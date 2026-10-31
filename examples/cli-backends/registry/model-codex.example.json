@@ -3,10 +3,10 @@
   "version": "1.0.0",
   "kind": "model",
   "name": {
-    "en": "Personal CLI model"
+    "en": "Personal inference model"
   },
   "description": {
-    "en": "Personal CLI endpoint; requires Catalog Approval"
+    "en": "Personal inference endpoint; requires Catalog Approval"
   },
   "config": {
     "provider": "openrouter",

@@ -280,15 +280,24 @@ pub fn completion(
 	if provider == Provider::Claude && reported_model.is_none() {
 		return Err(Failure("missing_reported_model"));
 	}
+	let envelope: Envelope =
+		serde_json::from_value(final_value.ok_or(Failure("missing_success_event"))?)
+			.map_err(|_| Failure("invalid_response_envelope"))?;
+	validated_completion(envelope, usage, reported_model.as_deref(), request)
+}
+
+pub(super) fn validated_completion(
+	envelope: Envelope,
+	usage: Value,
+	reported_model: Option<&str>,
+	request: &Request,
+) -> Result<Value> {
 	if usage["completion_tokens"]
 		.as_u64()
 		.is_some_and(|n| n > request.max_tokens as u64)
 	{
 		return Err(Failure("output_token_limit"));
 	}
-	let envelope: Envelope =
-		serde_json::from_value(final_value.ok_or(Failure("missing_success_event"))?)
-			.map_err(|_| Failure("invalid_response_envelope"))?;
 	if envelope.text.len() > 256 * 1024
 		|| envelope.tool_calls.len() > MAX_CALLS
 		|| envelope.text.trim().is_empty() && envelope.tool_calls.is_empty()
@@ -323,7 +332,7 @@ pub fn completion(
 	)
 }
 
-fn claude_usage(u: &Value) -> Value {
+pub(super) fn claude_usage(u: &Value) -> Value {
 	let mut usage = json!({});
 	// Anthropic input excludes cache; OpenAI-compatible input includes it once.
 	if let (Some(input), Some(read), Some(write)) = (

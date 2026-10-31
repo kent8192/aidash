@@ -3,10 +3,10 @@
   "version": "1.0.0",
   "kind": "agent",
   "name": {
-    "en": "Personal CLI agent"
+    "en": "Personal inference agent"
   },
   "description": {
-    "en": "Minimal personal CLI agent; no compaction provider dependency"
+    "en": "Minimal personal inference agent; no compaction provider dependency"
   },
   "config": {
     "schema_version": 1,

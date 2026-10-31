@@ -115,20 +115,20 @@ fn required_values_modes_and_secret_environment_are_explicit() {
 }
 
 #[test]
-fn unsupported_claude_token_never_falls_back_to_saved_login() {
+fn claude_token_requires_explicit_mode_and_never_falls_back() {
 	let tmp = tempfile::tempdir().unwrap();
 	let file = tmp.path().join("config");
 	std::fs::write(&file, "AIDASH_CLI_PROVIDER=claude\nAIDASH_CLI_AUTH_MODE=native\nAIDASH_CLI_MODEL=fixture-model-1\nAIDASH_CLI_CONTEXT_WINDOW=8192").unwrap();
 	let ambient = Values::from([("CLAUDE_CODE_OAUTH_TOKEN".into(), "fixture-token".into())]);
 	assert!(matches!(
 		config::load(&file, &ambient, &Values::new()),
-		Err(Failure("claude_oauth_token_backend_unsupported"))
+		Err(Failure("claude_token_requires_oauth_token_mode"))
 	));
 	let mut from_file = values();
 	from_file.insert("CLAUDE_CODE_OAUTH_TOKEN".into(), "fixture-token".into());
 	assert!(matches!(
 		Config::from_values(from_file.clone()),
-		Err(Failure("claude_oauth_token_backend_unsupported"))
+		Err(Failure("claude_token_requires_oauth_token_mode"))
 	));
 	from_file.insert("AIDASH_CLI_PROVIDER".into(), "codex".into());
 	assert!(matches!(
@@ -153,6 +153,7 @@ fn examples_parse_and_initialization_preserves_private_settings() {
 	let tmp = tempfile::tempdir().unwrap();
 	for profile in [
 		"claude",
+		"claude-oauth",
 		"codex-native",
 		"codex-access-token",
 		"codex-api-key",
@@ -164,6 +165,12 @@ fn examples_parse_and_initialization_preserves_private_settings() {
 		assert!(Config::from_values(v.clone()).is_err());
 		v.insert("AIDASH_CLI_MODEL".into(), "fixture-model-1".into());
 		v.insert("AIDASH_CLI_CONTEXT_WINDOW".into(), "8192".into());
+		if profile == "claude-oauth" {
+			v.insert(
+				"CLAUDE_CODE_OAUTH_TOKEN".into(),
+				"sk-ant-oat01-fixture-not-real".into(),
+			);
+		}
 		if profile == "codex-access-token" {
 			v.insert("CODEX_ACCESS_TOKEN".into(), "fixture-secret".into());
 		}

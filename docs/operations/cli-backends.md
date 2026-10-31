@@ -1,5 +1,8 @@
 # Personal CLI inference backends (experimental)
 
+For a supplied Claude OAuth token, use [the direct API setup](claude-oauth-api.md).
+The native CLI isolation restrictions below do not apply to that transport.
+
 This change is an **incomplete, guarded implementation**, not a declaration that all
 Claude Code and Codex configurations are supported. Do not deploy it for shared
 accounts, Cloud, Dedicated, or Federation. The first candidate route is a personal
@@ -11,6 +14,7 @@ rejected. No Compose backend integration is supplied.
 
 | Surface                                       | Implemented                                                          | Remaining gate                                                         |
 | --------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Claude OAuth token (direct API)               | Messages API, Bearer auth, text/tools, HTTP/SSE; no CLI process      | Live token/model smoke, then a real Aidash Run                         |
 | Claude saved login                            | Literal env loader, CLI profile, structured result adapter, HTTP/SSE | Live Linux isolation and account smoke, then a real Aidash Run         |
 | Codex saved ChatGPT login                     | Separate config and safe child environment                           | All native tools and automatic discovery cannot yet be proven disabled |
 | Codex access token / saved access-token login | Separate validated modes; capability check for `--with-access-token` | Same isolation gate; execution deliberately refused                    |
@@ -110,13 +114,12 @@ revoked or unauthorized credentials never trigger a different auth mode. Codex
 execution is blocked before these live cases can be exercised; it does not claim
 that login success proves token entitlement or remaining quota.
 
-## Manual Claude OAuth-token verification
+## Direct Claude OAuth-token API
 
-`CLAUDE_CODE_OAUTH_TOKEN` is not an implemented backend auth mode. A nonempty
-value in the process environment or dedicated env file is rejected before CLI
-inference, so a token check cannot silently use a saved account. For a separate
-manual test of the official CLI, see [the token check guide](claude-token-manual-check.md).
-That test is not evidence of Aidash integration or managed-hook isolation.
+Use `AIDASH_CLI_PROVIDER=claude` and `AIDASH_CLI_AUTH_MODE=oauth-token` for the
+[direct Messages API route](claude-oauth-api.md). This mode uses no CLI or saved
+login and works on macOS/Linux. Native mode still rejects a supplied token.
+The [manual CLI-only check](claude-token-manual-check.md) is a separate diagnostic.
 
 ## Env contract
 
@@ -135,24 +138,27 @@ backslashes, `$` expansion and backticks are rejected. No `source`, `eval` or co
 substitution is used. Unknown/duplicate env keys and unknown `AIDASH_CLI_*` environment
 keys fail. Empty secret placeholders are not treated as supplied credentials.
 
-| Variable                       | Type / default                                                                         | Required / consumer                                                         |
-| ------------------------------ | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `AIDASH_CLI_PROVIDER`          | `claude` or `codex`; no default                                                        | Backend                                                                     |
-| `AIDASH_CLI_AUTH_MODE`         | `native`, `access-token`, `access-token-login`, `api-key`, `api-key-login`; no default | Claude accepts only native; native Codex means saved ChatGPT, not API key   |
-| `AIDASH_CLI_EXECUTABLE`        | path or executable name; provider name                                                 | Backend launches this unmodified trusted CLI                                |
-| `AIDASH_CLI_MODEL`             | full ID; no default                                                                    | Required, aliases/placeholders rejected                                     |
-| `AIDASH_CLI_CONTEXT_WINDOW`    | integer 2048..2000000; no default                                                      | Required, verified by the user; must exceed output cap                      |
-| `AIDASH_CLI_PORT`              | integer 1024..65535; 18190                                                             | Backend loopback only; examples use Codex 18191                             |
-| `AIDASH_CLI_TIMEOUT_SECONDS`   | integer 1..900; 120                                                                    | Inference child deadline; capability probes have their own 15-second bounds |
-| `AIDASH_CLI_MAX_OUTPUT_TOKENS` | integer 1..32768; 4096                                                                 | CLI output request and response validation                                  |
-| `AIDASH_CLI_WORK_DIR`          | literal path; `private/cli-backends/work`                                              | Parent of private disposable cwd; never changes HOME or CODEX_HOME          |
-| `CLAUDE_CONFIG_DIR`            | optional absolute path                                                                 | Only Claude child; official meaning unchanged                               |
-| `CODEX_HOME`                   | optional absolute path                                                                 | Only Codex child; official state/auth root unchanged                        |
-| `CODEX_ACCESS_TOKEN`           | secret, no default                                                                     | Required only for access-token; never argv                                  |
-| `CODEX_API_KEY`                | secret, no default                                                                     | Required only for api-key; never argv                                       |
+| Variable                       | Type / default                                                                                        | Required / consumer                                                                 |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `AIDASH_CLI_PROVIDER`          | `claude` or `codex`; no default                                                                       | Backend                                                                             |
+| `AIDASH_CLI_AUTH_MODE`         | `native`, `oauth-token`, `access-token`, `access-token-login`, `api-key`, `api-key-login`; no default | Claude accepts native or oauth-token; native Codex means saved ChatGPT, not API key |
+| `AIDASH_CLI_EXECUTABLE`        | path or executable name; provider name                                                                | Native/CLI modes only; rejected in oauth-token mode                                 |
+| `AIDASH_CLI_MODEL`             | full ID; no default                                                                                   | Required, aliases/placeholders rejected                                             |
+| `AIDASH_CLI_CONTEXT_WINDOW`    | integer 2048..2000000; no default                                                                     | Required, verified by the user; must exceed output cap                              |
+| `AIDASH_CLI_PORT`              | integer 1024..65535; 18190                                                                            | Backend loopback only; examples use Codex 18191                                     |
+| `AIDASH_CLI_TIMEOUT_SECONDS`   | integer 1..900; 120                                                                                   | Inference HTTP/child deadline; CLI probes have their own 15-second bounds           |
+| `AIDASH_CLI_MAX_OUTPUT_TOKENS` | integer 1..32768; 4096                                                                                | Output request and response validation                                              |
+| `AIDASH_CLI_WORK_DIR`          | literal path; `private/cli-backends/work`                                                             | Parent of private disposable cwd; never changes HOME or CODEX_HOME                  |
+| `CLAUDE_CONFIG_DIR`            | optional absolute path                                                                                | Only Claude child; official meaning unchanged                                       |
+| `CODEX_HOME`                   | optional absolute path                                                                                | Only Codex child; official state/auth root unchanged                                |
+| `CODEX_ACCESS_TOKEN`           | secret, no default                                                                                    | Required only for access-token; never argv                                          |
+| `CODEX_API_KEY`                | secret, no default                                                                                    | Required only for api-key; never argv                                               |
+| `CLAUDE_CODE_OAUTH_TOKEN`      | secret; no default                                                                                    | Required only for Claude oauth-token; direct API only, never a child or argv        |
 
-`CLAUDE_CODE_OAUTH_TOKEN` is a recognized secret key with no supported backend mode;
-it must be absent or empty. It is never forwarded to a backend child.
+`CLAUDE_CODE_OAUTH_TOKEN` is required only for `oauth-token` mode (Claude direct API).
+It must start with `sk-ant-oat01-`; format validation does not prove access. It is
+never forwarded to a child or to another provider. Native mode requires it to be
+absent or empty. CLI executable/config roots/work directory are rejected in API mode.
 
 Saved access-token/API-key modes require the corresponding prior official login and
 no nonempty direct secret. A nonempty secret for a different selected mode is an

@@ -1,10 +1,9 @@
 # Manually check a Claude Code OAuth token
 
-This checks the **official CLI only**, not an Aidash Run. The current Aidash backend
-supports a personal saved login on unmanaged Linux; it does not support
-`CLAUDE_CODE_OAUTH_TOKEN` or macOS serving. A nonempty token in its env file or
-process environment now fails with `claude_oauth_token_backend_unsupported` rather
-than silently checking a different saved login. Do not put the token in root `.env`.
+For Aidash inference using a supplied OAuth token, follow [the direct API guide](claude-oauth-api.md).
+This page checks the **official CLI only**, not an Aidash Run. Native backend mode
+requires a saved login; select `oauth-token` for the separate direct API transport.
+Do not put the token in root `.env`.
 
 ## Prepare the token yourself
 
@@ -96,16 +95,10 @@ No actual token or live response was available when writing this guide. A token
 that expires must be replaced through the official command and the process
 restarted; this branch does not implement token extraction or OAuth refresh.
 
-## What remains for Aidash
+## Aidash integration
 
-Passing the CLI test does not enable token mode in `cli-backend`. That needs a
-separate verified authentication profile, token-account eligibility, isolation of
-managed hooks/customizations, and HTTP → CLI → Aidash acceptance. The official CLI
-can fetch server-managed settings using an environment OAuth token, so a cached
-personal login cannot be used as proof of the token's organization or policy.
-Do not bypass the existing host/account checks or claim that a successful
-`auth status` proves those controls. See [the backend guide](cli-backends.md) for
-the existing saved-login candidate and its limitations.
+A successful CLI check does not test the direct Messages API transport or an Aidash
+Run. Follow [the OAuth API guide](claude-oauth-api.md) for those separate checks.
 
 Sources checked on 2026-10-31:
 

@@ -1,4 +1,8 @@
-# CLI backend examples
+# Personal inference backend examples
+
+For a supplied Claude OAuth token, use the [direct API guide](../../docs/operations/claude-oauth-api.md)
+and `claude-oauth/.env.example`. It runs on macOS/Linux without a CLI subprocess.
+The restrictions below concern the separate native CLI modes.
 
 Read the [operating guide](../../docs/operations/cli-backends.md) first. This is an
 experimental, incomplete implementation: Codex inference fails closed, and Claude's
@@ -8,6 +12,7 @@ for managed accounts, macOS, Windows, WSL or Compose networking.
 
 | Directory                         | Purpose                                                        |
 | --------------------------------- | -------------------------------------------------------------- |
+| `claude-oauth/.env.example`       | Direct Claude Messages API with OAuth token; port 18190        |
 | `claude/.env.example`             | Claude saved login; port 18190                                 |
 | `codex-native/.env.example`       | Codex saved ChatGPT login; port 18191; currently blocked       |
 | `codex-access-token/.env.example` | Official Codex access token; currently blocked                 |
@@ -38,7 +43,6 @@ The model/Agent examples use Legacy projection, text input, no explicit cache ma
 and non-streaming. The Agent explicitly removes default compaction for the minimal
 short-Run setup. Other inference dependencies remain separately configured.
 
-For `claude setup-token` / `CLAUDE_CODE_OAUTH_TOKEN`, see the
-[manual CLI-only check](../../docs/operations/claude-token-manual-check.md).
-Token-based Aidash inference is not supported; the backend rejects a nonempty
-token rather than falling back to its saved-login mode.
+For `claude setup-token` / `CLAUDE_CODE_OAUTH_TOKEN`, select `oauth-token` explicitly
+and follow the [direct API guide](../../docs/operations/claude-oauth-api.md). Native
+mode still rejects a nonempty token rather than silently changing accounts.

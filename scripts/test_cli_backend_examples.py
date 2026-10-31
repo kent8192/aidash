@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class CliBackendExamples(unittest.TestCase):
     def test_examples_are_trackable_and_private_envs_are_ignored(self):
-        for profile in ("claude", "codex-native", "codex-access-token", "codex-api-key"):
+        for profile in ("claude", "claude-oauth", "codex-native", "codex-access-token", "codex-api-key"):
             example = f"examples/cli-backends/{profile}/.env.example"
             private = f"private/cli-backends/{profile}/.env"
             self.assertTrue((ROOT / example).is_file())

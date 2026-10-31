@@ -14,7 +14,7 @@ use std::{path::PathBuf, sync::Arc};
 #[derive(Parser)]
 #[command(
 	name = "cli-backend",
-	about = "Personal loopback CLI inference. No implicit env file or live calls."
+	about = "Personal loopback inference (CLI or Claude OAuth API). No implicit env file or live calls."
 )]
 struct Args {
 	#[arg(long, global = true)]
@@ -43,6 +43,7 @@ struct Args {
 #[derive(Clone, ValueEnum)]
 enum Profile {
 	Claude,
+	ClaudeOauth,
 	CodexNative,
 	CodexAccessToken,
 	CodexApiKey,
@@ -51,6 +52,7 @@ impl Profile {
 	fn name(&self) -> &'static str {
 		match self {
 			Self::Claude => "claude",
+			Self::ClaudeOauth => "claude-oauth",
 			Self::CodexNative => "codex-native",
 			Self::CodexAccessToken => "codex-access-token",
 			Self::CodexApiKey => "codex-api-key",
@@ -68,7 +70,7 @@ enum Command {
 	},
 	/// Validate configuration without starting a CLI or calling a model.
 	Validate,
-	/// Check CLI flags, version, isolation and saved login; no inference.
+	/// Check the selected transport. OAuth API mode only validates config; no inference.
 	Doctor,
 	/// Listen on 127.0.0.1. Stop with SIGINT or SIGTERM.
 	Serve,
@@ -160,8 +162,16 @@ pub async fn main() -> Result<()> {
 	match args.command {
 		Command::Validate => println!("{}", config.diagnostic()),
 		Command::Doctor => {
+			let direct = config.auth == config::Auth::OAuthToken;
 			Backend::checked(config, &ambient).await?;
-			println!("CLI profile and saved login verified; no inference performed");
+			println!(
+				"{}",
+				if direct {
+					"OAuth API configuration valid; token/model access NOT verified; run smoke --live"
+				} else {
+					"CLI profile and saved login verified; no inference performed"
+				}
+			);
 		}
 		Command::Serve => {
 			let backend = Arc::new(Backend::checked(config, &ambient).await?);
@@ -200,7 +210,7 @@ pub async fn main() -> Result<()> {
 				if parsed.text.trim() != "OK" || !parsed.tool_calls.is_empty() {
 					return Err(Failure("unexpected_smoke_response"));
 				}
-				println!("real CLI model response verified; this is not an Aidash Run");
+				println!("real model response verified; this is not an Aidash Run");
 			} else {
 				println!("backend health OK; no inference performed");
 			}

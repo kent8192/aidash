@@ -1,5 +1,6 @@
 //! Personal CLI inference behind Aidash's existing Keyless contract.
 //! Authentication never enters Provider Credentials or Plan Connections.
+mod anthropic;
 pub mod config;
 pub mod protocol;
 pub mod provider;

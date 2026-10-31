@@ -179,6 +179,92 @@ mod tests {
 	use aidash_integrations::cli_backend::config::{self, Config};
 	use std::path::Path;
 	#[tokio::test]
+	async fn http_oauth_messages_roundtrip_without_cli() {
+		let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let url = format!("http://{}/v1/messages", upstream.local_addr().unwrap());
+		let upstream_task = tokio::spawn(async move {
+			for _ in 0..3 {
+				let (socket, _) = upstream.accept().await.unwrap();
+				hyper::server::conn::http1::Builder::new().keep_alive(false)
+					.serve_connection(TokioIo::new(socket), service_fn(|req: HttpRequest<Incoming>| async move {
+						assert_eq!(req.uri().path(), "/v1/messages");
+						assert_eq!(req.headers()["authorization"], "Bearer sk-ant-oat01-fixture-not-real");
+						assert!(!req.headers().contains_key("x-api-key"));
+						let bytes = req.into_body().collect().await.unwrap().to_bytes();
+						let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+						assert_eq!(body["tools"][0]["name"], "workspace_message");
+						let followup = body["messages"].as_array().unwrap().len() > 1;
+						if followup {
+							assert_eq!(body["messages"][2]["content"][0]["type"], "tool_result");
+							assert_eq!(body["messages"][2]["content"][0]["content"][0]["text"], "executed by Aidash");
+						}
+						let content = if followup { json!([{"type":"text","text":"OK"}]) } else { json!([{"type":"tool_use","id":"toolu_fixture","name":"workspace_message","input":{"content":"done"}}]) };
+						Ok::<_, Infallible>(response(StatusCode::OK, json!({"type":"message","role":"assistant","model":"fixture-model-1","stop_reason":if followup {"end_turn"}else{"tool_use"},"content":content,"usage":{"input_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":2}})))
+					})).await.unwrap();
+			}
+		});
+		let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let port = listener.local_addr().unwrap().port();
+		let mut config = Config::from_values(config::parse_env("AIDASH_CLI_PROVIDER=claude\nAIDASH_CLI_AUTH_MODE=oauth-token\nAIDASH_CLI_MODEL=fixture-model-1\nAIDASH_CLI_CONTEXT_WINDOW=8192\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-fixture-not-real").unwrap()).unwrap();
+		config.port = port;
+		let (model, agent) =
+			super::super::examples::definitions(&config, "oauth-model", "oauth-agent", "1.0.0")
+				.unwrap();
+		assert_eq!(
+			model["config"]["endpoint"],
+			format!("http://127.0.0.1:{port}/v1")
+		);
+		assert_eq!(agent["config"]["model"]["id"], "oauth-model");
+		let backend = Arc::new(Backend::fixture_api(config, url));
+		let (stop, stopping) = tokio::sync::oneshot::channel();
+		let task = tokio::spawn(serve(listener, backend, async {
+			let _ = stopping.await;
+		}));
+		let origin = format!("http://127.0.0.1:{port}");
+		let api = reinhardt_test::client::APIClient::with_base_url(&origin);
+		let health = api.get("/health").await.unwrap();
+		assert_eq!(health.status_code(), 200);
+		let spec = aidash_application::tools::builtins()["workspace_message"].specification();
+		let mut request = json!({"model":"fixture-model-1","max_tokens":100,"messages":[{"role":"user","content":"Hi"}],"tools":[{"type":"function","function":spec}]});
+		let client = reqwest::Client::builder().no_proxy().build().unwrap();
+		let endpoint = format!("{origin}/v1/chat/completions");
+		let first = client.post(&endpoint).json(&request).send().await.unwrap();
+		assert_eq!(first.status(), 200);
+		let first: serde_json::Value = first.json().await.unwrap();
+		assert_eq!(first["choices"][0]["finish_reason"], "tool_calls");
+		let message = first["choices"][0]["message"].clone();
+		let id = message["tool_calls"][0]["id"].clone();
+		request["messages"].as_array_mut().unwrap().extend([
+			message,
+			json!({"role":"tool","tool_call_id":id,"content":"executed by Aidash"}),
+		]);
+		let second: serde_json::Value = client
+			.post(&endpoint)
+			.json(&request)
+			.send()
+			.await
+			.unwrap()
+			.json()
+			.await
+			.unwrap();
+		assert_eq!(second["choices"][0]["message"]["content"], "OK");
+		request["stream"] = json!(true);
+		let stream = client
+			.post(&endpoint)
+			.json(&request)
+			.send()
+			.await
+			.unwrap()
+			.text()
+			.await
+			.unwrap();
+		assert!(stream.contains("data: [DONE]"));
+		assert!(stream.contains("OK"));
+		stop.send(()).unwrap();
+		task.await.unwrap().unwrap();
+		upstream_task.await.unwrap();
+	}
+	#[tokio::test]
 	async fn http_runtime_cli_roundtrip_json_sse_tool_history_and_admission() {
 		super::super::examples::tests::committed_templates_match_the_real_registry_and_generated_definitions();
 		let tmp = tempfile::tempdir().unwrap();

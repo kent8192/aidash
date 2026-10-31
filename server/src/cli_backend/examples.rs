@@ -23,11 +23,11 @@ pub fn definitions(
 	{
 		return Err(Failure("invalid_registry_identity"));
 	}
-	let model = json!({"id":model_entry,"version":version,"kind":"model","name":{"en":"Personal CLI model"},"description":{"en":"Personal CLI endpoint; requires Catalog Approval"},"config":{
+	let model = json!({"id":model_entry,"version":version,"kind":"model","name":{"en":"Personal inference model"},"description":{"en":"Personal inference endpoint; requires Catalog Approval"},"config":{
 		"provider":"openrouter","model_id":config.model,"endpoint":format!("http://127.0.0.1:{}/v1",config.port),
 		"request_timeout_secs":config.timeout_seconds+65,"streaming":false,"stream_stall_timeout_secs":config.timeout_seconds+65,
 		"context_window":config.context_window,"max_output_tokens":config.max_output_tokens,"modalities":["text"],"cost":{},"projection_versions":["legacy"],"cache_mode":"none"}});
-	let agent = json!({"id":agent_entry,"version":version,"kind":"agent","name":{"en":"Personal CLI agent"},"description":{"en":"Minimal personal CLI agent; no compaction provider dependency"},"config":{
+	let agent = json!({"id":agent_entry,"version":version,"kind":"agent","name":{"en":"Personal inference agent"},"description":{"en":"Minimal personal inference agent; no compaction provider dependency"},"config":{
 		"schema_version":1,"model":{"id":model_entry,"version":version},"instructions":"Complete the user's task using the Aidash tools when needed. Report the result briefly.",
 		"bindings":[],"remove_default":["compaction"],"max_steps":8,"projection_version":"legacy"}});
 	validate(&model, &agent)?;

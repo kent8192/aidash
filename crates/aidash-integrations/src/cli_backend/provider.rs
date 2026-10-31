@@ -1,7 +1,7 @@
 //! Audited CLI profiles. Unsupported isolation fails before inference.
 use super::{
 	Failure, Result,
-	config::{Config, Provider, Values},
+	config::{Auth, Config, Provider, Values},
 	protocol::{self, Request},
 };
 use aidash_runtime::cli_child::exchange;
@@ -14,6 +14,8 @@ pub const CODEX_BLOCKER: &str = "codex_native_tools_and_discovery_isolation_unve
 pub struct Backend {
 	pub config: Config,
 	env: Values,
+	#[cfg(any(test, feature = "test-support"))]
+	api_fixture: Option<String>,
 }
 
 impl Backend {
@@ -21,7 +23,19 @@ impl Backend {
 	#[cfg(any(test, feature = "test-support"))]
 	pub fn fixture(config: Config, ambient: &Values) -> Self {
 		let env = config.child_env(ambient);
-		Self { config, env }
+		Self {
+			config,
+			env,
+			api_fixture: None,
+		}
+	}
+
+	#[cfg(any(test, feature = "test-support"))]
+	pub fn fixture_api(config: Config, endpoint: String) -> Self {
+		assert!(endpoint.starts_with("http://127.0.0.1:"));
+		let mut backend = Self::fixture(config, &Values::new());
+		backend.api_fixture = Some(endpoint);
+		backend
 	}
 
 	#[cfg(any(test, feature = "test-support"))]
@@ -31,7 +45,12 @@ impl Backend {
 
 	pub async fn checked(config: Config, ambient: &Values) -> Result<Self> {
 		let env = config.child_env(ambient);
-		let backend = Self { config, env };
+		let backend = Self {
+			config,
+			env,
+			#[cfg(any(test, feature = "test-support"))]
+			api_fixture: None,
+		};
 		backend.check().await?;
 		Ok(backend)
 	}
@@ -54,6 +73,11 @@ impl Backend {
 	}
 
 	pub async fn check(&self) -> Result<()> {
+		if self.config.auth == Auth::OAuthToken {
+			// Configuration checks do not spend tokens or inspect any CLI login.
+			self.config.oauth_token()?;
+			return Ok(());
+		}
 		std::fs::create_dir_all(&self.config.work_dir)
 			.map_err(|_| Failure("work_directory_failed"))?;
 		let cwd = tempfile::Builder::new()
@@ -121,6 +145,13 @@ impl Backend {
 	}
 
 	async fn exchange(&self, request: &Request) -> Result<Value> {
+		if self.config.auth == Auth::OAuthToken {
+			#[cfg(any(test, feature = "test-support"))]
+			if let Some(endpoint) = &self.api_fixture {
+				return super::anthropic::call(&self.config, request, endpoint).await;
+			}
+			return super::anthropic::infer(&self.config, request).await;
+		}
 		if self.config.provider != Provider::Claude {
 			return Err(Failure(CODEX_BLOCKER));
 		}

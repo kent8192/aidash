@@ -101,7 +101,12 @@ Identity UUIDs before the Cloud cutover; Marketplace sign-in creates no Cloud Te
 
 ## Run locally
 
-### Personal CLI backend (experimental)
+### Personal inference backend: OAuth API / CLI (experimental)
+
+To use your own Claude OAuth setup-token for inference, follow the
+[direct Messages API setup](docs/operations/claude-oauth-api.md). This separate
+loopback backend uses no Claude CLI subprocess; real token/model access must be
+checked explicitly with `smoke --live`.
 
 The [CLI backend guide](docs/operations/cli-backends.md) and
 [configuration examples](examples/cli-backends/README.md) cover a separate local

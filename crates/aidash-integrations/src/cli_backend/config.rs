@@ -38,6 +38,8 @@ pub enum Provider {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Auth {
 	Native,
+	/// Direct Anthropic Messages API; no CLI process or saved login is used.
+	OAuthToken,
 	AccessToken,
 	AccessTokenLogin,
 	ApiKey,
@@ -147,25 +149,30 @@ impl Config {
 		};
 		let auth = match required(&values, "AIDASH_CLI_AUTH_MODE")?.as_str() {
 			"native" => Auth::Native,
+			"oauth-token" => Auth::OAuthToken,
 			"access-token" => Auth::AccessToken,
 			"access-token-login" => Auth::AccessTokenLogin,
 			"api-key" => Auth::ApiKey,
 			"api-key-login" => Auth::ApiKeyLogin,
 			_ => return Err(Failure("invalid_auth_mode")),
 		};
-		if provider == Provider::Claude && auth != Auth::Native {
+		if provider == Provider::Claude && !matches!(auth, Auth::Native | Auth::OAuthToken)
+			|| provider == Provider::Codex && auth == Auth::OAuthToken
+		{
 			return Err(Failure("invalid_provider_auth_combination"));
 		}
 		if provider == Provider::Claude
+			&& auth != Auth::OAuthToken
 			&& values
 				.get("CLAUDE_CODE_OAUTH_TOKEN")
 				.is_some_and(|v| !v.is_empty())
 		{
 			// This profile verifies a saved personal login, not an environment
 			// token's account. Never silently test a different saved account.
-			return Err(Failure("claude_oauth_token_backend_unsupported"));
+			return Err(Failure("claude_token_requires_oauth_token_mode"));
 		}
 		let selected = match auth {
+			Auth::OAuthToken => Some("CLAUDE_CODE_OAUTH_TOKEN"),
 			Auth::AccessToken => Some("CODEX_ACCESS_TOKEN"),
 			Auth::ApiKey => Some("CODEX_API_KEY"),
 			_ => None,
@@ -175,6 +182,28 @@ impl Config {
 				required(&values, key)?;
 			} else if values.get(*key).is_some_and(|v| !v.is_empty()) {
 				return Err(Failure("conflicting_auth_environment"));
+			}
+		}
+		if auth == Auth::OAuthToken {
+			let token = &values["CLAUDE_CODE_OAUTH_TOKEN"];
+			if !token.starts_with("sk-ant-oat01-")
+				|| token.len() <= "sk-ant-oat01-".len()
+				|| token.len() > 8192
+				|| !token
+					.bytes()
+					.all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
+			{
+				return Err(Failure("invalid_claude_oauth_token"));
+			}
+			for key in [
+				"AIDASH_CLI_EXECUTABLE",
+				"AIDASH_CLI_WORK_DIR",
+				"CLAUDE_CONFIG_DIR",
+				"CODEX_HOME",
+			] {
+				if values.get(key).is_some_and(|v| !v.is_empty()) {
+					return Err(Failure("cli_setting_in_direct_api_mode"));
+				}
 			}
 		}
 		let foreign = if provider == Provider::Claude {
@@ -295,11 +324,22 @@ impl Config {
 		env
 	}
 
+	pub(super) fn oauth_token(&self) -> Result<&str> {
+		if self.provider != Provider::Claude || self.auth != Auth::OAuthToken {
+			return Err(Failure("invalid_provider_auth_combination"));
+		}
+		self.values
+			.get("CLAUDE_CODE_OAUTH_TOKEN")
+			.map(String::as_str)
+			.ok_or(Failure("required_setting_empty"))
+	}
+
 	pub fn diagnostic(&self) -> serde_json::Value {
 		serde_json::json!({"provider":format!("{:?}",self.provider),"auth_mode":format!("{:?}",self.auth),
 			"model":self.model,"origin":format!("http://127.0.0.1:{}",self.port),
 			"timeout_seconds":self.timeout_seconds,"max_output_tokens":self.max_output_tokens,
-			"context_window":self.context_window,"secret_required":matches!(self.auth,Auth::AccessToken|Auth::ApiKey),
+			"context_window":self.context_window,"secret_required":matches!(self.auth,Auth::AccessToken|Auth::ApiKey|Auth::OAuthToken),
+			"transport":if self.auth == Auth::OAuthToken {"anthropic-messages-api"}else{"cli"},
 			"restart_required":true})
 	}
 }
