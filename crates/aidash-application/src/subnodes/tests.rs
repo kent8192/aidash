@@ -58,6 +58,7 @@ struct Scope {
 	remote: bool,
 	nested: bool,
 	active: usize,
+	limits: SubnodeLimits,
 }
 fn scope() -> Scope {
 	let run = run();
@@ -82,6 +83,7 @@ fn scope() -> Scope {
 		remote: false,
 		nested: false,
 		active: 0,
+		limits: SubnodeLimits::default(),
 	}
 }
 impl Scope {
@@ -144,7 +146,7 @@ impl CreateScope for Scope {
 		Ok(None)
 	}
 	async fn limits(&mut self) -> Result<SubnodeLimits> {
-		Ok(SubnodeLimits::default())
+		Ok(self.limits)
 	}
 	async fn active_count(&mut self, _: Uuid) -> Result<usize> {
 		Ok(self.active)
@@ -247,6 +249,21 @@ async fn creation_refuses_nested_remote_over_limit_and_uncovered_member() {
 	assert!(
 		matches!(create(&mut scope, &run(), "key", &request).await, Err(Error::Refused(message)) if message.contains("creating agent"))
 	);
+}
+
+#[tokio::test]
+async fn a_remote_grant_run_creates_only_when_the_tenant_allows_it() {
+	let mut scope = scope();
+	scope.grant();
+	scope.remote = true;
+	assert!(matches!(
+		create(&mut scope, &run(), "key", &input()).await,
+		Err(Error::Refused(message)) if message == "remote Runs are not permitted to create Subnodes"
+	));
+	assert_eq!(scope.inserted, 0);
+	scope.limits.remote_runs_may_create = true;
+	create(&mut scope, &run(), "key", &input()).await.unwrap();
+	assert_eq!(scope.inserted, 1);
 }
 
 struct Management {
