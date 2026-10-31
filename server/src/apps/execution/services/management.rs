@@ -508,6 +508,13 @@ impl HarnessManagement {
 				.await?;
 			let model: crate::registry::ModelConfig = serde_json::from_value(model.config)?;
 			let headroom = f.run_request_headroom(&run).await?;
+			let version = agent.projection_version.unwrap_or_default();
+			if !agent.harness_contract.unwrap_or_default().supports(version) {
+				return Err(Error::Invalid(format!(
+					"Harness Contract {} does not support Projection Version {version}",
+					agent.harness_contract.unwrap_or_default()
+				)));
+			}
 			let batch = aidash_application::execution::media::load(
 				&mut crate::apps::workspaces::repositories::media::ScopedMedia {
 					access: lease.access_mut(),
@@ -517,7 +524,7 @@ impl HarnessManagement {
 				run.workspace_id,
 				&[(record.seq, message, headroom)],
 				&model,
-				agent.projection_version.unwrap_or_default(),
+				version,
 			)
 			.await
 			.map_err(|error| match error {
@@ -540,7 +547,7 @@ impl HarnessManagement {
 			let parts = batch.parts;
 			let request = aidash_application::execution::media::admission_request(
 				&model,
-				agent.projection_version.unwrap_or_default(),
+				version,
 				json!({"run_message":input.content}),
 				parts,
 			);

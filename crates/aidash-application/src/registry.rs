@@ -257,6 +257,8 @@ pub async fn register(
 		scope.assign_id(&mut entry, key).await?;
 		scope.authorize(&entry).await?;
 	}
+	// The caller receives the definition as stored, defaults included.
+	apply_agent_defaults(scope, &mut entry).await;
 	let inserted = register_definition(scope, validation, &entry, node).await?;
 	if tracked && inserted {
 		scope
@@ -277,6 +279,7 @@ pub async fn register_definition(
 ) -> Result<bool> {
 	system::reject_owner_definition(entry)?;
 	let mut entry = entry.clone();
+	apply_agent_defaults(scope, &mut entry).await;
 	bindings::normalize_agent(
 		&mut bindings::catalog::LookupCatalog {
 			definitions: scope,
@@ -288,6 +291,69 @@ pub async fn register_definition(
 	.await?;
 	validate_references(scope, validation, &entry, node).await?;
 	scope.insert_definition(&entry).await
+}
+
+/// The Projection Version and Harness Contract a new Agent definition gets when
+/// it names neither (#532): Native with `structured@3`, if its model declares
+/// Native. The values are written into the definition, so its bytes, digest and
+/// every Binding snapshot pin them. A definition that names a Projection
+/// Version keeps it, a Native one without a contract gets `structured@3`, and
+/// an Agent whose model lacks Native keeps the omitted defaults (`legacy`,
+/// `legacy@1`). Stored definitions are never rewritten (ADR 0093): when this
+/// id and version are already registered, a field the stored definition omits
+/// stays omitted, so replaying a registration made before these defaults
+/// remains idempotent. Applying the defaults twice changes nothing, so
+/// callers apply them to the entry they return or test, and
+/// [`register_definition`] applies them again before the insert.
+pub async fn apply_agent_defaults(scope: &mut dyn DefinitionLookup, entry: &mut Entry) {
+	if entry.kind != "agent" || !entry.config.is_object() {
+		return;
+	}
+	let stored = if entry.id.is_empty() {
+		None
+	} else {
+		// Absent or unreadable: registration reports the real error later.
+		scope
+			.definition(&entry.id, &entry.version)
+			.await
+			.ok()
+			.filter(|stored| stored.kind == "agent")
+	};
+	let stored_omits = |field: &str| {
+		stored
+			.as_ref()
+			.is_some_and(|stored| stored.config.get(field).is_none())
+	};
+	if entry.config.get("projection_version").is_none() && !stored_omits("projection_version") {
+		let model = entry.config.get("model").and_then(|model| {
+			Some((
+				model.get("id")?.as_str()?.to_owned(),
+				model.get("version")?.as_str()?.to_owned(),
+			))
+		});
+		// An unknown or invalid model is reported by reference validation.
+		let native = match model {
+			Some((id, version)) => match scope.definition(&id, &version).await {
+				Ok(model) if model.kind == "model" => serde_json::from_value::<
+					aidash_domain::model::ModelConfig,
+				>(model.config)
+				.is_ok_and(|config| {
+					config.supports_projection(aidash_domain::projection::ProjectionVersion::Native)
+				}),
+				_ => false,
+			},
+			None => false,
+		};
+		if native {
+			entry.config["projection_version"] = json!("native");
+		}
+	}
+	if entry.config.get("projection_version") == Some(&json!("native"))
+		&& entry.config.get("harness_contract").is_none()
+		&& !stored_omits("harness_contract")
+	{
+		entry.config["harness_contract"] = json!("structured@3");
+	}
 }
 
 #[cfg(test)]

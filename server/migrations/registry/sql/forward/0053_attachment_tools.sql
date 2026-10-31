@@ -1,17 +1,4 @@
--- Refuse reversal while newer tool definitions, Agent settings, or Run snapshots remain.
-DO $$
-BEGIN
- IF EXISTS (SELECT 1 FROM public.registry WHERE kind = 'tool' AND (metadata #>> '{config,operation}' = 'attachment_copy' OR (id IN ('aidash.workspace_read','aidash.workspace_observe','aidash.workspace_message') AND version = '1.0.1')))
- OR EXISTS (SELECT 1 FROM public.registry WHERE kind = 'agent' AND COALESCE(metadata #> '{config,remove_default}', '[]'::jsonb) ? 'attachment_copy') THEN
-  RAISE EXCEPTION 'registry 0050_attachment_tools cannot be reversed: attachment tools remain' USING ERRCODE = '55000';
- END IF;
- IF to_regclass('public.runs') IS NOT NULL THEN
-  IF EXISTS (SELECT 1 FROM public.runs WHERE jsonb_path_exists(context, 'lax $.binding_snapshot.bindings[*] ? (@.definition.config.operation == "attachment_copy" || (@.definition.config.operation == "workspace_read" && @.identity.version == "1.0.1") || (@.definition.config.operation == "workspace_observe" && @.identity.version == "1.0.1") || (@.definition.config.operation == "workspace_message" && @.identity.version == "1.0.1"))')) THEN
-   RAISE EXCEPTION 'registry 0050_attachment_tools cannot be reversed: Runs pin attachment tools' USING ERRCODE = '55000';
-  END IF;
- END IF;
-END
-$$;
+-- PostgreSQL function bodies have no typed migration operation.
 -- The registry/0023_research_providers descriptor contract plus the research `view` operation of research.page@1 and research.fixture@1 (#312).
 CREATE OR REPLACE FUNCTION public.aidash_descriptor_is_valid(value jsonb) RETURNS boolean
 LANGUAGE plpgsql IMMUTABLE STRICT AS $$
@@ -37,7 +24,7 @@ BEGIN
   WHEN 'task_create' THEN 'core.tasks@1' WHEN 'task_delegate' THEN 'core.tasks@1'
   WHEN 'agent_discover' THEN 'core.tasks@1' WHEN 'task_assign' THEN 'core.tasks@1'
   WHEN 'skill_list' THEN 'core.skills@1' WHEN 'skill_load' THEN 'core.skills@1' WHEN 'skill_read' THEN 'core.skills@1'
-  WHEN 'file_search' THEN 'core.files@1' WHEN 'file_read' THEN 'core.files@1' WHEN 'apply_patch' THEN 'core.files@1'
+  WHEN 'file_search' THEN 'core.files@1' WHEN 'file_read' THEN 'core.files@1' WHEN 'apply_patch' THEN 'core.files@1' WHEN 'attachment_copy' THEN 'core.files@1'
   WHEN 'artifact_publish' THEN 'core.artifacts@1' WHEN 'memory_mutate' THEN 'core.memory@1' WHEN 'memory_recall' THEN 'core.memory@1' WHEN 'memory_reflect' THEN 'core.memory@1'
   WHEN 'shell' THEN 'core.sandbox@1' WHEN 'shell_poll' THEN 'core.sandbox@1' WHEN 'shell_cancel' THEN 'core.sandbox@1'
   WHEN 'code_interpreter' THEN 'core.sandbox@1' WHEN 'python_install' THEN 'core.sandbox@1'
@@ -97,8 +84,9 @@ LANGUAGE plpgsql IMMUTABLE STRICT AS $$
 DECLARE plugins jsonb; plugin jsonb; plugin_settings jsonb; plugin_choices jsonb; server_choice jsonb; declared jsonb; completion jsonb; check_item jsonb; item jsonb; removals jsonb; edges jsonb; step_count numeric; parallelism numeric; context_policy jsonb; summary jsonb; restriction jsonb; candidate jsonb; policy jsonb; deferred boolean; budget text; bound numeric; removable text[]; support text[];
 BEGIN
  IF jsonb_typeof(value) IS DISTINCT FROM 'object'
- OR value - ARRAY['schema_version','model','instructions','bindings','remove_default','cluster','max_steps','projection_version','prompt_cache','exposure','tool_parallelism','context_policy','completion','agent_plugins','agent_plugin_settings']::text[] <> '{}'::jsonb
+ OR value - ARRAY['schema_version','model','instructions','bindings','remove_default','cluster','max_steps','projection_version','harness_contract','prompt_cache','exposure','tool_parallelism','context_policy','completion','agent_plugins','agent_plugin_settings']::text[] <> '{}'::jsonb
  OR NOT COALESCE(value->'projection_version','null'::jsonb) IN ('null'::jsonb,'"legacy"'::jsonb,'"ordered"'::jsonb,'"native"'::jsonb)
+ OR NOT COALESCE(value->'harness_contract','null'::jsonb) IN ('null'::jsonb,'"legacy@1"'::jsonb,'"structured@1"'::jsonb,'"structured@2"'::jsonb,'"structured@3"'::jsonb)
  OR NOT COALESCE(value->'prompt_cache','null'::jsonb) IN ('null'::jsonb,'"off"'::jsonb,'"explicit"'::jsonb)
  OR value->'schema_version' IS DISTINCT FROM '1'::jsonb
  OR NOT COALESCE(public.aidash_qualified_ref_is_valid(value->'model' || '{"registry_deployment":"aidash://contract"}'::jsonb),false)
@@ -237,10 +225,10 @@ BEGIN
  deferred := COALESCE(deferred,false);
  -- plpgsql ends an IF condition at its first THEN, so no CASE inside one.
  IF deferred THEN
-  removable := ARRAY['workspace_observe','workspace_wait','skill_asset_read','file_search','file_read','task_create','task_delegate','agent_discover','artifact_publish','workspace_message','memory_mutate','memory_recall','memory_reflect','compaction'];
+  removable := ARRAY['workspace_observe','workspace_wait','skill_asset_read','file_search','file_read','task_create','task_delegate','agent_discover','artifact_publish','workspace_message','attachment_copy','memory_mutate','memory_recall','memory_reflect','compaction'];
   support := ARRAY['skill_asset_read'];
  ELSE
-  removable := ARRAY['workspace_observe','workspace_wait','skill_list','skill_load','skill_read','file_search','file_read','task_create','task_delegate','agent_discover','artifact_publish','workspace_message','memory_mutate','memory_recall','memory_reflect','compaction'];
+  removable := ARRAY['workspace_observe','workspace_wait','skill_list','skill_load','skill_read','file_search','file_read','task_create','task_delegate','agent_discover','artifact_publish','workspace_message','attachment_copy','memory_mutate','memory_recall','memory_reflect','compaction'];
   support := ARRAY['skill_list','skill_load','skill_read'];
  END IF;
  FOR item IN SELECT jsonb_array_elements(edges) LOOP
