@@ -6,6 +6,7 @@ use serde_json::Value;
 pub struct Reply {
 	pub status: u16,
 	pub semantic_reason: Option<Failure>,
+	pub execution_refusal: Option<aidash_domain::federation::execution::Refusal>,
 	pub transaction_pending: bool,
 	pub body: Result<Vec<u8>>,
 }

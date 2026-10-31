@@ -39,6 +39,8 @@ pub(crate) struct Repository {
 	/// The local actor, or `None` for a request that a peer Node authenticated,
 	/// which has no local actor.
 	pub(crate) actor: Option<Actor>,
+	/// A worker revalidates its complete execution chain at every source boundary.
+	pub(crate) worker: Option<aidash_domain::RunMetadata>,
 }
 impl Repository {
 	/// The Node a Workspace of the acting subject's Tenant belongs to.
@@ -315,11 +317,30 @@ impl HomeScope for Scope {
 			.map_err(Into::into)
 	}
 	async fn delegation_grants(&mut self, task: &Task, node: &str) -> Result<Vec<Grant>> {
+		let worker_subjects = self.access.read_run.map(|_| self.access.subjects.clone());
 		let result:NativeResult<Vec<GrantRow>>=async {let identity=self.access.identity.clone();let access=&mut *self.access;Ok({ let query_bind_1 = task.id; let query_bind_2 = node; let query_bind_3 = &identity.tenant; let query_bind_4 = &identity.subject; crate::database::native::query_as(&Query::select().column(Asterisk).from(Alias::new("authorization_remote_grants"))
             .and_where(SimpleExpr::CustomWithExpr("(task_id=? AND node_id=? AND tenant=? AND root_subject=? AND NOT revoked AND expires_at>CLOCK_TIMESTAMP())".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), Expr::value(query_bind_3.to_owned()).into(), Expr::value(query_bind_4.to_owned()).into()]))
             .order_by(Alias::new("expires_at"),reinhardt::query::Order::Desc).limit(100).to_string(PostgresQueryBuilder)).fetch_all(&mut **access.tx).await? })}.await;
 		result
-			.map(|r| r.into_iter().map(Into::into).collect())
+			.map(|r| {
+				r.into_iter()
+					.map(Into::into)
+					.filter(|grant: &Grant| {
+						let Some(subjects) = &worker_subjects else {
+							return true;
+						};
+						let Some(id) = grant.inspection["agent"]["id"].as_str() else {
+							return false;
+						};
+						let Some(version) = grant.inspection["agent"]["version"].as_str() else {
+							return false;
+						};
+						let mut expected = subjects.clone();
+						expected.push(aidash_domain::agent_subject(node, id, version));
+						grant.subject_chain == expected
+					})
+					.collect()
+			})
 			.map_err(Into::into)
 	}
 	async fn insert_binding(
@@ -605,9 +626,20 @@ impl HomeRepository for Repository {
 		let Some(Actor::Subject(identity)) = &self.actor else {
 			return Err(NativeError::Forbidden.into());
 		};
+		let access = if let Some(run) = &self.worker {
+			crate::apps::identity::services::execution::access_for_run(
+				&self.runtime.store,
+				run,
+				true,
+			)
+			.await?
+			.ok_or(NativeError::Forbidden)?
+		} else {
+			Access::begin(&self.runtime.store, identity).await?
+		};
 		Ok(Scope {
 			runtime: self.runtime.clone(),
-			access: Box::new(Access::begin(&self.runtime.store, identity).await?),
+			access: Box::new(access),
 		})
 	}
 	async fn description(&self, node: &str, grant: Uuid) -> Result<(Scope, Description)> {
@@ -647,6 +679,10 @@ impl HomeRepository for Repository {
 		.map_err(Into::into)
 	}
 	async fn prepare(&self, task: Uuid, input: PrepareInput) -> Result<Prepared> {
+		if self.worker.is_some() {
+			return aidash_application::authorization::source::grants::prepare(self, task, input)
+				.await;
+		}
 		let Some(actor) = self.actor.clone() else {
 			return Err(NativeError::Forbidden.into());
 		};

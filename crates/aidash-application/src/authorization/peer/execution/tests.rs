@@ -72,6 +72,9 @@ impl PeerInspectionScope for Scope {
 	fn push_subject(&mut self, subject: String) {
 		self.subjects.push(subject);
 	}
+	async fn invalid_executor(&mut self, _: &Resource) -> Result<()> {
+		Ok(())
+	}
 	fn context(&mut self) -> &mut Value {
 		&mut self.context
 	}
@@ -85,6 +88,18 @@ impl PeerInspectionScope for Scope {
 	}
 	async fn require(&mut self, _: &Resource, action: &str) -> Result<()> {
 		self.call(action);
+		// Like the native scope, an unknown pushed executor is not an explicit
+		// deny, so it surfaces as an authority-approval refusal.
+		if self.subjects.len() > 1
+			&& self
+				.subjects
+				.last()
+				.is_some_and(|subject| !self.bundle.subjects.contains_key(subject))
+		{
+			return Err(Error::RemoteExecutionRefused(
+				aidash_domain::federation::execution::Refusal::PolicyAsk,
+			));
+		}
 		Ok(())
 	}
 	async fn generation(&mut self, _: &str, _: &InspectInput) -> Result<Option<Value>> {
@@ -102,7 +117,13 @@ impl PeerInspectionScope for Scope {
 	async fn entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
 		self.call(action);
 		if self.denied_action.as_deref() == Some(action) {
-			return Err(Error::Forbidden);
+			if action == aidash_domain::decision::INVOKE {
+				return Err(Error::Forbidden);
+			}
+			return Err(crate::authorization::catalog::policy_refusal(
+				"task_delegate",
+				action,
+			));
 		}
 		let snapshot = crate::test_support::snapshot("aidash://receiver", "agent");
 		let mut entry = snapshot
@@ -180,14 +201,16 @@ async fn preflight_checks_receiver_and_delegated_executor_before_pinning_definit
 
 #[rstest]
 #[tokio::test]
-async fn missing_executor_authority_stops_before_generation_or_catalog_access() {
+async fn missing_executor_authority_stops_before_catalog_access() {
 	let mut scope = Scope::new();
 	scope.bundle.subjects.clear();
 	assert!(matches!(
 		inspect(&mut scope, "aidash://home", &input()).await,
-		Err(Error::Forbidden)
+		Err(Error::RemoteExecutionRefused(
+			aidash_domain::federation::execution::Refusal::CatalogApproval
+		))
 	));
-	assert_eq!(scope.calls.len(), 1);
+	assert_eq!(scope.calls.len(), 3);
 	assert_eq!(scope.calls[0].0, "federation.execute");
 }
 
@@ -228,7 +251,9 @@ async fn denied_bound_tool_invocation_prevents_remote_preflight() {
 	scope.denied_action = Some("tool.invoke".into());
 	assert!(matches!(
 		inspect(&mut scope, "aidash://home", &input()).await,
-		Err(Error::Forbidden)
+		Err(Error::RemoteExecutionRefused(
+			aidash_domain::federation::execution::Refusal::Policy
+		))
 	));
 	let (action, subjects) = scope.calls.last().unwrap();
 	assert_eq!(action, "tool.invoke");

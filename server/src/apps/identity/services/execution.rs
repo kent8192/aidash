@@ -896,10 +896,29 @@ impl WorkerAuthority {
 		agent: &EntityRef,
 	) -> Result<Delegation> {
 		let mut lease = self.access.write().await;
-		if !run.is_local(f.config.deployment.as_str())
-			|| !aidash_domain::nodes::names_home(node, &run.home_node)
-		{
+		if !run.is_local(f.config.deployment.as_str()) {
 			return Err(Error::Forbidden);
+		}
+		if !aidash_domain::nodes::names_home(node, &run.home_node) {
+			let record = lease.task_read(task).await?;
+			if record.workspace_id != run.workspace_id {
+				return Err(Error::Forbidden);
+			}
+			let identity = lease.identity.clone();
+			if lease.tx.is_active() {
+				lease.suspend().await?;
+			}
+			let repository = crate::apps::identity::repositories::home_execution::Repository {
+				runtime: f.clone(),
+				actor: Some(super::identity::Actor::Subject(identity)),
+				worker: Some(run.metadata()),
+			};
+			let result =
+				aidash_application::authorization::home::delegate(&repository, task, node, agent)
+					.await
+					.map_err(Into::into);
+			refresh_access_for_run(&mut lease, &f.store, run).await?;
+			return result;
 		}
 		// Prepare the child's closure on the outer transaction: an inner shared
 		// lock could queue behind a writer waiting for this same parent lease.

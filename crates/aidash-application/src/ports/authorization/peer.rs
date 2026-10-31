@@ -29,6 +29,7 @@ pub trait PeerInspectionScope: Send {
 	fn bundle(&self) -> &PolicyBundle;
 	fn subjects(&self) -> &[String];
 	fn push_subject(&mut self, subject: String);
+	async fn invalid_executor(&mut self, resource: &Resource) -> Result<()>;
 	fn context(&mut self) -> &mut Value;
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;

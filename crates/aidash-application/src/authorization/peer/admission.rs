@@ -38,7 +38,12 @@ async fn finish<S: PeerAdmissionScope, T>(scope: S, result: Result<T>) -> Result
 fn semantic_failure(error: &Error) -> Failure {
 	match error {
 		Error::RemoteSemantic(reason) => *reason,
-		Error::Forbidden | Error::Unauthorized => Failure::Authority,
+		Error::RemoteExecutionRefused(
+			aidash_domain::federation::execution::Refusal::NodeUnreachable,
+		) => Failure::Unavailable,
+		Error::Forbidden | Error::Unauthorized | Error::RemoteExecutionRefused(_) => {
+			Failure::Authority
+		}
 		Error::Invalid(_) | Error::NotFound(_) => Failure::Configuration,
 		_ => Failure::Unavailable,
 	}
@@ -265,7 +270,13 @@ pub async fn worker_lease<R: PeerAdmissionRepository>(
 				let description: Description =
 					serde_json::from_value(repository.description(run.id).await?)?;
 				return Err(if description.semantic.disabled() {
-					error
+					match error {
+						Error::RemoteExecutionRefused(
+							aidash_domain::federation::execution::Refusal::NodeUnreachable,
+						) => Error::External("remote execution authority unavailable".into()),
+						Error::RemoteExecutionRefused(_) => Error::Forbidden,
+						other => other,
+					}
 				} else {
 					Error::RemoteSemantic(semantic_failure(&error))
 				});

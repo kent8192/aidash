@@ -23,6 +23,9 @@ impl SourceAuthorityScope for Scope<'_> {
 	fn source_subjects(&self) -> &[String] {
 		&self.access.subjects
 	}
+	fn source_replace_subjects(&mut self, subjects: Vec<String>) {
+		self.access.subjects = subjects;
+	}
 	fn source_bundle(&self) -> &PolicyBundle {
 		&self.access.snapshot.bundle
 	}

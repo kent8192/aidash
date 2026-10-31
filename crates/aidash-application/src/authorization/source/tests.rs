@@ -69,6 +69,9 @@ impl SourceAuthorityScope for Scope {
 	fn source_subjects(&self) -> &[String] {
 		&self.subjects
 	}
+	fn source_replace_subjects(&mut self, subjects: Vec<String>) {
+		self.subjects = subjects;
+	}
 	fn source_bundle(&self) -> &PolicyBundle {
 		&self.bundle
 	}
@@ -173,19 +176,10 @@ async fn source_denial_stops_the_remaining_dependency_checks(#[case] denied: &'s
 	assert_eq!(scope.calls.last().unwrap().0, denied);
 }
 #[rstest]
-#[case("chain")]
-#[case("missing")]
-#[case("kind")]
 #[tokio::test]
-async fn executor_must_be_the_current_last_agent_subject(#[case] change: &str) {
+async fn executor_must_be_the_last_subject_in_the_grant_chain() {
 	let mut scope = Scope::new();
-	let executor = scope.subjects.last().unwrap().clone();
-	match change {
-		"chain" => scope.subjects.reverse(),
-		"missing" => scope.bundle.subjects.clear(),
-		"kind" => scope.bundle.subjects.get_mut(&executor).unwrap().kind = SubjectKind::User,
-		_ => panic!("unknown authority"),
-	}
+	scope.subjects.reverse();
 	assert!(matches!(
 		authorize(
 			&mut scope,
@@ -197,7 +191,7 @@ async fn executor_must_be_the_current_last_agent_subject(#[case] change: &str) {
 		Err(Error::Forbidden)
 	));
 	assert!(scope.calls.is_empty());
-	assert!(scope.generation_checked);
+	assert!(!scope.generation_checked);
 }
 #[rstest]
 #[tokio::test]

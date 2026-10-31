@@ -8,6 +8,7 @@ fn reply(status: u16) -> Reply {
 	Reply {
 		status,
 		semantic_reason: None,
+		execution_refusal: None,
 		transaction_pending: false,
 		body: Ok(serde_json::to_vec(&json!({"ok":true})).unwrap()),
 	}
@@ -18,6 +19,18 @@ fn reply(status: u16) -> Reply {
 #[case(404)]
 fn permanent_denials_never_reflect_peer_body(#[case] status: u16) {
 	assert!(matches!(classify(reply(status)), Err(Error::Forbidden)));
+}
+#[rstest]
+fn receiver_can_share_a_closed_execution_refusal_without_reflecting_its_body() {
+	let mut response = reply(403);
+	response.execution_refusal =
+		Some(aidash_domain::federation::execution::Refusal::CatalogApproval);
+	assert!(matches!(
+		classify(response),
+		Err(Error::RemoteExecutionRefused(
+			aidash_domain::federation::execution::Refusal::CatalogApproval
+		))
+	));
 }
 #[rstest]
 #[case(400)]

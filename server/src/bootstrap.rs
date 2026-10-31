@@ -2106,6 +2106,7 @@ pub(crate) fn home_execution_repository(
 	crate::apps::identity::repositories::home_execution::Repository {
 		runtime: runtime.clone(),
 		actor: Some(actor),
+		worker: None,
 	}
 }
 /// A peer-authenticated request has no local actor; its authority is the grant it names.
@@ -2115,6 +2116,7 @@ pub(crate) fn peer_home_execution_repository(
 	crate::apps::identity::repositories::home_execution::Repository {
 		runtime: runtime.clone(),
 		actor: None,
+		worker: None,
 	}
 }
 

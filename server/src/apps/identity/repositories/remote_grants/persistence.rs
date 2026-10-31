@@ -53,6 +53,9 @@ impl SourceAuthorityScope for Scope {
 	fn source_subjects(&self) -> &[String] {
 		&self.access.subjects
 	}
+	fn source_replace_subjects(&mut self, subjects: Vec<String>) {
+		self.access.subjects = subjects;
+	}
 	fn source_bundle(&self) -> &PolicyBundle {
 		&self.access.snapshot.bundle
 	}
@@ -92,6 +95,28 @@ impl GrantScope for Scope {
 	}
 	fn append_subject(&mut self, subject: String) {
 		self.access.subjects.push(subject);
+	}
+	async fn record_refusal(
+		&mut self,
+		resource: &aidash_domain::policy::Resource,
+		reason: &str,
+	) -> Result<()> {
+		let records = self
+			.access
+			.subjects
+			.iter()
+			.map(|subject| {
+				let input = self
+					.access
+					.evaluation(subject, resource, "federation.execute");
+				let mut decision = self.access.snapshot.bundle.evaluate(&input);
+				decision.allowed = false;
+				decision.reason = reason.into();
+				decision.revision = self.access.snapshot.revision;
+				(input, decision)
+			})
+			.collect::<Vec<_>>();
+		self.access.record(&records).await.map_err(Into::into)
 	}
 	async fn inherit_task_origin(&mut self, id: Uuid) -> Result<()> {
 		crate::authorization::execution::inherit_task_origin(&mut self.access, id)

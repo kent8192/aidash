@@ -2577,9 +2577,127 @@ async fn new_cross_node_scoped_transaction_is_rejected_before_manifest_persisten
 
 #[rstest::rstest]
 #[tokio::test]
-async fn scoped_remote_agent_cannot_delegate_through_an_excluded_default_operation(
+async fn remote_grant_reports_the_receivers_missing_catalog_approval(
+	#[future(awt)]
+	#[with(false, false, true)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let authorization = aidash_server::authorization::Authorization {
+		pool: p.b.store.pool.clone(),
+	};
+	let reference = EntityRef {
+		id: "research".into(),
+		version: "1.0.0".into(),
+	};
+	authorization
+		.set_catalog(
+			"acme",
+			&aidash_domain::nodes::NodeName::derived("acme"),
+			&reference,
+			1,
+			false,
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	let (status, body) = request(&p.aa, &p.token, "POST", &format!("/api/tasks/{}/remote-grants", p.task), json!({"id":Uuid::new_v4(),"node_id":node_of(&p.b),"agent":reference,"ttl_seconds":3600,"semantic":{"mode":"disabled"}})).await;
+	assert_eq!(status, 403, "{body}");
+	let reason = body.to_string();
+	assert!(reason.contains("Catalog Approval"), "{reason}");
+	assert!(!reason.contains("agent_discover returned"), "{reason}");
+	let denied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM authorization_decisions WHERE decision->>'reason' = 'catalog_approval_missing'")
+		.fetch_one(p.b.store.pool.fixture_driver()).await.unwrap();
+	assert!(
+		denied > 0,
+		"receiver must record the Catalog Approval refusal"
+	);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn receiver_owns_the_remote_executor_subject(
+	#[future(awt)]
+	#[with(false, false, true)]
+	scoped_pair: Pair,
+) {
+	let mut p = scoped_pair;
+	let executor = aidash_domain::agent_subject(&node_of(&p.b), "research", "1.0.0");
+	p.source_policy["subjects"]
+		.as_object_mut()
+		.unwrap()
+		.remove(&executor);
+	let authorization = aidash_server::authorization::Authorization {
+		pool: p.a.store.pool.clone(),
+	};
+	let revision = authorization.snapshot("acme").await.unwrap().revision;
+	authorization
+		.replace(
+			"acme",
+			revision,
+			serde_json::from_value(p.source_policy.clone()).unwrap(),
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	let grant = Uuid::new_v4();
+	let (status, body) = request(&p.aa, &p.token, "POST", &format!("/api/tasks/{}/remote-grants", p.task), json!({"id":grant,"node_id":node_of(&p.b),"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":3600,"semantic":{"mode":"disabled"}})).await;
+	assert_eq!(status, 200, "{body}");
+	// The source describes the grant by its sending chain, so activation starts
+	// remote work although the source policy does not know the executor.
+	let (status, activated) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/tasks/{}/remote-grants/{grant}/activate", p.task),
+		json!({}),
+	)
+	.await;
+	assert_eq!(status, 200, "{activated}");
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_grant_run_reports_its_one_hop_limit_for_discovery_and_delegation(
 	#[future(awt)] scoped_pair: Pair,
 ) {
+	let p = scoped_pair;
+	let run = p.run().await;
+	for operation in ["agent_discover", "task_delegate"] {
+		let binding = run
+			.context
+			.binding_snapshot
+			.as_ref()
+			.unwrap()
+			.bindings
+			.iter()
+			.find(|binding| binding.definition.config["operation"] == operation)
+			.unwrap();
+		assert!(
+			binding.excluded_reason.is_none(),
+			"{operation} must be available to return a one-hop rejection"
+		);
+	}
+	let home = Home::new(p.b.clone(), run);
+	let discovery = home.discover(&Default::default()).await.unwrap_err();
+	assert!(discovery.to_string().contains("one hop"), "{discovery}");
+	let agent = EntityRef {
+		id: "research".into(),
+		version: "1.0.0".into(),
+	};
+	let refusal = home
+		.delegate_with_key("one-hop", p.task, &node_of(&p.a), &agent)
+		.await
+		.unwrap_err();
+	assert!(refusal.to_string().contains("one hop"), "{refusal}");
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn scoped_remote_agent_cannot_delegate_a_child_task(#[future(awt)] scoped_pair: Pair) {
 	let p = scoped_pair;
 	let run = p.run().await;
 	let excluded = run
@@ -2591,10 +2709,7 @@ async fn scoped_remote_agent_cannot_delegate_through_an_excluded_default_operati
 		.iter()
 		.find(|binding| binding.definition.config["operation"] == "task_delegate")
 		.unwrap();
-	assert!(
-		excluded.excluded_reason.is_some(),
-		"the factual Provider contract is local-only"
-	);
+	assert!(excluded.excluded_reason.is_none());
 	let home = Home::new(p.b.clone(), run);
 	let child = home
 		.create_task(
@@ -2613,8 +2728,7 @@ async fn scoped_remote_agent_cannot_delegate_through_an_excluded_default_operati
 		id: "research".into(),
 		version: "1.0.0".into(),
 	};
-	// Calling Home directly cannot recover an operation deliberately excluded
-	// under Q23 or turn its descriptor into a broader remote contract.
+	// A Remote Grant never lets its Run hand work on.
 	for _ in 0..2 {
 		assert!(
 			home.delegate_with_key("scoped-child-delegate", child.id, &node_of(&p.a), &agent)

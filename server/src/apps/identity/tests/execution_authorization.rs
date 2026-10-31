@@ -19,6 +19,265 @@ use std::sync::{
 use uuid::Uuid;
 
 #[rstest::rstest]
+#[case::success("success")]
+#[case::policy_deny("policy")]
+#[case::policy_ask("ask")]
+#[case::missing_catalog("catalog")]
+#[case::unreachable("unreachable")]
+#[tokio::test]
+async fn worker_delegates_to_an_agent_on_a_sibling_node(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+	#[case] mode: &str,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let sibling = common::second_node_in(f.store.pool.fixture_driver(), "acme").await;
+	let target: aidash_domain::nodes::NodeAddress = format!("{}/{sibling}", f.config.deployment)
+		.parse()
+		.unwrap();
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let agent = f.registry.get(&tenant, "research", "1.0.0").await.unwrap();
+	common::approve_agent_on(&f, "acme", &agent, &target).await;
+	let authorization = aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	};
+	if mode == "policy" || mode == "ask" {
+		let snapshot = authorization.snapshot("acme").await.unwrap();
+		let mut policy = serde_json::to_value(&snapshot.bundle).unwrap();
+		let parent = aidash_domain::agent_subject(
+			&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme")
+				.to_string(),
+			"research",
+			"1.0.0",
+		);
+		if mode == "policy" {
+			policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-remote","effect":"deny","subjects":{"ids":[parent]},"actions":["federation.execute"],"resources":{"kinds":["node"],"ids":[target.to_string()]}}));
+		} else {
+			policy["policies"][0]["subjects"] = json!({"ids":["alice", parent]});
+		}
+		authorization
+			.replace(
+				"acme",
+				snapshot.revision,
+				serde_json::from_value(policy).unwrap(),
+				"deployment_administrator",
+			)
+			.await
+			.unwrap();
+	} else if mode == "catalog" {
+		authorization
+			.set_catalog(
+				"acme",
+				&sibling,
+				&aidash_domain::registry::EntityRef {
+					id: "research".into(),
+					version: "1.0.0".into(),
+				},
+				1,
+				false,
+				"deployment_administrator",
+			)
+			.await
+			.unwrap();
+	}
+	let reference = json!({"id":"research", "version":"1.0.0"});
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task}/claim"),
+		json!({"revision":0,"agent":reference}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	let (status, child) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{}/tasks", run.workspace_id),
+		json!({"title":"Child", "description":"Delegate to sibling", "parent_id":task}),
+	)
+	.await;
+	assert_eq!(status, 200, "{child}");
+	let child_id: Uuid = serde_json::from_value(child["id"].clone()).unwrap();
+	let destination = if mode == "unreachable" {
+		aidash_domain::nodes::NodeAddress::derived("aidash://unreachable", "other").to_string()
+	} else {
+		target.to_string()
+	};
+	let response = json!({"text":"","tool_calls":[{"id":"delegate","name":"task_delegate","arguments":{"task_id":child_id,"node_id":destination,"agent":reference}}],"input_tokens":0,"output_tokens":0});
+	let pending = common::tool_pending(
+		json!({"response":response,"cursor":0,"request_window":120000,"request_tokens":0}),
+	);
+	sqlx::query("UPDATE runs SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
+		.bind(pending)
+		.bind(run.id)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert!(
+		Harness {
+			federation: f.clone()
+		}
+		.worker_once()
+		.await
+		.unwrap()
+	);
+	if mode != "success" {
+		let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+		if mode == "ask" {
+			assert_eq!(current.control.as_str(), "PAUSED");
+			assert!(
+				current
+					.error
+					.as_deref()
+					.unwrap_or_default()
+					.contains("federation.execute"),
+				"{:?}",
+				current.error
+			);
+			cleanup(f, &url, &schema).await;
+			return;
+		}
+		assert_eq!(current.control.as_str(), "ACTIVE", "{:?}", current.error);
+		let error = json!(current.context)["history"][0]["event"]["result"]["error"]
+			.as_str()
+			.unwrap_or_default()
+			.to_owned();
+		let expected = match mode {
+			"policy" => "federation.execute",
+			"catalog" => "Catalog Approval",
+			"unreachable" => "unreachable",
+			_ => unreachable!(),
+		};
+		assert!(error.contains(expected), "{error}");
+		assert!(!error.contains("agent_discover returned"), "{error}");
+		assert!(!error.contains(&run.home_node), "{error}");
+		if mode == "unreachable" {
+			let decisions: i64 = sqlx::query_scalar(
+				"SELECT COUNT(*) FROM authorization_decisions WHERE decision->>'reason' = 'node_unreachable'",
+			)
+			.fetch_one(f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+			assert!(decisions > 0, "an unreachable target must leave a decision");
+		}
+		cleanup(f, &url, &schema).await;
+		return;
+	}
+	let grants: i64 = sqlx::query_scalar(
+		"SELECT COUNT(*) FROM authorization_remote_grants WHERE task_id = $1 AND node_id = $2",
+	)
+	.bind(child_id)
+	.bind(target.to_string())
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		grants, 1,
+		"the selected sibling must receive a Remote Grant"
+	);
+	let chain: Vec<String> = sqlx::query_scalar(
+		"SELECT subject_chain FROM authorization_remote_grants WHERE task_id = $1",
+	)
+	.bind(child_id)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		chain,
+		vec![
+			"alice".to_owned(),
+			run.executor_subject(f.config.deployment.as_str()),
+			aidash_domain::agent_subject(&target.to_string(), "research", "1.0.0")
+		]
+	);
+	let bindings: i64 = sqlx::query_scalar(
+		"SELECT COUNT(*) FROM authorization_remote_execution WHERE task_id = $1",
+	)
+	.bind(child_id)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(bindings, 1, "the Remote Grant must be activated");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn owner_prepares_remote_grant_for_agent_approved_only_on_a_sibling_node(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let sibling = common::second_node_in(f.store.pool.fixture_driver(), "acme").await;
+	let address: aidash_domain::nodes::NodeAddress = format!("{}/{sibling}", f.config.deployment)
+		.parse()
+		.unwrap();
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let agent = f.registry.get(&tenant, "research", "1.0.0").await.unwrap();
+	common::approve_agent_on(&f, "acme", &agent, &address).await;
+	let authorization = aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	};
+	let reference = aidash_domain::registry::EntityRef {
+		id: "research".into(),
+		version: "1.0.0".into(),
+	};
+	authorization
+		.set_catalog(
+			"acme",
+			&aidash_domain::nodes::NodeName::derived("acme"),
+			&reference,
+			1,
+			false,
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	let (status, body) = request(&app, &token, "POST", &format!("/api/tasks/{task}/remote-grants"), json!({"id":Uuid::new_v4(), "node_id":address.to_string(), "agent":reference, "ttl_seconds":3600, "semantic":{"mode":"disabled"}})).await;
+	assert_eq!(status, 200, "{body}");
+	// A missing executor is a refusal and must leave a decision even when the
+	// receiver has an approval for that version.
+	let snapshot = authorization.snapshot("acme").await.unwrap();
+	let mut bundle = serde_json::to_value(&snapshot.bundle).unwrap();
+	let executor = aidash_domain::agent_subject(&address.to_string(), "research", "1.0.0");
+	bundle["subjects"]
+		.as_object_mut()
+		.unwrap()
+		.remove(&executor);
+	authorization
+		.replace(
+			"acme",
+			snapshot.revision,
+			serde_json::from_value(bundle).unwrap(),
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	let (status, body) = request(&app, &token, "POST", &format!("/api/tasks/{task}/remote-grants"), json!({"id":Uuid::new_v4(), "node_id":address.to_string(), "agent":reference, "ttl_seconds":3600, "semantic":{"mode":"disabled"}})).await;
+	assert_eq!(status, 403, "{body}");
+	let denied: i64 = sqlx::query_scalar(
+		"SELECT COUNT(*) FROM authorization_decisions WHERE decision->>'reason' = 'unknown_subject'",
+	)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert!(
+		denied > 0,
+		"the missing executor must produce a denial decision"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
 #[tokio::test]
 async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_file(
 	#[future(awt)]
@@ -2005,7 +2264,8 @@ async fn a_run_paused_by_a_short_node_name_resumes_into_a_rejected_call(
 		.as_str()
 		.unwrap_or_default()
 		.to_owned();
-	assert!(error.contains("does not name this Node"), "{error}");
+	assert!(!error.contains("agent_discover returned"), "{error}");
+	assert!(!error.contains(&run.home_node), "{error}");
 	cleanup(f, &url, &schema).await;
 }
 

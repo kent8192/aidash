@@ -917,6 +917,26 @@ async fn core_skill_operations_use_the_skill_flag_even_for_a_null_skill_id(
 	assert_eq!(repository.decisions().len(), 1);
 }
 #[rstest]
+#[case("task_delegate")]
+#[case("agent_discover")]
+#[tokio::test]
+async fn one_hop_rejection_precedes_remote_refresh_and_agent_flags(
+	mut repository: Repository,
+	run: RunMetadata,
+	mut agent: AgentConfig,
+	#[case] name: &str,
+) {
+	repository.remote = true;
+	repository.fault = Some("lease");
+	agent.allow_task_delegation = Some(false);
+	let result = authorize(&repository, &run, &agent, &call(name, json!({}))).await;
+	assert!(
+		matches!(result, Err(Error::Invalid(ref message)) if message.contains("one hop")),
+		"{result:?}"
+	);
+	assert!(repository.calls().is_empty());
+}
+#[rstest]
 #[case::task("task_create", "workspace", "task.create")]
 #[case::message("workspace_message", "workspace", "message.create")]
 #[case::human("human_request", "run", "human.request")]
@@ -1014,36 +1034,6 @@ async fn invalid_builtin_arguments_keep_the_existing_error_after_invoke(
 	assert_eq!(repository.decisions().len(), 1);
 }
 #[rstest]
-#[tokio::test]
-async fn a_foreign_delegate_target_is_denied_before_catalog_io(
-	repository: Repository,
-	run: RunMetadata,
-	agent: AgentConfig,
-) {
-	assert!(matches!(
-		authorize(
-			&repository,
-			&run,
-			&agent,
-			&call(
-				"task_delegate",
-				json!({"task_id":id(9),"node_id":"aidash://other","agent":reference()})
-			)
-		)
-		.await,
-		Err(Error::Invalid(ref message))
-			if message.contains("\"aidash://other\"") && message.contains(&run.home_node)
-	));
-	assert_eq!(
-		repository.calls(),
-		vec![
-			"lease",
-			"require:builtin:task_delegate:tool.invoke",
-			"release"
-		]
-	);
-}
-#[rstest]
 #[case::short_name(json!({"task_id":id(9),"node_id":"fancy-egret"}))]
 #[case::missing(json!({"task_id":id(9)}))]
 #[tokio::test]
@@ -1055,13 +1045,8 @@ async fn a_node_that_agent_discover_did_not_return_is_a_rejected_call(
 ) {
 	arguments["agent"] = json!(reference());
 	let result = authorize(&repository, &run, &agent, &call("task_delegate", arguments)).await;
-	assert!(
-		matches!(result, Err(Error::Invalid(ref message))
-			if message.contains("does not name this Node")
-				&& message.contains("agent_discover")
-				&& message.contains(&run.home_node)),
-		"{result:?}"
-	);
+	assert!(result.is_err(), "{result:?}");
+	assert!(!result.unwrap_err().to_string().contains(&run.home_node));
 	assert!(
 		!repository
 			.calls()
@@ -1246,7 +1231,7 @@ async fn remote_artifact_authority_uses_qualified_id_and_current_context(
 }
 #[rstest]
 #[tokio::test]
-async fn a_remote_delegate_cannot_address_a_task_other_than_its_admitted_task(
+async fn a_remote_grant_run_cannot_delegate_even_its_admitted_task(
 	mut repository: Repository,
 	run: RunMetadata,
 	agent: AgentConfig,
@@ -1262,14 +1247,14 @@ async fn a_remote_delegate_cannot_address_a_task_other_than_its_admitted_task(
 		),
 	)
 	.await;
-	// The model named another task: a Rejected Call, not an Authority Pause.
+	// The one-hop restriction is a Rejected Call before target admission.
 	assert!(
 		matches!(result, Err(Error::Invalid(ref message))
-			if message.contains("was not found in this Workspace")),
+			if message.contains("one hop")),
 		"{result:?}"
 	);
 	assert!(
-		repository
+		!repository
 			.calls()
 			.contains(&"catalog:configured:agent.execute".into())
 	);
@@ -1279,7 +1264,7 @@ async fn a_remote_delegate_cannot_address_a_task_other_than_its_admitted_task(
 			.iter()
 			.any(|name| name.starts_with("task_read:"))
 	);
-	assert_eq!(repository.decisions().len(), 1);
+	assert!(repository.decisions().is_empty());
 }
 #[rstest]
 #[case::memory("memory_mutate")]
@@ -1629,6 +1614,7 @@ async fn remote_filtering_happens_before_lease_failure_and_does_not_refresh(
 		tools,
 		BTreeMap::from([
 			("task_create".into(), 2),
+			("task_delegate".into(), 3),
 			("plugin_bad".into(), 4),
 			("skill_read".into(), 5)
 		])

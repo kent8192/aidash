@@ -107,6 +107,14 @@ pub async fn authorize(
 	call: &ToolCall,
 	contract: &ToolContract,
 ) -> Result<()> {
+	if repository.is_remote()
+		&& matches!(&contract.identity, ToolIdentity::Builtin(grant)
+			if matches!(grant.as_str(), "builtin:task_delegate" | "builtin:agent_discover"))
+	{
+		return Err(Error::Invalid(
+			"a Run started by a Remote Grant is limited to one hop and cannot discover agents or delegate tasks".into(),
+		));
+	}
 	named(
 		refresh(repository).await,
 		call,
@@ -305,24 +313,36 @@ pub async fn authorize(
 					.as_str()
 					.and_then(|s| s.parse::<Uuid>().ok())
 					.ok_or_else(|| Error::Invalid("invalid task id".into()))?;
-				// A Node address other than the home Node's, short name included, is
-				// the model's mistake; only the address `agent_discover` returned names it.
-				let node = call.arguments["node_id"].as_str();
-				if !node.is_some_and(|node| aidash_domain::nodes::names_home(node, &run.home_node))
-				{
-					return Err(Error::Invalid(format!(
-						"node_id {} does not name this Node; pass the node_id that agent_discover returned ({})",
-						node.map_or_else(|| "(missing)".to_owned(), |node| format!("{node:?}")),
-						run.home_node,
-					)));
-				}
+				let node = call.arguments["node_id"]
+					.as_str()
+					.ok_or_else(|| Error::Invalid("missing node_id".into()))?;
 				let reference: EntityRef = serde_json::from_value(call.arguments["agent"].clone())?;
-				named(
-					scope.catalog(&reference, "agent.execute", &call.name).await,
-					call,
-					RefusalCheck::Catalog,
-					Some("agent.execute"),
-				)?;
+				if aidash_domain::nodes::names_home(node, &run.home_node) {
+					named(
+						scope.catalog(&reference, "agent.execute", &call.name).await,
+						call,
+						RefusalCheck::Catalog,
+						Some("agent.execute"),
+					)?;
+				} else {
+					aidash_domain::nodes::NodeAddress::parse(node)?;
+					let resource = scope.resource("node", node, json!({"remote_node":node}));
+					let denied = scope
+						.explicitly_denied(&resource, "federation.execute")
+						.await?;
+					let decision = scope.require(&resource, "federation.execute").await;
+					if denied && matches!(decision, Err(Error::Forbidden)) {
+						return Err(Error::Invalid(
+							"policy denies federation.execute on the target Node".into(),
+						));
+					}
+					named(
+						decision,
+						call,
+						RefusalCheck::Policy,
+						Some("federation.execute"),
+					)?;
+				}
 			}
 			AuthorizationRequirement::Resource {
 				action,
