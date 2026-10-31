@@ -62,6 +62,17 @@ impl OpenRouterProvider {
 		if formats.is_empty() && self.config.provider_route.is_none() {
 			return Ok(Vec::new());
 		}
+		// Without a pin there is no candidate to report; this still fails the
+		// Run rather than pausing it (#658 decides outcomes by reason).
+		if !formats.is_empty()
+			&& self.config.provider_route.is_none()
+			&& self.config.media_routes.is_empty()
+		{
+			return Err(Error::Invalid(format!(
+				"model {} has no verified media route",
+				self.config.model_id
+			)));
+		}
 		let now = chrono::Utc::now();
 		let timing = |verified, expires| {
 			let mut reasons = Vec::new();
