@@ -6670,7 +6670,7 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 			.is_some_and(|error| error.contains("member needs a tool")),
 		"refusal: {refused}"
 	);
-	let created = inject("subnode_create", json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0"],"allowance":{"tools":["workspace_read","workspace_observe","workspace_wait","artifact_publish","human_request"],"secrets":[]},"title":"Investigation"}), "create-subnode").await;
+	let created = inject("subnode_create", json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0"],"allowance":{"tools":SUBNODE_TOOLS,"secrets":[]},"title":"Investigation"}), "create-subnode").await;
 	let subnode = Uuid::parse_str(
 		created["subnode_id"]
 			.as_str()
@@ -6835,12 +6835,13 @@ async fn subnode_rows(f: &aidash_server::federation::Federation) -> i64 {
 		.unwrap()
 }
 
-const SUBNODE_TOOLS: [&str; 5] = [
+const SUBNODE_TOOLS: [&str; 6] = [
 	"workspace_read",
 	"workspace_observe",
 	"workspace_wait",
 	"artifact_publish",
 	"human_request",
+	"connection_request",
 ];
 
 /// An agent that only has the default policy cannot create a Subnode, because
