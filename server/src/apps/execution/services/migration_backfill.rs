@@ -9,11 +9,7 @@ pub(crate) fn forward() -> String {
 			Expr::col(Alias::new("updated_at")),
 		)
 		.to_string(PostgresQueryBuilder);
-	format!(
-		"{};\n{};\n",
-		crate::database::scope::migration_deployment(),
-		update
-	)
+	format!("SET LOCAL aidash.scope = 'deployment';\n{update};\n")
 }
 
 pub(crate) fn backward() -> String {
