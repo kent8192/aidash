@@ -685,7 +685,13 @@ export function EntityForm({
               node={registryDeployment(data)}
               entries={data.registry}
             />
-            <AgentPluginImport config={pluginConfig} change={setPluginConfig} />
+            <AgentPluginImport
+              config={pluginConfig}
+              change={setPluginConfig}
+              tenant={
+                data.access.kind === "subject" ? data.access.tenant : undefined
+              }
+            />
             <AgentDocuments
               documents={documents}
               change={setDocuments}

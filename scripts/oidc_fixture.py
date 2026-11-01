@@ -438,4 +438,3 @@ def tenant_administrator(base, browser_origin, provider, api_token, tenant, subj
     assert status == 200, f"approving the Mapping answered {status}: {raw[:300]!r}"
     session.select(tenant)
     return session
-

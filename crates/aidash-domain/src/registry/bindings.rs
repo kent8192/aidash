@@ -27,6 +27,7 @@ fn is_sequential_tools(value: &u8) -> bool {
 }
 pub const REQUIRED_TOOLS: &[&str] = &["workspace_read", "human_request"];
 pub const DEFAULT_TOOLS: &[&str] = &[
+	"connection_request",
 	"workspace_observe",
 	"workspace_wait",
 	"skill_list",

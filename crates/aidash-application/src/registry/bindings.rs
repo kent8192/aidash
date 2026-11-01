@@ -22,6 +22,7 @@ async fn pin_agent_plugins(
 	config: &AgentBindings,
 	remote: bool,
 ) -> Result<Vec<PinnedAgentPlugin>> {
+	// #554 has personal-auth proxies ready; remote plugin content, hooks and stdio still require a separate admission contract.
 	if remote && !config.agent_plugins.is_empty() {
 		return Err(Error::Invalid(
 			"Agent Plugins are unavailable remotely".into(),

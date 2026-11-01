@@ -5,6 +5,9 @@ use async_trait::async_trait;
 use rstest::{fixture, rstest};
 use std::collections::HashMap;
 struct Scope {
+	person: bool,
+	connection_result: Value,
+	connection_cause: Option<aidash_domain::agent_plugin::ConnectionCause>,
 	task: Task,
 	additional: HashMap<Uuid, Task>,
 	previous: Option<(String, Value)>,
@@ -21,6 +24,9 @@ struct Scope {
 #[fixture]
 fn scope() -> Scope {
 	Scope {
+		person: true,
+		connection_cause: None,
+		connection_result: json!({"content":[{"type":"text","text":"called"}]}),
 		task: Task {
 			id: Uuid::from_u128(2),
 			workspace_id: Uuid::from_u128(3),
@@ -107,6 +113,30 @@ impl RemoteCommandScope for Scope {
 }
 #[async_trait]
 impl RemoteCommandEffects for Scope {
+	async fn connection_target(
+		&mut self,
+		_: &aidash_domain::identity::commands::connections::ConnectionCall,
+		_: bool,
+	) -> Result<()> {
+		self.call("connection_target")
+	}
+
+	fn connection_owner(&self) -> Option<crate::oauth_connections::Owner> {
+		self.person.then(|| crate::oauth_connections::Owner {
+			tenant: "source".into(),
+			subject: "root".into(),
+		})
+	}
+
+	async fn connection_unowned(
+		&mut self,
+		_: &aidash_domain::identity::commands::connections::ConnectionCall,
+		_: bool,
+	) -> Result<Value> {
+		self.call("unowned_target")?;
+		Ok(self.connection_result.clone())
+	}
+
 	async fn human_read(
 		&mut self,
 		_: Uuid,
@@ -161,6 +191,19 @@ impl RemoteCommandEffects for Scope {
 	async fn apply(&mut self, context: WriteContext<'_>, effect: Effect<'_>) -> Result<Applied> {
 		self.call("apply")?;
 		let effect = match effect {
+			Effect::Connection { owner, call, list } => {
+				assert_eq!(owner.subject, "root");
+				self.applied
+					.push(json!({"resource":call.resource,"list":list}));
+				return Ok(Applied {
+					value: match &self.connection_cause {
+						Some(cause) => json!({"outcome":"connection","cause":cause}),
+						None if list => self.connection_result.clone(),
+						None => json!({"outcome":"result","result":self.connection_result}),
+					},
+					output_id: None,
+				});
+			}
 			Effect::HumanRequest { kind, prompt } => {
 				json!({"kind":"human_request","request_kind":kind,"prompt":prompt})
 			}
@@ -583,4 +626,149 @@ async fn a_matching_agent_id_and_version_do_not_authorize_an_incomplete_or_chang
 	));
 	assert!(scope.applied.is_empty());
 	assert!(scope.journal.is_empty());
+}
+
+fn connection_data() -> Value {
+	json!({"tool_key":{"source":"registry","registry_deployment":"aidash://peer","id":"mcp","version":"1"},"resource":"https://mcp.example/tools","tool_name":"search","arguments":{"query":"private"},"idempotency_key":"logical-call","kind":"connection"})
+}
+#[rstest]
+#[tokio::test]
+async fn connection_consent_retries_the_same_key_then_replays_its_success(mut scope: Scope) {
+	let data = connection_data();
+	scope.connection_cause = Some(
+		aidash_domain::agent_plugin::ConnectionCause::ConnectionRequired {
+			resource: data["resource"].as_str().unwrap().into(),
+		},
+	);
+	let missing = run(&mut scope, "mcp.connection_call", &data).await.unwrap();
+	assert_eq!(missing["cause"]["error"], "connection_required");
+	assert!(scope.journal.is_empty());
+	scope.connection_cause = None;
+	scope.connection_result = json!({"content":[{"type":"text","text":"called"}]});
+	let called = run(&mut scope, "mcp.connection_call", &data).await.unwrap();
+	assert_eq!(
+		called,
+		json!({"outcome":"result","result":scope.connection_result})
+	);
+	assert_eq!(scope.journal.len(), 1);
+	scope.previous = Some((
+		scope.journal[0]["digest"].as_str().unwrap().into(),
+		called.clone(),
+	));
+	scope.applied.clear();
+	assert_eq!(
+		run(&mut scope, "mcp.connection_call", &data).await.unwrap(),
+		called
+	);
+	assert!(scope.applied.is_empty());
+	let mut changed = data;
+	changed["arguments"] = json!({"query":"other"});
+	assert!(matches!(
+		run(&mut scope, "mcp.connection_call", &changed).await,
+		Err(Error::Conflict(_))
+	));
+}
+#[rstest]
+#[case::scope_shaped_result(json!({"error":"connection_scope_insufficient","resource":"https://mcp.example/tools"}), true)]
+#[case::connection_shaped_result(json!({"error":"connection_required","resource":"https://mcp.example/tools"}), true)]
+#[case::refused(json!({"error":"connection_remote_refused"}), true)]
+#[tokio::test]
+async fn only_pre_execution_connection_outcomes_can_retry(
+	mut scope: Scope,
+	#[case] value: Value,
+	#[case] persisted: bool,
+) {
+	scope.connection_result = value.clone();
+	let wire = run(&mut scope, "mcp.connection_call", &connection_data())
+		.await
+		.unwrap();
+	assert_eq!(wire, json!({"outcome":"result","result":value}));
+	assert_eq!(!scope.journal.is_empty(), persisted);
+}
+#[rstest]
+#[case::optional(json!({"outcome":"not_personal"}))]
+#[case::personal_only(json!({"outcome":"result","result":{"error":"secret_unavailable"}}))]
+#[tokio::test]
+async fn a_non_person_root_uses_only_the_validated_unowned_path(
+	mut scope: Scope,
+	#[case] value: Value,
+) {
+	scope.person = false;
+	scope.connection_result = value.clone();
+	assert_eq!(
+		run(&mut scope, "mcp.connection_call", &connection_data())
+			.await
+			.unwrap(),
+		value
+	);
+	assert!(scope.applied.is_empty());
+	assert!(scope.journal.is_empty());
+	assert!(scope.calls.contains(&"unowned_target".into()));
+	assert!(!scope.calls.iter().any(|c| c.starts_with("previous:")));
+}
+
+#[rstest]
+#[tokio::test]
+async fn connection_call_requires_run_tool_authority_before_replay(mut scope: Scope) {
+	scope.failure = Some("require:tool.invoke".into());
+	assert!(
+		run(&mut scope, "mcp.connection_call", &connection_data())
+			.await
+			.is_err()
+	);
+	assert!(scope.applied.is_empty());
+	assert!(!scope.calls.iter().any(|c| c.starts_with("previous:")));
+}
+
+// Remote Agent Plugins remain banned at admission. These effect tests retain the
+// metadata-only protocol for when the plugin admission contract is introduced.
+#[rstest]
+#[case::tools(json!({"outcome":"tools","tools":[]}))]
+#[case::fallback(json!({"outcome":"not_personal"}))]
+#[case::required(json!({"outcome":"connection","cause":{"error":"connection_required","resource":"https://mcp.example/tools"}}))]
+#[case::scope(json!({"outcome":"connection","cause":{"error":"connection_scope_insufficient","resource":"https://mcp.example/tools","scope":"read"}}))]
+#[tokio::test]
+async fn connection_listing_is_authorized_and_never_replay_persisted(
+	mut scope: Scope,
+	#[case] value: Value,
+) {
+	let mut data = connection_data();
+	data["tool_key"] = json!({"source":"plugin","plugin":"docs","digest":"sha256:copy","server":"docs","schema_digest":null});
+	data["tool_name"] = json!("");
+	data["arguments"] = json!({});
+	data["idempotency_key"] = json!("");
+	scope.connection_result = value.clone();
+	assert_eq!(
+		run(&mut scope, "mcp.connection_list", &data).await.unwrap(),
+		value
+	);
+	assert!(scope.journal.is_empty());
+	assert!(scope.applied[0]["list"].as_bool().unwrap());
+	assert!(scope.calls.contains(&"require:tool.invoke".into()));
+	assert!(!scope.calls.iter().any(|call| call.starts_with("previous:")));
+	scope.failure = Some("require:tool.invoke".into());
+	scope.applied.clear();
+	assert!(run(&mut scope, "mcp.connection_list", &data).await.is_err());
+	assert!(scope.applied.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn current_tool_and_destination_authority_are_checked_before_personal_lookup_or_replay(
+	mut scope: Scope,
+) {
+	scope.failure = Some("connection_target".into());
+	assert!(
+		run(&mut scope, "mcp.connection_call", &connection_data())
+			.await
+			.is_err()
+	);
+	assert!(scope.applied.is_empty());
+	assert!(scope.journal.is_empty());
+	assert!(
+		!scope
+			.calls
+			.iter()
+			.any(|call| call.starts_with("previous:") || call == "unowned_target")
+	);
 }

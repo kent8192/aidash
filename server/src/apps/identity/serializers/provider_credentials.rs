@@ -186,8 +186,22 @@ pub struct Settings {
 	/// The Credential Broker of an Enterprise Store, read by that build.
 	#[setting(default = "None", leaf)]
 	pub broker: Option<serde_json::Value>,
+	/// The Tenant Secret broker of an Enterprise Store, read by that build
+	/// (ADR 0095).
+	#[setting(default = "None", leaf)]
+	pub tenant_secret_broker: Option<serde_json::Value>,
 }
 impl Settings {
+	/// Whether this configuration offers Tenant Secrets: a PostgreSQL Store
+	/// reads them locally, and an Enterprise Store needs its Tenant Secret
+	/// broker. A Deployment without either keeps them unavailable.
+	pub fn offers_tenant_secrets(&self) -> bool {
+		match &self.store {
+			Some(StoreConfig::Postgres { .. }) => true,
+			Some(StoreConfig::Enterprise(_)) => self.tenant_secret_broker.is_some(),
+			None => false,
+		}
+	}
 	pub(crate) async fn load_fingerprint_key(&self) -> crate::Result<secrecy::SecretString> {
 		use secrecy::ExposeSecret;
 		self.validate(&Profile::parse("local"))
@@ -218,6 +232,13 @@ impl SettingsValidation for Settings {
 		if self.broker.is_some() && !matches!(self.store, Some(StoreConfig::Enterprise(_))) {
 			return Err(invalid(
 				"a Credential Broker serves only an Enterprise Secret Store".into(),
+			));
+		}
+		if self.tenant_secret_broker.is_some()
+			&& !matches!(self.store, Some(StoreConfig::Enterprise(_)))
+		{
+			return Err(invalid(
+				"a Tenant Secret Broker serves only an Enterprise Secret Store".into(),
 			));
 		}
 		if let Some(store) = &self.store {

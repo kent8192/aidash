@@ -46,6 +46,8 @@ pub struct Store {
 		Option<std::sync::Arc<dyn aidash_application::provider_access::TokenIssuer>>,
 	pub provider_credentials:
 		Option<std::sync::Arc<aidash_application::provider_credentials::Service>>,
+	/// Per-person MCP OAuth grants (ADR 0100).
+	pub oauth_connections: Option<std::sync::Arc<aidash_application::oauth_connections::Service>>,
 	/// Present whenever the Store can hold Plan Tokens (PostgreSQL), so owners
 	/// can still read and disconnect their connections after
 	/// `plan_connections_enabled` is turned off (ADR 0007).
@@ -53,9 +55,9 @@ pub struct Store {
 	/// `[plan_connections] enabled`: new authorizations, model lists and
 	/// admission of `chatgpt` models.
 	pub plan_connections_enabled: bool,
-	/// Present only where the Secret Store can hold Tenant Secret values and
-	/// the server may read them: a self-hosted node with a PostgreSQL Store
-	/// (ADR 0051). Cloud and Dedicated offer none until #310.
+	/// Present wherever the Secret Store holds Tenant Secrets: a self-hosted
+	/// PostgreSQL Store reads them locally, and a Secret Manager Store routes
+	/// through its Tenant Secret broker (ADR 0051, ADR 0095).
 	pub tenant_secrets: Option<std::sync::Arc<aidash_application::tenant_secrets::Service>>,
 	pub capabilities: crate::capabilities::Runtime,
 	pub pool: Pool,
@@ -504,6 +506,7 @@ impl Store {
 			usage: std::sync::Arc::new(aidash_application::usage::NoUsage),
 			admission: std::sync::Arc::new(aidash_application::usage::AlwaysAdmit),
 			provider_credentials: None,
+			oauth_connections: None,
 			plan_connections: None,
 			plan_connections_enabled: false,
 			tenant_secrets: None,
@@ -633,6 +636,7 @@ impl Store {
 			usage: self.usage.clone(),
 			admission: self.admission.clone(),
 			provider_credentials: self.provider_credentials.clone(),
+			oauth_connections: self.oauth_connections.clone(),
 			plan_connections: self.plan_connections.clone(),
 			plan_connections_enabled: self.plan_connections_enabled,
 			tenant_secrets: self.tenant_secrets.clone(),
@@ -690,6 +694,7 @@ impl Store {
 			usage: self.usage.clone(),
 			admission: self.admission.clone(),
 			provider_credentials: self.provider_credentials.clone(),
+			oauth_connections: self.oauth_connections.clone(),
 			plan_connections: self.plan_connections.clone(),
 			plan_connections_enabled: self.plan_connections_enabled,
 			tenant_secrets: self.tenant_secrets.clone(),
@@ -3828,6 +3833,98 @@ impl Store {
 		tx.commit().await?;
 		Ok(invocations)
 	}
+	/// Records the Tenant Secret one tool call carried: its id, pinned version
+	/// and destination host. The value, headers and body are never recorded.
+	pub async fn invocation_secret(
+		&self,
+		scope: &TenancyScope,
+		key: &str,
+		secret: &aidash_application::tenant_secrets::SecretRecord,
+	) -> Result<()> {
+		let mut tx = self.pool.begin(scope).await?;
+		let query_bind_1 = secret.id;
+		let query_bind_2 = secret.version.as_str();
+		let query_bind_3 = secret.host.as_str();
+		let query_bind_4 = key;
+		crate::database::native::query(
+			&Query::update()
+				.table(Alias::new("invocations"))
+				.value_expr(
+					Alias::new("tenant_secret_id"),
+					SimpleExpr::CustomWithExpr(
+						"(?)".to_owned(),
+						vec![Expr::value(query_bind_1).into()],
+					),
+				)
+				.value_expr(
+					Alias::new("tenant_secret_version"),
+					SimpleExpr::CustomWithExpr(
+						"(?)".to_owned(),
+						vec![Expr::value(query_bind_2.to_owned()).into()],
+					),
+				)
+				.value_expr(
+					Alias::new("tenant_secret_host"),
+					SimpleExpr::CustomWithExpr(
+						"(?)".to_owned(),
+						vec![Expr::value(query_bind_3.to_owned()).into()],
+					),
+				)
+				.and_where(SimpleExpr::CustomWithExpr(
+					"(idempotency_key = ?)".to_owned(),
+					vec![Expr::value(query_bind_4.to_owned()).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await?;
+		tx.commit().await?;
+		Ok(())
+	}
+	/// The transport proved no operation executed. Save that fact under the
+	/// worker lease and remove only this attempt's unfinished admission.
+	pub async fn connection_refused(
+		&self,
+		scope: &TenancyScope,
+		run: &Run,
+		worker: Uuid,
+		key: &str,
+	) -> Result<()> {
+		let mut tx = self.pool.begin(scope).await?;
+		self.persist_tool_input_in(&mut tx, run, worker).await?;
+		let query = Query::delete()
+			.from_table(Alias::new("invocations"))
+			.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run.id)))
+			.and_where(Expr::col(Alias::new("idempotency_key")).eq(Expr::value(key)))
+			.and_where(Expr::col(Alias::new("status")).eq(Expr::value("STARTED")))
+			.to_string(PostgresQueryBuilder);
+		crate::database::native::query(&query)
+			.execute(&mut *tx)
+			.await?;
+		tx.commit().await?;
+		Ok(())
+	}
+
+	/// Record only the connection id; the token remains in the owner's Store.
+	pub async fn invocation_connection(
+		&self,
+		scope: &TenancyScope,
+		key: &str,
+		connection: &aidash_application::tenant_secrets::ConnectionRecord,
+	) -> Result<()> {
+		let mut tx = self.pool.begin(scope).await?;
+		let query = Query::update()
+			.table(Alias::new("invocations"))
+			.value(Alias::new("connection_id"), connection.id)
+			.and_where(Expr::col(Alias::new("idempotency_key")).eq(Expr::value(key)))
+			.to_string(PostgresQueryBuilder);
+		crate::database::native::query(&query)
+			.execute(&mut *tx)
+			.await?;
+		tx.commit().await?;
+		Ok(())
+	}
+
 	async fn persist_tool_input_in(
 		&self,
 		tx: &mut crate::database::native::Transaction,

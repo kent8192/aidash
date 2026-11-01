@@ -16,6 +16,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+	#[error("{}", .0.code())]
+	Connection(aidash_domain::agent_plugin::ConnectionCause),
 	#[error("{0}")]
 	Framework(#[from] FrameworkError),
 	#[error("{0}")]
@@ -54,6 +56,8 @@ pub enum Error {
 	NodeLimitReached,
 	#[error("external identity status is unavailable")]
 	IdentityStatusUnavailable,
+	#[error("OAuth Client secret storage is unavailable")]
+	OAuthClientSecretsUnavailable,
 	#[error("verified model media route unavailable for {0}")]
 	MediaRouteUnavailable(String),
 	#[error("atomic transaction visibility pending; retry after recovery")]
@@ -74,6 +78,9 @@ pub enum Error {
 	OrchestrationUnavailable,
 	#[error("{0}")]
 	External(String),
+	/// The configured Secret Store does not support MCP OAuth Connections.
+	#[error("connection_unavailable")]
+	ConnectionStoreUnavailable,
 	#[error("{message}")]
 	ToolNotDelivered {
 		message: String,
@@ -116,6 +123,7 @@ impl Error {
 			Self::NotFound(s) => (StatusCode::NOT_FOUND, s.clone()),
 			Self::Unprocessable(s) => (StatusCode::UNPROCESSABLE_ENTITY, s.clone()),
 			Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".into()),
+			Self::Connection(cause) => (StatusCode::CONFLICT, cause.code().into()),
 			Self::Forbidden | Self::AuthorityRefused(_) => {
 				(StatusCode::FORBIDDEN, "forbidden".into())
 			}
@@ -133,10 +141,11 @@ impl Error {
 				},
 				self.to_string(),
 			),
-			Self::IdentityStatusUnavailable | Self::MediaRouteUnavailable(_) => {
-				(StatusCode::SERVICE_UNAVAILABLE, self.to_string())
-			}
+			Self::IdentityStatusUnavailable
+			| Self::OAuthClientSecretsUnavailable
+			| Self::MediaRouteUnavailable(_) => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
 			Self::TransactionPending
+			| Self::ConnectionStoreUnavailable
 			| Self::SemanticUnavailable
 			| Self::OrchestrationUnavailable => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
 			Self::RemoteSemantic(reason) => (
@@ -336,6 +345,7 @@ impl From<aidash_application::Error> for Error {
 	fn from(error: aidash_application::Error) -> Self {
 		use aidash_application::Error as ApplicationError;
 		match error {
+			ApplicationError::Connection(cause) => Self::Connection(cause),
 			ApplicationError::Domain(error) => error.into(),
 			ApplicationError::Json(error) => Self::Json(error),
 			ApplicationError::Invalid(message) => Self::Invalid(message),
@@ -348,6 +358,7 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::Forbidden => Self::Forbidden,
 			ApplicationError::AuthorityRefused(refusal) => Self::AuthorityRefused(refusal),
 			ApplicationError::External(message) => Self::External(message),
+			ApplicationError::ConnectionStoreUnavailable => Self::ConnectionStoreUnavailable,
 			ApplicationError::ToolNotDelivered {
 				message,
 				retry_after,
@@ -380,12 +391,16 @@ impl From<aidash_application::Error> for Error {
 			}
 			ApplicationError::SemanticUnavailable => Self::SemanticUnavailable,
 			ApplicationError::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
+			ApplicationError::OAuthClientSecretsUnavailable => Self::OAuthClientSecretsUnavailable,
 			ApplicationError::ProviderRejected { status, reason } => {
 				Self::ProviderRejected { status, reason }
 			}
 			ApplicationError::Plan(failure) => Self::Plan(failure),
 			ApplicationError::InferenceStalled => Self::InferenceStalled,
 			ApplicationError::TransactionPending => Self::TransactionPending,
+			// The broker fault keeps its generic Deployment Administrator message and correlation.
+			error @ (ApplicationError::BrokerUnavailable { .. }
+			| ApplicationError::BrokerRejected { .. }) => Self::External(error.to_string()),
 			ApplicationError::Port(error) => match error.downcast::<Self>() {
 				Ok(error) => *error,
 				Err(error) => Self::External(error.to_string()),
@@ -398,6 +413,7 @@ impl From<aidash_application::Error> for Error {
 impl From<Error> for aidash_application::Error {
 	fn from(error: Error) -> Self {
 		match error {
+			Error::Connection(cause) => Self::Connection(cause),
 			Error::Invalid(message) => Self::Invalid(message),
 			Error::Conflict(message) => Self::Conflict(message),
 			Error::NotFound(message) => Self::NotFound(message),
@@ -408,6 +424,7 @@ impl From<Error> for aidash_application::Error {
 			Error::AuthorityRefused(refusal) => Self::AuthorityRefused(refusal),
 			Error::Refused(code) => Self::Refused(code),
 			Error::Unauthorized => Self::Unauthorized,
+			Error::External(message) => Self::External(message),
 			Error::Json(error) => Self::Json(error),
 			Error::RemoteSemantic(reason) => Self::RemoteSemantic(reason),
 			Error::Context(reason) => Self::Context(reason),
@@ -415,6 +432,7 @@ impl From<Error> for aidash_application::Error {
 			Error::ContextOverflow => Self::ContextOverflow,
 			Error::SemanticUnavailable => Self::SemanticUnavailable,
 			Error::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
+			Error::ConnectionStoreUnavailable => Self::ConnectionStoreUnavailable,
 			Error::TransactionPending => Self::TransactionPending,
 			Error::InferenceStalled => Self::InferenceStalled,
 			Error::ToolNotDelivered {

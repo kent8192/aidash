@@ -6,6 +6,13 @@ use crate::{
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::sync::Arc;
+/// Only personal tool calls have an invocation journal that classifies delivery.
+pub fn is_connection_call(path: &str, body: &Value) -> bool {
+	path == "/scoped/execution/commands"
+		&& body.get("operation").and_then(Value::as_str)
+			== Some(aidash_domain::identity::commands::connections::CALL)
+}
+
 pub struct Client {
 	peers: Arc<dyn Peers>,
 	transport: Arc<dyn Transport>,
@@ -20,15 +27,30 @@ impl Client {
 		path: &str,
 		body: &Value,
 	) -> Result<T> {
-		let reply = async {
-			let route = self.peers.route(node).await?;
-			self.transport.request(&route, path, body).await
-		}
-		.await
-		.map_err(|error| {
-			tracing::warn!(%node,%path,error=%error,"authority request failed");
-			Error::External("remote execution authority unavailable".into())
+		let connection_call = is_connection_call(path, body);
+		let route = self.peers.route(node).await.map_err(|error| {
+			tracing::warn!(%node, %path, %error, "authority route failed");
+			if connection_call {
+				Error::ToolNotDelivered {
+					message: "remote execution authority unavailable".into(),
+					retry_after: None,
+				}
+			} else {
+				Error::External("remote execution authority unavailable".into())
+			}
 		})?;
+		let reply = self
+			.transport
+			.request(&route, path, body)
+			.await
+			.map_err(|error| {
+				tracing::warn!(%node, %path, %error, "authority request failed");
+				if connection_call && matches!(error, Error::ToolNotDelivered { .. }) {
+					error
+				} else {
+					Error::External("remote execution authority unavailable".into())
+				}
+			})?;
 		let status = reply.status;
 		let value = classify(reply).inspect_err(|error| {
 			if matches!(error,Error::External(message) if message=="remote execution authority unavailable")
