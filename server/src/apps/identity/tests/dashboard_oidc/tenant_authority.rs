@@ -648,7 +648,8 @@ fn a_mapped_subject_discovers_another_tenants_node_on_the_worker_stack(
 			.await;
 		let (status, body) = t
 			.replace(|bundle| {
-				bundle["subjects"]["ci"] = json!({"kind":"service","groups":["members"]});
+				bundle["subjects"]["ci"] =
+					json!({"kind":"service","node":receiving,"groups":["members"]});
 				bundle["policies"].as_array_mut().unwrap().push(json!({
 					"id":"ci-discovers","effect":"allow","subjects":{"ids":["ci"]},
 					"actions":["federation.discover","agent.execute"],"resources":{"kinds":["*"]}

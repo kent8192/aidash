@@ -100,3 +100,15 @@ fn assignable_flag_is_omitted_from_unmarked_groups(bundle: PolicyBundle) {
 	);
 	assert_eq!(document["groups"]["members"]["assignable"], json!(true));
 }
+
+#[test]
+fn connection_administration_is_a_tenant_administrator_action() {
+	assert!(ACTIONS.contains(&CONNECTION_SCOPES_UPDATE));
+	assert!(ACTIONS.contains(&CONNECTION_ADMINISTER));
+	assert!(!ADMINISTRATION_ACTIONS.contains(&CONNECTION_SCOPES_UPDATE));
+	assert!(!ADMINISTRATION_ACTIONS.contains(&CONNECTION_ADMINISTER));
+	assert_eq!(resource_kind(CONNECTION_SCOPES_UPDATE), "connection_scopes");
+	assert_eq!(resource_kind(CONNECTION_ADMINISTER), "connection");
+	assert!(!crate::identity::tenancy::MEMBER_ACTIONS.contains(&CONNECTION_SCOPES_UPDATE));
+	assert!(!crate::identity::tenancy::MEMBER_ACTIONS.contains(&CONNECTION_ADMINISTER));
+}

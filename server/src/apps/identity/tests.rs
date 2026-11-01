@@ -13,5 +13,6 @@
 //! - `peer_graph_nodes`
 //! - `peer_graph_review`
 //! - `scoped_remote_execution`
+//! - `secret_readiness`
 //!
 //! Component tests also live beside the native repositories and service adapters.

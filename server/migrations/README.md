@@ -684,7 +684,7 @@ single Registry leaf without rewriting either history or changing stored data.
 state-only migration preserves the durable Research result history and leaves
 a single Execution head without changing either existing branch.
 
-`execution/0060_node_research_merge` joins Node cancellation and Research/approval
+`execution/0096_node_research_merge` joins Node cancellation and Research/approval
 histories with an empty state-only migration. Both existing histories and their
 rollback guards retain their identities; no schema or stored data changes.
 
@@ -694,9 +694,23 @@ Source histories, respectively. Both are empty state-only migrations. They
 preserve the existing migration identities and give each app one leaf without
 changing schema, retained inputs, or data.
 
-`execution/0061_node_plugin_merge` joins the Node cancellation and MCP
+`execution/0097_node_plugin_merge` joins the Node cancellation and MCP
 continuation heads after their Research history merges. The empty state-only
 migration preserves both histories and leaves one Execution head.
+`execution/0084_invocation_tenant_secrets` (after `execution/0083_harness_contract_state`)
+adds the nullable `tenant_secret_id`, `tenant_secret_version` and
+`tenant_secret_host` of `invocations` with typed column operations (#310, ADR
+0095). A tool call without a Tenant Secret leaves them null; a call that carried
+one records which Tenant Secret, at which pinned version, went to which host,
+never its value.
+
+`execution/0085_egress_secret_records` (after `execution/0084_invocation_tenant_secrets`)
+adds the nullable `secret_id`, `secret_version` and `secret_host` of
+`egress_requests` with typed column operations (#310, ADR 0095). A request for
+an External service without a Tenant Secret leaves them null; a brokered request
+records the Tenant Secret, the pinned version its token names and the
+destination host, never the value or a header value. The typed operations update
+the ORM snapshot, so no state-only checkpoint is needed.
 
 ## Home ledger recovery eligibility (#434)
 
@@ -740,6 +754,10 @@ CHECKs bound the reason to 1 to 1000 characters and tie `identity_id` to a brows
 through `RunSQL`, and `execution/0079_run_safety_stops_state` is the generated state-only
 snapshot that leaves the physical constraints and indexes to `0077`.
 
+`execution/0086_invocation_connections` (after `execution/0085_egress_secret_records`)
+adds nullable `invocations.connection_id` with a typed Reinhardt operation (#554,
+ADR 0100). It records the person's OAuth Connection used by dispatch, never a token.
+
 ## Harness Contract versions (#531)
 
 `registry/0050_harness_contract` (after `registry/0048_context_marketplace_merge`
@@ -773,19 +791,19 @@ existing identities and one leaf per app.
 
 ## Merged Node lifetime and Auth histories
 
-`identity/0051_node_auth_history_merge` joins the Common Auth origin binding,
+`identity/0062_node_auth_history_merge` joins the Common Auth origin binding,
 remote terminal receipts and task source lifetime histories.
-`execution/0058_node_lifetime_merge` joins Node cancellation jobs with Session
-Area lifetime state. `knowledge/0038_recovery_lifetime_merge` joins Home ledger
+`execution/0095_node_lifetime_merge` joins Node cancellation jobs with Session
+Area lifetime state. `knowledge/0039_recovery_lifetime_merge` joins Home ledger
 recovery eligibility and attempt evidence with remote-read source lifetimes.
 Each is an empty state-only migration that depends on every existing leaf of
 its app. Existing migration identities, dependencies, schema changes and
 rollback guards remain intact, with one head per app for future generation.
 
-`execution/0084_node_preview_merge` joins `execution/0061_node_plugin_merge`
+`execution/0098_node_preview_merge` joins `execution/0097_node_plugin_merge`
 with the Live preview, Safety Stop, Lease Recovery and Harness Contract history
 ending in `execution/0083_harness_contract_state`.
-`federation/0020_node_preview_origin_merge` joins Node registration recovery
+`federation/0021_node_preview_origin_merge` joins Node registration recovery
 ownership with `federation/0013_registered_preview_origin`. Both are empty
 state-only migrations; existing identities, schema changes and rollback guards
 remain intact.

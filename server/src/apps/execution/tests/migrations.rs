@@ -71,6 +71,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0050_harness_contract"),
 	("registry", "0051_harness_plugin_merge"),
 	("registry", "0052_harness_contract_structured3"),
+	("registry", "0053_connection_request"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -111,7 +112,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0038_recovery_lifetime_merge");
+	assert_eq!(knowledge[0].name, "0039_recovery_lifetime_merge");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -123,7 +124,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		88
+		92
 	);
 	let tables = migrations
 		.iter()
@@ -182,21 +183,29 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 						"ALTER TABLE public.dashboard_administration_history ALTER COLUMN identity_id DROP NOT NULL;"
 					);
 				} else if sql.starts_with("ALTER TABLE")
-					&& (migration.name.ends_with("_row_level_security")
-						// This typed table creation includes its unsupported RLS DDL
-						// in the same atomic migration, rather than a separate slot.
-						|| (migration.app_label.as_str(), migration.name.as_str())
-							== ("identity", "0049_remote_terminal_receipts"))
+					&& sql.contains(" ENABLE ROW LEVEL SECURITY;")
 				{
-					// Reinhardt has no row-level security operations (#6770). The
-					// database::policy unit tests compare these assets with the
-					// rendered template.
-					assert!(
-						sql.contains(&format!(
-							"CREATE POLICY {} ON",
-							aidash_server::database::policy::POLICY
-						)),
-						"{}: {sql}",
+					// A schema migration can carry a policy asset too. Recognize
+					// its contents and require the same exact reversible template
+					// as database::policy's migration scanner (#6770).
+					let tables = sql
+						.lines()
+						.filter_map(|line| {
+							line.strip_prefix("ALTER TABLE public.")?
+								.strip_suffix(" ENABLE ROW LEVEL SECURITY;")
+						})
+						.collect::<Vec<_>>();
+					assert!(!tables.is_empty(), "{}: {sql}", migration.name);
+					assert_eq!(
+						sql.as_str(),
+						aidash_server::database::policy::enable(&tables),
+						"{}",
+						migration.name
+					);
+					assert_eq!(
+						reverse_sql.as_deref(),
+						Some(aidash_server::database::policy::disable(&tables).as_str()),
+						"{} reversed",
 						migration.name
 					);
 				} else if sql.starts_with("ALTER TABLE") {
@@ -365,12 +374,12 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0085_policy_probe")
+		.get_migration("execution", "0099_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("execution".to_owned(), "0084_node_preview_merge".to_owned())]
+		vec![("execution".to_owned(), "0098_node_preview_merge".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -728,7 +737,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		88
+		92
 	);
 }
 
@@ -3312,11 +3321,11 @@ async fn node_deletion_schema_roundtrips_with_registered_model_state(
 			migration.app_label == "identity"
 				&& matches!(
 					migration.name.as_str(),
-					"0040_node_deletions"
-						| "0041_node_deletions_state"
-						| "0042_node_deletions_row_level_security"
-						| "0043_node_administration_target"
-						| "0044_node_administration_target_state"
+					"0051_node_deletions"
+						| "0052_node_deletions_state"
+						| "0053_node_deletions_row_level_security"
+						| "0054_node_administration_target"
+						| "0055_node_administration_target_state"
 				)
 		})
 		.cloned()
@@ -3553,12 +3562,12 @@ struct SourceLifetimeMigration {
 /// Provenance/session bindings retain their actual owner while a used source
 /// can expire. Rollback restores only the named former source-lifetime FK.
 #[rstest]
-#[case::memory(SourceLifetimeMigration { app: "knowledge", physical: "0037_remote_read_source_lifetime", state: None }, "memory_remote_reads", "memory_remote_read_unit", "memory_remote_reads_atomic", &["memory_remote_read_grant", "memory_remote_read_revision", "memory_remote_reads_pkey", "memory_remote_reads_tenant_root_fkey"])]
-#[case::origin(SourceLifetimeMigration { app: "identity", physical: "0047_task_origin_source_lifetime", state: Some("0048_task_origin_source_lifetime_state") }, "authorization_task_origins", "authorization_task_origins_source_run_id_fkey", "atomic_write_guard", &["authorization_task_origins_task_id_fkey", "authorization_task_origins_tenant_fkey", "authorization_task_origins_pkey"])]
-#[case::execution_task(SourceLifetimeMigration { app: "identity", physical: "0047_task_origin_source_lifetime", state: Some("0048_task_origin_source_lifetime_state") }, "authorization_execution", "authorization_execution_task_id_fkey", "atomic_write_guard", &["authorization_execution_run_id_fkey", "authorization_execution_credential_id_fkey", "authorization_execution_tenant_fkey", "authorization_execution_pkey", "authorization_execution_subject_chain_check"])]
-#[case::execution_workspace(SourceLifetimeMigration { app: "identity", physical: "0047_task_origin_source_lifetime", state: Some("0048_task_origin_source_lifetime_state") }, "authorization_execution", "authorization_execution_workspace_id_fkey", "atomic_write_guard", &["authorization_execution_run_id_fkey", "authorization_execution_credential_id_fkey", "authorization_execution_tenant_fkey", "authorization_execution_pkey", "authorization_execution_subject_chain_check"])]
-#[case::read_workspace(SourceLifetimeMigration { app: "identity", physical: "0047_task_origin_source_lifetime", state: Some("0048_task_origin_source_lifetime_state") }, "authorization_run_reads", "authorization_run_reads_workspace_id_fkey", "atomic_write_guard", &["authorization_run_reads_run_id_fkey", "authorization_run_reads_tenant_root_fkey", "authorization_run_reads_pkey"])]
-#[case::session(SourceLifetimeMigration { app: "execution", physical: "0056_session_area_lifetime", state: Some("0057_session_area_lifetime_state") }, "core_runs", "core_runs_area_id_fkey", "atomic_write_guard", &["core_runs_run_id_fkey", "core_runs_pkey", "core_runs_tenant_root_fkey"])]
+#[case::memory(SourceLifetimeMigration { app: "knowledge", physical: "0038_remote_read_source_lifetime", state: None }, "memory_remote_reads", "memory_remote_read_unit", "memory_remote_reads_atomic", &["memory_remote_read_grant", "memory_remote_read_revision", "memory_remote_reads_pkey", "memory_remote_reads_tenant_root_fkey"])]
+#[case::origin(SourceLifetimeMigration { app: "identity", physical: "0058_task_origin_source_lifetime", state: Some("0059_task_origin_source_lifetime_state") }, "authorization_task_origins", "authorization_task_origins_source_run_id_fkey", "atomic_write_guard", &["authorization_task_origins_task_id_fkey", "authorization_task_origins_tenant_fkey", "authorization_task_origins_pkey"])]
+#[case::execution_task(SourceLifetimeMigration { app: "identity", physical: "0058_task_origin_source_lifetime", state: Some("0059_task_origin_source_lifetime_state") }, "authorization_execution", "authorization_execution_task_id_fkey", "atomic_write_guard", &["authorization_execution_run_id_fkey", "authorization_execution_credential_id_fkey", "authorization_execution_tenant_fkey", "authorization_execution_pkey", "authorization_execution_subject_chain_check"])]
+#[case::execution_workspace(SourceLifetimeMigration { app: "identity", physical: "0058_task_origin_source_lifetime", state: Some("0059_task_origin_source_lifetime_state") }, "authorization_execution", "authorization_execution_workspace_id_fkey", "atomic_write_guard", &["authorization_execution_run_id_fkey", "authorization_execution_credential_id_fkey", "authorization_execution_tenant_fkey", "authorization_execution_pkey", "authorization_execution_subject_chain_check"])]
+#[case::read_workspace(SourceLifetimeMigration { app: "identity", physical: "0058_task_origin_source_lifetime", state: Some("0059_task_origin_source_lifetime_state") }, "authorization_run_reads", "authorization_run_reads_workspace_id_fkey", "atomic_write_guard", &["authorization_run_reads_run_id_fkey", "authorization_run_reads_tenant_root_fkey", "authorization_run_reads_pkey"])]
+#[case::session(SourceLifetimeMigration { app: "execution", physical: "0093_session_area_lifetime", state: Some("0094_session_area_lifetime_state") }, "core_runs", "core_runs_area_id_fkey", "atomic_write_guard", &["core_runs_run_id_fkey", "core_runs_pkey", "core_runs_tenant_root_fkey"])]
 #[tokio::test]
 async fn node_purge_source_lifetime_migrations_round_trip_without_weakening_provenance_owners(
 	#[future] fresh_database: MigrationFixture,
@@ -3689,15 +3698,15 @@ async fn node_purge_receiving_keysets_roundtrip_with_registered_model_state(
 	}
 	plan.sort().unwrap();
 	let mut selected = BTreeSet::from([
-		("federation".to_owned(), "0015_receiving_keysets".to_owned()),
+		("federation".to_owned(), "0016_receiving_keysets".to_owned()),
 		(
 			"federation".to_owned(),
-			"0016_receiving_keysets_state".to_owned(),
+			"0017_receiving_keysets_state".to_owned(),
 		),
-		("identity".to_owned(), "0045_receiving_keysets".to_owned()),
+		("identity".to_owned(), "0056_receiving_keysets".to_owned()),
 		(
 			"identity".to_owned(),
-			"0046_receiving_keysets_state".to_owned(),
+			"0057_receiving_keysets_state".to_owned(),
 		),
 	]);
 	for migration in &plan.migrations {
@@ -3754,7 +3763,7 @@ async fn node_purge_receiving_keysets_roundtrip_with_registered_model_state(
 #[rstest]
 #[case::registration(
 	"federation",
-	"0019_node_registration_recovery_ownership",
+	"0020_node_registration_recovery_ownership",
 	None,
 	"node_registrations",
 	"node_registrations_node_fkey",
@@ -3762,8 +3771,8 @@ async fn node_purge_receiving_keysets_roundtrip_with_registered_model_state(
 )]
 #[case::event(
 	"execution",
-	"0056_session_area_lifetime",
-	Some("0057_session_area_lifetime_state"),
+	"0093_session_area_lifetime",
+	Some("0094_session_area_lifetime_state"),
 	"events",
 	"events_node_fkey",
 	"events_tenant_root_fkey"

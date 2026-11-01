@@ -83,6 +83,8 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		// Safety Stop audit outlives its Run and even its Tenant (ADR 0101).
 		"run_safety_stops" => Audit,
 		"authorization_credentials"
+		| "oauth_connections"
+		| "oauth_authorizations"
 		| "identity_approval_preferences"
 		| "identity_approval_rules" => Subject("subject"),
 		"registry_requests" | "core_requests" => Subject("principal"),
@@ -157,6 +159,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		"generation_remote_finalizations" => Finalizations,
 		"generation_remote_dispatches" => Dispatches,
 		"authorization_remote_commands"
+		| "remote_connection_calls"
 		| "authorization_remote_execution"
 		| "authorization_remote_outputs"
 		| "authorization_remote_grant_reads"
@@ -238,6 +241,9 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "plan_authorizations"
 		| "plan_connection_hosts"
 		| "plan_connections"
+		| "oauth_clients"
+		| "oauth_dynamic_clients"
+		| "connection_scope_ceilings"
 		| "provider_authorizations"
 		| "provider_credential_bindings"
 		| "provider_credentials"

@@ -34,9 +34,13 @@ pub mod subject_credential_command;
 pub mod tenant_administration;
 pub mod tenant_deletions;
 pub mod tenant_purge;
+pub mod tenant_secret_readiness;
 pub mod tenant_secrets;
 pub mod tenants;
 
 pub mod node_purge;
 
 pub(crate) mod manual_keys;
+pub mod oauth_clients;
+
+pub mod oauth_connections;

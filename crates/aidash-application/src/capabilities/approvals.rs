@@ -265,6 +265,28 @@ async fn advise(
 		},
 	)
 }
+/// The person's current mode after applying the same policy ceiling as approvals.
+pub async fn connection_mode(
+	scope: &mut dyn ApprovalScope,
+	run: &Run,
+	target: &Resource,
+) -> Result<Option<ApprovalMode>> {
+	let Some(settings) = scope.approval_settings(run).await? else {
+		return Ok(None);
+	};
+	let Some(root) = scope.chain_root() else {
+		return Ok(None);
+	};
+	let allowed = ceiling(scope, &settings, root, target).mode_allowed;
+	let suspended =
+		settings.mode == ApprovalMode::Auto && scope.auto_blocks(run).await?.suspended();
+	Ok(Some(if allowed && !suspended {
+		settings.mode
+	} else {
+		ApprovalMode::Manual
+	}))
+}
+
 /// Whether the Run's effective Approval Mode is Auto: the person selected it,
 /// the policy allows it, the Decider is available, and its block limits have
 /// not suspended it. The model is told not to stop for clarifying questions

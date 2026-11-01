@@ -46,8 +46,15 @@ pub async fn validate_references(
 	node: &str,
 ) -> Result<()> {
 	validation.validate_in(entry, true)?;
-	// A Tenant Secret goes only to the hosts it records (ADR 0051).
-	if let Some((name, endpoint)) = aidash_domain::tenant_secrets::definition_target(entry) {
+	// A Tenant Secret goes only to the hosts it records (ADR 0051). A personal-only
+	// definition names the person's own secret: only the name is validated here and
+	// the hosts are enforced against that row at dispatch (ADR 0100).
+	if aidash_domain::tenant_secrets::definition_personal_only(entry)
+		&& let Some(name) = aidash_domain::tenant_secrets::definition_secret(entry)
+	{
+		aidash_domain::tenant_secrets::validate_name(&name)?;
+	}
+	if let Some((name, endpoint)) = aidash_domain::tenant_secrets::definition_shared_target(entry) {
 		let hosts = scope.tenant_secret_hosts(&name).await?;
 		crate::tenant_secrets::admit(&name, &endpoint, hosts.as_deref())?;
 	}

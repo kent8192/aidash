@@ -1,4 +1,0 @@
-DROP TRIGGER atomic_write_guard ON public.authorization_remote_terminal_receipts;
-DROP POLICY tenant_isolation ON public.authorization_remote_terminal_receipts;
-ALTER TABLE public.authorization_remote_terminal_receipts NO FORCE ROW LEVEL SECURITY;
-ALTER TABLE public.authorization_remote_terminal_receipts DISABLE ROW LEVEL SECURITY;

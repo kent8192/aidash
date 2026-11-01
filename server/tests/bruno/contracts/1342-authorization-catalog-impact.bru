@@ -1,0 +1,21 @@
+meta {
+  name: 1342 authorization-catalog-impact - Malformed bearer syntax is rejected
+  type: http
+  seq: 1342
+}
+
+get {
+  url: {{base_url}}/api/authorization/{{tenant}}/catalog/impact?id=aidash.workspace_read&version=1.0.0&node=brave-otter-k3m9q2xa
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Authorization: Basic invalid
+}
+
+tests {
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
+}

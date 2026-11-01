@@ -110,3 +110,9 @@ pub mod tenant_secrets;
 
 mod authorization_remote_terminal_receipts;
 pub use authorization_remote_terminal_receipts::AuthorizationRemoteTerminalReceipt;
+pub mod oauth_clients;
+
+pub mod oauth_connections;
+
+mod remote_connection_calls;
+pub use remote_connection_calls::RemoteConnectionCall;
