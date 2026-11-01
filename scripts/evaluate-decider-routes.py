@@ -32,7 +32,9 @@ THRESHOLDS = [round(0.05 * step, 2) for step in range(2, 11)]
 def post(path, body, key):
     request = urllib.request.Request(
         f"{API}/{path}",
-        data=json.dumps(body).encode(),
+        # The Node encodes with serde_json, which sorts object keys; the
+        # models read the state in that order.
+        data=json.dumps(body, sort_keys=True).encode(),
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         method="POST",
     )

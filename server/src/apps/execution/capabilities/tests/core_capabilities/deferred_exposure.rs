@@ -14,6 +14,8 @@ use upstream_fixtures::reply;
 
 const DEFERRED: &str = "2.0.0";
 const LEGACY: &str = "2.0.1";
+/// The legacy twin that also binds a native semantic memory source (#617).
+const NATIVE_MEMORY: &str = "2.0.2";
 const METADATA_BYTES: usize = 16384;
 // Keep the memory-free fixture large enough for eager tools, but small enough
 // that its discoverable tool schemas exceed the exposure budget.
@@ -166,8 +168,17 @@ async fn deferred_fixture(
 		let entry = json!({"id":id,"version":"1.0.0","kind":"skill","name":{"en":name},"description":{"en":description},"schema":{},"config":{"instructions":instructions,"files":files}});
 		register_approved(&c, entry).await;
 	}
-	for (version, deferred) in [(DEFERRED, true), (LEGACY, false)] {
-		register_agent(&c, version, deferred).await;
+	register_approved(
+		&c,
+		json!({"id":"native-semantic-memory","version":"1.0.0","kind":"memory","name":{"en":"Native semantic memory"},"description":{"en":"Workspace memory entries only"},"schema":{},"config":{"schema_version":1,"source":{"adapter":"semantic_memory"}}}),
+	)
+	.await;
+	for (version, deferred, memory) in [
+		(DEFERRED, true, false),
+		(LEGACY, false, false),
+		(NATIVE_MEMORY, false, true),
+	] {
+		register_agent(&c, version, deferred, memory).await;
 		c.policy["subjects"][aidash_server::domain::qualified_agent(
 			&aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),
 			"research",
@@ -199,8 +210,9 @@ async fn register_approved(c: &CoreFixture, entry: Value) {
 }
 
 /// Twin Agents with identical Bindings; only the deferred one has an
-/// Exposure policy and an Eager binding.
-async fn register_agent(c: &CoreFixture, version: &str, deferred: bool) {
+/// Exposure policy and an Eager binding. `memory` adds the native semantic
+/// memory source, which is not a memory provider.
+async fn register_agent(c: &CoreFixture, version: &str, deferred: bool, memory: bool) {
 	let node = c.f.config.deployment.as_str();
 	let target = |id: &str| json!({"registry_deployment":node,"id":id,"version":"1.0.0"});
 	let mut plugin = json!({"kind":"tool","target":target("http"),"alias":EAGER,"narrow":{}});
@@ -225,6 +237,12 @@ async fn register_agent(c: &CoreFixture, version: &str, deferred: bool) {
 		{"kind":"skill","target":target("atlas-skill"),"narrow":{}},
 		{"kind":"source","target":target("fixture-skills"),"narrow":{}},
 	]);
+	if memory {
+		agent.config["bindings"]
+			.as_array_mut()
+			.unwrap()
+			.push(json!({"kind":"memory","target":target("native-semantic-memory"),"narrow":{}}));
+	}
 	agent.config["remove_default"] = json!([]);
 	agent.config["max_steps"] = json!(80);
 	if deferred {
@@ -531,6 +549,31 @@ async fn deferred_first_request_exposes_only_mandatory_and_eager_capabilities(
 			.collect::<BTreeSet<_>>(),
 		initial
 	);
+	d.close().await;
+}
+
+/// A native memory source alone is not a memory provider, so the model is
+/// offered none of the memory builtins that would always refuse (#617).
+#[rstest::rstest]
+#[tokio::test]
+async fn native_memory_source_alone_offers_no_memory_builtins(
+	#[future] deferred_fixture: Deferred,
+) {
+	let d = Box::pin(deferred_fixture).await;
+	d.script(|_, _| Reply::Text("Done."));
+	let legacy = d.delegate(d.c.task, LEGACY).await;
+	completed(&d.drive(legacy.id).await);
+	let second = d.task(legacy.workspace_id).await;
+	let native = d.delegate(second, NATIVE_MEMORY).await;
+	completed(&d.drive(native.id).await);
+	let requests = d.requests().await;
+	let [legacy, native] = [&requests[0], &requests[requests.len() - 1]].map(tool_names);
+	for tool in aidash_domain::registry::bindings::MEMORY_TOOLS {
+		assert!(!legacy.contains(*tool), "{tool} offered without memory");
+		assert!(!native.contains(*tool), "{tool} offered without a provider");
+	}
+	// Everything else the legacy twin is offered stays offered.
+	assert_eq!(legacy, native);
 	d.close().await;
 }
 

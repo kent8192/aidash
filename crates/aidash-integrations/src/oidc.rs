@@ -58,6 +58,7 @@ struct GoogleClaims {
 fn oidc_http_client() -> Result<openidconnect::reqwest::Client> {
 	openidconnect::reqwest::Client::builder()
 		.redirect(openidconnect::reqwest::redirect::Policy::none())
+		.user_agent(crate::USER_AGENT)
 		.timeout(std::time::Duration::from_secs(10))
 		.build()
 		.map_err(|_| Error::External("OIDC client unavailable".into()))

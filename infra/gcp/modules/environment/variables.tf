@@ -60,3 +60,13 @@ variable "broker" {
   })
   default = null
 }
+variable "tenant_secret_broker" {
+  description = "Non-secret server settings from the environment's Tenant Secret Broker."
+  type = object({
+    endpoint = string
+    issuer   = string
+    audience = string
+    kid      = string
+  })
+  default = null
+}

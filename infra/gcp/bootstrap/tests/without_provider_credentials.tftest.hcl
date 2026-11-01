@@ -16,6 +16,7 @@ run "legacy_bootstrap_has_no_byok_resources" {
       length(google_project_iam_custom_role.byok_create) == 0 &&
       length(google_project_iam_custom_role.byok_manage) == 0 &&
       length(google_project_iam_custom_role.byok_broker_read) == 0 &&
+      length(google_project_iam_custom_role.byok_tenant_secret_broker_read) == 0 &&
       length(google_project_iam_custom_role.byok_deploy) == 0 &&
       length(google_project_iam_member.byok_deploy) == 0 &&
       length(google_project_iam_custom_role.byok_retire) == 0 &&

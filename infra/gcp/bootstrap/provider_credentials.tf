@@ -30,7 +30,9 @@ resource "google_project_iam_custom_role" "byok_manage" {
     "secretmanager.versions.list",
   ]
 }
-// Read role definition only; #137's human-run bootstrap owns the broker identity and grants.
+// Read role definitions only; #137's human-run bootstrap owns the broker
+// identities and grants. Key Material and Tenant Secrets use separate roles so a
+// forwarder bug cannot cross the two namespaces (ADR 0095).
 resource "google_project_iam_custom_role" "byok_broker_read" {
   count   = var.byok_project_id != "" ? 1 : 0
   project = var.byok_project_id
@@ -40,6 +42,26 @@ resource "google_project_iam_custom_role" "byok_broker_read" {
     "secretmanager.versions.access", "secretmanager.versions.get",
     "secretmanager.secrets.get",
   ]
+}
+resource "google_project_iam_custom_role" "byok_tenant_secret_broker_read" {
+  count   = var.byok_project_id != "" ? 1 : 0
+  project = var.byok_project_id
+  role_id = "aidashByokTenantSecretBrokerRead"
+  title   = "Aidash Tenant Secret broker read"
+  permissions = [
+    "secretmanager.versions.access", "secretmanager.versions.get",
+    "secretmanager.secrets.get",
+  ]
+}
+
+// Only OAuth Connections need broker writes. Never add versions.add to the
+// pasted Tenant Secret read role: -tsec- remains read-only for the broker.
+resource "google_project_iam_custom_role" "byok_oauth_broker" {
+  count       = var.byok_project_id != "" ? 1 : 0
+  project     = var.byok_project_id
+  role_id     = "aidashByokOAuthBroker"
+  title       = "Aidash OAuth Connection broker"
+  permissions = ["secretmanager.versions.access", "secretmanager.versions.add"]
 }
 
 // Resource Manager honours modifiedGrantsByRole for projects.setIamPolicy:
