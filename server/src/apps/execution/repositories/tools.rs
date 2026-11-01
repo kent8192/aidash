@@ -239,6 +239,28 @@ impl ToolOperations for Operations {
 		}
 		.specifications(&self.0.run)
 	}
+	async fn intrinsic_subnode_specifications(&self) -> Result<BTreeMap<String, ToolSpec>> {
+		let Some(authority) = &self.0.home.authority else {
+			return Ok(BTreeMap::new());
+		};
+		if !authority.is_subnode_member(&self.0.run).await? {
+			return Ok(BTreeMap::new());
+		}
+		let providers = super::bindings::Providers {
+			federation: self.0.home.federation.clone(),
+			home: self.0.home.clone(),
+			scope: self.0.scope.clone(),
+		};
+		aidash_domain::subnodes::COORDINATION_TOOLS
+			.iter()
+			.map(|name| {
+				Ok((
+					(*name).to_owned(),
+					providers.coordination_tool(name)?.specification(),
+				))
+			})
+			.collect()
+	}
 	async fn direct_skills(&self) -> Result<Vec<DirectSkill>> {
 		match &self.0.home.authority {
 			Some(authority) => authority

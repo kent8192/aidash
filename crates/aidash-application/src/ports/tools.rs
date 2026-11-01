@@ -215,6 +215,10 @@ pub trait ToolOperations: Send + Sync {
 	/// Model-visible specifications of the Run's aliased tool Bindings, by alias,
 	/// exactly as dispatch advertises them (`bound_specification`).
 	async fn binding_specifications(&self) -> Result<BTreeMap<String, ToolSpec>>;
+	/// Intrinsic Subnode coordination tools present in this Run.
+	async fn intrinsic_subnode_specifications(&self) -> Result<BTreeMap<String, ToolSpec>> {
+		Ok(BTreeMap::new())
+	}
 	/// Direct Skills pinned for the Run. Empty when Skills are off, nothing is
 	/// pinned, or this placement has no local authority.
 	async fn direct_skills(&self) -> Result<Vec<DirectSkill>>;

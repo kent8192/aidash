@@ -186,6 +186,16 @@ pub(crate) struct WorkerAuthority {
 }
 
 impl WorkerAuthority {
+	pub(crate) async fn is_subnode_member(&self, run: &Run) -> Result<bool> {
+		let mut none = std::collections::BTreeMap::<String, ()>::new();
+		aidash_application::authorization::tools::filter_subnode(
+			&crate::bootstrap::agent_tool_repository(None, &self.access, run),
+			&mut none,
+			|_| unreachable!("empty map"),
+		)
+		.await
+		.map_err(Into::into)
+	}
 	/// Resolve existing page and file selections before admitting another
 	/// Research page image, under the same worker authority lease.
 	pub(crate) async fn model_media(

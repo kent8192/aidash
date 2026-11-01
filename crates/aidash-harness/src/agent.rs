@@ -3609,42 +3609,11 @@ async fn exposure_catalog(
 	let direct = environment.direct_skills(run).await?;
 	let mut catalog =
 		exposure::catalog(snapshot, &specs, &direct, run.context.plugin_tools.as_ref())?;
-	for name in aidash_domain::subnodes::COORDINATION_TOOLS {
-		let Some(tool) = tools.get(*name) else {
-			continue;
-		};
-		if !matches!(&tool.contract().identity, aidash_domain::tool::ToolIdentity::Builtin(id) if id == &format!("builtin:{name}"))
-		{
-			continue;
-		}
-		if let Some(item) = catalog.iter_mut().find(|item| item.alias == *name) {
-			item.mandatory = true;
-			continue;
-		}
-		let spec = &specs[*name];
-		let detail = serde_json::to_value(spec)?;
-		catalog.push(exposure::Capability {
-			alias: (*name).into(),
-			kind: exposure::CapabilityKind::Tool,
-			identity: exposure::CapabilityIdentity::Registry(
-				aidash_domain::registry::bindings::QualifiedRef::builtin(
-					&snapshot.agent.registry_deployment,
-					name,
-				),
-			),
-			digest: aidash_domain::registry::rules::digest(&detail),
-			name: (*name).into(),
-			description: spec.description.clone(),
-			bundle: None,
-			companions: vec![],
-			companion_bytes: vec![],
-			definition_bytes: exposure::tool_bytes(spec)?,
-			detail,
-			mandatory: true,
-			eager: false,
-		});
-	}
-	catalog.sort_by(|a, b| a.alias.cmp(&b.alias));
+	let intrinsic = tools.iter().filter(|(name, tool)| {
+        aidash_domain::subnodes::COORDINATION_TOOLS.contains(&name.as_str())
+            && matches!(&tool.contract().identity, aidash_domain::tool::ToolIdentity::Builtin(id) if id == &format!("builtin:{name}"))
+    }).map(|(name, _)| (name.clone(), specs[name].clone())).collect();
+	exposure::include_subnode_intrinsics(snapshot, &mut catalog, &intrinsic)?;
 	Ok(catalog)
 }
 /// Resident blocks of the selected Skills: Registry bodies from the pinned
