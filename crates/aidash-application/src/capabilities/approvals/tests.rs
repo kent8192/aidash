@@ -2794,3 +2794,48 @@ async fn the_approver_sees_which_rule_or_mode_gave_an_approval() {
 }
 
 mod sampling;
+
+#[rstest::rstest]
+#[case::bypass_refused(ApprovalMode::Bypass, false, true, false, Some(ApprovalMode::Manual))]
+#[case::bypass_unaccepted(ApprovalMode::Bypass, true, false, false, Some(ApprovalMode::Manual))]
+#[case::bypass(ApprovalMode::Bypass, true, true, false, Some(ApprovalMode::Bypass))]
+#[case::auto_unavailable(ApprovalMode::Auto, true, false, false, Some(ApprovalMode::Manual))]
+#[case::auto(ApprovalMode::Auto, true, false, true, Some(ApprovalMode::Auto))]
+#[case::dont_ask(
+	ApprovalMode::DontAsk,
+	false,
+	false,
+	false,
+	Some(ApprovalMode::DontAsk)
+)]
+#[tokio::test]
+async fn connection_waits_use_the_policy_ceiling_of_the_persons_mode(
+	#[case] mode: ApprovalMode,
+	#[case] allowed: bool,
+	#[case] accepted: bool,
+	#[case] auto: bool,
+	#[case] expected: Option<ApprovalMode>,
+) {
+	let mut fake = scope(if allowed {
+		json!({"id":"modes","effect":"allow","subjects":{"ids":["alice"]},"actions":[MODE_BYPASS,MODE_AUTO],"resources":{"kinds":[MODE_RESOURCE]}})
+	} else {
+		Value::Null
+	});
+	fake.settings = Some(Settings {
+		mode,
+		bypass_accepted: accepted,
+		auto_available: auto,
+		rules: vec![],
+	});
+	let run = fake.run.clone();
+	let target = fake.resource("run", &run.id.to_string(), json!({}));
+	assert_eq!(
+		connection_mode(&mut fake, &run, &target).await.unwrap(),
+		expected
+	);
+	fake.settings = None;
+	assert_eq!(
+		connection_mode(&mut fake, &run, &target).await.unwrap(),
+		None
+	);
+}

@@ -1,3 +1,4 @@
+import { ConnectionStep } from "./connections/install";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
@@ -293,6 +294,8 @@ export function EntityConfiguration({
   const [members, setMembers] = useState<string[]>([]);
   const [endpoint, setEndpoint] = useState("");
   const [secret, setSecret] = useState("");
+  const [scopes, setScopes] = useState("");
+  const [personalSecret, setPersonalSecret] = useState(false);
   const [replay, setReplay] = useState("unsafe");
   const [toolName, setToolName] = useState("");
   const [idempotency, setIdempotency] = useState("");
@@ -439,6 +442,9 @@ export function EntityConfiguration({
     : kind === "memory"
       ? "conversation_memory"
       : "workspace_retrieval";
+  const declaredScopes = scopes.trim()
+    ? scopes.split(/\s+/).filter(Boolean)
+    : undefined;
   const transportConfig =
     transport === "agent"
       ? {
@@ -453,10 +459,12 @@ export function EntityConfiguration({
           transport,
           endpoint,
           ...(secret ? { secret } : {}),
+          ...(personalSecret ? { secret_owner: "personal" } : {}),
           replay,
           ...(transport === "mcp"
             ? {
                 tool_name: toolName,
+                ...(declaredScopes ? { scopes: declaredScopes } : {}),
                 idempotency_argument:
                   replay === "idempotent" ? idempotency : null,
               }
@@ -773,6 +781,30 @@ export function EntityConfiguration({
                       </Hint>
                     ))}
                 </div>
+              )}
+              <Check
+                checked={personalSecret}
+                onChange={(event) => setPersonalSecret(event.target.checked)}
+              >
+                {t("toolPersonalSecret")}
+              </Check>
+              {transport === "mcp" && (
+                <>
+                  <Field label={t("toolOAuthScopes")}>
+                    <Input
+                      value={scopes}
+                      onChange={(event) => setScopes(event.target.value)}
+                      placeholder="read write"
+                    />
+                  </Field>
+                  {data.access.kind === "subject" && (
+                    <ConnectionStep
+                      tenant={data.access.tenant}
+                      resource={endpoint}
+                      declared={declaredScopes}
+                    />
+                  )}
+                </>
               )}
               {transport === "mcp" && replay === "idempotent" && (
                 <Field label={t("toolIdempotency")}>

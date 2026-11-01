@@ -81,7 +81,10 @@ configuration cannot replace the adapter or its pinned references; private
 documents remain separately stored and must be available with the exact digest
 on the installing Node.
 
-Memory reads require a Memory Binding and the admitted recall/reflect operations.
+Memory reads require a Memory provider Binding and the admitted recall/reflect
+operations. An Agent whose only memory Binding is a native conversation or
+semantic memory source is not offered `memory_recall`, `memory_reflect` or
+`memory_mutate`; that memory reaches the model only as automatic context.
 `memory_mutate` alone does not enable reading. Supported native
 context declarations wrap the existing conversation/semantic memory, workspace
 retrieval, private-reference, original-reference and Skill adapters. Private

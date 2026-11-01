@@ -63,7 +63,12 @@ impl Scope for Lease {
 			.data
 			.rows
 			.values()
-			.find(|r| r.tenant == self.tenant && r.name == name && r.state != State::Deleted)
+			.find(|r| {
+				r.tenant == self.tenant
+					&& r.name == name
+					&& r.owner.is_none()
+					&& r.state != State::Deleted
+			})
 			.cloned())
 	}
 	async fn by_id(&mut self, id: Uuid) -> Result<Option<TenantSecret>> {
@@ -101,12 +106,17 @@ impl Scope for Lease {
 }
 
 type SecretVersions = BTreeMap<String, BTreeMap<String, (String, &'static str)>>;
+type SealedHosts = BTreeMap<String, BTreeMap<String, Vec<String>>>;
 
 #[derive(Clone, Default)]
 struct FakeStore {
 	/// resource -> version -> (value, state)
 	state: Arc<Mutex<SecretVersions>>,
+	/// What each version sealed: resource -> version -> hosts.
+	sealed_hosts: Arc<Mutex<SealedHosts>>,
 	refuse_secrets: bool,
+	/// Whether this Store seals the hosts with the value (ADR 0096).
+	seals: bool,
 }
 #[async_trait]
 impl Store for FakeStore {
@@ -165,6 +175,31 @@ impl Store for FakeStore {
 			.insert(self.secret_resource(id), BTreeMap::new());
 		Ok(())
 	}
+	fn seals_secret_hosts(&self) -> bool {
+		self.seals
+	}
+	async fn add_secret_version(
+		&self,
+		tenant: &str,
+		resource: &str,
+		hosts: &[String],
+		value: &SecretString,
+	) -> Result<String> {
+		if !self.seals {
+			return self.add_version(tenant, resource, value).await;
+		}
+		let sealed = aidash_capability::tenant_secret::sealed::seal(hosts, value.expose_secret())
+			.map_err(|_| Error::Invalid("invalid Tenant Secret hosts".into()))?;
+		let payload = SecretString::from(String::from_utf8_lossy(&sealed).into_owned());
+		let version = self.add_version(tenant, resource, &payload).await?;
+		self.sealed_hosts
+			.lock()
+			.await
+			.entry(resource.to_owned())
+			.or_default()
+			.insert(version.clone(), hosts.to_vec());
+		Ok(version)
+	}
 }
 #[async_trait]
 impl KeyMaterialReader for FakeStore {
@@ -188,11 +223,44 @@ fn service_with(store: FakeStore) -> (Service, Repo, FakeStore) {
 		Service {
 			repository: Arc::new(repo.clone()),
 			store: Arc::new(store.clone()),
-			reader: Arc::new(store.clone()),
+			reader: Some(Arc::new(store.clone())),
+			calls: None,
 			fingerprint_key: "test-fingerprint-root-key".into(),
 			max_per_tenant: 2,
 		},
 		repo,
+		store,
+	)
+}
+
+#[derive(Clone, Default)]
+struct RecordedGrant(Arc<Mutex<Vec<SecretCallGrant>>>);
+struct FakeCalls(RecordedGrant);
+#[async_trait]
+impl SecretCalls for FakeCalls {
+	async fn route(&self, grant: SecretCallGrant) -> Result<SecretRoute> {
+		self.0.0.lock().await.push(grant);
+		Ok(SecretRoute {
+			base: Url::parse("https://broker.example/v1/forward").unwrap(),
+			token: "canary-capability-token".into(),
+		})
+	}
+}
+
+fn service_with_calls(store: FakeStore) -> (Service, RecordedGrant, FakeStore) {
+	let repo = Repo::default();
+	let grants = RecordedGrant::default();
+	(
+		Service {
+			repository: Arc::new(repo),
+			store: Arc::new(store.clone()),
+			// A brokered Store is write-only: this reader must never be called.
+			reader: None,
+			calls: Some(Arc::new(FakeCalls(grants.clone()))),
+			fingerprint_key: "test-fingerprint-root-key".into(),
+			max_per_tenant: 2,
+		},
+		grants,
 		store,
 	)
 }
@@ -241,7 +309,7 @@ async fn a_stored_secret_shows_only_a_fingerprint_and_last_four_and_resolves_to_
 	assert_eq!(created.revision, 2);
 	let shown = serde_json::to_string(&created).unwrap();
 	assert!(!shown.contains("super-secret-value"), "{shown}");
-	let value = s.resolve("alpha", "search", ENDPOINT).await.unwrap();
+	let value = s.resolve_value("alpha", "search", ENDPOINT).await.unwrap();
 	assert_eq!(value.expose_secret(), "super-secret-value-1234");
 	// Another host, another Tenant and a missing name all fail the same way.
 	for (tenant, name, endpoint) in [
@@ -250,7 +318,7 @@ async fn a_stored_secret_shows_only_a_fingerprint_and_last_four_and_resolves_to_
 		("alpha", "other", ENDPOINT),
 	] {
 		assert!(matches!(
-			s.resolve(tenant, name, endpoint).await,
+			s.resolve_value(tenant, name, endpoint).await,
 			Err(Error::Invalid(m)) if m == UNAVAILABLE
 		));
 	}
@@ -281,7 +349,7 @@ async fn replacing_the_value_keeps_the_name_and_disables_the_old_version() {
 	assert_eq!(second.last4, "bbbb");
 	assert_ne!(second.fingerprint, first.fingerprint);
 	assert_eq!(
-		s.resolve("alpha", "search", ENDPOINT)
+		s.resolve_value("alpha", "search", ENDPOINT)
 			.await
 			.unwrap()
 			.expose_secret(),
@@ -328,7 +396,7 @@ async fn changing_hosts_takes_effect_at_the_next_resolution() {
 	)
 	.await
 	.unwrap();
-	assert!(s.resolve("alpha", "search", ENDPOINT).await.is_err());
+	assert!(s.resolve_value("alpha", "search", ENDPOINT).await.is_err());
 	assert_eq!(
 		s.hosts("alpha", "search").await.unwrap().unwrap(),
 		["other.example"]
@@ -351,7 +419,7 @@ async fn deleting_makes_calls_fail_destroys_the_value_and_frees_the_name() {
 		.await
 		.unwrap();
 	assert!(matches!(
-		s.resolve("alpha", "search", ENDPOINT).await,
+		s.resolve_value("alpha", "search", ENDPOINT).await,
 		Err(Error::Invalid(m)) if m == UNAVAILABLE
 	));
 	assert!(
@@ -466,7 +534,7 @@ async fn a_store_that_cannot_hold_tenant_secrets_refuses_and_leaves_nothing_usab
 		)
 		.await;
 	assert!(matches!(result, Err(Error::Invalid(_))));
-	assert!(s.resolve("alpha", "search", ENDPOINT).await.is_err());
+	assert!(s.resolve_value("alpha", "search", ENDPOINT).await.is_err());
 	// The unfinished row expires and is cleaned up by reconciliation.
 	{
 		let mut data = repo.0.lock().await;
@@ -524,4 +592,924 @@ fn admission_refuses_a_missing_secret_and_an_unrecorded_host() {
 	assert!(admit("search", ENDPOINT, None).is_err());
 	assert!(admit("search", "https://evil.example/", Some(&hosts)).is_err());
 	assert!(admit("search", "http://api.example.com/", Some(&hosts)).is_err());
+}
+
+/// `aidash-capability` is a leaf crate, so its sealed-payload codec repeats the
+/// host rule. This crate sees both and keeps them in step.
+#[test]
+fn sealed_payload_hosts_match_the_domain_normalization() {
+	use aidash_capability::tenant_secret::sealed;
+	assert_eq!(sealed::MAX_HOSTS, aidash_domain::tenant_secrets::MAX_HOSTS);
+	for hosts in [
+		vec![
+			"API.Example.com".to_owned(),
+			"api.example.com".to_owned(),
+			"b.example".to_owned(),
+		],
+		vec!["127.0.0.1".to_owned()],
+		vec!["xn--bcher-kva.example".to_owned()],
+		vec!["a.example".to_owned(), "b.example".to_owned()],
+	] {
+		let expected = aidash_domain::tenant_secrets::normalize_hosts(&hosts).unwrap();
+		let opened = sealed::open(&sealed::seal(&hosts, "canary-value").unwrap()).unwrap();
+		assert_eq!(opened.hosts, expected, "{hosts:?}");
+	}
+	for bad in [
+		"https://a.example",
+		"a.example/path",
+		"a.example:8443",
+		"*.example",
+		"user@a.example",
+		"",
+	] {
+		assert!(
+			aidash_domain::tenant_secrets::normalize_hosts(&[bad.to_owned()]).is_err(),
+			"{bad}"
+		);
+		assert!(
+			sealed::seal(&[bad.to_owned()], "canary-value").is_err(),
+			"{bad}"
+		);
+		let payload = serde_json::json!({"v": 1, "hosts": [bad], "value": "canary-value"});
+		assert!(
+			sealed::open(&serde_json::to_vec(&payload).unwrap()).is_err(),
+			"{bad}"
+		);
+	}
+}
+
+#[tokio::test]
+async fn a_sealing_store_refuses_a_hosts_change_without_the_value_and_seals_a_new_version() {
+	let (s, repo, store) = service_with(FakeStore {
+		seals: true,
+		..Default::default()
+	});
+	let created = s
+		.put(
+			"alpha",
+			"search",
+			put(Some("first-value-aaaa"), Some(&["api.example.com"]), 0),
+			"actor",
+		)
+		.await
+		.unwrap();
+	// The first version seals the hosts with the value.
+	let resource = store.secret_resource(created.id);
+	let first = {
+		let state = store.state.lock().await;
+		state
+			.get(&resource)
+			.unwrap()
+			.values()
+			.next()
+			.unwrap()
+			.0
+			.clone()
+	};
+	let opened = aidash_capability::tenant_secret::sealed::open(first.as_bytes()).unwrap();
+	assert_eq!(opened.hosts, ["api.example.com"]);
+	assert_eq!(opened.value.expose_secret(), "first-value-aaaa");
+	// A hosts change without the value is refused and changes nothing.
+	let refused = s
+		.put(
+			"alpha",
+			"search",
+			put(None, Some(&["other.example"]), created.revision),
+			"actor",
+		)
+		.await;
+	assert!(invalid(&refused), "{refused:?}");
+	assert!(
+		refused
+			.unwrap_err()
+			.to_string()
+			.contains("requires its value"),
+		"a clear invalid-input error"
+	);
+	let unchanged = s.get("alpha", "search").await.unwrap();
+	assert_eq!(unchanged.hosts, ["api.example.com"]);
+	assert_eq!(unchanged.revision, created.revision);
+	// The value and the hosts together write one new sealed version, and the
+	// pin follows it.
+	let changed = s
+		.put(
+			"alpha",
+			"search",
+			put(
+				Some("second-value-bbbb"),
+				Some(&["Other.Example"]),
+				created.revision,
+			),
+			"actor",
+		)
+		.await
+		.unwrap();
+	assert_eq!(changed.hosts, ["other.example"]);
+	let row = repo.0.lock().await.rows.get(&created.id).cloned().unwrap();
+	let pinned = row.pinned_version.clone().unwrap();
+	assert_eq!(pinned, format!("{resource}/versions/2"));
+	assert_eq!(
+		store.sealed_hosts.lock().await[&resource][&pinned],
+		["other.example"]
+	);
+	let payload = {
+		let state = store.state.lock().await;
+		state.get(&resource).unwrap()[&pinned].0.clone()
+	};
+	let opened = aidash_capability::tenant_secret::sealed::open(payload.as_bytes()).unwrap();
+	assert_eq!(opened.hosts, ["other.example"]);
+	assert_eq!(opened.value.expose_secret(), "second-value-bbbb");
+	// Replacing only the value keeps the current hosts in the sealed version.
+	let replaced = s
+		.put(
+			"alpha",
+			"search",
+			put(Some("third-value-cccc"), None, changed.revision),
+			"actor",
+		)
+		.await
+		.unwrap();
+	assert_eq!(replaced.hosts, ["other.example"]);
+	let row = repo.0.lock().await.rows.get(&created.id).cloned().unwrap();
+	let pinned = row.pinned_version.unwrap();
+	assert_eq!(
+		store.sealed_hosts.lock().await[&resource][&pinned],
+		["other.example"]
+	);
+}
+
+#[tokio::test]
+async fn brokered_resolution_returns_a_route_and_never_reads_the_value() {
+	let (s, grants, _) = service_with_calls(FakeStore {
+		seals: true,
+		..Default::default()
+	});
+	let created = s
+		.put(
+			"alpha",
+			"search",
+			put(Some("canary-value-1234"), Some(&["api.example.com"]), 0),
+			"actor",
+		)
+		.await
+		.unwrap();
+	let call = SecretCall {
+		destination: Destination {
+			origin: "https://api.example.com".into(),
+			path_prefix: "/tool/".into(),
+		},
+		methods: vec!["POST".into()],
+		attach: Attach::Header {
+			name: "x-api-key".into(),
+		},
+		subject: SecretSubject::Run {
+			run: "run-1".into(),
+			call: Uuid::from_u128(1),
+		},
+		max_response_bytes: Some(262_144),
+	};
+	let resolved = s
+		.resolve("alpha", "search", ENDPOINT, Some(call))
+		.await
+		.unwrap();
+	let Resolved::Brokered(route) = resolved else {
+		panic!("a brokered resolution returns a route");
+	};
+	assert_eq!(route.base.as_str(), "https://broker.example/v1/forward");
+	assert_eq!(route.token.expose_secret(), "canary-capability-token");
+	{
+		let recorded = grants.0.lock().await;
+		assert_eq!(recorded.len(), 1);
+		assert_eq!(recorded[0].tenant, "alpha");
+		assert_eq!(recorded[0].secret, created.id);
+		assert_eq!(recorded[0].version, "1");
+		assert_eq!(recorded[0].destination.origin, "https://api.example.com");
+		assert_eq!(recorded[0].methods, ["POST"]);
+		assert_eq!(recorded[0].max_response_bytes, Some(262_144));
+	}
+	// The direct path refuses rather than reading: this Service has no reader.
+	assert!(
+		s.resolve_value("alpha", "search", ENDPOINT)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("broker")
+	);
+	// A destination the metadata does not record is refused before a token.
+	let mut foreign = SecretCall {
+		destination: Destination {
+			origin: "https://evil.example".into(),
+			path_prefix: "/".into(),
+		},
+		methods: vec!["GET".into()],
+		attach: Attach::Bearer,
+		subject: SecretSubject::Run {
+			run: "run-1".into(),
+			call: Uuid::from_u128(2),
+		},
+		max_response_bytes: None,
+	};
+	assert!(matches!(
+		s.resolve("alpha", "search", ENDPOINT, Some(foreign.clone()))
+			.await,
+		Err(Error::Invalid(message)) if message == UNAVAILABLE
+	));
+	foreign.destination.origin = "https://api.example.com".into();
+	assert_eq!(grants.0.lock().await.len(), 1, "no second token was minted");
+}
+
+#[tokio::test]
+async fn corrupt_pinned_versions_are_never_sent_to_the_broker() {
+	let (mut service, repo, _) = service_with(FakeStore::default());
+	let grants = RecordedGrant::default();
+	service.calls = Some(Arc::new(FakeCalls(grants.clone())));
+	service.reader = None;
+	let created = service
+		.put(
+			"alpha",
+			"search",
+			put(Some("canary-value"), Some(&["api.example.com"]), 0),
+			"actor",
+		)
+		.await
+		.unwrap();
+	let call = SecretCall {
+		destination: endpoint_destination(ENDPOINT).unwrap(),
+		methods: vec!["POST".into()],
+		attach: Attach::Bearer,
+		subject: SecretSubject::Run {
+			run: "run-1".into(),
+			call: Uuid::from_u128(1),
+		},
+		max_response_bytes: None,
+	};
+	for pinned in [
+		"invalid",
+		"resource/versions/",
+		"resource/versions/01",
+		"resource/versions/latest",
+	] {
+		repo.0
+			.lock()
+			.await
+			.rows
+			.get_mut(&created.id)
+			.unwrap()
+			.pinned_version = Some(pinned.into());
+		assert!(
+			matches!(service.resolve("alpha", "search", ENDPOINT, Some(call.clone())).await, Err(Error::Invalid(message)) if message.contains("invalid pinned version")),
+			"{pinned}"
+		);
+	}
+	assert!(grants.0.lock().await.is_empty());
+}
+
+#[test]
+fn a_path_directory_keeps_its_last_slash() {
+	for (path, directory) in [
+		("/", "/"),
+		("/invoke", "/"),
+		("/v1/invoke", "/v1/"),
+		("/v1/", "/v1/"),
+	] {
+		assert_eq!(path_directory(path), directory, "{path}");
+	}
+}
+
+/// The signed destination is the endpoint path's directory, never a sibling.
+#[test]
+fn an_endpoint_signs_its_directory_and_forwards_only_the_remaining_path() {
+	for (endpoint, prefix, rest) in [
+		("https://api.example.com/tool", "/", "tool"),
+		("https://api.example.com/v1/tools/run", "/v1/tools/", "run"),
+		("https://api.example.com/v1/tools/", "/v1/tools/", ""),
+		("https://api.example.com/", "/", ""),
+	] {
+		let destination = endpoint_destination(endpoint).unwrap();
+		assert_eq!(destination.origin, "https://api.example.com");
+		assert_eq!(destination.path_prefix, prefix, "{endpoint}");
+		assert_eq!(forward_rest(endpoint).unwrap(), rest, "{endpoint}");
+	}
+}
+
+#[tokio::test]
+async fn a_brokered_call_secret_records_metadata_and_refreshes_one_route() {
+	let (s, grants, _) = service_with_calls(FakeStore {
+		seals: true,
+		..Default::default()
+	});
+	let created = s
+		.put(
+			"alpha",
+			"search",
+			put(Some("canary-value-1234"), Some(&["api.example.com"]), 0),
+			"actor",
+		)
+		.await
+		.unwrap();
+	let service = Arc::new(s);
+	let secret = service
+		.call_secret(
+			"alpha",
+			"search",
+			ENDPOINT,
+			SecretCall {
+				destination: endpoint_destination(ENDPOINT).unwrap(),
+				methods: vec!["POST".into()],
+				attach: Attach::Bearer,
+				subject: SecretSubject::Run {
+					run: "run-1".into(),
+					call: Uuid::from_u128(1),
+				},
+				max_response_bytes: Some(262_144),
+			},
+		)
+		.await
+		.unwrap();
+	let CallSecret::Brokered {
+		record,
+		source,
+		rest,
+	} = &secret
+	else {
+		panic!("a brokered call returns a route source");
+	};
+	assert_eq!(record.id, created.id);
+	assert_eq!(record.version, "1");
+	assert_eq!(record.host, "api.example.com");
+	assert_eq!(rest, "tool");
+	// The route minted for the call is used first, without another token.
+	assert_eq!(
+		source.route().await.unwrap().token.expose_secret(),
+		"canary-capability-token"
+	);
+	assert_eq!(grants.0.lock().await.len(), 1);
+	// A second request after the token's cache window re-routes through the
+	// broker adapter, which re-checks the metadata and mints another token.
+	assert_eq!(
+		source.route().await.unwrap().token.expose_secret(),
+		"canary-capability-token"
+	);
+	assert_eq!(grants.0.lock().await.len(), 2);
+	// After a rotation the session stops instead of minting a token for a
+	// version its invocation does not record.
+	service
+		.put(
+			"alpha",
+			"search",
+			put(Some("canary-value-5678"), None, created.revision),
+			"actor",
+		)
+		.await
+		.unwrap();
+	assert!(matches!(
+		source.route().await,
+		Err(Error::Invalid(message)) if message == UNAVAILABLE
+	));
+	assert_eq!(
+		grants.0.lock().await.len(),
+		2,
+		"no token for the new version"
+	);
+	drop(service);
+	assert!(
+		matches!(source.route().await, Err(Error::External(message)) if message.contains("no longer available"))
+	);
+	assert_eq!(grants.0.lock().await.len(), 2);
+}
+
+#[tokio::test]
+async fn a_self_hosted_call_secret_returns_the_value_and_records_metadata() {
+	let (s, _, _) = service_with(FakeStore::default());
+	let created = s
+		.put(
+			"alpha",
+			"search",
+			put(Some("canary-value-1234"), Some(&["api.example.com"]), 0),
+			"actor",
+		)
+		.await
+		.unwrap();
+	let secret = Arc::new(s)
+		.call_secret(
+			"alpha",
+			"search",
+			ENDPOINT,
+			SecretCall {
+				destination: endpoint_destination(ENDPOINT).unwrap(),
+				methods: vec!["POST".into()],
+				attach: Attach::Bearer,
+				subject: SecretSubject::Workbench {
+					tenant: "alpha".into(),
+					call: Uuid::from_u128(2),
+				},
+				max_response_bytes: Some(262_144),
+			},
+		)
+		.await
+		.unwrap();
+	let CallSecret::Value { record, value } = secret else {
+		panic!("a self-hosted call returns the value");
+	};
+	assert_eq!(record.id, created.id);
+	assert_eq!(record.version, "1");
+	assert_eq!(record.host, "api.example.com");
+	assert_eq!(value.expose_secret(), "canary-value-1234");
+}
+
+#[tokio::test]
+async fn a_resolution_reports_the_tenant_secret_id_and_pinned_version() {
+	let (s, _, _) = service_with_calls(FakeStore {
+		seals: true,
+		..Default::default()
+	});
+	let created = s
+		.put(
+			"alpha",
+			"search",
+			put(Some("canary-value-1234"), Some(&["api.example.com"]), 0),
+			"actor",
+		)
+		.await
+		.unwrap();
+	let call = SecretCall {
+		destination: Destination {
+			origin: "https://api.example.com".into(),
+			path_prefix: "/v1/".into(),
+		},
+		methods: vec!["GET".into()],
+		attach: Attach::Bearer,
+		subject: SecretSubject::Operation {
+			operation: Uuid::from_u128(3),
+			tenant: "alpha".into(),
+		},
+		max_response_bytes: None,
+	};
+	let resolution = s
+		.resolve_with_secret("alpha", "search", ENDPOINT, Some(call))
+		.await
+		.unwrap();
+	assert!(matches!(resolution.resolved, Resolved::Brokered(_)));
+	assert_eq!(
+		resolution.secret,
+		Some(SecretIdentity {
+			id: created.id,
+			version: "1".into()
+		})
+	);
+}
+
+#[tokio::test(start_paused = true)]
+async fn cached_routes_are_reissued_after_fifty_seconds() {
+	let cache = RouteCache::default();
+	let operation = Uuid::from_u128(7);
+	cache.insert(
+		operation,
+		"images",
+		CachedRoute {
+			base: Url::parse("https://broker.example/v1/forward").unwrap(),
+			token: "first-token".into(),
+			secret: SecretIdentity {
+				id: Uuid::from_u128(8),
+				version: "1".into(),
+			},
+		},
+	);
+	assert_eq!(
+		cache
+			.get(operation, "images")
+			.unwrap()
+			.token
+			.expose_secret(),
+		"first-token"
+	);
+	tokio::time::advance(std::time::Duration::from_secs(49)).await;
+	assert!(cache.get(operation, "images").is_some());
+	tokio::time::advance(std::time::Duration::from_secs(2)).await;
+	assert!(
+		cache.get(operation, "images").is_none(),
+		"a route is not reused past its 50-second cache lifetime"
+	);
+}
+
+#[tokio::test]
+async fn concurrent_route_cache_access_stays_consistent() {
+	let cache = Arc::new(RouteCache::default());
+	let operation = Uuid::from_u128(9);
+	let workers = (0..8)
+		.map(|worker| {
+			let cache = cache.clone();
+			tokio::spawn(async move {
+				for _ in 0..100 {
+					let _ = cache.get(operation, "images");
+					cache.insert(
+						operation,
+						"images",
+						CachedRoute {
+							base: Url::parse("https://broker.example/v1/forward").unwrap(),
+							token: format!("token-{worker}").into(),
+							secret: SecretIdentity {
+								id: Uuid::from_u128(10),
+								version: "1".into(),
+							},
+						},
+					);
+				}
+			})
+		})
+		.collect::<Vec<_>>();
+	for worker in workers {
+		worker.await.unwrap();
+	}
+	assert!(cache.get(operation, "images").is_some());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stale_operation_route_is_minted_again() {
+	let (s, grants, _) = service_with_calls(FakeStore {
+		seals: true,
+		..Default::default()
+	});
+	s.put(
+		"alpha",
+		"search",
+		put(Some("canary-value-1234"), Some(&["api.example.com"]), 0),
+		"actor",
+	)
+	.await
+	.unwrap();
+	let call = || SecretCall {
+		destination: Destination {
+			origin: "https://api.example.com".into(),
+			path_prefix: "/v1/".into(),
+		},
+		methods: vec!["GET".into()],
+		attach: Attach::Bearer,
+		subject: SecretSubject::Operation {
+			operation: Uuid::from_u128(11),
+			tenant: "alpha".into(),
+		},
+		max_response_bytes: None,
+	};
+	let first = s
+		.resolve_with_secret("alpha", "search", ENDPOINT, Some(call()))
+		.await
+		.unwrap();
+	let Resolved::Brokered(route) = first.resolved else {
+		panic!("a brokered resolution returns a route");
+	};
+	let cache = RouteCache::default();
+	cache.insert(
+		Uuid::from_u128(11),
+		"images",
+		CachedRoute {
+			base: route.base,
+			token: route.token,
+			secret: first.secret.unwrap(),
+		},
+	);
+	assert!(cache.get(Uuid::from_u128(11), "images").is_some());
+	tokio::time::advance(std::time::Duration::from_secs(50)).await;
+	assert!(
+		cache.get(Uuid::from_u128(11), "images").is_none(),
+		"the gateway re-routes once the cached route is 50 seconds old"
+	);
+	let second = s
+		.resolve_with_secret("alpha", "search", ENDPOINT, Some(call()))
+		.await
+		.unwrap();
+	assert!(matches!(second.resolved, Resolved::Brokered(_)));
+	assert_eq!(
+		grants.0.lock().await.len(),
+		2,
+		"a fresh token is minted after the cache expires"
+	);
+}
+
+#[tokio::test]
+async fn active_secrets_exclude_pending_and_deleted_names() {
+	let (s, _, _) = service_with(FakeStore::default());
+	let kept = s
+		.put(
+			"alpha",
+			"kept",
+			put(Some("canary-kept-value"), Some(&["api.example.com"]), 0),
+			"actor",
+		)
+		.await
+		.unwrap();
+	let removed = s
+		.put(
+			"alpha",
+			"removed",
+			put(Some("canary-removed-value"), Some(&["api.example.com"]), 0),
+			"actor",
+		)
+		.await
+		.unwrap();
+	s.delete("alpha", "removed", removed.revision, "actor")
+		.await
+		.unwrap();
+	let active = s.active("alpha").await.unwrap();
+	assert_eq!(active.len(), 1);
+	assert_eq!(active[0].id, kept.id);
+	assert_eq!(active[0].name, "kept");
+	assert_eq!(active[0].hosts, ["api.example.com"]);
+	assert!(s.active("beta").await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn personal_names_are_isolated_and_retiring_one_person_preserves_shared_values() {
+	let (mut service, _, store) = service();
+	service.max_per_tenant = 8;
+	let shared = service
+		.put(
+			"alpha",
+			"api",
+			put(Some("shared-canary"), Some(&["api.example.com"]), 0),
+			"admin",
+		)
+		.await
+		.unwrap();
+	let alice = service
+		.put_owned(
+			"alpha",
+			Some("alice"),
+			"api",
+			put(Some("alice-canary"), Some(&["api.example.com"]), 0),
+			"alice",
+		)
+		.await
+		.unwrap();
+	let bob = service
+		.put_owned(
+			"alpha",
+			Some("bob"),
+			"api",
+			put(Some("bob-canary"), Some(&["api.example.com"]), 0),
+			"bob",
+		)
+		.await
+		.unwrap();
+	assert_eq!(service.get("alpha", "api").await.unwrap().id, shared.id);
+	assert_eq!(
+		service
+			.personal("alpha", "alice", "api")
+			.await
+			.unwrap()
+			.unwrap()
+			.id,
+		alice.id
+	);
+	let visible = service.list_for("alpha", "alice").await.unwrap();
+	assert_eq!(visible.len(), 2);
+	assert!(
+		visible
+			.iter()
+			.any(|row| row.id == shared.id && row.owner == Ownership::Tenant)
+	);
+	assert!(
+		visible
+			.iter()
+			.any(|row| row.id == alice.id && row.owner == Ownership::Me)
+	);
+	assert_eq!(service.active("alpha").await.unwrap().len(), 1);
+	assert_eq!(service.retire_subject("alpha", "alice").await.unwrap(), 1);
+	assert!(
+		service
+			.personal("alpha", "alice", "api")
+			.await
+			.unwrap()
+			.is_none()
+	);
+	assert_eq!(
+		service
+			.personal("alpha", "bob", "api")
+			.await
+			.unwrap()
+			.unwrap()
+			.id,
+		bob.id
+	);
+	assert_eq!(
+		service.shared("alpha", "api").await.unwrap().unwrap().id,
+		shared.id
+	);
+	assert!(
+		!store
+			.state
+			.lock()
+			.await
+			.contains_key(&store.secret_resource(alice.id))
+	);
+}
+
+fn tool_call() -> SecretCall {
+	SecretCall {
+		destination: endpoint_destination(ENDPOINT).unwrap(),
+		methods: vec!["POST".into()],
+		attach: Attach::Bearer,
+		subject: SecretSubject::Run {
+			run: "personal-run".into(),
+			call: Uuid::from_u128(99),
+		},
+		max_response_bytes: Some(256_000),
+	}
+}
+
+#[rstest::rstest]
+#[case::alice_any(
+	Some("alice"),
+	aidash_domain::tool::SecretOwner::Any,
+	Some("alice-canary")
+)]
+#[case::alice_personal(
+	Some("alice"),
+	aidash_domain::tool::SecretOwner::Personal,
+	Some("alice-canary")
+)]
+#[case::other_person_any(
+	Some("bob"),
+	aidash_domain::tool::SecretOwner::Any,
+	Some("shared-canary")
+)]
+#[case::ownerless_any(None, aidash_domain::tool::SecretOwner::Any, Some("shared-canary"))]
+#[case::other_person_personal(Some("bob"), aidash_domain::tool::SecretOwner::Personal, None)]
+#[case::ownerless_personal(None, aidash_domain::tool::SecretOwner::Personal, None)]
+#[tokio::test]
+async fn named_tool_secrets_obey_the_person_and_secret_owner_policy(
+	#[case] subject: Option<&str>,
+	#[case] owner: aidash_domain::tool::SecretOwner,
+	#[case] expected: Option<&str>,
+) {
+	let (s, _, _) = service();
+	let shared = s
+		.put(
+			"alpha",
+			"api",
+			put(Some("shared-canary"), Some(&["api.example.com"]), 0),
+			"admin",
+		)
+		.await
+		.unwrap();
+	let personal = s
+		.put_owned(
+			"alpha",
+			Some("alice"),
+			"api",
+			put(Some("alice-canary"), Some(&["api.example.com"]), 0),
+			"alice",
+		)
+		.await
+		.unwrap();
+	let s = Arc::new(s);
+	let result = s
+		.call_secret_for("alpha", subject, "api", owner, ENDPOINT, tool_call())
+		.await;
+	if let Some(expected) = expected {
+		let CallSecret::Value { record, value } = result.unwrap() else {
+			panic!("self-hosted value")
+		};
+		assert_eq!(value.expose_secret(), expected);
+		assert_eq!(
+			record.id,
+			if expected == "alice-canary" {
+				personal.id
+			} else {
+				shared.id
+			}
+		);
+	} else {
+		let Err(Error::Invalid(message)) = result else {
+			panic!("personal-only selection must fail")
+		};
+		let error: serde_json::Value = serde_json::from_str(&message).unwrap();
+		assert_eq!(error["error"], UNAVAILABLE);
+		assert!(error["hint"].as_str().unwrap().contains("personal secret"));
+	}
+	assert_eq!(
+		s.shared("alpha", "api").await.unwrap().unwrap().id,
+		shared.id
+	);
+	let CallSecret::Value { record, .. } = s
+		.call_secret("alpha", "api", ENDPOINT, tool_call())
+		.await
+		.unwrap()
+	else {
+		panic!("shared value")
+	};
+	assert_eq!(
+		record.id, shared.id,
+		"legacy registration/workbench resolution stays shared-only"
+	);
+}
+
+#[tokio::test]
+async fn personal_dispatch_enforces_its_own_hosts_without_falling_back_to_shared() {
+	let (s, _, _) = service();
+	s.put(
+		"alpha",
+		"api",
+		put(Some("shared-canary"), Some(&["api.example.com"]), 0),
+		"admin",
+	)
+	.await
+	.unwrap();
+	s.put_owned(
+		"alpha",
+		Some("alice"),
+		"api",
+		put(Some("alice-canary"), Some(&["personal.example.com"]), 0),
+		"alice",
+	)
+	.await
+	.unwrap();
+	let s = Arc::new(s);
+	let shared = s.shared("alpha", "api").await.unwrap().unwrap();
+	admit("api", ENDPOINT, Some(&shared.hosts)).unwrap();
+	assert!(
+		matches!(s.call_secret_for("alpha", Some("alice"), "api", aidash_domain::tool::SecretOwner::Any, ENDPOINT, tool_call()).await,
+        Err(Error::Invalid(code)) if code == UNAVAILABLE)
+	);
+}
+
+#[tokio::test]
+async fn a_personal_broker_source_keeps_its_row_and_rechecks_hosts() {
+	let (s, grants, _) = service_with_calls(FakeStore {
+		seals: true,
+		..Default::default()
+	});
+	s.put(
+		"alpha",
+		"api",
+		put(Some("shared-canary"), Some(&["api.example.com"]), 0),
+		"admin",
+	)
+	.await
+	.unwrap();
+	let personal = s
+		.put_owned(
+			"alpha",
+			Some("alice"),
+			"api",
+			put(Some("alice-canary"), Some(&["api.example.com"]), 0),
+			"alice",
+		)
+		.await
+		.unwrap();
+	let s = Arc::new(s);
+	let row = s.personal("alpha", "alice", "api").await.unwrap().unwrap();
+	let CallSecret::Brokered { record, source, .. } = s
+		.call_secret_row(&row, ENDPOINT, tool_call())
+		.await
+		.unwrap()
+	else {
+		panic!("brokered row")
+	};
+	assert_eq!(record.id, personal.id);
+	source.route().await.unwrap();
+	source.route().await.unwrap();
+	assert!(
+		grants
+			.0
+			.lock()
+			.await
+			.iter()
+			.all(|grant| grant.secret == personal.id)
+	);
+	let changed = s
+		.put_owned(
+			"alpha",
+			Some("alice"),
+			"api",
+			put(
+				Some("alice-canary"),
+				Some(&["personal.example.com"]),
+				personal.revision,
+			),
+			"alice",
+		)
+		.await
+		.unwrap();
+	assert!(matches!(source.route().await, Err(Error::Invalid(code)) if code == UNAVAILABLE));
+	assert_eq!(
+		grants.0.lock().await.len(),
+		2,
+		"host refusal must not mint a shared grant"
+	);
+	s.delete_owned("alpha", Some("alice"), "api", changed.revision, "alice")
+		.await
+		.unwrap();
+	let replacement = s
+		.put_owned(
+			"alpha",
+			Some("alice"),
+			"api",
+			put(Some("new-alice-canary"), Some(&["api.example.com"]), 0),
+			"alice",
+		)
+		.await
+		.unwrap();
+	assert_ne!(replacement.id, personal.id);
+	assert!(matches!(source.route().await, Err(Error::Invalid(code)) if code == UNAVAILABLE));
 }

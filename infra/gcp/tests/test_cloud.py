@@ -284,7 +284,12 @@ class PlanTests(unittest.TestCase):
             terraform.configuration = dict.fromkeys(
                 ("project_id", "byok_project_id", "cloudflare_zone_id", "release_bucket", "deploy_service_account", "domain"), "fixture"
             )
-            broker = {"enabled": True, "byok_project_id": "byok", "secret_prefix": "aidash-test-cred-", "broker_service_account_email": "aidash-test-broker@fixture.iam.gserviceaccount.com"}
+            broker = {
+                "enabled": True, "byok_project_id": "byok", "secret_prefix": "aidash-test-cred-",
+                "broker_service_account_email": "aidash-test-broker@fixture.iam.gserviceaccount.com",
+                "tenant_secret_broker_service_account_email": "aidash-test-tsec@fixture.iam.gserviceaccount.com",
+                "tenant_secret_signing_key_id": "server-key",
+            }
             terraform.configuration["credential_brokers"] = {"test": broker, "retired": broker}
             terraform.configuration["gke_backup_enabled"] = True
             variables = []
@@ -296,7 +301,10 @@ class PlanTests(unittest.TestCase):
 
             with patch("cloud.run", side_effect=command):
                 terraform.apply({"test": {"kind": "test"}})
-            self.assertEqual(variables[0]["credential_brokers"], {"test": dict(broker, signing_version="1", verification_versions=["1"])})
+            self.assertEqual(variables[0]["credential_brokers"], {"test": dict(
+                broker, signing_version="1", verification_versions=["1"],
+                tenant_secret_signing_version="1", tenant_secret_verification_versions=["1"],
+            )})
             self.assertTrue(variables[0]["gke_backup_enabled"])
 
     def test_broker_image_is_refused_and_omitted_intent_does_not_drift(self):

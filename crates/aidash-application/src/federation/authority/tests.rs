@@ -223,3 +223,49 @@ async fn typed_authority_reply_rejects_duplicate_fields() {
 	let clean: Receipt = serde_json::from_slice(br#"{"id":1}"#).unwrap();
 	assert_eq!(clean.id, 1);
 }
+
+#[rstest]
+#[tokio::test]
+async fn personal_call_preserves_peer_result_and_delivery_failure() {
+	struct CallWire {
+		delivered: bool,
+	}
+	#[async_trait]
+	impl Transport for CallWire {
+		async fn request(&self, _: &Route, _: &str, _: &Value) -> Result<Reply> {
+			if !self.delivered {
+				return Err(Error::ToolNotDelivered {
+					message: "peer unavailable".into(),
+					retry_after: None,
+				});
+			}
+			Ok(Reply {
+				body: Ok(serde_json::to_vec(
+					&json!({"outcome":"result","result":{"error":"tool failed"}}),
+				)
+				.unwrap()),
+				..reply(200)
+			})
+		}
+	}
+	let log = Arc::new(Mutex::new(Vec::new()));
+	let peers = Arc::new(Sources { log, denied: false });
+	let path = "/scoped/execution/commands";
+	let body = json!({"operation": aidash_domain::identity::commands::connections::CALL});
+	let delivered = Client::new(peers.clone(), Arc::new(CallWire { delivered: true }));
+	let value: Value = delivered
+		.request("aidash://peer", path, &body)
+		.await
+		.unwrap();
+	assert_eq!(
+		crate::tools::connection_outcome(value, false).unwrap(),
+		Some(json!({"error":"tool failed"}))
+	);
+	let unavailable = Client::new(peers, Arc::new(CallWire { delivered: false }));
+	assert!(matches!(
+		unavailable
+			.request::<Value>("aidash://peer", path, &body)
+			.await,
+		Err(Error::ToolNotDelivered { .. })
+	));
+}

@@ -232,6 +232,35 @@ impl ModelConfig {
 		Ok(())
 	}
 
+	/// An OpenRouter model ID names one exact model. Variant suffixes change
+	/// routing or add behavior: `:online` runs web search, a Provider tool that
+	/// needs its own Catalog Approval and Data Protection Level, and sort
+	/// shortcuts such as `:nitro` contradict a Provider Route. Only `:free`
+	/// names a model of its own in OpenRouter's catalogs. Keyless endpoints
+	/// elsewhere keep their own ID syntax, such as `llama3:8b`.
+	pub fn validate_model_variant(&self) -> Result<()> {
+		let openrouter = url::Url::parse(&self.endpoint)
+			.ok()
+			.and_then(|url| url.host_str().map(str::to_owned))
+			.is_some_and(|host| host == "openrouter.ai" || host.ends_with(".openrouter.ai"));
+		let Some((_, variant)) = self.model_id.split_once(':') else {
+			return Ok(());
+		};
+		if !openrouter || variant == "free" {
+			return Ok(());
+		}
+		if variant == "online" {
+			return Err(Error::Invalid(format!(
+				"model {} uses the :online variant; register the base model and approve web search as a Provider tool",
+				self.model_id
+			)));
+		}
+		Err(Error::Invalid(format!(
+			"model {} uses an OpenRouter variant suffix; only :free is accepted",
+			self.model_id
+		)))
+	}
+
 	/// The estimator this model version opted into; `bytes` when omitted.
 	pub fn request_estimator(&self) -> crate::provider::estimate::RequestEstimator {
 		self.request_estimator.unwrap_or_default()

@@ -167,6 +167,7 @@ impl ExecutionTool for McpPluginTool {
 				key,
 				checkpoint,
 				inputs,
+				None,
 			)
 			.await
 	}
@@ -206,6 +207,7 @@ impl ExecutionTool for McpPluginTool {
 				self.contract.replay_safe(),
 				admitted,
 				key,
+				None,
 			)
 			.await
 	}

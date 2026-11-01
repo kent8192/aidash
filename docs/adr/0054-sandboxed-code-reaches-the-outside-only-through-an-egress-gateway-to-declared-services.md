@@ -20,3 +20,7 @@ Decided on 2026-10-16 for #296. Execution Pods keep deny-all networking for ingr
 
 - The package indexes are Built-in External services, and for them alone the gateway rewrites file addresses in index responses (ADR 0071).
 - A Live preview's page reaches the External services bound to its Run through the Preview gateway and this gateway, without Tenant Secrets (ADR 0069). A Live preview's Web server holds a gateway token that lasts as long as the Live preview rather than one operation (ADR 0070).
+
+## Amendment (2026-10-26, #310)
+
+- On Cloud and Dedicated the Egress gateway stays in the cluster without read access to any secret. Only the stage that attaches a Tenant Secret runs with the Credential Broker's isolation on Cloud Run, and the gateway forwards to it the requests for External services that carry one (ADR 0095). Execution Pods still reach nothing but the gateway.

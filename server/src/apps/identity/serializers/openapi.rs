@@ -193,6 +193,94 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		)?;
 	}
 	{
+		use super::oauth_clients as oc;
+		use aidash_application::oauth_clients::{Metadata as ClientMetadata, ScopeCeiling};
+		contracts.response::<_, Vec<ClientMetadata>>(
+			document,
+			views::oauth_clients::list,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, views::oauth_clients::list, &["String"])?;
+		contracts.response::<_, ClientMetadata>(
+			document,
+			views::oauth_clients::get_record,
+			200,
+			"application/json",
+		)?;
+		contracts.path(
+			document,
+			views::oauth_clients::get_record,
+			&["String", "Uuid"],
+		)?;
+		contracts.request::<_, oc::Write>(document, views::oauth_clients::put_collection)?;
+		contracts.response::<_, ClientMetadata>(
+			document,
+			views::oauth_clients::put_collection,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, views::oauth_clients::put_collection, &["String"])?;
+		contracts.request::<_, oc::Write>(document, views::oauth_clients::put_record)?;
+		contracts.response::<_, ClientMetadata>(
+			document,
+			views::oauth_clients::put_record,
+			200,
+			"application/json",
+		)?;
+		contracts.path(
+			document,
+			views::oauth_clients::put_record,
+			&["String", "Uuid"],
+		)?;
+		contracts.response::<_, ()>(
+			document,
+			views::oauth_clients::delete_record,
+			200,
+			"application/json",
+		)?;
+		contracts.path(
+			document,
+			views::oauth_clients::delete_record,
+			&["String", "Uuid"],
+		)?;
+		contracts.response::<_, Option<ScopeCeiling>>(
+			document,
+			views::oauth_clients::ceiling,
+			200,
+			"application/json",
+		)?;
+		contracts.path(
+			document,
+			views::oauth_clients::ceiling,
+			&["String", "String"],
+		)?;
+		contracts.request::<_, oc::CeilingWrite>(document, views::oauth_clients::put_ceiling)?;
+		contracts.response::<_, ScopeCeiling>(
+			document,
+			views::oauth_clients::put_ceiling,
+			200,
+			"application/json",
+		)?;
+		contracts.path(
+			document,
+			views::oauth_clients::put_ceiling,
+			&["String", "String"],
+		)?;
+		contracts.response::<_, ()>(
+			document,
+			views::oauth_clients::delete_ceiling,
+			200,
+			"application/json",
+		)?;
+		contracts.path(
+			document,
+			views::oauth_clients::delete_ceiling,
+			&["String", "String"],
+		)?;
+	}
+
+	{
 		use super::tenant_secrets as ts;
 		use aidash_application::tenant_secrets::Metadata as SecretMetadata;
 		contracts.response::<_, Vec<SecretMetadata>>(
@@ -213,6 +301,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			views::tenant_secrets::get_record,
 			&["String", "String"],
 		)?;
+		contracts.query::<_, ts::OwnerQuery>(document, views::tenant_secrets::get_record)?;
 		contracts.request::<_, ts::Write>(document, views::tenant_secrets::put_record)?;
 		contracts.response::<_, SecretMetadata>(
 			document,
@@ -316,6 +405,31 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		views::provider_credentials::update_binding,
 		&["String", "String"],
 	)?;
+	{
+		use super::oauth_connections as c;
+		use aidash_application::oauth_connections::{Disconnection, Metadata};
+		use views::oauth_connections as v;
+		contracts.response::<_, Vec<Metadata>>(document, v::list, 200, "application/json")?;
+		contracts.path(document, v::list, &["String"])?;
+		contracts.response::<_, Disconnection>(document, v::disconnect, 200, "application/json")?;
+		contracts.path(document, v::disconnect, &["String", "Uuid"])?;
+		contracts.response::<_, Vec<Metadata>>(document, v::members, 200, "application/json")?;
+		contracts.path(document, v::members, &["String", "String"])?;
+		contracts.response::<_, Disconnection>(
+			document,
+			v::force_disconnect,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, v::force_disconnect, &["String", "String", "Uuid"])?;
+		contracts.response::<_, c::Probe>(document, v::probe, 200, "application/json")?;
+		contracts.query::<_, c::ProbeQuery>(document, v::probe)?;
+		contracts.path(document, v::probe, &["String"])?;
+		contracts.request::<_, c::Start>(document, v::start)?;
+		contracts.response::<_, c::Started>(document, v::start, 200, "application/json")?;
+		contracts.path(document, v::start, &["String"])?;
+	}
+
 	{
 		use super::provider_authorizations as pa;
 		contracts.request::<_, pa::Start>(document, views::provider_authorizations::start)?;

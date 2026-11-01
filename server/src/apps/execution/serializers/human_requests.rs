@@ -16,6 +16,9 @@ impl From<HumanRequestRecord> for HumanRequest {
 				HumanRequestKind::Confirmation => "CONFIRMATION",
 				HumanRequestKind::InformationRequest => "INFORMATION_REQUEST",
 				HumanRequestKind::McpElicitation => "MCP_ELICITATION",
+				HumanRequestKind::McpConnection => {
+					aidash_domain::oauth_connections::CONNECTION_REQUEST_KIND
+				}
 			}
 			.into(),
 			prompt: record.prompt,

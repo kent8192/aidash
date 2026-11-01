@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 /// A tool result longer than this many characters is truncated to its head.
 const TRUNCATE_ABOVE: usize = 420;
-const TRUNCATED_HEAD: usize = 300;
+pub const TRUNCATED_HEAD: usize = 300;
 /// How a decision marks a tool result it cut to its head. The marker tells the
 /// model the cut was deliberate and that the head is meant to be enough: a
 /// marker that pointed at the full result made live models fetch it again,

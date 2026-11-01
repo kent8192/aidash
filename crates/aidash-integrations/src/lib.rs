@@ -1,5 +1,7 @@
 //! External service adapters implementing application ports.
 #[cfg(feature = "cloud-adapters")]
+mod broker;
+#[cfg(feature = "cloud-adapters")]
 pub mod decision;
 #[cfg(feature = "cloud-adapters")]
 pub mod federation;
@@ -19,6 +21,10 @@ pub mod response;
 pub mod semantic;
 
 pub use aidash_application::{Error, Result};
+
+/// What every request to a service outside the Deployment names itself:
+/// some services, GitHub's API among them, refuse requests without one.
+pub const USER_AGENT: &str = concat!("Aidash/", env!("CARGO_PKG_VERSION"));
 
 pub fn http_error(error: reqwest::Error) -> Error {
 	// External URLs can contain credentials; never retain them in errors.
@@ -81,6 +87,9 @@ pub mod jwks;
 pub mod chatgpt;
 #[cfg(feature = "cloud-adapters")]
 pub mod provider_authorization;
+
+#[cfg(feature = "cloud-adapters")]
+pub mod oauth;
 
 #[cfg(feature = "cloud-adapters")]
 pub mod provider_credentials;

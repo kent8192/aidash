@@ -190,3 +190,117 @@ run "production_broker_cannot_use_nonproduction_tier" {
   }
   expect_failures = [var.enabled]
 }
+
+run "tenant_secrets" {
+  command = apply
+  variables {
+    enabled                      = true
+    role                         = "tenant-secrets"
+    bind_runtime_signer          = false
+    secret_prefix                = "aidash-production-tsec-"
+    broker_service_account_email = "aidash-production-tsec@aidash-fixture.iam.gserviceaccount.com"
+    signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/tenant-secret"
+    secondary_signing_key_id     = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/capability"
+    secondary_issuer             = "aidash-worker"
+    issuer                       = "aidash-server"
+  }
+  assert {
+    condition     = google_cloud_run_v2_service.broker[0].name == "aidash-production-tenant-secret-broker" && google_cloud_run_v2_service.broker[0].ingress == "INGRESS_TRAFFIC_INTERNAL_ONLY" && google_cloud_run_v2_service.broker[0].invoker_iam_disabled
+    error_message = "The Tenant Secret broker is its own internal, token-authenticated service."
+  }
+  assert {
+    condition     = google_cloud_run_v2_service.broker[0].template[0].service_account == var.broker_service_account_email
+    error_message = "The Tenant Secret broker runs as its own bootstrap service account."
+  }
+  assert {
+    condition = (
+      { for item in google_cloud_run_v2_service.broker[0].template[0].containers[0].env : item.name => item.value }["AIDASH_BROKER_ROLE"] == "tenant-secrets" &&
+      { for item in google_cloud_run_v2_service.broker[0].template[0].containers[0].env : item.name => item.value }["AIDASH_TENANT_SECRET_PREFIX"] == "aidash-production-tsec-" &&
+      { for item in google_cloud_run_v2_service.broker[0].template[0].containers[0].env : item.name => item.value }["AIDASH_SECRET_CALL_AUDIENCE"] == "production-tsec" &&
+      !contains(keys({ for item in google_cloud_run_v2_service.broker[0].template[0].containers[0].env : item.name => item.value }), "AIDASH_CAPABILITY_ISSUER")
+    )
+    error_message = "The Tenant Secret role is selected by fixed environment names later Rust slices read and never shares the provider audience."
+  }
+  assert {
+    condition = (
+      jsondecode({ for item in google_cloud_run_v2_service.broker[0].template[0].containers[0].env : item.name => item.value }["AIDASH_SECRET_CALL_ISSUERS"]) == {
+        "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/capability/cryptoKeyVersions/1"    = "aidash-worker"
+        "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/tenant-secret/cryptoKeyVersions/1" = "aidash-server"
+      } &&
+      keys(jsondecode({ for item in google_cloud_run_v2_service.broker[0].template[0].containers[0].env : item.name => item.value }["AIDASH_CAPABILITY_PUBLIC_KEYS"])) == keys(jsondecode({ for item in google_cloud_run_v2_service.broker[0].template[0].containers[0].env : item.name => item.value }["AIDASH_SECRET_CALL_ISSUERS"]))
+    )
+    error_message = "Each verification key maps to the issuer its tokens must carry, over exactly the public-key set."
+  }
+  assert {
+    condition = keys(jsondecode({ for item in google_cloud_run_v2_service.broker[0].template[0].containers[0].env : item.name => item.value }["AIDASH_CAPABILITY_PUBLIC_KEYS"])) == [
+      "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/capability/cryptoKeyVersions/1",
+      "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/tenant-secret/cryptoKeyVersions/1",
+    ]
+    error_message = "The Tenant Secret broker verifies both the worker and server keys."
+  }
+  assert {
+    condition     = output.server_configuration.kid == "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/tenant-secret/cryptoKeyVersions/1" && output.server_configuration.issuer == "aidash-server" && output.server_configuration.audience == "production-tsec" && output.server_configuration.endpoint == "https://broker-fixture.run.app" && output.worker_configuration == null
+    error_message = "The server configuration exports the bare Cloud Run URI and the Tenant Secret audience."
+  }
+}
+run "tenant_role_rejects_key_material_prefix" {
+  command = plan
+  variables {
+    enabled                      = true
+    role                         = "tenant-secrets"
+    secret_prefix                = "aidash-production-cred-"
+    broker_service_account_email = "aidash-production-tsec@aidash-fixture.iam.gserviceaccount.com"
+    signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/tenant-secret"
+    secondary_signing_key_id     = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/capability"
+    secondary_issuer             = "aidash-worker"
+  }
+  expect_failures = [var.secret_prefix]
+}
+run "key_material_role_rejects_tenant_prefix" {
+  command = plan
+  variables {
+    enabled       = true
+    secret_prefix = "aidash-production-tsec-"
+  }
+  expect_failures = [var.secret_prefix]
+}
+run "tenant_role_requires_the_worker_verification_key" {
+  command = plan
+  variables {
+    enabled                      = true
+    role                         = "tenant-secrets"
+    secret_prefix                = "aidash-production-tsec-"
+    broker_service_account_email = "aidash-production-tsec@aidash-fixture.iam.gserviceaccount.com"
+    signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/tenant-secret"
+    secondary_issuer             = "aidash-worker"
+  }
+  expect_failures = [var.secondary_signing_key_id]
+}
+run "tenant_role_requires_the_worker_issuer" {
+  command = plan
+  variables {
+    enabled                      = true
+    role                         = "tenant-secrets"
+    secret_prefix                = "aidash-production-tsec-"
+    broker_service_account_email = "aidash-production-tsec@aidash-fixture.iam.gserviceaccount.com"
+    signing_key_id               = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/tenant-secret"
+    secondary_signing_key_id     = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/capability"
+  }
+  expect_failures = [var.secondary_issuer]
+}
+run "key_material_role_rejects_a_secondary_key" {
+  command = plan
+  variables {
+    enabled                  = true
+    secondary_signing_key_id = "projects/aidash-fixture/locations/us-central1/keyRings/aidash-production-capability/cryptoKeys/capability"
+  }
+  expect_failures = [var.secondary_signing_key_id]
+}
+run "key_material_role_rejects_a_secondary_issuer" {
+  command = plan
+  variables {
+    enabled          = true
+    secondary_issuer = "aidash-worker"
+  }
+  expect_failures = [var.secondary_issuer]
+}
