@@ -4,6 +4,7 @@ use aidash_domain::{
 	NewTask,
 	nodes::NodeName,
 	registry::EntityRef,
+	semantic::indexing::IndexingSpec,
 	workspaces::{ConversationResponse, conversation_agent, validate_conversation_target},
 };
 use serde_json::json;
@@ -61,6 +62,19 @@ pub async fn conversation(
 		.await?;
 	scope.require_task(&task, "task.read").await?;
 	scope.bind_task(task.id, conversation.id).await?;
+	// The Workspace exists only from this request on, so nothing else could
+	// give it the index the agent's memory bank requires (#647).
+	if let Some(memory) = scope.memory_embedding(&agent).await? {
+		scope.require_workspace("semantic.index.manage").await?;
+		scope
+			.create_memory_index(
+				&conversation,
+				&agent,
+				&memory.provider,
+				&IndexingSpec::for_memory(memory.embedding),
+			)
+			.await?;
+	}
 	let delegation = scope.delegate(task.id, &agent).await?;
 	let task = scope.task(task.id).await?;
 	Ok(ConversationResponse {

@@ -9,6 +9,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+aidash-application.workspace = true
+chrono.workspace = true
+async-trait.workspace = true
 aidash-domain.workspace = true
 aidash-capability.workspace = true
 aidash-gcp = { workspace = true, features = ["cloud"] }
@@ -17,23 +20,32 @@ async-stream = "0.3"
 axum = "0.8"
 base64 = "0.22"
 futures-util.workspace = true
+percent-encoding = "2"
 reqwest = { version = "0.13", default-features = false, features = [
   "json",
   "rustls",
   "stream",
 ] }
 secrecy = "0.10"
-zeroize = "1"
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 tokio.workspace = true
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json"] }
+url = "2"
 uuid.workspace = true
+zeroize = "1"
+
+[features]
+default = []
+# A local upstream origin for integration tests only. It is never part of the
+# release binary: the default and release builds compile no override at all.
+test-support = []
 
 [dev-dependencies]
-chrono.workspace = true
-aidash-application.workspace = true
-async-trait.workspace = true
+rstest.workspace = true
+aidash-integrations = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
+wiremock = "0.6"

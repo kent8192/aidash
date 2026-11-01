@@ -1,3 +1,4 @@
+import { EntryConnections } from "./connections/install";
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ShieldCheck } from "lucide-react";
@@ -55,6 +56,8 @@ import { RecordView } from "./record-view";
 import { marketplaceCopy } from "./marketplace-copy";
 import { ApprovalSetReview } from "./marketplace-approval";
 import { TenantSecretAssignments } from "./tenant-secrets";
+import { SecretReadiness } from "./capabilities/secret-readiness";
+import type { SecretReadinessFact } from "./capabilities/secret-readiness-model";
 import {
   Alert,
   Disclosure,
@@ -189,6 +192,16 @@ export function ScopedMarketplace({
     queryKey: [...context, "detail", selected],
     queryFn: () => marketplaceDetail(selected!),
     enabled: !!selected && !denied,
+    retry: false,
+    staleTime: 0,
+  });
+  const secretReadiness = useQuery({
+    queryKey: [...context, "secret-readiness", selected],
+    queryFn: () =>
+      apiFetch<SecretReadinessFact[]>(
+        `/api/marketplace/packages/${encodeURIComponent(selected!)}/secret-readiness`,
+      ),
+    enabled: !!selected && installing && !denied,
     retry: false,
     staleTime: 0,
   });
@@ -673,12 +686,22 @@ export function ScopedMarketplace({
                     onChange={(e) => setConfig(e.target.value)}
                   />
                 </Field>
+                <EntryConnections
+                  tenant={tenant}
+                  entry={view.manifest.entity}
+                />
                 <TenantSecretAssignments
                   tenant={tenant}
                   slots={view.manifest.secrets ?? []}
                   value={secrets}
                   onChange={setSecrets}
                 />
+                {secretReadiness.isError && (
+                  <Alert>{secretReadiness.error.message}</Alert>
+                )}
+                {secretReadiness.data && (
+                  <SecretReadiness facts={secretReadiness.data} />
+                )}
                 <Field label={copy.bindings}>
                   <Textarea
                     className="min-h-20 font-mono text-xs"

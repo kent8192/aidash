@@ -17,6 +17,7 @@ aidash-integrations = { path = "../crates/aidash-integrations", default-features
 aidash-capability = { path = "../crates/aidash-capability" }
 aidash-server = { path = "../server" }
 aidash-gcp = { path = "crates/aidash-gcp", default-features = false }
+aidash-broker = { path = "crates/aidash-broker" }
 reinhardt = { git = "https://github.com/kent8192/reinhardt-web", rev = "b6a006a769ca340c22a51e67fef1bb4be1dc3039", package = "reinhardt-web", default-features = false }
 async-trait = "0.1.89"
 chrono = { version = "0.4", features = ["serde"] }

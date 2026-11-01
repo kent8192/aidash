@@ -75,3 +75,36 @@ fn scoped_input_keys_bind_to_the_current_run(#[case] prefix: &str, #[case] permi
 	};
 	assert_eq!(require_input_key(&key, run).is_ok(), permitted);
 }
+
+#[test]
+fn personal_connection_calls_require_their_logical_key_and_listing_is_a_read() {
+	assert!(prepare("mcp.connection_call", &json!({"key":"unrelated"})).is_err());
+	assert!(prepare("mcp.connection_call", &json!({"idempotency_key":""})).is_err());
+	let metadata = prepare(
+		"mcp.connection_call",
+		&json!({"idempotency_key":"logical-call"}),
+	)
+	.unwrap();
+	assert!(metadata.mutation);
+	assert_eq!(metadata.request_key, "mcp.connection_call:logical-call");
+	assert!(!prepare("mcp.connection_list", &json!({})).unwrap().mutation);
+}
+
+#[test]
+fn a_tools_own_fallback_shaped_result_never_becomes_a_control_outcome() {
+	use super::connections::{Outcome, retryable};
+	for literal in [
+		json!({"outcome":"not_personal"}),
+		json!({"error":"connection_required","resource":"https://mcp.example/tools"}),
+		Value::Null,
+	] {
+		let wire = json!({"outcome":"result","result":literal});
+		assert!(!retryable(&wire));
+		let received: Outcome = serde_json::from_value(wire).unwrap();
+		assert!(matches!(received, Outcome::Result { result } if result == literal));
+	}
+	assert!(retryable(&json!({"outcome":"not_personal"})));
+	assert!(retryable(
+		&json!({"outcome":"connection","cause":{"error":"connection_required","resource":"https://mcp.example/tools"}})
+	));
+}

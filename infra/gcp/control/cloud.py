@@ -379,13 +379,26 @@ class Terraform:
     def normalized_broker(value):
         signing = value.get("signing_version")
         versions = value.get("verification_versions")
+        tenant_signing = value.get("tenant_secret_signing_version")
+        tenant_versions = value.get("tenant_secret_verification_versions")
         if versions is None:
             versions = ["1"]
+        if tenant_versions is None:
+            tenant_versions = ["1"]
         if not isinstance(versions, (list, tuple, set)):
             raise RuntimeError("Broker verification versions must be a collection")
-        return dict(value, enabled=value.get("enabled") or False,
-                    signing_version="1" if signing is None else str(signing),
-                    verification_versions=sorted({str(version) for version in versions}))
+        if not isinstance(tenant_versions, (list, tuple, set)):
+            raise RuntimeError("Tenant Secret broker verification versions must be a collection")
+        return dict(
+            value,
+            enabled=value.get("enabled") or False,
+            signing_version="1" if signing is None else str(signing),
+            verification_versions=sorted({str(version) for version in versions}),
+            tenant_secret_broker_service_account_email=value.get("tenant_secret_broker_service_account_email") or "",
+            tenant_secret_signing_key_id=value.get("tenant_secret_signing_key_id") or "",
+            tenant_secret_signing_version="1" if tenant_signing is None else str(tenant_signing),
+            tenant_secret_verification_versions=sorted({str(version) for version in tenant_versions}),
+        )
 
     def broker_configuration_in_state(self, store):
         state, _ = store.read("terraform/environments/default.tfstate")

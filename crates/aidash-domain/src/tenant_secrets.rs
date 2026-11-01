@@ -108,6 +108,10 @@ pub struct TenantSecret {
 	pub name: String,
 	/// The hosts this Tenant Secret may be sent to, sorted.
 	pub hosts: Vec<String>,
+	/// The user subject that owns a personal secret; `None` means shared with
+	/// everyone in the Tenant (ADR 0100).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub owner: Option<String>,
 	/// Adapter metadata, never part of an API projection.
 	pub secret_resource: String,
 	pub pinned_version: Option<String>,
@@ -141,6 +145,19 @@ impl TenantSecret {
 pub struct Disclosure {
 	pub secret: String,
 	pub host: String,
+}
+
+/// The secret a tool call resolves: the person's own wins; `SecretOwner::Any`
+/// falls back to the shared Tenant Secret, `SecretOwner::Personal` never does.
+pub fn pick_secret<'a>(
+	personal: Option<&'a TenantSecret>,
+	shared: Option<&'a TenantSecret>,
+	owner: crate::tool::SecretOwner,
+) -> Option<&'a TenantSecret> {
+	match owner {
+		crate::tool::SecretOwner::Any => personal.or(shared),
+		crate::tool::SecretOwner::Personal => personal,
+	}
 }
 
 /// The Tenant Secret a tool configuration names, with the endpoint it goes to.
@@ -199,6 +216,31 @@ pub fn definition_target(entry: &crate::registry::Entry) -> Option<(String, Stri
 		object.get("secret")?.as_str()?.to_owned(),
 		object.get("endpoint")?.as_str()?.to_owned(),
 	))
+}
+
+/// Whether a Tool definition accepts only the Run's person's own secret
+/// (`secret_owner: personal`), in the legacy and the descriptor shapes alike.
+pub fn definition_personal_only(entry: &crate::registry::Entry) -> bool {
+	if entry.kind != "tool" {
+		return false;
+	}
+	let mut config = entry.config.clone();
+	transport_mut(&mut config)
+		.and_then(|object| object.get("secret_owner"))
+		.and_then(serde_json::Value::as_str)
+		== Some("personal")
+}
+
+/// The shared Tenant Secret a Tool definition names, with the endpoint it goes
+/// to. A personal-only definition has none: its hosts are enforced against the
+/// person's own row at dispatch, so registration, installation and readiness
+/// never look up a shared row for it.
+pub fn definition_shared_target(entry: &crate::registry::Entry) -> Option<(String, String)> {
+	if definition_personal_only(entry) {
+		None
+	} else {
+		definition_target(entry)
+	}
 }
 
 /// The Tenant Secret a Tool definition names, if any.
