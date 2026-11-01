@@ -16,8 +16,8 @@ use aidash_domain::semantic::{
 use async_trait::async_trait;
 use chrono::Utc;
 use reinhardt::query::{
-	Alias, ColumnRef, Expr, ExprTrait as _, Func, JoinType, LockType, OnConflict, Order,
-	PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+	Alias, ColumnRef, Expr, ExprTrait as _, Func, JoinType, LockBehavior, LockType, OnConflict,
+	Order, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -688,8 +688,23 @@ impl ImagePublicationSession for Session {
 	async fn load(&mut self) -> aidash_application::Result<Option<ImagePublication>> {
 		let workspace = self.workspace;
 		let lease = self.lease()?;
-		crate::apps::workspaces::models::Workspace::lock_existing(lease.tx().as_mut(), workspace)
-			.await?;
+		// Maintenance must not wait behind a reader of this Workspace. Leave its
+		// publications and baseline pending so a later sweep can retry them.
+		if native::query(
+			&Query::select()
+				.column(Alias::new("id"))
+				.from(Alias::new("workspaces"))
+				.and_where(Expr::col("id").eq(Expr::value(workspace)))
+				.lock(LockType::Update)
+				.lock_behavior(LockBehavior::SkipLocked)
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_optional(&mut **lease.tx())
+		.await?
+		.is_none()
+		{
+			return Ok(None);
+		}
 		let index = storage::index(lease.tx(), workspace, true).await?;
 		let spec: IndexingSpec = serde_json::from_value(index.spec.clone())?;
 		if !spec.enabled {
