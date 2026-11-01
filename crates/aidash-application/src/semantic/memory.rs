@@ -1,6 +1,6 @@
 //! Managed agent memory and delivery reauthorization are shared business workflows.
 use crate::{Result, ports::semantic::memory::SemanticMemoryReadSession};
-use aidash_domain::semantic::{Failure, indexing::content_digest};
+use aidash_domain::semantic::{Failure, Source, indexing::content_digest};
 use uuid::Uuid;
 
 pub async fn reads_visible(scope: &mut dyn SemanticMemoryReadSession, run: Uuid) -> Result<bool> {
@@ -33,6 +33,7 @@ pub async fn reads_visible(scope: &mut dyn SemanticMemoryReadSession, run: Uuid)
 pub async fn reads_invalidity(
 	scope: &mut dyn SemanticMemoryReadSession,
 	run: Uuid,
+	pending: &mut Vec<Uuid>,
 ) -> Result<Option<Failure>> {
 	if let Some(failure) = scope.native_invalidity(run).await? {
 		return Ok(Some(failure));
@@ -54,10 +55,17 @@ pub async fn reads_invalidity(
 		{
 			return Ok(Some(Failure::Invalidated));
 		}
-		if !scope.permits(&entry, "semantic.read").await? {
-			return Ok(Some(Failure::Authority));
-		}
-		let Some(text) = scope.source(entry.workspace_id, &source).await? else {
+		let text = if matches!(source, Source::Artifact { .. } | Source::Message { .. }) {
+			scope
+				.classified_output_source(entry.workspace_id, &source, pending)
+				.await?
+		} else {
+			if !scope.permits(&entry, "semantic.read").await? {
+				return Ok(Some(Failure::Authority));
+			}
+			scope.source(entry.workspace_id, &source).await?
+		};
+		let Some(text) = text else {
 			return Ok(Some(Failure::Authority));
 		};
 		if scope.point_digest(entry.point_id).await?.as_deref() != Some(&content_digest(&text)) {

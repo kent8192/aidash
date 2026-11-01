@@ -62,7 +62,7 @@ pub async fn run_reads_invalidity(
 		if !scope.remote_reads(run).await? || !scope.received_semantic(run).await? {
 			return Ok(Some(Failure::Invalidated));
 		}
-		if let Some(reason) = scope.semantic_invalidity(run).await? {
+		if let Some(reason) = scope.semantic_invalidity(run, &mut pending).await? {
 			return Ok(Some(reason));
 		}
 		for (workspace, kind, id) in scope.sources(run).await? {
@@ -74,6 +74,38 @@ pub async fn run_reads_invalidity(
 		}
 	}
 	Ok(None)
+}
+
+/// Resolve a locked semantic output source using the same policies as direct reads,
+/// and defer producer journals to the caller's cycle-safe worklist.
+pub async fn classified_semantic_output_source(
+	scope: &mut dyn ReadProvenanceScope,
+	workspace: Uuid,
+	source: &aidash_domain::semantic::Source,
+	pending: &mut Vec<Uuid>,
+) -> Result<Option<String>> {
+	use aidash_domain::semantic::Source;
+	match source {
+		Source::Artifact { id } => {
+			let Some(row) = scope.source_artifact(*id, workspace).await? else {
+				return Ok(None);
+			};
+			if !artifact_visible(&mut ClassifiedOutputs { scope, pending }, &row).await? {
+				return Ok(None);
+			}
+			Ok(Some(serde_json::to_string(&row.content)?))
+		}
+		Source::Message { id } => {
+			let Some(row) = scope.source_message(*id, workspace).await? else {
+				return Ok(None);
+			};
+			if !message_visible(&mut ClassifiedOutputs { scope, pending }, &row).await? {
+				return Ok(None);
+			}
+			Ok(Some(row.content))
+		}
+		_ => unreachable!("classified semantic output must be an artifact or message"),
+	}
 }
 
 async fn source_invalidity(

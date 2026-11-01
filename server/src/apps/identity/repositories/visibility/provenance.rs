@@ -135,9 +135,10 @@ impl ReadProvenanceScope for Reads<'_> {
 	async fn semantic_invalidity(
 		&mut self,
 		run: Uuid,
+		pending: &mut Vec<Uuid>,
 	) -> Result<Option<aidash_domain::semantic::Failure>> {
 		self.access
-			.semantic_reads_invalidity(run)
+			.semantic_reads_invalidity(run, pending)
 			.await
 			.map_err(Into::into)
 	}
@@ -521,9 +522,10 @@ impl ReadProvenanceScope for NativeReads<'_> {
 	async fn semantic_invalidity(
 		&mut self,
 		run: Uuid,
+		pending: &mut Vec<Uuid>,
 	) -> Result<Option<aidash_domain::semantic::Failure>> {
 		self.access
-			.semantic_reads_invalidity(run)
+			.semantic_reads_invalidity(run, pending)
 			.await
 			.map_err(Into::into)
 	}

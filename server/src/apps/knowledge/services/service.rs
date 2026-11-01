@@ -155,10 +155,12 @@ impl Access {
 	pub(crate) async fn semantic_reads_invalidity(
 		&mut self,
 		run: Uuid,
+		pending: &mut Vec<Uuid>,
 	) -> Result<Option<aidash_domain::semantic::Failure>> {
 		aidash_application::semantic::memory::reads_invalidity(
 			&mut crate::bootstrap::semantic_memory_scope(&mut Lease::Inherited(self)),
 			run,
+			pending,
 		)
 		.await
 		.map_err(Into::into)

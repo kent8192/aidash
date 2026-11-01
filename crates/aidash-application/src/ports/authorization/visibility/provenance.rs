@@ -13,7 +13,11 @@ pub trait ReadProvenanceScope: ResourceVisibilityScope {
 	async fn catalog_read(&mut self, run: Uuid, reference: &EntityRef) -> Result<()>;
 	async fn remote_reads(&mut self, run: Uuid) -> Result<bool>;
 	async fn semantic_reads(&mut self, run: Uuid) -> Result<bool>;
-	async fn semantic_invalidity(&mut self, run: Uuid) -> Result<Option<Failure>> {
+	async fn semantic_invalidity(
+		&mut self,
+		run: Uuid,
+		_pending: &mut Vec<Uuid>,
+	) -> Result<Option<Failure>> {
 		Ok((!self.semantic_reads(run).await?).then_some(Failure::Authority))
 	}
 	/// The native local reader has no received-semantic journal; its foreign reader owns that check.

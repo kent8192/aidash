@@ -22,6 +22,13 @@ pub trait SemanticMemoryReadSession: Send {
 		workspace: Uuid,
 		source: &aidash_domain::semantic::Source,
 	) -> Result<Option<String>>;
+	/// Resolve an artifact or message while adding its producers to the shared classified walk.
+	async fn classified_output_source(
+		&mut self,
+		workspace: Uuid,
+		source: &aidash_domain::semantic::Source,
+		pending: &mut Vec<Uuid>,
+	) -> Result<Option<String>>;
 	/// True only when the stored source is provably missing or withdrawn.
 	async fn source_invalidated(
 		&mut self,

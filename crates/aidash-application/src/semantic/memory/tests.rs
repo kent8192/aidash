@@ -191,6 +191,14 @@ impl SemanticEntriesSession for Scope {
 }
 #[async_trait]
 impl SemanticMemoryReadSession for Scope {
+	async fn classified_output_source(
+		&mut self,
+		workspace: Uuid,
+		source: &Source,
+		_: &mut Vec<Uuid>,
+	) -> Result<Option<String>> {
+		SemanticEntriesSession::source(self, workspace, source).await
+	}
 	async fn permits(&mut self, entry: &Entry, action: &str) -> Result<bool> {
 		SemanticEntriesSession::permits(self, entry, action).await
 	}
@@ -243,7 +251,7 @@ async fn dependency_recheck_reports_the_actual_local_cause(
 		_ => unreachable!(),
 	}
 	assert_eq!(
-		reads_invalidity(&mut scope, Uuid::from_u128(7))
+		reads_invalidity(&mut scope, Uuid::from_u128(7), &mut vec![])
 			.await
 			.unwrap(),
 		Some(expected)

@@ -74,6 +74,14 @@ impl SemanticDisclosureScope for NativeReads<'_> {
 }
 #[async_trait]
 impl SemanticMemoryReadSession for NativeReads<'_> {
+	async fn classified_output_source(
+		&mut self,
+		workspace: Uuid,
+		source: &Source,
+		pending: &mut Vec<Uuid>,
+	) -> Result<Option<String>> {
+		aidash_application::authorization::visibility::provenance::classified_semantic_output_source(self, workspace, source, pending).await
+	}
 	async fn native_invalidity(
 		&mut self,
 		run: Uuid,

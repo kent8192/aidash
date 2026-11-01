@@ -82,6 +82,20 @@ pub(crate) async fn source_invalidated(
 
 #[async_trait]
 impl SemanticMemoryReadSession for Memory<'_, '_> {
+	async fn classified_output_source(
+		&mut self,
+		workspace: Uuid,
+		source: &Source,
+		pending: &mut Vec<Uuid>,
+	) -> Result<Option<String>> {
+		if let Some(access) = self.entries.lease.access() {
+			aidash_application::authorization::visibility::provenance::classified_semantic_output_source(
+				&mut crate::bootstrap::run_visibility_scope(access), workspace, source, pending,
+			).await
+		} else {
+			self.entries.source(workspace, source).await
+		}
+	}
 	async fn native_invalidity(
 		&mut self,
 		run: Uuid,
