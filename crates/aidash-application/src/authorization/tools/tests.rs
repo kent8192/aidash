@@ -2156,6 +2156,7 @@ async fn subnode_enforces_pinned_tool_and_secret_even_with_a_renamed_alias(
 		endpoint: "https://example.com".into(),
 		replay: "idempotent".into(),
 		secret: Some("named-secret".into()),
+		secret_owner: Default::default(),
 	};
 	let contract = ToolContract::registry(reference(), &config);
 	let call = call("renamed", json!({}));

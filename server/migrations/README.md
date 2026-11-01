@@ -782,9 +782,16 @@ Plugin settings validator, including its compaction rules, and restores that
 validator on rollback. The join is an empty state-only migration that preserves
 existing identities and one leaf per app.
 
+`execution/0089_subnodes`, `0090_subnodes_row_level_security`, and
+`0091_subnodes_state` create the Run-scoped Subnode tables, enforce Tenant
+row policies, and record their model state after `0088_mcp_connection_requests_state`.
+
 `registry/0054_subnode_provider` (after `registry/0053_connection_request`) extends the PostgreSQL built-in Tool descriptor
 validator with the six `core.subnodes@1` operations (#660). Its reversible
 `RunSQL` replaces the PostgreSQL function body because Reinhardt migrations
 cannot express PL/pgSQL function definitions. Rolling back restores the
 previous descriptor contract; existing Subnode descriptors then cannot be
 rewritten until the migration is reapplied.
+
+`federation/0014_model_state_merge` joins the baseline model state and the later
+federation migration history without changing schema or data.

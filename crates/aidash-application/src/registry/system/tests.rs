@@ -57,7 +57,7 @@ fn seeding_declares_exposure_builtins_beside_the_unchanged_legacy_set() {
 	let entries = entries(&validation, NODE).unwrap();
 	assert_eq!(
 		entries.len(),
-		REQUIRED_TOOLS.len() + DEFAULT_TOOLS.len() + EXPOSURE_TOOLS.len() + 2
+		REQUIRED_TOOLS.len() + DEFAULT_TOOLS.len() + EXPOSURE_TOOLS.len() + SUBNODE_TOOLS.len() + 2
 	);
 	let specifications = validation.node_specifications();
 	for entry in &entries {
@@ -98,6 +98,14 @@ fn seeding_declares_exposure_builtins_beside_the_unchanged_legacy_set() {
 			.unwrap();
 		let descriptor: ToolDescriptor = serde_json::from_value(entry.config.clone()).unwrap();
 		assert_eq!(descriptor.provider, "core.exposure@1");
+	}
+	for operation in SUBNODE_TOOLS {
+		let entry = entries
+			.iter()
+			.find(|entry| entry.id == format!("aidash.{operation}"))
+			.unwrap();
+		let descriptor: ToolDescriptor = serde_json::from_value(entry.config.clone()).unwrap();
+		assert_eq!(descriptor.provider, "core.subnodes@1");
 	}
 	assert!(!builtin_reference(&EntityRef {
 		id: "aidash.capability_load".into(),

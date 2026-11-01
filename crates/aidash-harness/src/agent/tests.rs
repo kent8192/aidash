@@ -4054,6 +4054,29 @@ async fn legacy_thinking_request_matches_byte_baseline(
 	assert_eq!(serde_json::to_string(request).unwrap(), baseline.trim());
 }
 
+#[rstest]
+#[tokio::test]
+async fn structured3_advertises_subnode_workspace_reads(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.tools = default_tools();
+	state.projection = ProjectionVersion::Native;
+	state.harness_contract = aidash_domain::harness_contract::HarnessContract::Structured3;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	advance_sources(&mut fixture).await.unwrap();
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let reader = requests[0]
+		.tools
+		.iter()
+		.find(|tool| tool.name == "workspace_read")
+		.unwrap();
+	assert!(
+		reader.parameters["properties"]
+			.get("workspace_id")
+			.is_some()
+	);
+	assert!(reader.description.contains("Subnode"));
+}
+
 /// The step state a Legacy request carries.
 fn step_state(request: &ModelRequest) -> Value {
 	serde_json::to_value(request).unwrap()["context"]["current"].clone()
@@ -4537,9 +4560,15 @@ async fn deferred_catalog(fixture: &Fixture) -> Vec<exposure::Capability> {
 			.await
 			.unwrap();
 	let snapshot = fixture.run.context.binding_snapshot.as_deref().unwrap();
-	exposure_catalog(&fixture.backend, &fixture.run, snapshot, &tools)
-		.await
-		.unwrap()
+	exposure_catalog(
+		&fixture.backend,
+		&fixture.run,
+		snapshot,
+		&tools,
+		fixture.backend.0.harness_contract,
+	)
+	.await
+	.unwrap()
 }
 fn alias_of(catalog: &[exposure::Capability], identity: &exposure::CapabilityIdentity) -> String {
 	catalog

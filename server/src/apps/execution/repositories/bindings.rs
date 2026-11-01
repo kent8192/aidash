@@ -95,6 +95,7 @@ impl Providers {
 			tool,
 			contract,
 			operation: Some(name.into()),
+			connection_scopes: Vec::new(),
 			store: self.federation.store.clone(),
 			home: self.home.clone(),
 			scope: self.scope.clone(),

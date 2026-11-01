@@ -120,7 +120,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		76
+		77
 	);
 	let tables = migrations
 		.iter()
@@ -722,7 +722,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		76
+		77
 	);
 }
 
@@ -3286,6 +3286,19 @@ async fn subnode_provider_migration_accepts_exact_builtin_descriptors_and_revers
 		.rollback_migrations(std::slice::from_ref(&migration))
 		.await
 		.unwrap();
+	let connection = serde_json::to_value(
+		aidash_domain::tool::providers::core_descriptor("aidash://fixture", "connection_request")
+			.unwrap(),
+	)
+	.unwrap();
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_descriptor_is_valid",
+			vec![connection.clone()]
+		)
+		.await
+	);
 	let descriptor = serde_json::to_value(
 		aidash_domain::tool::providers::core_descriptor("aidash://fixture", "subnode_create")
 			.unwrap(),
@@ -3301,4 +3314,5 @@ async fn subnode_provider_migration_accepts_exact_builtin_descriptors_and_revers
 	);
 	executor.apply_migrations(&[migration]).await.unwrap();
 	assert!(contract_accepts(&pool, "aidash_descriptor_is_valid", vec![descriptor]).await);
+	assert!(contract_accepts(&pool, "aidash_descriptor_is_valid", vec![connection]).await);
 }

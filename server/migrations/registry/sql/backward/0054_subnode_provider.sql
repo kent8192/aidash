@@ -1,4 +1,4 @@
--- Restore the registry/0034_research_view descriptor contract.
+-- Restore the descriptor contract from registry/0053_connection_request.
 CREATE OR REPLACE FUNCTION public.aidash_descriptor_is_valid(value jsonb) RETURNS boolean
 LANGUAGE plpgsql IMMUTABLE STRICT AS $$
 DECLARE expected_provider text; expected_tier text; start_operation boolean;
