@@ -30,7 +30,7 @@ fn draft() -> Draft {
 }
 #[fixture]
 fn entry() -> Entry {
-	serde_json::from_value(json!({"id":"managed","version":"1.0.0","kind":"agent","name":{"en":"Managed agent"},"description":{"en":"Publication fixture"},"config":{"schema_version":1,"bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"},"instructions":"Follow the fixture request.","max_steps":8,"cluster":null}})).unwrap()
+	serde_json::from_value(json!({"id":"managed","version":"1.0.0","kind":"agent","name":{"en":"Managed agent"},"description":{"en":"Publication fixture"},"config":{"schema_version":1,"bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"},"instructions":"Follow the fixture request.","max_steps":8}})).unwrap()
 }
 struct Repository {
 	definitions: Vec<Entry>,
