@@ -1,9 +1,11 @@
 # Cloudflare deployment mail setup
 
-This Terraform root manages exactly three literal Email Routing aliases:
+This Terraform root manages exactly these literal Email Routing aliases:
 `stg.deployment@aidash.run`, `prod.deployment@aidash.run`, and
-`test.deployment@aidash.run`. They forward to one supplied, already verified
-private destination. It creates no catch-all and does not send verification or
+`test.deployment@aidash.run` for deployment notifications, and
+`nonprod.security@aidash.run` for the nonproduction tier's GCP security alerts
+(the bootstrap's `security_alert_emails`). They forward to one supplied, already
+verified private destination. It creates no catch-all and does not send verification or
 deployment mail.
 
 The existing zone, configured `aidash.run` Email Sending registration and verified
