@@ -139,7 +139,7 @@ impl AgentConfig {
 								matches!(source.pin, crate::context::source::PinPolicy::OnDemand)
 							});
 					if binding.definition.config.get("schema_version").is_none() {
-						if binding.definition.kind == "memory" {
+						if memory_provider(&binding.definition.kind, &binding.definition.config) {
 							if result.memory.replace(binding.identity.local()).is_some() {
 								return Err(crate::Error::Invalid(
 									"Agent requires one primary memory provider".into(),

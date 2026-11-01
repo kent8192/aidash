@@ -38,8 +38,8 @@ const BEFORE_POLICIES: &[&str] = &[
 /// after opening Deployment Scope with `SET LOCAL aidash.scope`, because the
 /// native migration executor has no scope API.
 const IN_DEPLOYMENT_SCOPE: &[&str] = &[
-	"execution.0084_remove_agent_cluster forward",
-	"registry.0053_remove_agent_cluster forward",
+	"execution.0089_remove_agent_cluster forward",
+	"registry.0054_remove_agent_cluster forward",
 ];
 
 #[rstest::rstest]

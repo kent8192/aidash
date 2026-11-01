@@ -66,9 +66,9 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0050_harness_contract"),
 	("registry", "0051_harness_plugin_merge"),
 	("registry", "0052_harness_contract_structured3"),
-	("registry", "0053_remove_agent_cluster"),
-	// Its cross-app dependency names registry/0053, which this history omits.
-	("execution", "0084_remove_agent_cluster"),
+	("registry", "0053_connection_request"),
+	("registry", "0054_remove_agent_cluster"),
+	("execution", "0089_remove_agent_cluster"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -121,7 +121,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		71
+		75
 	);
 	let tables = migrations
 		.iter()
@@ -161,8 +161,8 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 					reverse_sql.is_some()
 						|| matches!(
 							(migration.app_label.as_str(), migration.name.as_str()),
-							("registry", "0053_remove_agent_cluster")
-								| ("execution", "0084_remove_agent_cluster")
+							("registry", "0054_remove_agent_cluster")
+								| ("execution", "0089_remove_agent_cluster")
 						),
 					"{}.{}",
 					migration.app_label,
@@ -185,17 +185,29 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 						"ALTER TABLE public.dashboard_administration_history ALTER COLUMN identity_id DROP NOT NULL;"
 					);
 				} else if sql.starts_with("ALTER TABLE")
-					&& migration.name.ends_with("_row_level_security")
+					&& sql.contains(" ENABLE ROW LEVEL SECURITY;")
 				{
-					// Reinhardt has no row-level security operations (#6770). The
-					// database::policy unit tests compare these assets with the
-					// rendered template.
-					assert!(
-						sql.contains(&format!(
-							"CREATE POLICY {} ON",
-							aidash_server::database::policy::POLICY
-						)),
-						"{}: {sql}",
+					// A schema migration can carry a policy asset too. Recognize
+					// its contents and require the same exact reversible template
+					// as database::policy's migration scanner (#6770).
+					let tables = sql
+						.lines()
+						.filter_map(|line| {
+							line.strip_prefix("ALTER TABLE public.")?
+								.strip_suffix(" ENABLE ROW LEVEL SECURITY;")
+						})
+						.collect::<Vec<_>>();
+					assert!(!tables.is_empty(), "{}: {sql}", migration.name);
+					assert_eq!(
+						sql.as_str(),
+						aidash_server::database::policy::enable(&tables),
+						"{}",
+						migration.name
+					);
+					assert_eq!(
+						reverse_sql.as_deref(),
+						Some(aidash_server::database::policy::disable(&tables).as_str()),
+						"{} reversed",
 						migration.name
 					);
 				} else if sql.starts_with("ALTER TABLE") {
@@ -364,14 +376,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0085_policy_probe")
+		.get_migration("execution", "0090_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0084_remove_agent_cluster".to_owned()
+			"0089_remove_agent_cluster".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -668,6 +680,62 @@ impl MigrationFixture {
 }
 
 #[rstest]
+#[case::empty_database(false)]
+#[case::applied_database(true)]
+#[tokio::test]
+async fn preserved_baseline_does_not_generate_table_recreation(
+	#[future] fresh_database: MigrationFixture,
+	#[case] apply_schema: bool,
+) {
+	// Arrange: the physical baseline and its ORM state share one native ledger.
+	let fixture = fresh_database.await;
+	if apply_schema {
+		fixture.migrate().await;
+	}
+	let bin = fixture.directory.path().join("src/bin");
+	std::fs::create_dir_all(&bin).unwrap();
+	std::fs::copy(
+		PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/bin/manage.rs"),
+		bin.join("manage.rs"),
+	)
+	.unwrap();
+	let mut command = deployment_command(&fixture.url, fixture.directory.path());
+	command.args(["makemigrations", "--check", "--dry-run"]);
+	// Act: use the shipped command, including installed-app model scope.
+	let output = tokio::time::timeout(Duration::from_secs(35), command.output())
+		.await
+		.unwrap()
+		.unwrap();
+	// Assert: neither built-in auth tables nor existing Aidash tables are proposed.
+	assert!(
+		output.status.success(),
+		"{}\n{}",
+		String::from_utf8_lossy(&output.stdout),
+		String::from_utf8_lossy(&output.stderr)
+	);
+	assert!(String::from_utf8_lossy(&output.stdout).contains("No changes detected"));
+	let applied = DatabaseMigrationRecorder::new(fixture.connection)
+		.get_applied_migrations_if_present()
+		.await
+		.unwrap();
+	let migrations = FilesystemSource::new(fixture.directory.path().join("migrations"))
+		.all_migrations()
+		.await
+		.unwrap();
+	assert_eq!(
+		applied.len(),
+		if apply_schema { migrations.len() } else { 0 }
+	);
+	assert_eq!(
+		migrations
+			.iter()
+			.filter(|migration| migration.state_only)
+			.count(),
+		75
+	);
+}
+
+#[rstest]
 #[tokio::test]
 async fn remove_agent_cluster_migrates_registry_drafts_requests_and_generation_templates(
 	#[future] fresh_database: MigrationFixture,
@@ -686,8 +754,8 @@ async fn remove_agent_cluster_migrates_registry_drafts_requests_and_generation_t
 		.filter(|migration| {
 			!matches!(
 				(migration.app_label.as_str(), migration.name.as_str()),
-				("registry", "0053_remove_agent_cluster")
-					| ("execution", "0084_remove_agent_cluster")
+				("registry", "0054_remove_agent_cluster")
+					| ("execution", "0089_remove_agent_cluster")
 			)
 		})
 		.cloned()
@@ -819,62 +887,6 @@ async fn remove_agent_cluster_migrates_registry_drafts_requests_and_generation_t
 			.contains("unsupported Marketplace writer")
 	);
 	tx.rollback().await.unwrap();
-}
-
-#[rstest]
-#[case::empty_database(false)]
-#[case::applied_database(true)]
-#[tokio::test]
-async fn preserved_baseline_does_not_generate_table_recreation(
-	#[future] fresh_database: MigrationFixture,
-	#[case] apply_schema: bool,
-) {
-	// Arrange: the physical baseline and its ORM state share one native ledger.
-	let fixture = fresh_database.await;
-	if apply_schema {
-		fixture.migrate().await;
-	}
-	let bin = fixture.directory.path().join("src/bin");
-	std::fs::create_dir_all(&bin).unwrap();
-	std::fs::copy(
-		PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/bin/manage.rs"),
-		bin.join("manage.rs"),
-	)
-	.unwrap();
-	let mut command = deployment_command(&fixture.url, fixture.directory.path());
-	command.args(["makemigrations", "--check", "--dry-run"]);
-	// Act: use the shipped command, including installed-app model scope.
-	let output = tokio::time::timeout(Duration::from_secs(35), command.output())
-		.await
-		.unwrap()
-		.unwrap();
-	// Assert: neither built-in auth tables nor existing Aidash tables are proposed.
-	assert!(
-		output.status.success(),
-		"{}\n{}",
-		String::from_utf8_lossy(&output.stdout),
-		String::from_utf8_lossy(&output.stderr)
-	);
-	assert!(String::from_utf8_lossy(&output.stdout).contains("No changes detected"));
-	let applied = DatabaseMigrationRecorder::new(fixture.connection)
-		.get_applied_migrations_if_present()
-		.await
-		.unwrap();
-	let migrations = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.all_migrations()
-		.await
-		.unwrap();
-	assert_eq!(
-		applied.len(),
-		if apply_schema { migrations.len() } else { 0 }
-	);
-	assert_eq!(
-		migrations
-			.iter()
-			.filter(|migration| migration.state_only)
-			.count(),
-		71
-	);
 }
 
 #[rstest]

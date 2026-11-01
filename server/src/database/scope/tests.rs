@@ -81,8 +81,8 @@ fn only_the_transaction_opener_writes_the_scope_settings() {
 	assert_eq!(
 		migration_openers,
 		[
-			"migrations/execution/sql/forward/0084_remove_agent_cluster.sql",
-			"migrations/registry/sql/forward/0053_remove_agent_cluster.sql",
+			"migrations/execution/sql/forward/0089_remove_agent_cluster.sql",
+			"migrations/registry/sql/forward/0054_remove_agent_cluster.sql",
 		]
 	);
 	for path in migration_openers {

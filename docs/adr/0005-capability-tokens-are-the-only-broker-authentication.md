@@ -18,3 +18,8 @@ Decided on 2026-10-08 (#137). Each provider call made with a Provider Credential
 ## Implementation note (proposed by the #151 worker on 2026-10-11, filed by the batch lead; PR #210)
 
 Implemented in #151: bootstrap tags broker service accounts and an IAM deny policy denies the deploy service account policy changes, token, signing, key creation, deletion, undeletion, disabling and OpenID-token permissions on them (ten permissions). Bootstrap-owned alerts cover broker redeploys through Cloud Run, Compute and GKE, broker IAM changes, BYOK-project audit-config changes, and Key Material reads by non-broker principals. `actAs` stays allowed (Cloud Run needs it), so broker redeploy remains the accepted residual path, detected by bootstrap-owned alerts. The broker image digest is reviewed code (`infra/gcp/environments/broker-image.json`). The `gcp-deploy` Environment is required by the WIF condition; a second reviewed Environment covers build runs (option C of the #151 reviewer question, adopted 2026-10-11). Live verification of the deny policy, tag targeting and alerts belongs to #152.
+
+## Amendment (2026-10-26, #310)
+
+- A Tenant Secret Capability Token is a second kind, with its own type and audience, that names one Tenant Secret at one version, a destination and its methods; the broker never accepts one kind as the other (ADR 0095).
+- The server signs Tenant Secret Capability Tokens with a KMS key of its own, separate from the worker's, and the broker accepts both public keys.

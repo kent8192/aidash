@@ -232,6 +232,9 @@ impl TenantDeletions {
 			// A retirement that failed at deletion is retried before the Tenant
 			// works again: no Plan Connection outlives its Tenant's deletion, and
 			// a failure leaves the Tenant deleted (ADR 0007).
+			if let Some(service) = &f.store.oauth_connections {
+				service.retire_tenant(&tenant).await?;
+			}
 			if let Some(service) = &f.store.plan_connections {
 				service
 					.retire_tenant(&tenant, &steward.administration_actor().decision_actor())
@@ -405,6 +408,11 @@ fn event<'a>(action: &'a str, tenant: &'a str) -> AdministrationEvent<'a> {
 /// reported; a connection left behind cannot serve calls while the Tenant is
 /// deleted, and a restore retires it before the Tenant works again.
 async fn retire_plan_connections(f: &Federation, tenant: &str, actor: &AdministrationActor) {
+	if let Some(service) = &f.store.oauth_connections
+		&& service.retire_tenant(tenant).await.is_err()
+	{
+		tracing::warn!("OAuth Connections of a deleted Tenant were not all retired");
+	}
 	let Some(service) = &f.store.plan_connections else {
 		return;
 	};

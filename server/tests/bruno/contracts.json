@@ -3139,6 +3139,17 @@
               "$ref": "#/components/schemas/NodeName",
               "description": "The Node the approval applies to."
             },
+            "restriction": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CatalogRestriction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Who may use the definition on this Node; absent means everyone the\nTenant's policy allows."
+            },
             "revision": {
               "type": "integer",
               "format": "int64"
@@ -3147,6 +3158,30 @@
               "type": "string"
             }
           }
+        },
+        "CatalogRestriction": {
+          "type": "object",
+          "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+          "required": ["subjects", "groups"],
+          "properties": {
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            },
+            "subjects": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
         },
         "NodeName": {
           "type": "string",
@@ -3192,6 +3227,17 @@
               "$ref": "#/components/schemas/NodeName",
               "description": "The Node the approval applies to."
             },
+            "restriction": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CatalogRestriction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Who may use the definition on this Node; absent means everyone the\nTenant's policy allows."
+            },
             "revision": {
               "type": "integer",
               "format": "int64"
@@ -3200,6 +3246,30 @@
               "type": "string"
             }
           }
+        },
+        "CatalogRestriction": {
+          "type": "object",
+          "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+          "required": ["subjects", "groups"],
+          "properties": {
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            },
+            "subjects": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
         },
         "NodeName": {
           "type": "string",
@@ -3248,6 +3318,17 @@
               "$ref": "#/components/schemas/NodeName",
               "description": "The Node the approval applies to."
             },
+            "restriction": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/CatalogRestriction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Who may use the definition on this Node; absent means everyone the\nTenant's policy allows."
+            },
             "revision": {
               "type": "integer",
               "format": "int64"
@@ -3256,6 +3337,30 @@
               "type": "string"
             }
           }
+        },
+        "CatalogRestriction": {
+          "type": "object",
+          "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+          "required": ["subjects", "groups"],
+          "properties": {
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            },
+            "subjects": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
         },
         "NodeName": {
           "type": "string",
@@ -21296,6 +21401,30 @@
             "companion"
           ]
         },
+        "CatalogRestriction": {
+          "type": "object",
+          "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+          "required": ["subjects", "groups"],
+          "properties": {
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            },
+            "subjects": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
+        },
         "Concurrency": {
           "oneOf": [
             {
@@ -28864,6 +28993,140 @@
           ],
           "description": "Whether a tool's calls may share a Tool Batch. Registry configuration can\nonly lower a provider's declaration, never raise it."
         },
+        "ConnectionCallState": {
+          "type": "object",
+          "required": [
+            "cause",
+            "resolved",
+            "attempt",
+            "waited_millis",
+            "refused"
+          ],
+          "properties": {
+            "attempt": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "cause": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ConnectionCause"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "refused": {},
+            "resolved": {
+              "type": "boolean",
+              "default": false
+            },
+            "waited_millis": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "ConnectionCause": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["error", "resource"],
+              "properties": {
+                "error": {
+                  "type": "string",
+                  "enum": ["connection_required"]
+                },
+                "resource": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["error", "resource"],
+              "properties": {
+                "error": {
+                  "type": "string",
+                  "enum": ["connection_scope_insufficient"]
+                },
+                "resource": {
+                  "type": "string"
+                },
+                "scope": {
+                  "type": ["string", "null"]
+                }
+              }
+            }
+          ],
+          "description": "A server that can contribute tools after the person connects or consents again."
+        },
+        "ConnectionRefusal": {
+          "type": "object",
+          "required": ["cause", "tool", "scopes"],
+          "properties": {
+            "cause": {
+              "$ref": "#/components/schemas/ConnectionCause"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "tool": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "ConnectionWait": {
+          "type": "object",
+          "required": [
+            "request_id",
+            "resource",
+            "started_at",
+            "answer_by",
+            "call",
+            "key"
+          ],
+          "properties": {
+            "answer_by": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "call": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ToolCall"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The builtin's result is recorded only once the person answers."
+            },
+            "key": {
+              "type": "string"
+            },
+            "request_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "resource": {
+              "type": "string"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "additionalProperties": false
+        },
         "ContextEvent": {
           "oneOf": [
             {
@@ -30236,6 +30499,17 @@
           "description": "A Run-start finding names its plugin, because [`Finding::component`] only names the server.",
           "required": ["plugin", "finding"],
           "properties": {
+            "connection": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ConnectionCause"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An MCP authentication challenge retained for connection_request and later re-listing."
+            },
             "finding": {
               "$ref": "#/components/schemas/Finding"
             },
@@ -30361,6 +30635,31 @@
           "type": "object",
           "required": ["retry"],
           "properties": {
+            "connection_refusals": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ConnectionRefusal"
+              },
+              "description": "Transport-proven, still-unsatisfied refusals. Tool result JSON never populates these."
+            },
+            "connection_wait": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ConnectionWait"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "connection_waited": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Survives context compaction and prevents repeated failure deferrals.",
+              "uniqueItems": true
+            },
             "context_reason": {
               "anyOf": [
                 {
@@ -31450,6 +31749,17 @@
               "format": "uint",
               "description": "End of the admitted Tool Batch `[cursor, batch_end)`. Present only from\nbatch admission until adoption, so a restart resumes exactly those calls.",
               "minimum": 0
+            },
+            "connection": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ConnectionCallState"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Authentication refusals are known not to have executed. A new attempt gets a new journal key."
             },
             "cursor": {
               "type": "integer",
@@ -32703,6 +33013,140 @@
           ],
           "description": "Whether a tool's calls may share a Tool Batch. Registry configuration can\nonly lower a provider's declaration, never raise it."
         },
+        "ConnectionCallState": {
+          "type": "object",
+          "required": [
+            "cause",
+            "resolved",
+            "attempt",
+            "waited_millis",
+            "refused"
+          ],
+          "properties": {
+            "attempt": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "cause": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ConnectionCause"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "refused": {},
+            "resolved": {
+              "type": "boolean",
+              "default": false
+            },
+            "waited_millis": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "ConnectionCause": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["error", "resource"],
+              "properties": {
+                "error": {
+                  "type": "string",
+                  "enum": ["connection_required"]
+                },
+                "resource": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["error", "resource"],
+              "properties": {
+                "error": {
+                  "type": "string",
+                  "enum": ["connection_scope_insufficient"]
+                },
+                "resource": {
+                  "type": "string"
+                },
+                "scope": {
+                  "type": ["string", "null"]
+                }
+              }
+            }
+          ],
+          "description": "A server that can contribute tools after the person connects or consents again."
+        },
+        "ConnectionRefusal": {
+          "type": "object",
+          "required": ["cause", "tool", "scopes"],
+          "properties": {
+            "cause": {
+              "$ref": "#/components/schemas/ConnectionCause"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "tool": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "ConnectionWait": {
+          "type": "object",
+          "required": [
+            "request_id",
+            "resource",
+            "started_at",
+            "answer_by",
+            "call",
+            "key"
+          ],
+          "properties": {
+            "answer_by": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "call": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ToolCall"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The builtin's result is recorded only once the person answers."
+            },
+            "key": {
+              "type": "string"
+            },
+            "request_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "resource": {
+              "type": "string"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "additionalProperties": false
+        },
         "ContextEvent": {
           "oneOf": [
             {
@@ -33946,6 +34390,17 @@
           "description": "A Run-start finding names its plugin, because [`Finding::component`] only names the server.",
           "required": ["plugin", "finding"],
           "properties": {
+            "connection": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ConnectionCause"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An MCP authentication challenge retained for connection_request and later re-listing."
+            },
             "finding": {
               "$ref": "#/components/schemas/Finding"
             },
@@ -34071,6 +34526,31 @@
           "type": "object",
           "required": ["retry"],
           "properties": {
+            "connection_refusals": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ConnectionRefusal"
+              },
+              "description": "Transport-proven, still-unsatisfied refusals. Tool result JSON never populates these."
+            },
+            "connection_wait": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ConnectionWait"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "connection_waited": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Survives context compaction and prevents repeated failure deferrals.",
+              "uniqueItems": true
+            },
             "context_reason": {
               "anyOf": [
                 {
@@ -34229,6 +34709,17 @@
             "run_id": {
               "type": "string",
               "format": "uuid"
+            },
+            "secret_host": {
+              "type": ["string", "null"]
+            },
+            "secret_id": {
+              "type": ["string", "null"],
+              "format": "uuid",
+              "description": "The Tenant Secret and pinned version a call carried, and the host it\nwent to. Absent for a service without a Tenant Secret (ADR 0095)."
+            },
+            "secret_version": {
+              "type": ["string", "null"]
             },
             "sent_bytes": {
               "type": "integer",
@@ -35140,6 +35631,17 @@
               "format": "uint",
               "description": "End of the admitted Tool Batch `[cursor, batch_end)`. Present only from\nbatch admission until adoption, so a restart resumes exactly those calls.",
               "minimum": 0
+            },
+            "connection": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ConnectionCallState"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Authentication refusals are known not to have executed. A new attempt gets a new journal key."
             },
             "cursor": {
               "type": "integer",
@@ -36065,6 +36567,140 @@
             }
           ],
           "description": "Whether a tool's calls may share a Tool Batch. Registry configuration can\nonly lower a provider's declaration, never raise it."
+        },
+        "ConnectionCallState": {
+          "type": "object",
+          "required": [
+            "cause",
+            "resolved",
+            "attempt",
+            "waited_millis",
+            "refused"
+          ],
+          "properties": {
+            "attempt": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "cause": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ConnectionCause"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "refused": {},
+            "resolved": {
+              "type": "boolean",
+              "default": false
+            },
+            "waited_millis": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "ConnectionCause": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["error", "resource"],
+              "properties": {
+                "error": {
+                  "type": "string",
+                  "enum": ["connection_required"]
+                },
+                "resource": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["error", "resource"],
+              "properties": {
+                "error": {
+                  "type": "string",
+                  "enum": ["connection_scope_insufficient"]
+                },
+                "resource": {
+                  "type": "string"
+                },
+                "scope": {
+                  "type": ["string", "null"]
+                }
+              }
+            }
+          ],
+          "description": "A server that can contribute tools after the person connects or consents again."
+        },
+        "ConnectionRefusal": {
+          "type": "object",
+          "required": ["cause", "tool", "scopes"],
+          "properties": {
+            "cause": {
+              "$ref": "#/components/schemas/ConnectionCause"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "tool": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "ConnectionWait": {
+          "type": "object",
+          "required": [
+            "request_id",
+            "resource",
+            "started_at",
+            "answer_by",
+            "call",
+            "key"
+          ],
+          "properties": {
+            "answer_by": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "call": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ToolCall"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The builtin's result is recorded only once the person answers."
+            },
+            "key": {
+              "type": "string"
+            },
+            "request_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "resource": {
+              "type": "string"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "additionalProperties": false
         },
         "ContextEvent": {
           "oneOf": [
@@ -37272,6 +37908,17 @@
           "description": "A Run-start finding names its plugin, because [`Finding::component`] only names the server.",
           "required": ["plugin", "finding"],
           "properties": {
+            "connection": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ConnectionCause"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An MCP authentication challenge retained for connection_request and later re-listing."
+            },
             "finding": {
               "$ref": "#/components/schemas/Finding"
             },
@@ -37397,6 +38044,31 @@
           "type": "object",
           "required": ["retry"],
           "properties": {
+            "connection_refusals": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ConnectionRefusal"
+              },
+              "description": "Transport-proven, still-unsatisfied refusals. Tool result JSON never populates these."
+            },
+            "connection_wait": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ConnectionWait"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "connection_waited": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Survives context compaction and prevents repeated failure deferrals.",
+              "uniqueItems": true
+            },
             "context_reason": {
               "anyOf": [
                 {
@@ -38339,6 +39011,17 @@
               "format": "uint",
               "description": "End of the admitted Tool Batch `[cursor, batch_end)`. Present only from\nbatch admission until adoption, so a restart resumes exactly those calls.",
               "minimum": 0
+            },
+            "connection": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ConnectionCallState"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Authentication refusals are known not to have executed. A new attempt gets a new journal key."
             },
             "cursor": {
               "type": "integer",
@@ -45579,10 +46262,16 @@
         }
       },
       "definitions": {
+        "SecretOwnership": {
+          "type": "string",
+          "description": "The namespace selected by the caller; personal ownership always resolves to\nthe authenticated subject, never a subject supplied in a request.",
+          "enum": ["me", "tenant"]
+        },
         "TenantSecretMetadata": {
           "type": "object",
           "description": "What a caller may learn about a Tenant Secret.",
           "required": [
+            "owner",
             "id",
             "tenant",
             "name",
@@ -45616,6 +46305,9 @@
             },
             "name": {
               "type": "string"
+            },
+            "owner": {
+              "$ref": "#/components/schemas/SecretOwnership"
             },
             "revision": {
               "type": "integer",
@@ -45640,16 +46332,22 @@
     "source": "server/src/apps/identity/views/tenant_secrets.rs",
     "json": false,
     "uuid_parameters": [],
-    "query_parameters": [],
+    "query_parameters": ["owner"],
     "response": {
       "schema": {
         "$ref": "#/components/schemas/TenantSecretMetadata"
       },
       "definitions": {
+        "SecretOwnership": {
+          "type": "string",
+          "description": "The namespace selected by the caller; personal ownership always resolves to\nthe authenticated subject, never a subject supplied in a request.",
+          "enum": ["me", "tenant"]
+        },
         "TenantSecretMetadata": {
           "type": "object",
           "description": "What a caller may learn about a Tenant Secret.",
           "required": [
+            "owner",
             "id",
             "tenant",
             "name",
@@ -45683,6 +46381,9 @@
             },
             "name": {
               "type": "string"
+            },
+            "owner": {
+              "$ref": "#/components/schemas/SecretOwnership"
             },
             "revision": {
               "type": "integer",
@@ -45713,10 +46414,16 @@
         "$ref": "#/components/schemas/TenantSecretMetadata"
       },
       "definitions": {
+        "SecretOwnership": {
+          "type": "string",
+          "description": "The namespace selected by the caller; personal ownership always resolves to\nthe authenticated subject, never a subject supplied in a request.",
+          "enum": ["me", "tenant"]
+        },
         "TenantSecretMetadata": {
           "type": "object",
           "description": "What a caller may learn about a Tenant Secret.",
           "required": [
+            "owner",
             "id",
             "tenant",
             "name",
@@ -45750,6 +46457,9 @@
             },
             "name": {
               "type": "string"
+            },
+            "owner": {
+              "$ref": "#/components/schemas/SecretOwnership"
             },
             "revision": {
               "type": "integer",
@@ -45780,10 +46490,16 @@
         "$ref": "#/components/schemas/TenantSecretMetadata"
       },
       "definitions": {
+        "SecretOwnership": {
+          "type": "string",
+          "description": "The namespace selected by the caller; personal ownership always resolves to\nthe authenticated subject, never a subject supplied in a request.",
+          "enum": ["me", "tenant"]
+        },
         "TenantSecretMetadata": {
           "type": "object",
           "description": "What a caller may learn about a Tenant Secret.",
           "required": [
+            "owner",
             "id",
             "tenant",
             "name",
@@ -45817,6 +46533,9 @@
             },
             "name": {
               "type": "string"
+            },
+            "owner": {
+              "$ref": "#/components/schemas/SecretOwnership"
             },
             "revision": {
               "type": "integer",
@@ -46698,6 +47417,78 @@
             }
           }
         },
+        "CatalogRestriction": {
+          "type": "object",
+          "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+          "required": ["subjects", "groups"],
+          "properties": {
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            },
+            "subjects": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
+        },
+        "EntityRef": {
+          "type": "object",
+          "required": ["id", "version"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
+        },
+        "ReviewInstallation": {
+          "type": "object",
+          "description": "The installed copy a review item can activate.",
+          "required": [
+            "installation",
+            "revision",
+            "digest",
+            "expected_activation_revision",
+            "active_revision"
+          ],
+          "properties": {
+            "active_revision": {
+              "type": ["integer", "null"],
+              "format": "int64"
+            },
+            "digest": {
+              "type": "string",
+              "description": "The immutable revision digest the activation fences on."
+            },
+            "expected_activation_revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "installation": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        },
         "ReviewItem": {
           "type": "object",
           "description": "One exact definition in the reviewed closure.",
@@ -46800,74 +47591,6 @@
             }
           }
         },
-        "ReviewInstallation": {
-          "type": "object",
-          "description": "The installed copy a review item can activate.",
-          "required": [
-            "installation",
-            "revision",
-            "digest",
-            "expected_activation_revision",
-            "active_revision"
-          ],
-          "properties": {
-            "active_revision": {
-              "type": ["integer", "null"],
-              "format": "int64"
-            },
-            "digest": {
-              "type": "string",
-              "description": "The immutable revision digest the activation fences on."
-            },
-            "expected_activation_revision": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "installation": {
-              "type": "string"
-            },
-            "revision": {
-              "type": "integer",
-              "format": "int64"
-            }
-          }
-        },
-        "CatalogRestriction": {
-          "type": "object",
-          "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
-          "required": ["subjects", "groups"],
-          "properties": {
-            "groups": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": [],
-              "uniqueItems": true
-            },
-            "subjects": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": [],
-              "uniqueItems": true
-            }
-          },
-          "additionalProperties": false
-        },
-        "EntityRef": {
-          "type": "object",
-          "required": ["id", "version"],
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "version": {
-              "type": "string"
-            }
-          }
-        },
         "ReviewStatus": {
           "oneOf": [
             {
@@ -46906,10 +47629,6 @@
             }
           ],
           "description": "Whether one exact version can be used now, and if not, what stands in the\nway. `Approved` means the Node's approval is enabled; a separate `widen`\nreports an approved restriction that no longer admits the root agent."
-        },
-        "NodeName": {
-          "type": "string",
-          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -46975,25 +47694,6 @@
         "$ref": "#/components/schemas/CatalogReviewResult"
       },
       "definitions": {
-        "CatalogReviewResult": {
-          "type": "object",
-          "description": "What one review submission wrote, in the caller's transaction.",
-          "required": ["bindings", "installations"],
-          "properties": {
-            "bindings": {
-              "type": "array",
-              "items": {
-                "$ref": "#/components/schemas/Binding"
-              }
-            },
-            "installations": {
-              "type": "array",
-              "items": {
-                "$ref": "#/components/schemas/MarketplaceInstallation"
-              }
-            }
-          }
-        },
         "Binding": {
           "type": "object",
           "required": [
@@ -47038,10 +47738,6 @@
             }
           }
         },
-        "NodeName": {
-          "type": "string",
-          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
-        },
         "CatalogRestriction": {
           "type": "object",
           "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
@@ -47065,6 +47761,25 @@
             }
           },
           "additionalProperties": false
+        },
+        "CatalogReviewResult": {
+          "type": "object",
+          "description": "What one review submission wrote, in the caller's transaction.",
+          "required": ["bindings", "installations"],
+          "properties": {
+            "bindings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Binding"
+              }
+            },
+            "installations": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/MarketplaceInstallation"
+              }
+            }
+          }
         },
         "MarketplaceInstallation": {
           "type": "object",
@@ -47099,6 +47814,10 @@
               "type": "string"
             }
           }
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -47116,6 +47835,11 @@
         "$ref": "#/components/schemas/CatalogApprovalRequestView"
       },
       "definitions": {
+        "CatalogApprovalRequestState": {
+          "type": "string",
+          "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
+          "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"]
+        },
         "CatalogApprovalRequestView": {
           "type": "object",
           "required": [
@@ -47197,10 +47921,6 @@
             "fulfilled"
           ]
         },
-        "NodeName": {
-          "type": "string",
-          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
-        },
         "CatalogRequestReview": {
           "type": "object",
           "description": "What a requester or an approver needs to know, without naming hidden items\nor the subjects that hold approval authority.",
@@ -47238,10 +47958,9 @@
             }
           }
         },
-        "CatalogApprovalRequestState": {
+        "NodeName": {
           "type": "string",
-          "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
-          "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"]
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -47259,6 +47978,11 @@
         "$ref": "#/components/schemas/CatalogApprovalRequestView"
       },
       "definitions": {
+        "CatalogApprovalRequestState": {
+          "type": "string",
+          "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
+          "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"]
+        },
         "CatalogApprovalRequestView": {
           "type": "object",
           "required": [
@@ -47340,10 +48064,6 @@
             "fulfilled"
           ]
         },
-        "NodeName": {
-          "type": "string",
-          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
-        },
         "CatalogRequestReview": {
           "type": "object",
           "description": "What a requester or an approver needs to know, without naming hidden items\nor the subjects that hold approval authority.",
@@ -47381,10 +48101,9 @@
             }
           }
         },
-        "CatalogApprovalRequestState": {
+        "NodeName": {
           "type": "string",
-          "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
-          "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"]
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -47402,6 +48121,11 @@
         "$ref": "#/components/schemas/CatalogApprovalRequestView"
       },
       "definitions": {
+        "CatalogApprovalRequestState": {
+          "type": "string",
+          "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
+          "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"]
+        },
         "CatalogApprovalRequestView": {
           "type": "object",
           "required": [
@@ -47483,10 +48207,6 @@
             "fulfilled"
           ]
         },
-        "NodeName": {
-          "type": "string",
-          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
-        },
         "CatalogRequestReview": {
           "type": "object",
           "description": "What a requester or an approver needs to know, without naming hidden items\nor the subjects that hold approval authority.",
@@ -47524,10 +48244,9 @@
             }
           }
         },
-        "CatalogApprovalRequestState": {
+        "NodeName": {
           "type": "string",
-          "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
-          "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"]
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -47562,6 +48281,11 @@
             }
           }
         },
+        "CatalogApprovalRequestState": {
+          "type": "string",
+          "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
+          "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"]
+        },
         "CatalogApprovalRequestView": {
           "type": "object",
           "required": [
@@ -47643,10 +48367,6 @@
             "fulfilled"
           ]
         },
-        "NodeName": {
-          "type": "string",
-          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
-        },
         "CatalogRequestReview": {
           "type": "object",
           "description": "What a requester or an approver needs to know, without naming hidden items\nor the subjects that hold approval authority.",
@@ -47684,10 +48404,9 @@
             }
           }
         },
-        "CatalogApprovalRequestState": {
+        "NodeName": {
           "type": "string",
-          "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
-          "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"]
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -47722,6 +48441,11 @@
             }
           }
         },
+        "CatalogApprovalRequestState": {
+          "type": "string",
+          "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
+          "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"]
+        },
         "CatalogApprovalRequestView": {
           "type": "object",
           "required": [
@@ -47803,10 +48527,6 @@
             "fulfilled"
           ]
         },
-        "NodeName": {
-          "type": "string",
-          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
-        },
         "CatalogRequestReview": {
           "type": "object",
           "description": "What a requester or an approver needs to know, without naming hidden items\nor the subjects that hold approval authority.",
@@ -47844,10 +48564,9 @@
             }
           }
         },
-        "CatalogApprovalRequestState": {
+        "NodeName": {
           "type": "string",
-          "description": "The lifecycle of one Catalog Approval Request. Only `Open` may move, and\nevery other state is final.",
-          "enum": ["open", "fulfilled", "declined", "stale", "withdrawn"]
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
         }
       }
     }
@@ -48392,5 +49111,916 @@
     "json": true,
     "uuid_parameters": [],
     "query_parameters": []
+  },
+  {
+    "method": "GET",
+    "path": "/api/marketplace/packages/{key}/secret-readiness",
+    "name": "marketplace-secret-readiness",
+    "source": "server/src/apps/marketplace/views/management.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/TenantSecretReadinessFact"
+        }
+      },
+      "definitions": {
+        "TenantSecretReadinessFact": {
+          "type": "object",
+          "description": "One item readiness fact. `item` names the bound tool or External service,\nor the Marketplace package's Secret slot.",
+          "required": ["item", "kind", "status", "repair"],
+          "properties": {
+            "item": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/components/schemas/TenantSecretReadinessKind"
+            },
+            "repair": {
+              "$ref": "#/components/schemas/TenantSecretReadinessRepair"
+            },
+            "status": {
+              "$ref": "#/components/schemas/TenantSecretReadinessStatus"
+            },
+            "tenant_secret_name": {
+              "type": ["string", "null"]
+            }
+          }
+        },
+        "TenantSecretReadinessKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["tool", "external_service"]
+            },
+            {
+              "type": "string",
+              "description": "One Secret slot a Marketplace package declares, before the installer\nchooses which of their Tenant Secrets fills it.",
+              "enum": ["slot"]
+            }
+          ],
+          "description": "Where a readiness fact belongs."
+        },
+        "TenantSecretReadinessRepair": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The caller holds `secret.manage` and can fix it in Tenant Secrets.",
+              "enum": ["manage_secret"]
+            },
+            {
+              "type": "string",
+              "description": "The caller cannot manage Secrets; someone who can must fix it.",
+              "enum": ["ask_administrator"]
+            },
+            {
+              "type": "string",
+              "description": "Only a Deployment Administrator can fix it.",
+              "enum": ["deployment_administrator"]
+            },
+            {
+              "type": "string",
+              "description": "Nothing to repair.",
+              "enum": ["none"]
+            }
+          ],
+          "description": "Who can repair a fact that is not ready."
+        },
+        "TenantSecretReadinessStatus": {
+          "type": "string",
+          "description": "What one bound item needs from the Tenant's Secrets.",
+          "enum": [
+            "ready",
+            "secret_missing",
+            "secret_hosts_mismatch",
+            "secrets_unavailable_on_deployment",
+            "broker_not_configured"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/registry/{id}/{version}/secret-readiness",
+    "name": "registry-secret-readiness",
+    "source": "server/src/apps/registry/views/management.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/TenantSecretReadinessFact"
+        }
+      },
+      "definitions": {
+        "TenantSecretReadinessFact": {
+          "type": "object",
+          "description": "One item readiness fact. `item` names the bound tool or External service,\nor the Marketplace package's Secret slot.",
+          "required": ["item", "kind", "status", "repair"],
+          "properties": {
+            "item": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/components/schemas/TenantSecretReadinessKind"
+            },
+            "repair": {
+              "$ref": "#/components/schemas/TenantSecretReadinessRepair"
+            },
+            "status": {
+              "$ref": "#/components/schemas/TenantSecretReadinessStatus"
+            },
+            "tenant_secret_name": {
+              "type": ["string", "null"]
+            }
+          }
+        },
+        "TenantSecretReadinessKind": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["tool", "external_service"]
+            },
+            {
+              "type": "string",
+              "description": "One Secret slot a Marketplace package declares, before the installer\nchooses which of their Tenant Secrets fills it.",
+              "enum": ["slot"]
+            }
+          ],
+          "description": "Where a readiness fact belongs."
+        },
+        "TenantSecretReadinessRepair": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The caller holds `secret.manage` and can fix it in Tenant Secrets.",
+              "enum": ["manage_secret"]
+            },
+            {
+              "type": "string",
+              "description": "The caller cannot manage Secrets; someone who can must fix it.",
+              "enum": ["ask_administrator"]
+            },
+            {
+              "type": "string",
+              "description": "Only a Deployment Administrator can fix it.",
+              "enum": ["deployment_administrator"]
+            },
+            {
+              "type": "string",
+              "description": "Nothing to repair.",
+              "enum": ["none"]
+            }
+          ],
+          "description": "Who can repair a fact that is not ready."
+        },
+        "TenantSecretReadinessStatus": {
+          "type": "string",
+          "description": "What one bound item needs from the Tenant's Secrets.",
+          "enum": [
+            "ready",
+            "secret_missing",
+            "secret_hosts_mismatch",
+            "secrets_unavailable_on_deployment",
+            "broker_not_configured"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/oauth-clients",
+    "name": "oauth-clients-list",
+    "source": "server/src/apps/identity/views/oauth_clients.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/OAuthClientMetadata"
+        }
+      },
+      "definitions": {
+        "OAuthClientMetadata": {
+          "type": "object",
+          "required": [
+            "id",
+            "tenant",
+            "owner",
+            "issuer",
+            "client_id",
+            "has_secret",
+            "created_at",
+            "updated_at",
+            "revision"
+          ],
+          "properties": {
+            "client_id": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "has_secret": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "issuer": {
+              "type": "string"
+            },
+            "owner": {
+              "$ref": "#/components/schemas/SecretOwnership"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "SecretOwnership": {
+          "type": "string",
+          "description": "The namespace selected by the caller; personal ownership always resolves to\nthe authenticated subject, never a subject supplied in a request.",
+          "enum": ["me", "tenant"]
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/oauth-clients/{id}",
+    "name": "oauth-clients-get-record",
+    "source": "server/src/apps/identity/views/oauth_clients.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/OAuthClientMetadata"
+      },
+      "definitions": {
+        "OAuthClientMetadata": {
+          "type": "object",
+          "required": [
+            "id",
+            "tenant",
+            "owner",
+            "issuer",
+            "client_id",
+            "has_secret",
+            "created_at",
+            "updated_at",
+            "revision"
+          ],
+          "properties": {
+            "client_id": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "has_secret": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "issuer": {
+              "type": "string"
+            },
+            "owner": {
+              "$ref": "#/components/schemas/SecretOwnership"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "SecretOwnership": {
+          "type": "string",
+          "description": "The namespace selected by the caller; personal ownership always resolves to\nthe authenticated subject, never a subject supplied in a request.",
+          "enum": ["me", "tenant"]
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/tenants/{tenant}/oauth-clients",
+    "name": "oauth-clients-put-collection",
+    "source": "server/src/apps/identity/views/oauth_clients.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/OAuthClientMetadata"
+      },
+      "definitions": {
+        "OAuthClientMetadata": {
+          "type": "object",
+          "required": [
+            "id",
+            "tenant",
+            "owner",
+            "issuer",
+            "client_id",
+            "has_secret",
+            "created_at",
+            "updated_at",
+            "revision"
+          ],
+          "properties": {
+            "client_id": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "has_secret": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "issuer": {
+              "type": "string"
+            },
+            "owner": {
+              "$ref": "#/components/schemas/SecretOwnership"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "SecretOwnership": {
+          "type": "string",
+          "description": "The namespace selected by the caller; personal ownership always resolves to\nthe authenticated subject, never a subject supplied in a request.",
+          "enum": ["me", "tenant"]
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/tenants/{tenant}/oauth-clients/{id}",
+    "name": "oauth-clients-put-record",
+    "source": "server/src/apps/identity/views/oauth_clients.rs",
+    "json": true,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/OAuthClientMetadata"
+      },
+      "definitions": {
+        "OAuthClientMetadata": {
+          "type": "object",
+          "required": [
+            "id",
+            "tenant",
+            "owner",
+            "issuer",
+            "client_id",
+            "has_secret",
+            "created_at",
+            "updated_at",
+            "revision"
+          ],
+          "properties": {
+            "client_id": {
+              "type": "string"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "has_secret": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "issuer": {
+              "type": "string"
+            },
+            "owner": {
+              "$ref": "#/components/schemas/SecretOwnership"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "SecretOwnership": {
+          "type": "string",
+          "description": "The namespace selected by the caller; personal ownership always resolves to\nthe authenticated subject, never a subject supplied in a request.",
+          "enum": ["me", "tenant"]
+        }
+      }
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/tenants/{tenant}/oauth-clients/{id}",
+    "name": "oauth-clients-delete-record",
+    "source": "server/src/apps/identity/views/oauth_clients.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "type": "null"
+      },
+      "definitions": {}
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/connection-scope-ceilings/{resource}",
+    "name": "oauth-clients-ceiling",
+    "source": "server/src/apps/identity/views/oauth_clients.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/ConnectionScopeCeiling"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "definitions": {
+        "ConnectionScopeCeiling": {
+          "type": "object",
+          "required": [
+            "tenant",
+            "resource",
+            "scopes",
+            "updated_at",
+            "revision"
+          ],
+          "properties": {
+            "resource": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "PUT",
+    "path": "/api/tenants/{tenant}/connection-scope-ceilings/{resource}",
+    "name": "oauth-clients-put-ceiling",
+    "source": "server/src/apps/identity/views/oauth_clients.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ConnectionScopeCeiling"
+      },
+      "definitions": {
+        "ConnectionScopeCeiling": {
+          "type": "object",
+          "required": [
+            "tenant",
+            "resource",
+            "scopes",
+            "updated_at",
+            "revision"
+          ],
+          "properties": {
+            "resource": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/tenants/{tenant}/connection-scope-ceilings/{resource}",
+    "name": "oauth-clients-delete-ceiling",
+    "source": "server/src/apps/identity/views/oauth_clients.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "type": "null"
+      },
+      "definitions": {}
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/connections",
+    "name": "connection-list",
+    "source": "server/src/apps/identity/views/oauth_connections.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/OAuthConnectionMetadata"
+        }
+      },
+      "definitions": {
+        "ConnectionState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The person started the authorization; no usable token is stored yet.",
+              "enum": ["pending"]
+            },
+            {
+              "type": "string",
+              "description": "Tokens are stored and a Run whose chain starts at the owner may use them.",
+              "enum": ["active"]
+            },
+            {
+              "type": "string",
+              "description": "The refresh token is no longer usable; the owner must connect again.",
+              "enum": ["needs_reconnection"]
+            }
+          ],
+          "description": "A Connection's lifecycle."
+        },
+        "OAuthConnectionMetadata": {
+          "type": "object",
+          "required": [
+            "id",
+            "tenant",
+            "subject",
+            "resource",
+            "issuer",
+            "scopes",
+            "state",
+            "access_expires_at",
+            "created_at",
+            "updated_at",
+            "revision"
+          ],
+          "properties": {
+            "access_expires_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "issuer": {
+              "type": "string"
+            },
+            "resource": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "state": {
+              "$ref": "#/components/schemas/ConnectionState"
+            },
+            "subject": {
+              "type": "string"
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/tenants/{tenant}/connections/{id}",
+    "name": "connection-disconnect",
+    "source": "server/src/apps/identity/views/oauth_connections.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ConnectionDisconnection"
+      },
+      "definitions": {
+        "ConnectionDisconnection": {
+          "type": "object",
+          "required": ["revoked"],
+          "properties": {
+            "revoked": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/members/{subject}/connections",
+    "name": "connection-members",
+    "source": "server/src/apps/identity/views/oauth_connections.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/OAuthConnectionMetadata"
+        }
+      },
+      "definitions": {
+        "ConnectionState": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "The person started the authorization; no usable token is stored yet.",
+              "enum": ["pending"]
+            },
+            {
+              "type": "string",
+              "description": "Tokens are stored and a Run whose chain starts at the owner may use them.",
+              "enum": ["active"]
+            },
+            {
+              "type": "string",
+              "description": "The refresh token is no longer usable; the owner must connect again.",
+              "enum": ["needs_reconnection"]
+            }
+          ],
+          "description": "A Connection's lifecycle."
+        },
+        "OAuthConnectionMetadata": {
+          "type": "object",
+          "required": [
+            "id",
+            "tenant",
+            "subject",
+            "resource",
+            "issuer",
+            "scopes",
+            "state",
+            "access_expires_at",
+            "created_at",
+            "updated_at",
+            "revision"
+          ],
+          "properties": {
+            "access_expires_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "issuer": {
+              "type": "string"
+            },
+            "resource": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "state": {
+              "$ref": "#/components/schemas/ConnectionState"
+            },
+            "subject": {
+              "type": "string"
+            },
+            "tenant": {
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/tenants/{tenant}/members/{subject}/connections/{id}",
+    "name": "connection-force-disconnect",
+    "source": "server/src/apps/identity/views/oauth_connections.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ConnectionDisconnection"
+      },
+      "definitions": {
+        "ConnectionDisconnection": {
+          "type": "object",
+          "required": ["revoked"],
+          "properties": {
+            "revoked": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/tenants/{tenant}/connections/probe",
+    "name": "connection-probe",
+    "source": "server/src/apps/identity/views/oauth_connections.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["resource"],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ConnectionProbe"
+      },
+      "definitions": {
+        "ConnectionProbe": {
+          "type": "object",
+          "description": "Tenant policy metadata readable with the probe's existing permission.",
+          "required": ["oauth", "scopes_supported", "issuer"],
+          "properties": {
+            "issuer": {
+              "type": ["string", "null"]
+            },
+            "oauth": {
+              "type": "boolean"
+            },
+            "scope_ceiling": {
+              "type": ["array", "null"],
+              "items": {
+                "type": "string"
+              }
+            },
+            "scopes_supported": {
+              "type": ["array", "null"],
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/tenants/{tenant}/connections/authorizations",
+    "name": "connection-start",
+    "source": "server/src/apps/identity/views/oauth_connections.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ConnectionAuthorizationStarted"
+      },
+      "definitions": {
+        "ConnectionAuthorizationStarted": {
+          "type": "object",
+          "required": ["authorization_url"],
+          "properties": {
+            "authorization_url": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/auth/connections/callback",
+    "name": "connection-callback",
+    "source": "server/src/apps/identity/views/oauth_connections.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["code", "error", "state"]
   }
 ]

@@ -22,6 +22,7 @@ async fn pin_agent_plugins(
 	config: &AgentBindings,
 	remote: bool,
 ) -> Result<Vec<PinnedAgentPlugin>> {
+	// #554 has personal-auth proxies ready; remote plugin content, hooks and stdio still require a separate admission contract.
 	if remote && !config.agent_plugins.is_empty() {
 		return Err(Error::Invalid(
 			"Agent Plugins are unavailable remotely".into(),
@@ -176,10 +177,25 @@ pub async fn resolve(
 			));
 		}
 	}
-	let memory_bound = config
-		.bindings
-		.iter()
-		.any(|binding| binding.kind == BindingKind::Memory);
+	// Only a memory provider makes the memory builtins callable; a native
+	// memory source alone feeds automatic context (#617).
+	let mut memory_provider = false;
+	for Pending { normalized, .. } in &pending {
+		if normalized.binding.kind != BindingKind::Memory {
+			continue;
+		}
+		let target = &normalized.binding.target;
+		let entry = match definitions.get(target) {
+			Some(entry) => entry.clone(),
+			None => {
+				let entry = catalog.definition(target).await?;
+				definitions.insert(target.clone(), entry.clone());
+				entry
+			}
+		};
+		memory_provider |=
+			aidash_domain::registry::bindings::memory_provider(&entry.kind, &entry.config);
+	}
 	while let Some(Pending {
 		normalized,
 		mut ancestry,
@@ -307,7 +323,7 @@ pub async fn resolve(
 					"mandatory tools retain their canonical aliases".into(),
 				));
 			}
-			excluded_reason = memory_exclusion(origin, &descriptor.operation, memory_bound)?;
+			excluded_reason = memory_exclusion(origin, &descriptor.operation, memory_provider)?;
 			if remote && excluded_reason.is_none() {
 				excluded_reason = remote_exclusion(origin, &contract)?;
 			}

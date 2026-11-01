@@ -7,7 +7,9 @@ use crate::{
 			PreparedRealRequest, RealDispatchRepository, RealDispatchScope, RealToolTransport,
 		},
 	},
+	tenant_secrets::{SecretCall, endpoint_destination},
 };
+use aidash_capability::tenant_secret::{Attach, SecretSubject};
 use aidash_domain::{
 	provider::ToolCall,
 	registry::workbench::{
@@ -80,16 +82,41 @@ async fn prepare(
 		.map_err(|e| Error::Invalid(e.to_string()))?;
 	// Resolved with the same authority and checks as the dispatch it serves.
 	let secret = match &rule.secret {
-		Some(name) => Some(
-			scope
-				.tenant_secret(&pin.tenant, name, &rule.endpoint)
-				.await?,
-		),
+		Some(name) => {
+			let descriptor: aidash_domain::tool::providers::ToolDescriptor =
+				serde_json::from_value(tool.config.clone())?;
+			if matches!(
+				descriptor.transport,
+				Some(aidash_domain::tool::ToolConfig::Http {
+					secret_owner: aidash_domain::tool::SecretOwner::Personal,
+					..
+				})
+			) {
+				// Workbench has no Run chain-root person and cannot borrow a shared secret.
+				return Err(crate::tenant_secrets::personal_required(name));
+			}
+			let call = SecretCall {
+				destination: endpoint_destination(&rule.endpoint)?,
+				methods: vec!["POST".to_owned()],
+				attach: Attach::Bearer,
+				subject: SecretSubject::Workbench {
+					tenant: pin.tenant.clone(),
+					call: Uuid::now_v7(),
+				},
+				max_response_bytes: Some(256_000),
+			};
+			Some(
+				scope
+					.tenant_secret(&pin.tenant, name, &rule.endpoint, call)
+					.await?,
+			)
+		}
 		None => None,
 	};
 	let request = dispatch
 		.transport
-		.prepare(session_id, rule, &call, secret.as_ref())?;
+		.prepare(session_id, rule, &call, secret.as_ref())
+		.await?;
 	Ok((session, request, call))
 }
 async fn record_pre_dispatch_denial(

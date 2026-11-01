@@ -97,6 +97,7 @@ impl Scope for NativeScope {
 		let rows = Record::objects()
 			.filter(Record::field_tenant().eq(&self.tenant))
 			.filter(Record::field_name().eq(name))
+			.filter(Record::field_owner().is_null())
 			.filter(Record::field_state().ne("deleted"))
 			.all_with_executor(self.tx.as_mut())
 			.await
@@ -160,6 +161,7 @@ impl Scope for NativeScope {
 				"tenant": value.tenant,
 				"id": value.id,
 				"name": value.name,
+				"owner": value.owner,
 				"hosts": value.hosts,
 				"state": value.state,
 				"revision": value.revision,
@@ -191,6 +193,7 @@ pub(crate) async fn active_hosts_in<E: reinhardt::db::orm::OrmExecutor>(
 	let rows = Record::objects()
 		.filter(Record::field_tenant().eq(tenant))
 		.filter(Record::field_name().eq(name))
+		.filter(Record::field_owner().is_null())
 		.filter(Record::field_state().eq("active"))
 		.all_with_db(db)
 		.await
@@ -218,6 +221,7 @@ pub(crate) async fn active_hosts(
 	let rows = Record::objects()
 		.filter(Record::field_tenant().eq(&tenant))
 		.filter(Record::field_name().eq(name))
+		.filter(Record::field_owner().is_null())
 		.filter(Record::field_state().eq("active"))
 		.all_with_executor(tx)
 		.await

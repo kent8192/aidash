@@ -28,13 +28,14 @@ install limits may not exceed maximum_seconds. */ -}}
 {{- /* Managed Provider Credential descriptor, validated as the GCP host did. */ -}}
 {{- define "aidash.providerCredentials" -}}
 {{- $d := .Values.providerCredentials.settings -}}
-{{- $invalid := "providerCredentials.settings must be a managed Provider Credential descriptor {fingerprint_key, store, broker}" -}}
-{{- if or (not (kindIs "map" $d)) (ne (keys $d | sortAlpha | join ",") "broker,fingerprint_key,store") -}}{{ fail $invalid }}{{- end -}}
+{{- $invalid := "providerCredentials.settings must be a managed Provider Credential descriptor {fingerprint_key, store, broker, tenant_secret_broker}" -}}
+{{- if or (not (kindIs "map" $d)) (ne (keys $d | sortAlpha | join ",") "broker,fingerprint_key,store,tenant_secret_broker") -}}{{ fail $invalid }}{{- end -}}
 {{- $store := $d.store -}}
 {{- if not (kindIs "invalid" $store) -}}
 {{- if and (kindIs "map" $store) (eq (toJson $store.kind) "\"postgres\"") -}}
 {{- if or (ne (keys $store | sortAlpha | join ",") "kind,master_key") (ne (toJson $store.master_key) (toJson (dict "env" "AIDASH_PROVIDER_STORE_MASTER_KEY"))) -}}{{ fail "providerCredentials.settings.store must reference AIDASH_PROVIDER_STORE_MASTER_KEY for a PostgreSQL Store" }}{{- end -}}
 {{- if not (kindIs "invalid" $d.broker) -}}{{ fail "A PostgreSQL Store cannot configure a Credential Broker" }}{{- end -}}
+{{- if not (kindIs "invalid" $d.tenant_secret_broker) -}}{{ fail "A PostgreSQL Store cannot configure a Tenant Secret Broker" }}{{- end -}}
 {{- else -}}
 {{- if or (not (kindIs "map" $store)) (ne (keys $store | sortAlpha | join ",") "byok_project_id,environment_id,kind") (ne (toJson $store.kind) "\"secret_manager\"") (not (kindIs "string" $store.byok_project_id)) (not (kindIs "string" $store.environment_id)) -}}{{ fail "providerCredentials.settings.store must be a Secret Manager Store {kind, byok_project_id, environment_id}" }}{{- end -}}
 {{- if or (not (regexMatch "^[a-z][a-z0-9-]{4,28}[a-z0-9]$" $store.byok_project_id)) (not (regexMatch "^(develop|test|pr-[1-9][0-9]*)$" $store.environment_id)) -}}{{ fail "providerCredentials.settings.store names an invalid BYOK project or Environment" }}{{- end -}}
@@ -50,6 +51,14 @@ install limits may not exceed maximum_seconds. */ -}}
 {{- end -}}
 {{- if ne $broker.audience $store.environment_id -}}{{ fail "providerCredentials.settings.broker.audience must be the Store's Environment" }}{{- end -}}
 {{- end -}}
+{{- $tenant := $d.tenant_secret_broker -}}
+{{- if not (kindIs "invalid" $tenant) -}}
+{{- if or (kindIs "invalid" $store) (not (kindIs "map" $tenant)) (ne (keys $tenant | sortAlpha | join ",") "audience,endpoint,issuer,kid") -}}{{ fail "providerCredentials.settings.tenant_secret_broker requires a managed Store and exactly {endpoint, issuer, audience, kid}" }}{{- end -}}
+{{- range $key, $value := $tenant -}}
+{{- if or (not (kindIs "string" $value)) (not $value) -}}{{ fail (printf "providerCredentials.settings.tenant_secret_broker.%s must be a non-empty string" $key) }}{{- end -}}
+{{- end -}}
+{{- if ne $tenant.audience (printf "%s-tsec" $store.environment_id) -}}{{ fail "providerCredentials.settings.tenant_secret_broker.audience must be the Store's Environment with a -tsec suffix" }}{{- end -}}
+{{- else if or (not (kindIs "invalid" $broker)) (and (not (kindIs "invalid" $store)) (eq (toJson $store.kind) "\"secret_manager\"") .Values.execution.egress.enabled) -}}{{ fail "Cloud and Dedicated Secret Manager stores require providerCredentials.settings.tenant_secret_broker when a broker is configured or egress is enabled" }}{{- end -}}
 {{- toJson (dict "provider_credentials" $d) -}}
 {{- end -}}
 
@@ -72,6 +81,5 @@ install limits may not exceed maximum_seconds. */ -}}
 {{- $e := .Values.execution.egress -}}
 {{- if not (regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$" $e.clusterIP) -}}{{ fail "execution.egress.clusterIP must be a reserved internal IPv4 Service IP" }}{{- end -}}
 {{- if not .Values.execution.runner.enabled -}}{{ fail "execution.egress requires execution.runner.enabled" }}{{- end -}}
-{{- if .Values.providerCredentials.settings -}}{{ fail "Cloud and Dedicated Egress gateways require #310" }}{{- end -}}
 {{- toJson (dict "endpoint" (printf "http://%s:%d" $e.clusterIP (int $e.port)) "listen" (printf "0.0.0.0:%d" (int $e.port)) "namespace" .Release.Namespace "pod_selector" (dict "app.kubernetes.io/instance" .Release.Name "app.kubernetes.io/component" "server") "limits" $e.limits) -}}
 {{- end -}}
