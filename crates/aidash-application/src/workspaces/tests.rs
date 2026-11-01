@@ -1,5 +1,7 @@
 use super::*;
 use crate::Error;
+use crate::ports::workspaces::MemoryEmbedding;
+use aidash_domain::semantic::{EmbeddingConfig, indexing::IndexingSpec};
 use aidash_domain::{
 	Conversation, Task, TaskStatus, Workspace, federation::Delegation, registry::Entry,
 };
@@ -12,6 +14,8 @@ struct Fixture {
 	denied: Option<&'static str>,
 	delegated_agent: Option<EntityRef>,
 	task: Task,
+	memory: Option<MemoryEmbedding>,
+	index: Option<(EntityRef, EntityRef, IndexingSpec)>,
 }
 impl Fixture {
 	fn new(kind: &str) -> Self {
@@ -20,7 +24,7 @@ impl Fixture {
                 "id":"target", "version":"1", "kind":kind, "name":{"en":"Target"}, "description":{"en":"Fixture"},
                 "config":{"coordinator":{"id":"coordinator", "version":"2"}},
             })).unwrap(),
-            operations: vec![], denied: None, delegated_agent: None,
+            operations: vec![], denied: None, delegated_agent: None, memory: None, index: None,
             task: Task {
                 id: Uuid::from_u128(3), workspace_id: Uuid::from_u128(1), title:"Title".into(), description:"Goal".into(),
                 status:TaskStatus::Open, requirements:json!({}), owner:None, created_by:"subject:fixture".into(),
@@ -115,6 +119,22 @@ impl ConversationScope for Fixture {
 	async fn bind_task(&mut self, task: Uuid, conversation: Uuid) -> Result<()> {
 		assert_eq!((task, conversation), (self.task.id, Uuid::from_u128(2)));
 		self.operations.push("bind.session".into());
+		Ok(())
+	}
+	async fn memory_embedding(&mut self, agent: &EntityRef) -> Result<Option<MemoryEmbedding>> {
+		self.operations.push(format!("memory.{}", agent.id));
+		Ok(self.memory.clone())
+	}
+	async fn create_memory_index(
+		&mut self,
+		conversation: &Conversation,
+		agent: &EntityRef,
+		provider: &EntityRef,
+		spec: &IndexingSpec,
+	) -> Result<()> {
+		assert_eq!(conversation.workspace_id, self.task.workspace_id);
+		self.operations.push("insert.index".into());
+		self.index = Some((agent.clone(), provider.clone(), spec.clone()));
 		Ok(())
 	}
 	async fn delegate(&mut self, task: Uuid, agent: &EntityRef) -> Result<Delegation> {
@@ -232,4 +252,105 @@ async fn malformed_cluster_coordinator_cannot_publish_a_conversation_or_task() {
 			.iter()
 			.any(|op| op == "insert.conversation" || op == "insert.task")
 	);
+}
+
+fn memory() -> MemoryEmbedding {
+	MemoryEmbedding {
+		provider: EntityRef {
+			id: "memory".into(),
+			version: "3".into(),
+		},
+		embedding: EmbeddingConfig {
+			provider: "openai".into(),
+			endpoint: "https://embeddings.example/v1".into(),
+			provider_credential: None,
+			model: "fixture-embedding".into(),
+			model_version: "1".into(),
+			dimensions: 3,
+		},
+	}
+}
+
+#[rstest::rstest]
+#[case("agent", "target")]
+#[case("cluster", "coordinator")]
+#[tokio::test]
+async fn a_target_that_binds_memory_gets_its_index_before_delegation(
+	#[case] kind: &str,
+	#[case] executor: &str,
+) {
+	// Arrange: the executing agent binds a memory provider.
+	let reference = EntityRef {
+		id: "target".into(),
+		version: "1".into(),
+	};
+	let mut scope = Fixture::new(kind);
+	scope.memory = Some(memory());
+	// Act
+	conversation(&mut scope, request(&reference, kind))
+		.await
+		.unwrap();
+	// Assert: the executing agent's policy embedding, with only what memory needs.
+	let (agent, provider, spec) = scope.index.clone().unwrap();
+	assert_eq!(agent.id, executor);
+	assert_eq!(provider, memory().provider);
+	assert_eq!(spec.embedding, memory().embedding);
+	assert!(spec.enabled);
+	assert!(!spec.auto_context);
+	assert_eq!(
+		(
+			spec.max_sources,
+			spec.max_results,
+			spec.max_result_tokens,
+			spec.max_input_bytes
+		),
+		(256, 10, 4096, 8192)
+	);
+	assert_eq!(
+		(spec.vector.provider.as_str(), spec.vector.endpoint.as_str()),
+		("postgres", "local")
+	);
+	let at = |op: &str| scope.operations.iter().position(|o| o == op).unwrap();
+	assert!(at("semantic.index.manage") < at("insert.index"));
+	assert!(at("insert.index") < at("delegate"));
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_target_without_memory_gets_no_index() {
+	let reference = EntityRef {
+		id: "target".into(),
+		version: "1".into(),
+	};
+	let mut scope = Fixture::new("agent");
+	conversation(&mut scope, request(&reference, "agent"))
+		.await
+		.unwrap();
+	assert!(scope.index.is_none());
+	assert!(
+		!scope
+			.operations
+			.iter()
+			.any(|op| op == "semantic.index.manage")
+	);
+	assert!(scope.operations.iter().any(|op| op == "delegate"));
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn starting_a_memory_target_without_index_authority_is_forbidden() {
+	// Arrange: the person may create the conversation but not configure an index.
+	let reference = EntityRef {
+		id: "target".into(),
+		version: "1".into(),
+	};
+	let mut scope = Fixture::new("agent");
+	scope.memory = Some(memory());
+	scope.denied = Some("semantic.index.manage");
+	// Act
+	let result = conversation(&mut scope, request(&reference, "agent")).await;
+	// Assert
+	assert!(matches!(result, Err(Error::Forbidden)));
+	assert!(scope.index.is_none());
+	assert!(!scope.operations.iter().any(|op| op == "delegate"));
 }
