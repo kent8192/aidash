@@ -29,6 +29,7 @@ impl RealTools {
 			origins,
 			permitted: reqwest::Client::builder()
 				.redirect(reqwest::redirect::Policy::none())
+				.user_agent(crate::USER_AGENT)
 				.timeout(TIMEOUT)
 				.build()
 				.map_err(crate::http_error)?,

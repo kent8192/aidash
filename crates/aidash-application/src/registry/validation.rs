@@ -315,6 +315,7 @@ impl DefinitionValidation {
 				m.validate_projection_versions()?;
 				m.validate_cache_mode()?;
 				m.validate_provider_route()?;
+				m.validate_model_variant()?;
 				m.validate_estimate_diagnostics()?;
 				if m.provider_credential.is_some() || m.plan_connection.is_some() {
 					aidash_domain::provider_credentials::validate_model_id(&m.model_id)?;
@@ -522,6 +523,12 @@ impl DefinitionValidation {
 			.ok_or_else(|| Error::NotFound(config.model.id.clone()))?;
 		let model: ModelConfig = serde_json::from_value(model.definition.config.clone())?;
 		let version = config.projection_version.unwrap_or_default();
+		let contract = config.harness_contract.unwrap_or_default();
+		if !contract.supports(version) {
+			return Err(Error::Invalid(format!(
+				"Harness Contract {contract} does not support Projection Version {version}"
+			)));
+		}
 		model.require_projection(version)?;
 		model.require_prompt_cache(config.prompt_cache.unwrap_or_default(), version)?;
 		if let Some(budgets) = config.exposure_policy().budgets() {
@@ -534,18 +541,21 @@ impl DefinitionValidation {
 				version,
 			);
 		}
-		let mut instructions = aidash_domain::context::versioned_agent_instructions(version, "");
+		let mut fragments: Vec<(&str, String)> = vec![];
 		let mut specifications = vec![];
 		for binding in &snapshot.bindings {
 			if binding.excluded_reason.is_some() {
 				continue;
 			}
 			if binding.definition.kind == "skill" {
-				instructions.push_str(&format!(
-					"\nSkill {}@{}:\n{}",
-					binding.identity.id,
-					binding.identity.version,
-					skill_instructions(&binding.definition)?
+				fragments.push((
+					"registry_skills",
+					format!(
+						"\nSkill {}@{}:\n{}",
+						binding.identity.id,
+						binding.identity.version,
+						skill_instructions(&binding.definition)?
+					),
 				));
 			} else if binding.definition.kind == "tool" {
 				let alias = binding
@@ -556,8 +566,17 @@ impl DefinitionValidation {
 				specifications.push(spec);
 			}
 		}
-		instructions.push_str("\nAdditional user instructions:\n");
-		instructions.push_str(&config.instructions);
+		let fragments = fragments
+			.iter()
+			.map(|(slot, text)| (*slot, text.as_str()))
+			.collect::<Vec<_>>();
+		let instructions = aidash_domain::harness_contract::system_text(
+			contract,
+			version,
+			&config.instructions,
+			&fragments,
+			"",
+		);
 		aidash_domain::context::request_context_budget(
 			model.context_window,
 			model.output_token_limit(),
@@ -620,7 +639,7 @@ impl DefinitionValidation {
 			}
 		}
 		let selection = exposure::select(budgets, &catalog, &ExposureState::default())?;
-		let mut instructions = aidash_domain::context::versioned_agent_instructions(version, "");
+		let mut fragments: Vec<(&str, String)> = vec![];
 		for alias in &selection.skills {
 			let capability = catalog
 				.iter()
@@ -630,13 +649,25 @@ impl DefinitionValidation {
 			if !matches!(capability.identity, CapabilityIdentity::Registry(_)) {
 				continue;
 			}
-			instructions.push_str(&exposure::resident_block(
-				capability,
-				&exposure::registry_skill_body(snapshot, capability)?,
+			fragments.push((
+				"resident_skills",
+				exposure::resident_block(
+					capability,
+					&exposure::registry_skill_body(snapshot, capability)?,
+				),
 			));
 		}
-		instructions.push_str("\nAdditional user instructions:\n");
-		instructions.push_str(&config.instructions);
+		let fragments = fragments
+			.iter()
+			.map(|(slot, text)| (*slot, text.as_str()))
+			.collect::<Vec<_>>();
+		let instructions = aidash_domain::harness_contract::system_text(
+			config.harness_contract.unwrap_or_default(),
+			version,
+			&config.instructions,
+			&fragments,
+			"",
+		);
 		let exposed = specifications
 			.into_iter()
 			.filter(|(alias, _)| selection.tools.contains(alias))
