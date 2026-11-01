@@ -185,7 +185,10 @@ pub async fn load<S: MediaAttachments + ?Sized>(
 		let Some(choice) = choice else {
 			accepted.truncate(old_len);
 			if through_seq.is_none() {
-				return Err(Error::MediaRouteUnavailable(model.model_id.clone()));
+				return Err(Error::MediaRouteUnavailable {
+					model: model.model_id.clone(),
+					candidates: Vec::new(),
+				});
 			}
 			has_more = true;
 			break;

@@ -43,11 +43,9 @@ async fn decode_bounded<T: Send + 'static>(
 			aidash_integrations::media::Refusal::TooLarge => {
 				crate::Error::Invalid("MEDIA_TOO_LARGE".into())
 			}
-			aidash_integrations::media::Refusal::RenditionTooLong => {
-				crate::Error::MediaRouteUnavailable(
-					"audio is too long to convert to WAV within the inference byte limit".into(),
-				)
-			}
+			aidash_integrations::media::Refusal::RenditionTooLong => crate::Error::Invalid(
+				"audio is too long to convert to WAV within the inference byte limit".into(),
+			),
 		})
 	};
 	tokio::time::timeout(deadline, run)

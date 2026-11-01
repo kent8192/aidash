@@ -504,7 +504,7 @@ async fn first_message_requires_a_current_approved_route(
 	.await
 	.err()
 	.unwrap();
-	assert!(matches!(error,Error::MediaRouteUnavailable(ref name) if name=="saved-model"));
+	assert!(matches!(error,Error::MediaRouteUnavailable { ref model, .. } if model=="saved-model"));
 }
 #[rstest]
 #[tokio::test]
@@ -1042,7 +1042,7 @@ async fn does_not_combine_individually_supported_formats_from_different_routes(
 			Default::default()
 		)
 		.await,
-		Err(Error::MediaRouteUnavailable(_))
+		Err(Error::MediaRouteUnavailable { .. })
 	));
 	assert!(!scope.calls.iter().any(|(action, _)| *action == "wav"));
 }

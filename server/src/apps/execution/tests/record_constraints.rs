@@ -995,7 +995,6 @@ async fn model_and_agent_configs_reject_unusable_shapes(
 		.unwrap();
 	let mut linked_agent_config = agent["config"].clone();
 	linked_agent_config["bindings"] = json!([{"kind":"tool","target":{"registry_deployment":"aidash://execution-test","id":"not-a-model","version":"1.0.0"},"narrow":{}},{"kind":"skill","target":{"registry_deployment":"aidash://execution-test","id":"test-skill","version":"1.0.0"},"narrow":{}}]);
-	linked_agent_config["cluster"] = json!({"id":"test-cluster","version":"1.0.0"});
 	update_registry_config(
 		f.store.pool.fixture_driver(),
 		"agent",
@@ -1025,35 +1024,14 @@ async fn model_and_agent_configs_reject_unusable_shapes(
 			"skills",
 			json!({"id":"absent","version":"1.0.0"}),
 		),
-		(
-			"wrong-kind-cluster",
-			"cluster",
-			json!({"id":"test-skill","version":"1.0.0"}),
-		),
-		(
-			"missing-cluster",
-			"cluster",
-			json!({"id":"absent","version":"1.0.0"}),
-		),
 	] {
 		let mut invalid_reference = agent.clone();
 		invalid_reference["id"] = json!(id);
-		if field == "cluster" {
-			invalid_reference["config"][field] = target;
-		} else {
-			invalid_reference["config"][field] = json!([target]);
-		}
-		if field == "cluster" {
-			check_foreign_key_rejected(
-				insert_entry(f.store.pool.fixture_driver(), &invalid_reference).await,
-				"registry_agent_resource_target",
-			);
-		} else {
-			check_rejected(
-				insert_entry(f.store.pool.fixture_driver(), &invalid_reference).await,
-				"registry_agent_config",
-			);
-		}
+		invalid_reference["config"][field] = json!([target]);
+		check_rejected(
+			insert_entry(f.store.pool.fixture_driver(), &invalid_reference).await,
+			"registry_agent_config",
+		);
 	}
 	// TRUNCATE skips row-level security, so the server role may not issue it.
 	let refused = sqlx::query("TRUNCATE registry_agent_model_refs")

@@ -288,7 +288,7 @@ impl AuthorizedMediaScope for ScopedMedia<'_> {
 }
 fn check_wav_size(size: i64) -> NativeResult<()> {
 	if size > 8 * 1024 * 1024 {
-		return Err(crate::Error::MediaRouteUnavailable(
+		return Err(crate::Error::Invalid(
 			"audio is too long to convert to WAV within the inference byte limit".into(),
 		));
 	}
@@ -471,7 +471,7 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 				let wav = crate::collaboration::attachments::render_wav(&media_type, &bytes)
 					.await
 					.map_err(|error| match error {
-						crate::Error::MediaRouteUnavailable(reason) => {
+						crate::Error::Invalid(reason) => {
 							aidash_application::Error::Invalid(format!(
 								"this model cannot read {media_type} through any current route: {reason}"
 							))
@@ -585,7 +585,7 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 					| aidash_application::Error::Unauthorized
 					| aidash_application::Error::AuthorityRefused(_),
 				) => return Ok(None),
-				Err(aidash_application::Error::MediaRouteUnavailable(reason)) => {
+				Err(aidash_application::Error::Invalid(reason)) => {
 					return Err(aidash_application::Error::Invalid(format!(
 						"this model cannot read {} through any current route: {reason}",
 						row.media_type

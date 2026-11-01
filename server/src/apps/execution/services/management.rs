@@ -528,12 +528,13 @@ impl HarnessManagement {
 			)
 			.await
 			.map_err(|error| match error {
-				aidash_application::Error::MediaRouteUnavailable(reason) => {
-					Error::Invalid(format!(
-						"recipient model {} has no current media route for every selected format: {reason}",
-						model.model_id
-					))
-				}
+				aidash_application::Error::MediaRouteUnavailable {
+					model: _,
+					candidates,
+				} => Error::Invalid(format!(
+					"recipient model {} has no current media route for every selected format: {candidates:?}",
+					model.model_id
+				)),
 				other => other.into(),
 			})?;
 			crate::apps::workspaces::models::ChannelAttachment::attach_run_media_in(

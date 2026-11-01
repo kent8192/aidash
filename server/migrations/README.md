@@ -1,10 +1,11 @@
 # Aidash native migration history
 
-`registry/0054_attachment_tools` (after `registry/0053_connection_request`) extends the existing PostgreSQL descriptor
+`registry/0055_attachment_tools` (after `registry/0054_remove_agent_cluster`) extends the existing PostgreSQL descriptor
 and Agent default validators for the built-in `attachment_copy` operation.
 The function bodies use SQL assets because Reinhardt has no typed operation
 for replacing PostgreSQL functions. Reversal refuses while definitions or Run
 snapshots still use the new operation.
+`registry/0054_remove_agent_cluster` removes the obsolete Agent config key from Registry definitions, Agent drafts and registration requests, then removes it from the Agent contract. `execution/0089_remove_agent_cluster` removes it from Generation policy templates and request definitions. PostgreSQL JSON updates and function replacement use SQL assets because Reinhardt migrations cannot express these transformations. Both are irreversible. Each owner-only atomic migration establishes Deployment Scope before its first row access because the native migration executor does not open scoped application transactions. The registry update temporarily disables the Marketplace writer fence within its transaction, retaining its other validation and reference triggers. Installed Registry copies change while immutable Marketplace versions and revisions stay untouched: old Marketplace versions must be republished and old installation revisions may no longer match. Run and Federation snapshots are unchanged; Runs using old snapshots fail and need cancellation. Surviving Run constraints and triggers do not call the Agent validator, so cancellation updates do not revalidate the retained snapshots. Catalog Approvals and Federation pins covering changed definitions need renewing.
 
 `execution/0081_lease_recoveries` updates the physical `runs.pending` default,
 and replaces the activation trigger function. PostgreSQL function replacement
