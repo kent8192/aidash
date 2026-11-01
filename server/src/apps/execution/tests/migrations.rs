@@ -69,6 +69,8 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0053_connection_request"),
 	("registry", "0054_remove_agent_cluster"),
 	("execution", "0089_remove_agent_cluster"),
+	("execution", "0090_run_created_at"),
+	("execution", "0091_bounded_read_indexes"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
