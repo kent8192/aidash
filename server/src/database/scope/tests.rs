@@ -80,7 +80,11 @@ fn only_the_transaction_opener_writes_the_scope_settings() {
 	migration_openers.sort();
 	assert_eq!(
 		migration_openers,
-		["migrations/execution/sql/forward/0089_run_created_at.sql",]
+		[
+			"migrations/execution/sql/forward/0089_remove_agent_cluster.sql",
+			"migrations/execution/sql/forward/0090_run_created_at.sql",
+			"migrations/registry/sql/forward/0054_remove_agent_cluster.sql",
+		]
 	);
 	for path in migration_openers {
 		let text = std::fs::read_to_string(root.join(path)).unwrap();

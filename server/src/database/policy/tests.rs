@@ -37,7 +37,11 @@ const BEFORE_POLICIES: &[&str] = &[
 /// Migration directions that write Tenant-owned rows under their policies
 /// after opening Deployment Scope with `SET LOCAL aidash.scope`, because the
 /// native migration executor has no scope API.
-const IN_DEPLOYMENT_SCOPE: &[&str] = &["execution.0089_run_created_at forward"];
+const IN_DEPLOYMENT_SCOPE: &[&str] = &[
+	"execution.0089_remove_agent_cluster forward",
+	"execution.0090_run_created_at forward",
+	"registry.0054_remove_agent_cluster forward",
+];
 
 #[rstest::rstest]
 #[tokio::test]

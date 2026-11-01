@@ -1,5 +1,7 @@
 # Aidash native migration history
 
+`registry/0054_remove_agent_cluster` removes the obsolete Agent config key from Registry definitions, Agent drafts and registration requests, then removes it from the Agent contract. `execution/0089_remove_agent_cluster` removes it from Generation policy templates and request definitions. PostgreSQL JSON updates and function replacement use SQL assets because Reinhardt migrations cannot express these transformations. Both are irreversible. Each owner-only atomic migration establishes Deployment Scope before its first row access because the native migration executor does not open scoped application transactions. The registry update temporarily disables the Marketplace writer fence within its transaction, retaining its other validation and reference triggers. Installed Registry copies change while immutable Marketplace versions and revisions stay untouched: old Marketplace versions must be republished and old installation revisions may no longer match. Run and Federation snapshots are unchanged; Runs using old snapshots fail and need cancellation. Surviving Run constraints and triggers do not call the Agent validator, so cancellation updates do not revalidate the retained snapshots. Catalog Approvals and Federation pins covering changed definitions need renewing.
+
 `execution/0081_lease_recoveries` updates the physical `runs.pending` default,
 and replaces the activation trigger function. PostgreSQL function replacement
 is a SQL exception that Reinhardt cannot express. The server decodes the
@@ -150,10 +152,10 @@ search-path setting. Regression checks load the exact generated SQL through
 `FilesystemSource` and verify both initial gate values after migration and after
 complete reversal/reapplication.
 
-`execution/0089_run_created_at` also materializes its Run backfill through
+`execution/0090_run_created_at` also materializes its Run backfill through
 `migrationseeds`: it enters Deployment Scope and copies each existing Run's
 `updated_at` into its new `created_at` as an approximation. Later Runs receive
-their creation time when inserted; `execution/0090_bounded_read_indexes` sets
+their creation time when inserted; `execution/0091_bounded_read_indexes` sets
 the physical insert default and creates the ordered, state-filtered indexes.
 
 Reinhardt Query already provides builders for several of these statements; the
