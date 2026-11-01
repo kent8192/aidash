@@ -6533,6 +6533,10 @@ impl SubnodeRig {
 		let base =
 			serde_json::to_value(f.registry.get(&tenant, "research", "1.0.0").await.unwrap())
 				.unwrap();
+		if members.contains(&"restricted-member") {
+			let (status, body) = request(app, &token, "POST", "/api/authorization/acme/catalog", json!({"node":node.node.as_str(),"entry":{"id":"aidash.outbound_get","version":"1.0.0"},"expected_revision":0,"enabled":true})).await;
+			assert_eq!(status, 200, "approve outbound_get: {body}");
+		}
 		for name in std::iter::once("subnode-creator").chain(members.iter().copied()) {
 			let mut entry = base.clone();
 			entry["id"] = json!(name);
@@ -6559,6 +6563,14 @@ impl SubnodeRig {
 						defaults.push(json!(name));
 					}
 				}
+			}
+			if members.contains(&"restricted-member") {
+				let narrow = if name == "subnode-creator" {
+					json!({"allowed_hosts":["example.com"]})
+				} else {
+					json!({})
+				};
+				entry["config"]["bindings"].as_array_mut().unwrap().push(json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.outbound_get","version":"1.0.0"},"alias":"outbound_get","narrow":narrow}));
 			}
 			let (status, body) = request(app, &token, "POST", "/api/registry", entry).await;
 			assert_eq!(status, 200, "register {name}: {body}");
@@ -6843,6 +6855,28 @@ const SUBNODE_TOOLS: [&str; 6] = [
 	"human_request",
 	"connection_request",
 ];
+
+#[rstest::rstest]
+#[tokio::test]
+async fn subnode_refuses_member_with_broader_outbound_binding(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::new(&f, &fixture.application, &["restricted-member"], true).await;
+	let mut tools = SUBNODE_TOOLS.to_vec();
+	tools.push("outbound_get");
+	let result = rig.inject("subnode_create", json!({"leader":"restricted-member@1.0.0","members":["restricted-member@1.0.0"],"allowance":{"tools":tools,"secrets":[]}}), "restricted-create").await;
+	assert!(
+		result["error"]
+			.as_str()
+			.is_some_and(|error| error.contains("restriction")),
+		"expected binding restriction refusal: {result}"
+	);
+	assert_eq!(subnode_rows(&f).await, 0);
+	cleanup(f, &url, &schema).await;
+}
 
 /// An agent that only has the default policy cannot create a Subnode, because
 /// `subnode.create` is an explicit action that no default group confers.

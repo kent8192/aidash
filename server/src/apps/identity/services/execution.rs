@@ -804,7 +804,7 @@ impl WorkerAuthority {
 		input: &aidash_application::subnodes::Create,
 	) -> Result<aidash_domain::subnodes::Subnode> {
 		use crate::apps::identity::repositories::subnodes::{
-			Creation, binding_authority, creator_can_use_binding,
+			Creation, binding_authority, check_member_bindings, creator_can_use_binding,
 		};
 		let remote =
 			crate::apps::identity::services::peer::admission::run_grant(&f.store, &run.metadata())
@@ -900,6 +900,7 @@ impl WorkerAuthority {
 				));
 			}
 			let config = aidash_domain::registry::AgentConfig::from_snapshot(&snapshot)?;
+			check_member_bindings(&usable, &snapshot, &config)?;
 			members.insert(
 				format!("{}@{}", agent.id, agent.version),
 				binding_authority(&snapshot, &config)?,
@@ -933,7 +934,7 @@ impl WorkerAuthority {
 	) -> Result<Value> {
 		use crate::apps::execution::models::subnodes::{SubnodeOperationReceipt, SubnodeRecord};
 		use crate::apps::identity::repositories::subnodes::{
-			Management, binding_authority, creator_binding_authority,
+			Management, binding_authority, check_member_bindings, creator_binding_authority,
 		};
 		use aidash_application::ports::subnodes::ManageScope as _;
 		use aidash_application::subnodes::{self, Command};
@@ -976,9 +977,13 @@ impl WorkerAuthority {
 		let creator = f.store.run(&tenancy, subnode.creator_run_id).await?;
 		let mut creator_authority = aidash_domain::subnodes::Allowance::default();
 		let mut candidate_authority = None;
-		if matches!(command, Command::Add { .. }) {
+		let mut creator_bindings = None;
+		if matches!(command, Command::Add { .. } | Command::Task { .. }) {
 			lease.set_node(run.node.clone());
-			creator_authority = creator_binding_authority(&mut lease, &creator, &subnode).await?;
+			let (authority, bindings) =
+				creator_binding_authority(&mut lease, &creator, &subnode).await?;
+			creator_authority = authority;
+			creator_bindings = Some(bindings);
 		}
 		let candidate = match command {
 			Command::Add { agent, .. } => Some(agent),
@@ -1010,6 +1015,13 @@ impl WorkerAuthority {
 				));
 			}
 			let config = aidash_domain::registry::AgentConfig::from_snapshot(&snapshot)?;
+			check_member_bindings(
+				creator_bindings
+					.as_ref()
+					.expect("candidate has creator bindings"),
+				&snapshot,
+				&config,
+			)?;
 			let required = binding_authority(&snapshot, &config)?;
 			aidash_domain::subnodes::member_fits(&required, &subnode.allowance)
 				.map_err(|error| Error::Refused(error.to_string()))?;

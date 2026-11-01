@@ -67,6 +67,46 @@ pub(crate) fn binding_authority(
 	Ok(authority)
 }
 
+/// Every usable member Binding must be covered by a creator Binding with the
+/// same pinned definition and at least as much effective authority.
+pub(crate) fn check_member_bindings(
+	creator: &BindingSnapshot,
+	member: &BindingSnapshot,
+	config: &aidash_domain::registry::AgentConfig,
+) -> Result<()> {
+	for binding in &member.bindings {
+		if binding.excluded_reason.is_some()
+			|| binding.definition.kind != "tool"
+			|| !creator_can_use_binding(config, binding)?
+		{
+			continue;
+		}
+		if let Ok(descriptor) = serde_json::from_value::<
+			aidash_domain::tool::providers::ToolDescriptor,
+		>(binding.definition.config.clone())
+			&& descriptor.provider.starts_with("core.")
+			&& aidash_domain::subnodes::COORDINATION_TOOLS.contains(&descriptor.operation.as_str())
+		{
+			continue;
+		}
+		let covered = creator.bindings.iter().any(|parent| {
+			parent.identity == binding.identity
+				&& parent.digest == binding.digest
+				&& parent
+					.narrow
+					.intersect(&binding.narrow)
+					.is_ok_and(|intersection| intersection == binding.narrow)
+		});
+		if !covered {
+			return Err(aidash_application::Error::Refused(format!(
+				"member Binding {} exceeds creator restrictions",
+				binding.identity.resource_id()
+			)));
+		}
+	}
+	Ok(())
+}
+
 /// A pinned Binding is not usable when the creator lacks its Agent or core
 /// capability prerequisite, even if current policy allows tool.invoke.
 pub(crate) fn creator_can_use_binding(
@@ -624,7 +664,7 @@ pub(crate) async fn creator_binding_authority(
 	access: &mut Access,
 	creator: &aidash_domain::Run,
 	subnode: &Subnode,
-) -> crate::Result<Allowance> {
+) -> crate::Result<(Allowance, BindingSnapshot)> {
 	let snapshot = creator
 		.context
 		.binding_snapshot
@@ -696,7 +736,7 @@ pub(crate) async fn creator_binding_authority(
 			Err(error) => return Err(error),
 		}
 	}
-	binding_authority(&usable, &config).map_err(Into::into)
+	Ok((binding_authority(&usable, &config)?, usable))
 }
 
 /// A Task in a Subnode can only originate from its creator or a current member,
