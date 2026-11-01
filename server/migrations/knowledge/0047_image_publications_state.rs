@@ -26,6 +26,30 @@ pub(super) fn migration() -> Migration {
 				expression: "generation > 0 AND CASE WHEN jsonb_typeof(changes) = 'array' THEN jsonb_array_length(changes) > 0 ELSE false END AND jsonb_typeof(authority) = 'object'".into(),
 			},
 		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "semantic_image_ledgers".into(),
+			constraint: Constraint::ForeignKey {
+				name: "semantic_image_ledgers_tenant_root_fkey".into(),
+				columns: vec!["tenant".into()],
+				referenced_table: "tenants".into(),
+				referenced_columns: vec!["name".into()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "semantic_image_publications".into(),
+			constraint: Constraint::ForeignKey {
+				name: "semantic_image_publications_tenant_root_fkey".into(),
+				columns: vec!["tenant".into()],
+				referenced_table: "tenants".into(),
+				referenced_columns: vec!["name".into()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
 		.state_only(true)
 		.atomic(true)
 }
