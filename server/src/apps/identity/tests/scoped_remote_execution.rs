@@ -712,6 +712,23 @@ async fn direct_thread_attachment_fetch_checks_mapping_and_grant(#[future(awt)] 
 	let endpoint = "/federation/v0.1/thread-attachment/1/fetch";
 	let input =
 		json!({"grant_id":p.grant,"admission_id":p.admission,"attachment_id":attachment["id"]});
+	let attachment_id = Uuid::parse_str(attachment["id"].as_str().unwrap()).unwrap();
+	let journal_query = Query::select()
+		.expr(Expr::cust("COUNT(*)"))
+		.from(Alias::new("authorization_remote_grant_reads"))
+		.and_where(Expr::col("grant_id").eq(Expr::value(p.grant)))
+		.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+		.and_where(Expr::col("resource_kind").eq("attachment"))
+		.and_where(Expr::col("resource_id").eq(Expr::value(attachment_id)))
+		.to_string(PostgresQueryBuilder);
+	let before: i64 = sqlx::query_scalar(&journal_query)
+		.fetch_one(p.a.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(
+		before, 0,
+		"the fetch must be the source of the journal entry"
+	);
 	let (status, fetched) = common::peer_request(
 		&p.aa,
 		(&p.b, "acme"),
@@ -722,6 +739,11 @@ async fn direct_thread_attachment_fetch_checks_mapping_and_grant(#[future(awt)] 
 	)
 	.await;
 	assert_eq!(status, 200, "{fetched}");
+	let after: i64 = sqlx::query_scalar(&journal_query)
+		.fetch_one(p.a.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(after, 1, "the grant must record its attachment read");
 	assert_eq!(
 		base64::engine::general_purpose::STANDARD
 			.decode(fetched["content_base64"].as_str().unwrap())

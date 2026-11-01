@@ -21,6 +21,12 @@ pub trait ReadProvenanceScope: ResourceVisibilityScope {
 	async fn source_task(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Task>>;
 	async fn source_artifact(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Artifact>>;
 	async fn source_message(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Message>>;
+	/// Resolve an extant attachment to its parent message for current-authority checks.
+	async fn source_attachment_message(
+		&mut self,
+		id: Uuid,
+		workspace: Uuid,
+	) -> Result<Option<Message>>;
 	async fn source_run(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<RunMetadata>>;
 	async fn source_conversation(
 		&mut self,

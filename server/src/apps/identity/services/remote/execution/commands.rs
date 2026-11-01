@@ -54,6 +54,7 @@ pub(crate) async fn thread_attachment(
 	)
 	.await?;
 	access.worker();
+	access.read_grant = Some(input.grant_id);
 	let workspace = description.task.workspace_id;
 	let mut lease = crate::collaboration::access::Lease::from_access(access);
 	let result: Result<AttachmentResponse> = async {
@@ -73,6 +74,25 @@ pub(crate) async fn thread_attachment(
 			.access_mut()
 			.workspace_record(workspace, "attachment", input.attachment_id)
 			.await?;
+		// Attachment reads must remain visible to grant provenance after the lease closes.
+		{
+			use aidash_application::ports::authorization::journals::{
+				ReadJournalScope as _, ReadMembership,
+			};
+			let mut journal = crate::bootstrap::run_visibility_scope(lease.access_mut());
+			match journal.membership() {
+				(None, Some(grant)) => {
+					journal
+						.record_sources(
+							ReadMembership::RemoteGrant(grant),
+							workspace,
+							&[("attachment".into(), input.attachment_id)],
+						)
+						.await?
+				}
+				_ => return Err(crate::Error::Forbidden),
+			}
+		}
 		let (attachment, bytes) = crate::collaboration::attachments::download(
 			&f.store,
 			&mut lease,

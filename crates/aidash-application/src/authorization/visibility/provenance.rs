@@ -58,6 +58,10 @@ pub async fn source_visible(
 			Some(artifact) => artifact_visible(scope, &artifact).await?,
 			None => false,
 		},
+		"attachment" => match scope.source_attachment_message(id, workspace).await? {
+			Some(message) => message_visible(scope, &message).await?,
+			None => false,
+		},
 		"message" => match scope.source_message(id, workspace).await? {
 			Some(message) => message_visible(scope, &message).await?,
 			None => false,

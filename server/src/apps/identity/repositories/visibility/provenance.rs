@@ -319,6 +319,27 @@ impl ReadProvenanceScope for Reads<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
+	async fn source_attachment_message(
+		&mut self,
+		id: Uuid,
+		workspace: Uuid,
+	) -> Result<Option<Message>> {
+		let message_id: Option<Uuid> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("message_id"))
+				.from(Alias::new("channel_attachments"))
+				.and_where(Expr::col("id").eq(Expr::value(id)))
+				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("message_id").is_not_null())
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **self.access.tx)
+		.await?;
+		match message_id {
+			Some(id) => self.source_message(id, workspace).await,
+			None => Ok(None),
+		}
+	}
 	async fn source_run(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<RunMetadata>> {
 		let result: NativeResult<Option<RunMetadata>> = async {
 			let this = &mut *self.access;
@@ -501,6 +522,27 @@ impl ReadProvenanceScope for NativeReads<'_> {
 		)
 		.await
 		.map_err(Into::into)
+	}
+	async fn source_attachment_message(
+		&mut self,
+		id: Uuid,
+		workspace: Uuid,
+	) -> Result<Option<Message>> {
+		let message_id: Option<Uuid> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("message_id"))
+				.from(Alias::new("channel_attachments"))
+				.and_where(Expr::col("id").eq(Expr::value(id)))
+				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("message_id").is_not_null())
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **self.access.tx)
+		.await?;
+		match message_id {
+			Some(id) => self.source_message(id, workspace).await,
+			None => Ok(None),
+		}
 	}
 	async fn source_run(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<RunMetadata>> {
 		crate::apps::execution::models::Run::read_in(self.access.tx.as_mut(), id, Some(workspace))

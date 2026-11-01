@@ -147,6 +147,16 @@ impl ReadProvenanceScope for Scope {
 		m.workspace_id = workspace;
 		Ok((!self.missing).then_some(m))
 	}
+	async fn source_attachment_message(
+		&mut self,
+		id: Uuid,
+		workspace: Uuid,
+	) -> Result<Option<Message>> {
+		self.lookup("attachment", id, workspace)?;
+		let mut message = message(id.as_u128(), "stored-sender");
+		message.workspace_id = workspace;
+		Ok((!self.missing).then_some(message))
+	}
 	async fn source_run(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<RunMetadata>> {
 		self.lookup("run", id, workspace)?;
 		let mut r = run();
@@ -551,4 +561,31 @@ fn message(id: u128, sender: &str) -> Message {
 		created_at: chrono::Utc::now(),
 		run_id: None,
 	}
+}
+
+#[rstest]
+#[case::visible(false, None, true)]
+#[case::deleted(true, None, false)]
+#[case::denied(false, Some("message.read"), false)]
+#[tokio::test]
+async fn attachment_provenance_requires_existing_attachment_and_readable_message(
+	mut scope: Scope,
+	#[case] missing: bool,
+	#[case] denied: Option<&'static str>,
+	#[case] expected: bool,
+) {
+	scope.missing = missing;
+	scope.denied = denied;
+	assert_eq!(
+		source_visible(
+			&mut scope,
+			Uuid::from_u128(3),
+			"attachment",
+			Uuid::from_u128(4),
+			&mut vec![]
+		)
+		.await
+		.unwrap(),
+		expected
+	);
 }
