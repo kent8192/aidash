@@ -3,8 +3,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0096_node_research_merge", "execution")
-		.add_dependency("execution", "0095_node_lifetime_merge")
+	Migration::new("0097_node_research_merge", "execution")
+		.add_dependency("execution", "0096_node_lifetime_merge")
 		.add_dependency("execution", "0059_research_history_merge")
 		.state_only(true)
 }

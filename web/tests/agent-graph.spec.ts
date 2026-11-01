@@ -48,7 +48,6 @@ function fixture() {
           { id: "missing", version: "1.0.0" },
         ],
         skills: [{ id: "evidence", version: "2.0.0" }],
-        cluster: { id: "team", version: "1.0.0" },
       }),
       entity("other", "agent", "Other agent", {
         model: { id: "model", version: "1.0.0" },
@@ -176,7 +175,7 @@ test("shows typed version-pinned relationships and opens existing details", asyn
   await expect(
     graph.locator('[data-graph-node][data-kind="model"]'),
   ).toHaveCount(1);
-  await expect(graph.locator('[data-layer="configuration"]')).toHaveCount(6);
+  await expect(graph.locator('[data-layer="configuration"]')).toHaveCount(5);
   await expect(graph.locator('[data-layer="runtime"]')).toHaveCount(2);
   await graph
     .getByRole("button", { name: "Relationship list", exact: true })

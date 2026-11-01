@@ -119,6 +119,7 @@
   "topologyHelp": "Node内のクラスターとエージェントが、境界を越えてタスクを共有します。",
   "activity": "アクティビティ",
   "viewAll": "すべて表示",
+  "useAsCoordinator": "調整役として使う",
   "noAssignment": "未割当",
   "goalPlaceholder": "Rust製Webフレームワークを競合調査し、それぞれの特徴とトレードオフを比較してください。",
   "goalTitle": "Rustフレームワークの調査",

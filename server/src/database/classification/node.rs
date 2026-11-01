@@ -258,6 +258,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "marketplace_audiences"
 		| "marketplace_consents"
 		| "marketplace_installations"
+		| "marketplace_plugin_recalls"
 		| "marketplace_provenance"
 		| "marketplace_requests"
 		| "marketplace_revisions"

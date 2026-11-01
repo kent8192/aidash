@@ -1,5 +1,7 @@
 # Aidash native migration history
 
+`registry/0054_remove_agent_cluster` removes the obsolete Agent config key from Registry definitions, Agent drafts and registration requests, then removes it from the Agent contract. `execution/0089_remove_agent_cluster` removes it from Generation policy templates and request definitions. PostgreSQL JSON updates and function replacement use SQL assets because Reinhardt migrations cannot express these transformations. Both are irreversible. Each owner-only atomic migration establishes Deployment Scope before its first row access because the native migration executor does not open scoped application transactions. The registry update temporarily disables the Marketplace writer fence within its transaction, retaining its other validation and reference triggers. Installed Registry copies change while immutable Marketplace versions and revisions stay untouched: old Marketplace versions must be republished and old installation revisions may no longer match. Run and Federation snapshots are unchanged; Runs using old snapshots fail and need cancellation. Surviving Run constraints and triggers do not call the Agent validator, so cancellation updates do not revalidate the retained snapshots. Catalog Approvals and Federation pins covering changed definitions need renewing.
+
 `execution/0081_lease_recoveries` updates the physical `runs.pending` default,
 and replaces the activation trigger function. PostgreSQL function replacement
 is a SQL exception that Reinhardt cannot express. The server decodes the
@@ -684,7 +686,7 @@ single Registry leaf without rewriting either history or changing stored data.
 state-only migration preserves the durable Research result history and leaves
 a single Execution head without changing either existing branch.
 
-`execution/0096_node_research_merge` joins Node cancellation and Research/approval
+`execution/0097_node_research_merge` joins Node cancellation and Research/approval
 histories with an empty state-only migration. Both existing histories and their
 rollback guards retain their identities; no schema or stored data changes.
 
@@ -694,7 +696,7 @@ Source histories, respectively. Both are empty state-only migrations. They
 preserve the existing migration identities and give each app one leaf without
 changing schema, retained inputs, or data.
 
-`execution/0097_node_plugin_merge` joins the Node cancellation and MCP
+`execution/0098_node_plugin_merge` joins the Node cancellation and MCP
 continuation heads after their Research history merges. The empty state-only
 migration preserves both histories and leaves one Execution head.
 `execution/0084_invocation_tenant_secrets` (after `execution/0083_harness_contract_state`)
@@ -793,14 +795,14 @@ existing identities and one leaf per app.
 
 `identity/0062_node_auth_history_merge` joins the Common Auth origin binding,
 remote terminal receipts and task source lifetime histories.
-`execution/0095_node_lifetime_merge` joins Node cancellation jobs with Session
+`execution/0096_node_lifetime_merge` joins Node cancellation jobs with Session
 Area lifetime state. `knowledge/0039_recovery_lifetime_merge` joins Home ledger
 recovery eligibility and attempt evidence with remote-read source lifetimes.
 Each is an empty state-only migration that depends on every existing leaf of
 its app. Existing migration identities, dependencies, schema changes and
 rollback guards remain intact, with one head per app for future generation.
 
-`execution/0098_node_preview_merge` joins `execution/0097_node_plugin_merge`
+`execution/0099_node_preview_merge` joins `execution/0098_node_plugin_merge`
 with the Live preview, Safety Stop, Lease Recovery and Harness Contract history
 ending in `execution/0083_harness_contract_state`.
 `federation/0021_node_preview_origin_merge` joins Node registration recovery
