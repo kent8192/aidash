@@ -953,11 +953,13 @@ async fn a_deployment_administrator_created_tenant_gets_its_first_administrator_
 	// Every Tenant Administrator and Registry action, including Tenant Secrets, `node.create`,
 	// `node.update`, `tenant.update`, `tenant.delete` and `credential.create`
 	// for its own subject.
-	assert_eq!(actions.len(), 32, "{overview}");
+	assert_eq!(actions.len(), 34, "{overview}");
 	for action in [
 		"node.create",
 		"node.update",
 		"approval.read",
+		"connection.scopes.update",
+		"connection.administer",
 		"secret.manage",
 		"secret.use",
 		"tenant.delete",

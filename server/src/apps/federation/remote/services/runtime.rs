@@ -415,20 +415,41 @@ impl Home {
 		})
 	}
 	pub(crate) async fn command<T: DeserializeOwned>(&self, op: &str, data: Value) -> Result<T> {
-		if let Some(grant) =
-			crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
-				.await?
-		{
-			return crate::authorization::peer::authority_request(
-				&self.federation,
-				&self.admitted_sender().await?,
-				&self.run.home_node,
-				"/scoped/execution/commands",
-				&json!({"grant_id":grant,"admission_id":self.run.id,"operation":op,"data":data}),
-			)
-			.await;
+		let preflight = async {
+			let grant =
+				crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
+					.await?
+					.ok_or(Error::Forbidden)?;
+			let sender = self.admitted_sender().await?;
+			Ok::<_, Error>((grant, sender))
 		}
-		Err(Error::Forbidden)
+		.await;
+		let (grant, sender) = preflight.map_err(|error| {
+			if op == aidash_domain::identity::commands::connections::CALL
+				&& !matches!(
+					error,
+					Error::Forbidden
+						| Error::TenantDeleted
+						| Error::Unauthorized
+						| Error::AuthorityRefused(_)
+						| Error::Refused(_)
+				) {
+				Error::ToolNotDelivered {
+					message: "remote execution authority unavailable".into(),
+					retry_after: None,
+				}
+			} else {
+				error
+			}
+		})?;
+		crate::authorization::peer::authority_request(
+			&self.federation,
+			&sender,
+			&self.run.home_node,
+			"/scoped/execution/commands",
+			&json!({"grant_id":grant,"admission_id":self.run.id,"operation":op,"data":data}),
+		)
+		.await
 	}
 	pub(crate) async fn optional_command<T: DeserializeOwned>(
 		&self,

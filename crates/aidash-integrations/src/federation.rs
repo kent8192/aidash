@@ -73,63 +73,89 @@ impl HttpTransport {
 		path: &str,
 		body: Option<&Value>,
 	) -> Result<reqwest::Response> {
-		let (true, Some(key)) = (self.egress.enabled, &self.egress.key) else {
-			return Err(Error::FederationDisabled);
-		};
-		let client = self.endpoints.client(endpoint)?;
-		// Composite authority operations make further bounded peer calls. Native
-		// retrieval also executes separately bounded provider attempts before its
-		// receipt is finalized; the outer request must allow those calls to finish.
-		let timeout = if path == "/scoped/semantic/query" {
-			Duration::from_secs(120)
-		} else if path == "/scoped/execution/commands"
-			|| path.starts_with("/scoped/execution/grants/")
-			|| path.starts_with("/scoped/execution/admissions")
-			|| path.starts_with("/scoped/usage/")
-		{
-			Duration::from_secs(60)
-		} else {
-			Duration::from_secs(10)
-		};
-		let bytes = body
-			.map(serde_json::to_vec)
-			.transpose()?
-			.unwrap_or_default();
-		let now = chrono::Utc::now().timestamp().max(0) as u64;
-		let claims = FederationClaims {
-			iss: self.deployment.to_string(),
-			sub: party.sub,
-			aud: party.aud,
-			subject: party.subject,
-			iat: now,
-			exp: now + TOKEN_TTL_SECS,
-			jti: uuid::Uuid::new_v4(),
-			kid: key.key_id().to_string(),
-			protocol: CURRENT.into(),
-			method: method.into(),
-			path: path.into(),
-			body: body_digest(&bytes),
-		};
-		let token = claims
-			.mint(&Signing(key.as_ref()))
-			.await
-			.map_err(|_| Error::External("the Deployment Key could not sign".into()))?;
-		let method = reqwest::Method::from_bytes(method.as_bytes())
-			.map_err(|_| Error::Invalid("invalid peer method".into()))?;
-		let mut request = client
-			.request(
-				method,
-				format!("{}/federation/v0.1{path}", endpoint.trim_end_matches('/')),
-			)
-			.timeout(timeout)
-			.bearer_auth(token.expose_secret())
-			.header("x-aidash-protocol", CURRENT);
-		if body.is_some() {
-			request = request
-				.header("content-type", "application/json")
-				.body(bytes);
+		let connection_call = body.is_some_and(|body| {
+			aidash_application::federation::authority::is_connection_call(path, body)
+		});
+		let request = async {
+			let (true, Some(key)) = (self.egress.enabled, &self.egress.key) else {
+				return Err(Error::FederationDisabled);
+			};
+			let client = self.endpoints.client(endpoint)?;
+			// Composite authority operations make further bounded peer calls. Native
+			// retrieval also executes separately bounded provider attempts before its
+			// receipt is finalized; the outer request must allow those calls to finish.
+			let timeout = if path == "/scoped/semantic/query" {
+				Duration::from_secs(120)
+			} else if path == "/scoped/execution/commands"
+				|| path.starts_with("/scoped/execution/grants/")
+				|| path.starts_with("/scoped/execution/admissions")
+				|| path.starts_with("/scoped/usage/")
+			{
+				Duration::from_secs(60)
+			} else {
+				Duration::from_secs(10)
+			};
+			let bytes = body
+				.map(serde_json::to_vec)
+				.transpose()?
+				.unwrap_or_default();
+			let now = chrono::Utc::now().timestamp().max(0) as u64;
+			let claims = FederationClaims {
+				iss: self.deployment.to_string(),
+				sub: party.sub,
+				aud: party.aud,
+				subject: party.subject,
+				iat: now,
+				exp: now + TOKEN_TTL_SECS,
+				jti: uuid::Uuid::new_v4(),
+				kid: key.key_id().to_string(),
+				protocol: CURRENT.into(),
+				method: method.into(),
+				path: path.into(),
+				body: body_digest(&bytes),
+			};
+			let token = claims
+				.mint(&Signing(key.as_ref()))
+				.await
+				.map_err(|_| Error::External("the Deployment Key could not sign".into()))?;
+			let method = reqwest::Method::from_bytes(method.as_bytes())
+				.map_err(|_| Error::Invalid("invalid peer method".into()))?;
+			let mut request = client
+				.request(
+					method,
+					format!("{}/federation/v0.1{path}", endpoint.trim_end_matches('/')),
+				)
+				.timeout(timeout)
+				.bearer_auth(token.expose_secret())
+				.header("x-aidash-protocol", CURRENT);
+			if body.is_some() {
+				request = request
+					.header("content-type", "application/json")
+					.body(bytes);
+			}
+			Ok::<_, Error>(request)
 		}
-		request.send().await.map_err(crate::keyless::send_error)
+		.await
+		.map_err(|error| {
+			if connection_call {
+				Error::ToolNotDelivered {
+					message: "remote execution authority unavailable".into(),
+					retry_after: None,
+				}
+			} else {
+				error
+			}
+		})?;
+		request.send().await.map_err(|error| {
+			if connection_call && (error.is_connect() || error.is_builder()) {
+				Error::ToolNotDelivered {
+					message: "remote execution authority unavailable".into(),
+					retry_after: None,
+				}
+			} else {
+				crate::keyless::send_error(error)
+			}
+		})
 	}
 }
 

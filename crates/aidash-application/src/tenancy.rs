@@ -126,6 +126,8 @@ pub enum DeploymentScopeReason {
 	/// Finding the owner, and so the Tenant, of a Plan Connection a Run's
 	/// admission pinned by id, before the owner's Tenant Scope opens.
 	PlanConnectionOwner,
+	/// Reserving and consuming browser-bound OAuth attempts before their Tenant is known.
+	OAuthAuthorization,
 	/// The activity observer, which writes this label by hand.
 	ActivityObserver,
 	/// Resolving a Preview's globally random subdomain or ticket to its Tenant
@@ -177,6 +179,7 @@ impl DeploymentScopeReason {
 			Self::FederationInbound => "federation-inbound",
 			Self::RunTenant => "run-tenant",
 			Self::PlanConnectionOwner => "plan-connection-owner",
+			Self::OAuthAuthorization => "oauth-authorization",
 			Self::ActivityObserver => "activity-observer",
 			Self::PreviewGateway => "preview-gateway",
 			Self::MarketplaceDistribution => "marketplace-distribution",
@@ -211,7 +214,8 @@ impl DeploymentScopeReason {
 			| Self::MarketplaceDistribution
 			| Self::TenantPurge
 			| Self::DemoData
-			| Self::AtomicParticipant => true,
+			| Self::AtomicParticipant
+			| Self::OAuthAuthorization => true,
 			Self::SemanticIndexing
 			| Self::TransactionRecovery
 			| Self::CredentialReconcile
@@ -269,6 +273,7 @@ mod tests {
 			DeploymentScopeReason::FederationInbound,
 			DeploymentScopeReason::RunTenant,
 			DeploymentScopeReason::PlanConnectionOwner,
+			DeploymentScopeReason::OAuthAuthorization,
 			DeploymentScopeReason::ActivityObserver,
 			DeploymentScopeReason::MarketplaceDistribution,
 			DeploymentScopeReason::UsageSampling,

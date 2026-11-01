@@ -1183,7 +1183,7 @@ async fn the_decider_kind_replaces_compactors_and_embedding_configs_reject_undec
 		"hook":"compaction","answer_type":"noul","description":"Keep needed history",
 		"provider_credential":"openrouter",
 		"routes":[{"provider_contract":"typesafe.jev/1","model":"typesafe/jev-1.14","threshold":"3fe0000000000000"}],
-		"builder":"aidash.compaction/2",
+		"builder":"aidash.compaction/3",
 		"option_source":"history_event/1","rule":"compaction.keep/1",
 		"mode":"enforce","max_calls_per_run":20
 	});

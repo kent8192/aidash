@@ -15,6 +15,7 @@ pub(crate) fn validate_request(kind: &str, prompt: &str) -> Result<()> {
 			| "CONFIRMATION"
 			| "INFORMATION_REQUEST"
 			| "MCP_ELICITATION"
+			| "MCP_CONNECTION"
 	) {
 		return Err(Error::Invalid("unknown human request kind".into()));
 	}
@@ -73,6 +74,13 @@ pub(crate) fn answer(
 	{
 		return Err(Error::Invalid(
 			"tool reconciliation requires a JSON object containing result".into(),
+		));
+	}
+	if request.kind == aidash_domain::oauth_connections::CONNECTION_REQUEST_KIND
+		&& (actor != "system" || response != serde_json::json!({"connected":false}))
+	{
+		return Err(Error::Invalid(
+			"connect through the OAuth authorization flow".into(),
 		));
 	}
 	if request.kind == "MCP_ELICITATION" {
