@@ -4551,6 +4551,43 @@ fn deferred_agent(fixture: &mut Fixture) {
 	}];
 	state.direct_bodies = BTreeMap::from([(DIRECT_SKILL, body.to_owned())]);
 }
+#[rstest]
+#[tokio::test]
+async fn deferred_exposure_keeps_injected_subnode_coordination_tools_mandatory(
+	mut fixture: Fixture,
+) {
+	deferred_agent(&mut fixture);
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	for name in aidash_domain::subnodes::COORDINATION_TOOLS {
+		state.custom.insert(
+			(*name).into(),
+			Scripted::new(
+				ToolSpec {
+					name: (*name).into(),
+					description: "coordination".into(),
+					parameters: json!({"type":"object"}),
+				},
+				name,
+			),
+		);
+	}
+	let catalog = deferred_catalog(&fixture).await;
+	let selected = exposure::select(
+		&budgets(&fixture.run),
+		&catalog,
+		&fixture.run.context.exposure,
+	)
+	.unwrap();
+	for name in aidash_domain::subnodes::COORDINATION_TOOLS {
+		assert!(selected.tools.contains(*name), "missing {name}");
+		assert!(
+			catalog
+				.iter()
+				.any(|item| item.alias == *name && item.mandatory)
+		);
+	}
+}
+
 fn budgets(run: &Run) -> aidash_domain::exposure::DeferredBudgets {
 	deferred_exposure(run).unwrap().expect("deferred Agent").1
 }
