@@ -284,9 +284,8 @@ fn definitions_without_cache_fields_keep_their_bytes() {
 }
 
 #[rstest]
-#[case::legacy(Some("legacy"), "structured@1")]
-#[case::ordered(Some("ordered"), "structured@2")]
-#[case::ordered_structured3(Some("ordered"), "structured@3")]
+#[case::legacy(Some("legacy"), "structured@3")]
+#[case::ordered(Some("ordered"), "structured@3")]
 #[tokio::test]
 async fn registration_rejects_structured_harness_contracts_without_native(
 	validation: DefinitionValidation,
@@ -308,15 +307,12 @@ async fn registration_rejects_structured_harness_contracts_without_native(
 }
 
 #[rstest]
-#[case::structured1("structured@1")]
-#[case::structured2("structured@2")]
-#[case::structured3("structured@3")]
 #[tokio::test]
 async fn registration_accepts_structured_harness_contracts_on_native(
 	validation: DefinitionValidation,
-	#[case] contract: &str,
 ) {
 	// Arrange
+	let contract = "structured@3";
 	let mut scope = scope_with(model_config(Some(json!(["native"]))));
 	let mut config = agent_config(Some("native"));
 	config["harness_contract"] = json!(contract);
@@ -335,6 +331,29 @@ async fn registration_accepts_structured_harness_contracts_on_native(
 	);
 }
 
+/// `structured@1` and `structured@2` lost the #532 comparison and were removed.
+#[rstest]
+#[case::structured1("structured@1")]
+#[case::structured2("structured@2")]
+#[tokio::test]
+async fn registration_rejects_removed_harness_contracts(
+	validation: DefinitionValidation,
+	#[case] contract: &str,
+) {
+	// Arrange
+	let mut scope = scope_with(model_config(Some(json!(["native"]))));
+	let mut config = agent_config(Some("native"));
+	config["harness_contract"] = json!(contract);
+	let agent = definition("agent", "agent", config);
+	// Act
+	let error = register_definition(&mut scope, &validation, &agent, NODE)
+		.await
+		.unwrap_err();
+	// Assert: the version no longer decodes.
+	assert!(error.to_string().contains("unknown variant"), "{error:?}");
+	assert!(!scope.entries.contains_key("agent@1.0.0"));
+}
+
 /// New Agent definitions that name neither version render Native with
 /// `structured@3` when their model declares Native (#532).
 #[rstest]
@@ -345,7 +364,7 @@ async fn registration_accepts_structured_harness_contracts_on_native(
 #[case::undeclared_model_keeps_omitted(None, None, None, None, None)]
 #[case::explicit_legacy_kept(Some(json!(["legacy","native"])), Some("legacy"), None, Some("legacy"), None)]
 #[case::explicit_native_gets_contract(Some(json!(["native"])), Some("native"), None, Some("native"), Some("structured@3"))]
-#[case::explicit_contract_kept(Some(json!(["native"])), None, Some("structured@1"), Some("native"), Some("structured@1"))]
+#[case::explicit_contract_kept(Some(json!(["native"])), None, Some("structured@3"), Some("native"), Some("structured@3"))]
 #[case::explicit_legacy_contract_kept(Some(json!(["native"])), Some("native"), Some("legacy@1"), Some("native"), Some("legacy@1"))]
 #[tokio::test]
 async fn new_agents_default_to_native_with_structured3(
@@ -385,7 +404,7 @@ async fn registration_rejects_structured_contracts_when_the_model_lacks_native()
 	let validation = validation();
 	let mut scope = scope_with(model_config(Some(json!(["legacy", "ordered"]))));
 	let mut config = agent_config(None);
-	config["harness_contract"] = json!("structured@1");
+	config["harness_contract"] = json!("structured@3");
 	let agent = definition("agent", "agent", config);
 	// Act
 	let error = register_definition(&mut scope, &validation, &agent, NODE)
