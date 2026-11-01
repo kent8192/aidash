@@ -8,6 +8,12 @@ Aidash coordinates Agents and their durable work across independently operated N
 An independently operated Aidash participant with its own identity, resources, and authority.
 _Avoid_: Worker, Agent
 
+**Cluster**:
+A Registry definition that names one Coordinator Agent version for coordinated work. One Agent version can coordinate multiple Clusters. The infrastructure concept is always written **Kubernetes cluster**.
+
+**Coordinator**:
+The Agent version named by a Cluster to coordinate work using the required coordination tools.
+
 **Agent definition**:
 A versioned description of an Agent's instructions and declared capabilities. A definition is distinct from a participant or an execution of its work.
 _Avoid_: Run, worker

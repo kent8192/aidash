@@ -139,7 +139,6 @@ pub struct AgentConfig {
 	pub remove_default: Vec<String>,
 	pub model: EntityRef,
 	pub instructions: String,
-	pub cluster: Option<EntityRef>,
 	pub max_steps: i32,
 	pub context_policy: Option<crate::context::policy::ContextPolicy>,
 	pub tool_parallelism: u8,

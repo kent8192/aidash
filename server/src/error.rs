@@ -60,8 +60,11 @@ pub enum Error {
 	IdentityStatusUnavailable,
 	#[error("OAuth Client secret storage is unavailable")]
 	OAuthClientSecretsUnavailable,
-	#[error("verified model media route unavailable for {0}")]
-	MediaRouteUnavailable(String),
+	#[error("verified model media route unavailable for {model}{}", aidash_application::route_refusal::CandidateRefusals(.candidates))]
+	MediaRouteUnavailable {
+		model: String,
+		candidates: Vec<aidash_application::route_refusal::RouteRefusal>,
+	},
 	#[error("atomic transaction visibility pending; retry after recovery")]
 	TransactionPending,
 	#[error("an atomic transaction committed during inference; retrying from fresh state")]
@@ -146,7 +149,7 @@ impl Error {
 			),
 			Self::IdentityStatusUnavailable
 			| Self::OAuthClientSecretsUnavailable
-			| Self::MediaRouteUnavailable(_) => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
+			| Self::MediaRouteUnavailable { .. } => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
 			Self::TransactionPending
 			| Self::ConnectionStoreUnavailable
 			| Self::SemanticUnavailable
@@ -392,7 +395,12 @@ impl From<aidash_application::Error> for Error {
 				count,
 				retry_after,
 			},
-			ApplicationError::MediaRouteUnavailable(model) => Self::MediaRouteUnavailable(model),
+			ApplicationError::MediaRouteUnavailable { model, candidates } => {
+				Self::MediaRouteUnavailable { model, candidates }
+			}
+			error @ ApplicationError::ProviderRouteUnavailable { .. } => {
+				Self::Invalid(error.to_string())
+			}
 			ApplicationError::OrchestrationUnavailable => Self::OrchestrationUnavailable,
 			ApplicationError::RemoteSemantic(reason) => Self::RemoteSemantic(reason),
 			ApplicationError::Context(reason) | ApplicationError::TerminalResponse(reason, _) => {

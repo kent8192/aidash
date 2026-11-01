@@ -157,7 +157,7 @@ export function workspaceGraph(
   }
   for (const edge of graph.edges) {
     if (!keep.has(edge.source)) continue;
-    if (!["tool", "model", "skill", "member"].includes(edge.relation)) continue;
+    if (!["tool", "model", "skill"].includes(edge.relation)) continue;
     if (
       byId.get(edge.source)?.kind === "agent" &&
       configurationKinds.has(byId.get(edge.target)?.kind ?? "")

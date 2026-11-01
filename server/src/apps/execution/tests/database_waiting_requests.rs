@@ -2,11 +2,56 @@ use crate::native_database::{DatabaseFixture, database};
 use crate::run_fixtures::{approval_pending, human_pending, pending, run};
 use aidash_server::apps::execution::models::{
 	HumanRequest, Run,
-	states::{HumanRequestKind, RunPhase},
+	states::{HumanRequestKind, RunControl, RunPhase},
 };
 use reinhardt::db::orm::Model;
 use rstest::rstest;
 use uuid::Uuid;
+
+#[rstest]
+#[tokio::test]
+async fn cancelling_a_run_preserves_its_old_agent_snapshot(
+	#[future] database: DatabaseFixture,
+	mut run: Run,
+) {
+	let database = database.await;
+	database.tenant("acme").await;
+	let mut db = database.lease.handle();
+	let definition: aidash_domain::registry::Entry = serde_json::from_value(serde_json::json!({
+		"id":"fixture", "version":"1.0.0", "kind":"agent",
+		"name":{"en":"Fixture"}, "description":{"en":"Fixture"},
+		"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","cluster":null}
+	})).unwrap();
+	let digest =
+		aidash_domain::registry::rules::digest(&serde_json::to_value(&definition).unwrap());
+	let snapshot = serde_json::json!({"schema_version":1,"agent":{"registry_deployment":"aidash://receiver","id":"fixture","version":"1.0.0"},"remote":true,"bindings":[],"definitions":[{"identity":{"registry_deployment":"aidash://receiver","id":"fixture","version":"1.0.0"},"definition":definition,"digest":digest}]});
+	let parsed: aidash_domain::registry::bindings::BindingSnapshot =
+		serde_json::from_value(snapshot.clone()).unwrap();
+	assert!(
+		parsed
+			.validate()
+			.unwrap_err()
+			.to_string()
+			.contains("cluster")
+	);
+	run.context.0["binding_snapshot"] = snapshot.clone();
+	Run::objects()
+		.create_with_conn(&mut db, &run)
+		.await
+		.unwrap();
+	run.control = RunControl::Cancelled;
+	Run::objects()
+		.update_with_conn(&mut db, &run)
+		.await
+		.unwrap();
+	let saved = Run::objects()
+		.get(run.id)
+		.get_with_db(&mut db)
+		.await
+		.unwrap();
+	assert_eq!(saved.control, RunControl::Cancelled);
+	assert_eq!(saved.context.0["binding_snapshot"], snapshot);
+}
 
 #[rstest]
 #[tokio::test]
