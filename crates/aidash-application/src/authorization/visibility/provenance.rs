@@ -1,7 +1,11 @@
 //! Iterative journal traversal terminates cycles without omitting any current read policy.
 use super::resources::{artifact_visible, conversation_resource, message_visible, task_visible};
+use crate::ports::authorization::visibility::resources::ResourceVisibilityScope;
 use crate::{Error, Result, ports::authorization::visibility::provenance::ReadProvenanceScope};
 use aidash_domain::semantic::Failure;
+use aidash_domain::{Artifact, HumanRequest, Task, policy::Resource};
+use async_trait::async_trait;
+use serde_json::Value;
 use std::collections::BTreeSet;
 use uuid::Uuid;
 pub async fn registry_reads_visible(
@@ -63,7 +67,7 @@ pub async fn run_reads_invalidity(
 		}
 		for (workspace, kind, id) in scope.sources(run).await? {
 			if let Some(reason) =
-				source_invalidity(scope, workspace, &kind, id, &mut pending).await?
+				source_invalidity(scope, workspace, &kind, id, &mut pending, true).await?
 			{
 				return Ok(Some(reason));
 			}
@@ -78,6 +82,7 @@ async fn source_invalidity(
 	kind: &str,
 	id: Uuid,
 	pending: &mut Vec<Uuid>,
+	classify_outputs: bool,
 ) -> Result<Option<Failure>> {
 	let visible = match kind {
 		"workspace_events" => {
@@ -85,14 +90,23 @@ async fn source_invalidity(
 			scope.decide(&resource, "workspace.events").await?
 		}
 		"task" => match scope.source_task(id, workspace).await? {
+			Some(task) if classify_outputs => {
+				task_visible(&mut ClassifiedOutputs { scope, pending }, &task).await?
+			}
 			Some(task) => task_visible(scope, &task).await?,
 			None => return Ok(Some(Failure::Invalidated)),
 		},
 		"artifact" => match scope.source_artifact(id, workspace).await? {
+			Some(row) if classify_outputs => {
+				artifact_visible(&mut ClassifiedOutputs { scope, pending }, &row).await?
+			}
 			Some(row) => artifact_visible(scope, &row).await?,
 			None => return Ok(Some(Failure::Invalidated)),
 		},
 		"message" => match scope.source_message(id, workspace).await? {
+			Some(row) if classify_outputs => {
+				message_visible(&mut ClassifiedOutputs { scope, pending }, &row).await?
+			}
 			Some(row) => message_visible(scope, &row).await?,
 			None => return Ok(Some(Failure::Invalidated)),
 		},
@@ -125,9 +139,52 @@ pub async fn source_visible(
 	id: Uuid,
 	pending: &mut Vec<Uuid>,
 ) -> Result<bool> {
-	Ok(source_invalidity(scope, workspace, kind, id, pending)
-		.await?
-		.is_none())
+	Ok(
+		source_invalidity(scope, workspace, kind, id, pending, false)
+			.await?
+			.is_none(),
+	)
+}
+
+/// Reuse resource policy checks while deferring local producer journals to the
+/// classified worklist, which also handles cycles between outputs and reads.
+struct ClassifiedOutputs<'a> {
+	scope: &'a mut dyn ReadProvenanceScope,
+	pending: &'a mut Vec<Uuid>,
+}
+
+#[async_trait]
+impl ResourceVisibilityScope for ClassifiedOutputs<'_> {
+	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
+		self.scope.resource(kind, id, attributes)
+	}
+	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
+		self.scope.workspace(id).await
+	}
+	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
+		self.scope.decide(resource, action).await
+	}
+	async fn artifact_task(&mut self, artifact: &Artifact) -> Result<Option<Task>> {
+		self.scope.artifact_task(artifact).await
+	}
+	async fn output_visible(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<bool> {
+		match self.scope.output_producers(workspace, kind, id).await? {
+			Some(producers) => {
+				self.pending.extend(producers);
+				Ok(true)
+			}
+			None => Ok(false),
+		}
+	}
+	fn cached_human(&self, id: Uuid) -> Option<bool> {
+		self.scope.cached_human(id)
+	}
+	fn remember_human(&mut self, id: Uuid, allowed: bool) {
+		self.scope.remember_human(id, allowed);
+	}
+	async fn humans(&mut self, workspace: Uuid, run: Uuid) -> Result<Vec<HumanRequest>> {
+		self.scope.humans(workspace, run).await
+	}
 }
 
 #[cfg(test)]

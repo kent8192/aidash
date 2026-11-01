@@ -21,6 +21,14 @@ pub trait ReadProvenanceScope: ResourceVisibilityScope {
 		Ok(true)
 	}
 	async fn sources(&mut self, run: Uuid) -> Result<Vec<RecordedRead>>;
+	/// Check remote output grants and return local producers for classified traversal.
+	/// `None` means the output's remote provenance is not visible.
+	async fn output_producers(
+		&mut self,
+		workspace: Uuid,
+		kind: &str,
+		id: Uuid,
+	) -> Result<Option<Vec<Uuid>>>;
 	async fn source_task(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Task>>;
 	async fn source_artifact(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Artifact>>;
 	async fn source_message(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Message>>;

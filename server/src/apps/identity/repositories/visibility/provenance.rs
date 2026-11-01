@@ -5,7 +5,7 @@ use crate::apps::execution::generation::repositories::contracts::RequestAccess;
 use aidash_application::{
 	Result,
 	ports::authorization::visibility::{
-		provenance::{ReadProvenanceScope, RecordedRead},
+		provenance::{LocalOutputScope, OutputScope, ReadProvenanceScope, RecordedRead},
 		resources::ResourceEventScope,
 	},
 };
@@ -74,6 +74,19 @@ impl Reads<'_> {
 
 #[async_trait]
 impl ReadProvenanceScope for Reads<'_> {
+	async fn output_producers(
+		&mut self,
+		workspace: Uuid,
+		kind: &str,
+		id: Uuid,
+	) -> Result<Option<Vec<Uuid>>> {
+		for grant in self.remote_grants(workspace, kind, id).await? {
+			if !self.grant_visible(grant).await? {
+				return Ok(None);
+			}
+		}
+		Ok(Some(self.producers(workspace, kind, id).await?))
+	}
 	async fn catalog_read(&mut self, run: Uuid, reference: &EntityRef) -> Result<()> {
 		match crate::apps::identity::services::catalog::entry(
 			self.access,
@@ -470,6 +483,14 @@ impl ReadProvenanceScope for Reads<'_> {
 }
 #[async_trait]
 impl ReadProvenanceScope for NativeReads<'_> {
+	async fn output_producers(
+		&mut self,
+		workspace: Uuid,
+		kind: &str,
+		id: Uuid,
+	) -> Result<Option<Vec<Uuid>>> {
+		Ok(Some(self.producers(workspace, kind, id).await?))
+	}
 	async fn registry_entries(&mut self, run: Uuid) -> Result<Vec<EntityRef>> {
 		crate::apps::identity::models::AuthorizationRunRegistryRead::for_run(
 			self.access.tx.as_mut(),

@@ -12,6 +12,8 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 struct Scope {
 	graph: BTreeMap<Uuid, Vec<RecordedRead>>,
+	outputs: BTreeMap<(Uuid, String, Uuid), Vec<Uuid>>,
+	invalid_runs: BTreeMap<Uuid, Failure>,
 	entries: Vec<EntityRef>,
 	calls: Vec<String>,
 	decisions: Vec<Resource>,
@@ -23,6 +25,8 @@ struct Scope {
 fn scope() -> Scope {
 	Scope {
 		graph: BTreeMap::new(),
+		outputs: BTreeMap::new(),
+		invalid_runs: BTreeMap::new(),
 		entries: vec![],
 		calls: vec![],
 		decisions: vec![],
@@ -81,9 +85,17 @@ impl ResourceVisibilityScope for Scope {
 		t.workspace_id = a.workspace_id;
 		Ok(Some(t))
 	}
-	async fn output_visible(&mut self, _: Uuid, _: &str, _: Uuid) -> Result<bool> {
+	async fn output_visible(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<bool> {
 		self.touch("output")?;
-		Ok(self.denied != Some("output"))
+		Ok(self.denied != Some("output")
+			&& self
+				.outputs
+				.get(&(workspace, kind.to_owned(), id))
+				.is_none_or(|producers| {
+					producers
+						.iter()
+						.all(|run| !self.invalid_runs.contains_key(run))
+				}))
 	}
 	fn cached_human(&self, _: Uuid) -> Option<bool> {
 		panic!("journal traversal does not directly cache human requests")
@@ -97,6 +109,20 @@ impl ResourceVisibilityScope for Scope {
 }
 #[async_trait]
 impl ReadProvenanceScope for Scope {
+	async fn output_producers(
+		&mut self,
+		workspace: Uuid,
+		kind: &str,
+		id: Uuid,
+	) -> Result<Option<Vec<Uuid>>> {
+		self.touch("output")?;
+		Ok((self.denied != Some("output")).then(|| {
+			self.outputs
+				.get(&(workspace, kind.to_owned(), id))
+				.cloned()
+				.unwrap_or_default()
+		}))
+	}
 	async fn registry_entries(&mut self, run: Uuid) -> Result<Vec<EntityRef>> {
 		self.touch("registry")?;
 		self.calls.push(format!("visited:{run}"));
@@ -118,6 +144,14 @@ impl ReadProvenanceScope for Scope {
 	async fn semantic_reads(&mut self, _: Uuid) -> Result<bool> {
 		self.touch("semantic")?;
 		Ok(self.denied != Some("semantic"))
+	}
+	async fn semantic_invalidity(&mut self, run: Uuid) -> Result<Option<Failure>> {
+		self.touch("semantic")?;
+		Ok(self
+			.invalid_runs
+			.get(&run)
+			.copied()
+			.or_else(|| (self.denied == Some("semantic")).then_some(Failure::Authority)))
 	}
 	async fn received_semantic(&mut self, _: Uuid) -> Result<bool> {
 		self.touch("received")?;
@@ -183,6 +217,89 @@ impl ReadProvenanceScope for Scope {
 		self.touch("generation.read")?;
 		Ok(self.denied != Some("generation.read"))
 	}
+}
+
+#[rstest]
+#[case("task", "task")]
+#[case("artifact", "artifact")]
+#[case("artifact", "task")]
+#[case("message", "message")]
+#[tokio::test]
+async fn changed_producer_source_retains_invalidation_through_output_provenance(
+	mut scope: Scope,
+	#[case] source_kind: &str,
+	#[case] output_kind: &str,
+) {
+	let root = Uuid::from_u128(1);
+	let producer = Uuid::from_u128(2);
+	let workspace = Uuid::from_u128(3);
+	let source = Uuid::from_u128(4);
+	let output = if output_kind == "task" && source_kind == "artifact" {
+		artifact().task_id
+	} else {
+		source
+	};
+	scope
+		.graph
+		.insert(root, vec![(workspace, source_kind.into(), source)]);
+	scope
+		.outputs
+		.insert((workspace, output_kind.into(), output), vec![producer]);
+	scope.invalid_runs.insert(producer, Failure::Invalidated);
+	assert_eq!(
+		run_reads_invalidity(&mut scope, root).await.unwrap(),
+		Some(Failure::Invalidated)
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn output_producer_cycles_terminate_and_preserve_other_producer_failure(mut scope: Scope) {
+	let root = Uuid::from_u128(1);
+	let producer = Uuid::from_u128(2);
+	let workspace = Uuid::from_u128(3);
+	let message = Uuid::from_u128(4);
+	scope
+		.graph
+		.insert(root, vec![(workspace, "message".into(), message)]);
+	scope
+		.graph
+		.insert(producer, vec![(workspace, "message".into(), message)]);
+	scope
+		.outputs
+		.insert((workspace, "message".into(), message), vec![root, producer]);
+	assert_eq!(run_reads_invalidity(&mut scope, root).await.unwrap(), None);
+	scope.invalid_runs.insert(producer, Failure::Configuration);
+	assert_eq!(
+		run_reads_invalidity(&mut scope, root).await.unwrap(),
+		Some(Failure::Configuration)
+	);
+}
+
+#[rstest]
+#[case("message.read")]
+#[case("output")]
+#[tokio::test]
+async fn denied_output_authority_is_not_masked_by_an_invalid_producer(
+	mut scope: Scope,
+	#[case] gate: &'static str,
+) {
+	let root = Uuid::from_u128(1);
+	let producer = Uuid::from_u128(2);
+	let workspace = Uuid::from_u128(3);
+	let message = Uuid::from_u128(4);
+	scope
+		.graph
+		.insert(root, vec![(workspace, "message".into(), message)]);
+	scope
+		.outputs
+		.insert((workspace, "message".into(), message), vec![producer]);
+	scope.invalid_runs.insert(producer, Failure::Invalidated);
+	scope.denied = Some(gate);
+	assert_eq!(
+		run_reads_invalidity(&mut scope, root).await.unwrap(),
+		Some(Failure::Authority)
+	);
 }
 
 #[rstest]
