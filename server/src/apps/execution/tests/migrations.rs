@@ -756,7 +756,11 @@ async fn remove_agent_cluster_migrates_registry_drafts_requests_and_generation_t
 			!matches!(
 				(migration.app_label.as_str(), migration.name.as_str()),
 				("registry", "0054_remove_agent_cluster")
+					| ("registry", "0055_subnode_provider")
 					| ("execution", "0089_remove_agent_cluster")
+					| ("execution", "0090_subnodes")
+					| ("execution", "0091_subnodes_row_level_security")
+					| ("execution", "0092_subnodes_state")
 			)
 		})
 		.cloned()
