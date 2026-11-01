@@ -422,7 +422,9 @@ impl Fixture {
 	}
 
 	async fn list_for(&self, run: Uuid) -> Result<Vec<ListedTool>> {
-		self.sessions.list(run, &server("demo"), &self.config).await
+		self.sessions
+			.list(run, &server("demo"), &self.config, None)
+			.await
 	}
 
 	async fn call(&self, tool: &str, digest: &str, arguments: Value) -> Result<Value> {
@@ -446,6 +448,7 @@ impl Fixture {
 				false,
 				arguments,
 				"key-1",
+				None,
 			)
 			.await
 	}
@@ -670,6 +673,7 @@ async fn a_call_that_failed_after_the_server_got_it_is_not_sent_again() {
 			true,
 			json!({"q": "x"}),
 			"read-only-key",
+			None,
 		)
 		.await;
 	assert!(matches!(retryable, Err(Error::ToolNotDelivered { .. })));
@@ -775,7 +779,7 @@ async fn an_origin_the_deployment_did_not_permit_is_refused_before_any_connectio
 	let config = remote(&origin, &[]);
 
 	let listed = sessions
-		.list(Uuid::new_v4(), &server("demo"), &config)
+		.list(Uuid::new_v4(), &server("demo"), &config, None)
 		.await;
 	let called = sessions
 		.call(
@@ -787,6 +791,7 @@ async fn an_origin_the_deployment_did_not_permit_is_refused_before_any_connectio
 			false,
 			json!({}),
 			"key-1",
+			None,
 		)
 		.await;
 
@@ -827,7 +832,7 @@ async fn a_server_nobody_answers_for_is_reported_as_unreachable() {
 	let sessions = sessions(&[&origin], IDLE_LIMIT, MAX_SESSIONS);
 
 	let listed = sessions
-		.list(Uuid::new_v4(), &server("demo"), &remote(&origin, &[]))
+		.list(Uuid::new_v4(), &server("demo"), &remote(&origin, &[]), None)
 		.await;
 
 	assert_eq!(failure(listed.unwrap_err()), Some(ListFailure::Unreachable));
@@ -841,6 +846,7 @@ async fn a_server_nobody_answers_for_is_reported_as_unreachable() {
 			false,
 			json!({}),
 			"key",
+			None,
 		)
 		.await;
 	assert!(matches!(called, Err(Error::ToolNotDelivered { .. })));
@@ -974,6 +980,7 @@ async fn modern_http_returns_one_input_batch_and_only_an_explicit_continuation_s
 			"call",
 			None,
 			None,
+			None,
 		)
 		.await
 		.unwrap();
@@ -1001,6 +1008,7 @@ async fn modern_http_returns_one_input_batch_and_only_an_explicit_continuation_s
 			json!({"q":"original"}),
 			"call",
 			Some(&checkpoint),
+			None,
 			None,
 		)
 		.await
@@ -1062,6 +1070,7 @@ async fn legacy_inputs_are_answered_inside_the_live_call_and_overlaps_are_refuse
 				"call",
 				None,
 				input,
+				None,
 			),
 		)
 		.await
@@ -1119,6 +1128,7 @@ async fn a_live_input_wait_is_not_evicted_by_idle_or_session_capacity_and_can_st
 		"call",
 		None,
 		Some(input.clone()),
+		None,
 	);
 	tokio::pin!(round);
 	tokio::select! {

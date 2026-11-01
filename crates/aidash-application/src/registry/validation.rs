@@ -149,9 +149,9 @@ impl DefinitionValidation {
 		self.plan_connections_enabled = enabled;
 		self
 	}
-	/// Tenant Secrets exist only where the Secret Store can hold them: a
-	/// self-hosted node with a PostgreSQL Store. Cloud and Dedicated offer
-	/// none until the Credential Broker carries tool calls (#310).
+	/// Tenant Secrets exist wherever the Secret Store can hold them: a
+	/// PostgreSQL Store reads them locally, and Cloud and Dedicated route
+	/// through the Tenant Secret broker (ADR 0051, ADR 0095).
 	pub fn with_tenant_secrets(mut self, enabled: bool) -> Self {
 		self.tenant_secrets_enabled = enabled;
 		self
@@ -319,6 +319,7 @@ impl DefinitionValidation {
 				if m.provider == "openrouter" {
 					aidash_domain::tool::provider_tools::reject_implicit_tools(&m.model_id)?;
 				}
+				m.validate_model_variant()?;
 				m.validate_estimate_diagnostics()?;
 				if m.provider_credential.is_some() || m.plan_connection.is_some() {
 					aidash_domain::provider_credentials::validate_model_id(&m.model_id)?;
@@ -446,6 +447,7 @@ impl DefinitionValidation {
 				endpoint,
 				replay,
 				secret,
+				..
 			}
 			| ToolConfig::Mcp {
 				endpoint,

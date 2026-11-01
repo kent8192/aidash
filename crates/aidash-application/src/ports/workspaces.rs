@@ -5,6 +5,7 @@ use aidash_domain::{
 	federation::Delegation,
 	nodes::NodeName,
 	registry::{EntityRef, Entry},
+	semantic::{EmbeddingConfig, indexing::IndexingSpec},
 };
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -38,8 +39,27 @@ pub trait ConversationScope: Send {
 	async fn create_task(&mut self, workspace: Uuid, input: &NewTask) -> Result<Task>;
 	async fn require_task(&mut self, task: &Task, action: &str) -> Result<()>;
 	async fn bind_task(&mut self, task: Uuid, conversation: Uuid) -> Result<()>;
+	/// The memory provider `agent` binds and the embedding its policy pins, or
+	/// `None` when the agent binds no memory.
+	async fn memory_embedding(&mut self, agent: &EntityRef) -> Result<Option<MemoryEmbedding>>;
+	/// Create the conversation's new Workspace's semantic index for `agent`'s
+	/// memory (#647), recorded as an event of the conversation.
+	async fn create_memory_index(
+		&mut self,
+		conversation: &Conversation,
+		agent: &EntityRef,
+		provider: &EntityRef,
+		spec: &IndexingSpec,
+	) -> Result<()>;
 	async fn delegate(&mut self, task: Uuid, agent: &EntityRef) -> Result<Delegation>;
 	async fn task(&mut self, task: Uuid) -> Result<Task>;
+}
+
+/// A memory provider and the embedding its policy pins.
+#[derive(Debug, Clone)]
+pub struct MemoryEmbedding {
+	pub provider: EntityRef,
+	pub embedding: EmbeddingConfig,
 }
 
 pub mod mutations;

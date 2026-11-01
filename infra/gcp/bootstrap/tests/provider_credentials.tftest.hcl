@@ -51,6 +51,10 @@ run "fixed_roles_and_limited_deploy" {
       google_project_iam_custom_role.byok_broker_read[0].permissions == toset([
         "secretmanager.versions.access", "secretmanager.versions.get", "secretmanager.secrets.get",
       ]) &&
+      google_project_iam_custom_role.byok_tenant_secret_broker_read[0].role_id == "aidashByokTenantSecretBrokerRead" &&
+      google_project_iam_custom_role.byok_tenant_secret_broker_read[0].permissions == toset([
+        "secretmanager.versions.access", "secretmanager.versions.get", "secretmanager.secrets.get",
+      ]) &&
       google_project_iam_custom_role.byok_retire[0].role_id == "aidashByokRetire" &&
       google_project_iam_custom_role.byok_retire[0].permissions == toset(["secretmanager.secrets.delete"]) &&
       google_project_iam_custom_role.byok_retire_inventory[0].role_id == "aidashByokRetireInventory" &&

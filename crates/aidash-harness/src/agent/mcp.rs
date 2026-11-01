@@ -59,6 +59,14 @@ impl Executor<'_> {
 			.mcp
 			.clone()
 			.unwrap_or_else(|| CallCheckpoint::new(call.key.into()));
+		if run.state.tool()?.mcp.is_none() {
+			checkpoint.waited_millis = run
+				.state
+				.tool()?
+				.connection
+				.as_ref()
+				.map_or(0, |state| state.waited_millis);
+		}
 		if checkpoint.key != call.key {
 			return Err(Error::Conflict(
 				"MCP checkpoint belongs to another call".into(),
@@ -233,7 +241,28 @@ impl Executor<'_> {
 					}
 				};
 				let result = match result {
-					Ok(result) => result,
+					Ok(result) => {
+						if matches!(&result, ToolRound::Complete(_)) {
+							self.checkpoint_connection_success(run, token, &call.call.name)
+								.await?;
+						}
+						result
+					}
+					Err(Error::Connection(cause)) => {
+						self.checkpoint_connection_refusal(
+							run,
+							token,
+							super::connections::RefusedCall {
+								call: call.call,
+								tool: call.tool,
+								guard: Some(call.guard),
+								key: &round_key,
+							},
+							cause.clone(),
+						)
+						.await?;
+						return Err(Error::Connection(cause));
+					}
 					Err(
 						Error::Invalid(message)
 						| Error::Domain(aidash_domain::Error::Invalid(message)),

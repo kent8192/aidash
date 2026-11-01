@@ -1256,6 +1256,7 @@ impl PluginSessions for Watched {
 		run: Uuid,
 		server: &crate::ports::tools::PluginServer,
 		config: &aidash_domain::agent_plugin::RemoteServer,
+		auth: Option<&crate::tenant_secrets::CallSecret>,
 	) -> Result<Vec<aidash_domain::agent_plugin::ListedTool>> {
 		{
 			let mut state = self.state.lock().unwrap();
@@ -1269,7 +1270,7 @@ impl PluginSessions for Watched {
 			);
 			state.order.push("plugin_listing");
 		}
-		self.inner.list(run, server, config).await
+		self.inner.list(run, server, config, auth).await
 	}
 	async fn call(
 		&self,
@@ -1281,6 +1282,7 @@ impl PluginSessions for Watched {
 		_: bool,
 		_: Value,
 		_: &str,
+		_auth: Option<&crate::tenant_secrets::CallSecret>,
 	) -> Result<Value> {
 		panic!("admission must not call a plugin tool")
 	}

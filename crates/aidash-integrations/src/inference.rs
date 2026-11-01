@@ -318,6 +318,7 @@ pub fn salted_provider(
 	cache_salt: Option<CacheSaltKeys>,
 ) -> Result<Arc<dyn ModelProvider>> {
 	config.validate_provider_route()?;
+	config.validate_model_variant()?;
 	config.validate_estimate_diagnostics()?;
 	config.validate_wire_api()?;
 	if config.provider == "openrouter" {

@@ -102,11 +102,7 @@ impl PageReader {
 		let addresses = self.resolver.resolve(host, port).await?;
 		let client = reqwest::Client::builder()
 			.no_proxy()
-			.user_agent(concat!(
-				"aidash/",
-				env!("CARGO_PKG_VERSION"),
-				" page-reading"
-			))
+			.user_agent(crate::USER_AGENT)
 			.redirect(reqwest::redirect::Policy::none())
 			.timeout(self.timeout)
 			.connect_timeout(Duration::from_secs(5))

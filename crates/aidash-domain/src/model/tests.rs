@@ -92,6 +92,47 @@ fn route_approval_rejects_stale_or_unsupported_pins(
 	assert_eq!(model.validate_provider_route().is_ok(), accepted);
 }
 
+/// OpenRouter model IDs name one exact model (#651): `:online` would add
+/// web search outside Provider tool approval, and only `:free` is a model of
+/// its own. Keyless endpoints keep their own `name:tag` syntax.
+#[rstest::rstest]
+#[case::exact(
+	"https://openrouter.ai/api/v1",
+	"deepseek/deepseek-v4.1-flash-1017",
+	None
+)]
+#[case::free("https://openrouter.ai/api/v1", "fixture/model:free", None)]
+#[case::online(
+	"https://openrouter.ai/api/v1",
+	"fixture/model:online",
+	Some("Provider tool")
+)]
+#[case::nitro(
+	"https://openrouter.ai/api/v1",
+	"fixture/model:nitro",
+	Some("only :free")
+)]
+#[case::empty("https://openrouter.ai/api/v1", "fixture/model:", Some("only :free"))]
+#[case::keyless("http://127.0.0.1:11434/v1", "llama3:8b", None)]
+fn openrouter_model_ids_refuse_variant_suffixes(
+	#[case] endpoint: &str,
+	#[case] model_id: &str,
+	#[case] refusal: Option<&str>,
+) {
+	let mut model = plan_model(&["text"]);
+	model.provider = "openrouter".into();
+	model.plan_connection = None;
+	model.endpoint = endpoint.into();
+	model.model_id = model_id.into();
+	match (model.validate_model_variant(), refusal) {
+		(Ok(()), None) => {}
+		(Err(Error::Invalid(message)), Some(expected)) => {
+			assert!(message.contains(expected), "{message}");
+		}
+		(result, _) => panic!("{model_id}: {result:?}"),
+	}
+}
+
 #[rstest::rstest]
 #[case::other_projection(crate::projection::ProjectionVersion::Ordered, 20, vec!["bytes"])]
 #[case::not_calibrated(crate::projection::ProjectionVersion::Native, 19, vec!["bytes"])]

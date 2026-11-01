@@ -107,3 +107,9 @@ pub mod tenant_secrets;
 
 mod tenant_data_protection;
 pub use tenant_data_protection::{TenantDataProtection, TenantDataProtectionHistory};
+pub mod oauth_clients;
+
+pub mod oauth_connections;
+
+mod remote_connection_calls;
+pub use remote_connection_calls::RemoteConnectionCall;

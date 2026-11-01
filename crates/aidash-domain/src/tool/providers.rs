@@ -61,7 +61,7 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 		"workspace_read" | "workspace_observe" | "workspace_wait" | "workspace_message" => {
 			"core.workspace@1"
 		}
-		"human_request" => "core.human@1",
+		"human_request" | "connection_request" => "core.human@1",
 		"task_create" | "task_delegate" | "agent_discover" | "task_assign" => "core.tasks@1",
 		"skill_list" | "skill_load" | "skill_read" | "skill_asset_read" => "core.skills@1",
 		"capability_search" | "capability_describe" | "capability_load" | "capability_unload" => {
@@ -148,6 +148,7 @@ pub fn research_contract(operation: ResearchOperation) -> ToolContract {
 			requirements: Vec::<AuthorizationRequirement>::new(),
 		},
 		behavior: ToolBehavior {
+			connection_request: false,
 			// Reading public sources leaves user resources unchanged. A repeated
 			// invocation key reuses the recorded attempt instead of dispatching.
 			effect: ToolEffect::ReadOnly,
@@ -428,19 +429,21 @@ pub fn remote_exclusion(
 	}
 }
 
-/// Why a Run excludes a memory builtin: the Agent binds no memory, so every
-/// call would be refused and no change of authority could lift it.
+/// Why a Run excludes a memory builtin: the Agent binds no memory provider,
+/// so every call would be refused and no change of authority could lift it.
 pub fn memory_exclusion(
 	origin: crate::registry::bindings::BindingOrigin,
 	operation: &str,
-	memory_bound: bool,
+	memory_provider: bool,
 ) -> Result<Option<String>> {
-	if memory_bound || !crate::registry::bindings::MEMORY_TOOLS.contains(&operation) {
+	if memory_provider || !crate::registry::bindings::MEMORY_TOOLS.contains(&operation) {
 		Ok(None)
 	} else if origin == crate::registry::bindings::BindingOrigin::Default {
-		Ok(Some("memory tools need a bound memory".into()))
+		Ok(Some("memory tools need a memory provider".into()))
 	} else {
-		Err(Error::Invalid("memory tools require a bound memory".into()))
+		Err(Error::Invalid(
+			"memory tools require a memory provider".into(),
+		))
 	}
 }
 

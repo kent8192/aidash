@@ -553,6 +553,56 @@ test("dependency review requires acknowledgment for each warning tool", async ({
   ).toEqual([true, true]);
 });
 
+test("Catalog Approval distinguishes OAuth, personal secrets, and shared secrets", async ({
+  page,
+}) => {
+  const definitions = [
+    entry("oauth", "tool", {
+      transport: "mcp",
+      endpoint: "https://mcp.example/mcp",
+      tool_name: "search",
+      replay: "unsafe",
+      idempotency_argument: null,
+    }),
+    entry("personal", "tool", {
+      transport: "http",
+      endpoint: "https://api.example/personal",
+      secret: "personal-key",
+      secret_owner: "personal",
+      replay: "read_only",
+    }),
+    entry("shared", "tool", {
+      transport: "http",
+      endpoint: "https://api.example/shared",
+      secret: "shared-key",
+      replay: "read_only",
+    }),
+  ];
+  await dashboard(page, tenantSubject, () =>
+    definitions.map((value) => registryVersion(value, unapproved)),
+  );
+  await routeTenantActions(page, ["catalog.approve", "secret.use"]);
+  await page.route("**/connections/probe?*", (route) =>
+    route.fulfill({
+      json: {
+        oauth: true,
+        scopes_supported: null,
+        issuer: "https://issuer.example",
+      },
+    }),
+  );
+  await page.goto("/settings?view=registry");
+  for (const [id, disclosure] of [
+    ["oauth", "per person (OAuth) → mcp.example"],
+    ["personal", "per person (secret) → api.example"],
+    ["shared", "shared secret → api.example"],
+  ]) {
+    await row(page, id).click();
+    await expect(approval(page)).toContainText(disclosure);
+    await page.keyboard.press("Escape");
+  }
+});
+
 const reviewItem = (
   id: string,
   kind: string,

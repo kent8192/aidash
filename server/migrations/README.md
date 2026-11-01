@@ -690,6 +690,21 @@ Source histories, respectively. Both are empty state-only migrations. They
 preserve the existing migration identities and give each app one leaf without
 changing schema, retained inputs, or data.
 
+`execution/0084_invocation_tenant_secrets` (after `execution/0083_harness_contract_state`)
+adds the nullable `tenant_secret_id`, `tenant_secret_version` and
+`tenant_secret_host` of `invocations` with typed column operations (#310, ADR
+0095). A tool call without a Tenant Secret leaves them null; a call that carried
+one records which Tenant Secret, at which pinned version, went to which host,
+never its value.
+
+`execution/0085_egress_secret_records` (after `execution/0084_invocation_tenant_secrets`)
+adds the nullable `secret_id`, `secret_version` and `secret_host` of
+`egress_requests` with typed column operations (#310, ADR 0095). A request for
+an External service without a Tenant Secret leaves them null; a brokered request
+records the Tenant Secret, the pinned version its token names and the
+destination host, never the value or a header value. The typed operations update
+the ORM snapshot, so no state-only checkpoint is needed.
+
 ## Home ledger recovery eligibility (#434)
 
 `knowledge/0036_memory_recovery_eligibility` (after
@@ -704,11 +719,13 @@ matching model state.
 is an empty state-only migration: both independent column changes apply before
 the single Knowledge head, and no schema or model state is overwritten.
 
-`identity/0045_tenant_data_protection` adds each Tenant's current Data Protection Level and append-only setting history (#542). A missing row means Standard with model-call ZDR and the Plan Connection exemption enabled. Checks reject unknown levels and a Zero Data Retention policy with model-call ZDR disabled. `identity/0046_data_protection_row_level_security` applies the same forced Tenant-isolation policy as the other Tenant-owned tables; literal SQL is required because Reinhardt does not expose RLS policy operations.
+`execution/0089_provider_tool_usage` stores provider-reported tool counts. `registry/0054_provider_tools` extends the current descriptor and Agent binding validation with Provider tool contracts, preserving the prior functions by delegation.
 
-`identity/0047_tenant_data_protection_state` records those two tables in ORM migration state. It executes no DDL; references, validity checks and row-level policies remain in the preceding database-only migrations.
+`identity/0051_tenant_data_protection` adds each Tenant's current Data Protection Level and append-only setting history (#542). A missing row means Standard with model-call ZDR and the Plan Connection exemption enabled. Checks reject unknown levels and a Zero Data Retention policy with model-call ZDR disabled. `identity/0052_data_protection_row_level_security` applies the same forced Tenant-isolation policy as the other Tenant-owned tables; literal SQL is required because Reinhardt does not expose RLS policy operations.
 
-`registry/0054_provider_warning_tools` extends the closed Provider tool validation functions with the warning-tier tools (advisor, subagent, model search, tool search, shell) without replacing the previous contracts; its reverse refuses to run while any such definition or pinned Run exists. `identity/0048_provider_warning_acknowledgment` adds the nullable exact disclosure text to `authorization_catalog_history`, filled only when a warning tool is approved. `execution/0085_provider_container` adds the nullable `runs.provider_container` pin (OpenRouter container id and network policy). OpenRouter has no container delete API, so the pin is kept after the Run ends.
+`identity/0053_tenant_data_protection_state` records those two tables in ORM migration state. It executes no DDL; references, validity checks and row-level policies remain in the preceding database-only migrations.
+
+`registry/0055_provider_warning_tools` extends the closed Provider tool validation functions with the warning-tier tools (advisor, subagent, model search, tool search, shell) without replacing the previous contracts; its reverse refuses to run while any such definition or pinned Run exists. `identity/0054_provider_warning_acknowledgment` adds the nullable exact disclosure text to `authorization_catalog_history`, filled only when a warning tool is approved. `execution/0090_provider_container` adds the nullable `runs.provider_container` pin (OpenRouter container id and network policy). OpenRouter has no container delete API, so the pin is kept after the Run ends.
 
 ## Run control provenance and Safety Stops (#485, ADR 0101)
 
@@ -737,6 +754,10 @@ CHECKs bound the reason to 1 to 1000 characters and tie `identity_id` to a brows
 `execution/0078_run_safety_stops_row_level_security` adds the tenant policy template
 through `RunSQL`, and `execution/0079_run_safety_stops_state` is the generated state-only
 snapshot that leaves the physical constraints and indexes to `0077`.
+
+`execution/0086_invocation_connections` (after `execution/0085_egress_secret_records`)
+adds nullable `invocations.connection_id` with a typed Reinhardt operation (#554,
+ADR 0100). It records the person's OAuth Connection used by dispatch, never a token.
 
 ## Harness Contract versions (#531)
 

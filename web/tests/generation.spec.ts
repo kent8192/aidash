@@ -184,7 +184,7 @@ async function createGenerationScenario(
               threshold: "3fe0000000000000",
             },
           ],
-          builder: "aidash.compaction/2",
+          builder: "aidash.compaction/3",
           option_source: "history_event/1",
           rule: "compaction.keep/1",
           mode: "enforce",

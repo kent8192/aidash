@@ -150,7 +150,7 @@ class ProviderToolSchema(unittest.TestCase):
         # Load real pre-migration contracts; no fake validators or weakened checks.
         for path, name in [
             ("0011_binding_contract.sql", "aidash_qualified_ref_is_valid"),
-            ("0034_research_view.sql", "aidash_descriptor_is_valid"),
+            ("0053_connection_request.sql", "aidash_descriptor_is_valid"),
             ("0052_harness_contract_structured3.sql", "aidash_agent_bindings_is_valid"),
         ]:
             cls.sql(function(SQL / "forward" / path, name))
@@ -163,8 +163,8 @@ class ProviderToolSchema(unittest.TestCase):
             CREATE TABLE runs(context jsonb NOT NULL);
         """)
         cls.before = cls.signature()
-        cls.sql((SQL / "forward/0053_provider_tools.sql").read_text())
-        cls.sql((SQL / "forward/0054_provider_warning_tools.sql").read_text())
+        cls.sql((SQL / "forward/0054_provider_tools.sql").read_text())
+        cls.sql((SQL / "forward/0055_provider_warning_tools.sql").read_text())
 
     @classmethod
     def signature(cls):
@@ -296,9 +296,11 @@ class ProviderToolSchema(unittest.TestCase):
             "operation": "file_read", "default_alias": "file_read", "tier": "builtin",
         }
         self.assertTrue(self.valid("aidash_descriptor_is_valid", legacy))
+        connection = dict(legacy, provider="core.human@1", operation="connection_request", default_alias="connection_request")
+        self.assertTrue(self.valid("aidash_descriptor_is_valid", connection))
 
     def test_rollback_refuses_history_then_restores_original_contracts(self):
-        reverse = (SQL / "backward/0054_provider_warning_tools.sql").read_text() + (SQL / "backward/0053_provider_tools.sql").read_text()
+        reverse = (SQL / "backward/0055_provider_warning_tools.sql").read_text() + (SQL / "backward/0054_provider_tools.sql").read_text()
         self.sql("INSERT INTO registry VALUES ('tool'," + literal({"config": descriptor("datetime")}) + ");")
         blocked = self.sql(reverse, check=False)
         self.assertNotEqual(blocked.returncode, 0)
@@ -312,8 +314,8 @@ class ProviderToolSchema(unittest.TestCase):
         self.assertEqual(self.signature(), self.before)
         self.assertFalse(self.valid("aidash_descriptor_is_valid", descriptor("datetime")))
         self.assertFalse(self.valid("aidash_agent_bindings_is_valid", agent(PINS[2])))
-        self.sql((SQL / "forward/0053_provider_tools.sql").read_text())
-        self.sql((SQL / "forward/0054_provider_warning_tools.sql").read_text())
+        self.sql((SQL / "forward/0054_provider_tools.sql").read_text())
+        self.sql((SQL / "forward/0055_provider_warning_tools.sql").read_text())
 
 
 if __name__ == "__main__":

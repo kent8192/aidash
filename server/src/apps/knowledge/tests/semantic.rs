@@ -168,7 +168,7 @@ mod controlled_context_composition {
 			}
 			let mut entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Explicit native context"},"config":{"schema_version":1,"source":source}});
 			if on_demand_memory && adapter == "semantic_memory" {
-				entry["config"]["context_source"] = json!({"provider":"aidash.native-context/1","operation":"semantic_memory","tools":{"read":[aidash_domain::registry::bindings::QualifiedRef::builtin(f.config.deployment.as_str(),"memory_recall")],"write":[],"detail":null},"pin":{"policy":"on_demand"},"volatility":"step","query":"task-inputs@1","refresh":"revision-bound@1","disclosure":{"previews":false,"query":false},"required_home":false});
+				entry["config"]["context_source"] = json!({"provider":"aidash.native-context/1","operation":"semantic_memory","tools":{"read":[],"write":[],"detail":null},"pin":{"policy":"on_demand"},"volatility":"step","query":"task-inputs@1","refresh":"revision-bound@1","disclosure":{"previews":false,"query":false},"required_home":false});
 			}
 			if adapter == "workspace_retrieval"
 				&& let Some(selection) = selection

@@ -66,8 +66,9 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0050_harness_contract"),
 	("registry", "0051_harness_plugin_merge"),
 	("registry", "0052_harness_contract_structured3"),
-	("registry", "0053_provider_tools"),
-	("registry", "0054_provider_warning_tools"),
+	("registry", "0054_provider_tools"),
+	("registry", "0055_provider_warning_tools"),
+	("registry", "0053_connection_request"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -120,7 +121,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		72
+		76
 	);
 	let tables = migrations
 		.iter()
@@ -179,17 +180,29 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 						"ALTER TABLE public.dashboard_administration_history ALTER COLUMN identity_id DROP NOT NULL;"
 					);
 				} else if sql.starts_with("ALTER TABLE")
-					&& migration.name.ends_with("_row_level_security")
+					&& sql.contains(" ENABLE ROW LEVEL SECURITY;")
 				{
-					// Reinhardt has no row-level security operations (#6770). The
-					// database::policy unit tests compare these assets with the
-					// rendered template.
-					assert!(
-						sql.contains(&format!(
-							"CREATE POLICY {} ON",
-							aidash_server::database::policy::POLICY
-						)),
-						"{}: {sql}",
+					// A schema migration can carry a policy asset too. Recognize
+					// its contents and require the same exact reversible template
+					// as database::policy's migration scanner (#6770).
+					let tables = sql
+						.lines()
+						.filter_map(|line| {
+							line.strip_prefix("ALTER TABLE public.")?
+								.strip_suffix(" ENABLE ROW LEVEL SECURITY;")
+						})
+						.collect::<Vec<_>>();
+					assert!(!tables.is_empty(), "{}: {sql}", migration.name);
+					assert_eq!(
+						sql.as_str(),
+						aidash_server::database::policy::enable(&tables),
+						"{}",
+						migration.name
+					);
+					assert_eq!(
+						reverse_sql.as_deref(),
+						Some(aidash_server::database::policy::disable(&tables).as_str()),
+						"{} reversed",
 						migration.name
 					);
 				} else if sql.starts_with("ALTER TABLE") {
@@ -358,12 +371,12 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0086_policy_probe")
+		.get_migration("execution", "0091_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("execution".to_owned(), "0085_provider_container".to_owned())]
+		vec![("execution".to_owned(), "0090_provider_container".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -710,7 +723,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		72
+		76
 	);
 }
 

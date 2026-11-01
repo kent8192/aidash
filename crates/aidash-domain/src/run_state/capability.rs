@@ -35,6 +35,8 @@ pub enum PersistedCapability {
 	McpCallState,
 	/// A sent MCP round keeps its identity while a live callback waits.
 	McpSentRound,
+	/// Authentication waits retain the unexecuted call and once-per-resource history.
+	ConnectionWait,
 }
 impl PersistedCapability {
 	pub const ALL: &'static [Self] = &[
@@ -42,6 +44,7 @@ impl PersistedCapability {
 		Self::DegradedContext,
 		Self::McpCallState,
 		Self::McpSentRound,
+		Self::ConnectionWait,
 	];
 
 	/// What this build can load. A worker only leases Runs whose state needs a subset.
@@ -54,6 +57,7 @@ impl PersistedCapability {
 			Self::DegradedContext => "degraded_context",
 			Self::McpCallState => "mcp_call_state",
 			Self::McpSentRound => "mcp_sent_round",
+			Self::ConnectionWait => "connection_wait",
 		}
 	}
 }
@@ -71,6 +75,11 @@ impl ToolCallState {
 		self.batch_end
 			.map(|_| PersistedCapability::ToolBatchState)
 			.into_iter()
+			.chain(
+				self.connection
+					.as_ref()
+					.map(|_| PersistedCapability::ConnectionWait),
+			)
 			.chain(self.mcp.as_ref().map(|_| PersistedCapability::McpCallState))
 			.chain(
 				self.mcp
@@ -81,10 +90,18 @@ impl ToolCallState {
 	}
 }
 impl RecoveryState {
-	fn required_capabilities(&self) -> Option<PersistedCapability> {
+	fn required_capabilities(&self) -> impl IntoIterator<Item = PersistedCapability> {
 		// Degraded context (#234) is rejected by workers built before it. It is
 		// omitted while empty, so a Run that never degraded needs nothing.
-		(!self.degraded.is_empty()).then_some(PersistedCapability::DegradedContext)
+		(!self.degraded.is_empty())
+			.then_some(PersistedCapability::DegradedContext)
+			.into_iter()
+			.chain(
+				(!self.connection_waited.is_empty()
+					|| self.connection_wait.is_some()
+					|| !self.connection_refusals.is_empty())
+				.then_some(PersistedCapability::ConnectionWait),
+			)
 	}
 }
 impl RunState {

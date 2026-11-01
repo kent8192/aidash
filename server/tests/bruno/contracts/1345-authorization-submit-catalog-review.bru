@@ -1,23 +1,17 @@
 meta {
-  name: 1345 authorization-submit-catalog-review - Subject without registry.read sees the review as not found
+  name: 1345 authorization-submit-catalog-review - Anonymous request is rejected
   type: http
   seq: 1345
 }
 
 post {
   url: {{base_url}}/api/authorization/{{tenant}}/catalog/review
-  body: text
+  body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  Authorization: Bearer {{contract_token}}
-  Content-Type: application/json
-}
-
-body:text {
-  {"node": "{{tenant_node}}", "root": {"id": "research", "version": "1.0.0"}, "closure_digest": "sha256:review"}
 }
 
 script:pre-request {
@@ -33,6 +27,6 @@ const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url
 }
 
 tests {
-  test("Exact HTTP 404", function () { expect(res.getStatus()).to.equal(404); });
-  test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });
+  test("Exact HTTP 401", function () { expect(res.getStatus()).to.equal(401); });
+  test("Stable authorization error envelope", function () { expect(res.getHeader("content-type")).to.include("application/json"); expect(res.getBody()).to.eql({error:"unauthorized"}); });
 }

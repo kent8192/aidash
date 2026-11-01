@@ -845,6 +845,7 @@ test("Tenant Secrets clear values after writing and edit hosts without returning
           : [
               {
                 name: "image-key",
+                owner: body.owner,
                 hosts: body.hosts,
                 revision: Number(body.expected_revision) + 1,
                 fingerprint: "fingerprint-296",
@@ -872,6 +873,7 @@ test("Tenant Secrets clear values after writing and edit hosts without returning
   expect(writes[0]).toEqual({
     method: "PUT",
     body: {
+      owner: "me",
       expected_revision: 0,
       hosts: ["api.example.test"],
       value: "browser-canary-never-persist-296",
@@ -889,6 +891,7 @@ test("Tenant Secrets clear values after writing and edit hosts without returning
   await panel.getByRole("button", { name: "Save", exact: true }).click();
   await expect.poll(() => writes.length).toBe(2);
   expect(writes[1].body).toEqual({
+    owner: "me",
     expected_revision: 1,
     hosts: ["other.example.test"],
   });
@@ -896,7 +899,7 @@ test("Tenant Secrets clear values after writing and edit hosts without returning
   await expect.poll(() => writes.length).toBe(3);
   expect(writes[2]).toEqual({
     method: "DELETE",
-    body: { expected_revision: 2 },
+    body: { owner: "me", expected_revision: 2 },
   });
   await expect(
     panel.getByText("fingerprint-296", { exact: false }),
