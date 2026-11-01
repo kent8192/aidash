@@ -117,7 +117,7 @@ const deciderContracts: Record<
   { builder: string; option_source: string; rule: string }
 > = {
   compaction: {
-    builder: "aidash.compaction/2",
+    builder: "aidash.compaction/3",
     option_source: "history_event/1",
     rule: "compaction.keep/1",
   },

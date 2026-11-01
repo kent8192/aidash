@@ -22,11 +22,14 @@ its default mode takes, the long-context limits (System One only), and the
 tool-input abridging stages. A version also declares its per-Run call limit
 (`max_calls_per_run`, shared by every Route and lowered only by a Binding) and
 whether it keeps the classification state (`state_retention`, allowed by the
-version's Catalog Approval). The builder `aidash.compaction/2` abridges
+version's Catalog Approval). The builder `aidash.compaction/3` abridges
 disclosed tool inputs stage by stage until the state fits the Route's default
 mode, sends only the most abridged state in the long-context mode, and treats a
 larger one as that Route being unavailable. On the `native` Projection Version
-it protects whole Model Turns. They configure no endpoint or key: the adapter
+it protects whole Model Turns. Its rubric travels first in the state, under the
+key `brief`, and says what each answer does: a kept call keeps a cut result's
+first 300 characters, and a dropped call leaves the agent unaware it ran (ADR
+0107). They configure no endpoint or key: the adapter
 calls OpenRouter's System One API, or its Decisions API with `provider.only` set
 to the Route's hosts, with `provider.zdr = true`, resolving the Tenant's current
 OpenRouter Provider Credential for each dispatch rather than when a request is
