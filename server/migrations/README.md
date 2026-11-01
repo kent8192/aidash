@@ -690,6 +690,21 @@ Source histories, respectively. Both are empty state-only migrations. They
 preserve the existing migration identities and give each app one leaf without
 changing schema, retained inputs, or data.
 
+`execution/0084_invocation_tenant_secrets` (after `execution/0083_harness_contract_state`)
+adds the nullable `tenant_secret_id`, `tenant_secret_version` and
+`tenant_secret_host` of `invocations` with typed column operations (#310, ADR
+0095). A tool call without a Tenant Secret leaves them null; a call that carried
+one records which Tenant Secret, at which pinned version, went to which host,
+never its value.
+
+`execution/0085_egress_secret_records` (after `execution/0084_invocation_tenant_secrets`)
+adds the nullable `secret_id`, `secret_version` and `secret_host` of
+`egress_requests` with typed column operations (#310, ADR 0095). A request for
+an External service without a Tenant Secret leaves them null; a brokered request
+records the Tenant Secret, the pinned version its token names and the
+destination host, never the value or a header value. The typed operations update
+the ORM snapshot, so no state-only checkpoint is needed.
+
 ## Home ledger recovery eligibility (#434)
 
 `knowledge/0036_memory_recovery_eligibility` (after
@@ -732,6 +747,10 @@ CHECKs bound the reason to 1 to 1000 characters and tie `identity_id` to a brows
 through `RunSQL`, and `execution/0079_run_safety_stops_state` is the generated state-only
 snapshot that leaves the physical constraints and indexes to `0077`.
 
+`execution/0086_invocation_connections` (after `execution/0085_egress_secret_records`)
+adds nullable `invocations.connection_id` with a typed Reinhardt operation (#554,
+ADR 0100). It records the person's OAuth Connection used by dispatch, never a token.
+
 ## Harness Contract versions (#531)
 
 `registry/0050_harness_contract` (after `registry/0048_context_marketplace_merge`
@@ -763,7 +782,7 @@ Plugin settings validator, including its compaction rules, and restores that
 validator on rollback. The join is an empty state-only migration that preserves
 existing identities and one leaf per app.
 
-`registry/0053_subnode_provider` (after `registry/0052_harness_contract_structured3`) extends the PostgreSQL built-in Tool descriptor
+`registry/0054_subnode_provider` (after `registry/0053_connection_request`) extends the PostgreSQL built-in Tool descriptor
 validator with the six `core.subnodes@1` operations (#660). Its reversible
 `RunSQL` replaces the PostgreSQL function body because Reinhardt migrations
 cannot express PL/pgSQL function definitions. Rolling back restores the

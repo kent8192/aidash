@@ -386,7 +386,13 @@ pub async fn resolve(
 	let graph = local_graph(scope, roots, node).await?;
 	// Structural validation never resolves node-local secret references.
 	validation.validate_in(&entry, false)?;
-	if let Some((name, endpoint)) = aidash_domain::tenant_secrets::definition_target(&entry) {
+	if aidash_domain::tenant_secrets::definition_personal_only(&entry)
+		&& let Some(name) = aidash_domain::tenant_secrets::definition_secret(&entry)
+	{
+		aidash_domain::tenant_secrets::validate_name(&name)?;
+	}
+	if let Some((name, endpoint)) = aidash_domain::tenant_secrets::definition_shared_target(&entry)
+	{
 		let hosts = scope.tenant_secret_hosts(&name).await?;
 		crate::tenant_secrets::admit(&name, &endpoint, hosts.as_deref())?;
 	}

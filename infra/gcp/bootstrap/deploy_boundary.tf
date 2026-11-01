@@ -26,17 +26,22 @@ resource "google_tags_tag_key" "broker" {
   count       = local.broker_boundary ? 1 : 0
   parent      = "projects/${var.project_id}"
   short_name  = "aidash-credential-broker"
-  description = "Marks Credential Broker service accounts the deploy identity is denied."
+  description = "Marks Credential and Tenant Secret Broker service accounts the deploy identity is denied."
   depends_on  = [google_project_service.required]
 }
 resource "google_tags_tag_value" "broker" {
   count       = local.broker_boundary ? 1 : 0
   parent      = google_tags_tag_key.broker[0].id
   short_name  = "broker"
-  description = "A service account that can read Key Material."
+  description = "A service account that can read Secret Store payloads."
 }
 resource "google_tags_tag_binding" "broker" {
   for_each  = google_service_account.broker
+  parent    = "//iam.googleapis.com/projects/${var.project_id}/serviceAccounts/${each.value.unique_id}"
+  tag_value = google_tags_tag_value.broker[0].id
+}
+resource "google_tags_tag_binding" "tenant_secret_broker" {
+  for_each  = google_service_account.tenant_secret_broker
   parent    = "//iam.googleapis.com/projects/${var.project_id}/serviceAccounts/${each.value.unique_id}"
   tag_value = google_tags_tag_value.broker[0].id
 }
@@ -45,7 +50,7 @@ resource "google_iam_deny_policy" "deploy_broker_boundary" {
   count        = local.broker_boundary ? 1 : 0
   parent       = urlencode("cloudresourcemanager.googleapis.com/projects/${var.project_id}")
   name         = "aidash-deploy-broker-boundary"
-  display_name = "Deploy identity cannot impersonate Credential Broker accounts"
+  display_name = "Deploy identity cannot impersonate broker accounts"
   rules {
     description = "Block path 1: no policy changes, tokens, signatures, keys, deletion or disabling for tagged broker accounts."
     deny_rule {
@@ -57,5 +62,8 @@ resource "google_iam_deny_policy" "deploy_broker_boundary" {
       }
     }
   }
-  depends_on = [google_tags_tag_binding.broker]
+  depends_on = [
+    google_tags_tag_binding.broker,
+    google_tags_tag_binding.tenant_secret_broker,
+  ]
 }

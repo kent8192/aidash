@@ -1,3 +1,4 @@
+import { ConnectionOutcomeBanner } from "./connections/install";
 import { selfHostedPlanConnections } from "@slots/plan-connections";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import React from "react";
@@ -192,6 +193,7 @@ function App() {
   return (
     <LocaleContext value={locale}>
       <div className="flex h-dvh min-h-0 flex-col bg-background text-foreground">
+        <ConnectionOutcomeBanner outcome={connectionOutcome} />
         {window.location.pathname === "/sign-in" ? (
           <SignInEntry locale={locale} setLocale={setLocale} />
         ) : invitationTenant(window.location.pathname) ? (
@@ -1144,6 +1146,12 @@ const sectionRoute = createRoute({
 // one, or the key a reconnect replaced), the redirect carries that key's
 // settings page; validation warnings about the connected key are flagged.
 const callbackSearch = new URLSearchParams(window.location.search);
+const connectionOutcome = callbackSearch.get("connection");
+if (connectionOutcome) {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("connection");
+  window.history.replaceState(window.history.state, "", url);
+}
 const providerAuthorizationOutcome = callbackSearch.get(
   "provider_authorization",
 );

@@ -300,15 +300,24 @@ class RuntimeConfigurationTests(unittest.TestCase):
     def test_byok_descriptor_requires_a_stable_fingerprint_and_matching_broker(self):
         store = {"kind": "secret_manager", "byok_project_id": "aidash-byok-fixture", "environment_id": "pr-2"}
         broker = {"endpoint": "https://broker", "issuer": "https://issuer", "audience": "pr-2", "kid": "1"}
-        descriptor = {"fingerprint_key": {"env": "AIDASH_PROVIDER_FINGERPRINT_KEY"}, "store": store, "broker": broker}
+        tenant = {"endpoint": "https://tenant-broker", "issuer": "aidash-server", "audience": "pr-2-tsec", "kid": "2"}
+        descriptor = {"fingerprint_key": {"env": "AIDASH_PROVIDER_FINGERPRINT_KEY"}, "store": store,
+                      "broker": broker, "tenant_secret_broker": tenant}
         output = dict(OUTPUT, provider_credentials=descriptor)
         with self.assertRaisesRegex(Refused, "fingerprint"):
             self.materialize(dict(RUNTIME, AIDASH_PROVIDER_FINGERPRINT_KEY="short"), output)
         with self.assertRaisesRegex(Refused, "broker"):
             self.materialize(dict(RUNTIME, AIDASH_PROVIDER_FINGERPRINT_KEY="f" * 32), dict(output, provider_credentials=dict(descriptor, broker=dict(broker, audience="test"))))
+        with self.assertRaisesRegex(Refused, "Tenant Secret broker"):
+            self.materialize(dict(RUNTIME, AIDASH_PROVIDER_FINGERPRINT_KEY="f" * 32), dict(output, provider_credentials=dict(descriptor, tenant_secret_broker=dict(tenant, audience="pr-2"))))
         settings = self.materialize(dict(RUNTIME, AIDASH_PROVIDER_FINGERPRINT_KEY="f" * 32), output)
         self.assertEqual(settings["provider"], descriptor)
-        self.assertEqual(self.materialize(RUNTIME)["provider"], {"fingerprint_key": None, "store": None, "broker": None})
+        expected = {"fingerprint_key": None, "store": None, "broker": None, "tenant_secret_broker": None}
+        self.assertEqual(self.materialize(RUNTIME)["provider"], expected)
+        # Terraform state written before #310 gains the explicit none.
+        legacy = {key: value for key, value in descriptor.items() if key != "tenant_secret_broker"}
+        legacy_output = dict(OUTPUT, provider_credentials=legacy)
+        self.assertEqual(self.materialize(dict(RUNTIME, AIDASH_PROVIDER_FINGERPRINT_KEY="f" * 32), legacy_output)["provider"], legacy | {"tenant_secret_broker": None})
 
 
 class PreviewTlsTests(unittest.TestCase):

@@ -94,7 +94,13 @@ pub async fn run(address: Option<SocketAddr>) -> crate::Result<()> {
 	let shutdown = ShutdownCoordinator::new(Duration::from_secs(30));
 	let mut stopped = shutdown.subscribe();
 	ProcessLifecycle::register(&context, shutdown.clone());
-	let federation = bootstrap::initialize(&context, &settings, connection).await?;
+	let federation = bootstrap::initialize_as(
+		&context,
+		&settings,
+		connection,
+		bootstrap::ProcessRole::Worker,
+	)
+	.await?;
 	let probes = match address {
 		Some(address) => Some(ProbeServer::start(address, context, shutdown.clone()).await?),
 		None => None,

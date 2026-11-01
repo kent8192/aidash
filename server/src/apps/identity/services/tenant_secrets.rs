@@ -7,7 +7,7 @@ use crate::{
 	authorization::{access::NativeAccess, identity::Actor},
 	federation::Federation,
 };
-use aidash_application::tenant_secrets::{Metadata, Put, Service};
+use aidash_application::tenant_secrets::{Metadata, Ownership, Put, Service};
 use aidash_domain::identity::tenant_administration::{COLLECTION, SECRET_MANAGE, SECRET_USE};
 use reinhardt::injectable;
 use serde_json::json;
@@ -68,15 +68,38 @@ impl Management {
 		let access = self
 			.authorize(&actor, &tenant, COLLECTION, &[SECRET_MANAGE, SECRET_USE])
 			.await?;
-		let result = service.list(&tenant).await;
+		let result = service
+			.list_for(&tenant, &self.subject(&actor, &tenant)?.subject)
+			.await;
 		access.finish(result.map_err(Into::into)).await
 	}
-	pub async fn get(&self, actor: Actor, tenant: String, name: String) -> Result<Metadata> {
+	pub async fn get(
+		&self,
+		actor: Actor,
+		tenant: String,
+		name: String,
+		owner: Ownership,
+	) -> Result<Metadata> {
 		let service = self.service()?;
 		let access = self
-			.authorize(&actor, &tenant, &name, &[SECRET_MANAGE, SECRET_USE])
+			.authorize(
+				&actor,
+				&tenant,
+				&name,
+				if owner == Ownership::Me {
+					&[SECRET_USE]
+				} else {
+					&[SECRET_MANAGE, SECRET_USE]
+				},
+			)
 			.await?;
-		let result = service.get(&tenant, &name).await;
+		let result = service
+			.get_owned(
+				&tenant,
+				owner.subject(&self.subject(&actor, &tenant)?.subject),
+				&name,
+			)
+			.await;
 		access.finish(result.map_err(Into::into)).await
 	}
 	pub async fn put(
@@ -88,12 +111,22 @@ impl Management {
 	) -> Result<Metadata> {
 		let service = self.service()?;
 		let access = self
-			.authorize(&actor, &tenant, &name, &[SECRET_MANAGE])
+			.authorize(
+				&actor,
+				&tenant,
+				&name,
+				if input.owner == Ownership::Me {
+					&[SECRET_USE]
+				} else {
+					&[SECRET_MANAGE]
+				},
+			)
 			.await?;
 		let subject = self.subject(&actor, &tenant)?.subject.clone();
 		let result = service
-			.put(
+			.put_owned(
 				&tenant,
+				input.owner.subject(&subject),
 				&name,
 				Put {
 					expected_revision: input.expected_revision,
@@ -114,11 +147,26 @@ impl Management {
 	) -> Result<Metadata> {
 		let service = self.service()?;
 		let access = self
-			.authorize(&actor, &tenant, &name, &[SECRET_MANAGE])
+			.authorize(
+				&actor,
+				&tenant,
+				&name,
+				if input.owner == Ownership::Me {
+					&[SECRET_USE]
+				} else {
+					&[SECRET_MANAGE]
+				},
+			)
 			.await?;
 		let subject = self.subject(&actor, &tenant)?.subject.clone();
 		let result = service
-			.delete(&tenant, &name, input.expected_revision, &subject)
+			.delete_owned(
+				&tenant,
+				input.owner.subject(&subject),
+				&name,
+				input.expected_revision,
+				&subject,
+			)
 			.await;
 		access.finish(result.map_err(Into::into)).await
 	}

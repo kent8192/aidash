@@ -119,7 +119,8 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 			},
 		),
 		store: encrypted.clone(),
-		reader: encrypted,
+		reader: Some(encrypted),
+		calls: None,
 		fingerprint_key: "tenant-secret-fingerprint-fixture-32-bytes".into(),
 		max_per_tenant: 64,
 	});
@@ -240,33 +241,27 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 	let token = request["egress"]["token"].as_str().unwrap();
 	let digest = "a".repeat(64);
 	assert!(matches!(
-		Gateway {
-			store: f.store.clone()
-		}
-		.admit(
-			&format!("{operation}.{}", "a".repeat(43)),
-			"images",
-			"GET",
-			"forged",
-			&digest
-		)
-		.await,
+		Gateway::new(f.store.clone())
+			.admit(
+				&format!("{operation}.{}", "a".repeat(43)),
+				"images",
+				"GET",
+				"forged",
+				&digest
+			)
+			.await,
 		Err(aidash_application::Error::Forbidden)
 	));
-	let first = Gateway {
-		store: f.store.clone(),
-	}
-	.admit(token, "images", "POST", "upload", &digest)
-	.await
-	.unwrap();
+	let first = Gateway::new(f.store.clone())
+		.admit(token, "images", "POST", "upload", &digest)
+		.await
+		.unwrap();
 	first.meter.charge(Direction::Sent, 6).await.unwrap();
 	// A fresh gateway instance sees the same durable operation budget.
-	let second = Gateway {
-		store: f.store.clone(),
-	}
-	.admit(token, "images", "GET", "download", &digest)
-	.await
-	.unwrap();
+	let second = Gateway::new(f.store.clone())
+		.admit(token, "images", "GET", "download", &digest)
+		.await
+		.unwrap();
 	let attempts = (0..8).map(|i| {
 		let meter = if i % 2 == 0 {
 			first.meter.clone()
@@ -282,11 +277,9 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 	first.meter.finish(201, 20, None).await.unwrap();
 	second.meter.finish(200, 25, None).await.unwrap();
 	assert!(matches!(
-		Gateway {
-			store: f.store.clone()
-		}
-		.admit(token, "images", "GET", "third", &digest)
-		.await,
+		Gateway::new(f.store.clone())
+			.admit(token, "images", "GET", "third", &digest)
+			.await,
 		Err(aidash_application::Error::Conflict(_))
 	));
 	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
@@ -331,11 +324,9 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 	.await
 	.unwrap();
 	assert!(matches!(
-		Gateway {
-			store: f.store.clone()
-		}
-		.admit(token, "images", "GET", "revoked", &digest)
-		.await,
+		Gateway::new(f.store.clone())
+			.admit(token, "images", "GET", "revoked", &digest)
+			.await,
 		Err(aidash_application::Error::Forbidden)
 	));
 	// Metering rechecks Run control, including on an already admitted stream.
@@ -382,9 +373,7 @@ async fn live_preview_credentials(
 		.execute(f.store.pool.fixture_driver()).await.unwrap();
 	let pod = session_token(preview, expires, &f.store).unwrap();
 	let page = page_token(preview, expires, &f.store).unwrap();
-	let gateway = Gateway {
-		store: f.store.clone(),
-	};
+	let gateway = Gateway::new(f.store.clone());
 	let digest = "b".repeat(64);
 	// A Pod cannot change its credential's kind to impersonate the page path,
 	// and a page cannot turn its credential into one that attaches the Secret.
@@ -415,15 +404,68 @@ async fn live_preview_credentials(
 		page.credential.is_none(),
 		"the page reaches the same service without its Tenant Secret"
 	);
-	for (admission, via) in [(&pod, "pod"), (&page, "page")] {
+	for (admission, via, host) in [
+		(&pod, "pod", Some("api.example.test")),
+		(&page, "page", None),
+	] {
 		admission.meter.finish(200, 1, None).await.unwrap();
-		let recorded: String = sqlx::query_scalar("SELECT via FROM egress_requests WHERE id = $1")
-			.bind(admission.request)
-			.fetch_one(f.store.pool.fixture_driver())
+		let (recorded, secret_host): (String, Option<String>) =
+			sqlx::query_as("SELECT via, secret_host FROM egress_requests WHERE id = $1")
+				.bind(admission.request)
+				.fetch_one(f.store.pool.fixture_driver())
+				.await
+				.unwrap();
+		assert_eq!(recorded, via);
+		// Only the request that carried the Tenant Secret names where it went.
+		assert_eq!(secret_host.as_deref(), host);
+	}
+	// A brokered preview mints once per session and records only the pinned identity.
+	let existing = f.store.tenant_secrets.as_ref().unwrap();
+	let calls = std::sync::Arc::new(RecordedCalls::default());
+	let mut store = f.store.clone();
+	store.tenant_secrets = Some(std::sync::Arc::new(
+		aidash_application::tenant_secrets::Service {
+			repository: existing.repository.clone(),
+			store: existing.store.clone(),
+			reader: None,
+			calls: Some(calls.clone()),
+			fingerprint_key: existing.fingerprint_key.clone(),
+			max_per_tenant: existing.max_per_tenant,
+		},
+	));
+	let gateway = Gateway::new(store);
+	let token = session_token(preview, expires, &f.store).unwrap();
+	for _ in 0..2 {
+		let admitted = gateway
+			.admit(&token, "secured-images", "GET", "/", &digest)
 			.await
 			.unwrap();
-		assert_eq!(recorded, via);
+		assert!(admitted.credential.is_none());
+		assert_eq!(
+			admitted.route.as_ref().unwrap().token.expose_secret(),
+			"fixture-route-token"
+		);
+		admitted.meter.finish(200, 1, None).await.unwrap();
+		let row: (Option<Uuid>, Option<String>, Option<String>) = sqlx::query_as(
+			"SELECT secret_id, secret_version, secret_host FROM egress_requests WHERE id = $1",
+		)
+		.bind(admitted.request)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert!(row.0.is_some());
+		assert_eq!(row.1.as_deref(), Some("1"));
+		assert_eq!(row.2.as_deref(), Some("api.example.test"));
 	}
+	let grants = calls.0.lock().unwrap();
+	assert_eq!(grants.len(), 1);
+	assert_eq!(grants[0].tenant, "acme");
+	assert_eq!(grants[0].destination.origin, "https://api.example.test");
+	assert_eq!(grants[0].destination.path_prefix, "/");
+	assert_eq!(grants[0].methods, vec!["GET"]);
+	assert!(
+		matches!(&grants[0].subject, aidash_capability::tenant_secret::SecretSubject::Operation { operation, tenant } if *operation == preview && tenant == "acme")
+	);
 }
 
 struct RunnerReply {
@@ -439,5 +481,21 @@ impl reinhardt::Handler for RunnerReply {
 		Ok(Response::ok()
 			.with_json(&json!({"status":"running","started_at":self.started}))
 			.unwrap())
+	}
+}
+
+#[derive(Default)]
+struct RecordedCalls(std::sync::Mutex<Vec<aidash_application::tenant_secrets::SecretCallGrant>>);
+#[async_trait::async_trait]
+impl aidash_application::tenant_secrets::SecretCalls for RecordedCalls {
+	async fn route(
+		&self,
+		grant: aidash_application::tenant_secrets::SecretCallGrant,
+	) -> aidash_application::Result<aidash_application::tenant_secrets::SecretRoute> {
+		self.0.lock().unwrap().push(grant);
+		Ok(aidash_application::tenant_secrets::SecretRoute {
+			base: "https://broker.example/v1/forward".parse().unwrap(),
+			token: "fixture-route-token".into(),
+		})
 	}
 }

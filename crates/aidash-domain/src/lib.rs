@@ -15,6 +15,7 @@ pub mod media;
 pub mod memory;
 pub mod model;
 pub mod nodes;
+pub mod oauth_connections;
 pub mod offering;
 pub mod plan_connections;
 pub mod policy;

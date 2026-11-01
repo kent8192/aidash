@@ -68,3 +68,58 @@ fn invalid_store_settings_refuse_to_start(
 	let error = store(&fields(config), broker.as_ref()).err().unwrap();
 	assert!(error.to_string().starts_with(refusal), "{error}");
 }
+
+const TENANT_KID: &str = "projects/fixture/locations/us-central1/keyRings/server/cryptoKeys/tenant-secret/cryptoKeyVersions/1";
+
+fn tenant_secret_broker() -> Value {
+	json!({
+		"endpoint": "https://tenant-secret-broker.run.app",
+		"issuer": "aidash-server",
+		"audience": "test-tsec",
+		"kid": TENANT_KID
+	})
+}
+
+#[test]
+fn tenant_secret_calls_use_the_servers_key_or_the_workers_existing_key() {
+	// No configured broker keeps Tenant Secrets unavailable.
+	assert!(super::secret_calls(None, None, false).unwrap().is_none());
+	// The server role signs with the broker's own (server) key.
+	assert!(
+		super::secret_calls(None, Some(&tenant_secret_broker()), false)
+			.unwrap()
+			.is_some()
+	);
+	// The worker role reuses its existing broker key and the Tenant Secret
+	// broker's endpoint and audience.
+	assert!(
+		super::secret_calls(Some(&broker("test")), Some(&tenant_secret_broker()), true)
+			.unwrap()
+			.is_some()
+	);
+	// A worker without its Credential Broker key cannot mint at all.
+	assert!(super::secret_calls(None, Some(&tenant_secret_broker()), true).is_err());
+}
+
+#[rstest]
+#[case::endpoint(
+	json!({"endpoint":"http://broker.run.app","issuer":"aidash-server","audience":"test-tsec","kid":TENANT_KID}),
+	"invalid Tenant Secret broker endpoint URL"
+)]
+#[case::unknown_field(
+	json!({"endpoint":"https://broker.run.app","issuer":"aidash-server","audience":"test-tsec","kid":TENANT_KID,"extra":true}),
+	"invalid Tenant Secret Broker"
+)]
+#[case::audience(
+	json!({"endpoint":"https://broker.run.app","issuer":"aidash-server","audience":"Test-Tsec","kid":TENANT_KID}),
+	"invalid Tenant Secret Capability Token issuer configuration"
+)]
+fn invalid_tenant_secret_broker_settings_refuse_to_start(
+	#[case] tenant: Value,
+	#[case] refusal: &str,
+) {
+	let error = super::secret_calls(None, Some(&tenant), false)
+		.err()
+		.unwrap();
+	assert!(error.to_string().starts_with(refusal), "{error}");
+}

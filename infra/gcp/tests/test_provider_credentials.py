@@ -52,11 +52,14 @@ class ProviderCredentialIamTests(unittest.TestCase):
         self.assertIn('"projects/${var.byok_project_id}/roles/aidashByokManage"', manage_binding)
         self.assertIn("data.google_project.byok[0].number", manage_binding)
         self.assertIn("local.provider_credential_secret_prefix", manage_binding)
+        self.assertIn("local.tenant_secret_secret_prefix", manage_binding)
         self.assertIn("resource.name.startsWith", manage_binding)
+        self.assertIn("||", manage_binding)
         self.assertNotIn("secretmanager.versions.access", self.byok)
         self.assertNotIn("setIamPolicy", self.byok)
         self.assertNotIn('google_secret_manager_secret_iam_member', self.byok)
         self.assertIn('"aidash-${var.environment_id}-cred-"', self.byok)
+        self.assertIn('"aidash-${var.environment_id}-tsec-"', self.byok)
         self.assertNotIn('incarnation', self.byok)
 
     def test_deploy_can_modify_only_fixed_write_roles(self):
@@ -97,6 +100,11 @@ class ProviderCredentialIamTests(unittest.TestCase):
         self.assertEqual(set(re.findall(r'"(secretmanager\.[^"]+)"', role)), {
             "secretmanager.versions.access", "secretmanager.versions.get", "secretmanager.secrets.get",
         })
+        tenant_role = resource(self.bootstrap, "google_project_iam_custom_role", "byok_tenant_secret_broker_read")
+        self.assertIn('"aidashByokTenantSecretBrokerRead"', tenant_role)
+        self.assertEqual(set(re.findall(r'"(secretmanager\.[^"]+)"', tenant_role)), {
+            "secretmanager.versions.access", "secretmanager.versions.get", "secretmanager.secrets.get",
+        })
         # Inventory every source, including secret-level IAM: bootstrap is the
         # only permitted binding of the fixed payload-read role.
         readers = []
@@ -122,10 +130,18 @@ class ProviderCredentialIamTests(unittest.TestCase):
                             self.assertRegex(body, r'project\s*=\s*var\.project_id')
                             self.assertIn("google_service_account.tls_renewer[0].email", body)
                             self.assertNotIn("byok", body)
-        self.assertEqual(set(readers), {("bootstrap/provider_credentials.tf", "byok_broker_read"), ("bootstrap/tls_renewal.tf", "tls_renewer")})
+        self.assertEqual(set(readers), {
+            ("bootstrap/provider_credentials.tf", "byok_broker_read"),
+            ("bootstrap/provider_credentials.tf", "byok_tenant_secret_broker_read"),
+            # ADR 0100 permits the Tenant Secret broker to read OAuth payloads.
+            ("bootstrap/provider_credentials.tf", "byok_oauth_broker"),
+            ("bootstrap/tls_renewal.tf", "tls_renewer"),
+        })
         self.assertEqual(set(byok_grants), {
             ("bootstrap/provider_credentials.tf", "byok_deploy"),
             ("bootstrap/credential_brokers.tf", "byok_broker_read"),
+            ("bootstrap/credential_brokers.tf", "byok_tenant_secret_broker_read"),
+            ("bootstrap/credential_brokers.tf", "byok_oauth_broker"),
             ("bootstrap/provider_credentials.tf", "byok_retire"),
             ("bootstrap/provider_credentials.tf", "byok_retire_inventory"),
             ("modules/environment/provider_credentials.tf", "provider_credential_create"),
