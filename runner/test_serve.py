@@ -200,6 +200,17 @@ class ServeReconcileTest(unittest.TestCase):
         self.assertEqual(runner.state["serve"]["pod_host"], "10.0.0.7")
         self.assertEqual(runner.state["status"], "cancelled")
 
+    def test_self_exiting_serve_hands_durable_output_to_allocation_cleanup(self):
+        runner = self.runner()
+        exited = pod()
+        exited["status"]["containerStatuses"][0]["state"] = {"terminated": {"exitCode": 0}}
+        runner.pod = Mock(side_effect=[None, pod(), pod(), exited])
+        runner.reconcile_serve(runner.state["operation_id"])
+        self.assertEqual(runner.state["serve"]["reason"], "server_exited")
+        self.assertTrue(runner.state["output_harvested"])
+        runner.allocation_harvested.assert_called_once()
+        self.assertTrue(runner.allocation_harvested.call_args.args[0]["output_harvested"])
+
     def test_a_serve_that_never_becomes_ready_fails_without_leaking_its_pod(self):
         runner = self.runner()
         runner.pod = Mock(return_value=pod(ready=False))

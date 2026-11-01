@@ -936,10 +936,11 @@ class Runner(AllocationJournal):
                 if any("terminated" in status.get("state", {}) for status in statuses.values()):
                     self.kube(["delete", "pod", self.pod_name(operation), "--wait=false"], check=False)
                     self.update(operation, status="failed", finished_at=time.time(),
-                                termination_confirmed=True,
+                                termination_confirmed=True, output_harvested=True,
                                 serve={"status": "stopped", "startup_log": self.startup_log(operation),
                                        "reason": "server_exited",
                                        "pod_host": (current.get("serve") or {}).get("pod_host")})
+                    self.allocation_harvested(self.get(operation))
                     return
                 time.sleep(1)
         except Exception as error:
