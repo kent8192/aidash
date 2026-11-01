@@ -34,6 +34,7 @@ fn media_reservation_covers_complete_request_growth(#[case] version: ProjectionV
 			attachments: Vec::new(),
 			history: Vec::new(),
 			volatile: history.to_string(),
+			harness: None,
 		}),
 		_ => history.into(),
 	};

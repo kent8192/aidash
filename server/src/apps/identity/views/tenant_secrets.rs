@@ -2,7 +2,7 @@
 //! none returns a value (ADR 0051).
 use super::super::{serializers::tenant_secrets::*, services::tenant_secrets::Management};
 use crate::{authorization::identity::Actor, http::json::Json};
-use reinhardt::{Depends, Path, Response, delete, get, http::ViewResult, put};
+use reinhardt::{Depends, Path, Query, Response, delete, get, http::ViewResult, put};
 fn response<T: serde::Serialize>(result: crate::Result<T>) -> ViewResult<Response> {
 	crate::http::json(result).map(|r| r.with_header("Cache-Control", "no-store"))
 }
@@ -24,11 +24,12 @@ pub async fn list(
 	auth = "protected"
 )]
 pub async fn get_record(
+	Query(query): Query<OwnerQuery>,
 	#[inject] service: Depends<Management>,
 	#[inject] actor: Actor,
 	Path((tenant, name)): Path<(String, String)>,
 ) -> ViewResult<Response> {
-	response(service.get(actor, tenant, name).await)
+	response(service.get(actor, tenant, name, query.owner).await)
 }
 #[put(
 	"/api/tenants/{tenant}/secrets/{name}",

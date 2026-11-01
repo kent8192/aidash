@@ -193,7 +193,12 @@ async fn registration_rejects_wrong_reference_kind_before_any_write(
 		.await
 		.unwrap_err();
 	assert_eq!(error.to_string(), "model must reference a model");
-	assert_eq!(scope.trace, ["read:model@1.0.0"]);
+	// The new-Agent defaults look for a stored version of this Agent and read the
+	// model first (#532); reference validation reads the model again.
+	assert_eq!(
+		scope.trace,
+		["read:agent@1.0.0", "read:model@1.0.0", "read:model@1.0.0"]
+	);
 	assert!(scope.events.is_empty());
 }
 
@@ -325,6 +330,53 @@ async fn registration_sends_a_tenant_secret_only_to_a_recorded_host(
 		.insert("search".into(), vec!["production.example".into()]);
 	assert!(
 		register_definition(&mut scope, &validation, &tool, "aidash://home")
+			.await
+			.unwrap()
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_personal_only_tool_registers_without_a_shared_row_or_host(
+	validation: DefinitionValidation,
+) {
+	let validation = validation.with_tenant_secrets(true);
+	let mut personal = tool_with_secret("search");
+	personal.config["transport"]["secret_owner"] = json!("personal");
+	// No Tenant Secret named `search`, shared or recorded: hosts are checked against the
+	// person's own row at dispatch.
+	let mut scope = Scope::default();
+	assert!(
+		register_definition(&mut scope, &validation, &personal, "aidash://home")
+			.await
+			.unwrap()
+	);
+	// The same definition without `personal` still needs the shared row.
+	assert!(
+		register_definition(
+			&mut Scope::default(),
+			&validation,
+			&tool_with_secret("search"),
+			"aidash://home"
+		)
+		.await
+		.is_err()
+	);
+	// Even a personal-only definition names a well-formed secret.
+	let mut bad = tool_with_secret("Not A Name");
+	bad.config["transport"]["secret_owner"] = json!("personal");
+	assert!(
+		register_definition(&mut Scope::default(), &validation, &bad, "aidash://home")
+			.await
+			.is_err()
+	);
+	// A shared row that records another host does not matter to a personal-only one.
+	let mut scope = Scope::default();
+	scope
+		.secret_hosts
+		.insert("search".into(), vec!["other.example".into()]);
+	assert!(
+		register_definition(&mut scope, &validation, &personal, "aidash://home")
 			.await
 			.unwrap()
 	);

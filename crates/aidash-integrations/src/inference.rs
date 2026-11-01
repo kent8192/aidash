@@ -247,6 +247,7 @@ pub fn salted_provider(
 	cache_salt: Option<CacheSaltKeys>,
 ) -> Result<Arc<dyn ModelProvider>> {
 	config.validate_provider_route()?;
+	config.validate_model_variant()?;
 	config.validate_estimate_diagnostics()?;
 	aidash_domain::provider_credentials::validate_grants(
 		&config.endpoint,

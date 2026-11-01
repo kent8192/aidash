@@ -21,6 +21,8 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 type Body = UnsyncBoxBody<Bytes, BoxError>;
 const IDLE: Duration = Duration::from_secs(30);
 const INDEX_BYTES: usize = 8 * 1024 * 1024;
+const BROKER_ERROR: &str = "x-aidash-broker-error";
+const SECRET_CALL: &str = "x-aidash-secret-call";
 
 fn failure(status: StatusCode, code: &'static str) -> Response<Body> {
 	Response::builder()
@@ -33,6 +35,43 @@ fn failure(status: StatusCode, code: &'static str) -> Response<Body> {
 				.boxed_unsync(),
 		)
 		.unwrap()
+}
+/// A broker-owned error never carries a value to the sandbox: the gateway
+/// reports the code alone (ADR 0095).
+fn broker_failure(code: &str) -> (StatusCode, &'static str) {
+	match code {
+		"secret_unavailable" => (StatusCode::FAILED_DEPENDENCY, "secret_unavailable"),
+		"secret_destination_refused" => (StatusCode::FORBIDDEN, "secret_destination_refused"),
+		"rate_limited" => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+		"upstream_unreachable" => (StatusCode::BAD_GATEWAY, "upstream_unreachable"),
+		"broker_rejected" => (StatusCode::BAD_GATEWAY, "broker_rejected"),
+		_ => (StatusCode::SERVICE_UNAVAILABLE, "broker_unavailable"),
+	}
+}
+/// The request's path under the service base's directory, appended to the broker's
+/// `/v1/forward` base. The broker joins it to the signed prefix in turn.
+fn broker_url(
+	route: &aidash_application::tenant_secrets::SecretRoute,
+	service: &Url,
+	base: &Url,
+) -> Result<Url, BoxError> {
+	// The broker signs the base path's directory, so an endpoint-style base
+	// such as `/invoke` forwards `invoke` exactly rather than `invoke/`.
+	let prefix = aidash_application::tenant_secrets::path_directory(base.path());
+	let relative = service
+		.path()
+		.strip_prefix(prefix)
+		.ok_or_else(|| io_error("invalid_egress_path"))?;
+	let mut target = route.base.as_str().trim_end_matches('/').to_owned();
+	if !relative.is_empty() {
+		target.push('/');
+		target.push_str(relative);
+	}
+	if let Some(query) = service.query() {
+		target.push('?');
+		target.push_str(query);
+	}
+	Url::parse(&target).map_err(Into::into)
 }
 fn io_error(code: &'static str) -> BoxError {
 	std::io::Error::other(code).into()
@@ -374,7 +413,7 @@ async fn forward(
 		completion.finish(Some("invalid_package_service")).await;
 		return failure(StatusCode::FORBIDDEN, "egress_forbidden");
 	}
-	let url = match asset
+	let service_url = match asset
 		.clone()
 		.map(Ok)
 		.unwrap_or_else(|| target(&admission, path, query.as_deref()))
@@ -385,6 +424,22 @@ async fn forward(
 			return failure(StatusCode::BAD_REQUEST, "invalid_egress_path");
 		}
 	};
+	// A brokered request goes to the broker's `/v1/forward` base instead of the
+	// External service. The broker attaches the Tenant Secret (ADR 0095).
+	let brokered = admission.route.is_some();
+	let upstream_url = match &admission.route {
+		Some(route) => {
+			let base = Url::parse(&admission.definition.base_url).expect("admitted service URL");
+			match broker_url(route, &service_url, &base) {
+				Ok(url) => url,
+				Err(_) => {
+					completion.finish(Some("invalid_path")).await;
+					return failure(StatusCode::BAD_REQUEST, "invalid_egress_path");
+				}
+			}
+		}
+		None => service_url.clone(),
+	};
 	let connection = request
 		.headers()
 		.get("connection")
@@ -393,15 +448,21 @@ async fn forward(
 		.split(',')
 		.map(|s| s.trim().to_ascii_lowercase())
 		.collect::<Vec<_>>();
-	let selected = match admission.destination {
-		aidash_domain::keyless::Destination::PublicOnly => &public,
-		aidash_domain::keyless::Destination::Permitted => &client,
-		aidash_domain::keyless::Destination::Forbidden => {
-			completion.finish(Some("destination_forbidden")).await;
-			return failure(StatusCode::FORBIDDEN, "egress_forbidden");
+	// The broker is an in-cluster service: it resolves the External service
+	// itself and applies the public-address rule there.
+	let selected = if brokered {
+		&client
+	} else {
+		match admission.destination {
+			aidash_domain::keyless::Destination::PublicOnly => &public,
+			aidash_domain::keyless::Destination::Permitted => &client,
+			aidash_domain::keyless::Destination::Forbidden => {
+				completion.finish(Some("destination_forbidden")).await;
+				return failure(StatusCode::FORBIDDEN, "egress_forbidden");
+			}
 		}
 	};
-	let mut upstream = selected.request(request.method().clone(), url.clone());
+	let mut upstream = selected.request(request.method().clone(), upstream_url);
 	for (name, value) in request.headers() {
 		if forwarded_header(name.as_str(), &connection)
 			&& name.as_str()
@@ -410,11 +471,23 @@ async fn forward(
 					.authentication
 					.header()
 					.to_ascii_lowercase()
+			// The broker owns this header; an inbound one must never override
+			// the token the gateway mints.
+			&& !(brokered && name.as_str() == SECRET_CALL)
 		{
 			upstream = upstream.header(name, value);
 		}
 	}
-	if let Some(secret) = &admission.credential {
+	if let Some(route) = &admission.route {
+		let Ok(mut value) = hyper::header::HeaderValue::from_str(route.token.expose_secret())
+		else {
+			completion.status = StatusCode::SERVICE_UNAVAILABLE.as_u16();
+			completion.finish(Some("broker_unavailable")).await;
+			return failure(StatusCode::SERVICE_UNAVAILABLE, "broker_unavailable");
+		};
+		value.set_sensitive(true);
+		upstream = upstream.header(SECRET_CALL, value);
+	} else if let Some(secret) = &admission.credential {
 		upstream = match &admission.definition.authentication {
 			aidash_domain::egress::Authentication::Bearer => {
 				upstream.bearer_auth(secret.expose_secret())
@@ -459,6 +532,19 @@ async fn forward(
 		}
 	};
 	completion.status = response.status().as_u16();
+	// A broker-owned error is returned as a gateway error that names the code
+	// only; an upstream status the broker passes through stays as it is.
+	if brokered
+		&& let Some(code) = response
+			.headers()
+			.get(BROKER_ERROR)
+			.and_then(|value| value.to_str().ok())
+	{
+		let (status, code) = broker_failure(code);
+		completion.status = status.as_u16();
+		completion.finish(Some(code)).await;
+		return failure(status, code);
+	}
 	let mut headers = response.headers().clone();
 	let connection = headers
 		.get("connection")
@@ -484,7 +570,10 @@ async fn forward(
 	if response.status().is_redirection()
 		&& let Some(location) = headers.get("location")
 	{
-		let redirected = location.to_str().ok().and_then(|s| url.join(s).ok());
+		let redirected = location
+			.to_str()
+			.ok()
+			.and_then(|s| service_url.join(s).ok());
 		let base = Url::parse(&admission.definition.base_url).expect("admitted service URL");
 		let Some(redirected) = redirected.filter(|u| {
 			u.origin() == base.origin()
@@ -564,9 +653,21 @@ async fn forward(
 			buffer.extend_from_slice(&bytes);
 		}
 		let rewritten = if index_type.contains("json") {
-			rewrite_json(&buffer, &url, &admission.gateway_origin, token, service)
+			rewrite_json(
+				&buffer,
+				&service_url,
+				&admission.gateway_origin,
+				token,
+				service,
+			)
 		} else {
-			rewrite_html(&buffer, &url, &admission.gateway_origin, token, service)
+			rewrite_html(
+				&buffer,
+				&service_url,
+				&admission.gateway_origin,
+				token,
+				service,
+			)
 		};
 		let Ok(rewritten) = rewritten else {
 			completion.finish(Some("invalid_package_index")).await;

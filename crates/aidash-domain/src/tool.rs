@@ -25,6 +25,24 @@ pub fn legacy_config(value: &serde_json::Value) -> crate::Result<Option<ToolConf
 	}
 }
 
+/// Whether a tool accepts a Tenant Secret shared by everyone, or only a
+/// personal secret owned by the Run's chain-root person (ADR 0100).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretOwner {
+	/// A personal secret wins; a shared Tenant Secret may be used otherwise.
+	#[default]
+	Any,
+	/// Only the person's own secret may be used.
+	Personal,
+}
+
+impl SecretOwner {
+	pub fn is_any(&self) -> bool {
+		matches!(self, Self::Any)
+	}
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "transport", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ToolConfig {
@@ -35,12 +53,15 @@ pub enum ToolConfig {
 	},
 	/// Tool transports never carry a Deployment secret. A Tenant's tool
 	/// authenticates with a Tenant Secret it names in `secret`, which goes only
-	/// to the hosts recorded with that Tenant Secret (ADR 0051).
+	/// to the hosts recorded with that Tenant Secret (ADR 0051), or with an MCP
+	/// OAuth Connection (ADR 0100).
 	Http {
 		endpoint: String,
 		replay: String,
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		secret: Option<String>,
+		#[serde(default, skip_serializing_if = "SecretOwner::is_any")]
+		secret_owner: SecretOwner,
 	},
 	Mcp {
 		endpoint: String,
@@ -49,6 +70,12 @@ pub enum ToolConfig {
 		idempotency_argument: Option<String>,
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		secret: Option<String>,
+		/// The OAuth scopes the tool declares; a person's Connection may request
+		/// only these when they are present.
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		scopes: Option<Vec<String>>,
+		#[serde(default, skip_serializing_if = "SecretOwner::is_any")]
+		secret_owner: SecretOwner,
 	},
 	Agent {
 		node_id: String,
@@ -67,3 +94,6 @@ impl ToolConfig {
 		)
 	}
 }
+
+#[cfg(test)]
+mod tests;

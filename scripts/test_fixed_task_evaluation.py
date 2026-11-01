@@ -329,6 +329,14 @@ class ProjectionCampaignTest(unittest.TestCase):
         with self.assertRaisesRegex(evaluation.GuardRefusal, "not an enforceable"):
             evaluation.require_enforceable_auxiliary_bound(auxiliary)
         evaluation.require_enforceable_auxiliary_bound(evaluation.auxiliary_allowance({"external_compaction": "disabled"}))
+        accepted = {"external_compaction": dict(approval["external_compaction"],
+                                                cost_enforcement="declared-reservation-accepted")}
+        evaluation.require_enforceable_auxiliary_bound(evaluation.auxiliary_allowance(accepted))
+        self.assertEqual(runner.run_worst_case(item, value, model, prices, evaluation.auxiliary_allowance(accepted)),
+                         main + 2700)
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "cost_enforcement must be"):
+            evaluation.auxiliary_allowance({"external_compaction": dict(approval["external_compaction"],
+                                                                        cost_enforcement="provider-capped")})
         larger = dict(config, max_calls_per_run=5)
         oversized = {**auxiliary, "decider": dict(auxiliary["decider"], config_sha256=evaluation.canonical_sha256(larger))}
         with self.assertRaisesRegex(evaluation.GuardRefusal, "exactly the approved"):
@@ -836,6 +844,29 @@ class ManifestTest(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text()), {"a": 1})
             with self.assertRaises(FileExistsError):
                 evaluation.reserve_exclusive(path)
+
+
+class AgentConfigTest(unittest.TestCase):
+    """The live runner pins every field the evaluator assumes for an omitted arm field."""
+
+    def config(self, fields):
+        value = corpus()
+        item = value["tasks"][0]
+        return runner.agent_config(value, item, {"id": "m", "version": "1"}, [], fields)
+
+    def test_omitted_fields_pin_legacy_projection_without_a_contract(self):
+        config = self.config({})
+        self.assertEqual(config["projection_version"], "legacy")
+        self.assertNotIn("harness_contract", config)
+
+    def test_native_arm_without_a_contract_pins_legacy_at_1(self):
+        # Registration would otherwise default it to structured@3, while the evidence
+        # loader expects contract 1 for an arm that names none.
+        self.assertEqual(self.config({"projection_version": "native"})["harness_contract"], "legacy@1")
+
+    def test_native_arm_keeps_its_named_contract(self):
+        config = self.config({"projection_version": "native", "harness_contract": "structured@3"})
+        self.assertEqual(config["harness_contract"], "structured@3")
 
 
 def chat(fixture, task_uuid, model="fixture/m", tools=(), history=(), system=None, parts=None):

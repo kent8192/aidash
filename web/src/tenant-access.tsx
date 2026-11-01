@@ -1,3 +1,6 @@
+import { Connections } from "./connections/settings";
+import { OAuthClients } from "./connections/clients";
+import { ScopeCeilings } from "./connections/ceilings";
 import { TenantSecrets } from "./tenant-secrets";
 import type { ReactNode } from "react";
 import {
@@ -65,7 +68,26 @@ export function TenantAccess({
           key={tenant}
           tenant={tenant}
           canManage={can("secret.manage")}
+          canUse={can("secret.use")}
         />
+      )}
+      {subject && overview.data && (
+        <Connections
+          key={`connections:${tenant}`}
+          tenant={tenant}
+          canAdminister={can("connection.administer")}
+        />
+      )}
+      {subject && (can("secret.use") || can("secret.manage")) && (
+        <OAuthClients
+          key={`clients:${tenant}`}
+          tenant={tenant}
+          canUse={can("secret.use")}
+          canManage={can("secret.manage")}
+        />
+      )}
+      {can("connection.scopes.update") && (
+        <ScopeCeilings key={`ceilings:${tenant}`} tenant={tenant} />
       )}
       {([
         "policy.read",

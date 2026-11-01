@@ -26,3 +26,7 @@ Each value is a complete, frozen rendering; layout and message format are never 
 - `Native` does not persist or replay reasoning output.
 - Unsupported versions fail at Agent registration and again in the adapter. There is never a silent fallback to `Legacy`, and ZDR stays enforced.
 - The default for new Agent definitions stays `Legacy` until the matched-task comparison in #181 supports a change.
+
+## Amendment (2026-10-30)
+
+New Agent definitions that omit `projection_version` are registered as `Native` when their model declares Native, together with the `structured@3` Harness Contract (#532, ADR 0093 amendment). The value is written into the definition at registration. A definition or Binding snapshot read without the field still decodes as `Legacy`, so pinned Runs keep byte-identical requests. Agents whose model does not declare Native keep the Legacy default.

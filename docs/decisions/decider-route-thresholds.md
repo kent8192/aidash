@@ -51,3 +51,15 @@ These are measurements on six synthetic sessions, not a quality guarantee. With
 differ by little more than one answer. Running the script again on a new model
 or host set gives the numbers for a new Decider version; changing a Route's
 threshold makes a new version that needs a new Catalog Approval.
+
+## Builder 3 check (2026-10-30)
+
+`aidash.compaction/3` (ADR 0107) changed the rubric, the questions and the key order. The same script
+now sorts keys, as the Node does; the run above sent insertion order. The raw answers are in
+`decider-route-evaluation-2026-10-30.json`. On the six sessions, Jev at 0.5 now removes 0.36 of the tool
+content, because it cuts results under their calls instead of dropping turns. At 0.15, Clef agrees with
+Jev on 0.67 to 0.71 of pairs and removes 0.40 to 0.43; at 0.1 it removes 0.33.
+
+Agreement with Jev stands in for labels. On the labeled #122 benchmark decisions
+([evaluation](../evaluation/compaction-rubric-2026-10-30.md)), Clef with builder 3 scores 0.808 at 0.1,
+0.862 at 0.15 and 0.869 at 0.2, and drops no correction at 0.15. The Route keeps 0.15.

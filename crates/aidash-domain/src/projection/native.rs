@@ -12,11 +12,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-/// The only trust level of enveloped content: data, never instructions.
+/// How enveloped content may be read. `Data` never instructs; `Aidash` states
+/// requirements from Aidash for this step under a `structured@*` Harness
+/// Contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Trust {
 	Data,
+	Aidash,
 }
 
 /// Where enveloped content came from.
@@ -37,12 +40,15 @@ pub enum Source {
 	HumanRequest,
 	/// This step's volatile content.
 	Step,
+	/// The Harness requirements of this step under a `structured@*` contract.
+	Harness,
 }
 
-/// The provenance envelope around every piece of data-derived content in a
-/// Native request. Human input is the only non-system instruction channel and
-/// is never wrapped; everything else says where it came from and that it is
-/// data. Field order is the serialized order.
+/// The provenance envelope around every piece of enveloped content in a Native
+/// request. Data-derived content is wrapped with trust `data`; under a
+/// `structured@*` Harness Contract the Harness requirements are wrapped with
+/// trust `aidash` instead. Human input is never wrapped. Field order is the
+/// serialized order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Envelope {
@@ -71,6 +77,17 @@ impl Envelope {
 		serde_json::to_string(self).expect("serializable provenance envelope")
 	}
 
+	/// The Harness requirements envelope of a structured Harness Contract.
+	fn harness(content: Value) -> Self {
+		Self {
+			source: Source::Harness,
+			provenance: json!("aidash"),
+			revision: None,
+			trust: Trust::Aidash,
+			content,
+		}
+	}
+
 	/// Envelope text around content that is already canonical JSON text, kept
 	/// byte for byte so its key order survives.
 	fn raw_text(source: Source, provenance: Value, content: &str) -> String {
@@ -86,9 +103,9 @@ impl Envelope {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NativeMessage {
-	/// A Human answer, sent as a user message. The answer is the only
-	/// non-system instruction channel and is not wrapped; the request it
-	/// replies to is.
+	/// A Human answer, sent as an unwrapped user message. It is the only
+	/// instruction channel outside `system` and the Harness envelope; the
+	/// request it replies to is enveloped.
 	Human { request: Envelope, response: Value },
 	/// Data-derived history that is not a tool result, sent as an enveloped
 	/// user message.
@@ -118,7 +135,17 @@ pub struct NativeContext {
 	/// Canonical JSON of this step's volatile content, sent enveloped as the
 	/// trailing user message. It is never stored in history.
 	pub volatile: String,
+	/// The Harness requirements envelope text of a `structured@*` contract, a
+	/// separate text part after the step data and this step's media. `None`
+	/// under `legacy@1`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub harness: Option<String>,
 }
+
+/// The reserved pinned key that carries the Harness requirements envelope
+/// content of a `structured@*` contract. It is never part of the step's data
+/// envelope; the Harness builds it and [`native_context`] moves it out.
+pub const HARNESS_REQUIREMENTS: &str = "harness_requirements";
 
 /// Project a Run's context and this step's pinned snapshot into the Native IR.
 ///
@@ -130,10 +157,12 @@ pub struct NativeContext {
 /// Legacy leaves them out of history, so no request carries a partial Model
 /// Turn. A turn without text or an executed call renders nothing.
 ///
-/// Continuation markers move to the volatile part until a rendered Model
-/// Turn answers them. A citation correction or a Completion Gate repair asks
-/// for a corrected answer, so only a turn without calls answers it; tool-call
-/// turns that gather the missing evidence or repair the files keep it current.
+/// Continuation markers move to the volatile part, or to the Harness
+/// requirements envelope under a `structured@*` contract, until a rendered
+/// Model Turn answers them. A citation correction or a Completion Gate repair
+/// asks for a corrected answer, so only a turn without calls answers it;
+/// tool-call turns that gather the missing evidence or repair the files keep it
+/// current.
 pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 	let projected = crate::context::source::project(context, pinned);
 	let mut pinned = projected.snapshot;
@@ -188,6 +217,30 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 		.map(|marker| serde_json::to_value(marker).expect("serializable marker"))
 		.collect();
 	let markers = Value::Array(markers);
+	// A structured Harness Contract builds one requirements envelope. Its
+	// content leaves the step's data envelope; markers join it here because
+	// only the projected history knows which ones are still open.
+	let harness_content = pinned
+		.as_object_mut()
+		.and_then(|fields| fields.remove(HARNESS_REQUIREMENTS));
+	let structured = harness_content.is_some();
+	let harness = harness_content.and_then(|content| {
+		let Value::Object(mut content) = content else {
+			return None;
+		};
+		if markers
+			.as_array()
+			.is_some_and(|markers| !markers.is_empty())
+		{
+			content.insert("markers".into(), markers.clone());
+		}
+		(!content.is_empty()).then(|| Envelope::harness(Value::Object(content)).text())
+	});
+	let extra = (!structured
+		&& markers
+			.as_array()
+			.is_some_and(|markers| !markers.is_empty()))
+	.then_some(("markers", &markers));
 	let mut attachments = attachments(context, &pinned);
 	let source_position = attachments
 		.iter()
@@ -202,13 +255,8 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 	NativeContext {
 		attachments,
 		history,
-		volatile: crate::context::volatile_part(
-			&pinned,
-			markers
-				.as_array()
-				.is_some_and(|markers| !markers.is_empty())
-				.then_some(("markers", &markers)),
-		),
+		volatile: crate::context::volatile_part(&pinned, extra),
+		harness,
 	}
 }
 
@@ -394,7 +442,8 @@ fn attachments(context: &Context, pinned: &Value) -> Vec<Envelope> {
 
 impl NativeContext {
 	/// Canonical chat messages after `system`: the attachment message, the
-	/// history, then the volatile message with this step's media parts.
+	/// history, then the volatile message with this step's media parts and,
+	/// last, the Harness requirements envelope.
 	/// `breakpoint` marks the end of the Stable Prefix, the last history
 	/// message or, without history, the last attachment (ADR 0019); the
 	/// volatile message is never marked.
@@ -429,14 +478,17 @@ impl NativeContext {
 		let volatile =
 			Envelope::raw_text(Source::Step, json!({"scope": "request"}), &self.volatile);
 		let mut media = media.map(media_part).peekable();
-		let content = if media.peek().is_none() {
+		let content = if self.harness.is_none() && media.peek().is_none() {
 			Value::String(volatile)
 		} else {
-			Value::Array(
-				std::iter::once(json!({"type": "text", "text": volatile}))
-					.chain(media)
-					.collect(),
-			)
+			let mut parts = vec![json!({"type": "text", "text": volatile})];
+			parts.extend(media);
+			// The Harness requirements are the last part, after this step's
+			// media, so a media-bearing request keeps every label intact.
+			if let Some(harness) = &self.harness {
+				parts.push(json!({"type": "text", "text": harness}));
+			}
+			Value::Array(parts)
 		};
 		messages.push(json!({"role": "user", "content": content}));
 		messages
