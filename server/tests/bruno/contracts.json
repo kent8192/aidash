@@ -50565,6 +50565,140 @@
           ],
           "description": "Whether a tool's calls may share a Tool Batch. Registry configuration can\nonly lower a provider's declaration, never raise it."
         },
+        "ConnectionCallState": {
+          "type": "object",
+          "required": [
+            "cause",
+            "resolved",
+            "attempt",
+            "waited_millis",
+            "refused"
+          ],
+          "properties": {
+            "attempt": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "cause": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ConnectionCause"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "refused": {},
+            "resolved": {
+              "type": "boolean",
+              "default": false
+            },
+            "waited_millis": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "ConnectionCause": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["error", "resource"],
+              "properties": {
+                "error": {
+                  "type": "string",
+                  "enum": ["connection_required"]
+                },
+                "resource": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["error", "resource"],
+              "properties": {
+                "error": {
+                  "type": "string",
+                  "enum": ["connection_scope_insufficient"]
+                },
+                "resource": {
+                  "type": "string"
+                },
+                "scope": {
+                  "type": ["string", "null"]
+                }
+              }
+            }
+          ],
+          "description": "A server that can contribute tools after the person connects or consents again."
+        },
+        "ConnectionRefusal": {
+          "type": "object",
+          "required": ["cause", "tool", "scopes"],
+          "properties": {
+            "cause": {
+              "$ref": "#/components/schemas/ConnectionCause"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "tool": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "ConnectionWait": {
+          "type": "object",
+          "required": [
+            "request_id",
+            "resource",
+            "started_at",
+            "answer_by",
+            "call",
+            "key"
+          ],
+          "properties": {
+            "answer_by": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "call": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ToolCall"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The builtin's result is recorded only once the person answers."
+            },
+            "key": {
+              "type": "string"
+            },
+            "request_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "resource": {
+              "type": "string"
+            },
+            "started_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "additionalProperties": false
+        },
         "ContextEvent": {
           "oneOf": [
             {
@@ -51771,6 +51905,17 @@
           "description": "A Run-start finding names its plugin, because [`Finding::component`] only names the server.",
           "required": ["plugin", "finding"],
           "properties": {
+            "connection": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ConnectionCause"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An MCP authentication challenge retained for connection_request and later re-listing."
+            },
             "finding": {
               "$ref": "#/components/schemas/Finding"
             },
@@ -51896,6 +52041,31 @@
           "type": "object",
           "required": ["retry"],
           "properties": {
+            "connection_refusals": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ConnectionRefusal"
+              },
+              "description": "Transport-proven, still-unsatisfied refusals. Tool result JSON never populates these."
+            },
+            "connection_wait": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ConnectionWait"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "connection_waited": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Survives context compaction and prevents repeated failure deferrals.",
+              "uniqueItems": true
+            },
             "context_reason": {
               "anyOf": [
                 {
@@ -52854,6 +53024,17 @@
               "format": "uint",
               "description": "End of the admitted Tool Batch `[cursor, batch_end)`. Present only from\nbatch admission until adoption, so a restart resumes exactly those calls.",
               "minimum": 0
+            },
+            "connection": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ConnectionCallState"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Authentication refusals are known not to have executed. A new attempt gets a new journal key."
             },
             "cursor": {
               "type": "integer",
