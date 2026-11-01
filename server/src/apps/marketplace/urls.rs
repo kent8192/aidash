@@ -9,6 +9,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::detail)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(management::secret_readiness)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::publish)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::sources)

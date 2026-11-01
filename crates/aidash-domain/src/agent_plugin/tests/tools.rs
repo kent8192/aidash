@@ -80,6 +80,7 @@ fn finding(
 	detail: &str,
 ) -> PluginFinding {
 	PluginFinding {
+		connection: None,
 		plugin: plugin.name.clone(),
 		finding: Finding {
 			component: Component::Server(server.to_owned()),

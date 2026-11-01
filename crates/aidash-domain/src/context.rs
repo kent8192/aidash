@@ -896,6 +896,10 @@ pub enum ContextEvent {
 	},
 }
 
+/// What an elided result tells the model in place of the content it removed.
+pub const ELIDED_NOTE: &str = "removed from the context to fit the window; call the tool again only if this \
+	result is still needed";
+
 impl ContextEvent {
 	pub fn tool(call: crate::provider::ToolCall, result: Value) -> Self {
 		Self::Tool { call, result }
@@ -904,7 +908,8 @@ impl ContextEvent {
 	/// A Native tool result removed by compaction. It keeps its call, so the
 	/// rendered Model Turn still pairs the same `tool_call_id` (ADR 0015).
 	pub fn elided_result(call_id: &str) -> Value {
-		json!({"elided": true, "invocation": call_id})
+		// The note keeps a model from fetching the result again by reflex (#626).
+		json!({"elided": true, "invocation": call_id, "note": ELIDED_NOTE})
 	}
 
 	/// Whether this result has the shape of an [`Self::elided_result`]. Any

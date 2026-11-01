@@ -32,6 +32,7 @@ impl Endpoints {
 					reqwest::Client::builder()
 						.connect_timeout(timeout)
 						.redirect(reqwest::redirect::Policy::none())
+						.user_agent(crate::USER_AGENT)
 						.no_proxy()
 						.build()
 						.map_err(crate::http_error)?,

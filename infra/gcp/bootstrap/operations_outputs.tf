@@ -40,29 +40,31 @@ output "operations_configuration" {
 output "delivery_configuration" {
   description = "Complete nonsecret GCP config for the delivery orchestrator. A null input produces no publishable config. This output never enables GitHub environment flags."
   value = var.delivery_configuration == null ? null : merge(var.delivery_configuration, {
-    project_id                      = var.project_id
-    deployment_tier                 = var.deployment_tier
-    repository                      = var.repository
-    automation_branch               = var.automation_branch
-    nonproduction_project_id        = var.nonproduction_project_id
-    nonproduction_state_bucket      = var.nonproduction_state_bucket
-    production_node_service_account = try(google_service_account.production_nodes[0].email, null)
-    staging_project_id              = var.deployment_tier == "production" ? var.nonproduction_project_id : ""
-    staging_release_bucket          = var.staging_release_bucket
-    notification_bucket             = google_storage_bucket.notifications.name
-    notification_service_account    = google_service_account.automation["notification-reader"].email
-    byok_project_id                 = var.byok_project_id
-    broker_service_accounts         = { for id, account in google_service_account.broker : id => account.email }
-    broker_signing_keys             = { for id, key in google_kms_crypto_key.capability : id => key.id }
-    state_bucket                    = google_storage_bucket.state.name
-    release_bucket                  = google_storage_bucket.releases.name
-    registry                        = "us-central1-docker.pkg.dev/${var.project_id}/aidash"
-    workload_identity_provider      = google_iam_workload_identity_pool_provider.github.name
-    deploy_service_account          = google_service_account.automation["deploy"].email
-    publish_service_account         = google_service_account.automation["publish"].email
-    acme_state_secret               = var.deployment_tier == "nonproduction" ? var.preview_acme_state_secret_id : ""
-    gke_backup_enabled              = var.production_backup_enabled || var.production_backup_agent_enabled
-    pre_update_backup_plan          = try(google_gke_backup_backup_plan.pre_update[0].id, null)
-    node_count                      = var.deployment_tier == "production" ? tomap({ production = 1 }) : tomap({ develop = 1, test = 1, pr = 1 })
+    project_id                            = var.project_id
+    deployment_tier                       = var.deployment_tier
+    repository                            = var.repository
+    automation_branch                     = var.automation_branch
+    nonproduction_project_id              = var.nonproduction_project_id
+    nonproduction_state_bucket            = var.nonproduction_state_bucket
+    production_node_service_account       = try(google_service_account.production_nodes[0].email, null)
+    staging_project_id                    = var.deployment_tier == "production" ? var.nonproduction_project_id : ""
+    staging_release_bucket                = var.staging_release_bucket
+    notification_bucket                   = google_storage_bucket.notifications.name
+    notification_service_account          = google_service_account.automation["notification-reader"].email
+    byok_project_id                       = var.byok_project_id
+    broker_service_accounts               = { for id, account in google_service_account.broker : id => account.email }
+    tenant_secret_broker_service_accounts = { for id, account in google_service_account.tenant_secret_broker : id => account.email }
+    broker_signing_keys                   = { for id, key in google_kms_crypto_key.capability : id => key.id }
+    tenant_secret_signing_keys            = { for id, key in google_kms_crypto_key.tenant_secret : id => key.id }
+    state_bucket                          = google_storage_bucket.state.name
+    release_bucket                        = google_storage_bucket.releases.name
+    registry                              = "us-central1-docker.pkg.dev/${var.project_id}/aidash"
+    workload_identity_provider            = google_iam_workload_identity_pool_provider.github.name
+    deploy_service_account                = google_service_account.automation["deploy"].email
+    publish_service_account               = google_service_account.automation["publish"].email
+    acme_state_secret                     = var.deployment_tier == "nonproduction" ? var.preview_acme_state_secret_id : ""
+    gke_backup_enabled                    = var.production_backup_enabled || var.production_backup_agent_enabled
+    pre_update_backup_plan                = try(google_gke_backup_backup_plan.pre_update[0].id, null)
+    node_count                            = var.deployment_tier == "production" ? tomap({ production = 1 }) : tomap({ develop = 1, test = 1, pr = 1 })
   })
 }

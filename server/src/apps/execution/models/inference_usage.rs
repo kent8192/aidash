@@ -42,6 +42,9 @@ pub struct InferenceUsage {
 	pub model_version: String,
 	#[field]
 	pub projection_version: i32,
+	/// The Harness Contract version the Run pinned (#531).
+	#[field]
+	pub harness_contract: i32,
 	/// Physical provider call purpose; auxiliary work never calibrates main inference.
 	#[field(field_type = "text")]
 	pub purpose: String,
@@ -127,6 +130,7 @@ impl InferenceUsage {
 			.model_id(dispatch.model_id.clone())
 			.model_version(dispatch.model_version.clone())
 			.projection_version(i32::from(dispatch.projection_version))
+			.harness_contract(i32::from(dispatch.harness_contract))
 			.purpose(dispatch.purpose.as_str().to_owned())
 			.requested_route(dispatch.requested_route.clone())
 			.provider_identity(None)

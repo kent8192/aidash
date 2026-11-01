@@ -256,6 +256,7 @@ impl Evidence {
 		validate_answers(&self.questions, &self.answers)?;
 		self.validate_candidates()?;
 		let mut replay = BTreeMap::new();
+		let mut ranked = Vec::new();
 		for candidate in &self.candidates {
 			let call = *self
 				.answers
@@ -281,6 +282,32 @@ impl Evidence {
 				return Err(Error::Invalid(
 					"duplicate historical decision candidate".into(),
 				));
+			}
+			ranked.push((
+				candidate.id.clone(),
+				FitCandidate {
+					history_index: candidate.history_index,
+					keep_result: result,
+					branch: chosen,
+					protected,
+				},
+			));
+		}
+		if self.rule == FIT_RULE {
+			// Sizes are not replayable, but the order is: the truncated results must be
+			// exactly the first ones `fit_order` names.
+			let truncated = ranked
+				.iter()
+				.filter(|(id, c)| {
+					c.branch == Branch::Keep
+						&& self.branches.get(id) == Some(&Branch::TruncateResult)
+				})
+				.count();
+			let order = fit_order(&ranked.iter().map(|(_, c)| *c).collect::<Vec<_>>());
+			for index in order.into_iter().take(truncated) {
+				if let Some((id, _)) = ranked.iter().find(|(_, c)| c.history_index == index) {
+					replay.insert(id.clone(), Branch::TruncateResult);
+				}
 			}
 		}
 		if replay != self.branches
@@ -510,7 +537,7 @@ impl Evidence {
 	}
 	fn validate_contract(&self) -> Result<()> {
 		if self.version != EVIDENCE_VERSION
-			|| self.rule != RULE
+			|| !matches!(self.rule.as_str(), RULE | FIT_RULE)
 			|| !matches!(self.provider_contract.as_str(), PROVIDER | DECISIONS)
 			|| self.builder != BUILDER
 			|| self.option_source != OPTION_SOURCE

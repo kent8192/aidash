@@ -74,9 +74,10 @@ LIVE_LIMITATIONS = [
     "for information only.",
     "Code-execution oracles require an explicitly approved pinned Docker image and run only in disposable "
     "resource-bounded containers with no network, host environment or parent process visibility.",
-    "Auxiliary definitions can describe planned Decider/Summary work, but live dispatch is refused until an "
-    "enforced provider/broker monetary bound exists. A declared reservation is not a provider cap "
-    "or a reported charge; recovery diagnostics remain not measured in this live tier.",
+    "Decider/Summary work is dispatched only when the approval accepts its declared per-call amount as a "
+    "reservation (external_compaction.cost_enforcement). The Node enforces only the call counts; a declared "
+    "reservation is not a provider cap or a reported charge, and Decision Attempt costs have no HTTP read "
+    "endpoint, so every such Run stays charged at its full auxiliary reservation.",
 ]
 
 
@@ -894,7 +895,8 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
                    "source_attestation_sha256": evaluation.canonical_sha256(source_attestation) if source_attestation else None,
                    "provider_credential": args.provider_credential,
                    "disclosure_approval": evaluation.canonical_sha256(approval),
-                   "jev_classifier": "bounded approved Decider" if auxiliary["decider"] else
+                   "jev_classifier": f"bounded approved Decider ({auxiliary['cost_enforcement']})"
+                                     if auxiliary["decider"] else
                                      "excluded: the approval attests the Tenant approves no compaction Decider"}
         limits = {"run_timeout_seconds": args.run_timeout, "wall_seconds": args.max_wall_seconds,
                   "max_output_tokens": max(config["max_output_tokens"] for config in models.values()),

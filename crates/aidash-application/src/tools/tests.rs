@@ -1,5 +1,6 @@
 //! Tool orchestration tests use portable identities and recording effect ports.
 use super::*;
+use crate::tenant_secrets::{CallSecret, SecretRecord};
 use aidash_domain::{
 	Artifact, ArtifactInput, HumanRequest, NewTask, ReadyState, RecoveryState, Run, RunControl,
 	RunState, StateVersion, Task, TaskStatus, context::Context, registry::SkillFile,
@@ -9,11 +10,14 @@ use rstest::{fixture, rstest};
 use std::sync::Mutex;
 use uuid::Uuid;
 struct Operations {
+	proxy: Option<Value>,
 	task: Task,
 	skills: Vec<EntityRef>,
 	skill_text: String,
 	calls: Mutex<Vec<&'static str>>,
 	inputs: Mutex<Vec<(String, Value)>>,
+	connection: bool,
+	person: bool,
 }
 impl Operations {
 	fn record(&self, name: &'static str) {
@@ -22,6 +26,26 @@ impl Operations {
 }
 #[async_trait]
 impl ToolOperations for Operations {
+	async fn connection_call(
+		&self,
+		call: &aidash_domain::identity::commands::connections::ConnectionCall,
+	) -> Result<Option<Value>> {
+		if let Some(result) = &self.proxy {
+			self.record("home.call");
+			self.inputs
+				.lock()
+				.unwrap()
+				.push((call.idempotency_key.clone(), serde_json::to_value(call)?));
+			Ok(Some(result.clone()))
+		} else {
+			Ok(None)
+		}
+	}
+
+	async fn connection_person(&self) -> Result<bool> {
+		Ok(self.person)
+	}
+
 	async fn registered_skills(&self) -> Result<Vec<EntityRef>> {
 		self.record("skills.authorize");
 		Ok(self.skills.clone())
@@ -97,8 +121,23 @@ impl ToolOperations for Operations {
 	) -> Result<Value> {
 		panic!("unexpected native recall");
 	}
-	async fn human_request(&self, _kind: &str, _prompt: &str, _key: &str) -> Result<HumanRequest> {
-		panic!("unexpected tool effect: human_request")
+	async fn human_request(&self, kind: &str, prompt: &str, key: &str) -> Result<HumanRequest> {
+		self.record("human.request");
+		self.inputs.lock().unwrap().push((
+			key.into(),
+			json!({"kind":kind,"prompt":serde_json::from_str::<Value>(prompt)?}),
+		));
+		Ok(HumanRequest {
+			id: Uuid::now_v7(),
+			run_id: Uuid::nil(),
+			workspace_id: Uuid::nil(),
+			kind: kind.into(),
+			prompt: prompt.into(),
+			response: None,
+			created_at: chrono::Utc::now(),
+			answered_by: None,
+			answer_by: None,
+		})
 	}
 	async fn binding_specifications(&self) -> Result<BTreeMap<String, ToolSpec>> {
 		panic!("unexpected tool effect: binding_specifications")
@@ -112,20 +151,58 @@ impl ToolOperations for Operations {
 	fn skill_read_bytes(&self) -> Result<usize> {
 		panic!("unexpected tool effect: skill_read_bytes")
 	}
-	async fn tenant_secret(&self, name: &str, endpoint: &str) -> Result<secrecy::SecretString> {
+	async fn connection(
+		&self,
+		resource: &str,
+		_call: SecretCall,
+		_key: &str,
+	) -> Result<CallSecret> {
+		self.record("connection.resolve");
+		assert_eq!(resource, "https://api.example.com/mcp");
+		if !self.connection {
+			return Err(Error::Invalid(
+				aidash_domain::oauth_connections::CONNECTION_REQUIRED.into(),
+			));
+		}
+		Ok(CallSecret::Connection {
+			record: crate::tenant_secrets::ConnectionRecord {
+				id: Uuid::now_v7(),
+				resource: resource.into(),
+				host: "api.example.com".into(),
+			},
+			source: std::sync::Arc::new(Token),
+		})
+	}
+
+	async fn tenant_secret(
+		&self,
+		name: &str,
+		endpoint: &str,
+		call: SecretCall,
+		key: &str,
+	) -> Result<CallSecret> {
 		self.record("secret.resolve");
-		self.inputs
-			.lock()
-			.unwrap()
-			.push((format!("{name}@{endpoint}"), Value::Null));
+		self.inputs.lock().unwrap().push((
+			format!("{name}@{endpoint}"),
+			json!({
+				"key": key,
+				"methods": call.methods,
+				"subject": call.subject,
+			}),
+		));
 		if name == "missing" {
 			return Err(Error::Invalid(
 				aidash_domain::tenant_secrets::UNAVAILABLE.into(),
 			));
 		}
-		Ok(secrecy::SecretString::from(
-			"tenant-secret-value".to_owned(),
-		))
+		Ok(CallSecret::Value {
+			record: SecretRecord {
+				id: Uuid::now_v7(),
+				version: "1".into(),
+				host: "api.example.test".into(),
+			},
+			value: secrecy::SecretString::from("tenant-secret-value".to_owned()),
+		})
 	}
 }
 #[async_trait]
@@ -135,7 +212,7 @@ impl ToolTransport for Operations {
 		_config: &ToolConfig,
 		input: Value,
 		key: &str,
-		secret: Option<&secrecy::SecretString>,
+		secret: Option<&CallSecret>,
 	) -> Result<Value> {
 		self.record(if secret.is_some() {
 			"transport.invoke.with_secret"
@@ -200,7 +277,10 @@ fn fixture() -> Fixture {
 	};
 	Fixture {
 		operations: Operations {
+			proxy: None,
 			skill_text: "界ab".into(),
+			connection: false,
+			person: false,
 			task,
 			skills: vec![],
 			calls: Mutex::new(vec![]),
@@ -268,6 +348,7 @@ async fn schema_rejection_precedes_every_tool_effect(fixture: Fixture) {
 			endpoint: "http://fixture.invalid".into(),
 			replay: "idempotent".into(),
 			secret: None,
+			secret_owner: Default::default(),
 		},
 		json!({"type":"object","required":["name"]}),
 	);
@@ -492,6 +573,7 @@ fn secret_tool(secret: Option<&str>) -> Plugin {
 			endpoint: "https://api.example.com/run".into(),
 			replay: "idempotent".into(),
 			secret: secret.map(str::to_owned),
+			secret_owner: Default::default(),
 		},
 		json!({"type":"object"}),
 	)
@@ -523,6 +605,15 @@ async fn a_tool_that_names_a_tenant_secret_sends_its_value_to_its_own_endpoint(f
 		fixture.operations.inputs.lock().unwrap()[0].0,
 		"search@https://api.example.com/run"
 	);
+	assert_eq!(
+		fixture.operations.inputs.lock().unwrap()[0].1["methods"],
+		json!(["POST"])
+	);
+	assert_eq!(
+		fixture.operations.inputs.lock().unwrap()[0].1["subject"]["run"],
+		fixture.run.id.to_string()
+	);
+	assert_eq!(fixture.operations.inputs.lock().unwrap()[0].1["key"], "key");
 }
 #[rstest]
 #[tokio::test]
@@ -566,4 +657,320 @@ async fn an_unavailable_tenant_secret_fails_the_call_before_any_request(fixture:
 		*fixture.operations.calls.lock().unwrap(),
 		["secret.resolve"]
 	);
+}
+
+struct Token;
+#[async_trait]
+impl crate::tenant_secrets::BearerSource for Token {
+	async fn bearer(&self) -> Result<secrecy::SecretString> {
+		Ok("connection-token".into())
+	}
+	async fn invalidate(&self) {}
+}
+
+/// The orchestration boundary owns precedence; wire tests own challenge/refresh behavior.
+#[rstest]
+#[case::connection_beats_named_secret(true, Some("search"), vec!["connection.resolve", "transport.invoke.with_secret"])]
+#[case::missing_connection_uses_secret(false, Some("search"), vec!["connection.resolve", "secret.resolve", "transport.invoke.with_secret"])]
+#[case::no_credentials_is_anonymous(false, None, vec!["connection.resolve", "transport.invoke"])]
+#[tokio::test]
+async fn mcp_authentication_resolution_order(
+	mut fixture: Fixture,
+	#[case] connected: bool,
+	#[case] secret: Option<&str>,
+	#[case] expected: Vec<&str>,
+) {
+	fixture.operations.connection = connected;
+	let mut tool = secret_tool(None);
+	tool.config = ToolConfig::Mcp {
+		endpoint: "https://api.example.com/mcp/".into(),
+		tool_name: "lookup".into(),
+		replay: "read_only".into(),
+		secret: secret.map(str::to_owned),
+		idempotency_argument: None,
+		scopes: None,
+		secret_owner: Default::default(),
+	};
+	assert!(
+		tool.invoke(
+			&ToolContext {
+				operations: &fixture.operations,
+				run: &fixture.run
+			},
+			&fixture.operations,
+			json!({}),
+			"mcp-key"
+		)
+		.await
+		.is_ok()
+	);
+	assert_eq!(*fixture.operations.calls.lock().unwrap(), expected);
+}
+
+#[rstest]
+#[case::http(false, false)]
+#[case::mcp(false, true)]
+#[case::connection_precedes_personal_secret(true, true)]
+#[tokio::test]
+async fn personal_only_tools_never_use_an_ownerless_shared_secret(
+	mut fixture: Fixture,
+	#[case] connected: bool,
+	#[case] mcp: bool,
+) {
+	fixture.operations.connection = connected;
+	let mut tool = secret_tool(Some("search"));
+	tool.config = if mcp {
+		ToolConfig::Mcp {
+			endpoint: "https://api.example.com/mcp".into(),
+			tool_name: "lookup".into(),
+			replay: "idempotent".into(),
+			idempotency_argument: None,
+			secret: Some("search".into()),
+			scopes: None,
+			secret_owner: aidash_domain::tool::SecretOwner::Personal,
+		}
+	} else {
+		ToolConfig::Http {
+			endpoint: "https://api.example.com/tool".into(),
+			replay: "idempotent".into(),
+			secret: Some("search".into()),
+			secret_owner: aidash_domain::tool::SecretOwner::Personal,
+		}
+	};
+	let result = tool
+		.invoke(
+			&ToolContext {
+				operations: &fixture.operations,
+				run: &fixture.run,
+			},
+			&fixture.operations,
+			json!({}),
+			"personal-call",
+		)
+		.await
+		.unwrap();
+	if connected {
+		assert!(
+			fixture
+				.operations
+				.calls
+				.lock()
+				.unwrap()
+				.contains(&"transport.invoke.with_secret")
+		);
+	} else {
+		assert_eq!(result["error"], "secret_unavailable");
+		assert!(result["hint"].as_str().unwrap().contains("personal secret"));
+		assert!(
+			!fixture
+				.operations
+				.calls
+				.lock()
+				.unwrap()
+				.iter()
+				.any(|call| call.starts_with("transport.invoke"))
+		);
+	}
+}
+
+#[rstest]
+#[case::http_any(false, aidash_domain::tool::SecretOwner::Any, false)]
+#[case::http_personal(false, aidash_domain::tool::SecretOwner::Personal, false)]
+#[case::mcp(true, aidash_domain::tool::SecretOwner::Any, false)]
+#[case::literal_fallback(false, aidash_domain::tool::SecretOwner::Any, true)]
+#[tokio::test]
+async fn a_home_personal_call_returns_its_result_before_any_local_secret_or_transport(
+	mut fixture: Fixture,
+	#[case] mcp: bool,
+	#[case] owner: aidash_domain::tool::SecretOwner,
+	#[case] literal_fallback: bool,
+) {
+	let result = if literal_fallback {
+		json!({"outcome":"not_personal"})
+	} else {
+		json!({"content":[{"type":"text","text":"home result"}]})
+	};
+	fixture.operations.proxy = Some(result.clone());
+	let config = if mcp {
+		ToolConfig::Mcp {
+			endpoint: "https://api.example.com/mcp".into(),
+			tool_name: "lookup".into(),
+			replay: "idempotent".into(),
+			idempotency_argument: None,
+			secret: None,
+			scopes: None,
+			secret_owner: owner,
+		}
+	} else {
+		ToolConfig::Http {
+			endpoint: "https://api.example.com/run".into(),
+			replay: "idempotent".into(),
+			secret: Some("personal".into()),
+			secret_owner: owner,
+		}
+	};
+	let tool = plugin(config, json!({"type":"object"}));
+	assert_eq!(
+		tool.invoke(
+			&ToolContext {
+				operations: &fixture.operations,
+				run: &fixture.run
+			},
+			&fixture.operations,
+			json!({"query":"private"}),
+			"logical-key"
+		)
+		.await
+		.unwrap(),
+		result
+	);
+	assert_eq!(*fixture.operations.calls.lock().unwrap(), ["home.call"]);
+	let saved = fixture.operations.inputs.lock().unwrap();
+	assert_eq!(saved[0].1["arguments"], json!({"query":"private"}));
+	assert_eq!(saved[0].1["idempotency_key"], "logical-key");
+	assert_eq!(
+		saved[0].1["kind"],
+		if mcp { "connection" } else { "personal_secret" }
+	);
+	assert!(saved[0].1.get("authorization").is_none());
+	assert!(saved[0].1.get("token").is_none());
+}
+
+#[rstest]
+#[case::fallback(json!({"outcome":"not_personal"}))]
+#[case::connection(json!({"error":"connection_required","resource":"https://mcp.example/tools"}))]
+#[case::scope(json!({"error":"connection_scope_insufficient","resource":"https://mcp.example/tools"}))]
+#[case::null(Value::Null)]
+fn connection_envelopes_preserve_every_literal_tool_result(#[case] result: Value) {
+	assert_eq!(
+		connection_outcome(json!({"outcome":"result","result":result}), false).unwrap(),
+		Some(result)
+	);
+}
+#[test]
+fn typed_connection_envelopes_restore_the_error_provenance() {
+	let cause = aidash_domain::agent_plugin::ConnectionCause::ConnectionRequired {
+		resource: "https://mcp.example/tools".into(),
+	};
+	assert!(
+		matches!(connection_outcome(json!({"outcome":"connection","cause":cause}), false), Err(Error::Connection(received)) if received == cause)
+	);
+	assert_eq!(
+		connection_outcome(json!({"outcome":"not_personal"}), false).unwrap(),
+		None
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn connection_request_canonicalizes_consent_and_refuses_without_a_person(
+	mut fixture: Fixture,
+) {
+	let builtin = builtins().remove("connection_request").unwrap();
+	let input = json!({"resource":"https://MCP.example:443/mcp/","scopes":["write","read","read"],"reason":"This task needs documents"});
+	let ctx = ToolContext {
+		operations: &fixture.operations,
+		run: &fixture.run,
+	};
+	assert!(
+		builtin
+			.invoke(&ctx, input.clone(), "connect")
+			.await
+			.is_err()
+	);
+	assert!(fixture.operations.calls.lock().unwrap().is_empty());
+	fixture.operations.person = true;
+	let ctx = ToolContext {
+		operations: &fixture.operations,
+		run: &fixture.run,
+	};
+	let result = builtin.invoke(&ctx, input, "connect").await.unwrap();
+	assert!(result["human_request_id"].is_string());
+	let inputs = fixture.operations.inputs.lock().unwrap();
+	let (_, request) = &inputs[0];
+	assert_eq!(
+		request["kind"],
+		aidash_domain::oauth_connections::CONNECTION_REQUEST_KIND
+	);
+	assert_eq!(request["prompt"]["resource"], "https://mcp.example/mcp");
+	assert_eq!(request["prompt"]["scopes"], json!(["read", "write"]));
+}
+
+#[rstest]
+#[case("http://ollama.lan:11434/mcp", None)]
+#[case("https://api.example.com/mcp?tenant=one", Some("search"))]
+#[tokio::test]
+async fn non_oauth_mcp_endpoint_uses_existing_transport(
+	fixture: Fixture,
+	#[case] endpoint: &str,
+	#[case] secret: Option<&str>,
+) {
+	let mut tool = secret_tool(None);
+	tool.config = ToolConfig::Mcp {
+		endpoint: endpoint.into(),
+		tool_name: "lookup".into(),
+		replay: "read_only".into(),
+		secret: secret.map(str::to_owned),
+		idempotency_argument: None,
+		scopes: None,
+		secret_owner: Default::default(),
+	};
+	let result = tool
+		.invoke(
+			&ToolContext {
+				operations: &fixture.operations,
+				run: &fixture.run,
+			},
+			&fixture.operations,
+			json!({}),
+			"key",
+		)
+		.await;
+	assert!(result.is_ok(), "{result:?}");
+	let calls = fixture.operations.calls.lock().unwrap();
+	assert!(!calls.contains(&"connection.resolve"));
+	assert!(calls.contains(&if secret.is_some() {
+		"transport.invoke.with_secret"
+	} else {
+		"transport.invoke"
+	}));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_non_oauth_mcp_endpoint_sends_its_personal_secret_call_home(mut fixture: Fixture) {
+	let result = json!({"content":[{"type":"text","text":"home result"}]});
+	fixture.operations.proxy = Some(result.clone());
+	let endpoint = "https://api.example.com/mcp?tenant=one";
+	let tool = plugin(
+		ToolConfig::Mcp {
+			endpoint: endpoint.into(),
+			tool_name: "lookup".into(),
+			replay: "idempotent".into(),
+			idempotency_argument: None,
+			secret: Some("personal".into()),
+			scopes: None,
+			secret_owner: aidash_domain::tool::SecretOwner::Personal,
+		},
+		json!({"type":"object"}),
+	);
+	assert_eq!(
+		tool.invoke(
+			&ToolContext {
+				operations: &fixture.operations,
+				run: &fixture.run
+			},
+			&fixture.operations,
+			json!({}),
+			"logical-key"
+		)
+		.await
+		.unwrap(),
+		result
+	);
+	let saved = fixture.operations.inputs.lock().unwrap();
+	assert_eq!(saved[0].1["kind"], "personal_secret");
+	assert_eq!(saved[0].1["resource"], endpoint);
+	assert_eq!(saved[0].1["secret_name"], "personal");
+	assert_eq!(saved[0].1["tool_name"], "lookup");
 }

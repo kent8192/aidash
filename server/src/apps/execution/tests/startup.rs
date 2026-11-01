@@ -211,3 +211,19 @@ async fn manage_runworker_recovers_durable_work_and_exposes_only_probes(
 	);
 	app.shutdown().await;
 }
+
+#[test]
+fn an_egress_gateway_on_a_secret_manager_store_needs_the_tenant_secret_broker() {
+	// Arrange: the Secret Manager Store seals hosts with the value, so the
+	// gateway cannot read a Tenant Secret and must forward to the broker.
+	// Act
+	let error = aidash_server::bootstrap::require_egress_broker_settings(true, false)
+		.unwrap_err()
+		.to_string();
+	// Assert: the refusal names the missing settings, not a vague capability.
+	assert!(error.contains("tenant_secret_broker"), "{error}");
+	assert!(error.contains("endpoint"), "{error}");
+	assert!(aidash_server::bootstrap::require_egress_broker_settings(true, true).is_ok());
+	// A PostgreSQL Store reads the value itself, so it stays direct.
+	assert!(aidash_server::bootstrap::require_egress_broker_settings(false, false).is_ok());
+}

@@ -256,3 +256,42 @@ test("a capability approval stays in the pending view after its toast", () => {
     ["approval"],
   );
 });
+
+test("connection notifications carry the complete resource and consent scopes into Connect", async () => {
+  const { connectionAction } = await import(
+    "../src/notifications/connection.ts"
+  );
+  const resource = `https://mcp.example/${"long/".repeat(60)}mcp`;
+  const request = {
+    kind: "MCP_CONNECTION",
+    response: null,
+    prompt: JSON.stringify({
+      resource,
+      scopes: ["read", "write"],
+      reason: "scope",
+      tool: "crm",
+    }),
+  };
+  assert.deepEqual(connectionAction(request, "acme"), {
+    tenant: "acme",
+    resource,
+    scopes: ["read", "write"],
+  });
+  assert.equal(
+    connectionAction({ ...request, response: { connected: true } }, "acme"),
+    null,
+  );
+  assert.equal(
+    connectionAction({ ...request, kind: "QUESTION" }, "acme"),
+    null,
+  );
+  assert.equal(connectionAction(request, undefined), null);
+  assert.equal(connectionAction({ ...request, prompt: "{" }, "acme"), null);
+  assert.equal(
+    connectionAction(
+      { ...request, prompt: JSON.stringify({ resource, scopes: [42] }) },
+      "acme",
+    ),
+    null,
+  );
+});

@@ -216,6 +216,13 @@ def agent_config(corpus, task, model_ref, tool_refs, fields):
     if task.get("context_policy"):
         config["context_policy"] = copy.deepcopy(task["context_policy"])
     config.update(json.loads(json.dumps(fields)))
+    # New Agents on a Native-capable model now default to Native with structured@3 (#532). An arm
+    # compares only the fields it names, so an arm that names no Projection Version stays Legacy, and
+    # a Native arm that names no Harness Contract stays on legacy@1, the contract the evaluator
+    # expects for an omitted field (`projection_evaluation._variant_harness_contract`).
+    config.setdefault("projection_version", "legacy")
+    if config["projection_version"] == "native":
+        config.setdefault("harness_contract", "legacy@1")
     return config
 
 
@@ -605,7 +612,8 @@ def register_variants(experiment, corpus, planned_runs, model_refs, fixture_url,
         if task.get("requires_summary") and auxiliary and auxiliary.get("summary"):
             identifier, _, version = auxiliary["summary"]["reference"].partition("@")
             config.setdefault("context_policy", {"version": "context-recovery/1"})["summary"] = {
-                "model": {"id": identifier, "version": version}, "max_tokens": 1024,
+                # A reasoning or verbose summary model may need more than the default; at most 4096.
+                "model": {"id": identifier, "version": version}, "max_tokens": task.get("summary_max_tokens", 1024),
                 "call_budget": auxiliary["summary"]["max_calls_per_run"]}
         identifier = agent_id(experiment.prefix, planned)
         try:

@@ -1,0 +1,83 @@
+# Run memory supply corpus (#122). See docs/memory-evaluation.md.
+#
+# Each case seeds a fresh Memory Bank with synthetic Units, assigns the bank's
+# participant to a new Task and claims it with one Agent per arm. A case passes
+# when the answer matches `expect` and none of `forbid`, and the Run actually
+# read every `required` Unit at its current revision (`/memory/units/impact`).
+# The facts exist nowhere else, so a correct answer without a read is a guess.
+version = "memory-supply-v1"
+instructions = """Answer the request. Use what you remember about this requester and \
+their projects when it is relevant. If you do not know a fact, say UNKNOWN instead of \
+guessing. Reply with the requested result and no tool calls once you are done."""
+max_steps = 6
+
+# `auto` recalls before every inference step (the default context source),
+# `on-demand` only through the memory_recall tool, `none` binds no memory.
+arms = ["auto", "on-demand", "none"]
+
+[[cases]]
+id = "exact-fact-among-distractors"
+language = "en-US"
+prompt = "What is the approved vendor code for Project Heron? Reply with only the code."
+expect = 'HX-4471-K'
+forbid = ['FX-2208-M', 'OX-9013-B']
+required = ["heron"]
+units = [
+  { id = "heron", text = "Project Heron's approved vendor code is HX-4471-K." },
+  { id = "falcon", text = "Project Falcon's approved vendor code is FX-2208-M." },
+  { id = "osprey", text = "Project Osprey's approved vendor code is OX-9013-B." },
+]
+
+[[cases]]
+id = "japanese-fact"
+language = "ja-JP"
+prompt = "オーロラ計画の定例会議の予約コードは何ですか？コードだけを答えてください。"
+expect = 'MR-7Q31'
+forbid = ['MR-2K88']
+required = ["aurora"]
+units = [
+  { id = "aurora", text = "オーロラ計画の定例会議は第7会議室で行い、予約コードは MR-7Q31 です。" },
+  { id = "borealis", text = "ボレアリス計画の定例会議は第2会議室で行い、予約コードは MR-2K88 です。" },
+]
+
+# The Run must read the corrected revision and never the superseded one.
+[[cases]]
+id = "corrected-fact"
+language = "en-US"
+prompt = "On which date does the Kestrel release freeze start? Reply with only the date as YYYY-MM-DD."
+expect = '2027-02-17'
+forbid = ['2027-02-03']
+required = ["kestrel"]
+units = [
+  { id = "kestrel", text = "The Kestrel release freeze starts on 2027-02-03." },
+]
+corrections = [
+  { id = "kestrel", text = "The Kestrel release freeze starts on 2027-02-17." },
+]
+
+# A deleted Unit must not reach the Run.
+[[cases]]
+id = "deleted-fact"
+language = "en-US"
+prompt = "What is the Merlin escrow PIN? Reply with only the PIN, or UNKNOWN."
+expect = 'UNKNOWN'
+forbid = ['4826']
+required = []
+units = [
+  { id = "merlin", text = "The Merlin escrow PIN is 4826." },
+  { id = "merlin-owner", text = "The Merlin escrow account is owned by the treasury team." },
+]
+deletions = ["merlin"]
+
+[[cases]]
+id = "preference"
+language = "en-US"
+prompt = """Which currency should the quarterly Pelican budget summary use for me? \
+Reply with only the ISO 4217 code."""
+expect = 'CHF'
+forbid = []
+required = ["pelican-currency"]
+units = [
+  { id = "pelican-currency", text = "The requester wants every Pelican budget summary reported in CHF (Swiss francs)." },
+  { id = "pelican-owner", text = "The Pelican budget is reviewed by the regional finance office." },
+]

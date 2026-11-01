@@ -150,6 +150,9 @@ impl ToolAuthorization {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ToolBehavior {
+	/// A connection consent wait remains available under every Approval Mode.
+	#[serde(skip_serializing_if = "std::ops::Not::not")]
+	pub connection_request: bool,
 	pub effect: ToolEffect,
 	pub fitting: Option<ResultFitting>,
 	pub continuation: Continuation,
@@ -360,6 +363,7 @@ impl ToolContract {
 /// The behavior of an ordinary tool that no model media, catch-up or yield attributes touch.
 fn external_behavior(effect: ToolEffect, tool_call_approval: bool) -> ToolBehavior {
 	ToolBehavior {
+		connection_request: false,
 		effect,
 		tool_call_approval,
 		fitting: None,
@@ -387,6 +391,7 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			requirements: vec![],
 		},
 		behavior: ToolBehavior {
+			connection_request: false,
 			effect: ToolEffect::Idempotent,
 			fitting: None,
 			continuation: Continuation::Ordinary,
@@ -460,10 +465,11 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			));
 			behavior.effect = ToolEffect::ReadOnly;
 		}
-		"human_request" => {
+		"human_request" | "connection_request" => {
 			auth.requirements
 				.push(resource("human.request", "run", Run));
 			behavior.continuation = Continuation::Human;
+			behavior.connection_request = name == "connection_request";
 		}
 		"agent_discover" => {
 			behavior.effect = ToolEffect::ReadOnly;
@@ -870,6 +876,8 @@ mod tests {
 				tool_name: "search".into(),
 				replay: "unsafe".into(),
 				idempotency_argument: None,
+				scopes: None,
+				secret_owner: Default::default(),
 			},
 		);
 		let plugin = ToolContract::agent_plugin(plugin_tool(), false);
@@ -927,6 +935,7 @@ mod tests {
 				endpoint: "https://example.invalid".into(),
 				replay: "read_only".into(),
 				secret: None,
+				secret_owner: Default::default(),
 			},
 			ToolConfig::Mcp {
 				endpoint: "https://example.invalid".into(),
@@ -934,6 +943,8 @@ mod tests {
 				tool_name: "lookup".into(),
 				replay: "read_only".into(),
 				idempotency_argument: None,
+				scopes: None,
+				secret_owner: Default::default(),
 			},
 		] {
 			let current = ToolContract::registry(
@@ -975,6 +986,7 @@ mod tests {
 					endpoint: "https://example.invalid".into(),
 					replay: replay.into(),
 					secret: None,
+					secret_owner: Default::default(),
 				},
 				ToolConfig::Mcp {
 					endpoint: "https://example.invalid".into(),
@@ -982,6 +994,8 @@ mod tests {
 					tool_name: "lookup".into(),
 					replay: replay.into(),
 					idempotency_argument: None,
+					scopes: None,
+					secret_owner: Default::default(),
 				},
 			] {
 				let contract = ToolContract::registry(reference.clone(), &config);

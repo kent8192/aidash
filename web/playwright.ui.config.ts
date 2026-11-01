@@ -31,6 +31,7 @@ export default defineConfig({
     "provider-credentials.spec.ts",
     "plan-connections.spec.ts",
     "tenant-administration.spec.ts",
+    "connections.spec.ts",
     "tenancy.spec.ts",
     "keyless-approval.spec.ts",
     "catalog-approval.spec.ts",
