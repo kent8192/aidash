@@ -145,9 +145,6 @@ for (const locale of ["en-US", "ja-JP"]) {
     await add.click();
     await binding.selectOption(`tool:${ids[1]}@1.0.0`);
     await add.click();
-    await dialog.locator('select[name="cluster"]').selectOption({
-      label: `${japanese ? "調査チーム" : "Research team"} · 1.0.0`,
-    });
     for (const id of ids) await expect(dialog).not.toContainText(id);
     await dialog.getByRole("button", { name: register, exact: true }).click();
     await expect
@@ -175,7 +172,6 @@ for (const locale of ["en-US", "ja-JP"]) {
             narrow: {},
           },
         ],
-        cluster: { id: ids[3], version: "1.0.0" },
       });
     await expect(dialog).toHaveCount(0);
     await page

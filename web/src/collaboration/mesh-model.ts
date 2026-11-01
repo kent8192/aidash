@@ -39,7 +39,6 @@ export type MeshRelation =
   | "tool"
   | "model"
   | "skill"
-  | "member"
   | "hosts"
   | "coordinates"
   | "federation"
@@ -75,18 +74,6 @@ export type MeshGraph = {
   omitted: number;
   omittedEdges: number;
 };
-export function canvasEdges(graph: MeshGraph, grouped: boolean): MeshEdge[] {
-  if (!grouped) return graph.edges;
-  return graph.edges.filter(
-    (edge) =>
-      edge.relation !== "member" ||
-      !graph.nodes.some(
-        (node) =>
-          (node.id === edge.source && node.parent === edge.target) ||
-          (node.id === edge.target && node.parent === edge.source),
-      ),
-  );
-}
 export const resourceKey = (nodeId: string, kind: string, id: string) =>
   JSON.stringify(["resource", nodeId, kind, id]);
 export function reference(value: unknown): EntityReference | undefined {
@@ -193,16 +180,14 @@ export function buildMeshGraph(
       if (ref) edge(id, entryNode("agent", ref), "coordinates");
     }
     if (e.kind !== "agent") continue;
-    for (const kind of ["tool", "model", "skill", "cluster"] as const) {
+    for (const kind of ["tool", "model", "skill"] as const) {
       const value =
         e.config?.[kind === "tool" || kind === "skill" ? `${kind}s` : kind];
       for (const item of Array.isArray(value) ? value : [value]) {
         const ref = reference(item);
         if (!ref) continue;
         const target = entryNode(kind, ref);
-        edge(id, target, kind === "cluster" ? "member" : kind);
-        if (kind === "cluster" && nodes.get(target)?.available)
-          nodes.get(id)!.parent = target;
+        edge(id, target, kind);
       }
     }
   }
@@ -225,9 +210,7 @@ export function buildMeshGraph(
       edge(local, id, "federation", "federation");
     }
     for (const e of registry.filter(
-      (e) =>
-        e.kind === "cluster" ||
-        (e.kind === "agent" && !reference(e.config?.cluster)),
+      (e) => e.kind === "cluster" || e.kind === "agent",
     ))
       edge(local, entityKey(nodeId, e.kind, e), "hosts");
   }
