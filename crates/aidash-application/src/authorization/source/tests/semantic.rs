@@ -574,6 +574,9 @@ async fn a_summarizer_pin_needs_no_home_semantic_retrieval() {
 		summarizer: Some(summarizer.clone()),
 	};
 	let mut scope = BindingScope::new();
+	scope.base.bundle.subjects.clear();
+	scope.base.reject_unknown = true;
+	let original = scope.base.subjects.clone();
 	let Binding::Disabled {
 		summarizer: Some(pin),
 	} = use_case::binding(
@@ -592,6 +595,7 @@ async fn a_summarizer_pin_needs_no_home_semantic_retrieval() {
 	assert_eq!(pin.entry, summarizer);
 	assert_eq!(pin.digest, "sha256:definition");
 	assert!(scope.reads.is_empty(), "{:?}", scope.reads);
+	assert_eq!(scope.base.subjects, original);
 	let actions: Vec<_> = scope
 		.base
 		.calls
@@ -680,4 +684,22 @@ async fn remote_home_binding_accepts_keyless_and_tenant_embeddings_under_the_sam
 	.await;
 	assert!(matches!(result.unwrap(), Binding::RequiredHome { .. }));
 	assert_eq!(scope.reads, vec!["index", "entry", "lineage"]);
+}
+
+#[tokio::test]
+async fn receiver_only_executor_is_excluded_from_semantic_authority() {
+	let mut scope = BindingScope::new();
+	scope.base.bundle.subjects.clear();
+	scope.base.reject_unknown = true;
+	let original = scope.base.subjects.clone();
+	let result = use_case::binding(
+		&mut scope,
+		&task(),
+		"aidash://receiver",
+		&remote_inspection(),
+		&request(),
+	)
+	.await;
+	assert!(matches!(result.unwrap(), Binding::RequiredHome { .. }));
+	assert_eq!(scope.base.subjects, original);
 }
