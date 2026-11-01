@@ -1,5 +1,7 @@
 # Aidash native migration history
 
+`registry/0054_remove_agent_cluster` removes the obsolete Agent config key from Registry definitions, Agent drafts and registration requests, then removes it from the Agent contract. `execution/0089_remove_agent_cluster` removes it from Generation policy templates and request definitions. PostgreSQL JSON updates and function replacement use SQL assets because Reinhardt migrations cannot express these transformations. Both are irreversible. Each owner-only atomic migration establishes Deployment Scope before its first row access because the native migration executor does not open scoped application transactions. The registry update temporarily disables the Marketplace writer fence within its transaction, retaining its other validation and reference triggers. Installed Registry copies change while immutable Marketplace versions and revisions stay untouched: old Marketplace versions must be republished and old installation revisions may no longer match. Run and Federation snapshots are unchanged; Runs using old snapshots fail and need cancellation. Surviving Run constraints and triggers do not call the Agent validator, so cancellation updates do not revalidate the retained snapshots. Catalog Approvals and Federation pins covering changed definitions need renewing.
+
 `execution/0081_lease_recoveries` updates the physical `runs.pending` default,
 and replaces the activation trigger function. PostgreSQL function replacement
 is a SQL exception that Reinhardt cannot express. The server decodes the
@@ -782,11 +784,11 @@ Plugin settings validator, including its compaction rules, and restores that
 validator on rollback. The join is an empty state-only migration that preserves
 existing identities and one leaf per app.
 
-`execution/0089_subnodes`, `0090_subnodes_row_level_security`, and
-`0091_subnodes_state` create the Run-scoped Subnode tables, enforce Tenant
-row policies, and record their model state after `0088_mcp_connection_requests_state`.
+`execution/0090_subnodes`, `0091_subnodes_row_level_security`, and
+`0092_subnodes_state` create the Run-scoped Subnode tables, enforce Tenant
+row policies, and record their model state after `0089_remove_agent_cluster`.
 
-`registry/0054_subnode_provider` (after `registry/0053_connection_request`) extends the PostgreSQL built-in Tool descriptor
+`registry/0055_subnode_provider` (after `registry/0054_remove_agent_cluster`) extends the PostgreSQL built-in Tool descriptor
 validator with the six `core.subnodes@1` operations (#660). Its reversible
 `RunSQL` replaces the PostgreSQL function body because Reinhardt migrations
 cannot express PL/pgSQL function definitions. Rolling back restores the

@@ -20,7 +20,7 @@ fn agent(id: &str) -> Entry {
 	entry(
 		id,
 		"agent",
-		json!({"schema_version":1,"model":r("model"),"instructions":"Fixture","bindings":[crate::test_support::binding("tool","aidash://local","tool")],"remove_default":aidash_domain::registry::bindings::DEFAULT_TOOLS,"cluster":null}),
+		json!({"schema_version":1,"model":r("model"),"instructions":"Fixture","bindings":[crate::test_support::binding("tool","aidash://local","tool")],"remove_default":aidash_domain::registry::bindings::DEFAULT_TOOLS}),
 	)
 }
 #[derive(Default)]
@@ -187,7 +187,7 @@ async fn deployment_definitions_travel_by_name_without_export() {
 	let root = entry(
 		"root",
 		"agent",
-		json!({"schema_version":1,"model":r("model"),"instructions":"Fixture","bindings":[crate::test_support::binding("tool","aidash://local","aidash.workspace_read")],"remove_default":aidash_domain::registry::bindings::DEFAULT_TOOLS,"cluster":null}),
+		json!({"schema_version":1,"model":r("model"),"instructions":"Fixture","bindings":[crate::test_support::binding("tool","aidash://local","aidash.workspace_read")],"remove_default":aidash_domain::registry::bindings::DEFAULT_TOOLS}),
 	);
 	let dependencies = publication_graph(&mut scope, &root, &[], "aidash://local")
 		.await

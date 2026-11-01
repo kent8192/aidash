@@ -1,8 +1,8 @@
 // reinhardt-migration-source: 1
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0089_subnodes", "execution")
-        .add_dependency("execution", "0088_mcp_connection_requests_state")
+	Migration::new("0090_subnodes", "execution")
+        .add_dependency("execution", "0089_remove_agent_cluster")
         .database_only(true).atomic(true)
         .add_operation(Operation::CreateTable {
             name: "subnodes".into(),

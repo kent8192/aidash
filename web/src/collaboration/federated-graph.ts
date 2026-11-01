@@ -80,7 +80,6 @@ const projectedRelations = new Set<MeshRelation>([
   "tool",
   "model",
   "skill",
-  "member",
   "hosts",
   "coordinates",
   "participates",
