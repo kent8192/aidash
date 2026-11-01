@@ -67,8 +67,8 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0051_harness_plugin_merge"),
 	("registry", "0052_harness_contract_structured3"),
 	("registry", "0053_connection_request"),
-	("registry", "0055_attachment_tools"),
 	("registry", "0054_remove_agent_cluster"),
+	("registry", "0055_attachment_tools"),
 	("execution", "0089_remove_agent_cluster"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
@@ -756,6 +756,7 @@ async fn remove_agent_cluster_migrates_registry_drafts_requests_and_generation_t
 			!matches!(
 				(migration.app_label.as_str(), migration.name.as_str()),
 				("registry", "0054_remove_agent_cluster")
+					| ("registry", "0055_attachment_tools")
 					| ("execution", "0089_remove_agent_cluster")
 			)
 		})
