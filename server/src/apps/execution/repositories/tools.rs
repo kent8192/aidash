@@ -13,6 +13,50 @@ use uuid::Uuid;
 pub(crate) struct Operations(pub(crate) crate::tool::ToolContext);
 #[async_trait]
 impl ToolOperations for Operations {
+	async fn connection_call(
+		&self,
+		call: &aidash_domain::identity::commands::connections::ConnectionCall,
+	) -> Result<Option<Value>> {
+		if self.0.home.local() {
+			return Ok(None);
+		}
+		let value: Value = self
+			.0
+			.home
+			.command(
+				aidash_domain::identity::commands::connections::CALL,
+				serde_json::to_value(call)?,
+			)
+			.await?;
+		aidash_application::tools::connection_outcome(value, false)
+	}
+
+	async fn connection_person(&self) -> Result<bool> {
+		Ok(
+			crate::apps::identity::repositories::oauth_connections::owner_of_run(
+				&self.0.store,
+				&self.0.run,
+			)
+			.await?
+			.is_some(),
+		)
+	}
+	async fn connection(
+		&self,
+		resource: &str,
+		call: aidash_application::tenant_secrets::SecretCall,
+		key: &str,
+	) -> Result<aidash_application::tenant_secrets::CallSecret> {
+		super::mcp_connections::connection(
+			&self.0.store,
+			&self.0.run,
+			&self.0.scope,
+			resource,
+			call,
+			key,
+		)
+		.await
+	}
 	async fn registered_skills(&self) -> Result<Vec<EntityRef>> {
 		let snapshot = self
 			.0
@@ -186,17 +230,78 @@ impl ToolOperations for Operations {
 	fn skill_read_bytes(&self) -> Result<usize> {
 		Ok(self.0.store.capabilities.0.limits.read_bytes)
 	}
-	async fn tenant_secret(&self, name: &str, endpoint: &str) -> Result<secrecy::SecretString> {
-		// The value is read from this node's own Secret Store, in the Run's
-		// Tenant: under Federation it never leaves the owning Tenant's Node.
+	async fn tenant_secret(
+		&self,
+		name: &str,
+		endpoint: &str,
+		call: aidash_application::tenant_secrets::SecretCall,
+		key: &str,
+	) -> Result<aidash_application::tenant_secrets::CallSecret> {
+		self.tenant_secret_for(
+			name,
+			endpoint,
+			aidash_domain::tool::SecretOwner::Any,
+			call,
+			key,
+		)
+		.await
+	}
+	async fn tenant_secret_for(
+		&self,
+		name: &str,
+		endpoint: &str,
+		owner: aidash_domain::tool::SecretOwner,
+		call: aidash_application::tenant_secrets::SecretCall,
+		key: &str,
+	) -> Result<aidash_application::tenant_secrets::CallSecret> {
+		// The Tenant Secret is resolved in the Run's own Tenant: under Federation
+		// it never leaves the owning Tenant's Node. A self-hosted Store reads the
+		// value; a Cloud or Dedicated Store mints a broker route instead.
 		let unavailable = || {
-			aidash_application::Error::Invalid(aidash_domain::tenant_secrets::UNAVAILABLE.into())
+			if owner == aidash_domain::tool::SecretOwner::Personal {
+				aidash_application::tenant_secrets::personal_required(name)
+			} else {
+				aidash_application::Error::Invalid(
+					aidash_domain::tenant_secrets::UNAVAILABLE.into(),
+				)
+			}
 		};
 		let (Some(service), Some(tenant)) =
 			(&self.0.store.tenant_secrets, self.0.scope.tenant_name())
 		else {
 			return Err(unavailable());
 		};
-		service.resolve(tenant.as_str(), name, endpoint).await
+		let person = crate::apps::identity::repositories::oauth_connections::owner_of_run(
+			&self.0.store,
+			&self.0.run,
+		)
+		.await?;
+		if person
+			.as_ref()
+			.is_some_and(|person| person.tenant != tenant.as_str())
+		{
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let secret = service
+			.call_secret_for(
+				tenant.as_str(),
+				person.as_ref().map(|person| person.subject.as_str()),
+				name,
+				owner,
+				endpoint,
+				call,
+			)
+			.await?;
+		// A call that carried a Tenant Secret records which one, its pinned
+		// version and its host. The value is never recorded.
+		self.0
+			.store
+			.invocation_secret(
+				&self.0.scope,
+				key,
+				secret.record().expect("Tenant Secret record"),
+			)
+			.await?;
+		Ok(secret)
 	}
 }

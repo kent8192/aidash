@@ -7,3 +7,4 @@ providerCredentials:
       kind: postgres
       master_key: { env: AIDASH_PROVIDER_STORE_MASTER_KEY }
     broker: null
+    tenant_secret_broker: null

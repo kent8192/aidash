@@ -18,6 +18,10 @@ fn an_external_service_cannot_open_a_tunnel_or_select_an_insecure_destination() 
 			"authentication",
 			json!({"type":"header","name":"x-forwarded-host"}),
 		),
+		(
+			"authentication",
+			json!({"type":"header","name":"x-aidash-correlation"}),
+		),
 	] {
 		let mut rejected = valid.clone();
 		rejected[key] = value;

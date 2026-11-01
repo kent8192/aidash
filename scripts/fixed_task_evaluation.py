@@ -57,12 +57,12 @@ CONCLUSION_SCOPE = ("Conclusions are limited to the tested tasks, fixture or mod
 UNRUNNABLE_STATUSES = ("feature-not-available", "not-measured")
 # The only Agent fields a comparison arm may set. Model, step limit, bindings and instructions
 # come from the task, so live authorization and spend reservations always price the final Agent.
-COMPARISON_AGENT_FIELDS = ("projection_version", "prompt_cache", "exposure")
+COMPARISON_AGENT_FIELDS = ("projection_version", "prompt_cache", "exposure", "harness_contract")
 # The implicit builtins an Agent gets unless `remove_default` names them, the ones bound Skills
 # need, and the deferred@1 exposure builtins (crates/aidash-domain/src/registry/bindings.rs,
 # exposure.rs `default_tools` and `skill_support_tools`). test_fixed_task_evaluation.py checks
 # them against the Rust lists.
-DEFAULT_TOOLS = ("workspace_observe", "workspace_wait", "skill_list", "skill_load", "skill_read", "file_search",
+DEFAULT_TOOLS = ("connection_request", "workspace_observe", "workspace_wait", "skill_list", "skill_load", "skill_read", "file_search",
                  "file_read", "task_create", "task_delegate", "agent_discover", "artifact_publish",
                  "workspace_message", "memory_mutate", "memory_recall", "memory_reflect")
 SKILL_TOOLS = ("skill_list", "skill_load", "skill_read")

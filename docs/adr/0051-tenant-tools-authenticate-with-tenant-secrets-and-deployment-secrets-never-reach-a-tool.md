@@ -22,3 +22,8 @@ A Tenant types or pastes a Tenant Secret's value. Arbitrary tool servers offer n
 - Replacing a value changes no definition version and keeps Catalog Approvals. Deleting a Tenant Secret makes the calls that need it fail with `secret_unavailable`.
 - A tool that carries a Tenant Secret is governed like any other tool under Federation: the receiving Node's authority decides, and the value never leaves the owning Tenant's Node.
 - Tenant Deletion purges Tenant Secrets with the Tenant's other Secret Store contents.
+
+## Amendment (2026-10-26, #310)
+
+- On Cloud and Dedicated, Tenant tool calls that carry a Tenant Secret go to a Credential Broker identity that reads only Tenant Secrets, never Key Material, under a Tenant Secret Capability Token (ADR 0095).
+- There, a Tenant Secret's hosts are sealed with its value, so changing them takes entering the value again (ADR 0096). Self-hosted Deployments change hosts without the value.

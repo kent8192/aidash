@@ -77,7 +77,7 @@ COMMON = {"attempt_id", "id", "run_id", "tenant_id", "tenant", "created_at", "co
           "finished_at", "settled_at", "cost_nanocredits", "upstream_cost_nanocredits", "cost_amount",
           "cost_unit", "provider_work_id", "reserved_nanocredits", "purpose", "status", "outcome"}
 USAGE_FIELDS = COMMON | {
-    "response_epoch", "model_id", "model_version", "projection_version", "requested_route",
+    "response_epoch", "model_id", "model_version", "projection_version", "harness_contract", "requested_route",
     "provider_identity", "shadow_estimates", "cache_identity", "input_tokens", "output_tokens",
     "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "estimated_tokens", "estimator",
     "estimator_version", "estimate_confidence", "upstream_model", "byte_basis", "output_reservation",
@@ -265,6 +265,8 @@ def _metadata(row, allowed, tenant, table):
     if table == "inference_usage":
         if "projection_version" in row:
             _count(row["projection_version"], "projection_version")
+        if "harness_contract" in row:
+            _count(row["harness_contract"], "harness_contract")
         if row.get("purpose", "main") not in ("main", "summary"):
             raise EvidenceError("inference purpose must be main or summary")
         if row.get("estimated_tokens") is not None and row.get("output_reservation") is not None and row["estimated_tokens"] < row["output_reservation"]:
@@ -282,6 +284,15 @@ def _variant_projection(variant):
     value = variant.get("agent_fields", {}).get("projection_version")
     return {1: "legacy", 2: "ordered", 3: "native", "1": "legacy", "2": "ordered", "3": "native"}.get(
         value, value or (variant.get("label") if variant.get("label") in ("legacy", "ordered", "native") else None))
+
+
+def _variant_harness_contract(variant):
+    """The numeric Harness Contract version an arm declares; absent means 1 (legacy@1)."""
+    value = variant.get("agent_fields", {}).get("harness_contract")
+    if isinstance(value, bool):
+        raise EvidenceError("arm harness_contract must be a version string or number")
+    return {"legacy@1": 1, "structured@1": 2, "structured@2": 3, "structured@3": 4,
+            1: 1, 2: 2, 3: 3, 4: 4, "1": 1, "2": 2, "3": 3, "4": 4}.get(value, 1 if value is None else value)
 
 
 def load_evidence(manifest, export=None, *, corpus=None, memory_corpus=None):
@@ -315,10 +326,11 @@ def load_evidence(manifest, export=None, *, corpus=None, memory_corpus=None):
         normalized["runs"].append({
             "key": run["key"], "run_id": run["run_id"], "task": run["task"], "comparison": run["comparison"],
             "arm": run["arm"], "repeat": run["repeat"], "projection": projection,
+            "harness_contract": _variant_harness_contract(variant),
             "prompt_cache": variant.get("agent_fields", {}).get("prompt_cache", "off"),
             "matched_configuration_sha256": canonical_sha256({"model": variant["model"], "tools": variant["tools"],
                 "skills": variant["skills"], "agent_fields": {k: v for k, v in variant.get("agent_fields", {}).items()
-                                                            if k not in ("projection_version", "prompt_cache")}}),
+                                                            if k not in ("projection_version", "prompt_cache", "harness_contract")}}),
             "outcome": run["outcome"], "oracle_passed": run["oracle"]["passed"],
             "constraint_retention": run["constraint_retention"], "wall_ms": run["wall_ms"],
             "long_context": run["long_context"], "phase": run["phase"],
@@ -401,8 +413,11 @@ def load_evidence(manifest, export=None, *, corpus=None, memory_corpus=None):
         compactions = {_attempt_id(r): r for r in run["context_compaction_attempts"]}
         for identifier, row in inference.items():
             expected_projection = {"legacy": 1, "ordered": 2, "native": 3}.get(run["projection"])
+            expected_contract = run["harness_contract"]
             if row.get("purpose", "main") == "main" and row.get("projection_version") is not None and row["projection_version"] != expected_projection:
                 raise EvidenceError("Usage Record Projection Version differs from the pinned Run arm")
+            if row.get("purpose", "main") == "main" and row.get("harness_contract") is not None and row["harness_contract"] != expected_contract:
+                raise EvidenceError("Usage Record Harness Contract differs from the pinned Run arm")
             if row.get("purpose", "main") == "summary" and identifier not in compactions:
                 raise EvidenceError("Summary Usage Record is missing its compaction attempt join")
         for identifier, row in compactions.items():

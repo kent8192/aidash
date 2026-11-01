@@ -34,6 +34,7 @@ impl Clients {
 				.timeout(timeout)
 				.connect_timeout(connect_timeout)
 				.redirect(reqwest::redirect::Policy::none())
+				.user_agent(crate::USER_AGENT)
 				.build()
 				.map_err(crate::http_error)?,
 			public: public_client(timeout, connect_timeout)?,
@@ -78,6 +79,7 @@ pub(crate) fn public_client_timeout(
 	builder
 		.connect_timeout(connect_timeout)
 		.redirect(reqwest::redirect::Policy::none())
+		.user_agent(crate::USER_AGENT)
 		.no_proxy()
 		.dns_resolver(Arc::new(PublicDns))
 		.build()
@@ -94,7 +96,10 @@ pub(crate) fn send_error(error: reqwest::Error) -> Error {
 	crate::http_error(error)
 }
 
-pub(crate) fn refused(error: &(dyn std::error::Error + 'static)) -> bool {
+/// Whether a send failed because the host resolved to a non-public address.
+/// Brokers that forward Tenant Secret calls report that as a refused
+/// destination rather than an upstream outage.
+pub fn refused(error: &(dyn std::error::Error + 'static)) -> bool {
 	let mut source = Some(error);
 	while let Some(current) = source {
 		if current.is::<NonPublicAddress>() {

@@ -37,6 +37,7 @@ struct BatchStep<'a> {
 	end: usize,
 }
 
+mod connections;
 mod context_sources;
 use context_sources::{cached_data_phase, collect_data_phase, read_planned_source};
 
@@ -516,6 +517,7 @@ impl<'a> Executor<'a> {
 		visibility: &mut dyn ExecutionVisibility,
 		home: &dyn ExecutionHome,
 		fitting: &aidash_application::context::Fitting<'_>,
+		harness_contract: aidash_domain::harness_contract::HarnessContract,
 		mut plan: aidash_application::context::SummaryPlan,
 		tools: &Tools,
 		staged: Option<&aidash_application::decision::StagedDecision>,
@@ -702,6 +704,7 @@ impl<'a> Executor<'a> {
 					model_id: summary.model.id.clone(),
 					model_version: summary.model.version.clone(),
 					projection_version: request.context.projection_version().number(),
+					harness_contract: harness_contract.number(),
 					upstream_model: model_cfg.model_id.clone(),
 					purpose: UsagePurpose::Summary,
 					requested_route: model_cfg
@@ -1202,10 +1205,12 @@ impl<'a> Executor<'a> {
 				};
 				// Ordered and Native share the Stable Prefix rules: a Run-stable
 				// snapshot quota and Retrieval Key reuse (ADR 0020). Only Ordered
-				// keeps per-turn paragraphs out of `system`; Native keeps every
-				// harness instruction in `system` and data in envelopes.
+				// keeps per-turn paragraphs out of `system`; a structured Harness
+				// Contract moves them to the `aidash` envelope instead.
 				let ordered = !projection.version().is_legacy();
-				let turn_paragraphs = matches!(projection, context::RequestProjection::Ordered(_));
+				let ordered_turn_paragraphs =
+					matches!(projection, context::RequestProjection::Ordered(_));
+				let contract = agent.harness_contract;
 				let source_input_seq = inputs
 					.last()
 					.map_or(run.observed_input_seq, |input| input.seq);
@@ -1262,7 +1267,7 @@ impl<'a> Executor<'a> {
 					prepared: &prepared_sources,
 				};
 				let mut source_instruction_slots = std::collections::BTreeMap::<String, [usize; 2]>::new();
-				let mut instructions = context::versioned_agent_instructions(agent.projection_version, "");
+				let mut instruction_fragments: Vec<(&str, String)> = Vec::new();
 				for source in source_plan
 					.iter()
 					.filter(|source| source.phase == ContextSourcePhase::Instructions)
@@ -1296,17 +1301,49 @@ impl<'a> Executor<'a> {
 					if caches_text {
 						source_skill_context.push_str(&text);
 					}
-					source_instruction_slots.insert(
-						source.contribution_slot.clone(),
-						[instructions.len(), instructions.len() + text.len()],
-					);
-					instructions.push_str(&text);
+					instruction_fragments.push((source.contribution_slot.as_str(), text));
 				}
-				if let Some(selection) = &exposure {
-					instructions.push_str(&selection.index);
+				let index = exposure
+					.as_ref()
+					.map(|selection| selection.index.clone())
+					.unwrap_or_default();
+				let fragments = instruction_fragments
+					.iter()
+					.map(|(slot, text)| (*slot, text.as_str()))
+					.collect::<Vec<_>>();
+				let mut instructions = aidash_domain::harness_contract::system_text(
+					contract,
+					agent.projection_version,
+					&agent.instructions,
+					&fragments,
+					&index,
+				);
+				for (slot, text) in &instruction_fragments {
+					if text.is_empty() {
+						continue;
+					}
+					// Every fragment is appended verbatim, so its byte range in the
+					// composed text is its first occurrence.
+					if let Some(start) = instructions.find(text.as_str()) {
+						source_instruction_slots
+							.insert((*slot).to_owned(), [start, start + text.len()]);
+					}
 				}
-				instructions.push_str("\nAdditional user instructions:\n");
-				instructions.push_str(&agent.instructions);
+				// Appended after the composed text so the slot ranges above stay valid.
+				if let Some(pinned) = &run.context.plugin_tools {
+					let resources: std::collections::BTreeSet<_> = pinned
+						.findings
+						.iter()
+						.filter_map(|finding| {
+							finding.connection.as_ref().map(|cause| cause.resource())
+						})
+						.collect();
+					if !resources.is_empty() {
+						instructions.push_str("\nMCP servers awaiting your starter's connection: ");
+						instructions.push_str(&serde_json::to_string(&resources)?);
+						instructions.push_str(". Call connection_request with a resource to ask them to connect; after consent its plugin tools become available.\n");
+					}
+				}
 				let fixed_sources = collect_data_phase(
 					self.environment,
 					run,
@@ -1437,9 +1474,21 @@ impl<'a> Executor<'a> {
 					output_limit
 				};
 				// Ordered keeps per-turn paragraphs out of the cached system prompt.
+				// A structured Harness Contract moves them into the `aidash` envelope.
+				let harness_paragraphs = contract.leaves_data_envelopes();
 				let mut turn_instructions = String::new();
+				let mut harness_turn_instructions: Vec<String> = Vec::new();
+				let mut push_turn_paragraph = |paragraph: &str| {
+					if harness_paragraphs {
+						harness_turn_instructions.push(paragraph.trim().to_owned());
+					} else if ordered_turn_paragraphs {
+						turn_instructions.push_str(paragraph);
+					} else {
+						instructions.push_str(paragraph);
+					}
+				};
 				if run_message_catchup {
-					(if turn_paragraphs { &mut turn_instructions } else { &mut instructions }).push_str(&format!(
+					push_turn_paragraph(&format!(
 						"\n\nRun-message catch-up: Treat the entries under run_messages as user task context. Read every required message record in this page before responding. Update the cumulative run_message_summary faithfully, preserving the user's goal, constraints, corrections, and unresolved requests in sequence order (newer corrections take precedence). Return only the concise updated summary, encoded in at most {run_message_limit} UTF-8 bytes. Do not answer the user, complete the task, publish text, or perform actions during catch-up.",
 					));
 				}
@@ -1448,7 +1497,7 @@ impl<'a> Executor<'a> {
 					&& let Some(guard) = guard
 					&& guard.auto_judging(run).await?
 				{
-					(if turn_paragraphs { &mut turn_instructions } else { &mut instructions }).push_str(AUTO_MODE_INSTRUCTION);
+					push_turn_paragraph(AUTO_MODE_INSTRUCTION);
 				}
 				let mut pinned = json!({"identity":{"node_id":self.environment.node_id(),"agent_id":run.agent_id,"agent_version":run.agent_version},"task":task,"agent_state":{"phase":run.phase(),"step":run.step}});
                 pinned.as_object_mut().expect("request snapshot").extend(snapshot_sources);
@@ -1526,7 +1575,7 @@ impl<'a> Executor<'a> {
 				let media_intake = media.defer_human || media.defer_selected;
 				if media_intake {
 					specifications.clear();
-					(if turn_paragraphs { &mut turn_instructions } else { &mut instructions }).push_str("\nMedia intake is continuing. For this interim turn, postpone required workspace reads and the cumulative run-message summary. Preserve the user goals, constraints, and corrections in these run messages and describe the media in this request as plain text. Do not call tools or complete the task; deferred media will be provided in the next request.");
+					push_turn_paragraph("\nMedia intake is continuing. For this interim turn, postpone required workspace reads and the cumulative run-message summary. Preserve the user goals, constraints, and corrections in these run messages and describe the media in this request as plain text. Do not call tools or complete the task; deferred media will be provided in the next request.");
 				}
 				// Catch-up and media intake send fewer tools; usage measures those sent.
 				if (run_message_catchup || media_intake) && let Some(selection) = exposure.as_mut() {
@@ -1540,12 +1589,42 @@ impl<'a> Executor<'a> {
 					)?,
 				);
 				let private_context = if fixed_sources.is_empty() { Value::Null } else {Value::Object(fixed_sources.clone())};
+				let read_instruction = has_run_message_references.then(|| {
+					if media.defer_human || media.defer_selected {
+						json!(
+							"These run-message records still require workspace_read after media intake completes. Do not call tools in this interim request."
+						)
+					} else if run_message_catchup {
+						json!(
+							"Read every run_messages entry with requires_workspace_read and every deferred_run_message_reads ID through workspace_read(kind=message, id=record.id or the deferred ID) before returning the updated run_message_summary. Full content remains in each workspace record."
+						)
+					} else {
+						json!(
+							"Read every run_messages entry with requires_workspace_read and every deferred_run_message_reads ID through workspace_read(kind=message, id=record.id or the deferred ID) before completing the task. Full content remains in each workspace record."
+						)
+					}
+				});
+				// One object renders both the measurement and the sent envelope,
+				// so the budgeting and the request cannot drift.
+				let mut harness_requirements = serde_json::Map::new();
+				if !harness_turn_instructions.is_empty() {
+					harness_requirements
+						.insert("turn_instructions".into(), json!(harness_turn_instructions));
+				}
+				if let Some(instruction) = &read_instruction {
+					harness_requirements
+						.insert("run_message_read_instruction".into(), instruction.clone());
+				}
 				// Ordered per-turn paragraphs are request content the fixed
 				// reservations must count, exactly as Legacy counts them in system.
 				let turn_instructions = turn_instructions.trim_start().to_owned();
 				let mut fixed_context = private_context.clone();
 				if !turn_instructions.is_empty() {
 					fixed_context["turn_instructions"] = json!(turn_instructions);
+				}
+				if contract.leaves_data_envelopes() && !harness_requirements.is_empty() {
+					fixed_context[aidash_domain::projection::native::HARNESS_REQUIREMENTS] =
+						Value::Object(harness_requirements.clone());
 				}
 				context::request_context_budget(
 					window,
@@ -1636,25 +1715,19 @@ impl<'a> Executor<'a> {
 				if !carried_reads.is_empty() {
 					pinned["deferred_run_message_reads"] = json!(carried_reads);
 				}
-				if has_run_message_references {
-					pinned["run_message_read_instruction"] = if media.defer_human
-						|| media.defer_selected
-					{
-						json!(
-							"These run-message records still require workspace_read after media intake completes. Do not call tools in this interim request."
-						)
-					} else if run_message_catchup {
-						json!(
-							"Read every run_messages entry with requires_workspace_read and every deferred_run_message_reads ID through workspace_read(kind=message, id=record.id or the deferred ID) before returning the updated run_message_summary. Full content remains in each workspace record."
-						)
-					} else {
-						json!(
-							"Read every run_messages entry with requires_workspace_read and every deferred_run_message_reads ID through workspace_read(kind=message, id=record.id or the deferred ID) before completing the task. Full content remains in each workspace record."
-						)
-					};
-				}
-				if !turn_instructions.is_empty() {
-					pinned["turn_instructions"] = json!(turn_instructions);
+				if contract.leaves_data_envelopes() {
+					// The `aidash` envelope is built by `native_context`, which also
+					// adds this step's open continuation markers. The reserved key
+					// is set even when empty so those markers have a destination.
+					pinned[aidash_domain::projection::native::HARNESS_REQUIREMENTS] =
+						Value::Object(harness_requirements);
+				} else {
+					if let Some(instruction) = read_instruction {
+						pinned["run_message_read_instruction"] = instruction;
+					}
+					if !turn_instructions.is_empty() {
+						pinned["turn_instructions"] = json!(turn_instructions);
+					}
 				}
 				if snapshot_fit.is_err()
 					&& budget
@@ -1798,7 +1871,7 @@ impl<'a> Executor<'a> {
                         let staged = plan.staged.take();
                         let summarized = async {
                             self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
-                            Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, *plan, &tools, staged.as_deref())).await
+                            Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, agent.harness_contract, *plan, &tools, staged.as_deref())).await
                         }.await;
                         // A pruning no summary completed changes nothing (ADR 0056).
                         if summarized.is_err() && let (Some(staged), Some(ports)) = (&staged, &decider) {
@@ -1871,6 +1944,7 @@ impl<'a> Executor<'a> {
 							model_id: agent.model.id.clone(),
 							model_version: agent.model.version.clone(),
 							projection_version: agent.projection_version.number(),
+							harness_contract: agent.harness_contract.number(),
 							upstream_model: model_cfg.model_id.clone(),
 							purpose: UsagePurpose::Main,
 							requested_route: model_cfg.provider_route.as_ref().map(|route| route.tag.clone()),
@@ -2134,6 +2208,7 @@ impl<'a> Executor<'a> {
 					};
 				}
 				run.state = RunState::ToolCall(Box::new(ToolCallState {
+connection: None,
 					response: result,
 					response_epoch: response_epoch(run.revision, run.step),
 					cursor: 0,
@@ -2665,6 +2740,7 @@ impl<'a> Executor<'a> {
 				}
 				// A person who asked not to be asked is not asked by the model either.
 				if contract.behavior.continuation == Continuation::Human
+                    && !contract.behavior.connection_request
 					&& home.local()
 					&& let Some(guard) = guard
 					&& guard.approval_mode(run).await? == Some(ApprovalMode::DontAsk)
@@ -2719,12 +2795,17 @@ impl<'a> Executor<'a> {
 					Some(approval) => format!("{call_key}:approval:{approval}"),
 					None => call_key.clone(),
 				};
+                let key = match run.state.tool()?.connection.as_ref().map_or(0, |state|state.attempt) {
+                    0 => key,
+                    attempt => format!("{key}:connection:{attempt}"),
+                };
 				// Approval follows the admitted provider contract for every Agent. A
 				// Read-only operation needs none, yet only the Tenant's own authority
 				// can tell whether its policy forbids the call outright.
-				if contract.behavior.tool_call_approval
-					|| (contract.behavior.read_only_operation && home.local() && guard.is_some())
-				{
+                let returning_refusal = run.state.tool()?.connection.as_ref().is_some_and(|state|state.refused.is_some());
+                if !returning_refusal && (contract.behavior.tool_call_approval
+                    || (contract.behavior.read_only_operation && home.local() && guard.is_some()))
+                {
 					let target = match &contract.identity {
 						ToolIdentity::Descriptor(reference) => ToolCallTarget::Registry(aidash_domain::registry::EntityRef {
 							id: reference.id.clone(),
@@ -2825,9 +2906,15 @@ impl<'a> Executor<'a> {
 						return Ok(());
 					}
 				}
-				let invocation = if tool.mcp_rounds() {
+				let invocation = if let Some(refused) = run.state.tool()?.connection.as_ref().and_then(|state|state.refused.clone()) {
+                    InvocationOutcome { status:"COMPLETED".into(), result:Some(refused), uncertain_reason: None, retrying: false }
+                } else if tool.mcp_rounds() {
                     let Some(guard) = guard else { return self.tool_error(run, token, call, cursor, "MCP inputs require local authority".into()).await; };
-                    let Some(output) = self.mcp_call(run, token, mcp::Call { tool: tool.as_ref(), call, key: &key, agent: &agent, guard, visibility }).await? else { return Ok(()); };
+                    let output = match self.mcp_call(run, token, mcp::Call { tool: tool.as_ref(), call, key: &key, agent: &agent, guard, visibility }).await {
+                        Ok(Some(output))=>output, Ok(None)=>return Ok(()),
+                        Err(Error::Connection(_))=>run.state.tool()?.connection.as_ref().and_then(|state|state.refused.clone()).ok_or_else(||Error::Conflict("typed MCP refusal was not checkpointed".into()))?,
+                        Err(error)=>return Err(error),
+                    };
                     InvocationOutcome { status: "COMPLETED".into(), result: Some(output), uncertain_reason: None, retrying: false }
                 } else {
                     store
@@ -2864,7 +2951,16 @@ impl<'a> Executor<'a> {
 				} else if let Some(output) = prepared_result {
 					output
 				} else {
-					Self::tool_delivery_result(store, run, token, &key, tool.invoke(run, call.arguments.clone(), &key).await).await?
+					match tool.invoke(run, call.arguments.clone(), &key).await {
+                        Ok(output) => {
+                            if contract.behavior.tenant_tool_call() {
+                                self.checkpoint_connection_success(run, token, &call.name).await?;
+                            }
+                            output
+                        },
+                        Err(Error::Connection(cause)) => self.checkpoint_connection_refusal(run,token,connections::RefusedCall {call,tool:tool.as_ref(),guard,key:&key},cause).await?,
+                        other => Self::tool_delivery_result(store, run, token, &key, other).await?,
+					}
 				};
                 // Revalidate Research before deriving any media selection. A completed
                 // replay may now be a tombstone under expired account terms.
@@ -2945,9 +3041,10 @@ impl<'a> Executor<'a> {
 					}
 					run.state.tool_mut()?.selected_media = selected;
 				}
-                let output = if invocation.status != "COMPLETED" && !research_result {
+                let output = if invocation.status != "COMPLETED" && !research_result && run.state.tool()?.connection.as_ref().is_none_or(|state|state.cause.is_none()) {
                     store.invocation_finish(run, token, &key, &output).await?
                 } else { output };
+                let Some(output) = self.connection_result(run, token, connections::RefusedCall {call, tool:tool.as_ref(), guard, key:&key}, output).await? else { return Ok(()) };
 				// What a Tenant's HTTP or MCP tool returns is external data and never
 				// raises an approval, which would repeat the external call.
 				let framework = if contract.behavior.tenant_tool_call() {
@@ -2955,6 +3052,9 @@ impl<'a> Executor<'a> {
 				} else {
 					FrameworkResult::decode(&contract, &output)?
 				};
+                if contract.behavior.connection_request && let FrameworkResult::Human(request) = framework {
+                    return self.builtin_connection_wait(run, token, call, request, &key, guard).await;
+                }
 				// An approval raised inside the call is not its result. The Run waits,
 				// then makes the same call again under the approval's own key.
 				if let FrameworkResult::Approval(approval_id) = framework {
@@ -3068,7 +3168,12 @@ impl<'a> Executor<'a> {
 							store.save_run(run, token, "run.waiting").await?;
 							return Ok(());
 						}
-						h = answer_at_deadline(home.as_ref(), id).await?;
+						h = if h.kind == aidash_domain::oauth_connections::CONNECTION_REQUEST_KIND {
+                            match home.close_human_request(id, json!({"connected":false})).await {
+                                Err(Error::Conflict(_)) => home.human_request_by_id(id).await?,
+                                result => result?,
+                            }
+                        } else { answer_at_deadline(home.as_ref(), id).await? };
 					}
 					let response = h.response.ok_or_else(||Error::Conflict("human request has not been answered".into()))?;
 					match &mut waiting {
@@ -3116,9 +3221,10 @@ impl<'a> Executor<'a> {
 						}
 						_ => {}
 					}
+                    let connection_answered = self.connection_answer(run, &mut waiting, id, &response, guard, visibility).await?;
 					completion::answer_review(run, id, Some(&response));
 					// MCP form data is disclosed to its server, not to the model.
-					if h.kind != "MCP_ELICITATION"
+					if !connection_answered && h.kind != "MCP_ELICITATION"
 						&& !matches!(waiting, WaitingState::Reconciliation { .. })
 					{
 						run.context.push(ContextEvent::Human {

@@ -117,7 +117,7 @@ const deciderContracts: Record<
   { builder: string; option_source: string; rule: string }
 > = {
   compaction: {
-    builder: "aidash.compaction/2",
+    builder: "aidash.compaction/3",
     option_source: "history_event/1",
     rule: "compaction.keep/1",
   },
@@ -461,7 +461,15 @@ export function EntityForm({
                           projection_versions: ["legacy", "ordered", "native"],
                         }
                       : modelSource === "openrouter"
-                        ? { provider_credential: "openrouter" }
+                        ? {
+                            provider_credential: "openrouter",
+                            // Native lets new Agents default to structured@3 (#532).
+                            projection_versions: [
+                              "legacy",
+                              "ordered",
+                              "native",
+                            ],
+                          }
                         : {}),
                     model_id: s("model_id"),
                     endpoint: s("endpoint"),
@@ -677,7 +685,13 @@ export function EntityForm({
               node={registryDeployment(data)}
               entries={data.registry}
             />
-            <AgentPluginImport config={pluginConfig} change={setPluginConfig} />
+            <AgentPluginImport
+              config={pluginConfig}
+              change={setPluginConfig}
+              tenant={
+                data.access.kind === "subject" ? data.access.tenant : undefined
+              }
+            />
             <AgentDocuments
               documents={documents}
               change={setDocuments}

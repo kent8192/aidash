@@ -73,8 +73,15 @@ async fn handle(State(api): State<Arc<Api>>, request: Request) -> Response {
 			"signatureCrc32c":if mode=="checksum" {"0".into()} else {crc32c::crc32c(&signature).to_string()},"verifiedDataCrc32c":mode!="verified"})).into_response();
 	}
 	let name = path.trim_start_matches("/v1/").trim_end_matches(":access");
-	Json(serde_json::json!({"name":if mode=="name" {"wrong"} else {name},"payload":{"data":STANDARD.encode(CANARY),
-		"dataCrc32c":if mode=="checksum" {"0".into()} else {crc32c::crc32c(CANARY.as_bytes()).to_string()}}})).into_response()
+	let bytes = if mode == "sealed" {
+		aidash_capability::tenant_secret::sealed::seal(&["api.example.com".into()], CANARY)
+			.unwrap()
+			.to_vec()
+	} else {
+		CANARY.as_bytes().to_vec()
+	};
+	Json(serde_json::json!({"name":if mode=="name" {"wrong"} else {name},"payload":{"data":STANDARD.encode(&bytes),
+		"dataCrc32c":if mode=="checksum" {"0".into()} else {crc32c::crc32c(&bytes).to_string()}}})).into_response()
 }
 struct Server {
 	base: String,
@@ -142,6 +149,41 @@ async fn secret_manager_reads_only_pinned_environment_resources_and_redacts_erro
 		CANARY
 	);
 	for mode in ["name", "checksum", "denied", "oversize"] {
+		*s.api.mode.lock().await = mode.into();
+		let error = source.access(&secret, "1").await.unwrap_err();
+		assert!(!error.to_string().contains(CANARY));
+	}
+	let before = s.api.calls.load(Ordering::SeqCst);
+	for (resource, version) in [
+		(secret.replace("test", "other"), "1"),
+		(secret.clone(), "latest"),
+		(format!("{secret}/../../escape"), "1"),
+	] {
+		assert!(source.access(&resource, version).await.is_err());
+	}
+	assert_eq!(s.api.calls.load(Ordering::SeqCst), before);
+}
+#[tokio::test]
+async fn tenant_secret_source_reads_only_sealed_tsec_resources() {
+	use aidash_capability::tenant_secret::{SealedSecretSource, sealed};
+	let s = server().await;
+	*s.api.mode.lock().await = "sealed".into();
+	let mut source = SecretManagerTenantSecretSource::new(
+		"1234",
+		"aidash-test-tsec-",
+		Arc::new(Tokens::default()),
+	)
+	.unwrap();
+	source.base = s.base.clone();
+	let secret = format!(
+		"projects/1234/secrets/aidash-test-tsec-{}",
+		uuid::Uuid::from_u128(100)
+	);
+	let bytes = source.access(&secret, "1").await.unwrap();
+	let opened = sealed::open(&bytes).unwrap();
+	assert_eq!(opened.value.expose_secret(), CANARY);
+	assert_eq!(opened.hosts, ["api.example.com"]);
+	for mode in ["name", "checksum", "denied", "disabled", "outage"] {
 		*s.api.mode.lock().await = mode.into();
 		let error = source.access(&secret, "1").await.unwrap_err();
 		assert!(!error.to_string().contains(CANARY));
