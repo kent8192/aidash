@@ -290,10 +290,10 @@ pub async fn description_mode<R: GrantRepository>(
 			.ok_or(Error::Forbidden)?;
 		if receiver_only {
 			// `authorize` validates the complete chain and strips the executor itself.
-			scope.append_subject(executor);
+			scope.append_subject(executor.clone());
 		}
 		super::authorize(&mut scope, &task, node, &inspection).await?;
-		scope.replace_subjects(sending);
+		scope.replace_subjects(sending.clone());
 		scope.remote_semantic_sources(current.id).await?;
 		if !scope.grant_reads_visible(current.id).await? {
 			return Err(Error::Forbidden);
@@ -313,10 +313,12 @@ pub async fn description_mode<R: GrantRepository>(
 		if !scope.live(current.id).await? {
 			return Err(Error::Forbidden);
 		}
-		if scope
-			.semantic_binding(&task, node, &fresh, &request)
-			.await? != semantic
-		{
+		if receiver_only {
+			scope.append_subject(executor);
+		}
+		let rebound = scope.semantic_binding(&task, node, &fresh, &request).await;
+		scope.replace_subjects(sending);
+		if rebound? != semantic {
 			return Err(Error::RemoteSemantic(Failure::Configuration));
 		}
 		Ok(Description {

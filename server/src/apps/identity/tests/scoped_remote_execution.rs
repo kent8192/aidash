@@ -2619,6 +2619,47 @@ async fn remote_grant_reports_the_receivers_missing_catalog_approval(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn review_receiver_only_executor_activates_required_home(
+	#[future(awt)]
+	#[with(true, false, true)]
+	scoped_pair: Pair,
+) {
+	let mut p = scoped_pair;
+	let executor = aidash_domain::agent_subject(&node_of(&p.b), "research", "1.0.0");
+	p.source_policy["subjects"]
+		.as_object_mut()
+		.unwrap()
+		.remove(&executor);
+	let authorization = aidash_server::authorization::Authorization {
+		pool: p.a.store.pool.clone(),
+	};
+	let revision = authorization.snapshot("acme").await.unwrap().revision;
+	authorization
+		.replace(
+			"acme",
+			revision,
+			serde_json::from_value(p.source_policy.clone()).unwrap(),
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	let grant = Uuid::new_v4();
+	let (status, body) = request(&p.aa, &p.token, "POST", &format!("/api/tasks/{}/remote-grants", p.task), json!({"id":grant,"node_id":node_of(&p.b),"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":3600,"semantic":{"mode":"required_home","embedding":{"id":"home-embedding","version":"1.0.0"}}})).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&format!("/api/tasks/{}/remote-grants/{grant}/activate", p.task),
+		json!({}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn receiver_owns_the_remote_executor_subject(
 	#[future(awt)]
 	#[with(false, false, true)]
