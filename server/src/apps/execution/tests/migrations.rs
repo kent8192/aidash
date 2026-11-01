@@ -69,6 +69,8 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0053_connection_request"),
 	("registry", "0054_remove_agent_cluster"),
 	("execution", "0089_remove_agent_cluster"),
+	("execution", "0090_reference_embedding_usage"),
+	("execution", "0091_reference_embedding_usage_state"),
 	("registry", "0055_embedding_inputs"),
 	("registry", "0056_reference_images"),
 	("registry", "0057_reference_image_byte_state"),
