@@ -43,10 +43,18 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 	"memory_recall",
 	"memory_reflect",
 ];
-/// Default builtins that act on the Agent's own memory. Without a `memory`
-/// Binding every call would be refused, so a Run excludes them instead of
-/// offering them (#600).
+/// Default builtins that act on the Agent's own memory. Without a memory
+/// provider every call would be refused, so a Run excludes them instead of
+/// offering them (#600, #617).
 pub const MEMORY_TOOLS: &[&str] = &["memory_mutate", "memory_recall", "memory_reflect"];
+/// Whether a resolved definition is a memory provider. A native conversation
+/// or semantic memory source (a definition with `schema_version`) is a
+/// `memory` Binding without one: it only feeds automatic context. This is
+/// the rule behind `AgentConfig::memory`, so memory tools are offered exactly
+/// when `AgentFlag::MemoryRead`/`MemoryWrite` can permit them.
+pub fn memory_provider(kind: &str, config: &serde_json::Value) -> bool {
+	kind == "memory" && config.get("schema_version").is_none()
+}
 pub const SKILL_TOOLS: &[&str] = &["skill_list", "skill_load", "skill_read"];
 pub const COORDINATOR_TOOLS: &[&str] = &["task_create", "task_delegate", "agent_discover"];
 /// Required under `deferred@1` only, with canonical aliases.
@@ -218,6 +226,10 @@ pub struct AgentBindings {
 	/// their digests and Binding snapshots stay byte-identical.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub projection_version: Option<crate::projection::ProjectionVersion>,
+	/// Harness Contract this Agent version's Runs render with (#531). Omitted
+	/// means `legacy@1` and is not serialized, like `projection_version`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub harness_contract: Option<crate::harness_contract::HarnessContract>,
 	/// Prompt-caching opt-in pinned by every Run of this Agent (ADR 0019).
 	/// Omitted means `off` and is not serialized, like `projection_version`.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -279,6 +291,19 @@ impl AgentBindings {
 				"Projection Version {version} is not implemented"
 			)));
 		}
+		if let Some(contract) = self.harness_contract {
+			let projection = self.projection_version.unwrap_or_default();
+			if !contract.is_implemented() {
+				return Err(Error::Invalid(format!(
+					"Harness Contract {contract} is not implemented"
+				)));
+			}
+			if !contract.supports(projection) {
+				return Err(Error::Invalid(format!(
+					"Harness Contract {contract} does not support Projection Version {projection}"
+				)));
+			}
+		}
 		let mut targets = BTreeSet::new();
 		for binding in &self.bindings {
 			binding.validate()?;
@@ -305,7 +330,9 @@ impl AgentBindings {
 						.strip_prefix("aidash.")
 						.is_some_and(|operation| MEMORY_TOOLS.contains(&operation))
 			}) {
-			return Err(Error::Invalid("memory tools require a bound memory".into()));
+			return Err(Error::Invalid(
+				"memory tools require a memory provider".into(),
+			));
 		}
 		if self.bindings.iter().any(|b| b.kind == BindingKind::Skill)
 			&& self

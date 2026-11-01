@@ -34,6 +34,7 @@ impl Clients {
 				.timeout(timeout)
 				.connect_timeout(connect_timeout)
 				.redirect(reqwest::redirect::Policy::none())
+				.user_agent(crate::USER_AGENT)
 				.build()
 				.map_err(crate::http_error)?,
 			public: public_client(timeout, connect_timeout)?,
@@ -78,6 +79,7 @@ pub(crate) fn public_client_timeout(
 	builder
 		.connect_timeout(connect_timeout)
 		.redirect(reqwest::redirect::Policy::none())
+		.user_agent(crate::USER_AGENT)
 		.no_proxy()
 		.dns_resolver(Arc::new(PublicDns))
 		.build()

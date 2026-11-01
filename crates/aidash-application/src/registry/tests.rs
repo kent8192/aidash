@@ -193,7 +193,12 @@ async fn registration_rejects_wrong_reference_kind_before_any_write(
 		.await
 		.unwrap_err();
 	assert_eq!(error.to_string(), "model must reference a model");
-	assert_eq!(scope.trace, ["read:model@1.0.0"]);
+	// The new-Agent defaults look for a stored version of this Agent and read the
+	// model first (#532); reference validation reads the model again.
+	assert_eq!(
+		scope.trace,
+		["read:agent@1.0.0", "read:model@1.0.0", "read:model@1.0.0"]
+	);
 	assert!(scope.events.is_empty());
 }
 

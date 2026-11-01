@@ -404,19 +404,21 @@ pub fn remote_exclusion(
 	}
 }
 
-/// Why a Run excludes a memory builtin: the Agent binds no memory, so every
-/// call would be refused and no change of authority could lift it.
+/// Why a Run excludes a memory builtin: the Agent binds no memory provider,
+/// so every call would be refused and no change of authority could lift it.
 pub fn memory_exclusion(
 	origin: crate::registry::bindings::BindingOrigin,
 	operation: &str,
-	memory_bound: bool,
+	memory_provider: bool,
 ) -> Result<Option<String>> {
-	if memory_bound || !crate::registry::bindings::MEMORY_TOOLS.contains(&operation) {
+	if memory_provider || !crate::registry::bindings::MEMORY_TOOLS.contains(&operation) {
 		Ok(None)
 	} else if origin == crate::registry::bindings::BindingOrigin::Default {
-		Ok(Some("memory tools need a bound memory".into()))
+		Ok(Some("memory tools need a memory provider".into()))
 	} else {
-		Err(Error::Invalid("memory tools require a bound memory".into()))
+		Err(Error::Invalid(
+			"memory tools require a memory provider".into(),
+		))
 	}
 }
 

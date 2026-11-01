@@ -18,6 +18,7 @@ impl AgentConfig {
 			tool_parallelism: self.tool_parallelism,
 			exposure: self.exposure,
 			projection_version: self.projection_version,
+			harness_contract: self.harness_contract,
 			prompt_cache: self.prompt_cache,
 			completion: self.completion.clone(),
 			agent_plugins: self.agent_plugins.clone(),
@@ -48,6 +49,7 @@ impl AgentConfig {
 			tool_parallelism: input.tool_parallelism,
 			exposure: input.exposure,
 			projection_version: input.projection_version,
+			harness_contract: input.harness_contract,
 			prompt_cache: input.prompt_cache,
 			completion: input.completion,
 			agent_plugins: input.agent_plugins,
@@ -139,7 +141,7 @@ impl AgentConfig {
 								matches!(source.pin, crate::context::source::PinPolicy::OnDemand)
 							});
 					if binding.definition.config.get("schema_version").is_none() {
-						if binding.definition.kind == "memory" {
+						if memory_provider(&binding.definition.kind, &binding.definition.config) {
 							if result.memory.replace(binding.identity.local()).is_some() {
 								return Err(crate::Error::Invalid(
 									"Agent requires one primary memory provider".into(),

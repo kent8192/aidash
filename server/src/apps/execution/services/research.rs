@@ -410,10 +410,21 @@ impl Tool for ResearchTool {
 						.clone(),
 				)?;
 				let renderer = providers.renderer(&self.provider)?;
+				let projection = agent.projection_version.unwrap_or_default();
+				if !agent
+					.harness_contract
+					.unwrap_or_default()
+					.supports(projection)
+				{
+					return Err(Error::Invalid(format!(
+						"Harness Contract {} does not support Projection Version {projection}",
+						agent.harness_contract.unwrap_or_default()
+					)));
+				}
 				let fitting = aidash_application::research::page_image::FittingRenderer {
 					renderer: renderer.as_ref(),
 					model: &model,
-					projection: agent.projection_version.unwrap_or_default(),
+					projection,
 					headroom: context.home.federation.run_request_headroom(run).await?,
 					selected_parts,
 				};
