@@ -2,6 +2,7 @@
 use crate::{Error, Result};
 use aidash_application::ports::{InferenceProgressSink, ModelProvider};
 use aidash_application::provider_access::{Context, Inference, Operation, ProviderAccess, Source};
+use aidash_application::route_refusal::{RouteReason, RouteRefusal};
 use aidash_domain::{
 	context::recovery::Failure,
 	model::ModelConfig,
@@ -47,8 +48,106 @@ impl OpenRouterProvider {
 		});
 		context
 	}
+	/// Judges every candidate's approval evidence at `now`. Discovery can take
+	/// seconds, so callers check before it and again with a fresh `now` after it.
+	fn evidence_candidates(
+		&self,
+		formats: &[&str],
+		now: chrono::DateTime<chrono::Utc>,
+	) -> Result<Vec<RouteRefusal>> {
+		let timing = |verified, expires| {
+			let mut reasons = Vec::new();
+			if verified > now {
+				reasons.push(RouteReason::NotYetValid);
+			}
+			if expires <= now {
+				reasons.push(RouteReason::Expired);
+			}
+			reasons
+		};
+		let missing_formats = |approved: &[String]| {
+			let mut missing: Vec<String> = formats
+				.iter()
+				.filter(|format| !approved.iter().any(|value| value == **format))
+				.map(|format| (*format).to_owned())
+				.collect();
+			missing.sort();
+			missing.dedup();
+			missing
+		};
+		let mut candidates = Vec::new();
+		if let Some(route) = &self.config.provider_route {
+			let mut reasons = timing(route.verified_at, route.expires_at);
+			let media_approved = formats.is_empty()
+				|| self.config.media_routes.iter().any(|media| {
+					media.tag == route.tag
+						&& media.verified_at <= now
+						&& media.expires_at > now
+						&& missing_formats(&media.formats).is_empty()
+				});
+			if !media_approved {
+				let approved: Vec<String> = self
+					.config
+					.media_routes
+					.iter()
+					.filter(|media| {
+						media.tag == route.tag && media.verified_at <= now && media.expires_at > now
+					})
+					.flat_map(|media| media.formats.iter().cloned())
+					.collect();
+				let mut missing = missing_formats(&approved);
+				// Approval must cover the entire request in one evidence record.
+				if missing.is_empty() {
+					missing = formats.iter().map(|format| (*format).to_owned()).collect();
+				}
+				missing.sort();
+				missing.dedup();
+				reasons.push(RouteReason::MediaFormatsNotApproved { formats: missing });
+			}
+			if !reasons.is_empty() {
+				let refusal = RouteRefusal {
+					tag: route.tag.clone(),
+					reasons,
+				};
+				tracing::warn!(model = %self.config.model_id, tag = %refusal.tag, reasons = ?refusal.reasons, "provider route refused");
+				return Err(Error::ProviderRouteUnavailable {
+					model: self.config.model_id.clone(),
+					refusal,
+				});
+			}
+			candidates.push(RouteRefusal {
+				tag: route.tag.clone(),
+				reasons,
+			});
+		} else {
+			for route in &self.config.media_routes {
+				let mut reasons = timing(route.verified_at, route.expires_at);
+				let missing = missing_formats(&route.formats);
+				if !missing.is_empty() {
+					reasons.push(RouteReason::MediaFormatsNotApproved { formats: missing });
+				}
+				if !reasons.is_empty() {
+					tracing::warn!(model = %self.config.model_id, tag = %route.tag, reasons = ?reasons, "media route refused");
+				}
+				candidates.push(RouteRefusal {
+					tag: route.tag.clone(),
+					reasons,
+				});
+			}
+			if candidates
+				.iter()
+				.all(|candidate| !candidate.reasons.is_empty())
+			{
+				return Err(Error::MediaRouteUnavailable {
+					model: self.config.model_id.clone(),
+					candidates,
+				});
+			}
+		}
+		Ok(candidates)
+	}
 	async fn verified_routes(&self, request: &ModelRequest) -> Result<Vec<String>> {
-		self.config.validate_provider_route()?;
+		self.config.validate_provider_route_structure()?;
 		let formats: Vec<&str> = request
 			.content_parts
 			.iter()
@@ -61,12 +160,19 @@ impl OpenRouterProvider {
 		if formats.is_empty() && self.config.provider_route.is_none() {
 			return Ok(Vec::new());
 		}
-		if !formats.is_empty() && self.config.media_routes.is_empty() {
+		// Without a pin there is no candidate to report; this still fails the
+		// Run rather than pausing it (#658 decides outcomes by reason).
+		if !formats.is_empty()
+			&& self.config.provider_route.is_none()
+			&& self.config.media_routes.is_empty()
+		{
 			return Err(Error::Invalid(format!(
 				"model {} has no verified media route",
 				self.config.model_id
 			)));
 		}
+		// Reject expired evidence before spending a catalog round trip.
+		self.evidence_candidates(&formats, chrono::Utc::now())?;
 		let access = self
 			.access
 			.resolve(
@@ -154,51 +260,37 @@ impl OpenRouterProvider {
 			.get("data")
 			.and_then(Value::as_array)
 			.ok_or_else(|| Error::External("OpenRouter ZDR endpoint list unavailable".into()))?;
-		let now = chrono::Utc::now();
-		if let Some(route) = &self.config.provider_route {
-			let media_approved = formats.is_empty()
-				|| self.config.media_routes.iter().any(|media| {
-					media.tag == route.tag
-						&& media.verified_at <= now
-						&& media.expires_at > now
-						&& formats
-							.iter()
-							.all(|format| media.formats.iter().any(|approved| approved == format))
-				});
-			if route.verified_at > now
-				|| route.expires_at <= now
-				|| !media_approved
-				|| !eligible_route(&route.tag, endpoints, zdr, &self.config.model_id, request)
-			{
-				return Err(Error::Invalid(format!(
-					"model {} pinned provider route is unavailable",
-					self.config.model_id
-				)));
-			}
-			return Ok(vec![route.tag.clone()]);
-		}
+		// Evidence may have expired while the catalog requests were in flight.
+		let mut candidates = self.evidence_candidates(&formats, chrono::Utc::now())?;
 		let mut eligible = Vec::new();
-		for evidence in &self.config.media_routes {
-			if evidence.verified_at > now
-				|| evidence.expires_at <= now
-				|| !formats
-					.iter()
-					.all(|format| evidence.formats.iter().any(|verified| verified == format))
-			{
+		for candidate in &mut candidates {
+			if !candidate.reasons.is_empty() {
 				continue;
 			}
-			if eligible_route(
-				&evidence.tag,
+			candidate.reasons = eligible_route(
+				&candidate.tag,
 				endpoints,
 				zdr,
 				&self.config.model_id,
 				request,
-			) {
-				eligible.push(evidence.tag.clone());
+			);
+			if candidate.reasons.is_empty() {
+				eligible.push(candidate.tag.clone());
+			} else {
+				tracing::warn!(model = %self.config.model_id, tag = %candidate.tag, reasons = ?candidate.reasons, "route refused");
 			}
 		}
 		if eligible.is_empty() {
-			return Err(Error::MediaRouteUnavailable(self.config.model_id.clone()));
+			if self.config.provider_route.is_some() {
+				return Err(Error::ProviderRouteUnavailable {
+					model: self.config.model_id.clone(),
+					refusal: candidates.remove(0),
+				});
+			}
+			return Err(Error::MediaRouteUnavailable {
+				model: self.config.model_id.clone(),
+				candidates,
+			});
 		}
 		Ok(eligible)
 	}
@@ -212,19 +304,48 @@ fn eligible_route(
 	zdr: &[Value],
 	model: &str,
 	request: &ModelRequest,
-) -> bool {
-	!endpoints.iter().any(|endpoint| {
-		endpoint["tag"]
-			.as_str()
-			.is_some_and(|other| other.starts_with(&format!("{tag}/")))
-	}) && endpoints.iter().any(|endpoint| {
-		endpoint["tag"] == tag
-			&& endpoint["context_length"]
+) -> Vec<RouteReason> {
+	let mut reasons = Vec::new();
+	let prefix = format!("{tag}/");
+	let mut tags: Vec<String> = endpoints
+		.iter()
+		.filter_map(|endpoint| endpoint["tag"].as_str())
+		.filter(|other| other.starts_with(&prefix))
+		.map(str::to_owned)
+		.collect();
+	tags.sort();
+	tags.dedup();
+	if !tags.is_empty() {
+		reasons.push(RouteReason::SubTags { tags });
+	}
+	let matches: Vec<&Value> = endpoints
+		.iter()
+		.filter(|endpoint| endpoint["tag"] == tag)
+		.collect();
+	if matches.is_empty() {
+		reasons.push(RouteReason::EndpointMissing);
+	} else {
+		let estimated = request.estimated_total_tokens() as u64;
+		if matches.iter().all(|endpoint| {
+			endpoint["context_length"]
 				.as_u64()
-				.is_none_or(|limit| request.estimated_total_tokens() as u64 <= limit)
-	}) && zdr
+				.is_some_and(|limit| estimated > limit)
+		}) {
+			let limit = matches
+				.iter()
+				.filter_map(|endpoint| endpoint["context_length"].as_u64())
+				.max()
+				.unwrap_or_default();
+			reasons.push(RouteReason::ContextTooLong { estimated, limit });
+		}
+	}
+	if !zdr
 		.iter()
 		.any(|endpoint| endpoint["model_id"] == model && endpoint["tag"] == tag)
+	{
+		reasons.push(RouteReason::NotZeroDataRetention);
+	}
+	reasons
 }
 
 /// A provider without Cache Salt Keys: every salted request is rejected
@@ -246,7 +367,7 @@ pub fn salted_provider(
 	context: Context,
 	cache_salt: Option<CacheSaltKeys>,
 ) -> Result<Arc<dyn ModelProvider>> {
-	config.validate_provider_route()?;
+	config.validate_provider_route_structure()?;
 	config.validate_model_variant()?;
 	config.validate_estimate_diagnostics()?;
 	aidash_domain::provider_credentials::validate_grants(
