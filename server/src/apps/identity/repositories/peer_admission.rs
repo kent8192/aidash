@@ -276,14 +276,30 @@ where
 		&mut self,
 		entry: &aidash_domain::registry::Entry,
 	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
-		crate::apps::registry::repositories::bindings::authorized(
+		let mut failure = None;
+		let result = crate::apps::registry::repositories::bindings::authorized_peer(
 			&mut self.access,
 			entry,
-			true,
 			self.runtime.borrow().store.provider_credentials.is_some(),
+			&mut failure,
 		)
-		.await
-		.map_err(Into::into)
+		.await;
+		if matches!(result, Err(crate::Error::Forbidden))
+			&& let Some((reference, serial)) = failure
+		{
+			let reason = if self.access.decision_serial != serial {
+				if self.access.last_policy_explicit_deny {
+					aidash_domain::federation::execution::Refusal::Policy
+				} else {
+					aidash_domain::federation::execution::Refusal::PolicyAsk
+				}
+			} else {
+				record_missing_catalog(&mut self.access, &reference, "registry.read").await?;
+				aidash_domain::federation::execution::Refusal::CatalogApproval
+			};
+			return Err(aidash_application::Error::RemoteExecutionRefused(reason));
+		}
+		result.map_err(Into::into)
 	}
 
 	async fn lineage(&mut self) -> Result<Vec<Ancestor>> {

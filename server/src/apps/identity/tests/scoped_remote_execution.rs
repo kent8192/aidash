@@ -2660,6 +2660,40 @@ async fn review_receiver_only_executor_activates_required_home(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn review_receiver_missing_dependency_catalog_is_classified_and_audited(
+	#[future(awt)]
+	#[with(false, false, true)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let authorization = aidash_server::authorization::Authorization {
+		pool: p.b.store.pool.clone(),
+	};
+	let model = EntityRef {
+		id: "model".into(),
+		version: "1.0.0".into(),
+	};
+	authorization
+		.set_catalog(
+			"acme",
+			&aidash_domain::nodes::NodeName::derived("acme"),
+			&model,
+			1,
+			false,
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	let (status, body) = request(&p.aa, &p.token, "POST", &format!("/api/tasks/{}/remote-grants", p.task), json!({"id":Uuid::new_v4(),"node_id":node_of(&p.b),"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":3600,"semantic":{"mode":"disabled"}})).await;
+	assert_eq!(status, 403, "{body}");
+	assert!(body.to_string().contains("Catalog Approval"), "{body}");
+	let denied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM authorization_decisions WHERE decision->>'reason' = 'catalog_approval_missing' AND resource_id = 'model@1.0.0'").fetch_one(p.b.store.pool.fixture_driver()).await.unwrap();
+	assert!(denied > 0, "missing model approval must be audited");
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn receiver_owns_the_remote_executor_subject(
 	#[future(awt)]
 	#[with(false, false, true)]
