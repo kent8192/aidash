@@ -24,7 +24,11 @@ pub async fn authorize<S: SourceAuthorityScope + ?Sized>(
 	access
 		.generation_home(task, node, inspection.generation.as_ref())
 		.await?;
-	access.source_replace_subjects(subjects[..subjects.len() - 1].to_vec());
+	// An executor known to the source remains subject to its policy, including denies.
+	// An unknown receiver-only executor is authorized by the receiving Node.
+	if !access.source_bundle().subjects.contains_key(&executor) {
+		access.source_replace_subjects(subjects[..subjects.len() - 1].to_vec());
+	}
 	let result = async {
 		let workspace = access.source_workspace(task.workspace_id).await?;
 		access.source_context(workspace.attributes.clone());
