@@ -29,6 +29,67 @@ use uuid::Uuid;
 /// Configuring a Workspace's semantic index (#360).
 pub(crate) const SEMANTIC_INDEX_MANAGE: &str = "semantic.index.manage";
 
+/// Validate an index specification against this node's runtime composition.
+pub(crate) fn validate_index(store: &Store, spec: &IndexingSpec) -> Result<()> {
+	native::IndexSpec::from(spec.clone())
+		.validate_with(&crate::bootstrap::registry_validation_for(store))?;
+	// An address literal is refused when configured, as before any call; a
+	// host name is checked again at each connection.
+	if spec.embedding.provider_credential.is_none()
+		&& store.keyless.destination(&spec.embedding.endpoint)?
+			== aidash_domain::keyless::Destination::Forbidden
+	{
+		return Err(aidash_application::Error::Invalid(
+			"a Keyless endpoint at a non-public address needs its origin in \
+			 [keyless_endpoints] permitted_private_origins"
+				.into(),
+		));
+	}
+	Ok(())
+}
+
+/// Create the first index generation of a Workspace that has none, in the
+/// caller's transaction, and return its revision. A conversation creates its
+/// new Workspace and this index in one admission (#647); the caller has
+/// already authorized `semantic.index.manage`.
+pub(crate) async fn create_first_index(
+	store: &Store,
+	tx: &mut dyn TransactionExecutor,
+	workspace: Uuid,
+	spec: &IndexingSpec,
+	reason: &str,
+) -> Result<i64> {
+	validate_index(store, spec)?;
+	WorkspaceRecord::lock_existing(tx, workspace).await?;
+	let tenant = AuthorizationWorkspace::tenant_in(tx, workspace)
+		.await?
+		.ok_or(aidash_application::Error::Forbidden)?;
+	if SemanticIndexe::locked(tx, workspace, true).await?.is_some() {
+		return Err(aidash_application::Error::Conflict(
+			"semantic index revision changed".into(),
+		));
+	}
+	let collection = format!("aidash_{}", Uuid::new_v4().simple());
+	let index = SemanticIndexe::replace_generation(
+		tx,
+		workspace,
+		&tenant,
+		1,
+		serde_json::to_value(spec)?,
+		&collection,
+	)
+	.await?;
+	SemanticCollection::record_generation(
+		tx,
+		&collection,
+		workspace,
+		serde_json::to_value(&spec.vector)?,
+	)
+	.await?;
+	SemanticHistory::append(tx, workspace, None, index.revision, "CONFIGURED", reason).await?;
+	Ok(index.revision)
+}
+
 pub(crate) struct NativeConfiguration {
 	pub store: Store,
 	pub actor: Actor,
@@ -56,21 +117,7 @@ pub(crate) struct Entries<'a, 'scope> {
 #[async_trait]
 impl SemanticConfigurationRepository for NativeConfiguration {
 	fn validate(&self, spec: &IndexingSpec) -> Result<()> {
-		native::IndexSpec::from(spec.clone())
-			.validate_with(&crate::bootstrap::registry_validation_for(&self.store))?;
-		// An address literal is refused when configured, as before any call; a
-		// host name is checked again at each connection.
-		if spec.embedding.provider_credential.is_none()
-			&& self.store.keyless.destination(&spec.embedding.endpoint)?
-				== aidash_domain::keyless::Destination::Forbidden
-		{
-			return Err(aidash_application::Error::Invalid(
-				"a Keyless endpoint at a non-public address needs its origin in \
-				 [keyless_endpoints] permitted_private_origins"
-					.into(),
-			));
-		}
-		Ok(())
+		validate_index(&self.store, spec)
 	}
 	async fn begin(&self) -> Result<Box<dyn SemanticConfigurationSession>> {
 		Ok(Box::new(Configuration {

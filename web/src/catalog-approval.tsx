@@ -358,7 +358,7 @@ export function CatalogApprovalSection({
         ) : (
           <KeylessOrigin origin={origin} />
         ))}
-      <SecretDisclosure entry={entry} />
+      <SecretDisclosure entry={entry} tenant={tenant} />
       {recipients && <DeciderRecipients recipients={recipients} />}
       {entry.kind === "agent" && (
         <RegisteredCompactionDetails

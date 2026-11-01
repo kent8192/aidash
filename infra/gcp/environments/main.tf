@@ -2,14 +2,15 @@ module "environment" {
   source   = "../modules/environment"
   for_each = var.environments
 
-  gcip_tenants     = var.gcip_tenants
-  gcip_idp_secrets = var.gcip_idp_secrets
-  project_id       = var.project_id
-  deployment_tier  = var.deployment_tier
-  byok_project_id  = var.byok_project_id
-  broker           = try(module.credential_broker[each.key].worker_configuration, null)
-  environment_id   = each.key
-  environment      = each.value
+  gcip_tenants         = var.gcip_tenants
+  gcip_idp_secrets     = var.gcip_idp_secrets
+  project_id           = var.project_id
+  deployment_tier      = var.deployment_tier
+  byok_project_id      = var.byok_project_id
+  broker               = try(module.credential_broker[each.key].worker_configuration, null)
+  tenant_secret_broker = try(module.tenant_secret_broker[each.key].server_configuration, null)
+  environment_id       = each.key
+  environment          = each.value
   hostname = each.value.kind == "production" ? var.production_hostname : (
     contains(["develop", "pr"], each.value.kind) ? (
       each.value.legacy_hostname ? "${each.value.kind == "pr" ? "preview" : "develop"}.${var.domain}" : "${coalesce(each.value.hostname_token, "invalid")}.preview.${var.domain}"

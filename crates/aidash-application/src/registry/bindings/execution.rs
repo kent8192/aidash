@@ -111,6 +111,10 @@ struct BoundTool {
 }
 #[async_trait]
 impl ExecutionTool for BoundTool {
+	fn connection_scopes(&self) -> Vec<String> {
+		self.inner.connection_scopes()
+	}
+
 	fn specification(&self) -> ToolSpec {
 		bound_specification(&self.binding, self.inner.specification())
 	}

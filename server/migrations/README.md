@@ -1,5 +1,11 @@
 # Aidash native migration history
 
+`registry/0054_embedding_inputs` through `0057_reference_images_row_level_security`
+add image retrieval inputs, private reference images, model state and Tenant
+policies after `0053_connection_request`. `execution/0089_reference_embedding_usage`
+and `0090_reference_embedding_usage_state` record reference embedding usage after
+`0088_mcp_connection_requests_state`.
+
 `execution/0081_lease_recoveries` updates the physical `runs.pending` default,
 and replaces the activation trigger function. PostgreSQL function replacement
 is a SQL exception that Reinhardt cannot express. The server decodes the
@@ -690,6 +696,21 @@ Source histories, respectively. Both are empty state-only migrations. They
 preserve the existing migration identities and give each app one leaf without
 changing schema, retained inputs, or data.
 
+`execution/0084_invocation_tenant_secrets` (after `execution/0083_harness_contract_state`)
+adds the nullable `tenant_secret_id`, `tenant_secret_version` and
+`tenant_secret_host` of `invocations` with typed column operations (#310, ADR
+0095). A tool call without a Tenant Secret leaves them null; a call that carried
+one records which Tenant Secret, at which pinned version, went to which host,
+never its value.
+
+`execution/0085_egress_secret_records` (after `execution/0084_invocation_tenant_secrets`)
+adds the nullable `secret_id`, `secret_version` and `secret_host` of
+`egress_requests` with typed column operations (#310, ADR 0095). A request for
+an External service without a Tenant Secret leaves them null; a brokered request
+records the Tenant Secret, the pinned version its token names and the
+destination host, never the value or a header value. The typed operations update
+the ORM snapshot, so no state-only checkpoint is needed.
+
 ## Home ledger recovery eligibility (#434)
 
 `knowledge/0036_memory_recovery_eligibility` (after
@@ -731,6 +752,10 @@ CHECKs bound the reason to 1 to 1000 characters and tie `identity_id` to a brows
 `execution/0078_run_safety_stops_row_level_security` adds the tenant policy template
 through `RunSQL`, and `execution/0079_run_safety_stops_state` is the generated state-only
 snapshot that leaves the physical constraints and indexes to `0077`.
+
+`execution/0086_invocation_connections` (after `execution/0085_egress_secret_records`)
+adds nullable `invocations.connection_id` with a typed Reinhardt operation (#554,
+ADR 0100). It records the person's OAuth Connection used by dispatch, never a token.
 
 ## Harness Contract versions (#531)
 

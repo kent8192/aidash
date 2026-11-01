@@ -20,6 +20,7 @@ pub(super) fn migration() -> Migration {
 					.with_not_null(true).with_default(Some("CURRENT_TIMESTAMP".into())),
 			],
 			constraints: vec![
+                Constraint::ForeignKey { name: "semantic_image_publications_tenant_root_fkey".into(), columns: vec!["tenant".into()], referenced_table: "tenants".into(), referenced_columns: vec!["name".into()], on_delete: ForeignKeyAction::NoAction, on_update: ForeignKeyAction::NoAction, deferrable: None },
 				Constraint::ForeignKey {
 					name: "semantic_image_publications_workspace_fkey".into(),
 					columns: vec!["tenant".into(), "workspace_id".into()],

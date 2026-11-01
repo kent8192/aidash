@@ -13,6 +13,8 @@ import {
   emptyCore,
   type CoreConfiguration,
 } from "./configuration";
+import { SecretReadiness } from "./secret-readiness";
+import type { SecretReadinessFact } from "./secret-readiness-model";
 type Agent = {
   id: string;
   version: string;
@@ -36,6 +38,16 @@ export function AgentCapabilities() {
     retry: false,
   });
   const [agent, setAgent] = useState<Agent>();
+  const readiness = useQuery({
+    queryKey: ["agent-secret-readiness", agent?.id, agent?.version],
+    queryFn: ({ signal }) =>
+      apiFetch<SecretReadinessFact[]>(
+        `/api/registry/${encodeURIComponent(agent!.id)}/${encodeURIComponent(agent!.version)}/secret-readiness`,
+        { signal },
+      ),
+    enabled: !!agent,
+    retry: false,
+  });
   const [configuration, setConfiguration] =
     useState<CoreConfiguration>(emptyCore);
   const [version, setVersion] = useState("");
@@ -97,6 +109,8 @@ export function AgentCapabilities() {
             value={configuration}
             change={setConfiguration}
           />
+          {readiness.isError && <Alert>{readiness.error.message}</Alert>}
+          {readiness.data && <SecretReadiness facts={readiness.data} />}
           <p>
             {ja
               ? "変更にはこの Agent の設定権限が必要です。保存後も新バージョンの利用承認が必要で、機能を有効にするだけでは実行権限は増えません。"

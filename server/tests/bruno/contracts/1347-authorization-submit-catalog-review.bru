@@ -1,12 +1,12 @@
 meta {
-  name: 1347 authorization-submit-catalog-review - Malformed JSON cannot reach the use case
+  name: 1347 authorization-submit-catalog-review - Subject without registry.read sees the review as not found
   type: http
   seq: 1347
 }
 
 post {
   url: {{base_url}}/api/authorization/{{tenant}}/catalog/review
-  body: file
+  body: text
   auth: none
 }
 
@@ -16,8 +16,8 @@ headers {
   Content-Type: application/json
 }
 
-body:file {
-  file1: @file(fixtures/malformed-json.txt) @contentType(application/json)
+body:text {
+  {"node": "{{tenant_node}}", "root": {"id": "research", "version": "1.0.0"}, "closure_digest": "sha256:review"}
 }
 
 script:pre-request {
@@ -33,6 +33,6 @@ const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url
 }
 
 tests {
-  test("Exact HTTP 400", function () { expect(res.getStatus()).to.equal(400); });
+  test("Exact HTTP 404", function () { expect(res.getStatus()).to.equal(404); });
   test("Rejection is diagnostic and does not disclose SQL or credentials", function () { const value=res.getBody(); const text=typeof value === "string" ? value : JSON.stringify(value); expect(text.length).to.be.greaterThan(0); expect(text).not.to.match(/postgres:\/\/|SELECT .* FROM |deployment_administrator_token|peer_token/); });
 }

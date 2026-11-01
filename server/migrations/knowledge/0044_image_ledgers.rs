@@ -16,7 +16,8 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("waiting_authority", FieldType::Boolean).with_not_null(true).with_default(Some("false".into())),
 				ColumnDefinition::new("next_authority_check", FieldType::TimestampTz).with_not_null(true).with_default(Some("CURRENT_TIMESTAMP".into())),
 			],
-			constraints: vec![],
+			constraints: vec![
+                Constraint::ForeignKey { name: "semantic_image_ledgers_tenant_root_fkey".into(), columns: vec!["tenant".into()], referenced_table: "tenants".into(), referenced_columns: vec!["name".into()], on_delete: ForeignKeyAction::NoAction, on_update: ForeignKeyAction::NoAction, deferrable: None },],
 			without_rowid: None,
 			interleave_in_parent: None,
 			partition: None,

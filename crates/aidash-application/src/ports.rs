@@ -138,6 +138,21 @@ pub trait VectorIndex: Send + Sync {
 /// revision check, typed state, audit event, and terminal-delivery outbox.
 #[async_trait]
 pub trait ExecutionRecoveryStore: Send + Sync {
+	/// `None` excludes remote, service, maintenance, decision and Workbench Runs.
+	async fn connection_wait_policy(
+		&self,
+		_run: &aidash_domain::Run,
+	) -> Result<Option<crate::connection_wait::Policy>> {
+		Ok(None)
+	}
+	async fn connection_request(
+		&self,
+		_run: &aidash_domain::Run,
+		_prompt: &str,
+		_key: &str,
+	) -> Result<aidash_domain::HumanRequest> {
+		Err(crate::Error::Forbidden)
+	}
 	async fn leased_run(&self, token: uuid::Uuid) -> Result<Option<aidash_domain::Run>>;
 	async fn save(&self, run: &aidash_domain::Run, token: uuid::Uuid, event: &str) -> Result<()>;
 	async fn pause(
@@ -205,3 +220,4 @@ pub mod retention;
 
 pub mod accounts;
 pub mod context_source;
+pub mod oauth;

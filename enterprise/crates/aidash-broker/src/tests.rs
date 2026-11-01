@@ -5,6 +5,7 @@ use axum::{Json, routing::any};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tower::ServiceExt;
 mod cloud;
+mod secret;
 
 const CANARY: &str = "canary-provider-key-never-in-errors-or-logs";
 #[derive(Default)]

@@ -159,6 +159,7 @@ impl ExternalService {
 					| "trailer" | "expect"
 			) || header.starts_with("sec-")
 			|| header.starts_with("x-forwarded-")
+			|| header.starts_with("x-aidash-")
 		{
 			return Err(Error::Invalid(
 				"invalid External service credential header".into(),
@@ -215,5 +216,13 @@ pub struct RequestRecord {
 	#[serde(default = "operation_via")]
 	pub via: String,
 	pub error: Option<String>,
+	/// The Tenant Secret and pinned version a call carried, and the host it
+	/// went to. Absent for a service without a Tenant Secret (ADR 0095).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub secret_id: Option<uuid::Uuid>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub secret_version: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub secret_host: Option<String>,
 	pub created_at: chrono::DateTime<chrono::Utc>,
 }

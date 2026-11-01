@@ -190,6 +190,24 @@ pub(crate) fn resolve_with_plugins(
 	extras: Vec<Entry>,
 	plugins: Vec<StoredAgentPlugin>,
 ) -> BindingSnapshot {
+	try_resolve_with_plugins(node, root, remote, extras, plugins).unwrap()
+}
+/// [`resolve`] that returns the admission error instead of panicking.
+pub(crate) fn try_resolve(
+	node: &str,
+	root: &Entry,
+	remote: bool,
+	extras: Vec<Entry>,
+) -> crate::Result<BindingSnapshot> {
+	try_resolve_with_plugins(node, root, remote, extras, vec![])
+}
+fn try_resolve_with_plugins(
+	node: &str,
+	root: &Entry,
+	remote: bool,
+	extras: Vec<Entry>,
+	plugins: Vec<StoredAgentPlugin>,
+) -> crate::Result<BindingSnapshot> {
 	let mut entries = extras;
 	if !entries.iter().any(|entry| entry.kind == "model") {
 		let model = &root.config["model"];
@@ -218,7 +236,6 @@ pub(crate) fn resolve_with_plugins(
 	)
 	.now_or_never()
 	.expect("fixture catalog never performs I/O")
-	.unwrap()
 }
 pub(crate) fn snapshot(node: &str, id: &str) -> BindingSnapshot {
 	resolve(node, &agent(id), true, vec![])
@@ -369,6 +386,7 @@ pub(crate) fn listed_tool(name: &str) -> aidash_domain::agent_plugin::ListedTool
 
 /// What a scripted server does when listed.
 pub(crate) enum Listed {
+	Connection(aidash_domain::agent_plugin::ConnectionCause),
 	Tools(Vec<aidash_domain::agent_plugin::ListedTool>),
 	Forbidden,
 	Failed(crate::ports::tools::ListFailure),
@@ -445,6 +463,7 @@ impl crate::ports::tools::PluginSessions for FakeSessions {
 		run: uuid::Uuid,
 		server: &crate::ports::tools::PluginServer,
 		_: &aidash_domain::agent_plugin::RemoteServer,
+		_auth: Option<&crate::tenant_secrets::CallSecret>,
 	) -> Result<Vec<aidash_domain::agent_plugin::ListedTool>> {
 		use std::sync::atomic::Ordering::SeqCst;
 		self.listings.lock().unwrap().push((run, server.clone()));
@@ -465,6 +484,7 @@ impl crate::ports::tools::PluginSessions for FakeSessions {
 					Listed::Forbidden => Err(Error::Forbidden),
 					Listed::Failed(failure) => Err((*failure).into()),
 					Listed::Invalid => Err(Error::Invalid("not a tool list".into())),
+					Listed::Connection(cause) => Err(Error::Connection(cause.clone())),
 					Listed::Leaky(text) => Err(Error::External(text.clone())),
 					Listed::Hang => std::future::pending().await,
 				}
@@ -483,6 +503,7 @@ impl crate::ports::tools::PluginSessions for FakeSessions {
 		_replay_safe: bool,
 		arguments: serde_json::Value,
 		key: &str,
+		_auth: Option<&crate::tenant_secrets::CallSecret>,
 	) -> Result<serde_json::Value> {
 		self.calls.lock().unwrap().push(SessionCall {
 			run,
