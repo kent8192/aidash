@@ -139,14 +139,12 @@ test("registers an agent with selected versioned skills", async ({ page }) => {
   }
   for (const name of ["task_create", "task_delegate", "agent_discover"])
     await dialog.getByLabel(name, { exact: true }).uncheck();
-  await dialog
-    .locator('[name="cluster"]')
-    .selectOption("fixture-cluster@1.0.0");
+  await dialog.getByLabel("調整役として使う", { exact: true }).check();
   for (const name of ["task_create", "task_delegate", "agent_discover"]) {
     await expect(dialog.getByLabel(name, { exact: true })).toBeChecked();
     await expect(dialog.getByLabel(name, { exact: true })).toBeDisabled();
   }
-  await dialog.locator('[name="cluster"]').selectOption("");
+  await dialog.getByLabel("調整役として使う", { exact: true }).uncheck();
   await expect(
     dialog.getByLabel("task_delegate", { exact: true }),
   ).toBeEnabled();

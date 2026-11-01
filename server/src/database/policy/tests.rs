@@ -34,6 +34,14 @@ const BEFORE_POLICIES: &[&str] = &[
 	"identity.0020_tenancy_schema backward",
 ];
 
+/// Migration directions that write Tenant-owned rows under their policies
+/// after opening Deployment Scope with `SET LOCAL aidash.scope`, because the
+/// native migration executor has no scope API.
+const IN_DEPLOYMENT_SCOPE: &[&str] = &[
+	"execution.0089_remove_agent_cluster forward",
+	"registry.0054_remove_agent_cluster forward",
+];
+
 #[rstest::rstest]
 #[tokio::test]
 async fn no_migration_writes_tenant_owned_rows_under_their_policy() {
@@ -43,7 +51,7 @@ async fn no_migration_writes_tenant_owned_rows_under_their_policy() {
 	assert_no_migration_writes_tenant_owned_rows(
 		&migrations,
 		&tenant_owned(TABLES),
-		BEFORE_POLICIES,
+		&[BEFORE_POLICIES, IN_DEPLOYMENT_SCOPE].concat(),
 	);
 }
 

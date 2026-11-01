@@ -1,4 +1,8 @@
-import { AgentBindings, type Binding } from "./agent-bindings";
+import {
+  AgentBindings,
+  coordinatorDefaults,
+  type Binding,
+} from "./agent-bindings";
 import { extractDocument } from "./agent-documents";
 import { registryDeployment } from "./node-selection";
 import { Button } from "./components/ui/button";
@@ -83,7 +87,6 @@ export type AgentEntry = {
     schema_version: number;
     bindings: Binding[];
     remove_default: string[];
-    cluster: Ref | null;
     max_steps: number;
     reference_embedding?: Ref;
   };
@@ -423,7 +426,6 @@ function versionFields(
       draft.config.remove_default,
       registered.config.remove_default,
     ],
-    ["Cluster", draft.config.cluster, registered.config.cluster],
     ["Private references", draftKnowledgeDigest, registeredKnowledgeDigest],
     ["Instructions", draft.config.instructions, registered.config.instructions],
     ["Maximum steps", draft.config.max_steps, registered.config.max_steps],
@@ -480,7 +482,6 @@ function newEntry(model?: Ref): AgentEntry {
       schema_version: 1,
       bindings: [],
       remove_default: [],
-      cluster: null,
       max_steps: 64,
     },
   };
@@ -507,8 +508,9 @@ export function Workbench({
   switchMode: (mode: Mode, focus: string) => void;
   integratedTools?: ReactNode;
 }) {
-  const { locale } = useI18n();
+  const { locale, t: translate } = useI18n();
   const t = text[locale];
+  const [coordinator, setCoordinator] = useState(false);
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -918,6 +920,7 @@ export function Workbench({
     queueMicrotask(() => {
       if (!active) return;
       hydratedDraft.current = key;
+      setCoordinator(false);
       if (!current) {
         setEditing(null);
         setBaseRevision(null);
@@ -1955,11 +1958,27 @@ export function Workbench({
             : "These settings never expand existing permissions."
         }
       >
+        <Check
+          checked={coordinator}
+          onChange={(event) => {
+            const selected = event.target.checked;
+            setCoordinator(selected);
+            if (selected)
+              change((value) => {
+                value.config.remove_default =
+                  value.config.remove_default.filter(
+                    (name) => !coordinatorDefaults.includes(name),
+                  );
+              });
+          }}
+        >
+          {translate("useAsCoordinator")}
+        </Check>
         <AgentBindings
           value={editing.config}
           entries={data.registry}
           node={registryDeployment(data)}
-          cluster={Boolean(editing.config.cluster)}
+          coordinator={coordinator}
           change={(configuration) =>
             change((value) => {
               value.config.bindings = configuration.bindings;

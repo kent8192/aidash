@@ -3,8 +3,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0090_reference_embedding_usage_state", "execution")
-		.add_dependency("execution", "0089_reference_embedding_usage")
+	Migration::new("0091_reference_embedding_usage_state", "execution")
+		.add_dependency("execution", "0090_reference_embedding_usage")
 		.add_operation(Operation::DropConstraintDefinition {
 			table: "generation_embedding_usage".into(),
 			constraint: Constraint::EnumDomain {

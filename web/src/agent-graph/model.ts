@@ -16,7 +16,6 @@ export type Relationship =
   | "model"
   | "tool"
   | "skill"
-  | "cluster"
   | "coordinator"
   | "run"
   | "executes";
@@ -161,7 +160,6 @@ export function buildAgentGraph(
     const config = record(entry.config);
     if (entry.kind === "agent") {
       configure(source, "model", config.model, "model");
-      configure(source, "cluster", config.cluster, "cluster");
       for (const kind of ["tool", "skill"] as const) {
         const values = config[`${kind}s`];
         if (Array.isArray(values)) {

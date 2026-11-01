@@ -3,9 +3,9 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0089_reference_embedding_usage", "execution")
+	Migration::new("0090_reference_embedding_usage", "execution")
 		.database_only(true)
-		.add_dependency("execution", "0088_mcp_connection_requests_state")
+		.add_dependency("execution", "0089_remove_agent_cluster")
 		.add_operation(Operation::DropConstraintDefinition {
 			table: "generation_embedding_usage".into(),
 			constraint: Constraint::Check {

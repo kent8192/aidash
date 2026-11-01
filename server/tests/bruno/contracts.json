@@ -21772,6 +21772,30 @@
               "format": "int64"
             }
           }
+        },
+        "CatalogRestriction": {
+          "type": "object",
+          "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
+          "required": ["subjects", "groups"],
+          "properties": {
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            },
+            "subjects": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
         }
       }
     }

@@ -3,8 +3,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0056_reference_image_byte_state", "registry")
-		.add_dependency("registry", "0055_reference_images")
+	Migration::new("0057_reference_image_byte_state", "registry")
+		.add_dependency("registry", "0056_reference_images")
 		.add_operation(Operation::AddColumn {
 			table: "agent_knowledge".into(),
 			column: ColumnDefinition::new("image_index", FieldType::Jsonb).with_not_null(false),

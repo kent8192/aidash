@@ -140,7 +140,6 @@ pub struct AgentConfig {
 	pub model: EntityRef,
 	pub reference_embedding: Option<EntityRef>,
 	pub instructions: String,
-	pub cluster: Option<EntityRef>,
 	pub max_steps: i32,
 	pub context_policy: Option<crate::context::policy::ContextPolicy>,
 	pub tool_parallelism: u8,

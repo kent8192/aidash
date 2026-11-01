@@ -79,7 +79,6 @@ const supportedRelations = [
   "tool",
   "model",
   "skill",
-  "member",
   "hosts",
   "coordinates",
   "participates",

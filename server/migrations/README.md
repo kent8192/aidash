@@ -1,10 +1,11 @@
 # Aidash native migration history
 
-`registry/0054_embedding_inputs` through `0057_reference_images_row_level_security`
+`registry/0055_embedding_inputs` through `0058_reference_images_row_level_security`
 add image retrieval inputs, private reference images, model state and Tenant
-policies after `0053_connection_request`. `execution/0089_reference_embedding_usage`
-and `0090_reference_embedding_usage_state` record reference embedding usage after
-`0088_mcp_connection_requests_state`.
+policies after `0054_remove_agent_cluster`. `execution/0090_reference_embedding_usage`
+and `0091_reference_embedding_usage_state` record reference embedding usage after
+`0089_remove_agent_cluster`.
+`registry/0054_remove_agent_cluster` removes the obsolete Agent config key from Registry definitions, Agent drafts and registration requests, then removes it from the Agent contract. `execution/0089_remove_agent_cluster` removes it from Generation policy templates and request definitions. PostgreSQL JSON updates and function replacement use SQL assets because Reinhardt migrations cannot express these transformations. Both are irreversible. Each owner-only atomic migration establishes Deployment Scope before its first row access because the native migration executor does not open scoped application transactions. The registry update temporarily disables the Marketplace writer fence within its transaction, retaining its other validation and reference triggers. Installed Registry copies change while immutable Marketplace versions and revisions stay untouched: old Marketplace versions must be republished and old installation revisions may no longer match. Run and Federation snapshots are unchanged; Runs using old snapshots fail and need cancellation. Surviving Run constraints and triggers do not call the Agent validator, so cancellation updates do not revalidate the retained snapshots. Catalog Approvals and Federation pins covering changed definitions need renewing.
 
 `execution/0081_lease_recoveries` updates the physical `runs.pending` default,
 and replaces the activation trigger function. PostgreSQL function replacement

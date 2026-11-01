@@ -3,9 +3,9 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0055_reference_images", "registry")
+	Migration::new("0056_reference_images", "registry")
 		.database_only(true)
-		.add_dependency("registry", "0054_embedding_inputs")
+		.add_dependency("registry", "0055_embedding_inputs")
 		.add_operation(Operation::AddColumn {
 			table: "agent_knowledge".into(),
 			column: ColumnDefinition::new("image_index", FieldType::Jsonb).with_not_null(false),
@@ -35,8 +35,8 @@ pub(super) fn migration() -> Migration {
 		})
 		// PostgreSQL function bodies and row policies cannot be represented by SchemaExpr.
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0055_reference_images.sql").into(),
-			reverse_sql: Some(include_str!("sql/backward/0055_reference_images.sql").into()),
+			sql: include_str!("sql/forward/0056_reference_images.sql").into(),
+			reverse_sql: Some(include_str!("sql/backward/0056_reference_images.sql").into()),
 		})
 		.atomic(true)
 }
