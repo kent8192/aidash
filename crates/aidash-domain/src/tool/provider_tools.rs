@@ -729,6 +729,9 @@ pub const REPLAY_KEYS: &[&str] = &[
 ];
 
 const REPLAY_DEPTH: usize = 8;
+// Admitted function schemas are nested under a tool-search result and can
+// reach the JSON parser's recursion bound; ordinary activity stays at 8.
+const REPLAY_SCHEMA_DEPTH: usize = 128;
 const REPLAY_FORBIDDEN_KEYS: &[&str] = &[
 	"image_url",
 	"input_image",
@@ -746,12 +749,26 @@ const REPLAY_FORBIDDEN_KEYS: &[&str] = &[
 /// when the request carries no shell tool). The broker applies this to client
 /// input it cannot otherwise attribute.
 pub fn replay_item_is_closed(item: &Value, container: Option<&str>) -> bool {
-	fn nested(value: &Value, depth: usize, container: Option<&str>) -> bool {
-		if depth > REPLAY_DEPTH {
+	fn nested(
+		value: &Value,
+		depth: usize,
+		container: Option<&str>,
+		max_depth: usize,
+		function_tool: bool,
+	) -> bool {
+		if depth > max_depth {
 			return false;
 		}
 		match value {
-			Value::Array(items) => items.iter().all(|item| nested(item, depth + 1, container)),
+			Value::Array(items) => items.iter().all(|item| {
+				nested(
+					item,
+					depth + 1,
+					container,
+					max_depth,
+					function_tool && depth == 1,
+				)
+			}),
 			Value::Object(map) => map.iter().all(|(key, value)| {
 				if REPLAY_FORBIDDEN_KEYS.contains(&key.as_str()) {
 					return false;
@@ -768,7 +785,15 @@ pub fn replay_item_is_closed(item: &Value, container: Option<&str>) -> bool {
 					}) {
 					return false;
 				}
-				nested(value, depth + 1, container)
+				let limit = if function_tool
+					&& map.get("type").and_then(Value::as_str) == Some("function")
+					&& key == "parameters"
+				{
+					REPLAY_SCHEMA_DEPTH
+				} else {
+					max_depth
+				};
+				nested(value, depth + 1, container, limit, false)
 			}),
 			_ => true,
 		}
@@ -786,6 +811,14 @@ pub fn replay_item_is_closed(item: &Value, container: Option<&str>) -> bool {
 						valid_container_id(id) && container.is_none_or(|signed| signed == id)
 					});
 				}
-				nested(value, 1, container)
+				nested(
+					value,
+					1,
+					container,
+					REPLAY_DEPTH,
+					key == "tools"
+						&& map.get("type").and_then(Value::as_str) == Some("tool_search_output")
+						&& value.is_array(),
+				)
 			})
 }

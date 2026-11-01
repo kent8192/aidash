@@ -222,3 +222,13 @@ fn replayed_provider_items_must_stay_inside_the_closed_observable_shape() {
 		None
 	));
 }
+
+#[test]
+fn provider_activity_replays_an_admitted_search_schema() {
+	let item = json!({"type":"tool_search_output","tools":[{"type":"function","name":"search","parameters":crate::research::search::search_schema()}]});
+	assert!(replay_item_is_closed(&item, None));
+	let mut forged = item.clone();
+	forged["tools"][0]["parameters"]["properties"]["freshness"]["oneOf"][0]["type"] =
+		json!("openrouter:shell");
+	assert!(!replay_item_is_closed(&forged, None));
+}
