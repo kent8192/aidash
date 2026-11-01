@@ -792,6 +792,3 @@ validator with the six `core.subnodes@1` operations (#660). Its reversible
 cannot express PL/pgSQL function definitions. Rolling back restores the
 previous descriptor contract; existing Subnode descriptors then cannot be
 rewritten until the migration is reapplied.
-
-`federation/0014_model_state_merge` joins the baseline model state and the later
-federation migration history without changing schema or data.
