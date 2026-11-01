@@ -103,7 +103,6 @@ type AgentFields = {
   schema_version?: number;
   bindings?: Binding[];
   remove_default?: string[];
-  cluster?: EntityRef | null;
   instructions?: string;
   max_steps?: number;
 };
@@ -457,9 +456,7 @@ function PolicyEditor({
     bindings: config?.bindings ?? [],
     remove_default: config?.remove_default ?? [],
   });
-  const [cluster, setCluster] = useState(
-    config?.cluster ? key(config.cluster) : "",
-  );
+  const [coordinator, setCoordinator] = useState(false);
   const [model, setModel] = useState(config?.model ? key(config.model) : "");
   const [decider, setDecider] = useState(
     initial?.compaction ? key(initial.compaction.provider) : "",
@@ -537,7 +534,6 @@ function PolicyEditor({
           instructions: text("instructions"),
           schema_version: 1,
           ...bindings,
-          cluster: text("cluster") ? entityRef(text("cluster")) : null,
           max_steps: Number(text("max_steps")),
         },
       };
@@ -695,7 +691,7 @@ function PolicyEditor({
           generated
           value={bindings}
           change={setBindings}
-          cluster={Boolean(cluster)}
+          coordinator={coordinator}
           entries={entries}
           node={node}
         />
@@ -706,39 +702,22 @@ function PolicyEditor({
             defaultValue={config?.instructions}
           />
         </Field>
-        <Field label={t("cluster")}>
-          <NativeSelect
-            name="cluster"
-            value={cluster}
-            onChange={(e) => {
-              const selected = e.target.value;
-              setCluster(selected);
-              if (selected)
-                setBindings((previous) => ({
-                  ...previous,
-                  remove_default: previous.remove_default.filter(
-                    (name) => !coordinatorDefaults.includes(name),
-                  ),
-                }));
-            }}
-          >
-            <option value="">{t("generationNoCluster")}</option>
-            {entries
-              .filter((entry) => entry.kind === "cluster")
-              .map((entry) => (
-                <option key={key(entry)} value={key(entry)}>
-                  {entityLabel(entry)}
-                </option>
-              ))}
-            {config?.cluster &&
-              !entries.some((entry) => key(entry) === key(config.cluster!)) && (
-                <option value={key(config.cluster)}>
-                  {t("generationReferenceUnavailable")} ·{" "}
-                  {config.cluster.version}
-                </option>
-              )}
-          </NativeSelect>
-        </Field>
+        <Check
+          checked={coordinator}
+          onChange={(e) => {
+            const selected = e.target.checked;
+            setCoordinator(selected);
+            if (selected)
+              setBindings((previous) => ({
+                ...previous,
+                remove_default: previous.remove_default.filter(
+                  (name) => !coordinatorDefaults.includes(name),
+                ),
+              }));
+          }}
+        >
+          {t("useAsCoordinator")}
+        </Check>
       </Section>
       <Section
         level={3}

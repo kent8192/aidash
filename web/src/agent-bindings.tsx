@@ -132,13 +132,13 @@ export function AgentBindings({
   change,
   node = "",
   entries = [],
-  cluster = false,
+  coordinator = false,
   generated = false,
 }: {
   value: BindingConfiguration;
   change: (v: BindingConfiguration) => void;
   node?: string;
-  cluster?: boolean;
+  coordinator?: boolean;
   /** Generated chains use only their explicit generation-policy Decider. */
   generated?: boolean;
   entries?: {
@@ -192,7 +192,7 @@ export function AgentBindings({
     )
       ? ["skill_list", "skill_load", "skill_read"]
       : []),
-    ...(cluster ? coordinatorDefaults : []),
+    ...(coordinator ? coordinatorDefaults : []),
   ];
   const required = requiredDefaults(bindings);
   const save = (next: BindingConfiguration) =>

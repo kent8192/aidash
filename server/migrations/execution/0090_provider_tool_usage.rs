@@ -3,8 +3,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0089_provider_tool_usage", "execution")
-		.add_dependency("execution", "0088_mcp_connection_requests_state")
+	Migration::new("0090_provider_tool_usage", "execution")
+		.add_dependency("execution", "0089_remove_agent_cluster")
 		.add_operation(Operation::AddColumn {
 			table: "inference_usage".into(),
 			column: ColumnDefinition::new("server_tool_use", FieldType::Jsonb),

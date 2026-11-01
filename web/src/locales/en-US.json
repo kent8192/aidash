@@ -119,6 +119,7 @@
   "topologyHelp": "Nodes own clusters. Agents share tasks across node boundaries.",
   "activity": "Activity",
   "viewAll": "View all",
+  "useAsCoordinator": "Use as coordinator",
   "noAssignment": "Unassigned",
   "goalPlaceholder": "Research competing Rust web frameworks and compare their tradeoffs.",
   "goalTitle": "Rust framework research",

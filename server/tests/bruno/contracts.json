@@ -21769,6 +21769,9 @@
             "enabled": {
               "type": "boolean"
             },
+            "provider_warning_acknowledgment": {
+              "type": ["string", "null"]
+            },
             "restriction": {
               "anyOf": [
                 {
@@ -21783,9 +21786,6 @@
             "revision": {
               "type": "integer",
               "format": "int64"
-            },
-            "provider_warning_acknowledgment": {
-              "type": ["string", "null"]
             }
           }
         },
@@ -22088,6 +22088,20 @@
           },
           "additionalProperties": false
         },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
+          },
+          "additionalProperties": false
+        },
         "QualifiedRef": {
           "type": "object",
           "required": ["registry_deployment", "id", "version"],
@@ -22232,20 +22246,6 @@
               "format": "int64"
             }
           }
-        },
-        "Parameters": {
-          "type": "object",
-          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
-          "required": ["max_tool_calls", "parameters"],
-          "properties": {
-            "max_tool_calls": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
-            "parameters": {}
-          },
-          "additionalProperties": false
         }
       }
     }
@@ -30951,6 +30951,20 @@
           },
           "additionalProperties": false
         },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
+          },
+          "additionalProperties": false
+        },
         "PendingCheck": {
           "type": "object",
           "description": "A started Check whose operation has not been recorded as evidence yet.",
@@ -32731,20 +32745,6 @@
               "type": "string"
             }
           }
-        },
-        "Parameters": {
-          "type": "object",
-          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
-          "required": ["max_tool_calls", "parameters"],
-          "properties": {
-            "max_tool_calls": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
-            "parameters": {}
-          },
-          "additionalProperties": false
         }
       }
     }
@@ -34876,6 +34876,20 @@
           },
           "additionalProperties": false
         },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
+          },
+          "additionalProperties": false
+        },
         "PendingCheck": {
           "type": "object",
           "description": "A started Check whose operation has not been recorded as evidence yet.",
@@ -35042,6 +35056,30 @@
               "items": {
                 "$ref": "#/components/schemas/PinnedServer"
               }
+            }
+          },
+          "additionalProperties": false
+        },
+        "ProviderToolActivity": {
+          "type": "object",
+          "description": "Read-only Context Journal inspection, independent of the lossy projection.",
+          "required": ["seq", "epoch", "items"],
+          "properties": {
+            "epoch": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "items": {
+              "type": "array",
+              "items": {}
+            },
+            "preview": {
+              "type": ["string", "null"]
+            },
+            "seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
             }
           },
           "additionalProperties": false
@@ -36617,44 +36655,6 @@
               "additionalProperties": false
             }
           ]
-        },
-        "Parameters": {
-          "type": "object",
-          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
-          "required": ["max_tool_calls", "parameters"],
-          "properties": {
-            "max_tool_calls": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
-            "parameters": {}
-          },
-          "additionalProperties": false
-        },
-        "ProviderToolActivity": {
-          "type": "object",
-          "description": "Read-only Context Journal inspection, independent of the lossy projection.",
-          "required": ["seq", "epoch", "items"],
-          "properties": {
-            "epoch": {
-              "type": "integer",
-              "format": "int64"
-            },
-            "items": {
-              "type": "array",
-              "items": {}
-            },
-            "preview": {
-              "type": ["string", "null"]
-            },
-            "seq": {
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0
-            }
-          },
-          "additionalProperties": false
         }
       }
     }
@@ -38459,6 +38459,20 @@
           },
           "additionalProperties": false
         },
+        "Parameters": {
+          "type": "object",
+          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
+          "required": ["max_tool_calls", "parameters"],
+          "properties": {
+            "max_tool_calls": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "parameters": {}
+          },
+          "additionalProperties": false
+        },
         "PendingCheck": {
           "type": "object",
           "description": "A started Check whose operation has not been recorded as evidence yet.",
@@ -40055,20 +40069,6 @@
               "additionalProperties": false
             }
           ]
-        },
-        "Parameters": {
-          "type": "object",
-          "description": "Binding-owned configuration, copied into the immutable Binding snapshot.\nNo default is deserialized: an author must explicitly pin every spending cap.",
-          "required": ["max_tool_calls", "parameters"],
-          "properties": {
-            "max_tool_calls": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
-            "parameters": {}
-          },
-          "additionalProperties": false
         }
       }
     }
