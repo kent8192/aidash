@@ -247,18 +247,27 @@ async fn verified_media_routes(
 	}
 	let client = clients.select(&access)?;
 	let mut endpoints = client.get(url).timeout(std::time::Duration::from_secs(15));
-	let mut zdr = client
-		.get(format!(
-			"{}/endpoints/zdr",
-			access.endpoint.trim_end_matches('/')
-		))
-		.timeout(std::time::Duration::from_secs(15));
+	let mut zdr = (context.data_protection.requirement()
+		== aidash_domain::data_protection::Requirement::Zdr)
+		.then(|| {
+			client
+				.get(format!(
+					"{}/endpoints/zdr",
+					access.endpoint.trim_end_matches('/')
+				))
+				.timeout(std::time::Duration::from_secs(15))
+		});
 	if !access.bearer.expose_secret().is_empty() {
 		endpoints = endpoints.bearer_auth(access.bearer.expose_secret());
-		zdr = zdr.bearer_auth(access.bearer.expose_secret());
+		zdr = zdr.map(|request| request.bearer_auth(access.bearer.expose_secret()));
 	}
-	let (endpoints, zdr) =
-		tokio::try_join!(endpoints.send(), zdr.send()).map_err(crate::keyless::send_error)?;
+	let (endpoints, zdr) = tokio::try_join!(endpoints.send(), async {
+		match zdr {
+			Some(request) => request.send().await.map(Some),
+			None => Ok(None),
+		}
+	})
+	.map_err(crate::keyless::send_error)?;
 	if !endpoints.status().is_success() {
 		return Err(crate::response::provider_rejection(
 			endpoints,
@@ -266,13 +275,19 @@ async fn verified_media_routes(
 		)
 		.await);
 	}
-	if !zdr.status().is_success() {
-		return Err(
-			crate::response::provider_rejection(zdr, config.provider_credential.is_some()).await,
-		);
-	}
+	let zdr = if let Some(response) = zdr {
+		if !response.status().is_success() {
+			return Err(crate::response::provider_rejection(
+				response,
+				config.provider_credential.is_some(),
+			)
+			.await);
+		}
+		Some(crate::response::json::<Value>(response, 8 * 1024 * 1024).await?)
+	} else {
+		None
+	};
 	let endpoints = crate::response::json::<Value>(endpoints, 2 * 1024 * 1024).await?;
-	let zdr = crate::response::json::<Value>(zdr, 8 * 1024 * 1024).await?;
 	let modalities = endpoints
 		.pointer("/data/architecture/input_modalities")
 		.and_then(Value::as_array)
@@ -300,9 +315,14 @@ async fn verified_media_routes(
 		.and_then(Value::as_array)
 		.ok_or_else(|| Error::External("OpenRouter endpoint list unavailable".into()))?;
 	let zdr = zdr
-		.get("data")
-		.and_then(Value::as_array)
-		.ok_or_else(|| Error::External("OpenRouter ZDR endpoint list unavailable".into()))?;
+		.as_ref()
+		.map(|body| {
+			body.get("data")
+				.and_then(Value::as_array)
+				.map(Vec::as_slice)
+				.ok_or_else(|| Error::External("OpenRouter ZDR endpoint list unavailable".into()))
+		})
+		.transpose()?;
 	// Evidence may have expired while the catalog requests were in flight.
 	let mut candidates = evidence_candidates(config, &formats, chrono::Utc::now())?;
 	let mut eligible = Vec::new();
@@ -366,11 +386,12 @@ pub(crate) fn provider_preferences(
 }
 
 /// Every slug prefix may match descendant regions or variants. Only a leaf
-/// tag present in both current catalogs is safe to send as an exact allowlist.
+/// tag in the endpoint catalog, and in the ZDR catalog when required, is safe
+/// to send as an exact allowlist.
 fn eligible_route(
 	tag: &str,
 	endpoints: &[Value],
-	zdr: &[Value],
+	zdr: Option<&[Value]>,
 	model: &str,
 	request: &ModelRequest,
 ) -> Vec<RouteReason> {
@@ -408,10 +429,11 @@ fn eligible_route(
 			reasons.push(RouteReason::ContextTooLong { estimated, limit });
 		}
 	}
-	if !zdr
-		.iter()
-		.any(|endpoint| endpoint["model_id"] == model && endpoint["tag"] == tag)
-	{
+	if zdr.is_some_and(|routes| {
+		!routes
+			.iter()
+			.any(|endpoint| endpoint["model_id"] == model && endpoint["tag"] == tag)
+	}) {
 		reasons.push(RouteReason::NotZeroDataRetention);
 	}
 	reasons

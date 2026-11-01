@@ -354,6 +354,70 @@ mod exact_routes {
 		}
 	}
 
+	#[rstest::rstest]
+	#[case::pinned(false)]
+	#[case::media(true)]
+	#[tokio::test]
+	async fn opted_out_routes_remain_usable_when_zdr_catalog_is_unavailable(#[case] media: bool) {
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+		let app = Router::new().route(
+			"/v1/models/vendor/model/endpoints",
+			get(|| async { Json(json!({"data":{"architecture":{"input_modalities":["text","image"]},"endpoints":[{"tag":"fixture/us","context_length":8192}]}})) }),
+		);
+		let _server = TestServer(tokio::spawn(async move {
+			axum::serve(listener, app).await.unwrap()
+		}));
+		let now = chrono::Utc::now();
+		let mut config: ModelConfig = serde_json::from_value(json!({"provider":"openrouter","model_id":"vendor/model","endpoint":endpoint,"context_window":8192,"modalities":["text","image"],"cost":{},"streaming":false})).unwrap();
+		if media {
+			config.media_routes = vec![MediaRouteEvidence {
+				tag: "fixture/us".into(),
+				formats: vec!["image/png".into()],
+				source: "approval".into(),
+				verified_at: now - chrono::Duration::minutes(1),
+				expires_at: now + chrono::Duration::hours(1),
+			}];
+		} else {
+			config.provider_route = Some(ProviderRouteEvidence {
+				tag: "fixture/us".into(),
+				source: "approval".into(),
+				verified_at: now - chrono::Duration::minutes(1),
+				expires_at: now + chrono::Duration::hours(1),
+			});
+		}
+		let context = Context {
+			data_protection: aidash_domain::data_protection::DataProtection {
+				model_call_zdr: false,
+				..Default::default()
+			},
+			..Default::default()
+		};
+		let request = ModelRequest {
+			instructions: "inspect".into(),
+			max_output_tokens: 64,
+			content_parts: if media {
+				vec![ContentPart::Image {
+					media_type: "image/png".into(),
+					bytes: vec![0],
+				}]
+			} else {
+				vec![]
+			},
+			..Default::default()
+		};
+		let routes = verified_routes(
+			&test_clients(),
+			&config,
+			&permitting(&endpoint),
+			&context,
+			&request,
+		)
+		.await
+		.unwrap();
+		assert_eq!(routes, vec!["fixture/us"]);
+	}
+
 	async fn refusal_fixture(
 		pinned: Option<(&str, i64, i64)>,
 		media: Vec<(&str, Vec<&str>, i64, i64)>,
