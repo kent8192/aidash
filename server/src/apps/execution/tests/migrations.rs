@@ -755,12 +755,10 @@ async fn remove_agent_cluster_migrates_registry_drafts_requests_and_generation_t
 	let baseline = plan
 		.migrations
 		.iter()
-		.filter(|migration| {
-			!matches!(
-				(migration.app_label.as_str(), migration.name.as_str()),
-				("registry", "0054_remove_agent_cluster")
-					| ("execution", "0089_remove_agent_cluster")
-			)
+		.filter(|migration| match migration.app_label.as_str() {
+			"registry" => migration.name.as_str() < "0054_",
+			"execution" => migration.name.as_str() < "0089_",
+			_ => true,
 		})
 		.cloned()
 		.collect::<Vec<_>>();
