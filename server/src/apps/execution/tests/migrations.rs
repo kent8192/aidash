@@ -71,6 +71,8 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0055_provider_tools"),
 	("registry", "0056_provider_warning_tools"),
 	("execution", "0089_remove_agent_cluster"),
+	("execution", "0090_provider_tool_usage"),
+	("execution", "0091_provider_container"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
