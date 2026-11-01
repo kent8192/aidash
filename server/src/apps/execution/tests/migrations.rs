@@ -844,6 +844,8 @@ async fn remove_agent_cluster_migrates_registry_drafts_requests_and_generation_t
 				(migration.app_label.as_str(), migration.name.as_str()),
 				("registry", "0054_remove_agent_cluster")
 					| ("execution", "0089_remove_agent_cluster")
+					| ("execution", "0090_run_created_at")
+					| ("execution", "0091_bounded_read_indexes")
 			)
 		})
 		.cloned()
