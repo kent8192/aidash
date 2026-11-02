@@ -258,8 +258,24 @@ async fn personal_call_preserves_peer_result_and_delivery_failure() {
 			})
 		}
 	}
-	let log = Arc::new(Mutex::new(Vec::new()));
-	let peers = Arc::new(Sources { log, denied: false });
+	struct CallPeers;
+	#[async_trait]
+	impl Peers for CallPeers {
+		async fn route(
+			&self,
+			node: &str,
+			request: &crate::federation::inbound::RequestDigest<'_>,
+		) -> Result<Route> {
+			assert_eq!(request.method, "POST");
+			assert_eq!(request.path, "/scoped/execution/commands");
+			assert_eq!(
+				serde_json::from_slice::<Value>(request.body).unwrap(),
+				json!({"operation": aidash_domain::identity::commands::connections::CALL})
+			);
+			Ok(crate::test_support::foreign_route(node))
+		}
+	}
+	let peers = Arc::new(CallPeers);
 	let path = "/scoped/execution/commands";
 	let body = json!({"operation": aidash_domain::identity::commands::connections::CALL});
 	let delivered = Client::new(peers.clone(), Arc::new(CallWire { delivered: true }));

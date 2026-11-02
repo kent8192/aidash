@@ -74,6 +74,19 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0053_connection_request"),
 	("registry", "0054_remove_agent_cluster"),
 	("execution", "0089_remove_agent_cluster"),
+	("execution", "0090_runner_allocation_journals"),
+	("execution", "0091_node_cancellation_jobs"),
+	("execution", "0092_node_cancellation_jobs_state"),
+	(
+		"execution",
+		"0093_node_cancellation_jobs_row_level_security",
+	),
+	("execution", "0094_session_area_lifetime"),
+	("execution", "0095_session_area_lifetime_state"),
+	("execution", "0096_node_lifetime_merge"),
+	("execution", "0097_node_research_merge"),
+	("execution", "0098_node_plugin_merge"),
+	("execution", "0099_node_preview_merge"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -765,11 +778,10 @@ async fn remove_agent_cluster_migrates_registry_drafts_requests_and_generation_t
 		.migrations
 		.iter()
 		.filter(|migration| {
-			!matches!(
-				(migration.app_label.as_str(), migration.name.as_str()),
-				("registry", "0054_remove_agent_cluster")
-					| ("execution", "0089_remove_agent_cluster")
-			)
+			!(migration.app_label == "registry" && migration.name == "0054_remove_agent_cluster"
+				|| migration.app_label == "execution"
+					&& TENANT_REGISTRY_MIGRATIONS
+						.contains(&(migration.app_label.as_str(), migration.name.as_str())))
 		})
 		.cloned()
 		.collect::<Vec<_>>();
