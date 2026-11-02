@@ -1075,3 +1075,14 @@ async fn an_expired_operation_is_reported_as_expired_not_as_an_exhausted_budget(
 	);
 	shutdown(tasks, stop).await;
 }
+
+#[test]
+fn a_rewritten_package_index_never_forwards_the_clients_accept_encoding() {
+	// npm and uv always send Accept-Encoding. Forwarding it beside the gateway's
+	// `identity` made registry.npmjs.org answer with gzip, which the JSON
+	// rewrite cannot read (#679).
+	assert!(!request_header_forwarded("accept-encoding", &[], true));
+	assert!(request_header_forwarded("accept-encoding", &[], false));
+	assert!(request_header_forwarded("accept", &[], true));
+	assert!(!request_header_forwarded("cookie", &[], false));
+}

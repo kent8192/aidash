@@ -16,6 +16,7 @@ pub struct Recipient {
 #[serde(deny_unknown_fields)]
 pub struct Share {
 	pub idempotency_key: Uuid,
+	/// The working area revision: take it from the previous result's `revision`; a new area starts at 1.
 	pub expected_revision: i64,
 	pub files: Vec<Selection>,
 	pub recipient: Recipient,

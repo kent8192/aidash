@@ -87,6 +87,50 @@ impl Access {
 		.map_err(Into::into)
 	}
 
+	/// Preserve the reason when memory execution rechecks its complete Run graph.
+	pub(crate) async fn run_invalidity(
+		&mut self,
+		run: &crate::domain::RunMetadata,
+	) -> crate::Result<Option<aidash_domain::semantic::Failure>> {
+		use aidash_domain::semantic::Failure;
+		match self.run_visible(run.clone()).await {
+			Ok(true) => return Ok(None),
+			Ok(false) | Err(crate::Error::Conflict(_)) => {}
+			Err(crate::Error::Forbidden) => return Ok(Some(Failure::Authority)),
+			Err(crate::Error::RemoteSemantic(reason)) => return Ok(Some(reason)),
+			Err(error) => return Err(error),
+		}
+		let mut pending = Vec::new();
+		let base = aidash_application::authorization::visibility::classified_base_visible(
+			&mut crate::bootstrap::run_visibility_scope(self),
+			run,
+			&mut pending,
+		)
+		.await
+		.map_err(crate::Error::from);
+		match base {
+			Ok(true) => {}
+			Ok(false) | Err(crate::Error::Forbidden) => return Ok(Some(Failure::Authority)),
+			Err(crate::Error::Conflict(_)) => return Ok(Some(Failure::Configuration)),
+			Err(crate::Error::RemoteSemantic(reason)) => return Ok(Some(reason)),
+			Err(error) => return Err(error),
+		}
+		let reason =
+			aidash_application::authorization::visibility::provenance::run_reads_invalidity_with_pending(
+				&mut crate::bootstrap::run_visibility_scope(self),
+				run.id,
+				pending,
+			)
+			.await
+			.map_err(crate::Error::from);
+		match reason {
+			Ok(reason) => Ok(reason.or(Some(Failure::Invalidated))),
+			Err(crate::Error::Forbidden) => Ok(Some(Failure::Authority)),
+			Err(crate::Error::RemoteSemantic(reason)) => Ok(Some(reason)),
+			Err(error) => Err(error),
+		}
+	}
+
 	pub(crate) async fn run_base_visible(
 		&mut self,
 		run: impl Into<crate::domain::RunMetadata>,
