@@ -190,8 +190,10 @@ class SetupTests(unittest.TestCase):
     def test_composition_preserves_bootstrap_brokers_and_explicit_enablement(self):
         def brokers(tier, output):
             identity = "production" if tier == "production" else "test"
-            output["configuration"]["value"].update(byok_project_id="aidash-byok", broker_service_accounts={identity: f"aidash-{identity}-broker@{tier}"})
+            output["configuration"]["value"].update(byok_project_id="aidash-byok", broker_service_accounts={identity: f"aidash-{identity}-broker@{tier}"},
+                                                    tenant_secret_broker_service_accounts={identity: f"aidash-{identity}-tsec@{tier}"})
             output["broker_signing_keys"] = {"value": {identity: f"projects/{tier}/keyRings/aidash-{identity}-capability/cryptoKeys/capability"}}
+            output["tenant_secret_signing_keys"] = {"value": {identity: f"projects/{tier}/keyRings/aidash-{identity}-capability/cryptoKeys/tenant-secret"}}
         with TemporaryDirectory() as directory:
             values = self.account_inputs(Path(directory), brokers)
             values["credential_brokers"] = {"nonproduction": {"test": {"enabled": True, "signing_version": "2", "verification_versions": ["1", "2"]}}}
@@ -199,7 +201,9 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(json.loads(result["nonproduction_config_json"])["credential_brokers"], {"test": {
                 "enabled": True, "signing_version": "2", "verification_versions": ["1", "2"], "byok_project_id": "aidash-byok", "secret_prefix": "aidash-test-cred-",
                 "broker_service_account_email": "aidash-test-broker@nonproduction",
-                "signing_key_id": "projects/nonproduction/keyRings/aidash-test-capability/cryptoKeys/capability"}})
+                "signing_key_id": "projects/nonproduction/keyRings/aidash-test-capability/cryptoKeys/capability",
+                "tenant_secret_broker_service_account_email": "aidash-test-tsec@nonproduction",
+                "tenant_secret_signing_key_id": "projects/nonproduction/keyRings/aidash-test-capability/cryptoKeys/tenant-secret"}})
             # Unconfigured bootstrap brokers stay published but disabled, so reconcile never drains them by omission.
             self.assertFalse(json.loads(result["production_config_json"])["credential_brokers"]["production"]["enabled"])
             for settings in ({"develop": {"enabled": True}}, {"test": {"image": "attacker.invalid/broker:latest"}}, {"test": {"enabled": "true"}}):
@@ -207,6 +211,14 @@ class SetupTests(unittest.TestCase):
                     values["credential_brokers"] = {"nonproduction": settings}
                     with self.assertRaises(setup.Refused):
                         setup.compose(values)
+            # A bootstrap output missing the Tenant Secret identity cannot compose an enableable broker.
+            values["credential_brokers"] = {}
+            output_file = Path(values["nonproduction_output_file"])
+            output = json.loads(output_file.read_text())
+            del output["tenant_secret_signing_keys"]
+            output_file.write_text(json.dumps(output))
+            with self.assertRaises(setup.Refused):
+                setup.compose(values)
 
     def test_production_state_relocation_preserves_lineage_and_cannot_overwrite_existing_state(self):
         from types import SimpleNamespace
