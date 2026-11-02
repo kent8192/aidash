@@ -129,7 +129,7 @@ async fn fixture_revision(pool: &sqlx::PgPool, area: Uuid, revision: i64, files:
 		&Query::delete()
 			.from_table(Alias::new("core_manifest_revisions"))
 			.and_where(Expr::col(Alias::new("tenant")).eq("acme"))
-			.and_where(Expr::col(Alias::new("area_id")).eq(area))
+			.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area)))
 			.and_where(Expr::col(Alias::new("revision")).eq(revision))
 			.to_string(PostgresQueryBuilder),
 	)
@@ -193,7 +193,7 @@ async fn fixture_revision(pool: &sqlx::PgPool, area: Uuid, revision: i64, files:
 		&Query::update()
 			.table(Alias::new("core_areas"))
 			.value(Alias::new("revision"), revision)
-			.and_where(Expr::col(Alias::new("id")).eq(area))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area)))
 			.to_string(PostgresQueryBuilder),
 	)
 	.execute(&mut *tx)
@@ -1284,7 +1284,6 @@ async fn reusable_grants_require_explicit_scope_and_revocation_withdraws_reuse(
 #[rstest::rstest]
 #[tokio::test]
 async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixture: CoreFixture) {
-	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let c = capability_fixture.await;
 	let sender = admit(&c).await;
 	let mut reader =

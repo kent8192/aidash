@@ -252,4 +252,4 @@ async fn binary_search_reports_unavailable_text_while_path_search_remains_usable
 	c.close().await;
 }
 
-use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
+use reinhardt::query::QueryStatementBuilder as _;
