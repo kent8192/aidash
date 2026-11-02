@@ -961,6 +961,7 @@ impl WorkerAuthority {
 pub(crate) use aidash_application::ports::execution::HumanMediaBatch;
 
 pub(crate) struct Guard {
+	pub(crate) scratch_space_id: Uuid,
 	remote: Option<Federation>,
 	access: Arc<RwLock<Access>>,
 	run: Run,
@@ -1069,6 +1070,7 @@ impl Guard {
 		)
 		.await?;
 		Ok(Self {
+			scratch_space_id: entry.scratch_space_id.ok_or(Error::Forbidden)?,
 			tenancy: entry.scope.tenancy()?,
 			remote: entry.remote.then(|| f.clone()),
 			access: Arc::new(RwLock::new(entry.scope)),
@@ -1091,6 +1093,7 @@ impl Guard {
 				&self.access,
 				&self.run,
 				&self.agent,
+				self.scratch_space_id,
 			),
 		)
 		.await

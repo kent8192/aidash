@@ -38,6 +38,18 @@ impl WorkerEntryRepository<Access> for Entries<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn scratch_space(&self, scope: &mut Access, run: &Run) -> Result<uuid::Uuid> {
+		let mut services = crate::apps::workspaces::repositories::scratch::NativeScratchServices {
+			policy: &self.federation.config.scratch_policy,
+		};
+		let mut adapter = crate::apps::workspaces::repositories::scratch::ScratchAdapter {
+			access: scope,
+			services: &mut services,
+			person_override: None,
+		};
+		aidash_application::scratch::scratch_space_for_run(&mut adapter, run, chrono::Utc::now())
+			.await
+	}
 	async fn initialize(&self, scope: &Access, run: &Run, agent: &AgentConfig) -> Result<()> {
 		let mut initialization = Access::under_lease(scope).await?;
 		let result = crate::capabilities::sessions::initialize(

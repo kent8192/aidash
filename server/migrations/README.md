@@ -138,6 +138,8 @@ application migrates using its scoped role. Reversal preserves borrowed
 extensions and drops only extensions created by this history.
 A final context operation sets the public search path before typed reverse operations run.
 
+The conversation Scratch Space backfill is generated with Reinhardt Query by `workspaces::services::migration_backfill`. The `migrationseeds` command checks its forward and reverse assets for drift. It assigns each pre-existing conversation a dedicated space with the conversation creator and default settings.
+
 The two baseline seed mutations and their inverses are built with Reinhardt Query
 in the owning federation and marketplace apps. `manage migrationseeds --check`
 compares their rendered PostgreSQL statements with the four canonical SQL assets.
@@ -147,8 +149,7 @@ history; never rewrite an applied migration. The native filesystem source parses
 static Rust syntax without executing arbitrary function calls, so these generated
 assets remain literal `include_str!` payloads in the native graph. This is
 materialized Query output, not a handwritten DML exception or a second migration
-engine. The sole raw statement in the forward seed assets is the transaction-local
-search-path setting. Regression checks load the exact generated SQL through
+engine. The forward seed assets also set the transaction-local search path or deployment scope where needed. Regression checks load the exact generated SQL through
 `FilesystemSource` and verify both initial gate values after migration and after
 complete reversal/reapplication.
 

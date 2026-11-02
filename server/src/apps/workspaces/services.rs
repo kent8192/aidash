@@ -12,4 +12,5 @@ pub use core::*;
 
 pub(crate) mod validation;
 
+pub(crate) mod migration_backfill;
 pub(crate) mod scratch;

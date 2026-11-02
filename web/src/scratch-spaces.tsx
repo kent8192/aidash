@@ -1,6 +1,7 @@
 import { useState } from "react";
+import { bytesFromGiB, millisFromCores } from "./scratch-settings";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { dashboardContext, transportGeneration } from "./transport";
+import { ApiError, dashboardContext, transportGeneration } from "./transport";
 import {
   scratchList,
   scratchLimits,
@@ -42,6 +43,7 @@ function Edit({
 }) {
   const { t } = useI18n();
   const [settings, setSettings] = useState(space.settings);
+  const [revision, setRevision] = useState(space.revision);
   const [hosts, setHosts] = useState(
     settings.allowed_hosts.kind === "hosts"
       ? settings.allowed_hosts.hosts.join("\n")
@@ -51,18 +53,22 @@ function Edit({
     settings.external_services.join("\n"),
   );
   const [member, setMember] = useState("");
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<"save" | "conflict" | null>(null);
   const [saving, setSaving] = useState(false);
   const change = <K extends keyof Settings>(key: K, value: Settings[K]) =>
     setSettings((old) => ({ ...old, [key]: value }));
   const act = async (operation: () => Promise<unknown>) => {
     setSaving(true);
-    setError(false);
+    setError(null);
     try {
       await operation();
       refresh();
-    } catch {
-      setError(true);
+    } catch (reason) {
+      setError(
+        reason instanceof ApiError && reason.status === 409
+          ? "conflict"
+          : "save",
+      );
     } finally {
       setSaving(false);
     }
@@ -76,7 +82,7 @@ function Edit({
           max={limits.ceilings.capacity_bytes / gib}
           value={settings.capacity_bytes / gib}
           onChange={(e) =>
-            change("capacity_bytes", Number(e.target.value) * gib)
+            change("capacity_bytes", bytesFromGiB(e.target.value))
           }
         />
       </Field>
@@ -84,12 +90,14 @@ function Edit({
         <Input
           type="number"
           min={1}
+          max={365}
+          step={1}
           value={settings.idle_expiry_days ?? ""}
           placeholder={t("scratchNever")}
           onChange={(e) =>
             change(
               "idle_expiry_days",
-              e.target.value ? Number(e.target.value) : null,
+              e.target.value ? Math.round(Number(e.target.value)) : null,
             )
           }
         />
@@ -143,7 +151,9 @@ function Edit({
           max={limits.ceilings.cpu_millis / 1000}
           step={0.001}
           value={settings.cpu_millis / 1000}
-          onChange={(e) => change("cpu_millis", Number(e.target.value) * 1000)}
+          onChange={(e) =>
+            change("cpu_millis", millisFromCores(e.target.value))
+          }
         />
       </Field>
       <Field label={t("scratchMemory")}>
@@ -152,26 +162,28 @@ function Edit({
           min={1}
           max={limits.ceilings.memory_bytes / gib}
           value={settings.memory_bytes / gib}
-          onChange={(e) => change("memory_bytes", Number(e.target.value) * gib)}
+          onChange={(e) => change("memory_bytes", bytesFromGiB(e.target.value))}
         />
       </Field>
       <Field label={t("scratchSent")}>
         <Input
           type="number"
-          min={0}
+          min={1 / gib}
+          max={limits.ceilings.daily_sent_bytes / gib}
           value={settings.daily_sent_bytes / gib}
           onChange={(e) =>
-            change("daily_sent_bytes", Number(e.target.value) * gib)
+            change("daily_sent_bytes", bytesFromGiB(e.target.value))
           }
         />
       </Field>
       <Field label={t("scratchReceived")}>
         <Input
           type="number"
-          min={0}
+          min={1 / gib}
+          max={limits.ceilings.daily_received_bytes / gib}
           value={settings.daily_received_bytes / gib}
           onChange={(e) =>
-            change("daily_received_bytes", Number(e.target.value) * gib)
+            change("daily_received_bytes", bytesFromGiB(e.target.value))
           }
         />
       </Field>
@@ -192,14 +204,20 @@ function Edit({
         onClick={() =>
           void act(() =>
             scratchSettings(space.id, {
-              ...settings,
-              docker_enabled:
-                settings.docker_enabled && limits.ceilings.docker_allowed,
-              allowed_hosts:
-                settings.allowed_hosts.kind === "all"
-                  ? { kind: "all" }
-                  : { kind: "hosts", hosts: split(hosts) },
-              external_services: split(services),
+              revision,
+              settings: {
+                ...settings,
+                docker_enabled:
+                  settings.docker_enabled && limits.ceilings.docker_allowed,
+                allowed_hosts:
+                  settings.allowed_hosts.kind === "all"
+                    ? { kind: "all" }
+                    : { kind: "hosts", hosts: split(hosts) },
+                external_services: split(services),
+              },
+            }).then((result) => {
+              setRevision((current) => current + 1);
+              return result;
             }),
           )
         }
@@ -249,7 +267,16 @@ function Edit({
       >
         {t("scratchDelete")}
       </Button>
-      {error && <Notice role="alert">{t("scratchSaveError")}</Notice>}
+      {error && (
+        <Notice role="alert">
+          {t(error === "conflict" ? "scratchConflict" : "scratchSaveError")}
+          {error === "conflict" && (
+            <Button onClick={() => window.location.reload()}>
+              {t("scratchReload")}
+            </Button>
+          )}
+        </Notice>
+      )}
     </div>
   );
 }

@@ -20,6 +20,8 @@ pub struct ScratchSpace {
 	pub creator: String,
 	#[field(field_type = "text")]
 	pub state: String,
+	pub revision: i64,
+	pub wipe_generation: i64,
 	pub created_at: DateTime<Utc>,
 	pub last_used_at: DateTime<Utc>,
 }

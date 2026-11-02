@@ -2,6 +2,30 @@ use super::*;
 use std::collections::BTreeSet;
 
 #[test]
+fn idle_and_daily_budgets_have_bounded_positive_values() {
+	let limits = ScratchCeilings::default();
+	let hosts = HostAllowlist::All;
+	let mut settings = ScratchSettings::default();
+	assert!(settings.validate(&limits, &hosts).is_ok());
+	settings.idle_expiry_days = Some(366);
+	assert!(settings.validate(&limits, &hosts).is_err());
+	settings.idle_expiry_days = None;
+	settings.daily_sent_bytes = 0;
+	assert!(settings.validate(&limits, &hosts).is_err());
+	settings.daily_sent_bytes = 1024 * 1024 * 1024 * 1024 + 1;
+	assert!(settings.validate(&limits, &hosts).is_err());
+	settings.daily_sent_bytes = 1024 * 1024 * 1024 * 1024;
+	settings.daily_received_bytes = 0;
+	assert!(settings.validate(&limits, &hosts).is_err());
+	settings.daily_received_bytes = 1024 * 1024 * 1024 * 1024 + 1;
+	assert!(settings.validate(&limits, &hosts).is_err());
+	let mut tighter = limits;
+	tighter.daily_sent_bytes = 50 * 1024 * 1024 * 1024;
+	settings.daily_received_bytes = 1;
+	assert!(settings.validate(&tighter, &hosts).is_err());
+}
+
+#[test]
 fn settings_cannot_expand_tenant_hosts_or_enable_disallowed_docker() {
 	let ceiling = ScratchCeilings::default();
 	let tenant = HostAllowlist::Hosts(BTreeSet::from(["example.com".to_owned()]));
@@ -28,6 +52,8 @@ fn membership_and_expiry_follow_conversation_person_and_last_use() {
 		creator: "alice".into(),
 		members: BTreeSet::from(["bob".into()]),
 		state: ScratchState::Active,
+		revision: 0,
+		wipe_generation: 0,
 		settings: ScratchSettings::default(),
 		created_at: now,
 		last_used_at: now,
@@ -38,7 +64,7 @@ fn membership_and_expiry_follow_conversation_person_and_last_use() {
 	assert!(space.is_expired(now + Duration::days(14)));
 	space.settings.idle_expiry_days = None;
 	assert!(!space.is_expired(now + Duration::days(100)));
-	space.clear();
+	space.tombstone();
 	assert!(!space.may_use("alice"));
 }
 

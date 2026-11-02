@@ -90,6 +90,7 @@ impl ScratchScope for Memory {
 	}
 	async fn clear_contents(&mut self, id: Uuid) -> Result<()> {
 		self.cleared.push(id);
+		self.spaces.get_mut(&id).unwrap().wipe_generation += 1;
 		Ok(())
 	}
 	async fn subnode_creator_run(&mut self, workspace: Uuid) -> Result<Option<Run>> {
@@ -114,6 +115,8 @@ fn space(now: DateTime<Utc>) -> ScratchSpace {
 		creator: "alice".into(),
 		members: BTreeSet::new(),
 		state: ScratchState::Active,
+		revision: 0,
+		wipe_generation: 0,
 		settings: ScratchSettings {
 			allowed_hosts: HostAllowlist::Hosts(BTreeSet::new()),
 			..ScratchSettings::default()
@@ -157,7 +160,7 @@ async fn membership_and_policy_bound_settings_control_mutations() {
 	let mut approved = space.settings.clone();
 	approved.allowed_hosts = HostAllowlist::Hosts(BTreeSet::from(["example.com".into()]));
 	approved.external_services.insert("approved".into());
-	update_settings(&mut scope, id, now, approved)
+	update_settings(&mut scope, id, now, 0, approved)
 		.await
 		.unwrap();
 	assert_eq!(
@@ -167,14 +170,14 @@ async fn membership_and_policy_bound_settings_control_mutations() {
 	let mut settings = space.settings.clone();
 	settings.allowed_hosts = HostAllowlist::Hosts(BTreeSet::from(["outside.example".into()]));
 	assert!(
-		update_settings(&mut scope, id, now, settings)
+		update_settings(&mut scope, id, now, 1, settings)
 			.await
 			.is_err()
 	);
 	let mut settings = space.settings.clone();
 	settings.external_services.insert("unapproved".into());
 	assert!(matches!(
-		update_settings(&mut scope, id, now, settings).await,
+		update_settings(&mut scope, id, now, 1, settings).await,
 		Err(Error::Forbidden)
 	));
 	assert_eq!(
@@ -191,10 +194,56 @@ async fn membership_and_policy_bound_settings_control_mutations() {
 	scope.person = "alice".into();
 	clear(&mut scope, id, now).await.unwrap();
 	assert_eq!(scope.cleared, vec![id]);
+	assert_eq!(scope.spaces[&id].wipe_generation, 1);
+	assert!(read(&mut scope, id, now).await.is_ok());
+}
+
+#[tokio::test]
+async fn expired_space_can_be_cleared_or_deleted_by_a_member() {
+	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+	let mut scope = Memory {
+		person: "alice".into(),
+		..Default::default()
+	};
+	let space = space(now);
+	let id = space.id;
+	create(&mut scope, &space).await.unwrap();
+	add_member(&mut scope, id, now, "bob").await.unwrap();
+	scope.person = "bob".into();
+	let expired = now + Duration::days(15);
+	clear(&mut scope, id, expired).await.unwrap();
+	assert!(read(&mut scope, id, expired).await.is_ok());
+	assert_eq!(scope.cleared, vec![id]);
+	delete(&mut scope, id, expired + Duration::days(15))
+		.await
+		.unwrap();
+	assert!(
+		read(&mut scope, id, expired + Duration::days(15))
+			.await
+			.is_err()
+	);
+	assert_eq!(scope.cleared, vec![id, id]);
+}
+
+#[tokio::test]
+async fn stale_settings_revision_does_not_overwrite_another_members_edit() {
+	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+	let mut scope = Memory {
+		person: "alice".into(),
+		..Default::default()
+	};
+	let space = space(now);
+	create(&mut scope, &space).await.unwrap();
+	let mut first = space.settings.clone();
+	first.idle_expiry_days = Some(30);
+	update_settings(&mut scope, space.id, now, 0, first)
+		.await
+		.unwrap();
 	assert!(matches!(
-		read(&mut scope, id, now).await,
-		Err(Error::Forbidden)
+		update_settings(&mut scope, space.id, now, 0, space.settings).await,
+		Err(Error::Conflict(_))
 	));
+	assert_eq!(scope.spaces[&space.id].settings.idle_expiry_days, Some(30));
 }
 
 #[tokio::test]
@@ -237,6 +286,33 @@ async fn run_requires_starter_authority_and_receiving_node() {
 			.await
 			.is_err()
 	);
+}
+
+#[tokio::test]
+async fn removing_a_conversation_starter_revokes_their_runs() {
+	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+	let mut scope = Memory {
+		person: "alice".into(),
+		..Default::default()
+	};
+	let space = space(now);
+	create(&mut scope, &space).await.unwrap();
+	add_member(&mut scope, space.id, now, "bob").await.unwrap();
+	let mut run =
+		crate::test_support::run_of(crate::test_support::snapshot("aidash://local", "agent"));
+	run.node = space.node.clone();
+	scope.binding = Some((space.id, "bob".into()));
+	assert_eq!(
+		scratch_space_for_run(&mut scope, &run, now).await.unwrap(),
+		space.id
+	);
+	remove_member(&mut scope, space.id, now, "bob")
+		.await
+		.unwrap();
+	assert!(matches!(
+		scratch_space_for_run(&mut scope, &run, now).await,
+		Err(Error::Forbidden)
+	));
 }
 
 #[tokio::test]
@@ -374,13 +450,13 @@ async fn members_can_use_services_already_shared_with_the_space() {
 		scratch_space_for_run(&mut scope, &run, now).await.unwrap(),
 		space.id
 	);
-	update_settings(&mut scope, space.id, now, space.settings.clone())
+	update_settings(&mut scope, space.id, now, 0, space.settings.clone())
 		.await
 		.unwrap();
 	let mut expanded = space.settings;
 	expanded.external_services.insert("another-service".into());
 	assert!(matches!(
-		update_settings(&mut scope, space.id, now, expanded).await,
+		update_settings(&mut scope, space.id, now, 1, expanded).await,
 		Err(Error::Forbidden)
 	));
 }

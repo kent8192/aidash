@@ -111,6 +111,16 @@ pub(super) fn migration() -> Migration {
             constraint_sql: "CONSTRAINT conversations_scratch_space_fkey FOREIGN KEY (tenant, scratch_space_id) REFERENCES scratch_spaces(tenant, id) ON DELETE NO ACTION ON UPDATE NO ACTION"
                 .to_string(),
         })
+        .add_operation(Operation::AlterColumn {
+            table: "scratch_spaces".into(), column: "revision".into(),
+            old_definition: Some(ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true).with_default(Some("0".into()))),
+            new_definition: ColumnDefinition::new("revision", FieldType::BigInteger).with_not_null(true), mysql_options: None,
+        })
+        .add_operation(Operation::AlterColumn {
+            table: "scratch_spaces".into(), column: "wipe_generation".into(),
+            old_definition: Some(ColumnDefinition::new("wipe_generation", FieldType::BigInteger).with_not_null(true).with_default(Some("0".into()))),
+            new_definition: ColumnDefinition::new("wipe_generation", FieldType::BigInteger).with_not_null(true), mysql_options: None,
+        })
         .add_dependency("workspaces", "0017_conversation_scratch_space")
         .atomic(true)
         .with_initial(None)

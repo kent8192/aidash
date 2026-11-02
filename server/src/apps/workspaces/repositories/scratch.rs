@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 use aidash_domain::{
 	Run,
 	nodes::NodeName,
+	policy::SubjectKind,
 	scratch::{HostAllowlist, ScratchCeilings, ScratchSettings, ScratchSpace, ScratchState},
 };
 use reinhardt::db::{
@@ -25,7 +26,17 @@ pub(crate) async fn load(
 	tenant: &str,
 	id: Uuid,
 ) -> Result<Option<ScratchSpace>> {
-	let (sql, values) = Query::select()
+	load_with_lock(tx, tenant, id, true).await
+}
+
+async fn load_with_lock(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	id: Uuid,
+	lock: bool,
+) -> Result<Option<ScratchSpace>> {
+	let mut query = Query::select();
+	query
 		.columns(
 			[
 				"id",
@@ -33,6 +44,8 @@ pub(crate) async fn load(
 				"name",
 				"creator",
 				"state",
+				"revision",
+				"wipe_generation",
 				"created_at",
 				"last_used_at",
 			]
@@ -40,9 +53,11 @@ pub(crate) async fn load(
 		)
 		.from(Alias::new("scratch_spaces"))
 		.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
-		.and_where(Expr::col("id").eq(Expr::value(id)))
-		.lock(LockType::Update)
-		.build(PostgresQueryBuilder);
+		.and_where(Expr::col("id").eq(Expr::value(id)));
+	if lock {
+		query.lock(LockType::Update);
+	}
+	let (sql, values) = query.build(PostgresQueryBuilder);
 	let Some(row) = tx.fetch_optional(&sql, convert_values(values)).await? else {
 		return Ok(None);
 	};
@@ -77,6 +92,8 @@ pub(crate) async fn load(
 		name: row.get("name").map_err(err)?,
 		creator: row.get("creator").map_err(err)?,
 		state: serde_json::from_value::<ScratchState>(Value::String(state))?,
+		revision: row.get("revision").map_err(err)?,
+		wipe_generation: row.get("wipe_generation").map_err(err)?,
 		settings: serde_json::from_value::<ScratchSettings>(settings)?,
 		members,
 		created_at: row.get("created_at").map_err(err)?,
@@ -168,6 +185,7 @@ pub(crate) async fn save(
 	let (sql, values) = Query::update()
 		.table(Alias::new("scratch_spaces"))
 		.value(Alias::new("state"), state)
+		.value(Alias::new("revision"), space.revision)
 		.value(Alias::new("last_used_at"), space.last_used_at)
 		.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
 		.and_where(Expr::col("id").eq(Expr::value(space.id)))
@@ -326,16 +344,22 @@ fn effective_policy(
 pub(crate) struct ScratchAdapter<'a> {
 	pub access: &'a mut Access,
 	pub services: &'a mut dyn ScratchServices,
+	pub person_override: Option<String>,
 }
 
 #[async_trait::async_trait]
 impl aidash_application::scratch::ScratchScope for ScratchAdapter<'_> {
 	fn person(&self) -> &str {
-		&self.access.identity.subject
+		self.person_override
+			.as_deref()
+			.unwrap_or(&self.access.identity.subject)
 	}
 	async fn require_create(&mut self, node: &NodeName) -> aidash_application::Result<()> {
 		let resource = self.access.node_resource(node).await?;
-		let person = self.access.identity.subject.clone();
+		let person = self
+			.person_override
+			.clone()
+			.unwrap_or_else(|| self.access.identity.subject.clone());
 		let evaluation = self.access.evaluation(
 			&person,
 			&resource,
@@ -359,7 +383,17 @@ impl aidash_application::scratch::ScratchScope for ScratchAdapter<'_> {
 		let resource = self.access.node_resource(node).await?;
 		let action = aidash_domain::identity::tenant_administration::NODE_USE;
 		self.access.require(&resource, action).await?;
-		if !self.access.subjects.iter().any(|subject| subject == person) {
+		if !self
+			.access
+			.snapshot
+			.bundle
+			.subjects
+			.get(person)
+			.is_some_and(|subject| subject.kind == SubjectKind::User && subject.enabled)
+		{
+			return Err(aidash_application::Error::Forbidden);
+		}
+		{
 			let evaluation = self.access.evaluation(person, &resource, action);
 			let mut decision = self.access.snapshot.bundle.evaluate(&evaluation);
 			decision.revision = self.access.snapshot.revision;
@@ -436,7 +470,7 @@ impl aidash_application::scratch::ScratchScope for ScratchAdapter<'_> {
 			.map_err(aidash_application::Error::from)?;
 		let mut spaces = Vec::with_capacity(ids.len());
 		for id in ids {
-			if let Some(space) = load(&mut **self.access.tx, &tenant, id)
+			if let Some(space) = load_with_lock(&mut **self.access.tx, &tenant, id, false)
 				.await
 				.map_err(aidash_application::Error::from)?
 			{
@@ -554,17 +588,25 @@ impl ScratchServices for NativeScratchServices<'_> {
 		access: &mut Access,
 		id: Uuid,
 	) -> aidash_application::Result<()> {
-		// The cleared tombstone is the durable disposal intent. Runtime workers
-		// may reclaim its contents after this transaction commits.
+		// Each request has a distinct durable generation so a worker cannot
+		// acknowledge a later wipe while processing an earlier one.
 		let tenant = access.identity.tenant.clone();
-		let space = load(&mut **access.tx, &tenant, id)
+		let (sql, values) = Query::update()
+			.table(Alias::new("scratch_spaces"))
+			.value_expr(
+				Alias::new("wipe_generation"),
+				Expr::col("wipe_generation").add(1),
+			)
+			.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.build(PostgresQueryBuilder);
+		let result = access
+			.tx
+			.execute(&sql, convert_values(values))
 			.await
-			.map_err(aidash_application::Error::from)?
-			.ok_or(aidash_application::Error::Forbidden)?;
-		if space.state != ScratchState::Cleared {
-			return Err(aidash_application::Error::Conflict(
-				"scratch space was not cleared".into(),
-			));
+			.map_err(crate::Error::from)?;
+		if result.rows_affected != 1 {
+			return Err(aidash_application::Error::Forbidden);
 		}
 		Ok(())
 	}
@@ -578,9 +620,8 @@ impl ScratchServices for NativeScratchServices<'_> {
 			// A receiver may only allocate for its own already-admitted Run.
 			// Locking the admission serializes concurrent lookups for this Run.
 			let tenant = access.identity.tenant.clone();
-			let person = access.identity.subject.clone();
 			let (sql, values) = Query::select()
-				.column(Alias::new("id"))
+				.column(Alias::new("credential_id"))
 				.from(Alias::new("authorization_remote_admissions"))
 				.and_where(Expr::col("id").eq(Expr::value(run.id)))
 				.and_where(Expr::col("tenant").eq(Expr::value(tenant.clone())))
@@ -600,18 +641,38 @@ impl ScratchServices for NativeScratchServices<'_> {
 							.to_owned(),
 					),
 				)
-				.and_where(
-					Expr::col("credential_id").eq(Expr::value(access.identity.credential_id)),
-				)
 				.lock(LockType::Update)
 				.build(PostgresQueryBuilder);
-			if access
+			let admission = access
 				.tx
 				.fetch_optional(&sql, convert_values(values))
 				.await
 				.map_err(crate::Error::from)?
-				.is_none()
-			{
+				.ok_or(aidash_application::Error::Forbidden)?;
+			let credential: Uuid = admission
+				.get("credential_id")
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(crate::Error::from)?;
+			let (sql, values) = Query::select()
+				.column(Alias::new("subject"))
+				.from(Alias::new("authorization_credentials"))
+				.and_where(Expr::col("id").eq(Expr::value(credential)))
+				.and_where(Expr::col("tenant").eq(tenant.clone()))
+				.and_where(Expr::col("revoked_at").is_null())
+				.and_where(Expr::col("expires_at").gt(Expr::value(chrono::Utc::now())))
+				.lock(LockType::Share)
+				.build(PostgresQueryBuilder);
+			let row = access
+				.tx
+				.fetch_optional(&sql, convert_values(values))
+				.await
+				.map_err(crate::Error::from)?
+				.ok_or(aidash_application::Error::Forbidden)?;
+			let person: String = row
+				.get("subject")
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(crate::Error::from)?;
+			if !access.subjects.contains(&person) {
 				return Err(aidash_application::Error::Forbidden);
 			}
 			// Serialize first allocation on the receiving Node, including different
@@ -648,6 +709,7 @@ impl ScratchServices for NativeScratchServices<'_> {
 				let mut scope = ScratchAdapter {
 					access,
 					services: self,
+					person_override: Some(person.clone()),
 				};
 				let (_, tenant_hosts) =
 					aidash_application::scratch::ScratchScope::limits(&mut scope, &run.node)
@@ -661,6 +723,8 @@ impl ScratchServices for NativeScratchServices<'_> {
 					creator: person.clone(),
 					members: Default::default(),
 					state: ScratchState::Active,
+					revision: 0,
+					wipe_generation: 0,
 					settings: ScratchSettings::for_tenant(&tenant_hosts),
 					created_at: now,
 					last_used_at: now,

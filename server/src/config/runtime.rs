@@ -158,6 +158,8 @@ impl Config {
 					capacity_bytes: node.scratch_capacity_bytes,
 					cpu_millis: node.scratch_cpu_millis,
 					memory_bytes: node.scratch_memory_bytes,
+					daily_sent_bytes: node.scratch_daily_sent_bytes,
+					daily_received_bytes: node.scratch_daily_received_bytes,
 					docker_allowed: node.scratch_docker_allowed,
 					all_hosts_allowed: node.scratch_all_hosts_allowed,
 				},

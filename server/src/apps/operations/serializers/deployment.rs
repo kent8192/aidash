@@ -53,6 +53,10 @@ pub struct DeploymentSettings {
 	pub scratch_cpu_millis: u32,
 	#[setting(default = "17179869184")]
 	pub scratch_memory_bytes: u64,
+	#[setting(default = "1099511627776")]
+	pub scratch_daily_sent_bytes: u64,
+	#[setting(default = "1099511627776")]
+	pub scratch_daily_received_bytes: u64,
 	/// Whether every Tenant on this Offering may enable Docker.
 	#[setting(default = "false")]
 	pub scratch_docker_allowed: bool,
@@ -133,6 +137,8 @@ impl SettingsValidation for DeploymentSettings {
 		if !(107374182400..=1099511627776).contains(&self.scratch_capacity_bytes)
 			|| self.scratch_cpu_millis < 4000
 			|| self.scratch_memory_bytes < 17179869184
+			|| self.scratch_daily_sent_bytes < 107374182400
+			|| self.scratch_daily_received_bytes < 107374182400
 		{
 			return Err(ValidationError::Constraint(
 				"scratch ceilings must accommodate defaults and capacity must not exceed 1 TiB"
@@ -215,6 +221,8 @@ mod tests {
 			.is_err()
 		);
 		assert!(check(&settings(json!({"scratch_cpu_millis": 1000}))).is_err());
+		assert!(check(&settings(json!({"scratch_daily_sent_bytes": 1}))).is_err());
+		assert!(check(&settings(json!({"scratch_daily_received_bytes": 1}))).is_err());
 		assert!(
 			check(&settings(
 				json!({"scratch_tenant_hosts": {"example": ["*", "example.com"]}})

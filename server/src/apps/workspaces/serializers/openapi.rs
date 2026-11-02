@@ -25,7 +25,7 @@ use crate::apps::workspaces::serializers::tasks::ConversationResponse;
 use crate::apps::workspaces::serializers::tasks::PageQuery;
 use crate::apps::workspaces::serializers::tasks::TaskPage;
 use crate::{Result, config::openapi::Contracts};
-use aidash_domain::scratch::{ScratchSettings, ScratchSpace};
+use aidash_domain::scratch::ScratchSpace;
 use reinhardt::rest::openapi::OpenApiSchema;
 
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
@@ -57,7 +57,8 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		"application/json",
 	)?;
 	contracts.path(document, views::scratch::read, &["Uuid"])?;
-	contracts.request::<_, ScratchSettings>(document, views::scratch::settings)?;
+	contracts
+		.request::<_, super::scratch::ScratchSettingsUpdate>(document, views::scratch::settings)?;
 	contracts.request::<_, ScratchMember>(document, views::scratch::add_member)?;
 	contracts.request::<_, ScratchMember>(document, views::scratch::remove_member)?;
 	contracts.path(document, views::scratch::settings, &["Uuid"])?;

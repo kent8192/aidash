@@ -3400,3 +3400,109 @@ async fn context_sources_migration_accepts_exact_native_policies_and_rejects_mis
 	unknown["context_source"]["unknown"] = json!(true);
 	assert!(!accepts(unknown).await);
 }
+
+#[rstest]
+#[tokio::test]
+async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture
+		.migrate_excluding(&[
+			("workspaces", "0017_conversation_scratch_space"),
+			("workspaces", "0018_scratch_space_model_state"),
+			("workspaces", "0019_scratch_node_index"),
+		])
+		.await;
+	fixture.tenant_root("scratch-upgrade").await;
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	let node = aidash_domain::nodes::NodeName::derived("scratch-upgrade").to_string();
+	let workspace_id = Uuid::new_v4();
+	let workspace = Workspace::build()
+		.id(workspace_id)
+		.tenant("scratch-upgrade")
+		.node(node.clone())
+		.title("Legacy conversation")
+		.goal("Upgrade")
+		.state(json!({}).into())
+		.revision(0)
+		.finish();
+	Workspace::objects()
+		.create_with_conn(&mut connection, &workspace)
+		.await
+		.unwrap();
+	let ids = [Uuid::new_v4(), Uuid::new_v4()];
+	for id in ids {
+		let sql = Query::insert()
+			.into_table(Alias::new("conversations"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"workspace_id",
+					"target",
+					"target_kind",
+					"created_by",
+					"created_at",
+				]
+				.map(Alias::new),
+			)
+			.values_panic::<_, reinhardt::query::Value>([
+				id.into(),
+				"scratch-upgrade".into(),
+				workspace_id.into(),
+				"assistant".into(),
+				"agent".into(),
+				"alice".into(),
+				chrono::DateTime::parse_from_rfc3339("2020-01-01T00:00:00Z")
+					.unwrap()
+					.with_timezone(&chrono::Utc)
+					.into(),
+			])
+			.to_string(PostgresQueryBuilder);
+		fixture.connection.execute(&sql, vec![]).await.unwrap();
+	}
+	let before_backfill = chrono::Utc::now();
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let query = Query::select()
+		.columns(
+			[
+				("c", "scratch_space_id"),
+				("s", "creator"),
+				("s", "node"),
+				("s", "last_used_at"),
+			]
+			.map(|(a, b)| (Alias::new(a), Alias::new(b))),
+		)
+		.from_as(Alias::new("conversations"), Alias::new("c"))
+		.join(
+			reinhardt::query::JoinType::InnerJoin,
+			reinhardt::query::TableRef::table_alias(Alias::new("scratch_spaces"), Alias::new("s")),
+			Expr::col((Alias::new("c"), Alias::new("scratch_space_id")))
+				.equals((Alias::new("s"), Alias::new("id"))),
+		)
+		.and_where(Expr::col((Alias::new("c"), Alias::new("tenant"))).eq("scratch-upgrade"))
+		.to_string(PostgresQueryBuilder);
+	let rows: Vec<(Uuid, String, String, chrono::DateTime<chrono::Utc>)> =
+		sqlx::query_as(&query).fetch_all(&pool).await.unwrap();
+	assert_eq!(rows.len(), 2);
+	assert_ne!(rows[0].0, rows[1].0);
+	assert!(
+		rows.iter()
+			.all(|(_, creator, assigned_node, last_used)| creator == "alice"
+				&& assigned_node == &node
+				&& *last_used >= before_backfill)
+	);
+	let settings = Query::select()
+		.column(Alias::new("settings"))
+		.from(Alias::new("scratch_space_settings"))
+		.and_where(Expr::col(Alias::new("tenant")).eq("scratch-upgrade"))
+		.to_string(PostgresQueryBuilder);
+	let values: Vec<(serde_json::Value,)> =
+		sqlx::query_as(&settings).fetch_all(&pool).await.unwrap();
+	assert_eq!(values.len(), 2);
+	assert!(values.iter().all(|(value,)| *value
+		== serde_json::to_value(aidash_domain::scratch::ScratchSettings::default()).unwrap()));
+}

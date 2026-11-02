@@ -7,7 +7,21 @@ pub(super) fn migration() -> Migration {
 		.atomic(true)
 		.add_operation(Operation::AddColumn {
 			table: "conversations".into(),
-			column: ColumnDefinition::new("scratch_space_id", FieldType::Uuid).with_not_null(true),
+			column: ColumnDefinition::new("scratch_space_id", FieldType::Uuid),
+			mysql_options: None,
+		})
+		.add_operation(Operation::RunSQL {
+			sql: include_str!("sql/forward/0017_conversation_scratch_space.sql").to_owned(),
+			reverse_sql: Some(
+				include_str!("sql/backward/0017_conversation_scratch_space.sql").to_owned(),
+			),
+		})
+		.add_operation(Operation::AlterColumn {
+			table: "conversations".into(),
+			column: "scratch_space_id".into(),
+			old_definition: Some(ColumnDefinition::new("scratch_space_id", FieldType::Uuid)),
+			new_definition: ColumnDefinition::new("scratch_space_id", FieldType::Uuid)
+				.with_not_null(true),
 			mysql_options: None,
 		})
 		.add_operation(Operation::AddConstraintDefinition {

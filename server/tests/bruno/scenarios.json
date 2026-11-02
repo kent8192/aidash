@@ -16690,7 +16690,7 @@
     {
       "name": "1515 scratch-settings - Anonymous request is rejected",
       "file": "contracts/1515-scratch-settings.bru",
-      "endpoint": "PATCH /api/scratch-spaces/{id}/settings",
+      "endpoint": "PUT /api/scratch-spaces/{id}/settings",
       "scenario": "Anonymous request is rejected",
       "status": 401,
       "required_checks": [
@@ -16702,7 +16702,7 @@
     {
       "name": "1516 scratch-settings - Wrong JSON media type is rejected",
       "file": "contracts/1516-scratch-settings.bru",
-      "endpoint": "PATCH /api/scratch-spaces/{id}/settings",
+      "endpoint": "PUT /api/scratch-spaces/{id}/settings",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
       "required_checks": [
@@ -16714,7 +16714,7 @@
     {
       "name": "1517 scratch-settings - Malformed JSON cannot reach the use case",
       "file": "contracts/1517-scratch-settings.bru",
-      "endpoint": "PATCH /api/scratch-spaces/{id}/settings",
+      "endpoint": "PUT /api/scratch-spaces/{id}/settings",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
       "required_checks": [

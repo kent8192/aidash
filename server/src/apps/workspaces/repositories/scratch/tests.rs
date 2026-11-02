@@ -23,6 +23,8 @@ async fn space_and_settings_are_tenant_scoped_and_transactional(
 		name: "Project".into(),
 		creator: "alice".into(),
 		state: ScratchState::Active,
+		revision: 0,
+		wipe_generation: 0,
 		settings: ScratchSettings::default(),
 		members: BTreeSet::from(["bob".into()]),
 		created_at: now,
@@ -31,6 +33,20 @@ async fn space_and_settings_are_tenant_scoped_and_transactional(
 	let mut tx = database.begin_in(&tenant_a).await;
 	insert(&mut *tx, "scratch-a", &space).await.unwrap();
 	tx.commit().await.unwrap();
+	// An unrelated transaction may inspect the space while a writer owns it.
+	let mut writer = database.begin_in(&tenant_a).await;
+	load(&mut *writer, "scratch-a", space.id).await.unwrap();
+	let mut reader = database.begin_in(&tenant_a).await;
+	let read = tokio::time::timeout(
+		std::time::Duration::from_secs(5),
+		load_with_lock(&mut *reader, "scratch-a", space.id, false),
+	)
+	.await
+	.expect("listing must not wait for a row lock")
+	.unwrap();
+	assert!(read.is_some());
+	reader.rollback().await.unwrap();
+	writer.rollback().await.unwrap();
 	let mut neighbour = space.clone();
 	neighbour.id = Uuid::new_v4();
 	neighbour.node = NodeName::derived("scratch-b");
@@ -53,7 +69,7 @@ async fn space_and_settings_are_tenant_scoped_and_transactional(
 	assert_eq!(loaded.members, BTreeSet::from(["bob".into()]));
 	space.members.insert("carol".into());
 	space.settings.idle_expiry_days = None;
-	space.clear();
+	space.tombstone();
 	save(&mut *tx, "scratch-a", &space).await.unwrap();
 	tx.rollback().await.unwrap();
 	let mut tx = database.begin_in(&tenant_a).await;
@@ -194,4 +210,216 @@ fn effective_operator_policy_applies_tenant_docker_and_host_restrictions() {
 	policy.ceilings.all_hosts_allowed = true;
 	policy.tenant_hosts.insert("a".into(), vec!["*".into()]);
 	assert_eq!(effective_policy(&policy, "a").1, HostAllowlist::All);
+}
+
+#[rstest]
+#[tokio::test]
+async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
+	#[future] database: DatabaseFixture,
+) {
+	use crate::apps::identity::services::{access::Access, identity::SubjectIdentity};
+	use aidash_application::scratch::ScratchScope;
+	use reinhardt::db::orm::execution::convert_values;
+	use reinhardt::query::{
+		IntoValue as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+	};
+	use serde_json::json;
+	let database = database.await;
+	let tenant = "scratch-delegated";
+	let scope = database.tenant(tenant).await;
+	let node = NodeName::derived(tenant);
+	let credential = Uuid::new_v4();
+	let tasks = [Uuid::new_v4(), Uuid::new_v4()];
+	let workspace = Uuid::new_v4();
+	let run_ids = [Uuid::new_v4(), Uuid::new_v4()];
+	let peer_credentials = [Uuid::new_v4(), Uuid::new_v4()];
+	let bundle: aidash_domain::policy::PolicyBundle = serde_json::from_value(json!({
+        "tenant": tenant,
+        "subjects": {"alice": {"kind":"user"}, "node-peer": {"kind":"node"}, "service-peer": {"kind":"service"}},
+        "policies": [{"id":"node-use", "effect":"allow", "subjects":{"any":true}, "actions":["node.use", "scratch.create"], "resources":{"kinds":["node"]}}]
+    })).unwrap();
+	let mut tx = database.begin_in(&scope).await;
+	let (sql, vals) = Query::insert()
+		.into_table(Alias::new("authorization_bundles"))
+		.columns(["tenant", "revision", "document"].map(Alias::new))
+		.values_panic([
+			tenant.into_value(),
+			1_i64.into_value(),
+			serde_json::to_value(&bundle).unwrap().into_value(),
+		])
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, convert_values(vals)).await.unwrap();
+	let (sql, vals) = Query::insert()
+		.into_table(Alias::new("authorization_credentials"))
+		.columns(
+			[
+				"id",
+				"tenant",
+				"subject",
+				"token_hash",
+				"expires_at",
+				"issued_by",
+			]
+			.map(Alias::new),
+		)
+		.values_panic([
+			credential.into_value(),
+			tenant.into_value(),
+			"alice".into_value(),
+			vec![7_u8; 32].into_value(),
+			(Utc::now() + chrono::Duration::days(1)).into_value(),
+			"alice".into_value(),
+		])
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, convert_values(vals)).await.unwrap();
+	for (((id, task), peer), peer_credential) in run_ids
+		.into_iter()
+		.zip(tasks)
+		.zip(["node-peer", "service-peer"])
+		.zip(peer_credentials)
+	{
+		let (sql, vals) = Query::insert()
+			.into_table(Alias::new("authorization_credentials"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"subject",
+					"token_hash",
+					"expires_at",
+					"issued_by",
+				]
+				.map(Alias::new),
+			)
+			.values_panic([
+				peer_credential.into_value(),
+				tenant.into_value(),
+				peer.into_value(),
+				vec![if peer == "node-peer" { 8_u8 } else { 9_u8 }; 32].into_value(),
+				(Utc::now() + chrono::Duration::days(1)).into_value(),
+				"alice".into_value(),
+			])
+			.build(PostgresQueryBuilder);
+		tx.execute(&sql, convert_values(vals)).await.unwrap();
+		let (sql, vals) = Query::insert()
+			.into_table(Alias::new("runs"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"task_id",
+					"workspace_id",
+					"home_node",
+					"node",
+					"agent_id",
+					"agent_version",
+				]
+				.map(Alias::new),
+			)
+			.values_panic([
+				id.into_value(),
+				tenant.into_value(),
+				task.into_value(),
+				workspace.into_value(),
+				"aidash://home".into_value(),
+				node.as_str().into_value(),
+				"agent".into_value(),
+				"1".into_value(),
+			])
+			.build(PostgresQueryBuilder);
+		tx.execute(&sql, convert_values(vals)).await.unwrap();
+		let (sql, vals) = Query::insert()
+			.into_table(Alias::new("authorization_remote_admissions"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"node",
+					"source_node",
+					"grant_id",
+					"task_id",
+					"credential_id",
+					"subject_chain",
+					"description",
+				]
+				.map(Alias::new),
+			)
+			.values_panic([
+				id.into_value(),
+				tenant.into_value(),
+				node.as_str().into_value(),
+				"aidash://home".into_value(),
+				Uuid::new_v4().into_value(),
+				task.into_value(),
+				credential.into_value(),
+				reinhardt::query::Value::Array(
+					reinhardt::query::ArrayType::String,
+					Some(Box::new(vec!["alice".into_value(), peer.into_value()])),
+				),
+				json!({}).into_value(),
+			])
+			.build(PostgresQueryBuilder);
+		tx.execute(&sql, convert_values(vals)).await.unwrap();
+	}
+	tx.commit().await.unwrap();
+	let pool = database.pool().await;
+	let mut spaces = Vec::new();
+	for (((id, task), peer), peer_credential) in run_ids
+		.into_iter()
+		.zip(tasks)
+		.zip(["node-peer", "service-peer"])
+		.zip(peer_credentials)
+	{
+		let raw: aidash_domain::RawRun = serde_json::from_value(json!({
+			"id":id, "task_id":task, "workspace_id":workspace, "node":node,
+			"home_node":"aidash://home", "agent_id":"agent", "agent_version":"1",
+			"phase":"READY", "control":"ACTIVE", "step":0, "revision":0,
+			"observed_input_seq":0, "ledger_worker_ready":true, "error":null,
+			"lease_owner":null, "lease_until":null, "updated_at":Utc::now(),
+			"context":aidash_domain::context::Context::default(),
+			"pending":{"state_version":1,"data":{},"recovery":{"retry":null,"lease_recoveries":0}}
+		}))
+		.unwrap();
+		let run = raw.decode().unwrap();
+		let identity = SubjectIdentity {
+			http_session: None,
+			credential_id: peer_credential,
+			tenant: tenant.into(),
+			subject: peer.into(),
+		};
+		let snapshot = aidash_application::authorization::Snapshot {
+			revision: 1,
+			bundle: bundle.clone(),
+		};
+		let mut access = Access::from_transaction(
+			database.begin_in(&scope).await,
+			&pool,
+			"aidash://receiver",
+			None,
+			&identity,
+			snapshot,
+		);
+		access.subjects = vec!["alice".into(), peer.into()];
+		access.audit = false;
+		let policy = crate::config::ScratchOperatorPolicy::default();
+		let mut services = NativeScratchServices { policy: &policy };
+		let mut adapter = ScratchAdapter {
+			access: &mut access,
+			services: &mut services,
+			person_override: None,
+		};
+		let (id, starter) = adapter.run_binding(&run).await.unwrap();
+		assert_eq!(starter, "alice");
+		let space = adapter.load_for_update(id).await.unwrap();
+		assert_eq!(space.creator, "alice");
+		assert!(space.may_use("alice"));
+		spaces.push(id);
+		drop(adapter);
+		services.clear_contents(&mut access, id).await.unwrap();
+		let reloaded = load(&mut **access.tx, tenant, id).await.unwrap().unwrap();
+		assert_eq!(reloaded.wipe_generation as usize, spaces.len());
+		assert_eq!(reloaded.state, ScratchState::Active);
+		access.finish(Ok(())).await.unwrap();
+	}
+	assert_eq!(spaces[0], spaces[1]);
 }

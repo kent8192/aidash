@@ -20,6 +20,12 @@ pub(crate) struct ScratchMember {
 	pub subject: String,
 }
 #[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ScratchSettingsUpdate {
+	pub revision: i64,
+	pub settings: ScratchSettings,
+}
+#[derive(Deserialize, Serialize, JsonSchema)]
 pub(crate) struct ScratchList {
 	pub node: NodeName,
 }

@@ -1,12 +1,11 @@
 //! Scratch Space HTTP endpoints.
 use super::super::{
-	serializers::scratch::{ScratchCreate, ScratchList, ScratchMember},
+	serializers::scratch::{ScratchCreate, ScratchList, ScratchMember, ScratchSettingsUpdate},
 	services::scratch::{Operation, execute},
 };
 use crate::{authorization::identity::Actor, federation::Federation, http::json::Json};
-use aidash_domain::scratch::ScratchSettings;
 use reinhardt::http::ViewResult;
-use reinhardt::{Path, Query, Response, delete, get, patch, post};
+use reinhardt::{Path, Query, Response, delete, get, post, put};
 use uuid::Uuid;
 
 #[post("/api/scratch-spaces", name = "scratch-create", auth = "protected")]
@@ -45,7 +44,7 @@ pub async fn read(
 ) -> ViewResult<Response> {
 	crate::http::json(execute(&runtime, actor, Operation::Read(id)).await)
 }
-#[patch(
+#[put(
 	"/api/scratch-spaces/{id}/settings",
 	name = "scratch-settings",
 	auth = "protected"
@@ -54,7 +53,7 @@ pub async fn settings(
 	#[inject] runtime: Federation,
 	#[inject] actor: Actor,
 	Path(id): Path<Uuid>,
-	Json(input): Json<ScratchSettings>,
+	Json(input): Json<ScratchSettingsUpdate>,
 ) -> ViewResult<Response> {
 	crate::http::json(execute(&runtime, actor, Operation::Settings(id, input)).await)
 }

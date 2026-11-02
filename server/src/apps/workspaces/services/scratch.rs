@@ -1,7 +1,7 @@
 //! Transactional, Tenant-authorized Scratch Space operations.
 use super::super::{
 	repositories::scratch::{NativeScratchServices, ScratchAdapter},
-	serializers::scratch::ScratchCreate,
+	serializers::scratch::{ScratchCreate, ScratchSettingsUpdate},
 };
 use crate::{
 	Error, Result,
@@ -23,7 +23,7 @@ pub(crate) enum Operation {
 	List(NodeName),
 	Limits(NodeName),
 	Read(Uuid),
-	Settings(Uuid, ScratchSettings),
+	Settings(Uuid, ScratchSettingsUpdate),
 	AddMember(Uuid, String),
 	RemoveMember(Uuid, String),
 	Clear(Uuid),
@@ -46,6 +46,7 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 		let mut scope = ScratchAdapter {
 			access: &mut access,
 			services: &mut services,
+			person_override: None,
 		};
 		let now = Utc::now();
 		let value = match op {
@@ -63,6 +64,8 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 					creator: identity.subject.clone(),
 					members: Default::default(),
 					state: ScratchState::Active,
+					revision: 0,
+					wipe_generation: 0,
 					settings,
 					created_at: now,
 					last_used_at: now,
@@ -81,7 +84,7 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 			}
 			Operation::Read(id) => serde_json::to_value(app::read(&mut scope, id, now).await?)?,
 			Operation::Settings(id, value) => {
-				app::update_settings(&mut scope, id, now, value).await?;
+				app::update_settings(&mut scope, id, now, value.revision, value.settings).await?;
 				json!({"sent":true})
 			}
 			Operation::AddMember(id, subject) => {

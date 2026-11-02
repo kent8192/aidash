@@ -1573,8 +1573,10 @@ pub(crate) fn worker_resume_repository<'a>(
 	access: &'a Arc<tokio::sync::RwLock<crate::authorization::access::Access>>,
 	run: &'a crate::domain::Run,
 	agent: &'a crate::registry::AgentConfig,
+	scratch_space_id: uuid::Uuid,
 ) -> crate::apps::identity::repositories::execution::resume::Resume<'a> {
 	crate::apps::identity::repositories::execution::resume::Resume {
+		scratch_space_id,
 		federation,
 		remote,
 		access,

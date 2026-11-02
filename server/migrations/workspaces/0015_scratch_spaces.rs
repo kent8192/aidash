@@ -17,6 +17,12 @@ pub(super) fn migration() -> Migration {
 				ColumnDefinition::new("name", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("creator", FieldType::Text).with_not_null(true),
 				ColumnDefinition::new("state", FieldType::Text).with_not_null(true),
+				ColumnDefinition::new("revision", FieldType::BigInteger)
+					.with_not_null(true)
+					.with_default(Some("0".into())),
+				ColumnDefinition::new("wipe_generation", FieldType::BigInteger)
+					.with_not_null(true)
+					.with_default(Some("0".into())),
 				ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true),
 				ColumnDefinition::new("last_used_at", FieldType::TimestampTz).with_not_null(true),
 			],

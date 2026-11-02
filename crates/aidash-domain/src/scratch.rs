@@ -119,6 +119,8 @@ pub struct ScratchCeilings {
 	pub capacity_bytes: u64,
 	pub cpu_millis: u32,
 	pub memory_bytes: u64,
+	pub daily_sent_bytes: u64,
+	pub daily_received_bytes: u64,
 	pub docker_allowed: bool,
 	pub all_hosts_allowed: bool,
 }
@@ -129,6 +131,8 @@ impl Default for ScratchCeilings {
 			capacity_bytes: 1024 * GIB,
 			cpu_millis: 4000,
 			memory_bytes: 16 * GIB,
+			daily_sent_bytes: 1024 * GIB,
+			daily_received_bytes: 1024 * GIB,
 			docker_allowed: false,
 			all_hosts_allowed: false,
 		}
@@ -157,7 +161,13 @@ impl ScratchSettings {
 			|| self.cpu_millis > ceilings.cpu_millis
 			|| self.memory_bytes == 0
 			|| self.memory_bytes > ceilings.memory_bytes
-			|| self.idle_expiry_days == Some(0)
+			|| self
+				.idle_expiry_days
+				.is_some_and(|days| !(1..=365).contains(&days))
+			|| self.daily_sent_bytes == 0
+			|| self.daily_sent_bytes > ceilings.daily_sent_bytes
+			|| self.daily_received_bytes == 0
+			|| self.daily_received_bytes > ceilings.daily_received_bytes
 			|| self.execution_image.as_ref().is_some_and(|s| {
 				let Some((name, digest)) = s.rsplit_once("@sha256:") else {
 					return true;
@@ -196,6 +206,9 @@ pub struct ScratchSpace {
 	pub creator: String,
 	pub members: BTreeSet<String>,
 	pub state: ScratchState,
+	pub revision: i64,
+	/// Monotonic wipe request observed by the Execution Pod runtime.
+	pub wipe_generation: i64,
 	pub settings: ScratchSettings,
 	pub created_at: DateTime<Utc>,
 	pub last_used_at: DateTime<Utc>,
@@ -227,7 +240,7 @@ impl ScratchSpace {
 		self.expires_at().is_some_and(|expiry| now >= expiry)
 	}
 
-	pub fn clear(&mut self) {
+	pub fn tombstone(&mut self) {
 		self.state = ScratchState::Cleared;
 	}
 }

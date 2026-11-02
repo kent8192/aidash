@@ -126,9 +126,15 @@ pub async fn update_settings(
 	scope: &mut dyn ScratchScope,
 	id: ScratchSpaceId,
 	now: DateTime<Utc>,
+	revision: i64,
 	settings: ScratchSettings,
 ) -> Result<()> {
 	let mut space = read(scope, id, now).await?;
+	if space.revision != revision {
+		return Err(Error::Conflict(
+			"Scratch Space settings changed; reload and retry".into(),
+		));
+	}
 	let (ceilings, tenant_hosts) = scope.limits(&space.node).await?;
 	settings.validate(&ceilings, &tenant_hosts)?;
 	// Services already shared with the space remain usable by every member.
@@ -141,6 +147,10 @@ pub async fn update_settings(
 		.collect();
 	scope.validate_references(&space.node, &additions).await?;
 	space.settings = settings;
+	space.revision = space
+		.revision
+		.checked_add(1)
+		.ok_or_else(|| Error::Conflict("Scratch Space revision exhausted".into()))?;
 	scope.save(&space).await
 }
 
@@ -175,8 +185,13 @@ pub async fn clear(
 	id: ScratchSpaceId,
 	now: DateTime<Utc>,
 ) -> Result<()> {
-	let mut space = read(scope, id, now).await?;
-	space.clear();
+	let person = scope.person().to_owned();
+	let mut space = scope.load_for_update(id).await?;
+	scope.require_node_use(&space.node, &person).await?;
+	if !space.may_modify(&person) {
+		return Err(Error::Forbidden);
+	}
+	space.last_used_at = space.last_used_at.max(now);
 	scope.save(&space).await?;
 	scope.clear_contents(id).await
 }
@@ -184,11 +199,17 @@ pub async fn clear(
 pub async fn delete(
 	scope: &mut dyn ScratchScope,
 	id: ScratchSpaceId,
-	now: DateTime<Utc>,
+	_now: DateTime<Utc>,
 ) -> Result<()> {
-	// Conversations retain the fixed identity; a cleared tombstone keeps that
-	// reference while removing the space from use.
-	clear(scope, id, now).await
+	let person = scope.person().to_owned();
+	let mut space = scope.load_for_update(id).await?;
+	scope.require_node_use(&space.node, &person).await?;
+	if !space.may_modify(&person) {
+		return Err(Error::Forbidden);
+	}
+	space.tombstone();
+	scope.save(&space).await?;
+	scope.clear_contents(id).await
 }
 
 /// Select the immutable Scratch Space for a new conversation, creating one
@@ -221,6 +242,8 @@ pub async fn select_for_conversation(
 		creator: scope.person().to_owned(),
 		members: Default::default(),
 		state: ScratchState::Active,
+		revision: 0,
+		wipe_generation: 0,
 		settings: ScratchSettings::for_tenant(&tenant_hosts),
 		created_at: now,
 		last_used_at: now,

@@ -86,6 +86,7 @@ impl ConversationScope for NativeConversation<'_> {
 		let mut scope = super::scratch::ScratchAdapter {
 			access: self.access,
 			services: &mut services,
+			person_override: None,
 		};
 		aidash_application::scratch::select_for_conversation(
 			&mut scope,

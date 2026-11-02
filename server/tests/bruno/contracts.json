@@ -50129,6 +50129,8 @@
             "creator",
             "members",
             "state",
+            "revision",
+            "wipe_generation",
             "settings",
             "created_at",
             "last_used_at"
@@ -50162,11 +50164,20 @@
             "node": {
               "$ref": "#/components/schemas/NodeName"
             },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
             "settings": {
               "$ref": "#/components/schemas/ScratchSettings"
             },
             "state": {
               "$ref": "#/components/schemas/ScratchState"
+            },
+            "wipe_generation": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Monotonic wipe request observed by the Execution Pod runtime."
             }
           }
         },
@@ -50304,6 +50315,8 @@
             "creator",
             "members",
             "state",
+            "revision",
+            "wipe_generation",
             "settings",
             "created_at",
             "last_used_at"
@@ -50337,11 +50350,20 @@
             "node": {
               "$ref": "#/components/schemas/NodeName"
             },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
             "settings": {
               "$ref": "#/components/schemas/ScratchSettings"
             },
             "state": {
               "$ref": "#/components/schemas/ScratchState"
+            },
+            "wipe_generation": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Monotonic wipe request observed by the Execution Pod runtime."
             }
           }
         },
@@ -50404,6 +50426,8 @@
             "capacity_bytes",
             "cpu_millis",
             "memory_bytes",
+            "daily_sent_bytes",
+            "daily_received_bytes",
             "docker_allowed",
             "all_hosts_allowed"
           ],
@@ -50419,6 +50443,16 @@
             "cpu_millis": {
               "type": "integer",
               "format": "uint32",
+              "minimum": 0
+            },
+            "daily_received_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "daily_sent_bytes": {
+              "type": "integer",
+              "format": "uint64",
               "minimum": 0
             },
             "docker_allowed": {
@@ -50570,6 +50604,8 @@
             "creator",
             "members",
             "state",
+            "revision",
+            "wipe_generation",
             "settings",
             "created_at",
             "last_used_at"
@@ -50603,11 +50639,20 @@
             "node": {
               "$ref": "#/components/schemas/NodeName"
             },
+            "revision": {
+              "type": "integer",
+              "format": "int64"
+            },
             "settings": {
               "$ref": "#/components/schemas/ScratchSettings"
             },
             "state": {
               "$ref": "#/components/schemas/ScratchState"
+            },
+            "wipe_generation": {
+              "type": "integer",
+              "format": "int64",
+              "description": "Monotonic wipe request observed by the Execution Pod runtime."
             }
           }
         },
@@ -50619,7 +50664,7 @@
     }
   },
   {
-    "method": "PATCH",
+    "method": "PUT",
     "path": "/api/scratch-spaces/{id}/settings",
     "name": "scratch-settings",
     "source": "server/src/apps/workspaces/views/scratch.rs",
