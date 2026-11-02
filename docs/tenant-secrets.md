@@ -104,6 +104,30 @@ Dedicated, and definitions that name one are refused at registration.
 
 ## External services
 
+### Clone a GitHub repository
+
+Register an `external_service` with ID `github`, base URL
+`https://github.com/`, and methods `["GET", "POST"]`. Store a Tenant Secret
+permitted for `github.com` whose value is `Basic <base64(x-access-token:TOKEN)>`,
+where the base64 text encodes the literal username `x-access-token`, a colon,
+and the token. Bind the Secret using
+`"authentication": {"type": "header", "name": "Authorization"}` and
+approve and bind the service to the Agent as described below. The gateway
+attaches the Secret; Git needs no credential helper.
+
+Inside the Working Area, clone with:
+
+```sh
+git clone "${AIDASH_EGRESS_URL}github/<owner>/<repo>.git"
+```
+
+This path was verified live against a private repository: `info/refs` and
+`git-upload-pack` both returned 200. Archive downloads do not work because
+GitHub redirects them to the cross-origin `codeload` host, and the gateway
+refuses cross-origin redirects. Current limits are tracked in
+[#682](https://github.com/kent8192/aidash/issues/682) (files in the Working
+Area) and [#683](https://github.com/kent8192/aidash/issues/683) (throughput).
+
 An `external_service` Registry entry has one HTTPS base URL, explicit HTTP
 methods, optional authentication and optional lower per-operation limits:
 
