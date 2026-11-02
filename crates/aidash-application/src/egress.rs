@@ -88,6 +88,8 @@ pub trait EgressScopes: Send + Sync {
 	/// Atomically checks suspension, counts a new connection in the current
 	/// minute, and suspends and notifies the operator on anomaly.
 	async fn admit_connection(&self, scope: &ScopeSettings) -> Result<()>;
+	/// Fail if an operator or anomaly stop has suspended the scope.
+	async fn check_active(&self, scope: &ScopeSettings) -> Result<()>;
 	async fn debit(
 		&self,
 		scope: &ScopeSettings,

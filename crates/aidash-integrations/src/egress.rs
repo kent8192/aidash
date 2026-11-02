@@ -136,6 +136,16 @@ impl Drop for Completion {
 pub async fn serve(
 	listener: TcpListener,
 	authority: Arc<dyn Authority>,
+	stopping: watch::Receiver<bool>,
+) -> crate::Result<()> {
+	serve_with_scopes(listener, authority, None, stopping).await
+}
+
+/// Serve legacy External service calls and, when configured, scope proxy calls.
+pub async fn serve_with_scopes(
+	listener: TcpListener,
+	authority: Arc<dyn Authority>,
+	scopes: Option<Arc<dyn aidash_application::egress::EgressScopes>>,
 	mut stopping: watch::Receiver<bool>,
 ) -> crate::Result<()> {
 	let client = reqwest::Client::builder()
@@ -166,16 +176,21 @@ pub async fn serve(
 			accepted = listener.accept() => {
 				let (socket, _) = accepted.map_err(|_| aidash_application::Error::External("Egress listener unavailable".into()))?;
 				let Ok(permit) = slots.clone().try_acquire_owned() else { continue; };
-				let authority = authority.clone(); let client = client.clone(); let public = public.clone();
+				let authority = authority.clone(); let client = client.clone(); let public = public.clone(); let scopes = scopes.clone();
 				connections.spawn(async move {
-					let _permit = permit;
+					let permit = Arc::new(permit);
 					let service = service_fn(move |request| {
-						let authority=authority.clone(); let client=client.clone(); let public=public.clone();
-						async move { Ok::<_,Infallible>(forward(request, authority, client, public).await) }
+						let authority=authority.clone(); let client=client.clone(); let public=public.clone(); let scopes=scopes.clone(); let permit=permit.clone();
+						async move {
+							let response = if request.method() == hyper::Method::CONNECT || request.uri().scheme().is_some() {
+								match scopes { Some(scopes) => proxy::forward(request, scopes, permit).await, None => failure(StatusCode::SERVICE_UNAVAILABLE, "egress_scope_unavailable") }
+							} else { forward(request, authority, client, public).await };
+							Ok::<_,Infallible>(response)
+						}
 					});
 					let _ = hyper::server::conn::http1::Builder::new().timer(TokioTimer::new())
 						.header_read_timeout(IDLE).max_headers(64)
-						.serve_connection(TokioIo::new(socket), service).await;
+						.serve_connection(TokioIo::new(socket), service).with_upgrades().await;
 				});
 			}
 		}
@@ -724,3 +739,5 @@ async fn forward(
 
 #[cfg(test)]
 mod tests;
+
+mod proxy;

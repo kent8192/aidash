@@ -79,6 +79,13 @@ impl EgressScopes for MemoryScopes {
 		}
 		Ok(())
 	}
+	async fn check_active(&self, scope: &ScopeSettings) -> Result<()> {
+		self.check(&scope.id)?;
+		if self.state.lock().unwrap().suspended {
+			return Err(Error::Refused("egress_suspended".into()));
+		}
+		Ok(())
+	}
 	async fn debit(
 		&self,
 		scope: &ScopeSettings,
