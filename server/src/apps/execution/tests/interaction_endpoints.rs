@@ -262,7 +262,10 @@ async fn bounded_lists_enforce_current_workspace_task_and_run_visibility(
 
 #[rstest]
 #[tokio::test]
-async fn human_request_list_pages_past_fifty_requests(#[future] execution: ExecutionFixture) {
+async fn human_request_list_pages_past_fifty_requests(
+	#[future] execution: ExecutionFixture,
+	#[from(reinhardt::test::fixtures::http_client)] http_client: reqwest::Client,
+) {
 	let execution = Box::pin(execution).await;
 	let run = claim(&execution).await;
 	for index in 0..51 {
@@ -311,6 +314,22 @@ async fn human_request_list_pages_past_fifty_requests(#[future] execution: Execu
 		})
 		.collect();
 	assert!(keys.windows(2).all(|pair| pair[0] > pair[1]));
+	let other = crate::endpoint::tenant_token(&execution.app.runtime.store, "globex").await;
+	let response = http_client
+		.get(format!("{}/api/human-requests", execution.app.server.url))
+		.bearer_auth(other)
+		.send()
+		.await
+		.unwrap();
+	let status = response.status();
+	let body = response.text().await.unwrap();
+	assert_eq!(status, 200, "{body}");
+	for item in items.iter().chain(second["items"].as_array().unwrap()) {
+		assert!(
+			!body.contains(item["id"].as_str().unwrap()),
+			"{status}: {body}"
+		);
+	}
 }
 
 #[rstest]

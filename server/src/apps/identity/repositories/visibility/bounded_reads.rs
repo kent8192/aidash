@@ -33,6 +33,10 @@ impl Reads<'_> {
 		query
 			.column(Alias::new("created_at"))
 			.from(Alias::new(table))
+			.and_where(
+				Expr::col(Alias::new("tenant"))
+					.eq(Expr::value(self.access.identity.tenant.clone())),
+			)
 			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)));
 		if let Some((column, owner)) = owner {
 			query.and_where(Expr::col(Alias::new(column)).eq(Expr::value(owner)));
@@ -98,6 +102,10 @@ impl Scope for Reads<'_> {
 		query
 			.column(Asterisk)
 			.from(Alias::new("runs"))
+			.and_where(
+				Expr::col(Alias::new("tenant"))
+					.eq(Expr::value(self.access.identity.tenant.clone())),
+			)
 			.and_where(Expr::col(Alias::new("task_id")).eq(Expr::value(task)))
 			.and_where(workspace_filter(&workspaces))
 			.order_by(Alias::new("created_at"), Order::Desc)
@@ -147,6 +155,10 @@ impl Scope for Reads<'_> {
 		query
 			.column(Asterisk)
 			.from(Alias::new("human_requests"))
+			.and_where(
+				Expr::col(Alias::new("tenant"))
+					.eq(Expr::value(self.access.identity.tenant.clone())),
+			)
 			.and_where(workspace_filter(&workspaces))
 			.order_by(Alias::new("created_at"), Order::Desc)
 			.order_by(Alias::new("id"), Order::Desc)
