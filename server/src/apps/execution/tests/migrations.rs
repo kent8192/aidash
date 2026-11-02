@@ -74,7 +74,6 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0055_embedding_inputs"),
 	("registry", "0056_reference_images"),
 	("registry", "0057_reference_image_byte_state"),
-	("registry", "0058_reference_images_row_level_security"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -983,9 +982,7 @@ async fn assert_image_policies(pool: &PgPool) {
 
 #[rstest]
 #[tokio::test]
-async fn image_policy_migrations_restore_policies_on_rollback(
-	#[future] fresh_database: MigrationFixture,
-) {
+async fn image_policy_migrations_reverse_safely(#[future] fresh_database: MigrationFixture) {
 	// Arrange: the actual migration graph installs all three policies.
 	let fixture = fresh_database.await;
 	fixture.migrate().await;
@@ -995,16 +992,26 @@ async fn image_policy_migrations_restore_policies_on_rollback(
 		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
-	// Act: undo the template migrations through the real migration executor.
-	for (app, name) in [
-		("registry", "0058_reference_images_row_level_security"),
-		("knowledge", "0048_semantic_images_row_level_security"),
-	] {
-		let migration = source.get_migration(app, name).await.unwrap();
+	// Act: undo the knowledge template migration through the real executor.
+	let migration = source
+		.get_migration("knowledge", "0048_semantic_images_row_level_security")
+		.await
+		.unwrap();
+	executor.rollback_migrations(&[migration]).await.unwrap();
+	// The earlier knowledge policies are restored and the registry policy remains.
+	assert_image_policies(&pool).await;
+
+	// Undo the registry model state and its table-creating migration in order.
+	for name in ["0057_reference_image_byte_state", "0056_reference_images"] {
+		let migration = source.get_migration("registry", name).await.unwrap();
 		executor.rollback_migrations(&[migration]).await.unwrap();
 	}
-	// Assert: rollback restores the original policies instead of exposing rows.
-	assert_image_policies(&pool).await;
+	let table: Option<String> =
+		sqlx::query_scalar("SELECT to_regclass('public.agent_knowledge_images')::text")
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+	assert!(table.is_none());
 }
 
 #[rstest]

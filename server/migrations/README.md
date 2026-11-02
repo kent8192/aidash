@@ -1,6 +1,6 @@
 # Aidash native migration history
 
-`registry/0055_embedding_inputs` through `0058_reference_images_row_level_security`
+`registry/0055_embedding_inputs` through `0057_reference_image_byte_state`
 add image retrieval inputs, private reference images, model state and Tenant
 policies after `0054_remove_agent_cluster`. `execution/0090_reference_embedding_usage`
 and `0091_reference_embedding_usage_state` record reference embedding usage after

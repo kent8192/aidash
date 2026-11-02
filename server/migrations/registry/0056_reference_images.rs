@@ -6,6 +6,7 @@ pub(super) fn migration() -> Migration {
 	Migration::new("0056_reference_images", "registry")
 		.database_only(true)
 		.add_dependency("registry", "0055_embedding_inputs")
+		.add_dependency("identity", "0028_tenancy_policy_functions")
 		.add_operation(Operation::AddColumn {
 			table: "agent_knowledge".into(),
 			column: ColumnDefinition::new("image_index", FieldType::Jsonb).with_not_null(false),
@@ -35,8 +36,8 @@ pub(super) fn migration() -> Migration {
 		})
 		// Reinhardt has no row policy operations (reinhardt-web#6770).
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0058_reference_images_row_level_security.sql").into(),
-			reverse_sql: Some(include_str!("sql/backward/0058_reference_images_row_level_security.sql").into()),
+			sql: include_str!("sql/forward/0056_reference_images_row_level_security.sql").into(),
+			reverse_sql: Some(include_str!("sql/backward/0056_reference_images_row_level_security.sql").into()),
 		})
 		// PostgreSQL function bodies cannot be represented by SchemaExpr.
 		.add_operation(Operation::RunSQL {
