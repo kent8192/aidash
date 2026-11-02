@@ -126,6 +126,7 @@ async fn conversation_member_recalls_empty_bank_after_reading_coordinator(
 			tier_limits: Arc::new(aidash_application::ports::nodes::NoTierLimits),
 			preview: None,
 			dashboard_origin: "http://localhost:3000".into(),
+			scratch_policy: Default::default(),
 		},
 		store,
 		client: runtime_controls.client,
@@ -134,11 +135,14 @@ async fn conversation_member_recalls_empty_bank_after_reading_coordinator(
 	let conversation = aidash_server::authorization::interaction::conversation(
 		&f,
 		identity,
-		"Conversation",
-		"Delegate research",
-		&reference("coordinator"),
-		"agent",
-		None,
+		aidash_application::workspaces::ConversationRequest {
+			title: "Conversation",
+			goal: "Delegate research",
+			target: &reference("coordinator"),
+			target_kind: "agent",
+			node: None,
+			scratch_space_id: None,
+		},
 	)
 	.await
 	.unwrap();
