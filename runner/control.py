@@ -595,13 +595,27 @@ class Runner(AllocationJournal):
                          "terminationGracePeriodSeconds": 1, "containers": [worker, collector], "volumes": volumes}}
 
     def pod(self, operation):
-        result = self.kube(["get", "pod", self.pod_name(operation), "-o", "json", "--ignore-not-found"])
-        pod = json.loads(result.stdout) if result.stdout.strip() else None
-        if pod and self.path(operation).exists():
-            record = self.get(operation)
-            if not record.get("admission_probe"):
-                self.observe_allocation(record, pod)
-        return pod
+        while True:
+            # Retry if another observer committed while the provider read was in flight.
+            with self.lock:
+                record = self.get(operation) if self.path(operation).exists() else None
+                uid = record.get('pod_uid') if record else None
+                path = self.allocations / (identity(uid) + '.json') if uid else None
+                seen = json.loads(path.read_bytes()) if path and path.exists() else None
+                seen = tuple(seen.get(k) for k in ('resource_version', 'receipt', 'quarantined', 'released')) if seen else None
+            result = self.kube(["get", "pod", self.pod_name(operation), "-o", "json", "--ignore-not-found"])
+            pod = json.loads(result.stdout) if result.stdout.strip() else None
+            with self.lock:
+                if pod and self.path(operation).exists():
+                    record = self.get(operation)
+                    if not record.get("admission_probe"):
+                        path = path or self.allocations / (identity(pod['metadata']['uid']) + '.json')
+                        current = json.loads(path.read_bytes()) if path.exists() else None
+                        current = tuple(current.get(k) for k in ('resource_version', 'receipt', 'quarantined', 'released')) if current else None
+                        if current != seen:
+                            continue
+                        self.observe_allocation(record, pod)
+                return pod
 
     def exec_collector(self, operation, action, data=None, timeout=45):
         return self.kube(["exec", "-i", self.pod_name(operation), "-c", "collector", "--",
@@ -709,7 +723,20 @@ class Runner(AllocationJournal):
             cid = statuses["execution"]["containerID"].split("://", 1)[1]
             record = self.update(operation, pod_operation=pod_operation, pod_uid=pod["metadata"]["uid"], container_id=cid,
                                  cluster_node=pod['spec']['nodeName'], image=pod['spec']['containers'][0]['image'])
-            self.observe_allocation(record, pod)
+            while True:
+                with self.lock:
+                    allocation = self.allocations / (identity(record['pod_uid']) + '.json')
+                    current = json.loads(allocation.read_bytes()) if allocation.exists() else None
+                    if not current:
+                        raise RuntimeError('allocation journal unavailable')
+                    if current.get('receipt'):
+                        break
+                    if current.get('resource_version') == pod['metadata'].get('resourceVersion'):
+                        self.observe_allocation(record, pod)
+                        break
+                pod = self.pod(pod_operation)
+                if not pod or pod['metadata']['uid'] != record['pod_uid']:
+                    raise RuntimeError('Python environment identity changed')
             limits = self.guard(record, 'limits', **self.execution_limits(record))
             self.update(operation, resource_evidence=limits)
             if pod_operation == operation and not record.get("hydrated"):

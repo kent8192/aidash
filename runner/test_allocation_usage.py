@@ -117,6 +117,31 @@ class AllocationUsageTest(unittest.TestCase):
                 self.assertFalse(any(call.args[0][0] in ('delete', 'patch') for call in self.runner.kube.call_args_list))
         self.assertEqual(self.runner.allocation_receipts()['receipts'], [])
 
+    def test_delayed_operation_poll_does_not_quarantine_terminal_receipt(self):
+        self.runner.observe_allocation(self.record, self.pod)
+        running = copy.deepcopy(self.pod)
+        terminal = copy.deepcopy(self.pod)
+        terminal['metadata']['resourceVersion'] = '102'
+        for status in terminal['status']['containerStatuses']:
+            status['state'] = {'terminated': {'finishedAt': '2026-10-02T00:02:00Z'}}
+        calls = []
+
+        def kube(arguments, **_):
+            calls.append(arguments)
+            if len(calls) == 1:
+                # Housekeeping commits a later snapshot while this GET is in flight.
+                self.runner.observe_allocation(self.record, terminal)
+                return Mock(stdout=json.dumps(running).encode())
+            return Mock(stdout=json.dumps(terminal).encode())
+
+        self.runner.kube = kube
+        observed = self.runner.pod(self.operation)
+        self.assertEqual(observed['metadata']['resourceVersion'], '102')
+        page = self.runner.allocation_receipts()
+        self.assertEqual(len(page['receipts']), 1)
+        self.assertEqual(page['pending_evidence'], 0)
+        self.assertFalse(json.loads((self.runner.allocations / (self.uid + '.json')).read_bytes()).get('quarantined'))
+
     def test_housekeeping_polls_the_provider_without_the_runner_lock(self):
         self.runner.observe_allocation(self.record, self.pod)
         path = self.runner.allocations / (self.uid + '.json')
