@@ -26,6 +26,25 @@ impl ObjectBlobStore {
 	pub fn new(store: Arc<dyn ObjectStore>) -> Self {
 		Self { store }
 	}
+
+	/// Uses standard AWS credential and endpoint environment configuration.
+	pub fn s3(bucket: &str) -> Result<Self> {
+		let store = object_store::aws::AmazonS3Builder::from_env()
+			.with_bucket_name(bucket)
+			.with_copy_if_not_exists(object_store::aws::S3CopyIfNotExists::Multipart)
+			.build()
+			.map_err(external)?;
+		Ok(Self::new(Arc::new(store)))
+	}
+
+	/// Uses Google application-default credentials and standard configuration.
+	pub fn gcs(bucket: &str) -> Result<Self> {
+		let store = object_store::gcp::GoogleCloudStorageBuilder::from_env()
+			.with_bucket_name(bucket)
+			.build()
+			.map_err(external)?;
+		Ok(Self::new(Arc::new(store)))
+	}
 	fn path(tenant: &str, digest: Digest) -> ObjectPath {
 		let tenant_hash = format!("{:x}", Sha256::digest(tenant.as_bytes()));
 		let hex = digest.to_string();
@@ -47,8 +66,11 @@ impl BlobStore for ObjectBlobStore {
 		mut input: BlobReader,
 	) -> Result<PutResult> {
 		let destination = Self::path(tenant, digest);
-		if self.exists(tenant, digest).await? {
-			return Ok(PutResult::AlreadyPresent);
+		match self.store.head(&destination).await {
+			Ok(meta) if meta.size == size => return Ok(PutResult::AlreadyPresent),
+			Ok(_) => return Err(Error::Conflict("OBJECT_INTEGRITY".into())),
+			Err(object_store::Error::NotFound { .. }) => {}
+			Err(error) => return Err(external(error)),
 		}
 		if size == 0 {
 			let mut byte = [0; 1];
@@ -238,6 +260,12 @@ mod tests {
 			(PutResult::Inserted, PutResult::AlreadyPresent)
 				| (PutResult::AlreadyPresent, PutResult::Inserted)
 		));
+		assert!(
+			store
+				.put_if_absent("one", digest, 4, Box::pin(std::io::Cursor::new(b"")))
+				.await
+				.is_err()
+		);
 		assert!(!store.exists("two", digest).await.unwrap());
 		let mut reader = store.get("one", digest, Some(1..3)).await.unwrap().unwrap();
 		let mut output = vec![];

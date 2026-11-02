@@ -23,6 +23,18 @@ impl BlobStore for MemoryBlobStore {
 		size: u64,
 		mut input: BlobReader,
 	) -> Result<PutResult> {
+		if let Some(existing) = self
+			.objects
+			.lock()
+			.map_err(|_| Error::External("blob lock poisoned".into()))?
+			.get(&(tenant.to_owned(), digest))
+		{
+			return if existing.len() as u64 == size {
+				Ok(PutResult::AlreadyPresent)
+			} else {
+				Err(Error::Conflict("OBJECT_INTEGRITY".into()))
+			};
+		}
 		let mut bytes = Vec::new();
 		input
 			.read_to_end(&mut bytes)
@@ -92,6 +104,29 @@ impl BlobStore for MemoryBlobStore {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[tokio::test]
+	async fn existing_blob_is_reused_without_consuming_the_input() {
+		let store = MemoryBlobStore::default();
+		let digest: Digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+			.parse()
+			.unwrap();
+		store
+			.put_if_absent("one", digest, 3, Box::pin(std::io::Cursor::new(b"abc")))
+			.await
+			.unwrap();
+		let result = store
+			.put_if_absent("one", digest, 3, Box::pin(std::io::Cursor::new(b"bad")))
+			.await
+			.unwrap();
+		assert_eq!(result, PutResult::AlreadyPresent);
+		assert!(
+			store
+				.put_if_absent("one", digest, 4, Box::pin(std::io::Cursor::new(b"")))
+				.await
+				.is_err()
+		);
+	}
 
 	#[tokio::test]
 	async fn isolates_tenants_and_rejects_incorrect_content() {
