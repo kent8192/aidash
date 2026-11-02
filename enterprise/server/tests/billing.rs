@@ -511,12 +511,25 @@ async fn stored_bytes_are_sampled_once_a_day_and_not_for_a_deleted_tenant(
 	let (alice, bob) = (d.person("alice").await, d.person("bob").await);
 	let (kept, _) = d.tenant_of(&alice).await;
 	let (deleted, _) = d.tenant_of(&bob).await;
-	for (tenant, size) in [(&kept, 1000_i64), (&kept, 234), (&deleted, 77)] {
+	for (index, (tenant, size)) in [(&kept, 1000_i64), (&kept, 234), (&deleted, 77)]
+		.into_iter()
+		.enumerate()
+	{
+		// Every object names the content-addressed blob that holds its bytes.
+		let digest = format!("{index:064x}");
+		sqlx::query("INSERT INTO core_blobs (tenant, digest, size) VALUES ($1, $2, $3)")
+			.bind(tenant)
+			.bind(&digest)
+			.bind(size)
+			.execute(d.federation.store.pool.fixture_driver())
+			.await
+			.unwrap();
 		sqlx::query(
-			"INSERT INTO core_objects (id, tenant, kind, digest, size, created_at) VALUES ($1, $2, 'blob', 'digest', $3, clock_timestamp())",
+			"INSERT INTO core_objects (id, tenant, kind, digest, size, created_at) VALUES ($1, $2, 'blob', $3, $4, clock_timestamp())",
 		)
 		.bind(Uuid::new_v4())
 		.bind(tenant)
+		.bind(&digest)
 		.bind(size)
 		.execute(d.federation.store.pool.fixture_driver())
 		.await
