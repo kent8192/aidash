@@ -19,7 +19,7 @@ jobs:
       - name: Fetch observer dependencies
         run: |
           for attempt in 1 2 3; do
-            if cargo fetch --locked --manifest-path infra/gcp/observer/Cargo.toml; then
+            if cargo fetch --locked --manifest-path enterprise/infra/gcp/observer/Cargo.toml; then
               exit 0
             fi
             if [[ "$attempt" == 3 ]]; then
@@ -32,4 +32,4 @@ jobs:
       - name: Test infrastructure without cloud credentials or resources
         env:
           CARGO_NET_OFFLINE: "true"
-        run: bash infra/gcp/check.sh
+        run: bash enterprise/infra/gcp/check.sh

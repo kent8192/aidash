@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Primary-backed ORM persistence. Lifecycle mutations use one transaction lock.
 use crate::models::*;
 use aidash_application::{

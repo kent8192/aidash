@@ -138,7 +138,10 @@ Path('/opt/aidash').mkdir(exist_ok=True)
     run(docker + ["python3", "-"], data=configuration)
     run(docker + ["systemctl", "restart", "containerd"])
     run(docker + ["test", "-x", NODE_CTR])
-    run(docker + ["python3", "-c", "from pathlib import Path; import sys; Path('/opt/aidash/node_guard.py').write_bytes(sys.stdin.buffer.read())"], data=(ROOT / "runner/node_guard.py").read_bytes())
+    # node_guard imports working_export from its own directory (#682).
+    for module in ("node_guard.py", "working_export.py"):
+        run(docker + ["python3", "-c", f"from pathlib import Path; import sys; Path('/opt/aidash/{module}').write_bytes(sys.stdin.buffer.read())"],
+            data=(ROOT / "runner" / module).read_bytes())
     service = f"""[Unit]
 Description=Aidash isolated runtime writer guardian
 After=containerd.service
