@@ -11,7 +11,8 @@ use chrono::{DateTime, Utc};
 
 use crate::{Error, Result};
 
-/// Implementations lock a loaded space until the enclosing transaction ends.
+/// `load_for_update` locks a space until the enclosing transaction ends;
+/// `load` is a non-locking read.
 /// The scope supplies the authenticated person; all reads are Tenant-scoped.
 /// The Run binding resolves delegated Runs on the receiving Node. The returned
 /// person is the person who started the conversation, not the executing Agent.
@@ -40,6 +41,7 @@ pub trait ScratchScope: Send {
 		members: &std::collections::BTreeSet<String>,
 	) -> Result<()>;
 	async fn insert(&mut self, space: &ScratchSpace) -> Result<()>;
+	async fn load(&mut self, id: ScratchSpaceId) -> Result<ScratchSpace>;
 	async fn load_for_update(&mut self, id: ScratchSpaceId) -> Result<ScratchSpace>;
 	async fn list(&mut self, node: &NodeName) -> Result<Vec<ScratchSpace>>;
 	async fn save(&mut self, space: &ScratchSpace) -> Result<()>;
@@ -106,8 +108,13 @@ async fn read_for_person(
 	id: ScratchSpaceId,
 	person: &str,
 	now: DateTime<Utc>,
+	lock: bool,
 ) -> Result<ScratchSpace> {
-	let space = scope.load_for_update(id).await?;
+	let space = if lock {
+		scope.load_for_update(id).await?
+	} else {
+		scope.load(id).await?
+	};
 	scope.require_node_use(&space.node, person).await?;
 	require_use(&space, person, now)?;
 	Ok(space)
@@ -119,7 +126,16 @@ pub async fn read(
 	now: DateTime<Utc>,
 ) -> Result<ScratchSpace> {
 	let person = scope.person().to_owned();
-	read_for_person(scope, id, &person, now).await
+	read_for_person(scope, id, &person, now, false).await
+}
+
+async fn read_for_update(
+	scope: &mut dyn ScratchScope,
+	id: ScratchSpaceId,
+	now: DateTime<Utc>,
+) -> Result<ScratchSpace> {
+	let person = scope.person().to_owned();
+	read_for_person(scope, id, &person, now, true).await
 }
 
 pub async fn update_settings(
@@ -129,7 +145,7 @@ pub async fn update_settings(
 	revision: i64,
 	settings: ScratchSettings,
 ) -> Result<()> {
-	let mut space = read(scope, id, now).await?;
+	let mut space = read_for_update(scope, id, now).await?;
 	if space.revision != revision {
 		return Err(Error::Conflict(
 			"Scratch Space settings changed; reload and retry".into(),
@@ -163,7 +179,7 @@ pub async fn add_member(
 	if member.trim().is_empty() {
 		return Err(Error::Invalid("member is required".into()));
 	}
-	let mut space = read(scope, id, now).await?;
+	let mut space = read_for_update(scope, id, now).await?;
 	space.members.insert(member.to_owned());
 	scope.validate_members(&space.members).await?;
 	scope.save(&space).await
@@ -175,7 +191,7 @@ pub async fn remove_member(
 	now: DateTime<Utc>,
 	member: &str,
 ) -> Result<()> {
-	let mut space = read(scope, id, now).await?;
+	let mut space = read_for_update(scope, id, now).await?;
 	space.members.remove(member);
 	scope.save(&space).await
 }
@@ -222,7 +238,7 @@ pub async fn select_for_conversation(
 	now: DateTime<Utc>,
 ) -> Result<ScratchSpaceId> {
 	if let Some(id) = requested {
-		let mut space = read(scope, id, now).await?;
+		let mut space = read_for_update(scope, id, now).await?;
 		if &space.node != node {
 			return Err(Error::Forbidden);
 		}
@@ -260,7 +276,7 @@ pub async fn scratch_space_for_run(
 	let creator = scope.subnode_creator_run(run.workspace_id).await?;
 	let binding_run = creator.as_ref().unwrap_or(run);
 	let (id, starter) = scope.run_binding(binding_run).await?;
-	let mut space = read_for_person(scope, id, &starter, now).await?;
+	let mut space = read_for_person(scope, id, &starter, now, true).await?;
 	if space.node != run.node {
 		return Err(Error::Forbidden);
 	}

@@ -463,6 +463,13 @@ impl aidash_application::scratch::ScratchScope for ScratchAdapter<'_> {
 			.map_err(aidash_application::Error::from)?
 			.ok_or_else(|| aidash_application::Error::NotFound("Scratch Space".into()))
 	}
+	async fn load(&mut self, id: Uuid) -> aidash_application::Result<ScratchSpace> {
+		let tenant = self.access.identity.tenant.clone();
+		load_with_lock(&mut **self.access.tx, &tenant, id, false)
+			.await
+			.map_err(aidash_application::Error::from)?
+			.ok_or_else(|| aidash_application::Error::NotFound("Scratch Space".into()))
+	}
 	async fn list(&mut self, node: &NodeName) -> aidash_application::Result<Vec<ScratchSpace>> {
 		let tenant = self.access.identity.tenant.clone();
 		let ids = ids_on_node(&mut **self.access.tx, &tenant, node.as_str())

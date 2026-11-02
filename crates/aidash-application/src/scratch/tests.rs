@@ -14,6 +14,8 @@ struct Memory {
 	creator: Option<(Uuid, Run)>,
 	bound_run: Option<Uuid>,
 	cleared: Vec<Uuid>,
+	read_loads: usize,
+	locked_loads: usize,
 }
 
 #[async_trait]
@@ -67,6 +69,14 @@ impl ScratchScope for Memory {
 		Ok(())
 	}
 	async fn load_for_update(&mut self, id: Uuid) -> Result<ScratchSpace> {
+		self.locked_loads += 1;
+		self.spaces
+			.get(&id)
+			.cloned()
+			.ok_or_else(|| Error::NotFound("space".into()))
+	}
+	async fn load(&mut self, id: Uuid) -> Result<ScratchSpace> {
+		self.read_loads += 1;
 		self.spaces
 			.get(&id)
 			.cloned()
@@ -105,6 +115,23 @@ impl ScratchScope for Memory {
 			.clone()
 			.ok_or_else(|| Error::NotFound("binding".into()))
 	}
+}
+
+#[tokio::test]
+async fn reads_do_not_lock_but_settings_updates_do() {
+	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+	let mut scope = Memory {
+		person: "alice".into(),
+		..Default::default()
+	};
+	let space = space(now);
+	create(&mut scope, &space).await.unwrap();
+	read(&mut scope, space.id, now).await.unwrap();
+	assert_eq!((scope.read_loads, scope.locked_loads), (1, 0));
+	update_settings(&mut scope, space.id, now, 0, space.settings)
+		.await
+		.unwrap();
+	assert_eq!((scope.read_loads, scope.locked_loads), (1, 1));
 }
 
 fn space(now: DateTime<Utc>) -> ScratchSpace {
