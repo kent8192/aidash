@@ -30,6 +30,10 @@ selected binary keeps its ordinary shared service fixtures and concurrency.
 `scripts/test-rust.sh --coverage --partition NAME --shard 1` builds the extension-enabled
 PostgreSQL image when required and writes `coverage/rust-NAME-1.lcov`; shard 2
 writes the corresponding `-2.lcov`. Omitting `--shard` runs the complete field.
+Each shard first runs `scripts/free-ci-runner-disk.sh`, which removes preinstalled
+toolchains no Rust test uses. The instrumented target directory and the per-test
+PostgreSQL databases share the runner's root disk, and federation shards had run out
+of space inside the PostgreSQL container.
 
 The uploader waits for all sixteen jobs and checks the exact set of nonempty LCOV
 artifacts. It submits all reports together with `flags: rust`; Codecov combines
