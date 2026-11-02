@@ -13,6 +13,65 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 const BATCH: u64 = 1024 * 1024;
 
+type ScopeCounts =
+	Arc<std::sync::Mutex<std::collections::HashMap<aidash_domain::egress::ScopeId, usize>>>;
+
+/// Scope tunnel capacity is separate from the HTTP listener's request pool.
+pub(super) struct TunnelManager {
+	global: Arc<tokio::sync::Semaphore>,
+	counts: ScopeCounts,
+	tasks: std::sync::Mutex<tokio::task::JoinSet<()>>,
+	stopping: tokio::sync::watch::Receiver<bool>,
+}
+struct TunnelLease {
+	permit: TunnelPermit,
+	manager: Arc<TunnelManager>,
+}
+struct TunnelPermit {
+	_global: tokio::sync::OwnedSemaphorePermit,
+	counts: ScopeCounts,
+	scope: aidash_domain::egress::ScopeId,
+}
+impl Drop for TunnelPermit {
+	fn drop(&mut self) {
+		let mut counts = self.counts.lock().unwrap();
+		if let Some(n) = counts.get_mut(&self.scope) {
+			*n -= 1;
+			if *n == 0 {
+				counts.remove(&self.scope);
+			}
+		}
+	}
+}
+impl TunnelManager {
+	pub(super) fn new(stopping: tokio::sync::watch::Receiver<bool>) -> Self {
+		Self {
+			global: Arc::new(tokio::sync::Semaphore::new(128)),
+			counts: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+			tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+			stopping,
+		}
+	}
+	fn acquire(&self, scope: &ScopeSettings) -> Option<TunnelPermit> {
+		let global = self.global.clone().try_acquire_owned().ok()?;
+		let mut counts = self.counts.lock().unwrap();
+		let n = counts.entry(scope.id.clone()).or_default();
+		if *n >= scope.tunnel_limits.concurrent {
+			return None;
+		}
+		*n += 1;
+		Some(TunnelPermit {
+			_global: global,
+			counts: self.counts.clone(),
+			scope: scope.id.clone(),
+		})
+	}
+	pub(super) async fn drain(&self) {
+		let mut tasks = std::mem::take(&mut *self.tasks.lock().unwrap());
+		while tasks.join_next().await.is_some() {}
+	}
+}
+
 /// Reserve before forwarding. A crash can leave unused reservation charged,
 /// but never permits traffic beyond the durable daily budget.
 struct Batch {
@@ -33,10 +92,6 @@ impl Batch {
 		}
 	}
 	async fn charge(&mut self, bytes: usize) -> io::Result<()> {
-		self.scopes
-			.check_active(&self.settings)
-			.await
-			.map_err(|e| io::Error::other(e.to_string()))?;
 		let day = chrono::Utc::now().date_naive();
 		if day != self.day {
 			if self.remaining != 0 {
@@ -70,62 +125,63 @@ impl Batch {
 				Err(error) => return Err(io::Error::other(error.to_string())),
 			}
 		}
-		self.remaining -= bytes;
 		Ok(())
 	}
 }
-impl Drop for Batch {
-	fn drop(&mut self) {
-		if self.remaining == 0 {
-			return;
-		}
-		let scopes = self.scopes.clone();
-		let settings = self.settings.clone();
-		let direction = self.direction;
-		let day = self.day;
-		let remaining = self.remaining;
-		tokio::spawn(async move {
-			if scopes
-				.refund(&settings, direction, remaining, day)
+impl Batch {
+	async fn settle(&mut self) -> io::Result<()> {
+		let remaining = std::mem::take(&mut self.remaining);
+		if remaining != 0 {
+			self.scopes
+				.refund(&self.settings, self.direction, remaining, self.day)
 				.await
-				.is_err()
-			{
-				tracing::error!("Egress reservation refund failed");
-			}
-		});
+				.map_err(|_| io::Error::other("egress_refund_failed"))?;
+		}
+		Ok(())
 	}
 }
 
 async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 	mut read: R,
 	mut write: W,
-	scopes: Arc<dyn EgressScopes>,
-	settings: ScopeSettings,
-	direction: Direction,
+	batch: &mut Batch,
+	activity: tokio::sync::watch::Sender<()>,
+	mut cancel: tokio::sync::watch::Receiver<bool>,
 	count: Arc<AtomicU64>,
 ) -> io::Result<()> {
 	let mut buffer = vec![0u8; BATCH as usize];
-	let mut batch = Batch::new(scopes, settings, direction);
 	loop {
-		let n = read.read(&mut buffer).await?;
-		if n == 0 {
-			write.shutdown().await?;
-			return Ok(());
+		if *cancel.borrow() {
+			return Err(io::Error::other("egress_cancelled"));
 		}
+		let n = tokio::select! {
+			n = read.read(&mut buffer) => n?,
+			_ = cancel.changed() => return Err(io::Error::other("egress_cancelled")),
+		};
+		if n == 0 {
+			return tokio::select! {
+				result = write.shutdown() => result,
+				_ = cancel.changed() => Err(io::Error::other("egress_cancelled")),
+			};
+		}
+		activity.send_replace(());
 		batch.charge(n).await?;
 		let mut written = 0;
 		while written < n {
-			match write.write(&buffer[written..n]).await {
+			let result = tokio::select! {
+				result = write.write(&buffer[written..n]) => result,
+				_ = cancel.changed() => return Err(io::Error::other("egress_cancelled")),
+			};
+			match result {
 				Ok(0) => {
-					batch.remaining += (n - written) as u64;
 					return Err(io::Error::new(io::ErrorKind::WriteZero, "upstream closed"));
 				}
 				Ok(bytes) => {
 					written += bytes;
+					batch.remaining -= bytes as u64;
 					count.fetch_add(bytes as u64, Ordering::Relaxed);
 				}
 				Err(error) => {
-					batch.remaining += (n - written) as u64;
 					return Err(error);
 				}
 			}
@@ -133,6 +189,7 @@ async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 	}
 }
 
+#[cfg(test)]
 async fn tunnel<C, U>(
 	client: C,
 	upstream: U,
@@ -143,33 +200,107 @@ where
 	C: AsyncRead + AsyncWrite + Unpin,
 	U: AsyncRead + AsyncWrite + Unpin,
 {
+	let (_stop, receiver) = tokio::sync::watch::channel(false);
+	tunnel_controlled(client, upstream, scopes, settings, receiver).await
+}
+
+async fn tunnel_controlled<C, U>(
+	client: C,
+	upstream: U,
+	scopes: Arc<dyn EgressScopes>,
+	settings: ScopeSettings,
+	mut stopping: tokio::sync::watch::Receiver<bool>,
+) -> (u64, u64, io::Result<()>)
+where
+	C: AsyncRead + AsyncWrite + Unpin,
+	U: AsyncRead + AsyncWrite + Unpin,
+{
 	let (client_read, client_write) = tokio::io::split(client);
 	let (upstream_read, upstream_write) = tokio::io::split(upstream);
 	let sent = Arc::new(AtomicU64::new(0));
 	let received = Arc::new(AtomicU64::new(0));
-	let result = tokio::try_join!(
-		pump(
-			client_read,
-			upstream_write,
-			scopes.clone(),
-			settings.clone(),
-			Direction::Sent,
-			sent.clone()
-		),
-		pump(
-			upstream_read,
-			client_write,
-			scopes,
-			settings,
-			Direction::Received,
-			received.clone()
-		),
-	)
-	.map(|_| ());
+	let mut sent_batch = Batch::new(scopes.clone(), settings.clone(), Direction::Sent);
+	let mut received_batch = Batch::new(scopes.clone(), settings.clone(), Direction::Received);
+	let (activity_tx, mut activity_rx) = tokio::sync::watch::channel(());
+	let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+	let result = {
+		let transfer = async {
+			let send = async {
+				let result = pump(
+					client_read,
+					upstream_write,
+					&mut sent_batch,
+					activity_tx.clone(),
+					cancel_rx.clone(),
+					sent.clone(),
+				)
+				.await;
+				if result.is_err() {
+					cancel_tx.send_replace(true);
+				}
+				result
+			};
+			let receive = async {
+				let result = pump(
+					upstream_read,
+					client_write,
+					&mut received_batch,
+					activity_tx.clone(),
+					cancel_rx.clone(),
+					received.clone(),
+				)
+				.await;
+				if result.is_err() {
+					cancel_tx.send_replace(true);
+				}
+				result
+			};
+			let (sent, received) = tokio::join!(send, receive);
+			match (sent, received) {
+				(Err(first), Err(second)) if first.to_string() == "egress_cancelled" => Err(second),
+				(Err(first), _) => Err(first),
+				(_, result) => result,
+			}
+		};
+		tokio::pin!(transfer);
+		let lifetime = tokio::time::sleep(settings.tunnel_limits.max_lifetime);
+		tokio::pin!(lifetime);
+		let idle = tokio::time::sleep(settings.tunnel_limits.idle_timeout);
+		tokio::pin!(idle);
+		let mut checks = tokio::time::interval(std::time::Duration::from_secs(5));
+		checks.tick().await;
+		let stopped = loop {
+			if *stopping.borrow() {
+				break (Some(io::Error::other("egress_shutdown")), None);
+			}
+			tokio::select! {
+				result = &mut transfer => break (None, Some(result)),
+				_ = &mut idle => break (Some(io::Error::new(io::ErrorKind::TimedOut, "egress_idle_timeout")), None),
+				_ = activity_rx.changed() => idle.as_mut().reset(tokio::time::Instant::now() + settings.tunnel_limits.idle_timeout),
+				_ = &mut lifetime => break (Some(io::Error::new(io::ErrorKind::TimedOut, "egress_lifetime_exceeded")), None),
+				changed = stopping.changed() => if changed.is_err() || *stopping.borrow() { break (Some(io::Error::other("egress_shutdown")), None); },
+				_ = checks.tick() => if scopes.check_active(&settings).await.is_err() { break (Some(io::Error::other("egress_suspended")), None); },
+			}
+		};
+		cancel_tx.send_replace(true);
+		match stopped {
+			(Some(error), _) => {
+				let _ = transfer.await;
+				Err(error)
+			}
+			(None, Some(result)) => result,
+			(None, None) => unreachable!(),
+		}
+	};
+	let sent_settle = sent_batch.settle().await;
+	let received_settle = received_batch.settle().await;
+	if sent_settle.is_err() || received_settle.is_err() {
+		tracing::error!("Egress reservation refund failed");
+	}
 	(
 		sent.load(Ordering::Relaxed),
 		received.load(Ordering::Relaxed),
-		result,
+		result.and(sent_settle).and(received_settle),
 	)
 }
 
@@ -198,9 +329,30 @@ struct Audit {
 	sent: Arc<AtomicU64>,
 	received: Arc<AtomicU64>,
 	outcome: &'static str,
+	finished: bool,
+}
+impl Audit {
+	async fn finish(&mut self) {
+		self.finished = true;
+		let record = aidash_application::egress::ConnectionRecord {
+			scope: self.scope.clone(),
+			host: self.host.clone(),
+			port: self.port,
+			sent_bytes: self.sent.load(Ordering::Relaxed),
+			received_bytes: self.received.load(Ordering::Relaxed),
+			duration_ms: self.started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+			outcome: self.outcome.to_owned(),
+		};
+		if self.scopes.record(record).await.is_err() {
+			tracing::error!("Egress connection audit failed");
+		}
+	}
 }
 impl Drop for Audit {
 	fn drop(&mut self) {
+		if self.finished {
+			return;
+		}
 		let scopes = self.scopes.clone();
 		let record = aidash_application::egress::ConnectionRecord {
 			scope: self.scope.clone(),
@@ -277,7 +429,8 @@ fn refusal(error: &aidash_application::Error) -> (hyper::StatusCode, &'static st
 pub(super) async fn forward(
 	request: hyper::Request<hyper::body::Incoming>,
 	scopes: Arc<dyn EgressScopes>,
-	permit: Arc<tokio::sync::OwnedSemaphorePermit>,
+	manager: Arc<TunnelManager>,
+	listener_permit: Arc<std::sync::Mutex<Option<tokio::sync::OwnedSemaphorePermit>>>,
 ) -> hyper::Response<super::Body> {
 	use hyper::{Method, StatusCode};
 	let Some(token) = credential(request.headers()) else {
@@ -325,6 +478,7 @@ pub(super) async fn forward(
 		sent: Arc::new(AtomicU64::new(0)),
 		received: Arc::new(AtomicU64::new(0)),
 		outcome: "refused",
+		finished: false,
 	};
 	if !scope
 		.allowed_hosts
@@ -332,6 +486,11 @@ pub(super) async fn forward(
 	{
 		return super::failure(StatusCode::FORBIDDEN, "egress_host_forbidden");
 	}
+	let Some(permit) = manager.acquire(&scope) else {
+		return super::failure(StatusCode::TOO_MANY_REQUESTS, "egress_tunnel_limit");
+	};
+	// Authenticated proxy traffic is now bounded by the independent pool.
+	drop(listener_permit.lock().unwrap().take());
 	if let Err(error) = scopes.admit_connection(&scope).await {
 		let (status, code) = refusal(&error);
 		return super::failure(status, code);
@@ -359,9 +518,18 @@ pub(super) async fn forward(
 				return super::failure(StatusCode::BAD_GATEWAY, "egress_connect_failed");
 			}
 		};
-		return connect_tunnel(request, upstream, scopes, scope, audit, permit);
+		return connect_tunnel(request, upstream, scopes, scope, audit, permit, manager);
 	}
-	forward_http(request, url, addresses, scopes, scope, audit).await
+	forward_http(
+		request,
+		url,
+		addresses,
+		scopes,
+		scope,
+		audit,
+		TunnelLease { permit, manager },
+	)
+	.await
 }
 
 fn connect_tunnel(
@@ -370,20 +538,29 @@ fn connect_tunnel(
 	scopes: Arc<dyn EgressScopes>,
 	scope: ScopeSettings,
 	mut audit: Audit,
-	permit: Arc<tokio::sync::OwnedSemaphorePermit>,
+	permit: TunnelPermit,
+	manager: Arc<TunnelManager>,
 ) -> hyper::Response<super::Body> {
 	let sent = audit.sent.clone();
 	let received = audit.received.clone();
 	let upgrade = hyper::upgrade::on(&mut request);
-	tokio::spawn(async move {
+	let stopping = manager.stopping.clone();
+	let mut tasks = manager.tasks.lock().unwrap();
+	while tasks.try_join_next().is_some() {}
+	tasks.spawn(async move {
 		let _permit = permit;
-		match upgrade.await {
-			Ok(client) => {
-				let (sent_bytes, received_bytes, result) = tunnel(
+		match tokio::time::timeout(std::time::Duration::from_secs(5), upgrade)
+			.await
+			.ok()
+			.and_then(Result::ok)
+		{
+			Some(client) => {
+				let (sent_bytes, received_bytes, result) = tunnel_controlled(
 					hyper_util::rt::TokioIo::new(client),
 					upstream,
 					scopes,
 					scope,
+					stopping,
 				)
 				.await;
 				sent.store(sent_bytes, Ordering::Relaxed);
@@ -399,9 +576,9 @@ fn connect_tunnel(
 					Err(_) => "interrupted",
 				};
 			}
-			Err(_) => audit.outcome = "upgrade_failed",
+			None => audit.outcome = "upgrade_failed",
 		}
-		drop(audit);
+		audit.finish().await;
 	});
 	hyper::Response::builder()
 		.status(hyper::StatusCode::OK)
@@ -420,7 +597,9 @@ async fn forward_http(
 	scopes: Arc<dyn EgressScopes>,
 	scope: ScopeSettings,
 	mut audit: Audit,
+	lease: TunnelLease,
 ) -> hyper::Response<super::Body> {
+	let TunnelLease { permit, manager } = lease;
 	use hyper::{StatusCode, header};
 	let upstream = match tokio::time::timeout(
 		super::IDLE,
@@ -437,22 +616,30 @@ async fn forward_http(
 	let (client, proxy) = tokio::io::duplex(64 * 1024);
 	let sent = audit.sent.clone();
 	let received = audit.received.clone();
-	let mut transfer = tokio::spawn(async move {
-		let (sent_bytes, received_bytes, result) = tunnel(proxy, upstream, scopes, scope).await;
-		sent.store(sent_bytes, Ordering::Relaxed);
-		received.store(received_bytes, Ordering::Relaxed);
-		let outcome = match result {
-			Ok(()) => "completed",
-			Err(error) if error.to_string().contains("egress_budget_exhausted") => {
-				"egress_budget_exhausted"
-			}
-			Err(error) if error.to_string().contains("egress_suspended") => "egress_suspended",
-			Err(_) => "interrupted",
-		};
-		audit.outcome = outcome;
-		drop(audit);
-		outcome
-	});
+	let (result_tx, mut transfer) = tokio::sync::oneshot::channel();
+	let stopping = manager.stopping.clone();
+	{
+		let mut tasks = manager.tasks.lock().unwrap();
+		while tasks.try_join_next().is_some() {}
+		tasks.spawn(async move {
+			let _permit = permit;
+			let (sent_bytes, received_bytes, result) =
+				tunnel_controlled(proxy, upstream, scopes, scope, stopping).await;
+			sent.store(sent_bytes, Ordering::Relaxed);
+			received.store(received_bytes, Ordering::Relaxed);
+			let outcome = match result {
+				Ok(()) => "completed",
+				Err(error) if error.to_string().contains("egress_budget_exhausted") => {
+					"egress_budget_exhausted"
+				}
+				Err(error) if error.to_string().contains("egress_suspended") => "egress_suspended",
+				Err(_) => "interrupted",
+			};
+			audit.outcome = outcome;
+			audit.finish().await;
+			let _ = result_tx.send(outcome);
+		});
+	}
 	let (mut sender, connection) =
 		match hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(client)).await {
 			Ok(pair) => pair,
@@ -549,6 +736,119 @@ mod tests {
 	use std::sync::Arc;
 	use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+	fn test_settings() -> ScopeSettings {
+		ScopeSettings {
+			id: ScopeId {
+				tenant: "t".into(),
+				node: "n".into(),
+				scratch_space: uuid::Uuid::new_v4(),
+			},
+			allowed_hosts: AllowedHosts::default(),
+			budget: DailyBudget::default(),
+			anomaly: AnomalyRule::default(),
+			operator_allows_all: false,
+			tunnel_limits: Default::default(),
+		}
+	}
+
+	#[test]
+	fn scope_tunnel_cap_is_independent_and_releases_capacity() {
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let manager = super::TunnelManager::new(receiver);
+		let mut one = test_settings();
+		one.tunnel_limits.concurrent = 1;
+		let mut two = test_settings();
+		two.tunnel_limits.concurrent = 1;
+		let held = manager.acquire(&one).unwrap();
+		assert!(manager.acquire(&one).is_none());
+		assert!(manager.acquire(&two).is_some());
+		drop(held);
+		assert!(manager.acquire(&one).is_some());
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn periodic_suspension_closes_idle_tunnel_and_settles_batch() {
+		let settings = test_settings();
+		let scopes = Arc::new(MemoryScopes::new("token".into(), settings.clone()));
+		let (mut client, gateway_client) = tokio::io::duplex(64);
+		let (gateway_server, mut server) = tokio::io::duplex(64);
+		let (_idle_client, idle_gateway) = tokio::io::duplex(64);
+		let (idle_upstream, _idle_server) = tokio::io::duplex(64);
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let idle_task = tokio::spawn(super::tunnel_controlled(
+			idle_gateway,
+			idle_upstream,
+			scopes.clone(),
+			settings.clone(),
+			receiver.clone(),
+		));
+		let task = tokio::spawn(super::tunnel_controlled(
+			gateway_client,
+			gateway_server,
+			scopes.clone(),
+			settings,
+			receiver,
+		));
+		client.write_all(b"a").await.unwrap();
+		let mut data = [0];
+		server.read_exact(&mut data).await.unwrap();
+		for _ in 0..5 {
+			client.write_all(b"b").await.unwrap();
+			server.read_exact(&mut data).await.unwrap();
+		}
+		assert_eq!(scopes.checks(), 0, "no check per read");
+		scopes.suspend();
+		tokio::time::advance(std::time::Duration::from_secs(5)).await;
+		let (sent, _, result) = task.await.unwrap();
+		assert_eq!(sent, 6);
+		assert!(result.unwrap_err().to_string().contains("egress_suspended"));
+		assert!(
+			idle_task
+				.await
+				.unwrap()
+				.2
+				.unwrap_err()
+				.to_string()
+				.contains("egress_suspended")
+		);
+		assert_eq!(scopes.usage(chrono::Utc::now().date_naive()).0, 6);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn tunnel_stops_on_idle_lifetime_and_shutdown() {
+		for mode in 0..3 {
+			let mut settings = test_settings();
+			settings.tunnel_limits.idle_timeout =
+				std::time::Duration::from_secs(if mode == 0 { 2 } else { 100 });
+			settings.tunnel_limits.max_lifetime =
+				std::time::Duration::from_secs(if mode == 1 { 2 } else { 100 });
+			let scopes = Arc::new(MemoryScopes::new("token".into(), settings.clone()));
+			let (_client, gateway_client) = tokio::io::duplex(64);
+			let (gateway_server, _server) = tokio::io::duplex(64);
+			let (stop, receiver) = tokio::sync::watch::channel(false);
+			let task = tokio::spawn(super::tunnel_controlled(
+				gateway_client,
+				gateway_server,
+				scopes,
+				settings,
+				receiver,
+			));
+			tokio::task::yield_now().await;
+			if mode == 2 {
+				stop.send(true).unwrap();
+			} else {
+				tokio::time::advance(std::time::Duration::from_secs(3)).await;
+			}
+			let (_, _, result) = task.await.unwrap();
+			let expected = [
+				"egress_idle_timeout",
+				"egress_lifetime_exceeded",
+				"egress_shutdown",
+			][mode];
+			assert!(result.unwrap_err().to_string().contains(expected));
+		}
+	}
+
 	#[tokio::test]
 	async fn tunnel_counts_both_directions_and_enforces_budget() {
 		let settings = ScopeSettings {
@@ -564,6 +864,7 @@ mod tests {
 			},
 			anomaly: AnomalyRule::default(),
 			operator_allows_all: false,
+			tunnel_limits: Default::default(),
 		};
 		let scopes = Arc::new(MemoryScopes::new("token".into(), settings.clone()));
 		let (mut client, gateway_client) = tokio::io::duplex(32);
@@ -603,6 +904,30 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn over_limit_is_a_typed_http_429() {
+		let mut settings = test_settings();
+		settings.tunnel_limits.concurrent = 0;
+		let scopes = Arc::new(MemoryScopes::new("credential".into(), settings));
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = listener.local_addr().unwrap();
+		let (stop, receiver) = tokio::sync::watch::channel(false);
+		let server = tokio::spawn(super::super::serve_with_scopes(
+			listener,
+			Arc::new(DenyLegacy),
+			Some(scopes),
+			receiver,
+		));
+		let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+		client.write_all(b"CONNECT registry.npmjs.org:443 HTTP/1.1\r\nHost: registry.npmjs.org:443\r\nProxy-Authorization: Bearer credential\r\nConnection: close\r\n\r\n").await.unwrap();
+		let mut response = Vec::new();
+		client.read_to_end(&mut response).await.unwrap();
+		assert!(response.starts_with(b"HTTP/1.1 429"));
+		assert!(String::from_utf8_lossy(&response).contains("egress_tunnel_limit"));
+		stop.send(true).unwrap();
+		server.await.unwrap().unwrap();
+	}
+
+	#[tokio::test]
 	async fn proxy_requires_scope_credential_and_rejects_private_resolution() {
 		let settings = ScopeSettings {
 			id: ScopeId {
@@ -619,6 +944,7 @@ mod tests {
 				connections_per_minute: 2,
 			},
 			operator_allows_all: false,
+			tunnel_limits: Default::default(),
 		};
 		let scope_id = settings.id.clone();
 		let scopes = Arc::new(MemoryScopes::new("token".into(), settings));
@@ -714,6 +1040,7 @@ mod tests {
 			budget: DailyBudget::default(),
 			anomaly: AnomalyRule::default(),
 			operator_allows_all: false,
+			tunnel_limits: Default::default(),
 		};
 		let scopes = Arc::new(MemoryScopes::new("token".into(), settings.clone()));
 		let gateway = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -721,7 +1048,11 @@ mod tests {
 		let gateway_scopes = scopes.clone();
 		let gateway_task = tokio::spawn(async move {
 			let (socket, _) = gateway.accept().await.unwrap();
+			let (_stop, receiver) = tokio::sync::watch::channel(false);
+			let manager = Arc::new(super::TunnelManager::new(receiver));
+			let service_manager = manager.clone();
 			let service = service_fn(move |request| {
+				let manager = service_manager.clone();
 				let scopes = gateway_scopes.clone();
 				let settings = settings.clone();
 				async move {
@@ -734,7 +1065,9 @@ mod tests {
 						sent: Arc::new(super::AtomicU64::new(0)),
 						received: Arc::new(super::AtomicU64::new(0)),
 						outcome: "refused",
+						finished: false,
 					};
+					let permit = manager.acquire(&settings).unwrap();
 					let result = super::forward_http(
 						request,
 						url::Url::parse("http://test.invalid/private?secret=value").unwrap(),
@@ -742,6 +1075,7 @@ mod tests {
 						scopes,
 						settings,
 						audit,
+						super::TunnelLease { permit, manager },
 					)
 					.await;
 					Ok::<_, Infallible>(result)
@@ -751,6 +1085,7 @@ mod tests {
 				.serve_connection(hyper_util::rt::TokioIo::new(socket), service)
 				.await
 				.unwrap();
+			manager.drain().await;
 		});
 		let mut client = tokio::net::TcpStream::connect(gateway_address)
 			.await
@@ -770,9 +1105,87 @@ mod tests {
 		.unwrap();
 		let records = scopes.records();
 		assert_eq!(records[0].host, "test.invalid");
+		assert!(!format!("{:?}", records[0]).contains("token"));
+		assert!(!format!("{:?}", records[0]).contains("secret=value"));
 		assert!(records[0].sent_bytes > 5);
 		assert!(records[0].received_bytes > 5);
 	}
+	#[tokio::test]
+	async fn shutdown_drains_upgraded_tunnel_and_persists_usage_and_record() {
+		use hyper::service::service_fn;
+		use std::convert::Infallible;
+		let settings = test_settings();
+		let scopes = Arc::new(MemoryScopes::new(
+			"secret-credential".into(),
+			settings.clone(),
+		));
+		let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let upstream_address = upstream.local_addr().unwrap();
+		let gateway = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = gateway.local_addr().unwrap();
+		let (stop, receiver) = tokio::sync::watch::channel(false);
+		let manager = Arc::new(super::TunnelManager::new(receiver));
+		let gateway_manager = manager.clone();
+		let gateway_scopes = scopes.clone();
+		let gateway_task = tokio::spawn(async move {
+			let (socket, _) = gateway.accept().await.unwrap();
+			let service = service_fn(move |request| {
+				let manager = gateway_manager.clone();
+				let scopes = gateway_scopes.clone();
+				let settings = settings.clone();
+				async move {
+					let audit = super::Audit {
+						scopes: scopes.clone(),
+						scope: settings.id.clone(),
+						host: "registry.npmjs.org".into(),
+						port: 443,
+						started: std::time::Instant::now(),
+						sent: Arc::new(super::AtomicU64::new(0)),
+						received: Arc::new(super::AtomicU64::new(0)),
+						outcome: "refused",
+						finished: false,
+					};
+					let permit = manager.acquire(&settings).unwrap();
+					let upstream = tokio::net::TcpStream::connect(upstream_address)
+						.await
+						.unwrap();
+					Ok::<_, Infallible>(super::connect_tunnel(
+						request, upstream, scopes, settings, audit, permit, manager,
+					))
+				}
+			});
+			hyper::server::conn::http1::Builder::new()
+				.serve_connection(hyper_util::rt::TokioIo::new(socket), service)
+				.with_upgrades()
+				.await
+				.unwrap();
+		});
+		let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+		client
+			.write_all(
+				b"CONNECT registry.npmjs.org:443 HTTP/1.1\r\nHost: registry.npmjs.org:443\r\n\r\n",
+			)
+			.await
+			.unwrap();
+		let mut head = Vec::new();
+		while !head.ends_with(b"\r\n\r\n") {
+			head.push(client.read_u8().await.unwrap());
+		}
+		assert!(head.starts_with(b"HTTP/1.1 200"));
+		let (mut remote, _) = upstream.accept().await.unwrap();
+		client.write_all(b"hello").await.unwrap();
+		let mut buffer = [0; 5];
+		remote.read_exact(&mut buffer).await.unwrap();
+		gateway_task.await.unwrap();
+		stop.send(true).unwrap();
+		manager.drain().await;
+		assert_eq!(scopes.usage(chrono::Utc::now().date_naive()).0, 5);
+		let records = scopes.records();
+		assert_eq!(records.len(), 1);
+		assert_eq!(records[0].sent_bytes, 5);
+		assert!(!format!("{:?}", records[0]).contains("secret-credential"));
+	}
+
 	#[tokio::test]
 	async fn connect_upgrades_and_counts_tunnel_bytes() {
 		use hyper::service::service_fn;
@@ -797,6 +1210,7 @@ mod tests {
 			budget: DailyBudget::default(),
 			anomaly: AnomalyRule::default(),
 			operator_allows_all: false,
+			tunnel_limits: Default::default(),
 		};
 		let scopes = Arc::new(MemoryScopes::new("token".into(), settings.clone()));
 		let gateway = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -804,7 +1218,11 @@ mod tests {
 		let gateway_scopes = scopes.clone();
 		let gateway_task = tokio::spawn(async move {
 			let (socket, _) = gateway.accept().await.unwrap();
+			let (_stop, receiver) = tokio::sync::watch::channel(false);
+			let manager = Arc::new(super::TunnelManager::new(receiver));
+			let service_manager = manager.clone();
 			let service = service_fn(move |request| {
+				let manager = service_manager.clone();
 				let scopes = gateway_scopes.clone();
 				let settings = settings.clone();
 				async move {
@@ -817,18 +1235,14 @@ mod tests {
 						sent: Arc::new(super::AtomicU64::new(0)),
 						received: Arc::new(super::AtomicU64::new(0)),
 						outcome: "refused",
+						finished: false,
 					};
 					let upstream = tokio::net::TcpStream::connect(upstream_address)
 						.await
 						.unwrap();
-					let permit = Arc::new(
-						Arc::new(tokio::sync::Semaphore::new(1))
-							.acquire_owned()
-							.await
-							.unwrap(),
-					);
+					let permit = manager.acquire(&settings).unwrap();
 					Ok::<_, Infallible>(super::connect_tunnel(
-						request, upstream, scopes, settings, audit, permit,
+						request, upstream, scopes, settings, audit, permit, manager,
 					))
 				}
 			});
@@ -837,6 +1251,7 @@ mod tests {
 				.with_upgrades()
 				.await
 				.unwrap();
+			manager.drain().await;
 		});
 		let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
 		client

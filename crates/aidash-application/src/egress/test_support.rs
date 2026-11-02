@@ -15,6 +15,7 @@ struct State {
 	window: Instant,
 	connections: u32,
 	notifications: u32,
+	checks: u32,
 	usage: HashMap<NaiveDate, (u64, u64)>,
 	records: Vec<ConnectionRecord>,
 }
@@ -35,6 +36,7 @@ impl MemoryScopes {
 				window: Instant::now(),
 				connections: 0,
 				notifications: 0,
+				checks: 0,
 				usage: HashMap::new(),
 				records: Vec::new(),
 			}),
@@ -46,6 +48,21 @@ impl MemoryScopes {
 	pub fn notifications(&self) -> u32 {
 		self.state.lock().unwrap().notifications
 	}
+	pub fn suspend(&self) {
+		self.state.lock().unwrap().suspended = true;
+	}
+	pub fn checks(&self) -> u32 {
+		self.state.lock().unwrap().checks
+	}
+	pub fn usage(&self, day: NaiveDate) -> (u64, u64) {
+		self.state
+			.lock()
+			.unwrap()
+			.usage
+			.get(&day)
+			.copied()
+			.unwrap_or_default()
+	}
 	fn check(&self, id: &ScopeId) -> Result<()> {
 		if id != &self.settings.id {
 			return Err(Error::Forbidden);
@@ -56,7 +73,7 @@ impl MemoryScopes {
 #[async_trait]
 impl EgressScopes for MemoryScopes {
 	async fn resolve(&self, credential: &str) -> Result<ScopeSettings> {
-		if credential != self.credential {
+		if !super::credentials_match(&self.credential, credential) {
 			return Err(Error::Unauthorized);
 		}
 		Ok(self.settings.clone())
@@ -92,7 +109,9 @@ impl EgressScopes for MemoryScopes {
 	}
 	async fn check_active(&self, scope: &ScopeSettings) -> Result<()> {
 		self.check(&scope.id)?;
-		if self.state.lock().unwrap().suspended {
+		let mut state = self.state.lock().unwrap();
+		state.checks += 1;
+		if state.suspended {
 			return Err(Error::Refused("egress_suspended".into()));
 		}
 		Ok(())
@@ -163,6 +182,19 @@ mod tests {
 	use super::*;
 	use aidash_domain::egress::{AllowedHosts, AnomalyRule, DailyBudget};
 
+	#[test]
+	fn credential_comparison_rejects_mismatches() {
+		assert!(super::super::credentials_match(
+			"fixed-token",
+			"fixed-token"
+		));
+		assert!(!super::super::credentials_match(
+			"fixed-token",
+			"fixed-tokem"
+		));
+		assert!(!super::super::credentials_match("fixed-token", "short"));
+	}
+
 	#[tokio::test]
 	async fn credential_budget_and_suspension_are_scoped() {
 		let settings = ScopeSettings {
@@ -180,6 +212,7 @@ mod tests {
 				connections_per_minute: 1,
 			},
 			operator_allows_all: false,
+			tunnel_limits: Default::default(),
 		};
 		let authority = MemoryScopes::new("token".into(), settings.clone());
 		assert!(authority.resolve("wrong").await.is_err());

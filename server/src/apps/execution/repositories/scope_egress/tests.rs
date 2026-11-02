@@ -95,6 +95,7 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 			connections_per_minute: 1,
 		},
 		operator_allows_all: false,
+		tunnel_limits: Default::default(),
 	};
 	let durable = DurableScopes::new(federation.store.clone(), Arc::new(Authority(scope.clone())));
 	assert!(durable.resolve("invalid").await.is_err());

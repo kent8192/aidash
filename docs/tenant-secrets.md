@@ -238,7 +238,13 @@ also requires the operator's Offering setting. The default traffic allowance is
 100 GiB sent and 100 GiB received per scope per UTC day, with no request-count
 limit. The default anomaly rule suspends the scope after more than 600 new
 connections in one minute; an operator must lift the suspension. The authority
-must emit an operator notification when it suspends a scope.
+must emit an operator notification when it suspends a scope. Each gateway
+instance permits at most 64 concurrent proxy connections per scope by default,
+using a separate pool from the External service listener. Idle proxy connections
+close after five minutes and every proxy connection closes after 24 hours. The
+gateway rechecks suspension at least every five seconds, including while idle.
+The authority must verify opaque credentials in constant time, using fixed-length
+random tokens; credentials are excluded from connection records and logs.
 
 Connection records contain scope, host, port, sent and received byte counts,
 duration and outcome, rather than request paths or bodies. An interrupted

@@ -56,6 +56,30 @@ pub trait Authority: Send + Sync {
 	) -> Result<Admission>;
 }
 
+/// Compare stored opaque credentials without early exit on matching bytes.
+/// Credential length is public; issuers should use fixed-length random tokens.
+pub fn credentials_match(expected: &str, provided: &str) -> bool {
+	use subtle::ConstantTimeEq;
+	bool::from(expected.as_bytes().ct_eq(provided.as_bytes()))
+}
+
+/// Limits for one gateway instance and scope tunnel.
+#[derive(Clone, Copy, Debug)]
+pub struct TunnelLimits {
+	pub concurrent: usize,
+	pub idle_timeout: std::time::Duration,
+	pub max_lifetime: std::time::Duration,
+}
+impl Default for TunnelLimits {
+	fn default() -> Self {
+		Self {
+			concurrent: 64,
+			idle_timeout: std::time::Duration::from_secs(300),
+			max_lifetime: std::time::Duration::from_secs(86400),
+		}
+	}
+}
+
 /// Settings resolved from a revocable Execution Pod proxy credential.
 #[derive(Clone, Debug)]
 pub struct ScopeSettings {
@@ -64,6 +88,7 @@ pub struct ScopeSettings {
 	pub budget: aidash_domain::egress::DailyBudget,
 	pub anomaly: aidash_domain::egress::AnomalyRule,
 	pub operator_allows_all: bool,
+	pub tunnel_limits: TunnelLimits,
 }
 
 /// Metadata for a completed connection; URL paths and bodies are never recorded.
@@ -80,7 +105,8 @@ pub struct ConnectionRecord {
 
 /// Supplies live Scratch Space authority to the durable egress adapter.
 /// Implementations verify credential authenticity, expiry and revocation, bind
-/// it to the Tenant and Node, and reload the active Space and current Tenant
+/// it to the Tenant and Node, compare opaque credentials using `credentials_match`
+/// (or a constant-time cryptographic verification), and reload the active Space and current Tenant
 /// policy for an already authenticated scope. Host settings must be narrowed
 /// by the current Tenant allowlist and the operator's Offering decision.
 #[async_trait]
@@ -122,6 +148,7 @@ pub trait EgressScopes: Send + Sync {
 	async fn admit_connection(&self, scope: &ScopeSettings) -> Result<()>;
 	/// Fail if an operator or anomaly stop has suspended the scope.
 	async fn check_active(&self, scope: &ScopeSettings) -> Result<()>;
+	/// Atomically rejects suspended scopes and reserves bytes against the daily budget.
 	async fn debit(
 		&self,
 		scope: &ScopeSettings,

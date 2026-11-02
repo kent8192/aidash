@@ -29,6 +29,7 @@ url = "2"
 
 semver = "1"
 sha2 = "0.10"
+subtle = "2"
 base64 = "0.22"
 
 regex = "1"

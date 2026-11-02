@@ -165,9 +165,12 @@ pub async fn serve_with_scopes(
 		.map_err(crate::http_error)?;
 	let slots = Arc::new(tokio::sync::Semaphore::new(128));
 	let mut connections = tokio::task::JoinSet::new();
+	let tunnels = Arc::new(proxy::TunnelManager::new(stopping.clone()));
 	loop {
-		if *stopping.borrow() {
+		if *stopping.borrow() || stopping.has_changed().is_err() {
 			connections.abort_all();
+			while connections.join_next().await.is_some() {}
+			tunnels.drain().await;
 			return Ok(());
 		}
 		tokio::select! {
@@ -176,14 +179,17 @@ pub async fn serve_with_scopes(
 			accepted = listener.accept() => {
 				let (socket, _) = accepted.map_err(|_| aidash_application::Error::External("Egress listener unavailable".into()))?;
 				let Ok(permit) = slots.clone().try_acquire_owned() else { continue; };
-				let authority = authority.clone(); let client = client.clone(); let public = public.clone(); let scopes = scopes.clone();
+				let authority = authority.clone(); let client = client.clone(); let public = public.clone(); let scopes = scopes.clone(); let tunnels = tunnels.clone();
 				connections.spawn(async move {
-					let permit = Arc::new(permit);
+					let permit = Arc::new(std::sync::Mutex::new(Some(permit)));
 					let service = service_fn(move |request| {
-						let authority=authority.clone(); let client=client.clone(); let public=public.clone(); let scopes=scopes.clone(); let permit=permit.clone();
+						let authority=authority.clone(); let client=client.clone(); let public=public.clone(); let scopes=scopes.clone(); let permit=permit.clone(); let tunnels=tunnels.clone();
 						async move {
 							let response = if request.method() == hyper::Method::CONNECT || request.uri().scheme().is_some() {
-								match scopes { Some(scopes) => proxy::forward(request, scopes, permit).await, None => failure(StatusCode::SERVICE_UNAVAILABLE, "egress_scope_unavailable") }
+								let connect = request.method() == hyper::Method::CONNECT;
+								let mut response = match scopes { Some(scopes) => proxy::forward(request, scopes, tunnels, permit).await, None => failure(StatusCode::SERVICE_UNAVAILABLE, "egress_scope_unavailable") };
+								if !connect || response.status() != StatusCode::OK { response.headers_mut().insert(hyper::header::CONNECTION, hyper::header::HeaderValue::from_static("close")); }
+								response
 							} else { forward(request, authority, client, public, scopes).await };
 							Ok::<_,Infallible>(response)
 						}
