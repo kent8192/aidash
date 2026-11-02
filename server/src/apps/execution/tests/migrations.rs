@@ -72,6 +72,9 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0090_content_blobs"),
 	("execution", "0091_content_object_references"),
 	("execution", "0092_content_object_state"),
+	("execution", "0093_blob_reservations"),
+	("execution", "0094_blob_reservations_state"),
+	("execution", "0095_blob_receipt_references"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -124,7 +127,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		76
+		77
 	);
 	let tables = migrations
 		.iter()
@@ -379,14 +382,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0093_policy_probe")
+		.get_migration("execution", "0096_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0092_content_object_state".to_owned()
+			"0095_blob_receipt_references".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -734,7 +737,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		76
+		77
 	);
 }
 
@@ -762,6 +765,9 @@ async fn remove_agent_cluster_migrates_registry_drafts_requests_and_generation_t
 					| ("execution", "0090_content_blobs")
 					| ("execution", "0091_content_object_references")
 					| ("execution", "0092_content_object_state")
+					| ("execution", "0093_blob_reservations")
+					| ("execution", "0094_blob_reservations_state")
+					| ("execution", "0095_blob_receipt_references")
 			)
 		})
 		.cloned()
