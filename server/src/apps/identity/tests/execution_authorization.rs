@@ -6773,14 +6773,34 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait as _, LockType, PostgresQueryBuilder, Query,
+		QueryStatementBuilder as _,
+	};
+	// A creator worker retains a key-share lock on its Run during provider I/O.
+	let mut creator_authority = f.store.pool.fixture_driver().begin().await.unwrap();
+	sqlx::query(
+		&Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("runs"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(creator_run)))
+			.lock(LockType::KeyShare)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(&mut *creator_authority)
+	.await
+	.unwrap();
 	// The recovery cursor already passed this older Run; the second pass wraps.
 	let harness = Harness {
 		federation: f.clone(),
 	};
-	assert!(
-		harness.worker_once().await.unwrap() || harness.worker_once().await.unwrap(),
-		"member Run was never leased"
-	);
+	let leased = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+		harness.worker_once().await.unwrap() || harness.worker_once().await.unwrap()
+	})
+	.await
+	.expect("member message must not wait for the creator worker's Run reference");
+	creator_authority.rollback().await.unwrap();
+	assert!(leased, "member Run was never leased");
 	let inputs = f
 		.store
 		.run_inputs(&TEST_FIXTURE, creator_run)
@@ -6810,10 +6830,6 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 	assert_eq!(body[0]["member_runs"][0]["id"], json!(child.id));
 	// A member worker retains this lock through its authority transaction.
 	let mut authority = f.store.pool.fixture_driver().begin().await.unwrap();
-	use reinhardt::query::{
-		Alias, Expr, ExprTrait as _, LockType, PostgresQueryBuilder, Query,
-		QueryStatementBuilder as _,
-	};
 	sqlx::query(
 		&Query::select()
 			.column(Alias::new("id"))

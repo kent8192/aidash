@@ -188,7 +188,7 @@ impl CreateScope for Creation<'_> {
 			.column(ColumnRef::Asterisk)
 			.from(Alias::new("runs"))
 			.and_where(Expr::col("id").eq(Expr::value(run.id)))
-			.lock(LockType::Update)
+			.lock(LockType::NoKeyUpdate)
 			.build(PostgresQueryBuilder);
 		let row = self
 			.access
@@ -340,7 +340,7 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 			.column(Alias::new("id"))
 			.from(Alias::new("runs"))
 			.and_where(Expr::col("id").eq(Expr::value(record.creator_run_id)))
-			.lock(LockType::Update)
+			.lock(LockType::NoKeyUpdate)
 			.build(PostgresQueryBuilder);
 		if self
 			.access
