@@ -28,6 +28,7 @@ struct Trace {
 	/// Request bodies sent to the runner.
 	bodies: Vec<Value>,
 	pod_times: Vec<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
+	reusable: Option<Uuid>,
 }
 #[derive(Clone)]
 struct Repository(Arc<Mutex<Trace>>);
@@ -106,6 +107,7 @@ fn repository() -> Repository {
 		failure: None,
 		bodies: vec![],
 		pod_times: vec![],
+		reusable: None,
 	})))
 }
 impl Repository {
@@ -216,6 +218,15 @@ impl OperationReconciliationScope for Scope {
 	}
 	async fn verified(&mut self, _: &MountedFile) -> Result<()> {
 		self.0.call("verified")
+	}
+	async fn reuse_output(&mut self, digest: &str, size: u64) -> Result<Option<Uuid>> {
+		self.0.call("reuse_output")?;
+		assert_eq!(
+			digest,
+			"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+		);
+		assert_eq!(size, 3);
+		Ok(self.0.0.lock().unwrap().reusable)
 	}
 	async fn begin_output(&mut self, _: u64) -> Result<()> {
 		self.0.call("begin_output")
@@ -489,6 +500,31 @@ async fn completed_output_publication_advances_revision_before_persisting_and_em
 	assert!(publish < persist && persist < event);
 	assert!(trace.commit);
 }
+#[rstest]
+#[tokio::test]
+async fn publication_reuses_a_tenant_blob_without_downloading_it(repository: Repository) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.reusable = Some(Uuid::from_u128(55));
+		trace.observed = json!({"status":"completed","termination_confirmed":true,"executed":true,
+            "files":[{"path":"new/path", "object_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "digest":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "size":3}],
+            "stdout":STANDARD.encode("stdout"), "displays":[], "exit_code":0});
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(trace.published[0].file_id, Uuid::from_u128(55));
+	assert_eq!(trace.published[0].path, "new/path");
+	assert!(
+		!trace
+			.calls
+			.iter()
+			.any(
+				|call| (call.starts_with("request:GET:") && call.contains("/files/"))
+					|| call == "begin_output"
+			)
+	);
+}
+
 #[rstest]
 #[case::completed("completed")]
 #[case::cancelled("cancelled")]

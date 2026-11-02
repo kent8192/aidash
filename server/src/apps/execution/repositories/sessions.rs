@@ -31,11 +31,39 @@ impl Scope<'_> {
 	}
 }
 pub(crate) fn select(table: &str) -> reinhardt::query::SelectStatement {
-	Query::select()
-		.column(ColumnRef::Asterisk)
-		.from(Alias::new(table))
-		.to_owned()
+	let mut query = Query::select();
+	query.column(ColumnRef::Asterisk).from(Alias::new(table));
+	if table == "core_areas" {
+		let manifest = Query::select()
+			.column(Alias::new("manifest"))
+			.from(Alias::new("core_manifest_revisions"))
+			.and_where(
+				Expr::col((Alias::new("core_manifest_revisions"), Alias::new("tenant")))
+					.equals((Alias::new("core_areas"), Alias::new("tenant"))),
+			)
+			.and_where(
+				Expr::col((Alias::new("core_manifest_revisions"), Alias::new("area_id")))
+					.equals((Alias::new("core_areas"), Alias::new("id"))),
+			)
+			.and_where(
+				Expr::col((
+					Alias::new("core_manifest_revisions"),
+					Alias::new("revision"),
+				))
+				.equals((Alias::new("core_areas"), Alias::new("revision"))),
+			)
+			.to_owned();
+		query.expr_as(
+			reinhardt::query::Func::coalesce(vec![
+				Expr::subquery(manifest).into(),
+				Expr::value(serde_json::json!([])).into(),
+			]),
+			Alias::new("manifest"),
+		);
+	}
+	query.to_owned()
 }
+
 /// Working area bound to a core run: `None` when the run is not a core run, `Some(None)`
 /// when its area is absent from the caller's tenant.
 pub(crate) async fn run_area(

@@ -215,6 +215,19 @@ async fn reconcile(
 					return Err(Error::Invalid("invalid runner paths".into()));
 				}
 				let file_size = file["size"].as_u64().ok_or(Error::Forbidden)?;
+				let object_id = file["object_id"]
+					.as_str()
+					.ok_or_else(|| Error::Invalid("invalid output id".into()))?;
+				if object_id.len() != 64 || !object_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+				{
+					return Err(Error::Invalid("invalid output id".into()));
+				}
+				let digest = file["digest"]
+					.as_str()
+					.ok_or_else(|| Error::Invalid("invalid output digest".into()))?;
+				digest
+					.parse::<aidash_domain::capabilities::Digest>()
+					.map_err(|_| Error::Invalid("invalid output digest".into()))?;
 				size = size.checked_add(file_size).ok_or(Error::Forbidden)?;
 				if size > limits.working_bytes {
 					return Err(Error::Conflict("runner file quota".into()));
@@ -229,7 +242,10 @@ async fn reconcile(
 					entries.push(unchanged.clone());
 					continue;
 				}
-				let (file_id, digest) = Box::pin(download_output(scope, id, file)).await?;
+				let (file_id, digest) = match scope.reuse_output(digest, file_size).await? {
+					Some(file_id) => (file_id, digest.to_owned()),
+					None => Box::pin(download_output(scope, id, file)).await?,
+				};
 				entries.push(MountedFile {
 					file_id,
 					path: path.into(),

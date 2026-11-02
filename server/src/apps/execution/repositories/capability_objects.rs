@@ -12,6 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use uuid::Uuid;
 
 pub(crate) struct PendingObject {
+	runtime: Runtime,
 	id: Uuid,
 	area: Option<Uuid>,
 	kind: String,
@@ -19,7 +20,6 @@ pub(crate) struct PendingObject {
 	written: u64,
 	file: tokio::fs::File,
 	hash: Sha256,
-	root: PathBuf,
 }
 
 impl PendingObject {
@@ -36,7 +36,7 @@ impl PendingObject {
 		Ok(())
 	}
 	pub(crate) async fn finish(
-		self,
+		mut self,
 		access: &mut Access,
 		expected: Option<&str>,
 	) -> Result<(Uuid, String)> {
@@ -45,14 +45,97 @@ impl PendingObject {
 			return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
 		}
 		self.file.sync_all().await?;
-		tokio::fs::File::open(&self.root).await?.sync_all().await?;
+		let tenant = access.identity.tenant.clone();
+		// Persist the proposed digest before exposing a blob so a later
+		// maintenance pass can find a write whose DB transaction rolled back.
+		let intent_dir = self.runtime.0.storage.join(".intents");
+		let intent_path = intent_dir.join(self.id.to_string());
+		let temporary = intent_dir.join(format!(".{}.new", self.id));
+		let mut options = tokio::fs::OpenOptions::new();
+		options.write(true).create_new(true);
+		#[cfg(unix)]
+		options.mode(0o600);
+		let mut intent = options.open(&temporary).await?;
+		intent
+			.write_all(&serde_json::to_vec(
+				&serde_json::json!({"id": self.id, "tenant": tenant, "digest": hash}),
+			)?)
+			.await?;
+		intent.sync_all().await?;
+		tokio::fs::rename(&temporary, &intent_path).await?;
+		tokio::fs::File::open(&intent_dir).await?.sync_all().await?;
+		let digest: aidash_domain::capabilities::Digest = hash
+			.parse()
+			.map_err(|_| Error::Invalid("invalid object digest".into()))?;
+		// All publication and reclamation for one Tenant/digest hold this
+		// transaction lock until commit, including physical store operations.
+		let lock = format!("core-blob:{tenant}:{hash}");
+		crate::database::native::query(
+			&Query::select()
+				.expr(SimpleExpr::CustomWithExpr(
+					"(pg_advisory_xact_lock(hashtextextended(?, 0)))".into(),
+					vec![Expr::value(lock).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut **access.tx)
+		.await?;
+		let existing: Option<i64> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("size"))
+				.from(Alias::new("core_blobs"))
+				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&tenant)))
+				.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(&hash)))
+				.lock(reinhardt::query::LockType::Update)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **access.tx)
+		.await?;
+		self.runtime.reserve(access, -(self.size as i64)).await?;
+		let store = self.runtime.blob_store().await?;
+		if let Some(size) = existing {
+			if size != self.size as i64 {
+				return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
+			}
+			if !store.exists(&tenant, digest).await? {
+				// A previous garbage collection may have unlinked an unreferenced
+				// blob before its transaction rolled back. Restore it on verified put.
+				self.file.rewind().await?;
+				store
+					.put_if_absent(&tenant, digest, self.size, Box::pin(self.file))
+					.await?;
+			}
+		} else {
+			self.runtime.charge(access, self.size as i64).await?;
+			// An uncommitted prior writer may have left bytes without a DB
+			// owner. Under the digest lock, discard them before verified put.
+			store.delete(&tenant, digest).await?;
+			self.file.rewind().await?;
+			store
+				.put_if_absent(&tenant, digest, self.size, Box::pin(self.file))
+				.await?;
+			crate::database::native::query(
+				&Query::insert()
+					.into_table(Alias::new("core_blobs"))
+					.columns(["tenant", "digest", "size"].map(Alias::new))
+					.values(vec![
+						tenant.clone().into(),
+						hash.clone().into(),
+						(self.size as i64).into(),
+					])
+					.map_err(Error::Invalid)?
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut **access.tx)
+			.await?;
+		}
 		crate::database::native::query(
 			&Query::insert()
 				.into_table(Alias::new("core_objects"))
 				.columns(["id", "tenant", "area_id", "kind", "digest", "size"].map(Alias::new))
 				.values(vec![
 					self.id.into(),
-					access.identity.tenant.clone().into(),
+					tenant.into(),
 					self.area.into_value(),
 					self.kind.into(),
 					hash.clone().into(),
@@ -65,6 +148,39 @@ impl PendingObject {
 		.await?;
 		Ok((self.id, hash))
 	}
+}
+
+/// Serialize Tenant quota and blob mutations before acquiring digest locks.
+pub(crate) async fn lock_tenant_quota(
+	tx: &mut crate::database::native::Transaction,
+	tenant: &str,
+) -> Result<()> {
+	crate::database::native::query(
+		&Query::insert()
+			.into_table(Alias::new("core_quotas"))
+			.columns([Alias::new("tenant")])
+			.values(vec![tenant.into()])
+			.map_err(Error::Invalid)?
+			.on_conflict(
+				OnConflict::column(Alias::new("tenant"))
+					.do_nothing()
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut **tx)
+	.await?;
+	let _: String = crate::database::native::query_scalar(
+		&Query::select()
+			.column(Alias::new("tenant"))
+			.from(Alias::new("core_quotas"))
+			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+			.lock(reinhardt::query::LockType::Update)
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&mut **tx)
+	.await?;
+	Ok(())
 }
 
 pub fn digest(bytes: &[u8]) -> String {
@@ -139,32 +255,45 @@ impl Runtime {
 			{
 				return Err(Error::Conflict("invalid object ownership intent".into()));
 			}
-			let exists: Option<Uuid> = {
-				let query_bind_1 = id;
-				crate::database::native::query_scalar(
+			if let Some(hash) = intent["digest"].as_str() {
+				let digest = hash
+					.parse()
+					.map_err(|_| Error::Conflict("invalid object ownership intent".into()))?;
+				let tenant = intent["tenant"].as_str().ok_or(Error::Forbidden)?;
+				let lock = format!("core-blob:{tenant}:{hash}");
+				let acquired: bool = crate::database::native::query_scalar(
 					&Query::select()
-						.column(Alias::new("id"))
-						.from(Alias::new("core_objects"))
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-								SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								),
-							),
-						)
+						.expr(SimpleExpr::CustomWithExpr(
+							"(pg_try_advisory_xact_lock(hashtextextended(?, 0)))".into(),
+							vec![Expr::value(lock).into()],
+						))
+						.to_string(PostgresQueryBuilder),
+				)
+				.scalar_one(&mut *tx)
+				.await?;
+				if !acquired {
+					continue;
+				}
+				let exists: Option<String> = crate::database::native::query_scalar(
+					&Query::select()
+						.column(Alias::new("digest"))
+						.from(Alias::new("core_blobs"))
+						.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+						.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(hash)))
 						.to_string(PostgresQueryBuilder),
 				)
 				.scalar_optional(&mut *tx)
-				.await?
-			};
-			if exists.is_none() {
-				match tokio::fs::remove_file(self.object_path(id)).await {
-					Ok(()) => {}
-					Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-					Err(e) => return Err(e.into()),
+				.await?;
+				if exists.is_none() {
+					self.blob_store().await?.delete(tenant, digest).await?;
 				}
 			}
+			match tokio::fs::remove_file(self.object_path(id)).await {
+				Ok(()) => {}
+				Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+				Err(e) => return Err(e.into()),
+			}
+
 			match tokio::fs::remove_file(entry.path()).await {
 				Ok(()) => {}
 				Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -212,76 +341,8 @@ impl Runtime {
 			access.core_gc_complete = true;
 		}
 		let size = i64::try_from(size).map_err(|_| Error::Invalid("OBJECT_LIMIT".into()))?;
-		let limit = i64::try_from(self.0.retained_bytes)
-			.map_err(|_| Error::Invalid("invalid quota".into()))?;
-		{
-			let query_bind_1 = &access.identity.tenant;
-			crate::database::native::query(
-				&Query::insert()
-					.into_table(Alias::new("core_quotas"))
-					.columns([Alias::new("tenant")])
-					.from_subquery(
-						reinhardt::query::Query::select()
-							.expr(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							))
-							.to_owned(),
-					)
-					.on_conflict(
-						OnConflict::column(Alias::new("tenant"))
-							.do_nothing()
-							.to_owned(),
-					)
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut **access.tx)
-			.await?
-		};
-		let reserved: Option<i64> = {
-			let query_bind_1 = &access.identity.tenant;
-			let query_bind_2 = size;
-			let query_bind_3 = limit;
-			crate::database::native::query_scalar(
-				&Query::update()
-					.table(Alias::new("core_quotas"))
-					.value_expr(
-						Alias::new("used_bytes"),
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("used_bytes")))
-							.add(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							)),
-					)
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("tenant"))).eq(
-							SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							),
-						),
-					)
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("used_bytes")))
-							.lte(SimpleExpr::CustomWithExpr(
-								"(? - ?)".to_owned(),
-								vec![
-									Expr::value(query_bind_3.to_owned()).into(),
-									Expr::value(query_bind_2.to_owned()).into(),
-								],
-							)),
-					)
-					.returning([Alias::new("used_bytes")])
-					.to_string(PostgresQueryBuilder),
-			)
-			.scalar_optional(&mut **access.tx)
-			.await?
-		};
-		if reserved.is_none() {
-			return Err(Error::Conflict(
-				"STORAGE_QUOTA: retained object quota exceeded".into(),
-			));
-		}
+		// Bound in-flight spool bytes independently of retained, deduplicated bytes.
+		self.reserve(access, size).await?;
 		tokio::fs::create_dir_all(&self.0.storage).await?;
 		if tokio::fs::symlink_metadata(&self.0.storage)
 			.await?
@@ -330,6 +391,7 @@ impl Runtime {
 		options.mode(0o600);
 		let file = options.open(self.object_path(id)).await?;
 		Ok(PendingObject {
+			runtime: self.clone(),
 			id,
 			area,
 			kind: kind.into(),
@@ -337,7 +399,6 @@ impl Runtime {
 			written: 0,
 			file,
 			hash: Sha256::new(),
-			root: self.0.storage.clone(),
 		})
 	}
 
@@ -387,6 +448,11 @@ impl Runtime {
 			if metadata["tenant"] != access.identity.tenant {
 				continue;
 			}
+			// Digest-bearing intents also name a possibly orphaned cloud blob;
+			// only the maintenance pass removes them under the digest lock.
+			if metadata["digest"].is_string() {
+				continue;
+			}
 			let acquired: bool = {
 				let query_bind_1 = format!("core-object:{id}");
 				crate::database::native::query_scalar(
@@ -434,7 +500,7 @@ impl Runtime {
 		}
 		Ok(())
 	}
-	async fn open_object(&self, access: &mut Access, entry: &FileEntry) -> Result<tokio::fs::File> {
+	async fn validate_object(&self, access: &mut Access, entry: &FileEntry) -> Result<()> {
 		let metadata: Option<(String, i64)> = {
 			let query_bind_1 = entry.file_id;
 			let query_bind_2 = &access.identity.tenant;
@@ -467,29 +533,29 @@ impl Runtime {
 		if metadata != Some((entry.digest.clone(), entry.size as i64)) {
 			return Err(Error::NotFound("file unavailable".into()));
 		}
-		let mut options = tokio::fs::OpenOptions::new();
-		options.read(true);
-		#[cfg(unix)]
-		options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-		let file = options.open(self.object_path(entry.file_id)).await?;
-		let metadata = file.metadata().await?;
-		#[cfg(unix)]
-		{
-			use std::os::unix::fs::MetadataExt;
-			if metadata.nlink() != 1 {
-				return Err(Error::Conflict("unsafe object alias".into()));
-			}
-		}
-		if !metadata.is_file() || metadata.len() != entry.size {
-			return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
-		}
-		Ok(file)
+		Ok(())
+	}
+	async fn open_object(
+		&self,
+		access: &mut Access,
+		entry: &FileEntry,
+	) -> Result<aidash_application::ports::blob_store::BlobReader> {
+		self.validate_object(access, entry).await?;
+		let digest = entry
+			.digest
+			.parse()
+			.map_err(|_| Error::Conflict("OBJECT_INTEGRITY".into()))?;
+		self.blob_store()
+			.await?
+			.get(&access.identity.tenant, digest, None)
+			.await?
+			.ok_or_else(|| Error::NotFound("file unavailable".into()))
 	}
 	pub(crate) async fn read(&self, access: &mut Access, entry: &FileEntry) -> Result<Vec<u8>> {
 		let file = self.open_object(access, entry).await?;
 		let mut bytes = Vec::new();
 		file.take(entry.size + 1).read_to_end(&mut bytes).await?;
-		if bytes.len() as u64 != entry.size || digest(&bytes) != entry.digest {
+		if bytes.len() as u64 != entry.size {
 			return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
 		}
 		Ok(bytes)
@@ -529,12 +595,27 @@ impl Runtime {
 		if offset > entry.size {
 			return Err(Error::Invalid("INVALID_READ_RANGE".into()));
 		}
-		let mut file = self.open_object(access, entry).await?;
-		file.seek(std::io::SeekFrom::Start(offset)).await?;
+		// Validate the logical reference before opening a range from the store.
+		self.validate_object(access, entry).await?;
+		if offset == entry.size {
+			return Ok(Vec::new());
+		}
+		let digest = entry
+			.digest
+			.parse()
+			.map_err(|_| Error::Conflict("OBJECT_INTEGRITY".into()))?;
+		let end = offset.saturating_add(4 << 20).min(entry.size);
+		let mut reader = self
+			.blob_store()
+			.await?
+			.get(&access.identity.tenant, digest, Some(offset..end))
+			.await?
+			.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
 		let mut bytes = Vec::new();
-		file.take((entry.size - offset).min(4 << 20))
-			.read_to_end(&mut bytes)
-			.await?;
+		reader.read_to_end(&mut bytes).await?;
+		if bytes.len() as u64 != end - offset {
+			return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
+		}
 		Ok(bytes)
 	}
 }
@@ -544,25 +625,77 @@ impl Runtime {
 		&self,
 		access: &mut Access,
 		entry: &FileEntry,
-	) -> Result<tokio::fs::File> {
-		let mut file = self.open_object(access, entry).await?;
-		let mut hash = Sha256::new();
-		let mut total = 0;
-		let mut buffer = vec![0; 65536];
-		loop {
-			let n = file.read(&mut buffer).await?;
-			if n == 0 {
-				break;
-			}
-			total += n as u64;
-			hash.update(&buffer[..n]);
-		}
-		if total != entry.size || format!("{:x}", hash.finalize()) != entry.digest {
+	) -> Result<aidash_application::ports::blob_store::BlobReader> {
+		self.open_object(access, entry).await
+	}
+
+	/// Reuse a verified Tenant blob without reading or transferring its bytes.
+	pub(crate) async fn reference_blob(
+		&self,
+		access: &mut Access,
+		area: Uuid,
+		kind: &str,
+		hash: &str,
+		size: u64,
+	) -> Result<Option<Uuid>> {
+		let digest = hash
+			.parse()
+			.map_err(|_| Error::Invalid("invalid object digest".into()))?;
+		let size = i64::try_from(size).map_err(|_| Error::Invalid("OBJECT_LIMIT".into()))?;
+		let tenant = access.identity.tenant.clone();
+		lock_tenant_quota(access.tx.native_mut(), &tenant).await?;
+		let lock = format!("core-blob:{tenant}:{hash}");
+		crate::database::native::query(
+			&Query::select()
+				.expr(SimpleExpr::CustomWithExpr(
+					"(pg_advisory_xact_lock(hashtextextended(?, 0)))".into(),
+					vec![Expr::value(lock).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut **access.tx)
+		.await?;
+		let existing: Option<i64> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("size"))
+				.from(Alias::new("core_blobs"))
+				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&tenant)))
+				.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(hash)))
+				.lock(reinhardt::query::LockType::Update)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **access.tx)
+		.await?;
+		let Some(existing) = existing else {
+			return Ok(None);
+		};
+		if existing != size {
 			return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
 		}
-		file.rewind().await?;
-		Ok(file)
+		if !self.blob_store().await?.exists(&tenant, digest).await? {
+			return Ok(None);
+		}
+		let id = Uuid::new_v4();
+		crate::database::native::query(
+			&Query::insert()
+				.into_table(Alias::new("core_objects"))
+				.columns(["id", "tenant", "area_id", "kind", "digest", "size"].map(Alias::new))
+				.values(vec![
+					id.into(),
+					tenant.into(),
+					area.into(),
+					kind.into(),
+					hash.into(),
+					size.into(),
+				])
+				.map_err(Error::Invalid)?
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut **access.tx)
+		.await?;
+		Ok(Some(id))
 	}
+
 	pub(crate) async fn copy_owned(
 		&self,
 		access: &mut Access,
@@ -579,24 +712,59 @@ impl Runtime {
 		kind: &str,
 		entry: &FileEntry,
 	) -> Result<FileEntry> {
-		let mut source = self.open_object(access, entry).await?;
-		let mut target = self.begin_object(access, area, kind, entry.size).await?;
-		let mut buffer = vec![0; 65536];
-		loop {
-			let n = source.read(&mut buffer).await?;
-			if n == 0 {
-				break;
-			}
-			target.write_block(&buffer[..n]).await?;
+		// Each logical object has its own authority and lifecycle while its
+		// immutable bytes are shared within the Tenant.
+		let tenant = access.identity.tenant.clone();
+		lock_tenant_quota(access.tx.native_mut(), &tenant).await?;
+		let lock = format!("core-blob:{tenant}:{}", entry.digest);
+		crate::database::native::query(
+			&Query::select()
+				.expr(SimpleExpr::CustomWithExpr(
+					"(pg_advisory_xact_lock(hashtextextended(?, 0)))".into(),
+					vec![Expr::value(lock).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut **access.tx)
+		.await?;
+		self.validate_object(access, entry).await?;
+		let digest = entry
+			.digest
+			.parse()
+			.map_err(|_| Error::Conflict("OBJECT_INTEGRITY".into()))?;
+		if !self.blob_store().await?.exists(&tenant, digest).await? {
+			return Err(Error::NotFound("file unavailable".into()));
 		}
-		let (file_id, digest) = target.finish(access, Some(&entry.digest)).await?;
+		let file_id = Uuid::new_v4();
+		crate::database::native::query(
+			&Query::insert()
+				.into_table(Alias::new("core_objects"))
+				.columns(["id", "tenant", "area_id", "kind", "digest", "size"].map(Alias::new))
+				.values(vec![
+					file_id.into(),
+					tenant.into(),
+					area.into_value(),
+					kind.into(),
+					entry.digest.clone().into(),
+					(entry.size as i64).into(),
+				])
+				.map_err(Error::Invalid)?
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut **access.tx)
+		.await?;
 		Ok(FileEntry {
 			file_id,
-			digest,
 			..entry.clone()
 		})
 	}
 	pub(crate) async fn reserve(&self, access: &mut Access, bytes: i64) -> Result<()> {
+		self.adjust_quota(access, bytes, "reserved_bytes").await
+	}
+	async fn charge(&self, access: &mut Access, bytes: i64) -> Result<()> {
+		self.adjust_quota(access, bytes, "used_bytes").await
+	}
+	async fn adjust_quota(&self, access: &mut Access, bytes: i64, column: &str) -> Result<()> {
 		{
 			let query_bind_1 = &access.identity.tenant;
 			crate::database::native::query(
@@ -629,12 +797,13 @@ impl Runtime {
 				&Query::update()
 					.table(Alias::new("core_quotas"))
 					.value_expr(
-						Alias::new("used_bytes"),
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("used_bytes")))
-							.add(SimpleExpr::CustomWithExpr(
+						Alias::new(column),
+						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(column))).add(
+							SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_2.to_owned()).into()],
-							)),
+							),
+						),
 					)
 					.and_where(
 						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("tenant"))).eq(
@@ -644,13 +813,11 @@ impl Runtime {
 							),
 						),
 					)
-					.and_where(SimpleExpr::CustomWithExpr(
-						"(used_bytes + ? BETWEEN 0 AND ?)".to_owned(),
-						vec![
-							Expr::value(query_bind_2.to_owned()).into(),
-							Expr::value(query_bind_3.to_owned()).into(),
-						],
-					))
+					.and_where(
+						Expr::col(Alias::new(column))
+							.add(Expr::value(query_bind_2))
+							.between(0, query_bind_3),
+					)
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut **access.tx)
@@ -662,101 +829,86 @@ impl Runtime {
 		}
 		Ok(())
 	}
-	/// The caller first commits a tombstone that blocks new readers/writers.
-	/// Unlink is idempotent: a crash between unlink and the database commit is
-	/// retried against the same UUID; quota is released only after unlink.
-	/// Internal reconciliation only: the caller must lock and validate a
-	/// committed cleanup/expiry record or publication tombstone for this object.
+	/// Remove logical ownership; a later sweep reclaims unreferenced bytes.
+	/// The caller must lock and validate the relevant cleanup or expiry record.
 	pub(crate) async fn erase_committed(
 		&self,
 		tx: &mut crate::database::native::Transaction,
 		tenant: &str,
 		id: Uuid,
+		purging: bool,
 	) -> Result<()> {
-		let size: Option<i64> = {
-			let query_bind_1 = id;
-			let query_bind_2 = tenant;
-			crate::database::native::query_scalar(
+		let digest: Option<String> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("digest"))
+				.from(Alias::new("core_objects"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **tx)
+		.await?;
+		let Some(digest) = digest else { return Ok(()) };
+		lock_tenant_quota(tx, tenant).await?;
+		let lock = format!("core-blob:{tenant}:{digest}");
+		crate::database::native::query(
+			&Query::select()
+				.expr(SimpleExpr::CustomWithExpr(
+					"(pg_advisory_xact_lock(hashtextextended(?, 0)))".into(),
+					vec![Expr::value(lock).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut **tx)
+		.await?;
+		let object: Option<(i64, String)> = crate::database::native::query_as(
+			&Query::select()
+				.columns([Alias::new("size"), Alias::new("kind")])
+				.from(Alias::new("core_objects"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+				.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(&digest)))
+				.lock(reinhardt::query::LockType::Update)
+				.to_string(PostgresQueryBuilder),
+		)
+		.columns(&["size", "kind"])
+		.fetch_optional(&mut **tx)
+		.await?;
+		let Some((_size, kind)) = object else {
+			return Ok(());
+		};
+		if !purging
+			&& matches!(
+				kind.as_str(),
+				"superseded_working" | "received" | "transfer_snapshot"
+			) {
+			let safe: Option<Uuid> = crate::database::native::query_scalar(
 				&Query::select()
-					.column(Alias::new("size"))
+					.column(Alias::new("id"))
 					.from(Alias::new("core_objects"))
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-							SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							),
-						),
-					)
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("tenant"))).eq(
-							SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							),
-						),
-					)
-					.lock(reinhardt::query::LockType::Update)
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+					.and_where(super::reclamation::no_active_hold())
 					.to_string(PostgresQueryBuilder),
 			)
 			.scalar_optional(&mut **tx)
-			.await?
-		};
-		let Some(size) = size else { return Ok(()) };
-		match tokio::fs::remove_file(self.object_path(id)).await {
-			Ok(()) => {}
-			Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-			Err(e) => return Err(e.into()),
-		}
-		tokio::fs::File::open(&self.0.storage)
-			.await?
-			.sync_all()
 			.await?;
-		{
-			let query_bind_1 = id;
-			crate::database::native::query(
-				&Query::delete()
-					.from_table(Alias::new("core_objects"))
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-							SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							),
-						),
-					)
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut **tx)
-			.await?
-		};
-		{
-			let query_bind_1 = tenant;
-			let query_bind_2 = size;
-			crate::database::native::query(
-				&Query::update()
-					.table(Alias::new("core_quotas"))
-					.value_expr(
-						Alias::new("used_bytes"),
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("used_bytes")))
-							.sub(SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							)),
-					)
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("tenant"))).eq(
-							SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							),
-						),
-					)
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut **tx)
-			.await?
-		};
+			if safe.is_none() {
+				return Ok(());
+			}
+		}
+		// A revision reference uses a restrictive foreign key: it cannot be
+		// reclaimed even if a stale sweep selected this object earlier.
+		crate::database::native::query(
+			&Query::delete()
+				.from_table(Alias::new("core_objects"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut **tx)
+		.await?;
+		// Physical deletion runs in a later transaction after this removal has
+		// committed, so rolling back cannot resurrect a reference to lost bytes.
 		Ok(())
 	}
 }

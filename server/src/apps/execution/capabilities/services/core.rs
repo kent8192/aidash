@@ -65,6 +65,7 @@ impl Default for Profile {
 			outbound_origins: vec![],
 			package_origins: vec![],
 			storage: PathBuf::from("/var/lib/aidash/capabilities"),
+			blob_storage: Default::default(),
 			working_bytes: 1 << 30,
 			retained_bytes: 10 << 30,
 			temporary_bytes: 256 << 20,
@@ -86,10 +87,24 @@ impl Default for Profile {
 		}
 	}
 }
-#[derive(Debug, Clone)]
-pub struct Runtime(pub Arc<Profile>);
+#[derive(Clone)]
+pub struct Runtime(
+	pub Arc<Profile>,
+	Arc<tokio::sync::OnceCell<Arc<dyn aidash_application::ports::blob_store::BlobStore>>>,
+);
+impl std::fmt::Debug for Runtime {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_tuple("Runtime").field(&self.0).finish()
+	}
+}
 impl Runtime {
 	pub fn new(profile: Profile) -> Result<Self> {
+		use crate::apps::execution::capabilities::serializers::core::BlobStorage;
+		if let BlobStorage::S3 { bucket } | BlobStorage::Gcs { bucket } = &profile.blob_storage
+			&& (bucket.trim().is_empty() || bucket.contains('/') || bucket != bucket.trim())
+		{
+			return Err(Error::Invalid("invalid blob storage bucket".into()));
+		}
 		if let Some(egress) = &profile.egress {
 			egress.limits.validate()?;
 			let endpoint = reqwest::Url::parse(&egress.endpoint)
@@ -172,7 +187,41 @@ impl Runtime {
 				));
 			}
 		}
-		Ok(Self(Arc::new(profile)))
+		Ok(Self(
+			Arc::new(profile),
+			Arc::new(tokio::sync::OnceCell::new()),
+		))
+	}
+	pub(crate) async fn blob_store(
+		&self,
+	) -> Result<Arc<dyn aidash_application::ports::blob_store::BlobStore>> {
+		use crate::apps::execution::capabilities::serializers::core::BlobStorage;
+		use aidash_integrations::blob_store::{LocalBlobStore, ObjectBlobStore};
+		let store = self
+			.1
+			.get_or_try_init(|| async {
+				let store: Arc<dyn aidash_application::ports::blob_store::BlobStore> =
+					match &self.0.blob_storage {
+						BlobStorage::Local => {
+							tokio::fs::create_dir_all(&self.0.storage).await?;
+							if tokio::fs::symlink_metadata(&self.0.storage)
+								.await?
+								.file_type()
+								.is_symlink()
+							{
+								return Err(Error::Invalid(
+									"object storage must not be a symlink".into(),
+								));
+							}
+							Arc::new(LocalBlobStore::new(&self.0.storage)?)
+						}
+						BlobStorage::S3 { bucket } => Arc::new(ObjectBlobStore::s3(bucket)?),
+						BlobStorage::Gcs { bucket } => Arc::new(ObjectBlobStore::gcs(bucket)?),
+					};
+				Ok::<_, Error>(store)
+			})
+			.await?;
+		Ok(store.clone())
 	}
 	pub fn from_env() -> Result<Self> {
 		let profile = match std::env::var("AIDASH_CAPABILITY_PROFILE") {
