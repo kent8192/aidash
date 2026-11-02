@@ -142,6 +142,46 @@ class AllocationUsageTest(unittest.TestCase):
         self.assertEqual(page['pending_evidence'], 0)
         self.assertFalse(json.loads((self.runner.allocations / (self.uid + '.json')).read_bytes()).get('quarantined'))
 
+    def test_operation_poll_stops_retrying_when_journal_keeps_advancing(self):
+        self.runner.observe_allocation(self.record, self.pod)
+        path = self.runner.allocations / (self.uid + '.json')
+        calls = []
+
+        def kube(arguments, **_):
+            calls.append(arguments)
+            if len(calls) > 5:
+                raise AssertionError('unbounded provider reads')
+            allocation = json.loads(path.read_bytes())
+            allocation['resource_version'] = str(101 + len(calls))
+            save(path, allocation)
+            return Mock(stdout=json.dumps(self.pod).encode())
+
+        self.runner.kube = kube
+        self.assertEqual(self.runner.pod(self.operation), self.pod)
+        self.assertEqual(len(calls), 5)
+        allocation = json.loads(path.read_bytes())
+        self.assertEqual(allocation['resource_version'], '106')
+        self.assertFalse(allocation.get('quarantined'))
+        self.assertEqual(self.runner.allocation_receipts()['receipts'], [])
+
+    def test_python_setup_stops_when_allocation_never_matches_pod(self):
+        self.record.update(status='starting', request={'usage_tenant': 'acme', 'kind': 'python'})
+        save(self.runner.path(self.operation), self.record)
+        self.runner.observe_allocation(self.record, self.pod)
+        pod = copy.deepcopy(self.pod)
+        pod['metadata']['resourceVersion'] = 'older'
+        pod['spec']['nodeName'] = 'node'
+        pod['spec']['containers'][0]['image'] = 'image'
+        pod['status']['containerStatuses'][0]['containerID'] = 'containerd://abc'
+        self.runner.pod = Mock(side_effect=[pod] * 6 + [AssertionError('unbounded provider reads')])
+        self.runner.guard = Mock()
+        self.runner.reconcile_python(self.operation)
+        record = self.runner.get(self.operation)
+        self.assertEqual(record['status'], 'uncertain')
+        self.assertEqual(record['error'], 'allocation observation did not stabilize')
+        self.assertEqual(self.runner.pod.call_count, 6)
+        self.runner.guard.assert_not_called()
+
     def test_housekeeping_polls_the_provider_without_the_runner_lock(self):
         self.runner.observe_allocation(self.record, self.pod)
         path = self.runner.allocations / (self.uid + '.json')

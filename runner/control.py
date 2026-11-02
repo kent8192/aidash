@@ -32,6 +32,7 @@ from runner_journal import Rejected, identity, save, sync_directory
 TERMINAL = {"completed", "cancelled", "failed", "uncertain"}
 # The sandbox image's runner/probe.py must emit exactly this evidence contract.
 PROBE_PROTOCOL = "aidash-admission-probe/2"
+ALLOCATION_OBSERVATION_ATTEMPTS = 5
 
 
 def termination_time(terminated, started_at, observed):
@@ -595,7 +596,7 @@ class Runner(AllocationJournal):
                          "terminationGracePeriodSeconds": 1, "containers": [worker, collector], "volumes": volumes}}
 
     def pod(self, operation):
-        while True:
+        for _ in range(ALLOCATION_OBSERVATION_ATTEMPTS):
             # Retry if another observer committed while the provider read was in flight.
             with self.lock:
                 record = self.get(operation) if self.path(operation).exists() else None
@@ -616,6 +617,8 @@ class Runner(AllocationJournal):
                             continue
                         self.observe_allocation(record, pod)
                 return pod
+        # Leave evidence unchanged; the next poll can try the provider again.
+        return pod
 
     def exec_collector(self, operation, action, data=None, timeout=45):
         return self.kube(["exec", "-i", self.pod_name(operation), "-c", "collector", "--",
@@ -723,7 +726,7 @@ class Runner(AllocationJournal):
             cid = statuses["execution"]["containerID"].split("://", 1)[1]
             record = self.update(operation, pod_operation=pod_operation, pod_uid=pod["metadata"]["uid"], container_id=cid,
                                  cluster_node=pod['spec']['nodeName'], image=pod['spec']['containers'][0]['image'])
-            while True:
+            for attempt in range(ALLOCATION_OBSERVATION_ATTEMPTS):
                 with self.lock:
                     allocation = self.allocations / (identity(record['pod_uid']) + '.json')
                     current = json.loads(allocation.read_bytes()) if allocation.exists() else None
@@ -734,6 +737,8 @@ class Runner(AllocationJournal):
                     if current.get('resource_version') == pod['metadata'].get('resourceVersion'):
                         self.observe_allocation(record, pod)
                         break
+                if attempt + 1 == ALLOCATION_OBSERVATION_ATTEMPTS:
+                    raise RuntimeError('allocation observation did not stabilize')
                 pod = self.pod(pod_operation)
                 if not pod or pod['metadata']['uid'] != record['pod_uid']:
                     raise RuntimeError('Python environment identity changed')
