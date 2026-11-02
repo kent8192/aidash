@@ -1160,3 +1160,120 @@ class DockerAdmissionTest(unittest.TestCase):
         verify_user_probe(report, docker=True, processes=128)
         with self.assertRaisesRegex(ValueError, 'raw'):
             verify_user_probe(dict(report, raw_socket=False), docker=True, processes=128)
+
+class ReviewRegressionTest(unittest.TestCase):
+    def test_background_does_not_consume_foreground_slots(self):
+        import threading
+        from execution_pod import CommandQueue
+        queue, release = CommandQueue(), threading.Event()
+        try:
+            jobs = [queue.submit('r', i, lambda _: release.wait(5), background=True) for i in range(8)]
+            self.assertEqual(queue.submit('r', 'foreground', lambda value: value).result(timeout=1), 'foreground')
+        finally:
+            release.set()
+            for job in jobs: job.result(timeout=5)
+            queue.close()
+
+    def test_concurrent_intervals_are_ambiguous(self):
+        import tempfile
+        from pathlib import Path
+        from execution_pod import change_interval, read_change_log
+        with tempfile.TemporaryDirectory() as d:
+            root, state = Path(d) / 'root', Path(d) / 'state'
+            root.mkdir()
+            change_interval(root, state, 'one', 'run-one')
+            (root / 'first').write_text('a')
+            change_interval(root, state, 'two', 'run-two')
+            (root / 'second').write_text('b')
+            change_interval(root, state, 'two', 'run-two', finished=True)
+            records = read_change_log(state / 'changes.jsonl')
+            self.assertEqual(records[0]['run_id'], 'run-one')
+            self.assertEqual(records[1]['attribution'], 'ambiguous')
+            self.assertEqual(records[1]['run_ids'], ['run-one', 'run-two'])
+            self.assertIn('second', records[1]['changes']['added'])
+            change_interval(root, state, 'three', 'run-one')
+            (root / 'third').write_text('c')
+            change_interval(root, state, 'three', 'run-one', finished=True)
+            records = read_change_log(state / 'changes.jsonl')
+            self.assertEqual(records[-1]['attribution'], 'ambiguous')
+            self.assertEqual(records[-1]['run_ids'], ['run-one'])
+
+    def test_nul_is_rejected_before_kubernetes_and_journal(self):
+        import tempfile
+        from pathlib import Path
+        from execution_pod import ExecutionPodController
+        class Backend:
+            def __init__(self, root): self.root = Path(root)
+            def kube(self, *a, **kw): raise AssertionError('must not reach Kubernetes')
+        with tempfile.TemporaryDirectory() as d:
+            controller = ExecutionPodController(Backend(d), {}, admitted=True)
+            for field, value in [('code', 'a\x00b'), ('run_id', 'a\x00b'), ('cwd', 'a\x00b'), ('env', {'X':'a\x00b'})]:
+                request = {'operation_id':'e6ded09d-f783-4ce8-98e9-dbfca68884f1','scratch_space_id':'s','run_id':'r','code':'true'}
+                request[field] = value
+                with self.subTest(field=field), self.assertRaises(ValueError): controller.submit_command(request)
+            self.assertFalse(list((Path(d) / 'execution-v2').glob('*.json')))
+            controller.session_executor.shutdown(wait=True)
+
+    def test_init_only_mounts_system_subpath(self):
+        from execution_pod import execution_manifests
+        settings = {'scratch_space_id':'s','image':'image@sha256:'+'a'*64,'cpu':2,'memory_bytes':2<<30,'capacity_bytes':2<<30,'docker_enabled':False}
+        config = {'runtime_class':'aidash-gvisor','helper_image':'helper@sha256:'+'b'*64,'namespace':'sandbox'}
+        _, pod = execution_manifests(settings, config)
+        image = next(item for item in pod['spec']['initContainers'] if item['name'] == 'image-root')
+        self.assertEqual(next(m for m in image['volumeMounts'] if m['name'] == 'scratch')['subPath'], 'image-root')
+        self.assertIn('-I', image['command'])
+        env = {item['name']:item['value'] for item in image['env']}
+        for name in ('LD_PRELOAD','LD_LIBRARY_PATH','PYTHONPATH','PYTHONHOME'): self.assertEqual(env[name], '')
+
+    def test_old_terminated_guard_does_not_quarantine_new_pod(self):
+        import json, tempfile
+        from pathlib import Path
+        from control import scratch_resource_name
+        from execution_pod import ExecutionPodController
+        class Backend:
+            def __init__(self, root): self.root = Path(root)
+        with tempfile.TemporaryDirectory() as d:
+            controller = ExecutionPodController(Backend(d), {}, admitted=True)
+            path = Path(d) / 'execution-v2-spaces' / (scratch_resource_name('space') + '.json')
+            path.parent.mkdir()
+            path.write_text(json.dumps({'terminated_pods':['old'], 'guard':{'pod_uid':'new','terminated':False}}))
+            controller._terminate_recorded_pod('space', expected_uid='old')
+            self.assertFalse(json.loads(path.read_text()).get('termination_unconfirmed', False))
+            controller.session_executor.shutdown(wait=True)
+
+    def test_stopping_marks_running_unknown_and_late_results_cannot_replace_it(self):
+        import json, tempfile
+        from pathlib import Path
+        from execution_pod import ExecutionPodController
+        class Backend:
+            def __init__(self, root): self.root = Path(root)
+        operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        with tempfile.TemporaryDirectory() as d:
+            controller = ExecutionPodController(Backend(d), {}, admitted=True)
+            path = controller._command_path(operation)
+            path.write_text(json.dumps({'operation_id': operation, 'scratch_space_id': 's', 'status': 'running'}))
+            with controller.lock:
+                controller._interrupt_space_commands('s')
+            controller._update_command(operation, status='completed', exit_code=0)
+            result = json.loads(path.read_text())
+            self.assertEqual((result['status'], result['outcome']), ('interrupted', 'unknown'))
+            self.assertNotIn('exit_code', result)
+            controller.session_executor.shutdown(wait=True)
+
+    def test_docker_result_never_reads_pvc_outcome(self):
+        import json, tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodController
+        operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        class Backend:
+            def __init__(self, root): self.root, self.command, self.environment = Path(root), ['kubectl'], {}
+            def kube(self, *args, **kwargs): raise AssertionError('Docker result must not read PVC')
+        with tempfile.TemporaryDirectory() as d:
+            controller = ExecutionPodController(Backend(d), {}, admitted=True)
+            controller._command_path(operation).write_text(json.dumps({'operation_id':operation,'scratch_space_id':'s','run_id':'r','pod':'pod','pod_uid':'uid','docker_enabled':True,'background':False,'timeout_seconds':5,'cwd':'.','code':'true','status':'queued'}))
+            transport = {'exit_code':0,'transport_timed_out':False,'output':{'stdout':'b2s=','stderr':'','truncated':False}}
+            with patch('execution_pod.drain_process', return_value=transport): controller._execute_command(operation)
+            result = controller.command_result(operation)
+            self.assertEqual((result['status'], result['exit_code'], result['stdout']), ('completed', 0, 'b2s='))
+            controller.session_executor.shutdown(wait=True)

@@ -68,7 +68,7 @@ def mount_rootfs(docker_enabled):
     """Bind runtime mounts into the persisted root before starting commands."""
     import stat
 
-    root = '/scratch-system/rootfs'
+    root = '/scratch-system/image-root/rootfs'
     libc = ctypes.CDLL(None, use_errno=True)
     runtime = root
     for component in ('run', 'aidash'):
@@ -193,7 +193,7 @@ def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, 
     if not pod_uid or pod_uid != expected_pod_uid:
         raise ValueError('Execution Pod identity changed')
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from execution_pod import append_change_log, helper_command, system_tree_diff, system_tree_index
+    from execution_pod import change_interval, helper_command
 
     state = Path('/scratch-system/operations')
     state.mkdir(mode=0o700, exist_ok=True)
@@ -208,7 +208,7 @@ def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, 
         os.fsync(directory)
     finally:
         os.close(directory)
-    root = '/scratch-system/rootfs'
+    root = '/scratch-system/image-root/rootfs'
     stopping = threading.Event()
     signal.signal(signal.SIGUSR1, lambda *_: stopping.set())
     running = state / (operation_id + '.running')
@@ -218,12 +218,29 @@ def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, 
         file.flush()
         os.fsync(file.fileno())
     os.replace(pending_running, running)
-    before = system_tree_index(root) if record_changes else None
-    argv = helper_command('chroot', 'docker' if docker_enabled else 'normal', root, cwd, '/bin/sh', '-c', code)
-    result = run_supervised(argv, timeout, stop_requested=stopping)
+    interval_stop = threading.Event()
+    interval_errors = []
     if record_changes:
-        changes = system_tree_diff(before, system_tree_index(root))
-        append_change_log('/scratch-system/changes.jsonl', run_id, changes)
+        change_interval(root, '/scratch-system', operation_id, run_id)
+        def track():
+            while not interval_stop.wait(2):
+                try:
+                    change_interval(root, '/scratch-system')
+                except Exception as error:
+                    interval_errors.append(error)
+                    return
+        tracker = threading.Thread(target=track, daemon=True)
+        tracker.start()
+    argv = helper_command('chroot', 'docker' if docker_enabled else 'normal', root, cwd, '/bin/sh', '-c', code)
+    try:
+        result = run_supervised(argv, timeout, stop_requested=stopping)
+    finally:
+        if record_changes:
+            interval_stop.set()
+            tracker.join()
+            change_interval(root, '/scratch-system', operation_id, run_id, finished=True)
+    if interval_errors:
+        raise RuntimeError('change tracking failed: ' + str(interval_errors[0]))
     result.update(operation_id=operation_id, run_id=run_id)
     temporary = state / (operation_id + '.new')
     with temporary.open('x', encoding='utf-8') as file:
@@ -306,8 +323,10 @@ def read_result(operation_id):
 if __name__ == '__main__':
     import sys
     if sys.argv[1:] == ['init']:
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
         from execution_pod import initialize_system_root
-        initialize_system_root('/', '/scratch-system', reset=os.environ.get('AIDASH_RESET_SYSTEM') == 'true')
+        initialize_system_root('/', '/scratch-image', reset=os.environ.get('AIDASH_RESET_SYSTEM') == 'true')
         raise SystemExit(0)
     if sys.argv[1:] == ['bootstrap']:
         import resource
@@ -317,6 +336,8 @@ if __name__ == '__main__':
             raise ValueError('invalid guest process ceiling')
         resource.setrlimit(resource.RLIMIT_NPROC, (process_limit, process_limit))
         mount_rootfs(os.environ.get('AIDASH_DOCKER_ENABLED') == 'true')
+        from pathlib import Path
+        (Path('/scratch-system') / 'change-tracker.json').unlink(missing_ok=True)
         while True:
             signal.pause()
     if (len(sys.argv) == 10 and sys.argv[1] == 'supervise' and sys.argv[2] in ('docker', 'normal')
@@ -325,6 +346,10 @@ if __name__ == '__main__':
         outcome = supervise_command(sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[9], seconds,
                                     sys.argv[2] == 'docker', expected_pod_uid=sys.argv[8],
                                     record_changes=sys.argv[3] == 'command')
+        if sys.argv[2] == 'docker':
+            status = outcome['status']
+            raise SystemExit(outcome.get('exit_code', 1) if status == 'completed' else
+                             124 if status == 'timed_out' else 125 if status == 'stopped' else 126)
         raise SystemExit(0 if outcome['status'] in ('completed', 'timed_out', 'stopped') else 1)
     if len(sys.argv) == 3 and sys.argv[1] == 'stop':
         stop_operation(sys.argv[2])

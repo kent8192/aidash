@@ -55,12 +55,14 @@ A trusted, read-only injected helper copies the image filesystem into the PVC
 on first start, then runs commands as root in that persisted root. `/scratch`
 contains user files; the copied system tree lives separately on the same PVC.
 Installed packages survive Pod restarts. Reset replaces the system tree from the
-image and preserves `/scratch`. A per-command Run ID and a cheap mtime/size
-system-tree diff are appended to a change log. Concurrent commands can overlap,
-so these diffs are observations rather than exclusive attribution; they do not
-capture every possible metadata-only change.
+image and preserves `/scratch`. The change log records cheap mtime/size diffs
+at active-command transitions and periodically while commands run. An interval
+with one command is attributed to its Run; overlapping commands produce an
+`ambiguous` record listing the Runs. The index does not capture every possible
+metadata-only change, and a sudden Pod loss can lose the latest interval.
 
-The Runner queues commands beyond eight simultaneous commands per Pod. The
+The Runner queues foreground commands beyond eight simultaneous commands per
+Pod; background processes have a separate pool of 16. The
 default deadline is ten minutes and the maximum is 60 minutes. Foreground
 commands waiting for a Run may be cancelled; background processes expose their
 starting Run and bounded logs. Commands interrupted by a lost Pod or node have
@@ -80,6 +82,10 @@ metadata endpoint and external destination, allowing only the Egress gateway.
 It fails closed when its positive controls cannot be reached. Network probes
 currently require IPv4. The CNI must enforce policy against raw and spoofed
 packets; Docker-mode admission also runs raw packet negative controls.
+
+In Docker mode, guest root can leave the chroot and modify PVC bookkeeping;
+the change log and reset are best-effort. Command results use the controller
+exec stream rather than trusting the PVC result files.
 
 Docker mode requires a separate gVisor RuntimeClass with `net-raw` enabled and
 is restricted to nodes labeled and tainted for that Tenant. User processes retain

@@ -21,6 +21,7 @@ class CommandQueue:
 
     def __init__(self):
         self._executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix='execution-pod')
+        self._background = ThreadPoolExecutor(max_workers=16, thread_name_prefix='execution-background')
         self._lock = Lock()
         self._waiting = {}
 
@@ -28,7 +29,7 @@ class CommandQueue:
         if not isinstance(run_id, str) or not run_id:
             raise ValueError('run_id must be a nonempty string')
         with self._lock:
-            future = self._executor.submit(execute, command)
+            future = (self._background if background else self._executor).submit(execute, command)
             if not background:
                 self._waiting.setdefault(run_id, set()).add(future)
         if not background:
@@ -51,6 +52,7 @@ class CommandQueue:
 
     def close(self):
         self._executor.shutdown(wait=True, cancel_futures=True)
+        self._background.shutdown(wait=True, cancel_futures=True)
 
 
 def system_tree_index(root):
@@ -61,7 +63,7 @@ def system_tree_index(root):
 
     root = Path(root)
     index = {}
-    excluded = {'scratch', 'proc', 'dev', 'tmp', 'sys'}
+    excluded = {'scratch', 'proc', 'dev', 'tmp', 'sys', '.aidash-helpers'}
     for directory, dirs, files, fd in os.fwalk(root, follow_symlinks=False):
         relative = Path(directory).relative_to(root)
         if relative == Path('.'):
@@ -111,7 +113,7 @@ def initialize_system_root(image_root, store, *, reset=False):
     if root.exists() and not reset:
         return False
     staging = store / ('rootfs.' + uuid.uuid4().hex + '.new')
-    excluded = {'scratch', 'scratch-system', 'proc', 'sys', 'dev', 'tmp', '.aidash-helpers'}
+    excluded = {'scratch', 'scratch-system', 'scratch-image', 'proc', 'sys', 'dev', 'tmp', '.aidash-helpers'}
     copied_links = {}
 
     def copy_image_file(source, target):
@@ -181,6 +183,49 @@ def append_change_log(path, run_id, changes):
         os.fsync(file.fileno())
 
 
+def change_interval(root, state_dir, operation_id=None, run_id=None, *, finished=False):
+    """Attribute changes between active-set transitions under one shared lock."""
+    import fcntl
+    import json
+    import os
+    import time
+    from pathlib import Path
+
+    directory = Path(state_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    with open(directory / 'changes.lock', 'a+b') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state_path = directory / 'change-tracker.json'
+        try:
+            state = json.loads(state_path.read_text())
+        except FileNotFoundError:
+            state = {'active': {}, 'index': None}
+        current = {key: list(value) for key, value in system_tree_index(root).items()}
+        if state['index'] is not None and state['active']:
+            diff = system_tree_diff(state['index'], current)
+            if any(diff.values()):
+                active = list(state['active'].values())
+                record = {'changes': diff, 'recorded_at': time.time()}
+                if len(active) == 1:
+                    record['run_id'] = active[0]
+                else:
+                    record.update(attribution='ambiguous', run_ids=sorted(set(active)))
+                fd = os.open(directory / 'changes.jsonl', os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, 'a', encoding='utf-8') as out:
+                    out.write(json.dumps(record, separators=(',', ':')) + '\n')
+                    out.flush()
+                    os.fsync(out.fileno())
+        if operation_id:
+            if finished:
+                state['active'].pop(operation_id, None)
+            else:
+                state['active'][operation_id] = run_id
+        state['index'] = current
+        temporary = directory / 'change-tracker.tmp'
+        temporary.write_text(json.dumps(state, separators=(',', ':')))
+        os.replace(temporary, state_path)
+
+
 def read_change_log(path):
     """Read complete records from a persistent change log."""
     import fcntl
@@ -238,9 +283,12 @@ def execution_manifests(settings, config):
     security = {'runAsUser': 0, 'allowPrivilegeEscalation': False,
                 'capabilities': {'drop': ['ALL'], 'add': capabilities},
                 'seccompProfile': {'type': 'RuntimeDefault'}}
-    init_security = {'runAsUser': 0, 'allowPrivilegeEscalation': False,
+    image_security = {'runAsUser': 0, 'allowPrivilegeEscalation': False,
                      'capabilities': {'drop': ['ALL'],
                                       'add': ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID']},
+                     'seccompProfile': {'type': 'RuntimeDefault'}}
+    init_security = {'runAsUser': 0, 'allowPrivilegeEscalation': False,
+                     'capabilities': {'drop': ['ALL']},
                      'seccompProfile': {'type': 'RuntimeDefault'}}
     volumes = [{'name': 'scratch', 'persistentVolumeClaim': {'claimName': name}},
                {'name': 'helpers', 'emptyDir': {}}]
@@ -265,12 +313,13 @@ def execution_manifests(settings, config):
                    {'name': 'image-root', 'image': settings['image'],
                     'command': ['/.aidash-helpers/loader', '--library-path',
                                 '/.aidash-helpers/lib:/.aidash-helpers/python/lib',
-                                '/.aidash-helpers/python/bin/python3',
+                                '/.aidash-helpers/python/bin/python3', '-I',
                                 '/.aidash-helpers/sandbox_v2.py', 'init'],
-                    'env': [{'name': 'PYTHONHOME', 'value': '/.aidash-helpers/python'},
-                            {'name': 'AIDASH_RESET_SYSTEM', 'value': str(bool(settings.get('_reset_system'))).lower()}],
-                    'securityContext': init_security, 'resources': {'limits': limits},
-                    'volumeMounts': mounts[:2]},
+                    'env': [{'name': key, 'value': ''} for key in ('LD_PRELOAD', 'LD_LIBRARY_PATH', 'PYTHONPATH', 'PYTHONHOME')] +
+                           [{'name': 'AIDASH_RESET_SYSTEM', 'value': str(bool(settings.get('_reset_system'))).lower()}],
+                    'securityContext': image_security, 'resources': {'limits': limits},
+                    'volumeMounts': [{'name': 'scratch', 'mountPath': '/scratch-image', 'subPath': 'image-root'},
+                                     {'name': 'helpers', 'mountPath': '/.aidash-helpers', 'readOnly': True}]},
                ],
                'containers': [{'name': 'execution', 'image': config['helper_image'],
                                'command': helper_command('bootstrap'),
@@ -403,7 +452,7 @@ class ExecutionPodController:
                   '/.aidash-helpers/python/bin/python3', '-I', '/.aidash-helpers/user_probe.py']
         mode = 'docker' if settings['docker_enabled'] else 'normal'
         result = self.backend.kube(['exec', name, '-c', 'execution', '--'] +
-            helper_command('chroot', mode, '/scratch-system/rootfs', '.', *python))
+            helper_command('chroot', mode, '/scratch-system/image-root/rootfs', '.', *python))
         try:
             report = json.loads(result.stdout)
             verify_user_probe(report, docker=settings['docker_enabled'],
@@ -490,7 +539,7 @@ print(json.dumps(r))'''
                       'docker' if settings['docker_enabled'] else 'normal', json.dumps(targets)]
             mode = 'docker' if settings['docker_enabled'] else 'normal'
             result = self.backend.kube(['exec', pod_name, '-c', 'execution', '--'] +
-                helper_command('chroot', mode, '/scratch-system/rootfs', '.', *python), timeout=45)
+                helper_command('chroot', mode, '/scratch-system/image-root/rootfs', '.', *python), timeout=45)
             report = json.loads(result.stdout)
             spoof_seen = False
             if settings['docker_enabled']:
@@ -569,9 +618,27 @@ print(json.dumps(r))'''
         from control import scratch_resource_name
         name = scratch_resource_name(scratch_space_id)
         with self.lock:
+            self._interrupt_space_commands(scratch_space_id)
             self._terminate_recorded_pod(scratch_space_id)
             self.backend.kube(['delete', 'pod', name, '--ignore-not-found', '--wait=true'])
         return {'stopped': True}
+
+    def _interrupt_space_commands(self, scratch_space_id):
+        import json
+        from control import save
+        directory = self.backend.root / 'execution-v2'
+        if not directory.exists():
+            return
+        for path in directory.glob('*.json'):
+            record = json.loads(path.read_bytes())
+            if record.get('scratch_space_id') == scratch_space_id and record.get('status') in ('queued', 'running'):
+                prior = record['status']
+                record.update(status='interrupted' if prior == 'running' else 'cancelled',
+                              outcome='unknown' if prior == 'running' else 'not_started')
+                save(path, record)
+                future = self.futures.get(record.get('operation_id'))
+                if prior == 'queued' and future:
+                    future.cancel()
 
     def _stop_matching_pod(self, scratch_space_id, pod_uid):
         from control import scratch_resource_name
@@ -611,6 +678,8 @@ print(json.dumps(r))'''
         if state.get('termination_unconfirmed') and (not guard or guard.get('terminated')):
             raise ExecutionPodError('termination_unconfirmed', 'The previous Pod termination cannot be proven')
         if expected_uid and (not guard or guard.get('pod_uid') != expected_uid):
+            if expected_uid in state.get('terminated_pods', []):
+                return
             raise ExecutionPodError('termination_unconfirmed', 'No node guard binding exists for the original Pod')
         if guard and not guard.get('terminated'):
             if expected_uid and guard['pod_uid'] != expected_uid:
@@ -627,6 +696,7 @@ print(json.dumps(r))'''
                 save(path, state)
                 raise ExecutionPodError('termination_unconfirmed', 'Node guard did not confirm Pod termination')
             guard['terminated'] = True
+            state.setdefault('terminated_pods', []).append(guard['pod_uid'])
             state['termination_unconfirmed'] = False
             save(path, state)
         current = self._get('pod', name)
@@ -776,6 +846,8 @@ print(json.dumps(r))'''
         from control import save
         with self.lock:
             record = self._read_command(operation_id)
+            if record.get('status') == 'interrupted' and fields.get('status') != 'interrupted':
+                return record
             record.update(fields)
             save(self._command_path(operation_id), record)
             return record
@@ -810,13 +882,18 @@ print(json.dumps(r))'''
         path = self._command_path(operation_id)
         scratch_id, run_id, code = request['scratch_space_id'], request['run_id'], request['code']
         name = scratch_resource_name(scratch_id)
-        if not isinstance(run_id, str) or not run_id or len(run_id) > 256:
-            raise ValueError('run_id must be a nonempty string of at most 256 characters')
+        if not isinstance(run_id, str) or not run_id or len(run_id) > 256 or '\x00' in run_id:
+            raise ValueError('run_id must be a nonempty string without NUL')
+        env = request.get('env', {})
+        if not isinstance(env, dict) or any(not isinstance(k, str) or not isinstance(v, str) or '\x00' in k or '\x00' in v for k, v in env.items()):
+            raise ValueError('environment must contain strings without NUL')
+        if env:
+            raise ValueError('custom environment is not supported')
         code_limit = 131072 if kind == 'python_cell' else 65536
-        if not isinstance(code, str) or len(code.encode('utf-8')) > code_limit:
+        if not isinstance(code, str) or '\x00' in code or len(code.encode('utf-8')) > code_limit:
             raise ValueError('command exceeds the code limit')
         cwd = request.get('cwd', '.')
-        if not isinstance(cwd, str) or cwd.startswith('/') or '..' in cwd.split('/'):
+        if not isinstance(cwd, str) or '\x00' in cwd or cwd.startswith('/') or '..' in cwd.split('/'):
             raise ValueError('cwd must be relative to /scratch')
         background = request.get('background', False)
         if type(background) is not bool:
@@ -879,7 +956,11 @@ print(json.dumps(r))'''
 
     def _execute_command(self, operation_id):
         import json
-        record = self._update_command(operation_id, status='running')
+        with self.lock:
+            record = self._read_command(operation_id)
+            if record['status'] != 'queued':
+                return
+            record = self._update_command(operation_id, status='running')
         name, uid = record['pod'], record['pod_uid']
         mode = 'docker' if record['docker_enabled'] else 'normal'
         deadline = 'background' if record['background'] else str(record['timeout_seconds'])
@@ -895,9 +976,22 @@ print(json.dumps(r))'''
             limit = self.config.get('output_bytes', getattr(self.backend, 'config', {}).get('output_bytes', 8388608))
             transport_timeout = None if record['background'] else record['timeout_seconds'] + 180
             transport = drain_process(argv, self.backend.environment, limit, transport_timeout, publish)
-            observed = self.backend.kube(['exec', name, '-c', 'execution', '--'] +
-                                         helper_command('result', operation_id), check=False)
-            outcome = json.loads(observed.stdout) if observed.returncode == 0 else None
+            if self._read_command(operation_id)['status'] == 'interrupted':
+                return
+            if record['docker_enabled']:
+                code = transport['exit_code']
+                if transport['transport_timed_out'] or code in (1, 126, 127) or code < 0:
+                    outcome = None
+                elif code == 124:
+                    outcome = {'operation_id': operation_id, 'run_id': record['run_id'], 'status': 'timed_out'}
+                elif code == 125:
+                    outcome = {'operation_id': operation_id, 'run_id': record['run_id'], 'status': 'stopped'}
+                else:
+                    outcome = {'operation_id': operation_id, 'run_id': record['run_id'], 'status': 'completed', 'exit_code': code}
+            else:
+                observed = self.backend.kube(['exec', name, '-c', 'execution', '--'] +
+                                             helper_command('result', operation_id), check=False)
+                outcome = json.loads(observed.stdout) if observed.returncode == 0 else None
             if (transport['transport_timed_out'] or not isinstance(outcome, dict)
                     or outcome.get('operation_id') != operation_id or outcome.get('run_id') != record['run_id']
                     or outcome.get('status') not in ('completed', 'timed_out', 'stopped')):
@@ -916,6 +1010,8 @@ print(json.dumps(r))'''
                                      **({'exit_code': outcome['exit_code']} if 'exit_code' in outcome else {}),
                                      **transport['output'])
         except Exception as error:
+            if self._read_command(operation_id)['status'] == 'interrupted':
+                return
             try:
                 self._stop_matching_pod(record['scratch_space_id'], uid)
             except Exception as stop_error:
@@ -1135,6 +1231,12 @@ print(json.dumps(r))'''
         import json
         import shlex
 
+        env = request.get('env', {})
+        if not isinstance(env, dict) or any(not isinstance(k, str) or not isinstance(v, str) or '\x00' in k or '\x00' in v for k, v in env.items()):
+            raise ValueError('environment must contain strings without NUL')
+        if env:
+            raise ValueError('custom environment is not supported')
+
         operation_id = request['operation_id']
         path = self._command_path(operation_id)
         original_digest = hashlib.sha256(json.dumps(request, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
@@ -1145,8 +1247,10 @@ print(json.dumps(r))'''
                     raise ExecutionPodError('command_conflict', 'Operation ID was already used for another command')
                 return self.command_result(operation_id)
         code = request['code']
-        if not isinstance(code, str) or len(code.encode('utf-8')) > 65536:
+        if not isinstance(code, str) or '\x00' in code or len(code.encode('utf-8')) > 65536:
             raise ValueError('Python code exceeds the limit')
+        if any(not isinstance(request.get(key, '.'), str) or '\x00' in request.get(key, '.') for key in ('cwd', 'run_id')):
+            raise ValueError('Python request contains NUL')
         seconds = execution_timeout(request)
         session = self.start_python(request['scratch_space_id'], request['run_id'])
         output_limit = self.config.get('output_bytes', getattr(self.backend, 'config', {}).get('output_bytes', 8388608))

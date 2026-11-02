@@ -44,6 +44,7 @@ def main():
     for name in ('sandbox_v2.py', 'execution_pod.py', 'control.py', 'python_session.py', 'network_probe.py', 'user_probe.py'):
         shutil.copy2(Path('/opt/aidash') / name, destination / name)
     Path('/scratch-system/scratch').mkdir(parents=True, exist_ok=True)
+    Path('/scratch-system/image-root').mkdir(parents=True, exist_ok=True)
     os.chmod(destination / 'loader', 0o755)
     (destination / '.guard-waiting').touch()
     wait_for_guard(destination / '.guard-ready')
