@@ -1,5 +1,5 @@
 //! Runner HTTP admits TLS, loopback, or an explicitly configured cluster Service,
-//! with rotating credentials, no proxy and a ten-second timeout.
+//! with rotating credentials, no proxy and endpoint-appropriate timeouts.
 use aidash_application::{
 	Error, Result,
 	ports::{Credentials, capabilities::runner::RunnerTransport},
@@ -13,9 +13,13 @@ pub struct RunnerHttp {
 	pub credentials: Arc<dyn Credentials>,
 }
 const MAX_RUNNER_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
-#[async_trait]
-impl RunnerTransport for RunnerHttp {
-	async fn request(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
+impl RunnerHttp {
+	async fn raw_request(
+		&self,
+		method: &str,
+		path: &str,
+		body: Option<&Value>,
+	) -> Result<(reqwest::StatusCode, Value)> {
 		let url = reqwest::Url::parse(&self.endpoint)
 			.map_err(|_| Error::Invalid("invalid runner endpoint".into()))?;
 		if url.scheme() != "https"
@@ -35,7 +39,13 @@ impl RunnerTransport for RunnerHttp {
 			})?;
 		let client = reqwest::Client::builder()
 			.no_proxy()
-			.timeout(Duration::from_secs(10))
+			.timeout(Duration::from_secs(if path.starts_with("/v2/pods/") {
+				600
+			} else if path.starts_with("/v2/") {
+				30
+			} else {
+				10
+			}))
 			.redirect(reqwest::redirect::Policy::none())
 			.build()
 			.map_err(crate::http_error)?;
@@ -53,6 +63,13 @@ impl RunnerTransport for RunnerHttp {
 		let response = request.send().await.map_err(crate::http_error)?;
 		let status = response.status();
 		let value: Value = crate::response::json(response, MAX_RUNNER_RESPONSE_BYTES).await?;
+		Ok((status, value))
+	}
+}
+#[async_trait]
+impl RunnerTransport for RunnerHttp {
+	async fn request(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
+		let (status, value) = self.raw_request(method, path, body).await?;
 		if status == reqwest::StatusCode::NOT_FOUND && path.starts_with("/v1/operations/") {
 			return Ok(json!({"status":"absent"}));
 		}
@@ -66,5 +83,6 @@ impl RunnerTransport for RunnerHttp {
 		Ok(value)
 	}
 }
+mod execution_pod;
 #[cfg(test)]
 mod tests;
