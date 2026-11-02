@@ -53,6 +53,9 @@ impl TunnelManager {
 		}
 	}
 	fn acquire(&self, scope: &ScopeSettings) -> Option<TunnelPermit> {
+		if scope.tunnel_limits.concurrent == 0 {
+			return None;
+		}
 		let global = self.global.clone().try_acquire_owned().ok()?;
 		let mut counts = self.counts.lock().unwrap();
 		let n = counts.entry(scope.id.clone()).or_default();
