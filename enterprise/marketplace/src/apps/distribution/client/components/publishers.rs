@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Account-owned Publisher registration, listings, and immutable publication.
 use super::super::hooks::{Load, Resource, use_service};
 use crate::apps::distribution::server_fn::*;

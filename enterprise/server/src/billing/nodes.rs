@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! How many Nodes a Tenant has, for the Tier's Node limit.
 use aidash_server::Result;
 use async_trait::async_trait;

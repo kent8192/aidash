@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Declarative Authentication Pages. Sensitive inputs stay in mounted hooks.
 use crate::{
 	app::{Action, App, Factor, State},
