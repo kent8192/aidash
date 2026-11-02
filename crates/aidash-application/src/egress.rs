@@ -79,8 +79,10 @@ pub struct ConnectionRecord {
 }
 
 /// Supplies live Scratch Space authority to the durable egress adapter.
-/// Implementations verify credentials and Tenant/Node ownership, and reload
-/// the current policy for an already authenticated scope.
+/// Implementations verify credential authenticity, expiry and revocation, bind
+/// it to the Tenant and Node, and reload the active Space and current Tenant
+/// policy for an already authenticated scope. Host settings must be narrowed
+/// by the current Tenant allowlist and the operator's Offering decision.
 #[async_trait]
 pub trait ScopeAuthority: Send + Sync {
 	async fn authenticate(&self, credential: &str) -> Result<ScopeSettings>;
