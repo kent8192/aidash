@@ -780,7 +780,7 @@ accepting the removed `structured@1` and `structured@2` (#532). Stored pins are
 not rewritten, because a Run Binding snapshot keeps a serde digest of each pinned
 definition that SQL cannot recompute; before any DDL, the migration refuses
 while Agent definitions, Marketplace packages or Run Binding snapshots still
-declare either version. Rollback restores the 0052 body.
+declare either version. Rollback restores the 0054 body.
 
 `registry/0052_harness_contract_structured3` lets the Agent Bindings validator accept
 `structured@3` (#532). Its rollback restores the 0050 body and refuses while

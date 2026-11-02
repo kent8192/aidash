@@ -2805,7 +2805,7 @@ async fn removed_harness_contracts_refuse_the_upgrade_while_still_stored(
 			"{contract}"
 		);
 	}
-	// Rollback restores the 0052 validator.
+	// Rollback restores the 0054 validator.
 	executor
 		.rollback_migrations(std::slice::from_ref(&migration))
 		.await
