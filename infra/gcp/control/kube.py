@@ -77,6 +77,12 @@ DEFAULT_TOLERATIONS = [
 ]
 DISK = re.compile(r"projects/([a-z][a-z0-9-]{4,28}[a-z0-9])/zones/([a-z0-9-]+)/disks/([a-z0-9-]+)")
 LEGACY_FINGERPRINT_KEY = "AIDASH_SECRET_PROVIDER_FINGERPRINT"
+# Egress gateway Service IPs, one per Environment that may run a Tenant Secret
+# broker. They sit in the static band (the first /24) of the clusters' Service
+# range in environments/cluster.tf, which Kubernetes never hands out dynamically
+# while the rest of the range has room. Nonproduction Environments share one
+# cluster, so their addresses differ; production has a cluster of its own.
+EGRESS_CLUSTER_IPS = {"develop": "10.48.0.200", "test": "10.48.0.201", PRODUCTION: "10.48.0.200"}
 RUNTIME_KEYS = {
     "AIDASH_PROVIDER_FINGERPRINT_KEY",
     "AIDASH_OIDC_CLIENT_ID",
@@ -776,6 +782,20 @@ def image(release, kind):
     return value
 
 
+def egress(identity, provider):
+    """Turn the Egress gateway on exactly where a Tenant Secret broker serves it.
+
+    On Cloud the gateway forwards Tenant Secret requests only through that broker
+    (ADR 0095), so without one it has nothing it may attach and stays off.
+    """
+    if not (provider or {}).get("tenant_secret_broker"):
+        return {"enabled": False}
+    address = EGRESS_CLUSTER_IPS.get(identity)
+    if address is None:
+        raise Refused("The Egress gateway has no reserved Service IP for this Environment")
+    return {"enabled": True, "clusterIP": address}
+
+
 def app_values(cluster, identity, output, release, sha, settings):
     namespace, sandbox, trusted, installer = namespaces(identity)
     selector, tolerations = scheduling(identity)
@@ -843,6 +863,7 @@ def app_values(cluster, identity, output, release, sha, settings):
             "runner": {"enabled": True, "image": control, "existingSecret": "app-runner",
                        "ingress": {"podSelectors": [{"aidash.run/activity": "env"}]},
                        "journal": {"storageClassName": journal_class}},
+            "egress": egress(identity, settings["provider"]),
         },
         **failover(identity),
     }
