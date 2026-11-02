@@ -228,6 +228,7 @@ def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, 
                     change_interval(root, '/scratch-system')
                 except Exception as error:
                     interval_errors.append(error)
+                    stopping.set()
                     return
         tracker = threading.Thread(target=track, daemon=True)
         tracker.start()
@@ -255,6 +256,23 @@ def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, 
     finally:
         os.close(directory)
     return result
+
+
+def docker_supervisor_exit_code(outcome):
+    """Reserve kubectl's local-error code and distinguish lifecycle outcomes."""
+    status = outcome['status']
+    if status == 'timed_out':
+        return 124
+    if status == 'stopped':
+        return 125
+    if status != 'completed':
+        return 126
+    code = outcome.get('exit_code')
+    if code == 1:
+        return 123
+    if type(code) is not int or code < 0 or 123 <= code <= 127 or code > 255:
+        return 126
+    return code
 
 
 def process_start_time(pid):
@@ -347,9 +365,7 @@ if __name__ == '__main__':
                                     sys.argv[2] == 'docker', expected_pod_uid=sys.argv[8],
                                     record_changes=sys.argv[3] == 'command')
         if sys.argv[2] == 'docker':
-            status = outcome['status']
-            raise SystemExit(outcome.get('exit_code', 1) if status == 'completed' else
-                             124 if status == 'timed_out' else 125 if status == 'stopped' else 126)
+            raise SystemExit(docker_supervisor_exit_code(outcome))
         raise SystemExit(0 if outcome['status'] in ('completed', 'timed_out', 'stopped') else 1)
     if len(sys.argv) == 3 and sys.argv[1] == 'stop':
         stop_operation(sys.argv[2])

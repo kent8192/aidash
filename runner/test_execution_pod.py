@@ -1260,6 +1260,13 @@ class ReviewRegressionTest(unittest.TestCase):
             self.assertNotIn('exit_code', result)
             controller.session_executor.shutdown(wait=True)
 
+    def test_docker_stream_reserves_local_transport_failure_code(self):
+        from sandbox_v2 import docker_supervisor_exit_code
+        self.assertEqual(docker_supervisor_exit_code({'status':'completed','exit_code':1}), 123)
+        self.assertEqual(docker_supervisor_exit_code({'status':'completed','exit_code':123}), 126)
+        self.assertEqual(docker_supervisor_exit_code({'status':'timed_out'}), 124)
+        self.assertEqual(docker_supervisor_exit_code({'status':'stopped'}), 125)
+
     def test_docker_result_never_reads_pvc_outcome(self):
         import json, tempfile
         from pathlib import Path
@@ -1276,4 +1283,11 @@ class ReviewRegressionTest(unittest.TestCase):
             with patch('execution_pod.drain_process', return_value=transport): controller._execute_command(operation)
             result = controller.command_result(operation)
             self.assertEqual((result['status'], result['exit_code'], result['stdout']), ('completed', 0, 'b2s='))
+            record = json.loads(controller._command_path(operation).read_text())
+            record['status'] = 'queued'
+            controller._command_path(operation).write_text(json.dumps(record))
+            transport['exit_code'] = 123
+            with patch('execution_pod.drain_process', return_value=transport): controller._execute_command(operation)
+            result = controller.command_result(operation)
+            self.assertEqual((result['status'], result['exit_code']), ('completed', 1))
             controller.session_executor.shutdown(wait=True)

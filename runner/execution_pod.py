@@ -987,7 +987,7 @@ print(json.dumps(r))'''
                 elif code == 125:
                     outcome = {'operation_id': operation_id, 'run_id': record['run_id'], 'status': 'stopped'}
                 else:
-                    outcome = {'operation_id': operation_id, 'run_id': record['run_id'], 'status': 'completed', 'exit_code': code}
+                    outcome = {'operation_id': operation_id, 'run_id': record['run_id'], 'status': 'completed', 'exit_code': 1 if code == 123 else code}
             else:
                 observed = self.backend.kube(['exec', name, '-c', 'execution', '--'] +
                                              helper_command('result', operation_id), check=False)

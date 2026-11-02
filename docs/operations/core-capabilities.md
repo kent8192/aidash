@@ -85,7 +85,9 @@ packets; Docker-mode admission also runs raw packet negative controls.
 
 In Docker mode, guest root can leave the chroot and modify PVC bookkeeping;
 the change log and reset are best-effort. Command results use the controller
-exec stream rather than trusting the PVC result files.
+exec stream rather than trusting the PVC result files. Exit codes 123–127 are
+reserved for transport and lifecycle outcomes and are reported as interrupted
+when a command itself returns them.
 
 Docker mode requires a separate gVisor RuntimeClass with `net-raw` enabled and
 is restricted to nodes labeled and tainted for that Tenant. User processes retain
