@@ -979,6 +979,19 @@ impl ErasureScope for Erasure<'_> {
 				)
 				.execute(&mut *self.tx)
 				.await?;
+				// A receipt can outlive its deleted Area. Once the receipt is
+				// removed, these objects must enter the ordinary superseded sweep.
+				crate::database::native::query(
+					&Query::update()
+						.table(Alias::new("core_objects"))
+						.value(Alias::new("kind"), "superseded_working")
+						.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&area.tenant)))
+						.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area.id)))
+						.and_where(Expr::col(Alias::new("kind")).eq(Expr::value("working")))
+						.to_string(PostgresQueryBuilder),
+				)
+				.execute(&mut *self.tx)
+				.await?;
 			}
 			Ok(())
 		}
