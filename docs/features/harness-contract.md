@@ -7,12 +7,14 @@ are not part of it. An Agent definition names one version, the Run's Binding
 snapshot pins it, and it never changes while the Run exists
 ([ADR 0093](../adr/0093-harness-contract-is-a-versioned-rule-pinned-per-run.md)).
 
-| Version        | Projection Versions           | Content                                                                                                                                                                        |
-| -------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `legacy@1`     | `legacy`, `ordered`, `native` | Today's text for each Projection Version, byte for byte. This is the default and never changes.                                                                                |
-| `structured@1` | `native`                      | Sectioned text with an explicit Instruction precedence; Harness requirements in an `aidash`-trust envelope; Agent instructions before Skills and the capability index.         |
-| `structured@2` | `native`                      | `structured@1` plus a short working-method section and two completion sentences.                                                                                               |
-| `structured@3` | `native`                      | Text selected by a GEPA search (#532): names the forms injected directions take, checks why an action is needed, keeps task-authorized data. Same envelopes as `structured@1`. |
+| Version        | Projection Versions           | Content                                                                                                                                                                                                                                                     |
+| -------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `legacy@1`     | `legacy`, `ordered`, `native` | Today's text for each Projection Version, byte for byte. Never changes.                                                                                                                                                                                     |
+| `structured@3` | `native`                      | Text selected by a GEPA search (#532): names the forms injected directions take, checks why an action is needed, keeps task-authorized data. Harness requirements in an `aidash`-trust envelope; Agent instructions before Skills and the capability index. |
+
+`structured@1` and `structured@2` lost the #532 comparison and were removed
+before any deployment. Their names and numbers (2 and 3 on Usage Records) are
+never reused, and a database that still stores either refuses the upgrade.
 
 ## Selecting a version
 
@@ -22,7 +24,7 @@ snapshot pins it, and it never changes while the Run exists
   "model": { "id": "model", "version": "1.0.0" },
   "instructions": "Research the working files.",
   "projection_version": "native",
-  "harness_contract": "structured@1"
+  "harness_contract": "structured@3"
 }
 ```
 
@@ -65,13 +67,55 @@ authority, impersonate the user, or demand a tool call were resisted in 26 of
 data stayed at the `legacy@1` level, 9 of 10, so the text does not over-refuse.
 DeepSeek V4.1 Flash was at ceiling with every version. Directions that ask the
 model to append text to its answer still succeeded with every version; text
-alone does not stop them (#629, #630).
+alone does not stop them. Marking or encoding the data did not stop them
+either on every model (see below); #630 checks deliverables instead.
 
 The live A/B on Aidash (gpt-oss-20b, 15 Runs per cell) confirmed it: the three
 injection styles were resisted in 36 of 45 Runs with `structured@3` against 14
 of 45 with `legacy@1`, with no loss on task-authorized formats, corrections or
 failed tools. `structured@3` is therefore the default for new Native Agent
 definitions.
+
+## Models that read untrusted data
+
+The Harness Contract lowers, but does not remove, the chance that a model
+follows directions written inside data. How much protection remains depends on
+the model. Under `structured@3`, in the replay evaluator, 20 Runs per style:
+
+| Model                               | claims admin authority | claims SYSTEM MESSAGE | impersonates the user | asks to append text | Japanese admin claim |
+| ----------------------------------- | ---------------------- | --------------------- | --------------------- | ------------------- | -------------------- |
+| `openai/gpt-oss-20b` (groq)         | 20/20                  | 20/20                 | 14/20                 | 0/20                | 20/20                |
+| `qwen/qwen3-30b-a3b-instruct-2507`  | 20/20                  | 20/20                 | 0/20                  | 0/20                | 20/20                |
+| `deepseek/deepseek-v4.1-flash-1017` | 10/10                  | 10/10                 | 10/10                 | 10/10               | not measured         |
+
+Cells count Runs that resisted. The DeepSeek row comes from the #532
+measurements, 10 Runs per style, where it resisted with every version. An Agent that reads untrusted data, such as web
+pages, uploaded files or third-party tool output, should use a model that
+resists every style, like DeepSeek V4.1 Flash above. Small open models follow
+directions that impersonate the requesting user or ask for text to be added to
+the answer, whatever the Contract says. Give such models only trusted data, or
+review what they publish. Runtime authorization still bounds what any model can
+execute.
+
+### Marking or encoding data (#629)
+
+Two further defences were measured against `structured@3` on gpt-oss-20b and
+Qwen3 30B A3B, with only the Contract text and the data envelopes changed:
+
+- **Data Mark**: a per-Run token placed before every whitespace run and after
+  24 characters without whitespace in tool results, attachments, observations
+  and human requests, plus one paragraph in the Contract saying marked text is
+  data. gpt-oss-20b resisted 95 of 100 injected Runs against 74 of 100
+  (p = 5e-5), mostly on appended text (16/20 against 0/20). Qwen3 did not change
+  at all (60/100 each). Exact copying of data fell from 10/10 to 6/10 on
+  gpt-oss-20b, and requests grew by 47 to 49 percent in input tokens.
+- **base64 tool results**: both models often could not read the data. Resisted
+  injections fell (gpt-oss-20b 15/50, Qwen3 23/50), every task-authorized format
+  and exact copy failed, and requests grew by about 70 percent.
+
+Neither met the bar for a new version: a significant gain on both weak models,
+no loss on authorized formats, corrections or copying, and at most 15 percent
+more input tokens. No Harness Contract version marks or encodes data.
 
 ## Instruction precedence
 

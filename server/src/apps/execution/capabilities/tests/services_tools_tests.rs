@@ -55,3 +55,20 @@ fn executable_contracts_are_derived_and_disabled_by_default() {
 	}
 	assert!(!tools.contains_key("python_install"));
 }
+
+#[test]
+fn area_mutation_tools_explain_where_to_find_the_expected_revision() {
+	let tools = implementations();
+	for name in ["shell", "code_interpreter", "apply_patch", "file_share"] {
+		let spec = tools[name].specification();
+		let description = spec.parameters["properties"]["expected_revision"]["description"]
+			.as_str()
+			.unwrap_or_default();
+		assert!(
+			description.contains("previous result"),
+			"{name}: {description}"
+		);
+		assert!(description.contains("1"), "{name}: {description}");
+		assert!(spec.description.contains("previous result"), "{name}");
+	}
+}

@@ -2,8 +2,8 @@
 // Track the distinct reservation counter in the ORM state.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0094_blob_reservations_state", "execution")
-		.add_dependency("execution", "0093_blob_reservations")
+	Migration::new("0096_blob_reservations_state", "execution")
+		.add_dependency("execution", "0095_blob_reservations")
 		.state_only(true)
 		.atomic(true)
 		.add_operation(Operation::AddColumn {

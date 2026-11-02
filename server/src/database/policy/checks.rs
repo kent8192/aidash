@@ -77,7 +77,7 @@ pub fn assert_policy_migrations_run_the_rendered_template(
 					// This migration drops and recreates these undeployed object
 					// tables, so their policies have to be installed again.
 					assert!(
-						label == "execution.0091_content_object_references"
+						label == "execution.0093_content_object_references"
 							&& matches!(
 								table,
 								"core_objects" | "core_quotas" | "core_retention_files"
@@ -132,7 +132,7 @@ pub fn assert_no_migration_writes_tenant_owned_rows(
 	known: &[&str],
 ) {
 	let statement = Regex::new(
-		r#"(?i)\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM|TRUNCATE(?:\s+TABLE)?|MERGE\s+INTO|COPY)\s+(?:ONLY\s+)?(?:public\.)?"?([a-z_][a-z0-9_]*)"#,
+		r#"(?i)\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM|TRUNCATE(?:\s+TABLE)?|MERGE\s+INTO|COPY)\s+(?:ONLY\s+)?(?:"?public"?\.)?"?([a-z_][a-z0-9_]*)"#,
 	)
 	.unwrap();
 	let writes = |sql: &str| {

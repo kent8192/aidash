@@ -86,7 +86,9 @@ pub async fn inventory(
 pub async fn confirmation(scope: &mut dyn CleanupScope, id: Uuid, revision: i64) -> Result<Value> {
 	let area = load(scope, id, "file.delete").await?;
 	if area.revision != revision {
-		return Err(Error::Conflict("AREA_REVISION_CHANGED".into()));
+		return Err(Error::Conflict(
+			aidash_domain::capabilities::errors::area_revision_changed(area.revision),
+		));
 	}
 	let id = Uuid::new_v4();
 	let expiry = Utc::now() + Duration::minutes(10);
@@ -123,7 +125,9 @@ pub async fn prepare(
 		);
 	}
 	if area.revision != input.expected_revision {
-		return Err(Error::Conflict("AREA_REVISION_CHANGED".into()));
+		return Err(Error::Conflict(
+			aidash_domain::capabilities::errors::area_revision_changed(area.revision),
+		));
 	}
 	if matches!(input.choice, Choice::Irreversible) {
 		scope

@@ -10,6 +10,7 @@ use uuid::Uuid;
 #[async_trait]
 pub trait SourceAuthorityScope: Send {
 	fn source_subjects(&self) -> &[String];
+	fn source_replace_subjects(&mut self, subjects: Vec<String>);
 	fn source_bundle(&self) -> &PolicyBundle;
 	fn source_context(&mut self, attributes: Value);
 	fn source_resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;

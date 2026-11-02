@@ -47,17 +47,23 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 			// disclosure are authorized.
 			let summarizer = summarizer_pin(&agent, inspection, node, reference)?;
 			super::authorize(access, task, node, inspection).await?;
-			let mut workspace = access.source_workspace(task.workspace_id).await?;
-			workspace.attributes["remote_node"] = json!(node);
-			workspace.attributes["inference_model"] = json!(agent.model);
-			workspace.attributes["decider"] = Value::Null;
-			workspace.attributes["summarizer"] = json!(summarizer.entry);
-			access
-				.source_require(&workspace, "semantic.disclose")
-				.await?;
-			return Ok(Binding::Disabled {
-				summarizer: Some(Box::new(summarizer)),
-			});
+			let subjects = sending_chain(access);
+			let result = async {
+				let mut workspace = access.source_workspace(task.workspace_id).await?;
+				workspace.attributes["remote_node"] = json!(node);
+				workspace.attributes["inference_model"] = json!(agent.model);
+				workspace.attributes["decider"] = Value::Null;
+				workspace.attributes["summarizer"] = json!(summarizer.entry);
+				access
+					.source_require(&workspace, "semantic.disclose")
+					.await?;
+				Ok(Binding::Disabled {
+					summarizer: Some(Box::new(summarizer)),
+				})
+			}
+			.await;
+			access.source_replace_subjects(subjects);
+			return result;
 		}
 		Request::RequiredHome {
 			embedding,
@@ -80,104 +86,120 @@ pub async fn binding<S: SemanticBindingScope + ?Sized>(
 		.map(|reference| summarizer_pin(&agent, inspection, node, reference))
 		.transpose()?;
 	super::authorize(access, task, node, inspection).await?;
-	let mut workspace = access.source_workspace(task.workspace_id).await?;
-	workspace.attributes["remote_node"] = json!(node);
-	workspace.attributes["inference_model"] = json!(agent.model);
-	workspace.attributes["decider"] = json!(decider);
-	workspace.attributes["summarizer"] = json!(summarizer.as_ref().map(|p| &p.entry));
-	access.source_require(&workspace, "semantic.search").await?;
-	// Disclosure is independently selectable in policy; local read/search is
-	// not permission to send text to the execution node and its providers.
-	access
-		.source_require(&workspace, "semantic.disclose")
-		.await?;
-	let (index, spec) = access
-		.semantic_index(task.workspace_id)
-		.await
-		.map_err(|error| {
-			if matches!(error, Error::NotFound(_)) {
-				Error::RemoteSemantic(Failure::Configuration)
-			} else {
-				error
-			}
-		})?;
-	if index.tenant != access.binding_tenant()
-		|| !spec.enabled
-		|| (!native_enabled && !spec.auto_context)
-	{
-		return Err(Error::RemoteSemantic(Failure::Configuration));
-	}
-	let entry = access
-		.embedding_entry(embedding, "embedding.invoke")
-		.await?;
-	access
-		.source_require(
-			&access.source_resource(
-				&entry.kind,
-				&entry.id,
-				crate::authorization::catalog::attributes(&entry),
-			),
-			"registry.read",
-		)
-		.await?;
-	if entry.kind != "embedding"
-		|| serde_json::from_value::<EmbeddingConfig>(entry.config.clone())? != spec.embedding
-	{
-		return Err(Error::RemoteSemantic(Failure::Configuration));
-	}
-	let decider = if let Some(reference) = decider {
-		let definition = inspection
-			.definitions
-			.iter()
-			.find(|d| d.kind == "decider" && &d.entry == reference)
-			.ok_or(Error::RemoteSemantic(Failure::Configuration))?;
-		Some(Provider {
-			node_id: aidash_domain::nodes::deployment_of(node).to_owned(),
-			entry: reference.clone(),
-			digest: definition.digest.clone(),
-			configuration_digest: digest(&definition.metadata.config),
-		})
-	} else {
-		None
-	};
-	Ok(Binding::RequiredHome {
-		native: if let Some(native) = native {
-			let generation = inspection
-				.generation
-				.as_ref()
-				.map(|value| -> Result<_> {
-					let intent: aidash_domain::generation::intent::Intent =
-						serde_json::from_value(value.clone())?;
-					Ok(aidash_domain::semantic::remote::NativeOrigin {
-						node_id: node.into(),
-						intent_id: intent.id,
-					})
-				})
-				.transpose()?;
-			Some(Box::new(
-				access
-					.native_binding(task.workspace_id, native, generation.as_ref())
-					.await?,
-			))
+	let subjects = sending_chain(access);
+	let result = async {
+		let mut workspace = access.source_workspace(task.workspace_id).await?;
+		workspace.attributes["remote_node"] = json!(node);
+		workspace.attributes["inference_model"] = json!(agent.model);
+		workspace.attributes["decider"] = json!(decider);
+		workspace.attributes["summarizer"] = json!(summarizer.as_ref().map(|p| &p.entry));
+		access.source_require(&workspace, "semantic.search").await?;
+		// Disclosure is independently selectable in policy; local read/search is
+		// not permission to send text to the execution node and its providers.
+		access
+			.source_require(&workspace, "semantic.disclose")
+			.await?;
+		let (index, spec) = access
+			.semantic_index(task.workspace_id)
+			.await
+			.map_err(|error| {
+				if matches!(error, Error::NotFound(_)) {
+					Error::RemoteSemantic(Failure::Configuration)
+				} else {
+					error
+				}
+			})?;
+		if index.tenant != access.binding_tenant()
+			|| !spec.enabled
+			|| (!native_enabled && !spec.auto_context)
+		{
+			return Err(Error::RemoteSemantic(Failure::Configuration));
+		}
+		let entry = access
+			.embedding_entry(embedding, "embedding.invoke")
+			.await?;
+		access
+			.source_require(
+				&access.source_resource(
+					&entry.kind,
+					&entry.id,
+					crate::authorization::catalog::attributes(&entry),
+				),
+				"registry.read",
+			)
+			.await?;
+		if entry.kind != "embedding"
+			|| serde_json::from_value::<EmbeddingConfig>(entry.config.clone())? != spec.embedding
+		{
+			return Err(Error::RemoteSemantic(Failure::Configuration));
+		}
+		let decider = if let Some(reference) = decider {
+			let definition = inspection
+				.definitions
+				.iter()
+				.find(|d| d.kind == "decider" && &d.entry == reference)
+				.ok_or(Error::RemoteSemantic(Failure::Configuration))?;
+			Some(Provider {
+				node_id: aidash_domain::nodes::deployment_of(node).to_owned(),
+				entry: reference.clone(),
+				digest: definition.digest.clone(),
+				configuration_digest: digest(&definition.metadata.config),
+			})
 		} else {
 			None
-		},
-		home_lineage: access.binding_lineage().await?,
-		execution_lineage: inspection.lineage.clone(),
-		version: VERSION,
-		// Native dependencies are canonical Unit revisions. A disposable index
-		// rebuild keeps the approved spec and must not withdraw consumed units.
-		index_revision: if native_enabled { 0 } else { index.revision },
-		index_digest: digest(&index.spec),
-		embedding: Box::new(Provider {
-			node_id: access.home_node_id().to_owned(),
-			entry: embedding.clone(),
-			digest: digest(&to_value(&entry)?),
-			configuration_digest: digest(&entry.config),
-		}),
-		decider: decider.map(Box::new),
-		summarizer: summarizer.map(Box::new),
-	})
+		};
+		Ok(Binding::RequiredHome {
+			native: if let Some(native) = native {
+				let generation = inspection
+					.generation
+					.as_ref()
+					.map(|value| -> Result<_> {
+						let intent: aidash_domain::generation::intent::Intent =
+							serde_json::from_value(value.clone())?;
+						Ok(aidash_domain::semantic::remote::NativeOrigin {
+							node_id: node.into(),
+							intent_id: intent.id,
+						})
+					})
+					.transpose()?;
+				Some(Box::new(
+					access
+						.native_binding(task.workspace_id, native, generation.as_ref())
+						.await?,
+				))
+			} else {
+				None
+			},
+			home_lineage: access.binding_lineage().await?,
+			execution_lineage: inspection.lineage.clone(),
+			version: VERSION,
+			// Native dependencies are canonical Unit revisions. A disposable index
+			// rebuild keeps the approved spec and must not withdraw consumed units.
+			index_revision: if native_enabled { 0 } else { index.revision },
+			index_digest: digest(&index.spec),
+			embedding: Box::new(Provider {
+				node_id: access.home_node_id().to_owned(),
+				entry: embedding.clone(),
+				digest: digest(&to_value(&entry)?),
+				configuration_digest: digest(&entry.config),
+			}),
+			decider: decider.map(Box::new),
+			summarizer: summarizer.map(Box::new),
+		})
+	}
+	.await;
+	access.source_replace_subjects(subjects);
+	result
+}
+
+fn sending_chain<S: SemanticBindingScope + ?Sized>(access: &mut S) -> Vec<String> {
+	let subjects = access.source_subjects().to_vec();
+	if let Some(executor) = subjects.last()
+		&& !access.source_bundle().subjects.contains_key(executor)
+	{
+		access.source_replace_subjects(subjects[..subjects.len() - 1].to_vec());
+	}
+	subjects
 }
 
 /// Only the exact summarizer pinned by the Agent's Context Policy may be

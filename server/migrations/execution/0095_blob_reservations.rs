@@ -2,8 +2,8 @@
 // Transfer reservations are not retained bytes and must not be counted twice.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0093_blob_reservations", "execution")
-		.add_dependency("execution", "0092_content_object_state")
+	Migration::new("0095_blob_reservations", "execution")
+		.add_dependency("execution", "0094_content_object_state")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::AddColumn {

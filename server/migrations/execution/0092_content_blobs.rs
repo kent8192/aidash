@@ -4,8 +4,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0090_content_blobs", "execution")
-		.add_dependency("execution", "0089_remove_agent_cluster")
+	Migration::new("0092_content_blobs", "execution")
+		.add_dependency("execution", "0091_bounded_read_indexes")
 		.atomic(true)
 		.database_only(true)
 		.add_operation(Operation::CreateTable {
@@ -105,7 +105,7 @@ pub(super) fn migration() -> Migration {
 			partition: None,
 		})
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0090_content_blobs.sql").into(),
-			reverse_sql: Some(include_str!("sql/backward/0090_content_blobs.sql").into()),
+			sql: include_str!("sql/forward/0092_content_blobs.sql").into(),
+			reverse_sql: Some(include_str!("sql/backward/0092_content_blobs.sql").into()),
 		})
 }

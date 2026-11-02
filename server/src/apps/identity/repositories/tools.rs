@@ -91,7 +91,8 @@ impl AgentToolScope for Scope<'_> {
 	async fn explicitly_denied(&mut self, resource: &Resource, action: &str) -> Result<bool> {
 		for subject in self.access.subjects.clone() {
 			let input = self.access.evaluation(&subject, resource, action);
-			if self.access.snapshot.bundle.evaluate(&input).reason == "explicit_deny" {
+			let bundle = &self.access.snapshot.bundle;
+			if Access::policy_explicit_deny(bundle, &bundle.evaluate(&input)) {
 				return Ok(true);
 			}
 		}

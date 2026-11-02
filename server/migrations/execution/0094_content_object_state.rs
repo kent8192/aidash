@@ -2,8 +2,8 @@
 // Revision manifests are no longer columns on the logical Area model.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0092_content_object_state", "execution")
-		.add_dependency("execution", "0091_content_object_references")
+	Migration::new("0094_content_object_state", "execution")
+		.add_dependency("execution", "0093_content_object_references")
 		.state_only(true)
 		.atomic(true)
 		.add_operation(Operation::DropColumn {

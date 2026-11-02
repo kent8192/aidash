@@ -3,8 +3,8 @@
 // remain visible to recovery. PostgreSQL row policies require raw DDL.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0096_blob_uploads", "execution")
-		.add_dependency("execution", "0095_blob_receipt_references")
+	Migration::new("0098_blob_uploads", "execution")
+		.add_dependency("execution", "0097_blob_receipt_references")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::CreateTable {
@@ -49,7 +49,7 @@ pub(super) fn migration() -> Migration {
 			operator_class: None,
 		})
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0096_blob_uploads.sql").into(),
-			reverse_sql: Some(include_str!("sql/backward/0096_blob_uploads.sql").into()),
+			sql: include_str!("sql/forward/0098_blob_uploads.sql").into(),
+			reverse_sql: Some(include_str!("sql/backward/0098_blob_uploads.sql").into()),
 		})
 }

@@ -2,8 +2,8 @@
 // Receipt references disappear with their owning Tenant record, never earlier.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0095_blob_receipt_references", "execution")
-		.add_dependency("execution", "0094_blob_reservations_state")
+	Migration::new("0097_blob_receipt_references", "execution")
+		.add_dependency("execution", "0096_blob_reservations_state")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::AddConstraintDefinition {

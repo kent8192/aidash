@@ -5,8 +5,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0091_content_object_references", "execution")
-		.add_dependency("execution", "0090_content_blobs")
+	Migration::new("0093_content_object_references", "execution")
+		.add_dependency("execution", "0092_content_blobs")
 		.atomic(true)
 		.database_only(true)
 		.add_operation(Operation::AddConstraintDefinition {
@@ -30,9 +30,9 @@ pub(super) fn migration() -> Migration {
 		// index 0061 named. Their backward operations drop them, so remove them
 		// here and let the reverse restore them.
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0091_content_object_references_legacy.sql").into(),
+			sql: include_str!("sql/forward/0093_content_object_references_legacy.sql").into(),
 			reverse_sql: Some(
-				include_str!("sql/backward/0091_content_object_references_legacy.sql").into(),
+				include_str!("sql/backward/0093_content_object_references_legacy.sql").into(),
 			),
 		})
 		.add_operation(Operation::DropNamedIndex {
@@ -265,15 +265,15 @@ pub(super) fn migration() -> Migration {
 			operator_class: None,
 		})
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0091_content_object_references_policy.sql").into(),
+			sql: include_str!("sql/forward/0093_content_object_references_policy.sql").into(),
 			reverse_sql: Some(
-				include_str!("sql/backward/0091_content_object_references_policy.sql").into(),
+				include_str!("sql/backward/0093_content_object_references_policy.sql").into(),
 			),
 		})
 		.add_operation(Operation::RunSQL {
-			sql: include_str!("sql/forward/0091_content_object_references_triggers.sql").into(),
+			sql: include_str!("sql/forward/0093_content_object_references_triggers.sql").into(),
 			reverse_sql: Some(
-				include_str!("sql/backward/0091_content_object_references_triggers.sql").into(),
+				include_str!("sql/backward/0093_content_object_references_triggers.sql").into(),
 			),
 		})
 }
