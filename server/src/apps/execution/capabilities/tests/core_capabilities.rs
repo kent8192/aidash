@@ -1356,33 +1356,13 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 	// File transfer is byte-opaque: even an image asset can be shared with a
 	// text-only recipient for storage or processing by its tools.
 	area["manifest"][0]["media_type"] = json!("image/svg+xml");
-	{
-		let query_bind_1 = area["id"].as_str().unwrap().parse::<Uuid>().unwrap();
-		let query_bind_2 = &area["manifest"];
-		sqlx::query(
-			&Query::update()
-				.table(Alias::new("core_areas"))
-				.value_expr(
-					Alias::new("manifest"),
-					SimpleExpr::CustomWithExpr(
-						"(?)".to_owned(),
-						vec![Expr::value(query_bind_2.to_owned()).into()],
-					),
-				)
-				.and_where(
-					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-						SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						),
-					),
-				)
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(c.f.store.pool.fixture_driver())
-		.await
-	}
-	.unwrap();
+	fixture_revision(
+		c.f.store.pool.fixture_driver(),
+		area["id"].as_str().unwrap().parse().unwrap(),
+		area["revision"].as_i64().unwrap(),
+		area["manifest"].clone(),
+	)
+	.await;
 	let source = &area["manifest"][0];
 	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":source["file_id"],"expected_digest":source["digest"]}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),"agent_id":"reader","agent_version":"1.1.0","thread_id":task["id"]}});
 	let share_path = format!("/api/runs/{}/files/share", sender.id);
