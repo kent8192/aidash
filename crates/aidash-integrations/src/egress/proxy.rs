@@ -762,6 +762,9 @@ mod tests {
 		let (_stop, receiver) = tokio::sync::watch::channel(false);
 		let manager = super::TunnelManager::new(receiver);
 		let mut one = test_settings();
+		one.tunnel_limits.concurrent = 0;
+		assert!(manager.acquire(&one).is_none());
+		assert!(manager.counts.lock().unwrap().is_empty());
 		one.tunnel_limits.concurrent = 1;
 		let mut two = test_settings();
 		two.tunnel_limits.concurrent = 1;
