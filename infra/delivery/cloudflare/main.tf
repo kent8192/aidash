@@ -12,11 +12,17 @@ data "cloudflare_zone" "existing" {
 }
 
 locals {
-  aliases = {
+  deployment_aliases = {
     stg  = "stg.deployment@aidash.run"
     prod = "prod.deployment@aidash.run"
     test = "test.deployment@aidash.run"
   }
+  # One per deployment tier: GCP security alerts (credential broker reads,
+  # revisions and IAM changes) for that tier's bootstrap `security_alert_emails`.
+  security_aliases = {
+    nonprod-security = "nonprod.security@aidash.run"
+  }
+  aliases = merge(local.deployment_aliases, local.security_aliases)
 }
 
 data "cloudflare_email_sending_subdomain" "configured" {
@@ -93,7 +99,7 @@ data "cloudflare_email_routing_rule" "adopted" {
         length(self.matchers) == 1 &&
         try(self.matchers[0].type == "literal" && self.matchers[0].field == "to" && self.matchers[0].value == local.aliases[each.key], false)
       )
-      error_message = "Adoption is restricted to exact, API-managed deployment aliases; do not take over Worker or multi-matcher rules."
+      error_message = "Adoption is restricted to exact, API-managed aliases; do not take over Worker or multi-matcher rules."
     }
   }
 }
@@ -101,7 +107,7 @@ data "cloudflare_email_routing_rule" "adopted" {
 resource "cloudflare_email_routing_rule" "deployment" {
   for_each = local.aliases
   zone_id  = var.zone_id
-  name     = "Aidash ${each.key} deployment notifications"
+  name     = contains(keys(local.security_aliases), each.key) ? "Aidash ${trimsuffix(each.key, "-security")} security alerts" : "Aidash ${each.key} deployment notifications"
   enabled  = true
   source   = "api"
   matchers = [{ type = "literal", field = "to", value = each.value }]
@@ -118,7 +124,7 @@ resource "cloudflare_email_routing_rule" "deployment" {
     prevent_destroy = true
     precondition {
       condition     = length(local.matching_rules[each.key]) <= 1
-      error_message = "Multiple existing rules match a deployment alias; resolve ownership before applying."
+      error_message = "Multiple existing rules match a managed alias; resolve ownership before applying."
     }
   }
 }
