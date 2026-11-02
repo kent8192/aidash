@@ -520,6 +520,35 @@ class CommandJournalTest(unittest.TestCase):
             self.assertEqual(len(backend.calls), 3)
             self.assertEqual(backend.calls[2][:2], ['delete', 'pod'])
 
+    def test_stopping_background_retries_until_supervisor_is_ready(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from execution_pod import ExecutionPodController
+
+        operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        class Backend:
+            def __init__(self, root):
+                self.root = Path(root)
+                self.attempts = 0
+            def kube(self, args, **_kwargs):
+                if args[0] == 'get':
+                    return SimpleNamespace(stdout=b'{"metadata":{"uid":"pod-uid"}}')
+                self.attempts += 1
+                if self.attempts == 1:
+                    raise RuntimeError('supervisor not ready')
+                return SimpleNamespace(stdout=b'')
+        with tempfile.TemporaryDirectory() as directory:
+            backend = Backend(directory)
+            controller = ExecutionPodController(backend, {}, admitted=True)
+            path = controller._command_path(operation)
+            path.write_text(json.dumps({'operation_id': operation, 'background': True,
+                'status': 'running', 'pod': 'pod', 'pod_uid': 'pod-uid'}))
+            self.assertEqual(controller.stop_background(operation)['status'], 'stopping')
+            self.assertEqual(backend.attempts, 2)
+            controller.session_executor.shutdown(wait=True)
+
     def test_command_result_is_journaled_and_repeated_id_is_not_replayed(self):
         import json
         import tempfile

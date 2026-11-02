@@ -955,6 +955,7 @@ print(json.dumps(r))'''
         return {'processes': sorted(result, key=lambda item: item['operation_id'])}
 
     def stop_background(self, operation_id):
+        import time
         record = self._read_command(operation_id)
         if not record.get('background'):
             raise ExecutionPodError('not_background', 'Command is not a background process')
@@ -967,11 +968,21 @@ print(json.dumps(r))'''
         pod = self._get('pod', record['pod'])
         if not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']:
             raise ExecutionPodError('pod_interrupted', 'The original Execution Pod is unavailable')
-        try:
-            self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] + helper_command('stop', operation_id))
-        except Exception as error:
-            raise ExecutionPodError('stop_failed', 'Could not stop background process: ' + str(error)) from error
-        return {'operation_id': operation_id, 'status': 'stopping'}
+        # A future can leave the queue before its in-Pod supervisor publishes
+        # the stop marker. Wait for that short startup window instead of losing
+        # a stop request at the queued-to-running transition.
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] + helper_command('stop', operation_id))
+                return {'operation_id': operation_id, 'status': 'stopping'}
+            except Exception as error:
+                current = self.command_result(operation_id)
+                if current['status'] in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted'):
+                    return current
+                if time.monotonic() >= deadline:
+                    raise ExecutionPodError('stop_failed', 'Could not stop background process: ' + str(error)) from error
+                time.sleep(.1)
 
     def reset(self, settings):
         if not self.admitted:
