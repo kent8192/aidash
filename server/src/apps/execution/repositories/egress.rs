@@ -391,6 +391,21 @@ pub(crate) async fn attach(
 	Ok(())
 }
 
+/// The operation or session ended, expired or no longer exists. Revoked
+/// authority stays [`Error::Forbidden`], so the gateway reports each truthfully.
+fn expired() -> Error {
+	Error::Conflict(aidash_domain::egress::OPERATION_EXPIRED.into())
+}
+
+fn exhausted() -> Error {
+	Error::Conflict(aidash_domain::egress::LIMIT_EXCEEDED.into())
+}
+
+/// Clamps a counter to its signed column.
+fn column(value: u64) -> i64 {
+	value.min(i64::MAX as u64) as i64
+}
+
 async fn live(
 	store: &Store,
 	identity: &SubjectIdentity,
@@ -405,7 +420,7 @@ async fn live(
 		.await
 		.map_err(reinhardt::core::exception::Error::from)?
 		.pop()
-		.ok_or(Error::Forbidden)?;
+		.ok_or_else(expired)?;
 	access.subjects = serde_json::from_value(op.subjects.0)?;
 	let run = access.run_for_interaction(op.run_id).await?;
 	let task = access.task_read(run.task_id).await?;
@@ -432,13 +447,13 @@ async fn live(
 		.ok_or(Error::Forbidden)?;
 	let current: aidash_domain::Run = current.try_into()?;
 	if current.phase().is_terminal() || current.control != aidash_domain::RunControl::Active {
-		return Err(Error::Forbidden);
+		return Err(expired());
 	}
 	let operation = super::operations::get(&mut access, operation).await?;
 	if !matches!(operation.state.as_str(), "submitted" | "running")
 		|| operation.result["termination_confirmed"] == true
 	{
-		return Err(Error::Forbidden);
+		return Err(expired());
 	}
 	Ok((access, current))
 }
@@ -863,8 +878,14 @@ impl Authority for Gateway {
 				}
 			};
 			for row in [&mut total, &mut per_service] {
-				if row.requests >= row.max_requests || row.expires_at <= Utc::now() {
-					return Err(Error::Conflict("egress_limit_exceeded".into()));
+				// Body debits may end one batch over a byte limit; an exhausted
+				// counter refuses the next request so the overshoot never grows.
+				if row.requests >= row.max_requests
+					|| row.sent_bytes >= row.max_sent_bytes
+					|| row.received_bytes >= row.max_received_bytes
+					|| row.expires_at <= Utc::now()
+				{
+					return Err(exhausted());
 				}
 				debit(row, aidash_domain::egress::Debit::Request)?;
 				Budget::objects()
@@ -928,7 +949,9 @@ impl Authority for Gateway {
 	}
 }
 
-/// Debits a Live preview's session budget and finishes its request record.
+/// Adds streamed bytes to a Live preview's session budget and request record.
+/// The bytes are committed even past a limit or after the session expired;
+/// the call then reports why the stream must stop.
 async fn charge_session(
 	store: &Store,
 	identity: &SubjectIdentity,
@@ -949,45 +972,123 @@ async fn charge_session(
 		.await
 		.map_err(reinhardt::core::exception::Error::from)?
 		.pop()
-		.ok_or(Error::Forbidden)?;
-	if row.expires_at <= Utc::now() {
-		return Err(Error::Forbidden);
-	}
-	match direction {
+		.ok_or_else(expired)?;
+	let ended = row.expires_at <= Utc::now();
+	let full = match direction {
 		Direction::Sent => {
 			row.sent_bytes = row.sent_bytes.saturating_add(bytes);
-			if row.sent_bytes > row.max_sent_bytes {
-				return Err(Error::Conflict("egress_limit_exceeded".into()));
-			}
+			row.sent_bytes >= row.max_sent_bytes
 		}
 		Direction::Received => {
 			row.received_bytes = row.received_bytes.saturating_add(bytes);
-			if row.received_bytes > row.max_received_bytes {
-				return Err(Error::Conflict("egress_limit_exceeded".into()));
-			}
+			row.received_bytes >= row.max_received_bytes
 		}
-	}
+	};
 	EgressSession::objects()
 		.save_with_executor(&mut *tx, &row)
 		.await
 		.map_err(reinhardt::core::exception::Error::from)?;
+	add_to_record(&mut tx, request, direction, bytes).await?;
+	tx.commit().await?;
+	if ended {
+		return Err(expired());
+	}
+	if bytes > 0 && full {
+		return Err(exhausted());
+	}
+	Ok(())
+}
+
+async fn add_to_record(
+	tx: &mut crate::database::native::Transaction,
+	request: Uuid,
+	direction: Direction,
+	bytes: i64,
+) -> Result<()> {
 	let mut record = RequestRecord::objects()
 		.filter(RequestRecord::field_id().eq(request))
 		.select_for_update()
-		.all_with_executor(&mut *tx)
+		.all_with_executor(&mut **tx)
 		.await
 		.map_err(reinhardt::core::exception::Error::from)?
 		.pop()
 		.ok_or(Error::Forbidden)?;
 	match direction {
-		Direction::Sent => record.sent_bytes += bytes,
-		Direction::Received => record.received_bytes += bytes,
+		Direction::Sent => record.sent_bytes = record.sent_bytes.saturating_add(bytes),
+		Direction::Received => record.received_bytes = record.received_bytes.saturating_add(bytes),
 	}
 	RequestRecord::objects()
-		.save_with_executor(&mut *tx, &record)
+		.save_with_executor(&mut **tx, &record)
 		.await
 		.map_err(reinhardt::core::exception::Error::from)?;
-	tx.commit().await
+	Ok(())
+}
+
+/// What recording a debit found once the bytes were counted.
+struct Recorded {
+	/// A budget counter reached its limit.
+	exhausted: bool,
+	/// The operation's deadline passed.
+	expired: bool,
+}
+
+/// Adds streamed bytes to the operation's total and per-service budgets and to
+/// the request record in `tx`. Recording never refuses: the bytes already
+/// crossed the gateway, so a budget may end at most one debit over its limit.
+async fn record_operation_bytes(
+	tx: &mut crate::database::native::Transaction,
+	operation: Uuid,
+	service: &str,
+	request: Uuid,
+	direction: Direction,
+	bytes: i64,
+) -> Result<Recorded> {
+	let mut recorded = Recorded {
+		exhausted: false,
+		expired: false,
+	};
+	for service in ["", service] {
+		let mut row = Budget::objects()
+			.filter(Budget::field_operation_id().eq(operation))
+			.filter(Budget::field_service().eq(service))
+			.select_for_update()
+			.all_with_executor(&mut **tx)
+			.await
+			.map_err(reinhardt::core::exception::Error::from)?
+			.pop()
+			.ok_or_else(expired)?;
+		recorded.expired |= row
+			.deadline_at
+			.unwrap_or(row.expires_at)
+			.min(row.expires_at)
+			<= Utc::now();
+		let usage = aidash_domain::egress::Usage {
+			sent_bytes: u64::try_from(row.sent_bytes).unwrap_or_default(),
+			received_bytes: u64::try_from(row.received_bytes).unwrap_or_default(),
+			requests: u32::try_from(row.requests).unwrap_or_default(),
+		};
+		let limits = Limits {
+			sent_bytes: u64::try_from(row.max_sent_bytes).unwrap_or_default(),
+			received_bytes: u64::try_from(row.max_received_bytes).unwrap_or_default(),
+			requests: u32::try_from(row.max_requests).unwrap_or_default(),
+		};
+		let (next, full) = usage.record(
+			limits,
+			match direction {
+				Direction::Sent => aidash_domain::egress::Debit::Sent(bytes as u64),
+				Direction::Received => aidash_domain::egress::Debit::Received(bytes as u64),
+			},
+		);
+		recorded.exhausted |= full;
+		row.sent_bytes = column(next.sent_bytes);
+		row.received_bytes = column(next.received_bytes);
+		Budget::objects()
+			.save_with_executor(&mut **tx, &row)
+			.await
+			.map_err(reinhardt::core::exception::Error::from)?;
+	}
+	add_to_record(tx, request, direction, bytes).await?;
+	Ok(recorded)
 }
 
 #[async_trait]
@@ -1007,48 +1108,49 @@ impl Meter for RequestMeter {
 		}
 		let result: Result<()> = async {
 			let bytes = i64::try_from(bytes).map_err(|_| Error::Forbidden)?;
-			let (mut access, _) = live(&self.store, &self.identity, self.operation).await?;
-			for service in ["", self.service.as_str()] {
-				let mut row = budget(&mut access, self.operation, service)
-					.await?
-					.ok_or(Error::Forbidden)?;
-				if row
-					.deadline_at
-					.unwrap_or(row.expires_at)
-					.min(row.expires_at)
-					<= Utc::now()
-				{
-					return Err(Error::Forbidden);
+			let recorded = match live(&self.store, &self.identity, self.operation).await {
+				// The Run lock taken by `live` serializes debits on the operation.
+				Ok((mut access, _)) => {
+					let recorded = record_operation_bytes(
+						&mut access.tx,
+						self.operation,
+						&self.service,
+						self.request,
+						direction,
+						bytes,
+					)
+					.await?;
+					access.finish(Ok(())).await?;
+					recorded
 				}
-				debit(
-					&mut row,
-					match direction {
-						Direction::Sent => aidash_domain::egress::Debit::Sent(bytes as u64),
-						Direction::Received => aidash_domain::egress::Debit::Received(bytes as u64),
-					},
-				)?;
-				Budget::objects()
-					.save_with_executor(&mut **access.tx, &row)
-					.await
-					.map_err(reinhardt::core::exception::Error::from)?;
+				// The bytes already crossed the gateway, so they still count
+				// although the operation can no longer use it.
+				Err(refusal) => {
+					let mut tx = self
+						.store
+						.pool
+						.begin(&TenancyScope::tenant(&self.identity.tenant)?)
+						.await?;
+					record_operation_bytes(
+						&mut tx,
+						self.operation,
+						&self.service,
+						self.request,
+						direction,
+						bytes,
+					)
+					.await?;
+					tx.commit().await?;
+					return Err(refusal);
+				}
+			};
+			if recorded.expired {
+				return Err(expired());
 			}
-			let mut record = RequestRecord::objects()
-				.filter(RequestRecord::field_id().eq(self.request))
-				.select_for_update()
-				.all_with_executor(&mut **access.tx)
-				.await
-				.map_err(reinhardt::core::exception::Error::from)?
-				.pop()
-				.ok_or(Error::Forbidden)?;
-			match direction {
-				Direction::Sent => record.sent_bytes += bytes,
-				Direction::Received => record.received_bytes += bytes,
+			if recorded.exhausted {
+				return Err(exhausted());
 			}
-			RequestRecord::objects()
-				.save_with_executor(&mut **access.tx, &record)
-				.await
-				.map_err(reinhardt::core::exception::Error::from)?;
-			access.finish(Ok(())).await
+			Ok(())
 		}
 		.await;
 		result.map_err(Into::into)

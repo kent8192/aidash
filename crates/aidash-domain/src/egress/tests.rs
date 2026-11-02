@@ -109,3 +109,26 @@ fn scratch_scope_daily_budget_defaults_to_100_gib_per_direction() {
 	assert_eq!(DailyBudget::default().sent_bytes, 100 * (1 << 30));
 	assert_eq!(DailyBudget::default().received_bytes, 100 * (1 << 30));
 }
+
+#[test]
+fn recorded_bytes_always_count_and_report_a_reached_limit() {
+	let limits = Limits {
+		sent_bytes: 10,
+		received_bytes: 12,
+		requests: 2,
+	};
+	let (usage, exhausted) = Usage::default().record(limits, Debit::Sent(9));
+	assert!(!exhausted);
+	// The batch that crosses the limit is still counted in full.
+	let (usage, exhausted) = usage.record(limits, Debit::Sent(5));
+	assert!(exhausted);
+	assert_eq!(usage.sent_bytes, 14);
+	// Received bytes are a separate counter; reaching it exactly is exhausted.
+	let (usage, exhausted) = usage.record(limits, Debit::Received(12));
+	assert!(exhausted);
+	assert_eq!(usage.received_bytes, 12);
+	// A debit that adds nothing never reports exhaustion.
+	assert!(!usage.record(limits, Debit::Sent(0)).1);
+	let (usage, _) = usage.record(limits, Debit::Received(u64::MAX));
+	assert_eq!(usage.received_bytes, u64::MAX);
+}

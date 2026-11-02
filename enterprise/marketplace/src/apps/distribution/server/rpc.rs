@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Native adapter shared by the typed Pages functions and protocol handlers.
 //! Reuses the owning handler's cookie/CSRF/admission policies in process, never
 //! a network hop or an arbitrary client-selected URL.

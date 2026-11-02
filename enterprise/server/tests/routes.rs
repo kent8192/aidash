@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Each Offering of the Enterprise build mounts exactly the routes the
 //! Community catalog and the Enterprise catalog list for it.
 use aidash_domain::offering::Offering;

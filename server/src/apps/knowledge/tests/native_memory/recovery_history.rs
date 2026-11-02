@@ -1294,7 +1294,7 @@ pub(super) async fn read_only_job(store: &Store, directory: &std::path::Path) ->
 	// Exercise the exact controller-managed login/guards, not a test approximation.
 	// DDL exception: role grants and trigger/function definitions are not Query operations.
 	let ddl = std::process::Command::new("python3").current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap())
-		.args(["-c", "import sys; sys.path.insert(0, 'infra/gcp/control'); from kube import memory_role_sql; print(memory_role_sql('3' * 64))"])
+		.args(["-c", "import sys; sys.path.insert(0, 'enterprise/infra/gcp/control'); from kube import memory_role_sql; print(memory_role_sql('3' * 64))"])
 		.output().unwrap();
 	assert!(ddl.status.success());
 	let ddl = String::from_utf8(ddl.stdout).unwrap().replace(

@@ -271,9 +271,18 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		async move { meter.charge(Direction::Sent, 1).await }
 	});
 	let results = futures_util::future::join_all(attempts).await;
-	assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 4);
-	second.meter.charge(Direction::Received, 12).await.unwrap();
-	assert!(first.meter.charge(Direction::Received, 1).await.is_err());
+	// Debits are serialized on the operation and always commit the bytes the
+	// gateway already streamed. The debit that reaches the limit, and every
+	// later one, reports exhaustion after committing.
+	assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 3);
+	assert!(results.iter().filter_map(|r| r.as_ref().err()).all(
+		|e| matches!(e, aidash_application::Error::Conflict(code) if code == aidash_domain::egress::LIMIT_EXCEEDED)
+	));
+	second.meter.charge(Direction::Received, 11).await.unwrap();
+	assert!(matches!(
+		first.meter.charge(Direction::Received, 2).await,
+		Err(aidash_application::Error::Conflict(code)) if code == aidash_domain::egress::LIMIT_EXCEEDED
+	));
 	first.meter.finish(201, 20, None).await.unwrap();
 	second.meter.finish(200, 25, None).await.unwrap();
 	assert!(matches!(
@@ -291,9 +300,10 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		.unwrap()
 		.pop()
 		.unwrap();
+	// Overshoot is bounded by one debit per stream.
 	assert_eq!(
 		(total.sent_bytes, total.received_bytes, total.requests),
-		(10, 12, 2)
+		(14, 13, 2)
 	);
 	let records = RequestRecord::objects()
 		.filter(RequestRecord::field_operation_id().eq(operation))
@@ -301,8 +311,8 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		.await
 		.unwrap();
 	assert_eq!(records.len(), 2);
-	assert_eq!(records.iter().map(|r| r.sent_bytes).sum::<i64>(), 10);
-	assert_eq!(records.iter().map(|r| r.received_bytes).sum::<i64>(), 12);
+	assert_eq!(records.iter().map(|r| r.sent_bytes).sum::<i64>(), 14);
+	assert_eq!(records.iter().map(|r| r.received_bytes).sum::<i64>(), 13);
 	assert!(
 		records
 			.iter()
@@ -348,10 +358,31 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		.control(&scope, run.id, aidash_domain::RunControlAction::Cancel)
 		.await
 		.unwrap();
+	// An ended operation is reported as such, not as a revoked authority or an
+	// exhausted budget, and the bytes streamed before the refusal still count.
 	assert!(matches!(
-		first.meter.charge(Direction::Sent, 0).await,
-		Err(aidash_application::Error::Forbidden)
+		first.meter.charge(Direction::Sent, 3).await,
+		Err(aidash_application::Error::Conflict(code)) if code == aidash_domain::egress::OPERATION_EXPIRED
 	));
+	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	let total = Budget::objects()
+		.filter(Budget::field_operation_id().eq(operation))
+		.filter(Budget::field_service().eq(""))
+		.all_with_executor(&mut *tx)
+		.await
+		.unwrap()
+		.pop()
+		.unwrap();
+	assert_eq!(total.sent_bytes, 17);
+	let record = RequestRecord::objects()
+		.filter(RequestRecord::field_id().eq(first.request))
+		.all_with_executor(&mut *tx)
+		.await
+		.unwrap()
+		.pop()
+		.unwrap();
+	assert_eq!(record.sent_bytes, 6 + 4 + 3);
+	tx.commit().await.unwrap();
 }
 
 async fn live_preview_credentials(

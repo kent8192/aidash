@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! `[dashboard.gcip]` and the managed source that Cloud Environments write.
 use aidash_server::{Error, Result};
 use indexmap::IndexMap;

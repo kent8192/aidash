@@ -106,6 +106,10 @@ impl Default for AnomalyRule {
 
 pub const DISCLOSURE: &str = "Sandboxed code may send this External service anything it can read, including Tenant data in the Working Area. Individual requests are not approved. Aidash's zero data retention and Usage Record guarantees do not apply to these calls.";
 pub const UNAVAILABLE: &str = "EGRESS_UNAVAILABLE";
+/// A budget counter reached its limit: the gateway stops the stream.
+pub const LIMIT_EXCEEDED: &str = "egress_limit_exceeded";
+/// The operation or Live preview session ended, expired or no longer exists.
+pub const OPERATION_EXPIRED: &str = "operation_expired";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -187,6 +191,31 @@ impl Usage {
 			return Err(exceeded());
 		}
 		Ok(next)
+	}
+
+	/// Records body bytes that already crossed the gateway. Unlike
+	/// [`Self::debit`] it never refuses, so a counter always holds what was
+	/// transferred, saturating at `u64::MAX`. The flag reports whether this
+	/// debit added bytes and left its counter at or above the limit; the caller
+	/// then stops the stream, so a budget is exceeded by at most one debit.
+	/// A request is still refused before it starts with [`Self::debit`].
+	pub fn record(self, limits: Limits, debit: Debit) -> (Self, bool) {
+		let mut next = self;
+		let exhausted = match debit {
+			Debit::Sent(bytes) => {
+				next.sent_bytes = next.sent_bytes.saturating_add(bytes);
+				bytes > 0 && next.sent_bytes >= limits.sent_bytes
+			}
+			Debit::Received(bytes) => {
+				next.received_bytes = next.received_bytes.saturating_add(bytes);
+				bytes > 0 && next.received_bytes >= limits.received_bytes
+			}
+			Debit::Request => {
+				next.requests = next.requests.saturating_add(1);
+				next.requests > limits.requests
+			}
+		};
+		(next, exhausted)
 	}
 }
 

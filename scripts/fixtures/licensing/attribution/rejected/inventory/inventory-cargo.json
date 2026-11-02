@@ -1,0 +1,8 @@
+{
+  "workspace": "root",
+  "ecosystem": "cargo",
+  "packages": [
+    { "name": "serde", "version": "1.0.0" },
+    { "name": "aidash-domain", "version": "0.1.0", "license": "" }
+  ]
+}
