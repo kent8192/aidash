@@ -224,10 +224,12 @@ Once that authority and the Execution Pod runtime are connected, the Pod needs
 accepts HTTP Basic proxy authentication with the scope credential as the password
 (for example, `http://scope:<scope-credential>@<gateway-host>:<gateway-port>`;
 URL-encode the credential). Set `NO_PROXY` only for explicitly permitted local
-endpoints, such as `localhost,127.0.0.1,::1`; do not exempt metadata addresses
-or the cluster network. The Pod's network policy must enforce the same boundary
-regardless of these environment variables. The scope credential is not a Tenant
-Secret, and Tenant Secret values never enter the Pod.
+endpoints and the exact gateway host, for example
+`localhost,127.0.0.1,::1,<gateway-host>`. The gateway exemption lets callers
+reach its path-level External service route directly. Do not exempt metadata
+addresses or the cluster network. The Pod's network policy must enforce the
+same boundary regardless of these environment variables. The scope credential
+is not a Tenant Secret, and Tenant Secret values never enter the Pod.
 
 For CONNECT, the gateway tunnels TLS without inspecting it. For plain HTTP it
 forwards absolute-form requests. It checks the scope's host allowlist and rejects
