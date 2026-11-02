@@ -1,26 +1,24 @@
-Aidash interim notice
+Aidash component scope notice
 
-Copyright (c) 2026 kent8192 (https://github.com/kent8192). All rights reserved.
+Copyright (c) 2026 kent8192 (https://github.com/kent8192).
 
-The licensing of Aidash is being prepared in
-https://github.com/kent8192/aidash/issues/124. Until it takes effect, no
-license is granted to original Aidash material in this repository. The only
-exceptions are:
+Aidash is licensed by component, not as a whole.
 
-- crates/aidash-capability, which is licensed under Apache-2.0, as its package
-  manifest states.
-- Third-party material listed in THIRD_PARTY_NOTICES.md. It keeps its own
-  terms, and its notices are kept verbatim under third_party/.
+- Original Aidash material outside enterprise/ is licensed under the Apache
+  License, Version 2.0. The unmodified text is in LICENSES/Apache-2.0.txt.
+- Original Aidash material under enterprise/ is licensed under the Business
+  Source License 1.1, with the parameters stated in enterprise/LICENSE. The
+  unmodified standard text is in LICENSES/BUSL-1.1.txt.
+- Third-party material keeps its own terms and notices. See
+  THIRD_PARTY_NOTICES.md.
+- A license follows the material, not its filename or location. Moving or
+  copying a file does not change its license.
+- Earlier revisions keep the terms they carried. This notice withdraws
+  nothing.
+
+No repository-wide license choice is made or implied. docs/licensing.md
+explains the component rule, the earlier notices and the transition of each
+Enterprise version to Apache-2.0.
 
 This notice does not limit what GitHub's Terms of Service allow other GitHub
 users to do with a public repository, such as viewing and forking it on GitHub.
-
-Revisions published before this notice keep the terms they carried. This notice
-withdraws nothing.
-
-The MIT text that this file held before this notice is the upstream notice of
-fast-jev-compaction. It is now kept verbatim in
-third_party/fast-jev-compaction/LICENSE.
-
-External code contributions are not accepted until the licensing takes effect.
-Issues are welcome.

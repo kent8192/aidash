@@ -11,7 +11,10 @@ use secrecy::ExposeSecret;
 use sha2::{Digest, Sha256};
 use std::{
 	convert::Infallible,
-	sync::Arc,
+	sync::{
+		Arc, OnceLock,
+		atomic::{AtomicU64, Ordering},
+	},
 	time::{Duration, Instant},
 };
 use tokio::{net::TcpListener, sync::watch};
@@ -23,6 +26,15 @@ const IDLE: Duration = Duration::from_secs(30);
 const INDEX_BYTES: usize = 8 * 1024 * 1024;
 const BROKER_ERROR: &str = "x-aidash-broker-error";
 const SECRET_CALL: &str = "x-aidash-secret-call";
+/// Body bytes are debited in batches. Each debit is a PostgreSQL transaction
+/// that rechecks the operation and locks its budget rows and request record,
+/// so debiting every chunk held a stream to a few dozen KB/s (#683). At 1 MiB a
+/// 1 GiB budget takes at most 1,024 debits per direction, while a stream can
+/// exceed its budget by at most one batch plus one chunk before the debit that
+/// reaches the limit stops it.
+const BATCH_BYTES: u64 = 1024 * 1024;
+/// How long a failed or interrupted stream may take to debit its remainder.
+const FLUSH_GRACE: Duration = Duration::from_secs(5);
 
 fn failure(status: StatusCode, code: &'static str) -> Response<Body> {
 	Response::builder()
@@ -77,32 +89,167 @@ fn io_error(code: &'static str) -> BoxError {
 	std::io::Error::other(code).into()
 }
 
-async fn charge(
-	meter: &dyn Meter,
-	direction: Direction,
-	bytes: usize,
-	deadline: tokio::time::Instant,
-) -> Result<(), BoxError> {
-	tokio::time::timeout_at(deadline, meter.charge(direction, bytes))
-		.await
-		.map_err(|_| io_error("operation_expired"))?
-		.map_err(|_| io_error("egress_limit_exceeded"))
+/// Why a debit stopped a stream. The request record and the client see the
+/// same code, so an expired operation is never reported as an exhausted budget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Refusal {
+	status: StatusCode,
+	code: &'static str,
+}
+impl Refusal {
+	const LIMIT: Self = Self {
+		status: StatusCode::TOO_MANY_REQUESTS,
+		code: aidash_domain::egress::LIMIT_EXCEEDED,
+	};
+	const EXPIRED: Self = Self {
+		status: StatusCode::FORBIDDEN,
+		code: aidash_domain::egress::OPERATION_EXPIRED,
+	};
+	const FORBIDDEN: Self = Self {
+		status: StatusCode::FORBIDDEN,
+		code: "egress_forbidden",
+	};
+	const UNAVAILABLE: Self = Self {
+		status: StatusCode::SERVICE_UNAVAILABLE,
+		code: aidash_domain::egress::UNAVAILABLE,
+	};
+
+	fn of(error: &aidash_application::Error) -> Self {
+		use aidash_application::Error;
+		match error {
+			Error::Conflict(code) if code == aidash_domain::egress::LIMIT_EXCEEDED => Self::LIMIT,
+			Error::Conflict(code) if code == aidash_domain::egress::OPERATION_EXPIRED => {
+				Self::EXPIRED
+			}
+			Error::Forbidden | Error::Unauthorized | Error::AuthorityRefused(_) => Self::FORBIDDEN,
+			_ => Self::UNAVAILABLE,
+		}
+	}
+
+	fn response(self) -> Response<Body> {
+		failure(self.status, self.code)
+	}
 }
 
-/// Each stream, including a partially consumed one, completes its audit record.
-struct Completion {
+/// Body bytes streamed but not yet debited, per direction. A flush takes the
+/// whole pending count, so every byte is debited exactly once; dropping the
+/// last handle debits whatever an abandoned stream left.
+struct Debits {
 	meter: Arc<dyn Meter>,
+	sent: AtomicU64,
+	received: AtomicU64,
+	/// The upload's refusal. Reqwest reports a failed request body only as a
+	/// failed request, so the response path reads the real cause here.
+	refused: OnceLock<Refusal>,
+}
+impl Debits {
+	fn new(meter: Arc<dyn Meter>) -> Self {
+		Self {
+			meter,
+			sent: AtomicU64::new(0),
+			received: AtomicU64::new(0),
+			refused: OnceLock::new(),
+		}
+	}
+
+	fn pending(&self, direction: Direction) -> &AtomicU64 {
+		match direction {
+			Direction::Sent => &self.sent,
+			Direction::Received => &self.received,
+		}
+	}
+
+	/// Counts bytes before they are handed on, so a stream dropped while it
+	/// waits to be polled again still debits them.
+	fn count(&self, direction: Direction, bytes: usize) {
+		self.pending(direction)
+			.fetch_add(bytes as u64, Ordering::Relaxed);
+	}
+
+	/// Debits the pending bytes once a whole batch has accumulated.
+	async fn flush_due(
+		&self,
+		direction: Direction,
+		deadline: tokio::time::Instant,
+	) -> Result<(), Refusal> {
+		if self.pending(direction).load(Ordering::Relaxed) < BATCH_BYTES {
+			return Ok(());
+		}
+		self.flush(direction, deadline).await
+	}
+
+	async fn flush(
+		&self,
+		direction: Direction,
+		deadline: tokio::time::Instant,
+	) -> Result<(), Refusal> {
+		let bytes = self.pending(direction).swap(0, Ordering::Relaxed);
+		if bytes == 0 {
+			return Ok(());
+		}
+		let bytes = usize::try_from(bytes).map_err(|_| Refusal::LIMIT)?;
+		match tokio::time::timeout_at(deadline, self.meter.charge(direction, bytes)).await {
+			Ok(Ok(())) => Ok(()),
+			Ok(Err(error)) => Err(Refusal::of(&error)),
+			Err(_) => Err(Refusal::EXPIRED),
+		}
+	}
+}
+impl Drop for Debits {
+	fn drop(&mut self) {
+		let sent = *self.sent.get_mut();
+		let received = *self.received.get_mut();
+		if sent == 0 && received == 0 {
+			return;
+		}
+		let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+			return;
+		};
+		let meter = self.meter.clone();
+		runtime.spawn(async move {
+			for (direction, bytes) in [(Direction::Sent, sent), (Direction::Received, received)] {
+				if bytes > 0 {
+					let _ = tokio::time::timeout(
+						FLUSH_GRACE,
+						meter.charge(direction, bytes.min(usize::MAX as u64) as usize),
+					)
+					.await;
+				}
+			}
+		});
+	}
+}
+
+/// Each stream, including a partially consumed one, debits its remaining
+/// bytes and then completes its audit record.
+struct Completion {
+	debits: Arc<Debits>,
 	started: Instant,
+	deadline: tokio::time::Instant,
 	status: u16,
 	finished: bool,
 }
 impl Completion {
-	async fn finish(&mut self, error: Option<&str>) {
+	/// Debits what both directions still hold. A stream that ended cleanly
+	/// must do so within the operation deadline; a failed one gets a short
+	/// grace so the bytes it did stream still count.
+	async fn settle(&self, error: Option<&str>) -> Option<Refusal> {
+		let deadline = match error {
+			None => self.deadline,
+			Some(_) => self.deadline.max(tokio::time::Instant::now() + FLUSH_GRACE),
+		};
+		let sent = self.debits.flush(Direction::Sent, deadline).await;
+		let received = self.debits.flush(Direction::Received, deadline).await;
+		sent.err().or(received.err())
+	}
+
+	async fn close(&mut self, error: Option<&str>) {
 		if self.finished {
 			return;
 		}
 		self.finished = true;
 		if self
+			.debits
 			.meter
 			.finish(
 				self.status,
@@ -115,15 +262,32 @@ impl Completion {
 			tracing::error!("Egress request audit could not be completed");
 		}
 	}
+
+	/// Debits the remainder and completes the record. The stream's own failure
+	/// stays the recorded outcome; a refused final debit is recorded, and
+	/// returned, only for a stream that otherwise ended cleanly.
+	async fn finish(&mut self, error: Option<&str>) -> Option<Refusal> {
+		if self.finished {
+			return None;
+		}
+		let refusal = self.settle(error).await;
+		self.close(error.or(refusal.map(|refusal| refusal.code)))
+			.await;
+		refusal
+	}
 }
 impl Drop for Completion {
 	fn drop(&mut self) {
 		if !self.finished {
-			let meter = self.meter.clone();
+			let debits = self.debits.clone();
 			let status = self.status;
 			let elapsed = self.started.elapsed().as_millis().min(u64::MAX as u128) as u64;
 			tokio::spawn(async move {
-				let _ = meter
+				let deadline = tokio::time::Instant::now() + FLUSH_GRACE;
+				let _ = debits.flush(Direction::Sent, deadline).await;
+				let _ = debits.flush(Direction::Received, deadline).await;
+				let _ = debits
+					.meter
 					.finish(status, elapsed, Some("stream_interrupted"))
 					.await;
 			});
@@ -393,8 +557,13 @@ async fn forward(
 		Err(aidash_application::Error::Forbidden | aidash_application::Error::Unauthorized) => {
 			return failure(StatusCode::FORBIDDEN, "egress_forbidden");
 		}
+		Err(aidash_application::Error::Conflict(code))
+			if code == aidash_domain::egress::OPERATION_EXPIRED =>
+		{
+			return Refusal::EXPIRED.response();
+		}
 		Err(aidash_application::Error::Conflict(_)) => {
-			return failure(StatusCode::TOO_MANY_REQUESTS, "egress_limit_exceeded");
+			return Refusal::LIMIT.response();
 		}
 		Err(aidash_application::Error::Invalid(message)) if message == "secret_unavailable" => {
 			return failure(StatusCode::FAILED_DEPENDENCY, "secret_unavailable");
@@ -406,8 +575,9 @@ async fn forward(
 		.unwrap_or_default();
 	let deadline = tokio::time::Instant::now() + remaining;
 	let mut completion = Completion {
-		meter: admission.meter.clone(),
+		debits: Arc::new(Debits::new(admission.meter.clone())),
 		started: Instant::now(),
+		deadline,
 		status: 502,
 		finished: false,
 	};
@@ -514,7 +684,7 @@ async fn forward(
 	if rewrites_index {
 		upstream = upstream.header("accept-encoding", "identity");
 	}
-	let meter = admission.meter.clone();
+	let debits = completion.debits.clone();
 	let mut incoming = request.into_body().into_data_stream();
 	let body = async_stream::try_stream! {
 		loop {
@@ -522,8 +692,17 @@ async fn forward(
 				.map_err(|_|io_error("operation_expired"))?.map_err(|_|io_error("egress_idle_timeout"))?;
 			let Some(frame) = frame else { break; };
 			let bytes = frame.map_err(|_|io_error("egress_upload_interrupted"))?;
-			charge(meter.as_ref(), Direction::Sent, bytes.len(), deadline).await?;
+			debits.count(Direction::Sent, bytes.len());
 			yield bytes;
+			if let Err(refusal) = debits.flush_due(Direction::Sent, deadline).await {
+				let _ = debits.refused.set(refusal);
+				Err(io_error(refusal.code))?;
+			}
+		}
+		// The whole upload is debited before the request is complete.
+		if let Err(refusal) = debits.flush(Direction::Sent, deadline).await {
+			let _ = debits.refused.set(refusal);
+			Err(io_error(refusal.code))?;
 		}
 	};
 	let body = body.map_err(|error: BoxError| error);
@@ -535,6 +714,13 @@ async fn forward(
 	{
 		Ok(Ok(response)) => response,
 		_ => {
+			// A refused upload debit fails the request; report the refusal
+			// rather than an unreachable upstream.
+			if let Some(refusal) = completion.debits.refused.get().copied() {
+				completion.status = refusal.status.as_u16();
+				completion.finish(Some(refusal.code)).await;
+				return refusal.response();
+			}
 			completion.finish(Some("upstream_unavailable")).await;
 			return failure(StatusCode::BAD_GATEWAY, "EGRESS_UNAVAILABLE");
 		}
@@ -611,7 +797,12 @@ async fn forward(
 	// Hyper does not poll bodies for these responses. Complete their audit now,
 	// rather than classifying a correctly empty response as an interruption.
 	if head || matches!(status, StatusCode::NO_CONTENT | StatusCode::NOT_MODIFIED) {
-		completion.finish(None).await;
+		if let Some(refusal) = completion.settle(None).await {
+			completion.status = refusal.status.as_u16();
+			completion.close(Some(refusal.code)).await;
+			return refusal.response();
+		}
+		completion.close(None).await;
 		let mut result = Response::new(
 			Full::new(Bytes::new())
 				.map_err(|never| match never {})
@@ -646,15 +837,17 @@ async fn forward(
 					return failure(StatusCode::BAD_GATEWAY, "package_index_unavailable");
 				}
 			};
-			if charge(
-				admission.meter.as_ref(),
-				Direction::Received,
-				bytes.len(),
-				deadline,
-			)
-			.await
-			.is_err() || buffer.len().saturating_add(bytes.len()) > INDEX_BYTES
+			completion.debits.count(Direction::Received, bytes.len());
+			if let Err(refusal) = completion
+				.debits
+				.flush_due(Direction::Received, deadline)
+				.await
 			{
+				completion.status = refusal.status.as_u16();
+				completion.finish(Some(refusal.code)).await;
+				return refusal.response();
+			}
+			if buffer.len().saturating_add(bytes.len()) > INDEX_BYTES {
 				completion.finish(Some("index_limit_exceeded")).await;
 				return failure(StatusCode::BAD_GATEWAY, "package_index_limit_exceeded");
 			}
@@ -681,20 +874,17 @@ async fn forward(
 			completion.finish(Some("invalid_package_index")).await;
 			return failure(StatusCode::BAD_GATEWAY, "invalid_package_index");
 		};
-		if rewritten.len() > buffer.len()
-			&& charge(
-				admission.meter.as_ref(),
-				Direction::Received,
-				rewritten.len() - buffer.len(),
-				deadline,
-			)
-			.await
-			.is_err()
-		{
-			completion.finish(Some("egress_limit_exceeded")).await;
-			return failure(StatusCode::TOO_MANY_REQUESTS, "egress_limit_exceeded");
+		// Rewritten links can lengthen the index the sandbox receives.
+		completion.debits.count(
+			Direction::Received,
+			rewritten.len().saturating_sub(buffer.len()),
+		);
+		if let Some(refusal) = completion.settle(None).await {
+			completion.status = refusal.status.as_u16();
+			completion.close(Some(refusal.code)).await;
+			return refusal.response();
 		}
-		completion.finish(None).await;
+		completion.close(None).await;
 		headers.remove("content-length");
 		headers.remove("content-encoding");
 		headers.remove("etag");
@@ -708,19 +898,33 @@ async fn forward(
 		*result.headers_mut() = headers;
 		return result;
 	}
-	let meter = admission.meter.clone();
+	let debits = completion.debits.clone();
 	let output = async_stream::try_stream! {
 		loop {
 			let next = match tokio::time::timeout_at(deadline,tokio::time::timeout(IDLE,downstream.next())).await {
 				Ok(Ok(next)) => next,
 				_ => { completion.finish(Some("egress_timeout")).await; Err(io_error("egress_timeout"))?; unreachable!() }
 			};
-			let Some(bytes) = next else { completion.finish(None).await; break; };
-			let bytes=match bytes { Ok(bytes)=>bytes, Err(_)=>{ completion.finish(Some("upstream_interrupted")).await; Err(io_error("upstream_interrupted"))?; unreachable!() } };
-			if charge(meter.as_ref(), Direction::Received, bytes.len(), deadline).await.is_err() {
-				completion.finish(Some("egress_limit_exceeded")).await; Err(io_error("egress_limit_exceeded"))?;
-			}
+			let Some(bytes) = next else {
+				// The final debit can still refuse; the client then sees an
+				// incomplete body rather than a clean end.
+				if let Some(refusal) = completion.finish(None).await { Err(io_error(refusal.code))?; }
+				break;
+			};
+			let bytes = match bytes {
+				Ok(bytes) => bytes,
+				Err(_) => {
+					// An upstream that echoes the upload fails when the upload's
+					// debit was refused; that refusal is the real cause.
+					let code = debits.refused.get().map_or("upstream_interrupted", |refusal| refusal.code);
+					completion.finish(Some(code)).await; Err(io_error(code))?; unreachable!()
+				}
+			};
+			debits.count(Direction::Received, bytes.len());
 			yield Frame::data(bytes);
+			if let Err(refusal) = debits.flush_due(Direction::Received, deadline).await {
+				completion.finish(Some(refusal.code)).await; Err(io_error(refusal.code))?;
+			}
 		}
 	};
 	let output = output.map_err(|error: BoxError| error);

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 import { useQuery } from "@tanstack/react-query";
 import { Download } from "lucide-react";
 import {

@@ -904,3 +904,117 @@ async fn a_lost_shell_operation_with_a_live_writer_stays_uncertain(repository: R
 	assert_eq!(trace.saved[0].state, "uncertain");
 	assert!(trace.calls.contains(&"area:uncertain".into()));
 }
+/// What the runner reports when its collector refused to export `/work` (#682).
+fn refused_export(reason: &str, path: &str, limit: Value) -> Value {
+	json!({"status":"failed","termination_confirmed":true,"executed":true,"exit_code":0,
+		"stdout":STANDARD.encode("stdout"),"truncated":false,
+		"error":{"code":"WORKING_EXPORT_REFUSED","retryable":false,
+			"message":format!("symlinks are not supported in /work: {path}; use npm install --no-bin-links, or keep dependency trees under /tmp"),
+			"details":{"reason":reason,"path":path,"limit":limit}}})
+}
+#[rstest]
+#[tokio::test]
+async fn a_refused_export_fails_only_the_operation_and_keeps_the_published_revision(
+	repository: Repository,
+) {
+	repository.0.lock().unwrap().observed =
+		refused_export("symlink", "tools/node_modules/.bin/sha.js", Value::Null);
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	let saved = &trace.saved[0];
+	assert_eq!(saved.state, "failed");
+	assert_eq!(saved.revision, 7);
+	assert_eq!(saved.result["error"]["code"], "WORKING_EXPORT_REFUSED");
+	assert_eq!(
+		saved.result["error"]["details"],
+		json!({"reason":"symlink","path":"tools/node_modules/.bin/sha.js","limit":null})
+	);
+	assert_eq!(saved.result["termination_confirmed"], true);
+	// The command's own output stays readable beside the refusal.
+	assert_eq!(saved.result["output_file"]["size"], json!(6));
+	assert!(trace.calls.contains(&"area:active".into()));
+	assert!(!trace.calls.contains(&"publish".into()));
+	assert!(
+		!trace
+			.calls
+			.iter()
+			.any(|call| call.starts_with("area:uncertain"))
+	);
+	assert_eq!(trace.events.len(), 1);
+	assert!(trace.commit);
+}
+#[rstest]
+#[tokio::test]
+async fn a_refused_python_export_resets_the_session_without_publishing(repository: Repository) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.operation.kind = "code_interpreter".into();
+		trace.operation.input =
+			json!({"command":"print(1)","seconds":1,"session_id":Uuid::from_u128(20)});
+		trace.observed = refused_export("hard_link", "a", Value::Null);
+		trace.observed["writer_frozen"] = json!(false);
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(trace.saved[0].state, "failed");
+	assert_eq!(trace.saved[0].revision, 7);
+	assert_eq!(trace.saved[0].result["writer_frozen"], false);
+	assert!(trace.calls.contains(&"python:false".into()));
+	assert!(trace.calls.contains(&"area:active".into()));
+	assert!(!trace.calls.contains(&"publish".into()));
+}
+fn working_file(path: &str, size: u64) -> Value {
+	json!({"path":path,"size":size,"object_id":"0".repeat(64),"digest":"digest"})
+}
+#[rstest]
+#[tokio::test]
+async fn an_export_over_the_file_ceiling_is_refused_before_any_download(repository: Repository) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		// A mounted reference counts toward the manifest's 4096 entries.
+		trace.area.manifest = json!([{"file_id":Uuid::from_u128(30),"path":"guide.md","digest":"d",
+			"size":1,"media_type":"text/plain","scope":"references","provenance":{}}]);
+		trace.limits.working_bytes = 1 << 20;
+		let files = (0..4096)
+			.map(|index| working_file(&format!("f{index:04}"), 0))
+			.collect::<Vec<_>>();
+		trace.observed = json!({"status":"completed","termination_confirmed":true,"executed":true,
+			"files":files,"stdout":STANDARD.encode("stdout"),"displays":[],"exit_code":0});
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	let saved = &trace.saved[0];
+	assert_eq!(saved.state, "failed");
+	assert_eq!(saved.revision, 7);
+	assert_eq!(saved.result["error"]["code"], "WORKING_EXPORT_REFUSED");
+	assert_eq!(
+		saved.result["error"]["details"],
+		json!({"reason":"file_count","path":"f4095","limit":4096})
+	);
+	assert!(
+		saved.result["error"]["message"]
+			.as_str()
+			.unwrap()
+			.contains("at most 4096 files")
+	);
+	assert!(!trace.calls.contains(&"begin_output".into()));
+	assert!(!trace.calls.contains(&"publish".into()));
+	assert!(trace.calls.contains(&"area:active".into()));
+}
+#[rstest]
+#[tokio::test]
+async fn an_export_over_the_byte_quota_is_refused_before_any_download(repository: Repository) {
+	repository.0.lock().unwrap().observed = json!({"status":"completed","termination_confirmed":true,
+		"executed":true,"files":[working_file("small",24),working_file("large",1001)],
+		"stdout":STANDARD.encode("stdout"),"displays":[],"exit_code":0});
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	let saved = &trace.saved[0];
+	assert_eq!(saved.state, "failed");
+	assert_eq!(
+		saved.result["error"]["details"],
+		json!({"reason":"bytes","path":"large","limit":1024})
+	);
+	assert!(!trace.calls.contains(&"begin_output".into()));
+	assert!(!trace.calls.contains(&"publish".into()));
+}

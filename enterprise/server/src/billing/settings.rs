@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! `[billing]`: the Tiers a Deployment sells and how long it keeps usage.
 use aidash_server::{Error, Result};
 use serde::{Deserialize, Serialize};

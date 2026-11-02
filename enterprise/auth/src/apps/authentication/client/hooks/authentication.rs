@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Browser workflow. Every mutation uses the latest server-owned CSRF/context.
 use super::forms::{CodeForm, CredentialsForm, use_code_form, use_credentials_form};
 use crate::apps::authentication::server_fn::*;
