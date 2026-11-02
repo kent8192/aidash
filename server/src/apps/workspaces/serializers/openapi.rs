@@ -18,13 +18,83 @@ use crate::apps::workspaces::serializers::management::ConversationInput;
 use crate::apps::workspaces::serializers::management::MessageInput;
 use crate::apps::workspaces::serializers::management::StateInput;
 use crate::apps::workspaces::serializers::management::WorkspaceInput;
+use crate::apps::workspaces::serializers::scratch::{
+	ScratchCreate, ScratchLimits, ScratchList, ScratchMember,
+};
 use crate::apps::workspaces::serializers::tasks::ConversationResponse;
 use crate::apps::workspaces::serializers::tasks::PageQuery;
 use crate::apps::workspaces::serializers::tasks::TaskPage;
 use crate::{Result, config::openapi::Contracts};
+use aidash_domain::scratch::{ScratchSettings, ScratchSpace};
 use reinhardt::rest::openapi::OpenApiSchema;
 
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
+	contracts.request::<_, ScratchCreate>(document, views::scratch::create)?;
+	contracts.response::<_, ScratchSpace>(
+		document,
+		views::scratch::create,
+		200,
+		"application/json",
+	)?;
+	contracts.query::<_, ScratchList>(document, views::scratch::limits)?;
+	contracts.response::<_, ScratchLimits>(
+		document,
+		views::scratch::limits,
+		200,
+		"application/json",
+	)?;
+	contracts.query::<_, ScratchList>(document, views::scratch::list)?;
+	contracts.response::<_, Vec<ScratchSpace>>(
+		document,
+		views::scratch::list,
+		200,
+		"application/json",
+	)?;
+	contracts.response::<_, ScratchSpace>(
+		document,
+		views::scratch::read,
+		200,
+		"application/json",
+	)?;
+	contracts.path(document, views::scratch::read, &["Uuid"])?;
+	contracts.request::<_, ScratchSettings>(document, views::scratch::settings)?;
+	contracts.request::<_, ScratchMember>(document, views::scratch::add_member)?;
+	contracts.request::<_, ScratchMember>(document, views::scratch::remove_member)?;
+	contracts.path(document, views::scratch::settings, &["Uuid"])?;
+	contracts.response::<_, SentResponse>(
+		document,
+		views::scratch::settings,
+		200,
+		"application/json",
+	)?;
+	contracts.path(document, views::scratch::add_member, &["Uuid"])?;
+	contracts.response::<_, SentResponse>(
+		document,
+		views::scratch::add_member,
+		200,
+		"application/json",
+	)?;
+	contracts.path(document, views::scratch::remove_member, &["Uuid"])?;
+	contracts.response::<_, SentResponse>(
+		document,
+		views::scratch::remove_member,
+		200,
+		"application/json",
+	)?;
+	contracts.path(document, views::scratch::clear, &["Uuid"])?;
+	contracts.response::<_, SentResponse>(
+		document,
+		views::scratch::clear,
+		200,
+		"application/json",
+	)?;
+	contracts.path(document, views::scratch::remove, &["Uuid"])?;
+	contracts.response::<_, SentResponse>(
+		document,
+		views::scratch::remove,
+		200,
+		"application/json",
+	)?;
 	contracts.response::<_, TaskPage>(
 		document,
 		views::management::task_list,

@@ -11,3 +11,5 @@ pub mod core;
 pub use core::*;
 
 pub(crate) mod validation;
+
+pub(crate) mod scratch;

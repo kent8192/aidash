@@ -11394,6 +11394,7 @@
         "Conversation": {
           "type": "object",
           "required": [
+            "scratch_space_id",
             "created_by",
             "id",
             "workspace_id",
@@ -11412,6 +11413,11 @@
             "id": {
               "type": "string",
               "format": "uuid"
+            },
+            "scratch_space_id": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Fixed when the conversation starts."
             },
             "target": {
               "type": "string"
@@ -21764,30 +21770,6 @@
               "format": "int64"
             }
           }
-        },
-        "CatalogRestriction": {
-          "type": "object",
-          "description": "Who may use an approved definition on its Node (ADR 0029, ADR 0095). A\nrestriction names subjects directly and/or Assignable Groups; their\nmembers may use it. It only narrows what the Tenant's policy already\nallows, so it can never grant authority.",
-          "required": ["subjects", "groups"],
-          "properties": {
-            "groups": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": [],
-              "uniqueItems": true
-            },
-            "subjects": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "default": [],
-              "uniqueItems": true
-            }
-          },
-          "additionalProperties": false
         }
       }
     }
@@ -50022,5 +50004,743 @@
     "json": false,
     "uuid_parameters": [],
     "query_parameters": ["code", "error", "state"]
+  },
+  {
+    "method": "POST",
+    "path": "/api/scratch-spaces",
+    "name": "scratch-create",
+    "source": "server/src/apps/workspaces/views/scratch.rs",
+    "json": true,
+    "uuid_parameters": [],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ScratchSpace"
+      },
+      "definitions": {
+        "HostAllowlist": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["kind"],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": ["all"]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["kind", "hosts"],
+              "properties": {
+                "hosts": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "uniqueItems": true
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["hosts"]
+                }
+              }
+            }
+          ],
+          "description": "All hosts, or an explicit set of canonical DNS names or IP addresses."
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
+        },
+        "ScratchSettings": {
+          "type": "object",
+          "required": [
+            "capacity_bytes",
+            "idle_expiry_days",
+            "allowed_hosts",
+            "execution_image",
+            "external_services",
+            "cpu_millis",
+            "memory_bytes",
+            "docker_enabled",
+            "daily_sent_bytes",
+            "daily_received_bytes"
+          ],
+          "properties": {
+            "allowed_hosts": {
+              "$ref": "#/components/schemas/HostAllowlist"
+            },
+            "capacity_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "cpu_millis": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "daily_received_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "daily_sent_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "docker_enabled": {
+              "type": "boolean"
+            },
+            "execution_image": {
+              "type": ["string", "null"]
+            },
+            "external_services": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Registry identifiers of External services available to users of the space.",
+              "uniqueItems": true
+            },
+            "idle_expiry_days": {
+              "type": ["integer", "null"],
+              "format": "uint32",
+              "description": "None means the Scratch Space never expires from idleness.",
+              "minimum": 0
+            },
+            "memory_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "ScratchSpace": {
+          "type": "object",
+          "required": [
+            "id",
+            "node",
+            "name",
+            "creator",
+            "members",
+            "state",
+            "settings",
+            "created_at",
+            "last_used_at"
+          ],
+          "properties": {
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "creator": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "last_used_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "members": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "name": {
+              "type": "string"
+            },
+            "node": {
+              "$ref": "#/components/schemas/NodeName"
+            },
+            "settings": {
+              "$ref": "#/components/schemas/ScratchSettings"
+            },
+            "state": {
+              "$ref": "#/components/schemas/ScratchState"
+            }
+          }
+        },
+        "ScratchState": {
+          "type": "string",
+          "enum": ["active", "cleared"]
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/scratch-spaces",
+    "name": "scratch-list",
+    "source": "server/src/apps/workspaces/views/scratch.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["node"],
+    "response": {
+      "schema": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ScratchSpace"
+        }
+      },
+      "definitions": {
+        "HostAllowlist": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["kind"],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": ["all"]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["kind", "hosts"],
+              "properties": {
+                "hosts": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "uniqueItems": true
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["hosts"]
+                }
+              }
+            }
+          ],
+          "description": "All hosts, or an explicit set of canonical DNS names or IP addresses."
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
+        },
+        "ScratchSettings": {
+          "type": "object",
+          "required": [
+            "capacity_bytes",
+            "idle_expiry_days",
+            "allowed_hosts",
+            "execution_image",
+            "external_services",
+            "cpu_millis",
+            "memory_bytes",
+            "docker_enabled",
+            "daily_sent_bytes",
+            "daily_received_bytes"
+          ],
+          "properties": {
+            "allowed_hosts": {
+              "$ref": "#/components/schemas/HostAllowlist"
+            },
+            "capacity_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "cpu_millis": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "daily_received_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "daily_sent_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "docker_enabled": {
+              "type": "boolean"
+            },
+            "execution_image": {
+              "type": ["string", "null"]
+            },
+            "external_services": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Registry identifiers of External services available to users of the space.",
+              "uniqueItems": true
+            },
+            "idle_expiry_days": {
+              "type": ["integer", "null"],
+              "format": "uint32",
+              "description": "None means the Scratch Space never expires from idleness.",
+              "minimum": 0
+            },
+            "memory_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "ScratchSpace": {
+          "type": "object",
+          "required": [
+            "id",
+            "node",
+            "name",
+            "creator",
+            "members",
+            "state",
+            "settings",
+            "created_at",
+            "last_used_at"
+          ],
+          "properties": {
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "creator": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "last_used_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "members": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "name": {
+              "type": "string"
+            },
+            "node": {
+              "$ref": "#/components/schemas/NodeName"
+            },
+            "settings": {
+              "$ref": "#/components/schemas/ScratchSettings"
+            },
+            "state": {
+              "$ref": "#/components/schemas/ScratchState"
+            }
+          }
+        },
+        "ScratchState": {
+          "type": "string",
+          "enum": ["active", "cleared"]
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/scratch-spaces/limits",
+    "name": "scratch-limits",
+    "source": "server/src/apps/workspaces/views/scratch.rs",
+    "json": false,
+    "uuid_parameters": [],
+    "query_parameters": ["node"],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ScratchLimits"
+      },
+      "definitions": {
+        "HostAllowlist": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["kind"],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": ["all"]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["kind", "hosts"],
+              "properties": {
+                "hosts": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "uniqueItems": true
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["hosts"]
+                }
+              }
+            }
+          ],
+          "description": "All hosts, or an explicit set of canonical DNS names or IP addresses."
+        },
+        "ScratchCeilings": {
+          "type": "object",
+          "description": "Effective Deployment ceilings and operator decisions for this Tenant.",
+          "required": [
+            "capacity_bytes",
+            "cpu_millis",
+            "memory_bytes",
+            "docker_allowed",
+            "all_hosts_allowed"
+          ],
+          "properties": {
+            "all_hosts_allowed": {
+              "type": "boolean"
+            },
+            "capacity_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "cpu_millis": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "docker_allowed": {
+              "type": "boolean"
+            },
+            "memory_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          }
+        },
+        "ScratchLimits": {
+          "type": "object",
+          "required": ["ceilings", "tenant_hosts"],
+          "properties": {
+            "ceilings": {
+              "$ref": "#/components/schemas/ScratchCeilings"
+            },
+            "tenant_hosts": {
+              "$ref": "#/components/schemas/HostAllowlist"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "path": "/api/scratch-spaces/{id}",
+    "name": "scratch-read",
+    "source": "server/src/apps/workspaces/views/scratch.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/ScratchSpace"
+      },
+      "definitions": {
+        "HostAllowlist": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["kind"],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": ["all"]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["kind", "hosts"],
+              "properties": {
+                "hosts": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "uniqueItems": true
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["hosts"]
+                }
+              }
+            }
+          ],
+          "description": "All hosts, or an explicit set of canonical DNS names or IP addresses."
+        },
+        "NodeName": {
+          "type": "string",
+          "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused."
+        },
+        "ScratchSettings": {
+          "type": "object",
+          "required": [
+            "capacity_bytes",
+            "idle_expiry_days",
+            "allowed_hosts",
+            "execution_image",
+            "external_services",
+            "cpu_millis",
+            "memory_bytes",
+            "docker_enabled",
+            "daily_sent_bytes",
+            "daily_received_bytes"
+          ],
+          "properties": {
+            "allowed_hosts": {
+              "$ref": "#/components/schemas/HostAllowlist"
+            },
+            "capacity_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "cpu_millis": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "daily_received_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "daily_sent_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "docker_enabled": {
+              "type": "boolean"
+            },
+            "execution_image": {
+              "type": ["string", "null"]
+            },
+            "external_services": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Registry identifiers of External services available to users of the space.",
+              "uniqueItems": true
+            },
+            "idle_expiry_days": {
+              "type": ["integer", "null"],
+              "format": "uint32",
+              "description": "None means the Scratch Space never expires from idleness.",
+              "minimum": 0
+            },
+            "memory_bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "ScratchSpace": {
+          "type": "object",
+          "required": [
+            "id",
+            "node",
+            "name",
+            "creator",
+            "members",
+            "state",
+            "settings",
+            "created_at",
+            "last_used_at"
+          ],
+          "properties": {
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "creator": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "last_used_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "members": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            },
+            "name": {
+              "type": "string"
+            },
+            "node": {
+              "$ref": "#/components/schemas/NodeName"
+            },
+            "settings": {
+              "$ref": "#/components/schemas/ScratchSettings"
+            },
+            "state": {
+              "$ref": "#/components/schemas/ScratchState"
+            }
+          }
+        },
+        "ScratchState": {
+          "type": "string",
+          "enum": ["active", "cleared"]
+        }
+      }
+    }
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/scratch-spaces/{id}/settings",
+    "name": "scratch-settings",
+    "source": "server/src/apps/workspaces/views/scratch.rs",
+    "json": true,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/SentResponse"
+      },
+      "definitions": {
+        "SentResponse": {
+          "type": "object",
+          "required": ["sent"],
+          "properties": {
+            "sent": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/scratch-spaces/{id}/members",
+    "name": "scratch-member-add",
+    "source": "server/src/apps/workspaces/views/scratch.rs",
+    "json": true,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/SentResponse"
+      },
+      "definitions": {
+        "SentResponse": {
+          "type": "object",
+          "required": ["sent"],
+          "properties": {
+            "sent": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/scratch-spaces/{id}/members/remove",
+    "name": "scratch-member-remove",
+    "source": "server/src/apps/workspaces/views/scratch.rs",
+    "json": true,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/SentResponse"
+      },
+      "definitions": {
+        "SentResponse": {
+          "type": "object",
+          "required": ["sent"],
+          "properties": {
+            "sent": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "POST",
+    "path": "/api/scratch-spaces/{id}/clear",
+    "name": "scratch-clear",
+    "source": "server/src/apps/workspaces/views/scratch.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/SentResponse"
+      },
+      "definitions": {
+        "SentResponse": {
+          "type": "object",
+          "required": ["sent"],
+          "properties": {
+            "sent": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/scratch-spaces/{id}",
+    "name": "scratch-delete",
+    "source": "server/src/apps/workspaces/views/scratch.rs",
+    "json": false,
+    "uuid_parameters": ["id"],
+    "query_parameters": [],
+    "response": {
+      "schema": {
+        "$ref": "#/components/schemas/SentResponse"
+      },
+      "definitions": {
+        "SentResponse": {
+          "type": "object",
+          "required": ["sent"],
+          "properties": {
+            "sent": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
   }
 ]
