@@ -142,6 +142,20 @@ async fn provider_credentials(store: &Store, tenant: &str) -> Result<()> {
 /// Erases the Tenant's capability object files and the `core_objects` rows
 /// that name them.
 async fn capability_objects(store: &Store, tenant: &str) -> Result<()> {
+	// The Tenant is already inaccessible and its deletion row is locked. Drop
+	// revision and receipt references before erasing its logical objects.
+	{
+		let mut tx = store.pool.begin(&scope()).await?;
+		native::query(
+			&Query::delete()
+				.from_table(Alias::new("core_blob_references"))
+				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await?;
+		tx.commit().await?;
+	}
 	loop {
 		let mut tx = store.pool.begin(&scope()).await?;
 		let ids: Vec<Uuid> = {
@@ -158,12 +172,62 @@ async fn capability_objects(store: &Store, tenant: &str) -> Result<()> {
 			.await?
 		};
 		if ids.is_empty() {
-			return Ok(());
+			let digests: Vec<String> = native::query_scalar(
+				&Query::select()
+					.column(Alias::new("digest"))
+					.from(Alias::new("core_blobs"))
+					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+					.limit(OBJECT_BATCH)
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_all(&mut *tx)
+			.await?;
+			if digests.is_empty() {
+				tx.commit().await?;
+				return Ok(());
+			}
+			crate::apps::execution::repositories::capability_objects::lock_tenant_quota(
+				&mut tx, tenant,
+			)
+			.await?;
+			for digest in digests {
+				let lock = format!("core-blob:{tenant}:{digest}");
+				native::query(
+					&Query::select()
+						.expr(reinhardt::query::SimpleExpr::CustomWithExpr(
+							"(pg_advisory_xact_lock(hashtextextended(?, 0)))".into(),
+							vec![Expr::value(lock).into()],
+						))
+						.to_string(PostgresQueryBuilder),
+				)
+				.execute(&mut *tx)
+				.await?;
+				let parsed = digest
+					.parse()
+					.map_err(|_| crate::Error::Conflict("OBJECT_INTEGRITY".into()))?;
+				store
+					.capabilities
+					.blob_store()
+					.await?
+					.delete(tenant, parsed)
+					.await?;
+				native::query(
+					&Query::delete()
+						.from_table(Alias::new("core_blobs"))
+						.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+						.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(digest)))
+						.to_string(PostgresQueryBuilder),
+				)
+				.execute(&mut *tx)
+				.await?;
+			}
+			tx.commit().await?;
+			continue;
 		}
 		for id in ids {
 			store
 				.capabilities
-				.erase_committed(&mut tx, tenant, id)
+				.erase_committed(&mut tx, tenant, id, true)
 				.await?;
 		}
 		tx.commit().await?;

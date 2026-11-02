@@ -1,9 +1,90 @@
 use super::sessions;
 use crate::{Error, Result, authorization::access::Access};
 use chrono::{DateTime, Utc};
-use reinhardt::query::{Alias, Expr, IntoValue as _, LockType, PostgresQueryBuilder, Query};
+use reinhardt::query::{
+	Alias, Expr, IntoValue as _, LockType, OnConflict, PostgresQueryBuilder, Query,
+};
 use serde_json::Value;
 use uuid::Uuid;
+
+/// Receipt rows protect every File version they still name. The foreign key
+/// removes these references when the owning record is deleted.
+async fn sync_receipt_references(
+	tx: &mut crate::database::native::Transaction,
+	record: &Record,
+) -> Result<()> {
+	let value = match record.kind.as_str() {
+		"transfer_out" if record.data["objects_released"] == true => serde_json::json!([]),
+		"transfer_out" => record.data["description"]["files"].clone(),
+		"transfer_in" if record.state == "committed" => record.data["receipt"]["files"].clone(),
+		"collaboration" => record.data["receipt"]["files"].clone(),
+		_ => return Ok(()),
+	};
+	let mut files: Vec<crate::apps::execution::capabilities::serializers::contracts::FileEntry> =
+		serde_json::from_value(value)?;
+	files.sort_by(|a, b| a.digest.cmp(&b.digest).then(a.file_id.cmp(&b.file_id)));
+	super::capability_objects::lock_tenant_quota(tx, &record.tenant).await?;
+	crate::database::native::query(
+		&Query::delete()
+			.from_table(Alias::new("core_blob_references"))
+			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&record.tenant)))
+			.and_where(Expr::col(Alias::new("record_id")).eq(Expr::value(record.id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut **tx)
+	.await?;
+	for file in files {
+		let lock = format!("core-blob:{}:{}", record.tenant, file.digest);
+		crate::database::native::query(
+			&Query::select()
+				.expr(SimpleExpr::CustomWithExpr(
+					"(pg_advisory_xact_lock(hashtextextended(?, 0)))".into(),
+					vec![Expr::value(lock).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut **tx)
+		.await?;
+		let holder = format!("{}:{}", record.id, file.file_id);
+		crate::database::native::query(
+			&Query::insert()
+				.into_table(Alias::new("core_blob_references"))
+				.columns(
+					[
+						"id",
+						"tenant",
+						"digest",
+						"holder_kind",
+						"holder_id",
+						"object_id",
+						"record_id",
+					]
+					.map(Alias::new),
+				)
+				.values(vec![
+					Uuid::new_v4().into(),
+					record.tenant.clone().into(),
+					file.digest.into(),
+					"receipt".into(),
+					holder.into(),
+					file.file_id.into(),
+					record.id.into(),
+				])
+				.map_err(Error::Invalid)?
+				.on_conflict(
+					OnConflict::columns(
+						["tenant", "digest", "holder_kind", "holder_id"].map(Alias::new),
+					)
+					.do_nothing()
+					.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut **tx)
+		.await?;
+	}
+	Ok(())
+}
 
 pub(crate) async fn get(access: &mut Access, id: Uuid, kind: &str) -> Result<Record> {
 	{
@@ -92,7 +173,9 @@ pub(crate) async fn insert(
 	)
 	.execute(&mut **access.tx)
 	.await?;
-	get(access, id, kind).await
+	let record = get(access, id, kind).await?;
+	sync_receipt_references(access.tx.native_mut(), &record).await?;
+	Ok(record)
 }
 pub(crate) async fn update(access: &mut Access, record: &mut Record) -> Result<()> {
 	update_committed(&mut access.tx, record).await
@@ -134,6 +217,7 @@ pub(crate) async fn update_committed(
 		return Err(Error::Conflict("RECORD_CHANGED".into()));
 	}
 	record.revision += 1;
+	sync_receipt_references(tx, record).await?;
 	Ok(())
 }
 

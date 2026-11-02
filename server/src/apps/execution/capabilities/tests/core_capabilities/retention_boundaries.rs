@@ -202,7 +202,7 @@ async fn keep_converts_the_existing_recovery_snapshot_to_retained_storage(
 	);
 	assert_eq!(restored["owner"], "alice");
 	// A consumed retained snapshot becomes ordinary working storage. Replacing
-	// it must free its object and quota without deleting the restored area.
+	// it preserves its historical revision and charges the new unique blob.
 	let (status, admitted) = request(&f.c.app, &f.c.token, "POST", &format!("/api/workspaces/{}/threads/{}/agents/research/runs", f.workspace, f.new_thread["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Continue restored work","description":"Replace the saved file"})).await;
 	assert_eq!(status, 200, "{admitted}");
 	let (_, session) = request(
@@ -244,36 +244,25 @@ async fn keep_converts_the_existing_recovery_snapshot_to_retained_storage(
 		.unwrap();
 	assert_eq!(kind, "superseded_working");
 	let WorkerControl { stop, receiver: rx } = control_1;
-	// Act: collect superseded bytes after the recovery snapshot has been patched.
 	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
 		f.c.f.store.clone(),
 		rx,
 	));
-	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
-	loop {
-		let kind: Option<String> = sqlx::query_scalar(&object_kind)
-			.bind(old_id)
-			.fetch_optional(f.c.f.store.pool.fixture_driver())
-			.await
-			.unwrap();
-		if kind.is_none() {
-			break;
-		}
-		assert!(
-			tokio::time::Instant::now() < deadline,
-			"replaced retained bytes were not reclaimed"
-		);
-		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-	}
-	assert!(!f.c.root.join(old_id.simple().to_string()).exists());
-	let used: i64 = sqlx::query_scalar(&quota)
+	tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+	let kind: String = sqlx::query_scalar(&object_kind)
+		.bind(old_id)
 		.fetch_one(f.c.f.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	assert_eq!(
-		used,
-		baseline - old["size"].as_i64().unwrap() + b"replacement\n".len() as i64
+		kind, "superseded_working",
+		"the historical revision keeps its object"
 	);
+	let used: i64 = sqlx::query_scalar(&quota)
+		.fetch_one(f.c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(used, baseline + b"replacement\n".len() as i64);
 	stop.send(true).unwrap();
 	worker.await.unwrap().unwrap();
 	f.c.close().await;

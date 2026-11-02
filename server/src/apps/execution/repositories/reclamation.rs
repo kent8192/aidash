@@ -23,12 +23,58 @@ use uuid::Uuid;
 /// The capability worker reaches every Tenant's operations and work areas.
 const MAINTENANCE: TenancyScope =
 	TenancyScope::Deployment(DeploymentScopeReason::CapabilityMaintenance);
-/// A superseded object no active hold covers. Holds expire on their own for
-/// Federation; every other holder is released explicitly or with its area.
-const ACTIVE_HOLD: &str = "NOT EXISTS (SELECT 1 FROM core_retention_files f \
-	JOIN core_retention_holds h ON h.id = f.hold_id \
-	WHERE f.file_id = core_objects.id AND f.tenant = core_objects.tenant \
-	AND (h.expires_at IS NULL OR h.expires_at > CURRENT_TIMESTAMP))";
+/// A superseded object may be reclaimed only after its active holds expire.
+pub(crate) fn no_active_hold() -> SimpleExpr {
+	Expr::not_exists(
+		Query::select()
+			.expr(Expr::value(1))
+			.from_as(Alias::new("core_retention_files"), Alias::new("f"))
+			.join(
+				reinhardt::query::JoinType::InnerJoin,
+				reinhardt::query::TableRef::table_alias(
+					Alias::new("core_retention_holds"),
+					Alias::new("h"),
+				),
+				Expr::col((Alias::new("h"), Alias::new("id")))
+					.equals((Alias::new("f"), Alias::new("hold_id"))),
+			)
+			.and_where(
+				Expr::col((Alias::new("f"), Alias::new("file_id")))
+					.equals((Alias::new("core_objects"), Alias::new("id"))),
+			)
+			.and_where(
+				Expr::col((Alias::new("f"), Alias::new("tenant")))
+					.equals((Alias::new("core_objects"), Alias::new("tenant"))),
+			)
+			.cond_where(
+				Condition::any()
+					.add(Expr::col((Alias::new("h"), Alias::new("expires_at"))).is_null())
+					.add(
+						Expr::col((Alias::new("h"), Alias::new("expires_at")))
+							.gt(Expr::current_timestamp()),
+					),
+			)
+			.to_owned(),
+	)
+	.into()
+}
+pub(crate) fn no_revision_references() -> reinhardt::query::SimpleExpr {
+	Expr::not_exists(
+		Query::select()
+			.expr(Expr::value(1))
+			.from(Alias::new("core_blob_references"))
+			.and_where(
+				Expr::col((Alias::new("core_blob_references"), Alias::new("object_id")))
+					.equals((Alias::new("core_objects"), Alias::new("id"))),
+			)
+			.and_where(
+				Expr::col((Alias::new("core_blob_references"), Alias::new("tenant")))
+					.equals((Alias::new("core_objects"), Alias::new("tenant"))),
+			)
+			.to_owned(),
+	)
+	.into()
+}
 pub(crate) struct Repository<'a> {
 	store: &'a Store,
 	orphan_cursor: tokio::sync::Mutex<Option<tokio::fs::ReadDir>>,
@@ -60,6 +106,7 @@ let ids: Vec<Uuid> = {
 			crate::database::native::query_scalar(&Query::select().column(Alias::new("id")).from(Alias::new("core_records"))
             .and_where(Expr::col(Alias::new("kind")).is_in(["transfer_in", "transfer_out", "reference"]))
             .and_where(Expr::cust("COALESCE(data->>'objects_released','false') <> 'true'"))
+            .and_where(Expr::col(Alias::new("data")).binary(reinhardt::query::BinOper::PgOperator(reinhardt::query::types::PgBinOper::Contains), Expr::value(serde_json::json!({"receipt_retained": true}))).not())
             .and_where(Condition::any()
                 .add(Expr::cust("kind = 'transfer_out' AND (state IN ('delivered','blocked') OR expires_at <= CURRENT_TIMESTAMP)"))
                 .add(Expr::cust("kind = 'transfer_in' AND (state = 'committed' OR expires_at <= CURRENT_TIMESTAMP)"))
@@ -80,14 +127,16 @@ let ids: Vec<Uuid> = {
 					&Query::select()
 						.column(Alias::new("id"))
 						.from(Alias::new("core_objects"))
-						.and_where(
-							Expr::col(Alias::new("kind"))
-								.eq(reinhardt::query::Expr::value("superseded_working")),
-						)
+						.and_where(Expr::col(Alias::new("kind")).is_in([
+							"superseded_working",
+							"received",
+							"transfer_snapshot",
+						]))
 						.and_where(
 							Expr::col(Alias::new("id")).gt(Expr::value(query_bind_1.to_owned())),
 						)
-						.and_where(Expr::cust(ACTIVE_HOLD))
+						.and_where(no_active_hold())
+						.and_where(no_revision_references())
 						.order_by(Alias::new("id"), reinhardt::query::Order::Asc)
 						.limit(16)
 						.to_string(PostgresQueryBuilder),
@@ -142,9 +191,116 @@ let ids: Vec<Uuid> = {
 		self.store
 			.capabilities
 			.reconcile_orphan_batch(&self.store.pool, &mut cursor)
+			.await?;
+		reclaim_unreferenced_blobs(self.store)
 			.await
 			.map_err(Into::into)
 	}
+}
+
+/// Reap only blobs whose object and reference removals already committed.
+async fn reclaim_unreferenced_blobs(store: &Store) -> NativeResult<()> {
+	let mut query = Query::select();
+	query
+		.columns(["tenant", "digest"].map(Alias::new))
+		.from(Alias::new("core_blobs"));
+	for table in ["core_objects", "core_blob_references"] {
+		query.and_where(Expr::not_exists(
+			Query::select()
+				.expr(Expr::value(1))
+				.from(Alias::new(table))
+				.and_where(
+					Expr::col((Alias::new(table), Alias::new("tenant")))
+						.equals((Alias::new("core_blobs"), Alias::new("tenant"))),
+				)
+				.and_where(
+					Expr::col((Alias::new(table), Alias::new("digest")))
+						.equals((Alias::new("core_blobs"), Alias::new("digest"))),
+				)
+				.to_owned(),
+		));
+	}
+	let candidates: Vec<(String, String)> =
+		crate::database::native::query_as(&query.limit(16).to_string(PostgresQueryBuilder))
+			.columns(&["tenant", "digest"])
+			.fetch_all(store.pool.in_scope(&MAINTENANCE))
+			.await?;
+	for (tenant, digest) in candidates {
+		let mut tx = store.pool.begin(&MAINTENANCE).await?;
+		super::capability_objects::lock_tenant_quota(&mut tx, &tenant).await?;
+		let lock = format!("core-blob:{tenant}:{digest}");
+		crate::database::native::query(
+			&Query::select()
+				.expr(SimpleExpr::CustomWithExpr(
+					"(pg_advisory_xact_lock(hashtextextended(?, 0)))".into(),
+					vec![Expr::value(lock).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await?;
+		let mut referenced = false;
+		for table in ["core_objects", "core_blob_references"] {
+			let id: Option<Uuid> = crate::database::native::query_scalar(
+				&Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new(table))
+					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&tenant)))
+					.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(&digest)))
+					.limit(1)
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_optional(&mut *tx)
+			.await?;
+			referenced |= id.is_some();
+		}
+		if !referenced {
+			let size: Option<i64> = crate::database::native::query_scalar(
+				&Query::select()
+					.column(Alias::new("size"))
+					.from(Alias::new("core_blobs"))
+					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&tenant)))
+					.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(&digest)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_optional(&mut *tx)
+			.await?;
+			if let Some(size) = size {
+				let parsed = digest
+					.parse()
+					.map_err(|_| crate::Error::Conflict("OBJECT_INTEGRITY".into()))?;
+				store
+					.capabilities
+					.blob_store()
+					.await?
+					.delete(&tenant, parsed)
+					.await?;
+				crate::database::native::query(
+					&Query::delete()
+						.from_table(Alias::new("core_blobs"))
+						.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&tenant)))
+						.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(&digest)))
+						.to_string(PostgresQueryBuilder),
+				)
+				.execute(&mut *tx)
+				.await?;
+				crate::database::native::query(
+					&Query::update()
+						.table(Alias::new("core_quotas"))
+						.value_expr(
+							Alias::new("used_bytes"),
+							Expr::col(Alias::new("used_bytes")).sub(Expr::value(size)),
+						)
+						.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&tenant)))
+						.to_string(PostgresQueryBuilder),
+				)
+				.execute(&mut *tx)
+				.await?;
+			}
+		}
+		tx.commit().await?;
+	}
+	Ok(())
 }
 #[async_trait]
 impl ReclamationScope for Scope<'_> {
@@ -182,12 +338,14 @@ impl ReclamationScope for Scope<'_> {
 					&Query::update()
 						.table(Alias::new("core_quotas"))
 						.value_expr(
-							Alias::new("used_bytes"),
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("used_bytes")))
-								.sub(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_2.to_owned()).into()],
-								)),
+							Alias::new("reserved_bytes"),
+							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
+								"reserved_bytes",
+							)))
+							.sub(SimpleExpr::CustomWithExpr(
+								"(?)".to_owned(),
+								vec![Expr::value(query_bind_2.to_owned()).into()],
+							)),
 						)
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("tenant"))).eq(
@@ -198,17 +356,37 @@ impl ReclamationScope for Scope<'_> {
 							),
 						)
 						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("used_bytes")))
-								.gte(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_2.to_owned()).into()],
-								)),
+							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
+								"reserved_bytes",
+							)))
+							.gte(SimpleExpr::CustomWithExpr(
+								"(?)".to_owned(),
+								vec![Expr::value(query_bind_2.to_owned()).into()],
+							)),
 						)
 						.to_string(PostgresQueryBuilder),
 				)
 				.execute(&mut *self.tx)
 				.await?
 			};
+			Ok(())
+		}
+		.await;
+		result.map_err(Into::into)
+	}
+	async fn release_transfer_refs(&mut self, tenant: &str, id: Uuid) -> Result<()> {
+		let result: NativeResult<()> = async {
+			super::capability_objects::lock_tenant_quota(&mut self.tx, tenant).await?;
+			crate::database::native::query(
+				&Query::delete()
+					.from_table(Alias::new("core_blob_references"))
+					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+					.and_where(Expr::col(Alias::new("record_id")).eq(Expr::value(id)))
+					.and_where(Expr::col(Alias::new("holder_kind")).eq(Expr::value("receipt")))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *self.tx)
+			.await?;
 			Ok(())
 		}
 		.await;
@@ -263,12 +441,12 @@ impl ReclamationScope for Scope<'_> {
 						)
 						.and_where(
 							Expr::col(Alias::new("kind"))
-								.eq(reinhardt::query::Expr::value("superseded_working")),
+                                .is_in(["superseded_working", "received", "transfer_snapshot"]),
 						)
 						// A hold written between the selection and this lock refuses the
 						// erase instead of dropping the bytes a reference still names.
-						.and_where(Expr::cust(ACTIVE_HOLD))
-						.lock(LockType::Update)
+						.and_where(no_active_hold())
+                        .and_where(no_revision_references())
 						.to_string(PostgresQueryBuilder),
 				)
 				.scalar_optional(&mut *self.tx)
@@ -282,7 +460,7 @@ impl ReclamationScope for Scope<'_> {
 	async fn erase(&mut self, tenant: &str, id: Uuid) -> Result<()> {
 		self.store
 			.capabilities
-			.erase_committed(&mut self.tx, tenant, id)
+			.erase_committed(&mut self.tx, tenant, id, false)
 			.await
 			.map_err(Into::into)
 	}

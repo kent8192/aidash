@@ -16,22 +16,32 @@ pub async fn reclaim(repository: &dyn ReclamationRepository, id: Uuid) -> Result
 		match record.kind.as_str() {
 			"transfer_out" => {
 				if record.data["objects_released"] == true
+					|| record.data["receipt_retained"] == true
 					|| !(expired || matches!(record.state.as_str(), "delivered" | "blocked"))
 				{
 					return Ok(false);
 				}
-				files = serde_json::from_value::<Vec<FileEntry>>(
-					record.data["description"]["files"].clone(),
-				)?;
-				if expired && !matches!(record.state.as_str(), "delivered" | "blocked") {
-					record.state = if record.data["commit_attempted"] == true {
-						"expired_unconfirmed"
-					} else {
-						"expired"
+				if record.data["receipt"].is_object() {
+					// A delivered receipt keeps its source snapshots until the
+					// owning record is removed.
+					record.data["receipt_retained"] = json!(true);
+				} else {
+					files = serde_json::from_value::<Vec<FileEntry>>(
+						record.data["description"]["files"].clone(),
+					)?;
+					scope
+						.release_transfer_refs(&record.tenant, record.id)
+						.await?;
+					if expired && !matches!(record.state.as_str(), "delivered" | "blocked") {
+						record.state = if record.data["commit_attempted"] == true {
+							"expired_unconfirmed"
+						} else {
+							"expired"
+						}
+						.into();
 					}
-					.into();
+					record.data["objects_released"] = json!(true);
 				}
-				record.data["objects_released"] = json!(true);
 			}
 			"transfer_in" => {
 				if record.data["objects_released"] == true

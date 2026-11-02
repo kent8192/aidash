@@ -925,6 +925,7 @@ impl ErasureScope for Erasure<'_> {
 									vec![Expr::value(query_bind_2.to_owned()).into()],
 								)),
 						)
+						.and_where(super::reclamation::no_revision_references())
 						.to_string(PostgresQueryBuilder),
 				)
 				.scalar_all(&mut **tx)
@@ -946,6 +947,16 @@ impl ErasureScope for Erasure<'_> {
 			)
 			.execute(&mut *self.tx)
 			.await?;
+			crate::database::native::query(
+				&Query::delete()
+					.from_table(Alias::new("core_manifest_revisions"))
+					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&area.tenant)))
+					.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area.id)))
+					.and_where(Expr::col(Alias::new("revision")).ne(Expr::value(area.revision)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *self.tx)
+			.await?;
 			Ok(())
 		}
 		.await;
@@ -954,12 +965,13 @@ impl ErasureScope for Erasure<'_> {
 	async fn erase(&mut self, tenant: &str, id: Uuid) -> Result<()> {
 		self.store
 			.capabilities
-			.erase_committed(&mut self.tx, tenant, id)
+			.erase_committed(&mut self.tx, tenant, id, false)
 			.await
 			.map_err(Into::into)
 	}
 	async fn update_area(&mut self, area: &Area) -> Result<()> {
 		let result: NativeResult<()> = async {
+			super::files::record_revision(&mut self.tx, &area.tenant, area, &area.manifest).await?;
 			let tx = &mut self.tx;
 			{
 				let query_bind_1 = area.id;

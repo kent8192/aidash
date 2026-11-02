@@ -274,9 +274,13 @@ async fn chunked_transfer(#[future] two_nodes: TransferFixture) -> ChunkedTransf
 	bytes.extend_from_slice("final 東京\n".as_bytes());
 	let id = Uuid::new_v4();
 	let digest = aidash_server::capabilities::objects::digest(&bytes);
-	tokio::fs::write(c.a.root.join(id.simple().to_string()), &bytes)
-		.await
-		.unwrap();
+	fixture_blob(
+		c.a.f.store.pool.fixture_driver(),
+		&c.a.root,
+		&digest,
+		&bytes,
+	)
+	.await;
 	// A text-only recipient must be able to receive media for storage or tools.
 	let file = json!({"file_id":id,"path":"large.svg","digest":digest,"size":bytes.len(),"media_type":"image/svg+xml","scope":"working","provenance":{"kind":"explicit-transport-fixture"}});
 	let mut tx = c.a.f.store.pool.fixture_driver().begin().await.unwrap();
@@ -315,22 +319,14 @@ async fn chunked_transfer(#[future] two_nodes: TransferFixture) -> ChunkedTransf
 	.execute(&mut *tx)
 	.await
 	.unwrap();
-	{
-		let query_bind_1 = Uuid::parse_str(area["id"].as_str().unwrap()).unwrap();
-		let query_bind_2 = json!([file]);
-		sqlx::query(
-			&Query::update()
-				.table(Alias::new("core_areas"))
-				.value_expr(Alias::new("manifest"), Expr::value(query_bind_2.to_owned()))
-				.value(Alias::new("revision"), 2)
-				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())))
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(&mut *tx)
-		.await
-	}
-	.unwrap();
 	tx.commit().await.unwrap();
+	fixture_revision(
+		c.a.f.store.pool.fixture_driver(),
+		Uuid::parse_str(area["id"].as_str().unwrap()).unwrap(),
+		2,
+		json!([file]),
+	)
+	.await;
 	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":id,"expected_digest":digest}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.b.f.config.deployment.as_str(), "acme").to_string(),"agent_id":c.receiver.agent_id,"agent_version":c.receiver.agent_version,"thread_id":c.b.task}});
 	let (status, pending) = request(
 		&c.a.app,
@@ -455,11 +451,20 @@ async fn chunks_resume_out_of_order_after_both_servers_restart_without_duplicate
 	.await;
 	assert_eq!(area["manifest"].as_array().unwrap().len(), 1);
 	assert_eq!(area["revision"], 2);
-	let id = Uuid::parse_str(area["manifest"][0]["file_id"].as_str().unwrap()).unwrap();
+	let digest = area["manifest"][0]["digest"].as_str().unwrap();
+	let tenant = aidash_server::capabilities::objects::digest(b"acme");
 	assert_eq!(
-		tokio::fs::read(c.b.root.join(id.simple().to_string()))
-			.await
-			.unwrap(),
+		tokio::fs::read(
+			c.b.root
+				.join("tenants")
+				.join(tenant)
+				.join("sha256")
+				.join(&digest[..2])
+				.join(&digest[2..4])
+				.join(digest)
+		)
+		.await
+		.unwrap(),
 		fixture.bytes
 	);
 	fixture.peers.close().await;
@@ -1064,17 +1069,20 @@ async fn staged_transfer_callbacks_recheck_marketplace_dependency_approvals(
 		sqlx::query_scalar(
 			&Query::select()
 				.column(Alias::new("manifest"))
-				.from(Alias::new("core_areas"))
+				.from(Alias::new("core_manifest_revisions"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(thread_id=?)".to_owned(),
+					"(area_id IN (SELECT id FROM core_areas WHERE thread_id=?))".to_owned(),
 					vec![Expr::value(query_bind_1.to_owned()).into()],
 				))
+				.order_by(Alias::new("revision"), reinhardt::query::Order::Desc)
+				.limit(1)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(c.b.f.store.pool.fixture_driver())
+		.fetch_optional(c.b.f.store.pool.fixture_driver())
 		.await
 	}
-	.unwrap();
+	.unwrap()
+	.unwrap_or_else(|| json!([]));
 	assert_eq!(visible, json!([]), "staged files must remain invisible");
 	c.close().await;
 }

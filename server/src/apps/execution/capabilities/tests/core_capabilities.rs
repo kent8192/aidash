@@ -86,6 +86,122 @@ use aidash_server::{
 use serde_json::Value;
 use uuid::Uuid;
 
+async fn fixture_blob(pool: &sqlx::PgPool, root: &std::path::Path, digest: &str, bytes: &[u8]) {
+	use reinhardt::query::{Alias, OnConflict, PostgresQueryBuilder, Query};
+	let tenant_hash = aidash_server::capabilities::objects::digest(b"acme");
+	let path = root
+		.join("tenants")
+		.join(tenant_hash)
+		.join("sha256")
+		.join(&digest[..2])
+		.join(&digest[2..4])
+		.join(digest);
+	tokio::fs::create_dir_all(path.parent().unwrap())
+		.await
+		.unwrap();
+	tokio::fs::write(path, bytes).await.unwrap();
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("core_blobs"))
+			.columns(["tenant", "digest", "size"].map(Alias::new))
+			.values(vec![
+				"acme".into(),
+				digest.into(),
+				(bytes.len() as i64).into(),
+			])
+			.unwrap()
+			.on_conflict(
+				OnConflict::columns(["tenant", "digest"].map(Alias::new))
+					.do_nothing()
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(pool)
+	.await
+	.unwrap();
+}
+
+async fn fixture_revision(pool: &sqlx::PgPool, area: Uuid, revision: i64, files: Value) {
+	use reinhardt::query::{Alias, Expr, IntoValue as _, PostgresQueryBuilder, Query};
+	let mut tx = pool.begin().await.unwrap();
+	sqlx::query(
+		&Query::delete()
+			.from_table(Alias::new("core_manifest_revisions"))
+			.and_where(Expr::col(Alias::new("tenant")).eq("acme"))
+			.and_where(Expr::col(Alias::new("area_id")).eq(area))
+			.and_where(Expr::col(Alias::new("revision")).eq(revision))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("core_manifest_revisions"))
+			.columns(["tenant", "area_id", "revision", "manifest"].map(Alias::new))
+			.values(vec![
+				"acme".into(),
+				area.into(),
+				revision.into(),
+				files.clone().into_value(),
+			])
+			.unwrap()
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	for file in files.as_array().unwrap() {
+		let id: Uuid = serde_json::from_value(file["file_id"].clone()).unwrap();
+		let digest = file["digest"].as_str().unwrap();
+		let holder = format!("{area}:{revision}:{id}");
+		sqlx::query(
+			&Query::insert()
+				.into_table(Alias::new("core_blob_references"))
+				.columns(
+					[
+						"id",
+						"tenant",
+						"digest",
+						"holder_kind",
+						"holder_id",
+						"object_id",
+						"area_id",
+						"revision",
+					]
+					.map(Alias::new),
+				)
+				.values(vec![
+					Uuid::new_v4().into(),
+					"acme".into(),
+					digest.into(),
+					"revision".into(),
+					holder.into(),
+					id.into(),
+					area.into(),
+					revision.into(),
+				])
+				.unwrap()
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	}
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("core_areas"))
+			.value(Alias::new("revision"), revision)
+			.and_where(Expr::col(Alias::new("id")).eq(area))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+}
+
 #[derive(Clone)]
 struct CoreFixture {
 	_storage: Arc<tempfile::TempDir>,

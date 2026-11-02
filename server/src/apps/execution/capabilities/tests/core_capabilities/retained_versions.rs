@@ -75,7 +75,7 @@ fn text(bytes: &Value) -> String {
 
 #[rstest::rstest]
 #[tokio::test]
-async fn a_cited_html_revision_survives_later_publications_and_release_reclaims_it(
+async fn a_cited_revision_survives_release_until_its_history_is_removed(
 	#[future] capability_fixture: CoreFixture,
 ) {
 	let c = capability_fixture.await;
@@ -175,13 +175,27 @@ async fn a_cited_html_revision_survives_later_publications_and_release_reclaims_
 	assert_eq!(status, 200, "{bytes}");
 	assert_eq!(text(&bytes), "old()\n");
 
-	// Releasing the last hold lets the ordinary reclamation erase both.
+	// Releasing the hold alone must not remove a retained revision.
 	assert_eq!(
 		aidash_server::capabilities::retention::release_for(&c.f, actor(&c).await, &holder)
 			.await
 			.unwrap(),
 		1
 	);
+	// The revision is independently retained even after the message releases it.
+	assert_eq!(download(&c, area_id, html).await.0, 200);
+	assert_eq!(download(&c, area_id, sibling).await.0, 200);
+	let old_revision = area["revision"].as_i64().unwrap();
+	let delete = Query::delete()
+		.from_table(Alias::new("core_manifest_revisions"))
+		.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value("acme")))
+		.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area_id)))
+		.and_where(Expr::col(Alias::new("revision")).eq(Expr::value(old_revision)))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&delete)
+		.execute(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
 	while object_exists(&c, html).await || object_exists(&c, sibling).await {
 		assert!(
@@ -535,5 +549,154 @@ async fn concurrent_identical_citations_leave_one_hold(#[future] capability_fixt
 	second.unwrap();
 	assert_eq!(holds(&c, "acme").await, 1, "one hold for the holder");
 	assert_eq!(held_files(&c, "acme").await, 1, "one row per File version");
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn identical_files_share_one_tenant_blob_across_areas_and_survive_one_release(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let c = capability_fixture.await;
+	let first = admit(&c).await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let (status, workspace) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		"/api/workspaces",
+		json!({"title":"Dedup","goal":"Independent files","node":node}),
+	)
+	.await;
+	assert_eq!(status, 200, "{workspace}");
+	let (status, task) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!(
+			"/api/workspaces/{}/tasks",
+			workspace["id"].as_str().unwrap()
+		),
+		json!({"title":"Second area","description":"Write the same content"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{task}");
+	let (status, delegated) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/tasks/{}/delegate", task["id"].as_str().unwrap()),
+		json!({"node_id":c.f.config.deployment,"agent":{"id":"research","version":"1.1.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{delegated}");
+	let second =
+		c.f.store
+			.runs(&TEST_FIXTURE)
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|run| run.task_id.to_string() == task["id"].as_str().unwrap())
+			.unwrap();
+	let mut areas = Vec::new();
+	let mut used = Vec::new();
+	for (run, path) in [(first.id, "one.txt"), (second.id, "two.txt")] {
+		let patch =
+			format!("*** Begin Patch\n*** Add File: {path}\n+identical bytes\n*** End Patch");
+		let (status, body) = request(&c.app, &c.token, "POST", &path_for_patch(run), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{(path):null},"patch":patch})).await;
+		assert_eq!(status, 200, "{body}");
+		let (status, area) = request(
+			&c.app,
+			&c.token,
+			"GET",
+			&format!("/api/runs/{run}/working-area"),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{area}");
+		areas.push(area);
+		let quota = Query::select()
+			.column(Alias::new("used_bytes"))
+			.from(Alias::new("core_quotas"))
+			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value("acme")))
+			.to_string(PostgresQueryBuilder);
+		used.push(
+			sqlx::query_scalar::<_, i64>(&quota)
+				.fetch_one(c.f.store.pool.fixture_driver())
+				.await
+				.unwrap(),
+		);
+	}
+	assert_ne!(areas[0]["id"], areas[1]["id"]);
+	assert_eq!(
+		areas[0]["manifest"][0]["digest"],
+		areas[1]["manifest"][0]["digest"]
+	);
+	assert_ne!(
+		areas[0]["manifest"][0]["file_id"],
+		areas[1]["manifest"][0]["file_id"]
+	);
+	assert_eq!(
+		used[0], used[1],
+		"the second reference does not charge the blob twice"
+	);
+	let digest = areas[0]["manifest"][0]["digest"].as_str().unwrap();
+	let blobs = Query::select()
+		.expr(reinhardt::query::Func::count(
+			Expr::col(Alias::new("digest")).into(),
+		))
+		.from(Alias::new("core_blobs"))
+		.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value("acme")))
+		.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(digest)))
+		.to_string(PostgresQueryBuilder);
+	assert_eq!(counts(&c, &blobs).await, 1);
+	let second_area: Uuid = serde_json::from_value(areas[1]["id"].clone()).unwrap();
+	let second_file: Uuid =
+		serde_json::from_value(areas[1]["manifest"][0]["file_id"].clone()).unwrap();
+	let (status, bytes) = download(&c, second_area, second_file).await;
+	assert_eq!(status, 200, "{bytes}");
+	assert_eq!(text(&bytes), "identical bytes\n");
+	let first_area: Uuid = serde_json::from_value(areas[0]["id"].clone()).unwrap();
+	let first_file: Uuid =
+		serde_json::from_value(areas[0]["manifest"][0]["file_id"].clone()).unwrap();
+	let (status, changed) = request(&c.app, &c.token, "POST", &path_for_patch(first.id),
+        json!({"idempotency_key":Uuid::new_v4(),"expected_revision":areas[0]["revision"],"preconditions":{"one.txt":digest},"patch":"*** Begin Patch\n*** Update File: one.txt\n@@\n-identical bytes\n+different bytes\n*** End Patch"})).await;
+	assert_eq!(status, 200, "{changed}");
+	let prune = Query::delete()
+		.from_table(Alias::new("core_manifest_revisions"))
+		.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value("acme")))
+		.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(first_area)))
+		.and_where(
+			Expr::col(Alias::new("revision"))
+				.eq(Expr::value(areas[0]["revision"].as_i64().unwrap())),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&prune)
+		.execute(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let WorkerControl { stop, receiver: rx } = worker_control();
+	let worker = tokio::spawn(aidash_server::capabilities::reclamation::run(
+		c.f.store.clone(),
+		rx,
+	));
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+	while object_exists(&c, first_file).await {
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"released reference was not reclaimed"
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+	}
+	assert_eq!(
+		counts(&c, &blobs).await,
+		1,
+		"the second area still owns the shared blob"
+	);
+	let (status, bytes) = download(&c, second_area, second_file).await;
+	assert_eq!(status, 200, "{bytes}");
+	assert_eq!(text(&bytes), "identical bytes\n");
+	let _ = stop.send(true);
+	worker.await.unwrap().unwrap();
 	c.close().await;
 }

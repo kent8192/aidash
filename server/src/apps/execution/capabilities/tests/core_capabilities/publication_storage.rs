@@ -25,7 +25,7 @@ fn storage_fixture(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn unchanged_exports_reuse_objects_and_superseded_working_bytes_are_reclaimed(
+async fn unchanged_exports_reuse_objects_and_history_protects_superseded_bytes(
 	#[future] storage_fixture: (CoreFixture, Uuid, Value),
 	#[from(worker_control)] control_1: WorkerControl,
 ) {
@@ -78,6 +78,31 @@ async fn unchanged_exports_reuse_objects_and_superseded_working_bytes_are_reclai
 			);
 		}
 	}
+	let old_is_retained: i64 = sqlx::query_scalar(
+		&Query::select()
+			.expr(reinhardt::query::Func::count(
+				Expr::col(Alias::new("id")).into(),
+			))
+			.from(Alias::new("core_objects"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(old)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(old_is_retained, 1);
+	let current_revision = revision.as_i64().unwrap();
+	let area_id: Uuid = serde_json::from_value(initial["id"].clone()).unwrap();
+	let delete = Query::delete()
+		.from_table(Alias::new("core_manifest_revisions"))
+		.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value("acme")))
+		.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area_id)))
+		.and_where(Expr::col(Alias::new("revision")).lt(Expr::value(current_revision)))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&delete)
+		.execute(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
 	loop {
 		let count: i64 = {
@@ -111,7 +136,6 @@ async fn unchanged_exports_reuse_objects_and_superseded_working_bytes_are_reclai
 		);
 		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 	}
-	assert!(!c.root.join(old.simple().to_string()).exists());
 	let used: i64 = sqlx::query_scalar(
 		&Query::select()
 			.column(Alias::new("used_bytes"))

@@ -101,6 +101,16 @@ impl ReclamationScope for Scope {
 			Ok(())
 		}
 	}
+	async fn release_transfer_refs(&mut self, tenant: &str, id: Uuid) -> Result<()> {
+		assert_eq!(tenant, "tenant");
+		assert_eq!(id, Uuid::from_u128(1));
+		self.state
+			.lock()
+			.unwrap()
+			.calls
+			.push("release-transfer-refs".into());
+		Ok(())
+	}
 	async fn object_kind(&mut self, id: Uuid, tenant: &str) -> Result<Option<String>> {
 		assert_eq!(id, file().file_id);
 		assert_eq!(tenant, "tenant");
@@ -181,9 +191,33 @@ async fn expired_transfer_release_commits_ownership_and_preserves_prior_effect_u
 	assert_eq!(state.record.data["objects_released"], true);
 	assert_eq!(
 		state.calls,
-		vec!["lock-record", "object-kind", "erase", "update", "commit"]
+		vec![
+			"lock-record",
+			"release-transfer-refs",
+			"object-kind",
+			"erase",
+			"update",
+			"commit"
+		]
 	);
 	assert_eq!(state.scopes, 0);
+}
+
+#[rstest]
+#[tokio::test]
+async fn delivered_transfer_receipt_keeps_its_snapshot_until_the_record_is_removed(
+	repository: Repository,
+) {
+	{
+		let mut state = repository.0.lock().unwrap();
+		state.record.state = "delivered".into();
+		state.record.expires_at = None;
+		state.record.data["receipt"] = json!({"id":"receipt"});
+	}
+	reclaim(&repository, Uuid::from_u128(1)).await.unwrap();
+	let state = repository.0.lock().unwrap();
+	assert_eq!(state.record.data["receipt_retained"], true);
+	assert_eq!(state.calls, vec!["lock-record", "update", "commit"]);
 }
 
 #[rstest]
@@ -210,13 +244,17 @@ async fn an_unexpired_transfer_cannot_release_its_objects(repository: Repository
 #[rstest]
 #[tokio::test]
 async fn a_foreign_object_namespace_rolls_back_the_release_marker(repository: Repository) {
+	inbound(&repository);
 	repository.0.lock().unwrap().kind = "working".into();
 	assert!(matches!(
 		reclaim(&repository, Uuid::from_u128(1)).await,
 		Err(Error::Forbidden)
 	));
 	let state = repository.0.lock().unwrap();
-	assert_eq!(state.calls, vec!["lock-record", "object-kind", "rollback"]);
+	assert_eq!(
+		state.calls,
+		vec!["lock-record", "quota", "object-kind", "rollback"]
+	);
 	assert!(state.record.data["objects_released"].is_null());
 	assert_eq!(state.scopes, 0);
 }

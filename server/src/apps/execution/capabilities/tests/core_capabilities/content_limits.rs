@@ -143,9 +143,7 @@ fn search_boundary_fixture(
 		let bytes = b"\xff\nmatched text\n";
 		let id = Uuid::new_v4();
 		let digest = aidash_server::capabilities::objects::digest(bytes);
-		tokio::fs::write(c.root.join(id.simple().to_string()), bytes)
-			.await
-			.unwrap();
+		fixture_blob(c.f.store.pool.fixture_driver(), &c.root, &digest, bytes).await;
 		let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
 		let file = json!({"file_id":id,"path":"binary.bin","size":bytes.len(),"digest":digest,"media_type":"application/octet-stream","scope":"working","provenance":{"kind":"binary-fixture"}});
 		sqlx::query(
@@ -172,33 +170,13 @@ fn search_boundary_fixture(
 		.unwrap();
 		let mut manifest = area["manifest"].clone();
 		manifest.as_array_mut().unwrap().push(file);
-		{
-			let query_bind_1 = area_id;
-			let query_bind_2 = manifest;
-			sqlx::query(
-				&Query::update()
-					.table(Alias::new("core_areas"))
-					.value_expr(
-						Alias::new("manifest"),
-						SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_2.to_owned()).into()],
-						),
-					)
-					.and_where(
-						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-							SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_1.to_owned()).into()],
-							),
-						),
-					)
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(c.f.store.pool.fixture_driver())
-			.await
-		}
-		.unwrap();
+		fixture_revision(
+			c.f.store.pool.fixture_driver(),
+			area_id,
+			area["revision"].as_i64().unwrap(),
+			manifest,
+		)
+		.await;
 		(c, run.id)
 	}
 }
@@ -275,5 +253,3 @@ async fn binary_search_reports_unavailable_text_while_path_search_remains_usable
 }
 
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
-
-use reinhardt::query::SimpleExpr;

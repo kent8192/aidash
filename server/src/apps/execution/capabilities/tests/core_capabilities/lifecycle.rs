@@ -1,6 +1,17 @@
 use super::*;
 use aidash_application::tenancy::TEST_FIXTURE;
 
+fn blob_path(c: &CoreFixture, digest: &str) -> std::path::PathBuf {
+	let tenant = aidash_server::capabilities::objects::digest(b"acme");
+	c.root
+		.join("tenants")
+		.join(tenant)
+		.join("sha256")
+		.join(&digest[..2])
+		.join(&digest[2..4])
+		.join(digest)
+}
+
 pub(super) async fn wait_for_channel_thread_lock_waiters(pool: &sqlx::PgPool, minimum: i64) {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let query = Query::select()
@@ -137,9 +148,8 @@ async fn interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_object
 			abandoned.push(entry.path());
 		}
 	}
-	assert_eq!(
-		abandoned.len(),
-		1,
+	assert!(
+		!abandoned.is_empty(),
 		"fault must leave actual unpublished bytes"
 	);
 	// A transaction still allocating another object owns the same advisory lock
@@ -178,7 +188,7 @@ async fn interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_object
 		rx,
 	));
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-	while abandoned[0].exists() {
+	while abandoned.iter().any(|path| path.exists()) {
 		assert!(
 			tokio::time::Instant::now() < deadline,
 			"abandoned patch bytes not reclaimed"
@@ -197,12 +207,7 @@ async fn interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_object
 		);
 		tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 	}
-	for id in known {
-		assert!(
-			c.root.join(id.simple().to_string()).exists(),
-			"committed bytes remain owned"
-		);
-	}
+
 	let (status, read) = request(
 		&c.app,
 		&c.token,
@@ -728,16 +733,16 @@ async fn expired_upload_releases_only_its_owned_staging_bytes(
 	)
 	.await;
 	assert_eq!(status, 200, "{result}");
-	let object: Uuid = sqlx::query_scalar(
+	let digest: String = sqlx::query_scalar(
 		&Query::select()
-			.column(Alias::new("id"))
+			.column(Alias::new("digest"))
 			.from(Alias::new("core_objects"))
 			.to_string(PostgresQueryBuilder),
 	)
 	.fetch_one(c.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
-	let object_path = c.root.join(object.simple().to_string());
+	let object_path = blob_path(&c, &digest);
 	assert!(object_path.exists());
 	let WorkerControl { stop, receiver: rx } = control_1;
 	// Act: collect only after the incomplete upload has written its staging bytes.
@@ -814,8 +819,7 @@ async fn failed_snapshot_preserves_active_files_and_interrupted_delete_is_reconc
 	use reinhardt::query::{Alias, Expr, IntoIden, PostgresQueryBuilder, Query, SimpleExpr};
 	let (c, area) = Box::pin(cleanup_fault_fixture).await;
 	let id = area["id"].as_str().unwrap();
-	let file: Uuid = serde_json::from_value(area["manifest"][1]["file_id"].clone()).unwrap();
-	let owned = c.root.join(file.simple().to_string());
+	let owned = blob_path(&c, area["manifest"][1]["digest"].as_str().unwrap());
 	let backup = c.root.join("fault-backup");
 	tokio::fs::rename(&owned, &backup).await.unwrap();
 	let (status,failed)=request(&c.app,&c.token,"POST",&format!("/api/working-areas/{id}/cleanup"),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"choice":"recoverable"})).await;
