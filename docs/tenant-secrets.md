@@ -243,4 +243,8 @@ duration and outcome, rather than request paths or bodies. An interrupted
 connection may retain unused reserved budget if the gateway terminates before
 returning it. The separate path-level External service route remains responsible
 for attaching Tenant Secrets; scope-based admission for that route is not yet
-wired.
+wired. Its integration route is `/v2/services/<service>/<path>` with the scope
+credential in `Authorization: Bearer <scope-credential>`. The gateway removes
+that header before forwarding and attaches the External service's Tenant Secret
+separately. The legacy `/v1/<operation-token>/<service>/<path>` route continues
+to use operation admission until the scope authority is connected.
