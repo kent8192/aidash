@@ -155,6 +155,25 @@ Redirects return through the gateway and cannot change the admitted origin or
 escape the base path. Gateway failures produce `EGRESS_UNAVAILABLE`; the Pod
 has no direct fallback route.
 
+The gateway debits body bytes in batches of 1 MiB per direction, and debits
+the remainder when a stream ends, fails or is interrupted, so the request
+record always holds the bytes actually streamed. A debit commits those bytes
+even when they take a counter past its limit, then stops the stream. A budget
+can therefore be exceeded by at most one batch (1 MiB plus one body chunk) per
+direction for each request streaming at that moment; once a counter is
+exhausted, the next request is refused before it starts. The stream's error,
+in both the request record and the client response, names the reason:
+
+| Code                    | Status | Meaning                                                           |
+| ----------------------- | ------ | ----------------------------------------------------------------- |
+| `egress_limit_exceeded` | 429    | A byte or request budget is exhausted.                            |
+| `operation_expired`     | 403    | The operation or Live preview ended, expired or no longer exists. |
+| `egress_forbidden`      | 403    | The Run's authority was revoked.                                  |
+| `EGRESS_UNAVAILABLE`    | 503    | The budget store could not record the debit.                      |
+
+A response whose headers were already sent ends with an incomplete body
+instead of a status.
+
 Run inspection lists the request time, operation, service, method, path,
 SHA-256 query digest, status, byte counts and duration. Bodies, header values
 and query contents are never recorded. A partially consumed response is
