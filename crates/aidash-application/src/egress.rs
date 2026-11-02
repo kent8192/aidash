@@ -55,3 +55,56 @@ pub trait Authority: Send + Sync {
 		query_digest: &str,
 	) -> Result<Admission>;
 }
+
+/// Settings resolved from a revocable Execution Pod proxy credential.
+#[derive(Clone, Debug)]
+pub struct ScopeSettings {
+	pub id: aidash_domain::egress::ScopeId,
+	pub allowed_hosts: aidash_domain::egress::AllowedHosts,
+	pub budget: aidash_domain::egress::DailyBudget,
+	pub anomaly: aidash_domain::egress::AnomalyRule,
+	pub operator_allows_all: bool,
+}
+
+/// Metadata for a completed connection; URL paths and bodies are never recorded.
+#[derive(Clone, Debug)]
+pub struct ConnectionRecord {
+	pub scope: aidash_domain::egress::ScopeId,
+	pub host: String,
+	pub port: u16,
+	pub sent_bytes: u64,
+	pub received_bytes: u64,
+	pub duration_ms: u64,
+	pub outcome: String,
+}
+
+/// Durable scope authority. Implementations must serialize admission, suspension,
+/// and budget debits across all gateway instances. Debits are made before bytes
+/// leave the gateway and may be reserved in batches; unused reservations must be
+/// returned on completion. Each debit is associated with its UTC day.
+#[async_trait]
+pub trait EgressScopes: Send + Sync {
+	async fn resolve(&self, credential: &str) -> Result<ScopeSettings>;
+	/// Atomically checks suspension, counts a new connection in the current
+	/// minute, and suspends and notifies the operator on anomaly.
+	async fn admit_connection(&self, scope: &ScopeSettings) -> Result<()>;
+	async fn debit(
+		&self,
+		scope: &ScopeSettings,
+		direction: Direction,
+		bytes: u64,
+		day: chrono::NaiveDate,
+	) -> Result<()>;
+	async fn refund(
+		&self,
+		scope: &ScopeSettings,
+		direction: Direction,
+		bytes: u64,
+		day: chrono::NaiveDate,
+	) -> Result<()>;
+	async fn record(&self, record: ConnectionRecord) -> Result<()>;
+	async fn lift_suspension(&self, scope: &aidash_domain::egress::ScopeId) -> Result<()>;
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
