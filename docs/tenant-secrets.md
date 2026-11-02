@@ -160,6 +160,49 @@ SHA-256 query digest, status, byte counts and duration. Bodies, header values
 and query contents are never recorded. A partially consumed response is
 recorded as interrupted rather than silently becoming a successful request.
 
+### Clone a GitHub repository
+
+The Execution Pod image includes `git`. It reaches GitHub through an External
+service; the gateway attaches the Tenant Secret, so Git needs no credential
+helper and the token never enters the Pod.
+
+1. Store a Tenant Secret, for example `github-git`, with hosts `["github.com"]`
+   and the value `Basic <base64(x-access-token:TOKEN)>`. The base64 text encodes
+   the literal username `x-access-token`, a colon and the token. Cloning needs
+   read access to the repository's contents; pushing needs write access.
+2. Register an `external_service`, for example with ID `github`, approve it
+   and bind it to the Agent:
+
+   ```json
+   {
+     "base_url": "https://github.com/",
+     "methods": ["GET", "POST"],
+     "secret": "github-git",
+     "authentication": { "type": "header", "name": "Authorization" }
+   }
+   ```
+
+3. Clone, fetch and push with the ordinary `https://github.com/` URL. Map it to
+   the gateway with `-c` on every command:
+
+   ```sh
+   git -c url."${AIDASH_EGRESS_URL}github/".insteadOf=https://github.com/ \
+     clone https://github.com/<owner>/<repo>.git
+   git -c url."${AIDASH_EGRESS_URL}github/".insteadOf=https://github.com/ fetch
+   ```
+
+   `AIDASH_EGRESS_URL` carries an operation token that ends with the operation.
+   Never write it into the repository's remote URL or Git configuration: a later
+   operation gets a new token, and the stored one fails.
+
+Archive downloads do not work. GitHub redirects them to the cross-origin
+`codeload` host, and the gateway refuses cross-origin redirects. Git's
+`info/refs` and `git-upload-pack` requests to a private repository were
+verified through the gateway. A complete clone of a large repository is still
+limited by [#683](https://github.com/kent8192/aidash/issues/683) (throughput)
+and by the Working Area's file rules
+([#682](https://github.com/kent8192/aidash/issues/682)).
+
 ## Self-hosted deployment
 
 The gateway is an internal listener of the server. The capability profile has
