@@ -23,6 +23,9 @@ import time
 from urllib.parse import urlsplit, parse_qs
 import uuid
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from execution_pod import ExecutionPodController, ExecutionPodError
+
 TERMINAL = {"completed", "cancelled", "failed", "uncertain"}
 # The sandbox image's runner/probe.py must emit exactly this evidence contract.
 PROBE_PROTOCOL = "aidash-admission-probe/2"
@@ -114,6 +117,7 @@ class Runner:
         fcntl.flock(self.owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
         self.lock = threading.RLock()
         self.active = set()
+        self.execution_pods = ExecutionPodController(self, config.get('execution_pods', {}))
         self.admission_operation = None
         # Seeded by recover(), the final startup scan; until then only the
         # operations saved during startup are tracked, and nothing serves it yet.
@@ -1141,6 +1145,18 @@ class Handler(BaseHTTPRequestHandler):
         if not hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + runner.token):
             raise Rejected(401, "runner authentication required")
         path = urlsplit(self.path).path
+        if self.command == 'POST' and path in ('/v2/pods/ensure', '/v2/pods/stop', '/v2/pods/delete'):
+            size = int(self.headers.get('Content-Length', '0'))
+            if not 0 < size <= 1048576:
+                raise Rejected(413, 'runner request limit')
+            request = json.loads(self.rfile.read(size))
+            if not isinstance(request, dict):
+                raise ValueError('object required')
+            if path == '/v2/pods/ensure':
+                return runner.execution_pods.ensure(request)
+            if path == '/v2/pods/stop':
+                return runner.execution_pods.stop(request['scratch_space_id'])
+            return runner.execution_pods.delete(request['scratch_space_id'])
         if self.command == "POST" and path == "/v1/operations":
             size = int(self.headers.get("Content-Length", "0"))
             if not 0 < size <= 8 * 1048576:
@@ -1188,12 +1204,18 @@ class Handler(BaseHTTPRequestHandler):
     def respond(self):
         try:
             data, status = self.handle_request(), 200
+        except ExecutionPodError as error:
+            status = 503 if error.code in ('admission_unverified', 'startup_failed') else 409
+            data = {'code': error.code, 'message': error.message}
         except Rejected as error:
-            data, status = {"error": error.message}, error.code
+            data, status = ({'code': 'request_rejected', 'message': error.message}
+                            if urlsplit(self.path).path.startswith('/v2/') else {'error': error.message}), error.code
         except (ValueError, KeyError, TypeError) as error:
-            data, status = {"error": str(error)}, 400
+            data, status = ({'code': 'invalid_request', 'message': str(error) or 'invalid request'}
+                            if urlsplit(self.path).path.startswith('/v2/') else {'error': str(error)}), 400
         except Exception:
-            data, status = {"error": "runner control unavailable"}, 503
+            data, status = ({'code': 'runner_unavailable', 'message': 'runner control unavailable'}
+                            if urlsplit(self.path).path.startswith('/v2/') else {'error': 'runner control unavailable'}), 503
         encoded = json.dumps(data, separators=(",", ":")).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")

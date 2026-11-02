@@ -227,3 +227,106 @@ class PodManifestTest(unittest.TestCase):
             initialize_system_root(image, base / 'store')
             root = base / 'store' / 'rootfs'
             self.assertEqual((root / 'first').stat().st_ino, (root / 'second').stat().st_ino)
+
+
+class ExecutionPodControllerTest(unittest.TestCase):
+    def test_v2_admission_is_required_before_creating_resources(self):
+        from execution_pod import ExecutionPodController
+
+        class Backend:
+            def kube(self, *_args, **_kwargs):
+                raise AssertionError('unverified pod must not reach Kubernetes')
+
+        controller = ExecutionPodController(Backend(), {}, admitted=False)
+        with self.assertRaisesRegex(RuntimeError, 'admission'):
+            controller.ensure({'scratch_space_id': 'example'})
+
+    def test_ensure_is_idempotent_and_stop_preserves_claim(self):
+        import json
+        from types import SimpleNamespace
+        from execution_pod import ExecutionPodController
+
+        class Backend:
+            def __init__(self):
+                self.objects = {}
+            def kube(self, args, data=None, **_kwargs):
+                if args[0] == 'get':
+                    obj = self.objects.get((args[1], args[2]))
+                    return SimpleNamespace(stdout=json.dumps(obj).encode() if obj else b'')
+                if args[0] == 'create':
+                    obj = json.loads(data)
+                    kind = 'pvc' if obj['kind'] == 'PersistentVolumeClaim' else 'pod'
+                    self.objects[(kind, obj['metadata']['name'])] = obj
+                elif args[0] == 'delete':
+                    self.objects.pop((args[1], args[2]), None)
+                return SimpleNamespace(stdout=b'')
+
+        backend = Backend()
+        config = {'runtime_class': 'aidash-gvisor', 'helper_image': 'helper@sha256:' + 'b' * 64,
+                  'namespace': 'aidash-sandbox'}
+        settings = {'scratch_space_id': 'id', 'image': 'image@sha256:' + 'a' * 64, 'cpu': 2,
+                    'memory_bytes': 1 << 30, 'capacity_bytes': 1 << 30, 'docker_enabled': False}
+        controller = ExecutionPodController(backend, config, admitted=True)
+        resource = controller.ensure(settings)
+        self.assertEqual(controller.ensure(settings), resource)
+        controller.stop('id')
+        self.assertIn(('pvc', resource['claim']), backend.objects)
+        self.assertNotIn(('pod', resource['pod']), backend.objects)
+        controller.delete('id')
+        self.assertFalse(backend.objects)
+
+
+class ExecutionPodHttpTest(unittest.TestCase):
+    def test_unverified_ensure_returns_typed_error_without_starting_pod(self):
+        import http.client
+        import json
+        import threading
+        from http.server import ThreadingHTTPServer
+        from types import SimpleNamespace
+        from control import Handler
+        from execution_pod import ExecutionPodController
+
+        class Backend:
+            def kube(self, *_args, **_kwargs):
+                raise AssertionError('unverified pod must not be created')
+        runner = SimpleNamespace(token='x' * 32,
+                                 execution_pods=ExecutionPodController(Backend(), {}, admitted=False))
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        server.runner = runner
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            conn = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=2)
+            conn.request('POST', '/v2/pods/ensure', json.dumps({'scratch_space_id': 'example'}),
+                         {'Authorization': 'Bearer ' + runner.token, 'Content-Type': 'application/json'})
+            response = conn.getresponse()
+            body = json.loads(response.read())
+            self.assertEqual(response.status, 503)
+            self.assertEqual(body['code'], 'admission_unverified')
+            self.assertTrue(body['message'])
+            conn.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+    def test_startup_failure_contains_typed_reason(self):
+        import json
+        from types import SimpleNamespace
+        from execution_pod import ExecutionPodController, ExecutionPodError
+
+        class Backend:
+            def kube(self, args, data=None, **_kwargs):
+                if args[0] == 'get':
+                    return SimpleNamespace(stdout=b'')
+                if args[0] == 'wait':
+                    raise RuntimeError('image pull failed')
+                return SimpleNamespace(stdout=json.dumps({'ok': True}).encode())
+        config = {'runtime_class': 'aidash-gvisor', 'helper_image': 'helper@sha256:' + 'b' * 64,
+                  'namespace': 'aidash-sandbox'}
+        settings = {'scratch_space_id': 'id', 'image': 'image@sha256:' + 'a' * 64, 'cpu': 2,
+                    'memory_bytes': 1 << 30, 'capacity_bytes': 1 << 30, 'docker_enabled': False}
+        with self.assertRaises(ExecutionPodError) as caught:
+            ExecutionPodController(Backend(), config, admitted=True).ensure(settings)
+        self.assertEqual(caught.exception.code, 'startup_failed')
+        self.assertIn('image pull failed', caught.exception.message)

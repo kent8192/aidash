@@ -261,3 +261,72 @@ def execution_manifests(settings, config):
     pod = {'apiVersion': 'v1', 'kind': 'Pod', 'metadata': dict(metadata,
            labels={'aidash-sandbox': 'true'}), 'spec': podspec}
     return claim, pod
+
+
+class ExecutionPodError(RuntimeError):
+    """Typed failure returned by the Execution Pod protocol."""
+
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+class ExecutionPodController:
+    """Serialize scratch Pod and persistent claim creation on the control node."""
+
+    def __init__(self, backend, config, *, admitted=False):
+        self.backend, self.config, self.admitted = backend, config, admitted
+        self.lock = Lock()
+
+    def _get(self, kind, name):
+        import json
+        result = self.backend.kube(['get', kind, name, '-o', 'json', '--ignore-not-found'])
+        return json.loads(result.stdout) if result.stdout.strip() else None
+
+    def ensure(self, settings):
+        import hashlib
+        import json
+
+        if not self.admitted:
+            raise ExecutionPodError('admission_unverified', 'Execution Pod admission has not been verified')
+        claim, pod = execution_manifests(settings, self.config)
+        name = pod['metadata']['name']
+        # Attach an immutable digest of the desired manifest. Existing Pods
+        # with different settings must never be silently reused.
+        fingerprint = hashlib.sha256(json.dumps(pod['spec'], sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        pod['metadata']['annotations'] = {'aidash.run/spec-digest': fingerprint}
+        with self.lock:
+            existing_claim = self._get('pvc', name)
+            if existing_claim is None:
+                self.backend.kube(['create', '-f', '-'], json.dumps(claim).encode())
+            else:
+                current = existing_claim['spec']['resources']['requests']['storage']
+                if current != claim['spec']['resources']['requests']['storage']:
+                    raise ExecutionPodError('capacity_mismatch', 'Scratch Space capacity differs from the existing claim')
+            existing_pod = self._get('pod', name)
+            if existing_pod is None:
+                self.backend.kube(['create', '-f', '-'], json.dumps(pod).encode())
+            elif existing_pod.get('metadata', {}).get('annotations', {}).get('aidash.run/spec-digest') != fingerprint:
+                raise ExecutionPodError('settings_mismatch', 'Existing Execution Pod has different settings')
+        try:
+            self.backend.kube(['wait', '--for=condition=Ready', 'pod/' + name, '--timeout=120s'], timeout=130)
+        except Exception as error:
+            detail = str(error).strip() or type(error).__name__
+            raise ExecutionPodError('startup_failed', 'Execution Pod did not become ready: ' + detail[-2000:]) from error
+        return {'protocol': 'aidash-runner/2', 'pod': name, 'claim': name}
+
+    def stop(self, scratch_space_id):
+        from control import scratch_resource_name
+        name = scratch_resource_name(scratch_space_id)
+        with self.lock:
+            self.backend.kube(['delete', 'pod', name, '--ignore-not-found', '--wait=true'])
+        return {'stopped': True}
+
+    def delete(self, scratch_space_id):
+        from control import scratch_resource_name
+        name = scratch_resource_name(scratch_space_id)
+        with self.lock:
+            self.backend.kube(['delete', 'pod', name, '--ignore-not-found', '--wait=true'])
+            self.backend.kube(['delete', 'pvc', name, '--ignore-not-found', '--wait=true'])
+        return {'deleted': True}
