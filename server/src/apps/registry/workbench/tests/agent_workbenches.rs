@@ -30,7 +30,7 @@ async fn finished_test(app: &common::TestApplication, token: &str, path: &str, i
 
 fn agent() -> Value {
 	// Exclude unrelated native-memory schemas from the external-Tool sandbox fixture.
-	json!({"id":"","version":"1.0.0","kind":"agent","name":{"en":"Test agent"},"description":{"en":"Authoring fixture"},"capabilities":["summarize"],"tags":[],"languages":["en"],"skills":[],"schema":{},"config":{"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Summarize carefully","schema_version":1,"bindings":[],"remove_default":["memory_mutate","memory_recall","memory_reflect"],"cluster":null,"max_steps":8}})
+	json!({"id":"","version":"1.0.0","kind":"agent","name":{"en":"Test agent"},"description":{"en":"Authoring fixture"},"capabilities":["summarize"],"tags":[],"languages":["en"],"skills":[],"schema":{},"config":{"model":{"id":"fixture-model","version":"1.0.0"},"instructions":"Summarize carefully","schema_version":1,"bindings":[],"remove_default":["memory_mutate","memory_recall","memory_reflect"],"max_steps":8}})
 }
 
 #[rstest::rstest]

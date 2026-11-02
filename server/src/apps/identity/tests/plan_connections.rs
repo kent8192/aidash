@@ -1297,7 +1297,7 @@ async fn runs_admitted_for_another_identity_never_use_a_reconnection(
 /// The Binding snapshot of an Agent whose model is served by Plan Connections.
 async fn snapshot(f: &Federation) -> aidash_domain::registry::bindings::BindingSnapshot {
 	let model: aidash_server::registry::Entry = serde_json::from_value(json!({"id":"plan-model","version":"1.0.0","kind":"model","name":{"en":"Plan model"},"description":{"en":"Plan model"},"config":{"provider":"chatgpt","model_id":"gpt-5.5","endpoint":"https://api.openai.com/v1","plan_connection":"chatgpt","context_window":128000,"max_output_tokens":1024,"modalities":["text"],"cost":{}}})).unwrap();
-	let agent: aidash_server::registry::Entry = serde_json::from_value(json!({"id":"plan-agent","version":"1.0.0","kind":"agent","name":{"en":"Plan agent"},"description":{"en":"Plan agent"},"config":{"schema_version":1,"bindings":[],"model":{"id":"plan-model","version":"1.0.0"},"instructions":"Test admission","cluster":null}})).unwrap();
+	let agent: aidash_server::registry::Entry = serde_json::from_value(json!({"id":"plan-agent","version":"1.0.0","kind":"agent","name":{"en":"Plan agent"},"description":{"en":"Plan agent"},"config":{"schema_version":1,"bindings":[],"model":{"id":"plan-model","version":"1.0.0"},"instructions":"Test admission"}})).unwrap();
 	f.registry
 		.register(
 			&aidash_domain::tenancy::TenantName::new("alpha").unwrap(),

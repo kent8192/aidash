@@ -1,33 +1,3 @@
--- DDL only: the Agent Bindings contract stops accepting the `structured@1` and
--- `structured@2` Harness Contract versions, which lost the #532 comparison and
--- were removed before any deployment. The body is 0052's without those two
--- values. PostgreSQL function bodies have no typed migration operation.
---
--- Stored pins are not rewritten: a Run Binding snapshot keeps a serde digest
--- of each pinned definition that SQL cannot recompute. The migration refuses
--- instead, before any DDL, while anything still declares a removed version.
-DO $$
-BEGIN
- IF EXISTS(SELECT 1 FROM registry WHERE kind = 'agent' AND metadata->'config'->>'harness_contract' IN ('structured@1','structured@2')) THEN
-  RAISE EXCEPTION 'registry 0054_remove_structured_harness_contracts cannot be applied: Agent definitions declare structured@1 or structured@2'
-   USING ERRCODE = '55000', HINT = 'These versions were removed (#532). Delete those definitions, or re-register them with structured@3, before upgrading.';
- END IF;
- IF to_regclass('public.marketplace_versions') IS NOT NULL THEN
-  IF EXISTS(SELECT 1 FROM public.marketplace_versions WHERE kind = 'agent' AND (document->>'manifest_source')::jsonb #>> '{entity,config,harness_contract}' IN ('structured@1','structured@2')) THEN
-   RAISE EXCEPTION 'registry 0054_remove_structured_harness_contracts cannot be applied: packages declare structured@1 or structured@2'
-    USING ERRCODE = '55000', HINT = 'These versions were removed (#532). Remove those package versions before upgrading.';
-  END IF;
- END IF;
- -- Nest the query so PostgreSQL does not plan it when the table is absent.
- IF to_regclass('public.runs') IS NOT NULL THEN
-  IF EXISTS(SELECT 1 FROM public.runs WHERE
-   jsonb_path_exists(context, 'lax $.binding_snapshot.definitions[*].definition ? (@.kind == "agent" && (@.config.harness_contract == "structured@1" || @.config.harness_contract == "structured@2"))')
-   OR jsonb_path_exists(context, 'lax $.binding_snapshot.foreign_agents[*].definitions[*].definition ? (@.kind == "agent" && (@.config.harness_contract == "structured@1" || @.config.harness_contract == "structured@2"))')) THEN
-   RAISE EXCEPTION 'registry 0054_remove_structured_harness_contracts cannot be applied: Runs pin Agent definitions declaring structured@1 or structured@2'
-    USING ERRCODE = '55000', HINT = 'These versions were removed (#532). Delete those Runs before upgrading.';
-  END IF;
- END IF;
-END $$;
 CREATE OR REPLACE FUNCTION public.aidash_agent_bindings_is_valid(value jsonb) RETURNS boolean
 LANGUAGE plpgsql IMMUTABLE STRICT AS $$
 DECLARE plugins jsonb; plugin jsonb; plugin_settings jsonb; plugin_choices jsonb; server_choice jsonb; declared jsonb; completion jsonb; check_item jsonb; item jsonb; removals jsonb; edges jsonb; step_count numeric; parallelism numeric; context_policy jsonb; summary jsonb; restriction jsonb; candidate jsonb; policy jsonb; deferred boolean; budget text; bound numeric; removable text[]; support text[];
@@ -35,7 +5,7 @@ BEGIN
  IF jsonb_typeof(value) IS DISTINCT FROM 'object'
  OR value - ARRAY['schema_version','model','instructions','bindings','remove_default','cluster','max_steps','projection_version','harness_contract','prompt_cache','exposure','tool_parallelism','context_policy','completion','agent_plugins','agent_plugin_settings']::text[] <> '{}'::jsonb
  OR NOT COALESCE(value->'projection_version','null'::jsonb) IN ('null'::jsonb,'"legacy"'::jsonb,'"ordered"'::jsonb,'"native"'::jsonb)
- OR NOT COALESCE(value->'harness_contract','null'::jsonb) IN ('null'::jsonb,'"legacy@1"'::jsonb,'"structured@3"'::jsonb)
+ OR NOT COALESCE(value->'harness_contract','null'::jsonb) IN ('null'::jsonb,'"legacy@1"'::jsonb,'"structured@1"'::jsonb,'"structured@2"'::jsonb,'"structured@3"'::jsonb)
  OR NOT COALESCE(value->'prompt_cache','null'::jsonb) IN ('null'::jsonb,'"off"'::jsonb,'"explicit"'::jsonb)
  OR value->'schema_version' IS DISTINCT FROM '1'::jsonb
  OR NOT COALESCE(public.aidash_qualified_ref_is_valid(value->'model' || '{"registry_deployment":"aidash://contract"}'::jsonb),false)

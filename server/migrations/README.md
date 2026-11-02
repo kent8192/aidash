@@ -1,5 +1,7 @@
 # Aidash native migration history
 
+`registry/0054_remove_agent_cluster` removes the obsolete Agent config key from Registry definitions, Agent drafts and registration requests, then removes it from the Agent contract. `execution/0089_remove_agent_cluster` removes it from Generation policy templates and request definitions. PostgreSQL JSON updates and function replacement use SQL assets because Reinhardt migrations cannot express these transformations. Both are irreversible. Each owner-only atomic migration establishes Deployment Scope before its first row access because the native migration executor does not open scoped application transactions. The registry update temporarily disables the Marketplace writer fence within its transaction, retaining its other validation and reference triggers. Installed Registry copies change while immutable Marketplace versions and revisions stay untouched: old Marketplace versions must be republished and old installation revisions may no longer match. Run and Federation snapshots are unchanged; Runs using old snapshots fail and need cancellation. Surviving Run constraints and triggers do not call the Agent validator, so cancellation updates do not revalidate the retained snapshots. Catalog Approvals and Federation pins covering changed definitions need renewing.
+
 `execution/0081_lease_recoveries` updates the physical `runs.pending` default,
 and replaces the activation trigger function. PostgreSQL function replacement
 is a SQL exception that Reinhardt cannot express. The server decodes the
@@ -772,8 +774,8 @@ drops that check from the ORM snapshot again, because it is enforced apart from
 model state like the earlier `inference_usage` checks. Rollback drops the
 evidence column and loses the recorded versions.
 
-`registry/0054_remove_structured_harness_contracts` (after
-`registry/0053_connection_request`) stops the Agent Bindings validator from
+`registry/0055_remove_structured_harness_contracts` (after
+`registry/0054_remove_agent_cluster`) stops the Agent Bindings validator from
 accepting the removed `structured@1` and `structured@2` (#532). Stored pins are
 not rewritten, because a Run Binding snapshot keeps a serde digest of each pinned
 definition that SQL cannot recompute; before any DDL, the migration refuses
