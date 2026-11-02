@@ -398,7 +398,7 @@ impl Runtime {
 		intent.sync_all().await?;
 		tokio::fs::File::open(&intents).await?.sync_all().await?;
 		let mut options = tokio::fs::OpenOptions::new();
-		options.write(true).create_new(true);
+		options.read(true).write(true).create_new(true);
 		#[cfg(unix)]
 		options.mode(0o600);
 		let file = options.open(self.object_path(id)).await?;
