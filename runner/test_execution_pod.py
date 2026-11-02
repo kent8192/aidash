@@ -1171,7 +1171,8 @@ class ReviewRegressionTest(unittest.TestCase):
             self.assertEqual(queue.submit('r', 'foreground', lambda value: value).result(timeout=1), 'foreground')
         finally:
             release.set()
-            for job in jobs: job.result(timeout=5)
+            for job in jobs:
+                job.result(timeout=5)
             queue.close()
 
     def test_concurrent_intervals_are_ambiguous(self):
@@ -1210,7 +1211,8 @@ class ReviewRegressionTest(unittest.TestCase):
             for field, value in [('code', 'a\x00b'), ('run_id', 'a\x00b'), ('cwd', 'a\x00b'), ('env', {'X':'a\x00b'})]:
                 request = {'operation_id':'e6ded09d-f783-4ce8-98e9-dbfca68884f1','scratch_space_id':'s','run_id':'r','code':'true'}
                 request[field] = value
-                with self.subTest(field=field), self.assertRaises(ValueError): controller.submit_command(request)
+                with self.subTest(field=field), self.assertRaises(ValueError):
+                    controller.submit_command(request)
             self.assertFalse(list((Path(d) / 'execution-v2').glob('*.json')))
             controller.session_executor.shutdown(wait=True)
 
@@ -1223,7 +1225,8 @@ class ReviewRegressionTest(unittest.TestCase):
         self.assertEqual(next(m for m in image['volumeMounts'] if m['name'] == 'scratch')['subPath'], 'image-root')
         self.assertIn('-I', image['command'])
         env = {item['name']:item['value'] for item in image['env']}
-        for name in ('LD_PRELOAD','LD_LIBRARY_PATH','PYTHONPATH','PYTHONHOME'): self.assertEqual(env[name], '')
+        for name in ('LD_PRELOAD','LD_LIBRARY_PATH','PYTHONPATH','PYTHONHOME'):
+            self.assertEqual(env[name], '')
 
     def test_image_subpath_cannot_point_at_bookkeeping(self):
         import tempfile
@@ -1237,7 +1240,8 @@ class ReviewRegressionTest(unittest.TestCase):
                 prepare_image_subpath(root / 'image-root')
 
     def test_old_terminated_guard_does_not_quarantine_new_pod(self):
-        import json, tempfile
+        import json
+        import tempfile
         from pathlib import Path
         from control import scratch_resource_name
         from execution_pod import ExecutionPodController
@@ -1253,7 +1257,8 @@ class ReviewRegressionTest(unittest.TestCase):
             controller.session_executor.shutdown(wait=True)
 
     def test_stopping_marks_running_unknown_and_late_results_cannot_replace_it(self):
-        import json, tempfile
+        import json
+        import tempfile
         from pathlib import Path
         from execution_pod import ExecutionPodController
         class Backend:
@@ -1279,7 +1284,8 @@ class ReviewRegressionTest(unittest.TestCase):
         self.assertEqual(docker_supervisor_exit_code({'status':'stopped'}), 125)
 
     def test_docker_result_never_reads_pvc_outcome(self):
-        import json, tempfile
+        import json
+        import tempfile
         from pathlib import Path
         from unittest.mock import patch
         from execution_pod import ExecutionPodController
@@ -1291,14 +1297,16 @@ class ReviewRegressionTest(unittest.TestCase):
             controller = ExecutionPodController(Backend(d), {}, admitted=True)
             controller._command_path(operation).write_text(json.dumps({'operation_id':operation,'scratch_space_id':'s','run_id':'r','pod':'pod','pod_uid':'uid','docker_enabled':True,'background':False,'timeout_seconds':5,'cwd':'.','code':'true','status':'queued'}))
             transport = {'exit_code':0,'transport_timed_out':False,'output':{'stdout':'b2s=','stderr':'','truncated':False}}
-            with patch('execution_pod.drain_process', return_value=transport): controller._execute_command(operation)
+            with patch('execution_pod.drain_process', return_value=transport):
+                controller._execute_command(operation)
             result = controller.command_result(operation)
             self.assertEqual((result['status'], result['exit_code'], result['stdout']), ('completed', 0, 'b2s='))
             record = json.loads(controller._command_path(operation).read_text())
             record['status'] = 'queued'
             controller._command_path(operation).write_text(json.dumps(record))
             transport['exit_code'] = 123
-            with patch('execution_pod.drain_process', return_value=transport): controller._execute_command(operation)
+            with patch('execution_pod.drain_process', return_value=transport):
+                controller._execute_command(operation)
             result = controller.command_result(operation)
             self.assertEqual((result['status'], result['exit_code']), ('completed', 1))
             controller.session_executor.shutdown(wait=True)
