@@ -14,7 +14,10 @@ def environment(lease):
     return {
         'AIDASH_EGRESS_URL': base,
         'NPM_CONFIG_REGISTRY': base + 'core.npm/',
-        'NPM_CONFIG_REPLACE_REGISTRY_HOST': 'always',
+        # The gateway rewrites index tarball links onto its own paths; `npmjs`
+        # redirects only registry.npmjs.org links (lockfiles) and leaves those
+        # rewritten links alone, which `always` would prefix twice (#679).
+        'NPM_CONFIG_REPLACE_REGISTRY_HOST': 'npmjs',
         'UV_INDEX_URL': base + 'core.pypi/simple/',
         'UV_INSECURE_HOST': urlsplit(lease['url']).hostname,
         'UV_PYTHON_DOWNLOADS': 'never',
