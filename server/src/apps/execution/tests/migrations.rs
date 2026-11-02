@@ -402,6 +402,9 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 		.migrate_excluding(&[
 			("execution", "0090_run_created_at"),
 			("execution", "0091_bounded_read_indexes"),
+			("execution", "0092_scope_egress"),
+			("execution", "0093_scope_egress_row_level_security"),
+			("execution", "0094_scope_egress_state"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -822,7 +825,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		75
+		76
 	);
 }
 
