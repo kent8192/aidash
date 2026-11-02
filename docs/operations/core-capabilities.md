@@ -12,7 +12,7 @@ Provider descriptors. Required/default Builtins and approved Sandboxed Bundles d
 the exposed tool set. The runtime gate below verifies these implementations. Registry
 declarations and catalog approvals do not grant authority over target resources.
 
-## Supported execution boundary
+## Supported execution boundary (runner/1)
 
 Shell, Python and document parsing require the `aidash-runner/1` controller,
 Kubernetes, the `aidash-gvisor` RuntimeClass and the trusted node lifecycle adapter
@@ -38,6 +38,68 @@ in `runner/requirements.lock`. The runtime image's final OCI digest is recorded
 by the setup command and the admission result. Admission is required separately
 on each architecture and deployment; a local arm64 result does not certify an
 amd64 deployment.
+
+## Execution Pods (runner/2)
+
+The v2 runtime is opt-in and exposes a separate `aidash-runner/2` control
+protocol. Existing shell and Python tools continue to use v1 until they are
+retargeted. The server must authorize access to a Scratch Space and pass its
+opaque ID, pinned image, CPU, memory, capacity, Docker setting and Tenant ID
+when Docker is enabled. The Runner creates one gVisor Pod and one PVC for that
+ID. A quota-enforcing storage class with a `Delete` reclaim policy and a
+controller deletion finalizer is required; a `Retain` volume is refused. Purge
+is acknowledged only after the bound PV disappears. Preserve the Runner journal
+across restarts; it records operation and volume identities and prevents replay.
+
+A trusted, read-only injected helper copies the image filesystem into the PVC
+on first start, then runs commands as root in that persisted root. `/scratch`
+contains user files; the copied system tree lives separately on the same PVC.
+Installed packages survive Pod restarts. Reset replaces the system tree from the
+image and preserves `/scratch`. A per-command Run ID and a cheap mtime/size
+system-tree diff are appended to a change log. Concurrent commands can overlap,
+so these diffs are observations rather than exclusive attribution; they do not
+capture every possible metadata-only change.
+
+The Runner queues commands beyond eight simultaneous commands per Pod. The
+default deadline is ten minutes and the maximum is 60 minutes. Foreground
+commands waiting for a Run may be cancelled; background processes expose their
+starting Run and bounded logs. Commands interrupted by a lost Pod or node have
+an unknown outcome and are never replayed. Python interpreters are per Run.
+The Pod stops after 30 minutes without a command or Live preview viewer;
+background processes alone do not extend its life. Preview and MCP integration
+with the application remains for wave 2.
+
+Admission gates user-image startup on a node guard which binds the Pod UID and
+sandbox to host cgroup CPU, memory and pids limits. It independently checks
+termination before a new writer starts. Normal-mode commands lose SYS_ADMIN,
+NET_ADMIN and NET_RAW from all capability sets including the bounding set and
+run with `no_new_privs`; admission runs a user process to verify this and the
+guest process limit. There is no service-account token. Network admission checks
+the effective Kubernetes NetworkPolicies and probes a reachable peer Pod, node,
+metadata endpoint and external destination, allowing only the Egress gateway.
+It fails closed when its positive controls cannot be reached. Network probes
+currently require IPv4. The CNI must enforce policy against raw and spoofed
+packets; Docker-mode admission also runs raw packet negative controls.
+
+Docker mode requires a separate gVisor RuntimeClass with `net-raw` enabled and
+is restricted to nodes labeled and tainted for that Tenant. User processes retain
+SYS_ADMIN, NET_ADMIN and NET_RAW inside gVisor and `/var/lib/docker` is tmpfs.
+A guest root with SYS_ADMIN can change or bypass the guest PID limit, so that
+limit is best-effort in Docker mode. The enforced boundary is the Sentry's host
+cgroup CPU, memory and pids limits, verified by the node guard and inaccessible
+to guest root. A fork bomb can exhaust resources on the Tenant-dedicated nodes;
+it does not acquire resources reserved for another Tenant's nodes.
+
+To enable the v2 controller in Helm, configure `execution.pods.enabled`, a
+trusted digest-pinned `helperImage`, `storageClassName`, and the private IP
+`proxy.endpoint`, `proxy.namespace` and `proxy.selector`. Set `allowDocker`
+only after provisioning the separate Docker RuntimeClass and Tenant-dedicated
+nodes. The controller performs a disposable admission test before serving v2
+requests and reports a typed failure if prerequisites or cleanup fail. For a
+local kind installation, `setup-capability-runtime.py --execution-pods` accepts
+`--helper-image`, `--storage-class`, `--proxy-endpoint`, `--proxy-namespace`
+and one or more `--proxy-selector key=value` arguments; `--allow-docker` is
+optional. Provision the enforcing storage class and Egress gateway separately.
 
 ## Reproduce the runtime gate
 
