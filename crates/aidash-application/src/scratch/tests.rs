@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 #[derive(Default)]
 struct Memory {
+	person: String,
 	spaces: BTreeMap<Uuid, ScratchSpace>,
 	binding: Option<(Uuid, String)>,
 	cleared: Vec<Uuid>,
@@ -12,6 +13,9 @@ struct Memory {
 
 #[async_trait]
 impl ScratchScope for Memory {
+	fn person(&self) -> &str {
+		&self.person
+	}
 	async fn require_create(&mut self, _: &NodeName) -> Result<()> {
 		Ok(())
 	}
@@ -20,6 +24,22 @@ impl ScratchScope for Memory {
 			ScratchCeilings::default(),
 			HostAllowlist::Hosts(BTreeSet::from(["example.com".into()])),
 		))
+	}
+	async fn validate_references(
+		&mut self,
+		_: &NodeName,
+		settings: &ScratchSettings,
+	) -> Result<()> {
+		if settings.external_services.iter().any(|id| id != "approved") {
+			return Err(Error::Forbidden);
+		}
+		Ok(())
+	}
+	async fn validate_members(&mut self, members: &BTreeSet<String>) -> Result<()> {
+		if members.iter().any(|member| member != "bob") {
+			return Err(Error::Forbidden);
+		}
+		Ok(())
 	}
 	async fn insert(&mut self, space: &ScratchSpace) -> Result<()> {
 		self.spaces.insert(space.id, space.clone());
@@ -75,36 +95,54 @@ fn space(now: DateTime<Utc>) -> ScratchSpace {
 #[tokio::test]
 async fn membership_and_policy_bound_settings_control_mutations() {
 	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
-	let mut scope = Memory::default();
+	let mut scope = Memory {
+		person: "alice".into(),
+		..Default::default()
+	};
 	let space = space(now);
 	let id = space.id;
-	assert!(create(&mut scope, &space, "mallory").await.is_err());
-	create(&mut scope, &space, "alice").await.unwrap();
+	scope.person = "mallory".into();
+	assert!(create(&mut scope, &space).await.is_err());
+	scope.person = "alice".into();
+	create(&mut scope, &space).await.unwrap();
+	scope.person = "bob".into();
 	assert!(matches!(
-		read(&mut scope, id, "bob", now).await,
+		read(&mut scope, id, now).await,
 		Err(Error::Forbidden)
 	));
-	add_member(&mut scope, id, "alice", now, "bob")
-		.await
-		.unwrap();
+	scope.person = "alice".into();
+	assert!(matches!(
+		add_member(&mut scope, id, now, "outsider").await,
+		Err(Error::Forbidden)
+	));
+	add_member(&mut scope, id, now, "bob").await.unwrap();
+	scope.person = "bob".into();
 	let mut settings = space.settings.clone();
 	settings.allowed_hosts = HostAllowlist::Hosts(BTreeSet::from(["outside.example".into()]));
 	assert!(
-		update_settings(&mut scope, id, "bob", now, settings)
+		update_settings(&mut scope, id, now, settings)
 			.await
 			.is_err()
 	);
-	remove_member(&mut scope, id, "alice", now, "bob")
-		.await
-		.unwrap();
+	let mut settings = space.settings.clone();
+	settings.external_services.insert("unapproved".into());
 	assert!(matches!(
-		read(&mut scope, id, "bob", now).await,
+		update_settings(&mut scope, id, now, settings).await,
 		Err(Error::Forbidden)
 	));
-	clear(&mut scope, id, "alice", now).await.unwrap();
+	assert!(scope.spaces[&id].settings.external_services.is_empty());
+	scope.person = "alice".into();
+	remove_member(&mut scope, id, now, "bob").await.unwrap();
+	scope.person = "bob".into();
+	assert!(matches!(
+		read(&mut scope, id, now).await,
+		Err(Error::Forbidden)
+	));
+	scope.person = "alice".into();
+	clear(&mut scope, id, now).await.unwrap();
 	assert_eq!(scope.cleared, vec![id]);
 	assert!(matches!(
-		read(&mut scope, id, "alice", now).await,
+		read(&mut scope, id, now).await,
 		Err(Error::Forbidden)
 	));
 }
@@ -112,10 +150,13 @@ async fn membership_and_policy_bound_settings_control_mutations() {
 #[tokio::test]
 async fn run_requires_starter_authority_and_receiving_node() {
 	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
-	let mut scope = Memory::default();
+	let mut scope = Memory {
+		person: "alice".into(),
+		..Default::default()
+	};
 	let space = space(now);
 	let id = space.id;
-	create(&mut scope, &space, "alice").await.unwrap();
+	create(&mut scope, &space).await.unwrap();
 	let mut run =
 		crate::test_support::run_of(crate::test_support::snapshot("aidash://local", "agent"));
 	scope.binding = Some((id, "mallory".into()));
