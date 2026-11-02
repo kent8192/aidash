@@ -91,7 +91,7 @@ impl InboundRepository for Federation {
 		receiver: &NodeName,
 		subject: &str,
 	) -> Result<bool> {
-		let decision = self
+		let (decision, explicit_deny) = self
 			.store
 			.pool
 			.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
@@ -111,6 +111,10 @@ impl InboundRepository for Federation {
 				};
 				let mut decision = snapshot.bundle.evaluate(&evaluation);
 				decision.revision = snapshot.revision;
+				let explicit_deny = crate::authorization::access::Access::policy_explicit_deny(
+					&snapshot.bundle,
+					&decision,
+				);
 				if !decision.allowed {
 					AuthorizationDecision::append_many(
 						tx,
@@ -119,12 +123,12 @@ impl InboundRepository for Federation {
 					)
 					.await?;
 				}
-				Ok(decision)
+				Ok((decision, explicit_deny))
 			})
 			.await?;
 		if !decision.allowed {
 			return Err(aidash_application::Error::RemoteExecutionRefused(
-				if decision.reason == "explicit_deny" {
+				if explicit_deny {
 					aidash_domain::federation::execution::Refusal::NodeUseDenied
 				} else {
 					aidash_domain::federation::execution::Refusal::NodeUseAsk
