@@ -149,6 +149,24 @@ class EvidenceImportTest(unittest.TestCase):
                 with self.assertRaises(projection.EvidenceError):
                     projection.load_evidence(self.manifest, export)
 
+    def test_import_accepts_historical_structured_contracts(self):
+        for contract, version in (("structured@1", 2), ("structured@2", 3)):
+            with self.subTest(contract=contract):
+                manifest, export = copy.deepcopy(self.manifest), copy.deepcopy(self.export)
+                historical_corpus = corpus()
+                for comparison in historical_corpus["comparisons"]:
+                    for arm in ("baseline", "candidate"):
+                        if arm in comparison:
+                            comparison[arm]["agent"]["harness_contract"] = contract
+                for variant in manifest["experiment"]["variants"]:
+                    variant["agent_fields"]["harness_contract"] = contract
+                for row in export["inference_usage"]:
+                    if row["purpose"] == "main":
+                        row["harness_contract"] = version
+                export["manifest_sha256"] = projection.canonical_sha256(manifest)
+                imported = projection.load_evidence(manifest, export, corpus=historical_corpus)
+                self.assertEqual(len(imported["runs"]), len(manifest["runs"]))
+
     def test_harness_contract_arm_field_is_numeric_with_a_legacy_default(self):
         for value, expected in ((None, 1), ("legacy@1", 1), ("structured@3", 4), (1, 1), (2, 2), (3, 3), (4, 4), ("2", 2)):
             variant = {"agent_fields": {} if value is None else {"harness_contract": value}}

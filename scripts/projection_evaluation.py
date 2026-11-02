@@ -290,11 +290,11 @@ def _variant_harness_contract(variant):
     """The numeric Harness Contract version an arm declares; absent means 1 (legacy@1).
 
     Numbers 2 and 3 belonged to structured@1 and structured@2, removed by #532;
-    historical exports may still carry them, so the numbers stay readable."""
+    historical exports may still carry either spelling, so both stay readable."""
     value = variant.get("agent_fields", {}).get("harness_contract")
     if isinstance(value, bool):
         raise EvidenceError("arm harness_contract must be a version string or number")
-    return {"legacy@1": 1, "structured@3": 4,
+    return {"legacy@1": 1, "structured@1": 2, "structured@2": 3, "structured@3": 4,
             1: 1, 2: 2, 3: 3, 4: 4, "1": 1, "2": 2, "3": 3, "4": 4}.get(value, 1 if value is None else value)
 
 
