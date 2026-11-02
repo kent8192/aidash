@@ -582,6 +582,59 @@ async fn embeddings_authorize_one_string_input_before_key_lookup() {
 }
 
 #[tokio::test]
+async fn embeddings_admit_only_a_single_inline_image() {
+	let f = Fixture::new().await;
+	let image =
+		json!({"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}});
+	for input in [
+		json!([{"content":[]}]),
+		json!([{"content":[image.clone(), image.clone()]}]),
+		json!([{"content":[image.clone()]}, {"content":[image.clone()]}]),
+		json!([{"content":[{"type":"image_url","image_url":{"url":"https://example.com/image.png"}}]}]),
+		json!([{"content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,!!"}}]}]),
+		json!([{"content":[image.clone()], "extra":true}]),
+		json!([{"content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo=", "detail":"high"}}]}]),
+	] {
+		let response = f
+			.request(
+				&f.claims(),
+				"POST",
+				"/api/v1/embeddings",
+				json!({"model":"author/model","provider":{"zdr":true},"input":input}),
+			)
+			.await;
+		assert_eq!(response.status(), 403);
+		assert_eq!(f.source.reads.load(Ordering::SeqCst), 0);
+		assert_eq!(f.provider.calls.load(Ordering::SeqCst), 0);
+	}
+	let response = f
+		.request(
+			&f.claims(),
+			"POST",
+			"/api/v1/embeddings",
+			json!({"model":"author/model","provider":{"zdr":true},"input":[{"content":[image]}]}),
+		)
+		.await;
+	assert_eq!(response.status(), 200);
+	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn image_embedding_accepts_media_above_the_text_request_limit() {
+	use base64::Engine;
+	let f = Fixture::new().await;
+	let mut bytes = vec![0; REQUEST_LIMIT];
+	bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+	let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+	let body = json!({"model":"author/model","provider":{"zdr":true},"input":[{"content":[{"type":"image_url","image_url":{"url":format!("data:image/png;base64,{encoded}")}}]}]});
+	let response = f
+		.request(&f.claims(), "POST", "/api/v1/embeddings", body)
+		.await;
+	assert_eq!(response.status(), 200);
+	assert_eq!(f.provider.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn chat_rejects_prompt_cache_directives_recursively_before_key_lookup() {
 	let f = Fixture::new().await;
 	for extra in [

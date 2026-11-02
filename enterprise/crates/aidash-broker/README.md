@@ -69,15 +69,18 @@ than `max_output_tokens`, and set both `provider.zdr: true` and
 `provider.require_parameters: true`. The latter rejects routing to endpoints
 that [ignore requested parameters](https://openrouter.ai/docs/guides/routing/provider-selection#requiring-providers-to-support-all-parameters).
 OpenRouter embeddings
-must name the exact model and set ZDR. Model discovery paths use the shared
-Provider Credential model-ID validator, including single-segment and multiple-
+must name the exact model and set ZDR. An embedding input is one text string or
+one inline base64 image in the single-image request shape; remote URLs and
+multiple inputs are rejected. Text-only embedding requests remain limited to
+1 MiB. Model discovery paths use the shared Provider Credential model-ID
+validator, including single-segment and multiple-
 segment IDs, and must exactly match the signed claim; ZDR discovery is an
 operation-wide catalog. Chat requests are limited to
-16 MiB so the application's 8 MiB raw-media allowance fits after base64 encoding
-and JSON framing. Decision requests and responses share that limit: a System
+16 MiB, as are embedding request bodies, so the application's 8 MiB raw-media
+allowance fits after base64 encoding and JSON framing. Decision requests and responses share that limit: a System
 One exchange carries the fitted history and one answer per question, which only
-the provider's capacity bounds. Other requests remain limited to 1 MiB. Query strings,
-absolute URIs, percent-encoded paths, empty segments and
+the provider's capacity bounds. Other request bodies remain limited to 1 MiB.
+Query strings, absolute URIs, percent-encoded paths, empty segments and
 path traversal are rejected. Violations are rejected, never rewritten.
 OpenRouter's [model fallback list](https://openrouter.ai/docs/guides/routing/model-fallbacks)
 would add authority outside the single signed model, so even empty, null or

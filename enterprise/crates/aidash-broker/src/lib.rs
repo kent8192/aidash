@@ -322,8 +322,11 @@ fn body_policy(body: &[u8], claims: &Claims, op: Operation, path: &str) -> Resul
 	{
 		return Err(Failure::Model);
 	}
-	if op == Operation::Embeddings && value.get("input").and_then(Value::as_str).is_none() {
-		return Err(Failure::ClaimViolation);
+	if op == Operation::Embeddings {
+		policy::embedding_input(value.get("input"))?;
+		if value.get("input").is_some_and(Value::is_string) && body.len() > REQUEST_LIMIT {
+			return Err(Failure::ClaimViolation);
+		}
 	}
 	// Premium aliases are outside the signed inference authority on every API.
 	if value.get("speed").is_some()
@@ -506,7 +509,7 @@ async fn relay(State(broker): State<Arc<Broker>>, request: Request) -> Response 
 	}
 	let method = request.method().clone();
 	let request_limit = match op {
-		Operation::Chat => CHAT_REQUEST_LIMIT,
+		Operation::Chat | Operation::Embeddings => CHAT_REQUEST_LIMIT,
 		Operation::Decision => DECISION_LIMIT,
 		_ => REQUEST_LIMIT,
 	};
