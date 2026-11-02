@@ -25,20 +25,66 @@ pub(super) fn migration() -> Migration {
 					.with_default(Some("'[]'::jsonb".into())),
 			),
 		})
-		// Reversing DropTable restores columns, constraints and indexes from
-		// the model state, not the triggers and policies 0006, 0036 and 0062
-		// added with RunSQL. Their backward assets drop them, so restore them.
+		// Reversing DropTable restores only what the model state holds, not the
+		// triggers and policies 0006, 0036 and 0062 added with RunSQL nor the
+		// index 0061 named. Their backward operations drop them, so remove them
+		// here and let the reverse restore them.
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/0091_content_object_references_legacy.sql").into(),
 			reverse_sql: Some(
 				include_str!("sql/backward/0091_content_object_references_legacy.sql").into(),
 			),
 		})
+		.add_operation(Operation::DropNamedIndex {
+			table: "core_retention_files".into(),
+			name: "core_retention_files_object".into(),
+			columns: vec!["tenant".into(), "file_id".into()],
+			unique: false,
+			index_type: Some(IndexType::BTree),
+			where_clause: None,
+			concurrently: false,
+			expressions: None,
+			mysql_options: None,
+			operator_class: None,
+		})
 		.add_operation(Operation::DropTable {
 			name: "core_retention_files".into(),
 		})
+		// The model state holds only columns and primary keys for these tables,
+		// so keep the constraints 0004 and 0061 added for the reverse to restore.
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "core_objects".into(),
+			constraint: Constraint::Unique {
+				name: "core_objects_tenant_id_key".into(),
+				columns: vec!["tenant".into(), "id".into()],
+			},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "core_objects".into(),
+			constraint: Constraint::ForeignKey {
+				name: "core_objects_tenant_root_fkey".into(),
+				columns: vec!["tenant".into()],
+				referenced_table: "tenants".into(),
+				referenced_columns: vec!["name".into()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
+		})
 		.add_operation(Operation::DropTable {
 			name: "core_objects".into(),
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "core_quotas".into(),
+			constraint: Constraint::ForeignKey {
+				name: "core_quotas_tenant_root_fkey".into(),
+				columns: vec!["tenant".into()],
+				referenced_table: "tenants".into(),
+				referenced_columns: vec!["name".into()],
+				on_delete: ForeignKeyAction::NoAction,
+				on_update: ForeignKeyAction::NoAction,
+				deferrable: None,
+			},
 		})
 		.add_operation(Operation::DropTable {
 			name: "core_quotas".into(),
