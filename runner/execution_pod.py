@@ -1275,7 +1275,7 @@ def verify_user_probe(report, *, docker, processes):
             raise ValueError('Docker capabilities are unavailable')
         if report.get('raw_socket') is not True:
             raise ValueError('Docker raw sockets are unavailable')
-    elif any(caps[name] & blocked for name in names) or report.get('raw_socket') is not False:
+    elif any(caps[name] & (blocked | (1 << 18)) for name in names) or report.get('raw_socket') is not False:
         raise ValueError('Docker capabilities remain available to the user process')
 
 

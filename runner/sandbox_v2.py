@@ -4,7 +4,7 @@ import os
 
 # Linux capability numbers; Docker requires these, normal commands must never
 # regain them even through setuid binaries or file capabilities.
-_BLOCKED = (12, 13, 21)  # NET_ADMIN, NET_RAW, SYS_ADMIN
+_BLOCKED = (12, 13, 18, 21)  # NET_ADMIN, NET_RAW, SYS_CHROOT, SYS_ADMIN
 _PR_CAPBSET_DROP = 24
 _PR_SET_NO_NEW_PRIVS = 38
 _PR_CAP_AMBIENT = 47

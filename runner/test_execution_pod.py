@@ -146,7 +146,7 @@ class ProcessCapabilityTest(unittest.TestCase):
         result = subprocess.run([sys.executable, 'sandbox_v2.py', 'normal', '/bin/cat', '/proc/self/status'],
                                 capture_output=True, text=True, check=True)
         fields = dict(line.split(':', 1) for line in result.stdout.splitlines() if ':' in line)
-        blocked = sum(1 << cap for cap in (12, 13, 21))
+        blocked = sum(1 << cap for cap in (12, 13, 18, 21))
         for name in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'):
             self.assertEqual(int(fields[name], 16) & blocked, 0, name)
         self.assertEqual(fields['NoNewPrivs'].strip(), '1')
@@ -842,9 +842,10 @@ class RootAdmissionTest(unittest.TestCase):
                   'root_writable': True, 'helpers_read_only': True}
         verify_user_probe(report, docker=False, processes=128)
         for field in report['caps']:
-            bad = dict(report, caps=dict(report['caps'], **{field: 1 << 21}))
-            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'capabilit'):
-                verify_user_probe(bad, docker=False, processes=128)
+            for capability in (18, 21):
+                bad = dict(report, caps=dict(report['caps'], **{field: 1 << capability}))
+                with self.subTest(field=field, capability=capability), self.assertRaisesRegex(ValueError, 'capabilit'):
+                    verify_user_probe(bad, docker=False, processes=128)
         with self.assertRaisesRegex(ValueError, 'service account'):
             verify_user_probe(dict(report, service_account_absent=False), docker=False, processes=128)
         with self.assertRaisesRegex(ValueError, 'process'):

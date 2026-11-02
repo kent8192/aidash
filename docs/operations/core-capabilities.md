@@ -72,7 +72,7 @@ with the application remains for wave 2.
 Admission gates user-image startup on a node guard which binds the Pod UID and
 sandbox to host cgroup CPU, memory and pids limits. It independently checks
 termination before a new writer starts. Normal-mode commands lose SYS_ADMIN,
-NET_ADMIN and NET_RAW from all capability sets including the bounding set and
+NET_ADMIN, NET_RAW and SYS_CHROOT from all capability sets including the bounding set and
 run with `no_new_privs`; admission runs a user process to verify this and the
 guest process limit. There is no service-account token. Network admission checks
 the effective Kubernetes NetworkPolicies and probes a reachable peer Pod, node,
