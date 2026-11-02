@@ -154,6 +154,16 @@ pub async fn authorize(
 			if current != *contract {
 				return Err(Error::Conflict("admitted provider contract changed".into()));
 			}
+			if repository.is_remote()
+				&& descriptor.provider == "core.tasks@1"
+				&& matches!(
+					descriptor.operation.as_str(),
+					"task_delegate" | "agent_discover"
+				) {
+				return Err(Error::Invalid(
+					"a Run started by a Remote Grant is limited to one hop and cannot discover agents or delegate tasks".into(),
+				));
+			}
 			operation = Some(descriptor.operation);
 			&current.authorization
 		}

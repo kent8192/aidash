@@ -2842,6 +2842,47 @@ async fn remote_grant_run_reports_its_one_hop_limit_for_discovery_and_delegation
 
 #[rstest::rstest]
 #[tokio::test]
+async fn binding_backed_remote_delegation_is_rejected_before_target_authority(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let run = p.run().await;
+	let binding = run
+		.context
+		.binding_snapshot
+		.as_ref()
+		.unwrap()
+		.bindings
+		.iter()
+		.find(|binding| binding.definition.config["operation"] == "task_delegate")
+		.unwrap();
+	assert!(binding.excluded_reason.is_none());
+	let target = aidash_domain::nodes::NodeAddress::derived("aidash://third", "acme").to_string();
+	let mut policy = p.receiver_policy.clone();
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-next-hop","effect":"deny","subjects":{"any":true},"actions":["federation.execute"],"resources":{"kinds":["node"],"ids":[target]}}));
+	common::replace_policy(&p.b.store, "acme", policy).await;
+	let pending = common::tool_pending(
+		json!({"response":{"text":"","tool_calls":[{"id":"second-hop","name":"task_delegate","arguments":{"task_id":p.task,"node_id":target,"agent":{"id":"research","version":"1.0.0"}}}],"input_tokens":0,"output_tokens":0},"cursor":0}),
+	);
+	sqlx::query("UPDATE runs SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
+		.bind(pending)
+		.bind(run.id)
+		.execute(p.b.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	p.step().await;
+	let run = p.run().await;
+	assert_eq!(run.control.as_str(), "ACTIVE", "{:?}", run.error);
+	let history = json!(run.context);
+	let error = history["history"][0]["event"]["result"]["error"]
+		.as_str()
+		.unwrap_or_default();
+	assert!(error.contains("one hop"), "{history}");
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn scoped_remote_agent_cannot_delegate_a_child_task(#[future(awt)] scoped_pair: Pair) {
 	let p = scoped_pair;
 	let run = p.run().await;
