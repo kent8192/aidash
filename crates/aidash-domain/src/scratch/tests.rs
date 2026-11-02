@@ -5,8 +5,10 @@ use std::collections::BTreeSet;
 fn settings_cannot_expand_tenant_hosts_or_enable_disallowed_docker() {
 	let ceiling = ScratchCeilings::default();
 	let tenant = HostAllowlist::Hosts(BTreeSet::from(["example.com".to_owned()]));
-	let mut settings = ScratchSettings::default();
-	settings.allowed_hosts = HostAllowlist::Hosts(BTreeSet::from(["other.com".to_owned()]));
+	let mut settings = ScratchSettings {
+		allowed_hosts: HostAllowlist::Hosts(BTreeSet::from(["other.com".to_owned()])),
+		..ScratchSettings::default()
+	};
 	assert!(settings.validate(&ceiling, &tenant).is_err());
 	settings.allowed_hosts = tenant.clone();
 	settings.docker_enabled = true;
@@ -72,8 +74,10 @@ fn ceilings_and_operator_control_bound_settings() {
 
 #[test]
 fn wildcard_text_cannot_bypass_the_all_hosts_operator_gate() {
-	let mut settings = ScratchSettings::default();
-	settings.allowed_hosts = HostAllowlist::Hosts(BTreeSet::from(["*".into()]));
+	let settings = ScratchSettings {
+		allowed_hosts: HostAllowlist::Hosts(BTreeSet::from(["*".into()])),
+		..ScratchSettings::default()
+	};
 	assert!(
 		settings
 			.validate(&ScratchCeilings::default(), &HostAllowlist::All)
