@@ -181,6 +181,10 @@ async fn interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_object
 	)
 	.await
 	.unwrap();
+	let temporary_intent = c.root.join(".intents").join(format!(".{live}.new"));
+	tokio::fs::write(&temporary_intent, b"in progress")
+		.await
+		.unwrap();
 	let WorkerControl { stop, receiver: rx } = control_1;
 	// Act: collect abandoned bytes while the test holds the allocating transaction lock.
 	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
@@ -199,8 +203,12 @@ async fn interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_object
 		live_path.exists(),
 		"collector must not race an active transaction"
 	);
+	assert!(
+		temporary_intent.exists(),
+		"an active temporary intent must remain"
+	);
 	tx.rollback().await.unwrap();
-	while live_path.exists() {
+	while live_path.exists() || temporary_intent.exists() {
 		assert!(
 			tokio::time::Instant::now() < deadline,
 			"rolled-back bytes not reclaimed"

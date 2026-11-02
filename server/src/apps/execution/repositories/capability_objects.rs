@@ -211,11 +211,14 @@ impl Runtime {
 				*cursor = None;
 				break;
 			};
-			let Some(id) = entry
-				.file_name()
-				.to_str()
-				.and_then(|s| Uuid::parse_str(s).ok())
-			else {
+			let name = entry.file_name();
+			let Some(name) = name.to_str() else {
+				continue;
+			};
+			let temporary_name = name.strip_prefix('.').and_then(|s| s.strip_suffix(".new"));
+			let temporary = temporary_name.is_some();
+			let id = Uuid::parse_str(temporary_name.unwrap_or(name));
+			let Ok(id) = id else {
 				continue;
 			};
 			let mut tx = pool.begin(&MAINTENANCE).await?;
@@ -233,6 +236,15 @@ impl Runtime {
 				.await?
 			};
 			if !acquired {
+				continue;
+			}
+			if temporary {
+				match tokio::fs::remove_file(entry.path()).await {
+					Ok(()) => {}
+					Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+					Err(e) => return Err(e.into()),
+				}
+				tx.commit().await?;
 				continue;
 			}
 			let mut options = tokio::fs::OpenOptions::new();
