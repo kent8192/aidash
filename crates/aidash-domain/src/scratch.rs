@@ -33,7 +33,24 @@ impl HostAllowlist {
 }
 
 fn valid_host(host: &str) -> bool {
-	matches!(url::Host::parse(host), Ok(url::Host::Domain(ref value)) if value == host && !value.is_empty())
+	match url::Host::parse(host) {
+		Ok(url::Host::Domain(value)) => {
+			value == host
+				&& value.len() <= 253
+				&& value.split('.').all(|label| {
+					!label.is_empty()
+						&& label.len() <= 63
+						&& !label.starts_with('-')
+						&& !label.ends_with('-')
+						&& label
+							.bytes()
+							.all(|b| b.is_ascii_alphanumeric() || b == b'-')
+				})
+		}
+		Ok(url::Host::Ipv4(address)) => address.to_string() == host,
+		Ok(url::Host::Ipv6(address)) => format!("[{address}]") == host,
+		Err(_) => false,
+	}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

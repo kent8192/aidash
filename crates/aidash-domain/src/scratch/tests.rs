@@ -67,3 +67,14 @@ fn ceilings_and_operator_control_bound_settings() {
 	settings.idle_expiry_days = None;
 	assert!(settings.validate(&ceilings, &hosts).is_ok());
 }
+
+#[test]
+fn wildcard_text_cannot_bypass_the_all_hosts_operator_gate() {
+	let mut settings = ScratchSettings::default();
+	settings.allowed_hosts = HostAllowlist::Hosts(BTreeSet::from(["*".into()]));
+	assert!(
+		settings
+			.validate(&ScratchCeilings::default(), &HostAllowlist::All)
+			.is_err()
+	);
+}
