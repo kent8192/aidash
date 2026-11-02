@@ -13,13 +13,14 @@ use crate::{Error, Result};
 
 /// Implementations lock a loaded space until the enclosing transaction ends.
 /// The scope supplies the authenticated person; all reads are Tenant-scoped.
-/// The Run binding must resolve a Subnode to its creator's space and a delegated
-/// Run to a binding on the receiving Node. The returned person is the person
-/// who started the conversation, not the Agent executing the Run.
+/// The Run binding resolves delegated Runs on the receiving Node. The returned
+/// person is the person who started the conversation, not the executing Agent.
 #[async_trait]
 pub trait ScratchScope: Send {
 	fn person(&self) -> &str;
 	async fn require_create(&mut self, node: &NodeName) -> Result<()>;
+	/// Enforce Node access for the authenticated person or the conversation starter.
+	async fn require_node_use(&mut self, node: &NodeName, person: &str) -> Result<()>;
 	async fn limits(&mut self, node: &NodeName) -> Result<(ScratchCeilings, HostAllowlist)>;
 	/// Verify referenced images and External services are approved for this Tenant and Node.
 	async fn validate_references(
@@ -40,6 +41,8 @@ pub trait ScratchScope: Send {
 	/// Record a durable deletion request in this transaction; the adapter must
 	/// prevent the old contents from being used after the transaction commits.
 	async fn clear_contents(&mut self, id: ScratchSpaceId) -> Result<()>;
+	/// Find the creator Run when this workspace belongs to a Subnode.
+	async fn subnode_creator_run(&mut self, workspace: uuid::Uuid) -> Result<Option<Run>>;
 	async fn run_binding(&mut self, run: &Run) -> Result<(ScratchSpaceId, String)>;
 }
 
@@ -52,6 +55,7 @@ fn require_use(space: &ScratchSpace, person: &str, now: DateTime<Utc>) -> Result
 
 pub async fn create(scope: &mut dyn ScratchScope, space: &ScratchSpace) -> Result<()> {
 	let person = scope.person().to_owned();
+	scope.require_node_use(&space.node, &person).await?;
 	scope.require_create(&space.node).await?;
 	let (ceilings, tenant_hosts) = scope.limits(&space.node).await?;
 	space.settings.validate(&ceilings, &tenant_hosts)?;
@@ -77,6 +81,7 @@ pub async fn list(
 	now: DateTime<Utc>,
 ) -> Result<Vec<ScratchSpace>> {
 	let person = scope.person().to_owned();
+	scope.require_node_use(node, &person).await?;
 	Ok(scope
 		.list(node)
 		.await?
@@ -92,6 +97,7 @@ async fn read_for_person(
 	now: DateTime<Utc>,
 ) -> Result<ScratchSpace> {
 	let space = scope.load_for_update(id).await?;
+	scope.require_node_use(&space.node, person).await?;
 	require_use(&space, person, now)?;
 	Ok(space)
 }
@@ -171,7 +177,9 @@ pub async fn scratch_space_for_run(
 	run: &Run,
 	now: DateTime<Utc>,
 ) -> Result<ScratchSpaceId> {
-	let (id, starter) = scope.run_binding(run).await?;
+	let creator = scope.subnode_creator_run(run.workspace_id).await?;
+	let binding_run = creator.as_ref().unwrap_or(run);
+	let (id, starter) = scope.run_binding(binding_run).await?;
 	let mut space = read_for_person(scope, id, &starter, now).await?;
 	if space.node != run.node {
 		return Err(Error::Forbidden);

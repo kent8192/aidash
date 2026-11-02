@@ -6,8 +6,12 @@ use uuid::Uuid;
 #[derive(Default)]
 struct Memory {
 	person: String,
+	deny_node: bool,
+	node_people: Vec<String>,
 	spaces: BTreeMap<Uuid, ScratchSpace>,
 	binding: Option<(Uuid, String)>,
+	creator: Option<(Uuid, Run)>,
+	bound_run: Option<Uuid>,
 	cleared: Vec<Uuid>,
 }
 
@@ -15,6 +19,14 @@ struct Memory {
 impl ScratchScope for Memory {
 	fn person(&self) -> &str {
 		&self.person
+	}
+	async fn require_node_use(&mut self, _: &NodeName, person: &str) -> Result<()> {
+		self.node_people.push(person.to_owned());
+		if self.deny_node {
+			Err(Error::Forbidden)
+		} else {
+			Ok(())
+		}
 	}
 	async fn require_create(&mut self, _: &NodeName) -> Result<()> {
 		Ok(())
@@ -71,7 +83,14 @@ impl ScratchScope for Memory {
 		self.cleared.push(id);
 		Ok(())
 	}
-	async fn run_binding(&mut self, _: &Run) -> Result<(Uuid, String)> {
+	async fn subnode_creator_run(&mut self, workspace: Uuid) -> Result<Option<Run>> {
+		Ok(self
+			.creator
+			.as_ref()
+			.and_then(|(id, run)| (*id == workspace).then(|| run.clone())))
+	}
+	async fn run_binding(&mut self, run: &Run) -> Result<(Uuid, String)> {
+		self.bound_run = Some(run.id);
 		self.binding
 			.clone()
 			.ok_or_else(|| Error::NotFound("binding".into()))
@@ -105,6 +124,12 @@ async fn membership_and_policy_bound_settings_control_mutations() {
 	assert!(create(&mut scope, &space).await.is_err());
 	scope.person = "alice".into();
 	create(&mut scope, &space).await.unwrap();
+	scope.deny_node = true;
+	assert!(matches!(
+		read(&mut scope, id, now).await,
+		Err(Error::Forbidden)
+	));
+	scope.deny_node = false;
 	scope.person = "bob".into();
 	assert!(matches!(
 		read(&mut scope, id, now).await,
@@ -172,6 +197,7 @@ async fn run_requires_starter_authority_and_receiving_node() {
 	create(&mut scope, &space).await.unwrap();
 	let mut run =
 		crate::test_support::run_of(crate::test_support::snapshot("aidash://local", "agent"));
+	scope.person = "agent:worker".into();
 	scope.binding = Some((id, "mallory".into()));
 	assert!(matches!(
 		scratch_space_for_run(&mut scope, &run, now).await,
@@ -191,4 +217,55 @@ async fn run_requires_starter_authority_and_receiving_node() {
 		id
 	);
 	assert_eq!(scope.spaces[&id].last_used_at, now + Duration::days(1));
+	assert_eq!(scope.node_people.last().map(String::as_str), Some("alice"));
+}
+
+#[tokio::test]
+async fn listing_shows_only_spaces_available_to_the_person_on_that_node() {
+	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+	let mut scope = Memory {
+		person: "alice".into(),
+		..Default::default()
+	};
+	let shared = space(now);
+	let mut private = space(now);
+	private.name = "Private".into();
+	let mut remote = space(now);
+	remote.node = NodeName::derived("remote");
+	create(&mut scope, &shared).await.unwrap();
+	create(&mut scope, &private).await.unwrap();
+	create(&mut scope, &remote).await.unwrap();
+	add_member(&mut scope, shared.id, now, "bob").await.unwrap();
+	add_member(&mut scope, remote.id, now, "bob").await.unwrap();
+	scope.person = "bob".into();
+	let visible = list(&mut scope, &shared.node, now).await.unwrap();
+	assert_eq!(
+		visible.iter().map(|value| value.id).collect::<Vec<_>>(),
+		vec![shared.id]
+	);
+}
+
+#[tokio::test]
+async fn subnode_run_uses_the_creator_runs_scratch_space() {
+	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+	let mut scope = Memory {
+		person: "alice".into(),
+		..Default::default()
+	};
+	let space = space(now);
+	create(&mut scope, &space).await.unwrap();
+	let creator =
+		crate::test_support::run_of(crate::test_support::snapshot("aidash://local", "agent"));
+	let mut child = creator.clone();
+	child.id = Uuid::new_v4();
+	child.workspace_id = Uuid::new_v4();
+	scope.creator = Some((child.workspace_id, creator.clone()));
+	scope.binding = Some((space.id, "alice".into()));
+	assert_eq!(
+		scratch_space_for_run(&mut scope, &child, now)
+			.await
+			.unwrap(),
+		space.id
+	);
+	assert_eq!(scope.bound_run, Some(creator.id));
 }
