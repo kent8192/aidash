@@ -49,7 +49,16 @@ pub async fn run_reads_invalidity(
 	scope: &mut dyn ReadProvenanceScope,
 	run: Uuid,
 ) -> Result<Option<Failure>> {
-	let mut pending = vec![run];
+	run_reads_invalidity_with_pending(scope, run, vec![]).await
+}
+
+/// Include producers discovered while checking the Run's own resource gates.
+pub async fn run_reads_invalidity_with_pending(
+	scope: &mut dyn ReadProvenanceScope,
+	run: Uuid,
+	mut pending: Vec<Uuid>,
+) -> Result<Option<Failure>> {
+	pending.push(run);
 	let mut visited = BTreeSet::new();
 	while let Some(run) = pending.pop() {
 		if !visited.insert(run) {
@@ -74,6 +83,15 @@ pub async fn run_reads_invalidity(
 		}
 	}
 	Ok(None)
+}
+
+/// Check the Task's current policy while deferring local producer journals.
+pub async fn classified_task_visible(
+	scope: &mut dyn ReadProvenanceScope,
+	task: &Task,
+	pending: &mut Vec<Uuid>,
+) -> Result<bool> {
+	task_visible(&mut ClassifiedOutputs { scope, pending }, task).await
 }
 
 /// Resolve a locked semantic output source using the same policies as direct reads,

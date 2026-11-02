@@ -100,7 +100,15 @@ impl Access {
 			Err(crate::Error::RemoteSemantic(reason)) => return Ok(Some(reason)),
 			Err(error) => return Err(error),
 		}
-		match self.run_base_visible(run.clone()).await {
+		let mut pending = Vec::new();
+		let base = aidash_application::authorization::visibility::classified_base_visible(
+			&mut crate::bootstrap::run_visibility_scope(self),
+			run,
+			&mut pending,
+		)
+		.await
+		.map_err(crate::Error::from);
+		match base {
 			Ok(true) => {}
 			Ok(false) | Err(crate::Error::Forbidden) => return Ok(Some(Failure::Authority)),
 			Err(crate::Error::Conflict(_)) => return Ok(Some(Failure::Configuration)),
@@ -108,9 +116,10 @@ impl Access {
 			Err(error) => return Err(error),
 		}
 		let reason =
-			aidash_application::authorization::visibility::provenance::run_reads_invalidity(
+			aidash_application::authorization::visibility::provenance::run_reads_invalidity_with_pending(
 				&mut crate::bootstrap::run_visibility_scope(self),
 				run.id,
+				pending,
 			)
 			.await
 			.map_err(crate::Error::from);

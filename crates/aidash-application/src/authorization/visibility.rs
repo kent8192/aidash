@@ -89,6 +89,50 @@ pub async fn base_visible(scope: &mut dyn RunVisibilityScope, run: &RunMetadata)
 	local_base_visible(scope, run).await
 }
 
+/// Recheck the base policies without collapsing the owning Task's producer
+/// journals into a boolean. The ordinary cached verdict may already be false
+/// because one of those journals is invalidated.
+pub async fn classified_base_visible<S>(
+	scope: &mut S,
+	run: &RunMetadata,
+	pending: &mut Vec<Uuid>,
+) -> Result<bool>
+where
+	S: RunVisibilityScope
+		+ crate::ports::authorization::visibility::provenance::ReadProvenanceScope,
+{
+	if !run.is_local(scope.node_id()) {
+		if scope.scoped_admission(run.id).await? {
+			return Ok(scope.core_area_visible(run.id).await?
+				&& scope.foreign_base_visible(run).await?
+				&& scope.human_reads(run.workspace_id, run.id).await?);
+		}
+		if !scope.legacy_execution(run).await? {
+			return Ok(false);
+		}
+	}
+	if !scope.core_area_visible(run.id).await? {
+		return Ok(false);
+	}
+	let workspace = LocalRunVisibilityScope::workspace(scope, run.workspace_id).await?;
+	let resource = LocalRunVisibilityScope::resource(
+		scope,
+		"run",
+		&run.id.to_string(),
+		workspace.attributes.clone(),
+	);
+	let memory = scope.memory_resource(run, &workspace).await?;
+	let Some(task) = scope.task(run).await? else {
+		return Ok(false);
+	};
+	Ok(
+		provenance::classified_task_visible(scope, &task, pending).await?
+			&& LocalRunVisibilityScope::decide(scope, &resource, "run.read").await?
+			&& LocalRunVisibilityScope::decide(scope, &memory, "memory.read").await?
+			&& scope.human_reads(run.workspace_id, run.id).await?,
+	)
+}
+
 pub async fn run_visible(scope: &mut dyn RunVisibilityScope, run: &RunMetadata) -> Result<bool> {
 	Ok(base_visible(scope, run).await? && scope.run_reads(run.id).await?)
 }

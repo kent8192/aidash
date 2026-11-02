@@ -336,3 +336,179 @@ async fn a_rejected_record_moves_the_lock_epoch_of_its_transaction() {
 	);
 	assert_eq!(tx.lock_epoch(), 1);
 }
+
+#[rstest]
+#[tokio::test]
+async fn owning_task_producer_unit_deletion_is_reported_as_invalidation(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	let database = database.await;
+	let (store, _, workspace) = setup(&database, bounds).await;
+	let bank = memory::create_participant(
+		&store,
+		&administrator(&store).await,
+		workspace,
+		memory::CreateParticipant {
+			agent: reference("a"),
+		},
+	)
+	.await
+	.unwrap()
+	.bank;
+	let unit = Uuid::now_v7();
+	memory::mutate(
+		&store,
+		&administrator(&store).await,
+		mutation(
+			&bank,
+			Change::Add {
+				id: unit,
+				content: content("Original memory"),
+			},
+		),
+	)
+	.await
+	.unwrap();
+	let (producer, actor) = reader(&store, &bank, unit).await;
+	let task = store
+		.create_task(
+			&TEST_FIXTURE,
+			workspace,
+			&aidash_domain::NewTask {
+				title: "Produced task".into(),
+				description: "Continue the producer work".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: None,
+			},
+			"deployment_administrator",
+			None,
+		)
+		.await
+		.unwrap();
+	let consumer = Uuid::now_v7();
+	let pending = aidash_domain::run_state::encode(
+		&aidash_domain::run_state::RunState::Completed(aidash_domain::run_state::TerminalState {}),
+		&aidash_domain::run_state::RecoveryState::default(),
+	)
+	.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	for (table, columns, values) in [
+		(
+			"runs",
+			vec![
+				"id",
+				"task_id",
+				"workspace_id",
+				"home_node",
+				"node",
+				"agent_id",
+				"agent_version",
+				"phase",
+				"pending",
+				"revision",
+				"tenant",
+			],
+			vec![
+				Expr::value(consumer),
+				Expr::value(task.id),
+				Expr::value(workspace),
+				Expr::value(
+					aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+						.to_string(),
+				),
+				Expr::value(aidash_domain::nodes::NodeName::derived("acme").to_string()),
+				Expr::value("a"),
+				Expr::value("1.0.0"),
+				Expr::value("COMPLETED"),
+				Expr::value(pending),
+				Expr::value(1_i64),
+				Expr::value("acme"),
+			],
+		),
+		(
+			"authorization_run_outputs",
+			vec![
+				"run_id",
+				"tenant",
+				"workspace_id",
+				"resource_kind",
+				"resource_id",
+			],
+			vec![
+				Expr::value(producer),
+				Expr::value("acme"),
+				Expr::value(workspace),
+				Expr::value("task"),
+				Expr::value(task.id),
+			],
+		),
+	] {
+		let mut row = Query::select();
+		for value in values {
+			row.expr(value);
+		}
+		native::query(
+			&Query::insert()
+				.into_table(Alias::new(table))
+				.columns(columns.into_iter().map(Alias::new))
+				.from_subquery(row)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	}
+	tx.commit().await.unwrap();
+	let run = store.run(&TEST_FIXTURE, consumer).await.unwrap().metadata();
+	let Actor::Subject(identity) = actor else {
+		panic!("expected subject")
+	};
+	let mut access = crate::authorization::access::Access::begin(&store, &identity)
+		.await
+		.unwrap();
+	let result = access.run_invalidity(&run).await;
+	assert_eq!(access.finish(result).await.unwrap(), None);
+	memory::mutate(
+		&store,
+		&administrator(&store).await,
+		mutation(
+			&bank,
+			Change::Delete {
+				id: unit,
+				expected_revision: 1,
+			},
+		),
+	)
+	.await
+	.unwrap();
+	let mut access = crate::authorization::access::Access::begin(&store, &identity)
+		.await
+		.unwrap();
+	let result = access.run_invalidity(&run).await;
+	assert_eq!(
+		access.finish(result).await.unwrap(),
+		Some(Failure::Invalidated)
+	);
+	Authorization { pool: store.pool.clone() }
+		.replace(
+			"acme",
+			2,
+			serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[
+				{"id":"all","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},
+				{"id":"deny-task","effect":"deny","subjects":{"any":true},"actions":["task.read"],"resources":{"kinds":["task"],"ids":[task.id]}}
+			]})).unwrap(),
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	let mut access = crate::authorization::access::Access::begin(&store, &identity)
+		.await
+		.unwrap();
+	let result = access.run_invalidity(&run).await;
+	assert_eq!(
+		access.finish(result).await.unwrap(),
+		Some(Failure::Authority)
+	);
+}
