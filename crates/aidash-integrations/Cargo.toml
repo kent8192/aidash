@@ -13,6 +13,8 @@ reinhardt = { workspace = true, features = ["grpc-tls"], optional = true }
 prost = { version = "0.14", optional = true }
 tonic-prost = { version = "0.14", optional = true }
 bytes = "1"
+object_store = { version = "0.14.2", features = ["aws", "gcp"] }
+tokio-util = { version = "0.7", features = ["io"] }
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "http1"] }
 http-body-util = "0.1"
