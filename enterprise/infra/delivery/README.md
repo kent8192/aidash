@@ -107,10 +107,12 @@ node identity and signing-key outputs. `gcip_tenants` contains public pool/IdP
 metadata only. Client secrets belong in the corresponding protected IdP secret.
 Every bootstrap broker in `byok_broker_environments` becomes a
 `credential_brokers` entry built from its bootstrap service account, signing key
-and Secret prefix; an omitted broker would be drained and removed on the next
+and Secret prefix, plus its Tenant Secret broker service account and server
+signing key; an omitted broker would be drained and removed on the next
 reconcile. Each entry is disabled unless the optional per-tier
-`credential_brokers` account input sets `enabled`, `signing_version` or
-`verification_versions` for a bootstrap-created broker ID.
+`credential_brokers` account input sets `enabled`, `signing_version`,
+`verification_versions`, `tenant_secret_signing_version` or
+`tenant_secret_verification_versions` for a bootstrap-created broker ID.
 Composition leaves every workflow disabled, the staging-required flag off and
 all activation acknowledgements false. Complete account setup before activating.
 

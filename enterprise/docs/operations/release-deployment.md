@@ -342,6 +342,41 @@ evidence without restarting the running application. Inspect protected state,
 delivery acknowledgements and provider mail logs; do not copy random URLs or
 private data into public comments.
 
+## Credential Broker activation
+
+A Secret Manager Store reads Key Material and Tenant Secrets only through the
+Credential Broker (ADR 0002, 0095). Each Environment in the bootstrap's
+`byok_broker_environments` gets two Cloud Run services: the Key Material broker
+(`-broker`, Secret prefix `aidash-<env>-cred-`) and the Tenant Secret broker
+(`-tsec`, prefix `aidash-<env>-tsec-`). Enabling them also turns on that
+Environment's Egress gateway, because on Cloud the gateway attaches Tenant
+Secrets only through the Tenant Secret broker. Only `develop`, `test` and
+`production` have a reserved gateway Service IP; PR Environments run neither.
+[`infra/gcp/README.md`](../../infra/gcp/README.md) explains the trust boundary
+and the deny policy.
+
+Activate a tier in this order. Each step changes cloud resources, so show its
+plan and get the owner's approval before applying it:
+
+1. Route the tier's security alias (`nonprod.security@aidash.run` or
+   `prod.security@aidash.run`) with `infra/delivery/cloudflare`, then send a test
+   message and confirm it arrives.
+2. Apply the tier's bootstrap with `byok_broker_environments` and
+   `security_alert_emails` set to that alias. The plan adds both broker service
+   accounts, the `capability` and `tenant-secret` KMS keys, the conditioned read
+   roles, the deny policy, the alert policies and their email channel.
+3. Build and push the broker image, then merge its digest into
+   `infra/gcp/environments/broker-image.json` (see "Updating the broker image
+   digest" in `infra/gcp/README.md`). Terraform refuses an enabled broker
+   without an approved digest.
+4. Run `setup.py compose`, which copies both brokers' identities and keys from the
+   bootstrap output, with `enabled: true` in the tier's `credential_brokers` input,
+   then apply the `github` stack to publish `AIDASH_GCP_CONFIG`.
+5. Let the next reconcile apply the environments root and deploy. Confirm both
+   Cloud Run services serve the approved digest, the Agent page's readiness panel
+   no longer reports an unconfigured broker, and the `byok_key_material_read`
+   alert stays silent while Tenant tool calls succeed.
+
 ## Activation and recovery evidence
 
 During supervised nonproduction acceptance, prove WIF rejects another branch/workflow,

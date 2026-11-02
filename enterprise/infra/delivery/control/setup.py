@@ -39,7 +39,7 @@ SECRETS = {
     "deployment-notifications": {"CLOUDFLARE_EMAIL_SENDING_TOKEN"},
     "certificate-renewal": {"CLOUDFLARE_CERTIFICATE_DNS_TOKEN"},
 }
-BROKER_SETTINGS = {"enabled", "signing_version", "verification_versions"}
+BROKER_SETTINGS = {"enabled", "signing_version", "verification_versions", "tenant_secret_signing_version", "tenant_secret_verification_versions"}
 
 
 class Refused(ValueError):
@@ -193,7 +193,12 @@ def compose_brokers(bootstrap, output, settings):
     """
     accounts = bootstrap.get("broker_service_accounts") or {}
     keys = (output.get("broker_signing_keys") or {}).get("value") or {}
-    if set(accounts) != set(keys) or not isinstance(settings, dict) or set(settings) - set(accounts):
+    # Each broker pairs with a Tenant Secret broker identity and server signing
+    # key (ADR 0095); the environment Terraform refuses an enabled broker without them.
+    tenant_accounts = bootstrap.get("tenant_secret_broker_service_accounts") or {}
+    tenant_keys = (output.get("tenant_secret_signing_keys") or {}).get("value") or {}
+    if (len({frozenset(accounts), frozenset(keys), frozenset(tenant_accounts), frozenset(tenant_keys)}) != 1
+            or not isinstance(settings, dict) or set(settings) - set(accounts)):
         raise Refused("Credential broker settings must name bootstrap-created broker identities and signing keys")
     brokers = {}
     for identity in sorted(accounts):
@@ -201,7 +206,9 @@ def compose_brokers(bootstrap, output, settings):
         if not isinstance(chosen, dict) or set(chosen) - BROKER_SETTINGS or not isinstance(chosen.get("enabled", False), bool):
             raise Refused("Inputs may set only broker enablement and signing versions")
         brokers[identity] = dict({"enabled": False}, **chosen, byok_project_id=bootstrap["byok_project_id"], secret_prefix=f"aidash-{identity}-cred-",
-                                 broker_service_account_email=accounts[identity], signing_key_id=keys[identity])
+                                 broker_service_account_email=accounts[identity], signing_key_id=keys[identity],
+                                 tenant_secret_broker_service_account_email=tenant_accounts[identity],
+                                 tenant_secret_signing_key_id=tenant_keys[identity])
     return brokers
 
 

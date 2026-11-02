@@ -17,18 +17,20 @@ data "cloudflare_zone" "existing" {
 
 locals {
   aliases = {
-    stg       = "stg.deployment@aidash.run"
-    prod      = "prod.deployment@aidash.run"
-    test      = "test.deployment@aidash.run"
-    licensing = "licensing@aidash.run"
+    stg              = "stg.deployment@aidash.run"
+    prod             = "prod.deployment@aidash.run"
+    test             = "test.deployment@aidash.run"
+    licensing        = "licensing@aidash.run"
+    nonprod-security = "nonprod.security@aidash.run"
   }
   # Deployment mail uses its tier in the rule name. The licensing address is a
   # public contact route, not a deployment notification, so it gets its own name.
   rule_names = {
-    stg       = "Aidash stg deployment notifications"
-    prod      = "Aidash prod deployment notifications"
-    test      = "Aidash test deployment notifications"
-    licensing = "Aidash licensing inquiries"
+    stg              = "Aidash stg deployment notifications"
+    prod             = "Aidash prod deployment notifications"
+    test             = "Aidash test deployment notifications"
+    licensing        = "Aidash licensing inquiries"
+    nonprod-security = "Aidash nonprod security alerts"
   }
 }
 

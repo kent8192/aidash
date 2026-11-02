@@ -644,6 +644,38 @@ class SealAndMigrationTests(unittest.TestCase):
         with self.assertRaisesRegex(Refused, "protection"):
             kube.app_values(self.cluster, "production", {**output, "memory_recovery": {"required": False}}, release, "a" * 40, {"provider": None, "gcip": None})
 
+    def test_egress_gateway_follows_the_tenant_secret_broker_on_a_reserved_service_ip(self):
+        output = dict(OUTPUT, server_service_account="server@fixture", worker_service_account="worker@fixture")
+        release = {"images": {kind: f"registry.example/{kind}@sha256:" + "a" * 64 for kind in IMAGE_KINDS}}
+        external = {"AIDASH_PROVIDER_FINGERPRINT_KEY": "f" * 32}
+
+        def provider(identity, tenant_secret_broker=True):
+            store = {"kind": "secret_manager", "byok_project_id": "aidash-byok", "environment_id": identity}
+            broker = {"endpoint": f"https://{identity}-broker.example", "issuer": "worker", "audience": identity, "kid": "1"}
+            tenant = {"endpoint": f"https://{identity}-tsec.example", "issuer": "server", "audience": f"{identity}-tsec", "kid": "1"}
+            return kube.provider_settings({"fingerprint_key": {"env": "AIDASH_PROVIDER_FINGERPRINT_KEY"}, "store": store,
+                                           "broker": broker, "tenant_secret_broker": tenant if tenant_secret_broker else None}, external)
+
+        # Without a Tenant Secret broker there is nothing the gateway may attach on Cloud.
+        for settings in ({"provider": None, "gcip": None}, {"provider": provider("develop", False), "gcip": None}):
+            values = kube.app_values(self.cluster, "develop", output, release, "a" * 40, settings)
+            self.assertEqual(values["execution"]["egress"], {"enabled": False})
+        values = kube.app_values(self.cluster, "develop", output, release, "a" * 40, {"provider": provider("develop"), "gcip": None})
+        self.assertEqual(values["execution"]["egress"], {"enabled": True, "clusterIP": "10.48.0.200"})
+        manifest = subprocess.check_output(["helm", "template", "app", str(kube.APP_CHART), "-f", "-"], input=json.dumps(values).encode())
+        service = next(obj for obj in yaml.safe_load_all(manifest) if obj and obj["kind"] == "Service" and obj["metadata"]["name"] == "app-egress")
+        self.assertEqual(service["spec"]["clusterIP"], "10.48.0.200")
+        # Preview Environments run no broker, so they have no reserved address either.
+        with self.assertRaisesRegex(Refused, "reserved Service IP"):
+            kube.app_values(self.cluster, "pr-2", output, release, "a" * 40, {"provider": provider("pr-2"), "gcip": None})
+        # Every reserved address sits in the static band of the clusters' Service range,
+        # and Environments sharing the nonproduction cluster never share one.
+        cluster_tf = (Path(__file__).resolve().parents[1] / "environments/cluster.tf").read_text()
+        self.assertIn('ip_cidr_range = "10.48.0.0/20"', cluster_tf)
+        self.assertTrue(all(address.startswith("10.48.0.") for address in kube.EGRESS_CLUSTER_IPS.values()))
+        nonproduction = [address for identity, address in kube.EGRESS_CLUSTER_IPS.items() if identity != kube.PRODUCTION]
+        self.assertEqual(len(nonproduction), len(set(nonproduction)))
+
     def test_existing_journal_claim_keeps_its_bound_storage_class(self):
         output = dict(OUTPUT, server_service_account="server@fixture", worker_service_account="worker@fixture")
         release = {"images": {kind: f"registry.example/{kind}@sha256:" + "a" * 64 for kind in ("app", "control", "sandbox")}}
