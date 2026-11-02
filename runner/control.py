@@ -28,6 +28,13 @@ TERMINAL = {"completed", "cancelled", "failed", "uncertain"}
 PROBE_PROTOCOL = "aidash-admission-probe/2"
 
 
+def scratch_resource_name(scratch_space_id):
+    """Derive a stable Kubernetes DNS label without exposing the opaque ID."""
+    if not isinstance(scratch_space_id, str) or not scratch_space_id:
+        raise ValueError("scratch_space_id must be a nonempty string")
+    return "scratch-" + hashlib.sha256(scratch_space_id.encode("utf-8")).hexdigest()[:48]
+
+
 class Rejected(Exception):
     def __init__(self, code, message):
         self.code, self.message = code, message
