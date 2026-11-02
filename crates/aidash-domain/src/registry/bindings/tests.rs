@@ -463,36 +463,32 @@ fn absent_harness_contract_keeps_the_definition_bytes() {
 #[test]
 fn structured_harness_contracts_require_the_native_projection_version() {
 	// Arrange
+	let contract = "structured@3";
 	for projection in [None, Some("legacy"), Some("ordered")] {
 		let mut input = serde_json::to_value(agent()).unwrap();
 		if let Some(projection) = projection {
 			input["projection_version"] = json!(projection);
 		}
-		for contract in ["structured@3"] {
-			input["harness_contract"] = json!(contract);
-			// Act / Assert
-			let error =
-				serde_json::from_value::<crate::registry::AgentConfig>(input.clone()).unwrap_err();
-			assert!(
-				error
-					.to_string()
-					.contains("does not support Projection Version"),
-				"{contract} with {projection:?}: {error}"
-			);
-		}
-	}
-	// Act: Native accepts the structured version.
-	for contract in ["structured@3"] {
-		let mut input = serde_json::to_value(agent()).unwrap();
-		input["projection_version"] = json!("native");
 		input["harness_contract"] = json!(contract);
-		let parsed: crate::registry::AgentConfig = serde_json::from_value(input.clone()).unwrap();
-		// Assert
-		assert_eq!(
-			parsed.definition().harness_contract,
-			serde_json::from_value(json!(contract)).unwrap()
+		// Act / Assert
+		let error = serde_json::from_value::<crate::registry::AgentConfig>(input).unwrap_err();
+		assert!(
+			error
+				.to_string()
+				.contains("does not support Projection Version"),
+			"{contract} with {projection:?}: {error}"
 		);
 	}
+	// Act: Native accepts the structured version.
+	let mut input = serde_json::to_value(agent()).unwrap();
+	input["projection_version"] = json!("native");
+	input["harness_contract"] = json!(contract);
+	let parsed: crate::registry::AgentConfig = serde_json::from_value(input).unwrap();
+	// Assert
+	assert_eq!(
+		parsed.definition().harness_contract,
+		serde_json::from_value(json!(contract)).unwrap()
+	);
 }
 
 #[test]
