@@ -117,6 +117,16 @@ async fn membership_and_policy_bound_settings_control_mutations() {
 	));
 	add_member(&mut scope, id, now, "bob").await.unwrap();
 	scope.person = "bob".into();
+	let mut approved = space.settings.clone();
+	approved.allowed_hosts = HostAllowlist::Hosts(BTreeSet::from(["example.com".into()]));
+	approved.external_services.insert("approved".into());
+	update_settings(&mut scope, id, now, approved)
+		.await
+		.unwrap();
+	assert_eq!(
+		scope.spaces[&id].settings.external_services,
+		BTreeSet::from(["approved".into()])
+	);
 	let mut settings = space.settings.clone();
 	settings.allowed_hosts = HostAllowlist::Hosts(BTreeSet::from(["outside.example".into()]));
 	assert!(
@@ -130,7 +140,10 @@ async fn membership_and_policy_bound_settings_control_mutations() {
 		update_settings(&mut scope, id, now, settings).await,
 		Err(Error::Forbidden)
 	));
-	assert!(scope.spaces[&id].settings.external_services.is_empty());
+	assert_eq!(
+		scope.spaces[&id].settings.external_services,
+		BTreeSet::from(["approved".into()])
+	);
 	scope.person = "alice".into();
 	remove_member(&mut scope, id, now, "bob").await.unwrap();
 	scope.person = "bob".into();
