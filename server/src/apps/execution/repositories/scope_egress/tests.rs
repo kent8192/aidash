@@ -79,6 +79,7 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 		.await
 		.unwrap();
 	tenant_roots::tenant_root(&federation, "acme").await;
+	tenant_roots::tenant_root(&federation, "beta").await;
 	let scope = ScopeSettings {
 		id: ScopeId {
 			tenant: "acme".into(),
@@ -98,6 +99,19 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 	let durable = DurableScopes::new(federation.store.clone(), Arc::new(Authority(scope.clone())));
 	assert!(durable.resolve("invalid").await.is_err());
 	durable.resolve("credential").await.unwrap();
+	let mut other = federation
+		.store
+		.pool
+		.begin(&TenancyScope::tenant("beta").unwrap())
+		.await
+		.unwrap();
+	let hidden = ScopeState::objects()
+		.filter(ScopeState::field_scope_id().eq(scope.id.scratch_space))
+		.all_with_executor(&mut *other)
+		.await
+		.unwrap();
+	assert!(hidden.is_empty(), "another Tenant must not see scope state");
+	other.commit().await.unwrap();
 	let day = Utc::now().date_naive();
 	let (left, right) = tokio::join!(
 		durable.debit(&scope, Direction::Sent, 8, day),
