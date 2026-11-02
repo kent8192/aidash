@@ -184,7 +184,7 @@ pub async fn serve_with_scopes(
 						async move {
 							let response = if request.method() == hyper::Method::CONNECT || request.uri().scheme().is_some() {
 								match scopes { Some(scopes) => proxy::forward(request, scopes, permit).await, None => failure(StatusCode::SERVICE_UNAVAILABLE, "egress_scope_unavailable") }
-							} else { forward(request, authority, client, public).await };
+							} else { forward(request, authority, client, public, scopes).await };
 							Ok::<_,Infallible>(response)
 						}
 					});
@@ -345,13 +345,46 @@ async fn forward(
 	authority: Arc<dyn Authority>,
 	client: reqwest::Client,
 	public: reqwest::Client,
+	scopes: Option<Arc<dyn aidash_application::egress::EgressScopes>>,
 ) -> Response<Body> {
-	if !request.uri().path().starts_with("/v1/") || request.uri().scheme().is_some() {
+	if request.uri().scheme().is_some() {
 		return failure(StatusCode::NOT_FOUND, "egress_route_not_found");
 	}
-	let route = request.uri().path()[4..].to_owned();
-	let Some((token, remainder)) = route.split_once('/') else {
-		return failure(StatusCode::UNAUTHORIZED, "egress_token_required");
+	let request_path = request.uri().path();
+	let scoped = request_path.starts_with("/v2/services/");
+	let route = if scoped {
+		request_path[13..].to_owned()
+	} else if let Some(path) = request_path.strip_prefix("/v1/") {
+		path.to_owned()
+	} else {
+		return failure(StatusCode::NOT_FOUND, "egress_route_not_found");
+	};
+	let scope_token = if scoped {
+		let mut values = request
+			.headers()
+			.get_all(hyper::header::AUTHORIZATION)
+			.iter();
+		let token = values
+			.next()
+			.and_then(|v| v.to_str().ok())
+			.and_then(|s| s.split_once(' '))
+			.filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+			.map(|(_, token)| token)
+			.filter(|s| !s.is_empty());
+		if values.next().is_some() || token.is_none() {
+			return failure(StatusCode::UNAUTHORIZED, "egress_token_required");
+		}
+		token.map(str::to_owned)
+	} else {
+		None
+	};
+	let (token, remainder) = if let Some(token) = scope_token.as_deref() {
+		(token, route.as_str())
+	} else {
+		let Some((token, remainder)) = route.split_once('/') else {
+			return failure(StatusCode::UNAUTHORIZED, "egress_token_required");
+		};
+		(token, remainder)
 	};
 	let (service, path) = remainder.split_once('/').unwrap_or((remainder, ""));
 	if token.len() > 512
@@ -364,6 +397,9 @@ async fn forward(
 		return failure(StatusCode::BAD_REQUEST, "invalid_egress_route");
 	}
 	let asset = if let Some(encoded) = path.strip_prefix("__asset/") {
+		if scoped {
+			return failure(StatusCode::BAD_REQUEST, "invalid_egress_path");
+		}
 		let decoded = URL_SAFE_NO_PAD
 			.decode(encoded)
 			.ok()
@@ -387,22 +423,47 @@ async fn forward(
 		"{:x}",
 		Sha256::digest(query.as_deref().unwrap_or("").as_bytes())
 	);
-	let admission = match authority
-		.admit(
-			token,
-			service,
-			request.method().as_str(),
-			audit_path,
-			&query_digest,
-		)
-		.await
-	{
+	let admitted = if scoped {
+		match scopes {
+			Some(scopes) => {
+				scopes
+					.admit_external(
+						token,
+						service,
+						request.method().as_str(),
+						audit_path,
+						&query_digest,
+					)
+					.await
+			}
+			None => Err(aidash_application::Error::Forbidden),
+		}
+	} else {
+		authority
+			.admit(
+				token,
+				service,
+				request.method().as_str(),
+				audit_path,
+				&query_digest,
+			)
+			.await
+	};
+	let admission = match admitted {
 		Ok(value) => value,
 		Err(aidash_application::Error::Forbidden | aidash_application::Error::Unauthorized) => {
 			return failure(StatusCode::FORBIDDEN, "egress_forbidden");
 		}
 		Err(aidash_application::Error::Conflict(_)) => {
 			return failure(StatusCode::TOO_MANY_REQUESTS, "egress_limit_exceeded");
+		}
+		Err(aidash_application::Error::Refused(message))
+			if message == "egress_budget_exhausted" =>
+		{
+			return failure(StatusCode::TOO_MANY_REQUESTS, "egress_budget_exhausted");
+		}
+		Err(aidash_application::Error::Refused(message)) if message == "egress_suspended" => {
+			return failure(StatusCode::FORBIDDEN, "egress_suspended");
 		}
 		Err(aidash_application::Error::Invalid(message)) if message == "secret_unavailable" => {
 			return failure(StatusCode::FAILED_DEPENDENCY, "secret_unavailable");
@@ -423,7 +484,7 @@ async fn forward(
 		completion.finish(Some("operation_expired")).await;
 		return failure(StatusCode::FORBIDDEN, "egress_expired");
 	}
-	let index = admission.definition.builtin_index(service);
+	let index = !scoped && admission.definition.builtin_index(service);
 	if asset.is_some() && !index {
 		completion.finish(Some("invalid_package_service")).await;
 		return failure(StatusCode::FORBIDDEN, "egress_forbidden");
@@ -600,8 +661,13 @@ async fn forward(
 			return failure(StatusCode::BAD_GATEWAY, "egress_redirect_refused");
 		};
 		let relative = redirected.path().strip_prefix(base.path()).unwrap_or("");
+		let prefix = if scoped {
+			format!("/v2/services/{service}/{relative}")
+		} else {
+			format!("/v1/{token}/{service}/{relative}")
+		};
 		let rewritten = format!(
-			"/v1/{token}/{service}/{relative}{}",
+			"{prefix}{}",
 			redirected
 				.query()
 				.map(|q| format!("?{q}"))

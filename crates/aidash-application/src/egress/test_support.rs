@@ -61,6 +61,17 @@ impl EgressScopes for MemoryScopes {
 		}
 		Ok(self.settings.clone())
 	}
+	async fn admit_external(
+		&self,
+		_: &str,
+		_: &str,
+		_: &str,
+		_: &str,
+		_: &str,
+	) -> Result<super::Admission> {
+		// This test scope has no External services configured.
+		Err(Error::Forbidden)
+	}
 	async fn admit_connection(&self, scope: &ScopeSettings) -> Result<()> {
 		self.check(&scope.id)?;
 		let mut s = self.state.lock().unwrap();

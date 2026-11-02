@@ -11,8 +11,8 @@ pub struct Admission {
 	pub gateway_origin: String,
 	pub destination: aidash_domain::keyless::Destination,
 	pub request: Uuid,
-	/// The operation, or a Live preview's session-lifetime owner.
-	pub operation: Uuid,
+	/// The operation or Live preview owner; absent for a Scratch Space call.
+	pub operation: Option<Uuid>,
 	/// Set when the token is a session token; the request record carries it.
 	pub session: Option<Uuid>,
 	pub service: String,
@@ -85,6 +85,16 @@ pub struct ConnectionRecord {
 #[async_trait]
 pub trait EgressScopes: Send + Sync {
 	async fn resolve(&self, credential: &str) -> Result<ScopeSettings>;
+	/// Admit an External service made available to this scope. Implementations
+	/// recheck the scope, service and daily limits before attaching any secret.
+	async fn admit_external(
+		&self,
+		credential: &str,
+		service: &str,
+		method: &str,
+		path: &str,
+		query_digest: &str,
+	) -> Result<Admission>;
 	/// Atomically checks suspension, counts a new connection in the current
 	/// minute, and suspends and notifies the operator on anomaly.
 	async fn admit_connection(&self, scope: &ScopeSettings) -> Result<()>;

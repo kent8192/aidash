@@ -64,7 +64,7 @@ impl Authority for FixtureAuthority {
 			gateway_origin: self.origin.clone(),
 			destination: Destination::Permitted,
 			request: Uuid::new_v4(),
-			operation: Uuid::new_v4(),
+			operation: Some(Uuid::new_v4()),
 			session: None,
 			service: service.into(),
 			definition: ExternalService {
@@ -409,7 +409,7 @@ impl Authority for BrokerAuthority {
 			gateway_origin: self.origin.clone(),
 			destination: Destination::PublicOnly,
 			request: Uuid::new_v4(),
-			operation: Uuid::new_v4(),
+			operation: Some(Uuid::new_v4()),
 			session: None,
 			service: service.into(),
 			definition: self.definition.clone(),
@@ -671,7 +671,7 @@ impl Authority for DirectAuthority {
 			gateway_origin: self.origin.clone(),
 			destination: Destination::Permitted,
 			request: Uuid::new_v4(),
-			operation: Uuid::new_v4(),
+			operation: Some(Uuid::new_v4()),
 			session: None,
 			service: service.into(),
 			definition: ExternalService {
@@ -781,4 +781,182 @@ fn a_brokered_request_keeps_the_service_path_exactly() {
 		.unwrap();
 		assert_eq!(url.as_str(), forwarded, "{base} {service}");
 	}
+}
+
+struct ScopeServiceFixture {
+	scopes: Arc<aidash_application::egress::test_support::MemoryScopes>,
+	upstream: String,
+	origin: String,
+	audit: Arc<Audit>,
+}
+#[async_trait]
+impl aidash_application::egress::EgressScopes for ScopeServiceFixture {
+	async fn resolve(&self, credential: &str) -> Result<aidash_application::egress::ScopeSettings> {
+		self.scopes.resolve(credential).await
+	}
+	async fn admit_external(
+		&self,
+		credential: &str,
+		service: &str,
+		_: &str,
+		_: &str,
+		_: &str,
+	) -> Result<Admission> {
+		let scope = self.scopes.resolve(credential).await?;
+		self.scopes.check_active(&scope).await?;
+		if service != "images" {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		Ok(Admission {
+			gateway_origin: self.origin.clone(),
+			destination: Destination::Permitted,
+			request: Uuid::new_v4(),
+			operation: None,
+			session: None,
+			service: service.into(),
+			definition: ExternalService {
+				base_url: self.upstream.clone(),
+				methods: vec!["GET".into()],
+				secret: Some("image-key".into()),
+				authentication: Default::default(),
+				limits: None,
+			},
+			expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
+			credential: Some("canary-tenant-secret".into()),
+			route: None,
+			meter: self.audit.clone(),
+		})
+	}
+	async fn admit_connection(
+		&self,
+		scope: &aidash_application::egress::ScopeSettings,
+	) -> Result<()> {
+		self.scopes.admit_connection(scope).await
+	}
+	async fn check_active(&self, scope: &aidash_application::egress::ScopeSettings) -> Result<()> {
+		self.scopes.check_active(scope).await
+	}
+	async fn debit(
+		&self,
+		scope: &aidash_application::egress::ScopeSettings,
+		direction: Direction,
+		bytes: u64,
+		day: chrono::NaiveDate,
+	) -> Result<()> {
+		self.scopes.debit(scope, direction, bytes, day).await
+	}
+	async fn refund(
+		&self,
+		scope: &aidash_application::egress::ScopeSettings,
+		direction: Direction,
+		bytes: u64,
+		day: chrono::NaiveDate,
+	) -> Result<()> {
+		self.scopes.refund(scope, direction, bytes, day).await
+	}
+	async fn record(&self, record: aidash_application::egress::ConnectionRecord) -> Result<()> {
+		self.scopes.record(record).await
+	}
+	async fn lift_suspension(&self, scope: &aidash_domain::egress::ScopeId) -> Result<()> {
+		self.scopes.lift_suspension(scope).await
+	}
+}
+
+#[tokio::test]
+async fn external_service_accepts_scope_credential_without_forwarding_it() {
+	use aidash_application::egress::{ScopeSettings, test_support::MemoryScopes};
+	use aidash_domain::egress::{AllowedHosts, AnomalyRule, DailyBudget, ScopeId};
+	let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let upstream_url = format!("http://{}/", upstream.local_addr().unwrap());
+	let upstream_task = tokio::spawn(async move {
+		axum::serve(
+			upstream,
+			Router::new().route(
+				"/{*path}",
+				any(|request: Request<AxumBody>| async move {
+					assert_eq!(
+						request.headers()["authorization"],
+						"Bearer canary-tenant-secret"
+					);
+					assert!(request.headers().get("proxy-authorization").is_none());
+					if request.uri().path() == "/redirect" {
+						return Response::builder()
+							.status(StatusCode::FOUND)
+							.header("location", "/next")
+							.body(AxumBody::empty())
+							.unwrap();
+					}
+					Response::new(AxumBody::from("ok"))
+				}),
+			),
+		)
+		.await
+		.unwrap();
+	});
+	let settings = ScopeSettings {
+		id: ScopeId {
+			tenant: "tenant".into(),
+			node: "node".into(),
+			scratch_space: Uuid::new_v4(),
+		},
+		allowed_hosts: AllowedHosts::default(),
+		budget: DailyBudget::default(),
+		anomaly: AnomalyRule::default(),
+		operator_allows_all: false,
+	};
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let origin = format!("http://{}", listener.local_addr().unwrap());
+	let audit = Arc::new(Audit::default());
+	let authority = Arc::new(FixtureAuthority {
+		upstream: upstream_url.clone(),
+		origin: origin.clone(),
+		audit: audit.clone(),
+	});
+	let scopes = Arc::new(ScopeServiceFixture {
+		scopes: Arc::new(MemoryScopes::new("scope-token".into(), settings)),
+		upstream: upstream_url,
+		origin: origin.clone(),
+		audit,
+	});
+	let (stop, stopping) = watch::channel(false);
+	let gateway = tokio::spawn(serve_with_scopes(
+		listener,
+		authority,
+		Some(scopes),
+		stopping,
+	));
+	let client = reqwest::Client::builder()
+		.redirect(reqwest::redirect::Policy::none())
+		.build()
+		.unwrap();
+	let url = format!("{origin}/v2/services/images/photo?private=yes");
+	assert_eq!(
+		client
+			.get(&url)
+			.bearer_auth("wrong")
+			.send()
+			.await
+			.unwrap()
+			.status(),
+		StatusCode::FORBIDDEN
+	);
+	let response = client
+		.get(&url)
+		.bearer_auth("scope-token")
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(response.status(), StatusCode::OK);
+	assert_eq!(response.text().await.unwrap(), "ok");
+	let redirect = client
+		.get(format!("{origin}/v2/services/images/redirect"))
+		.bearer_auth("scope-token")
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(redirect.status(), StatusCode::FOUND);
+	assert_eq!(redirect.headers()["location"], "/v2/services/images/next");
+	stop.send(true).unwrap();
+	gateway.await.unwrap().unwrap();
+	upstream_task.abort();
 }
