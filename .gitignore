@@ -184,6 +184,10 @@ enterprise/infra/**/*.tfplan
 !enterprise/infra/**/*.example.tfvars.json
 enterprise/infra/**/backend.tfvars
 enterprise/infra/github-runners/lambdas/*.zip
+# Checkouts from before the move keep untracked Terraform state and secrets
+# under infra/ after their nested .gitignore files move to enterprise/ (#254).
+# Nothing is tracked there any more, so keep ignoring the whole directory.
+/infra/
 
 # Orphan detector Lambda build artifacts (Issue #3903)
 enterprise/infra/github-runners/lambda-src/*/node_modules/

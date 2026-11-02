@@ -30,8 +30,6 @@ When the table is absent, the Offering is `self-hosted`. Every command that load
 
 `enterprise/` keeps copies of `rust-toolchain.toml`, `rustfmt.toml`, `clippy.toml`, the `[workspace.package]` and `[workspace.lints]` tables and the profiles. Keep them equal to the Community files, except the `[workspace.package]` license, which is `Apache-2.0` for Community and `BUSL-1.1` for Enterprise (ADR 0035), and keep `enterprise/Cargo.lock` on the versions `Cargo.lock` holds for packages both lock (`cargo update --manifest-path enterprise/Cargo.toml -p <package> --precise <version>`).
 
-Nothing under `enterprise/` declares a license until the licensing cutover (#255).
-
 ## Dashboard
 
 The dashboard in `web/` is one single-page app. It reaches build-specific UI through extension slots. A slot is a module in `web/src/slots/` that `@slots/<name>` resolves to, and Community implements each as a stub.
