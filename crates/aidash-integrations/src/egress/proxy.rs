@@ -692,18 +692,22 @@ async fn forward_http(
 		header::CONNECTION,
 		header::HeaderValue::from_static("close"),
 	);
+	let pending_response = sender.send_request(hyper::Request::from_parts(parts, body));
+	tokio::pin!(pending_response);
 	let response = tokio::select! {
-		response = sender.send_request(hyper::Request::from_parts(parts, body)) => match response {
-			Ok(response) => response,
-			Err(_) => return super::failure(StatusCode::BAD_GATEWAY, "egress_upstream_failed"),
+		response = &mut pending_response => response,
+		outcome = &mut transfer => match outcome {
+			// The transfer may finish after writing the response into the duplex
+			// buffer but before Hyper has parsed its headers.
+			Ok("completed") => pending_response.await,
+			Ok("egress_budget_exhausted") => return super::failure(StatusCode::TOO_MANY_REQUESTS, "egress_budget_exhausted"),
+			Ok("egress_suspended") => return super::failure(StatusCode::FORBIDDEN, "egress_suspended"),
+			_ => return super::failure(StatusCode::BAD_GATEWAY, "egress_upstream_failed"),
 		},
-		outcome = &mut transfer => {
-			return match outcome {
-				Ok("egress_budget_exhausted") => super::failure(StatusCode::TOO_MANY_REQUESTS, "egress_budget_exhausted"),
-				Ok("egress_suspended") => super::failure(StatusCode::FORBIDDEN, "egress_suspended"),
-				_ => super::failure(StatusCode::BAD_GATEWAY, "egress_upstream_failed"),
-			};
-		}
+	};
+	let response = match response {
+		Ok(response) => response,
+		Err(_) => return super::failure(StatusCode::BAD_GATEWAY, "egress_upstream_failed"),
 	};
 	let (mut parts, body) = response.into_parts();
 	let connection_headers = parts
@@ -1103,7 +1107,11 @@ mod tests {
 		client.write_all(b"GET http://test.invalid/private?secret=value HTTP/1.1\r\nHost: test.invalid\r\nProxy-Authorization: Bearer token\r\nConnection: close\r\n\r\n").await.unwrap();
 		let mut response = Vec::new();
 		client.read_to_end(&mut response).await.unwrap();
-		assert!(response.ends_with(b"hello"));
+		assert!(
+			response.ends_with(b"hello"),
+			"response: {}",
+			String::from_utf8_lossy(&response)
+		);
 		upstream_task.await.unwrap();
 		gateway_task.await.unwrap();
 		tokio::time::timeout(std::time::Duration::from_secs(3), async {
