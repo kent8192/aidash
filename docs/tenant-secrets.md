@@ -104,30 +104,6 @@ Dedicated, and definitions that name one are refused at registration.
 
 ## External services
 
-### Clone a GitHub repository
-
-Register an `external_service` with ID `github`, base URL
-`https://github.com/`, and methods `["GET", "POST"]`. Store a Tenant Secret
-permitted for `github.com` whose value is `Basic <base64(x-access-token:TOKEN)>`,
-where the base64 text encodes the literal username `x-access-token`, a colon,
-and the token. Bind the Secret using
-`"authentication": {"type": "header", "name": "Authorization"}` and
-approve and bind the service to the Agent as described below. The gateway
-attaches the Secret; Git needs no credential helper.
-
-Inside the Working Area, clone with:
-
-```sh
-git clone "${AIDASH_EGRESS_URL}github/<owner>/<repo>.git"
-```
-
-This path was verified live against a private repository: `info/refs` and
-`git-upload-pack` both returned 200. Archive downloads do not work because
-GitHub redirects them to the cross-origin `codeload` host, and the gateway
-refuses cross-origin redirects. Current limits are tracked in
-[#682](https://github.com/kent8192/aidash/issues/682) (files in the Working
-Area) and [#683](https://github.com/kent8192/aidash/issues/683) (throughput).
-
 An `external_service` Registry entry has one HTTPS base URL, explicit HTTP
 methods, optional authentication and optional lower per-operation limits:
 
@@ -183,6 +159,49 @@ Run inspection lists the request time, operation, service, method, path,
 SHA-256 query digest, status, byte counts and duration. Bodies, header values
 and query contents are never recorded. A partially consumed response is
 recorded as interrupted rather than silently becoming a successful request.
+
+### Clone a GitHub repository
+
+The Execution Pod image includes `git`. It reaches GitHub through an External
+service; the gateway attaches the Tenant Secret, so Git needs no credential
+helper and the token never enters the Pod.
+
+1. Store a Tenant Secret, for example `github-git`, with hosts `["github.com"]`
+   and the value `Basic <base64(x-access-token:TOKEN)>`. The base64 text encodes
+   the literal username `x-access-token`, a colon and the token. Cloning needs
+   read access to the repository's contents; pushing needs write access.
+2. Register an `external_service`, for example with ID `github`, approve it
+   and bind it to the Agent:
+
+   ```json
+   {
+     "base_url": "https://github.com/",
+     "methods": ["GET", "POST"],
+     "secret": "github-git",
+     "authentication": { "type": "header", "name": "Authorization" }
+   }
+   ```
+
+3. Clone, fetch and push with the ordinary `https://github.com/` URL. Map it to
+   the gateway with `-c` on every command:
+
+   ```sh
+   git -c url."${AIDASH_EGRESS_URL}github/".insteadOf=https://github.com/ \
+     clone https://github.com/<owner>/<repo>.git
+   git -c url."${AIDASH_EGRESS_URL}github/".insteadOf=https://github.com/ fetch
+   ```
+
+   `AIDASH_EGRESS_URL` carries an operation token that ends with the operation.
+   Never write it into the repository's remote URL or Git configuration: a later
+   operation gets a new token, and the stored one fails.
+
+Archive downloads do not work. GitHub redirects them to the cross-origin
+`codeload` host, and the gateway refuses cross-origin redirects. Git's
+`info/refs` and `git-upload-pack` requests to a private repository were
+verified through the gateway. A complete clone of a large repository is still
+limited by [#683](https://github.com/kent8192/aidash/issues/683) (throughput)
+and by the Working Area's file rules
+([#682](https://github.com/kent8192/aidash/issues/682)).
 
 ## Self-hosted deployment
 
