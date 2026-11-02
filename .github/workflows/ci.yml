@@ -192,6 +192,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Free runner disk for instrumented builds and test databases
+        run: scripts/free-ci-runner-disk.sh
       - name: Install the native gRPC build prerequisite
         run: scripts/install-ci-protoc.sh
       - run: rustup show active-toolchain
