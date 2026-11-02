@@ -14,6 +14,7 @@ use uuid::Uuid;
 struct Audit {
 	sent: AtomicU64,
 	received: AtomicU64,
+	charges: AtomicU64,
 	requests: Mutex<Vec<(String, String, String)>>,
 	finished_records: Mutex<Vec<(u16, Option<String>)>>,
 	finished: Notify,
@@ -21,6 +22,7 @@ struct Audit {
 #[async_trait]
 impl Meter for Audit {
 	async fn charge(&self, direction: Direction, bytes: usize) -> Result<()> {
+		self.charges.fetch_add(1, Ordering::Relaxed);
 		match direction {
 			Direction::Sent => &self.sent,
 			Direction::Received => &self.received,
@@ -171,6 +173,10 @@ async fn upload_and_download_stream_before_the_upload_finishes_and_audits_exclud
 		.unwrap();
 	assert_eq!(audit.sent.load(Ordering::Relaxed), total as u64);
 	assert_eq!(audit.received.load(Ordering::Relaxed), total as u64);
+	assert!(
+		audit.charges.load(Ordering::Relaxed) <= 24,
+		"body chunks must be batched in both directions"
+	);
 	assert_eq!(
 		*audit.requests.lock().unwrap(),
 		vec![(
@@ -236,7 +242,8 @@ async fn a_stalled_budget_store_cannot_hold_a_response_past_the_operation_deadli
 	let upstream_task = tokio::spawn(async move {
 		axum::serve(
 			upstream,
-			Router::new().route("/image", any(|| async { "image" })),
+			// Large enough for a batch debit, which then stalls mid-stream.
+			Router::new().route("/image", any(|| async { vec![0x89u8; 2 << 20] })),
 		)
 		.await
 		.unwrap();
@@ -264,6 +271,10 @@ async fn a_stalled_budget_store_cannot_hold_a_response_past_the_operation_deadli
 	tokio::time::timeout(Duration::from_secs(1), audit.finished.notified())
 		.await
 		.unwrap();
+	assert_eq!(
+		*audit.finished_records.lock().unwrap(),
+		vec![(200, Some("operation_expired".into()))]
+	);
 	stop.send(true).unwrap();
 	gateway.await.unwrap().unwrap();
 	upstream_task.abort();
@@ -781,4 +792,286 @@ fn a_brokered_request_keeps_the_service_path_exactly() {
 		.unwrap();
 		assert_eq!(url.as_str(), forwarded, "{base} {service}");
 	}
+}
+
+/// Commits every debit like the server meter, then refuses once a counter
+/// reaches `limit` or when the operation has expired.
+struct BudgetMeter {
+	audit: Arc<Audit>,
+	limit: u64,
+	expired: bool,
+}
+#[async_trait]
+impl Meter for BudgetMeter {
+	async fn charge(&self, direction: Direction, bytes: usize) -> Result<()> {
+		self.audit.charge(direction, bytes).await?;
+		let used = match direction {
+			Direction::Sent => &self.audit.sent,
+			Direction::Received => &self.audit.received,
+		}
+		.load(Ordering::Relaxed);
+		if self.expired {
+			return Err(aidash_application::Error::Conflict(
+				aidash_domain::egress::OPERATION_EXPIRED.into(),
+			));
+		}
+		if used >= self.limit {
+			return Err(aidash_application::Error::Conflict(
+				aidash_domain::egress::LIMIT_EXCEEDED.into(),
+			));
+		}
+		Ok(())
+	}
+	async fn finish(&self, status: u16, elapsed: u64, error: Option<&str>) -> Result<()> {
+		self.audit.finish(status, elapsed, error).await
+	}
+}
+struct MeterAuthority {
+	inner: FixtureAuthority,
+	limit: u64,
+	expired: bool,
+}
+#[async_trait]
+impl Authority for MeterAuthority {
+	async fn admit(
+		&self,
+		token: &str,
+		service: &str,
+		method: &str,
+		path: &str,
+		digest: &str,
+	) -> Result<Admission> {
+		let mut admission = self
+			.inner
+			.admit(token, service, method, path, digest)
+			.await?;
+		admission.meter = Arc::new(BudgetMeter {
+			audit: self.inner.audit.clone(),
+			limit: self.limit,
+			expired: self.expired,
+		});
+		Ok(admission)
+	}
+}
+
+const CHUNK: usize = 64 * 1024;
+
+/// An upstream whose `/download/{n}` streams `n` 64 KiB chunks, `/broken`
+/// streams 40 chunks and then fails, and `/upload` drains the request body
+/// before it answers.
+async fn metered_gateway(
+	limit: u64,
+	expired: bool,
+) -> (
+	String,
+	Arc<Audit>,
+	Vec<tokio::task::JoinHandle<()>>,
+	watch::Sender<bool>,
+) {
+	let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let upstream_url = format!("http://{}/", upstream.local_addr().unwrap());
+	let upstream_task = tokio::spawn(async move {
+		axum::serve(
+			upstream,
+			Router::new()
+				.route(
+					"/download/{n}",
+					any(
+						|axum::extract::Path(n): axum::extract::Path<usize>| async move {
+							let chunks = futures_util::stream::iter(
+								(0..n)
+									.map(|_| Ok::<_, std::io::Error>(Bytes::from(vec![7; CHUNK]))),
+							);
+							AxumBody::from_stream(chunks)
+						},
+					),
+				)
+				.route(
+					"/broken",
+					any(|| async {
+						let chunks = async_stream::stream! {
+							for _ in 0..40 { yield Ok(Bytes::from(vec![7; CHUNK])); }
+							// Let the client read every chunk before the failure.
+							tokio::time::sleep(Duration::from_millis(300)).await;
+							yield Err(std::io::Error::other("upstream broke"));
+						};
+						AxumBody::from_stream(chunks)
+					}),
+				)
+				.route(
+					"/upload",
+					any(|request: Request<AxumBody>| async move {
+						let body = axum::body::to_bytes(request.into_body(), usize::MAX)
+							.await
+							.map(|bytes| bytes.len())
+							.unwrap_or_default();
+						body.to_string()
+					}),
+				),
+		)
+		.await
+		.unwrap();
+	});
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let origin = format!("http://{}", listener.local_addr().unwrap());
+	let audit = Arc::new(Audit::default());
+	let authority = Arc::new(MeterAuthority {
+		inner: FixtureAuthority {
+			upstream: upstream_url,
+			origin: origin.clone(),
+			audit: audit.clone(),
+		},
+		limit,
+		expired,
+	});
+	let (stop, receiver) = watch::channel(false);
+	let gateway = tokio::spawn(async move { serve(listener, authority, receiver).await.unwrap() });
+	(origin, audit, vec![upstream_task, gateway], stop)
+}
+
+async fn shutdown(tasks: Vec<tokio::task::JoinHandle<()>>, stop: watch::Sender<bool>) {
+	stop.send(true).unwrap();
+	for task in tasks {
+		task.abort();
+		let _ = task.await;
+	}
+}
+
+/// Reads a response body until it ends or fails; returns the bytes read and
+/// whether it ended cleanly.
+async fn drain(response: reqwest::Response) -> (usize, bool) {
+	let mut stream = response.bytes_stream();
+	let mut total = 0;
+	while let Some(next) = stream.next().await {
+		match next {
+			Ok(bytes) => total += bytes.len(),
+			Err(_) => return (total, false),
+		}
+	}
+	(total, true)
+}
+
+#[tokio::test]
+async fn a_large_download_is_debited_in_batches_and_totals_the_streamed_bytes() {
+	let (origin, audit, tasks, stop) = metered_gateway(u64::MAX, false).await;
+	let response = reqwest::get(format!("{origin}/v1/operation-token/images/download/160"))
+		.await
+		.unwrap();
+	assert_eq!(response.status(), StatusCode::OK);
+	let (total, clean) = drain(response).await;
+	assert!(clean);
+	assert_eq!(total, 160 * CHUNK);
+	tokio::time::timeout(Duration::from_secs(5), audit.finished.notified())
+		.await
+		.unwrap();
+	assert_eq!(audit.received.load(Ordering::Relaxed), total as u64);
+	// 10 MiB in 1 MiB batches, not one debit per chunk.
+	assert!(audit.charges.load(Ordering::Relaxed) <= 11);
+	assert_eq!(*audit.finished_records.lock().unwrap(), vec![(200, None)]);
+	shutdown(tasks, stop).await;
+}
+
+#[tokio::test]
+async fn an_interrupted_download_still_debits_every_streamed_byte() {
+	let (origin, audit, tasks, stop) = metered_gateway(u64::MAX, false).await;
+	let response = reqwest::get(format!("{origin}/v1/operation-token/images/broken"))
+		.await
+		.unwrap();
+	let (total, clean) = drain(response).await;
+	assert!(!clean);
+	assert_eq!(total, 40 * CHUNK);
+	tokio::time::timeout(Duration::from_secs(5), audit.finished.notified())
+		.await
+		.unwrap();
+	assert_eq!(audit.received.load(Ordering::Relaxed), total as u64);
+	assert_eq!(
+		*audit.finished_records.lock().unwrap(),
+		vec![(200, Some("upstream_interrupted".into()))]
+	);
+	shutdown(tasks, stop).await;
+}
+
+#[tokio::test]
+async fn an_exhausted_budget_stops_a_download_after_at_most_one_batch_over() {
+	let limit = 2 * BATCH_BYTES + 1;
+	let (origin, audit, tasks, stop) = metered_gateway(limit, false).await;
+	let response = reqwest::get(format!("{origin}/v1/operation-token/images/download/160"))
+		.await
+		.unwrap();
+	let (total, clean) = drain(response).await;
+	assert!(!clean, "the refused debit ends the body early");
+	tokio::time::timeout(Duration::from_secs(5), audit.finished.notified())
+		.await
+		.unwrap();
+	let received = audit.received.load(Ordering::Relaxed);
+	assert!(received >= limit);
+	assert!(received <= limit + BATCH_BYTES + CHUNK as u64);
+	assert!(total as u64 <= received);
+	assert_eq!(
+		*audit.finished_records.lock().unwrap(),
+		vec![(200, Some("egress_limit_exceeded".into()))]
+	);
+	shutdown(tasks, stop).await;
+}
+
+#[tokio::test]
+async fn an_exhausted_upload_budget_is_reported_as_the_limit_not_the_upstream() {
+	let (origin, audit, tasks, stop) = metered_gateway(BATCH_BYTES, false).await;
+	let upload = futures_util::stream::iter(
+		(0..64).map(|_| Ok::<_, std::io::Error>(Bytes::from(vec![1; CHUNK]))),
+	);
+	let response = reqwest::Client::new()
+		.post(format!("{origin}/v1/operation-token/images/upload"))
+		.body(reqwest::Body::wrap_stream(upload))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+	assert_eq!(
+		response.text().await.unwrap(),
+		r#"{"error":"egress_limit_exceeded"}"#
+	);
+	let sent = audit.sent.load(Ordering::Relaxed);
+	assert!((BATCH_BYTES..=2 * BATCH_BYTES).contains(&sent));
+	assert_eq!(
+		*audit.finished_records.lock().unwrap(),
+		vec![(429, Some("egress_limit_exceeded".into()))]
+	);
+	shutdown(tasks, stop).await;
+}
+
+#[tokio::test]
+async fn an_expired_operation_is_reported_as_expired_not_as_an_exhausted_budget() {
+	let (origin, audit, tasks, stop) = metered_gateway(u64::MAX, true).await;
+	let response = reqwest::get(format!("{origin}/v1/operation-token/images/download/1"))
+		.await
+		.unwrap();
+	let (_, clean) = drain(response).await;
+	assert!(!clean);
+	tokio::time::timeout(Duration::from_secs(5), audit.finished.notified())
+		.await
+		.unwrap();
+	assert_eq!(audit.received.load(Ordering::Relaxed), CHUNK as u64);
+	let upload = futures_util::stream::iter(
+		(0..32).map(|_| Ok::<_, std::io::Error>(Bytes::from(vec![1; CHUNK]))),
+	);
+	let response = reqwest::Client::new()
+		.post(format!("{origin}/v1/operation-token/images/upload"))
+		.body(reqwest::Body::wrap_stream(upload))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(response.status(), StatusCode::FORBIDDEN);
+	assert_eq!(
+		response.text().await.unwrap(),
+		r#"{"error":"operation_expired"}"#
+	);
+	assert_eq!(
+		*audit.finished_records.lock().unwrap(),
+		vec![
+			(200, Some("operation_expired".into())),
+			(403, Some("operation_expired".into()))
+		]
+	);
+	shutdown(tasks, stop).await;
 }
