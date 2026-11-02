@@ -783,3 +783,5 @@ Plugin/Context Source heads. The Harness Contract validator extends the Agent
 Plugin settings validator, including its compaction rules, and restores that
 validator on rollback. The join is an empty state-only migration that preserves
 existing identities and one leaf per app.
+
+`workspaces/0015_scratch_spaces` adds Node-owned Scratch Spaces, their Tenant-scoped settings, and membership. Composite foreign keys keep each child and its parent in the same Tenant. `0016_scratch_spaces_row_level_security` applies the standard Tenant row policies. Reinhardt has no row-policy migration operation, so this migration uses the reversible policy SQL template. `0017_conversation_scratch_space` fixes each conversation to one Scratch Space in the same Tenant. `0018_scratch_space_model_state` records the ORM relationship state without changing the database-enforced constraints. The undeployed database is recreated rather than backfilling legacy conversations. A cleared space retains a tombstone while conversations still reference it; runtime reclamation is delivered separately.
