@@ -71,3 +71,159 @@ class CommandQueueTest(unittest.TestCase):
         finally:
             release.set()
             queue.close()
+
+
+class SystemTreeTest(unittest.TestCase):
+    def test_records_added_modified_removed_and_does_not_scan_scratch(self):
+        import tempfile
+        from pathlib import Path
+        from execution_pod import system_tree_index, system_tree_diff
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'etc').mkdir()
+            (root / 'scratch').mkdir()
+            (root / 'etc' / 'edited').write_text('old')
+            (root / 'etc' / 'removed').write_text('gone')
+            before = system_tree_index(root)
+            (root / 'etc' / 'edited').write_text('new contents')
+            (root / 'etc' / 'removed').unlink()
+            (root / 'etc' / 'added').write_text('new')
+            (root / 'scratch' / 'work').write_text('ignored')
+            after = system_tree_index(root)
+            self.assertEqual(system_tree_diff(before, after), {
+                'added': ['etc/added'], 'modified': ['etc', 'etc/edited'],
+                'removed': ['etc/removed'],
+            })
+
+    def test_symlink_is_recorded_but_never_followed(self):
+        import tempfile
+        from pathlib import Path
+        from execution_pod import system_tree_index
+
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
+            root = Path(directory)
+            (Path(outside) / 'secret').write_text('hidden')
+            (root / 'link').symlink_to(outside, target_is_directory=True)
+            index = system_tree_index(root)
+            self.assertIn('link', index)
+            self.assertNotIn('link/secret', index)
+
+    def test_initial_copy_reuses_system_and_reset_recopies_image(self):
+        import tempfile
+        from pathlib import Path
+        from execution_pod import initialize_system_root
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            image, store = base / 'image', base / 'store'
+            (image / 'usr' / 'bin').mkdir(parents=True)
+            (image / 'usr' / 'bin' / 'base').write_text('image')
+            (image / 'scratch').mkdir()
+            (image / 'scratch' / 'user-data').write_text('not image')
+            initialize_system_root(image, store)
+            root = store / 'rootfs'
+            (root / 'usr' / 'bin' / 'installed').write_text('installed')
+            initialize_system_root(image, store)
+            self.assertTrue((root / 'usr' / 'bin' / 'installed').exists())
+            self.assertFalse((root / 'scratch' / 'user-data').exists())
+            initialize_system_root(image, store, reset=True)
+            self.assertFalse((root / 'usr' / 'bin' / 'installed').exists())
+            self.assertEqual((root / 'usr' / 'bin' / 'base').read_text(), 'image')
+
+
+class ProcessCapabilityTest(unittest.TestCase):
+    @unittest.skipUnless(__import__('sys').platform.startswith('linux'), 'Linux capabilities required')
+    def test_normal_command_cannot_regain_docker_capabilities(self):
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        status = Path('/proc/self/status').read_text()
+        effective = int(next(line.split()[1] for line in status.splitlines() if line.startswith('CapEff:')), 16)
+        if not effective & (1 << 8):
+            self.skipTest('CAP_SETPCAP is required to exercise bounding-set reduction')
+        result = subprocess.run([sys.executable, 'sandbox_v2.py', 'normal', '/bin/cat', '/proc/self/status'],
+                                capture_output=True, text=True, check=True)
+        fields = dict(line.split(':', 1) for line in result.stdout.splitlines() if ':' in line)
+        blocked = sum(1 << cap for cap in (12, 13, 21))
+        for name in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'):
+            self.assertEqual(int(fields[name], 16) & blocked, 0, name)
+        self.assertEqual(fields['NoNewPrivs'].strip(), '1')
+
+
+class ChangeLogTest(unittest.TestCase):
+    def test_records_each_run_and_its_changes(self):
+        import tempfile
+        from pathlib import Path
+        from execution_pod import append_change_log, read_change_log
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'changes.jsonl'
+            append_change_log(path, 'run-1', {'added': ['usr/bin/jq'], 'modified': [], 'removed': []})
+            append_change_log(path, 'run-2', {'added': [], 'modified': [], 'removed': ['etc/example']})
+            records = read_change_log(path)
+            self.assertEqual([entry['run_id'] for entry in records], ['run-1', 'run-2'])
+            self.assertEqual(records[0]['changes']['added'], ['usr/bin/jq'])
+            self.assertEqual(records[1]['changes']['removed'], ['etc/example'])
+
+
+class PodManifestTest(unittest.TestCase):
+    def test_isolated_pod_and_durable_claim_for_scratch(self):
+        from execution_pod import execution_manifests
+
+        settings = {'scratch_space_id': 'scratch one', 'image': 'image@sha256:' + 'a' * 64,
+                    'cpu': 4, 'memory_bytes': 16 << 30, 'capacity_bytes': 100 << 30,
+                    'docker_enabled': False}
+        config = {'runtime_class': 'aidash-gvisor', 'helper_image': 'helper@sha256:' + 'b' * 64,
+                  'namespace': 'aidash-sandbox', 'storage_class': 'fast'}
+        pvc, pod = execution_manifests(settings, config)
+        self.assertEqual(pvc['spec']['resources']['requests']['storage'], str(100 << 30))
+        self.assertEqual(pvc['spec']['storageClassName'], 'fast')
+        self.assertFalse(pod['spec']['automountServiceAccountToken'])
+        self.assertEqual(pod['spec']['runtimeClassName'], 'aidash-gvisor')
+        self.assertEqual(pod['spec']['initContainers'][1]['image'], settings['image'])
+        self.assertTrue(pod['spec']['initContainers'][1]['volumeMounts'][1]['readOnly'])
+        self.assertEqual(pod['spec']['containers'][0]['securityContext']['runAsUser'], 0)
+        caps = pod['spec']['containers'][0]['securityContext']['capabilities']['add']
+        self.assertNotIn('NET_ADMIN', caps)
+        self.assertNotIn('NET_RAW', caps)
+        self.assertTrue(any(v.get('persistentVolumeClaim', {}).get('claimName') == pvc['metadata']['name']
+                            for v in pod['spec']['volumes']))
+        self.assertFalse(any('hostPath' in v for v in pod['spec']['volumes']))
+
+    def test_docker_requires_operator_authority_and_dedicated_tenant(self):
+        from execution_pod import execution_manifests
+
+        settings = {'scratch_space_id': 'id', 'image': 'image@sha256:' + 'a' * 64, 'cpu': 2,
+                    'memory_bytes': 1 << 30, 'capacity_bytes': 1 << 30, 'docker_enabled': True,
+                    'tenant_id': 'tenant one'}
+        config = {'runtime_class': 'aidash-gvisor', 'helper_image': 'helper@sha256:' + 'b' * 64,
+                  'namespace': 'aidash-sandbox', 'allow_docker': False}
+        with self.assertRaises(ValueError):
+            execution_manifests(settings, config)
+        config['allow_docker'] = True
+        _, pod = execution_manifests(settings, config)
+        caps = pod['spec']['containers'][0]['securityContext']['capabilities']['add']
+        self.assertIn('NET_ADMIN', caps)
+        self.assertIn('NET_RAW', caps)
+        self.assertIn('aidash.run/tenant', pod['spec']['nodeSelector'])
+        self.assertTrue(pod['spec']['tolerations'])
+        self.assertTrue(any(v.get('emptyDir', {}).get('medium') == 'Memory' and v['name'] == 'docker'
+                            for v in pod['spec']['volumes']))
+
+    def test_image_hardlinks_are_preserved(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        from execution_pod import initialize_system_root
+
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            image = base / 'image'
+            image.mkdir()
+            (image / 'first').write_text('image content')
+            os.link(image / 'first', image / 'second')
+            initialize_system_root(image, base / 'store')
+            root = base / 'store' / 'rootfs'
+            self.assertEqual((root / 'first').stat().st_ino, (root / 'second').stat().st_ino)
