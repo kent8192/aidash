@@ -800,6 +800,7 @@ mod tests {
 			server.read_exact(&mut data).await.unwrap();
 		}
 		assert_eq!(scopes.checks(), 0, "no check per read");
+		tokio::task::yield_now().await;
 		scopes.suspend();
 		tokio::time::advance(std::time::Duration::from_secs(5)).await;
 		let (sent, _, result) = task.await.unwrap();
