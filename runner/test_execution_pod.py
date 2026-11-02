@@ -243,6 +243,8 @@ class ExecutionPodControllerTest(unittest.TestCase):
 
     def test_ensure_is_idempotent_and_stop_preserves_claim(self):
         import json
+        import tempfile
+        from pathlib import Path
         from types import SimpleNamespace
         from execution_pod import ExecutionPodController
 
@@ -262,6 +264,9 @@ class ExecutionPodControllerTest(unittest.TestCase):
                 return SimpleNamespace(stdout=b'')
 
         backend = Backend()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        backend.root = Path(temporary.name)
         config = {'runtime_class': 'aidash-gvisor', 'helper_image': 'helper@sha256:' + 'b' * 64,
                   'namespace': 'aidash-sandbox'}
         settings = {'scratch_space_id': 'id', 'image': 'image@sha256:' + 'a' * 64, 'cpu': 2,
@@ -312,6 +317,8 @@ class ExecutionPodHttpTest(unittest.TestCase):
 
     def test_startup_failure_contains_typed_reason(self):
         import json
+        import tempfile
+        from pathlib import Path
         from types import SimpleNamespace
         from execution_pod import ExecutionPodController, ExecutionPodError
 
@@ -326,8 +333,12 @@ class ExecutionPodHttpTest(unittest.TestCase):
                   'namespace': 'aidash-sandbox'}
         settings = {'scratch_space_id': 'id', 'image': 'image@sha256:' + 'a' * 64, 'cpu': 2,
                     'memory_bytes': 1 << 30, 'capacity_bytes': 1 << 30, 'docker_enabled': False}
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        backend = Backend()
+        backend.root = Path(temporary.name)
         with self.assertRaises(ExecutionPodError) as caught:
-            ExecutionPodController(Backend(), config, admitted=True).ensure(settings)
+            ExecutionPodController(backend, config, admitted=True).ensure(settings)
         self.assertEqual(caught.exception.code, 'startup_failed')
         self.assertIn('image pull failed', caught.exception.message)
 
@@ -398,3 +409,253 @@ class SupervisorTest(unittest.TestCase):
             self.assertEqual(result['status'], 'stopped')
         finally:
             timer.cancel()
+
+
+class CommandTransportTest(unittest.TestCase):
+    def test_drains_large_output_without_exceeding_budget(self):
+        import os
+        import sys
+        from execution_pod import drain_process
+        script = 'import os; os.write(1,b"a"*100000); os.write(2,b"b"*100000)'
+        result = drain_process([sys.executable, '-c', script], os.environ.copy(), 100, 10)
+        self.assertEqual(result['exit_code'], 0)
+        self.assertTrue(result['output']['truncated'])
+        import base64
+        self.assertEqual(sum(len(base64.b64decode(result['output'][key]))
+                             for key in ('stdout', 'stderr')), 100)
+
+    def test_transport_timeout_stops_its_local_process(self):
+        import os
+        import sys
+        from execution_pod import drain_process
+        result = drain_process([sys.executable, '-c', 'import time; time.sleep(30)'],
+                               os.environ.copy(), 100, .2)
+        self.assertTrue(result['transport_timed_out'])
+
+
+class PodBindingTest(unittest.TestCase):
+    def test_replacement_pod_rejects_command_before_execution(self):
+        from unittest.mock import patch
+        from sandbox_v2 import supervise_command
+        with patch.dict('os.environ', {'AIDASH_POD_UID': 'replacement'}):
+            with self.assertRaisesRegex(ValueError, 'Pod identity'):
+                supervise_command('e6ded09d-f783-4ce8-98e9-dbfca68884f1', 'run', '.', 'true',
+                                  5, False, expected_pod_uid='original')
+
+
+class CommandJournalTest(unittest.TestCase):
+    def test_recovery_marks_running_unknown_and_never_replays_it(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from execution_pod import ExecutionPodController
+
+        class Backend:
+            def __init__(self, root):
+                self.root = Path(root)
+                self.calls = []
+            def kube(self, args, data=None, **_kwargs):
+                self.calls.append(args)
+                if args[0] == 'get':
+                    return SimpleNamespace(stdout=json.dumps({'metadata': {'uid': 'pod-uid'}}).encode())
+                return SimpleNamespace(stdout=b'')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'execution-v2'
+            root.mkdir()
+            operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+            record = {'operation_id': operation, 'scratch_space_id': 'scratch', 'run_id': 'run',
+                      'status': 'running', 'background': True, 'pod_uid': 'pod-uid'}
+            (root / (operation + '.json')).write_text(json.dumps(record))
+            backend = Backend(directory)
+            controller = ExecutionPodController(backend, {}, admitted=False)
+            controller.recover_commands()
+            result = json.loads((root / (operation + '.json')).read_text())
+            self.assertEqual(result['status'], 'interrupted')
+            self.assertEqual(result['outcome'], 'unknown')
+            self.assertEqual(len(backend.calls), 2)
+            self.assertEqual(backend.calls[1][:2], ['delete', 'pod'])
+
+    def test_command_result_is_journaled_and_repeated_id_is_not_replayed(self):
+        import json
+        import tempfile
+        import time
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodController
+
+        operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        class Backend:
+            def __init__(self, root):
+                self.root = Path(root)
+                self.command = ['kubectl']
+                self.environment = {}
+            def kube(self, args, data=None, **_kwargs):
+                if args[0] == 'get':
+                    body = {'metadata': {'uid': 'pod-uid'}, 'status': {'phase': 'Running'},
+                            'spec': {'containers': [{'name': 'execution', 'securityContext': {
+                                'capabilities': {'add': ['SYS_ADMIN']}}}]}}
+                else:
+                    body = {'operation_id': operation, 'run_id': 'run', 'status': 'completed', 'exit_code': 0}
+                return SimpleNamespace(stdout=json.dumps(body).encode(), returncode=0)
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Backend(directory), {'output_bytes': 1024}, admitted=True)
+            request = {'operation_id': operation, 'scratch_space_id': 'scratch', 'run_id': 'run',
+                       'code': 'echo hi'}
+            captured = {'exit_code': 0, 'transport_timed_out': False,
+                        'output': {'stdout': 'aGkK', 'stderr': '', 'truncated': False}}
+            with patch('execution_pod.drain_process', return_value=captured) as transport:
+                controller.submit_command(request)
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    result = controller.command_result(operation)
+                    if result['status'] == 'completed':
+                        break
+                    time.sleep(.01)
+                self.assertEqual(result['status'], 'completed')
+                self.assertEqual(result['stdout'], 'aGkK')
+                controller.submit_command(request)
+                self.assertEqual(transport.call_count, 1)
+
+    def test_changelog_is_read_in_bounded_chunks(self):
+        import base64
+        import tempfile
+        from pathlib import Path
+        from sandbox_v2 import log_chunk
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'changes.jsonl'
+            path.write_bytes(b'abcdefgh')
+            first = log_chunk(path, 0, 3)
+            second = log_chunk(path, first['next_offset'], 5)
+            self.assertEqual(base64.b64decode(first['data']), b'abc')
+            self.assertFalse(first['eof'])
+            self.assertEqual(base64.b64decode(second['data']), b'defgh')
+            self.assertTrue(second['eof'])
+
+
+class IdlePodTest(unittest.TestCase):
+    def test_live_viewers_and_foreground_work_keep_pod_but_background_does_not(self):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from execution_pod import ExecutionPodController
+
+        class Backend:
+            def __init__(self, root):
+                self.root = Path(root)
+                self.deleted = []
+            def kube(self, args, data=None, **_kwargs):
+                import json
+                if args[0] == 'get':
+                    return SimpleNamespace(stdout=json.dumps({'metadata': {'uid': 'pod-uid'}}).encode())
+                if args[0] == 'delete':
+                    self.deleted.append(args[2])
+                return SimpleNamespace(stdout=b'')
+        with tempfile.TemporaryDirectory() as directory:
+            backend = Backend(directory)
+            controller = ExecutionPodController(backend, {}, admitted=True)
+            controller.touch_space('scratch', now=1)
+            controller.viewer_heartbeat('scratch', 'viewer', now=1800)
+            controller.stop_idle(now=1802)
+            self.assertFalse(backend.deleted)
+            controller.stop_idle(now=3659)
+            self.assertFalse(backend.deleted)
+            controller.foreground_jobs['scratch'] = 1
+            controller.stop_idle(now=4000)
+            self.assertFalse(backend.deleted)
+            controller.foreground_jobs['scratch'] = 0
+            controller.stop_idle(now=4001)
+            self.assertEqual(len(backend.deleted), 1)
+
+
+class PythonSessionTest(unittest.TestCase):
+    def test_cells_share_state_within_one_run(self):
+        import os
+        import subprocess
+        import sys
+        import tempfile
+        import time
+        from pathlib import Path
+        from python_session import send_cell
+        with tempfile.TemporaryDirectory() as directory:
+            socket_path = str(Path(directory) / 'session.sock')
+            server = subprocess.Popen([sys.executable, '-I', 'python_session.py', 'serve', socket_path],
+                                      cwd=Path(__file__).parent, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            try:
+                deadline = time.monotonic() + 3
+                while not os.path.exists(socket_path) and time.monotonic() < deadline:
+                    time.sleep(.01)
+                first = send_cell(socket_path, 'value = 41', 2, 1024)
+                second = send_cell(socket_path, 'value + 1', 2, 1024)
+                self.assertEqual(first['status'], 'completed')
+                self.assertEqual(second['stdout'], '42\n')
+            finally:
+                server.terminate()
+                server.wait(timeout=3)
+                server.stderr.close()
+
+    def test_cell_output_is_bounded(self):
+        import os
+        import subprocess
+        import sys
+        import tempfile
+        import time
+        from pathlib import Path
+        from python_session import send_cell
+        with tempfile.TemporaryDirectory() as directory:
+            socket_path = str(Path(directory) / 'session.sock')
+            server = subprocess.Popen([sys.executable, '-I', 'python_session.py', 'serve', socket_path],
+                                      cwd=Path(__file__).parent, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            try:
+                deadline = time.monotonic() + 3
+                while not os.path.exists(socket_path) and time.monotonic() < deadline:
+                    time.sleep(.01)
+                result = send_cell(socket_path, 'print("x" * 100)', 2, 10)
+                self.assertEqual(result['stdout'], 'x' * 10)
+                self.assertTrue(result['truncated'])
+            finally:
+                server.terminate()
+                server.wait(timeout=3)
+                server.stderr.close()
+
+    def test_cell_waits_for_interpreter_startup(self):
+        import subprocess
+        import sys
+        import tempfile
+        from pathlib import Path
+        from python_session import send_cell
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / 'delayed.sock')
+            script = ('import time,sys; time.sleep(.2); '
+                      'sys.path.insert(0,sys.argv[1]); from python_session import serve; serve(sys.argv[2])')
+            server = subprocess.Popen([sys.executable, '-I', '-c', script, str(Path(__file__).parent), path],
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            try:
+                result = send_cell(path, '2 + 3', 2, 1024)
+                self.assertEqual(result['stdout'], '5\n')
+            finally:
+                server.terminate()
+                server.wait(timeout=3)
+                server.stderr.close()
+
+
+class PythonSessionMappingTest(unittest.TestCase):
+    def test_session_is_reused_per_run_and_separate_across_runs(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            backend = Mock()
+            backend.root = Path(directory)
+            controller = ExecutionPodController(backend, {}, admitted=True)
+            controller.submit_command = Mock(return_value={'status': 'queued'})
+            controller._get = Mock(return_value={'metadata': {'uid': 'pod'}})
+            controller._read_command = Mock(return_value={'status': 'running', 'pod_uid': 'pod'})
+            first = controller.start_python('scratch', 'run-a')
+            again = controller.start_python('scratch', 'run-a')
+            second = controller.start_python('scratch', 'run-b')
+            self.assertEqual(first, again)
+            self.assertNotEqual(first['operation_id'], second['operation_id'])
+            self.assertEqual(controller.submit_command.call_count, 2)

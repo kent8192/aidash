@@ -70,8 +70,17 @@ def mount_rootfs(docker_enabled):
 
     root = '/scratch-system/rootfs'
     libc = ctypes.CDLL(None, use_errno=True)
+    runtime = root
+    for component in ('run', 'aidash'):
+        runtime = os.path.join(runtime, component)
+        try:
+            os.mkdir(runtime, 0o700)
+        except FileExistsError:
+            pass
+        if not stat.S_ISDIR(os.lstat(runtime).st_mode):
+            raise ValueError('Python session directory must not be a symlink')
     mounts = [('/proc', 'proc'), ('/dev', 'dev'), ('/tmp', 'tmp'),
-              ('/scratch-system/scratch', 'scratch')]
+              ('/scratch-system/scratch', 'scratch'), ('/.aidash-helpers', '.aidash-helpers')]
     if docker_enabled:
         mounts.append(('/docker-storage', 'var/lib/docker'))
     for source, relative in mounts:
@@ -162,7 +171,8 @@ def run_supervised(argv, timeout, stop_requested=None):
     return {'status': 'termination_unconfirmed'}
 
 
-def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled):
+def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, *, expected_pod_uid,
+                      record_changes=True):
     """Execute once, persist its outcome, and record its observed system changes."""
     import json
     from pathlib import Path
@@ -175,12 +185,15 @@ def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled):
         raise ValueError('canonical operation UUID required')
     if not isinstance(run_id, str) or not run_id:
         raise ValueError('run_id must be a nonempty string')
-    if not isinstance(code, str) or len(code.encode('utf-8')) > 65536:
+    if not isinstance(code, str) or len(code.encode('utf-8')) > 131072:
         raise ValueError('command exceeds the code limit')
     if timeout is not None and (type(timeout) is not int or not 1 <= timeout <= 3600):
         raise ValueError('invalid command timeout')
+    pod_uid = os.environ.get('AIDASH_POD_UID')
+    if not pod_uid or pod_uid != expected_pod_uid:
+        raise ValueError('Execution Pod identity changed')
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from execution_pod import append_change_log, system_tree_diff, system_tree_index
+    from execution_pod import append_change_log, helper_command, system_tree_diff, system_tree_index
 
     state = Path('/scratch-system/operations')
     state.mkdir(mode=0o700, exist_ok=True)
@@ -196,9 +209,6 @@ def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled):
     finally:
         os.close(directory)
     root = '/scratch-system/rootfs'
-    pod_uid = os.environ.get('AIDASH_POD_UID')
-    if not pod_uid:
-        raise ValueError('Pod UID required')
     stopping = threading.Event()
     signal.signal(signal.SIGUSR1, lambda *_: stopping.set())
     running = state / (operation_id + '.running')
@@ -208,12 +218,12 @@ def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled):
         file.flush()
         os.fsync(file.fileno())
     os.replace(pending_running, running)
-    before = system_tree_index(root)
-    argv = [sys.executable, '-I', str(Path(__file__).resolve()), 'chroot',
-            'docker' if docker_enabled else 'normal', root, cwd, '/bin/sh', '-c', code]
+    before = system_tree_index(root) if record_changes else None
+    argv = helper_command('chroot', 'docker' if docker_enabled else 'normal', root, cwd, '/bin/sh', '-c', code)
     result = run_supervised(argv, timeout, stop_requested=stopping)
-    changes = system_tree_diff(before, system_tree_index(root))
-    append_change_log('/scratch-system/changes.jsonl', run_id, changes)
+    if record_changes:
+        changes = system_tree_diff(before, system_tree_index(root))
+        append_change_log('/scratch-system/changes.jsonl', run_id, changes)
     result.update(operation_id=operation_id, run_id=run_id)
     temporary = state / (operation_id + '.new')
     with temporary.open('x', encoding='utf-8') as file:
@@ -261,6 +271,38 @@ def stop_operation(operation_id):
         os.close(fd)
 
 
+def log_chunk(path, offset, limit):
+    import base64
+    import fcntl
+    if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 262144:
+        raise ValueError('invalid log offset or limit')
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return {'data': '', 'next_offset': offset, 'eof': True}
+    with os.fdopen(fd, 'rb') as file:
+        fcntl.flock(file, fcntl.LOCK_SH)
+        file.seek(offset)
+        data = file.read(limit)
+        eof = file.tell() >= os.fstat(file.fileno()).st_size
+    return {'data': base64.b64encode(data).decode('ascii'), 'next_offset': offset + len(data), 'eof': eof}
+
+
+def read_result(operation_id):
+    import json
+    import uuid
+    from pathlib import Path
+    if str(uuid.UUID(operation_id)) != operation_id:
+        raise ValueError('canonical operation UUID required')
+    path = Path('/scratch-system/operations') / (operation_id + '.json')
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, 'rb') as file:
+        data = file.read(65537)
+    if len(data) > 65536:
+        raise ValueError('command result exceeds the limit')
+    return json.loads(data)
+
+
 if __name__ == '__main__':
     import sys
     if sys.argv[1:] == ['init']:
@@ -272,13 +314,23 @@ if __name__ == '__main__':
         mount_rootfs(os.environ.get('AIDASH_DOCKER_ENABLED') == 'true')
         while True:
             signal.pause()
-    if len(sys.argv) == 8 and sys.argv[1] == 'supervise' and sys.argv[2] in ('docker', 'normal'):
-        seconds = None if sys.argv[6] == 'background' else int(sys.argv[6])
-        outcome = supervise_command(sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[7], seconds,
-                                    sys.argv[2] == 'docker')
+    if (len(sys.argv) == 10 and sys.argv[1] == 'supervise' and sys.argv[2] in ('docker', 'normal')
+            and sys.argv[3] in ('command', 'session')):
+        seconds = None if sys.argv[7] == 'background' else int(sys.argv[7])
+        outcome = supervise_command(sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[9], seconds,
+                                    sys.argv[2] == 'docker', expected_pod_uid=sys.argv[8],
+                                    record_changes=sys.argv[3] == 'command')
         raise SystemExit(0 if outcome['status'] in ('completed', 'timed_out', 'stopped') else 1)
     if len(sys.argv) == 3 and sys.argv[1] == 'stop':
         stop_operation(sys.argv[2])
+        raise SystemExit(0)
+    if len(sys.argv) == 4 and sys.argv[1] == 'changes':
+        import json
+        print(json.dumps(log_chunk('/scratch-system/changes.jsonl', int(sys.argv[2]), int(sys.argv[3]))))
+        raise SystemExit(0)
+    if len(sys.argv) == 3 and sys.argv[1] == 'result':
+        import json
+        print(json.dumps(read_result(sys.argv[2])))
         raise SystemExit(0)
     if len(sys.argv) >= 6 and sys.argv[1] == 'chroot' and sys.argv[2] in ('docker', 'normal'):
         chroot_command(sys.argv[3], sys.argv[4], sys.argv[5:], sys.argv[2] == 'docker')

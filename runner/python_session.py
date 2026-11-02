@@ -1,0 +1,143 @@
+"""A Run's unprivileged, stateful Python interpreter inside its Execution Pod."""
+import contextlib
+import io
+import json
+import os
+import socket
+import struct
+import sys
+import time
+import traceback
+
+_MAX_MESSAGE = 64 * 1048576
+
+
+def _read_exact(connection, size):
+    chunks = bytearray()
+    while len(chunks) < size:
+        chunk = connection.recv(min(65536, size - len(chunks)))
+        if not chunk:
+            raise EOFError('Python session closed the connection')
+        chunks.extend(chunk)
+    return bytes(chunks)
+
+
+def _receive(connection, limit=_MAX_MESSAGE):
+    length = struct.unpack('!I', _read_exact(connection, 4))[0]
+    if length > limit:
+        raise ValueError('Python session message exceeds the limit')
+    return json.loads(_read_exact(connection, length))
+
+
+def _send(connection, value):
+    data = json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    if len(data) > _MAX_MESSAGE:
+        raise ValueError('Python session response exceeds the limit')
+    connection.sendall(struct.pack('!I', len(data)) + data)
+
+
+class _Output(io.TextIOBase):
+    def __init__(self, limit):
+        self.limit, self.data, self.truncated = limit, bytearray(), False
+
+    def write(self, text):
+        raw = str(text).encode('utf-8', errors='replace')
+        chunk = raw[:max(0, self.limit - len(self.data))]
+        self.data.extend(chunk)
+        self.truncated |= len(chunk) != len(raw)
+        return len(text)
+
+    def value(self):
+        return self.data.decode('utf-8', errors='replace')
+
+
+def send_cell(path, code, timeout, output_bytes):
+    if not isinstance(code, str) or len(code.encode('utf-8')) > 65536:
+        raise ValueError('Python code exceeds the limit')
+    if type(timeout) is not int or not 1 <= timeout <= 3600:
+        raise ValueError('invalid Python timeout')
+    if type(output_bytes) is not int or not 1 <= output_bytes <= 8388608:
+        raise ValueError('invalid Python output limit')
+    deadline = time.monotonic() + timeout
+    while True:
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            connection.settimeout(max(.001, deadline - time.monotonic()))
+            connection.connect(path)
+            break
+        except (FileNotFoundError, ConnectionRefusedError):
+            connection.close()
+            if time.monotonic() >= deadline:
+                raise TimeoutError('Python interpreter did not become ready') from None
+            time.sleep(.05)
+    with connection:
+        connection.settimeout(max(.001, deadline - time.monotonic()))
+        _send(connection, {'code': code, 'output_bytes': output_bytes})
+        return _receive(connection)
+
+
+def serve(path):
+    if os.path.lexists(path):
+        raise FileExistsError('Python session socket already exists')
+    namespace = {'__name__': '__main__'}
+    last_used = time.monotonic()
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+        server.bind(path)
+        os.chmod(path, 0o600)
+        server.listen(8)
+        server.settimeout(1)
+        try:
+            while time.monotonic() - last_used < 1800:
+                try:
+                    connection, _ = server.accept()
+                except socket.timeout:
+                    continue
+                with connection:
+                    connection.settimeout(60)
+                    try:
+                        request = _receive(connection, 131072)
+                        code, limit = request['code'], request['output_bytes']
+                        if not isinstance(code, str) or len(code.encode('utf-8')) > 65536:
+                            raise ValueError('Python code exceeds the limit')
+                        if type(limit) is not int or not 1 <= limit <= 8388608:
+                            raise ValueError('invalid Python output limit')
+                        output = _Output(limit)
+                        status = 'completed'
+                        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+                            try:
+                                try:
+                                    compiled = compile(code, '<cell>', 'eval')
+                                except SyntaxError:
+                                    exec(compile(code, '<cell>', 'exec'), namespace)
+                                else:
+                                    result = eval(compiled, namespace)
+                                    if result is not None:
+                                        print(repr(result))
+                            except BaseException:
+                                status = 'failed'
+                                traceback.print_exc()
+                        _send(connection, {'status': status, 'stdout': output.value(),
+                                           'truncated': output.truncated})
+                    except Exception as error:
+                        try:
+                            _send(connection, {'status': 'failed', 'code': 'python_session_error',
+                                               'message': str(error) or type(error).__name__})
+                        except OSError:
+                            pass
+                    last_used = time.monotonic()
+        finally:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+
+
+if __name__ == '__main__':
+    if len(sys.argv) == 3 and sys.argv[1] == 'serve':
+        serve(sys.argv[2])
+    elif len(sys.argv) == 6 and sys.argv[1] == 'cell':
+        import base64
+        code = base64.b64decode(sys.argv[5], validate=True).decode('utf-8')
+        print(json.dumps(send_cell(sys.argv[2], code, int(sys.argv[3]), int(sys.argv[4]))))
+    else:
+        raise SystemExit('invalid Python session request')

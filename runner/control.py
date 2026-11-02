@@ -158,6 +158,7 @@ class Runner:
             self.verify_freeze()
         self.retire_admission_probes()
         self.recover()
+        self.execution_pods.recover_commands()
 
     def operation_files(self):
         for path in self.root.glob("*.json"):
@@ -1145,7 +1146,11 @@ class Handler(BaseHTTPRequestHandler):
         if not hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + runner.token):
             raise Rejected(401, "runner authentication required")
         path = urlsplit(self.path).path
-        if self.command == 'POST' and path in ('/v2/pods/ensure', '/v2/pods/stop', '/v2/pods/delete'):
+        if self.command == 'POST' and path in (
+                '/v2/pods/ensure', '/v2/pods/stop', '/v2/pods/delete', '/v2/pods/reset',
+                '/v2/commands/submit', '/v2/commands/result', '/v2/runs/cancel',
+                '/v2/background/list', '/v2/background/stop', '/v2/changes', '/v2/viewers/heartbeat',
+                '/v2/python/start', '/v2/python/cell', '/v2/python/stop'):
             size = int(self.headers.get('Content-Length', '0'))
             if not 0 < size <= 1048576:
                 raise Rejected(413, 'runner request limit')
@@ -1156,7 +1161,30 @@ class Handler(BaseHTTPRequestHandler):
                 return runner.execution_pods.ensure(request)
             if path == '/v2/pods/stop':
                 return runner.execution_pods.stop(request['scratch_space_id'])
-            return runner.execution_pods.delete(request['scratch_space_id'])
+            if path == '/v2/pods/delete':
+                return runner.execution_pods.delete(request['scratch_space_id'])
+            if path == '/v2/pods/reset':
+                return runner.execution_pods.reset(request)
+            if path == '/v2/commands/submit':
+                return runner.execution_pods.submit_command(request)
+            if path == '/v2/commands/result':
+                return runner.execution_pods.command_result(request['operation_id'])
+            if path == '/v2/runs/cancel':
+                return runner.execution_pods.cancel_run(request['run_id'])
+            if path == '/v2/background/list':
+                return runner.execution_pods.background_processes(request['scratch_space_id'])
+            if path == '/v2/background/stop':
+                return runner.execution_pods.stop_background(request['operation_id'])
+            if path == '/v2/viewers/heartbeat':
+                return runner.execution_pods.viewer_heartbeat(request['scratch_space_id'], request['viewer_id'])
+            if path == '/v2/python/start':
+                return runner.execution_pods.start_python(request['scratch_space_id'], request['run_id'])
+            if path == '/v2/python/cell':
+                return runner.execution_pods.python_cell(request)
+            if path == '/v2/python/stop':
+                return runner.execution_pods.stop_python(request['scratch_space_id'], request['run_id'])
+            return runner.execution_pods.change_log(request['scratch_space_id'], request.get('offset', 0),
+                                                    request.get('limit', 65536))
         if self.command == "POST" and path == "/v1/operations":
             size = int(self.headers.get("Content-Length", "0"))
             if not 0 < size <= 8 * 1048576:
@@ -1205,7 +1233,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             data, status = self.handle_request(), 200
         except ExecutionPodError as error:
-            status = 503 if error.code in ('admission_unverified', 'startup_failed') else 409
+            status = (404 if error.code == 'command_not_found' else
+                      503 if error.code in ('admission_unverified', 'startup_failed', 'pod_unavailable',
+                                            'change_log_unavailable') else 409)
             data = {'code': error.code, 'message': error.message}
         except Rejected as error:
             data, status = ({'code': 'request_rejected', 'message': error.message}
@@ -1235,6 +1265,7 @@ if __name__ == "__main__":
     profile = json.loads(Path(os.environ["AIDASH_CAPABILITY_PROFILE"]).read_bytes())
     config = dict(profile, **profile["runner"])
     runner = Runner(config)
+    runner.execution_pods.start_idle_monitor()
     server = ThreadingHTTPServer((config["listen_host"], config["listen_port"]), Handler)
     server.runner = runner
     server.serve_forever()
