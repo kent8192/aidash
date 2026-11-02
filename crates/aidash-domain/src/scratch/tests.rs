@@ -63,6 +63,8 @@ fn ceilings_and_operator_control_bound_settings() {
 	assert!(settings.validate(&ceilings, &hosts).is_ok());
 	settings.capacity_bytes = 1024 * 1024 * 1024 * 1024 + 1;
 	assert!(settings.validate(&ceilings, &hosts).is_err());
+	ceilings.capacity_bytes = u64::MAX;
+	assert!(settings.validate(&ceilings, &hosts).is_err());
 	settings.capacity_bytes = 1024 * 1024 * 1024 * 1024;
 	settings.idle_expiry_days = None;
 	assert!(settings.validate(&ceilings, &hosts).is_ok());
@@ -77,4 +79,50 @@ fn wildcard_text_cannot_bypass_the_all_hosts_operator_gate() {
 			.validate(&ScratchCeilings::default(), &HostAllowlist::All)
 			.is_err()
 	);
+}
+
+#[test]
+fn default_hosts_cover_major_package_and_container_registries() {
+	let HostAllowlist::Hosts(hosts) = ScratchSettings::default().allowed_hosts else {
+		panic!("defaults must be bounded")
+	};
+	for host in [
+		"registry.npmjs.org",
+		"pypi.org",
+		"crates.io",
+		"proxy.golang.org",
+		"github.com",
+		"deb.debian.org",
+		"registry-1.docker.io",
+		"ghcr.io",
+		"quay.io",
+	] {
+		assert!(hosts.contains(host), "missing {host}");
+	}
+}
+
+#[test]
+fn execution_image_must_be_pinned_by_digest() {
+	let mut settings = ScratchSettings::default();
+	let ceilings = ScratchCeilings::default();
+	settings.execution_image = Some("example/image:latest".into());
+	assert!(settings.validate(&ceilings, &HostAllowlist::All).is_err());
+	settings.execution_image = Some(format!("example/image@sha256:{}", "a".repeat(64)));
+	assert!(settings.validate(&ceilings, &HostAllowlist::All).is_ok());
+}
+
+#[test]
+fn tenant_defaults_never_expand_the_tenant_hosts() {
+	let tenant = HostAllowlist::Hosts(BTreeSet::from([
+		"pypi.org".to_owned(),
+		"internal.example".to_owned(),
+	]));
+	let settings = ScratchSettings::for_tenant(&tenant);
+	assert_eq!(
+		settings.allowed_hosts,
+		HostAllowlist::Hosts(BTreeSet::from(["pypi.org".to_owned()]))
+	);
+	settings
+		.validate(&ScratchCeilings::default(), &tenant)
+		.unwrap();
 }

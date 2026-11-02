@@ -11,12 +11,38 @@ const GIB: u64 = 1024 * 1024 * 1024;
 
 pub type ScratchSpaceId = Uuid;
 
-/// All hosts, or an explicit set of DNS hostnames.
+/// All hosts, or an explicit set of canonical DNS names or IP addresses.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", content = "hosts", rename_all = "snake_case")]
 pub enum HostAllowlist {
 	All,
 	Hosts(BTreeSet<String>),
+}
+
+/// Public package and source registries enabled for a new Tenant by default.
+pub fn default_public_hosts() -> BTreeSet<String> {
+	[
+		"registry.npmjs.org",
+		"pypi.org",
+		"files.pythonhosted.org",
+		"crates.io",
+		"index.crates.io",
+		"static.crates.io",
+		"proxy.golang.org",
+		"sum.golang.org",
+		"github.com",
+		"objects.githubusercontent.com",
+		"archive.ubuntu.com",
+		"security.ubuntu.com",
+		"deb.debian.org",
+		"registry-1.docker.io",
+		"auth.docker.io",
+		"ghcr.io",
+		"quay.io",
+	]
+	.into_iter()
+	.map(str::to_owned)
+	.collect()
 }
 
 impl HostAllowlist {
@@ -54,6 +80,7 @@ fn valid_host(host: &str) -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ScratchSettings {
 	pub capacity_bytes: u64,
 	/// None means the Scratch Space never expires from idleness.
@@ -74,7 +101,7 @@ impl Default for ScratchSettings {
 		Self {
 			capacity_bytes: 100 * GIB,
 			idle_expiry_days: Some(14),
-			allowed_hosts: HostAllowlist::Hosts(BTreeSet::new()),
+			allowed_hosts: HostAllowlist::Hosts(default_public_hosts()),
 			execution_image: None,
 			external_services: BTreeSet::new(),
 			cpu_millis: 4000,
@@ -87,7 +114,7 @@ impl Default for ScratchSettings {
 }
 
 /// Effective Deployment ceilings and operator decisions for this Tenant.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ScratchCeilings {
 	pub capacity_bytes: u64,
 	pub cpu_millis: u32,
@@ -109,19 +136,39 @@ impl Default for ScratchCeilings {
 }
 
 impl ScratchSettings {
+	/// Default public destinations narrowed by the Tenant's host policy.
+	pub fn for_tenant(tenant_hosts: &HostAllowlist) -> Self {
+		let defaults = default_public_hosts();
+		let hosts = match tenant_hosts {
+			HostAllowlist::All => defaults,
+			HostAllowlist::Hosts(hosts) => defaults.intersection(hosts).cloned().collect(),
+		};
+		Self {
+			allowed_hosts: HostAllowlist::Hosts(hosts),
+			..Self::default()
+		}
+	}
+
 	pub fn validate(&self, ceilings: &ScratchCeilings, tenant_hosts: &HostAllowlist) -> Result<()> {
 		if self.capacity_bytes == 0
 			|| self.capacity_bytes > ceilings.capacity_bytes
+			|| self.capacity_bytes > 1024 * GIB
 			|| self.cpu_millis == 0
 			|| self.cpu_millis > ceilings.cpu_millis
 			|| self.memory_bytes == 0
 			|| self.memory_bytes > ceilings.memory_bytes
 			|| self.idle_expiry_days == Some(0)
-			|| self
-				.execution_image
-				.as_ref()
-				.is_some_and(|s| s.trim().is_empty())
-			|| (self.docker_enabled && !ceilings.docker_allowed)
+			|| self.execution_image.as_ref().is_some_and(|s| {
+				let Some((name, digest)) = s.rsplit_once("@sha256:") else {
+					return true;
+				};
+				name.trim().is_empty()
+					|| name != name.trim()
+					|| digest.len() != 64
+					|| !digest
+						.bytes()
+						.all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+			}) || (self.docker_enabled && !ceilings.docker_allowed)
 			|| !self
 				.allowed_hosts
 				.narrows(tenant_hosts, ceilings.all_hosts_allowed)
