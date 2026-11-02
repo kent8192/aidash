@@ -17,7 +17,12 @@ import {
   pairClass,
 } from "./components/patterns";
 import { MemoryRegistryFields, memoryConfiguration } from "./memory-registry";
-import { ApiError, apiFetch } from "./transport";
+import {
+  ApiError,
+  apiFetch,
+  dashboardContext,
+  transportGeneration,
+} from "./transport";
 import {
   HomeNativeMemoryFields,
   nativeMemoryRequest,
@@ -43,6 +48,7 @@ import { Field, useAgentLabel, useEntityLabel, useI18n } from "./ui";
 import type { State, EntityRef, Discovery, Task } from "./types";
 import {
   conversationCreate,
+  scratchList,
   workspaceCreate,
   taskCreate,
   registryCreate,
@@ -142,6 +148,21 @@ function probabilityBits(value: number): string {
 export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
   const { t } = useI18n();
   const where = useNodeChoice();
+  const [scratchChoice, setScratchChoice] = useState<{
+    node: string | undefined;
+    id: string;
+  }>({ node: undefined, id: "" });
+  const scratchId = scratchChoice.node === where.node ? scratchChoice.id : "";
+  const spaces = useQuery({
+    queryKey: [
+      "scratch-spaces",
+      where.node,
+      dashboardContext(),
+      transportGeneration(),
+    ],
+    enabled: Boolean(where.node),
+    queryFn: () => scratchList({ node: where.node ?? "" }),
+  });
   const entityLabel = useEntityLabel(data.registry);
   const targets = data.registry.filter((e) =>
     ["agent", "cluster"].includes(e.kind),
@@ -160,6 +181,7 @@ export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
             target: ref(value.target),
             target_kind: target.kind,
             node: where.node,
+            scratch_space_id: scratchId || undefined,
           }),
         )
       )
@@ -221,6 +243,23 @@ export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
         )}
       </form.Field>
       {where.field}
+      <Field label={t("scratchSpace")}>
+        <NativeSelect
+          value={scratchId}
+          onChange={(event) =>
+            setScratchChoice({ node: where.node, id: event.target.value })
+          }
+        >
+          <option value="">{t("scratchNewConversation")}</option>
+          {spaces.data?.map((space) => (
+            <option key={space.id} value={space.id}>
+              {space.name} · {space.id.slice(0, 8)}
+            </option>
+          ))}
+        </NativeSelect>
+      </Field>
+      {spaces.isLoading && <Hint>{t("scratchLoading")}</Hint>}
+      {spaces.isError && <Notice role="alert">{t("scratchLoadError")}</Notice>}
       <form.Subscribe selector={(s) => s.isSubmitting}>
         {(pending) => (
           <Button

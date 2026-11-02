@@ -1,3 +1,4 @@
+import { ScratchSpacesSettings } from "../scratch-spaces";
 import { SafetyStopPanel } from "./safety-stop";
 import { selfHostedPlanConnections } from "@slots/plan-connections";
 import {
@@ -672,7 +673,10 @@ export function Configuration({
               <Notice role="status">{approvalCopy[locale].personalOnly}</Notice>
             ))}
           {section === "node" && (
-            <NodeView data={data} disconnect={disconnect} />
+            <>
+              <NodeView data={data} disconnect={disconnect} />
+              {data.access.kind === "subject" && <ScratchSpacesSettings />}
+            </>
           )}
           {section === "nodes" && <NodesPage data={data} />}
         </>
