@@ -105,7 +105,7 @@ impl EndScope for Cascade<'_> {
 					.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
 					.and_where(Expr::col("control").ne("CANCELLED"))
 					.order_by(Alias::new("id"), Order::Asc)
-					.lock(LockType::Update)
+					.lock(LockType::NoKeyUpdate)
 					.to_string(PostgresQueryBuilder),
 			)
 			.scalar_all(&mut **self.tx)
@@ -198,7 +198,7 @@ impl EndScope for NativeCascade<'_> {
 			.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
 			.and_where(Expr::col("control").ne("CANCELLED"))
 			.order_by(Alias::new("id"), Order::Asc)
-			.lock(LockType::Update)
+			.lock(LockType::NoKeyUpdate)
 			.build(PostgresQueryBuilder);
 		let rows = self
 			.tx

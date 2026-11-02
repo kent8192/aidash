@@ -6808,14 +6808,36 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 	assert_eq!(status, 200, "subnodes: {body}");
 	assert_eq!(body[0]["id"], json!(subnode));
 	assert_eq!(body[0]["member_runs"][0]["id"], json!(child.id));
-	let (status, body) = request(
-		app,
-		token,
-		"POST",
-		&format!("/api/runs/{}/control", creator_run),
-		json!({"action":"cancel"}),
+	// A member worker retains this lock through its authority transaction.
+	let mut authority = f.store.pool.fixture_driver().begin().await.unwrap();
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait as _, LockType, PostgresQueryBuilder, Query,
+		QueryStatementBuilder as _,
+	};
+	sqlx::query(
+		&Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("runs"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(child.id)))
+			.lock(LockType::KeyShare)
+			.to_string(PostgresQueryBuilder),
 	)
-	.await;
+	.fetch_one(&mut *authority)
+	.await
+	.unwrap();
+	let (status, body) = tokio::time::timeout(
+		std::time::Duration::from_secs(10),
+		request(
+			app,
+			token,
+			"POST",
+			&format!("/api/runs/{}/control", creator_run),
+			json!({"action":"cancel"}),
+		),
+	)
+	.await
+	.expect("cascade must not wait for the member worker's Run reference");
+	authority.rollback().await.unwrap();
 	assert_eq!(status, 200, "cancel: {body}");
 	let child = f.store.run(&TEST_FIXTURE, child.id).await.unwrap();
 	assert_eq!(child.control, aidash_domain::RunControl::Cancelled);
