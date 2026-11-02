@@ -936,6 +936,24 @@ impl ErasureScope for Erasure<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
+	async fn digest(&mut self, tenant: &str, id: Uuid) -> Result<Option<String>> {
+		crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("digest"))
+				.from(Alias::new("core_objects"))
+				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut *self.tx)
+		.await
+		.map_err(Into::into)
+	}
+	async fn reclaim_blob(&mut self, tenant: &str, digest: &str) -> Result<()> {
+		super::reclamation::reclaim_blob(self.store, &mut self.tx, tenant, digest)
+			.await
+			.map_err(Into::into)
+	}
 	async fn release_holds(&mut self, area: &Area) -> Result<()> {
 		let result: NativeResult<()> = async {
 			crate::database::native::query(

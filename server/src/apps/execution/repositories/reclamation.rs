@@ -227,81 +227,92 @@ async fn reclaim_unreferenced_blobs(store: &Store) -> NativeResult<()> {
 			.await?;
 	for (tenant, digest) in candidates {
 		let mut tx = store.pool.begin(&MAINTENANCE).await?;
-		super::capability_objects::lock_tenant_quota(&mut tx, &tenant).await?;
-		let lock = format!("core-blob:{tenant}:{digest}");
-		crate::database::native::query(
-			&Query::select()
-				.expr(SimpleExpr::CustomWithExpr(
-					"(pg_advisory_xact_lock(hashtextextended(?, 0)))".into(),
-					vec![Expr::value(lock).into()],
-				))
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(&mut *tx)
-		.await?;
-		let mut referenced = false;
-		for table in ["core_objects", "core_blob_references"] {
-			let id: Option<Uuid> = crate::database::native::query_scalar(
-				&Query::select()
-					.column(Alias::new("id"))
-					.from(Alias::new(table))
-					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&tenant)))
-					.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(&digest)))
-					.limit(1)
-					.to_string(PostgresQueryBuilder),
-			)
-			.scalar_optional(&mut *tx)
-			.await?;
-			referenced |= id.is_some();
-		}
-		if !referenced {
-			let size: Option<i64> = crate::database::native::query_scalar(
-				&Query::select()
-					.column(Alias::new("size"))
-					.from(Alias::new("core_blobs"))
-					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&tenant)))
-					.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(&digest)))
-					.to_string(PostgresQueryBuilder),
-			)
-			.scalar_optional(&mut *tx)
-			.await?;
-			if let Some(size) = size {
-				let parsed = digest
-					.parse()
-					.map_err(|_| crate::Error::Conflict("OBJECT_INTEGRITY".into()))?;
-				store
-					.capabilities
-					.blob_store()
-					.await?
-					.delete(&tenant, parsed)
-					.await?;
-				crate::database::native::query(
-					&Query::delete()
-						.from_table(Alias::new("core_blobs"))
-						.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&tenant)))
-						.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(&digest)))
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(&mut *tx)
-				.await?;
-				crate::database::native::query(
-					&Query::update()
-						.table(Alias::new("core_quotas"))
-						.value_expr(
-							Alias::new("used_bytes"),
-							Expr::col(Alias::new("used_bytes")).sub(Expr::value(size)),
-						)
-						.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&tenant)))
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(&mut *tx)
-				.await?;
-			}
-		}
+		reclaim_blob(store, &mut tx, &tenant, &digest).await?;
 		tx.commit().await?;
 	}
 	Ok(())
 }
+/// Reclaim an already unreferenced committed blob under the publication lock.
+pub(crate) async fn reclaim_blob(
+	store: &Store,
+	tx: &mut crate::database::native::Transaction,
+	tenant: &str,
+	digest: &str,
+) -> NativeResult<()> {
+	super::capability_objects::lock_tenant_quota(tx, tenant).await?;
+	let lock = format!("core-blob:{tenant}:{digest}");
+	crate::database::native::query(
+		&Query::select()
+			.expr(SimpleExpr::CustomWithExpr(
+				"(pg_advisory_xact_lock(hashtextextended(?, 0)))".into(),
+				vec![Expr::value(lock).into()],
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut **tx)
+	.await?;
+	let mut referenced = false;
+	for table in ["core_objects", "core_blob_references"] {
+		let id: Option<Uuid> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("id"))
+				.from(Alias::new(table))
+				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+				.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(digest)))
+				.limit(1)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **tx)
+		.await?;
+		referenced |= id.is_some();
+	}
+	if !referenced {
+		let size: Option<i64> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("size"))
+				.from(Alias::new("core_blobs"))
+				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+				.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(digest)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **tx)
+		.await?;
+		if let Some(size) = size {
+			let parsed = digest
+				.parse()
+				.map_err(|_| crate::Error::Conflict("OBJECT_INTEGRITY".into()))?;
+			store
+				.capabilities
+				.blob_store()
+				.await?
+				.delete(tenant, parsed)
+				.await?;
+			crate::database::native::query(
+				&Query::delete()
+					.from_table(Alias::new("core_blobs"))
+					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+					.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(digest)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut **tx)
+			.await?;
+			crate::database::native::query(
+				&Query::update()
+					.table(Alias::new("core_quotas"))
+					.value_expr(
+						Alias::new("used_bytes"),
+						Expr::col(Alias::new("used_bytes")).sub(Expr::value(size)),
+					)
+					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut **tx)
+			.await?;
+		}
+	}
+	Ok(())
+}
+
 #[async_trait]
 impl ReclamationScope for Scope<'_> {
 	async fn load(&mut self, id: Uuid) -> Result<Record> {

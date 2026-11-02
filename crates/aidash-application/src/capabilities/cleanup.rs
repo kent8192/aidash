@@ -347,9 +347,9 @@ pub async fn restore(scope: &mut dyn CleanupScope, id: Uuid, input: Restore) -> 
 }
 pub async fn erase_job(repository: &dyn CleanupRepository, snapshot: Record) -> Result<()> {
 	let mut scope = repository.begin().await?;
+	let mut staged = false;
 	let result = async {
 		let (mut area, mut record) = scope.locked(&snapshot).await?;
-
 		let expiring = matches!(record.state.as_str(), "restored" | "recoverable")
 			&& record.expires_at.is_some_and(|t| t <= Utc::now());
 		if !expiring && !matches!(record.state.as_str(), "deleting" | "cleanup_failed") {
@@ -362,18 +362,47 @@ pub async fn erase_job(repository: &dyn CleanupRepository, snapshot: Record) -> 
 			.filter(|f| !matches!(f.scope, FileScope::References))
 			.map(|f| f.file_id)
 			.collect::<std::collections::BTreeSet<_>>();
-		if expiring {
-			// The recoverable snapshot kept the holds until it expired; the
-			// Retained versions now follow the erased snapshot.
-			scope.release_holds(&area).await?;
-			if record.state == "recoverable"
-				&& (area.state != "recoverable" || record.data["generation"] != area.generation)
+		if !record.data["erasure_digests"].is_array() {
+			if expiring {
+				if record.state == "recoverable"
+					&& (area.state != "recoverable" || record.data["generation"] != area.generation)
+				{
+					return Err(Error::Conflict("CLEANUP_GENERATION_CHANGED".into()));
+				}
+			} else if area.generation != record.data["generation"]
+				|| !matches!(area.state.as_str(), "cleaning" | "cleanup_failed")
 			{
 				return Err(Error::Conflict("CLEANUP_GENERATION_CHANGED".into()));
 			}
-			for id in snapshot_ids {
+			scope.release_holds(&area).await?;
+			let ids: Vec<Uuid> = if expiring {
+				snapshot_ids.iter().copied().collect()
+			} else {
+				scope
+					.objects(&area)
+					.await?
+					.into_iter()
+					.filter(|id| !snapshot_ids.contains(id))
+					.collect()
+			};
+			let mut digests = std::collections::BTreeSet::new();
+			for id in ids {
+				if let Some(digest) = scope.digest(&area.tenant, id).await? {
+					digests.insert(digest);
+				}
 				scope.erase(&area.tenant, id).await?;
 			}
+			record.data["erasure_digests"] = json!(digests);
+			scope.update_area(&area).await?;
+			scope.update_record(&mut record).await?;
+			staged = true;
+			return Ok(true);
+		}
+		for digest in serde_json::from_value::<Vec<String>>(record.data["erasure_digests"].clone())?
+		{
+			scope.reclaim_blob(&area.tenant, &digest).await?;
+		}
+		if expiring {
 			if record.state == "recoverable" {
 				area.state = "deleted".into();
 				area.generation += 1;
@@ -384,20 +413,6 @@ pub async fn erase_job(repository: &dyn CleanupRepository, snapshot: Record) -> 
 			record.data["snapshot"] = json!([]);
 			record.expires_at = None;
 		} else {
-			if area.generation != record.data["generation"]
-				|| !matches!(area.state.as_str(), "cleaning" | "cleanup_failed")
-			{
-				return Err(Error::Conflict("CLEANUP_GENERATION_CHANGED".into()));
-			}
-			// A non-recoverable cleanup removes every hold, so the versions it
-			// keeps are erased with the rest of the Working Area.
-			scope.release_holds(&area).await?;
-			let ids: Vec<Uuid> = scope.objects(&area).await?;
-			for id in ids {
-				if !snapshot_ids.contains(&id) {
-					scope.erase(&area.tenant, id).await?;
-				}
-			}
 			record.state = if record.data["choice"] == "recoverable" {
 				"recoverable"
 			} else {
@@ -406,6 +421,7 @@ pub async fn erase_job(repository: &dyn CleanupRepository, snapshot: Record) -> 
 			.into();
 			area.state = record.state.clone();
 		}
+		record.data["erasure_digests"] = Value::Null;
 		scope.update_area(&area).await?;
 		scope.update_record(&mut record).await?;
 		scope
@@ -418,8 +434,13 @@ pub async fn erase_job(repository: &dyn CleanupRepository, snapshot: Record) -> 
 		Ok(true)
 	}
 	.await;
-	scope.finish(result).await
+	scope.finish(result).await?;
+	if staged {
+		Box::pin(erase_job(repository, snapshot)).await?;
+	}
+	Ok(())
 }
+
 pub async fn sweep(repository: &dyn CleanupRepository, cursor: &mut Uuid) -> Result<()> {
 	let jobs = repository.jobs(*cursor).await?;
 	if jobs.is_empty() {
