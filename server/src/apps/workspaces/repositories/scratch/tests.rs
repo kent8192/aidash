@@ -6,9 +6,7 @@ use aidash_domain::{
 use chrono::Utc;
 use rstest::rstest;
 
-#[path = "../../../execution/tests/support/native_database.rs"]
-mod native_database;
-use native_database::{DatabaseFixture, database};
+use crate::apps::execution::test_database::{DatabaseFixture, database};
 
 #[rstest]
 #[tokio::test]

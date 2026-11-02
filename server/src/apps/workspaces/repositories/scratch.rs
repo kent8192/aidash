@@ -521,7 +521,6 @@ impl ScratchServices for NativeScratchServices<'_> {
 				.tx
 				.fetch_all(&sql, convert_values(values))
 				.await
-				.map_err(reinhardt::core::exception::Error::from)
 				.map_err(crate::Error::from)?;
 			let mut versions = Vec::new();
 			for row in rows {
@@ -610,7 +609,6 @@ impl ScratchServices for NativeScratchServices<'_> {
 				.tx
 				.fetch_optional(&sql, convert_values(values))
 				.await
-				.map_err(reinhardt::core::exception::Error::from)
 				.map_err(crate::Error::from)?
 				.is_none()
 			{
@@ -630,7 +628,6 @@ impl ScratchServices for NativeScratchServices<'_> {
 				.tx
 				.fetch_optional(&sql, convert_values(values))
 				.await
-				.map_err(reinhardt::core::exception::Error::from)
 				.map_err(crate::Error::from)?
 				.ok_or(aidash_application::Error::Forbidden)?;
 			let scratch_id = remote_space_id(
@@ -701,7 +698,6 @@ impl ScratchServices for NativeScratchServices<'_> {
 				.tx
 				.fetch_optional(&sql, convert_values(values))
 				.await
-				.map_err(reinhardt::core::exception::Error::from)
 				.map_err(crate::Error::from)?;
 			if let Some(row) = row {
 				let err = reinhardt::core::exception::Error::from;
@@ -726,7 +722,6 @@ impl ScratchServices for NativeScratchServices<'_> {
 				.tx
 				.fetch_optional(&sql, convert_values(values))
 				.await
-				.map_err(reinhardt::core::exception::Error::from)
 				.map_err(crate::Error::from)?
 				.ok_or(aidash_application::Error::Forbidden)?;
 			let parent: Uuid = parent
