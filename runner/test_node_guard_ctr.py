@@ -9,7 +9,9 @@ import uuid
 
 
 class CtrPathTests(unittest.TestCase):
-    def test_guard_uses_ctr_from_path_and_honors_override(self):
+    def test_guard_runs_the_ctr_named_by_the_override(self):
+        # Setup and Helm pass the node's ctr path explicitly (#680); the guard
+        # never searches PATH for a binary it runs as root.
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             pod, area = str(uuid.uuid4()), str(uuid.uuid4())
@@ -26,18 +28,13 @@ class CtrPathTests(unittest.TestCase):
             runsc = root / 'runsc'
             runsc.write_text('#!/bin/sh\nprintf %s ' + "'" + json.dumps({'status': 'running', 'annotations': {'io.kubernetes.cri.image-name': 'image'}}) + "'" + '\n')
             runsc.chmod(0o755)
-            env = dict(os.environ, PATH=str(root), AIDASH_RUNSC_BINARY=str(runsc),
-                       AIDASH_GUARD_STATE=str(root / 'state'))
-            env.pop('AIDASH_CTR_BINARY', None)
+            env = dict(os.environ, PATH='', AIDASH_RUNSC_BINARY=str(runsc),
+                       AIDASH_CTR_BINARY=str(ctr), AIDASH_GUARD_STATE=str(root / 'state'))
             script = Path(__file__).with_name('node_guard.py')
-            for override in (None, str(ctr)):
-                if override:
-                    env['AIDASH_CTR_BINARY'] = override
-                    env['PATH'] = ''
-                result = subprocess.run([sys.executable, str(script)], input=json.dumps(request),
-                                        text=True, capture_output=True, env=env)
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertEqual(json.loads(result.stdout)['status'], 'running')
+            result = subprocess.run([sys.executable, str(script)], input=json.dumps(request),
+                                    text=True, capture_output=True, env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout)['status'], 'running')
 
 
 if __name__ == '__main__':

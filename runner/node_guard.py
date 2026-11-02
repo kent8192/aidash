@@ -12,7 +12,6 @@ import os
 from pathlib import Path
 import re
 import select
-import shutil
 import signal
 import stat
 import subprocess
@@ -29,7 +28,7 @@ MIGRATION_WARNED = set()
 ADOPTED_TOMBSTONES = {}
 RUNTIME = os.environ.get('AIDASH_RUNSC_ROOT', '/run/containerd/runsc/k8s.io')
 RUNSC_BINARY = os.environ.get('AIDASH_RUNSC_BINARY', '/usr/local/bin/runsc')
-CTR_BINARY = os.environ.get('AIDASH_CTR_BINARY') or os.path.abspath(shutil.which('ctr') or '/usr/bin/ctr')
+CTR_BINARY = os.environ.get('AIDASH_CTR_BINARY', '/usr/bin/ctr')
 CGROUP_ROOT = Path(os.environ.get('AIDASH_CGROUP_ROOT', '/sys/fs/cgroup'))
 SENTRY_BINARIES = tuple(json.loads(os.environ.get('AIDASH_SENTRY_BINARIES',
     '["/usr/local/bin/runsc", "/usr/local/bin/gvisor-bin/gvisor_sentry"]')))
