@@ -247,6 +247,13 @@ never reported as a source change
 not offered to a paused Run: an Ordered Run re-retrieves once only when a
 reused retrieval goes stale before it is sent (ADR 0020).
 
+A recorded Run dependency requires `memory.read` on that Run's private memory
+only after it has actually read a memory Unit; an empty read journal adds no
+private-memory authority requirement. Direct disclosure of a Run keeps its
+own `memory.read` gate.
+An invisible Federation dependency still reports `invalidated`: the peer's
+current visibility response does not identify the reason.
+
 ## Impact inspection
 
 `POST /api/workspaces/{workspace}/memory/units/impact` takes the provider, the

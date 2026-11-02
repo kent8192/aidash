@@ -6,6 +6,19 @@ use crate::{Result, domain};
 use uuid::Uuid;
 
 impl NativeAccess {
+	pub(crate) async fn semantic_reads_invalidity(
+		&mut self,
+		run: Uuid,
+		pending: &mut Vec<Uuid>,
+	) -> Result<Option<aidash_domain::semantic::Failure>> {
+		aidash_application::semantic::memory::reads_invalidity(
+			&mut crate::bootstrap::native_run_visibility_scope(self),
+			run,
+			pending,
+		)
+		.await
+		.map_err(Into::into)
+	}
 	pub(crate) async fn run_for_interaction(&mut self, id: Uuid) -> Result<domain::Run> {
 		aidash_application::authorization::workspaces::run_for_interaction(
 			&mut crate::bootstrap::native_run_visibility_scope(self),

@@ -1,8 +1,8 @@
 // reinhardt-migration-source: 1
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0092_scope_egress_state", "execution")
-		.add_dependency("execution", "0091_scope_egress_row_level_security")
+	Migration::new("0094_scope_egress_state", "execution")
+		.add_dependency("execution", "0093_scope_egress_row_level_security")
 		.state_only(true)
 		.atomic(true)
 		.add_operation(Operation::CreateTable {

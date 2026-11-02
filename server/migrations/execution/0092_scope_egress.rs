@@ -1,8 +1,8 @@
 // reinhardt-migration-source: 1
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0090_scope_egress", "execution")
-.add_dependency("execution", "0089_remove_agent_cluster")
+	Migration::new("0092_scope_egress", "execution")
+.add_dependency("execution", "0091_bounded_read_indexes")
 .database_only(true).atomic(true)
 .add_operation(Operation::CreateTable {
 name: "egress_scope_state".into(),

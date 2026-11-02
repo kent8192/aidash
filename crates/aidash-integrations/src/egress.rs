@@ -238,6 +238,13 @@ fn forwarded_header(name: &str, connection: &[String]) -> bool {
 		&& !connection.iter().any(|v| v == name)
 }
 
+/// A rewritten package index must reach the gateway uncompressed: the client's
+/// own `accept-encoding` would sit beside the gateway's `identity` and let the
+/// index answer with gzip, which the JSON/HTML rewrite cannot read (#679).
+fn request_header_forwarded(name: &str, connection: &[String], rewrites_index: bool) -> bool {
+	forwarded_header(name, connection) && !(rewrites_index && name == "accept-encoding")
+}
+
 fn package_url(service: &str, url: &Url) -> bool {
 	url.scheme() == "https"
 		&& url.username().is_empty()
@@ -545,8 +552,9 @@ async fn forward(
 		}
 	};
 	let mut upstream = selected.request(request.method().clone(), upstream_url);
+	let rewrites_index = index && asset.is_none();
 	for (name, value) in request.headers() {
-		if forwarded_header(name.as_str(), &connection)
+		if request_header_forwarded(name.as_str(), &connection, rewrites_index)
 			&& name.as_str()
 				!= admission
 					.definition
@@ -585,7 +593,7 @@ async fn forward(
 			}
 		};
 	}
-	if index && asset.is_none() {
+	if rewrites_index {
 		upstream = upstream.header("accept-encoding", "identity");
 	}
 	let meter = admission.meter.clone();

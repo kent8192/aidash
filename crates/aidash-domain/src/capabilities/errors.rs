@@ -11,6 +11,16 @@ pub struct CapabilityError {
 fn bounded(value: &str) -> String {
 	value.chars().take(2048).collect()
 }
+const REVISION_PREFIX: &str = "AREA_REVISION_CHANGED: the working area is at revision ";
+/// Refusal text for a stale `expected_revision`; it carries the revision the
+/// model must send next so it can recover without guessing.
+pub fn area_revision_changed(current: i64) -> String {
+	format!("{REVISION_PREFIX}{current}; retry with expected_revision {current}")
+}
+fn current_revision(message: &str) -> Option<i64> {
+	let rest = message.strip_prefix(REVISION_PREFIX)?;
+	rest.split(';').next()?.parse().ok()
+}
 impl CapabilityError {
 	pub fn message(status: u16, message: &str) -> Self {
 		let prefix = message.split([':', ' ']).next().unwrap_or_default();
@@ -35,7 +45,8 @@ impl CapabilityError {
 			code: code.into(),
 			message: bounded(message),
 			retryable: matches!(status, 429 | 503),
-			details: None,
+			details: current_revision(message)
+				.map(|revision| json!({"current_revision": revision})),
 		}
 	}
 	pub fn stored(value: &Value) -> Option<Self> {

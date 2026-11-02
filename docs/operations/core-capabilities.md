@@ -238,6 +238,9 @@ upper-policy denial cannot be approved away. Authenticated services belong in
 separately configured integrations. Never copy their tokens into Python, Shell,
 Skill scripts or package requests.
 
+Git repositories can be cloned through an approved Egress gateway service; see
+[GitHub repository access](../tenant-secrets.md#clone-a-github-repository).
+
 Additional Python dependencies use explicitly authorized, hash-pinned wheel
 objects fetched by the broker from permitted package origins. Installation is
 offline in the sandbox, with no dependency auto-download or source build. It
