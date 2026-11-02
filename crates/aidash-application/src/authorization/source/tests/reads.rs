@@ -128,6 +128,16 @@ impl SourceAuthorityScope for Producer<'_> {
 #[async_trait]
 impl ProducerScope for Producer<'_> {
 	async fn producer_semantic_sources(&mut self, _: Uuid) -> Result<()> {
+		if self.base.reject_unknown
+			&& self
+				.base
+				.subjects
+				.iter()
+				.skip(1)
+				.any(|s| !self.base.bundle.subjects.contains_key(s))
+		{
+			return Err(Error::Forbidden);
+		}
 		if self.blocked {
 			std::future::pending::<()>().await;
 		}
@@ -403,4 +413,18 @@ async fn already_active_output_visit_does_not_start_recursive_disclosure() {
 	);
 	assert_eq!(reader.output_reads, 0);
 	assert!(!reader.producer_entered);
+}
+
+#[rstest]
+#[tokio::test]
+async fn receiver_only_executor_can_read_required_home_output() {
+	let mut reader = Reader::new();
+	reader.base.bundle.subjects.clear();
+	reader.base.reject_unknown = true;
+	reader.grant.as_mut().unwrap().semantic = json!({"mode":"required_home","home_lineage":[],"execution_lineage":[],"version":1,"index_revision":1,"index_digest":"index","embedding":{"node_id":"aidash://home","entry":{"id":"embedding","version":"1"},"digest":"digest","configuration_digest":"config"}});
+	assert!(
+		use_case::output_visible(&mut reader, Uuid::from_u128(3))
+			.await
+			.unwrap()
+	);
 }

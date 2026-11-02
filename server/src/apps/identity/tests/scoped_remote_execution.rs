@@ -2655,6 +2655,36 @@ async fn review_receiver_only_executor_activates_required_home(
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
+	p.grant = grant;
+	p.admission = serde_json::from_value(body["admission_id"].clone()).unwrap();
+	for _ in 0..10 {
+		if p.run().await.phase().as_str() == "COMPLETED" {
+			break;
+		}
+		p.step().await;
+	}
+	assert_eq!(
+		p.run().await.phase().as_str(),
+		"COMPLETED",
+		"{:?}",
+		p.run().await
+	);
+	let workspace =
+		p.a.store
+			.task(&TEST_FIXTURE, p.task)
+			.await
+			.unwrap()
+			.workspace_id;
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"GET",
+		&format!("/api/workspaces/{workspace}"),
+		json!({}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	assert!(body.to_string().contains("Scoped remote result"), "{body}");
 	p.close().await;
 }
 
