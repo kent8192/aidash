@@ -48,6 +48,12 @@ pub trait ReadProvenanceScope: ResourceVisibilityScope {
 	async fn run_dependency_visible(&mut self, run: &RunMetadata) -> Result<bool> {
 		self.run_base_visible(run).await
 	}
+	/// Apply dependency resource policies while deferring Task producer journals.
+	async fn classified_run_dependency_visible(
+		&mut self,
+		run: &RunMetadata,
+		pending: &mut Vec<Uuid>,
+	) -> Result<bool>;
 	async fn generation_visible(&mut self, job: &Request) -> Result<bool>;
 }
 

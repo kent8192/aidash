@@ -339,7 +339,7 @@ async fn a_rejected_record_moves_the_lock_epoch_of_its_transaction() {
 
 #[rstest]
 #[tokio::test]
-async fn owning_task_producer_unit_deletion_is_reported_as_invalidation(
+async fn owning_and_recorded_run_task_producer_deletion_is_invalidation(
 	#[future] database: DatabaseFixture,
 	bounds: Bounds,
 ) {
@@ -388,6 +388,24 @@ async fn owning_task_producer_unit_deletion_is_reported_as_invalidation(
 		.await
 		.unwrap();
 	let consumer = Uuid::now_v7();
+	let root = Uuid::now_v7();
+	let root_task = store
+		.create_task(
+			&TEST_FIXTURE,
+			workspace,
+			&aidash_domain::NewTask {
+				title: "Root task".into(),
+				description: "Read the dependency".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: None,
+			},
+			"deployment_administrator",
+			None,
+		)
+		.await
+		.unwrap()
+		.id;
 	let pending = aidash_domain::run_state::encode(
 		&aidash_domain::run_state::RunState::Completed(aidash_domain::run_state::TerminalState {}),
 		&aidash_domain::run_state::RecoveryState::default(),
@@ -419,12 +437,61 @@ async fn owning_task_producer_unit_deletion_is_reported_as_invalidation(
 						.to_string(),
 				),
 				Expr::value(aidash_domain::nodes::NodeName::derived("acme").to_string()),
+				Expr::value("dependency"),
+				Expr::value("1.0.0"),
+				Expr::value("COMPLETED"),
+				Expr::value(pending.clone()),
+				Expr::value(1_i64),
+				Expr::value("acme"),
+			],
+		),
+		(
+			"runs",
+			vec![
+				"id",
+				"task_id",
+				"workspace_id",
+				"home_node",
+				"node",
+				"agent_id",
+				"agent_version",
+				"phase",
+				"pending",
+				"revision",
+				"tenant",
+			],
+			vec![
+				Expr::value(root),
+				Expr::value(root_task),
+				Expr::value(workspace),
+				Expr::value(
+					aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+						.to_string(),
+				),
+				Expr::value(aidash_domain::nodes::NodeName::derived("acme").to_string()),
 				Expr::value("a"),
 				Expr::value("1.0.0"),
 				Expr::value("COMPLETED"),
 				Expr::value(pending),
 				Expr::value(1_i64),
 				Expr::value("acme"),
+			],
+		),
+		(
+			"authorization_run_reads",
+			vec![
+				"run_id",
+				"tenant",
+				"workspace_id",
+				"resource_kind",
+				"resource_id",
+			],
+			vec![
+				Expr::value(root),
+				Expr::value("acme"),
+				Expr::value(workspace),
+				Expr::value("run"),
+				Expr::value(consumer),
 			],
 		),
 		(
@@ -461,10 +528,30 @@ async fn owning_task_producer_unit_deletion_is_reported_as_invalidation(
 		.unwrap();
 	}
 	tx.commit().await.unwrap();
-	let run = store.run(&TEST_FIXTURE, consumer).await.unwrap().metadata();
+	let consumer_run = store.run(&TEST_FIXTURE, consumer).await.unwrap().metadata();
 	let Actor::Subject(identity) = actor else {
 		panic!("expected subject")
 	};
+	let mut access = crate::authorization::access::Access::begin(&store, &identity)
+		.await
+		.unwrap();
+	let result = access.run_invalidity(&consumer_run).await;
+	assert_eq!(access.finish(result).await.unwrap(), None);
+	// A memory-free dependency does not require access to its private bank.
+	Authorization { pool: store.pool.clone() }
+		.replace("acme", 2, serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[
+			{"id":"all","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},
+			{"id":"deny-dependency-memory","effect":"deny","subjects":{"any":true},"actions":["memory.read"],"resources":{"kinds":["memory"],"ids":["dependency"]}}
+		]})).unwrap(), "deployment_administrator").await.unwrap();
+	let mut access = crate::authorization::access::Access::begin(&store, &identity)
+		.await
+		.unwrap();
+	let result = access.run_invalidity(&consumer_run).await;
+	assert_eq!(
+		access.finish(result).await.unwrap(),
+		Some(Failure::Authority)
+	);
+	let run = store.run(&TEST_FIXTURE, root).await.unwrap().metadata();
 	let mut access = crate::authorization::access::Access::begin(&store, &identity)
 		.await
 		.unwrap();
@@ -491,10 +578,23 @@ async fn owning_task_producer_unit_deletion_is_reported_as_invalidation(
 		access.finish(result).await.unwrap(),
 		Some(Failure::Invalidated)
 	);
+	// Restore the original owning-Task regression under unrestricted memory.
+	Authorization { pool: store.pool.clone() }.replace("acme", 3,
+		serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[
+			{"id":"all","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}
+		]})).unwrap(), "deployment_administrator").await.unwrap();
+	let mut access = crate::authorization::access::Access::begin(&store, &identity)
+		.await
+		.unwrap();
+	let result = access.run_invalidity(&consumer_run).await;
+	assert_eq!(
+		access.finish(result).await.unwrap(),
+		Some(Failure::Invalidated)
+	);
 	Authorization { pool: store.pool.clone() }
 		.replace(
 			"acme",
-			2,
+			4,
 			serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[
 				{"id":"all","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},
 				{"id":"deny-task","effect":"deny","subjects":{"any":true},"actions":["task.read"],"resources":{"kinds":["task"],"ids":[task.id]}}
@@ -503,6 +603,20 @@ async fn owning_task_producer_unit_deletion_is_reported_as_invalidation(
 		)
 		.await
 		.unwrap();
+	let mut access = crate::authorization::access::Access::begin(&store, &identity)
+		.await
+		.unwrap();
+	let result = access.run_invalidity(&run).await;
+	assert_eq!(
+		access.finish(result).await.unwrap(),
+		Some(Failure::Authority)
+	);
+
+	Authorization { pool: store.pool.clone() }.replace("acme", 5,
+		serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[
+			{"id":"all","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},
+			{"id":"deny-dependency-run","effect":"deny","subjects":{"any":true},"actions":["run.read"],"resources":{"kinds":["run"],"ids":[consumer]}}
+		]})).unwrap(), "deployment_administrator").await.unwrap();
 	let mut access = crate::authorization::access::Access::begin(&store, &identity)
 		.await
 		.unwrap();

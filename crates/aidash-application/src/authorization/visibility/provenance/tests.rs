@@ -226,6 +226,13 @@ impl ReadProvenanceScope for Scope {
 		self.touch("base")?;
 		Ok(self.denied != Some("base"))
 	}
+	async fn classified_run_dependency_visible(
+		&mut self,
+		run: &RunMetadata,
+		_: &mut Vec<Uuid>,
+	) -> Result<bool> {
+		self.run_base_visible(run).await
+	}
 	async fn generation_visible(&mut self, _: &Request) -> Result<bool> {
 		self.touch("generation.read")?;
 		Ok(self.denied != Some("generation.read"))

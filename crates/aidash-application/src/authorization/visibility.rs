@@ -111,6 +111,21 @@ where
 			return Ok(false);
 		}
 	}
+	classified_local_dependency_visible(scope, run, pending, true).await
+}
+
+/// Recheck local dependency policies and enqueue its Task's producers. A Run
+/// with no native memory reads does not require private memory access.
+pub async fn classified_local_dependency_visible<S>(
+	scope: &mut S,
+	run: &RunMetadata,
+	pending: &mut Vec<Uuid>,
+	require_memory: bool,
+) -> Result<bool>
+where
+	S: LocalRunVisibilityScope
+		+ crate::ports::authorization::visibility::provenance::ReadProvenanceScope,
+{
 	if !scope.core_area_visible(run.id).await? {
 		return Ok(false);
 	}
@@ -121,15 +136,23 @@ where
 		&run.id.to_string(),
 		workspace.attributes.clone(),
 	);
-	let memory = scope.memory_resource(run, &workspace).await?;
+	let memory = if require_memory {
+		Some(scope.memory_resource(run, &workspace).await?)
+	} else {
+		None
+	};
 	let Some(task) = scope.task(run).await? else {
 		return Ok(false);
 	};
 	Ok(
 		provenance::classified_task_visible(scope, &task, pending).await?
 			&& LocalRunVisibilityScope::decide(scope, &resource, "run.read").await?
-			&& LocalRunVisibilityScope::decide(scope, &memory, "memory.read").await?
-			&& scope.human_reads(run.workspace_id, run.id).await?,
+			&& match memory {
+				Some(memory) => {
+					LocalRunVisibilityScope::decide(scope, &memory, "memory.read").await?
+				}
+				None => true,
+			} && scope.human_reads(run.workspace_id, run.id).await?,
 	)
 }
 

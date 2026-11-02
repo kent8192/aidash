@@ -163,7 +163,13 @@ async fn source_invalidity(
 		"run" => match scope.source_run(id, workspace).await? {
 			Some(run) => {
 				pending.push(run.id);
-				scope.run_dependency_visible(&run).await?
+				if classify_outputs {
+					scope
+						.classified_run_dependency_visible(&run, pending)
+						.await?
+				} else {
+					scope.run_dependency_visible(&run).await?
+				}
 			}
 			None => return Ok(Some(Failure::Invalidated)),
 		},
