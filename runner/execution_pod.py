@@ -209,11 +209,17 @@ def execution_manifests(settings, config):
     for key in ('cpu', 'memory_bytes', 'capacity_bytes'):
         if type(settings[key]) is not int or settings[key] <= 0:
             raise ValueError(key + ' must be a positive integer')
+    processes = config.get('processes', 128)
+    if type(processes) is not int or processes < 32:
+        raise ValueError('processes must be an integer of at least 32')
     docker = settings['docker_enabled']
     if type(docker) is not bool:
         raise ValueError('docker_enabled must be a boolean')
     if docker and not config.get('allow_docker', False):
         raise ValueError('Docker execution is not permitted by the Deployment')
+    if docker and (not config.get('docker_runtime_class') or
+                   config['docker_runtime_class'] == config['runtime_class']):
+        raise ValueError('Docker requires a separate raw-socket RuntimeClass')
     metadata = {'name': name, 'namespace': config['namespace']}
     claim = {'apiVersion': 'v1', 'kind': 'PersistentVolumeClaim', 'metadata': dict(metadata),
              'spec': {'accessModes': ['ReadWriteOnce'],
@@ -239,12 +245,15 @@ def execution_manifests(settings, config):
         volumes.append({'name': 'docker', 'emptyDir': {'medium': 'Memory'}})
         mounts.append({'name': 'docker', 'mountPath': '/docker-storage'})
     limits = {'cpu': str(settings['cpu']), 'memory': str(settings['memory_bytes'])}
-    podspec = {'runtimeClassName': config['runtime_class'], 'restartPolicy': 'Never',
+    podspec = {'runtimeClassName': config['docker_runtime_class'] if docker else config['runtime_class'],
+               'restartPolicy': 'Never',
                'automountServiceAccountToken': False, 'enableServiceLinks': False,
                'hostNetwork': False, 'hostPID': False, 'hostIPC': False,
+               'resources': {'limits': limits},
                'initContainers': [
                    {'name': 'helpers', 'image': config['helper_image'],
                     'command': ['python3', '-I', '/opt/aidash/prepare_helpers.py'],
+                    'env': [{'name': 'AIDASH_PROCESS_LIMIT', 'value': str(processes)}],
                     'securityContext': init_security, 'resources': {'limits': limits},
                     'volumeMounts': [{'name': 'helpers', 'mountPath': '/helpers'},
                                      {'name': 'scratch', 'mountPath': '/scratch-system'}]},
@@ -261,6 +270,7 @@ def execution_manifests(settings, config):
                'containers': [{'name': 'execution', 'image': config['helper_image'],
                                'command': helper_command('bootstrap'),
                                'env': [{'name': 'AIDASH_DOCKER_ENABLED', 'value': str(docker).lower()},
+                                       {'name': 'AIDASH_PROCESS_LIMIT', 'value': str(processes)},
                                        {'name': 'AIDASH_POD_UID',
                                         'valueFrom': {'fieldRef': {'fieldPath': 'metadata.uid'}}}],
                                'securityContext': security, 'resources': {'limits': limits},
@@ -298,12 +308,98 @@ class ExecutionPodController:
         self.live_output = {}
         self.foreground_jobs = {}
         self.viewers = {}
+        self.admit_locks = {}
         self.session_executor = ThreadPoolExecutor(max_workers=128, thread_name_prefix='python-session')
 
     def _get(self, kind, name):
         import json
         result = self.backend.kube(['get', kind, name, '-o', 'json', '--ignore-not-found'])
         return json.loads(result.stdout) if result.stdout.strip() else None
+
+    def _admit_pod(self, name, settings):
+        import json
+        import time
+
+        with self.lock:
+            gate = self.admit_locks.setdefault(name, Lock())
+        with gate:
+            deadline = time.monotonic() + 120
+            while time.monotonic() < deadline:
+                pod = self._get('pod', name)
+                if not pod:
+                    raise ExecutionPodError('startup_failed', 'Execution Pod disappeared during startup')
+                status = pod.get('status', {})
+                if status.get('phase') == 'Failed':
+                    raise ExecutionPodError('startup_failed', 'Execution Pod failed during initialization: ' +
+                                            str(status.get('message') or status.get('reason') or 'unknown cause'))
+                metadata = pod.get('metadata', {})
+                epoch = int(metadata.get('annotations', {}).get('aidash.run/epoch', '0'))
+                node = pod.get('spec', {}).get('nodeName')
+                if not metadata.get('uid') or not node or epoch < 1:
+                    time.sleep(.2)
+                    continue
+                candidates = [('helpers', status.get('initContainerStatuses', [])),
+                              ('execution', status.get('containerStatuses', []))]
+                for container_name, statuses in reversed(candidates):
+                    container = next((item for item in statuses if item.get('name') == container_name), None)
+                    if not container or 'running' not in container.get('state', {}):
+                        continue
+                    container_id = container.get('containerID', '').removeprefix('containerd://')
+                    if len(container_id) != 64:
+                        continue
+                    if container_name == 'helpers':
+                        waiting = self.backend.kube(['exec', name, '-c', 'helpers', '--', 'python3', '-c',
+                            "from pathlib import Path;raise SystemExit(not Path('/helpers/.guard-waiting').is_file())"],
+                            check=False)
+                        if waiting.returncode:
+                            continue
+                    self.backend.guard_execution_pod(pod, settings, container_name, container_id, epoch)
+                    if container_name == 'helpers':
+                        probe = self.backend.kube(['exec', name, '-c', 'helpers', '--', 'python3', '-c',
+                            'import json,resource;print(json.dumps(resource.getrlimit(resource.RLIMIT_NPROC)))'])
+                        wanted = self.config.get('processes', 128)
+                        if json.loads(probe.stdout) != [wanted, wanted]:
+                            raise ExecutionPodError('admission_failed', 'Guest process ceiling does not match the profile')
+                        self.backend.kube(['exec', name, '-c', 'helpers', '--', 'python3', '-c',
+                                           "from pathlib import Path;Path('/helpers/.guard-ready').touch()"])
+                    return
+                time.sleep(.2)
+            raise ExecutionPodError('startup_timeout', 'Execution Pod did not reach the admission gate')
+
+    def _verify_running_pod(self, name, settings):
+        import json
+        pod = self._get('pod', name)
+        if not pod:
+            raise ExecutionPodError('startup_failed', 'Execution Pod disappeared after startup')
+        statuses = pod.get('status', {}).get('containerStatuses', [])
+        execution = next((item for item in statuses if item.get('name') == 'execution'), None)
+        if not execution or 'running' not in execution.get('state', {}):
+            raise ExecutionPodError('startup_failed', 'Execution container is not running')
+        container_id = execution.get('containerID', '').removeprefix('containerd://')
+        epoch = int(pod.get('metadata', {}).get('annotations', {}).get('aidash.run/epoch', '0'))
+        if len(container_id) != 64 or epoch < 1:
+            raise ExecutionPodError('admission_failed', 'Execution Pod identity evidence is incomplete')
+        self.backend.guard_execution_pod(pod, settings, 'execution', container_id, epoch)
+        probe = '''import json,os,resource,socket
+fields=dict(line.split(":",1) for line in open("/proc/self/status") if ":" in line)
+try:
+ s=socket.socket(socket.AF_INET,socket.SOCK_RAW,socket.IPPROTO_ICMP);s.close();raw=True
+except OSError: raw=False
+print(json.dumps({"uid":os.getuid(),"kernel":os.uname().release,"no_new_privs":int(fields["NoNewPrivs"]),
+ "caps":{k:int(fields[k],16) for k in ("CapInh","CapPrm","CapEff","CapBnd","CapAmb")},
+ "process_limit":resource.getrlimit(resource.RLIMIT_NPROC),"raw_socket":raw,
+ "service_account_absent":not os.path.exists("/var/run/secrets/kubernetes.io/serviceaccount/token")}))'''
+        python = ['/.aidash-helpers/loader', '--library-path',
+                  '/.aidash-helpers/lib:/.aidash-helpers/python/lib',
+                  '/.aidash-helpers/python/bin/python3', '-I', '-c', probe]
+        mode = 'docker' if settings['docker_enabled'] else 'normal'
+        result = self.backend.kube(['exec', name, '-c', 'execution', '--'] +
+            helper_command('chroot', mode, '/scratch-system/rootfs', '.', *python))
+        try:
+            verify_user_probe(json.loads(result.stdout), docker=settings['docker_enabled'],
+                              processes=self.config.get('processes', 128))
+        except (ValueError, KeyError, TypeError) as error:
+            raise ExecutionPodError('admission_failed', 'User isolation probe failed: ' + str(error)) from error
 
     def ensure(self, settings):
         import hashlib
@@ -331,12 +427,17 @@ class ExecutionPodController:
                     raise ExecutionPodError('capacity_mismatch', 'Scratch Space capacity differs from the existing claim')
             existing_pod = self._get('pod', name)
             if existing_pod is None:
+                pod['metadata']['annotations']['aidash.run/epoch'] = str(self.reserve_epoch(settings['scratch_space_id']))
                 self.backend.kube(['create', '-f', '-'], json.dumps(pod).encode())
                 self.touch_space(settings['scratch_space_id'])
             elif existing_pod.get('metadata', {}).get('annotations', {}).get('aidash.run/spec-digest') != fingerprint:
                 raise ExecutionPodError('settings_mismatch', 'Existing Execution Pod has different settings')
         try:
+            self._admit_pod(name, settings)
             self.backend.kube(['wait', '--for=condition=Ready', 'pod/' + name, '--timeout=120s'], timeout=130)
+            self._verify_running_pod(name, settings)
+        except ExecutionPodError:
+            raise
         except Exception as error:
             detail = str(error).strip() or type(error).__name__
             raise ExecutionPodError('startup_failed', 'Execution Pod did not become ready: ' + detail[-2000:]) from error
@@ -635,9 +736,27 @@ class ExecutionPodController:
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
             path = directory / (name + '.json')
             timestamp = time.time() if now is None else now
+            state = {'scratch_space_id': scratch_space_id}
             if path.exists():
-                timestamp = max(timestamp, json.loads(path.read_bytes())['last_command_at'])
-            save(path, {'scratch_space_id': scratch_space_id, 'last_command_at': timestamp})
+                state = json.loads(path.read_bytes())
+                timestamp = max(timestamp, state['last_command_at'])
+            state['last_command_at'] = timestamp
+            save(path, state)
+
+    def reserve_epoch(self, scratch_space_id):
+        import json
+        import time
+        from control import save, scratch_resource_name
+        name = scratch_resource_name(scratch_space_id)
+        directory = self.backend.root / 'execution-v2-spaces'
+        with self.lock:
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            path = directory / (name + '.json')
+            state = json.loads(path.read_bytes()) if path.exists() else {
+                'scratch_space_id': scratch_space_id, 'last_command_at': time.time()}
+            state['epoch'] = state.get('epoch', 0) + 1
+            save(path, state)
+            return state['epoch']
 
     def viewer_heartbeat(self, scratch_space_id, viewer_id, *, now=None):
         import time
@@ -848,3 +967,25 @@ def drain_process(argv, environment, output_limit, timeout, on_output=None):
             for key in list(selector.get_map().values()):
                 key.fileobj.close()
     return {'exit_code': exit_code, 'transport_timed_out': timed_out, 'output': output.public()}
+
+
+def verify_user_probe(report, *, docker, processes):
+    """Fail closed unless a real user child has the expected isolation profile."""
+    if report.get('uid') != 0 or 'gvisor' not in str(report.get('kernel', '')).lower():
+        raise ValueError('gVisor root user required')
+    if report.get('no_new_privs') != 1 or report.get('process_limit') != [processes, processes]:
+        raise ValueError('user process restrictions do not match the profile')
+    if report.get('service_account_absent') is not True:
+        raise ValueError('service account token is exposed')
+    caps = report.get('caps', {})
+    names = ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')
+    if any(type(caps.get(name)) is not int for name in names):
+        raise ValueError('capability evidence is incomplete')
+    blocked = (1 << 12) | (1 << 13) | (1 << 21)
+    if docker:
+        if any(caps[name] & blocked != blocked for name in ('CapPrm', 'CapEff', 'CapBnd')):
+            raise ValueError('Docker capabilities are unavailable')
+        if report.get('raw_socket') is not True:
+            raise ValueError('Docker raw sockets are unavailable')
+    elif any(caps[name] & blocked for name in names) or report.get('raw_socket') is not False:
+        raise ValueError('Docker capabilities remain available to the user process')

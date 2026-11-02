@@ -635,6 +635,23 @@ class Runner:
             raise RuntimeError("node lifecycle adapter: " + str(value.get("error", "failed")))
         return value
 
+    def guard_execution_pod(self, pod, settings, container_name, container_id, epoch):
+        name = pod['metadata']['name']
+        if not re.fullmatch(r'scratch-[0-9a-f]{48}', name):
+            raise ValueError('invalid Scratch Space Pod name')
+        area = str(uuid.UUID(hex=name[8:40]))
+        entries = pod['spec']['initContainers'] if container_name == 'helpers' else pod['spec']['containers']
+        image = next(item['image'] for item in entries if item['name'] == container_name)
+        if image != self.execution_pods.config['helper_image']:
+            raise ValueError('Execution Pod helper image differs from the verified image')
+        record = {'operation_id': area, 'area_id': area, 'pod_uid': pod['metadata']['uid'],
+                  'container_id': container_id, 'epoch': epoch, 'image': image,
+                  'cluster_node': pod['spec']['nodeName']}
+        return self.guard(record, 'v2_limits', protocol='aidash-runner/2', pod_name=name,
+                          container_name=container_name, cpu=settings['cpu'],
+                          memory_bytes=settings['memory_bytes'], capacity_bytes=settings['capacity_bytes'],
+                          host_tasks=self.execution_pods.config.get('host_tasks', 512))
+
     def session(self, sid):
         path = self.root / ("session-" + identity(sid) + ".json")
         if not path.exists():

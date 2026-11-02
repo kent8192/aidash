@@ -30,6 +30,7 @@ RUNTIME = os.environ.get('AIDASH_RUNSC_ROOT', '/run/containerd/runsc/k8s.io')
 RUNSC_BINARY = os.environ.get('AIDASH_RUNSC_BINARY', '/usr/local/bin/runsc')
 CTR_BINARY = os.environ.get('AIDASH_CTR_BINARY', '/usr/bin/ctr')
 CGROUP_ROOT = Path(os.environ.get('AIDASH_CGROUP_ROOT', '/sys/fs/cgroup'))
+KUBELET_PODS = Path('/var/lib/kubelet/pods')
 SENTRY_BINARIES = tuple(json.loads(os.environ.get('AIDASH_SENTRY_BINARIES',
     '["/usr/local/bin/runsc", "/usr/local/bin/gvisor-bin/gvisor_sentry"]')))
 NAMESPACE = os.environ.get('AIDASH_SANDBOX_NAMESPACE', 'aidash-sandbox')
@@ -63,11 +64,20 @@ def validate(request):
     info = json.loads(command(CTR_BINARY, '-n', 'k8s.io', 'containers', 'info', cid))
     labels = info['Labels']
     state = json.loads(command(RUNSC_BINARY, '--root=' + RUNTIME, 'state', cid))
+    if request.get('protocol') == 'aidash-runner/2':
+        pod_name, container_name = request.get('pod_name'), request.get('container_name')
+        if (not isinstance(pod_name, str) or not re.fullmatch('scratch-[0-9a-f]{48}', pod_name)
+                or container_name not in ('helpers', 'execution')
+                or area != str(uuid.UUID(hex=pod_name[8:40]))):
+            raise ValueError('invalid scratch execution identity')
+    else:
+        pod_name, container_name = None, 'execution'
     if (info['Runtime']['Name'] != 'io.containerd.runsc.v1'
             or labels.get('io.kubernetes.pod.namespace') != NAMESPACE
             or labels.get('io.kubernetes.pod.uid') != pod
-            or labels.get('io.kubernetes.container.name') != 'execution'
-            or not labels.get('io.kubernetes.pod.name', '').startswith('operation-')
+            or labels.get('io.kubernetes.container.name') != container_name
+            or (labels.get('io.kubernetes.pod.name') != pod_name if pod_name is not None
+                else not labels.get('io.kubernetes.pod.name', '').startswith('operation-'))
             or state['annotations'].get('io.kubernetes.cri.image-name') != request['image']):
         raise ValueError('sandbox binding mismatch')
     return cid, pod, area, state
@@ -152,6 +162,36 @@ def filesystem_capacity(size, page_size):
     return ((size + page_size - 1) // page_size) * page_size
 
 
+def scratch_capacity(pod_uid, requested_bytes):
+    """Prove the single Scratch PVC has a filesystem no larger than its budget."""
+    pod_uid = str(uuid.UUID(pod_uid))
+    if type(requested_bytes) is not int or requested_bytes <= 0:
+        raise ValueError('positive Scratch Space capacity required')
+    root = KUBELET_PODS / pod_uid / 'volumes'
+    candidates = []
+    for plugin in ('kubernetes.io~csi', 'kubernetes.io~local-volume',
+                   'kubernetes.io~gce-pd', 'kubernetes.io~aws-ebs'):
+        directory = root / plugin
+        if not directory.exists():
+            continue
+        if directory.is_symlink() or not directory.is_dir():
+            raise ValueError('unsafe persistent volume directory')
+        for volume in directory.iterdir():
+            if volume.is_symlink() or not volume.is_dir():
+                raise ValueError('unsafe persistent volume entry')
+            mount = volume / 'mount' if plugin == 'kubernetes.io~csi' else volume
+            if mount.is_symlink() or not mount.is_dir():
+                raise ValueError('unsafe persistent volume mount')
+            candidates.append(mount)
+    if len(candidates) != 1:
+        raise ValueError('exactly one persistent volume required')
+    fs = os.statvfs(candidates[0])
+    capacity = fs.f_blocks * fs.f_frsize
+    if capacity <= 0 or capacity > requested_bytes:
+        raise ValueError('Scratch Space filesystem capacity is not enforced')
+    return capacity
+
+
 def sentry_cgroup(pid):
     group = Path('/proc') / str(pid) / 'cgroup'
     hierarchy = next(line[3:] for line in group.read_text().splitlines() if line.startswith('0::'))
@@ -185,11 +225,21 @@ def handle(request):
             cid, pod, state = previous['container_id'], str(uuid.UUID(previous['pod_uid'])), {'status': 'stopped'}
         else:
             cid, pod, area, state = validate(request)
+        transition = (previous and request.get('protocol') == 'aidash-runner/2'
+                      and request.get('action') == 'v2_limits'
+                      and previous.get('protocol') == 'aidash-runner/2'
+                      and previous.get('pod_uid') == request.get('pod_uid')
+                      and previous.get('pod_name') == request.get('pod_name')
+                      and previous.get('epoch') == request.get('epoch')
+                      and previous.get('sentry_pid') == state.get('pid')
+                      and request.get('container_name') == 'execution')
         if previous and (request['epoch'] < previous['epoch'] or
-                         request['epoch'] == previous['epoch'] and previous['container_id'] != cid):
+                         request['epoch'] == previous['epoch'] and previous['container_id'] != cid and not transition):
             raise ValueError('stale execution epoch')
         op = request['action']
-        if op == 'limits':
+        if op in ('limits', 'v2_limits'):
+            if op == 'v2_limits' and request.get('protocol') != 'aidash-runner/2':
+                raise ValueError('Execution Pod protocol required')
             root = CGROUP_ROOT
             current = sentry_cgroup(state['pid'])
             host_tasks = request['host_tasks']
@@ -217,6 +267,15 @@ def handle(request):
                 current = current.parent
             if not cpus or not memory or not processes:
                 raise ValueError('cgroup v2 resource ceilings required')
+            if op == 'v2_limits':
+                result = {'cpu': min(cpus), 'memory_bytes': min(memory), 'host_tasks': min(processes)}
+                expected = {key: request[key] for key in result}
+                if result != expected:
+                    raise ValueError('observed cgroup limits differ from execution profile: ' + str(result))
+                result['scratch_capacity_bytes'] = scratch_capacity(pod, request['capacity_bytes'])
+                result['swap_bytes'] = 0
+                save(path, binding(request, state, frozen=False, deadline=None))
+                return result
             disk = {}
             for name in ('work', 'temp'):
                 fs = os.statvfs(volume(pod, name))

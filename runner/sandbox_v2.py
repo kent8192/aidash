@@ -310,7 +310,12 @@ if __name__ == '__main__':
         initialize_system_root('/', '/scratch-system', reset=os.environ.get('AIDASH_RESET_SYSTEM') == 'true')
         raise SystemExit(0)
     if sys.argv[1:] == ['bootstrap']:
+        import resource
         import signal
+        process_limit = int(os.environ['AIDASH_PROCESS_LIMIT'])
+        if process_limit < 32:
+            raise ValueError('invalid guest process ceiling')
+        resource.setrlimit(resource.RLIMIT_NPROC, (process_limit, process_limit))
         mount_rootfs(os.environ.get('AIDASH_DOCKER_ENABLED') == 'true')
         while True:
             signal.pause()

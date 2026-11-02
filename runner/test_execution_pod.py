@@ -199,12 +199,14 @@ class PodManifestTest(unittest.TestCase):
                     'memory_bytes': 1 << 30, 'capacity_bytes': 1 << 30, 'docker_enabled': True,
                     'tenant_id': 'tenant one'}
         config = {'runtime_class': 'aidash-gvisor', 'helper_image': 'helper@sha256:' + 'b' * 64,
-                  'namespace': 'aidash-sandbox', 'allow_docker': False}
+                  'namespace': 'aidash-sandbox', 'allow_docker': False,
+                  'docker_runtime_class': 'aidash-gvisor-docker'}
         with self.assertRaises(ValueError):
             execution_manifests(settings, config)
         config['allow_docker'] = True
         _, pod = execution_manifests(settings, config)
         caps = pod['spec']['containers'][0]['securityContext']['capabilities']['add']
+        self.assertEqual(pod['spec']['runtimeClassName'], 'aidash-gvisor-docker')
         self.assertIn('NET_ADMIN', caps)
         self.assertIn('NET_RAW', caps)
         self.assertIn('aidash.run/tenant', pod['spec']['nodeSelector'])
@@ -246,6 +248,7 @@ class ExecutionPodControllerTest(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from types import SimpleNamespace
+        from unittest.mock import Mock
         from execution_pod import ExecutionPodController
 
         class Backend:
@@ -272,6 +275,8 @@ class ExecutionPodControllerTest(unittest.TestCase):
         settings = {'scratch_space_id': 'id', 'image': 'image@sha256:' + 'a' * 64, 'cpu': 2,
                     'memory_bytes': 1 << 30, 'capacity_bytes': 1 << 30, 'docker_enabled': False}
         controller = ExecutionPodController(backend, config, admitted=True)
+        controller._admit_pod = Mock()
+        controller._verify_running_pod = Mock()
         resource = controller.ensure(settings)
         self.assertEqual(controller.ensure(settings), resource)
         controller.stop('id')
@@ -320,6 +325,7 @@ class ExecutionPodHttpTest(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from types import SimpleNamespace
+        from unittest.mock import Mock
         from execution_pod import ExecutionPodController, ExecutionPodError
 
         class Backend:
@@ -337,8 +343,11 @@ class ExecutionPodHttpTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         backend = Backend()
         backend.root = Path(temporary.name)
+        controller = ExecutionPodController(backend, config, admitted=True)
+        controller._admit_pod = Mock()
+        controller._verify_running_pod = Mock()
         with self.assertRaises(ExecutionPodError) as caught:
-            ExecutionPodController(backend, config, admitted=True).ensure(settings)
+            controller.ensure(settings)
         self.assertEqual(caught.exception.code, 'startup_failed')
         self.assertIn('image pull failed', caught.exception.message)
 
@@ -659,3 +668,178 @@ class PythonSessionMappingTest(unittest.TestCase):
             self.assertEqual(first, again)
             self.assertNotEqual(first['operation_id'], second['operation_id'])
             self.assertEqual(controller.submit_command.call_count, 2)
+
+
+class GuardV2IdentityTest(unittest.TestCase):
+    def test_guard_binds_scratch_pod_uid_container_and_runtime(self):
+        import json
+        import uuid
+        from unittest.mock import patch
+        import node_guard
+
+        digest = 'a' * 48
+        pod_uid = str(uuid.uuid4())
+        request = {'protocol': 'aidash-runner/2', 'container_id': 'b' * 64, 'pod_uid': pod_uid,
+                   'pod_name': 'scratch-' + digest, 'container_name': 'helpers',
+                   'area_id': str(uuid.UUID(hex=digest[:32])), 'epoch': 1, 'image': 'image@sha256:' + 'c' * 64}
+        info = {'Runtime': {'Name': 'io.containerd.runsc.v1'}, 'Labels': {
+            'io.kubernetes.pod.namespace': node_guard.NAMESPACE, 'io.kubernetes.pod.uid': pod_uid,
+            'io.kubernetes.container.name': 'helpers', 'io.kubernetes.pod.name': request['pod_name']}}
+        state = {'annotations': {'io.kubernetes.cri.image-name': request['image']}}
+        with patch.object(node_guard, 'command', side_effect=[json.dumps(info).encode(), json.dumps(state).encode()]):
+            self.assertEqual(node_guard.validate(request)[1], pod_uid)
+        info['Labels']['io.kubernetes.pod.name'] = 'scratch-' + 'd' * 48
+        with patch.object(node_guard, 'command', side_effect=[json.dumps(info).encode(), json.dumps(state).encode()]):
+            with self.assertRaisesRegex(ValueError, 'binding'):
+                node_guard.validate(request)
+
+
+class GuardV2CapacityTest(unittest.TestCase):
+    def test_unbounded_or_ambiguous_persistent_storage_is_rejected(self):
+        import tempfile
+        import uuid
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import node_guard
+        with tempfile.TemporaryDirectory() as directory:
+            pod = str(uuid.uuid4())
+            volumes = Path(directory) / pod / 'volumes'
+            mount = volumes / 'kubernetes.io~csi' / 'pvc-test' / 'mount'
+            mount.mkdir(parents=True)
+            with patch.object(node_guard, 'KUBELET_PODS', Path(directory)), \
+                 patch.object(node_guard.os, 'statvfs', return_value=SimpleNamespace(f_blocks=100, f_frsize=4096)):
+                self.assertEqual(node_guard.scratch_capacity(pod, 409600), 409600)
+                with self.assertRaisesRegex(ValueError, 'capacity'):
+                    node_guard.scratch_capacity(pod, 409599)
+                (volumes / 'kubernetes.io~local-volume' / 'pvc-other').mkdir(parents=True)
+                with self.assertRaisesRegex(ValueError, 'exactly one'):
+                    node_guard.scratch_capacity(pod, 409600)
+
+    def test_guard_enforces_sentry_limits_before_admission(self):
+        import tempfile
+        import uuid
+        from pathlib import Path
+        from unittest.mock import patch
+        import node_guard
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cgroups = root / 'cgroups'
+            sentry = cgroups / 'sentry'
+            sentry.mkdir(parents=True)
+            for name, value in {'cpu.max': '200000 100000', 'memory.max': str(2 << 30),
+                                'pids.max': 'max', 'memory.swap.max': 'max'}.items():
+                (sentry / name).write_text(value)
+            request = {'protocol': 'aidash-runner/2', 'action': 'v2_limits', 'area_id': str(uuid.uuid4()),
+                       'pod_uid': str(uuid.uuid4()), 'container_id': 'a' * 64, 'epoch': 1,
+                       'image': 'pinned', 'cpu': 2, 'memory_bytes': 2 << 30, 'host_tasks': 512,
+                       'capacity_bytes': 100 << 30}
+            with patch.object(node_guard, 'ROOT', root / 'guard'), \
+                 patch.object(node_guard, 'CGROUP_ROOT', cgroups), \
+                 patch.object(node_guard, 'sentry_cgroup', return_value=sentry), \
+                 patch.object(node_guard, 'validate', return_value=('a' * 64, request['pod_uid'], request['area_id'], {'pid': 42})), \
+                 patch.object(node_guard, 'binding', return_value={}), \
+                 patch.object(node_guard, 'scratch_capacity', return_value=99 << 30):
+                result = node_guard.handle(request)
+                self.assertEqual(result['scratch_capacity_bytes'], 99 << 30)
+                self.assertEqual((sentry / 'pids.max').read_text(), '512')
+                self.assertEqual((sentry / 'memory.swap.max').read_text(), '0')
+                (cgroups / 'pids.max').write_text('128')
+                with self.assertRaisesRegex(ValueError, 'cgroup limits'):
+                    node_guard.handle(request)
+
+
+class InitGateTest(unittest.TestCase):
+    def test_image_initialization_waits_for_guard_receipt(self):
+        import tempfile
+        import threading
+        from pathlib import Path
+        from prepare_helpers import wait_for_guard
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = Path(directory) / 'guard-ready'
+            with self.assertRaises(TimeoutError):
+                wait_for_guard(receipt, timeout=.05)
+            timer = threading.Timer(.05, receipt.touch)
+            timer.start()
+            try:
+                wait_for_guard(receipt, timeout=1)
+            finally:
+                timer.join()
+
+
+class RootAdmissionTest(unittest.TestCase):
+    def test_normal_user_cannot_reacquire_docker_capabilities(self):
+        from execution_pod import verify_user_probe
+        report = {'uid': 0, 'kernel': '4.19.0-gvisor', 'no_new_privs': 1,
+                  'caps': {name: 0 for name in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')},
+                  'process_limit': [128, 128], 'service_account_absent': True, 'raw_socket': False}
+        verify_user_probe(report, docker=False, processes=128)
+        for field in report['caps']:
+            bad = dict(report, caps=dict(report['caps'], **{field: 1 << 21}))
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'capabilit'):
+                verify_user_probe(bad, docker=False, processes=128)
+        with self.assertRaisesRegex(ValueError, 'service account'):
+            verify_user_probe(dict(report, service_account_absent=False), docker=False, processes=128)
+
+    def test_guard_allows_only_same_sentry_to_transition_from_init_to_execution(self):
+        import json
+        import tempfile
+        import uuid
+        from pathlib import Path
+        from unittest.mock import patch
+        import node_guard
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cgroups = root / 'cgroups'
+            sentry = cgroups / 'sentry'
+            sentry.mkdir(parents=True)
+            for name, value in {'cpu.max': '200000 100000', 'memory.max': str(2 << 30),
+                                'pids.max': '512', 'memory.swap.max': '0'}.items():
+                (sentry / name).write_text(value)
+            area, pod = str(uuid.uuid4()), str(uuid.uuid4())
+            request = {'protocol': 'aidash-runner/2', 'action': 'v2_limits', 'area_id': area, 'pod_uid': pod,
+                       'pod_name': 'scratch-' + 'a' * 48, 'container_name': 'execution',
+                       'container_id': 'b' * 64, 'epoch': 3, 'image': 'pinned', 'cpu': 2,
+                       'memory_bytes': 2 << 30, 'host_tasks': 512, 'capacity_bytes': 100 << 30}
+            guard = root / 'guard'
+            guard.mkdir()
+            previous = dict(request, container_id='c' * 64, container_name='helpers', sentry_pid=42)
+            (guard / (area + '.json')).write_text(json.dumps(previous))
+            with patch.object(node_guard, 'ROOT', guard), patch.object(node_guard, 'CGROUP_ROOT', cgroups), \
+                 patch.object(node_guard, 'sentry_cgroup', return_value=sentry), \
+                 patch.object(node_guard, 'validate', return_value=('b' * 64, pod, area, {'pid': 42})), \
+                 patch.object(node_guard, 'gone', return_value=False), \
+                 patch.object(node_guard, 'binding', return_value={}), \
+                 patch.object(node_guard, 'scratch_capacity', return_value=99 << 30):
+                self.assertEqual(node_guard.handle(request)['host_tasks'], 512)
+                (guard / (area + '.json')).write_text(json.dumps(dict(previous, sentry_pid=99)))
+                with self.assertRaisesRegex(ValueError, 'stale'):
+                    node_guard.handle(request)
+
+
+class AdmissionGateOrderTest(unittest.TestCase):
+    def test_guard_checks_cgroup_before_releasing_user_image(self):
+        import json
+        from types import SimpleNamespace
+        from execution_pod import ExecutionPodController
+        events = []
+        pod = {'metadata': {'uid': 'pod-uid', 'annotations': {'aidash.run/epoch': '1'}},
+               'spec': {'nodeName': 'node-1'}, 'status': {'initContainerStatuses': [
+                   {'name': 'helpers', 'containerID': 'containerd://' + 'a' * 64, 'state': {'running': {}}}]}}
+        class Backend:
+            def kube(self, args, data=None, **_kwargs):
+                if args[0] == 'get':
+                    return SimpleNamespace(stdout=json.dumps(pod).encode(), returncode=0)
+                if '.guard-waiting' in args[-1]:
+                    events.append('waiting')
+                    return SimpleNamespace(stdout=b'', returncode=0)
+                if 'getrlimit' in args[-1]:
+                    events.append('process-limit')
+                    return SimpleNamespace(stdout=b'[128,128]', returncode=0)
+                events.append('release')
+                return SimpleNamespace(stdout=b'', returncode=0)
+            def guard_execution_pod(self, *_args):
+                events.append('guard')
+        controller = ExecutionPodController(Backend(), {'processes': 128}, admitted=True)
+        controller._admit_pod('scratch-' + 'a' * 48, {})
+        self.assertEqual(events, ['waiting', 'guard', 'process-limit', 'release'])

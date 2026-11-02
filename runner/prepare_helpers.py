@@ -2,11 +2,26 @@
 import os
 from pathlib import Path
 import platform
+import resource
 import shutil
 import sys
+import time
+
+
+def wait_for_guard(receipt, *, timeout=180):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if receipt.is_file() and not receipt.is_symlink():
+            return
+        time.sleep(.05)
+    raise TimeoutError('node guard did not admit the Execution Pod')
 
 
 def main():
+    process_limit = int(os.environ['AIDASH_PROCESS_LIMIT'])
+    if process_limit < 32:
+        raise ValueError('invalid guest process ceiling')
+    resource.setrlimit(resource.RLIMIT_NPROC, (process_limit, process_limit))
     destination = Path('/helpers')
     arch = platform.machine()
     if arch not in ('aarch64', 'x86_64'):
@@ -30,6 +45,8 @@ def main():
         shutil.copy2(Path('/opt/aidash') / name, destination / name)
     Path('/scratch-system/scratch').mkdir(parents=True, exist_ok=True)
     os.chmod(destination / 'loader', 0o755)
+    (destination / '.guard-waiting').touch()
+    wait_for_guard(destination / '.guard-ready')
 
 
 if __name__ == '__main__':
