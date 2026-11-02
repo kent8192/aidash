@@ -32,7 +32,5 @@ pub struct CoreAreas {
 	#[field(field_type = "text")]
 	pub state: String,
 	#[field]
-	pub manifest: Json<Value>,
-	#[field]
 	pub constraints: Json<Value>,
 }

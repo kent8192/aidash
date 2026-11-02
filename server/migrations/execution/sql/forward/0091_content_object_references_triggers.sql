@@ -1,0 +1,2 @@
+CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.core_objects FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();
+CREATE TRIGGER atomic_write_guard BEFORE INSERT OR DELETE OR UPDATE OR TRUNCATE ON public.core_quotas FOR EACH STATEMENT EXECUTE FUNCTION public.atomic_write_guard();

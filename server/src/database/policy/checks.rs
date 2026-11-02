@@ -73,7 +73,18 @@ pub fn assert_policy_migrations_run_the_rendered_template(
 				"{label} reversed"
 			);
 			for table in tables {
-				assert!(covered.insert(table.to_owned()), "{table} is enabled twice");
+				if !covered.insert(table.to_owned()) {
+					// This migration drops and recreates these undeployed object
+					// tables, so their policies have to be installed again.
+					assert!(
+						label == "execution.0091_content_object_references"
+							&& matches!(
+								table,
+								"core_objects" | "core_quotas" | "core_retention_files"
+							),
+						"{table} is enabled twice"
+					);
+				}
 			}
 		}
 	}
