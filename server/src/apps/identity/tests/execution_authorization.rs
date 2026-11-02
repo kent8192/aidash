@@ -21,6 +21,7 @@ use uuid::Uuid;
 #[rstest::rstest]
 #[case::success("success")]
 #[case::policy_deny("policy")]
+#[case::ancestor_policy_deny("ancestor_policy")]
 #[case::policy_ask("ask")]
 #[case::missing_catalog("catalog")]
 #[case::unreachable("unreachable")]
@@ -44,7 +45,7 @@ async fn worker_delegates_to_an_agent_on_a_sibling_node(
 	let authorization = aidash_server::authorization::Authorization {
 		pool: f.store.pool.clone(),
 	};
-	if mode == "policy" || mode == "ask" {
+	if mode == "policy" || mode == "ancestor_policy" || mode == "ask" {
 		let snapshot = authorization.snapshot("acme").await.unwrap();
 		let mut policy = serde_json::to_value(&snapshot.bundle).unwrap();
 		let parent = aidash_domain::agent_subject(
@@ -53,8 +54,15 @@ async fn worker_delegates_to_an_agent_on_a_sibling_node(
 			"research",
 			"1.0.0",
 		);
-		if mode == "policy" {
-			policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-remote","effect":"deny","subjects":{"ids":[parent]},"actions":["federation.execute"],"resources":{"kinds":["node"],"ids":[target.to_string()]}}));
+		if mode == "policy" || mode == "ancestor_policy" {
+			let denied_subject = if mode == "ancestor_policy" {
+				policy["subjects"]["ancestor"] = json!({"kind":"user"});
+				policy["subjects"][&parent]["delegated_by"] = json!("ancestor");
+				"ancestor".to_string()
+			} else {
+				parent.clone()
+			};
+			policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-remote","effect":"deny","subjects":{"ids":[denied_subject]},"actions":["federation.execute"],"resources":{"kinds":["node"],"ids":[target.to_string()]}}));
 		} else {
 			policy["policies"][0]["subjects"] = json!({"ids":["alice", parent]});
 		}
@@ -149,7 +157,7 @@ async fn worker_delegates_to_an_agent_on_a_sibling_node(
 			.unwrap_or_default()
 			.to_owned();
 		let expected = match mode {
-			"policy" => "federation.execute",
+			"policy" | "ancestor_policy" => "federation.execute",
 			"catalog" => "Catalog Approval",
 			"unreachable" => "unreachable",
 			_ => unreachable!(),
