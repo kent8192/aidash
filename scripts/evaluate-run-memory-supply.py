@@ -314,8 +314,7 @@ class Campaign:
                 raise
             while True:
                 if run_id is None:
-                    run_id = next((run["id"] for run in bounded.get("/api/state", self.token)["runs"]
-                                   if run["task_id"] == task), None)
+                    run_id = next((run["id"] for run in bounded.get(f"/api/tasks/{task}/runs", self.token)["items"]), None)
                     if run_id is not None:
                         claim_uncertain = False
                         record["run_id"] = run_id
@@ -326,7 +325,7 @@ class Campaign:
                     if run.get("control") == "PAUSED":
                         raise RuntimeError(f"Run {run_id} paused: {run.get('error') or run.get('state_error')}")
                     if run["phase"] == "WAITING":
-                        for request in bounded.get("/api/state", self.token)["human_requests"]:
+                        for request in runner.pending_human_requests(bounded, self.token, run_id):
                             if request["run_id"] == run_id and request.get("response") is None:
                                 answer = {"approved": False} if request["kind"] == "APPROVAL_REQUIRED" else \
                                     {"answer": runner.NO_HUMAN}

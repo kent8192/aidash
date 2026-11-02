@@ -82,6 +82,7 @@ fn only_the_transaction_opener_writes_the_scope_settings() {
 		migration_openers,
 		[
 			"migrations/execution/sql/forward/0089_remove_agent_cluster.sql",
+			"migrations/execution/sql/forward/0090_run_created_at.sql",
 			"migrations/registry/sql/forward/0054_remove_agent_cluster.sql",
 			"migrations/registry/sql/forward/0055_remove_structured_harness_contracts.sql",
 		]
