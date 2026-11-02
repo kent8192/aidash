@@ -27,6 +27,7 @@ pub mod retention;
 pub mod run_input;
 pub mod run_state;
 pub mod safety_stop;
+pub mod scratch;
 pub mod semantic;
 pub mod tenancy;
 pub mod tenant_secrets;
