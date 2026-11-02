@@ -33,7 +33,12 @@ pub(super) fn migration() -> Migration {
 			interleave_in_parent: None,
 			partition: None,
 		})
-		// PostgreSQL function bodies and row policies cannot be represented by SchemaExpr.
+		// Reinhardt has no row policy operations (reinhardt-web#6770).
+		.add_operation(Operation::RunSQL {
+			sql: include_str!("sql/forward/0058_reference_images_row_level_security.sql").into(),
+			reverse_sql: Some(include_str!("sql/backward/0058_reference_images_row_level_security.sql").into()),
+		})
+		// PostgreSQL function bodies cannot be represented by SchemaExpr.
 		.add_operation(Operation::RunSQL {
 			sql: include_str!("sql/forward/0056_reference_images.sql").into(),
 			reverse_sql: Some(include_str!("sql/backward/0056_reference_images.sql").into()),
