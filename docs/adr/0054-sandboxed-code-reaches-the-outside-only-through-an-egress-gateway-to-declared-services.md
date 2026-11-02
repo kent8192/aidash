@@ -24,3 +24,9 @@ Decided on 2026-10-16 for #296. Execution Pods keep deny-all networking for ingr
 ## Amendment (2026-10-26, #310)
 
 - On Cloud and Dedicated the Egress gateway stays in the cluster without read access to any secret. Only the stage that attaches a Tenant Secret runs with the Credential Broker's isolation on Cloud Run, and the gateway forwards to it the requests for External services that carry one (ADR 0095). Execution Pods still reach nothing but the gateway.
+
+## Amendment (2026-11-02, #697)
+
+- An Execution Pod now also reaches the hosts its Scratch Space allows through an HTTPS proxy in the Egress gateway, which records only the host and the bytes (ADR 0111). Declared External services remain the path for requests that carry a Tenant Secret, and they keep path-level records.
+- External services are made available to a Scratch Space rather than bound to a Run, and their limits apply per Scratch Space per day instead of per operation. There is no request-count limit.
+- TLS is still never intercepted, and Tenant Secrets still never enter an Execution Pod.
