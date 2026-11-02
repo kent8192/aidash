@@ -74,9 +74,32 @@ impl ConversationScope for NativeConversation<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn select_scratch_space(
+		&mut self,
+		workspace: &Workspace,
+		name: &str,
+		requested: Option<Uuid>,
+	) -> Result<Uuid> {
+		let mut services = super::scratch::NativeScratchServices {
+			policy: &self.federation.config.scratch_policy,
+		};
+		let mut scope = super::scratch::ScratchAdapter {
+			access: self.access,
+			services: &mut services,
+		};
+		aidash_application::scratch::select_for_conversation(
+			&mut scope,
+			&workspace.node,
+			name,
+			requested,
+			chrono::Utc::now(),
+		)
+		.await
+	}
 	async fn create_conversation(
 		&mut self,
 		workspace_id: Uuid,
+		scratch_space_id: Uuid,
 		target: &EntityRef,
 		target_kind: &str,
 	) -> Result<Conversation> {
@@ -92,6 +115,7 @@ impl ConversationScope for NativeConversation<'_> {
 					.columns([
 						Alias::new("id"),
 						Alias::new("workspace_id"),
+						Alias::new("scratch_space_id"),
 						Alias::new("target"),
 						Alias::new("target_kind"),
 						Alias::new("created_by"),
@@ -107,6 +131,7 @@ impl ConversationScope for NativeConversation<'_> {
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_2.to_owned()).into()],
 							))
+							.expr(Expr::value(scratch_space_id))
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_3.to_owned()).into()],

@@ -22,12 +22,18 @@ pub trait ScratchScope: Send {
 	/// Enforce Node access for the authenticated person or the conversation starter.
 	async fn require_node_use(&mut self, node: &NodeName, person: &str) -> Result<()>;
 	async fn limits(&mut self, node: &NodeName) -> Result<(ScratchCeilings, HostAllowlist)>;
-	/// Verify referenced images and External services are approved for this Tenant and Node.
+	/// Verify the image and newly added External services for this Tenant and Node.
+	/// Existing services are shared with all members and need no individual
+	/// Registry-read grant when an unrelated setting changes.
 	async fn validate_references(
 		&mut self,
 		node: &NodeName,
 		settings: &ScratchSettings,
 	) -> Result<()>;
+	/// Recheck runtime-wide image approval without imposing the caller's
+	/// Registry permissions on services already shared with the space.
+	async fn validate_runtime(&mut self, node: &NodeName, settings: &ScratchSettings)
+	-> Result<()>;
 	/// Ensure every member names a person in the scoped Tenant.
 	async fn validate_members(
 		&mut self,
@@ -71,6 +77,11 @@ pub async fn create(scope: &mut dyn ScratchScope, space: &ScratchSpace) -> Resul
 			"Scratch Space name and creator are required".into(),
 		));
 	}
+	// The creator must be an enabled person in this Tenant as well as the
+	// authenticated subject; an Agent cannot become a space owner.
+	scope
+		.validate_members(&std::collections::BTreeSet::from([person]))
+		.await?;
 	scope.validate_members(&space.members).await?;
 	scope.insert(space).await
 }
@@ -120,7 +131,15 @@ pub async fn update_settings(
 	let mut space = read(scope, id, now).await?;
 	let (ceilings, tenant_hosts) = scope.limits(&space.node).await?;
 	settings.validate(&ceilings, &tenant_hosts)?;
-	scope.validate_references(&space.node, &settings).await?;
+	// Services already shared with the space remain usable by every member.
+	// The member changing settings must be allowed to add any new services.
+	let mut additions = settings.clone();
+	additions.external_services = settings
+		.external_services
+		.difference(&space.settings.external_services)
+		.cloned()
+		.collect();
+	scope.validate_references(&space.node, &additions).await?;
 	space.settings = settings;
 	scope.save(&space).await
 }
@@ -157,9 +176,9 @@ pub async fn clear(
 	now: DateTime<Utc>,
 ) -> Result<()> {
 	let mut space = read(scope, id, now).await?;
-	scope.clear_contents(id).await?;
 	space.clear();
-	scope.save(&space).await
+	scope.save(&space).await?;
+	scope.clear_contents(id).await
 }
 
 pub async fn delete(
@@ -167,9 +186,47 @@ pub async fn delete(
 	id: ScratchSpaceId,
 	now: DateTime<Utc>,
 ) -> Result<()> {
-	read(scope, id, now).await?;
-	scope.clear_contents(id).await?;
-	scope.delete(id).await
+	// Conversations retain the fixed identity; a cleared tombstone keeps that
+	// reference while removing the space from use.
+	clear(scope, id, now).await
+}
+
+/// Select the immutable Scratch Space for a new conversation, creating one
+/// dedicated to that conversation when no existing space was requested.
+pub async fn select_for_conversation(
+	scope: &mut dyn ScratchScope,
+	node: &NodeName,
+	name: &str,
+	requested: Option<ScratchSpaceId>,
+	now: DateTime<Utc>,
+) -> Result<ScratchSpaceId> {
+	if let Some(id) = requested {
+		let mut space = read(scope, id, now).await?;
+		if &space.node != node {
+			return Err(Error::Forbidden);
+		}
+		let (ceilings, tenant_hosts) = scope.limits(node).await?;
+		space.settings.validate(&ceilings, &tenant_hosts)?;
+		scope.validate_runtime(node, &space.settings).await?;
+		space.last_used_at = space.last_used_at.max(now);
+		scope.save(&space).await?;
+		return Ok(id);
+	}
+	let (_, tenant_hosts) = scope.limits(node).await?;
+
+	let space = ScratchSpace {
+		id: uuid::Uuid::new_v4(),
+		node: node.clone(),
+		name: name.to_owned(),
+		creator: scope.person().to_owned(),
+		members: Default::default(),
+		state: ScratchState::Active,
+		settings: ScratchSettings::for_tenant(&tenant_hosts),
+		created_at: now,
+		last_used_at: now,
+	};
+	create(scope, &space).await?;
+	Ok(space.id)
 }
 
 pub async fn scratch_space_for_run(
@@ -184,6 +241,12 @@ pub async fn scratch_space_for_run(
 	if space.node != run.node {
 		return Err(Error::Forbidden);
 	}
+	// Operator decisions, Tenant hosts, and image approval can change after a
+	// space was created. Recheck them without narrowing shared services to the
+	// executing Agent's individual Registry permissions.
+	let (ceilings, tenant_hosts) = scope.limits(&space.node).await?;
+	space.settings.validate(&ceilings, &tenant_hosts)?;
+	scope.validate_runtime(&space.node, &space.settings).await?;
 	space.last_used_at = space.last_used_at.max(now);
 	scope.save(&space).await?;
 	Ok(id)

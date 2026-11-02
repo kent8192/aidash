@@ -16,7 +16,7 @@ use reinhardt::query::{
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::{Error, Result};
+use crate::{Error, Result, apps::identity::services::access::Access};
 
 /// Locks the row before loading dependent settings and members. The Tenant is
 /// always the caller's scoped Tenant, never supplied by an API request.
@@ -246,80 +246,139 @@ pub(crate) async fn delete(tx: &mut dyn TransactionExecutor, tenant: &str, id: U
 	Ok(())
 }
 
-#[cfg(test)]
-mod tests;
+/// A receiving Node keeps one space per home Workspace and mapped person.
+fn remote_space_id(
+	tenant: &str,
+	node: &NodeName,
+	home: &str,
+	workspace: Uuid,
+	person: &str,
+) -> Uuid {
+	use sha2::{Digest, Sha256};
+	let mut hash = Sha256::new();
+	hash.update(b"aidash:remote-scratch-space:v1");
+	for value in [tenant, node.as_str(), home, person] {
+		hash.update((value.len() as u64).to_be_bytes());
+		hash.update(value.as_bytes());
+	}
+	hash.update(workspace.as_bytes());
+	let digest = hash.finalize();
+	let mut bytes = [0_u8; 16];
+	bytes.copy_from_slice(&digest[..16]);
+	bytes[6] = (bytes[6] & 0x0f) | 0x80;
+	bytes[8] = (bytes[8] & 0x3f) | 0x80;
+	Uuid::from_bytes(bytes)
+}
 
-/// The authorization, deployment settings, and runtime bindings supplied by
-/// the server composition. Every method operates in the caller's transaction.
+/// Inputs that depend on Deployment configuration, the Registry, and the
+/// Execution Pod lifecycle. Implementations retain the caller's Access transaction.
 #[async_trait::async_trait]
 pub(crate) trait ScratchServices: Send {
-	async fn require_create(
-		&mut self,
-		tx: &mut dyn TransactionExecutor,
-		node: &NodeName,
-	) -> aidash_application::Result<()>;
-	async fn require_node_use(
-		&mut self,
-		tx: &mut dyn TransactionExecutor,
-		node: &NodeName,
-		person: &str,
-	) -> aidash_application::Result<()>;
 	async fn limits(
 		&mut self,
-		tx: &mut dyn TransactionExecutor,
+		access: &mut Access,
 		node: &NodeName,
 	) -> aidash_application::Result<(ScratchCeilings, HostAllowlist)>;
 	async fn validate_references(
 		&mut self,
-		tx: &mut dyn TransactionExecutor,
+		access: &mut Access,
 		node: &NodeName,
 		settings: &ScratchSettings,
 	) -> aidash_application::Result<()>;
-	async fn validate_members(
+	async fn validate_runtime(
 		&mut self,
-		tx: &mut dyn TransactionExecutor,
-		members: &BTreeSet<String>,
+		access: &mut Access,
+		node: &NodeName,
+		settings: &ScratchSettings,
 	) -> aidash_application::Result<()>;
 	async fn clear_contents(
 		&mut self,
-		tx: &mut dyn TransactionExecutor,
+		access: &mut Access,
 		id: Uuid,
 	) -> aidash_application::Result<()>;
 	async fn run_binding(
 		&mut self,
-		tx: &mut dyn TransactionExecutor,
+		access: &mut Access,
 		run: &Run,
 	) -> aidash_application::Result<(Uuid, String)>;
 }
 
-/// A transaction-scoped adapter; callers supply the authenticated Tenant and person.
+fn effective_policy(
+	policy: &crate::config::ScratchOperatorPolicy,
+	tenant: &str,
+) -> (ScratchCeilings, HostAllowlist) {
+	let mut ceilings = policy.ceilings.clone();
+	ceilings.docker_allowed |= policy.docker_tenants.contains(tenant);
+	let hosts = policy.tenant_hosts.get(tenant).cloned().unwrap_or_else(|| {
+		aidash_domain::scratch::default_public_hosts()
+			.into_iter()
+			.collect()
+	});
+	let allowed = if hosts.len() == 1 && hosts[0] == "*" {
+		HostAllowlist::All
+	} else {
+		HostAllowlist::Hosts(hosts.into_iter().collect())
+	};
+	(ceilings, allowed)
+}
+
+/// Uses the same Access transaction for policy checks, audit and persistence.
 pub(crate) struct ScratchAdapter<'a> {
-	pub tx: &'a mut dyn TransactionExecutor,
-	pub tenant: &'a str,
-	pub person: &'a str,
+	pub access: &'a mut Access,
 	pub services: &'a mut dyn ScratchServices,
 }
 
 #[async_trait::async_trait]
 impl aidash_application::scratch::ScratchScope for ScratchAdapter<'_> {
 	fn person(&self) -> &str {
-		self.person
+		&self.access.identity.subject
 	}
 	async fn require_create(&mut self, node: &NodeName) -> aidash_application::Result<()> {
-		self.services.require_create(self.tx, node).await
+		let resource = self.access.node_resource(node).await?;
+		let person = self.access.identity.subject.clone();
+		let evaluation = self.access.evaluation(
+			&person,
+			&resource,
+			aidash_domain::identity::tenant_administration::SCRATCH_CREATE,
+		);
+		let mut decision = self.access.snapshot.bundle.evaluate(&evaluation);
+		decision.revision = self.access.snapshot.revision;
+		self.access
+			.record(&[(evaluation, decision.clone())])
+			.await?;
+		if !decision.allowed {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		Ok(())
 	}
 	async fn require_node_use(
 		&mut self,
 		node: &NodeName,
 		person: &str,
 	) -> aidash_application::Result<()> {
-		self.services.require_node_use(self.tx, node, person).await
+		let resource = self.access.node_resource(node).await?;
+		let action = aidash_domain::identity::tenant_administration::NODE_USE;
+		self.access.require(&resource, action).await?;
+		if !self.access.subjects.iter().any(|subject| subject == person) {
+			let evaluation = self.access.evaluation(person, &resource, action);
+			let mut decision = self.access.snapshot.bundle.evaluate(&evaluation);
+			decision.revision = self.access.snapshot.revision;
+			self.access
+				.record(&[(evaluation, decision.clone())])
+				.await?;
+			if !decision.allowed {
+				return Err(aidash_application::Error::Forbidden);
+			}
+		}
+		self.access.set_node(node.clone());
+		Ok(())
 	}
+
 	async fn limits(
 		&mut self,
 		node: &NodeName,
 	) -> aidash_application::Result<(ScratchCeilings, HostAllowlist)> {
-		self.services.limits(self.tx, node).await
+		self.services.limits(self.access, node).await
 	}
 	async fn validate_references(
 		&mut self,
@@ -327,33 +386,57 @@ impl aidash_application::scratch::ScratchScope for ScratchAdapter<'_> {
 		settings: &ScratchSettings,
 	) -> aidash_application::Result<()> {
 		self.services
-			.validate_references(self.tx, node, settings)
+			.validate_references(self.access, node, settings)
+			.await
+	}
+	async fn validate_runtime(
+		&mut self,
+		node: &NodeName,
+		settings: &ScratchSettings,
+	) -> aidash_application::Result<()> {
+		self.services
+			.validate_runtime(self.access, node, settings)
 			.await
 	}
 	async fn validate_members(
 		&mut self,
 		members: &BTreeSet<String>,
 	) -> aidash_application::Result<()> {
-		self.services.validate_members(self.tx, members).await
+		use aidash_domain::policy::SubjectKind;
+		if members.iter().any(|member| {
+			!self
+				.access
+				.snapshot
+				.bundle
+				.subjects
+				.get(member)
+				.is_some_and(|subject| subject.kind == SubjectKind::User && subject.enabled)
+		}) {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		Ok(())
 	}
 	async fn insert(&mut self, space: &ScratchSpace) -> aidash_application::Result<()> {
-		insert(self.tx, self.tenant, space)
+		let tenant = self.access.identity.tenant.clone();
+		insert(&mut **self.access.tx, &tenant, space)
 			.await
 			.map_err(Into::into)
 	}
 	async fn load_for_update(&mut self, id: Uuid) -> aidash_application::Result<ScratchSpace> {
-		load(self.tx, self.tenant, id)
+		let tenant = self.access.identity.tenant.clone();
+		load(&mut **self.access.tx, &tenant, id)
 			.await
 			.map_err(aidash_application::Error::from)?
 			.ok_or_else(|| aidash_application::Error::NotFound("Scratch Space".into()))
 	}
 	async fn list(&mut self, node: &NodeName) -> aidash_application::Result<Vec<ScratchSpace>> {
-		let ids = ids_on_node(self.tx, self.tenant, node.as_str())
+		let tenant = self.access.identity.tenant.clone();
+		let ids = ids_on_node(&mut **self.access.tx, &tenant, node.as_str())
 			.await
 			.map_err(aidash_application::Error::from)?;
 		let mut spaces = Vec::with_capacity(ids.len());
 		for id in ids {
-			if let Some(space) = load(self.tx, self.tenant, id)
+			if let Some(space) = load(&mut **self.access.tx, &tenant, id)
 				.await
 				.map_err(aidash_application::Error::from)?
 			{
@@ -363,19 +446,298 @@ impl aidash_application::scratch::ScratchScope for ScratchAdapter<'_> {
 		Ok(spaces)
 	}
 	async fn save(&mut self, space: &ScratchSpace) -> aidash_application::Result<()> {
-		save(self.tx, self.tenant, space).await.map_err(Into::into)
+		let tenant = self.access.identity.tenant.clone();
+		save(&mut **self.access.tx, &tenant, space)
+			.await
+			.map_err(Into::into)
 	}
 	async fn delete(&mut self, id: Uuid) -> aidash_application::Result<()> {
-		delete(self.tx, self.tenant, id).await.map_err(Into::into)
+		let tenant = self.access.identity.tenant.clone();
+		delete(&mut **self.access.tx, &tenant, id)
+			.await
+			.map_err(Into::into)
 	}
 	async fn clear_contents(&mut self, id: Uuid) -> aidash_application::Result<()> {
-		self.services.clear_contents(self.tx, id).await
+		self.services.clear_contents(self.access, id).await
 	}
 	async fn subnode_creator_run(&mut self, _: Uuid) -> aidash_application::Result<Option<Run>> {
 		// Subnodes are not in the develop schema. Replace this when #670 lands.
 		Ok(None)
 	}
 	async fn run_binding(&mut self, run: &Run) -> aidash_application::Result<(Uuid, String)> {
-		self.services.run_binding(self.tx, run).await
+		self.services.run_binding(self.access, run).await
 	}
 }
+
+/// Deployment inputs for Scratch Space admission.
+pub(crate) struct NativeScratchServices<'a> {
+	pub policy: &'a crate::config::ScratchOperatorPolicy,
+}
+
+#[async_trait::async_trait]
+impl ScratchServices for NativeScratchServices<'_> {
+	async fn limits(
+		&mut self,
+		access: &mut Access,
+		_: &NodeName,
+	) -> aidash_application::Result<(ScratchCeilings, HostAllowlist)> {
+		Ok(effective_policy(self.policy, &access.identity.tenant))
+	}
+
+	async fn validate_runtime(
+		&mut self,
+		access: &mut Access,
+		_: &NodeName,
+		settings: &ScratchSettings,
+	) -> aidash_application::Result<()> {
+		if let Some(image) = &settings.execution_image
+			&& !self
+				.policy
+				.tenant_images
+				.get(&access.identity.tenant)
+				.is_some_and(|images| images.contains(image))
+		{
+			return Err(aidash_application::Error::Forbidden);
+		}
+		Ok(())
+	}
+
+	async fn validate_references(
+		&mut self,
+		access: &mut Access,
+		node: &NodeName,
+		settings: &ScratchSettings,
+	) -> aidash_application::Result<()> {
+		self.validate_runtime(access, node, settings).await?;
+		for id in &settings.external_services {
+			let (sql, values) = Query::select()
+				.column(Alias::new("version"))
+				.from(Alias::new("registry"))
+				.and_where(Expr::col("tenant").eq(Expr::value(access.identity.tenant.clone())))
+				.and_where(Expr::col("id").eq(Expr::value(id.clone())))
+				.and_where(Expr::col("kind").eq(Expr::value("external_service")))
+				.build(PostgresQueryBuilder);
+			let rows = access
+				.tx
+				.fetch_all(&sql, convert_values(values))
+				.await
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(crate::Error::from)?;
+			let mut versions = Vec::new();
+			for row in rows {
+				let version: String = row
+					.get("version")
+					.map_err(reinhardt::core::exception::Error::from)
+					.map_err(crate::Error::from)?;
+				if let Ok(parsed) = semver::Version::parse(&version) {
+					versions.push((parsed, version));
+				}
+			}
+			let version = versions
+				.into_iter()
+				.max_by(|a, b| a.0.cmp(&b.0))
+				.map(|(_, version)| version)
+				.ok_or(aidash_application::Error::Forbidden)?;
+			let reference = aidash_domain::registry::EntityRef {
+				id: id.clone(),
+				version,
+			};
+			let entry =
+				crate::authorization::catalog::entry(access, &reference, "registry.read").await?;
+			crate::marketplace::check_pinned(access, &entry).await?;
+			aidash_domain::egress::definition(&entry)?;
+		}
+		Ok(())
+	}
+
+	async fn clear_contents(
+		&mut self,
+		access: &mut Access,
+		id: Uuid,
+	) -> aidash_application::Result<()> {
+		// The cleared tombstone is the durable disposal intent. Runtime workers
+		// may reclaim its contents after this transaction commits.
+		let tenant = access.identity.tenant.clone();
+		let space = load(&mut **access.tx, &tenant, id)
+			.await
+			.map_err(aidash_application::Error::from)?
+			.ok_or(aidash_application::Error::Forbidden)?;
+		if space.state != ScratchState::Cleared {
+			return Err(aidash_application::Error::Conflict(
+				"scratch space was not cleared".into(),
+			));
+		}
+		Ok(())
+	}
+
+	async fn run_binding(
+		&mut self,
+		access: &mut Access,
+		run: &Run,
+	) -> aidash_application::Result<(Uuid, String)> {
+		if !run.is_local(&access.node_id) {
+			// A receiver may only allocate for its own already-admitted Run.
+			// Locking the admission serializes concurrent lookups for this Run.
+			let tenant = access.identity.tenant.clone();
+			let person = access.identity.subject.clone();
+			let (sql, values) = Query::select()
+				.column(Alias::new("id"))
+				.from(Alias::new("authorization_remote_admissions"))
+				.and_where(Expr::col("id").eq(Expr::value(run.id)))
+				.and_where(Expr::col("tenant").eq(Expr::value(tenant.clone())))
+				.and_where(Expr::col("node").eq(Expr::value(run.node.as_str().to_owned())))
+				.and_where(Expr::col("task_id").eq(Expr::value(run.task_id)))
+				.and_where(Expr::col("source_node").eq(Expr::value(run.home_node.clone())))
+				.and_where(
+					Expr::col("id").in_subquery(
+						Query::select()
+							.column(Alias::new("id"))
+							.from(Alias::new("runs"))
+							.and_where(Expr::col("tenant").eq(Expr::value(tenant.clone())))
+							.and_where(Expr::col("workspace_id").eq(Expr::value(run.workspace_id)))
+							.and_where(
+								Expr::col("home_node").eq(Expr::value(run.home_node.clone())),
+							)
+							.to_owned(),
+					),
+				)
+				.and_where(
+					Expr::col("credential_id").eq(Expr::value(access.identity.credential_id)),
+				)
+				.lock(LockType::Update)
+				.build(PostgresQueryBuilder);
+			if access
+				.tx
+				.fetch_optional(&sql, convert_values(values))
+				.await
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(crate::Error::from)?
+				.is_none()
+			{
+				return Err(aidash_application::Error::Forbidden);
+			}
+			// Serialize first allocation on the receiving Node, including different
+			// Runs of the same home Workspace. UUIDv8 is domain-separated from
+			// user-created UUIDv4 spaces and stable across retries.
+			let (sql, values) = Query::select()
+				.column(Alias::new("name"))
+				.from(Alias::new("nodes"))
+				.and_where(Expr::col("tenant").eq(Expr::value(tenant.clone())))
+				.and_where(Expr::col("name").eq(Expr::value(run.node.as_str().to_owned())))
+				.lock(LockType::Update)
+				.build(PostgresQueryBuilder);
+			access
+				.tx
+				.fetch_optional(&sql, convert_values(values))
+				.await
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(crate::Error::from)?
+				.ok_or(aidash_application::Error::Forbidden)?;
+			let scratch_id = remote_space_id(
+				&tenant,
+				&run.node,
+				&run.home_node,
+				run.workspace_id,
+				&person,
+			);
+			let existing = load(&mut **access.tx, &tenant, scratch_id)
+				.await
+				.map_err(aidash_application::Error::from)?;
+			if let Some(space) = existing {
+				if space.node != run.node || space.creator != person {
+					return Err(aidash_application::Error::Forbidden);
+				}
+			} else {
+				let mut scope = ScratchAdapter {
+					access,
+					services: self,
+				};
+				let (_, tenant_hosts) =
+					aidash_application::scratch::ScratchScope::limits(&mut scope, &run.node)
+						.await?;
+
+				let now = chrono::Utc::now();
+				let space = ScratchSpace {
+					id: scratch_id,
+					node: run.node.clone(),
+					name: "Delegated Run".into(),
+					creator: person.clone(),
+					members: Default::default(),
+					state: ScratchState::Active,
+					settings: ScratchSettings::for_tenant(&tenant_hosts),
+					created_at: now,
+					last_used_at: now,
+				};
+				aidash_application::scratch::create(&mut scope, &space).await?;
+			}
+			return Ok((scratch_id, person));
+		}
+		let mut task = run.task_id;
+		for _ in 0..64 {
+			let (sql, values) = Query::select()
+				.columns([
+					(Alias::new("c"), Alias::new("scratch_space_id")),
+					(Alias::new("c"), Alias::new("created_by")),
+				])
+				.from_as(Alias::new("core_task_sessions"), Alias::new("s"))
+				.join(
+					reinhardt::query::JoinType::InnerJoin,
+					reinhardt::query::TableRef::table_alias(
+						Alias::new("conversations"),
+						Alias::new("c"),
+					),
+					Expr::col((Alias::new("s"), Alias::new("thread_id")))
+						.equals((Alias::new("c"), Alias::new("id"))),
+				)
+				.and_where(
+					Expr::col((Alias::new("s"), Alias::new("task_id"))).eq(Expr::value(task)),
+				)
+				.and_where(
+					Expr::col((Alias::new("s"), Alias::new("tenant")))
+						.eq(Expr::value(access.identity.tenant.clone())),
+				)
+				.build(PostgresQueryBuilder);
+			let row = access
+				.tx
+				.fetch_optional(&sql, convert_values(values))
+				.await
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(crate::Error::from)?;
+			if let Some(row) = row {
+				let err = reinhardt::core::exception::Error::from;
+				let id = row
+					.get("scratch_space_id")
+					.map_err(err)
+					.map_err(crate::Error::from)?;
+				let starter = row
+					.get("created_by")
+					.map_err(err)
+					.map_err(crate::Error::from)?;
+				return Ok((id, starter));
+			}
+			let (sql, values) = Query::select()
+				.column(Alias::new("parent_id"))
+				.from(Alias::new("tasks"))
+				.and_where(Expr::col("id").eq(Expr::value(task)))
+				.and_where(Expr::col("tenant").eq(Expr::value(access.identity.tenant.clone())))
+				.and_where(Expr::col("parent_id").is_not_null())
+				.build(PostgresQueryBuilder);
+			let parent = access
+				.tx
+				.fetch_optional(&sql, convert_values(values))
+				.await
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(crate::Error::from)?
+				.ok_or(aidash_application::Error::Forbidden)?;
+			let parent: Uuid = parent
+				.get("parent_id")
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(crate::Error::from)?;
+			task = parent;
+		}
+		Err(aidash_application::Error::Forbidden)
+	}
+}
+
+#[cfg(test)]
+mod tests;

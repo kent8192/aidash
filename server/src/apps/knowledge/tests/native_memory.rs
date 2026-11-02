@@ -2656,6 +2656,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		sandbox: Default::default(),
 		registry,
 		config: Config {
+			scratch_policy: Default::default(),
 			tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
 				aidash_domain::offering::Offering::SelfHosted,
 			),

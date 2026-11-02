@@ -302,6 +302,8 @@ impl Event {
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Conversation {
+	/// Fixed when the conversation starts.
+	pub scratch_space_id: Uuid,
 	pub created_by: String,
 	pub id: Uuid,
 	pub workspace_id: Uuid,

@@ -71,14 +71,24 @@ impl ConversationScope for Fixture {
 		self.require(action)?;
 		Ok(self.target.clone())
 	}
+	async fn select_scratch_space(
+		&mut self,
+		_workspace: &Workspace,
+		_name: &str,
+		requested: Option<Uuid>,
+	) -> Result<Uuid> {
+		Ok(requested.unwrap_or(Uuid::nil()))
+	}
 	async fn create_conversation(
 		&mut self,
 		workspace_id: Uuid,
+		scratch_space_id: Uuid,
 		target: &EntityRef,
 		target_kind: &str,
 	) -> Result<Conversation> {
 		self.operations.push("insert.conversation".into());
 		Ok(Conversation {
+			scratch_space_id,
 			id: Uuid::from_u128(2),
 			workspace_id,
 			target: format!("{}@{}", target.id, target.version),
@@ -163,6 +173,7 @@ fn request<'a>(reference: &'a EntityRef, kind: &'a str) -> ConversationRequest<'
 		target: reference,
 		target_kind: kind,
 		node: None,
+		scratch_space_id: None,
 	}
 }
 
@@ -209,6 +220,20 @@ async fn authorized_admission_binds_the_session_and_returns_the_delegated_revisi
 			.count(),
 		usize::from(kind == "cluster")
 	);
+}
+
+#[tokio::test]
+async fn conversation_retains_the_selected_scratch_space() {
+	let reference = EntityRef {
+		id: "target".into(),
+		version: "1".into(),
+	};
+	let mut scope = Fixture::new("agent");
+	let mut input = request(&reference, "agent");
+	let selected = Uuid::new_v4();
+	input.scratch_space_id = Some(selected);
+	let result = conversation(&mut scope, input).await.unwrap();
+	assert_eq!(result.conversation.scratch_space_id, selected);
 }
 
 #[rstest::rstest]

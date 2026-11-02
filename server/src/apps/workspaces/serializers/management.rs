@@ -51,4 +51,6 @@ pub(crate) struct ConversationInput {
 	/// The Node the Workspace belongs to. The Tenant's default Node when absent.
 	#[serde(default)]
 	pub(crate) node: Option<aidash_domain::nodes::NodeName>,
+	#[serde(default)]
+	pub(crate) scratch_space_id: Option<Uuid>,
 }

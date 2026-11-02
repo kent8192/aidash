@@ -81,6 +81,7 @@ record!(Event {
 	created_at
 });
 record!(Conversation {
+	scratch_space_id,
 	created_by,
 	id,
 	workspace_id,

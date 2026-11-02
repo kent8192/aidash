@@ -16,6 +16,7 @@ pub struct ConversationRequest<'a> {
 	pub target_kind: &'a str,
 	/// The Node the Workspace goes to; the Tenant's default Node when absent.
 	pub node: Option<&'a NodeName>,
+	pub scratch_space_id: Option<uuid::Uuid>,
 }
 
 pub async fn conversation(
@@ -35,8 +36,16 @@ pub async fn conversation(
 			.await?;
 	}
 	let agent = conversation_agent(&entry, input.target)?;
+	let scratch_space_id = scope
+		.select_scratch_space(&workspace, input.title, input.scratch_space_id)
+		.await?;
 	let conversation = scope
-		.create_conversation(workspace.id, input.target, input.target_kind)
+		.create_conversation(
+			workspace.id,
+			scratch_space_id,
+			input.target,
+			input.target_kind,
+		)
 		.await?;
 	scope
 		.require_conversation(&conversation, "conversation.create")

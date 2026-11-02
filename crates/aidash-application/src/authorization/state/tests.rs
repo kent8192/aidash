@@ -95,6 +95,7 @@ fn human(value: u128, visible: bool) -> HumanRequest {
 }
 fn conversation(value: u128, visible: bool) -> Conversation {
 	Conversation {
+		scratch_space_id: uuid::Uuid::nil(),
 		id: id(value),
 		workspace_id: id(1),
 		target: "saved-target".into(),

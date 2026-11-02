@@ -7,6 +7,7 @@ use uuid::Uuid;
 struct Memory {
 	person: String,
 	deny_node: bool,
+	deny_references: bool,
 	node_people: Vec<String>,
 	spaces: BTreeMap<Uuid, ScratchSpace>,
 	binding: Option<(Uuid, String)>,
@@ -42,13 +43,21 @@ impl ScratchScope for Memory {
 		_: &NodeName,
 		settings: &ScratchSettings,
 	) -> Result<()> {
-		if settings.external_services.iter().any(|id| id != "approved") {
+		if (self.deny_references && !settings.external_services.is_empty())
+			|| settings.external_services.iter().any(|id| id != "approved")
+		{
 			return Err(Error::Forbidden);
 		}
 		Ok(())
 	}
+	async fn validate_runtime(&mut self, _: &NodeName, _: &ScratchSettings) -> Result<()> {
+		Ok(())
+	}
 	async fn validate_members(&mut self, members: &BTreeSet<String>) -> Result<()> {
-		if members.iter().any(|member| member != "bob") {
+		if members
+			.iter()
+			.any(|member| member != "alice" && member != "bob")
+		{
 			return Err(Error::Forbidden);
 		}
 		Ok(())
@@ -105,7 +114,10 @@ fn space(now: DateTime<Utc>) -> ScratchSpace {
 		creator: "alice".into(),
 		members: BTreeSet::new(),
 		state: ScratchState::Active,
-		settings: ScratchSettings::default(),
+		settings: ScratchSettings {
+			allowed_hosts: HostAllowlist::Hosts(BTreeSet::new()),
+			..ScratchSettings::default()
+		},
 		created_at: now,
 		last_used_at: now,
 	}
@@ -218,6 +230,13 @@ async fn run_requires_starter_authority_and_receiving_node() {
 	);
 	assert_eq!(scope.spaces[&id].last_used_at, now + Duration::days(1));
 	assert_eq!(scope.node_people.last().map(String::as_str), Some("alice"));
+	// A later operator revocation is checked again before the next Run.
+	scope.spaces.get_mut(&id).unwrap().settings.docker_enabled = true;
+	assert!(
+		scratch_space_for_run(&mut scope, &run, now + Duration::days(1))
+			.await
+			.is_err()
+	);
 }
 
 #[tokio::test]
@@ -268,4 +287,100 @@ async fn subnode_run_uses_the_creator_runs_scratch_space() {
 		space.id
 	);
 	assert_eq!(scope.bound_run, Some(creator.id));
+}
+
+#[tokio::test]
+async fn conversation_selects_an_accessible_space_or_creates_a_dedicated_one() {
+	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+	let mut scope = Memory {
+		person: "alice".into(),
+		..Default::default()
+	};
+	let node = NodeName::derived("conversation");
+	let id = select_for_conversation(&mut scope, &node, "New conversation", None, now)
+		.await
+		.unwrap();
+	assert_eq!(scope.spaces[&id].creator, "alice");
+	assert_eq!(scope.spaces[&id].node, node);
+	assert_eq!(
+		scope.spaces[&id].settings.allowed_hosts,
+		HostAllowlist::Hosts(BTreeSet::new())
+	);
+	assert_eq!(
+		select_for_conversation(
+			&mut scope,
+			&node,
+			"Other",
+			Some(id),
+			now + Duration::days(1)
+		)
+		.await
+		.unwrap(),
+		id
+	);
+	assert_eq!(scope.spaces[&id].last_used_at, now + Duration::days(1));
+	let other_node = NodeName::derived("other");
+	assert!(matches!(
+		select_for_conversation(&mut scope, &other_node, "Other", Some(id), now).await,
+		Err(Error::Forbidden)
+	));
+	scope.person = "bob".into();
+	assert!(matches!(
+		select_for_conversation(&mut scope, &node, "Other", Some(id), now).await,
+		Err(Error::Forbidden)
+	));
+}
+
+#[tokio::test]
+async fn agents_cannot_create_a_space_as_the_owner() {
+	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+	let mut scope = Memory {
+		person: "agent:worker".into(),
+		..Default::default()
+	};
+	let mut space = space(now);
+	space.creator = scope.person.clone();
+	assert!(matches!(
+		create(&mut scope, &space).await,
+		Err(Error::Forbidden)
+	));
+	assert!(scope.spaces.is_empty());
+}
+
+#[tokio::test]
+async fn members_can_use_services_already_shared_with_the_space() {
+	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+	let mut scope = Memory {
+		person: "alice".into(),
+		..Default::default()
+	};
+	let mut space = space(now);
+	space.settings.external_services.insert("approved".into());
+	create(&mut scope, &space).await.unwrap();
+	add_member(&mut scope, space.id, now, "bob").await.unwrap();
+	scope.person = "bob".into();
+	scope.deny_references = true;
+	assert_eq!(
+		select_for_conversation(&mut scope, &space.node, "reuse", Some(space.id), now)
+			.await
+			.unwrap(),
+		space.id
+	);
+	let mut run =
+		crate::test_support::run_of(crate::test_support::snapshot("aidash://local", "agent"));
+	run.node = space.node.clone();
+	scope.binding = Some((space.id, "bob".into()));
+	assert_eq!(
+		scratch_space_for_run(&mut scope, &run, now).await.unwrap(),
+		space.id
+	);
+	update_settings(&mut scope, space.id, now, space.settings.clone())
+		.await
+		.unwrap();
+	let mut expanded = space.settings;
+	expanded.external_services.insert("another-service".into());
+	assert!(matches!(
+		update_settings(&mut scope, space.id, now, expanded).await,
+		Err(Error::Forbidden)
+	));
 }

@@ -8,6 +8,7 @@ use reinhardt::conf::settings::validation::{ValidationError, ValidationResult};
 use reinhardt::core::validators::Validate as ValidateRules;
 use reinhardt::{Validate, settings};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::net::SocketAddr;
 
@@ -45,6 +46,28 @@ pub struct DeploymentSettings {
 	/// its key. Exchange between Nodes of this Deployment never depends on it.
 	#[setting(default = "true")]
 	pub federation: bool,
+	/// Effective Scratch Space capacity ceiling, in bytes.
+	#[setting(default = "1099511627776")]
+	pub scratch_capacity_bytes: u64,
+	#[setting(default = "4000")]
+	pub scratch_cpu_millis: u32,
+	#[setting(default = "17179869184")]
+	pub scratch_memory_bytes: u64,
+	/// Whether every Tenant on this Offering may enable Docker.
+	#[setting(default = "false")]
+	pub scratch_docker_allowed: bool,
+	/// Operator-approved Tenants that may enable Docker.
+	#[setting(default = "Vec::new()", leaf)]
+	pub scratch_docker_tenants: Vec<String>,
+	/// Whether this Offering permits selecting all hosts.
+	#[setting(default = "false")]
+	pub scratch_all_hosts_allowed: bool,
+	/// Per-Tenant allowed hosts; a single `*` denotes all hosts.
+	#[setting(default = "BTreeMap::new()", leaf)]
+	pub scratch_tenant_hosts: BTreeMap<String, Vec<String>>,
+	/// Execution image references approved for each Tenant.
+	#[setting(default = "BTreeMap::new()", leaf)]
+	pub scratch_tenant_images: BTreeMap<String, Vec<String>>,
 	/// `[deployment.key]`: where the Deployment Key lives. Without it this
 	/// Deployment cannot federate with other Deployments.
 	#[setting(optional, node)]
@@ -107,6 +130,37 @@ impl SettingsValidation for DeploymentSettings {
 	fn validate(&self, _profile: &Profile) -> ValidationResult {
 		ValidateRules::validate(self)
 			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
+		if !(107374182400..=1099511627776).contains(&self.scratch_capacity_bytes)
+			|| self.scratch_cpu_millis < 4000
+			|| self.scratch_memory_bytes < 17179869184
+		{
+			return Err(ValidationError::Constraint(
+				"scratch ceilings must accommodate defaults and capacity must not exceed 1 TiB"
+					.into(),
+			));
+		}
+		for hosts in self.scratch_tenant_hosts.values() {
+			if hosts.iter().any(|host| host == "*") {
+				if hosts.len() != 1 {
+					return Err(ValidationError::Constraint(
+						"scratch all-hosts Tenant policy must contain only *".into(),
+					));
+				}
+				continue;
+			}
+			let settings = aidash_domain::scratch::ScratchSettings {
+				allowed_hosts: aidash_domain::scratch::HostAllowlist::Hosts(
+					hosts.iter().cloned().collect(),
+				),
+				..Default::default()
+			};
+			settings
+				.validate(
+					&Default::default(),
+					&aidash_domain::scratch::HostAllowlist::All,
+				)
+				.map_err(|error| ValidationError::Constraint(error.to_string()))?;
+		}
 		DeploymentId::parse(&self.id)
 			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
 		validate_endpoint(&self.endpoint)
@@ -149,6 +203,34 @@ mod tests {
 
 	fn problem(extra: serde_json::Value) -> String {
 		check(&settings(extra)).unwrap_err().to_string()
+	}
+
+	#[test]
+	fn scratch_ceilings_and_tenant_host_policies_are_validated() {
+		check(&settings(json!({}))).unwrap();
+		assert!(
+			check(&settings(
+				json!({"scratch_capacity_bytes": 1099511627777_u64})
+			))
+			.is_err()
+		);
+		assert!(check(&settings(json!({"scratch_cpu_millis": 1000}))).is_err());
+		assert!(
+			check(&settings(
+				json!({"scratch_tenant_hosts": {"example": ["*", "example.com"]}})
+			))
+			.is_err()
+		);
+		assert!(
+			check(&settings(
+				json!({"scratch_tenant_hosts": {"example": ["*.example.com"]}})
+			))
+			.is_err()
+		);
+		check(&settings(
+			json!({"scratch_tenant_hosts": {"example": ["*"]}}),
+		))
+		.unwrap();
 	}
 
 	#[test]

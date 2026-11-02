@@ -135,11 +135,14 @@ impl CollaborationManagement {
 		interaction::conversation(
 			&f,
 			&identity,
-			&input.title,
-			&input.goal,
-			&input.target,
-			&input.target_kind,
-			input.node.as_ref(),
+			aidash_application::workspaces::ConversationRequest {
+				title: &input.title,
+				goal: &input.goal,
+				target: &input.target,
+				target_kind: &input.target_kind,
+				node: input.node.as_ref(),
+				scratch_space_id: input.scratch_space_id,
+			},
 		)
 		.await
 	}
