@@ -243,6 +243,31 @@ class ExecutionPodControllerTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'admission'):
             controller.ensure({'scratch_space_id': 'example'})
 
+    def test_cancel_run_only_cancels_the_named_scratch_space(self):
+        import threading
+        from execution_pod import CommandQueue, ExecutionPodController
+
+        controller = ExecutionPodController(object(), {}, admitted=True)
+        release = threading.Event()
+        queues = {space: CommandQueue() for space in ('one', 'two')}
+        controller.queues.update(queues)
+        try:
+            for queue in queues.values():
+                for _ in range(8):
+                    queue.submit('active', None, lambda _: release.wait(5))
+            first = queues['one'].submit('same-run', 'one', lambda value: value)
+            second = queues['two'].submit('same-run', 'two', lambda value: value)
+            controller.cancel_run('one', 'same-run')
+            self.assertTrue(first.cancelled())
+            self.assertFalse(second.cancelled())
+            release.set()
+            self.assertEqual(second.result(timeout=5), 'two')
+        finally:
+            release.set()
+            for queue in queues.values():
+                queue.close()
+            controller.session_executor.shutdown(wait=True)
+
     def test_ensure_is_idempotent_and_stop_preserves_claim(self):
         import json
         import tempfile
