@@ -24,7 +24,7 @@ from urllib.parse import urlsplit, parse_qs
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from execution_pod import ExecutionPodController, ExecutionPodError
+from execution_pod import ExecutionPodController, ExecutionPodError, v2_network_policy
 
 TERMINAL = {"completed", "cancelled", "failed", "uncertain"}
 # The sandbox image's runner/probe.py must emit exactly this evidence contract.
@@ -117,7 +117,16 @@ class Runner:
         fcntl.flock(self.owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
         self.lock = threading.RLock()
         self.active = set()
-        self.execution_pods = ExecutionPodController(self, config.get('execution_pods', {}))
+        execution_config = {'namespace': config['namespace'], 'runtime_class': config['runtime_class'],
+                            'processes': config.get('processes', 128), 'host_tasks': config.get('host_tasks', 512),
+                            'output_bytes': config.get('output_bytes', 8388608)}
+        execution_config_path = os.environ.get('AIDASH_EXECUTION_POD_CONFIG')
+        if execution_config_path:
+            supplied = json.loads(Path(execution_config_path).read_bytes())
+            if not isinstance(supplied, dict) or {'namespace', 'runtime_class', 'processes', 'host_tasks'} & supplied.keys():
+                raise ValueError('invalid Execution Pod configuration overrides')
+            execution_config.update(supplied)
+        self.execution_pods = ExecutionPodController(self, execution_config)
         self.admission_operation = None
         # Seeded by recover(), the final startup scan; until then only the
         # operations saved during startup are tracked, and nothing serves it yet.
@@ -149,6 +158,7 @@ class Runner:
         if runtime["handler"] != "runsc":
             raise ValueError("verified runsc runtime class required")
         self.ensure_network_policy()
+        self.ensure_v2_network_policy()
         self.verified = False
         self.python_verified = False
         # Existing journals contain untrusted work too. Re-prove the current
@@ -159,6 +169,7 @@ class Runner:
         self.retire_admission_probes()
         self.recover()
         self.execution_pods.recover_commands()
+        self.activate_execution_pods()
 
     def operation_files(self):
         for path in self.root.glob("*.json"):
@@ -266,7 +277,8 @@ class Runner:
     def ensure_network_policy(self):
         policy = {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
                   "metadata": {"name": "aidash-deny", "namespace": self.config["namespace"]},
-                  "spec": {"podSelector": {"matchLabels": {"aidash-sandbox": "true"}},
+                  "spec": {"podSelector": {"matchLabels": {"aidash-sandbox": "true"},
+                                           "matchExpressions": [{"key": "aidash-v2", "operator": "DoesNotExist"}]},
                            "policyTypes": ["Ingress", "Egress"], "ingress": [], "egress": []}}
         settings = self.config.get('egress')
         if settings:
@@ -280,6 +292,49 @@ class Runner:
                                'podSelector': {'matchLabels': settings['pod_selector']}}
             policy['spec']['egress'] = [{'to': [destination], 'ports': [{'protocol': 'TCP', 'port': endpoint.port or 80}]}]
         self.kube(["apply", "-f", "-"], json.dumps(policy).encode())
+
+    def ensure_v2_network_policy(self):
+        config = self.execution_pods.config
+        if config.get('proxy_endpoint'):
+            policy = v2_network_policy(config)
+        else:
+            policy = {'apiVersion': 'networking.k8s.io/v1', 'kind': 'NetworkPolicy',
+                      'metadata': {'name': 'aidash-v2-egress', 'namespace': self.config['namespace']},
+                      'spec': {'podSelector': {'matchLabels': {'aidash-sandbox': 'true', 'aidash-v2': 'true'}},
+                               'policyTypes': ['Ingress', 'Egress'], 'ingress': [], 'egress': []}}
+        self.kube(['apply', '-f', '-'], json.dumps(policy).encode())
+
+    def activate_execution_pods(self):
+        """Enable v2 only after a disposable Pod passes its complete admission."""
+        config = self.execution_pods.config
+        self.execution_pods.admission_error = 'Execution Pods are disabled'
+        if not config.get('enabled'):
+            return
+        scratch_id = 'admission-' + str(uuid.uuid4())
+        error = None
+        self.execution_pods.admitted = True  # startup is not serving requests yet
+        try:
+            if config.get('allow_docker'):
+                runtime = self.kube_json(['get', 'runtimeclass', config['docker_runtime_class'], '-o', 'json'])
+                if runtime.get('handler') != 'runsc-docker':
+                    raise ValueError('Docker RuntimeClass does not use the verified raw-socket handler')
+            settings = {'scratch_space_id': scratch_id, 'image': self.config['image'],
+                        'cpu': min(self.config.get('cpu', 2), 2),
+                        'memory_bytes': min(self.config.get('memory_bytes', 2 << 30), 2 << 30),
+                        'capacity_bytes': config.get('admission_capacity_bytes', 5 << 30),
+                        'docker_enabled': False}
+            self.execution_pods.ensure(settings)
+        except Exception as failure:
+            error = str(failure) or type(failure).__name__
+        try:
+            self.execution_pods.delete(scratch_id)
+        except Exception as failure:
+            detail = str(failure) or type(failure).__name__
+            error = (error + '; ' if error else '') + 'admission cleanup failed: ' + detail
+        self.execution_pods.admitted = error is None
+        self.execution_pods.admission_error = error
+        if error:
+            print('Execution Pod admission failed: ' + error, file=sys.stderr, flush=True)
 
     def path(self, operation):
         return self.root / f"{identity(operation)}.json"
@@ -635,7 +690,7 @@ class Runner:
             raise RuntimeError("node lifecycle adapter: " + str(value.get("error", "failed")))
         return value
 
-    def guard_execution_pod(self, pod, settings, container_name, container_id, epoch):
+    def guard_execution_pod(self, pod, settings, container_name, container_id, epoch, *, action='v2_limits', **fields):
         name = pod['metadata']['name']
         if not re.fullmatch(r'scratch-[0-9a-f]{48}', name):
             raise ValueError('invalid Scratch Space Pod name')
@@ -647,10 +702,21 @@ class Runner:
         record = {'operation_id': area, 'area_id': area, 'pod_uid': pod['metadata']['uid'],
                   'container_id': container_id, 'epoch': epoch, 'image': image,
                   'cluster_node': pod['spec']['nodeName']}
-        return self.guard(record, 'v2_limits', protocol='aidash-runner/2', pod_name=name,
+        return self.guard(record, action, protocol='aidash-runner/2', pod_name=name,
                           container_name=container_name, cpu=settings['cpu'],
                           memory_bytes=settings['memory_bytes'], capacity_bytes=settings['capacity_bytes'],
-                          host_tasks=self.execution_pods.config.get('host_tasks', 512))
+                          host_tasks=self.execution_pods.config.get('host_tasks', 512), **fields)
+
+    def terminate_execution_pod(self, guard):
+        name = guard['pod_name']
+        if not re.fullmatch(r'scratch-[0-9a-f]{48}', name):
+            raise ValueError('invalid Scratch Space Pod name')
+        area = str(uuid.UUID(hex=name[8:40]))
+        record = {'operation_id': area, 'area_id': area, 'pod_uid': guard['pod_uid'],
+                  'container_id': guard['container_id'], 'epoch': guard['epoch'],
+                  'image': guard['image'], 'cluster_node': guard['cluster_node']}
+        return self.guard(record, 'terminate', protocol='aidash-runner/2', pod_name=name,
+                          container_name=guard['container_name'])
 
     def session(self, sid):
         path = self.root / ("session-" + identity(sid) + ".json")
@@ -1163,6 +1229,9 @@ class Handler(BaseHTTPRequestHandler):
         if not hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + runner.token):
             raise Rejected(401, "runner authentication required")
         path = urlsplit(self.path).path
+        if self.command == 'GET' and path == '/v2/health':
+            return {'protocol': 'aidash-runner/2', 'verified': runner.execution_pods.admitted,
+                    'error': getattr(runner.execution_pods, 'admission_error', None)}
         if self.command == 'POST' and path in (
                 '/v2/pods/ensure', '/v2/pods/stop', '/v2/pods/delete', '/v2/pods/reset',
                 '/v2/commands/submit', '/v2/commands/result', '/v2/runs/cancel',
@@ -1187,7 +1256,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/v2/commands/result':
                 return runner.execution_pods.command_result(request['operation_id'])
             if path == '/v2/runs/cancel':
-                return runner.execution_pods.cancel_run(request['run_id'])
+                return runner.execution_pods.cancel_run(request['scratch_space_id'], request['run_id'])
             if path == '/v2/background/list':
                 return runner.execution_pods.background_processes(request['scratch_space_id'])
             if path == '/v2/background/stop':

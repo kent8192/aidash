@@ -127,20 +127,26 @@ def configuration(root, runsc_root='/run/containerd/runsc'):
     if config.get('version') != 2:
         raise ValueError('only verified containerd configuration version 2 is supported')
     cri = config.get('plugins', {}).get('io.containerd.grpc.v1.cri', {})
-    runtime = cri.get('containerd', {}).get('runtimes', {}).get('runsc')
-    expected = {'runtime_type': 'io.containerd.runsc.v1',
-                'options': {'TypeUrl': 'io.containerd.runsc.v1.options',
-                            'ConfigPath': '/etc/containerd/runsc.toml'}}
-    if runtime is not None and runtime != expected:
-        raise ValueError('existing runsc registration differs from verified configuration')
+    runtimes = cri.get('containerd', {}).get('runtimes', {})
+    for name, path in (('runsc', '/etc/containerd/runsc.toml'),
+                       ('runsc-docker', '/etc/containerd/runsc-docker.toml')):
+        expected = {'runtime_type': 'io.containerd.runsc.v1',
+                    'options': {'TypeUrl': 'io.containerd.runsc.v1.options', 'ConfigPath': path}}
+        if name in runtimes and runtimes[name] != expected:
+            raise ValueError('existing runsc registration differs from verified configuration')
     files = {root / 'etc/containerd/runsc.toml':
-             (f'root = {json.dumps(runsc_root)}\n[runsc_config]\nplatform = "systrap"\n').encode()}
-    if runtime is None:
-        text += ('\n[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc]\n'
+             (f'root = {json.dumps(runsc_root)}\n[runsc_config]\nplatform = "systrap"\n').encode(),
+             root / 'etc/containerd/runsc-docker.toml':
+             (f'root = {json.dumps(runsc_root)}\n[runsc_config]\nplatform = "systrap"\nnet-raw = "true"\n').encode()}
+    for name, path in (('runsc', '/etc/containerd/runsc.toml'),
+                       ('runsc-docker', '/etc/containerd/runsc-docker.toml')):
+        if name in runtimes:
+            continue
+        text += (f'\n[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.{name}]\n'
                  'runtime_type = "io.containerd.runsc.v1"\n'
-                 '[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc.options]\n'
+                 f'[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.{name}.options]\n'
                  'TypeUrl = "io.containerd.runsc.v1.options"\n'
-                 'ConfigPath = "/etc/containerd/runsc.toml"\n')
+                 f'ConfigPath = "{path}"\n')
         files[config_path] = text.encode()
     return {path: data for path, data in files.items()
             if path.is_symlink() or not path.is_file() or path.read_bytes() != data

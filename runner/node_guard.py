@@ -111,7 +111,7 @@ def open_file(root, path):
         os.close(fd)
 
 
-def kill_sandbox(state):
+def kill_sandbox(state, expected_start=None):
     pid = state['pid']
     if not isinstance(pid, int) or pid <= 1:
         raise ValueError('invalid sandbox pid')
@@ -119,6 +119,8 @@ def kill_sandbox(state):
     # executable after opening the descriptor and before delivering SIGKILL.
     fd = os.pidfd_open(pid)
     try:
+        if expected_start is not None and process_identity(pid)[0] != expected_start:
+            raise ValueError('sandbox process identity changed')
         executable = f'/proc/{pid}/exe'
         if not any(os.path.exists(p) and os.path.samefile(executable, p) for p in SENTRY_BINARIES):
             raise ValueError('sandbox process identity changed')
@@ -200,6 +202,72 @@ def sentry_cgroup(pid):
     return CGROUP_ROOT / hierarchy.lstrip('/')
 
 
+def start_network_listener(nonce):
+    """Open a short-lived TCP/UDP positive-control listener on the node."""
+    if not isinstance(nonce, str) or not re.fullmatch('[0-9a-f]{32}', nonce):
+        raise ValueError('invalid network probe nonce')
+    receipt = ROOT / ('network-' + nonce + '.seen')
+    if receipt.exists():
+        raise ValueError('network probe nonce was already used')
+    program = '''import pathlib,select,socket,sys,time
+tcp=socket.socket();tcp.bind(("0.0.0.0",0));tcp.listen(8)
+udp=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);udp.bind(("0.0.0.0",tcp.getsockname()[1]))
+print(tcp.getsockname()[1],flush=True)
+end=time.monotonic()+90
+while time.monotonic()<end:
+ for s in select.select([tcp,udp],[],[],1)[0]:
+  if s is tcp: c,_=tcp.accept();c.close()
+  else:
+   data=udp.recvfrom(65535)[0];nonce=bytes.fromhex(sys.argv[1])
+   if data==nonce: pathlib.Path(sys.argv[2]).touch()
+   elif data==b"control"+nonce: pathlib.Path(sys.argv[2]+".control").touch()
+'''
+    process = subprocess.Popen(['/usr/bin/nsenter', '-t', '1', '-n', sys.executable, '-I', '-c', program,
+                                nonce, str(receipt)],
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True)
+    ready, _, _ = select.select([process.stdout], [], [], 10)
+    if not ready:
+        process.kill()
+        process.wait()
+        raise RuntimeError('node network listener did not start')
+    try:
+        port = int(process.stdout.readline().strip())
+        if not 1 <= port <= 65535 or process.poll() is not None:
+            raise ValueError('invalid node network listener')
+        start, _ = process_identity(process.pid)
+        return {'pid': process.pid, 'start': start, 'port': port, 'nonce': nonce}
+    except Exception:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        raise
+    finally:
+        process.stdout.close()
+
+
+def stop_network_listener(listener):
+    pid = listener['pid']
+    if type(pid) is not int or pid <= 1:
+        raise ValueError('invalid node listener identity')
+    if not re.fullmatch('[0-9a-f]{32}', listener.get('nonce', '')):
+        raise ValueError('invalid node listener nonce')
+    try:
+        fd = os.pidfd_open(pid)
+    except ProcessLookupError:
+        (ROOT / ('network-' + listener['nonce'] + '.seen')).unlink(missing_ok=True)
+        (ROOT / ('network-' + listener['nonce'] + '.seen.control')).unlink(missing_ok=True)
+        return
+    try:
+        start, _ = process_identity(pid)
+        if start != listener['start']:
+            raise ValueError('node listener identity changed')
+        signal.pidfd_send_signal(fd, signal.SIGKILL)
+    finally:
+        os.close(fd)
+    (ROOT / ('network-' + listener['nonce'] + '.seen')).unlink(missing_ok=True)
+    (ROOT / ('network-' + listener['nonce'] + '.seen.control')).unlink(missing_ok=True)
+
+
 def handle(request):
     # Serialize validation with the watchdog. Its exact-bound pidfd tombstone
     # proves termination even when runsc has already removed its state. Only
@@ -213,6 +281,15 @@ def handle(request):
         bound = previous and all(
             previous.get(k) == request.get(k) for k in
             ('container_id', 'pod_uid', 'area_id', 'epoch', 'image'))
+        if (bound and request.get('protocol') == 'aidash-runner/2' and request.get('action') == 'terminate'
+                and previous.get('protocol') == 'aidash-runner/2'
+                and previous.get('pod_name') == request.get('pod_name')
+                and previous.get('sentry_pid') and previous.get('sentry_start')):
+            if not previous.get('terminated') and not gone(previous):
+                kill_sandbox({'pid': previous['sentry_pid']}, expected_start=previous['sentry_start'])
+            previous.update(terminated=True, deadline=None, frozen=False)
+            save(path, previous)
+            return {'termination_confirmed': True}
         terminated = bound and (previous.get('terminated') or gone(previous))
         if terminated:
             if not previous.get('terminated'):
@@ -237,6 +314,47 @@ def handle(request):
                          request['epoch'] == previous['epoch'] and previous['container_id'] != cid and not transition):
             raise ValueError('stale execution epoch')
         op = request['action']
+        if op in ('v2_network_start', 'v2_network_reach', 'v2_network_udp_control',
+                  'v2_network_seen', 'v2_network_stop'):
+            if request.get('protocol') != 'aidash-runner/2' or not bound or not previous:
+                raise ValueError('verified Execution Pod binding required')
+            if previous.get('sentry_pid') != state.get('pid'):
+                raise ValueError('sandbox identity changed')
+            if op in ('v2_network_reach', 'v2_network_udp_control'):
+                import ipaddress
+                import socket
+                address = ipaddress.IPv4Address(request['address'])
+                expected_port = 18080 if op == 'v2_network_reach' else 18081
+                if not address.is_private or address.is_loopback or address.is_link_local or request.get('port') != expected_port:
+                    raise ValueError('invalid network canary target')
+                if op == 'v2_network_udp_control':
+                    listener = previous.get('network_listener')
+                    if not listener:
+                        raise ValueError('node network listener unavailable')
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                        sock.sendto(b'control' + bytes.fromhex(listener['nonce']), (str(address), 18081))
+                    return {'sent': True}
+                try:
+                    with socket.create_connection((str(address), 18080), timeout=2):
+                        return {'reachable': True}
+                except OSError:
+                    return {'reachable': False}
+            if op == 'v2_network_start':
+                if previous.get('network_listener'):
+                    raise ValueError('node network listener already active')
+                listener = start_network_listener(request.get('nonce'))
+                save(path, dict(previous, network_listener=listener))
+                return {'port': listener['port']}
+            listener = previous.get('network_listener')
+            if op == 'v2_network_seen':
+                if not listener:
+                    raise ValueError('node network listener unavailable')
+                receipt = ROOT / ('network-' + listener['nonce'] + '.seen')
+                return {'seen': receipt.exists(), 'control_seen': Path(str(receipt) + '.control').exists()}
+            if listener:
+                stop_network_listener(listener)
+                save(path, dict(previous, network_listener=None))
+            return {'stopped': True}
         if op in ('limits', 'v2_limits'):
             if op == 'v2_limits' and request.get('protocol') != 'aidash-runner/2':
                 raise ValueError('Execution Pod protocol required')

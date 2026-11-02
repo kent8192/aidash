@@ -209,6 +209,11 @@ def execution_manifests(settings, config):
     for key in ('cpu', 'memory_bytes', 'capacity_bytes'):
         if type(settings[key]) is not int or settings[key] <= 0:
             raise ValueError(key + ' must be a positive integer')
+    for key, ceiling in (('cpu', config.get('max_cpu', 256)),
+                         ('memory_bytes', config.get('max_memory_bytes', 1 << 40)),
+                         ('capacity_bytes', min(config.get('max_capacity_bytes', 1 << 40), 1 << 40))):
+        if type(ceiling) is not int or ceiling <= 0 or settings[key] > ceiling:
+            raise ValueError(key + ' exceeds the Deployment ceiling')
     processes = config.get('processes', 128)
     if type(processes) is not int or processes < 32:
         raise ValueError('processes must be an integer of at least 32')
@@ -284,7 +289,12 @@ def execution_manifests(settings, config):
         podspec['tolerations'] = [{'key': 'aidash.run/tenant', 'operator': 'Equal',
                                    'value': tenant_label, 'effect': 'NoSchedule'}]
     pod = {'apiVersion': 'v1', 'kind': 'Pod', 'metadata': dict(metadata,
-           labels={'aidash-sandbox': 'true'}), 'spec': podspec}
+           labels={'aidash-sandbox': 'true', 'aidash-v2': 'true'}), 'spec': podspec}
+    if config.get('proxy_endpoint'):
+        v2_network_policy(config)  # validate before passing the proxy to user processes
+        proxy = config['proxy_endpoint']
+        podspec['containers'][0]['env'] += [
+            {'name': key, 'value': proxy} for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy')]
     return claim, pod
 
 
@@ -338,6 +348,12 @@ class ExecutionPodController:
                 if not metadata.get('uid') or not node or epoch < 1:
                     time.sleep(.2)
                     continue
+                claim = self._get('pvc', name)
+                if not claim or not claim.get('spec', {}).get('volumeName'):
+                    time.sleep(.2)
+                    continue
+                volume = self._volume_for_purge(claim)
+                self._record_volume(settings['scratch_space_id'], volume)
                 candidates = [('helpers', status.get('initContainerStatuses', [])),
                               ('execution', status.get('containerStatuses', []))]
                 for container_name, statuses in reversed(candidates):
@@ -353,7 +369,8 @@ class ExecutionPodController:
                             check=False)
                         if waiting.returncode:
                             continue
-                    self.backend.guard_execution_pod(pod, settings, container_name, container_id, epoch)
+                    evidence = self.backend.guard_execution_pod(pod, settings, container_name, container_id, epoch)
+                    self._record_guard(pod, container_name, container_id, epoch, host_evidence=evidence)
                     if container_name == 'helpers':
                         probe = self.backend.kube(['exec', name, '-c', 'helpers', '--', 'python3', '-c',
                             'import json,resource;print(json.dumps(resource.getrlimit(resource.RLIMIT_NPROC)))'])
@@ -379,27 +396,121 @@ class ExecutionPodController:
         epoch = int(pod.get('metadata', {}).get('annotations', {}).get('aidash.run/epoch', '0'))
         if len(container_id) != 64 or epoch < 1:
             raise ExecutionPodError('admission_failed', 'Execution Pod identity evidence is incomplete')
-        self.backend.guard_execution_pod(pod, settings, 'execution', container_id, epoch)
-        probe = '''import json,os,resource,socket
-fields=dict(line.split(":",1) for line in open("/proc/self/status") if ":" in line)
-try:
- s=socket.socket(socket.AF_INET,socket.SOCK_RAW,socket.IPPROTO_ICMP);s.close();raw=True
-except OSError: raw=False
-print(json.dumps({"uid":os.getuid(),"kernel":os.uname().release,"no_new_privs":int(fields["NoNewPrivs"]),
- "caps":{k:int(fields[k],16) for k in ("CapInh","CapPrm","CapEff","CapBnd","CapAmb")},
- "process_limit":resource.getrlimit(resource.RLIMIT_NPROC),"raw_socket":raw,
- "service_account_absent":not os.path.exists("/var/run/secrets/kubernetes.io/serviceaccount/token")}))'''
+        evidence = self.backend.guard_execution_pod(pod, settings, 'execution', container_id, epoch)
+        self._record_guard(pod, 'execution', container_id, epoch, host_evidence=evidence)
         python = ['/.aidash-helpers/loader', '--library-path',
                   '/.aidash-helpers/lib:/.aidash-helpers/python/lib',
-                  '/.aidash-helpers/python/bin/python3', '-I', '-c', probe]
+                  '/.aidash-helpers/python/bin/python3', '-I', '/.aidash-helpers/user_probe.py']
         mode = 'docker' if settings['docker_enabled'] else 'normal'
         result = self.backend.kube(['exec', name, '-c', 'execution', '--'] +
             helper_command('chroot', mode, '/scratch-system/rootfs', '.', *python))
         try:
-            verify_user_probe(json.loads(result.stdout), docker=settings['docker_enabled'],
+            report = json.loads(result.stdout)
+            verify_user_probe(report, docker=settings['docker_enabled'],
                               processes=self.config.get('processes', 128))
         except (ValueError, KeyError, TypeError) as error:
             raise ExecutionPodError('admission_failed', 'User isolation probe failed: ' + str(error)) from error
+        self._record_guard(pod, 'execution', container_id, epoch, host_evidence=evidence, user_evidence=report)
+        self._verify_network_pod(pod, settings, container_id, epoch)
+
+    def _verify_network_pod(self, pod, settings, container_id, epoch):
+        import ipaddress
+        import json
+        import time
+        import uuid
+        from urllib.parse import urlsplit
+
+        # The policy selector must identify the gateway rather than a caller's
+        # chosen IP. A positive control independently proves each denied target
+        # actually has a listener, so a refused port is not isolation evidence.
+        expected_policy = v2_network_policy(self.config)
+        policies = self.backend.kube(['get', 'networkpolicies', '-o', 'json'])
+        verify_network_policies(json.loads(policies.stdout)['items'], pod['metadata']['labels'], expected_policy)
+        gateway = urlsplit(self.config['proxy_endpoint'])
+        gateway_ip = str(ipaddress.IPv4Address(gateway.hostname))
+        node_ip = str(ipaddress.IPv4Address(pod['status']['hostIP']))
+        nonce = uuid.uuid4().hex
+        policy, canary = network_canary_manifests(self.config, pod['spec']['nodeName'], nonce)
+        canary_name = canary['metadata']['name']
+        pod_name = pod['metadata']['name']
+        listener = None
+        try:
+            self.backend.kube(['create', '-f', '-'], json.dumps(policy).encode())
+            self.backend.kube(['create', '-f', '-'], json.dumps(canary).encode())
+            self.backend.kube(['wait', '--for=condition=Ready', 'pod/' + canary_name, '--timeout=60s'], timeout=70)
+            listener = self.backend.guard_execution_pod(pod, settings, 'execution', container_id, epoch,
+                                                        action='v2_network_start', nonce=nonce)
+            target_pod = self._get('pod', canary_name)
+            peer_ip = str(ipaddress.IPv4Address(target_pod['status']['podIP']))
+            peer_control = self.backend.guard_execution_pod(pod, settings, 'execution', container_id, epoch,
+                action='v2_network_reach', address=peer_ip, port=18080)
+            if peer_control.get('reachable') is not True:
+                raise ValueError('network positive control unavailable: peer from another Pod')
+            targets = {'gateway': {'address': gateway_ip, 'port': gateway.port},
+                       'peer': {'address': peer_ip, 'port': 18080},
+                       'node': {'address': node_ip, 'port': listener['port']},
+                       'metadata': {'address': '169.254.169.254', 'port': 80},
+                       'internet': {'address': '1.1.1.1', 'port': 443},
+                       'udp_port': 18081, 'nonce': nonce}
+            # The canary has permissive egress and proves all ports respond.
+            # Its own /ready endpoint also proves the UDP listener is bound.
+            control = '''import json,socket,sys,urllib.request
+t=json.loads(sys.argv[1]); r={}
+for n in ("peer","node","metadata","internet","gateway"):
+ try:
+  s=socket.create_connection((t[n]["address"],t[n]["port"]),timeout=2);s.close();r[n]=True
+ except OSError:r[n]=False
+try:r["peer"]=r["peer"] and urllib.request.urlopen("http://127.0.0.1:18080/ready",timeout=2).read()==b"ready"
+except Exception:r["peer"]=False
+print(json.dumps(r))'''
+            positive = self.backend.kube(['exec', canary_name, '-c', 'canary', '--', 'python3', '-I', '-c',
+                                          control, json.dumps(targets)])
+            verify_positive_controls(json.loads(positive.stdout))
+            if settings['docker_enabled']:
+                self.backend.guard_execution_pod(pod, settings, 'execution', container_id, epoch,
+                    action='v2_network_udp_control', address=peer_ip, port=18081)
+                self.backend.kube(['exec', canary_name, '-c', 'canary', '--', 'python3', '-I', '-c',
+                    'import socket,sys;s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);'
+                    's.sendto(b"control"+bytes.fromhex(sys.argv[3]),(sys.argv[1],int(sys.argv[2])))',
+                    node_ip, str(listener['port']), nonce])
+                udp_deadline = time.monotonic() + 5
+                while time.monotonic() < udp_deadline:
+                    node_control = self.backend.guard_execution_pod(pod, settings, 'execution', container_id, epoch,
+                                                                     action='v2_network_seen')
+                    peer_control = self.backend.kube(['exec', canary_name, '-c', 'canary', '--', 'python3', '-I',
+                        '-c', 'import urllib.request;print(urllib.request.urlopen("http://127.0.0.1:18080/control-seen").read().decode())'])
+                    if node_control.get('control_seen') is True and peer_control.stdout.strip() == b'true':
+                        break
+                    time.sleep(.1)
+                else:
+                    raise ValueError('network UDP positive controls unavailable')
+            python = ['/.aidash-helpers/loader', '--library-path',
+                      '/.aidash-helpers/lib:/.aidash-helpers/python/lib',
+                      '/.aidash-helpers/python/bin/python3', '-I', '/.aidash-helpers/network_probe.py',
+                      'docker' if settings['docker_enabled'] else 'normal', json.dumps(targets)]
+            mode = 'docker' if settings['docker_enabled'] else 'normal'
+            result = self.backend.kube(['exec', pod_name, '-c', 'execution', '--'] +
+                helper_command('chroot', mode, '/scratch-system/rootfs', '.', *python), timeout=45)
+            report = json.loads(result.stdout)
+            spoof_seen = False
+            if settings['docker_enabled']:
+                time.sleep(1)
+                node_seen = self.backend.guard_execution_pod(pod, settings, 'execution', container_id, epoch,
+                                                              action='v2_network_seen')
+                canary_seen = self.backend.kube(['exec', canary_name, '-c', 'canary', '--', 'python3', '-I',
+                    '-c', 'import urllib.request;print(urllib.request.urlopen("http://127.0.0.1:18080/seen").read().decode())'])
+                if node_seen.get('seen') not in (True, False) or canary_seen.stdout.strip() not in (b'true', b'false'):
+                    raise ValueError('spoof receiver evidence is incomplete')
+                spoof_seen = node_seen['seen'] or canary_seen.stdout.strip() == b'true'
+            verify_network_probe(report, docker=settings['docker_enabled'], spoof_seen=spoof_seen)
+        except Exception as error:
+            raise ExecutionPodError('admission_failed', 'Network isolation probe failed: ' + str(error)) from error
+        finally:
+            if listener is not None:
+                self.backend.guard_execution_pod(pod, settings, 'execution', container_id, epoch,
+                                                 action='v2_network_stop')
+            self.backend.kube(['delete', 'pod', canary_name, '--ignore-not-found', '--wait=true'])
+            self.backend.kube(['delete', 'networkpolicy', canary_name, '--ignore-not-found', '--wait=true'])
 
     def ensure(self, settings):
         import hashlib
@@ -418,6 +529,7 @@ print(json.dumps({"uid":os.getuid(),"kernel":os.uname().release,"no_new_privs":i
         fingerprint = hashlib.sha256(json.dumps(fingerprint_spec, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         pod['metadata']['annotations'] = {'aidash.run/spec-digest': fingerprint}
         with self.lock:
+            self._require_space_termination_confirmed(settings['scratch_space_id'])
             existing_claim = self._get('pvc', name)
             if existing_claim is None:
                 self.backend.kube(['create', '-f', '-'], json.dumps(claim).encode())
@@ -437,9 +549,19 @@ print(json.dumps({"uid":os.getuid(),"kernel":os.uname().release,"no_new_privs":i
             self.backend.kube(['wait', '--for=condition=Ready', 'pod/' + name, '--timeout=120s'], timeout=130)
             self._verify_running_pod(name, settings)
         except ExecutionPodError:
+            try:
+                self.stop(settings['scratch_space_id'])
+            except Exception as cleanup:
+                self._mark_space_unconfirmed(settings['scratch_space_id'])
+                raise ExecutionPodError('termination_unconfirmed', 'Admission cleanup failed: ' + str(cleanup)) from cleanup
             raise
         except Exception as error:
             detail = str(error).strip() or type(error).__name__
+            try:
+                self.stop(settings['scratch_space_id'])
+            except Exception as cleanup:
+                self._mark_space_unconfirmed(settings['scratch_space_id'])
+                raise ExecutionPodError('termination_unconfirmed', 'Admission cleanup failed: ' + str(cleanup)) from cleanup
             raise ExecutionPodError('startup_failed', 'Execution Pod did not become ready: ' + detail[-2000:]) from error
         return {'protocol': 'aidash-runner/2', 'pod': name, 'claim': name}
 
@@ -447,6 +569,7 @@ print(json.dumps({"uid":os.getuid(),"kernel":os.uname().release,"no_new_privs":i
         from control import scratch_resource_name
         name = scratch_resource_name(scratch_space_id)
         with self.lock:
+            self._terminate_recorded_pod(scratch_space_id)
             self.backend.kube(['delete', 'pod', name, '--ignore-not-found', '--wait=true'])
         return {'stopped': True}
 
@@ -457,16 +580,157 @@ print(json.dumps({"uid":os.getuid(),"kernel":os.uname().release,"no_new_privs":i
             raise ExecutionPodError('pod_identity_missing', 'Cannot verify the original Pod identity')
         with self.lock:
             current = self._get('pod', name)
+            self._terminate_recorded_pod(scratch_space_id, expected_uid=pod_uid)
             if current and current.get('metadata', {}).get('uid') == pod_uid:
                 self.backend.kube(['delete', 'pod', name, '--ignore-not-found', '--wait=true'])
 
+    def _record_guard(self, pod, container_name, container_id, epoch, *, host_evidence=None, user_evidence=None):
+        import json
+        from control import save
+        name = pod['metadata']['name']
+        path = self.backend.root / 'execution-v2-spaces' / (name + '.json')
+        with self.lock:
+            state = json.loads(path.read_bytes())
+            state['guard'] = {'pod_name': name, 'pod_uid': pod['metadata']['uid'],
+                              'cluster_node': pod['spec']['nodeName'], 'container_name': container_name,
+                              'container_id': container_id, 'epoch': epoch, 'terminated': False,
+                              'image': self.config['helper_image']}
+            if host_evidence is not None:
+                state['guard']['host_evidence'] = host_evidence
+            if user_evidence is not None:
+                state['guard']['user_evidence'] = user_evidence
+            save(path, state)
+
+    def _terminate_recorded_pod(self, scratch_space_id, *, expected_uid=None):
+        import json
+        from control import save, scratch_resource_name
+        name = scratch_resource_name(scratch_space_id)
+        path = self.backend.root / 'execution-v2-spaces' / (name + '.json')
+        state = json.loads(path.read_bytes()) if path.exists() else {}
+        guard = state.get('guard')
+        if state.get('termination_unconfirmed') and (not guard or guard.get('terminated')):
+            raise ExecutionPodError('termination_unconfirmed', 'The previous Pod termination cannot be proven')
+        if expected_uid and (not guard or guard.get('pod_uid') != expected_uid):
+            raise ExecutionPodError('termination_unconfirmed', 'No node guard binding exists for the original Pod')
+        if guard and not guard.get('terminated'):
+            if expected_uid and guard['pod_uid'] != expected_uid:
+                raise ExecutionPodError('termination_unconfirmed', 'Recorded Pod identity differs from the current Pod')
+            try:
+                result = self.backend.terminate_execution_pod(guard)
+            except Exception as error:
+                state['termination_unconfirmed'] = True
+                save(path, state)
+                raise ExecutionPodError('termination_unconfirmed',
+                                        'Node guard could not confirm Pod termination: ' + str(error)) from error
+            if result.get('termination_confirmed') is not True:
+                state['termination_unconfirmed'] = True
+                save(path, state)
+                raise ExecutionPodError('termination_unconfirmed', 'Node guard did not confirm Pod termination')
+            guard['terminated'] = True
+            state['termination_unconfirmed'] = False
+            save(path, state)
+        current = self._get('pod', name)
+        if expected_uid and current and current.get('metadata', {}).get('uid') != expected_uid:
+            return
+        if current and (not guard or current.get('metadata', {}).get('uid') != guard['pod_uid']):
+            statuses = current.get('status', {})
+            image_started = any(item.get('state', {}).get('running') is not None or
+                                item.get('state', {}).get('terminated') is not None
+                                for item in statuses.get('initContainerStatuses', []) if item.get('name') == 'image-root')
+            if statuses.get('phase') != 'Pending' or image_started or statuses.get('containerStatuses'):
+                raise ExecutionPodError('termination_unconfirmed', 'No node guard binding exists for the running Pod')
+
+    def _require_space_termination_confirmed(self, scratch_space_id):
+        import json
+        from control import scratch_resource_name
+        path = self.backend.root / 'execution-v2-spaces' / (scratch_resource_name(scratch_space_id) + '.json')
+        if path.exists() and json.loads(path.read_bytes()).get('termination_unconfirmed'):
+            raise ExecutionPodError('termination_unconfirmed', 'A previous Pod termination has not been confirmed')
+
+    def _mark_space_unconfirmed(self, scratch_space_id):
+        import json
+        import time
+        from control import save, scratch_resource_name
+        path = self.backend.root / 'execution-v2-spaces' / (scratch_resource_name(scratch_space_id) + '.json')
+        with self.lock:
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            state = json.loads(path.read_bytes()) if path.exists() else {
+                'scratch_space_id': scratch_space_id, 'last_command_at': time.time()}
+            state['termination_unconfirmed'] = True
+            save(path, state)
+
     def delete(self, scratch_space_id):
+        import json
+        import time
         from control import scratch_resource_name
         name = scratch_resource_name(scratch_space_id)
         with self.lock:
+            path = self.backend.root / 'execution-v2-spaces' / (name + '.json')
+            state = json.loads(path.read_bytes()) if path.exists() else {}
+            claim = self._get('pvc', name)
+            volume = self._volume_for_purge(claim) if claim and claim.get('spec', {}).get('volumeName') else None
+            if volume:
+                self._record_volume(scratch_space_id, volume)
+            elif state.get('volume'):
+                volume = state['volume']
+                current = self._get('pv', volume['name'])
+                if claim and current:
+                    raise ExecutionPodError('purge_unconfirmed', 'Claim lost its recorded volume binding')
+            self._terminate_recorded_pod(scratch_space_id)
             self.backend.kube(['delete', 'pod', name, '--ignore-not-found', '--wait=true'])
             self.backend.kube(['delete', 'pvc', name, '--ignore-not-found', '--wait=true'])
+            if volume:
+                deadline = time.monotonic() + 120
+                while time.monotonic() < deadline:
+                    current = self._get('pv', volume['name'])
+                    if not current or current.get('metadata', {}).get('uid') != volume['uid']:
+                        self._mark_purged(scratch_space_id)
+                        return {'deleted': True}
+                    time.sleep(.5)
+                raise ExecutionPodError('purge_unconfirmed', 'Persistent volume deletion was not confirmed')
+            if state.get('guard') and not state.get('purged'):
+                raise ExecutionPodError('purge_unconfirmed', 'Persistent volume identity is unavailable')
+            self._mark_purged(scratch_space_id)
         return {'deleted': True}
+
+    def _volume_for_purge(self, claim):
+        volume_name = claim['spec']['volumeName']
+        volume = self._get('pv', volume_name)
+        if not volume:
+            raise ExecutionPodError('purge_unconfirmed', 'Bound persistent volume is unavailable')
+        metadata, spec = volume.get('metadata', {}), volume.get('spec', {})
+        if spec.get('claimRef', {}).get('uid') != claim.get('metadata', {}).get('uid'):
+            raise ExecutionPodError('purge_unconfirmed', 'Persistent volume claim identity does not match')
+        if spec.get('persistentVolumeReclaimPolicy') != 'Delete':
+            raise ExecutionPodError('purge_unsupported', 'Persistent volume reclaim policy must be Delete')
+        finalizers = set(metadata.get('finalizers', []))
+        if not finalizers.intersection({'external-provisioner.volume.kubernetes.io/finalizer',
+                                        'kubernetes.io/pv-controller'}):
+            raise ExecutionPodError('purge_unsupported', 'Persistent volume deletion finalizer is unavailable')
+        if not metadata.get('uid'):
+            raise ExecutionPodError('purge_unconfirmed', 'Persistent volume UID is unavailable')
+        return {'name': volume_name, 'uid': metadata['uid']}
+
+    def _record_volume(self, scratch_space_id, volume):
+        import json
+        from control import save, scratch_resource_name
+        path = self.backend.root / 'execution-v2-spaces' / (scratch_resource_name(scratch_space_id) + '.json')
+        with self.lock:
+            state = json.loads(path.read_bytes())
+            previous = state.get('volume')
+            if previous and previous != volume:
+                raise ExecutionPodError('purge_unconfirmed', 'Scratch Space persistent volume identity changed')
+            state.update(volume=volume, purged=False)
+            save(path, state)
+
+    def _mark_purged(self, scratch_space_id):
+        import json
+        from control import save, scratch_resource_name
+        path = self.backend.root / 'execution-v2-spaces' / (scratch_resource_name(scratch_space_id) + '.json')
+        if path.exists():
+            state = json.loads(path.read_bytes())
+            state.update(purged=True, volume=None)
+            save(path, state)
 
     def recover_commands(self):
         """Retire incomplete executions without ever replaying their commands."""
@@ -560,6 +824,7 @@ print(json.dumps({"uid":os.getuid(),"kernel":os.uname().release,"no_new_privs":i
         seconds = execution_timeout(request)
         digest = hashlib.sha256(json.dumps(request, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         with self.lock:
+            self._require_space_termination_confirmed(scratch_id)
             if path.exists():
                 prior = self._read_command(operation_id)
                 if prior.get('request_digest') != digest:
@@ -653,20 +918,23 @@ print(json.dumps({"uid":os.getuid(),"kernel":os.uname().release,"no_new_privs":i
         except Exception as error:
             try:
                 self._stop_matching_pod(record['scratch_space_id'], uid)
-            except Exception:
-                pass
+            except Exception as stop_error:
+                self._mark_space_unconfirmed(record['scratch_space_id'])
+                error = RuntimeError(str(error) + '; termination unconfirmed: ' + str(stop_error))
             self._update_command(operation_id, status='interrupted', outcome='unknown',
                                  error_code='command_interrupted', message=str(error) or type(error).__name__)
         finally:
             with self.lock:
                 self.live_output.pop(operation_id, None)
 
-    def cancel_run(self, run_id):
+    def cancel_run(self, scratch_space_id, run_id):
+        from control import scratch_resource_name
+        scratch_resource_name(scratch_space_id)
         if not isinstance(run_id, str) or not run_id:
             raise ValueError('run_id must be a nonempty string')
         with self.lock:
-            queues = tuple(self.queues.values())
-        for queue in queues:
+            queue = self.queues.get(scratch_space_id)
+        if queue:
             queue.cancel_waiting(run_id)
         return {'cancelled_waiting': True}
 
@@ -755,6 +1023,7 @@ print(json.dumps({"uid":os.getuid(),"kernel":os.uname().release,"no_new_privs":i
             state = json.loads(path.read_bytes()) if path.exists() else {
                 'scratch_space_id': scratch_space_id, 'last_command_at': time.time()}
             state['epoch'] = state.get('epoch', 0) + 1
+            state.pop('guard', None)
             save(path, state)
             return state['epoch']
 
@@ -793,7 +1062,7 @@ print(json.dumps({"uid":os.getuid(),"kernel":os.uname().release,"no_new_privs":i
                     continue
                 pod = self._get('pod', scratch_resource_name(scratch_id))
                 if pod:
-                    self._stop_matching_pod(scratch_id, pod.get('metadata', {}).get('uid'))
+                    self.stop(scratch_id)
 
     def start_idle_monitor(self):
         import sys
@@ -973,14 +1242,22 @@ def verify_user_probe(report, *, docker, processes):
     """Fail closed unless a real user child has the expected isolation profile."""
     if report.get('uid') != 0 or 'gvisor' not in str(report.get('kernel', '')).lower():
         raise ValueError('gVisor root user required')
-    if report.get('no_new_privs') != 1 or report.get('process_limit') != [processes, processes]:
+    if report.get('no_new_privs') != 1:
         raise ValueError('user process restrictions do not match the profile')
+    if not docker and (report.get('process_limit') != [processes, processes]
+                       or report.get('process_limit_enforced') is not True
+                       or report.get('process_limit_unraiseable') is not True):
+        raise ValueError('user process ceiling is not enforced')
     if report.get('service_account_absent') is not True:
         raise ValueError('service account token is exposed')
+    if report.get('root_writable') is not True or report.get('helpers_read_only') is not True:
+        raise ValueError('system root or helper mount protection is invalid')
     caps = report.get('caps', {})
     names = ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')
     if any(type(caps.get(name)) is not int for name in names):
         raise ValueError('capability evidence is incomplete')
+    if any(caps[name] & ((1 << 19) | (1 << 24)) for name in names):
+        raise ValueError('unsafe process-control capabilities remain available')
     blocked = (1 << 12) | (1 << 13) | (1 << 21)
     if docker:
         if any(caps[name] & blocked != blocked for name in ('CapPrm', 'CapEff', 'CapBnd')):
@@ -989,3 +1266,131 @@ def verify_user_probe(report, *, docker, processes):
             raise ValueError('Docker raw sockets are unavailable')
     elif any(caps[name] & blocked for name in names) or report.get('raw_socket') is not False:
         raise ValueError('Docker capabilities remain available to the user process')
+
+
+def verify_network_probe(report, *, docker, spoof_seen):
+    """Check positive gateway and negative network/spoof controls."""
+    if report.get('gateway') is not True:
+        raise ValueError('egress gateway is unreachable')
+    if any(report.get(name) is not False for name in ('peer', 'node', 'metadata', 'internet')):
+        raise ValueError('network isolation probe failed')
+    if docker and (report.get('raw_sent') is not True or spoof_seen is not False):
+        raise ValueError('spoofed packet isolation is unverified')
+
+
+def v2_network_policy(config):
+    """Restrict v2 Pods to the configured, internal Egress gateway."""
+    import ipaddress
+    from urllib.parse import urlsplit
+    endpoint = urlsplit(config['proxy_endpoint'])
+    try:
+        address = ipaddress.ip_address(endpoint.hostname)
+        port = endpoint.port
+    except (TypeError, ValueError):
+        raise ValueError('Egress gateway must be an IP origin with a valid port') from None
+    if (endpoint.scheme not in ('http', 'https') or not port or endpoint.username or endpoint.password
+            or endpoint.path not in ('', '/') or endpoint.query or endpoint.fragment
+            or not address.is_private or address.is_link_local or address.is_loopback
+            or address.is_multicast or address.is_unspecified):
+        raise ValueError('Egress gateway must be a private non-link-local IP origin')
+    namespace, selector = config.get('proxy_namespace'), config.get('proxy_selector')
+    if not isinstance(namespace, str) or not namespace or not isinstance(selector, dict) or not selector:
+        raise ValueError('Egress gateway namespace and Pod selector are required')
+    if any(not isinstance(key, str) or not isinstance(value, str) for key, value in selector.items()):
+        raise ValueError('invalid Egress gateway Pod selector')
+    return {'apiVersion': 'networking.k8s.io/v1', 'kind': 'NetworkPolicy',
+            'metadata': {'name': 'aidash-v2-egress', 'namespace': config['namespace']},
+            'spec': {'podSelector': {'matchLabels': {'aidash-sandbox': 'true', 'aidash-v2': 'true'}},
+                     'policyTypes': ['Ingress', 'Egress'], 'ingress': [],
+                     'egress': [{'to': [{'namespaceSelector': {'matchLabels': {
+                         'kubernetes.io/metadata.name': namespace}}, 'podSelector': {'matchLabels': selector}}],
+                         'ports': [{'protocol': 'TCP', 'port': port}]}]}}
+
+
+def network_canary_manifests(config, node, nonce):
+    """Create a disposable listener with permissive ingress as a negative control."""
+    import re
+    if not isinstance(nonce, str) or not re.fullmatch('[0-9a-f]{32}', nonce):
+        raise ValueError('invalid network canary nonce')
+    if not isinstance(node, str) or not node:
+        raise ValueError('network canary requires a node')
+    name = 'admission-' + nonce
+    labels = {'aidash-canary': nonce}
+    metadata = {'name': name, 'namespace': config['namespace'], 'labels': labels}
+    security = {'runAsUser': 10000, 'runAsNonRoot': True, 'allowPrivilegeEscalation': False,
+                'readOnlyRootFilesystem': True, 'capabilities': {'drop': ['ALL']},
+                'seccompProfile': {'type': 'RuntimeDefault'}}
+    pod = {'apiVersion': 'v1', 'kind': 'Pod', 'metadata': metadata,
+           'spec': {'nodeName': node, 'restartPolicy': 'Never', 'automountServiceAccountToken': False,
+                    'enableServiceLinks': False, 'hostNetwork': False, 'hostPID': False, 'hostIPC': False,
+                    'terminationGracePeriodSeconds': 1,
+                    'containers': [{'name': 'canary', 'image': config['helper_image'],
+                                    'command': ['python3', '-I', '/opt/aidash/network_canary.py',
+                                                '18080', '18081', nonce],
+                                    'securityContext': security,
+                                    'readinessProbe': {'httpGet': {'path': '/ready', 'port': 18080},
+                                                       'periodSeconds': 1, 'timeoutSeconds': 1},
+                                    'resources': {'limits': {'cpu': '250m', 'memory': '128Mi'}}}]}}
+    policy = {'apiVersion': 'networking.k8s.io/v1', 'kind': 'NetworkPolicy',
+              'metadata': {'name': name, 'namespace': config['namespace']},
+              'spec': {'podSelector': {'matchLabels': labels}, 'policyTypes': ['Ingress', 'Egress'],
+                       'ingress': [{'ports': [{'protocol': 'TCP', 'port': 18080},
+                                              {'protocol': 'UDP', 'port': 18081}]}], 'egress': [{}]}}
+    return policy, pod
+
+
+def verify_positive_controls(report):
+    """Refuse negative evidence unless each target was independently reachable."""
+    missing = [name for name in ('peer', 'node', 'metadata', 'internet', 'gateway')
+               if report.get(name) is not True]
+    if missing:
+        raise ValueError('network positive control unavailable: ' + ', '.join(missing))
+
+
+def _selector_matches(selector, labels):
+    for key, value in selector.get('matchLabels', {}).items():
+        if labels.get(key) != value:
+            return False
+    for expression in selector.get('matchExpressions', []):
+        key, operator = expression['key'], expression['operator']
+        values = expression.get('values', [])
+        if operator == 'In' and (key not in labels or labels[key] not in values):
+            return False
+        if operator == 'NotIn' and key in labels and labels[key] in values:
+            return False
+        if operator == 'Exists' and key not in labels:
+            return False
+        if operator == 'DoesNotExist' and key in labels:
+            return False
+        if operator not in ('In', 'NotIn', 'Exists', 'DoesNotExist'):
+            raise ValueError('unknown network policy selector operator')
+    return True
+
+
+def verify_network_policies(policies, labels, expected):
+    """Reject additive policies that widen v2 ingress or Egress gateway access."""
+    allowed = expected['spec']['egress'][0]
+    allowed_peer = allowed['to'][0]
+    allowed_port = allowed['ports'][0]['port']
+    found = False
+    for policy in policies:
+        spec = policy['spec']
+        if not _selector_matches(spec.get('podSelector', {}), labels):
+            continue
+        types = spec.get('policyTypes')
+        ingress = types is None or 'Ingress' in types
+        egress = ('Egress' in types) if types is not None else 'egress' in spec
+        if ingress and spec.get('ingress'):
+            raise ValueError('network policy admits unexpected ingress')
+        if not egress:
+            continue
+        for rule in spec.get('egress', []):
+            peers, ports = rule.get('to'), rule.get('ports')
+            if not peers or not ports or any(peer != allowed_peer for peer in peers):
+                raise ValueError('network policy admits an unexpected destination')
+            for port in ports:
+                if port.get('protocol', 'TCP') != 'TCP' or port.get('port') != allowed_port or 'endPort' in port:
+                    raise ValueError('network policy admits an unexpected port')
+            found = True
+    if not found:
+        raise ValueError('network policy does not admit the Egress gateway')

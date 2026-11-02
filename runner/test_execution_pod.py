@@ -261,6 +261,8 @@ class ExecutionPodControllerTest(unittest.TestCase):
                 if args[0] == 'create':
                     obj = json.loads(data)
                     kind = 'pvc' if obj['kind'] == 'PersistentVolumeClaim' else 'pod'
+                    if kind == 'pod':
+                        obj['status'] = {'phase': 'Pending'}
                     self.objects[(kind, obj['metadata']['name'])] = obj
                 elif args[0] == 'delete':
                     self.objects.pop((args[1], args[2]), None)
@@ -459,6 +461,7 @@ class CommandJournalTest(unittest.TestCase):
         from pathlib import Path
         from types import SimpleNamespace
         from execution_pod import ExecutionPodController
+        from control import scratch_resource_name
 
         class Backend:
             def __init__(self, root):
@@ -469,6 +472,8 @@ class CommandJournalTest(unittest.TestCase):
                 if args[0] == 'get':
                     return SimpleNamespace(stdout=json.dumps({'metadata': {'uid': 'pod-uid'}}).encode())
                 return SimpleNamespace(stdout=b'')
+            def terminate_execution_pod(self, guard):
+                return {'termination_confirmed': True}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'execution-v2'
             root.mkdir()
@@ -476,14 +481,19 @@ class CommandJournalTest(unittest.TestCase):
             record = {'operation_id': operation, 'scratch_space_id': 'scratch', 'run_id': 'run',
                       'status': 'running', 'background': True, 'pod_uid': 'pod-uid'}
             (root / (operation + '.json')).write_text(json.dumps(record))
+            spaces = Path(directory) / 'execution-v2-spaces'
+            spaces.mkdir()
+            name = scratch_resource_name('scratch')
+            (spaces / (name + '.json')).write_text(json.dumps({'scratch_space_id': 'scratch',
+                'last_command_at': 1, 'guard': {'pod_uid': 'pod-uid', 'terminated': False}}))
             backend = Backend(directory)
             controller = ExecutionPodController(backend, {}, admitted=False)
             controller.recover_commands()
             result = json.loads((root / (operation + '.json')).read_text())
             self.assertEqual(result['status'], 'interrupted')
             self.assertEqual(result['outcome'], 'unknown')
-            self.assertEqual(len(backend.calls), 2)
-            self.assertEqual(backend.calls[1][:2], ['delete', 'pod'])
+            self.assertEqual(len(backend.calls), 3)
+            self.assertEqual(backend.calls[2][:2], ['delete', 'pod'])
 
     def test_command_result_is_journaled_and_repeated_id_is_not_replayed(self):
         import json
@@ -557,7 +567,8 @@ class IdlePodTest(unittest.TestCase):
             def kube(self, args, data=None, **_kwargs):
                 import json
                 if args[0] == 'get':
-                    return SimpleNamespace(stdout=json.dumps({'metadata': {'uid': 'pod-uid'}}).encode())
+                    return SimpleNamespace(stdout=json.dumps({'metadata': {'uid': 'pod-uid'},
+                                                               'status': {'phase': 'Pending'}}).encode())
                 if args[0] == 'delete':
                     self.deleted.append(args[2])
                 return SimpleNamespace(stdout=b'')
@@ -772,7 +783,9 @@ class RootAdmissionTest(unittest.TestCase):
         from execution_pod import verify_user_probe
         report = {'uid': 0, 'kernel': '4.19.0-gvisor', 'no_new_privs': 1,
                   'caps': {name: 0 for name in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')},
-                  'process_limit': [128, 128], 'service_account_absent': True, 'raw_socket': False}
+                  'process_limit': [128, 128], 'process_limit_enforced': True, 'process_limit_unraiseable': True,
+                  'service_account_absent': True, 'raw_socket': False,
+                  'root_writable': True, 'helpers_read_only': True}
         verify_user_probe(report, docker=False, processes=128)
         for field in report['caps']:
             bad = dict(report, caps=dict(report['caps'], **{field: 1 << 21}))
@@ -780,6 +793,8 @@ class RootAdmissionTest(unittest.TestCase):
                 verify_user_probe(bad, docker=False, processes=128)
         with self.assertRaisesRegex(ValueError, 'service account'):
             verify_user_probe(dict(report, service_account_absent=False), docker=False, processes=128)
+        with self.assertRaisesRegex(ValueError, 'process'):
+            verify_user_probe(dict(report, process_limit_enforced=False), docker=False, processes=128)
 
     def test_guard_allows_only_same_sentry_to_transition_from_init_to_execution(self):
         import json
@@ -821,6 +836,7 @@ class AdmissionGateOrderTest(unittest.TestCase):
     def test_guard_checks_cgroup_before_releasing_user_image(self):
         import json
         from types import SimpleNamespace
+        from unittest.mock import Mock
         from execution_pod import ExecutionPodController
         events = []
         pod = {'metadata': {'uid': 'pod-uid', 'annotations': {'aidash.run/epoch': '1'}},
@@ -829,7 +845,14 @@ class AdmissionGateOrderTest(unittest.TestCase):
         class Backend:
             def kube(self, args, data=None, **_kwargs):
                 if args[0] == 'get':
-                    return SimpleNamespace(stdout=json.dumps(pod).encode(), returncode=0)
+                    if args[1] == 'pvc':
+                        value = {'metadata': {'uid': 'claim'}, 'spec': {'volumeName': 'pv'}}
+                    elif args[1] == 'pv':
+                        value = {'metadata': {'uid': 'volume', 'finalizers': ['external-provisioner.volume.kubernetes.io/finalizer']},
+                                 'spec': {'claimRef': {'uid': 'claim'}, 'persistentVolumeReclaimPolicy': 'Delete'}}
+                    else:
+                        value = pod
+                    return SimpleNamespace(stdout=json.dumps(value).encode(), returncode=0)
                 if '.guard-waiting' in args[-1]:
                     events.append('waiting')
                     return SimpleNamespace(stdout=b'', returncode=0)
@@ -841,5 +864,244 @@ class AdmissionGateOrderTest(unittest.TestCase):
             def guard_execution_pod(self, *_args):
                 events.append('guard')
         controller = ExecutionPodController(Backend(), {'processes': 128}, admitted=True)
-        controller._admit_pod('scratch-' + 'a' * 48, {})
+        controller._record_guard = Mock()
+        controller._record_volume = Mock()
+        controller._admit_pod('scratch-' + 'a' * 48, {'scratch_space_id': 'scratch'})
         self.assertEqual(events, ['waiting', 'guard', 'process-limit', 'release'])
+
+    def test_network_evidence_requires_gateway_and_denies_all_other_targets(self):
+        from execution_pod import verify_network_probe
+        report = {'gateway': True, 'peer': False, 'node': False, 'metadata': False,
+                  'internet': False, 'raw_sent': False}
+        verify_network_probe(report, docker=False, spoof_seen=False)
+        for field in ('peer', 'node', 'metadata', 'internet'):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'network'):
+                verify_network_probe(dict(report, **{field: True}), docker=False, spoof_seen=False)
+        with self.assertRaisesRegex(ValueError, 'gateway'):
+            verify_network_probe(dict(report, gateway=False), docker=False, spoof_seen=False)
+        with self.assertRaisesRegex(ValueError, 'spoof'):
+            verify_network_probe(dict(report, raw_sent=True), docker=True, spoof_seen=True)
+
+    def test_spoof_probe_contains_requested_source_and_nonce(self):
+        import socket
+        import struct
+        from network_probe import spoof_packet
+        packet = spoof_packet('192.0.2.1', '198.51.100.2', 18081, b'nonce')
+        self.assertEqual(socket.inet_ntoa(packet[12:16]), '192.0.2.1')
+        self.assertEqual(socket.inet_ntoa(packet[16:20]), '198.51.100.2')
+        self.assertEqual(struct.unpack('!H', packet[22:24])[0], 18081)
+        self.assertTrue(packet.endswith(b'nonce'))
+
+
+class V2NetworkPolicyTest(unittest.TestCase):
+    def test_only_configured_gateway_is_permitted(self):
+        from execution_pod import v2_network_policy
+        config = {'namespace': 'sandbox', 'proxy_endpoint': 'http://10.0.0.8:8888',
+                  'proxy_namespace': 'gateway', 'proxy_selector': {'app': 'proxy'}}
+        policy = v2_network_policy(config)
+        self.assertEqual(policy['spec']['podSelector']['matchLabels']['aidash-v2'], 'true')
+        self.assertEqual(policy['spec']['ingress'], [])
+        self.assertEqual(policy['spec']['egress'], [{
+            'to': [{'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': 'gateway'}},
+                    'podSelector': {'matchLabels': {'app': 'proxy'}}}],
+            'ports': [{'protocol': 'TCP', 'port': 8888}],
+        }])
+        with self.assertRaises(ValueError):
+            v2_network_policy(dict(config, proxy_endpoint='http://169.254.169.254:80'))
+
+    def test_negative_probe_requires_reachable_positive_controls(self):
+        from execution_pod import verify_positive_controls
+        controls = {'peer': True, 'node': True, 'metadata': True, 'internet': True, 'gateway': True}
+        verify_positive_controls(controls)
+        for name in controls:
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'positive control'):
+                verify_positive_controls(dict(controls, **{name: False}))
+
+    def test_guard_network_control_distinguishes_spoof_from_positive_udp(self):
+        import json
+        import tempfile
+        import uuid
+        from pathlib import Path
+        from unittest.mock import patch
+        import node_guard
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            area, pod = str(uuid.uuid4()), str(uuid.uuid4())
+            request = {'protocol': 'aidash-runner/2', 'action': 'v2_network_seen', 'area_id': area,
+                       'pod_uid': pod, 'pod_name': 'scratch-' + 'a' * 48, 'container_name': 'execution',
+                       'container_id': 'b' * 64, 'epoch': 1, 'image': 'pinned'}
+            previous = dict(request, sentry_pid=42, network_listener={'nonce': 'c' * 32, 'pid': 50})
+            (root / (area + '.json')).write_text(json.dumps(previous))
+            with patch.object(node_guard, 'ROOT', root), patch.object(node_guard, 'gone', return_value=False), \
+                 patch.object(node_guard, 'validate', return_value=('b' * 64, pod, area, {'pid': 42})):
+                (root / ('network-' + 'c' * 32 + '.seen.control')).touch()
+                self.assertEqual(node_guard.handle(request), {'seen': False, 'control_seen': True})
+                (root / ('network-' + 'c' * 32 + '.seen')).touch()
+                self.assertEqual(node_guard.handle(request), {'seen': True, 'control_seen': True})
+
+    def test_additive_network_policy_cannot_open_another_egress_path(self):
+        from execution_pod import verify_network_policies, v2_network_policy
+        config = {'namespace': 'sandbox', 'proxy_endpoint': 'http://10.0.0.8:8888',
+                  'proxy_namespace': 'gateway', 'proxy_selector': {'app': 'proxy'}}
+        expected = v2_network_policy(config)
+        labels = {'aidash-sandbox': 'true', 'aidash-v2': 'true'}
+        verify_network_policies([expected], labels, expected)
+        permissive = {'metadata': {'name': 'other'}, 'spec': {'podSelector': {},
+                      'policyTypes': ['Egress'], 'egress': [{}]}}
+        with self.assertRaisesRegex(ValueError, 'network policy'):
+            verify_network_policies([expected, permissive], labels, expected)
+
+
+class GuardV2TerminationTest(unittest.TestCase):
+    def test_init_container_can_retire_exact_sentry_after_container_disappears(self):
+        import json
+        import tempfile
+        import uuid
+        from pathlib import Path
+        from unittest.mock import patch
+        import node_guard
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            area, pod = str(uuid.uuid4()), str(uuid.uuid4())
+            request = {'protocol': 'aidash-runner/2', 'action': 'terminate', 'area_id': area,
+                       'pod_uid': pod, 'pod_name': 'scratch-' + 'a' * 48, 'container_name': 'helpers',
+                       'container_id': 'b' * 64, 'epoch': 1, 'image': 'pinned'}
+            previous = dict(request, sentry_pid=42, sentry_start='123', terminated=False)
+            (root / (area + '.json')).write_text(json.dumps(previous))
+            with patch.object(node_guard, 'ROOT', root), patch.object(node_guard, 'gone', return_value=False), \
+                 patch.object(node_guard, 'kill_sandbox') as kill, \
+                 patch.object(node_guard, 'validate', side_effect=AssertionError('container already gone')):
+                self.assertTrue(node_guard.handle(request)['termination_confirmed'])
+                kill.assert_called_once_with({'pid': 42}, expected_start='123')
+
+    def test_unconfirmed_node_termination_blocks_reuse_and_purge(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from execution_pod import ExecutionPodController, ExecutionPodError
+        from control import scratch_resource_name
+        class Backend:
+            def __init__(self, root):
+                self.root = Path(root)
+            def terminate_execution_pod(self, _guard):
+                raise RuntimeError('node unreachable')
+        with tempfile.TemporaryDirectory() as directory:
+            backend = Backend(directory)
+            controller = ExecutionPodController(backend, {}, admitted=True)
+            name = scratch_resource_name('scratch')
+            spaces = backend.root / 'execution-v2-spaces'
+            spaces.mkdir()
+            path = spaces / (name + '.json')
+            path.write_text(json.dumps({'scratch_space_id': 'scratch', 'last_command_at': 1,
+                                       'guard': {'pod_uid': 'uid', 'terminated': False}}))
+            with self.assertRaisesRegex(ExecutionPodError, 'node unreachable'):
+                controller._terminate_recorded_pod('scratch', expected_uid='uid')
+            self.assertTrue(json.loads(path.read_text())['termination_unconfirmed'])
+            with self.assertRaisesRegex(ExecutionPodError, 'not been confirmed'):
+                controller._require_space_termination_confirmed('scratch')
+
+
+class StartupAdmissionTest(unittest.TestCase):
+    def test_failed_self_test_leaves_v2_closed_and_deletes_probe(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from control import Runner
+        runner = object.__new__(Runner)
+        runner.config = {'image': 'image@sha256:' + 'a' * 64, 'cpu': 2, 'memory_bytes': 2 << 30}
+        runner.execution_pods = SimpleNamespace(config={'enabled': True, 'helper_image': 'helper@sha256:' + 'b' * 64},
+            admitted=False, ensure=Mock(side_effect=RuntimeError('network probe failed')), delete=Mock())
+        runner.activate_execution_pods()
+        self.assertFalse(runner.execution_pods.admitted)
+        self.assertIn('network probe failed', runner.execution_pods.admission_error)
+        runner.execution_pods.delete.assert_called_once()
+
+    def test_self_test_enables_only_after_success_and_cleanup(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from control import Runner
+        runner = object.__new__(Runner)
+        runner.config = {'image': 'image@sha256:' + 'a' * 64, 'cpu': 2, 'memory_bytes': 2 << 30}
+        runner.execution_pods = SimpleNamespace(config={'enabled': True, 'helper_image': 'helper@sha256:' + 'b' * 64},
+            admitted=False, ensure=Mock(), delete=Mock())
+        runner.activate_execution_pods()
+        self.assertTrue(runner.execution_pods.admitted)
+        runner.execution_pods.ensure.assert_called_once()
+        runner.execution_pods.delete.assert_called_once()
+        runner.execution_pods.delete.side_effect = RuntimeError('cleanup failed')
+        runner.activate_execution_pods()
+        self.assertFalse(runner.execution_pods.admitted)
+        self.assertIn('cleanup failed', runner.execution_pods.admission_error)
+
+
+class PurgeSafetyTest(unittest.TestCase):
+    def test_retained_persistent_volume_is_never_reported_as_purged(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from execution_pod import ExecutionPodController, ExecutionPodError
+
+        class Backend:
+            def __init__(self, root):
+                self.root = Path(root)
+                self.calls = []
+            def kube(self, args, data=None, **_kwargs):
+                self.calls.append(args)
+                if args[:2] == ['get', 'pvc']:
+                    body = {'metadata': {'uid': 'claim-uid'}, 'spec': {'volumeName': 'volume-1'}}
+                elif args[:2] == ['get', 'pv']:
+                    body = {'metadata': {'uid': 'volume-uid'}, 'spec': {'persistentVolumeReclaimPolicy': 'Retain',
+                            'claimRef': {'uid': 'claim-uid'}}}
+                else:
+                    raise AssertionError('retained data must not be deleted or reported as purged')
+                return SimpleNamespace(stdout=json.dumps(body).encode())
+        with tempfile.TemporaryDirectory() as directory:
+            backend = Backend(directory)
+            controller = ExecutionPodController(backend, {}, admitted=True)
+            with self.assertRaises(ExecutionPodError) as error:
+                controller.delete('scratch')
+            self.assertEqual(error.exception.code, 'purge_unsupported')
+            self.assertFalse(any(call[0] == 'delete' for call in backend.calls))
+
+    def test_purge_waits_for_delete_policy_volume_to_disappear(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from execution_pod import ExecutionPodController
+        class Backend:
+            def __init__(self, root):
+                self.root, self.deleted = Path(root), False
+            def kube(self, args, data=None, **_kwargs):
+                if args[0] == 'get':
+                    if args[1] == 'pvc':
+                        body = {'metadata': {'uid': 'claim-uid'}, 'spec': {'volumeName': 'volume-1'}}
+                    elif args[1] == 'pv' and not self.deleted:
+                        body = {'metadata': {'uid': 'volume-uid', 'finalizers': ['external-provisioner.volume.kubernetes.io/finalizer']},
+                                'spec': {'persistentVolumeReclaimPolicy': 'Delete', 'claimRef': {'uid': 'claim-uid'}}}
+                    else:
+                        return SimpleNamespace(stdout=b'')
+                    return SimpleNamespace(stdout=json.dumps(body).encode())
+                if args[:2] == ['delete', 'pvc']:
+                    self.deleted = True
+                return SimpleNamespace(stdout=b'')
+        with tempfile.TemporaryDirectory() as directory:
+            backend = Backend(directory)
+            controller = ExecutionPodController(backend, {}, admitted=True)
+            controller.touch_space('scratch')
+            self.assertEqual(controller.delete('scratch'), {'deleted': True})
+
+
+class DockerAdmissionTest(unittest.TestCase):
+    def test_guest_pid_limit_is_best_effort_while_required_caps_and_raw_are_checked(self):
+        from execution_pod import verify_user_probe
+        allowed = (1 << 12) | (1 << 13) | (1 << 21)
+        report = {'uid': 0, 'kernel': '4.19.0-gvisor', 'no_new_privs': 1,
+                  'caps': {'CapInh': 0, 'CapPrm': allowed, 'CapEff': allowed,
+                           'CapBnd': allowed, 'CapAmb': 0},
+                  'process_limit': [128, 128], 'process_limit_enforced': False,
+                  'process_limit_unraiseable': True, 'service_account_absent': True,
+                  'raw_socket': True, 'root_writable': True, 'helpers_read_only': True}
+        verify_user_probe(report, docker=True, processes=128)
+        with self.assertRaisesRegex(ValueError, 'raw'):
+            verify_user_probe(dict(report, raw_socket=False), docker=True, processes=128)

@@ -41,7 +41,7 @@ def main():
     version = f'python{sys.version_info.major}.{sys.version_info.minor}'
     shutil.copytree(source_lib / version, destination / 'python/lib' / version,
                     symlinks=True, dirs_exist_ok=True)
-    for name in ('sandbox_v2.py', 'execution_pod.py', 'control.py', 'python_session.py'):
+    for name in ('sandbox_v2.py', 'execution_pod.py', 'control.py', 'python_session.py', 'network_probe.py', 'user_probe.py'):
         shutil.copy2(Path('/opt/aidash') / name, destination / name)
     Path('/scratch-system/scratch').mkdir(parents=True, exist_ok=True)
     os.chmod(destination / 'loader', 0o755)
