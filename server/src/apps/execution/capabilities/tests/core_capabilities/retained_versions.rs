@@ -64,6 +64,75 @@ async fn object_exists(c: &CoreFixture, file: Uuid) -> bool {
 	counts(c, &query).await > 0
 }
 
+#[rstest::rstest]
+#[tokio::test]
+async fn repeated_rewrites_prune_unheld_revisions_and_unique_blob_usage(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let c = capability_fixture.await;
+	let run = admit(&c).await;
+	let quota = Query::select()
+		.column(Alias::new("used_bytes"))
+		.from(Alias::new("core_quotas"))
+		.and_where(Expr::col(Alias::new("tenant")).eq("acme"))
+		.to_string(PostgresQueryBuilder);
+	let baseline: i64 = sqlx::query_scalar(&quota)
+		.fetch_optional(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap()
+		.unwrap_or(0);
+	let mut revision = json!(1);
+	let mut digest = Value::Null;
+	let mut old = String::new();
+	for n in 0..20 {
+		let value = format!("rewrite-{n:02}");
+		let patch = if n == 0 {
+			format!("*** Begin Patch\n*** Add File: report.txt\n+{value}\n*** End Patch")
+		} else {
+			format!(
+				"*** Begin Patch\n*** Update File: report.txt\n@@\n-{old}\n+{value}\n*** End Patch"
+			)
+		};
+		let (status, result) = request(&c.app, &c.token, "POST", &path_for_patch(run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":revision,"preconditions":{"report.txt":digest},"patch":patch})).await;
+		assert_eq!(status, 200, "{result}");
+		let (status, area) = request(
+			&c.app,
+			&c.token,
+			"GET",
+			&format!("/api/runs/{}/working-area", run.id),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{area}");
+		revision = area["revision"].clone();
+		digest = area["manifest"][0]["digest"].clone();
+		old = value;
+	}
+	let WorkerControl { stop, receiver: rx } = worker_control();
+	let worker = tokio::spawn(aidash_server::capabilities::reclamation::run(
+		c.f.store.clone(),
+		rx,
+	));
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+	loop {
+		let used: i64 = sqlx::query_scalar(&quota)
+			.fetch_one(c.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+		if used == baseline + (old.len() + 1) as i64 {
+			break;
+		}
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"unique usage remained {used}, baseline {baseline}"
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+	}
+	let _ = stop.send(true);
+	worker.await.unwrap().unwrap();
+	c.close().await;
+}
+
 fn text(bytes: &Value) -> String {
 	String::from_utf8(
 		base64::engine::general_purpose::STANDARD
@@ -75,7 +144,7 @@ fn text(bytes: &Value) -> String {
 
 #[rstest::rstest]
 #[tokio::test]
-async fn a_cited_revision_survives_release_until_its_history_is_removed(
+async fn a_cited_revision_survives_until_its_last_hold_is_released(
 	#[future] capability_fixture: CoreFixture,
 ) {
 	let c = capability_fixture.await;
@@ -175,27 +244,14 @@ async fn a_cited_revision_survives_release_until_its_history_is_removed(
 	assert_eq!(status, 200, "{bytes}");
 	assert_eq!(text(&bytes), "old()\n");
 
-	// Releasing the hold alone must not remove a retained revision.
+	// Releasing the final hold makes the old revision eligible for reclamation.
 	assert_eq!(
 		aidash_server::capabilities::retention::release_for(&c.f, actor(&c).await, &holder)
 			.await
 			.unwrap(),
 		1
 	);
-	// The revision is independently retained even after the message releases it.
-	assert_eq!(download(&c, area_id, html).await.0, 200);
-	assert_eq!(download(&c, area_id, sibling).await.0, 200);
-	let old_revision = area["revision"].as_i64().unwrap();
-	let delete = Query::delete()
-		.from_table(Alias::new("core_manifest_revisions"))
-		.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value("acme")))
-		.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area_id)))
-		.and_where(Expr::col(Alias::new("revision")).eq(Expr::value(old_revision)))
-		.to_string(PostgresQueryBuilder);
-	sqlx::query(&delete)
-		.execute(c.f.store.pool.fixture_driver())
-		.await
-		.unwrap();
+
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
 	while object_exists(&c, html).await || object_exists(&c, sibling).await {
 		assert!(
@@ -656,25 +712,12 @@ async fn identical_files_share_one_tenant_blob_across_areas_and_survive_one_rele
 	let (status, bytes) = download(&c, second_area, second_file).await;
 	assert_eq!(status, 200, "{bytes}");
 	assert_eq!(text(&bytes), "identical bytes\n");
-	let first_area: Uuid = serde_json::from_value(areas[0]["id"].clone()).unwrap();
 	let first_file: Uuid =
 		serde_json::from_value(areas[0]["manifest"][0]["file_id"].clone()).unwrap();
 	let (status, changed) = request(&c.app, &c.token, "POST", &path_for_patch(first.id),
         json!({"idempotency_key":Uuid::new_v4(),"expected_revision":areas[0]["revision"],"preconditions":{"one.txt":digest},"patch":"*** Begin Patch\n*** Update File: one.txt\n@@\n-identical bytes\n+different bytes\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{changed}");
-	let prune = Query::delete()
-		.from_table(Alias::new("core_manifest_revisions"))
-		.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value("acme")))
-		.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(first_area)))
-		.and_where(
-			Expr::col(Alias::new("revision"))
-				.eq(Expr::value(areas[0]["revision"].as_i64().unwrap())),
-		)
-		.to_string(PostgresQueryBuilder);
-	sqlx::query(&prune)
-		.execute(c.f.store.pool.fixture_driver())
-		.await
-		.unwrap();
+
 	let WorkerControl { stop, receiver: rx } = worker_control();
 	let worker = tokio::spawn(aidash_server::capabilities::reclamation::run(
 		c.f.store.clone(),

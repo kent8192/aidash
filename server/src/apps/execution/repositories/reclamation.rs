@@ -187,6 +187,7 @@ let ids: Vec<Uuid> = {
 		python::reap(self.store, cursor).await.map_err(Into::into)
 	}
 	async fn orphans(&self) -> Result<()> {
+		prune_revisions(self.store).await?;
 		let mut cursor = self.orphan_cursor.lock().await;
 		self.store
 			.capabilities
@@ -198,13 +199,122 @@ let ids: Vec<Uuid> = {
 	}
 }
 
+/// An Area row lock serializes pruning with creation of a retention hold.
+async fn prune_revisions(store: &Store) -> NativeResult<()> {
+	let held = || {
+		Expr::exists(
+			Query::select()
+				.expr(Expr::value(1))
+				.from(Alias::new("core_retention_holds"))
+				.and_where(
+					Expr::col((Alias::new("core_retention_holds"), Alias::new("tenant")))
+						.equals((Alias::new("core_manifest_revisions"), Alias::new("tenant"))),
+				)
+				.and_where(
+					Expr::col((Alias::new("core_retention_holds"), Alias::new("area_id")))
+						.equals((Alias::new("core_manifest_revisions"), Alias::new("area_id"))),
+				)
+				.and_where(
+					Expr::col((Alias::new("core_retention_holds"), Alias::new("revision"))).equals(
+						(
+							Alias::new("core_manifest_revisions"),
+							Alias::new("revision"),
+						),
+					),
+				)
+				.cond_where(
+					Condition::any()
+						.add(
+							Expr::col((
+								Alias::new("core_retention_holds"),
+								Alias::new("expires_at"),
+							))
+							.is_null(),
+						)
+						.add(
+							Expr::col((
+								Alias::new("core_retention_holds"),
+								Alias::new("expires_at"),
+							))
+							.gt(Expr::current_timestamp()),
+						),
+				)
+				.to_owned(),
+		)
+	};
+	let candidates: Vec<(String, Uuid)> = crate::database::native::query_as(
+		&Query::select()
+			.columns(["tenant", "id"].map(Alias::new))
+			.from(Alias::new("core_areas"))
+			.and_where(Expr::exists(
+				Query::select()
+					.expr(Expr::value(1))
+					.from(Alias::new("core_manifest_revisions"))
+					.and_where(
+						Expr::col((Alias::new("core_manifest_revisions"), Alias::new("tenant")))
+							.equals((Alias::new("core_areas"), Alias::new("tenant"))),
+					)
+					.and_where(
+						Expr::col((Alias::new("core_manifest_revisions"), Alias::new("area_id")))
+							.equals((Alias::new("core_areas"), Alias::new("id"))),
+					)
+					.and_where(
+						Expr::col((
+							Alias::new("core_manifest_revisions"),
+							Alias::new("revision"),
+						))
+						.ne(Expr::col((
+							Alias::new("core_areas"),
+							Alias::new("revision"),
+						))),
+					)
+					.and_where(held().not())
+					.to_owned(),
+			))
+			.limit(16)
+			.to_string(PostgresQueryBuilder),
+	)
+	.columns(&["tenant", "id"])
+	.fetch_all(store.pool.in_scope(&MAINTENANCE))
+	.await?;
+	for (tenant, area) in candidates {
+		let mut tx = store.pool.begin(&MAINTENANCE).await?;
+		let current: Option<i64> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("revision"))
+				.from(Alias::new("core_areas"))
+				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&tenant)))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area)))
+				.lock(LockType::Update)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut *tx)
+		.await?;
+		if let Some(current) = current {
+			crate::database::native::query(
+				&Query::delete()
+					.from_table(Alias::new("core_manifest_revisions"))
+					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&tenant)))
+					.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area)))
+					.and_where(Expr::col(Alias::new("revision")).ne(Expr::value(current)))
+					.and_where(held().not())
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *tx)
+			.await?;
+		}
+		tx.commit().await?;
+	}
+	Ok(())
+}
+
 /// Reap only blobs whose object and reference removals already committed.
 async fn reclaim_unreferenced_blobs(store: &Store) -> NativeResult<()> {
 	let mut query = Query::select();
 	query
 		.columns(["tenant", "digest"].map(Alias::new))
 		.from(Alias::new("core_blobs"));
-	for table in ["core_objects", "core_blob_references"] {
+	for table in ["core_objects", "core_blob_references", "core_blob_uploads"] {
 		query.and_where(Expr::not_exists(
 			Query::select()
 				.expr(Expr::value(1))
@@ -239,7 +349,6 @@ pub(crate) async fn reclaim_blob(
 	tenant: &str,
 	digest: &str,
 ) -> NativeResult<()> {
-	super::capability_objects::lock_tenant_quota(tx, tenant).await?;
 	let lock = format!("core-blob:{tenant}:{digest}");
 	crate::database::native::query(
 		&Query::select()
@@ -251,8 +360,24 @@ pub(crate) async fn reclaim_blob(
 	)
 	.execute(&mut **tx)
 	.await?;
+	// A new logical reference takes a foreign-key key-share lock on this row.
+	// Lock it before checking references and deleting bytes so that publication
+	// cannot commit a reference between the check and physical deletion.
+	let size: Option<i64> = crate::database::native::query_scalar(
+		&Query::select()
+			.column(Alias::new("size"))
+			.from(Alias::new("core_blobs"))
+			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+			.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(digest)))
+			.lock(LockType::Update)
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_optional(&mut **tx)
+	.await?;
+	let Some(size) = size else { return Ok(()) };
+	super::capability_objects::lock_tenant_quota(tx, tenant).await?;
 	let mut referenced = false;
-	for table in ["core_objects", "core_blob_references"] {
+	for table in ["core_objects", "core_blob_references", "core_blob_uploads"] {
 		let id: Option<Uuid> = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("id"))
@@ -267,48 +392,36 @@ pub(crate) async fn reclaim_blob(
 		referenced |= id.is_some();
 	}
 	if !referenced {
-		let size: Option<i64> = crate::database::native::query_scalar(
-			&Query::select()
-				.column(Alias::new("size"))
-				.from(Alias::new("core_blobs"))
+		let parsed = digest
+			.parse()
+			.map_err(|_| crate::Error::Conflict("OBJECT_INTEGRITY".into()))?;
+		store
+			.capabilities
+			.blob_store()
+			.await?
+			.delete(tenant, parsed)
+			.await?;
+		crate::database::native::query(
+			&Query::delete()
+				.from_table(Alias::new("core_blobs"))
 				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
 				.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(digest)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_optional(&mut **tx)
+		.execute(&mut **tx)
 		.await?;
-		if let Some(size) = size {
-			let parsed = digest
-				.parse()
-				.map_err(|_| crate::Error::Conflict("OBJECT_INTEGRITY".into()))?;
-			store
-				.capabilities
-				.blob_store()
-				.await?
-				.delete(tenant, parsed)
-				.await?;
-			crate::database::native::query(
-				&Query::delete()
-					.from_table(Alias::new("core_blobs"))
-					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
-					.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(digest)))
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut **tx)
-			.await?;
-			crate::database::native::query(
-				&Query::update()
-					.table(Alias::new("core_quotas"))
-					.value_expr(
-						Alias::new("used_bytes"),
-						Expr::col(Alias::new("used_bytes")).sub(Expr::value(size)),
-					)
-					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut **tx)
-			.await?;
-		}
+		crate::database::native::query(
+			&Query::update()
+				.table(Alias::new("core_quotas"))
+				.value_expr(
+					Alias::new("used_bytes"),
+					Expr::col(Alias::new("used_bytes")).sub(Expr::value(size)),
+				)
+				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut **tx)
+		.await?;
 	}
 	Ok(())
 }
@@ -387,7 +500,6 @@ impl ReclamationScope for Scope<'_> {
 	}
 	async fn release_transfer_refs(&mut self, tenant: &str, id: Uuid) -> Result<()> {
 		let result: NativeResult<()> = async {
-			super::capability_objects::lock_tenant_quota(&mut self.tx, tenant).await?;
 			crate::database::native::query(
 				&Query::delete()
 					.from_table(Alias::new("core_blob_references"))

@@ -99,6 +99,13 @@ impl BlobStore for MemoryBlobStore {
 			.remove(&(tenant.to_owned(), digest));
 		Ok(())
 	}
+	async fn delete_tenant(&self, tenant: &str) -> Result<()> {
+		self.objects
+			.lock()
+			.map_err(|_| Error::External("blob lock poisoned".into()))?
+			.retain(|(owner, _), _| owner != tenant);
+		Ok(())
+	}
 }
 
 #[cfg(test)]

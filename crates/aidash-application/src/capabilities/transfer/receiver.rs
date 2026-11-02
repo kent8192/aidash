@@ -213,8 +213,8 @@ pub async fn chunk(
 		if reserved < bytes.len() as i64 {
 			return Err(Error::Conflict("TRANSFER_RESERVATION_CHANGED".into()));
 		}
-		scope.reserve(-(bytes.len() as i64)).await?;
 		let (file_id, digest) = scope.put_staging(&bytes).await?;
+		scope.reserve(-(bytes.len() as i64)).await?;
 		record.data["chunks"][key] = json!(FileEntry {
 			file_id,
 			digest,
@@ -264,7 +264,6 @@ pub async fn commit(
         for (index,file) in description.files.iter().enumerate() {
             let reserved=record.data["reserved"].as_i64().ok_or(Error::Forbidden)?;
             if reserved<file.size as i64 {return Err(Error::Conflict("TRANSFER_RESERVATION_CHANGED".into()));}
-            scope.reserve(-(file.size as i64)).await?;
             record.data["reserved"]=json!(reserved-file.size as i64);
             scope.begin_received(area.id,file.size).await?;
             let mut offset=0;
@@ -282,6 +281,7 @@ pub async fn commit(
         record.state="committed".into();record.expires_at=None;
         record.data["receipt"]=json!({"id":record.id,"node_id":description.target.node_id,"area_id":area.id,"revision":area.revision,"manifest_digest":description.manifest_digest,"files":delivered});
         scope.update(&mut record).await?;
+        scope.reserve(-(total as i64)).await?;
         scope.event(area.workspace_id,"capability.files_received",json!({"transfer_id":record.id,"area_id":area.id,"source_node":source})).await?;
         Ok(view(&record))
     }.await;

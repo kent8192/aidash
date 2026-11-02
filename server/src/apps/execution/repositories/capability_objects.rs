@@ -11,6 +11,10 @@ use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use uuid::Uuid;
 
+// Cleanup retries must not consume the connection pool while a publication
+// with many files still owns its object locks.
+static UPLOAD_CLEANUP: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
 pub(crate) struct PendingObject {
 	runtime: Runtime,
 	id: Uuid,
@@ -18,8 +22,17 @@ pub(crate) struct PendingObject {
 	kind: String,
 	size: u64,
 	written: u64,
-	file: tokio::fs::File,
+	file: Option<tokio::fs::File>,
 	hash: Sha256,
+	pool: crate::database::native::Pool,
+	tenant: String,
+}
+
+impl Drop for PendingObject {
+	fn drop(&mut self) {
+		self.runtime
+			.schedule_release(self.pool.clone(), self.tenant.clone(), self.id);
+	}
 }
 
 impl PendingObject {
@@ -31,7 +44,11 @@ impl PendingObject {
 		if self.written > self.size {
 			return Err(Error::Conflict("OBJECT_SIZE_CHANGED".into()));
 		}
-		self.file.write_all(bytes).await?;
+		self.file
+			.as_mut()
+			.expect("pending upload file")
+			.write_all(bytes)
+			.await?;
 		self.hash.update(bytes);
 		Ok(())
 	}
@@ -40,11 +57,15 @@ impl PendingObject {
 		access: &mut Access,
 		expected: Option<&str>,
 	) -> Result<(Uuid, String)> {
-		let hash = format!("{:x}", self.hash.finalize());
+		let hash = format!("{:x}", std::mem::take(&mut self.hash).finalize());
 		if self.written != self.size || expected.is_some_and(|expected| hash != expected) {
 			return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
 		}
-		self.file.sync_all().await?;
+		self.file
+			.as_mut()
+			.expect("pending upload file")
+			.sync_all()
+			.await?;
 		let tenant = access.identity.tenant.clone();
 		// Persist the proposed digest before exposing a blob so a later
 		// maintenance pass can find a write whose DB transaction rolled back.
@@ -67,8 +88,32 @@ impl PendingObject {
 		let digest: aidash_domain::capabilities::Digest = hash
 			.parse()
 			.map_err(|_| Error::Invalid("invalid object digest".into()))?;
-		// All publication and reclamation for one Tenant/digest hold this
-		// transaction lock until commit, including physical store operations.
+		// Publish the reservation's digest before uploading, so GC must wait
+		// until the caller's publication has committed or rolled back.
+		{
+			let mut tx = self.pool.begin(&MAINTENANCE).await?;
+			let changed = crate::database::native::query(
+				&Query::update()
+					.table(Alias::new("core_blob_uploads"))
+					.value(Alias::new("digest"), hash.clone())
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(self.id)))
+					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&tenant)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *tx)
+			.await?
+			.rows_affected();
+			if changed != 1 {
+				return Err(Error::Conflict("UPLOAD_RESERVATION_CHANGED".into()));
+			}
+			self.runtime
+				.check_upload_quota(&mut tx, &tenant, 0, true)
+				.await?;
+			tx.commit().await?;
+		}
+		// The digest lock serializes writers without holding a Tenant quota row
+		// while the object store receives bytes.
+		let mut blob_tx = self.pool.begin(&MAINTENANCE).await?;
 		let lock = format!("core-blob:{tenant}:{hash}");
 		crate::database::native::query(
 			&Query::select()
@@ -78,7 +123,7 @@ impl PendingObject {
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&mut **access.tx)
+		.execute(&mut *blob_tx)
 		.await?;
 		let existing: Option<i64> = crate::database::native::query_scalar(
 			&Query::select()
@@ -86,12 +131,10 @@ impl PendingObject {
 				.from(Alias::new("core_blobs"))
 				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&tenant)))
 				.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(&hash)))
-				.lock(reinhardt::query::LockType::Update)
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_optional(&mut **access.tx)
+		.scalar_optional(&mut *blob_tx)
 		.await?;
-		self.runtime.reserve(access, -(self.size as i64)).await?;
 		let store = self.runtime.blob_store().await?;
 		if let Some(size) = existing {
 			if size != self.size as i64 {
@@ -100,19 +143,39 @@ impl PendingObject {
 			if !store.exists(&tenant, digest).await? {
 				// A previous garbage collection may have unlinked an unreferenced
 				// blob before its transaction rolled back. Restore it on verified put.
-				self.file.rewind().await?;
+				self.file
+					.as_mut()
+					.expect("pending upload file")
+					.rewind()
+					.await?;
 				store
-					.put_if_absent(&tenant, digest, self.size, Box::pin(self.file))
+					.put_if_absent(
+						&tenant,
+						digest,
+						self.size,
+						Box::pin(self.file.take().expect("pending upload file")),
+					)
 					.await?;
 			}
 		} else {
-			self.runtime.charge(access, self.size as i64).await?;
 			// An uncommitted prior writer may have left bytes without a DB
 			// owner. Under the digest lock, discard them before verified put.
 			store.delete(&tenant, digest).await?;
-			self.file.rewind().await?;
+			self.file
+				.as_mut()
+				.expect("pending upload file")
+				.rewind()
+				.await?;
 			store
-				.put_if_absent(&tenant, digest, self.size, Box::pin(self.file))
+				.put_if_absent(
+					&tenant,
+					digest,
+					self.size,
+					Box::pin(self.file.take().expect("pending upload file")),
+				)
+				.await?;
+			self.runtime
+				.adjust_quota_tx(&mut blob_tx, &tenant, self.size as i64, "used_bytes")
 				.await?;
 			crate::database::native::query(
 				&Query::insert()
@@ -126,9 +189,10 @@ impl PendingObject {
 					.map_err(Error::Invalid)?
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&mut **access.tx)
+			.execute(&mut *blob_tx)
 			.await?;
 		}
+		blob_tx.commit().await?;
 		crate::database::native::query(
 			&Query::insert()
 				.into_table(Alias::new("core_objects"))
@@ -137,7 +201,7 @@ impl PendingObject {
 					self.id.into(),
 					tenant.into(),
 					self.area.into_value(),
-					self.kind.into(),
+					self.kind.clone().into(),
 					hash.clone().into(),
 					(self.size as i64).into(),
 				])
@@ -150,7 +214,7 @@ impl PendingObject {
 	}
 }
 
-/// Serialize Tenant quota and blob mutations before acquiring digest locks.
+/// Serialize changes to a Tenant's retained-byte accounting.
 pub(crate) async fn lock_tenant_quota(
 	tx: &mut crate::database::native::Transaction,
 	tenant: &str,
@@ -190,6 +254,287 @@ pub fn validate_path(path: &str) -> Result<()> {
 	aidash_domain::registry::rules::validate_path(path).map_err(Into::into)
 }
 impl Runtime {
+	fn schedule_release(&self, pool: crate::database::native::Pool, tenant: String, id: Uuid) {
+		let runtime = self.clone();
+		if let Ok(handle) = tokio::runtime::Handle::try_current() {
+			handle.spawn(async move {
+				for _ in 0..40 {
+					let result = {
+						let Ok(_permit) = UPLOAD_CLEANUP.acquire().await else {
+							return;
+						};
+						runtime.release_upload(&pool, &tenant, id).await
+					};
+					match result {
+						Ok(true) => return,
+						Ok(false) => {
+							tokio::time::sleep(std::time::Duration::from_millis(250)).await
+						}
+						Err(error) => {
+							tracing::warn!(%id, %error, "upload reservation cleanup pending");
+							return;
+						}
+					}
+				}
+			});
+		}
+	}
+	async fn reserve_upload(
+		&self,
+		pool: &crate::database::native::Pool,
+		tenant: &str,
+		id: Uuid,
+		size: i64,
+	) -> Result<()> {
+		let mut tx = pool.begin(&MAINTENANCE).await?;
+		let lock = format!("core-upload-quota:{tenant}");
+		crate::database::native::query(
+			&Query::select()
+				.expr(SimpleExpr::CustomWithExpr(
+					"(pg_advisory_xact_lock(hashtextextended(?, 0)))".into(),
+					vec![Expr::value(lock).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await?;
+		// Bound temporary spool usage before its digest is known. Once hashed,
+		// check retained capacity with deduplication before remote upload.
+		self.check_upload_quota(&mut tx, tenant, size, false)
+			.await?;
+		crate::database::native::query(
+			&Query::insert()
+				.into_table(Alias::new("core_blob_uploads"))
+				.columns(["id", "tenant", "size"].map(Alias::new))
+				.values(vec![id.into(), tenant.into(), size.into()])
+				.map_err(Error::Invalid)?
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await?;
+		tx.commit().await?;
+		Ok(())
+	}
+
+	async fn check_upload_quota(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		tenant: &str,
+		additional: i64,
+		include_used: bool,
+	) -> Result<()> {
+		// Serialize the capacity check with commits that charge retained bytes.
+		// The lock is released with this short reservation transaction, before
+		// any bytes are sent to the object store.
+		self.adjust_quota_tx(tx, tenant, 0, "used_bytes").await?;
+		let used: i64 = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("used_bytes"))
+				.from(Alias::new("core_quotas"))
+				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut **tx)
+		.await?;
+		let reservations: Vec<i64> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("size"))
+				.from(Alias::new("core_blob_uploads"))
+				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+				// Once a blob is charged it must not also consume a pending
+				// reservation while the publication transaction finishes.
+				.and_where(Expr::not_exists(
+					Query::select()
+						.expr(Expr::value(1))
+						.from(Alias::new("core_blobs"))
+						.and_where(Expr::col((Alias::new("core_blobs"), Alias::new("tenant")))
+							.equals((Alias::new("core_blob_uploads"), Alias::new("tenant"))))
+						.and_where(Expr::col((Alias::new("core_blobs"), Alias::new("digest")))
+							.equals((Alias::new("core_blob_uploads"), Alias::new("digest"))))
+						.to_owned(),
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_all(&mut **tx)
+		.await?;
+		let total = reservations
+			.into_iter()
+			.try_fold(
+				additional
+					.checked_add(if include_used { used } else { 0 })
+					.ok_or_else(|| Error::Conflict("STORAGE_QUOTA".into()))?,
+				i64::checked_add,
+			)
+			.ok_or_else(|| Error::Conflict("STORAGE_QUOTA".into()))?;
+		if total > self.0.retained_bytes as i64 {
+			return Err(Error::Conflict("STORAGE_QUOTA".into()));
+		}
+		Ok(())
+	}
+
+	async fn release_upload(
+		&self,
+		pool: &crate::database::native::Pool,
+		tenant: &str,
+		id: Uuid,
+	) -> Result<bool> {
+		let mut tx = pool.begin(&MAINTENANCE).await?;
+		let lock = format!("core-object:{id}");
+		let acquired: bool = crate::database::native::query_scalar(
+			&Query::select()
+				.expr(SimpleExpr::CustomWithExpr(
+					"(pg_try_advisory_xact_lock(hashtextextended(?, 0)))".into(),
+					vec![Expr::value(lock).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut *tx)
+		.await?;
+		if !acquired {
+			return Ok(false);
+		}
+		let digest: Option<Option<String>> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("digest"))
+				.from(Alias::new("core_blob_uploads"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut *tx)
+		.await?;
+		if let Some(Some(hash)) = digest {
+			let lock = format!("core-blob:{tenant}:{hash}");
+			crate::database::native::query(
+				&Query::select()
+					.expr(SimpleExpr::CustomWithExpr(
+						"(pg_advisory_xact_lock(hashtextextended(?, 0)))".into(),
+						vec![Expr::value(lock).into()],
+					))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *tx)
+			.await?;
+			let committed: Option<String> = crate::database::native::query_scalar(
+				&Query::select()
+					.column(Alias::new("digest"))
+					.from(Alias::new("core_blobs"))
+					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+					.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(&hash)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_optional(&mut *tx)
+			.await?;
+			if committed.is_none() {
+				let digest = hash
+					.parse()
+					.map_err(|_| Error::Conflict("OBJECT_INTEGRITY".into()))?;
+				self.blob_store().await?.delete(tenant, digest).await?;
+			}
+		}
+		crate::database::native::query(
+			&Query::delete()
+				.from_table(Alias::new("core_blob_uploads"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await?;
+		tx.commit().await?;
+		for path in [
+			self.object_path(id),
+			self.0.storage.join(".intents").join(id.to_string()),
+			self.0.storage.join(".intents").join(format!(".{id}.new")),
+		] {
+			match tokio::fs::remove_file(path).await {
+				Ok(()) => {}
+				Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+				Err(error) => return Err(error.into()),
+			}
+		}
+		Ok(true)
+	}
+	/// Remove durable local upload intents and spools for a deleted Tenant.
+	pub(crate) async fn purge_tenant_intents(
+		&self,
+		pool: &crate::database::native::Pool,
+		tenant: &str,
+	) -> Result<()> {
+		async fn belongs_to(
+			path: &std::path::Path,
+			tenant: &str,
+			id: Uuid,
+		) -> Result<Option<bool>> {
+			let mut options = tokio::fs::OpenOptions::new();
+			options.read(true);
+			#[cfg(unix)]
+			options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+			let file = match options.open(path).await {
+				Ok(file) => file,
+				Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+				Err(error) => return Err(error.into()),
+			};
+			let metadata = file.metadata().await?;
+			if !metadata.is_file() || metadata.len() > 8192 {
+				return Ok(None);
+			}
+			let mut bytes = Vec::new();
+			file.take(8193).read_to_end(&mut bytes).await?;
+			let Ok(intent) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+				return Ok(None);
+			};
+			if intent["tenant"].as_str().is_none() || intent["id"] != id.to_string() {
+				return Ok(None);
+			}
+			Ok(Some(intent["tenant"] == tenant))
+		}
+		let mut entries = match tokio::fs::read_dir(self.0.storage.join(".intents")).await {
+			Ok(entries) => entries,
+			Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+			Err(error) => return Err(error.into()),
+		};
+		while let Some(entry) = entries.next_entry().await? {
+			let name = entry.file_name();
+			let Some(name) = name.to_str() else { continue };
+			let id = name
+				.strip_prefix('.')
+				.and_then(|s| s.strip_suffix(".new"))
+				.unwrap_or(name);
+			let Ok(id) = Uuid::parse_str(id) else {
+				continue;
+			};
+			// Do not wait for unrelated Tenants' in-flight uploads.
+			if belongs_to(&entry.path(), tenant, id).await? == Some(false) {
+				continue;
+			}
+			let mut tx = pool.begin(&MAINTENANCE).await?;
+			let lock = format!("core-object:{id}");
+			crate::database::native::query(
+				&Query::select()
+					.expr(SimpleExpr::CustomWithExpr(
+						"(pg_advisory_xact_lock(hashtextextended(?, 0)))".into(),
+						vec![Expr::value(lock).into()],
+					))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *tx)
+			.await?;
+			// Re-read after locking because the writer may have replaced the intent.
+			if belongs_to(&entry.path(), tenant, id).await? != Some(true) {
+				continue;
+			}
+			for path in [self.object_path(id), entry.path()] {
+				match tokio::fs::remove_file(path).await {
+					Ok(()) => {}
+					Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+					Err(error) => return Err(error.into()),
+				}
+			}
+			tx.commit().await?;
+		}
+		Ok(())
+	}
 	/// Reconcile crash/rollback debris without impersonating a user. A writer
 	/// holds the same object lock until its database transaction commits. Once
 	/// acquired, absence of the object row proves these bytes have no owner.
@@ -300,6 +645,15 @@ impl Runtime {
 					self.blob_store().await?.delete(tenant, digest).await?;
 				}
 			}
+			crate::database::native::query(
+				&Query::delete()
+					.from_table(Alias::new("core_blob_uploads"))
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *tx)
+			.await?;
+			tx.commit().await?;
 			match tokio::fs::remove_file(self.object_path(id)).await {
 				Ok(()) => {}
 				Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -311,7 +665,6 @@ impl Runtime {
 				Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
 				Err(e) => return Err(e.into()),
 			}
-			tx.commit().await?;
 		}
 		Ok(())
 	}
@@ -353,8 +706,8 @@ impl Runtime {
 			access.core_gc_complete = true;
 		}
 		let size = i64::try_from(size).map_err(|_| Error::Invalid("OBJECT_LIMIT".into()))?;
-		// Bound in-flight spool bytes independently of retained, deduplicated bytes.
-		self.reserve(access, size).await?;
+		let pool = access.tx.native_mut().pool().clone();
+		let tenant = access.identity.tenant.clone();
 		tokio::fs::create_dir_all(&self.0.storage).await?;
 		if tokio::fs::symlink_metadata(&self.0.storage)
 			.await?
@@ -397,11 +750,18 @@ impl Runtime {
 		intent.write_all(&serde_json::to_vec(&serde_json::json!({"id":id,"tenant":access.identity.tenant,"area_id":area,"kind":kind,"size":size}))?).await?;
 		intent.sync_all().await?;
 		tokio::fs::File::open(&intents).await?.sync_all().await?;
+		self.reserve_upload(&pool, &tenant, id, size).await?;
 		let mut options = tokio::fs::OpenOptions::new();
 		options.read(true).write(true).create_new(true);
 		#[cfg(unix)]
 		options.mode(0o600);
-		let file = options.open(self.object_path(id)).await?;
+		let file = match options.open(self.object_path(id)).await {
+			Ok(file) => file,
+			Err(error) => {
+				self.schedule_release(pool.clone(), tenant.clone(), id);
+				return Err(error.into());
+			}
+		};
 		Ok(PendingObject {
 			runtime: self.clone(),
 			id,
@@ -409,8 +769,10 @@ impl Runtime {
 			kind: kind.into(),
 			size: size as u64,
 			written: 0,
-			file,
+			file: Some(file),
 			hash: Sha256::new(),
+			pool,
+			tenant,
 		})
 	}
 
@@ -501,6 +863,18 @@ impl Runtime {
 				.await?
 			};
 			if exists.is_some() {
+				continue;
+			}
+			let reservation: Option<Uuid> = crate::database::native::query_scalar(
+				&Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("core_blob_uploads"))
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_optional(&mut **access.tx)
+			.await?;
+			if reservation.is_some() {
 				continue;
 			}
 			match tokio::fs::remove_file(self.object_path(id)).await {
@@ -655,25 +1029,12 @@ impl Runtime {
 			.map_err(|_| Error::Invalid("invalid object digest".into()))?;
 		let size = i64::try_from(size).map_err(|_| Error::Invalid("OBJECT_LIMIT".into()))?;
 		let tenant = access.identity.tenant.clone();
-		lock_tenant_quota(access.tx.native_mut(), &tenant).await?;
-		let lock = format!("core-blob:{tenant}:{hash}");
-		crate::database::native::query(
-			&Query::select()
-				.expr(SimpleExpr::CustomWithExpr(
-					"(pg_advisory_xact_lock(hashtextextended(?, 0)))".into(),
-					vec![Expr::value(lock).into()],
-				))
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(&mut **access.tx)
-		.await?;
 		let existing: Option<i64> = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("size"))
 				.from(Alias::new("core_blobs"))
 				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&tenant)))
 				.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(hash)))
-				.lock(reinhardt::query::LockType::Update)
 				.to_string(PostgresQueryBuilder),
 		)
 		.scalar_optional(&mut **access.tx)
@@ -727,18 +1088,6 @@ impl Runtime {
 		// Each logical object has its own authority and lifecycle while its
 		// immutable bytes are shared within the Tenant.
 		let tenant = access.identity.tenant.clone();
-		lock_tenant_quota(access.tx.native_mut(), &tenant).await?;
-		let lock = format!("core-blob:{tenant}:{}", entry.digest);
-		crate::database::native::query(
-			&Query::select()
-				.expr(SimpleExpr::CustomWithExpr(
-					"(pg_advisory_xact_lock(hashtextextended(?, 0)))".into(),
-					vec![Expr::value(lock).into()],
-				))
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(&mut **access.tx)
-		.await?;
 		self.validate_object(access, entry).await?;
 		let digest = entry
 			.digest
@@ -771,14 +1120,19 @@ impl Runtime {
 		})
 	}
 	pub(crate) async fn reserve(&self, access: &mut Access, bytes: i64) -> Result<()> {
-		self.adjust_quota(access, bytes, "reserved_bytes").await
+		let tenant = access.identity.tenant.clone();
+		self.adjust_quota_tx(access.tx.native_mut(), &tenant, bytes, "reserved_bytes")
+			.await
 	}
-	async fn charge(&self, access: &mut Access, bytes: i64) -> Result<()> {
-		self.adjust_quota(access, bytes, "used_bytes").await
-	}
-	async fn adjust_quota(&self, access: &mut Access, bytes: i64, column: &str) -> Result<()> {
+	async fn adjust_quota_tx(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		tenant: &str,
+		bytes: i64,
+		column: &str,
+	) -> Result<()> {
 		{
-			let query_bind_1 = &access.identity.tenant;
+			let query_bind_1 = tenant;
 			crate::database::native::query(
 				&Query::insert()
 					.into_table(Alias::new("core_quotas"))
@@ -798,11 +1152,11 @@ impl Runtime {
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&mut **access.tx)
+			.execute(&mut **tx)
 			.await?
 		};
 		let changed = {
-			let query_bind_1 = &access.identity.tenant;
+			let query_bind_1 = tenant;
 			let query_bind_2 = bytes;
 			let query_bind_3 = self.0.retained_bytes as i64;
 			crate::database::native::query(
@@ -830,9 +1184,18 @@ impl Runtime {
 							.add(Expr::value(query_bind_2))
 							.between(0, query_bind_3),
 					)
+					// A new transfer reservation must fit alongside retained bytes.
+					.and_where(if column == "reserved_bytes" && bytes > 0 {
+						Expr::col(Alias::new("used_bytes"))
+							.add(Expr::col(Alias::new("reserved_bytes")))
+							.add(Expr::value(bytes))
+							.lte(query_bind_3)
+					} else {
+						Expr::value(true).eq(true)
+					})
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&mut **access.tx)
+			.execute(&mut **tx)
 			.await?
 		}
 		.rows_affected();
@@ -861,7 +1224,6 @@ impl Runtime {
 		.scalar_optional(&mut **tx)
 		.await?;
 		let Some(digest) = digest else { return Ok(()) };
-		lock_tenant_quota(tx, tenant).await?;
 		let lock = format!("core-blob:{tenant}:{digest}");
 		crate::database::native::query(
 			&Query::select()

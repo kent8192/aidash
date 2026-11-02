@@ -25,7 +25,7 @@ fn storage_fixture(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn unchanged_exports_reuse_objects_and_history_protects_superseded_bytes(
+async fn unchanged_exports_reuse_objects_and_sweep_reclaims_superseded_bytes(
 	#[future] storage_fixture: (CoreFixture, Uuid, Value),
 	#[from(worker_control)] control_1: WorkerControl,
 ) {
@@ -78,31 +78,7 @@ async fn unchanged_exports_reuse_objects_and_history_protects_superseded_bytes(
 			);
 		}
 	}
-	let old_is_retained: i64 = sqlx::query_scalar(
-		&Query::select()
-			.expr(reinhardt::query::Func::count(
-				Expr::col(Alias::new("id")).into(),
-			))
-			.from(Alias::new("core_objects"))
-			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(old)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_one(c.f.store.pool.fixture_driver())
-	.await
-	.unwrap();
-	assert_eq!(old_is_retained, 1);
-	let current_revision = revision.as_i64().unwrap();
-	let area_id: Uuid = serde_json::from_value(initial["id"].clone()).unwrap();
-	let delete = Query::delete()
-		.from_table(Alias::new("core_manifest_revisions"))
-		.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value("acme")))
-		.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area_id)))
-		.and_where(Expr::col(Alias::new("revision")).lt(Expr::value(current_revision)))
-		.to_string(PostgresQueryBuilder);
-	sqlx::query(&delete)
-		.execute(c.f.store.pool.fixture_driver())
-		.await
-		.unwrap();
+
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
 	loop {
 		let count: i64 = {
@@ -352,4 +328,130 @@ async fn running_storage_fixture(
 		)),
 	};
 	(c, run, initial, worker)
+}
+
+struct PausedBlobStore {
+	inner: aidash_integrations::blob_store::LocalBlobStore,
+	entered: tokio::sync::Notify,
+	resume: tokio::sync::Notify,
+	fail: std::sync::atomic::AtomicBool,
+}
+#[async_trait::async_trait]
+impl aidash_application::ports::blob_store::BlobStore for PausedBlobStore {
+	async fn put_if_absent(
+		&self,
+		tenant: &str,
+		digest: aidash_domain::capabilities::Digest,
+		size: u64,
+		input: aidash_application::ports::blob_store::BlobReader,
+	) -> aidash_application::Result<aidash_application::ports::blob_store::PutResult> {
+		self.entered.notify_one();
+		self.resume.notified().await;
+		if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+			return Err(aidash_application::Error::External(
+				"injected upload failure".into(),
+			));
+		}
+		self.inner.put_if_absent(tenant, digest, size, input).await
+	}
+	async fn get(
+		&self,
+		tenant: &str,
+		digest: aidash_domain::capabilities::Digest,
+		range: Option<std::ops::Range<u64>>,
+	) -> aidash_application::Result<Option<aidash_application::ports::blob_store::BlobReader>> {
+		self.inner.get(tenant, digest, range).await
+	}
+	async fn exists(
+		&self,
+		tenant: &str,
+		digest: aidash_domain::capabilities::Digest,
+	) -> aidash_application::Result<bool> {
+		self.inner.exists(tenant, digest).await
+	}
+	async fn delete(
+		&self,
+		tenant: &str,
+		digest: aidash_domain::capabilities::Digest,
+	) -> aidash_application::Result<()> {
+		self.inner.delete(tenant, digest).await
+	}
+	async fn delete_tenant(&self, tenant: &str) -> aidash_application::Result<()> {
+		self.inner.delete_tenant(tenant).await
+	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_blocked_upload_does_not_lock_tenant_quota_and_failure_releases_reservation(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let mut c = capability_fixture.await;
+	let run = admit(&c).await;
+	let paused = Arc::new(PausedBlobStore {
+		inner: aidash_integrations::blob_store::LocalBlobStore::new(&c.root).unwrap(),
+		entered: tokio::sync::Notify::new(),
+		resume: tokio::sync::Notify::new(),
+		fail: std::sync::atomic::AtomicBool::new(false),
+	});
+	c.f.store.capabilities = Runtime::new((*c.f.store.capabilities.0).clone())
+		.unwrap()
+		.with_blob_store(paused.clone());
+	c.app.context.set_singleton(c.f.clone());
+	let app = c.app.clone();
+	let token = c.token.clone();
+	let task = tokio::spawn(async move {
+		request(&app, &token, "POST", &path_for_patch(run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"blocked.txt":null},"patch":"*** Begin Patch\n*** Add File: blocked.txt\n+unique blocked bytes\n*** End Patch"})).await
+	});
+	tokio::time::timeout(
+		std::time::Duration::from_secs(10),
+		paused.entered.notified(),
+	)
+	.await
+	.expect("upload did not start");
+	let query = Query::select()
+		.column(Alias::new("tenant"))
+		.from(Alias::new("core_quotas"))
+		.and_where(Expr::col(Alias::new("tenant")).eq("acme"))
+		.lock(reinhardt::query::LockType::Update)
+		.to_string(PostgresQueryBuilder);
+	let available = tokio::time::timeout(
+		std::time::Duration::from_secs(2),
+		sqlx::query_scalar::<_, String>(&query).fetch_one(c.f.store.pool.fixture_driver()),
+	)
+	.await;
+	paused.fail.store(true, std::sync::atomic::Ordering::SeqCst);
+	paused.resume.notify_one();
+	let (status, _) = task.await.unwrap();
+	assert!(
+		matches!(available, Ok(Ok(_))),
+		"upload held the Tenant quota row or quota was unavailable"
+	);
+	assert_ne!(
+		status, 200,
+		"injected upload failure should abort publication"
+	);
+	let count = Query::select()
+		.expr(reinhardt::query::Func::count(
+			Expr::col(Alias::new("id")).into(),
+		))
+		.from(Alias::new("core_blob_uploads"))
+		.and_where(Expr::col(Alias::new("tenant")).eq("acme"))
+		.to_string(PostgresQueryBuilder);
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+	loop {
+		let count: i64 = sqlx::query_scalar(&count)
+			.fetch_one(c.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+		if count == 0 {
+			break;
+		}
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"failed upload reservation remained"
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+	}
+	c.close().await;
 }

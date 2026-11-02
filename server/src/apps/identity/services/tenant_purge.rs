@@ -142,6 +142,11 @@ async fn provider_credentials(store: &Store, tenant: &str) -> Result<()> {
 /// Erases the Tenant's capability object files and the `core_objects` rows
 /// that name them.
 async fn capability_objects(store: &Store, tenant: &str) -> Result<()> {
+	// Wait for pre-deletion upload transactions before deleting their blobs.
+	store
+		.capabilities
+		.purge_tenant_intents(&store.pool, tenant)
+		.await?;
 	// The Tenant is already inaccessible and its deletion row is locked. Drop
 	// revision and receipt references before erasing its logical objects.
 	{
@@ -184,12 +189,18 @@ async fn capability_objects(store: &Store, tenant: &str) -> Result<()> {
 			.await?;
 			if digests.is_empty() {
 				tx.commit().await?;
+				store
+					.capabilities
+					.purge_tenant_intents(&store.pool, tenant)
+					.await?;
+				store
+					.capabilities
+					.blob_store()
+					.await?
+					.delete_tenant(tenant)
+					.await?;
 				return Ok(());
 			}
-			crate::apps::execution::repositories::capability_objects::lock_tenant_quota(
-				&mut tx, tenant,
-			)
-			.await?;
 			for digest in digests {
 				let lock = format!("core-blob:{tenant}:{digest}");
 				native::query(

@@ -75,6 +75,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0093_blob_reservations"),
 	("execution", "0094_blob_reservations_state"),
 	("execution", "0095_blob_receipt_references"),
+	("execution", "0096_blob_uploads"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -382,15 +383,12 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0096_policy_probe")
+		.get_migration("execution", "0097_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![(
-			"execution".to_owned(),
-			"0095_blob_receipt_references".to_owned()
-		)]
+		vec![("execution".to_owned(), "0096_blob_uploads".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -768,6 +766,7 @@ async fn remove_agent_cluster_migrates_registry_drafts_requests_and_generation_t
 					| ("execution", "0093_blob_reservations")
 					| ("execution", "0094_blob_reservations_state")
 					| ("execution", "0095_blob_receipt_references")
+					| ("execution", "0096_blob_uploads")
 			)
 		})
 		.cloned()

@@ -13,6 +13,7 @@ pub async fn reclaim(repository: &dyn ReclamationRepository, id: Uuid) -> Result
 
 		let expired = record.expires_at.is_some_and(|at| at <= Utc::now());
 		let mut files = vec![];
+		let mut release_quota = 0;
 		match record.kind.as_str() {
 			"transfer_out" => {
 				if record.data["objects_released"] == true
@@ -57,9 +58,7 @@ pub async fn reclaim(repository: &dyn ReclamationRepository, id: Uuid) -> Result
 					files.push(serde_json::from_value::<FileEntry>(value.clone())?);
 				}
 				let reserved = record.data["reserved"].as_i64().ok_or(Error::Forbidden)?;
-				if reserved > 0 {
-					scope.release_quota(&record.tenant, reserved).await?;
-				}
+				release_quota = reserved;
 				if record.state != "committed" {
 					record.state = "expired".into();
 				}
@@ -149,6 +148,9 @@ pub async fn reclaim(repository: &dyn ReclamationRepository, id: Uuid) -> Result
 			}
 		}
 		scope.update(&mut record).await?;
+		if release_quota > 0 {
+			scope.release_quota(&record.tenant, release_quota).await?;
+		}
 		Ok(true)
 	}
 	.await;

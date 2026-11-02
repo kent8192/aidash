@@ -182,6 +182,23 @@ impl BlobStore for ObjectBlobStore {
 			Err(e) => Err(external(e)),
 		}
 	}
+	async fn delete_tenant(&self, tenant: &str) -> Result<()> {
+		let tenant_hash = format!("{:x}", Sha256::digest(tenant.as_bytes()));
+		for prefix in [
+			format!("tenants/{tenant_hash}/"),
+			format!("temporary/{tenant_hash}/"),
+		] {
+			let prefix = ObjectPath::from(prefix);
+			let mut objects = self.store.list(Some(&prefix));
+			while let Some(object) = objects.try_next().await.map_err(external)? {
+				match self.store.delete(&object.location).await {
+					Ok(()) | Err(object_store::Error::NotFound { .. }) => {}
+					Err(error) => return Err(external(error)),
+				}
+			}
+		}
+		Ok(())
+	}
 }
 
 pub struct LocalBlobStore(ObjectBlobStore);
@@ -216,6 +233,9 @@ impl BlobStore for LocalBlobStore {
 	}
 	async fn delete(&self, tenant: &str, digest: Digest) -> Result<()> {
 		self.0.delete(tenant, digest).await
+	}
+	async fn delete_tenant(&self, tenant: &str) -> Result<()> {
+		self.0.delete_tenant(tenant).await
 	}
 }
 
@@ -284,6 +304,55 @@ mod tests {
 		contract(Arc::new(ObjectBlobStore::new(Arc::new(
 			object_store::memory::InMemory::new(),
 		))))
+		.await;
+	}
+
+	async fn tenant_purge_contract(backend: Arc<dyn ObjectStore>) {
+		let store = ObjectBlobStore::new(backend.clone());
+		let digest: Digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+			.parse()
+			.unwrap();
+		for tenant in ["one", "two"] {
+			store
+				.put_if_absent(tenant, digest, 3, Box::pin(std::io::Cursor::new(b"abc")))
+				.await
+				.unwrap();
+			let hash = format!("{:x}", Sha256::digest(tenant.as_bytes()));
+			backend
+				.put(
+					&ObjectPath::from(format!("temporary/{hash}/abandoned")),
+					b"partial".to_vec().into(),
+				)
+				.await
+				.unwrap();
+		}
+		store.delete_tenant("one").await.unwrap();
+		store.delete_tenant("one").await.unwrap();
+		assert!(!store.exists("one", digest).await.unwrap());
+		assert!(store.exists("two", digest).await.unwrap());
+		let one = format!("{:x}", Sha256::digest(b"one"));
+		let two = format!("{:x}", Sha256::digest(b"two"));
+		assert!(
+			backend
+				.head(&ObjectPath::from(format!("temporary/{one}/abandoned")))
+				.await
+				.is_err()
+		);
+		assert!(
+			backend
+				.head(&ObjectPath::from(format!("temporary/{two}/abandoned")))
+				.await
+				.is_ok()
+		);
+	}
+
+	#[tokio::test]
+	async fn tenant_purge_removes_orphans_in_memory_and_local_stores() {
+		tenant_purge_contract(Arc::new(object_store::memory::InMemory::new())).await;
+		let dir = tempfile::tempdir().unwrap();
+		tenant_purge_contract(Arc::new(
+			object_store::local::LocalFileSystem::new_with_prefix(dir.path()).unwrap(),
+		))
 		.await;
 	}
 }

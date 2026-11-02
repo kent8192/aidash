@@ -35,6 +35,8 @@ pub trait BlobStore: Send + Sync {
 	) -> Result<Option<BlobReader>>;
 	async fn exists(&self, tenant: &str, digest: Digest) -> Result<bool>;
 	async fn delete(&self, tenant: &str, digest: Digest) -> Result<()>;
+	/// Remove all committed and temporary objects belonging to a Tenant.
+	async fn delete_tenant(&self, tenant: &str) -> Result<()>;
 }
 
 #[cfg(any(test, feature = "test-support"))]

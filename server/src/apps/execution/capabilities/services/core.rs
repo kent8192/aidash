@@ -98,6 +98,16 @@ impl std::fmt::Debug for Runtime {
 	}
 }
 impl Runtime {
+	#[cfg(feature = "capability-runtime-tests")]
+	pub fn with_blob_store(
+		mut self,
+		store: Arc<dyn aidash_application::ports::blob_store::BlobStore>,
+	) -> Self {
+		let cell = tokio::sync::OnceCell::new();
+		assert!(cell.set(store).is_ok(), "new blob store cell is empty");
+		self.1 = Arc::new(cell);
+		self
+	}
 	pub fn new(profile: Profile) -> Result<Self> {
 		use crate::apps::execution::capabilities::serializers::core::BlobStorage;
 		if let BlobStorage::S3 { bucket } | BlobStorage::Gcs { bucket } = &profile.blob_storage

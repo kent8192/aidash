@@ -192,6 +192,11 @@ impl OperationReconciliationScope for Scope {
 	}
 	async fn request(&mut self, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
 		self.0.call(&format!("request:{method}:{path}"))?;
+		if method == "GET" && path.contains("/files/") {
+			return Ok(
+				json!({"data":STANDARD.encode("abc"),"offset":0,"size":3,"digest":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}),
+			);
+		}
 		if path == "/v1/operations" {
 			assert!(body.as_ref().unwrap()["operation_id"] == json!(Uuid::from_u128(1)));
 		}
@@ -502,10 +507,11 @@ async fn completed_output_publication_advances_revision_before_persisting_and_em
 }
 #[rstest]
 #[tokio::test]
-async fn publication_reuses_a_tenant_blob_without_downloading_it(repository: Repository) {
+async fn publication_reuses_an_area_blob_without_downloading_it(repository: Repository) {
 	{
 		let mut trace = repository.0.lock().unwrap();
 		trace.reusable = Some(Uuid::from_u128(55));
+		trace.area.manifest = json!([{"file_id":Uuid::from_u128(30),"path":"old/path","digest":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","size":3,"media_type":"application/octet-stream","scope":"working","provenance":{}}]);
 		trace.observed = json!({"status":"completed","termination_confirmed":true,"executed":true,
             "files":[{"path":"new/path", "object_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "digest":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "size":3}],
             "stdout":STANDARD.encode("stdout"), "displays":[], "exit_code":0});
@@ -522,6 +528,51 @@ async fn publication_reuses_a_tenant_blob_without_downloading_it(repository: Rep
 				|call| (call.starts_with("request:GET:") && call.contains("/files/"))
 					|| call == "begin_output"
 			)
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn runner_cannot_reuse_an_unmounted_tenant_blob(repository: Repository) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.reusable = Some(Uuid::from_u128(55));
+		trace.observed = json!({"status":"completed","termination_confirmed":true,"executed":true,
+			"files":[{"path":"stolen", "object_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "digest":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "size":3}],
+			"stdout":STANDARD.encode("stdout"), "displays":[], "exit_code":0});
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert!(!trace.calls.iter().any(|call| call == "reuse_output"));
+	assert!(
+		trace
+			.calls
+			.iter()
+			.any(|call| call.starts_with("request:GET:") && call.contains("/files/"))
+	);
+	assert!(trace.calls.iter().any(|call| call == "finish_output"));
+	assert_ne!(trace.published[0].file_id, Uuid::from_u128(55));
+}
+
+#[rstest]
+#[tokio::test]
+async fn mounted_operation_input_can_be_reused_without_download(repository: Repository) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.reusable = Some(Uuid::from_u128(55));
+		trace.files = serde_json::from_value(json!([{"file_id":Uuid::from_u128(30),"path":"mounted","digest":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","size":3,"media_type":"application/octet-stream","scope":"references","provenance":{}}])).unwrap();
+		trace.observed = json!({"status":"completed","termination_confirmed":true,"executed":true,
+			"files":[{"path":"copy", "object_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "digest":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "size":3}],
+			"stdout":STANDARD.encode("stdout"), "displays":[], "exit_code":0});
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(trace.published[0].file_id, Uuid::from_u128(55));
+	assert!(
+		!trace
+			.calls
+			.iter()
+			.any(|call| call.starts_with("request:GET:") && call.contains("/files/"))
 	);
 }
 

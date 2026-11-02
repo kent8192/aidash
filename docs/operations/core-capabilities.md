@@ -115,10 +115,12 @@ Do not down-migrate or remove storage to disable the feature.
 Working Area objects use SHA-256 content addresses. A Tenant has its own blob
 namespace; its Working Areas, retained File versions, receipts and recovery
 snapshots can refer to the same bytes without storing or charging them twice.
-Each publication retains an immutable Area revision. A transfer or sharing
-receipt retains the File versions it identifies until the receipt record is
-removed; a recovery snapshot keeps its versions until it expires or is
-released. Reclamation removes bytes only after all references are gone.
+Each publication creates an immutable Area revision. The current revision and
+revisions protected by an active retention hold remain available; the sweep
+removes other superseded revisions. A transfer or sharing receipt retains the
+File versions it identifies until the receipt record is removed; a recovery
+snapshot keeps its versions until it expires or is released. Reclamation
+removes bytes only after all references are gone.
 
 The capability profile's `storage` path is a private, persistent local staging
 and ownership-intent directory. With the default `blob_storage` setting it is
@@ -147,8 +149,10 @@ stale `temporary/` objects after an appropriate recovery interval. Credential
 material belongs in the service environment, not the profile.
 
 Retained usage counts each Tenant's distinct blob once, including content kept
-by revisions or recovery. In-flight transfer reservations are accounted
-separately. Identical bytes in different Tenants remain physically separate.
+by revisions or recovery. In-flight transfer and upload reservations are
+accounted separately. Identical bytes in different Tenants remain physically
+separate. Tenant purge removes committed and orphaned blob keys, temporary
+keys, and local upload intents.
 
 ## Initial ceilings
 

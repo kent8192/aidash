@@ -23,7 +23,6 @@ async fn sync_receipt_references(
 	let mut files: Vec<crate::apps::execution::capabilities::serializers::contracts::FileEntry> =
 		serde_json::from_value(value)?;
 	files.sort_by(|a, b| a.digest.cmp(&b.digest).then(a.file_id.cmp(&b.file_id)));
-	super::capability_objects::lock_tenant_quota(tx, &record.tenant).await?;
 	crate::database::native::query(
 		&Query::delete()
 			.from_table(Alias::new("core_blob_references"))
@@ -34,17 +33,6 @@ async fn sync_receipt_references(
 	.execute(&mut **tx)
 	.await?;
 	for file in files {
-		let lock = format!("core-blob:{}:{}", record.tenant, file.digest);
-		crate::database::native::query(
-			&Query::select()
-				.expr(SimpleExpr::CustomWithExpr(
-					"(pg_advisory_xact_lock(hashtextextended(?, 0)))".into(),
-					vec![Expr::value(lock).into()],
-				))
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(&mut **tx)
-		.await?;
 		let holder = format!("{}:{}", record.id, file.file_id);
 		crate::database::native::query(
 			&Query::insert()

@@ -32,7 +32,7 @@ use aidash_domain::{
 use async_trait::async_trait;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait as _, IntoValue as _, OnConflict, PostgresQueryBuilder, Query,
-	QueryStatementBuilder as _, SimpleExpr,
+	QueryStatementBuilder as _,
 };
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt};
@@ -91,21 +91,9 @@ pub(crate) async fn record_revision(
 	if stored != *manifest {
 		return Err(NativeError::Conflict("AREA_REVISION_CHANGED".into()));
 	}
-	super::capability_objects::lock_tenant_quota(tx, tenant).await?;
 	let mut entries: Vec<FileEntry> = serde_json::from_value(manifest.clone())?;
 	entries.sort_by(|a, b| a.digest.cmp(&b.digest).then(a.file_id.cmp(&b.file_id)));
 	for file in entries {
-		let lock = format!("core-blob:{tenant}:{}", file.digest);
-		crate::database::native::query(
-			&Query::select()
-				.expr(SimpleExpr::CustomWithExpr(
-					"(pg_advisory_xact_lock(hashtextextended(?, 0)))".into(),
-					vec![Expr::value(lock).into()],
-				))
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(&mut **tx)
-		.await?;
 		let holder = format!("{}:{}:{}", area.id, area.revision, file.file_id);
 		crate::database::native::query(
 			&Query::insert()

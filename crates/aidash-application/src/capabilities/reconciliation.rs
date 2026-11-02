@@ -198,6 +198,9 @@ async fn reconcile(
 					.await;
 			}
 			let previous = serde_json::from_value::<Vec<MountedFile>>(area.manifest.clone())?;
+			// A digest supplied by the runner is not authority to read an
+			// arbitrary Tenant blob. Only the Area or this operation's mounted
+			// inputs can authorize a download-free reuse.
 			let mut entries = previous
 				.iter()
 				.filter(|file| !matches!(file.scope, FileScope::Working))
@@ -206,6 +209,11 @@ async fn reconcile(
 			let exported = observed["files"]
 				.as_array()
 				.ok_or_else(|| Error::External("invalid runner file manifest".into()))?;
+			let mounted = if exported.is_empty() {
+				Vec::new()
+			} else {
+				scope.upload_files(&operation).await?
+			};
 			let mut size = entries.iter().map(|file| file.size).sum::<u64>();
 			let mut seen = std::collections::BTreeSet::new();
 			for file in exported {
@@ -242,7 +250,16 @@ async fn reconcile(
 					entries.push(unchanged.clone());
 					continue;
 				}
-				let (file_id, digest) = match scope.reuse_output(digest, file_size).await? {
+				let authorized = previous
+					.iter()
+					.chain(mounted.iter())
+					.any(|file| file.digest == digest && file.size == file_size);
+				let reusable = if authorized {
+					scope.reuse_output(digest, file_size).await?
+				} else {
+					None
+				};
+				let (file_id, digest) = match reusable {
 					Some(file_id) => (file_id, digest.to_owned()),
 					None => Box::pin(download_output(scope, id, file)).await?,
 				};
