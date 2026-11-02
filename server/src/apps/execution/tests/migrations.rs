@@ -756,6 +756,7 @@ async fn remove_agent_cluster_migrates_registry_drafts_requests_and_generation_t
 			!matches!(
 				(migration.app_label.as_str(), migration.name.as_str()),
 				("registry", "0054_remove_agent_cluster")
+					| ("registry", "0055_remove_structured_harness_contracts")
 					| ("execution", "0089_remove_agent_cluster")
 			)
 		})
