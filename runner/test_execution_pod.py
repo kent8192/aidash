@@ -330,3 +330,71 @@ class ExecutionPodHttpTest(unittest.TestCase):
             ExecutionPodController(Backend(), config, admitted=True).ensure(settings)
         self.assertEqual(caught.exception.code, 'startup_failed')
         self.assertIn('image pull failed', caught.exception.message)
+
+
+class ExecutionRequestTest(unittest.TestCase):
+    def test_default_and_maximum_timeouts_are_enforced(self):
+        from execution_pod import execution_timeout
+        self.assertEqual(execution_timeout({}), 600)
+        self.assertEqual(execution_timeout({'timeout_seconds': 3600}), 3600)
+        for value in (0, 3601, True, '10'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                execution_timeout({'timeout_seconds': value})
+
+    def test_output_limit_applies_to_both_streams_combined(self):
+        from execution_pod import BoundedOutput
+        output = BoundedOutput(5)
+        output.add('stdout', b'abc')
+        output.add('stderr', b'defg')
+        result = output.public()
+        self.assertEqual(result['stdout'], 'YWJj')
+        self.assertEqual(result['stderr'], 'ZGU=')
+        self.assertTrue(result['truncated'])
+
+
+class SupervisorTest(unittest.TestCase):
+    @unittest.skipUnless(__import__('sys').platform.startswith('linux'), 'Linux proc and pidfd required')
+    def test_timeout_stops_descendant_that_created_a_new_session(self):
+        import os
+        import sys
+        import tempfile
+        from pathlib import Path
+        from sandbox_v2 import run_supervised
+
+        with tempfile.TemporaryDirectory() as directory:
+            pid_path = Path(directory) / 'child.pid'
+            script = ('import os,subprocess,sys,time; '
+                      'p=subprocess.Popen([sys.executable,"-c","import os,time; os.setsid(); time.sleep(60)"]); '
+                      'open(sys.argv[1],"w").write(str(p.pid)); time.sleep(60)')
+            result = run_supervised([sys.executable, '-c', script, str(pid_path)], timeout=1)
+            self.assertEqual(result['status'], 'timed_out')
+            pid = int(pid_path.read_text())
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+
+    @unittest.skipUnless(__import__('sys').platform.startswith('linux'), 'Linux subreaper required')
+    def test_background_descendant_remains_tracked_after_shell_exits(self):
+        import sys
+        import time
+        from sandbox_v2 import run_supervised
+        script = ('import subprocess,sys; '
+                  'subprocess.Popen([sys.executable,"-c","import os,time; os.setsid(); time.sleep(.35)"])')
+        start = time.monotonic()
+        result = run_supervised([sys.executable, '-c', script], timeout=2)
+        self.assertEqual(result, {'status': 'completed', 'exit_code': 0})
+        self.assertGreaterEqual(time.monotonic() - start, .3)
+
+    @unittest.skipUnless(__import__('sys').platform.startswith('linux'), 'Linux subreaper required')
+    def test_background_process_can_be_stopped(self):
+        import sys
+        import threading
+        from sandbox_v2 import run_supervised
+        stopped = threading.Event()
+        timer = threading.Timer(.3, stopped.set)
+        timer.start()
+        try:
+            result = run_supervised([sys.executable, '-c', 'import time; time.sleep(60)'],
+                                    timeout=None, stop_requested=stopped)
+            self.assertEqual(result['status'], 'stopped')
+        finally:
+            timer.cancel()

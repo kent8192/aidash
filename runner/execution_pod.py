@@ -247,7 +247,9 @@ def execution_manifests(settings, config):
                ],
                'containers': [{'name': 'execution', 'image': config['helper_image'],
                                'command': ['python3', '-I', '/opt/aidash/sandbox_v2.py', 'bootstrap'],
-                               'env': [{'name': 'AIDASH_DOCKER_ENABLED', 'value': str(docker).lower()}],
+                               'env': [{'name': 'AIDASH_DOCKER_ENABLED', 'value': str(docker).lower()},
+                                       {'name': 'AIDASH_POD_UID',
+                                        'valueFrom': {'fieldRef': {'fieldPath': 'metadata.uid'}}}],
                                'securityContext': security, 'resources': {'limits': limits},
                                'volumeMounts': mounts}], 'volumes': volumes}
     if docker:
@@ -330,3 +332,35 @@ class ExecutionPodController:
             self.backend.kube(['delete', 'pod', name, '--ignore-not-found', '--wait=true'])
             self.backend.kube(['delete', 'pvc', name, '--ignore-not-found', '--wait=true'])
         return {'deleted': True}
+
+
+def execution_timeout(request):
+    """Validate the public command deadline in seconds."""
+    timeout = request.get('timeout_seconds', 600)
+    if type(timeout) is not int or not 1 <= timeout <= 3600:
+        raise ValueError('timeout_seconds must be an integer between 1 and 3600')
+    return timeout
+
+
+class BoundedOutput:
+    """Drain both streams while retaining at most the configured total bytes."""
+
+    def __init__(self, limit):
+        if type(limit) is not int or limit < 0:
+            raise ValueError('output limit must be a nonnegative integer')
+        self.limit = limit
+        self.streams = {'stdout': bytearray(), 'stderr': bytearray()}
+        self.truncated = False
+        self.used = 0
+
+    def add(self, stream, data):
+        room = self.limit - self.used
+        chunk = data[:room]
+        self.streams[stream].extend(chunk)
+        self.used += len(chunk)
+        self.truncated |= len(chunk) < len(data)
+
+    def public(self):
+        import base64
+        return {**{name: base64.b64encode(value).decode('ascii') for name, value in self.streams.items()},
+                'truncated': self.truncated}
