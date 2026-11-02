@@ -84,7 +84,7 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		),
 		(
 			"shell",
-			"Start an isolated Shell operation. Poll the durable operation ID; cancellation cannot undo earlier effects.",
+			"Start an isolated Shell operation. Poll the durable operation ID; cancellation cannot undo earlier effects. expected_revision is the revision from the previous result; a new area starts at 1.",
 			schema::<Shell>(),
 		),
 		(
@@ -99,7 +99,7 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		),
 		(
 			"code_interpreter",
-			"Execute in the live isolated Python kernel. SESSION_RESET requires acknowledging the new ID before any code executes; saved files survive heap loss.",
+			"Execute in the live isolated Python kernel. SESSION_RESET requires acknowledging the new ID before any code executes; saved files survive heap loss. expected_revision is the revision from the previous result; a new area starts at 1.",
 			schema::<Python>(),
 		),
 		(
@@ -119,12 +119,12 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		),
 		(
 			"apply_patch",
-			"Apply a Codex add/update/delete patch with the current revision and exact digest-or-absence preconditions for every path.",
+			"Apply a Codex add/update/delete patch with the current revision and exact digest-or-absence preconditions for every path. expected_revision is the revision from the previous result; a new area starts at 1.",
 			schema::<Patch>(),
 		),
 		(
 			"file_share",
-			"Share selected immutable files with an exact authorized Agent/thread; delivery cannot recall information already read.",
+			"Share selected immutable files with an exact authorized Agent/thread; delivery cannot recall information already read. expected_revision is the revision from the previous result; a new area starts at 1.",
 			schema::<Share>(),
 		),
 		(
