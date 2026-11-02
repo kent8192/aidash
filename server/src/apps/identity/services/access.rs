@@ -2,7 +2,7 @@
 use super::{
 	Authorization, Snapshot,
 	identity::SubjectIdentity,
-	policy::{Decision, Evaluation, Resource},
+	policy::{Decision, Effect, Evaluation, PolicyBundle, Resource},
 };
 use crate::apps::identity::models::AuthorizationDecision;
 use crate::database::native::Pool;
@@ -703,11 +703,23 @@ impl Access {
 		}
 	}
 
+	pub(crate) fn policy_explicit_deny(bundle: &PolicyBundle, decision: &Decision) -> bool {
+		// Delegation failures retain the ancestor's matched policy IDs, but replace
+		// its reason. A missing ancestor allow must remain an approval request.
+		!decision.allowed
+			&& (decision.reason == "explicit_deny"
+				|| (decision.reason == "delegation_denied"
+					&& bundle.policies.iter().any(|policy| {
+						policy.effect == Effect::Deny
+							&& decision.matched_policies.contains(&policy.id)
+					})))
+	}
+
 	pub(crate) async fn record(&mut self, records: &[(Evaluation, Decision)]) -> Result<()> {
 		self.decision_serial = self.decision_serial.saturating_add(records.len() as u64);
 		self.last_policy_explicit_deny = records
 			.iter()
-			.any(|(_, decision)| decision.reason == "explicit_deny");
+			.any(|(_, decision)| Self::policy_explicit_deny(&self.snapshot.bundle, decision));
 		if !self.audit {
 			return Ok(());
 		}

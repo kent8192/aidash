@@ -197,7 +197,8 @@ where
 	async fn require(&mut self, r: &Resource, action: &str) -> Result<()> {
 		let denied = self.access.subjects.iter().any(|subject| {
 			let input = self.access.evaluation(subject, r, action);
-			self.access.snapshot.bundle.evaluate(&input).reason == "explicit_deny"
+			let bundle = &self.access.snapshot.bundle;
+			Access::policy_explicit_deny(bundle, &bundle.evaluate(&input))
 		});
 		self.access
 			.require(r, action)

@@ -2689,6 +2689,44 @@ async fn review_receiver_only_executor_activates_required_home(
 }
 
 #[rstest::rstest]
+#[case("federation.execute", true)]
+#[case("agent.execute", true)]
+#[case("model.infer", true)]
+#[case("federation.execute", false)]
+#[tokio::test]
+async fn receiver_ancestor_explicit_deny_is_a_policy_refusal(
+	#[case] action: &str,
+	#[case] explicit_deny: bool,
+	#[future(awt)]
+	#[with(false, false, true)]
+	scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let mut policy = p.receiver_policy.clone();
+	policy["subjects"]["ancestor"] = json!({"kind":"user"});
+	policy["subjects"]["alice"]["delegated_by"] = json!("ancestor");
+	if explicit_deny {
+		policy["policies"].as_array_mut().unwrap().push(json!({
+			"id":"ancestor-deny", "effect":"deny", "subjects":{"ids":["ancestor"]},
+			"actions":[action], "resources":{"kinds":["*"]}
+		}));
+	} else {
+		let executor = aidash_domain::agent_subject(&node_of(&p.b), "research", "1.0.0");
+		policy["policies"][0]["subjects"] = json!({"ids":["alice", executor]});
+	}
+	common::replace_policy(&p.b.store, "acme", policy).await;
+	let (status, body) = request(&p.aa, &p.token, "POST", &format!("/api/tasks/{}/remote-grants", p.task), json!({"id":Uuid::new_v4(),"node_id":node_of(&p.b),"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":3600,"semantic":{"mode":"disabled"}})).await;
+	assert_eq!(status, 403, "{body}");
+	let expected = if explicit_deny {
+		"policy denies"
+	} else {
+		"requires authority approval"
+	};
+	assert!(body.to_string().contains(expected), "{body}");
+	p.close().await;
+}
+
+#[rstest::rstest]
 #[tokio::test]
 async fn review_receiver_missing_dependency_catalog_is_classified_and_audited(
 	#[future(awt)]
