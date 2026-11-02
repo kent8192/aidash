@@ -6,7 +6,6 @@ name an observed execution container/pod UUID, never an arbitrary host path.
 """
 import base64
 import fcntl
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -33,6 +32,16 @@ CGROUP_ROOT = Path(os.environ.get('AIDASH_CGROUP_ROOT', '/sys/fs/cgroup'))
 SENTRY_BINARIES = tuple(json.loads(os.environ.get('AIDASH_SENTRY_BINARIES',
     '["/usr/local/bin/runsc", "/usr/local/bin/gvisor-bin/gvisor_sentry"]')))
 NAMESPACE = os.environ.get('AIDASH_SANDBOX_NAMESPACE', 'aidash-sandbox')
+
+
+def working_export():
+    # Shipped beside this file; isolated mode (-I) keeps the script directory
+    # off sys.path, so it is added explicitly.
+    directory = str(Path(__file__).resolve().parent)
+    if directory not in sys.path:
+        sys.path.insert(0, directory)
+    import working_export as module
+    return module
 
 
 def command(*args):
@@ -319,25 +328,8 @@ def handle(request):
         maximum = request['working_bytes']
         if type(maximum) is not int or not 0 <= maximum <= 1 << 30:
             raise ValueError('working quota')
-        files, total = [], 0
-        for directory, dirs, names in os.walk(root, followlinks=False):
-            dirs.sort()
-            names.sort()
-            for name in dirs:
-                if (Path(directory) / name).is_symlink():
-                    raise ValueError('symlink directory')
-            for name in names:
-                relative = str((Path(directory) / name).relative_to(root))
-                with open_file(root, relative) as file:
-                    size = os.fstat(file.fileno()).st_size
-                    total += size
-                    if total > maximum or len(files) >= 4096:
-                        raise ValueError('working quota')
-                    digest = hashlib.file_digest(file, 'sha256').hexdigest()
-                files.append({'path': relative, 'object_id': hashlib.sha256(relative.encode()).hexdigest(),
-                              'digest': digest, 'size': size})
-        return {'files': files}
-
+        # A refusal is returned as data: the runner fails only this operation.
+        return working_export().collect(root, maximum, open_file)
 
 def migrate_legacy():
     if LEGACY_ROOT is None or LEGACY_ROOT == ROOT or not LEGACY_ROOT.is_dir():

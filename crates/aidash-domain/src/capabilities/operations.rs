@@ -117,6 +117,38 @@ pub fn request_validation_failure(
 		None
 	}
 }
+/// Error code of an operation whose `/work` export was refused (#682): a link,
+/// a hard-link alias, a quota or an unsafe name. Nothing is published, so the
+/// Area keeps its previous revision and only this operation fails.
+pub const WORKING_EXPORT_REFUSED: &str = "WORKING_EXPORT_REFUSED";
+/// Most entries one Working Area manifest holds, mounted inputs included.
+pub const MAX_AREA_FILES: usize = 4096;
+/// A Working Area quota an export can exceed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportQuota {
+	Files,
+	Bytes,
+}
+/// The stored tool error refusing an export over `quota`, in the same shape the
+/// runner reports: the first offending relative `path` and the `limit`.
+pub fn export_quota_refusal(quota: ExportQuota, path: &str, limit: u64) -> Value {
+	let (reason, message) = match quota {
+		ExportQuota::Files => (
+			"file_count",
+			format!(
+				"the working area holds at most {limit} files; remove files (first over the limit: {path}), or keep dependency trees under /tmp"
+			),
+		),
+		ExportQuota::Bytes => (
+			"bytes",
+			format!(
+				"the working area holds at most {limit} bytes; remove files (first over the limit: {path}), or keep large output under /tmp"
+			),
+		),
+	};
+	json!({"code":WORKING_EXPORT_REFUSED,"message":message,"retryable":false,
+		"details":{"reason":reason,"path":path,"limit":limit}})
+}
 /// Operation kind of a Completion Gate Check (#112). It runs under the bound
 /// shell capability, and its files are never exported into the Working Area.
 pub const VERIFICATION: &str = "verification";
