@@ -198,9 +198,11 @@ Without egress settings, sandbox networking remains deny-all.
 
 The Runner image includes Node.js 22 LTS, npm/npx and uv/uvx. Built-in
 External services `core.npm` and `core.pypi` need their own Tenant Catalog
-Approvals and Agent bindings. The operation sets npm's registry and
-`replace-registry-host`, and uv's index, to the gateway. Python downloads are
-disabled with `UV_PYTHON_DOWNLOADS=never`.
+Approvals and Agent bindings. The operation points npm's registry and uv's
+index at the gateway. npm's `replace-registry-host` stays `npmjs`, so lockfile
+links on registry.npmjs.org go through the gateway while the gateway's own
+rewritten links are used unchanged. Python downloads are disabled with
+`UV_PYTHON_DOWNLOADS=never`.
 
 Only these built-in indexes buffer index responses, up to 8 MiB, to rewrite
 package file addresses onto the gateway. npm files remain on
