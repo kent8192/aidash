@@ -10,7 +10,7 @@ ARG UV_SHA256_ARM64=9041c73c99fdc5892cf128140beb354eca9231d502068cc36e6cb53a8e59
 # Node.js LTS (npm, npx) and uv (uvx) run against the image's Python only.
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates curl xz-utils; \
+    apt-get install -y --no-install-recommends ca-certificates curl git xz-utils; \
     case "${TARGETARCH}" in \
         amd64) node_arch=x64; node_sha="${NODE_SHA256_AMD64}"; uv_arch=x86_64; uv_sha="${UV_SHA256_AMD64}" ;; \
         arm64) node_arch=arm64; node_sha="${NODE_SHA256_ARM64}"; uv_arch=aarch64; uv_sha="${UV_SHA256_ARM64}" ;; \

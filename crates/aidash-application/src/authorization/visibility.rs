@@ -54,6 +54,26 @@ pub async fn local_run_visible(
 	Ok(local_base_visible(scope, run).await? && scope.run_reads(run.id).await?)
 }
 
+/// A source Run with no native memory reads has no private memory dependency.
+/// Keep the ordinary Run disclosure gate and its cached verdict unchanged.
+pub async fn local_dependency_without_memory_visible(
+	scope: &mut dyn LocalRunVisibilityScope,
+	run: &RunMetadata,
+) -> Result<bool> {
+	if !scope.core_area_visible(run.id).await? {
+		return Ok(false);
+	}
+	let workspace = scope.workspace(run.workspace_id).await?;
+	let resource = scope.resource("run", &run.id.to_string(), workspace.attributes);
+	let task_visible = match scope.task(run).await? {
+		Some(task) => scope.task_visible(&task).await?,
+		None => false,
+	};
+	Ok(task_visible
+		&& scope.decide(&resource, "run.read").await?
+		&& scope.human_reads(run.workspace_id, run.id).await?)
+}
+
 pub async fn base_visible(scope: &mut dyn RunVisibilityScope, run: &RunMetadata) -> Result<bool> {
 	if !run.is_local(scope.node_id()) {
 		if scope.scoped_admission(run.id).await? {
@@ -67,6 +87,73 @@ pub async fn base_visible(scope: &mut dyn RunVisibilityScope, run: &RunMetadata)
 		}
 	}
 	local_base_visible(scope, run).await
+}
+
+/// Recheck the base policies without collapsing the owning Task's producer
+/// journals into a boolean. The ordinary cached verdict may already be false
+/// because one of those journals is invalidated.
+pub async fn classified_base_visible<S>(
+	scope: &mut S,
+	run: &RunMetadata,
+	pending: &mut Vec<Uuid>,
+) -> Result<bool>
+where
+	S: RunVisibilityScope
+		+ crate::ports::authorization::visibility::provenance::ReadProvenanceScope,
+{
+	if !run.is_local(scope.node_id()) {
+		if scope.scoped_admission(run.id).await? {
+			return Ok(scope.core_area_visible(run.id).await?
+				&& scope.foreign_base_visible(run).await?
+				&& scope.human_reads(run.workspace_id, run.id).await?);
+		}
+		if !scope.legacy_execution(run).await? {
+			return Ok(false);
+		}
+	}
+	classified_local_dependency_visible(scope, run, pending, true).await
+}
+
+/// Recheck local dependency policies and enqueue its Task's producers. A Run
+/// with no native memory reads does not require private memory access.
+pub async fn classified_local_dependency_visible<S>(
+	scope: &mut S,
+	run: &RunMetadata,
+	pending: &mut Vec<Uuid>,
+	require_memory: bool,
+) -> Result<bool>
+where
+	S: LocalRunVisibilityScope
+		+ crate::ports::authorization::visibility::provenance::ReadProvenanceScope,
+{
+	if !scope.core_area_visible(run.id).await? {
+		return Ok(false);
+	}
+	let workspace = LocalRunVisibilityScope::workspace(scope, run.workspace_id).await?;
+	let resource = LocalRunVisibilityScope::resource(
+		scope,
+		"run",
+		&run.id.to_string(),
+		workspace.attributes.clone(),
+	);
+	let memory = if require_memory {
+		Some(scope.memory_resource(run, &workspace).await?)
+	} else {
+		None
+	};
+	let Some(task) = scope.task(run).await? else {
+		return Ok(false);
+	};
+	Ok(
+		provenance::classified_task_visible(scope, &task, pending).await?
+			&& LocalRunVisibilityScope::decide(scope, &resource, "run.read").await?
+			&& match memory {
+				Some(memory) => {
+					LocalRunVisibilityScope::decide(scope, &memory, "memory.read").await?
+				}
+				None => true,
+			} && scope.human_reads(run.workspace_id, run.id).await?,
+	)
 }
 
 pub async fn run_visible(scope: &mut dyn RunVisibilityScope, run: &RunMetadata) -> Result<bool> {

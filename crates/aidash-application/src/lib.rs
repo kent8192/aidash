@@ -66,6 +66,8 @@ pub enum Error {
 	#[error("forbidden")]
 	AuthorityRefused(Box<aidash_domain::tool::AuthorityRefusal>),
 	#[error("{0}")]
+	RemoteExecutionRefused(aidash_domain::federation::execution::Refusal),
+	#[error("{0}")]
 	External(String),
 	#[error("OAuth Client secret storage is unavailable")]
 	OAuthClientSecretsUnavailable,
