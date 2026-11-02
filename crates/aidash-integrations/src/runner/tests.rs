@@ -1,6 +1,6 @@
 use super::*;
 use aidash_application::ports::capabilities::execution_pod::{
-	CommandRequest, ExecutionPodError, ExecutionPodRuntime,
+	CommandRequest, ExecutionPodError, ExecutionPodErrorCode, ExecutionPodRuntime,
 };
 use axum::{
 	Json, Router,
@@ -229,7 +229,7 @@ async fn execution_pod_requests_preserve_identity_and_remote_failure_codes() {
 	assert_eq!(accepted.run_id.as_deref(), Some("run-a"));
 	client.cancel_waiting("space-a", "run-a").await.unwrap();
 	assert!(
-		matches!(client.stop("space-a").await, Err(ExecutionPodError::Remote { code, message }) if code == "termination_unconfirmed" && message == "guard unavailable")
+		matches!(client.stop("space-a").await, Err(ExecutionPodError::Remote { code, message }) if code == ExecutionPodErrorCode::TerminationUnconfirmed && message == "guard unavailable")
 	);
 	assert!(client.delete("space-a").await.is_err());
 }

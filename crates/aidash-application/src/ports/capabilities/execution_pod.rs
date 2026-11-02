@@ -3,10 +3,105 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExecutionPodErrorCode {
+	TerminationUnconfirmed,
+	PodUnavailable,
+	CommandConflict,
+	InvalidRequest,
+	Timeout,
+	Interrupted,
+	QueueFull,
+	AdmissionFailed,
+	AdmissionUnverified,
+	CapacityMismatch,
+	ChangeLogUnavailable,
+	CommandNotFound,
+	NotBackground,
+	PodIdentityMissing,
+	PodInterrupted,
+	PurgeUnconfirmed,
+	PurgeUnsupported,
+	SettingsMismatch,
+	StartupFailed,
+	StartupTimeout,
+	StopFailed,
+	CommandInterrupted,
+	RequestRejected,
+	RunnerUnavailable,
+	Unknown(String),
+}
+impl From<&str> for ExecutionPodErrorCode {
+	fn from(value: &str) -> Self {
+		match value {
+			"termination_unconfirmed" => Self::TerminationUnconfirmed,
+			"pod_unavailable" => Self::PodUnavailable,
+			"command_conflict" => Self::CommandConflict,
+			"invalid_request" => Self::InvalidRequest,
+			"timeout" => Self::Timeout,
+			"interrupted" => Self::Interrupted,
+			"queue_full" => Self::QueueFull,
+			"admission_failed" => Self::AdmissionFailed,
+			"admission_unverified" => Self::AdmissionUnverified,
+			"capacity_mismatch" => Self::CapacityMismatch,
+			"change_log_unavailable" => Self::ChangeLogUnavailable,
+			"command_not_found" => Self::CommandNotFound,
+			"not_background" => Self::NotBackground,
+			"pod_identity_missing" => Self::PodIdentityMissing,
+			"pod_interrupted" => Self::PodInterrupted,
+			"purge_unconfirmed" => Self::PurgeUnconfirmed,
+			"purge_unsupported" => Self::PurgeUnsupported,
+			"settings_mismatch" => Self::SettingsMismatch,
+			"startup_failed" => Self::StartupFailed,
+			"startup_timeout" => Self::StartupTimeout,
+			"stop_failed" => Self::StopFailed,
+			"command_interrupted" => Self::CommandInterrupted,
+			"request_rejected" => Self::RequestRejected,
+			"runner_unavailable" => Self::RunnerUnavailable,
+			other => Self::Unknown(other.into()),
+		}
+	}
+}
+impl std::fmt::Display for ExecutionPodErrorCode {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		let value = match self {
+			Self::TerminationUnconfirmed => "termination_unconfirmed",
+			Self::PodUnavailable => "pod_unavailable",
+			Self::CommandConflict => "command_conflict",
+			Self::InvalidRequest => "invalid_request",
+			Self::Timeout => "timeout",
+			Self::Interrupted => "interrupted",
+			Self::QueueFull => "queue_full",
+			Self::AdmissionFailed => "admission_failed",
+			Self::AdmissionUnverified => "admission_unverified",
+			Self::CapacityMismatch => "capacity_mismatch",
+			Self::ChangeLogUnavailable => "change_log_unavailable",
+			Self::CommandNotFound => "command_not_found",
+			Self::NotBackground => "not_background",
+			Self::PodIdentityMissing => "pod_identity_missing",
+			Self::PodInterrupted => "pod_interrupted",
+			Self::PurgeUnconfirmed => "purge_unconfirmed",
+			Self::PurgeUnsupported => "purge_unsupported",
+			Self::SettingsMismatch => "settings_mismatch",
+			Self::StartupFailed => "startup_failed",
+			Self::StartupTimeout => "startup_timeout",
+			Self::StopFailed => "stop_failed",
+			Self::CommandInterrupted => "command_interrupted",
+			Self::RequestRejected => "request_rejected",
+			Self::RunnerUnavailable => "runner_unavailable",
+			Self::Unknown(value) => value,
+		};
+		f.write_str(value)
+	}
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutionPodError {
 	#[error("{code}: {message}")]
-	Remote { code: String, message: String },
+	Remote {
+		code: ExecutionPodErrorCode,
+		message: String,
+	},
 	#[error("execution pod transport: {0}")]
 	Transport(#[from] crate::Error),
 }
@@ -107,6 +202,17 @@ pub trait ExecutionPodRuntime: Send + Sync {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn remote_error_codes_preserve_known_and_future_values() {
+		assert_eq!(
+			ExecutionPodErrorCode::from("termination_unconfirmed"),
+			ExecutionPodErrorCode::TerminationUnconfirmed
+		);
+		assert_eq!(
+			ExecutionPodErrorCode::from("future_code"),
+			ExecutionPodErrorCode::Unknown("future_code".into())
+		);
+	}
 	#[test]
 	fn interrupted_command_preserves_unknown_outcome_and_binary_output() {
 		let result: CommandResult = serde_json::from_str(r#"{"operation_id":"op","status":"interrupted","outcome":"unknown","stdout":"AP8=","error_code":"command_interrupted","message":"node died"}"#).unwrap();
