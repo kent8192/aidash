@@ -39,3 +39,31 @@ fn membership_and_expiry_follow_conversation_person_and_last_use() {
 	space.clear();
 	assert!(!space.may_use("alice"));
 }
+
+#[test]
+fn external_service_registry_ids_round_trip_in_settings() {
+	let mut settings = ScratchSettings::default();
+	settings.external_services.insert("weather.forecast".into());
+	let json = serde_json::to_string(&settings).unwrap();
+	let decoded: ScratchSettings = serde_json::from_str(&json).unwrap();
+	assert_eq!(
+		decoded.external_services,
+		BTreeSet::from(["weather.forecast".into()])
+	);
+}
+
+#[test]
+fn ceilings_and_operator_control_bound_settings() {
+	let mut settings = ScratchSettings::default();
+	let mut ceilings = ScratchCeilings::default();
+	let hosts = HostAllowlist::All;
+	settings.allowed_hosts = HostAllowlist::All;
+	assert!(settings.validate(&ceilings, &hosts).is_err());
+	ceilings.all_hosts_allowed = true;
+	assert!(settings.validate(&ceilings, &hosts).is_ok());
+	settings.capacity_bytes = 1024 * 1024 * 1024 * 1024 + 1;
+	assert!(settings.validate(&ceilings, &hosts).is_err());
+	settings.capacity_bytes = 1024 * 1024 * 1024 * 1024;
+	settings.idle_expiry_days = None;
+	assert!(settings.validate(&ceilings, &hosts).is_ok());
+}

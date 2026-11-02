@@ -43,7 +43,8 @@ pub struct ScratchSettings {
 	pub idle_expiry_days: Option<u32>,
 	pub allowed_hosts: HostAllowlist,
 	pub execution_image: Option<String>,
-	pub external_services: BTreeSet<Uuid>,
+	/// Registry identifiers of External services available to users of the space.
+	pub external_services: BTreeSet<String>,
 	pub cpu_millis: u32,
 	pub memory_bytes: u64,
 	pub docker_enabled: bool,
