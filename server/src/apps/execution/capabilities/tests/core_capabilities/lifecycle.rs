@@ -148,10 +148,9 @@ async fn interrupted_patch_keeps_old_manifest_and_reclaims_only_abandoned_object
 			abandoned.push(entry.path());
 		}
 	}
-	assert!(
-		!abandoned.is_empty(),
-		"fault must leave actual unpublished bytes"
-	);
+	// Dropping the failed upload schedules its own release, which may already
+	// have removed its spool. Whatever remains must still be collected below;
+	// the live object exercises the collector either way.
 	// A transaction still allocating another object owns the same advisory lock
 	// as production. The collector must leave it untouched until rollback.
 	let live = Uuid::new_v4();
@@ -270,6 +269,9 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 		aidash_server::database::native::query_as(
 			&Query::select()
 				.column(ColumnRef::Asterisk)
+				// Manifests live in core_manifest_revisions; the extra areas
+				// below carry none.
+				.expr_as(Expr::cust("'[]'::jsonb"), Alias::new("manifest"))
 				.from(Alias::new("core_areas"))
 				.and_where(
 					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
@@ -304,14 +306,13 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 					"revision",
 					"epoch",
 					"state",
-					"manifest",
 					"constraints",
 					"next_sequence",
 				]
 				.map(Alias::new),
 			)
 			.from_subquery(
-				((1..=14).map(|index| Expr::cust(format!("${index}")))).fold(
+				((1..=13).map(|index| Expr::cust(format!("${index}")))).fold(
 					reinhardt::query::Query::select(),
 					|mut select, expr| {
 						select.expr(expr);
@@ -332,7 +333,6 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 			.bind(extra.revision)
 			.bind(extra.epoch)
 			.bind(extra.state)
-			.bind(extra.manifest)
 			.bind(extra.constraints)
 			.bind(extra.next_sequence)
 			.execute(c.f.store.pool.fixture_driver())

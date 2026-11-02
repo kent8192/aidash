@@ -1,4 +1,3 @@
--- Reinhardt does not yet express PostgreSQL row-level security policies.
 ALTER TABLE public.core_blob_uploads ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.core_blob_uploads FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON public.core_blob_uploads AS PERMISSIVE FOR ALL TO PUBLIC

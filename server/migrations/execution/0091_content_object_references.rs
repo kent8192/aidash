@@ -25,6 +25,15 @@ pub(super) fn migration() -> Migration {
 					.with_default(Some("'[]'::jsonb".into())),
 			),
 		})
+		// Reversing DropTable restores columns, constraints and indexes from
+		// the model state, not the triggers and policies 0006, 0036 and 0062
+		// added with RunSQL. Their backward assets drop them, so restore them.
+		.add_operation(Operation::RunSQL {
+			sql: include_str!("sql/forward/0091_content_object_references_legacy.sql").into(),
+			reverse_sql: Some(
+				include_str!("sql/backward/0091_content_object_references_legacy.sql").into(),
+			),
+		})
 		.add_operation(Operation::DropTable {
 			name: "core_retention_files".into(),
 		})
