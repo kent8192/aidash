@@ -1437,7 +1437,13 @@ mod openrouter {
 		let calls = Arc::new(AtomicUsize::new(0));
 		let (provider, _server) = openrouter_provider(app, config, calls).await;
 		let result = provider.infer(request(), &Recorder::default()).await;
-		assert!(matches!(result, Err(Error::Invalid(_))));
+		assert!(matches!(
+			result,
+			Err(Error::ProviderRouteUnavailable { model, refusal })
+				if model == "vendor/model"
+					&& refusal.tag == "vendor/route"
+					&& refusal.reasons == vec![aidash_application::route_refusal::RouteReason::NotZeroDataRetention]
+		));
 		assert_eq!(counter.load(Ordering::SeqCst), 0);
 	}
 
