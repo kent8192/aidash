@@ -1225,6 +1225,17 @@ class ReviewRegressionTest(unittest.TestCase):
         env = {item['name']:item['value'] for item in image['env']}
         for name in ('LD_PRELOAD','LD_LIBRARY_PATH','PYTHONPATH','PYTHONHOME'): self.assertEqual(env[name], '')
 
+    def test_image_subpath_cannot_point_at_bookkeeping(self):
+        import tempfile
+        from pathlib import Path
+        from prepare_helpers import prepare_image_subpath
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'operations').mkdir()
+            (root / 'image-root').symlink_to('operations')
+            with self.assertRaisesRegex(ValueError, 'symlink'):
+                prepare_image_subpath(root / 'image-root')
+
     def test_old_terminated_guard_does_not_quarantine_new_pod(self):
         import json, tempfile
         from pathlib import Path

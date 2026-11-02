@@ -17,6 +17,13 @@ def wait_for_guard(receipt, *, timeout=180):
     raise TimeoutError('node guard did not admit the Execution Pod')
 
 
+def prepare_image_subpath(image_root):
+    image_root = Path(image_root)
+    if image_root.is_symlink():
+        raise ValueError('image root subpath must not be a symlink')
+    image_root.mkdir(parents=True, exist_ok=True)
+
+
 def main():
     process_limit = int(os.environ['AIDASH_PROCESS_LIMIT'])
     if process_limit < 32:
@@ -44,7 +51,7 @@ def main():
     for name in ('sandbox_v2.py', 'execution_pod.py', 'control.py', 'python_session.py', 'network_probe.py', 'user_probe.py'):
         shutil.copy2(Path('/opt/aidash') / name, destination / name)
     Path('/scratch-system/scratch').mkdir(parents=True, exist_ok=True)
-    Path('/scratch-system/image-root').mkdir(parents=True, exist_ok=True)
+    prepare_image_subpath('/scratch-system/image-root')
     os.chmod(destination / 'loader', 0o755)
     (destination / '.guard-waiting').touch()
     wait_for_guard(destination / '.guard-ready')
