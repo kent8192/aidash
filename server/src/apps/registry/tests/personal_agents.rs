@@ -58,7 +58,7 @@ async fn reference_image_replay_uses_saved_binary_without_another_provider_call(
 		Arc,
 		atomic::{AtomicUsize, Ordering},
 	};
-	let execution = Box::pin(execution).await;
+	let mut execution = Box::pin(execution).await;
 	let app = &execution.app;
 	let count = Arc::new(AtomicUsize::new(0));
 	let observed = count.clone();
@@ -118,9 +118,57 @@ async fn reference_image_replay_uses_saved_binary_without_another_provider_call(
 		record.sha256,
 		aidash_domain::semantic::indexing::content_digest_bytes(&record.bytes)
 	);
+	let entry: Entry = serde_json::from_value(first.1.clone()).unwrap();
+	assert_json(
+		execution
+			.subject
+			.post(
+				"/api/authorization/acme/catalog/approvals",
+				&json!({"node":aidash_domain::nodes::NodeName::derived("acme"), "approvals":[
+					{"entry":{"id":source["id"],"version":source["version"]},"enabled":true,"expected_revision":0},
+					{"entry":{"id":entry.id,"version":entry.version},"enabled":true,"expected_revision":0}
+				]}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	assert_json(
+		execution
+			.subject
+			.post(
+				&format!("/api/tasks/{}/claim", execution.task),
+				&json!({"revision":0,"agent":{"id":entry.id,"version":entry.version}}),
+				"json",
+			)
+			.await
+			.unwrap(),
+		200,
+	);
+	let harness = Harness {
+		federation: runtime.clone(),
+	};
+	for _ in 0..12 {
+		if !harness.worker_once().await.unwrap() {
+			break;
+		}
+	}
+	let body = execution
+		.provider
+		.received
+		.try_recv()
+		.expect("agent must reach inference");
+	let context: Value =
+		serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+	assert_eq!(
+		context["current"]["reference_documents"],
+		json!([{"name":"chart.png"}])
+	);
+	let calls = count.load(Ordering::SeqCst);
 	server.abort();
 	assert_eq!(personal(&execution.subject, key, input).await, first);
-	assert_eq!(count.load(Ordering::SeqCst), 1);
+	assert_eq!(count.load(Ordering::SeqCst), calls);
 }
 
 async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documents: bool) {
