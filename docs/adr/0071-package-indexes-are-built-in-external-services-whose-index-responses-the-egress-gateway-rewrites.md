@@ -13,3 +13,7 @@ Decided on 2026-10-19 while grilling Live previews. Execution Pods carry Node.js
 
 - uv never downloads a Python interpreter (`UV_PYTHON_DOWNLOADS=never`); the image's Python is the only one.
 - Until #310 lands, Cloud and Dedicated Execution Pods cannot install packages.
+
+## Superseded (2026-11-02, #697)
+
+ADR 0111 supersedes this decision. Package registries are ordinary allowed hosts of a Scratch Space, reached through the Egress gateway's HTTPS proxy, so no index response is rewritten and `core.npm` and `core.pypi` are removed.

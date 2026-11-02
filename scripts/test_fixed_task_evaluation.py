@@ -1020,9 +1020,11 @@ class FakeNode:
             return 200, {"id": "task-uuid", "revision": 0}
         if path.endswith("/claim"):
             return 200, {}
-        if path == "/api/state":
+        if path == "/api/tasks/task-uuid/runs":
+            return 200, {"items": [{"id": "run-1", "task_id": "task-uuid"}], "next_cursor": None}
+        if path == "/api/human-requests?run=run-1":
             requests = [self.human] if self.human and not self.answers else []
-            return 200, {"runs": [{"id": "run-1", "task_id": "task-uuid"}], "human_requests": requests}
+            return 200, {"items": requests, "next_cursor": None}
         if path == "/api/runs/run-1":
             phase = self.phases.pop(0) if len(self.phases) > 1 else self.phases[0]
             return 200, {"run": {"id": "run-1", "task_id": "task-uuid", "phase": phase, "step": 3,
@@ -1099,6 +1101,25 @@ class Clock:
 
 
 class RunnerTest(unittest.TestCase):
+    def test_pending_human_requests_follow_short_filtered_pages(self):
+        class Pages:
+            def get(self, path, token):
+                if path == "/api/human-requests?run=run-1":
+                    return {"items": [], "next_cursor": "hidden+/="}
+                if path == "/api/human-requests?run=run-1&cursor=hidden%2B%2F%3D":
+                    return {"items": [{"id": "visible"}], "next_cursor": None}
+                raise AssertionError(path)
+        self.assertEqual(list(runner.pending_human_requests(Pages(), "subject", "run-1")), [{"id": "visible"}])
+
+    def test_administrator_without_run_preserves_uncertain_claim_guard(self):
+        clock = Clock()
+        def reject_lookup(method, path, body, token, timeout=None):
+            raise AssertionError(f"unexpected administrator lookup: {path}")
+        api = runner.Api(reject_lookup, "deployment-administrator")
+        self.assertIsNone(runner.cancel_run(api, None, "task-uuid", None, clock, clock.sleep))
+        with self.assertRaisesRegex(RuntimeError, "may have admitted a Run"):
+            runner.cancel_run(api, None, "task-uuid", None, clock, clock.sleep, claim_uncertain=True)
+
     def setUp(self):
         self.corpus = corpus()
         self.planned = evaluation.plan(self.corpus, ["long-conversation-corrections"], ["projection"])[0]
@@ -1185,10 +1206,10 @@ class RunnerTest(unittest.TestCase):
                 def late(method, path, body, token, timeout=None, node=node, reads=reads, appears=appears):
                     if path.endswith("/claim"):
                         return 504, {"error": "gateway timeout"}  # It may still have committed.
-                    if path == "/api/state":
+                    if path == "/api/tasks/task-uuid/runs":
                         reads.append(path)
                         if not appears or len(reads) < 3:
-                            return 200, {"runs": [], "human_requests": []}
+                            return 200, {"items": [], "next_cursor": None}
                     return node.call(method, path, body, token)
                 clock = Clock()
                 experiment = self.experiment(node)
