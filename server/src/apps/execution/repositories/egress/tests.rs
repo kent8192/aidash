@@ -1,8 +1,8 @@
 //! The real gateway authority and meters share PostgreSQL budgets across calls.
 #[path = "../../tests/support/settings.rs"]
-mod settings;
+pub(crate) mod settings;
 #[path = "../../tests/support/tenant_roots.rs"]
-mod tenant_roots;
+pub(crate) mod tenant_roots;
 use crate::apps::execution::test_database::{DatabaseFixture, database};
 
 use crate::apps::execution::{

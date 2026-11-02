@@ -1,5 +1,12 @@
 # Aidash native migration history
 
+`execution/0090_scope_egress` adds Node-owned scope state, per-day counters,
+connection metadata and stop events. Its composite references bind every child
+to the same Tenant, Node and scope, and Node deletion cascades through them.
+`0091` applies forced Tenant row policies; Reinhardt cannot express those
+policies as schema operations, so the migration uses SQL assets. `0092` records
+the corresponding model state.
+
 `registry/0054_remove_agent_cluster` removes the obsolete Agent config key from Registry definitions, Agent drafts and registration requests, then removes it from the Agent contract. `execution/0089_remove_agent_cluster` removes it from Generation policy templates and request definitions. PostgreSQL JSON updates and function replacement use SQL assets because Reinhardt migrations cannot express these transformations. Both are irreversible. Each owner-only atomic migration establishes Deployment Scope before its first row access because the native migration executor does not open scoped application transactions. The registry update temporarily disables the Marketplace writer fence within its transaction, retaining its other validation and reference triggers. Installed Registry copies change while immutable Marketplace versions and revisions stay untouched: old Marketplace versions must be republished and old installation revisions may no longer match. Run and Federation snapshots are unchanged; Runs using old snapshots fail and need cancellation. Surviving Run constraints and triggers do not call the Agent validator, so cancellation updates do not revalidate the retained snapshots. Catalog Approvals and Federation pins covering changed definitions need renewing.
 
 `execution/0081_lease_recoveries` updates the physical `runs.pending` default,

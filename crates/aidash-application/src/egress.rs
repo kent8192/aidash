@@ -78,6 +78,26 @@ pub struct ConnectionRecord {
 	pub outcome: String,
 }
 
+/// Supplies live Scratch Space authority to the durable egress adapter.
+/// Implementations verify credentials and Tenant/Node ownership, and reload
+/// the current policy for an already authenticated scope.
+#[async_trait]
+pub trait ScopeAuthority: Send + Sync {
+	async fn authenticate(&self, credential: &str) -> Result<ScopeSettings>;
+	async fn current(&self, scope: &aidash_domain::egress::ScopeId) -> Result<ScopeSettings>;
+	/// The returned meter records request metadata and bytes; scope budgets are
+	/// charged by the durable adapter, not by the authority's meter.
+	async fn admit_external(
+		&self,
+		credential: &str,
+		scope: &aidash_domain::egress::ScopeId,
+		service: &str,
+		method: &str,
+		path: &str,
+		query_digest: &str,
+	) -> Result<Admission>;
+}
+
 /// Durable scope authority. Implementations must serialize admission, suspension,
 /// and budget debits across all gateway instances. Debits are made before bytes
 /// leave the gateway and may be reserved in batches; unused reservations must be
