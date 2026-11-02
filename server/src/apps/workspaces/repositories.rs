@@ -7,3 +7,5 @@ pub(crate) mod citations;
 pub mod mutations;
 
 pub(crate) mod media;
+
+pub(crate) mod scratch;
