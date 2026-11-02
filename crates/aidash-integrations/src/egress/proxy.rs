@@ -168,6 +168,9 @@ async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 		batch.charge(n).await?;
 		let mut written = 0;
 		while written < n {
+			if *cancel.borrow() {
+				return Err(io::Error::other("egress_cancelled"));
+			}
 			let result = tokio::select! {
 				result = write.write(&buffer[written..n]) => result,
 				_ = cancel.changed() => return Err(io::Error::other("egress_cancelled")),
