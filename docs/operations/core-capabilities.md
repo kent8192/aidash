@@ -229,7 +229,10 @@ in remote Runs. See
 [deferred capability exposure](registry-capabilities.md#deferred-capability-exposure).
 
 The outbound broker enforces configured HTTPS origins, public DNS/IP checks,
-per-hop scope and bounded responses. Shell/Python have no general network proxy.
+per-hop scope and bounded responses. Shell/Python have no general network proxy
+in the currently wired runtime. The Scratch Space proxy integration contract and
+its remaining authority wiring are described in [Tenant Secrets and sandbox
+egress](../tenant-secrets.md#scratch-space-proxy-integration).
 An approval binds the original requester, invocation, targets and current policy;
 upper-policy denial cannot be approved away. Authenticated services belong in
 separately configured integrations. Never copy their tokens into Python, Shell,

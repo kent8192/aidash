@@ -212,3 +212,35 @@ and its wheel-selection API/UI have been removed; use uv through the gateway.
 File previews, Retained versions and message citations are described in
 [File previews and Retained versions](file-previews-and-retained-versions.md).
 Live previews follow with [#405](https://github.com/kent8192/aidash/issues/405).
+
+## Scratch Space proxy integration
+
+The scope-authenticated forward proxy is an integration component. The server
+has not yet connected it to Scratch Space credentials or durable scope policy;
+the operation-token gateway described above remains the active route.
+
+Once that authority and the Execution Pod runtime are connected, the Pod needs
+`HTTPS_PROXY` and `HTTP_PROXY` set to the internal Egress gateway. The gateway
+accepts HTTP Basic proxy authentication with the scope credential as the password
+(for example, `http://scope:<scope-credential>@<gateway-host>:<gateway-port>`;
+URL-encode the credential). Set `NO_PROXY` only for explicitly permitted local
+endpoints, such as `localhost,127.0.0.1,::1`; do not exempt metadata addresses
+or the cluster network. The Pod's network policy must enforce the same boundary
+regardless of these environment variables. The scope credential is not a Tenant
+Secret, and Tenant Secret values never enter the Pod.
+
+For CONNECT, the gateway tunnels TLS without inspecting it. For plain HTTP it
+forwards absolute-form requests. It checks the scope's host allowlist and rejects
+non-public resolved addresses even when all hosts are enabled. All-host access
+also requires the operator's Offering setting. The default traffic allowance is
+100 GiB sent and 100 GiB received per scope per UTC day, with no request-count
+limit. The default anomaly rule suspends the scope after more than 600 new
+connections in one minute; an operator must lift the suspension. The authority
+must emit an operator notification when it suspends a scope.
+
+Connection records contain scope, host, port, sent and received byte counts,
+duration and outcome, rather than request paths or bodies. An interrupted
+connection may retain unused reserved budget if the gateway terminates before
+returning it. The separate path-level External service route remains responsible
+for attaching Tenant Secrets; scope-based admission for that route is not yet
+wired.
