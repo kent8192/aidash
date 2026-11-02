@@ -63,7 +63,9 @@ pub async fn prepare(
 		return Err(Error::Conflict("CAPABILITIES_DISABLED".into()));
 	}
 	if input.expected_revision != area.revision {
-		return Err(Error::Conflict("AREA_REVISION_CHANGED".into()));
+		return Err(Error::Conflict(
+			aidash_domain::capabilities::errors::area_revision_changed(area.revision),
+		));
 	}
 	scope.authorize(area, "file.share").await?;
 	scope

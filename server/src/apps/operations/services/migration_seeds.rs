@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub struct MigrationSeeds;
 
-fn assets() -> [(&'static str, String); 6] {
+fn assets() -> [(&'static str, String); 8] {
 	use crate::apps::{
 		federation::services::migration_seed as federation,
 		marketplace::services::migration_seed as marketplace,
@@ -42,6 +42,14 @@ fn assets() -> [(&'static str, String); 6] {
 		(
 			"workspaces/sql/backward/0017_conversation_scratch_space.sql",
 			crate::apps::workspaces::services::migration_backfill::backward(),
+		),
+		(
+			"execution/sql/forward/0090_run_created_at.sql",
+			crate::apps::execution::services::migration_backfill::forward(),
+		),
+		(
+			"execution/sql/backward/0090_run_created_at.sql",
+			crate::apps::execution::services::migration_backfill::backward(),
 		),
 	]
 }
@@ -99,7 +107,7 @@ impl CapabilityCommand for MigrationSeeds {
 			.cloned()
 			.unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
 		materialize(&root, matches.get_flag("write"))?;
-		println!("Migration seed assets match their Reinhardt Query builders.");
+		println!("Migration assets match their Reinhardt Query builders.");
 		Ok(())
 	}
 }
@@ -143,5 +151,18 @@ mod tests {
 		};
 		assert_eq!(sql, &expected[4].1);
 		assert_eq!(reverse_sql.as_deref(), Some(expected[5].1.as_str()));
+		let migration = FilesystemSource::new(&root)
+			.get_migration("execution", "0090_run_created_at")
+			.await
+			.unwrap();
+		assert!(
+			migration
+				.operations
+				.iter()
+				.any(|operation| matches!(operation,
+					Operation::RunSQL { sql, reverse_sql }
+					if sql == &expected[6].1 && reverse_sql.as_deref() == Some(expected[7].1.as_str())
+				))
+		);
 	}
 }

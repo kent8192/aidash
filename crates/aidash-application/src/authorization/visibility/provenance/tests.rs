@@ -12,6 +12,9 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 struct Scope {
 	graph: BTreeMap<Uuid, Vec<RecordedRead>>,
+	outputs: BTreeMap<(Uuid, String, Uuid), Vec<Uuid>>,
+	invalid_runs: BTreeMap<Uuid, Failure>,
+	semantic_entry: Option<(Uuid, aidash_domain::semantic::mutations::Entry)>,
 	entries: Vec<EntityRef>,
 	calls: Vec<String>,
 	decisions: Vec<Resource>,
@@ -23,6 +26,9 @@ struct Scope {
 fn scope() -> Scope {
 	Scope {
 		graph: BTreeMap::new(),
+		outputs: BTreeMap::new(),
+		invalid_runs: BTreeMap::new(),
+		semantic_entry: None,
 		entries: vec![],
 		calls: vec![],
 		decisions: vec![],
@@ -81,9 +87,17 @@ impl ResourceVisibilityScope for Scope {
 		t.workspace_id = a.workspace_id;
 		Ok(Some(t))
 	}
-	async fn output_visible(&mut self, _: Uuid, _: &str, _: Uuid) -> Result<bool> {
+	async fn output_visible(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<bool> {
 		self.touch("output")?;
-		Ok(self.denied != Some("output"))
+		Ok(self.denied != Some("output")
+			&& self
+				.outputs
+				.get(&(workspace, kind.to_owned(), id))
+				.is_none_or(|producers| {
+					producers
+						.iter()
+						.all(|run| !self.invalid_runs.contains_key(run))
+				}))
 	}
 	fn cached_human(&self, _: Uuid) -> Option<bool> {
 		panic!("journal traversal does not directly cache human requests")
@@ -97,6 +111,20 @@ impl ResourceVisibilityScope for Scope {
 }
 #[async_trait]
 impl ReadProvenanceScope for Scope {
+	async fn output_producers(
+		&mut self,
+		workspace: Uuid,
+		kind: &str,
+		id: Uuid,
+	) -> Result<Option<Vec<Uuid>>> {
+		self.touch("output")?;
+		Ok((self.denied != Some("output")).then(|| {
+			self.outputs
+				.get(&(workspace, kind.to_owned(), id))
+				.cloned()
+				.unwrap_or_default()
+		}))
+	}
 	async fn registry_entries(&mut self, run: Uuid) -> Result<Vec<EntityRef>> {
 		self.touch("registry")?;
 		self.calls.push(format!("visited:{run}"));
@@ -118,6 +146,25 @@ impl ReadProvenanceScope for Scope {
 	async fn semantic_reads(&mut self, _: Uuid) -> Result<bool> {
 		self.touch("semantic")?;
 		Ok(self.denied != Some("semantic"))
+	}
+	async fn semantic_invalidity(
+		&mut self,
+		run: Uuid,
+		pending: &mut Vec<Uuid>,
+	) -> Result<Option<Failure>> {
+		self.touch("semantic")?;
+		if self
+			.semantic_entry
+			.as_ref()
+			.is_some_and(|(root, _)| *root == run)
+		{
+			return crate::semantic::memory::reads_invalidity(self, run, pending).await;
+		}
+		Ok(self
+			.invalid_runs
+			.get(&run)
+			.copied()
+			.or_else(|| (self.denied == Some("semantic")).then_some(Failure::Authority)))
 	}
 	async fn received_semantic(&mut self, _: Uuid) -> Result<bool> {
 		self.touch("received")?;
@@ -180,10 +227,294 @@ impl ReadProvenanceScope for Scope {
 		self.touch("base")?;
 		Ok(self.denied != Some("base"))
 	}
+	async fn classified_run_dependency_visible(
+		&mut self,
+		run: &RunMetadata,
+		_: &mut Vec<Uuid>,
+	) -> Result<bool> {
+		self.run_base_visible(run).await
+	}
 	async fn generation_visible(&mut self, _: &Request) -> Result<bool> {
 		self.touch("generation.read")?;
 		Ok(self.denied != Some("generation.read"))
 	}
+}
+
+#[async_trait]
+impl crate::ports::semantic::memory::SemanticMemoryReadSession for Scope {
+	async fn classified_output_source(
+		&mut self,
+		workspace: Uuid,
+		source: &aidash_domain::semantic::Source,
+		pending: &mut Vec<Uuid>,
+	) -> Result<Option<String>> {
+		classified_semantic_output_source(self, workspace, source, pending).await
+	}
+	async fn entry_authorized(
+		&mut self,
+		_: &aidash_domain::semantic::mutations::Entry,
+	) -> Result<bool> {
+		Ok(self.denied != Some("semantic.read"))
+	}
+	async fn permits(
+		&mut self,
+		entry: &aidash_domain::semantic::mutations::Entry,
+		_: &str,
+	) -> Result<bool> {
+		let source: aidash_domain::semantic::Source = serde_json::from_value(entry.source.clone())?;
+		let (kind, id) = match source {
+			aidash_domain::semantic::Source::Artifact { id } => ("artifact", id),
+			aidash_domain::semantic::Source::Message { id } => ("message", id),
+			_ => unreachable!(),
+		};
+		ResourceVisibilityScope::output_visible(self, entry.workspace_id, kind, id).await
+	}
+	async fn source(
+		&mut self,
+		_: Uuid,
+		_: &aidash_domain::semantic::Source,
+	) -> Result<Option<String>> {
+		Ok(Some("content".into()))
+	}
+	async fn dependencies(&mut self, run: Uuid) -> Result<Vec<(Uuid, i64)>> {
+		Ok(self
+			.semantic_entry
+			.as_ref()
+			.filter(|(root, _)| *root == run)
+			.map(|(_, e)| vec![(e.id, e.revision)])
+			.unwrap_or_default())
+	}
+	async fn entry(
+		&mut self,
+		id: Uuid,
+	) -> Result<Option<aidash_domain::semantic::mutations::Entry>> {
+		Ok(self
+			.semantic_entry
+			.as_ref()
+			.filter(|(_, e)| e.id == id)
+			.map(|(_, e)| e.clone()))
+	}
+	async fn point_digest(&mut self, _: Uuid) -> Result<Option<String>> {
+		let kind = self.semantic_entry.as_ref().unwrap().1.source["kind"]
+			.as_str()
+			.unwrap();
+		Ok(Some(aidash_domain::semantic::indexing::content_digest(
+			if kind == "artifact" {
+				"{}"
+			} else {
+				"same content"
+			},
+		)))
+	}
+}
+
+fn semantic_output_fixture(mut scope: Scope, kind: &str) -> Scope {
+	let root = Uuid::from_u128(1);
+	let producer = Uuid::from_u128(2);
+	let workspace = Uuid::from_u128(3);
+	let source = Uuid::from_u128(4);
+	scope
+		.outputs
+		.insert((workspace, kind.into(), source), vec![producer]);
+	scope.semantic_entry = Some((
+		root,
+		aidash_domain::semantic::mutations::Entry {
+			id: Uuid::from_u128(5),
+			workspace_id: workspace,
+			key: "key".into(),
+			source: json!({"kind": kind, "id": source}),
+			agent: None,
+			metadata: json!({}),
+			revision: 1,
+			point_id: Uuid::from_u128(6),
+			index_revision: 1,
+			deleted: false,
+			state: "READY".into(),
+			attempts: 0,
+			last_error: None,
+			created_by: "author".into(),
+			updated_at: chrono::Utc::now(),
+		},
+	));
+	scope
+}
+
+#[rstest]
+#[case("artifact")]
+#[case("message")]
+#[tokio::test]
+async fn changed_semantic_source_producer_retains_invalidation(scope: Scope, #[case] kind: &str) {
+	let mut scope = semantic_output_fixture(scope, kind);
+	scope
+		.invalid_runs
+		.insert(Uuid::from_u128(2), Failure::Invalidated);
+	assert_eq!(
+		run_reads_invalidity(&mut scope, Uuid::from_u128(1))
+			.await
+			.unwrap(),
+		Some(Failure::Invalidated)
+	);
+}
+
+#[rstest]
+#[case::cycle(None, None, None)]
+#[case::configuration(Some(Failure::Configuration), None, Some(Failure::Configuration))]
+#[case::semantic_authority(
+	Some(Failure::Invalidated),
+	Some("semantic.read"),
+	Some(Failure::Authority)
+)]
+#[case::source_authority(
+	Some(Failure::Invalidated),
+	Some("message.read"),
+	Some(Failure::Authority)
+)]
+#[case::output_authority(Some(Failure::Invalidated), Some("output"), Some(Failure::Authority))]
+#[tokio::test]
+async fn semantic_output_cycles_and_authority_keep_the_correct_cause(
+	scope: Scope,
+	#[case] producer_failure: Option<Failure>,
+	#[case] denied: Option<&'static str>,
+	#[case] expected: Option<Failure>,
+) {
+	let mut scope = semantic_output_fixture(scope, "message");
+	let root = Uuid::from_u128(1);
+	let producer = Uuid::from_u128(2);
+	scope.outputs.insert(
+		(Uuid::from_u128(3), "message".into(), Uuid::from_u128(4)),
+		vec![root, producer],
+	);
+	if let Some(failure) = producer_failure {
+		scope.invalid_runs.insert(producer, failure);
+	}
+	scope.denied = denied;
+	assert_eq!(
+		run_reads_invalidity(&mut scope, root).await.unwrap(),
+		expected
+	);
+}
+
+#[rstest]
+#[case("task", "task")]
+#[case("artifact", "artifact")]
+#[case("artifact", "task")]
+#[case("message", "message")]
+#[tokio::test]
+async fn changed_producer_source_retains_invalidation_through_output_provenance(
+	mut scope: Scope,
+	#[case] source_kind: &str,
+	#[case] output_kind: &str,
+) {
+	let root = Uuid::from_u128(1);
+	let producer = Uuid::from_u128(2);
+	let workspace = Uuid::from_u128(3);
+	let source = Uuid::from_u128(4);
+	let output = if output_kind == "task" && source_kind == "artifact" {
+		artifact().task_id
+	} else {
+		source
+	};
+	scope
+		.graph
+		.insert(root, vec![(workspace, source_kind.into(), source)]);
+	scope
+		.outputs
+		.insert((workspace, output_kind.into(), output), vec![producer]);
+	scope.invalid_runs.insert(producer, Failure::Invalidated);
+	assert_eq!(
+		run_reads_invalidity(&mut scope, root).await.unwrap(),
+		Some(Failure::Invalidated)
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn output_producer_cycles_terminate_and_preserve_other_producer_failure(mut scope: Scope) {
+	let root = Uuid::from_u128(1);
+	let producer = Uuid::from_u128(2);
+	let workspace = Uuid::from_u128(3);
+	let message = Uuid::from_u128(4);
+	scope
+		.graph
+		.insert(root, vec![(workspace, "message".into(), message)]);
+	scope
+		.graph
+		.insert(producer, vec![(workspace, "message".into(), message)]);
+	scope
+		.outputs
+		.insert((workspace, "message".into(), message), vec![root, producer]);
+	assert_eq!(run_reads_invalidity(&mut scope, root).await.unwrap(), None);
+	scope.invalid_runs.insert(producer, Failure::Configuration);
+	assert_eq!(
+		run_reads_invalidity(&mut scope, root).await.unwrap(),
+		Some(Failure::Configuration)
+	);
+}
+
+#[rstest]
+#[case("message.read")]
+#[case("output")]
+#[tokio::test]
+async fn denied_output_authority_is_not_masked_by_an_invalid_producer(
+	mut scope: Scope,
+	#[case] gate: &'static str,
+) {
+	let root = Uuid::from_u128(1);
+	let producer = Uuid::from_u128(2);
+	let workspace = Uuid::from_u128(3);
+	let message = Uuid::from_u128(4);
+	scope
+		.graph
+		.insert(root, vec![(workspace, "message".into(), message)]);
+	scope
+		.outputs
+		.insert((workspace, "message".into(), message), vec![producer]);
+	scope.invalid_runs.insert(producer, Failure::Invalidated);
+	scope.denied = Some(gate);
+	assert_eq!(
+		run_reads_invalidity(&mut scope, root).await.unwrap(),
+		Some(Failure::Authority)
+	);
+}
+
+#[rstest]
+#[case::deleted(true, None, Failure::Invalidated)]
+#[case::revoked(false, Some("message.read"), Failure::Authority)]
+#[tokio::test]
+async fn memory_recheck_distinguishes_deleted_sources_from_lost_authority(
+	mut scope: Scope,
+	#[case] missing: bool,
+	#[case] denied: Option<&'static str>,
+	#[case] expected: Failure,
+) {
+	let run = Uuid::from_u128(1);
+	scope.graph.insert(
+		run,
+		vec![(Uuid::from_u128(3), "message".into(), Uuid::from_u128(4))],
+	);
+	scope.missing = missing;
+	scope.denied = denied;
+	assert_eq!(
+		run_reads_invalidity(&mut scope, run).await.unwrap(),
+		Some(expected)
+	);
+}
+
+#[rstest]
+#[case("remote")]
+#[case("received")]
+#[tokio::test]
+async fn opaque_remote_denials_keep_the_existing_invalidated_verdict(
+	mut scope: Scope,
+	#[case] gate: &'static str,
+) {
+	scope.denied = Some(gate);
+	assert_eq!(
+		run_reads_invalidity(&mut scope, Uuid::from_u128(1))
+			.await
+			.unwrap(),
+		Some(Failure::Invalidated),
+	);
 }
 #[rstest]
 #[tokio::test]

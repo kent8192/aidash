@@ -33,6 +33,8 @@ mod decay;
 mod diversity;
 #[path = "native_memory/maintenance_review.rs"]
 mod maintenance_review;
+#[path = "native_memory/memory_authority.rs"]
+mod memory_authority;
 #[path = "native_memory/policy_bounds.rs"]
 mod policy_bounds;
 #[path = "native_memory/precision.rs"]

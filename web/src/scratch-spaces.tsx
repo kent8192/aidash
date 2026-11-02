@@ -169,6 +169,7 @@ function Edit({
         <Input
           type="number"
           min={1 / gib}
+          step="any"
           max={limits.ceilings.daily_sent_bytes / gib}
           value={settings.daily_sent_bytes / gib}
           onChange={(e) =>
@@ -180,6 +181,7 @@ function Edit({
         <Input
           type="number"
           min={1 / gib}
+          step="any"
           max={limits.ceilings.daily_received_bytes / gib}
           value={settings.daily_received_bytes / gib}
           onChange={(e) =>

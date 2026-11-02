@@ -347,6 +347,10 @@ async fn migration_seed_command_detects_drift_and_regenerates_only_owned_assets(
 	paths.extend(["forward", "backward"].map(|direction| {
 		format!("workspaces/sql/{direction}/0017_conversation_scratch_space.sql")
 	}));
+	paths.extend([
+		"execution/sql/forward/0090_run_created_at.sql".to_owned(),
+		"execution/sql/backward/0090_run_created_at.sql".to_owned(),
+	]);
 	for path in &paths {
 		let path = root.join(path);
 		std::fs::create_dir_all(path.parent().unwrap()).unwrap();

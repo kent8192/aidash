@@ -311,6 +311,7 @@ async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
 					"workspace_id",
 					"home_node",
 					"node",
+					"created_at",
 					"agent_id",
 					"agent_version",
 				]
@@ -323,6 +324,7 @@ async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
 				workspace.into_value(),
 				"aidash://home".into_value(),
 				node.as_str().into_value(),
+				Utc::now().into_value(),
 				"agent".into_value(),
 				"1".into_value(),
 			])

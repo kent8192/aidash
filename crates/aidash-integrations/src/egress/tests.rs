@@ -782,3 +782,14 @@ fn a_brokered_request_keeps_the_service_path_exactly() {
 		assert_eq!(url.as_str(), forwarded, "{base} {service}");
 	}
 }
+
+#[test]
+fn a_rewritten_package_index_never_forwards_the_clients_accept_encoding() {
+	// npm and uv always send Accept-Encoding. Forwarding it beside the gateway's
+	// `identity` made registry.npmjs.org answer with gzip, which the JSON
+	// rewrite cannot read (#679).
+	assert!(!request_header_forwarded("accept-encoding", &[], true));
+	assert!(request_header_forwarded("accept-encoding", &[], false));
+	assert!(request_header_forwarded("accept", &[], true));
+	assert!(!request_header_forwarded("cookie", &[], false));
+}
