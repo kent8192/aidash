@@ -947,16 +947,21 @@ impl ErasureScope for Erasure<'_> {
 			)
 			.execute(&mut *self.tx)
 			.await?;
-			crate::database::native::query(
-				&Query::delete()
-					.from_table(Alias::new("core_manifest_revisions"))
-					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&area.tenant)))
-					.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area.id)))
-					.and_where(Expr::col(Alias::new("revision")).ne(Expr::value(area.revision)))
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut *self.tx)
-			.await?;
+			if matches!(
+				area.state.as_str(),
+				"cleaning" | "cleanup_failed" | "recoverable"
+			) {
+				crate::database::native::query(
+					&Query::delete()
+						.from_table(Alias::new("core_manifest_revisions"))
+						.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&area.tenant)))
+						.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area.id)))
+						.and_where(Expr::col(Alias::new("revision")).ne(Expr::value(area.revision)))
+						.to_string(PostgresQueryBuilder),
+				)
+				.execute(&mut *self.tx)
+				.await?;
+			}
 			Ok(())
 		}
 		.await;
