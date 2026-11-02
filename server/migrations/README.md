@@ -774,6 +774,14 @@ drops that check from the ORM snapshot again, because it is enforced apart from
 model state like the earlier `inference_usage` checks. Rollback drops the
 evidence column and loses the recorded versions.
 
+`registry/0055_remove_structured_harness_contracts` (after
+`registry/0054_remove_agent_cluster`) stops the Agent Bindings validator from
+accepting the removed `structured@1` and `structured@2` (#532). Stored pins are
+not rewritten, because a Run Binding snapshot keeps a serde digest of each pinned
+definition that SQL cannot recompute; before any DDL, the migration refuses
+while Agent definitions, Marketplace packages or Run Binding snapshots still
+declare either version. Rollback restores the 0054 body.
+
 `registry/0052_harness_contract_structured3` lets the Agent Bindings validator accept
 `structured@3` (#532). Its rollback restores the 0050 body and refuses while
 definitions, packages or Run Binding snapshots declare `structured@3`.

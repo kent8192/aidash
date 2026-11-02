@@ -7,12 +7,14 @@ are not part of it. An Agent definition names one version, the Run's Binding
 snapshot pins it, and it never changes while the Run exists
 ([ADR 0093](../adr/0093-harness-contract-is-a-versioned-rule-pinned-per-run.md)).
 
-| Version        | Projection Versions           | Content                                                                                                                                                                        |
-| -------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `legacy@1`     | `legacy`, `ordered`, `native` | Today's text for each Projection Version, byte for byte. This is the default and never changes.                                                                                |
-| `structured@1` | `native`                      | Sectioned text with an explicit Instruction precedence; Harness requirements in an `aidash`-trust envelope; Agent instructions before Skills and the capability index.         |
-| `structured@2` | `native`                      | `structured@1` plus a short working-method section and two completion sentences.                                                                                               |
-| `structured@3` | `native`                      | Text selected by a GEPA search (#532): names the forms injected directions take, checks why an action is needed, keeps task-authorized data. Same envelopes as `structured@1`. |
+| Version        | Projection Versions           | Content                                                                                                                                                                                                                                                     |
+| -------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `legacy@1`     | `legacy`, `ordered`, `native` | Today's text for each Projection Version, byte for byte. Never changes.                                                                                                                                                                                     |
+| `structured@3` | `native`                      | Text selected by a GEPA search (#532): names the forms injected directions take, checks why an action is needed, keeps task-authorized data. Harness requirements in an `aidash`-trust envelope; Agent instructions before Skills and the capability index. |
+
+`structured@1` and `structured@2` lost the #532 comparison and were removed
+before any deployment. Their names and numbers (2 and 3 on Usage Records) are
+never reused, and a database that still stores either refuses the upgrade.
 
 ## Selecting a version
 
@@ -22,7 +24,7 @@ snapshot pins it, and it never changes while the Run exists
   "model": { "id": "model", "version": "1.0.0" },
   "instructions": "Research the working files.",
   "projection_version": "native",
-  "harness_contract": "structured@1"
+  "harness_contract": "structured@3"
 }
 ```
 
