@@ -175,6 +175,20 @@ execution:
   runtimeClass:
     create: false
     name: ""
+  pods:
+    enabled: false
+    helperImage: ""
+    storageClassName: ""
+    admissionCapacityBytes: 5368709120
+    maxCpu: 256
+    maxMemoryBytes: 1099511627776
+    maxCapacityBytes: 1099511627776
+    allowDocker: false
+    dockerRuntimeClass: ""
+    proxy:
+      endpoint: ""
+      namespace: ""
+      podSelector: {}
   gvisor:
     version: "20260921.0"
     sha256: "3dd478770dd751d09c257ba14d739b179348a36c5f2d9e954b773f5f90bff646"

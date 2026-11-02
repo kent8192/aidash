@@ -548,6 +548,28 @@ class ChartsTest(unittest.TestCase):
                 with self.subTest(chart=chart, invalid=invalid), self.assertRaises(subprocess.CalledProcessError):
                     render(chart, dict(values, **invalid))
 
+    def test_execution_pod_v2_configures_separate_docker_runtime_and_claim_permissions(self):
+        execution = {'createNamespaces': True, 'sandboxImage': 'sandbox' + DIGEST,
+                     'runtimeClass': {'create': True},
+                     'runner': {'enabled': True, 'existingSecret': 'runner', 'image': 'trusted-runner' + DIGEST},
+                     'guard': {'enabled': True, 'image': 'trusted-guard' + DIGEST},
+                     'pods': {'enabled': True, 'helperImage': 'trusted-runner' + DIGEST,
+                              'storageClassName': 'bounded', 'allowDocker': True,
+                              'proxy': {'endpoint': 'http://10.96.0.90:8950', 'namespace': 'gateway',
+                                        'podSelector': {'app': 'proxy'}}}}
+        objects = render(self.aidash, dict(self.base, execution=execution,
+                                           environment={'nodeSelector': {'pool': 'execution'}}))
+        self.assertEqual(select(objects, 'RuntimeClass', '-runsc-docker')['handler'], 'runsc-docker')
+        self.assertEqual(select(objects, 'Namespace', '-sandbox')['metadata']['labels']['pod-security.kubernetes.io/enforce'], 'privileged')
+        profile = select(objects, 'ConfigMap', '-profile')
+        settings = json.loads(profile['data']['execution-pods.json'])
+        self.assertEqual(settings['storage_class'], 'bounded')
+        self.assertEqual(settings['proxy_selector'], {'app': 'proxy'})
+        self.assertTrue(settings['allow_docker'])
+        rules = select(objects, 'Role', '-sandbox')['rules']
+        self.assertTrue(any('persistentvolumeclaims' in rule.get('resources', []) and
+                            {'get', 'create', 'delete'} <= set(rule['verbs']) for rule in rules))
+
     def test_execution_privileges_scheduling_and_independent_trusted_images(self):
         execution = {'createNamespaces': True, 'sandboxImage': 'sandbox@sha256:' + 'a' * 64,
                      'runtimeClass': {'create': True},
