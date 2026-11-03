@@ -35,6 +35,9 @@ pub trait ScratchScope: Send {
 	/// Registry permissions on services already shared with the space.
 	async fn validate_runtime(&mut self, node: &NodeName, settings: &ScratchSettings)
 	-> Result<()>;
+	/// Ensure a new space's owner may own it: a person, or the Peer Mapping
+	/// credential subject that a delegated Run's space is allocated for.
+	async fn validate_owner(&mut self, person: &str) -> Result<()>;
 	/// Ensure every member names a person in the scoped Tenant.
 	async fn validate_members(
 		&mut self,
@@ -85,11 +88,9 @@ pub async fn create_dedicated(scope: &mut dyn ScratchScope, space: &ScratchSpace
 			"Scratch Space name and creator are required".into(),
 		));
 	}
-	// The creator must be an enabled person in this Tenant as well as the
-	// authenticated subject; an Agent cannot become a space owner.
-	scope
-		.validate_members(&std::collections::BTreeSet::from([person]))
-		.await?;
+	// The creator must be an enabled owner in this Tenant as well as the
+	// authenticated subject; a Run's own Agent cannot become a space owner.
+	scope.validate_owner(&person).await?;
 	scope.validate_members(&space.members).await?;
 	scope.insert(space).await
 }

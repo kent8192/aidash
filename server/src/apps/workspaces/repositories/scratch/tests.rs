@@ -216,6 +216,7 @@ fn effective_operator_policy_applies_tenant_docker_and_host_restrictions() {
 #[tokio::test]
 async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
 	#[future] database: DatabaseFixture,
+	#[values("user", "service", "agent")] mapped_kind: &str,
 ) {
 	use crate::apps::identity::services::{access::Access, identity::SubjectIdentity};
 	use aidash_application::scratch::ScratchScope;
@@ -225,7 +226,13 @@ async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
 	};
 	use serde_json::json;
 	let database = database.await;
-	let tenant = "scratch-delegated";
+	// Peer Mappings may name a person or an exportable service credential.
+	let tenant = &format!("scratch-delegated-{mapped_kind}");
+	let mapped = match mapped_kind {
+		"user" => "alice",
+		"service" => "remote-alice",
+		_ => "remote-agent",
+	};
 	let scope = database.tenant(tenant).await;
 	let node = NodeName::derived(tenant);
 	let credential = Uuid::new_v4();
@@ -235,7 +242,7 @@ async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
 	let peer_credentials = [Uuid::new_v4(), Uuid::new_v4()];
 	let bundle: aidash_domain::policy::PolicyBundle = serde_json::from_value(json!({
         "tenant": tenant,
-        "subjects": {"alice": {"kind":"user"}, "node-peer": {"kind":"node"}, "service-peer": {"kind":"service"}},
+        "subjects": {mapped: {"kind":mapped_kind}, "node-peer": {"kind":"node"}, "service-peer": {"kind":"service"}},
         "policies": [{"id":"node-use", "effect":"allow", "subjects":{"any":true}, "actions":["node.use", "scratch.create"], "resources":{"kinds":["node"]}}]
     })).unwrap();
 	let mut tx = database.begin_in(&scope).await;
@@ -265,7 +272,7 @@ async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
 		.values_panic([
 			credential.into_value(),
 			tenant.into_value(),
-			"alice".into_value(),
+			mapped.into_value(),
 			vec![7_u8; 32].into_value(),
 			(Utc::now() + chrono::Duration::days(1)).into_value(),
 			"alice".into_value(),
@@ -356,7 +363,7 @@ async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
 				credential.into_value(),
 				reinhardt::query::Value::Array(
 					reinhardt::query::ArrayType::String,
-					Some(Box::new(vec!["alice".into_value(), peer.into_value()])),
+					Some(Box::new(vec![mapped.into_value(), peer.into_value()])),
 				),
 				json!({}).into_value(),
 			])
@@ -401,7 +408,7 @@ async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
 			&identity,
 			snapshot,
 		);
-		access.subjects = vec!["alice".into(), peer.into()];
+		access.subjects = vec![mapped.into(), peer.into()];
 		access.audit = false;
 		let policy = crate::config::ScratchOperatorPolicy::default();
 		let mut services = NativeScratchServices { policy: &policy };
@@ -411,10 +418,16 @@ async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
 			person_override: None,
 		};
 		let (id, starter) = adapter.run_binding(&run).await.unwrap();
-		assert_eq!(starter, "alice");
+		assert_eq!(starter, mapped);
 		let space = adapter.load_for_update(id).await.unwrap();
-		assert_eq!(space.creator, "alice");
-		assert!(space.may_use("alice"));
+		assert_eq!(space.creator, mapped);
+		assert!(space.may_use(mapped));
+		// Outside a delegated allocation only a person may own a space.
+		adapter.person_override = None;
+		assert_eq!(
+			adapter.validate_owner(mapped).await.is_ok(),
+			mapped_kind == "user"
+		);
 		spaces.push(id);
 		drop(adapter);
 		services.clear_contents(&mut access, id).await.unwrap();

@@ -60,6 +60,10 @@ impl ScratchScope for Memory {
 	async fn validate_runtime(&mut self, _: &NodeName, _: &ScratchSettings) -> Result<()> {
 		Ok(())
 	}
+	async fn validate_owner(&mut self, person: &str) -> Result<()> {
+		self.validate_members(&BTreeSet::from([person.to_owned()]))
+			.await
+	}
 	async fn validate_members(&mut self, members: &BTreeSet<String>) -> Result<()> {
 		if members
 			.iter()

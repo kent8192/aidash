@@ -347,6 +347,29 @@ pub(crate) struct ScratchAdapter<'a> {
 	pub person_override: Option<String>,
 }
 
+impl ScratchAdapter<'_> {
+	/// Spaces belong to enabled people. A delegated Run's space instead
+	/// belongs to its Peer Mapping's credential subject, which is always an
+	/// exportable service or agent credential; only that allocation sets
+	/// `person_override`.
+	fn may_own(&self, person: &str) -> bool {
+		let delegated = self.person_override.is_some();
+		self.access
+			.snapshot
+			.bundle
+			.subjects
+			.get(person)
+			.is_some_and(|subject| {
+				subject.enabled
+					&& match subject.kind {
+						SubjectKind::User => true,
+						SubjectKind::Service | SubjectKind::Agent => delegated,
+						SubjectKind::Node => false,
+					}
+			})
+	}
+}
+
 #[async_trait::async_trait]
 impl aidash_application::scratch::ScratchScope for ScratchAdapter<'_> {
 	fn person(&self) -> &str {
@@ -383,14 +406,7 @@ impl aidash_application::scratch::ScratchScope for ScratchAdapter<'_> {
 		let resource = self.access.node_resource(node).await?;
 		let action = aidash_domain::identity::tenant_administration::NODE_USE;
 		self.access.require(&resource, action).await?;
-		if !self
-			.access
-			.snapshot
-			.bundle
-			.subjects
-			.get(person)
-			.is_some_and(|subject| subject.kind == SubjectKind::User && subject.enabled)
-		{
+		if !self.may_own(person) {
 			return Err(aidash_application::Error::Forbidden);
 		}
 		{
@@ -431,6 +447,12 @@ impl aidash_application::scratch::ScratchScope for ScratchAdapter<'_> {
 		self.services
 			.validate_runtime(self.access, node, settings)
 			.await
+	}
+	async fn validate_owner(&mut self, person: &str) -> aidash_application::Result<()> {
+		if !self.may_own(person) {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		Ok(())
 	}
 	async fn validate_members(
 		&mut self,
