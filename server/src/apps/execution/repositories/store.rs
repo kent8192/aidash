@@ -94,6 +94,7 @@ pub struct Store {
 	pub egress: aidash_integrations::federation::Egress,
 	/// The Deployment's Retention Rules from `[research_retention]` (ADR 0045).
 	pub research_retention: aidash_domain::retention::RetentionRules,
+	pub data_protection_floor: aidash_domain::data_protection::Level,
 	/// The Deployment's ceilings on Tenants' Test Limits from
 	/// `[workbench_test_limits]` (#361).
 	pub test_limit_ceilings: aidash_domain::registry::workbench::sandbox::TestLimitCeilings,
@@ -254,6 +255,7 @@ impl Store {
 			track_output,
 		} = request;
 		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		super::subnodes::require_writable(tx.as_mut(), run.workspace_id).await?;
 		RunRecord::ensure_response_current(tx.as_mut(), run.id, worker, included_input_seq).await?;
 		RunRecord::worker_context(tx.as_mut()).await?;
 		nonempty(content, "message")?;
@@ -505,6 +507,7 @@ impl Store {
 			keyless,
 			egress: Default::default(),
 			research_retention: aidash_domain::retention::RetentionRules::DEFAULT,
+			data_protection_floor: Default::default(),
 			test_limit_ceilings: Default::default(),
 			preview_limits: aidash_domain::preview::live::Limits::default(),
 			preview_domain: None,
@@ -544,7 +547,14 @@ impl Store {
 		self.cache_salt = keys;
 		self
 	}
-	/// Permit these private origins for Keyless endpoints (ADR 0036).
+	/// Minimum Data Protection Level applied to every current Tenant policy.
+	pub fn with_data_protection_floor(
+		mut self,
+		floor: aidash_domain::data_protection::Level,
+	) -> Self {
+		self.data_protection_floor = floor;
+		self
+	}
 	pub fn with_research_retention(
 		mut self,
 		rules: aidash_domain::retention::RetentionRules,
@@ -579,6 +589,14 @@ impl Store {
 		origins: aidash_domain::keyless::PermittedOrigins,
 	) -> Self {
 		self.keyless = aidash_application::provider_access::KeylessAccess::permitting(origins);
+		self.plugin_sessions = plugin_sessions(&self.keyless, &self.tool_clients);
+		self
+	}
+	pub fn with_hosted_model_origins(
+		mut self,
+		origins: aidash_domain::keyless::PermittedOrigins,
+	) -> Self {
+		self.keyless = self.keyless.with_deployment_hosted(origins);
 		self.plugin_sessions = plugin_sessions(&self.keyless, &self.tool_clients);
 		self
 	}
@@ -635,6 +653,7 @@ impl Store {
 			plugin_sessions: self.plugin_sessions.clone(),
 			egress: self.egress.clone(),
 			research_retention: self.research_retention,
+			data_protection_floor: self.data_protection_floor,
 			test_limit_ceilings: self.test_limit_ceilings,
 			preview_limits: self.preview_limits.clone(),
 			preview_domain: self.preview_domain.clone(),
@@ -693,6 +712,7 @@ impl Store {
 			plugin_sessions: self.plugin_sessions.clone(),
 			egress: self.egress.clone(),
 			research_retention: self.research_retention,
+			data_protection_floor: self.data_protection_floor,
 			test_limit_ceilings: self.test_limit_ceilings,
 			preview_limits: self.preview_limits.clone(),
 			preview_domain: self.preview_domain.clone(),
@@ -1492,6 +1512,8 @@ impl Store {
 					.as_deref()
 					.expect("admitted Binding snapshot"),
 				self.provider_credentials.is_some(),
+				self.data_protection_floor,
+				&self.keyless,
 				// Only a subject's own admission passes its Binding snapshot;
 				// its grant pins the Plan Connection next (ADR 0007).
 				if admitted.is_some() {
@@ -2049,6 +2071,16 @@ impl Store {
 		publication: Publication,
 	) -> Result<Artifact> {
 		input.validate()?;
+		let workspace: Uuid = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("workspace_id"))
+				.from(Alias::new("tasks"))
+				.and_where(Expr::col("id").eq(Expr::value(task_id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut **tx)
+		.await?;
+		super::subnodes::require_writable(tx.as_mut(), workspace).await?;
 		let task: Task = {
 			let query_bind_1 = task_id;
 			aidash_server::database::query_as(
@@ -2774,6 +2806,7 @@ impl Store {
 	) -> Result<()> {
 		nonempty(content, "message")?;
 		let mut tx = self.pool.begin(scope).await?;
+		super::subnodes::require_writable(tx.as_mut(), run.workspace_id).await?;
 		let message = MessageRecord::append_in(
 			tx.as_mut(),
 			run.workspace_id,
@@ -2807,15 +2840,25 @@ impl Store {
 		let Some(run) = run else {
 			return Ok(());
 		};
-		let valid: bool = {
-			let query_bind_1 = run;
-			let query_bind_2 = workspace;
-			crate::database::native::query_scalar(&Query::select()
-				.expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM authorization_execution WHERE run_id = ? AND workspace_id = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into()]))
-				.to_string(PostgresQueryBuilder))
+		let own = Query::select()
+			.expr(Expr::value(1_i32))
+			.from(Alias::new("authorization_execution"))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.to_owned();
+		let subnode = Query::select()
+			.expr(Expr::value(1_i32))
+			.from(Alias::new("subnodes"))
+			.and_where(Expr::col("creator_run_id").eq(Expr::value(run)))
+			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.to_owned();
+		let valid: bool = crate::database::native::query_scalar(
+			&Query::select()
+				.expr(Expr::exists(own).or(Expr::exists(subnode)))
+				.to_string(PostgresQueryBuilder),
+		)
 		.scalar_one(&mut **tx)
-		.await?
-		};
+		.await?;
 		if !valid {
 			return Err(Error::Forbidden);
 		}
@@ -3259,6 +3302,20 @@ impl Store {
 			)?;
 		}
 		if saved.phase().is_terminal() {
+			let reason = match saved.phase() {
+				RunPhase::Completed => "creator_completed",
+				RunPhase::Failed => "creator_failed",
+				RunPhase::Cancelled => "creator_cancelled",
+				_ => unreachable!("terminal Run phase"),
+			};
+			self.subnode_control_in(
+				tx,
+				saved.id,
+				RunControlAction::Cancel,
+				ControlSource::System,
+				Some(reason),
+			)
+			.await?;
 			self.close_plugin_sessions_soon(saved.id);
 		}
 		self.run_event(
@@ -3439,6 +3496,18 @@ impl Store {
 			json!({"run_id":run.id,"task_id":run.task_id}),
 		)
 		.await?;
+		self.subnode_control_in(
+			&mut tx,
+			run.id,
+			RunControlAction::Cancel,
+			ControlSource::System,
+			Some(if phase == "COMPLETED" {
+				"creator_completed"
+			} else {
+				"creator_cancelled"
+			}),
+		)
+		.await?;
 		let closed = crate::apps::execution::repositories::inference::close_pending(
 			tx.as_mut(),
 			self.deployment.as_str(),
@@ -3496,6 +3565,31 @@ impl Store {
 	/// increases and the control source is replaced, even when control itself
 	/// keeps its value (a Safety Stop of an already paused Run).
 	pub(crate) async fn control_in_as(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		id: Uuid,
+		action: RunControlAction,
+		source: ControlSource,
+	) -> Result<RunInspection> {
+		let run = self.control_one_in_as(tx, id, action, source).await?;
+		if action == RunControlAction::Cancel {
+			let reason = if source == ControlSource::DeploymentAdministrator {
+				"safety_stop"
+			} else {
+				"creator_cancelled"
+			};
+			self.subnode_control_in(tx, id, RunControlAction::Cancel, source, Some(reason))
+				.await?;
+		} else if action == RunControlAction::Pause
+			&& source == ControlSource::DeploymentAdministrator
+		{
+			self.subnode_control_in(tx, id, RunControlAction::Pause, source, None)
+				.await?;
+		}
+		Ok(run)
+	}
+
+	pub(crate) async fn control_one_in_as(
 		&self,
 		tx: &mut crate::database::native::Transaction,
 		id: Uuid,
@@ -3596,6 +3690,29 @@ impl Store {
 		)
 		.await?;
 		Ok(r.inspect())
+	}
+
+	/// Run the cascade in the creator's transaction after locking the creator.
+	async fn subnode_control_in(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		creator: Uuid,
+		action: RunControlAction,
+		source: ControlSource,
+		reason: Option<&str>,
+	) -> Result<()> {
+		let reason = reason
+			.map(|reason| serde_json::from_value(serde_json::Value::String(reason.into())))
+			.transpose()?;
+		aidash_application::subnodes::control_for_creator(
+			&mut super::subnodes::Cascade { store: self, tx },
+			creator,
+			action,
+			source,
+			reason,
+		)
+		.await
+		.map_err(Into::into)
 	}
 
 	pub async fn human_request(

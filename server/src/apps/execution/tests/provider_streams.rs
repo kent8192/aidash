@@ -171,6 +171,7 @@ fn model_config(
 
 fn request(with_tools: bool) -> ModelRequest {
 	ModelRequest {
+		provider_tools: vec![],
 		instructions: "Follow the task".into(),
 		context: json!({"task":"Read notes"}).into(),
 		tools: if with_tools {

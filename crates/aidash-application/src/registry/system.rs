@@ -27,7 +27,18 @@ pub fn operations() -> impl Iterator<Item = &'static str> {
 		.chain(EXPOSURE_TOOLS)
 		.copied()
 		.chain([SKILL_ASSET_READ, TASK_ASSIGN])
+		.chain(SUBNODE_TOOLS.iter().copied())
 }
+
+/// Explicitly bound Subnode operations, seeded after the legacy and Exposure tools.
+pub const SUBNODE_TOOLS: &[&str] = &[
+	"subnode_create",
+	"subnode_task",
+	"subnode_add_member",
+	"subnode_remove_member",
+	"subnode_dissolve",
+	"subnode_message",
+];
 
 /// Starts a generation inside Aidash only, so it is an ordinary built-in that
 /// needs no Catalog Approval.
@@ -35,34 +46,35 @@ const TASK_ASSIGN: &str = "task_assign";
 
 pub fn entries(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entry>> {
 	let specifications = validation.node_specifications();
-	operations()
-		.map(|operation| {
-			let spec = specifications.get(operation).ok_or_else(|| {
-				crate::Error::Invalid(format!(
-					"system provider has no declaration for {operation}"
-				))
-			})?;
-			Ok(Entry {
-				binding_normalization: None,
-				installation: None,
-				id: format!("aidash.{operation}"),
-				version: aidash_domain::registry::bindings::QualifiedRef::builtin(node, operation)
-					.version,
-				kind: "tool".into(),
-				name: std::collections::BTreeMap::from([("en".into(), operation.to_string())]),
-				description: std::collections::BTreeMap::from([(
-					"en".into(),
-					spec.description.clone(),
-				)]),
-				capabilities: vec![operation.to_string()],
-				tags: vec!["system".into()],
-				languages: vec![],
-				skills: vec![],
-				schema: spec.parameters.clone(),
-				config: serde_json::to_value(core_descriptor(node, operation)?)?,
-			})
-		})
-		.collect()
+	let mut entries = Vec::new();
+	for operation in operations() {
+		let spec = specifications.get(operation).ok_or_else(|| {
+			crate::Error::Invalid(format!(
+				"system provider has no declaration for {operation}"
+			))
+		})?;
+		let entry = Entry {
+			binding_normalization: None,
+			installation: None,
+			id: format!("aidash.{operation}"),
+			version: aidash_domain::registry::bindings::QualifiedRef::builtin(node, operation)
+				.version,
+			kind: "tool".into(),
+			name: std::collections::BTreeMap::from([("en".into(), operation.to_string())]),
+			description: std::collections::BTreeMap::from([(
+				"en".into(),
+				spec.description.clone(),
+			)]),
+			capabilities: vec![operation.to_string()],
+			tags: vec!["system".into()],
+			languages: vec![],
+			skills: vec![],
+			schema: spec.parameters.clone(),
+			config: serde_json::to_value(core_descriptor(node, operation)?)?,
+		};
+		entries.push(entry);
+	}
+	Ok(entries)
 }
 
 /// Keep the original immutable declarations available to admitted Runs and
@@ -100,6 +112,15 @@ pub fn legacy_workspace_entries(
 		entry.description.insert("en".into(), description.into());
 		entry.schema = schema;
 	}
+	let mut attachment_reader = entries
+		.iter()
+		.find(|entry| entry.id == "aidash.workspace_read")
+		.unwrap()
+		.clone();
+	attachment_reader.version = "1.0.1".into();
+	attachment_reader.description.insert("en".into(), "Read one accessible workspace record by kind and exact ID. Messages list Thread Attachment metadata without bytes. Use kind=attachment to read metadata or representation=model_input to select media for the next inference; use attachment_copy to save one in the Working Area. Other records return a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. The returned chunk is capped to fit the active request budget. If budget_limited is true, continue from next_offset on a later turn; if deferred is true, stop reading until that later turn.".into());
+	attachment_reader.schema = json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event","attachment"]},"id":{"type":"string"},"representation":{"enum":["metadata","model_input"]},"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false});
+	entries.push(attachment_reader);
 	Ok(entries)
 }
 
@@ -284,11 +305,12 @@ pub fn is_builtin(entry: &Entry) -> bool {
 
 pub fn builtin_reference(reference: &aidash_domain::registry::EntityRef) -> bool {
 	(reference.version == "1.0.0"
-		|| reference.version == "1.0.1"
+		|| (reference.id == "aidash.workspace_read" && reference.version == "1.1.0")
+		|| (reference.version == "1.0.1"
 			&& matches!(
 				reference.id.as_str(),
 				"aidash.workspace_read" | "aidash.workspace_observe" | "aidash.workspace_message"
-			)) && (reference.id
+			))) && (reference.id
 		== aidash_domain::registry::bindings::source_defaults::WORKSPACE_OBSERVATION_ID
 		|| reference
 			.id
@@ -299,7 +321,9 @@ pub fn builtin_reference(reference: &aidash_domain::registry::EntityRef) -> bool
 /// A definition the Deployment provides to every Tenant, which no Tenant changes:
 /// its identifier carries a reserved prefix (ADR 0033).
 pub fn is_deployment_definition(entry: &Entry) -> bool {
-	entry.id.starts_with("aidash.") || entry.id.starts_with("core.")
+	entry.id.starts_with("aidash.")
+		|| entry.id.starts_with("core.")
+		|| entry.id.starts_with("provider.openrouter.")
 }
 
 pub fn reject_distribution(entry: &Entry) -> Result<()> {
@@ -310,7 +334,8 @@ pub fn reject_distribution(entry: &Entry) -> Result<()> {
 }
 
 pub fn reject_owner_definition(entry: &Entry) -> Result<()> {
-	if entry.id.starts_with("aidash.")
+	if entry.id.starts_with("provider.openrouter.")
+		|| entry.id.starts_with("aidash.")
 		|| entry.id.starts_with("core.")
 		|| entry.kind == "tool"
 			&& serde_json::from_value::<aidash_domain::tool::providers::ToolDescriptor>(
@@ -320,6 +345,8 @@ pub fn reject_owner_definition(entry: &Entry) -> Result<()> {
 				// Node providers are declared only by the Node's packages.
 				descriptor.provider.starts_with("core.")
 					|| descriptor.provider.starts_with("research.")
+					|| aidash_domain::tool::provider_tools::declaration(&descriptor.provider)
+						.is_some()
 			}) {
 		return Err(crate::Error::Forbidden);
 	}

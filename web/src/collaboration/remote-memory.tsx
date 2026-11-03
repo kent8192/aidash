@@ -128,6 +128,10 @@ const reasons: Record<RemoteSemanticFailure, [string, string]> = {
     "The provider response did not meet the approved contract.",
     "プロバイダーの応答が承認済みの仕様を満たしていません。",
   ],
+  embedding_model_not_found: [
+    "The embedding model is unavailable. Register a new agent version.",
+    "埋め込みモデルを利用できません。新しい Agent バージョンを登録してください。",
+  ],
   context_budget: [
     "Semantic context does not fit the model's available context budget.",
     "記憶の参照結果がモデルのコンテキスト上限に収まりません。",

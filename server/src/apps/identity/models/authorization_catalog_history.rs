@@ -25,6 +25,8 @@ pub struct AuthorizationCatalogHistory {
 	pub restriction: Option<reinhardt::db::orm::Json<serde_json::Value>>,
 	#[field(field_type = "text")]
 	pub actor: String,
+	#[field(field_type = "text", null = true)]
+	pub provider_warning_acknowledgment: Option<String>,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
 }

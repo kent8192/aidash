@@ -15,7 +15,7 @@ use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::Model;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::query::{
-	Alias, Condition, Expr, ExprTrait, OnConflict, PostgresQueryBuilder, Query,
+	Alias, Condition, Expr, ExprTrait, LockType, OnConflict, PostgresQueryBuilder, Query,
 	QueryStatementBuilder,
 };
 use uuid::Uuid;
@@ -83,9 +83,17 @@ impl RunInput {
 	}
 
 	async fn locked_run(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<RunContract> {
+		let (sql, values) = Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("runs"))
+			.and_where(Expr::col("id").eq(Expr::value(run)))
+			.lock(LockType::NoKeyUpdate)
+			.build(PostgresQueryBuilder);
+		tx.fetch_optional(&sql, convert_values(values))
+			.await?
+			.ok_or_else(|| Error::NotFound("run".into()))?;
 		Run::objects()
 			.filter(Run::field_id().eq(run))
-			.select_for_update()
 			.all_with_executor(tx)
 			.await
 			.map_err(FrameworkError::from)?

@@ -34,12 +34,14 @@ impl MutationScope for Scope<'_> {
 		revision: i64,
 		state: Value,
 	) -> Result<WorkspaceContract> {
+		require_subnode_writable(self.0, "workspace", id).await?;
 		require_target_node(self.0, &self.2, "workspace", id).await?;
 		Workspace::replace_state(self.0, id, revision, state)
 			.await
 			.map_err(Into::into)
 	}
 	async fn lock_task(&mut self, id: Uuid) -> Result<Task> {
+		require_subnode_writable(self.0, "task", id).await?;
 		require_target_node(self.0, &self.2, "task", id).await?;
 		TaskRecord::lock(self.0, id)
 			.await
@@ -83,6 +85,7 @@ impl MutationScope for Scope<'_> {
 			.map_err(Into::into)
 	}
 	async fn lock_run(&mut self, id: Uuid) -> Result<(RawRun, bool)> {
+		require_subnode_writable(self.0, "run", id).await?;
 		require_target_node(self.0, &self.2, "run", id).await?;
 		let (record, leased) = Run::lock_with_lease(self.0, id).await?;
 		// RawRun preserves JSON context and pending without decoding execution state.
@@ -93,6 +96,14 @@ impl MutationScope for Scope<'_> {
 	}
 	async fn complete_run(&mut self, id: Uuid) -> Result<()> {
 		Run::complete(self.0, id).await?;
+		aidash_application::subnodes::control_for_creator(
+			&mut crate::apps::execution::repositories::subnodes::NativeCascade { tx: self.0 },
+			id,
+			aidash_domain::RunControlAction::Cancel,
+			aidash_domain::ControlSource::System,
+			Some(aidash_domain::subnodes::EndReason::CreatorCompleted),
+		)
+		.await?;
 		// Completion is validated as Home-local, so the Home node records markers.
 		let run = inference::target(&mut *self.0, id).await?;
 		let closed = inference::close_pending(
@@ -122,6 +133,53 @@ impl MutationScope for Scope<'_> {
 		}
 		.map_err(Into::into)
 	}
+}
+
+/// A distributed mutation must not race dissolution after its preflight.
+/// RLS restricts both the target and the Subnode to the current Tenant.
+async fn require_subnode_writable(
+	tx: &mut dyn TransactionExecutor,
+	kind: &str,
+	id: Uuid,
+) -> Result<()> {
+	use reinhardt::db::orm::{QueryRow, execution::convert_values};
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	};
+	let mut query = Query::select();
+	query
+		.column(Alias::new("state"))
+		.from(Alias::new("subnodes"));
+	if kind == "workspace" {
+		query.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(id)));
+	} else {
+		let table = match kind {
+			"task" => "tasks",
+			"run" => "runs",
+			_ => return Err(aidash_application::Error::Forbidden),
+		};
+		let target = Query::select()
+			.column(Alias::new("workspace_id"))
+			.from(Alias::new(table))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+			.to_owned();
+		query.and_where(Expr::col(Alias::new("workspace_id")).in_subquery(target));
+	}
+	let (sql, values) = query.lock(LockType::Share).build(PostgresQueryBuilder);
+	if let Some(row) = tx
+		.fetch_optional(&sql, convert_values(values))
+		.await
+		.map_err(crate::Error::from)?
+	{
+		let row = QueryRow::from_backend_row(row);
+		let state: String = row.get("state").ok_or(crate::Error::Forbidden)?;
+		if state != "active" {
+			return Err(aidash_application::Error::Conflict(
+				"Subnode is dissolved".into(),
+			));
+		}
+	}
+	Ok(())
 }
 
 /// A participant may mutate only records stored on its exact Node. Hold SHARE

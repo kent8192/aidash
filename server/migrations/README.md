@@ -1,5 +1,11 @@
 # Aidash native migration history
 
+`registry/0057_embedding_inputs` through `0059_reference_image_byte_state`
+add image retrieval inputs, private reference images, model state and Tenant
+policies after `0056_attachment_tools`. `execution/0092_reference_embedding_usage`
+and `0093_reference_embedding_usage_state` record reference embedding usage after
+`0091_bounded_read_indexes`.
+
 `registry/0056_attachment_tools` (after `registry/0055_remove_structured_harness_contracts`) extends the existing PostgreSQL descriptor
 and Agent default validators for the built-in `attachment_copy` operation.
 The function bodies use SQL assets because Reinhardt has no typed operation
@@ -733,6 +739,14 @@ matching model state.
 is an empty state-only migration: both independent column changes apply before
 the single Knowledge head, and no schema or model state is overwritten.
 
+`execution/0097_provider_tool_usage` stores provider-reported tool counts. `registry/0061_provider_tools` extends the current descriptor and Agent binding validation with Provider tool contracts, preserving the prior functions by delegation.
+
+`identity/0051_tenant_data_protection` adds each Tenant's current Data Protection Level and append-only setting history (#542). A missing row means Standard with model-call ZDR and the Plan Connection exemption enabled. Checks reject unknown levels and a Zero Data Retention policy with model-call ZDR disabled. `identity/0052_data_protection_row_level_security` applies the same forced Tenant-isolation policy as the other Tenant-owned tables; literal SQL is required because Reinhardt does not expose RLS policy operations.
+
+`identity/0053_tenant_data_protection_state` records those two tables in ORM migration state. It executes no DDL; references, validity checks and row-level policies remain in the preceding database-only migrations.
+
+`registry/0062_provider_warning_tools` extends the closed Provider tool validation functions with the warning-tier tools (advisor, subagent, model search, tool search, shell) without replacing the previous contracts; its reverse refuses to run while any such definition or pinned Run exists. `identity/0054_provider_warning_acknowledgment` adds the nullable exact disclosure text to `authorization_catalog_history`, filled only when a warning tool is approved. `execution/0098_provider_container` adds the nullable `runs.provider_container` pin (OpenRouter container id and network policy). OpenRouter has no container delete API, so the pin is kept after the Run ends.
+
 ## Run control provenance and Safety Stops (#485, ADR 0101)
 
 `execution/0075_run_control_provenance` (after `execution/0074_federated_preview_authority`)
@@ -816,3 +830,14 @@ validator on rollback. The join is an empty state-only migration that preserves
 existing identities and one leaf per app.
 
 `workspaces/0019_scratch_spaces` adds Node-owned Scratch Spaces, their Tenant-scoped settings, and membership. Composite foreign keys keep each child and its parent in the same Tenant. `0020_scratch_spaces_row_level_security` applies the standard Tenant row policies. Reinhardt has no row-policy migration operation, so this migration uses the reversible policy SQL template. `0021_conversation_scratch_space` fixes each conversation to one Scratch Space in the same Tenant. `0022_scratch_space_model_state` records the ORM relationship state without changing the database-enforced constraints. The Query-generated `migrationseeds` assets backfill conversations before enforcing the binding. `0024_workspace_scratch_space` moves Run resolution to Workspace bindings, creating a dedicated space for each Workspace. It recovers the starter from Workspace ownership, a conversation, or the earliest Task. `0025_scratch_workspace_model_state` records the ORM relationship without changing the physical foreign key. A cleared space retains a tombstone while conversations still reference it; runtime reclamation is delivered separately.
+
+`execution/0094_subnodes`, `0095_subnodes_row_level_security`, and
+`0096_subnodes_state` create the Run-scoped Subnode tables, enforce Tenant
+row policies, and record their model state after `0089_remove_agent_cluster`.
+
+`registry/0060_subnode_provider` (after `registry/0059_reference_image_byte_state`) extends the PostgreSQL built-in Tool descriptor
+validator with the six `core.subnodes@1` operations (#660). Its reversible
+`RunSQL` replaces the PostgreSQL function body because Reinhardt migrations
+cannot express PL/pgSQL function definitions. Rolling back restores the
+previous descriptor contract; existing Subnode descriptors then cannot be
+rewritten until the migration is reapplied.

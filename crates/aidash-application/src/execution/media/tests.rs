@@ -47,6 +47,7 @@ fn model() -> ModelConfig {
 		endpoint: "https://provider.example/api".into(),
 		provider_credential: None,
 		plan_connection: None,
+		wire_api: None,
 		request_timeout_secs: None,
 		streaming: None,
 		stream_stall_timeout_secs: None,
@@ -585,7 +586,7 @@ async fn attachment_read_faults_retain_their_identity_without_partial_output(
 	assert_eq!(scope.calls.last(), Some(&("attachments", id(2))));
 }
 use crate::ports::execution::media::SelectedMediaScope;
-use aidash_domain::media::{SelectedFile, Selection};
+use aidash_domain::media::{ModelFileSelection as Selection, SelectedFile};
 
 struct FileScope {
 	files: Vec<SelectedFile>,
@@ -593,6 +594,7 @@ struct FileScope {
 	calls: Vec<(&'static str, Uuid)>,
 	denied: bool,
 	read_fault: Option<Uuid>,
+	subnode_area: Option<(Uuid, Uuid)>,
 	page_images: BTreeMap<String, (String, Vec<u8>)>,
 	thread_attachments: BTreeMap<Uuid, (String, String, Vec<u8>)>,
 }
@@ -617,6 +619,7 @@ fn file_scope() -> FileScope {
 		calls: vec![],
 		denied: false,
 		read_fault: None,
+		subnode_area: None,
 		page_images: BTreeMap::new(),
 		thread_attachments: BTreeMap::new(),
 	}
@@ -624,6 +627,8 @@ fn file_scope() -> FileScope {
 fn selection(scope: &FileScope, file_id: Uuid) -> ModelMedia {
 	ModelMedia::File(Selection {
 		file_id,
+		workspace_id: None,
+		area_id: None,
 		expected_digest: scope
 			.files
 			.iter()
@@ -632,6 +637,60 @@ fn selection(scope: &FileScope, file_id: Uuid) -> ModelMedia {
 			.digest
 			.clone(),
 	})
+}
+
+#[rstest]
+#[tokio::test]
+async fn subnode_media_is_denied_unless_the_adapter_authorizes_that_area(
+	mut file_scope: FileScope,
+) {
+	let mut selected_file = match selection(&file_scope, id(1)) {
+		ModelMedia::File(file) => file,
+		_ => unreachable!(),
+	};
+	selected_file.workspace_id = Some(id(100));
+	selected_file.area_id = Some(id(101));
+	assert!(matches!(
+		selected(&mut file_scope, &[ModelMedia::File(selected_file)]).await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(
+		file_scope.calls,
+		vec![("snapshot", Uuid::nil()), ("subnode", id(101))]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn subnode_media_rechecks_area_and_digest_before_reading(mut file_scope: FileScope) {
+	file_scope.subnode_area = Some((id(100), id(101)));
+	let mut selected_file = match selection(&file_scope, id(1)) {
+		ModelMedia::File(file) => file,
+		_ => unreachable!(),
+	};
+	selected_file.workspace_id = Some(id(100));
+	selected_file.area_id = Some(id(101));
+	selected(&mut file_scope, &[ModelMedia::File(selected_file.clone())])
+		.await
+		.unwrap();
+	assert_eq!(
+		file_scope.calls,
+		vec![
+			("snapshot", Uuid::nil()),
+			("subnode", id(101)),
+			("read", id(1))
+		]
+	);
+	file_scope.calls.clear();
+	selected_file.expected_digest = "changed".into();
+	assert!(matches!(
+		selected(&mut file_scope, &[ModelMedia::File(selected_file)]).await,
+		Err(Error::Conflict(_))
+	));
+	assert_eq!(
+		file_scope.calls,
+		vec![("snapshot", Uuid::nil()), ("subnode", id(101))]
+	);
 }
 #[async_trait]
 impl SelectedMediaScope for FileScope {
@@ -643,6 +702,22 @@ impl SelectedMediaScope for FileScope {
 			Ok(self.files.clone())
 		}
 	}
+	async fn subnode_file(
+		&mut self,
+		workspace: Uuid,
+		area: Uuid,
+		file: Uuid,
+	) -> Result<SelectedFile> {
+		self.calls.push(("subnode", area));
+		if self.subnode_area != Some((workspace, area)) {
+			return Err(Error::Forbidden);
+		}
+		self.files
+			.iter()
+			.find(|entry| entry.file_id == file)
+			.cloned()
+			.ok_or_else(|| Error::NotFound("file unavailable".into()))
+	}
 	async fn read(&mut self, file: Uuid) -> Result<Vec<u8>> {
 		self.calls.push(("read", file));
 		if self.read_fault == Some(file) {
@@ -651,6 +726,26 @@ impl SelectedMediaScope for FileScope {
 			))));
 		}
 		Ok(self.content[&file].clone())
+	}
+	async fn workspace_image(
+		&mut self,
+		area: Uuid,
+		generation: i64,
+		file: Uuid,
+		path: &str,
+	) -> Result<Option<SelectedFile>> {
+		self.calls.push(("workspace_image", area));
+		if self.denied {
+			return Err(Error::Forbidden);
+		}
+		if generation != 3 {
+			return Ok(None);
+		}
+		Ok(self
+			.files
+			.iter()
+			.find(|entry| entry.file_id == file && entry.path == path)
+			.cloned())
 	}
 	async fn thread_attachment(
 		&mut self,
@@ -667,6 +762,55 @@ impl SelectedMediaScope for FileScope {
 		self.calls.push(("page_image", Uuid::nil()));
 		Ok(self.page_images.get(reference).cloned())
 	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_workspace_match_opens_through_the_existing_model_media_reader(
+	mut file_scope: FileScope,
+) {
+	let file = file_scope.files[0].clone();
+	let selection = ModelMedia::WorkingImage(aidash_domain::media::WorkingImageSelection {
+		area_id: id(20),
+		generation: 3,
+		file_id: file.file_id,
+		path: file.path.clone(),
+		expected_digest: file.digest.clone(),
+	});
+	let output = selected(&mut file_scope, &[selection]).await.unwrap();
+	assert_eq!(
+		parts(&output),
+		vec![
+			json!({"text":"Selected file: inputs/saved.png"}),
+			json!({"image":"image/png","bytes":image().content})
+		]
+	);
+	assert_eq!(
+		file_scope.calls,
+		vec![
+			("snapshot", Uuid::nil()),
+			("workspace_image", id(20)),
+			("read", id(1))
+		]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_stale_workspace_image_never_reads_bytes(mut file_scope: FileScope) {
+	let file = file_scope.files[0].clone();
+	let selection = ModelMedia::WorkingImage(aidash_domain::media::WorkingImageSelection {
+		area_id: id(20),
+		generation: 2,
+		file_id: file.file_id,
+		path: file.path.clone(),
+		expected_digest: file.digest.clone(),
+	});
+	assert!(matches!(
+		selected(&mut file_scope, &[selection]).await,
+		Err(Error::NotFound(_))
+	));
+	assert!(!file_scope.calls.iter().any(|(call, _)| *call == "read"));
 }
 #[rstest]
 #[tokio::test]
@@ -746,6 +890,8 @@ async fn selected_missing_file_keeps_order_and_the_original_not_found(
 	}
 	selections.push(ModelMedia::File(Selection {
 		file_id: id(99),
+		workspace_id: None,
+		area_id: None,
 		expected_digest: "unavailable".into(),
 	}));
 	let error = selected(&mut file_scope, &selections).await.err().unwrap();
@@ -770,6 +916,8 @@ async fn selected_changed_digest_is_rejected_before_reading_that_file(
 	}
 	selections.push(ModelMedia::File(Selection {
 		file_id: id(2),
+		workspace_id: None,
+		area_id: None,
 		expected_digest: "stale digest".into(),
 	}));
 	let error = selected(&mut file_scope, &selections).await.err().unwrap();
@@ -833,6 +981,8 @@ async fn selected_duplicate_metadata_uses_the_first_matching_saved_file(mut file
 	file_scope.files.push(duplicate);
 	let selections = [ModelMedia::File(Selection {
 		file_id: id(1),
+		workspace_id: None,
+		area_id: None,
 		expected_digest: "later duplicate digest".into(),
 	})];
 	assert!(

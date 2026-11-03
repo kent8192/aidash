@@ -5,6 +5,7 @@ pub mod approval_rules;
 pub mod catalog;
 pub mod completion;
 pub mod context;
+pub mod data_protection;
 pub mod decision;
 pub mod deployment;
 pub mod entities;
@@ -28,6 +29,8 @@ pub mod run_input;
 pub mod run_state;
 pub mod safety_stop;
 pub mod scratch;
+pub mod subnodes;
+
 pub mod semantic;
 pub mod tenancy;
 pub mod tenant_secrets;

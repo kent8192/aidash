@@ -945,6 +945,7 @@ impl PolicyAdministration {
 			enabled: input.enabled,
 			expected_revision: input.expected_revision,
 			groups: input.groups,
+			provider_warning_acknowledged: input.provider_warning_acknowledged,
 			restriction: input.restriction,
 		};
 		Ok(self

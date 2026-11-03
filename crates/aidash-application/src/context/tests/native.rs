@@ -26,6 +26,7 @@ fn turns(turns: usize) -> Context {
 	for turn in 0..turns {
 		let ids = [format!("t{turn}-a"), format!("t{turn}-b")];
 		context.push(ContextEvent::Assistant {
+			provider_activity: vec![],
 			epoch: turn as i64,
 			text: if turn % 2 == 0 {
 				format!("Step {turn}")
@@ -110,6 +111,7 @@ fn a_turn_that_renders_nothing_takes_no_protected_slot() {
 	// Arrange: the latest response's only call was deferred before it ran.
 	let mut context = turns(10);
 	context.push(ContextEvent::Assistant {
+		provider_activity: vec![],
 		epoch: 10,
 		text: String::new(),
 		calls: vec!["deferred".into()],

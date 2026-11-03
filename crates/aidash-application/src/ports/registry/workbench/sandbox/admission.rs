@@ -33,5 +33,5 @@ pub trait AdmissionRepository: ExecutionRepository + SandboxRepository {
 	async fn begin_admission(&self) -> Result<Box<dyn AdmissionScope + '_>>;
 }
 pub trait SandboxModels: Send + Sync {
-	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>>;
+	fn provider(&self, tenant: &str, model: ModelConfig) -> Result<Arc<dyn ModelProvider>>;
 }

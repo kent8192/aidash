@@ -296,6 +296,9 @@ fn memory() -> MemoryEmbedding {
 			model: "fixture-embedding".into(),
 			model_version: "1".into(),
 			dimensions: 3,
+			inputs: [aidash_domain::semantic::EmbeddingInputKind::Text]
+				.into_iter()
+				.collect(),
 		},
 	}
 }

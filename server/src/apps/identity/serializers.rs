@@ -57,6 +57,7 @@ pub mod invitations;
 
 pub(crate) mod tenant_administration;
 
+pub(crate) mod data_protection;
 pub mod oauth_clients;
 
 pub mod oauth_connections;

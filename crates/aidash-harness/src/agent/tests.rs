@@ -1899,6 +1899,26 @@ fn fixture() -> Fixture {
 
 #[rstest]
 #[tokio::test]
+async fn refused_tool_call_is_a_model_correctable_result(fixture: Fixture) {
+	let result = Executor::tool_delivery_result(
+		&fixture.backend,
+		&fixture.run,
+		Uuid::nil(),
+		"refused-call",
+		Err(Error::Refused(
+			"member needs a tool outside the allowance".into(),
+		)),
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		result,
+		json!({"error":"member needs a tool outside the allowance"})
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn remote_human_poll_preserves_waiting_until_home_answers(mut fixture: Fixture) {
 	let id = Uuid::new_v4();
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
@@ -3969,9 +3989,9 @@ fn run_message_catch_up(fixture: &mut Fixture) {
 	fixture.run.context.run_message_summary_seq = 1;
 }
 
-/// Legacy Agents (no exposure policy) must keep sending exactly these
-/// requests. Baselines are compact `serde_json` output of the captured
-/// `ModelRequest` (instructions, context, tools in order, output limit).
+/// Agents without an exposure policy advertise the current builtins. Existing
+/// Runs retain their pinned workspace_read 1.0.0 definition independently.
+/// Baselines are compact `serde_json` output of the captured `ModelRequest`.
 #[rstest]
 #[case::default_tools(
 	plain_agent,
@@ -4032,6 +4052,29 @@ async fn legacy_thinking_request_matches_byte_baseline(
 		sorted
 	);
 	assert_eq!(serde_json::to_string(request).unwrap(), baseline.trim());
+}
+
+#[rstest]
+#[tokio::test]
+async fn structured3_advertises_subnode_workspace_reads(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.tools = default_tools();
+	state.projection = ProjectionVersion::Native;
+	state.harness_contract = aidash_domain::harness_contract::HarnessContract::Structured3;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	advance_sources(&mut fixture).await.unwrap();
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let reader = requests[0]
+		.tools
+		.iter()
+		.find(|tool| tool.name == "workspace_read")
+		.unwrap();
+	assert!(
+		reader.parameters["properties"]
+			.get("workspace_id")
+			.is_some()
+	);
+	assert!(reader.description.contains("Subnode"));
 }
 
 /// The step state a Legacy request carries.
@@ -4508,6 +4551,43 @@ fn deferred_agent(fixture: &mut Fixture) {
 	}];
 	state.direct_bodies = BTreeMap::from([(DIRECT_SKILL, body.to_owned())]);
 }
+#[rstest]
+#[tokio::test]
+async fn deferred_exposure_keeps_injected_subnode_coordination_tools_mandatory(
+	mut fixture: Fixture,
+) {
+	deferred_agent(&mut fixture);
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	for name in aidash_domain::subnodes::COORDINATION_TOOLS {
+		state.custom.insert(
+			(*name).into(),
+			Scripted::new(
+				ToolSpec {
+					name: (*name).into(),
+					description: "coordination".into(),
+					parameters: json!({"type":"object"}),
+				},
+				name,
+			),
+		);
+	}
+	let catalog = deferred_catalog(&fixture).await;
+	let selected = exposure::select(
+		&budgets(&fixture.run),
+		&catalog,
+		&fixture.run.context.exposure,
+	)
+	.unwrap();
+	for name in aidash_domain::subnodes::COORDINATION_TOOLS {
+		assert!(selected.tools.contains(*name), "missing {name}");
+		assert!(
+			catalog
+				.iter()
+				.any(|item| item.alias == *name && item.mandatory)
+		);
+	}
+}
+
 fn budgets(run: &Run) -> aidash_domain::exposure::DeferredBudgets {
 	deferred_exposure(run).unwrap().expect("deferred Agent").1
 }
@@ -4517,9 +4597,15 @@ async fn deferred_catalog(fixture: &Fixture) -> Vec<exposure::Capability> {
 			.await
 			.unwrap();
 	let snapshot = fixture.run.context.binding_snapshot.as_deref().unwrap();
-	exposure_catalog(&fixture.backend, &fixture.run, snapshot, &tools)
-		.await
-		.unwrap()
+	exposure_catalog(
+		&fixture.backend,
+		&fixture.run,
+		snapshot,
+		&tools,
+		fixture.backend.0.harness_contract,
+	)
+	.await
+	.unwrap()
 }
 fn alias_of(catalog: &[exposure::Capability], identity: &exposure::CapabilityIdentity) -> String {
 	catalog

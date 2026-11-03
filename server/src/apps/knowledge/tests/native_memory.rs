@@ -2270,11 +2270,14 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 
 	let endpoint = format!("{}/v1", provider.url);
 	let database = database.await;
-	let (store, registry, workspace) = setup_endpoint_flags(
+	// This scenario tests the journal bound, so both recalled Units must fit
+	// even as the Agent's default tool schemas evolve.
+	let (store, registry, workspace) = setup_endpoint_flags_with_window(
 		&database,
 		bounds,
 		&endpoint,
 		(learning_enabled, false, false),
+		65_536,
 	)
 	.await;
 	let mixed_on_demand = matches!(delivery, "extra_on_demand" | "primary_on_demand");
