@@ -14,12 +14,12 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("AIDASH_OUTPUT_BYTES", "1024")
 import collector
-from control import Rejected, Runner, termination_time
+from control import Rejected, Runner, save, termination_time
 
 
 def request(kind):
     return {"operation_id": str(uuid.uuid4()), "area_id": str(uuid.uuid4()), "epoch": 1,
-            "digest": "fixture", "kind": kind, "code": "make test", "seconds": 60, "files": []}
+            "usage_tenant": "acme", "digest": "fixture", "kind": kind, "code": "make test", "seconds": 60, "files": []}
 
 
 class Admitted(Exception):
@@ -30,10 +30,13 @@ class VerificationTest(unittest.TestCase):
     def runner(self, root):
         runner = object.__new__(Runner)
         runner.root = Path(root)
+        runner.lock = threading.RLock()
         runner.config = {"maximum_seconds": 600, "working_bytes": 1 << 20, "limits": {}}
         runner.kube = Mock()
         runner.writable_bytes = Mock(return_value=1 << 20)
         runner.update = Mock()
+        runner.allocation_harvested = Mock()
+        runner.close_allocation = Mock()
         return runner
 
     def test_only_known_command_kinds_are_accepted(self):
@@ -63,6 +66,7 @@ class VerificationTest(unittest.TestCase):
 
             runner.guard = guard
             record = {"operation_id": str(uuid.uuid4()), "request": request(kind)}
+            save(runner.path(record["operation_id"]), record)
             runner.recover_stopped_shell(record)
             return calls, runner.update.call_args.kwargs
 
@@ -116,8 +120,9 @@ class VerificationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             runner = self.runner(root)
             operation = str(uuid.uuid4())
+            pod_uid = str(uuid.uuid4())
             record = {'operation_id': operation, 'area_id': str(uuid.uuid4()), 'session_id': str(uuid.uuid4()),
-                      'pod_operation': 'existing', 'pod_uid': 'uid', 'request': request('python'),
+                      'pod_operation': 'existing', 'pod_uid': pod_uid, 'request': request('python'),
                       'digest': 'fixture', 'cancel_requested': False}
             runner.get = Mock(return_value=record)
             runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
@@ -125,7 +130,11 @@ class VerificationTest(unittest.TestCase):
             runner.active = {operation}
             runner.config['idle_seconds'] = 60
             runner.execution_limits = Mock(return_value={})
-            runner.pod = Mock(return_value={'metadata': {'uid': 'uid'},
+            runner.allocations = Path(root) / 'allocations'
+            runner.allocations.mkdir()
+            save(runner.allocations / (pod_uid + '.json'), {'resource_version': '101'})
+            runner.observe_allocation = Mock()
+            runner.pod = Mock(return_value={'metadata': {'uid': pod_uid, 'resourceVersion': '101'},
                 'spec': {'nodeName': 'node', 'containers': [{'image': 'image'}]},
                 'status': {'containerStatuses': [
                     {'name': 'execution', 'containerID': 'containerd://cid', 'state': {'running': {}}},
@@ -141,6 +150,9 @@ class VerificationTest(unittest.TestCase):
             self.assertEqual(record['error']['details'], refusal)
             self.assertTrue(record['termination_confirmed'])
             self.assertFalse(record['writer_frozen'])
+            runner.observe_allocation.assert_called_once()
+            runner.allocation_harvested.assert_called_once()
+            runner.close_allocation.assert_called_once()
             self.assertIn('terminate', [call.args[1] for call in runner.guard.call_args_list])
             session = json.loads((Path(root) / ('session-' + record['session_id'] + '.json')).read_text())
             self.assertEqual(session['status'], 'stopped')

@@ -17,7 +17,7 @@ class CtrPathTests(unittest.TestCase):
             pod, area = str(uuid.uuid4()), str(uuid.uuid4())
             request = {'action': 'status', 'container_id': 'a' * 64, 'pod_uid': pod,
                        'area_id': area, 'epoch': 1, 'image': 'image'}
-            info = {'Labels': {'io.kubernetes.pod.namespace': 'aidash-sandbox',
+            info = {'ID': request['container_id'], 'Labels': {'io.kubernetes.pod.namespace': 'aidash-sandbox',
                                'io.kubernetes.pod.uid': pod,
                                'io.kubernetes.container.name': 'execution',
                                'io.kubernetes.pod.name': 'operation-test'},
@@ -26,7 +26,7 @@ class CtrPathTests(unittest.TestCase):
             ctr.write_text('#!/bin/sh\nprintf %s ' + "'" + json.dumps(info) + "'" + '\n')
             ctr.chmod(0o755)
             runsc = root / 'runsc'
-            runsc.write_text('#!/bin/sh\nprintf %s ' + "'" + json.dumps({'status': 'running', 'annotations': {'io.kubernetes.cri.image-name': 'image'}}) + "'" + '\n')
+            runsc.write_text('#!/bin/sh\nprintf %s ' + "'" + json.dumps({'id': request['container_id'], 'status': 'running', 'annotations': {'io.kubernetes.cri.image-name': 'image'}}) + "'" + '\n')
             runsc.chmod(0o755)
             env = dict(os.environ, PATH='', AIDASH_RUNSC_BINARY=str(runsc),
                        AIDASH_CTR_BINARY=str(ctr), AIDASH_GUARD_STATE=str(root / 'state'))

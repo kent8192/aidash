@@ -23,9 +23,19 @@ pub(crate) async fn sending_node(
 			if holder.as_deref() != Some(sender.tenant.as_str()) {
 				return Err(unregistered());
 			}
+			nodes::get_live(tx, sender.tenant.as_str(), node.as_str())
+				.await
+				.map_err(|error| match error {
+					Error::NotFound(_) => unregistered(),
+					other => other,
+				})?;
 			Ok(node.clone())
 		}
-		None => Ok(nodes::default_of(tx, sender.tenant.as_str()).await?.name),
+		None => {
+			let node = nodes::default_of(tx, sender.tenant.as_str()).await?.name;
+			nodes::require_live(tx, sender.tenant.as_str(), node.as_str()).await?;
+			Ok(node)
+		}
 	}
 }
 
@@ -53,6 +63,9 @@ pub(crate) async fn route(
 	lock: bool,
 ) -> Result<Option<Route>> {
 	let tenant = sender.tenant.as_str();
+	if crate::apps::identity::repositories::tenant_deletions::is_deleted(tx, tenant).await? {
+		return Err(unregistered());
+	}
 	let node = sending_node(tx, sender).await?;
 	let from = own.node(node.clone());
 	if *target == from {
@@ -64,6 +77,9 @@ pub(crate) async fn route(
 			.as_deref()
 			== Some(tenant)
 	{
+		if !nodes::is_live(tx, tenant, target.node.as_str()).await? {
+			return Ok(None);
+		}
 		return Ok(Some(sibling(sender, from, target.clone())));
 	}
 	let Some(registration) =
@@ -108,10 +124,13 @@ pub(crate) async fn all(
 	lock: bool,
 ) -> Result<Vec<Route>> {
 	let tenant = sender.tenant.as_str();
+	if crate::apps::identity::repositories::tenant_deletions::is_deleted(tx, tenant).await? {
+		return Err(unregistered());
+	}
 	let node = sending_node(tx, sender).await?;
 	let from = own.node(node.clone());
 	let mut routes = vec![];
-	for sibling_node in nodes::list(tx, tenant).await? {
+	for sibling_node in nodes::list_live(tx, tenant).await? {
 		if sibling_node.name != node {
 			routes.push(sibling(sender, from.clone(), own.node(sibling_node.name)));
 		}
@@ -141,4 +160,99 @@ impl crate::authorization::access::Access {
 		let own = DeploymentId::parse(&self.node_id)?;
 		route_to(&mut **self.tx, &own, &sender, node, true).await
 	}
+}
+
+/// Reusable by the receiving crypto CAS on its own locked transaction. The
+/// caller already verified the complete cryptographic receiver/caller binding.
+pub(crate) async fn closed_node_request_in(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	receiver: &NodeAddress,
+	sender: &NodeAddress,
+	subject: &str,
+	request: &aidash_application::federation::inbound::RequestDigest<'_>,
+) -> Result<bool> {
+	if crate::apps::identity::repositories::tenant_deletions::is_deleted(tx, tenant).await?
+		|| registrations::name_tenant(tx, receiver.node.as_str())
+			.await?
+			.as_deref()
+			!= Some(tenant)
+	{
+		return Ok(false);
+	}
+	if crate::apps::federation::transactions::repositories::recovery_admission::inbound(
+		tx, receiver, sender, subject, request,
+	)
+	.await?
+	{
+		return Ok(true);
+	}
+	crate::apps::execution::repositories::node_cancellations::allows_closed_node_request_in(
+		tx, tenant, receiver, sender, subject, request,
+	)
+	.await
+}
+
+/// A retained route exists only after proving this exact durable outbound work.
+/// This is not a caller-selectable deleted-Node bypass.
+pub(crate) async fn route_delivery(
+	tx: &mut dyn TransactionExecutor,
+	own: &DeploymentId,
+	sender: &Sender,
+	target: &NodeAddress,
+	request: &aidash_application::federation::inbound::RequestDigest<'_>,
+) -> Result<Option<Route>> {
+	match route(tx, own, sender, target, false).await {
+		Ok(Some(route)) => return Ok(Some(route)),
+		Ok(None) | Err(Error::Unauthorized | Error::Forbidden | Error::NotFound(_)) => {}
+		Err(error) => return Err(error),
+	}
+	let Some(node) = &sender.node else {
+		return Ok(None);
+	};
+	let tenant = sender.tenant.as_str();
+	if crate::apps::identity::repositories::tenant_deletions::is_deleted(tx, tenant).await?
+		|| registrations::name_tenant(tx, node.as_str())
+			.await?
+			.as_deref()
+			!= Some(tenant)
+	{
+		return Ok(None);
+	}
+	let from = own.node(node.clone());
+	if !crate::apps::federation::transactions::repositories::recovery_admission::outbound(
+		tx,
+		&from,
+		target,
+		sender.subject.as_deref().unwrap_or_default(),
+		request,
+	)
+	.await?
+		&& !crate::apps::execution::repositories::node_cancellations::allows_closed_node_delivery_in(
+			tx, own, sender, target, request,
+		).await?
+	{
+		return Ok(None);
+	}
+	if target.deployment == *own
+		&& registrations::name_tenant(tx, target.node.as_str())
+			.await?
+			.as_deref()
+			== Some(tenant)
+	{
+		return Ok(Some(sibling(sender, from, target.clone())));
+	}
+	let Some(registration) =
+		registrations::get_locked(tx, tenant, node.as_str(), target, false).await?
+	else {
+		return Ok(None);
+	};
+	Ok(Some(Route {
+		tenant: sender.tenant.clone(),
+		sender: from,
+		subject: sender.subject.clone(),
+		target: target.clone(),
+		counterpart: registration.counterpart,
+		atomic_transactions: registration.atomic_transactions,
+	}))
 }

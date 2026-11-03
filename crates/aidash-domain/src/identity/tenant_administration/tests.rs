@@ -12,7 +12,7 @@ fn bundle() -> PolicyBundle {
 		},
 		"subjects": {
 			"root": {"kind": "user", "groups": ["administrators", "members"]},
-			"bot": {"kind": "agent"}
+			"bot": {"kind": "agent", "node": crate::nodes::NodeName::derived("acme")}
 		}
 	}))
 	.unwrap()

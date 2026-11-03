@@ -10,6 +10,8 @@ import {
   sessionFetch,
 } from "./transport";
 import { useI18n } from "./ui";
+import { NodeLifecycleSettings } from "./node-lifecycle-settings";
+import type { State } from "./types";
 
 /** A recorded Tenant Deletion (ADR 0060). */
 export type TenantDeletion = {
@@ -440,7 +442,11 @@ function purgeProgress(
 /** The Deployment Administrators' list of Tenants, with each deletion's
  *  deadline, Restore while it is restorable, Purge now until it is purged, and
  *  the step and error of a purge that keeps failing. */
-export function DeploymentTenants() {
+export function DeploymentTenants({
+  offering,
+}: {
+  offering?: State["offering"];
+}) {
   const { locale } = useI18n();
   const english = locale === "en-US";
   const client = useQueryClient();
@@ -448,6 +454,7 @@ export function DeploymentTenants() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [confirming, setConfirming] = useState<string | null>(null);
+  const [nodeTenant, setNodeTenant] = useState<string | null>(null);
   const tenants = useQuery({
     queryKey: ["deployment-tenants", offset],
     queryFn: () => apiFetch<TenantRecord[]>(`/api/tenants?offset=${offset}`),
@@ -514,6 +521,15 @@ export function DeploymentTenants() {
               )}
             </span>
             <span className="flex flex-wrap items-center gap-2">
+              {!tenant.deletion && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setNodeTenant(tenant.name)}
+                >
+                  {english ? "Manage Nodes" : "Node を管理"}
+                </Button>
+              )}
               {tenant.restorable && (
                 <Button
                   size="sm"
@@ -569,6 +585,19 @@ export function DeploymentTenants() {
           </li>
         ))}
       </ul>
+      {nodeTenant && (
+        <div className="grid gap-2">
+          <span className="font-mono text-xs">{nodeTenant}</span>
+          <NodeLifecycleSettings
+            key={nodeTenant}
+            tenant={nodeTenant}
+            canUpdate={false}
+            canDelete
+            offering={offering}
+            deploymentAdministrator
+          />
+        </div>
+      )}
       <div className="flex gap-2">
         <Button
           size="sm"

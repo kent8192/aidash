@@ -15,7 +15,7 @@ from control import ActivityAggregate, Rejected, Runner
 
 def serve_request(port=3000, seconds=7200):
     return {"operation_id": str(uuid.uuid4()), "area_id": str(uuid.uuid4()), "epoch": 1,
-            "digest": "fixture", "kind": "serve", "code": "python3 -m http.server 3000",
+            "digest": "fixture", "usage_tenant": "acme", "kind": "serve", "code": "python3 -m http.server 3000",
             "seconds": seconds, "files": [], "port": port}
 
 
@@ -164,6 +164,7 @@ class ServeReconcileTest(unittest.TestCase):
         runner.pod = Mock(side_effect=[None, pod(), pod(), pod(), pod()])
         runner.kube = Mock(return_value=Mock(stdout=b"listening on 3000", stderr=b""))
         runner.kube_json = Mock()
+        runner.allocation_harvested = Mock()
         def exec_collector(_operation, action, data=None, timeout=45):
             if action == ["prepared"]:
                 return Mock(stdout=json.dumps({"digest": None}).encode())
@@ -182,6 +183,8 @@ class ServeReconcileTest(unittest.TestCase):
         self.assertEqual(runner.state["status"], "cancelled")
         self.assertTrue(runner.state["termination_confirmed"])
         self.assertEqual(runner.state["serve"]["reason"], "cancelled")
+        runner.allocation_harvested.assert_called_once()
+        self.assertEqual(runner.allocation_harvested.call_args.args[0]["status"], "cancelled")
 
     def test_a_ready_serve_reports_its_pod_host_and_keeps_running(self):
         runner = self.runner()
@@ -196,6 +199,17 @@ class ServeReconcileTest(unittest.TestCase):
         runner.reconcile_serve(runner.state["operation_id"])
         self.assertEqual(runner.state["serve"]["pod_host"], "10.0.0.7")
         self.assertEqual(runner.state["status"], "cancelled")
+
+    def test_self_exiting_serve_hands_durable_output_to_allocation_cleanup(self):
+        runner = self.runner()
+        exited = pod()
+        exited["status"]["containerStatuses"][0]["state"] = {"terminated": {"exitCode": 0}}
+        runner.pod = Mock(side_effect=[None, pod(), pod(), exited])
+        runner.reconcile_serve(runner.state["operation_id"])
+        self.assertEqual(runner.state["serve"]["reason"], "server_exited")
+        self.assertTrue(runner.state["output_harvested"])
+        runner.allocation_harvested.assert_called_once()
+        self.assertTrue(runner.allocation_harvested.call_args.args[0]["output_harvested"])
 
     def test_a_serve_that_never_becomes_ready_fails_without_leaking_its_pod(self):
         runner = self.runner()

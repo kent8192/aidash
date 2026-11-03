@@ -43,6 +43,7 @@ async fn mcp_connection_owner_is_only_the_local_runs_chain_root_person(
 		"mcp-service".into(),
 		aidash_domain::policy::Subject {
 			kind: aidash_domain::policy::SubjectKind::Service,
+			node: Some(aidash_domain::nodes::NodeName::derived("acme")),
 			groups: Default::default(),
 			roles: Default::default(),
 			attributes: json!({}),

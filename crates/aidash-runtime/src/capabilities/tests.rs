@@ -36,6 +36,14 @@ impl OperationReconciliationRepository for Repository {
 }
 #[async_trait]
 impl OperationProcessingRepository for Repository {
+	async fn begin_receipt_output(
+		&self,
+		_: &Receipt,
+	) -> Result<Box<dyn aidash_application::ports::capabilities::processing::ReceiptOutputScope + '_>>
+	{
+		Err(Error::Forbidden)
+	}
+
 	async fn active_operations(&self) -> Result<Vec<Uuid>> {
 		self.ticks.fetch_add(1, Ordering::SeqCst);
 		self.entered.notify_one();
@@ -159,4 +167,30 @@ async fn a_fatal_background_job_drops_all_other_owned_job_futures() {
 	);
 	assert_eq!(jobs.started.load(Ordering::SeqCst), 4);
 	assert_eq!(active.load(Ordering::SeqCst), 0);
+}
+
+#[async_trait]
+impl aidash_application::ports::capabilities::pod_usage::PodUsageRepository for Repository {
+	async fn pending_allocations(
+		&self,
+		_: Option<Uuid>,
+	) -> Result<aidash_application::ports::capabilities::pod_usage::AllocationPage> {
+		Ok(
+			aidash_application::ports::capabilities::pod_usage::AllocationPage {
+				instance: Uuid::nil(),
+				receipts: vec![],
+				next_after: None,
+				pending_evidence: 0,
+			},
+		)
+	}
+	async fn deliver_allocation(&self, _: aidash_application::usage::PodTime) -> Result<()> {
+		Err(Error::Forbidden)
+	}
+	async fn acknowledge_allocation(
+		&self,
+		_: &aidash_application::ports::capabilities::pod_usage::AllocationReceipt,
+	) -> Result<()> {
+		Err(Error::Forbidden)
+	}
 }

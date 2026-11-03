@@ -1,4 +1,6 @@
 use super::*;
+use crate::ports::federation::inbound::ReceivingKeys;
+use aidash_capability::federation::rollover::{RolloverClaims, mint_transition};
 use aidash_capability::{
 	InMemorySigner,
 	federation::{FederationClaims, body_digest},
@@ -11,13 +13,14 @@ use aidash_domain::{
 	},
 };
 use async_trait::async_trait;
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
 use secrecy::ExposeSecret;
 use std::sync::Mutex;
 
 const OWN: &str = "aidash://receiver";
 const OTHER: &str = "aidash://sender";
-const NOW: u64 = 1_000;
+const NOW: u64 = 100_000;
 
 fn node(name: &str) -> NodeName {
 	NodeName::parse(name).unwrap()
@@ -40,7 +43,8 @@ const TENANT: &str = "calm-heron-t1t1t1t1";
 const NEIGHBOURS: &str = "brave-otter-t2t2t2t2";
 
 fn signer(seed: u8) -> InMemorySigner {
-	InMemorySigner::new("kid".into(), [seed; 32])
+	let provisional = InMemorySigner::new("kid".into(), [seed; 32]);
+	InMemorySigner::new(key_id(&provisional).to_string(), [seed; 32])
 }
 
 fn key_id(signer: &InMemorySigner) -> DeploymentKeyId {
@@ -56,6 +60,8 @@ struct World {
 	may_use: bool,
 	enabled: bool,
 	key: bool,
+	trust: Mutex<Vec<(ReceivingKeyOwner, ReceivingKeys)>>,
+	cas_conflict: bool,
 	asked: Mutex<Vec<&'static str>>,
 }
 
@@ -74,11 +80,26 @@ impl World {
 			may_use: true,
 			enabled: true,
 			key: true,
+			trust: Mutex::new(vec![]),
+			cas_conflict: false,
 			asked: Mutex::new(vec![]),
 		}
 	}
 
 	fn register(&mut self, sender: NodeAddress, counterpart: Counterpart, enabled: bool) {
+		if let Counterpart::OtherDeployment { key, .. } = &counterpart {
+			self.trust.get_mut().unwrap().push((
+				ReceivingKeyOwner::Registration {
+					tenant: tenant(TENANT),
+					node: node(RECEIVING),
+					source_node: sender.clone(),
+				},
+				ReceivingKeys {
+					keys: super::super::registrations::trusted_keys(key).unwrap(),
+					keys_revision: 1,
+				},
+			));
+		}
 		self.registrations.push(NodeRegistration {
 			tenant: tenant(TENANT),
 			node: node(RECEIVING),
@@ -134,6 +155,20 @@ impl InboundRepository for World {
 	async fn tenant_live(&self, tenant: &TenantName) -> Result<bool> {
 		Ok(!self.deleted.contains(tenant))
 	}
+	async fn node_live(&self, tenant: &TenantName, node: &NodeName) -> Result<bool> {
+		Ok(self.nodes.contains(&(node.clone(), tenant.clone())) && !self.deleted.contains(tenant))
+	}
+	async fn closed_node_request(
+		&self,
+		_: &TenantName,
+		_: &NodeAddress,
+		_: &NodeAddress,
+		_: &str,
+		_: &RequestDigest<'_>,
+	) -> Result<bool> {
+		// This authority fixture has no durable transaction participants.
+		Ok(false)
+	}
 	async fn registration(
 		&self,
 		tenant: &TenantName,
@@ -168,6 +203,63 @@ impl InboundRepository for World {
 	async fn subject_may_use(&self, _: &TenantName, _: &NodeName, _: &str) -> Result<bool> {
 		self.asked.lock().unwrap().push("policy");
 		Ok(self.may_use)
+	}
+	async fn receiving_keys(&self, owner: &ReceivingKeyOwner) -> Result<Option<ReceivingKeys>> {
+		Ok(self
+			.trust
+			.lock()
+			.unwrap()
+			.iter()
+			.find(|(held, _)| held == owner)
+			.map(|(_, keys)| keys.clone()))
+	}
+	async fn advance_recovery_keys(
+		&self,
+		_: &ReceivingKeyOwner,
+		_: i64,
+		_: i64,
+		_: &aidash_domain::nodes::keys::TrustedDeploymentKeys,
+		_: &str,
+		_: &RequestDigest<'_>,
+	) -> Result<bool> {
+		// This World has no durable journal; real recovery is owned by HTTP/PG.
+		Ok(false)
+	}
+
+	async fn advance_keys(
+		&self,
+		owner: &ReceivingKeyOwner,
+		expected_keys_revision: i64,
+		expected_authorization_revision: i64,
+		keys: &aidash_domain::nodes::keys::TrustedDeploymentKeys,
+	) -> Result<bool> {
+		let authorization = match owner {
+			ReceivingKeyOwner::Registration {
+				tenant,
+				node,
+				source_node,
+			} => self
+				.registrations
+				.iter()
+				.find(|row| {
+					&row.tenant == tenant && &row.node == node && &row.source_node == source_node
+				})
+				.filter(|row| row.enabled)
+				.map(|row| row.revision),
+		};
+		if self.cas_conflict || authorization != Some(expected_authorization_revision) {
+			return Ok(false);
+		}
+		let mut trust = self.trust.lock().unwrap();
+		let Some((_, stored)) = trust.iter_mut().find(|(held, _)| held == owner) else {
+			return Ok(false);
+		};
+		if stored.keys_revision != expected_keys_revision || stored.keys.quarantined {
+			return Ok(false);
+		}
+		stored.keys = keys.clone();
+		stored.keys_revision += 1;
+		Ok(true)
 	}
 }
 
@@ -207,6 +299,7 @@ async fn token(
 		method: "POST".into(),
 		path: "/scoped/discover".into(),
 		body: body_digest(b"{}"),
+		transition: None,
 	};
 	change(&mut claims);
 	let signing = InMemorySigner::new(key_id(signer).as_str().into(), seed_of(signer));
@@ -547,4 +640,105 @@ async fn an_unregistered_sender_and_a_missing_mapping_differ_only_after_the_sign
 	)
 	.await;
 	assert!(matches!(unmapped, Err(Error::Forbidden)));
+}
+
+// Owner-boundary regression: a valid successor request must reach admission
+// without looking up the public endpoint; capability owns proof cryptography.
+#[tokio::test]
+async fn a_successor_request_advances_receiving_trust_without_discovery() {
+	let predecessor = signer(1);
+	let successor = signer(2);
+	let mut world = World::new();
+	let sender = remote(&mut world, &predecessor);
+	// Different values detect accidentally binding CAS to the wrong revision.
+	world.registrations[0].revision = 3;
+	world.trust.get_mut().unwrap()[0].1.keys_revision = 7;
+	let transition = transition(&predecessor, &successor).await;
+	let admitted = accept(
+		token(&successor, &sender, "", |claims| {
+			claims.transition = Some(transition);
+		})
+		.await,
+		&digest(),
+		&world,
+	)
+	.await;
+	assert!(admitted.is_ok(), "{admitted:?}");
+	let stored = world.trust.lock().unwrap()[0].1.clone();
+	assert_eq!(stored.keys.current.key_id, key_id(&successor));
+	assert_eq!(stored.keys_revision, 8);
+	assert_eq!(world.registrations[0].revision, 3);
+	let retry = accept(
+		token(&successor, &sender, "", |_| {}).await,
+		&digest(),
+		&world,
+	)
+	.await;
+	assert!(retry.is_ok(), "{retry:?}");
+	assert_eq!(world.trust.lock().unwrap()[0].1.keys_revision, 8);
+}
+
+async fn transition(predecessor: &InMemorySigner, successor: &InMemorySigner) -> String {
+	mint_transition(
+		&RolloverClaims {
+			deployment: OTHER.into(),
+			predecessor_kid: key_id(predecessor).to_string(),
+			successor_kid: key_id(successor).to_string(),
+			successor_public_key: URL_SAFE_NO_PAD.encode(successor.public_key().to_bytes()),
+			published_at: NOW - 86_400,
+			activates_at: NOW,
+			retires_at: NOW + 604_800,
+		},
+		predecessor,
+	)
+	.await
+	.unwrap()
+}
+
+// This owns orchestration, not proof cryptography or PostgreSQL CAS semantics:
+// persisting before full owner/subject admission or ignoring CAS false is a bug.
+#[tokio::test]
+async fn rejected_successor_requests_never_replace_receiving_trust() {
+	let predecessor = signer(1);
+	let successor = signer(2);
+	let transition = transition(&predecessor, &successor).await;
+	for refusal in [
+		"binding",
+		"audience",
+		"mapping",
+		"quarantine",
+		"cas_conflict",
+	] {
+		let mut world = World::new();
+		let sender = remote(&mut world, &predecessor);
+		if refusal == "quarantine" {
+			world.trust.get_mut().unwrap()[0].1.keys.quarantine();
+		}
+		world.cas_conflict = refusal == "cas_conflict";
+		let before = world.trust.lock().unwrap()[0].1.clone();
+		let subject = if refusal == "mapping" { "alice" } else { "" };
+		let inbound = token(&successor, &sender, subject, |claims| {
+			claims.transition = Some(transition.clone());
+			if refusal == "binding" {
+				claims.path = "/wrong".into();
+			}
+			if refusal == "audience" {
+				claims.aud = address(OWN, SIBLING).to_string();
+			}
+		})
+		.await;
+		let result = accept(inbound, &digest(), &world).await;
+		if refusal == "mapping" {
+			assert!(
+				matches!(result, Err(Error::Forbidden)),
+				"{refusal}: {result:?}"
+			);
+		} else {
+			assert!(
+				matches!(result, Err(Error::Unauthorized)),
+				"{refusal}: {result:?}"
+			);
+		}
+		assert_eq!(world.trust.lock().unwrap()[0].1, before, "{refusal}");
+	}
 }

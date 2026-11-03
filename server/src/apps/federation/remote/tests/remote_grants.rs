@@ -88,7 +88,8 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		"research",
 		"1.0.0",
 	);
-	policy["subjects"][&executor] = json!({"kind":"agent"});
+	policy["subjects"][&executor] =
+		json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 	assert_eq!(
 		request(
 			&aa,

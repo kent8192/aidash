@@ -48,7 +48,7 @@ fn missing_or_disabled_identity_is_denied_before_provider_freshness(
 }
 #[fixture]
 fn bundle() -> crate::policy::PolicyBundle {
-	serde_json::from_value(json!({"tenant":"tenant","subjects":{"reader":{"kind":"user"},"agent":{"kind":"agent","delegated_by":"reader"}}})).unwrap()
+	serde_json::from_value(json!({"tenant":"tenant","subjects":{"reader":{"kind":"user"},"agent":{"kind":"agent", "node": crate::nodes::NodeName::derived("acme"),"delegated_by":"reader"}}})).unwrap()
 }
 #[rstest]
 #[case::primary("reader", true)]

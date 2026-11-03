@@ -39,6 +39,7 @@ async fn tenant(fixture: &EndpointFixture, name: &str) {
 			subject.into(),
 			Subject {
 				kind: SubjectKind::User,
+				node: None,
 				groups: groups.into_iter().map(str::to_owned).collect(),
 				roles: BTreeSet::new(),
 				attributes: json!({}),

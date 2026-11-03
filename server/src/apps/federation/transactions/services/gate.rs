@@ -90,3 +90,23 @@ pub(crate) async fn read_in(tx: &mut crate::database::native::Transaction) -> Re
 use reinhardt::query::QueryStatementBuilder as _;
 
 use uuid::Uuid;
+
+/// Non-blocking probe for durable deletion snapshots. A missing/locked gate or
+/// pending decision defers mutation without aborting the caller's transaction.
+/// The shared lock is retained until the caller commits when mutation is safe.
+pub(crate) async fn try_read_in(tx: &mut dyn TransactionExecutor) -> Result<Option<i64>> {
+	use reinhardt::query::{Alias, Expr, LockBehavior, LockType, PostgresQueryBuilder, Query};
+	let gate: Option<(Option<Uuid>, i64)> = crate::database::native::query_as(
+		&Query::select()
+			.columns([Alias::new("transaction_id"), Alias::new("commit_epoch")])
+			.from(Alias::new("atomic_gate"))
+			.and_where(Expr::col("singleton"))
+			.lock(LockType::Share)
+			.lock_behavior(LockBehavior::SkipLocked)
+			.to_string(PostgresQueryBuilder),
+	)
+	.columns(&["transaction_id", "commit_epoch"])
+	.fetch_optional(tx)
+	.await?;
+	Ok(gate.and_then(|(pending, epoch)| pending.is_none().then_some(epoch)))
+}

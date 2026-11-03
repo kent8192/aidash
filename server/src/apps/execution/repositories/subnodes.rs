@@ -38,7 +38,7 @@ pub(crate) async fn require_writable(
 
 pub(crate) struct Cascade<'a> {
 	pub store: &'a Store,
-	pub tx: &'a mut crate::database::native::Transaction,
+	pub tx: &'a mut dyn reinhardt::db::backends::TransactionExecutor,
 }
 #[async_trait]
 impl EndScope for Cascade<'_> {
@@ -55,7 +55,7 @@ impl EndScope for Cascade<'_> {
 					.to_string(PostgresQueryBuilder),
 			)
 			.columns(&["id", "workspace_id"])
-			.fetch_all(&mut **self.tx)
+			.fetch_all(&mut *self.tx)
 			.await
 		}
 		.await;
@@ -83,10 +83,10 @@ impl EndScope for Cascade<'_> {
 				.and_where(Expr::col("id").eq(Expr::value(id.0)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&mut **self.tx)
+		.execute(&mut *self.tx)
 		.await?;
 		self.store
-			.event(
+			.event_in_executor(
 				self.tx,
 				Some(workspace),
 				"subnode.dissolved",
@@ -108,7 +108,7 @@ impl EndScope for Cascade<'_> {
 					.lock(LockType::NoKeyUpdate)
 					.to_string(PostgresQueryBuilder),
 			)
-			.scalar_all(&mut **self.tx)
+			.scalar_all(&mut *self.tx)
 			.await
 		}
 		.await;

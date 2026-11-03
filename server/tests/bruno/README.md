@@ -66,15 +66,62 @@ revision, executable hash and provider call counts are written under
 counts executed scenarios and successful assertions independently; missing
 requests cannot be replaced by a duplicate.
 
-Generate the ordinary Bruno requests after an intentional contract change with
-`python3 scripts/bruno_contracts.py`, then inspect the changed expected statuses,
-response schemas and assertions. `python3 scripts/bruno_contracts.py --check`
+After an intentional native contract change, save the unfiltered `manage showurls`
+output and the normal `manage openapi` JSON from the same qualified Community
+build. Keep the build/source identity with those artifacts. Public OpenAPI is
+not a complete transport inventory: internal Federation and static HEAD routes
+still come from `showurls`. The catalog adapter only reads these saved files;
+it never launches a command, connects to a service or inspects application source.
+From the workspace root, using your own saved paths:
+
+```bash
+python3 scripts/export-bruno-catalog.py \
+  --showurls notes/bruno-native-showurls.txt \
+  --openapi notes/bruno-native-openapi.json \
+  --metadata server/tests/bruno/contracts.json \
+  --output server/tests/bruno/contracts.json
+```
+
+Use `--check server/tests/bruno/contracts.json` instead of `--output ...` to
+compare JSON structure without writing; repository formatting may compact arrays,
+but value types and array order still have to match. Both native inputs are mandatory. The reviewed catalog
+supplies legacy names/source dispatch metadata, not route inclusion or payload
+schemas. The adapter recognizes eight explicitly reviewed Node/receiving-key
+additions; another unannotated operation is an error requiring review. It also
+rejects empty, unparsed or duplicate route inventories, mismatched operation
+identities and unresolved native schema references. Output retains reviewed
+metadata order for known method/path identities and appends new native operations
+in method/path order; metadata controls layout, not inclusion. JSON keys have
+stable ordering. Only transitively referenced native schema
+components are retained, with JSON response schemas keyed by their documented
+status. Non-public routes retain reviewed transport metadata without carrying
+forward stale payload schemas.
+
+Then generate the ordinary Bruno requests with
+`python3 scripts/bruno_contracts.py` and inspect the changes. This renderer writes
+the request files and `scenarios.json`; it does not generate the catalog. Expected
+statuses and authority/state assertions remain independently authored in the
+renderer and journeys, never learned from a server response or selected from
+OpenAPI. The schema for an independently authored success status, including HTTP201,
+comes from the native catalog export. `python3 scripts/bruno_contracts.py --check`
 checks the catalog, manifest and request-file set. The expanded cases include
 JSON/media rejection, typed IDs, paging, real credential/peer authentication,
 state preservation on rejected writes, documented response fields and types,
 frontend GET/HEAD/ETag behavior and browser activity/all-session logout.
 Malformed JSON comes from a file body so the HTTP client's automatic JSON string
 encoding cannot turn a syntax-error case into valid JSON of the wrong type.
+
+The Node transport journey creates one disposable Node with HTTP201, switches
+and restores the default, deletes/restores the same Node and reads back its
+state/address. It leaves the original default selected. Rejected lifecycle writes
+read back the actual target Node. The shared Subject policy is not widened into
+Tenant administration. Receiving-key requests exercise exact required selectors,
+typed quarantine/dual-CAS bodies, ordinary Subject refusal and missing foreign
+tuples; these are not successful trust-confirmation cases. The existing native
+HTTP/PostgreSQL owners retain successful independent PEM/fingerprint confirmation,
+TA/DA policy, CAS/concurrency, retained-record recovery and crypto proof. Bruno
+does not duplicate their foreign-peer matrix or claim physical erasure from a
+purge request. Inventory failures report missing/extra method/path multiplicities.
 
 SSE delivery and Last-Event-ID replay start three additional real Aidash processes
 sequentially, sharing the isolated database. Only one streaming process runs at a

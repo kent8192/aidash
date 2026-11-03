@@ -32,13 +32,17 @@ pub async fn activate(
 pub async fn control(
 	#[inject] service: Depends<PeerExecutionManagement>,
 	#[inject] peer: InboundCall,
+	request: reinhardt::Request,
 	Path(id): Path<Uuid>,
 	Json(input): Json<RemoteExecutionControlInput>,
 ) -> ViewResult<Response> {
 	if let Err(error) = crate::http::validate(&input) {
 		return Ok(error.http_response());
 	}
-	crate::http::json(api::control(service.runtime.clone(), peer.0, id, input).await)
+	let Some(request) = crate::apps::identity::services::http_auth::peer_request(&request) else {
+		return Ok(crate::Error::Unauthorized.http_response());
+	};
+	crate::http::json(api::control(service.runtime.clone(), peer.0, id, input, &request).await)
 }
 
 #[post(

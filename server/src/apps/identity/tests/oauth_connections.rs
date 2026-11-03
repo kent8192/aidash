@@ -375,7 +375,8 @@ async fn oauth_connections_subject_credentials_manage_only_their_persons_connect
 	let (mut policy, alice, _) =
 		common::bootstrap(&f, &fixture.application, "http://127.0.0.1:9").await;
 	policy["subjects"]["bob"] = json!({"kind":"user"});
-	policy["subjects"]["bot"] = json!({"kind":"service"});
+	policy["subjects"]["bot"] =
+		json!({"kind":"service", "node": aidash_domain::nodes::NodeName::derived("acme")});
 	policy["subjects"]["charlie"] = json!({"kind":"user"});
 	policy["policies"].as_array_mut().unwrap().push(json!({
 		"id":"bob-cannot-update-ceilings", "effect":"deny", "subjects":{"ids":["bob"]},

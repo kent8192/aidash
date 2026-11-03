@@ -11,6 +11,14 @@ use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use uuid::Uuid;
 
+struct ObjectReservation<'a> {
+	id: Uuid,
+	area: Option<Uuid>,
+	kind: &'a str,
+	size: u64,
+	grandfather_existing: bool,
+}
+
 pub(crate) struct PendingObject {
 	id: Uuid,
 	area: Option<Uuid>,
@@ -40,12 +48,20 @@ impl PendingObject {
 		access: &mut Access,
 		expected: Option<&str>,
 	) -> Result<(Uuid, String)> {
-		let tenant = access.identity.tenant.clone();
-		self.finish_for(&mut access.tx, &tenant, expected).await
+		self.finish_in(access.tx.as_mut(), &access.identity.tenant, expected)
+			.await
 	}
 	pub(crate) async fn finish_for(
 		self,
 		tx: &mut crate::database::native::Transaction,
+		tenant: &str,
+		expected: Option<&str>,
+	) -> Result<(Uuid, String)> {
+		self.finish_in(tx.as_mut(), tenant, expected).await
+	}
+	pub(crate) async fn finish_in(
+		self,
+		tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 		tenant: &str,
 		expected: Option<&str>,
 	) -> Result<(Uuid, String)> {
@@ -70,7 +86,7 @@ impl PendingObject {
 				.map_err(Error::Invalid)?
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&mut **tx)
+		.execute(tx)
 		.await?;
 		Ok((self.id, hash))
 	}
@@ -220,11 +236,16 @@ impl Runtime {
 			self.reconcile_orphans(access).await?;
 			access.core_gc_complete = true;
 		}
-		let tenant = access.identity.tenant.clone();
-		self.begin_object_for(&mut access.tx, &tenant, area, kind, size, false)
-			.await
+		self.begin_object_in(
+			access.tx.as_mut(),
+			&access.identity.tenant,
+			Uuid::new_v4(),
+			area,
+			kind,
+			size,
+		)
+		.await
 	}
-
 	pub(crate) async fn begin_object_for(
 		&self,
 		tx: &mut crate::database::native::Transaction,
@@ -234,6 +255,55 @@ impl Runtime {
 		size: u64,
 		grandfather_existing: bool,
 	) -> Result<PendingObject> {
+		self.begin_object_with_quota(
+			tx.as_mut(),
+			tenant,
+			ObjectReservation {
+				id: Uuid::new_v4(),
+				area,
+				kind,
+				size,
+				grandfather_existing,
+			},
+		)
+		.await
+	}
+	/// Exact retained-operation receipt owner only; this does not admit execution.
+	pub(crate) async fn begin_object_in(
+		&self,
+		tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+		tenant: &str,
+		id: Uuid,
+		area: Option<Uuid>,
+		kind: &str,
+		size: u64,
+	) -> Result<PendingObject> {
+		self.begin_object_with_quota(
+			tx,
+			tenant,
+			ObjectReservation {
+				id,
+				area,
+				kind,
+				size,
+				grandfather_existing: false,
+			},
+		)
+		.await
+	}
+	async fn begin_object_with_quota(
+		&self,
+		tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+		tenant: &str,
+		reservation: ObjectReservation<'_>,
+	) -> Result<PendingObject> {
+		let ObjectReservation {
+			id,
+			area,
+			kind,
+			size,
+			grandfather_existing,
+		} = reservation;
 		let size = i64::try_from(size).map_err(|_| Error::Invalid("OBJECT_LIMIT".into()))?;
 		let limit = if grandfather_existing {
 			i64::MAX
@@ -242,7 +312,7 @@ impl Runtime {
 				.map_err(|_| Error::Invalid("invalid quota".into()))?
 		};
 		{
-			let query_bind_1 = tenant.to_owned();
+			let query_bind_1 = tenant;
 			crate::database::native::query(
 				&Query::insert()
 					.into_table(Alias::new("core_quotas"))
@@ -262,11 +332,11 @@ impl Runtime {
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&mut **tx)
+			.execute(&mut *tx)
 			.await?
 		};
 		let reserved: Option<i64> = {
-			let query_bind_1 = tenant.to_owned();
+			let query_bind_1 = tenant;
 			let query_bind_2 = size;
 			let query_bind_3 = limit;
 			crate::database::native::query_scalar(
@@ -301,7 +371,7 @@ impl Runtime {
 					.returning([Alias::new("used_bytes")])
 					.to_string(PostgresQueryBuilder),
 			)
-			.scalar_optional(&mut **tx)
+			.scalar_optional(&mut *tx)
 			.await?
 		};
 		if reserved.is_none() {
@@ -325,7 +395,6 @@ impl Runtime {
 			tokio::fs::set_permissions(&self.0.storage, std::fs::Permissions::from_mode(0o700))
 				.await?;
 		}
-		let id = Uuid::new_v4();
 		// Ownership survives a database rollback or process crash. The advisory
 		// lock keeps a collector from mistaking an uncommitted object for an orphan.
 		{
@@ -338,7 +407,7 @@ impl Runtime {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&mut **tx)
+			.execute(&mut *tx)
 			.await?
 		};
 		let intents = self.0.storage.join(".intents");
