@@ -282,7 +282,10 @@ pub async fn scratch_space_for_run(
 	let creator = scope.subnode_creator_run(run.workspace_id).await?;
 	let binding_run = creator.as_ref().unwrap_or(run);
 	let (id, starter) = scope.run_binding(binding_run).await?;
-	let mut space = read_for_person(scope, id, &starter, now, true).await?;
+	// Run admission already checks the executing Node's authority; here the
+	// starter only has to still be allowed to use the space.
+	let mut space = scope.load_for_update(id).await?;
+	require_use(&space, &starter, now)?;
 	if space.node != run.node {
 		return Err(Error::Forbidden);
 	}
