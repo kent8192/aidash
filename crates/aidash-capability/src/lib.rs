@@ -28,6 +28,7 @@ pub enum Operation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Maintenance {
+	ReferenceIndexing,
 	MemoryIndexing,
 	MemoryRetention,
 	MemoryReflection,
@@ -223,6 +224,16 @@ impl PublicKeys {
 				.iter()
 				.enumerate()
 				.any(|(i, op)| claims.ops[..i].contains(op))
+		{
+			return Err(Failure::Operation);
+		}
+		if matches!(
+			claims.sub,
+			TokenSubject::Maintenance {
+				maintenance: Maintenance::ReferenceIndexing,
+				..
+			}
+		) && claims.ops.as_slice() != [Operation::Embeddings]
 		{
 			return Err(Failure::Operation);
 		}

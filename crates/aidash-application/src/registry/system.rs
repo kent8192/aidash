@@ -46,33 +46,82 @@ const TASK_ASSIGN: &str = "task_assign";
 
 pub fn entries(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entry>> {
 	let specifications = validation.node_specifications();
-	operations()
-		.map(|operation| {
-			let spec = specifications.get(operation).ok_or_else(|| {
-				crate::Error::Invalid(format!(
-					"system provider has no declaration for {operation}"
-				))
-			})?;
-			Ok(Entry {
-				binding_normalization: None,
-				installation: None,
-				id: format!("aidash.{operation}"),
-				version: "1.0.0".into(),
-				kind: "tool".into(),
-				name: std::collections::BTreeMap::from([("en".into(), operation.to_string())]),
-				description: std::collections::BTreeMap::from([(
-					"en".into(),
-					spec.description.clone(),
-				)]),
-				capabilities: vec![operation.to_string()],
-				tags: vec!["system".into()],
-				languages: vec![],
-				skills: vec![],
-				schema: spec.parameters.clone(),
-				config: serde_json::to_value(core_descriptor(node, operation)?)?,
-			})
+	let mut entries = Vec::new();
+	for operation in operations() {
+		let spec = specifications.get(operation).ok_or_else(|| {
+			crate::Error::Invalid(format!(
+				"system provider has no declaration for {operation}"
+			))
+		})?;
+		let entry = Entry {
+			binding_normalization: None,
+			installation: None,
+			id: format!("aidash.{operation}"),
+			version: aidash_domain::registry::bindings::QualifiedRef::builtin(node, operation)
+				.version,
+			kind: "tool".into(),
+			name: std::collections::BTreeMap::from([("en".into(), operation.to_string())]),
+			description: std::collections::BTreeMap::from([(
+				"en".into(),
+				spec.description.clone(),
+			)]),
+			capabilities: vec![operation.to_string()],
+			tags: vec!["system".into()],
+			languages: vec![],
+			skills: vec![],
+			schema: spec.parameters.clone(),
+			config: serde_json::to_value(core_descriptor(node, operation)?)?,
+		};
+		entries.push(entry);
+	}
+	Ok(entries)
+}
+
+/// Keep the original immutable declarations available to admitted Runs and
+/// existing Tenants when the workspace tools gain attachment support.
+pub fn legacy_workspace_entries(
+	validation: &DefinitionValidation,
+	node: &str,
+) -> Result<Vec<Entry>> {
+	let mut entries: Vec<_> = entries(validation, node)?
+		.into_iter()
+		.filter(|entry| {
+			matches!(
+				entry.id.as_str(),
+				"aidash.workspace_read" | "aidash.workspace_observe" | "aidash.workspace_message"
+			)
 		})
-		.collect()
+		.collect();
+	for entry in &mut entries {
+		entry.version = "1.0.0".into();
+		let (description, schema) = match entry.id.as_str() {
+			"aidash.workspace_message" => (
+				"Send a message to the human and other agents sharing this workspace.",
+				json!({"type":"object","required":["content"],"properties":{"content":{"type":"string"}},"additionalProperties":false}),
+			),
+			"aidash.workspace_observe" => (
+				"Read a bounded summary of goal, tasks, artifact references, messages and recent event metadata. Use workspace_read for full records. Collections have separate totals and next_offset; events/messages are newest first. Refresh pagination if the workspace changes.",
+				json!({"type":"object","properties":{"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}},"additionalProperties":false}),
+			),
+			"aidash.workspace_read" => (
+				"Read one accessible workspace record by kind and exact ID. Returns a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. The returned chunk is capped to fit the active request budget. If budget_limited is true, continue from next_offset on a later turn; if deferred is true, stop reading until that later turn.",
+				json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event"]},"id":{"type":"string"},"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false}),
+			),
+			_ => unreachable!(),
+		};
+		entry.description.insert("en".into(), description.into());
+		entry.schema = schema;
+	}
+	let mut attachment_reader = entries
+		.iter()
+		.find(|entry| entry.id == "aidash.workspace_read")
+		.unwrap()
+		.clone();
+	attachment_reader.version = "1.0.1".into();
+	attachment_reader.description.insert("en".into(), "Read one accessible workspace record by kind and exact ID. Messages list Thread Attachment metadata without bytes. Use kind=attachment to read metadata or representation=model_input to select media for the next inference; use attachment_copy to save one in the Working Area. Other records return a JSON text chunk, total_chars and next_offset; concatenate chunks in offset order to recover the full record. The returned chunk is capped to fit the active request budget. If budget_limited is true, continue from next_offset on a later turn; if deferred is true, stop reading until that later turn.".into());
+	attachment_reader.schema = json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event","attachment"]},"id":{"type":"string"},"representation":{"enum":["metadata","model_input"]},"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000}},"additionalProperties":false});
+	entries.push(attachment_reader);
+	Ok(entries)
 }
 
 /// Every definition the Node declares to every Tenant's Registry: the built-in
@@ -216,6 +265,7 @@ pub async fn seed(
 	let deciders = [approval_decider()?, compaction_decider()?];
 	for entry in entries(validation, node)?
 		.into_iter()
+		.chain(legacy_workspace_entries(validation, node)?)
 		.chain(offered)
 		.chain(deciders)
 		.chain([aidash_domain::registry::bindings::source_defaults::workspace_observation()?])
@@ -254,13 +304,18 @@ pub fn is_builtin(entry: &Entry) -> bool {
 }
 
 pub fn builtin_reference(reference: &aidash_domain::registry::EntityRef) -> bool {
-	reference.version == "1.0.0"
-		&& (reference.id
-			== aidash_domain::registry::bindings::source_defaults::WORKSPACE_OBSERVATION_ID
-			|| reference
-				.id
-				.strip_prefix("aidash.")
-				.is_some_and(|operation| operations().any(|builtin| builtin == operation)))
+	(reference.version == "1.0.0"
+		|| (reference.id == "aidash.workspace_read" && reference.version == "1.1.0")
+		|| (reference.version == "1.0.1"
+			&& matches!(
+				reference.id.as_str(),
+				"aidash.workspace_read" | "aidash.workspace_observe" | "aidash.workspace_message"
+			))) && (reference.id
+		== aidash_domain::registry::bindings::source_defaults::WORKSPACE_OBSERVATION_ID
+		|| reference
+			.id
+			.strip_prefix("aidash.")
+			.is_some_and(|operation| operations().any(|builtin| builtin == operation)))
 }
 
 /// A definition the Deployment provides to every Tenant, which no Tenant changes:

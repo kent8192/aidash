@@ -12,6 +12,7 @@ pub struct Match {
 	pub source: Value,
 	pub agent: Option<String>,
 	pub metadata: Value,
+	#[serde(default, skip_serializing_if = "String::is_empty")]
 	pub text: String,
 	pub score: f32,
 }

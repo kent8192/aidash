@@ -53,20 +53,39 @@ impl Catalog {
 		);
 		for operation in crate::registry::system::operations() {
 			result.core(operation);
+			if matches!(
+				operation,
+				"workspace_read" | "workspace_observe" | "workspace_message"
+			) {
+				result.insert(entry(
+					&format!("aidash.{operation}"),
+					"tool",
+					serde_json::to_value(core_descriptor(NODE, operation).unwrap()).unwrap(),
+				));
+			}
 		}
 		result
 	}
 	fn insert(&mut self, entry: Entry) {
-		self.entries.insert(reference(&entry.id), entry);
+		let mut id = reference(&entry.id);
+		id.version = entry.version.clone();
+		self.entries.insert(id, entry);
 	}
 	fn core(&mut self, operation: &str) -> QualifiedRef {
 		let descriptor = core_descriptor(NODE, operation).unwrap();
 		let reference = QualifiedRef::builtin(NODE, operation);
-		self.insert(entry(
+		let mut definition = entry(
 			&reference.id,
 			"tool",
 			serde_json::to_value(descriptor).unwrap(),
-		));
+		);
+		definition.version = reference.version.clone();
+		self.insert(definition);
+		if operation == "workspace_read" {
+			let mut current = self.entries[&reference].clone();
+			current.version = "1.0.1".into();
+			self.insert(current);
+		}
 		reference
 	}
 	fn bundle(&mut self, id: &str, members: Vec<QualifiedRef>) -> QualifiedRef {
@@ -152,6 +171,54 @@ async fn snapshot(
 		remote,
 	)
 	.await
+}
+
+#[tokio::test]
+async fn previously_normalized_agent_resolves_without_rewriting_its_builtin_bindings() {
+	let mut agent = agent_entry(&agent_config());
+	agent.normalize_agent(NODE).unwrap();
+	let saved = agent.binding_normalization.as_mut().unwrap();
+	saved
+		.bindings
+		.retain(|binding| binding.binding.target.id != "aidash.attachment_copy");
+	for binding in &mut saved.bindings {
+		if matches!(
+			binding.binding.target.id.as_str(),
+			"aidash.workspace_read" | "aidash.workspace_observe" | "aidash.workspace_message"
+		) {
+			binding.binding.target.version = "1.0.0".into();
+		}
+	}
+	let original = agent.binding_normalization.clone();
+	let resolved = resolve(
+		&mut Catalog::new(),
+		&providers(),
+		reference("agent"),
+		&agent,
+		false,
+	)
+	.await
+	.unwrap();
+	resolved.validate().unwrap();
+	let root = resolved
+		.definitions
+		.iter()
+		.find(|definition| definition.identity == resolved.agent)
+		.unwrap();
+	assert_eq!(root.definition.binding_normalization, original);
+	assert!(
+		resolved
+			.bindings
+			.iter()
+			.any(|binding| binding.identity.id == "aidash.workspace_read"
+				&& binding.identity.version == "1.0.0")
+	);
+	assert!(
+		!resolved
+			.bindings
+			.iter()
+			.any(|binding| binding.identity.id == "aidash.attachment_copy")
+	);
 }
 
 #[rstest::rstest]
@@ -1680,7 +1747,11 @@ async fn receiver_export_rejects_a_custom_policy_hidden_under_the_system_source_
 	source.config = serde_json::to_value(native).unwrap();
 	// This is a valid, freshly admitted graph with correct digests, so rejection
 	// comes from the receiver export boundary rather than corrupt snapshot bytes.
-	let saved = snapshot(&mut catalog, &agent_config(), true).await.unwrap();
+	let mut config = agent_config();
+	config
+		.bindings
+		.push(Binding::tool(QualifiedRef::builtin(NODE, "workspace_read")));
+	let saved = snapshot(&mut catalog, &config, true).await.unwrap();
 	saved.validate().unwrap();
 	let error = ForeignAgentSnapshot::from_snapshot(saved).unwrap_err();
 	assert!(
@@ -2233,11 +2304,12 @@ async fn shared_read_claim_above_a_sequential_provider_is_rejected(#[case] descr
 	let mut config = agent_config();
 	let target = QualifiedRef::builtin(NODE, "workspace_read");
 	if descriptor {
-		catalog
-			.entries
-			.get_mut(&reference(&target.id))
-			.unwrap()
-			.config["narrow"]["concurrency"] = json!("shared_read");
+		let current = QualifiedRef {
+			version: "1.1.0".into(),
+			..target.clone()
+		};
+		catalog.entries.get_mut(&current).unwrap().config["narrow"]["concurrency"] =
+			json!("shared_read");
 	} else {
 		let mut read = Binding::tool(target);
 		read.narrow = serde_json::from_value(json!({"concurrency":"shared_read"})).unwrap();
@@ -2369,6 +2441,9 @@ async fn remote_home_receipt_obligation_rejects_on_demand_despite_false_declarat
 		serde_json::to_value(native).unwrap(),
 	));
 	let mut config = agent_config();
+	config
+		.bindings
+		.push(Binding::tool(QualifiedRef::builtin(NODE, "workspace_read")));
 	config.bindings.push(
 		serde_json::from_value(json!({"kind":"source","target":identity,"narrow":{}})).unwrap(),
 	);
@@ -2537,6 +2612,9 @@ async fn semantic_query_policy_agrees_including_implicit_defaults(
 	use aidash_domain::registry::bindings::sources::{NativeContext, NativeSource, OnUnavailable};
 	let mut catalog = Catalog::new();
 	let mut config = agent_config();
+	config
+		.bindings
+		.push(Binding::tool(QualifiedRef::builtin(NODE, "workspace_read")));
 	for (id, kind, source, query) in [
 		(
 			"query-memory",

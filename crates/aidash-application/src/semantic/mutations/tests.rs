@@ -14,6 +14,9 @@ fn spec() -> IndexingSpec {
 			model: "fixture".into(),
 			model_version: "1".into(),
 			dimensions: 2,
+			inputs: [aidash_domain::semantic::EmbeddingInputKind::Text]
+				.into_iter()
+				.collect(),
 		},
 		vector: VectorConfig {
 			provider: "postgres".into(),
@@ -26,6 +29,8 @@ fn spec() -> IndexingSpec {
 		max_results: 2,
 		max_result_tokens: 128,
 		max_input_bytes: 128,
+		max_image_bytes: 8 * 1024 * 1024,
+		max_images: 256,
 	}
 }
 fn index() -> Index {
@@ -78,6 +83,7 @@ struct Scope {
 	rows: Vec<Entry>,
 	count: i64,
 	text: Option<String>,
+	image_visible: bool,
 	replay: bool,
 	pages: VecDeque<Vec<History>>,
 }
@@ -93,6 +99,7 @@ impl Default for Scope {
 			rows: vec![],
 			count: 0,
 			text: Some("content".into()),
+			image_visible: false,
 			replay: false,
 			pages: VecDeque::new(),
 		}
@@ -143,6 +150,10 @@ impl SemanticEntriesSession for Scope {
 	async fn source(&mut self, _: Uuid, _: &Source) -> Result<Option<String>> {
 		self.touch("source")?;
 		Ok(self.text.clone())
+	}
+	async fn image_visible(&mut self, _: Uuid, _: &Source) -> Result<bool> {
+		self.touch("image_visible")?;
+		Ok(self.image_visible)
 	}
 	async fn count(&mut self, _: Uuid) -> Result<i64> {
 		self.touch("count")?;
@@ -195,7 +206,7 @@ impl SemanticEntriesSession for Scope {
 	}
 	async fn history_entry(&mut self, _: Uuid) -> Result<Entry> {
 		self.touch("history_entry")?;
-		Ok(entry())
+		Ok(self.old.clone().unwrap_or_else(entry))
 	}
 }
 
@@ -393,6 +404,30 @@ async fn deletion_and_reindex_keep_separate_source_authority_paths(#[case] delet
 	assert_eq!(scope.calls.contains(&"source"), !delete);
 	assert_eq!(scope.calls.last(), Some(&"history"));
 }
+
+#[rstest]
+#[case::delete(true)]
+#[case::reindex(false)]
+#[tokio::test]
+async fn working_image_lifecycle_is_managed_by_file_publication(#[case] delete: bool) {
+	let mut old = entry();
+	old.source = serde_json::to_value(Source::WorkingImage {
+		area_id: Uuid::from_u128(7),
+		generation: 1,
+		file_id: Uuid::from_u128(8),
+		path: "image.png".into(),
+	})
+	.unwrap();
+	let mut scope = Scope {
+		old: Some(old.clone()),
+		..Default::default()
+	};
+	assert!(matches!(
+		change(&mut scope, old.workspace_id, old.id, 1, delete).await,
+		Err(Error::Invalid(_))
+	));
+	assert!(!scope.calls.contains(&"change"));
+}
 #[rstest]
 #[case::delete(true)]
 #[case::reindex(false)]
@@ -433,6 +468,39 @@ async fn listing_omits_sources_that_have_disappeared() {
 		["workspace", "index_share", "list", "read", "source"]
 	);
 }
+
+#[rstest]
+#[case::allowed(true, false)]
+#[case::denied(false, false)]
+#[case::deleted_without_area_access(false, true)]
+#[tokio::test]
+async fn image_index_state_is_listed_only_under_current_area_authority(
+	#[case] visible: bool,
+	#[case] deleted: bool,
+) {
+	let mut image = entry();
+	image.source = serde_json::to_value(Source::WorkingImage {
+		area_id: Uuid::from_u128(7),
+		generation: 1,
+		file_id: Uuid::from_u128(8),
+		path: "image.png".into(),
+	})
+	.unwrap();
+	image.state = "PENDING".into();
+	image.deleted = deleted;
+	let mut scope = Scope {
+		rows: vec![image],
+		text: None,
+		image_visible: visible,
+		..Default::default()
+	};
+	let result = entries(&mut scope, Uuid::from_u128(1)).await.unwrap();
+	assert_eq!(result.len(), usize::from(visible));
+	if visible {
+		assert_eq!(result[0].state, "PENDING");
+	}
+	assert!(!scope.calls.contains(&"source"));
+}
 #[rstest]
 #[tokio::test]
 async fn history_advances_past_two_hundred_denied_candidates() {
@@ -472,4 +540,53 @@ async fn history_advances_past_two_hundred_denied_candidates() {
 	);
 }
 
+#[rstest]
+#[case::allowed(true)]
+#[case::denied(false)]
+#[tokio::test]
+async fn image_history_requires_current_area_authority(#[case] visible: bool) {
+	let mut image = entry();
+	image.source = serde_json::to_value(Source::WorkingImage {
+		area_id: Uuid::from_u128(7),
+		generation: 1,
+		file_id: Uuid::from_u128(8),
+		path: "image.png".into(),
+	})
+	.unwrap();
+	let row = History {
+		sequence: 1,
+		workspace_id: Uuid::from_u128(1),
+		entry_id: Some(image.id),
+		revision: 1,
+		state: "PENDING".into(),
+		detail: "fixture".into(),
+		created_at: Utc::now(),
+	};
+	let mut scope = Scope {
+		old: Some(image),
+		image_visible: visible,
+		pages: VecDeque::from([vec![row]]),
+		..Default::default()
+	};
+	assert_eq!(
+		history(&mut scope, Uuid::from_u128(1)).await.unwrap().len(),
+		usize::from(visible)
+	);
+}
+
 mod configuration;
+
+#[test]
+fn public_entry_cannot_claim_a_working_area_image() {
+	let mut value = input();
+	value.source = Source::WorkingImage {
+		area_id: Uuid::from_u128(1),
+		generation: 1,
+		file_id: Uuid::from_u128(2),
+		path: "image.png".into(),
+	};
+	assert!(matches!(
+		validate_public_put(&value),
+		Err(Error::Invalid(_))
+	));
+}

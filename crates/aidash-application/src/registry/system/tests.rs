@@ -15,6 +15,32 @@ use std::{collections::BTreeMap, sync::Arc};
 
 const NODE: &str = "aidash://local";
 
+#[test]
+fn workspace_attachment_tools_keep_original_declarations_immutable() {
+	let validation = DefinitionValidation::new(Arc::new(Contracts));
+	let current = entries(&validation, NODE).unwrap();
+	let old = legacy_workspace_entries(&validation, NODE).unwrap();
+	assert_eq!(old.len(), 4);
+	for legacy in old {
+		assert!(matches!(legacy.version.as_str(), "1.0.0" | "1.0.1"));
+		let new = current.iter().find(|entry| entry.id == legacy.id).unwrap();
+		assert_eq!(
+			new.version,
+			if legacy.id == "aidash.workspace_read" {
+				"1.1.0"
+			} else {
+				"1.0.1"
+			}
+		);
+		assert_ne!(new.description, legacy.description);
+		assert_eq!(new.config, legacy.config);
+		assert!(builtin_reference(&EntityRef {
+			id: legacy.id.clone(),
+			version: legacy.version.clone()
+		}));
+	}
+}
+
 /// Native core tools live outside the application builtin table.
 struct Contracts;
 impl Credentials for Contracts {
@@ -70,8 +96,10 @@ fn seeding_declares_exposure_builtins_beside_the_unchanged_legacy_set() {
 			version: entry.version.clone(),
 		}));
 		let specification = &specifications[operation];
-		assert_eq!(entry.description["en"], specification.description);
-		assert_eq!(entry.schema, specification.parameters);
+		if !(operation == "workspace_read" && entry.version == "1.0.0") {
+			assert_eq!(entry.description["en"], specification.description);
+			assert_eq!(entry.schema, specification.parameters);
+		}
 		if EXPOSURE_TOOLS.contains(&operation) || operation == SKILL_ASSET_READ {
 			assert_eq!(
 				entry.description["en"],
@@ -195,6 +223,27 @@ impl DefinitionWriter for Writer {
 }
 
 #[tokio::test]
+async fn seeding_an_existing_registry_preserves_old_workspace_declarations() {
+	let validation = DefinitionValidation::new(Arc::new(Contracts));
+	let original = legacy_workspace_entries(&validation, NODE).unwrap();
+	let mut writer = Writer::default();
+	for entry in &original {
+		writer.insert_definition(entry).await.unwrap();
+	}
+	seed(&mut writer, &validation, NODE).await.unwrap();
+	for entry in original {
+		assert_eq!(
+			writer.definition(&entry.id, &entry.version).await.unwrap(),
+			entry
+		);
+		assert_eq!(
+			writer.definition(&entry.id, "1.0.1").await.unwrap().version,
+			"1.0.1"
+		);
+	}
+}
+
+#[tokio::test]
 async fn seeding_adds_the_approval_decider_to_every_registry_and_repeats_safely() {
 	let validation = DefinitionValidation::new(Arc::new(Contracts));
 	let mut writer = Writer::default();
@@ -235,6 +284,37 @@ async fn seeding_adds_the_approval_decider_to_every_registry_and_repeats_safely(
 		seed(&mut writer, &validation, NODE).await,
 		Err(crate::Error::Conflict(_))
 	));
+}
+
+#[tokio::test]
+async fn seeding_keeps_the_original_workspace_read_and_adds_a_new_version() {
+	let validation = DefinitionValidation::new(Arc::new(Contracts));
+	let mut writer = Writer::default();
+	let entries = legacy_workspace_entries(&validation, NODE).unwrap();
+	let old = entries
+		.iter()
+		.find(|entry| entry.id == "aidash.workspace_read" && entry.version == "1.0.0")
+		.unwrap();
+	assert_eq!(
+		old.schema["properties"]["kind"]["enum"],
+		json!(["workspace", "task", "artifact", "message", "event"])
+	);
+	assert!(!old.description["en"].contains("matched File"));
+	writer
+		.entries
+		.insert((old.id.clone(), old.version.clone()), old.clone());
+	seed(&mut writer, &validation, NODE).await.unwrap();
+	assert_eq!(
+		writer.definition(&old.id, &old.version).await.unwrap(),
+		*old
+	);
+	let current = writer.definition(&old.id, "1.1.0").await.unwrap();
+	assert!(
+		current.schema["properties"]["kind"]["enum"]
+			.as_array()
+			.unwrap()
+			.contains(&json!("file"))
+	);
 }
 
 struct ResearchContracts;

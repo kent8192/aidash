@@ -50,6 +50,18 @@ fn expired_buckets_never_lock_new_callers_out() {
 
 #[tokio::test]
 async fn body_admission_owns_the_request_slot_and_uses_route_limits() {
+	assert_eq!(
+		super::request_body_limit(&http::Method::POST, "/api/agents/personal"),
+		12 * 1024 * 1024
+	);
+	assert_eq!(
+		super::request_body_limit(&http::Method::PUT, "/api/workbench/drafts/123"),
+		12 * 1024 * 1024
+	);
+	assert_eq!(
+		super::request_body_limit(&http::Method::POST, "/api/workbench/drafts/123/register"),
+		super::BODY_LIMIT
+	);
 	let protection = Protection::new(Settings {
 		concurrency: 1,
 		..Default::default()
@@ -83,6 +95,22 @@ async fn body_admission_owns_the_request_slot_and_uses_route_limits() {
 		denied.err().unwrap().status,
 		http::StatusCode::SERVICE_UNAVAILABLE
 	);
+	drop(admitted);
+	let upload = "/api/workspaces/00000000-0000-0000-0000-000000000001/attachments"
+		.parse()
+		.unwrap();
+	let admitted = RequestAdmission::admit(
+		&protection,
+		RequestHead {
+			method: &method,
+			uri: &upload,
+			headers: &headers,
+			remote_addr: None,
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(admitted.max_body_size, 8 * 1024 * 1024);
 	drop(admitted);
 	let ordinary = "/api/tasks".parse().unwrap();
 	let admitted = RequestAdmission::admit(

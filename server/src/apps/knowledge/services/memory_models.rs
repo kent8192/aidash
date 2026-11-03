@@ -887,7 +887,7 @@ impl Models {
 					MaintenancePurpose::MemoryRetrieval
 				}),
 			)
-			.embed(&config, text),
+			.embed(&config, aidash_domain::semantic::EmbeddingInput::Text(text)),
 		)
 		.await
 		// A provider deadline or transport failure is the outage a Run retries

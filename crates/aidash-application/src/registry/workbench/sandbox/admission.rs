@@ -291,10 +291,13 @@ async fn prepare(
 		suffix: instructions[suffix_start..].to_owned(),
 		state,
 	});
+	let documents: Vec<aidash_domain::registry::ReferenceDocument> =
+		serde_json::from_value(draft.documents.clone())?;
+	let visible = aidash_domain::registry::knowledge::visible_documents(&documents)?;
 	let mut request = ModelRequest {
 		content_parts: Vec::new(),
 		instructions,
-		context: json!({"test_message":input.message,"private_references":draft.documents,"test_mode":input.mode,"profile_id":input.profile_id}).into(),
+		context: json!({"test_message":input.message,"private_references":visible,"test_mode":input.mode,"profile_id":input.profile_id}).into(),
 		tools: tool_specs,
 		max_output_tokens: (limits.max_output_tokens as u32).min(model_config.output_token_limit()),
 		response_format: None,

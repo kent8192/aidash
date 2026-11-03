@@ -89,11 +89,12 @@ fn snapshot_of(agent: &AgentBindings, agent_plugins: Vec<PinnedAgentPlugin>) -> 
 		}
 		let operation = target.id.strip_prefix("aidash.").unwrap();
 		let descriptor = core_descriptor(NODE, operation).unwrap();
-		let tool = entry(
+		let mut tool = entry(
 			&target.id,
 			"tool",
 			serde_json::to_value(&descriptor).unwrap(),
 		);
+		tool.version.clone_from(&target.version);
 		// The fixture Agent binds no memory, so its memory defaults are excluded.
 		let excluded_reason =
 			crate::tool::providers::memory_exclusion(normalized.origin, operation, false).unwrap();
@@ -143,6 +144,38 @@ fn refusal(snapshot: &BindingSnapshot) -> String {
 }
 
 #[test]
+fn attachment_selection_requires_the_current_admitted_tool_and_arguments() {
+	let mut snapshot = snapshot_of(&agent(), vec![]);
+	assert!(snapshot.supports_thread_attachment_selection());
+	let binding = snapshot
+		.bindings
+		.iter_mut()
+		.find(|item| item.identity.id == "aidash.workspace_read")
+		.unwrap();
+	binding.identity.version = "1.0.0".into();
+	assert!(!snapshot.supports_thread_attachment_selection());
+	let binding = snapshot
+		.bindings
+		.iter_mut()
+		.find(|item| item.identity.id == "aidash.workspace_read")
+		.unwrap();
+	binding.identity.version = "1.0.1".into();
+	binding
+		.narrow
+		.scope
+		.insert("representation".into(), ["metadata".into()].into());
+	assert!(!snapshot.supports_thread_attachment_selection());
+	let binding = snapshot
+		.bindings
+		.iter_mut()
+		.find(|item| item.identity.id == "aidash.workspace_read")
+		.unwrap();
+	binding.narrow.scope.clear();
+	binding.excluded_reason = Some("not admitted".into());
+	assert!(!snapshot.supports_thread_attachment_selection());
+}
+
+#[test]
 fn a_definition_without_plugins_keeps_its_bytes_and_its_digest() {
 	let definition = agent();
 
@@ -168,6 +201,47 @@ fn a_snapshot_without_plugins_keeps_its_bytes() {
 			.unwrap()
 			.get("agent_plugins")
 			.is_none()
+	);
+}
+
+#[test]
+fn implicit_workspace_source_uses_the_reader_version_in_the_snapshot() {
+	let snapshot = snapshot_of(&agent(), vec![]);
+	let mut native = sources::NativeContext {
+		schema_version: BINDING_SCHEMA,
+		source: sources::NativeSource::WorkspaceObservation {},
+		context_source: None,
+	};
+	let source = qualified("aidash.workspace-observation");
+	let declaration = native.declaration_for_snapshot(&source, &snapshot);
+	assert!(
+		declaration
+			.tools
+			.read
+			.iter()
+			.any(|tool| tool.id == "aidash.workspace_read" && tool.version == "1.1.0")
+	);
+	assert!(
+		!declaration
+			.tools
+			.read
+			.iter()
+			.any(|tool| tool.id == "aidash.workspace_read" && tool.version == "1.0.0")
+	);
+	let mut declared = native.declaration(&source);
+	for tool in &mut declared.tools.read {
+		if tool.id == "aidash.workspace_read" {
+			tool.version = "1.0.0".into();
+		}
+	}
+	native.context_source = Some(declared);
+	let explicit = native.declaration_for_snapshot(&source, &snapshot);
+	assert!(
+		explicit
+			.tools
+			.read
+			.iter()
+			.any(|tool| tool.id == "aidash.workspace_read" && tool.version == "1.0.0")
 	);
 }
 

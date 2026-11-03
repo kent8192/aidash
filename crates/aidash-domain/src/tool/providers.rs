@@ -56,9 +56,8 @@ pub struct ToolDescriptor {
 
 pub fn core_provider(operation: &str) -> Option<&'static str> {
 	Some(match operation {
-		"workspace_read" | "workspace_observe" | "workspace_wait" | "workspace_message" => {
-			"core.workspace@1"
-		}
+		"workspace_read" | "workspace_observe" | "workspace_wait" | "workspace_message"
+		| "workspace_search" => "core.workspace@1",
 		"human_request" | "connection_request" => "core.human@1",
 		"subnode_create"
 		| "subnode_task"
@@ -71,7 +70,7 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 		"capability_search" | "capability_describe" | "capability_load" | "capability_unload" => {
 			"core.exposure@1"
 		}
-		"file_search" | "file_read" | "apply_patch" => "core.files@1",
+		"file_search" | "file_read" | "apply_patch" | "attachment_copy" => "core.files@1",
 		"artifact_publish" => "core.artifacts@1",
 		"memory_mutate" | "memory_recall" | "memory_reflect" => "core.memory@1",
 		"shell" | "shell_poll" | "shell_cancel" | "code_interpreter" | "python_poll"
@@ -284,6 +283,12 @@ impl ToolDescriptor {
 			}
 			let mut contract =
 				builtin_contract(&self.operation).expect("declared provider operation");
+			if self.operation == "workspace_read"
+				&& identity.id == "aidash.workspace_read"
+				&& matches!(identity.version.as_str(), "1.0.0" | "1.0.1")
+			{
+				contract.behavior.yields_model_media = false;
+			}
 			// Availability is resolved by Bindings, independently of target-resource authority.
 			contract.authorization.flag = None;
 			contract.authorization.core = None;
