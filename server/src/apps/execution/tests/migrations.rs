@@ -124,7 +124,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		76
+		77
 	);
 	let tables = migrations
 		.iter()
@@ -572,14 +572,14 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0021_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0022_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"workspaces".to_owned(),
-			"0020_workspace_scratch_space".to_owned()
+			"0021_scratch_workspace_model_state".to_owned()
 		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
@@ -3741,6 +3741,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0018_scratch_space_model_state"),
 			("workspaces", "0019_scratch_node_index"),
 			("workspaces", "0020_workspace_scratch_space"),
+			("workspaces", "0021_scratch_workspace_model_state"),
 		])
 		.await;
 	fixture.tenant_root("scratch-upgrade").await;
@@ -3793,7 +3794,10 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 	}
 	let before_backfill = chrono::Utc::now();
 	fixture
-		.migrate_excluding(&[("workspaces", "0020_workspace_scratch_space")])
+		.migrate_excluding(&[
+			("workspaces", "0020_workspace_scratch_space"),
+			("workspaces", "0021_scratch_workspace_model_state"),
+		])
 		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let query = Query::select()
@@ -3853,7 +3857,10 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 ) {
 	let fixture = fresh_database.await;
 	fixture
-		.migrate_excluding(&[("workspaces", "0020_workspace_scratch_space")])
+		.migrate_excluding(&[
+			("workspaces", "0020_workspace_scratch_space"),
+			("workspaces", "0021_scratch_workspace_model_state"),
+		])
 		.await;
 	fixture.tenant_root("scratch-workspace-upgrade").await;
 	let tenant = "scratch-workspace-upgrade";
