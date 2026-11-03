@@ -178,9 +178,13 @@ async fn previously_normalized_agent_resolves_without_rewriting_its_builtin_bind
 	let mut agent = agent_entry(&agent_config());
 	agent.normalize_agent(NODE).unwrap();
 	let saved = agent.binding_normalization.as_mut().unwrap();
-	saved
-		.bindings
-		.retain(|binding| binding.binding.target.id != "aidash.attachment_copy");
+	// A normalization saved before #640 and #639 has neither default.
+	saved.bindings.retain(|binding| {
+		!matches!(
+			binding.binding.target.id.as_str(),
+			"aidash.attachment_copy" | "aidash.workspace_search"
+		)
+	});
 	for binding in &mut saved.bindings {
 		if matches!(
 			binding.binding.target.id.as_str(),
@@ -213,12 +217,10 @@ async fn previously_normalized_agent_resolves_without_rewriting_its_builtin_bind
 			.any(|binding| binding.identity.id == "aidash.workspace_read"
 				&& binding.identity.version == "1.0.0")
 	);
-	assert!(
-		!resolved
-			.bindings
-			.iter()
-			.any(|binding| binding.identity.id == "aidash.attachment_copy")
-	);
+	assert!(!resolved.bindings.iter().any(|binding| matches!(
+		binding.identity.id.as_str(),
+		"aidash.attachment_copy" | "aidash.workspace_search"
+	)));
 }
 
 #[rstest::rstest]
