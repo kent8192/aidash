@@ -250,9 +250,13 @@ impl ToolBehavior {
 			.ok()
 			.map(ModelMedia::WorkingImage);
 		}
+		// `workspace_read` also yields model media for Working Area images, so an
+		// attachment input (no `file_id`) must fall through to its own branch
+		// instead of matching null against null here.
 		if self.yields_model_media
 			&& input["representation"] == "model_input"
 			&& output["status"] == "completed"
+			&& !input["file_id"].is_null()
 			&& output["metadata"]["file_id"] == input["file_id"]
 		{
 			return serde_json::from_value::<ModelFileSelection>(serde_json::json!({

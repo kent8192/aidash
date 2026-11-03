@@ -456,14 +456,14 @@ impl AgentBindings {
 				target.version = "1.0.0".into();
 			} else if mode == 2 && *operation == "workspace_read" {
 				target.version = "1.0.1".into();
-			} else if (mode == 0 || mode == 3) && *operation == "workspace_read" {
-				if let Some(binding) = self.bindings.iter().find(|b| {
+			} else if (mode == 0 || mode == 3)
+				&& *operation == "workspace_read"
+				&& let Some(binding) = self.bindings.iter().find(|b| {
 					b.target.id == target.id
 						&& b.target.registry_deployment == node
 						&& matches!(b.target.version.as_str(), "1.0.0" | "1.0.1" | "1.1.0")
 				}) {
-					target = binding.target.clone();
-				}
+				target = binding.target.clone();
 			}
 			let explicit = self
 				.bindings

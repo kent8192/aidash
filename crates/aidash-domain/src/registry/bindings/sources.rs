@@ -82,14 +82,12 @@ impl NativeContext {
 				.bindings
 				.iter()
 				.any(|binding| binding.identity == *reference && binding.excluded_reason.is_none())
-			{
-				if let Some(saved) = snapshot.bindings.iter().find(|binding| {
+				&& let Some(saved) = snapshot.bindings.iter().find(|binding| {
 					binding.identity.id == reference.id
 						&& binding.identity.registry_deployment == reference.registry_deployment
 						&& binding.excluded_reason.is_none()
 				}) {
-					*reference = saved.identity.clone();
-				}
+				*reference = saved.identity.clone();
 			}
 		}
 
