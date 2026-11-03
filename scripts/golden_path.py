@@ -626,8 +626,16 @@ def main():
     # Binding defaults include File Tools. Enable only disposable fixture
     # storage; command runners remain disabled in the Node's execution profile.
     profile_directory = tempfile.TemporaryDirectory(prefix="aidash-golden-profile-")
-    profile = pathlib.Path(profile_directory.name) / "profile.json"
-    profile.write_text(json.dumps({"admission": True, "storage": str(profile.parent / "storage")}))
+    # Each Deployment has its own database and therefore its own object ownership
+    # journal. Sharing storage would let either worker erase the other's objects
+    # as orphans, including attachments retained during Node deletion.
+    profiles = {}
+    for node in (node_a, node_b):
+        directory = pathlib.Path(profile_directory.name) / hashlib.sha256(node.encode()).hexdigest()
+        directory.mkdir()
+        profile = directory / "profile.json"
+        profile.write_text(json.dumps({"admission": True, "storage": str(directory / "storage")}))
+        profiles[node] = profile
     # Compaction Deciders name the Tenant's OpenRouter Provider Credential
     # (ADR 0041), so each Node runs a disposable PostgreSQL Provider Credential
     # Store whose keys exist only for this run.
@@ -738,7 +746,7 @@ def main():
         env = {**os.environ, "DATABASE_URL": database_url(login, database), "NATS_URL": f"nats://127.0.0.1:{nats_proxy.server_address[1]}", "AIDASH_DEPLOYMENT_ID": node, "AIDASH_ENDPOINT": f"http://127.0.0.1:{port}", "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": TOKEN, "AIDASH_WEB_DIR": str(ROOT / "web/dist"), "AIDASH_KEYLESS_PRIVATE_ORIGINS": keyless_origins}
         # Browser fixtures create audit/history pages in bursts alongside UI polling.
         env["AIDASH_API_RATE_BURST"] = os.environ.get("AIDASH_API_RATE_BURST", "1000")
-        env["AIDASH_CAPABILITY_PROFILE"] = str(profile)
+        env["AIDASH_CAPABILITY_PROFILE"] = str(profiles[node])
         # Each Deployment holds its own Deployment Key, which it signs Federation tokens with.
         if keyed:
             env["REINHARDT_SETTINGS_DIR"] = str(key_directories[node])

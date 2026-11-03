@@ -7050,9 +7050,10 @@ impl SubnodeRig {
 		let (mut policy, token, task_id) = bootstrap(f, app, "http://127.0.0.1:9").await;
 		let node = aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme");
 		let creator = qualified_agent(&node, "subnode-creator", "1.0.0");
-		policy["subjects"][&creator] = json!({"kind":"agent"});
+		policy["subjects"][&creator] = json!({"kind":"agent", "node":node.node.as_str()});
 		for name in members {
-			policy["subjects"][qualified_agent(&node, name, "1.0.0")] = json!({"kind":"agent"});
+			policy["subjects"][qualified_agent(&node, name, "1.0.0")] =
+				json!({"kind":"agent", "node":node.node.as_str()});
 		}
 		if grant {
 			policy["policies"].as_array_mut().unwrap().push(json!({"id":"create-subnodes","effect":"allow","subjects":{"ids":[creator]},"actions":["subnode.create"],"resources":{"kinds":["node"]}}));

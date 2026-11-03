@@ -779,8 +779,16 @@ impl Access {
 
 	pub async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
 		for subject in &self.subjects {
-			super::identity::require_live_subject_on(self.tx.executor(), &self.snapshot, subject)
+			// An unknown subject must reach policy evaluation so its denial is audited.
+			// Known subjects still require a live owner before any authorization.
+			if self.snapshot.bundle.subjects.contains_key(subject) {
+				super::identity::require_live_subject_on(
+					self.tx.executor(),
+					&self.snapshot,
+					subject,
+				)
 				.await?;
+			}
 		}
 		// A Subnode creator reads, but never writes, the Subnode's Workspace.
 		if self.inherited_lease && subnode_workspace_write(action) {
