@@ -7,6 +7,7 @@ use uuid::Uuid;
 struct Memory {
 	person: String,
 	deny_node: bool,
+	deny_create: bool,
 	deny_references: bool,
 	node_people: Vec<String>,
 	spaces: BTreeMap<Uuid, ScratchSpace>,
@@ -32,7 +33,11 @@ impl ScratchScope for Memory {
 		}
 	}
 	async fn require_create(&mut self, _: &NodeName) -> Result<()> {
-		Ok(())
+		if self.deny_create {
+			Err(Error::Forbidden)
+		} else {
+			Ok(())
+		}
 	}
 	async fn limits(&mut self, _: &NodeName) -> Result<(ScratchCeilings, HostAllowlist)> {
 		Ok((
@@ -484,6 +489,25 @@ async fn members_can_use_services_already_shared_with_the_space() {
 	expanded.external_services.insert("another-service".into());
 	assert!(matches!(
 		update_settings(&mut scope, space.id, now, 1, expanded).await,
+		Err(Error::Forbidden)
+	));
+}
+
+#[tokio::test]
+async fn a_workspace_gets_its_dedicated_space_without_scratch_create() {
+	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+	let node: NodeName = "brave-otter-k3m9q2xa".parse().unwrap();
+	let mut scope = Memory {
+		person: "alice".into(),
+		deny_create: true,
+		..Default::default()
+	};
+	let id = select_for_workspace(&mut scope, &node, "Project", None, now)
+		.await
+		.unwrap();
+	assert_eq!(scope.spaces[&id].creator, "alice");
+	assert!(matches!(
+		create(&mut scope, &space(now)).await,
 		Err(Error::Forbidden)
 	));
 }

@@ -736,7 +736,7 @@ impl ScratchServices for NativeScratchServices<'_> {
 					created_at: now,
 					last_used_at: now,
 				};
-				aidash_application::scratch::create(&mut scope, &space).await?;
+				aidash_application::scratch::create_dedicated(&mut scope, &space).await?;
 			}
 			return Ok((scratch_id, person));
 		}

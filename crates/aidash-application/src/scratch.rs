@@ -62,9 +62,15 @@ fn require_use(space: &ScratchSpace, person: &str, now: DateTime<Utc>) -> Result
 }
 
 pub async fn create(scope: &mut dyn ScratchScope, space: &ScratchSpace) -> Result<()> {
+	scope.require_create(&space.node).await?;
+	create_dedicated(scope, space).await
+}
+
+/// A space dedicated to one new Workspace is authorized by creating that
+/// Workspace, so it does not need `scratch.create`.
+pub async fn create_dedicated(scope: &mut dyn ScratchScope, space: &ScratchSpace) -> Result<()> {
 	let person = scope.person().to_owned();
 	scope.require_node_use(&space.node, &person).await?;
-	scope.require_create(&space.node).await?;
 	let (ceilings, tenant_hosts) = scope.limits(&space.node).await?;
 	space.settings.validate(&ceilings, &tenant_hosts)?;
 	scope
@@ -264,7 +270,7 @@ pub async fn select_for_workspace(
 		created_at: now,
 		last_used_at: now,
 	};
-	create(scope, &space).await?;
+	create_dedicated(scope, &space).await?;
 	Ok(space.id)
 }
 
