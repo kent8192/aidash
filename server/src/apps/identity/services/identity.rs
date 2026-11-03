@@ -76,28 +76,36 @@ pub(crate) async fn require_live_subject_on(
 	snapshot: &Snapshot,
 	subject: &str,
 ) -> Result<()> {
+	let mut tx = tx;
+	for node in subject_nodes(snapshot, subject)? {
+		let transaction = tx
+			.as_deref_mut()
+			.ok_or_else(|| Error::Conflict("authorization transaction is suspended".into()))?;
+		crate::apps::identity::repositories::nodes::require_live(
+			transaction,
+			&snapshot.bundle.tenant,
+			node,
+		)
+		.await?;
+	}
+	Ok(())
+}
+
+/// Validate the delegation chain before checking each Node's current state.
+pub(crate) fn subject_nodes<'a>(snapshot: &'a Snapshot, subject: &str) -> Result<Vec<&'a str>> {
 	if !enabled(snapshot, subject) {
 		return Err(Error::Forbidden);
 	}
-	let mut tx = tx;
+	let mut nodes = Vec::new();
 	let mut current = Some(subject);
 	while let Some(id) = current {
 		let subject = snapshot.bundle.subjects.get(id).ok_or(Error::Forbidden)?;
 		if subject.kind != aidash_domain::policy::SubjectKind::User {
-			let node = subject.node.as_ref().ok_or(Error::Forbidden)?;
-			let transaction = tx
-				.as_deref_mut()
-				.ok_or_else(|| Error::Conflict("authorization transaction is suspended".into()))?;
-			crate::apps::identity::repositories::nodes::require_live(
-				transaction,
-				&snapshot.bundle.tenant,
-				node.as_str(),
-			)
-			.await?;
+			nodes.push(subject.node.as_ref().ok_or(Error::Forbidden)?.as_str());
 		}
 		current = subject.delegated_by.as_deref();
 	}
-	Ok(())
+	Ok(nodes)
 }
 
 impl Authorization {

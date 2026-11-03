@@ -72,6 +72,10 @@ pub(crate) struct AccessTransaction {
 	/// with a savepoint rollback that may have released them (its lock epoch).
 	admissions: std::collections::BTreeMap<CatalogAdmission, crate::registry::Entry>,
 	admissions_epoch: u64,
+	// Node deletion takes the policy lock exclusively. A successful check is
+	// valid only while this transaction retains its policy lease.
+	live_nodes: std::collections::BTreeSet<(String, String)>,
+	live_nodes_epoch: u64,
 }
 
 impl AccessTransaction {
@@ -80,6 +84,8 @@ impl AccessTransaction {
 			transaction: Some(transaction),
 			admissions: Default::default(),
 			admissions_epoch: 0,
+			live_nodes: Default::default(),
+			live_nodes_epoch: 0,
 		}
 	}
 
@@ -96,19 +102,33 @@ impl AccessTransaction {
 	fn install(&mut self, transaction: crate::database::native::Transaction) {
 		debug_assert!(self.transaction.is_none());
 		self.admissions.clear();
+		self.live_nodes.clear();
 		self.transaction = Some(transaction);
 	}
 
 	fn take(&mut self) -> Option<crate::database::native::Transaction> {
 		self.admissions.clear();
+		self.live_nodes.clear();
 		self.transaction.take()
 	}
 
-	/// The executor for checks that only read rows for Node-backed subjects.
-	pub(crate) fn executor(&mut self) -> Option<&mut dyn TransactionExecutor> {
-		self.transaction
-			.as_mut()
-			.map(|transaction| transaction as &mut dyn TransactionExecutor)
+	async fn require_live_node(&mut self, tenant: &str, node: &str) -> Result<()> {
+		let epoch = self
+			.transaction
+			.as_ref()
+			.ok_or_else(|| Error::Conflict("authorization transaction is suspended".into()))?
+			.lock_epoch();
+		if epoch != self.live_nodes_epoch {
+			self.live_nodes.clear();
+			self.live_nodes_epoch = epoch;
+		}
+		let key = (tenant.to_owned(), node.to_owned());
+		if !self.live_nodes.contains(&key) {
+			crate::apps::identity::repositories::nodes::require_live(&mut **self, tenant, node)
+				.await?;
+			self.live_nodes.insert(key);
+		}
+		Ok(())
 	}
 
 	pub(crate) fn admitted(&self, admission: &CatalogAdmission) -> Option<crate::registry::Entry> {
@@ -433,8 +453,11 @@ impl Access {
 			return Err(Error::Forbidden);
 		}
 		for subject in &subjects {
-			super::identity::require_live_subject_on(self.tx.executor(), &self.snapshot, subject)
-				.await?;
+			for node in super::identity::subject_nodes(&self.snapshot, subject)? {
+				self.tx
+					.require_live_node(&self.snapshot.bundle.tenant, node)
+					.await?;
+			}
 		}
 		if identity.credential_id != self.identity.credential_id {
 			identity.lock_credential(&mut self.tx).await?;
@@ -563,13 +586,11 @@ impl Access {
 				.install(self.pool.begin(&self.identity.tenancy()?).await?);
 		}
 		self.snapshot = self.identity.lock_with_mode(&mut self.tx, false).await?;
+		self.tx.live_nodes.clear();
 		if let Some(node) = &self.node {
-			crate::apps::identity::repositories::nodes::require_live(
-				&mut *self.tx,
-				&self.identity.tenant,
-				node.as_str(),
-			)
-			.await?;
+			self.tx
+				.require_live_node(&self.identity.tenant, node.as_str())
+				.await?;
 		}
 		let policy = self.pool.dashboard_policy();
 		crate::apps::identity::models::DashboardExecutionOrigin::require_current(
@@ -695,12 +716,9 @@ impl Access {
 		)
 		.scalar_one(&mut **self.tx)
 		.await?;
-		crate::apps::identity::repositories::nodes::require_live(
-			&mut *self.tx,
-			&self.identity.tenant,
-			&name,
-		)
-		.await?;
+		self.tx
+			.require_live_node(&self.identity.tenant, &name)
+			.await?;
 		Ok(aidash_domain::nodes::NodeName::parse(&name)?)
 	}
 
@@ -708,12 +726,9 @@ impl Access {
 	/// operation has named it, the Tenant's default Node otherwise.
 	pub(crate) async fn catalog_node(&mut self) -> Result<aidash_domain::nodes::NodeName> {
 		if let Some(node) = &self.node {
-			crate::apps::identity::repositories::nodes::require_live(
-				&mut *self.tx,
-				&self.identity.tenant,
-				node.as_str(),
-			)
-			.await?;
+			self.tx
+				.require_live_node(&self.identity.tenant, node.as_str())
+				.await?;
 			return Ok(node.clone());
 		}
 		let name: String = crate::database::native::query_scalar(
@@ -728,12 +743,9 @@ impl Access {
 		)
 		.scalar_one(&mut **self.tx)
 		.await?;
-		crate::apps::identity::repositories::nodes::require_live(
-			&mut *self.tx,
-			&self.identity.tenant,
-			&name,
-		)
-		.await?;
+		self.tx
+			.require_live_node(&self.identity.tenant, &name)
+			.await?;
 		let node = aidash_domain::nodes::NodeName::parse(&name)?;
 		self.set_node(node.clone());
 		Ok(node)
@@ -779,15 +791,13 @@ impl Access {
 
 	pub async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
 		for subject in &self.subjects {
-			// An unknown subject must reach policy evaluation so its denial is audited.
-			// Known subjects still require a live owner before any authorization.
+			// Unknown subjects reach evaluation so their denial is audited.
 			if self.snapshot.bundle.subjects.contains_key(subject) {
-				super::identity::require_live_subject_on(
-					self.tx.executor(),
-					&self.snapshot,
-					subject,
-				)
-				.await?;
+				for node in super::identity::subject_nodes(&self.snapshot, subject)? {
+					self.tx
+						.require_live_node(&self.snapshot.bundle.tenant, node)
+						.await?;
+				}
 			}
 		}
 		// A Subnode creator reads, but never writes, the Subnode's Workspace.
