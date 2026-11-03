@@ -63,6 +63,11 @@ impl Client {
 	}
 }
 fn classify(reply: Reply) -> Result<Vec<u8>> {
+	if reply.status == 403
+		&& let Some(reason) = reply.execution_refusal
+	{
+		return Err(Error::RemoteExecutionRefused(reason));
+	}
 	if !(200..=299).contains(&reply.status)
 		&& let Some(reason) = reply.semantic_reason
 	{

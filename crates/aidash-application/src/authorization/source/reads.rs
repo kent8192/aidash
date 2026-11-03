@@ -33,6 +33,16 @@ pub async fn visible<S: SourceReadScope + ?Sized>(
 		let mut producer = scope.producer(&grant).await?;
 		let inspection: Inspection = serde_json::from_value(grant.inspection)?;
 		super::authorize(producer.as_mut(), &task, node, &inspection).await?;
+		// `authorize` restores the complete chain after validating it. Subsequent
+		// source checks must still exclude an executor known only to the receiver.
+		let executor =
+			aidash_domain::agent_subject(node, &inspection.agent.id, &inspection.agent.version);
+		let subjects = producer.source_subjects();
+		if subjects.last() == Some(&executor)
+			&& !producer.source_bundle().subjects.contains_key(&executor)
+		{
+			producer.source_replace_subjects(subjects[..subjects.len() - 1].to_vec());
+		}
 		let binding: Binding = serde_json::from_value(grant.semantic)?;
 		if let Binding::RequiredHome {
 			decider,

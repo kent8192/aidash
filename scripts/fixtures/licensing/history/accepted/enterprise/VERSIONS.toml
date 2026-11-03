@@ -1,0 +1,8 @@
+# The tests replace REPLACE_COMMIT and REPLACE_DATE with the commit that
+# first added enterprise/LICENSE and its UTC committer date.
+[[version]]
+version = "0.1.0"
+change_date = "2030-10-26"
+change_license = "Apache-2.0"
+first_public_commit = "REPLACE_COMMIT"
+first_public_date = "REPLACE_DATE"

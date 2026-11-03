@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Stateless Credential Broker: capability admission, fixed Provider Catalog and bounded relay.
 use aidash_capability::{
 	Claims, DataProtectionRequirement, Failure, KeyMaterialError, KeyMaterialSource, Operation,

@@ -28,6 +28,23 @@ TERMINAL = {"completed", "cancelled", "failed", "uncertain"}
 PROBE_PROTOCOL = "aidash-admission-probe/2"
 
 
+# Guidance shown to the model when the collector refuses to export /work.
+EXPORT_GUIDANCE = {
+    'symlink': 'symlinks are not supported in /work: {path}; use npm install --no-bin-links, or keep dependency trees under /tmp',
+    'hard_link': 'hard-link aliases are not supported in /work: {path}; write independent copies, or keep dependency trees under /tmp',
+    'file_count': 'the working area holds at most {limit} files; remove files (first over the limit: {path}), or keep dependency trees under /tmp',
+    'bytes': 'the working area holds at most {limit} bytes; remove files (first over the limit: {path}), or keep large output under /tmp',
+    'unsafe_directory': 'unsupported directory in /work: {path}; rename or remove it, or use /tmp',
+    'unsafe_file': 'unsupported file in /work: {path}; keep only regular files with printable names, or use /tmp',
+}
+
+
+def export_error(refused):
+    """The typed tool error of an export refusal: final, never retried."""
+    message = EXPORT_GUIDANCE[refused['reason']].format(path=refused['path'], limit=refused['limit'])
+    return {'code': 'WORKING_EXPORT_REFUSED', 'message': message, 'details': refused, 'retryable': False}
+
+
 class Rejected(Exception):
     def __init__(self, code, message):
         self.code, self.message = code, message
@@ -736,6 +753,17 @@ class Runner:
                     raise RuntimeError("Python memory no longer live")
             self.update(operation, status="finishing", writer_frozen=memory_live, termination_confirmed=not memory_live)
             exported = self.guard(record, "export", working_bytes=self.writable_bytes(record))
+            if 'refused' in exported:
+                if memory_live:
+                    self.guard(record, 'terminate')
+                session = dict(session_id=record['session_id'], area_id=record['area_id'], operation_id=operation,
+                               pod_operation=pod_operation, pod_uid=record['pod_uid'], container_id=cid,
+                               status='stopped', last_used=time.time(), manifest=self.file_identity(record['request']['files']))
+                save(self.root / ('session-' + record['session_id'] + '.json'), session)
+                self.refuse_export(operation, exported['refused'], pod_operation, writer_frozen=False,
+                                   stdout=result.get('stdout', ''), truncated=result.get('truncated', False),
+                                   exit_code=result['exit_code'])
+                return
             directory = self.root / (operation + ".files")
             directory.mkdir(exist_ok=True, mode=0o700)
             for file in exported["files"]:
@@ -921,6 +949,19 @@ class Runner:
             with self.lock:
                 self.active.discard(operation)
 
+    def refuse_export(self, operation, refused, pod_operation, **fields):
+        """End an operation whose Working Area export was refused.
+
+        The refusal is certain and final: nothing is published, so the area
+        keeps its previous revision, and the export is never retried.
+        """
+        self.update(operation, status='failed', termination_confirmed=True, finished_at=time.time(),
+                    error=export_error(refused), **fields)
+        try:
+            self.kube(['delete', 'pod', self.pod_name(pod_operation), '--wait=false', '--force', '--grace-period=0'], check=False)
+        except Exception as cleanup_error:
+            print(f"Refused export cleanup {operation}: {cleanup_error}", file=sys.stderr, flush=True)
+
     def recover_stopped_shell(self, record):
         # Collector RPCs can fail before the Sentry's death becomes observable.
         # Wait for exact-bound physical stop evidence; never replay the command
@@ -939,6 +980,9 @@ class Runner:
                     self.guard(record, 'export', working_bytes=self.writable_bytes(record)))
         captured = self.guard(record, 'logs')
         operation = record['operation_id']
+        if 'refused' in exported:
+            self.refuse_export(operation, exported['refused'], operation, stdout=captured['stdout'], truncated=True)
+            return
         directory = self.root / (operation + '.files')
         directory.mkdir(exist_ok=True, mode=0o700)
         for file in exported['files']:
@@ -1053,6 +1097,10 @@ class Runner:
                         diagnostic = self.kube(["logs", self.pod_name(operation), "-c", "execution", "--limit-bytes=16384"]).stdout.decode(errors="replace")
                     exported = ({"files": []} if record["request"]["kind"] == "verify" else
                                 json.loads(self.exec_collector(operation, ["export", str(self.writable_bytes(record))], timeout=120).stdout))
+                    if 'refused' in exported:
+                        self.refuse_export(operation, exported['refused'], operation,
+                                           stdout=captured['stdout'], truncated=captured['truncated'])
+                        break
                     directory = self.root / (operation + ".files")
                     directory.mkdir(exist_ok=True, mode=0o700)
                     for file in exported["files"]:

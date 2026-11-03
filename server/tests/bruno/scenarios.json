@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 377,
+  "endpoint_count": 379,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -16710,6 +16710,129 @@
       "status": 400,
       "required_checks": [
         "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1517 task-runs - Anonymous request is rejected",
+      "file": "contracts/1517-task-runs.bru",
+      "endpoint": "GET /api/tasks/{id}/runs",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1518 task-runs - Deployment Administrator cannot read Tenant data",
+      "file": "contracts/1518-task-runs.bru",
+      "endpoint": "GET /api/tasks/{id}/runs",
+      "scenario": "Deployment Administrator cannot read Tenant data",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1519 task-runs - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1519-task-runs.bru",
+      "endpoint": "GET /api/tasks/{id}/runs",
+      "scenario": "Typed resource IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1520 task-runs - Missing scoped authority cannot disclose application data",
+      "file": "contracts/1520-task-runs.bru",
+      "endpoint": "GET /api/tasks/{id}/runs",
+      "scenario": "Missing scoped authority cannot disclose application data",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1521 task-runs - Paging rejects nonnumeric or malformed cursors",
+      "file": "contracts/1521-task-runs.bru",
+      "endpoint": "GET /api/tasks/{id}/runs",
+      "scenario": "Paging rejects nonnumeric or malformed cursors",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1522 task-runs - Subject lists the readable Task's Runs",
+      "file": "contracts/1522-task-runs.bru",
+      "endpoint": "GET /api/tasks/{id}/runs",
+      "scenario": "Subject lists the readable Task's Runs",
+      "status": 200,
+      "required_checks": [
+        "Exact HTTP 200",
+        "Documented response fields and types",
+        "Subject lists the readable Task's Runs contract"
+      ]
+    },
+    {
+      "name": "1523 human-requests - Anonymous request is rejected",
+      "file": "contracts/1523-human-requests.bru",
+      "endpoint": "GET /api/human-requests",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1524 human-requests - Deployment Administrator cannot read Tenant data",
+      "file": "contracts/1524-human-requests.bru",
+      "endpoint": "GET /api/human-requests",
+      "scenario": "Deployment Administrator cannot read Tenant data",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1525 human-requests - Malformed bearer syntax is rejected",
+      "file": "contracts/1525-human-requests.bru",
+      "endpoint": "GET /api/human-requests",
+      "scenario": "Malformed bearer syntax is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1526 human-requests - Application read preserves the typed response contract",
+      "file": "contracts/1526-human-requests.bru",
+      "endpoint": "GET /api/human-requests",
+      "scenario": "Application read preserves the typed response contract",
+      "status": 200,
+      "required_checks": [
+        "Exact HTTP 200",
+        "Documented response fields and types",
+        "Application read preserves the typed response contract contract"
+      ]
+    },
+    {
+      "name": "1527 human-requests - Paging rejects nonnumeric or malformed cursors",
+      "file": "contracts/1527-human-requests.bru",
+      "endpoint": "GET /api/human-requests",
+      "scenario": "Paging rejects nonnumeric or malformed cursors",
+      "status": 400,
+      "required_checks": [
         "Exact HTTP 400",
         "Rejection is diagnostic and does not disclose SQL or credentials"
       ]

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Build script for marketplace.
 //!
 //! Sets up cfg aliases for simplified conditional compilation.

@@ -248,7 +248,7 @@ async fn capped_sampling_returns_partial_text_and_max_tokens_without_a_provider_
 ) {
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.projection = aidash_domain::projection::ProjectionVersion::Native;
-	state.harness_contract = aidash_domain::harness_contract::HarnessContract::Structured2;
+	state.harness_contract = aidash_domain::harness_contract::HarnessContract::Structured3;
 	sampling(&mut fixture);
 	fixture
 		.backend
@@ -286,7 +286,7 @@ async fn capped_sampling_returns_partial_text_and_max_tokens_without_a_provider_
 		fixture.backend.0.usage.lock().unwrap()[0]
 			.0
 			.harness_contract,
-		3
+		4
 	);
 	assert_eq!(
 		fixture.backend.0.usage.lock().unwrap()[0].1,

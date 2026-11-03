@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Service-owned ORM model; shared browser wire data lives in serializers.rs.
 use reinhardt::{db::orm::Json, model};
 use serde::{Deserialize, Serialize};

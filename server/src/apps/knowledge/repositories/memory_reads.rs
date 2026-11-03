@@ -177,6 +177,24 @@ pub(crate) async fn visible(lease: &mut Lease<'_>, run_id: Uuid) -> Result<bool>
 	Ok(invalidity(lease, run_id).await?.is_none())
 }
 
+/// A Run depends on private memory only after at least one Unit was delivered.
+pub(crate) async fn has_reads(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	run_id: Uuid,
+) -> Result<bool> {
+	Ok(native::query(
+		&Query::select()
+			.column(Alias::new("unit_id"))
+			.from(Alias::new("memory_run_reads"))
+			.and_where(Expr::col("run_id").eq(Expr::value(run_id)))
+			.limit(1)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_optional(tx)
+	.await?
+	.is_some())
+}
+
 /// Why a Run's memory read journal no longer holds, or `None` while it does.
 /// A changed, withdrawn, deleted or expired source is `Invalidated`; a changed
 /// participant or provider is `Configuration`; lost access is `Authority`.
@@ -189,7 +207,9 @@ pub(crate) async fn invalidity(lease: &mut Lease<'_>, run_id: Uuid) -> Result<Op
 		error => Err(error),
 	};
 	let binding_change = |error: Error| match error {
-		Error::Conflict(_) => Ok(Some(Failure::Configuration)),
+		Error::Conflict(_) | Error::NotFound(_) | Error::Invalid(_) => {
+			Ok(Some(Failure::Configuration))
+		}
 		Error::Forbidden => Ok(Some(Failure::Authority)),
 		error => Err(error),
 	};
@@ -210,18 +230,13 @@ pub(crate) async fn invalidity(lease: &mut Lease<'_>, run_id: Uuid) -> Result<Op
 		Err(error) => return binding_change(error),
 	};
 	let Some(binding) = binding else {
-		let read = native::query(
-			&Query::select()
-				.column(Alias::new("unit_id"))
-				.from(Alias::new("memory_run_reads"))
-				.and_where(Expr::col("run_id").eq(Expr::value(run_id)))
-				.limit(1)
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_optional(&mut **lease.tx())
-		.await?;
-		return Ok(read.map(|_| Failure::Authority));
+		return Ok(has_reads(&mut **lease.tx(), run_id)
+			.await?
+			.then_some(Failure::Authority));
 	};
+	if !has_reads(&mut **lease.tx(), run_id).await? {
+		return Ok(None);
+	}
 	if let Err(error) = units::authorize(lease, &binding.bank, "memory.read").await {
 		return binding_change(error);
 	}

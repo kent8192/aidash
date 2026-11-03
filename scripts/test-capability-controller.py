@@ -201,8 +201,12 @@ class ControllerLifecycle(unittest.TestCase):
                 self.addCleanup(lambda p=path: p.unlink(missing_ok=True))
                 with patch.dict(collector.ROOTS, working=work), patch.object(sys, "argv", ["collector", "export", "4096"]):
                     if unsafe:
-                        with self.assertRaisesRegex(ValueError, "invalid relative file path"):
+                        # A refusal is data, so the runner fails only this operation.
+                        output = io.StringIO()
+                        with contextlib.redirect_stdout(output):
                             collector.export()
+                        self.assertEqual(json.loads(output.getvalue()),
+                                         {"refused": {"reason": "unsafe_file", "path": name, "limit": None}})
                         with self.assertRaisesRegex(ValueError, "invalid file path"):
                             with node_guard.open_file(work, name):
                                 pass

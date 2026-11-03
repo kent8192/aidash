@@ -7,8 +7,10 @@ use crate::{
 };
 use aidash_domain::{
 	capabilities::operations::{
-		FileScope, MountedFile, VERIFICATION, capability_of, lost_area_state,
-		reconciliation::Snapshot, request_validation_failure,
+		ExportQuota, FileScope, MAX_AREA_FILES, MountedFile, VERIFICATION, WORKING_EXPORT_REFUSED,
+		capability_of, export_quota_refusal, lost_area_state,
+		reconciliation::{Area, Limits, Snapshot},
+		request_validation_failure,
 	},
 	completion::{MAX_DIAGNOSTIC_BYTES, bounded_tail},
 };
@@ -197,6 +199,12 @@ async fn reconcile(
 					.event(json!({"operation_id":id,"area_id":area.id,"status":operation.state}))
 					.await;
 			}
+			// The runner refused to export `/work` (#682): only this operation
+			// fails, and the Area keeps its published revision.
+			if observed["error"]["code"] == WORKING_EXPORT_REFUSED {
+				let error = observed["error"].clone();
+				return Box::pin(refuse_export(scope, &area, operation, &observed, error)).await;
+			}
 			let previous = serde_json::from_value::<Vec<MountedFile>>(area.manifest.clone())?;
 			let mut entries = previous
 				.iter()
@@ -206,12 +214,16 @@ async fn reconcile(
 			let exported = observed["files"]
 				.as_array()
 				.ok_or_else(|| Error::External("invalid runner file manifest".into()))?;
+			// The runner counts only `/work`; mounted inputs share the manifest.
+			if let Some(error) = quota_refusal(&entries, exported, limits.working_bytes)? {
+				return Box::pin(refuse_export(scope, &area, operation, &observed, error)).await;
+			}
 			let mut size = entries.iter().map(|file| file.size).sum::<u64>();
 			let mut seen = std::collections::BTreeSet::new();
 			for file in exported {
 				let path = file["path"].as_str().ok_or(Error::Forbidden)?;
 				aidash_domain::registry::rules::validate_path(path)?;
-				if !seen.insert(path) || entries.len() >= 4096 {
+				if !seen.insert(path) || entries.len() >= MAX_AREA_FILES {
 					return Err(Error::Invalid("invalid runner paths".into()));
 				}
 				let file_size = file["size"].as_u64().ok_or(Error::Forbidden)?;
@@ -240,22 +252,7 @@ async fn reconcile(
 					provenance: json!({"kind":"operation","operation_id":id}),
 				});
 			}
-			let stdout = STANDARD
-				.decode(observed["stdout"].as_str().ok_or(Error::Forbidden)?)
-				.map_err(|_| Error::Invalid("invalid runner output encoding".into()))?;
-			if stdout.len() as u64 > limits.output_bytes {
-				return Err(Error::Conflict("runner output quota".into()));
-			}
-			let (output_id, output_digest) = scope.put("output", &stdout).await?;
-			let output = MountedFile {
-				file_id: output_id,
-				path: format!("operation-{id}.log"),
-				digest: output_digest,
-				size: stdout.len() as u64,
-				media_type: "text/plain; charset=utf-8".into(),
-				scope: FileScope::Working,
-				provenance: json!({"kind":"operation","operation_id":id}),
-			};
+			let output = store_output(scope, id, &observed, limits).await?;
 			let mut displays = vec![];
 			let mut display_bytes = 0;
 			for (index, display) in observed["displays"]
@@ -346,6 +343,87 @@ async fn reconcile(
 		.event(json!({"operation_id":id,"area_id":area.id,"status":operation.state}))
 		.await?;
 	Ok(())
+}
+/// Saves the operation's command output as its own object, outside the Area
+/// manifest.
+async fn store_output(
+	scope: &mut dyn OperationReconciliationScope,
+	id: Uuid,
+	observed: &Value,
+	limits: Limits,
+) -> Result<MountedFile> {
+	let stdout = STANDARD
+		.decode(observed["stdout"].as_str().ok_or(Error::Forbidden)?)
+		.map_err(|_| Error::Invalid("invalid runner output encoding".into()))?;
+	if stdout.len() as u64 > limits.output_bytes {
+		return Err(Error::Conflict("runner output quota".into()));
+	}
+	let (file_id, digest) = scope.put("output", &stdout).await?;
+	Ok(MountedFile {
+		file_id,
+		path: format!("operation-{id}.log"),
+		digest,
+		size: stdout.len() as u64,
+		media_type: "text/plain; charset=utf-8".into(),
+		scope: FileScope::Working,
+		provenance: json!({"kind":"operation","operation_id":id}),
+	})
+}
+/// The refusal of an export that would exceed the manifest's file ceiling or
+/// the byte quota, naming the first exported file over it.
+fn quota_refusal(
+	entries: &[MountedFile],
+	exported: &[Value],
+	working_bytes: u64,
+) -> Result<Option<Value>> {
+	let mounted = entries.iter().map(|file| file.size).sum::<u64>();
+	let mut size = mounted;
+	for (index, file) in exported.iter().enumerate() {
+		let path = file["path"].as_str().ok_or(Error::Forbidden)?;
+		if entries.len() + index >= MAX_AREA_FILES {
+			return Ok(Some(export_quota_refusal(
+				ExportQuota::Files,
+				path,
+				MAX_AREA_FILES as u64,
+			)));
+		}
+		size = size.saturating_add(file["size"].as_u64().ok_or(Error::Forbidden)?);
+		if size > working_bytes {
+			return Ok(Some(export_quota_refusal(
+				ExportQuota::Bytes,
+				path,
+				working_bytes.saturating_sub(mounted),
+			)));
+		}
+	}
+	Ok(None)
+}
+/// Ends an operation whose export was refused as a failed tool call: nothing is
+/// published, the Area reopens at its previous revision and the Run continues.
+/// A Python session resets, since its memory no longer matches those files.
+async fn refuse_export(
+	scope: &mut dyn OperationReconciliationScope,
+	area: &Area,
+	mut operation: Snapshot,
+	observed: &Value,
+	error: Value,
+) -> Result<()> {
+	let id = operation.id;
+	let limits = scope.limits();
+	let output = store_output(scope, id, observed, limits).await?;
+	scope.set_area("active").await?;
+	operation.revision = area.revision;
+	operation.state = "failed".into();
+	operation.result = json!({"session_id":operation.input["session_id"],"writer_frozen":false,"output_file":output,"exit_code":observed["exit_code"],"truncated":observed["truncated"],"termination_confirmed":true,"runner_acknowledged":false,"error":error});
+	if operation.kind == "code_interpreter" {
+		scope
+			.complete_python(&operation, &json!({"writer_frozen":false}))
+			.await?;
+	}
+	scope.persist(&operation).await?;
+	scope
+		.event(json!({"operation_id":id,"area_id":area.id,"status":operation.state}))
+		.await
 }
 /// When the runner saw the Pod's command start and stop, as the runner
 /// records them: seconds since the epoch.

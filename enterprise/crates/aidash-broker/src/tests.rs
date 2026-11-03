@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 use super::*;
 use aidash_capability::{InMemorySigner, TokenSigner, TokenSubject, mint};
 use async_trait::async_trait;
