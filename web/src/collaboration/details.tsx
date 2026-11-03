@@ -57,6 +57,7 @@ import {
 import { GenerationAssignForm } from "../generation";
 import { RunResearchEvidence } from "../research-governance";
 import { EntityDetails } from "../entity-details";
+import { RunSubnodes } from "./subnodes";
 import { DeciderStartRefusal } from "../catalog-approval";
 import { unapprovedCompactionDecider } from "../catalog-approval-model";
 import { ArtifactList } from "./channel";
@@ -604,6 +605,7 @@ function RunPanel({
           }
         />
       )}
+      {!managed && <RunSubnodes run={id} node={node} agentLabel={agentLabel} />}
       {managed && <RemoteMemoryProvenance url={`/api/runs/${id}/semantic`} />}
       {managed && <RemoteRunManagement id={id} />}
       {controllable && (

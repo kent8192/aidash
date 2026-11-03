@@ -8,6 +8,23 @@ use aidash_domain::{
 	registry::EntityRef,
 };
 use uuid::Uuid;
+async fn subnode_members(
+	scope: &mut dyn WorkerTaskScope,
+	run: &RunMetadata,
+) -> Result<Option<Vec<EntityRef>>> {
+	let members = scope.subnode_members(run.workspace_id).await?;
+	if let Some(members) = &members {
+		let caller = EntityRef {
+			id: run.agent_id.clone(),
+			version: run.agent_version.clone(),
+		};
+		if !members.contains(&caller) {
+			return Err(Error::Forbidden);
+		}
+	}
+	Ok(members)
+}
+
 pub async fn assign(
 	scope: &mut dyn WorkerTaskScope,
 	run: &RunMetadata,
@@ -15,10 +32,13 @@ pub async fn assign(
 	policy: &str,
 	reason: &str,
 ) -> Result<Assignment> {
+	let members = subnode_members(scope, run).await?;
 	if scope.task_workspace(task).await? != Some(run.workspace_id) {
 		return Err(Error::Forbidden);
 	}
-	let assignment = scope.assign(task, policy, reason).await?;
+	let assignment = scope
+		.assign(task, policy, reason, members.as_deref())
+		.await?;
 	scope.record_output(run, "task", task).await?;
 	if let Assignment::Generated { generation } = &assignment {
 		scope
@@ -33,6 +53,7 @@ pub async fn create_task(
 	key: &str,
 	input: &NewTask,
 ) -> Result<Task> {
+	subnode_members(scope, run).await?;
 	let workspace = scope.workspace(run.workspace_id).await?;
 	scope.require(&workspace, "task.create").await?;
 	scope.related_tasks(run.workspace_id, input).await?;
@@ -74,6 +95,13 @@ pub async fn delegate(
 		return Err(Error::Forbidden);
 	}
 	let node = run.home_node.as_str();
+	if let Some(members) = subnode_members(scope, run).await?
+		&& !members.contains(agent)
+	{
+		return Err(Error::Refused(
+			"Subnode delegation target is not a member".into(),
+		));
+	}
 	if scope.task_workspace(task).await? != Some(run.workspace_id) {
 		return Err(Error::Forbidden);
 	}

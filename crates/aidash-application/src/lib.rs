@@ -226,3 +226,4 @@ pub(crate) mod test_support;
 pub mod egress;
 
 pub mod oauth_clients;
+pub mod subnodes;

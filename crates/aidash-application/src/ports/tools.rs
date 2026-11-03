@@ -148,6 +148,13 @@ pub trait PluginInputs: Send + Sync {
 /// Memory and task operations must retain their policy locks and durable writes.
 #[async_trait]
 pub trait ToolOperations: Send + Sync {
+	async fn subnode_command(&self, key: &str, command: &crate::subnodes::Command)
+	-> Result<Value>;
+	async fn subnode_create(
+		&self,
+		key: &str,
+		input: &crate::subnodes::Create,
+	) -> Result<aidash_domain::subnodes::Subnode>;
 	/// A remote Run asks its Home to use personal authentication. `None` means
 	/// Home has no personal authentication and the local shared/anonymous path applies.
 	async fn connection_call(
@@ -200,6 +207,16 @@ pub trait ToolOperations: Send + Sync {
 		offset: usize,
 		maximum: usize,
 	) -> Result<Value>;
+	async fn read_subnode_record_chunk(
+		&self,
+		_workspace: Uuid,
+		_kind: &str,
+		_id: &str,
+		_offset: usize,
+		_maximum: usize,
+	) -> Result<Value> {
+		Err(crate::Error::Forbidden)
+	}
 	/// Resolve a Workspace File pointer under the Run's current authority.
 	async fn workspace_image(
 		&self,
@@ -227,6 +244,10 @@ pub trait ToolOperations: Send + Sync {
 	/// Model-visible specifications of the Run's aliased tool Bindings, by alias,
 	/// exactly as dispatch advertises them (`bound_specification`).
 	async fn binding_specifications(&self) -> Result<BTreeMap<String, ToolSpec>>;
+	/// Intrinsic Subnode coordination tools present in this Run.
+	async fn intrinsic_subnode_specifications(&self) -> Result<BTreeMap<String, ToolSpec>> {
+		Ok(BTreeMap::new())
+	}
 	/// Direct Skills pinned for the Run. Empty when Skills are off, nothing is
 	/// pinned, or this placement has no local authority.
 	async fn direct_skills(&self) -> Result<Vec<DirectSkill>>;

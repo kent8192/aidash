@@ -26,6 +26,16 @@ impl Operations {
 }
 #[async_trait]
 impl ToolOperations for Operations {
+	async fn subnode_command(&self, _: &str, _: &crate::subnodes::Command) -> Result<Value> {
+		panic!("unexpected Subnode effect")
+	}
+	async fn subnode_create(
+		&self,
+		_: &str,
+		_: &crate::subnodes::Create,
+	) -> Result<aidash_domain::subnodes::Subnode> {
+		panic!("unexpected tool effect: subnode_create")
+	}
 	async fn connection_call(
 		&self,
 		call: &aidash_domain::identity::commands::connections::ConnectionCall,

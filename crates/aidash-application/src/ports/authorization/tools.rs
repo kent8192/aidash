@@ -21,6 +21,8 @@ pub trait AgentToolRepository: Send + Sync {
 }
 #[async_trait]
 pub trait AgentToolScope: Send {
+	/// None outside a Subnode; a dissolved Subnode or removed member is refused.
+	async fn subnode_allowance(&mut self) -> Result<Option<aidash_domain::subnodes::Allowance>>;
 	fn transaction_active(&self) -> bool;
 	async fn suspend(&mut self) -> Result<()>;
 	/// Replace the retained authority without releasing this scope's lease.

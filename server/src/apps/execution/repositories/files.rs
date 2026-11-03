@@ -167,6 +167,46 @@ impl FileScopePort for Scope<'_> {
 		)
 		.await
 	}
+	async fn subnode_area(
+		&mut self,
+		run: &RunMetadata,
+		workspace: Uuid,
+		area: Uuid,
+	) -> Result<Area> {
+		use crate::apps::execution::models::subnodes::SubnodeRecord;
+		use reinhardt::db::orm::Model;
+		if self.access.read_run != Some(run.id) {
+			return Err(Error::Forbidden);
+		}
+		let matches = SubnodeRecord::objects()
+			.filter(SubnodeRecord::field_tenant().eq(self.access.identity.tenant.clone()))
+			.filter(SubnodeRecord::field_workspace_id().eq(workspace))
+			.filter(SubnodeRecord::field_creator_run_id().eq(run.id))
+			.all_with_executor(self.access.tx.native_mut())
+			.await
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
+		if matches.is_empty() {
+			return Err(Error::Forbidden);
+		}
+		// Narrow the inherited Workspace only for this read. Session authorization
+		// still checks file.read and every source constraint against the creator.
+		let previous = std::mem::replace(
+			&mut self.access.context,
+			serde_json::json!({"workspace_id": workspace}),
+		);
+		let result = aidash_application::capabilities::sessions::load(
+			&mut crate::bootstrap::session_scope(None, self.access),
+			area,
+		)
+		.await;
+		self.access.context = previous;
+		let area = result?;
+		if area.workspace_id != workspace {
+			return Err(Error::Forbidden);
+		}
+		Ok(area)
+	}
 	async fn authorize(&mut self, area: &Area, action: &str) -> Result<()> {
 		aidash_application::capabilities::sessions::authorize(
 			&mut crate::bootstrap::session_scope(None, self.access),

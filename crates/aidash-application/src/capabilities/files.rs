@@ -206,6 +206,17 @@ pub async fn invoke(
 		"file_read" => {
 			let selection: FileRead =
 				serde_json::from_value(input).map_err(|e| Error::Invalid(e.to_string()))?;
+			match (selection.workspace_id, selection.area_id) {
+				(Some(workspace), Some(target)) => {
+					area = scope.subnode_area(run, workspace, target).await?;
+				}
+				(None, None) => {}
+				_ => {
+					return Err(Error::Invalid(
+						"workspace_id and area_id must be supplied together".into(),
+					));
+				}
+			}
 			if matches!(selection.representation, Representation::ModelInput) {
 				let file = files(&area)?
 					.into_iter()

@@ -819,3 +819,14 @@ Plugin/Context Source heads. The Harness Contract validator extends the Agent
 Plugin settings validator, including its compaction rules, and restores that
 validator on rollback. The join is an empty state-only migration that preserves
 existing identities and one leaf per app.
+
+`execution/0094_subnodes`, `0095_subnodes_row_level_security`, and
+`0096_subnodes_state` create the Run-scoped Subnode tables, enforce Tenant
+row policies, and record their model state after `0089_remove_agent_cluster`.
+
+`registry/0060_subnode_provider` (after `registry/0059_reference_image_byte_state`) extends the PostgreSQL built-in Tool descriptor
+validator with the six `core.subnodes@1` operations (#660). Its reversible
+`RunSQL` replaces the PostgreSQL function body because Reinhardt migrations
+cannot express PL/pgSQL function definitions. Rolling back restores the
+previous descriptor contract; existing Subnode descriptors then cannot be
+rewritten until the migration is reapplied.

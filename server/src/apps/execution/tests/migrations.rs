@@ -68,9 +68,13 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0052_harness_contract_structured3"),
 	("registry", "0053_connection_request"),
 	("registry", "0054_remove_agent_cluster"),
+	("registry", "0060_subnode_provider"),
 	("registry", "0055_remove_structured_harness_contracts"),
 	("registry", "0056_attachment_tools"),
 	("execution", "0089_remove_agent_cluster"),
+	("execution", "0094_subnodes"),
+	("execution", "0095_subnodes_row_level_security"),
+	("execution", "0096_subnodes_state"),
 	("execution", "0090_run_created_at"),
 	("execution", "0091_bounded_read_indexes"),
 	("execution", "0092_reference_embedding_usage"),
@@ -130,7 +134,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		81
+		82
 	);
 	let tables = migrations
 		.iter()
@@ -385,15 +389,12 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0094_policy_probe")
+		.get_migration("execution", "0097_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![(
-			"execution".to_owned(),
-			"0093_reference_embedding_usage_state".to_owned()
-		)]
+		vec![("execution".to_owned(), "0096_subnodes_state".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -410,6 +411,9 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0091_bounded_read_indexes"),
 			("execution", "0092_reference_embedding_usage"),
 			("execution", "0093_reference_embedding_usage_state"),
+			("execution", "0094_subnodes"),
+			("execution", "0095_subnodes_row_level_security"),
+			("execution", "0096_subnodes_state"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -830,7 +834,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		81
+		82
 	);
 }
 
@@ -3849,4 +3853,83 @@ async fn context_sources_migration_accepts_exact_native_policies_and_rejects_mis
 	let mut unknown = configured;
 	unknown["context_source"]["unknown"] = json!(true);
 	assert!(!accepts(unknown).await);
+}
+
+#[rstest]
+#[tokio::test]
+async fn subnode_provider_migration_accepts_exact_builtin_descriptors_and_reverses(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let operations = [
+		"subnode_create",
+		"subnode_task",
+		"subnode_add_member",
+		"subnode_remove_member",
+		"subnode_dissolve",
+		"subnode_message",
+	];
+	for operation in operations {
+		let descriptor = serde_json::to_value(
+			aidash_domain::tool::providers::core_descriptor("aidash://fixture", operation).unwrap(),
+		)
+		.unwrap();
+		assert!(
+			contract_accepts(
+				&pool,
+				"aidash_descriptor_is_valid",
+				vec![descriptor.clone()]
+			)
+			.await,
+			"{operation}"
+		);
+		let mut wrong = descriptor;
+		wrong["provider"] = json!("core.tasks@1");
+		assert!(
+			!contract_accepts(&pool, "aidash_descriptor_is_valid", vec![wrong]).await,
+			"{operation}"
+		);
+	}
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.get_migration("registry", "0060_subnode_provider")
+			.await
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	let connection = serde_json::to_value(
+		aidash_domain::tool::providers::core_descriptor("aidash://fixture", "connection_request")
+			.unwrap(),
+	)
+	.unwrap();
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_descriptor_is_valid",
+			vec![connection.clone()]
+		)
+		.await
+	);
+	let descriptor = serde_json::to_value(
+		aidash_domain::tool::providers::core_descriptor("aidash://fixture", "subnode_create")
+			.unwrap(),
+	)
+	.unwrap();
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_descriptor_is_valid",
+			vec![descriptor.clone()]
+		)
+		.await
+	);
+	executor.apply_migrations(&[migration]).await.unwrap();
+	assert!(contract_accepts(&pool, "aidash_descriptor_is_valid", vec![descriptor]).await);
+	assert!(contract_accepts(&pool, "aidash_descriptor_is_valid", vec![connection]).await);
 }

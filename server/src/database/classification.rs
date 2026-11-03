@@ -201,6 +201,10 @@ pub const TABLES: &[Table] = &[
 	audit("execution", "run_safety_stops"),
 	table("execution", "run_task_snapshots", TenantOwned),
 	table("execution", "runs", TenantOwned),
+	table("execution", "subnodes", TenantOwned),
+	table("execution", "subnode_members", TenantOwned),
+	table("execution", "subnode_operation_receipts", TenantOwned),
+	table("execution", "subnode_limits", TenantOwned),
 	table("execution", "url_intents", TenantOwned),
 	// federation
 	// cross-node transaction plumbing
