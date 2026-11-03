@@ -854,7 +854,8 @@ async fn direct_thread_attachment_fetch_checks_mapping_and_grant(#[future(awt)] 
 async fn remote_selected_thread_attachment_reaches_next_inference(
 	#[case] revoke: bool,
 	#[future(awt)]
-	#[with(false, false, false, false, false, (false, false, 32), false, false, false, true)]
+	// Select the media Agent and activate its admission.
+	#[with(false, false, false, false, false, (false, false, 32), false, false, true, true)]
 	scoped_pair: Pair,
 ) {
 	use base64::Engine as _;
@@ -1013,7 +1014,8 @@ async fn media_receiver_agent(
 			Value::Null,
 		)
 		.await;
-		policy["bundle"]["subjects"][&subject] = json!({"kind":"agent"});
+		policy["bundle"]["subjects"][&subject] =
+			json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 		let (status, body) = request(
 			app,
 			&runtime.config.api_token,
@@ -1024,7 +1026,8 @@ async fn media_receiver_agent(
 		.await;
 		assert_eq!(status, 200, "{body}");
 	}
-	source_policy["subjects"][&subject] = json!({"kind":"agent"});
+	source_policy["subjects"][&subject] =
+		json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 }
 
 /// A receiver Agent on the Ordered Projection Version, approved on both nodes.
@@ -7910,7 +7913,8 @@ async fn foreign_generation_uses_the_receiving_nodes_policy_resource(
 async fn node_deletion_or_explicit_cancel_prevents_late_activation(
 	#[case] deletion: bool,
 	#[future(awt)]
-	#[with(false,false,false,false,false,(false,false,32),false,false,false)]
+	// Prepare the admission without activating a receiver Run.
+	#[with(false,false,false,false,false,(false,false,32),false,false,false,false)]
 	scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
