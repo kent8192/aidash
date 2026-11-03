@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 pub struct Python {
 	pub idempotency_key: Uuid,
 	pub code: String,
+	/// The working area revision: take it from the previous result's `revision`; a new area starts at 1.
 	pub expected_revision: i64,
 	pub expected_session_id: Option<Uuid>,
 	pub timeout_seconds: Option<u64>,

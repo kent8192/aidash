@@ -49,3 +49,32 @@ is Apache-2.0, the license of Community.
 - Enterprise binaries and images are never distributed publicly; only Enterprise
   source is. Community images and desktop builds are published once releases
   begin.
+
+## Amendment (2026-10-26)
+
+This amendment refines the decision for the cutover (#255). It does not
+supersede it.
+
+- **Change Date.** The cutover PR fixes a date D in UTC, and the Change Date is
+  D plus four years. For 0.1.0, D is 2026-10-26 and the Change Date is
+  2030-10-26. The cutover commits must first be pushed on or after D. A later
+  push only shortens the period; an earlier one would exceed the four-year
+  limit.
+- **Approval is the first push.** The repository is public, so pushing the
+  cutover commits to any branch publishes the grants; they cannot wait for the
+  merge. The Licensor therefore approves the final content before that first
+  push, and the push is the first public distribution of Enterprise 0.1.0 under
+  BUSL-1.1 and of Community under Apache-2.0. The merge brings the same terms
+  into the development branch.
+- **First public commit.** CI derives it from git as the commit that first
+  added `enterprise/LICENSE`. A follow-up PR records its SHA and date in
+  `enterprise/VERSIONS.toml`, and the history check compares that record with
+  git. The cutover PR leaves the two fields out. The recorded date is the
+  commit date, which is never later than the first push.
+- **Interim guard superseded.** The consequence above that "CI rejects any
+  license declaration outside an allowlist" no longer holds. #407 deleted the
+  interim guard. #255 replaces it with checks for scope, license expressions,
+  standard text integrity, BSL parameters, transition history, the dependency
+  boundary, artifact contents and third-party attribution. Those checks do not
+  scan prose that names a license, which is the rule that made #407 delete the
+  old guard. The earlier consequence stays in this record as history.

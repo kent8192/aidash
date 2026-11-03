@@ -45,7 +45,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           AIDASH_GCP_CONFIG: ${{ vars.AIDASH_GCP_PRODUCTION_CONFIG }}
-        run: python3 infra/gcp/control/controller.py dispatch-production
+        run: python3 enterprise/infra/gcp/control/controller.py dispatch-production
 
   prepare:
     if: >-
@@ -77,7 +77,7 @@ jobs:
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
       - id: prepare
         name: Authorize the human-merged release and original staging bundle
-        run: python3 infra/gcp/control/controller.py prepare
+        run: python3 enterprise/infra/gcp/control/controller.py prepare
 
   apply:
     needs: prepare
@@ -120,10 +120,10 @@ jobs:
           terraform_version: 1.14.8
           terraform_wrapper: false
       - name: Deploy the verified bundle after admission drain
-        run: python3 infra/gcp/control/controller.py reconcile
+        run: python3 enterprise/infra/gcp/control/controller.py reconcile
       - name: Export safe continuation status without URLs or credentials
         if: always()
-        run: python3 infra/gcp/control/controller.py production-progress
+        run: python3 enterprise/infra/gcp/control/controller.py production-progress
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

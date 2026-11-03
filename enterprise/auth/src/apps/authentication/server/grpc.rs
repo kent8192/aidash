@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Private mTLS service adapters; product peers never obtain administrator scope.
 use crate::{Error, Result, service::Authentication};
 use aidash_application::{accounts::Service as Accounts, ports::accounts::Scope};

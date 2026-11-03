@@ -1,6 +1,7 @@
 {
   "name": "aidash-enterprise-dashboard",
   "private": true,
+  "license": "BUSL-1.1",
   "type": "module",
   "scripts": {
     "link": "ln -sfn ../../web/node_modules node_modules",

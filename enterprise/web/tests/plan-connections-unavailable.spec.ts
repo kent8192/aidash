@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 import { expect, test } from "@playwright/test";
 import { installBearerDashboard } from "../../../web/tests/auth-fixture";
 import {

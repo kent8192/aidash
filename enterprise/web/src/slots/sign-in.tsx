@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 import { lazy } from "react";
 import { takeEmailHint } from "../gcip-email-hint";
 import type { SignInMethod } from "@/slots/types";

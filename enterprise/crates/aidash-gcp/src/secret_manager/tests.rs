@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 use super::*;
 #[test]
 fn resources_and_numeric_pins_are_confined_to_the_configured_environment() {

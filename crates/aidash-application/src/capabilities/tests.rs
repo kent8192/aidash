@@ -448,6 +448,8 @@ async fn new_operation_admission_stops_before_file_authority_on_invalid_saved_st
 	}
 	let expected = if condition == "TERMINAL" {
 		"RUN_NOT_ACTIVE"
+	} else if condition == "AREA_REVISION_CHANGED" {
+		"AREA_REVISION_CHANGED: the working area is at revision 8; retry with expected_revision 8"
 	} else {
 		condition
 	};
@@ -460,6 +462,28 @@ async fn new_operation_admission_stops_before_file_authority_on_invalid_saved_st
 	);
 	assert!(!scope.calls.iter().any(|stage| stage == "file.write"));
 	assert!(scope.accepted.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn stale_revision_returns_a_recovery_hint(
+	mut scope: Scope,
+	run: RunMetadata,
+	input: ShellRequest,
+) {
+	scope.area.revision = 8;
+	let error = prepare(&mut scope, &run, input, "shell", json!({}))
+		.await
+		.unwrap_err();
+	let response =
+		aidash_domain::capabilities::errors::CapabilityError::message(409, &error.to_string());
+	let value = serde_json::to_value(response).unwrap();
+	assert_eq!(value["code"], "AREA_REVISION_CHANGED");
+	assert_eq!(value["details"]["current_revision"], 8);
+	assert_eq!(
+		value["message"],
+		"AREA_REVISION_CHANGED: the working area is at revision 8; retry with expected_revision 8"
+	);
 }
 #[rstest]
 #[case::authorization("file.write", 2)]

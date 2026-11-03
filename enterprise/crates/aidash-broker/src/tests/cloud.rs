@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Acceptance through the real Cloud ProviderAccess, issuer, HTTP broker and fakes.
 use super::*;
 use aidash_application::{
