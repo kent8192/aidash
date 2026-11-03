@@ -7,6 +7,9 @@ use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0093_content_object_references", "execution")
 		.add_dependency("execution", "0092_content_blobs")
+		// Thread Attachments reference `core_objects`, which this migration
+		// recreates, so it runs after their references exist and moves them.
+		.add_dependency("workspaces", "0018_attachment_wav_rendition_state")
 		.atomic(true)
 		.database_only(true)
 		.add_operation(Operation::AddConstraintDefinition {
@@ -24,6 +27,33 @@ pub(super) fn migration() -> Migration {
 					.with_not_null(true)
 					.with_default(Some("'[]'::jsonb".into())),
 			),
+		})
+		// The Thread Attachment references block dropping `core_objects`. They are
+		// added back to the recreated table below; a development database that
+		// holds attachments is recreated, as its object bytes are discarded.
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "channel_attachments".into(),
+			constraint: Constraint::ForeignKey {
+				name: "channel_attachments_object_fkey".into(),
+				columns: vec!["tenant".into(), "object_id".into()],
+				referenced_table: "core_objects".into(),
+				referenced_columns: vec!["tenant".into(), "id".into()],
+				on_delete: ForeignKeyAction::Cascade,
+				on_update: ForeignKeyAction::Restrict,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "channel_attachments".into(),
+			constraint: Constraint::ForeignKey {
+				name: "channel_attachments_wav_object_fkey".into(),
+				columns: vec!["tenant".into(), "wav_object_id".into()],
+				referenced_table: "core_objects".into(),
+				referenced_columns: vec!["tenant".into(), "id".into()],
+				on_delete: ForeignKeyAction::Cascade,
+				on_update: ForeignKeyAction::Restrict,
+				deferrable: None,
+			},
 		})
 		// Reversing DropTable restores only what the model state holds, not the
 		// triggers and policies 0006, 0036 and 0062 added with RunSQL nor the
@@ -135,6 +165,30 @@ pub(super) fn migration() -> Migration {
 			without_rowid: None,
 			interleave_in_parent: None,
 			partition: None,
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "channel_attachments".into(),
+			constraint: Constraint::ForeignKey {
+				name: "channel_attachments_object_fkey".into(),
+				columns: vec!["tenant".into(), "object_id".into()],
+				referenced_table: "core_objects".into(),
+				referenced_columns: vec!["tenant".into(), "id".into()],
+				on_delete: ForeignKeyAction::Cascade,
+				on_update: ForeignKeyAction::Restrict,
+				deferrable: None,
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "channel_attachments".into(),
+			constraint: Constraint::ForeignKey {
+				name: "channel_attachments_wav_object_fkey".into(),
+				columns: vec!["tenant".into(), "wav_object_id".into()],
+				referenced_table: "core_objects".into(),
+				referenced_columns: vec!["tenant".into(), "id".into()],
+				on_delete: ForeignKeyAction::Cascade,
+				on_update: ForeignKeyAction::Restrict,
+				deferrable: None,
+			},
 		})
 		.add_operation(Operation::AddColumn {
 			table: "core_blob_references".into(),
