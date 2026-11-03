@@ -235,6 +235,9 @@ upper-policy denial cannot be approved away. Authenticated services belong in
 separately configured integrations. Never copy their tokens into Python, Shell,
 Skill scripts or package requests.
 
+Git repositories can be cloned through an approved Egress gateway service; see
+[GitHub repository access](../tenant-secrets.md#clone-a-github-repository).
+
 Additional Python dependencies use explicitly authorized, hash-pinned wheel
 objects fetched by the broker from permitted package origins. Installation is
 offline in the sandbox, with no dependency auto-download or source build. It
@@ -247,6 +250,33 @@ If retained storage fills after an operation executes, its poll result exposes
 `STORAGE_QUOTA`. The old file revision stays intact and the runner's result is
 retained. Restore capacity to reconcile that same operation ID; submitting the
 operation again does not reinstall packages or repeat code.
+
+### Working Area export restrictions
+
+After each shell command or Python cell, the runner exports `/work` as the next
+Working Area revision. It never follows links and never accepts aliases, so it
+refuses to export:
+
+- a symbolic link, such as the `node_modules/.bin` links npm writes;
+- a hard-link alias, such as the files pnpm links from its store;
+- more than 4096 files in the Working Area manifest, mounted references
+  included;
+- more bytes than the configured Working Area quota leaves writable;
+- a directory or file whose name is not a printable relative path, or a special
+  file.
+
+A refusal fails only that operation, with the tool error
+`WORKING_EXPORT_REFUSED`. Nothing is published, so the Working Area keeps its
+previous revision and stays usable, and the Run continues. The error message
+names the reason, the first offending relative path and, for a quota, the limit.
+For example: `symlinks are not supported in /work:
+tools/node_modules/.bin/sha.js; use npm install --no-bin-links, or keep
+dependency trees under /tmp`. Its `details` carry the same `reason`, `path` and
+`limit` fields. The command's output stays readable. A refused Python cell also
+resets the interpreter, because its memory no longer matches the published
+files. Remove the offending files, install with `npm install --no-bin-links`, or
+keep dependency trees and build output under `/tmp`, which is never exported
+and is bounded by the temporary-storage ceiling.
 
 ## Sharing and cleanup
 

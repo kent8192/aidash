@@ -51,6 +51,9 @@ pub struct Run {
 	pub lease_owner: Option<uuid::Uuid>,
 	#[field(null = true)]
 	pub lease_until: Option<DateTime<Utc>>,
+	/// Creation time; Runs predating this field use their last update at migration.
+	#[field(auto_now_add = true)]
+	pub created_at: DateTime<Utc>,
 	#[field(auto_now_add = true)]
 	pub updated_at: DateTime<Utc>,
 	#[field(default = 0)]

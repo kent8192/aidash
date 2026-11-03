@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 // Error codes shared by the lazy GCIP SDK adapter and the sign-in page. They
 // live outside the adapter so tests can replace it without redefining them.
 /** `code` of the error a first-factor method rejects with while a TOTP code is due. */

@@ -15,6 +15,7 @@ struct Scope {
 	context: Value,
 	denied: Option<&'static str>,
 	generation_checked: bool,
+	reject_unknown: bool,
 }
 fn entry(kind: &str) -> Entry {
 	serde_json::from_value(
@@ -61,6 +62,7 @@ impl Scope {
 			context: json!({}),
 			denied: None,
 			generation_checked: false,
+			reject_unknown: false,
 		}
 	}
 }
@@ -68,6 +70,9 @@ impl Scope {
 impl SourceAuthorityScope for Scope {
 	fn source_subjects(&self) -> &[String] {
 		&self.subjects
+	}
+	fn source_replace_subjects(&mut self, subjects: Vec<String>) {
+		self.subjects = subjects;
 	}
 	fn source_bundle(&self) -> &PolicyBundle {
 		&self.bundle
@@ -83,8 +88,23 @@ impl SourceAuthorityScope for Scope {
 			attributes,
 		}
 	}
-	async fn generation_home(&mut self, _: &Task, _: &str, _: Option<&Value>) -> Result<()> {
+	async fn generation_home(
+		&mut self,
+		_: &Task,
+		_: &str,
+		generation: Option<&Value>,
+	) -> Result<()> {
 		self.generation_checked = true;
+		if generation.is_some()
+			&& self.reject_unknown
+			&& self
+				.subjects
+				.iter()
+				.skip(1)
+				.any(|s| !self.bundle.subjects.contains_key(s))
+		{
+			return Err(Error::Forbidden);
+		}
 		Ok(())
 	}
 	async fn source_workspace(&mut self, id: Uuid) -> Result<Resource> {
@@ -94,6 +114,15 @@ impl SourceAuthorityScope for Scope {
 		Ok(self.source_resource("task", &task.id.to_string(), self.context.clone()))
 	}
 	async fn source_require(&mut self, resource: &Resource, action: &str) -> Result<()> {
+		if self.reject_unknown
+			&& self
+				.subjects
+				.iter()
+				.skip(1)
+				.any(|s| !self.bundle.subjects.contains_key(s))
+		{
+			return Err(Error::Forbidden);
+		}
 		self.calls
 			.push((action.into(), resource.clone(), self.context.clone()));
 		if self.denied == Some(action) {
@@ -173,19 +202,10 @@ async fn source_denial_stops_the_remaining_dependency_checks(#[case] denied: &'s
 	assert_eq!(scope.calls.last().unwrap().0, denied);
 }
 #[rstest]
-#[case("chain")]
-#[case("missing")]
-#[case("kind")]
 #[tokio::test]
-async fn executor_must_be_the_current_last_agent_subject(#[case] change: &str) {
+async fn executor_must_be_the_last_subject_in_the_grant_chain() {
 	let mut scope = Scope::new();
-	let executor = scope.subjects.last().unwrap().clone();
-	match change {
-		"chain" => scope.subjects.reverse(),
-		"missing" => scope.bundle.subjects.clear(),
-		"kind" => scope.bundle.subjects.get_mut(&executor).unwrap().kind = SubjectKind::User,
-		_ => panic!("unknown authority"),
-	}
+	scope.subjects.reverse();
 	assert!(matches!(
 		authorize(
 			&mut scope,
@@ -197,7 +217,7 @@ async fn executor_must_be_the_current_last_agent_subject(#[case] change: &str) {
 		Err(Error::Forbidden)
 	));
 	assert!(scope.calls.is_empty());
-	assert!(scope.generation_checked);
+	assert!(!scope.generation_checked);
 }
 #[rstest]
 #[tokio::test]
@@ -245,3 +265,18 @@ async fn pinned_context_dependencies_preserve_source_registry_authority(
 mod semantic;
 
 mod reads;
+
+#[tokio::test]
+async fn receiver_only_executor_is_excluded_from_generation_authority() {
+	let mut scope = Scope::new();
+	scope.bundle.subjects.clear();
+	scope.reject_unknown = true;
+	let original = scope.subjects.clone();
+	let mut inspection = inspection("model");
+	inspection.generation = Some(json!({"intent":"generation"}));
+	authorize(&mut scope, &task(), "aidash://receiver", &inspection)
+		.await
+		.unwrap();
+	assert!(scope.generation_checked);
+	assert_eq!(scope.subjects, original);
+}

@@ -54,6 +54,68 @@ pub async fn provide(
 	}
 }
 impl HarnessManagement {
+	pub(crate) async fn task_runs(
+		&self,
+		actor: Actor,
+		id: Uuid,
+		q: crate::apps::execution::serializers::management::RunListQuery,
+	) -> Result<aidash_application::authorization::bounded_reads::RunPage> {
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		let cursor = q
+			.cursor
+			.as_deref()
+			.map(Uuid::parse_str)
+			.transpose()
+			.map_err(|_| Error::Invalid("invalid cursor".into()))?;
+		let mut access =
+			crate::authorization::access::Access::begin(&self.runtime.store, &identity).await?;
+		let result = aidash_application::authorization::bounded_reads::runs(
+			&mut crate::apps::identity::repositories::visibility::bounded_reads::Reads {
+				federation: &self.runtime,
+				access: &mut access,
+				task_workspace: None,
+				selected_run: None,
+			},
+			id,
+			cursor,
+		)
+		.await
+		.map_err(Into::into);
+		access.finish(result).await
+	}
+	pub(crate) async fn human_requests(
+		&self,
+		actor: Actor,
+		q: crate::apps::execution::serializers::management::HumanListQuery,
+	) -> Result<aidash_application::authorization::bounded_reads::HumanPage> {
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		let cursor = q
+			.cursor
+			.as_deref()
+			.map(Uuid::parse_str)
+			.transpose()
+			.map_err(|_| Error::Invalid("invalid cursor".into()))?;
+		let mut access =
+			crate::authorization::access::Access::begin(&self.runtime.store, &identity).await?;
+		let result = aidash_application::authorization::bounded_reads::humans(
+			&mut crate::apps::identity::repositories::visibility::bounded_reads::Reads {
+				federation: &self.runtime,
+				access: &mut access,
+				task_workspace: None,
+				selected_run: None,
+			},
+			q.run,
+			q.state,
+			cursor,
+		)
+		.await
+		.map_err(Into::into);
+		access.finish(result).await
+	}
 	pub(crate) async fn state(&self, actor: Actor) -> Result<Response> {
 		let f = self.runtime.clone();
 

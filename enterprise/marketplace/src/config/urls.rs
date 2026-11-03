@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! One project registration for browser routes and typed server functions.
 //!
 //! Only the WASM client discovers routes through `inventory`; the native

@@ -2,7 +2,7 @@
 use super::{
 	Authorization, Snapshot,
 	identity::SubjectIdentity,
-	policy::{Decision, Evaluation, Resource},
+	policy::{Decision, Effect, Evaluation, PolicyBundle, Resource},
 };
 use crate::apps::identity::models::AuthorizationDecision;
 use crate::database::native::Pool;
@@ -173,6 +173,8 @@ pub(crate) struct Access {
 	pub cached_runs: std::collections::BTreeMap<(Uuid, Uuid), bool>,
 	pub cached_humans: std::collections::BTreeMap<Uuid, bool>,
 	pending_decisions: Vec<(Evaluation, Decision)>,
+	pub(crate) last_policy_explicit_deny: bool,
+	pub(crate) decision_serial: u64,
 	pub(super) pool: Pool,
 	pub read_run: Option<Uuid>,
 	pub read_grant: Option<Uuid>,
@@ -392,6 +394,8 @@ impl Access {
 			cached_runs: Default::default(),
 			cached_humans: Default::default(),
 			pending_decisions: vec![],
+			last_policy_explicit_deny: false,
+			decision_serial: 0,
 			pool: pool.clone(),
 			read_run: None,
 			read_grant: None,
@@ -506,6 +510,8 @@ impl Access {
 			cached_runs: Default::default(),
 			cached_humans: Default::default(),
 			pending_decisions: vec![],
+			last_policy_explicit_deny: false,
+			decision_serial: 0,
 			pool: pool.clone(),
 			read_run: lease.read_run,
 			read_grant: lease.read_grant,
@@ -570,6 +576,7 @@ impl Access {
 		self.cached_runs.clear();
 		self.cached_humans.clear();
 		self.pending_decisions.clear();
+		self.last_policy_explicit_deny = false;
 		self.read_run = Some(run_id);
 		self.read_grant = None;
 		self.worker();
@@ -780,7 +787,23 @@ impl Access {
 		}
 	}
 
+	pub(crate) fn policy_explicit_deny(bundle: &PolicyBundle, decision: &Decision) -> bool {
+		// Delegation failures retain the ancestor's matched policy IDs, but replace
+		// its reason. A missing ancestor allow must remain an approval request.
+		!decision.allowed
+			&& (decision.reason == "explicit_deny"
+				|| (decision.reason == "delegation_denied"
+					&& bundle.policies.iter().any(|policy| {
+						policy.effect == Effect::Deny
+							&& decision.matched_policies.contains(&policy.id)
+					})))
+	}
+
 	pub(crate) async fn record(&mut self, records: &[(Evaluation, Decision)]) -> Result<()> {
+		self.decision_serial = self.decision_serial.saturating_add(records.len() as u64);
+		self.last_policy_explicit_deny = records
+			.iter()
+			.any(|(_, decision)| Self::policy_explicit_deny(&self.snapshot.bundle, decision));
 		if !self.audit {
 			return Ok(());
 		}
@@ -852,7 +875,12 @@ impl Access {
 			if let Some(tx) = tx {
 				tx.rollback().await?;
 			}
-			if matches!(result, Err(Error::Forbidden | Error::AuthorityRefused(_))) {
+			if matches!(
+				result,
+				Err(Error::Forbidden
+					| Error::AuthorityRefused(_)
+					| Error::RemoteExecutionRefused(_))
+			) {
 				// Denials survive rollback with the evaluated policy revision.
 				let mut audit: Box<dyn TransactionExecutor> = self
 					.pool

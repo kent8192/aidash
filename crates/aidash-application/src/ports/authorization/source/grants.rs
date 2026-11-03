@@ -24,6 +24,12 @@ pub trait GrantScope: HomeScope + SourceAuthorityScope + SourcePeerScope {
 	fn home_address(&self) -> String;
 	fn replace_subjects(&mut self, subjects: Vec<String>);
 	fn append_subject(&mut self, subject: String);
+	/// Record a refusal after policy evaluation but before peer admission.
+	async fn record_refusal(
+		&mut self,
+		resource: &aidash_domain::policy::Resource,
+		reason: &str,
+	) -> Result<()>;
 	async fn inherit_task_origin(&mut self, id: Uuid) -> Result<()>;
 	/// A Subnode Workspace may delegate only to its local members.
 	async fn require_non_subnode_workspace(&mut self, workspace: Uuid) -> Result<()>;

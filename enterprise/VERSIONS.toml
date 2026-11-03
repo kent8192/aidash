@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
+# Enterprise version history.
+#
+# One [[version]] table records one published Enterprise version. CI checks
+# these records against git and rejects a Change Date that moves later.
+#
+# version:             The Enterprise version. It matches version in
+#                      [workspace.package] and the Licensed Work in
+#                      enterprise/LICENSE.
+# change_date:         The date when this version becomes available under
+#                      change_license. It is the date of first public
+#                      distribution plus four years. A recorded date never
+#                      moves later.
+# change_license:      The SPDX identifier this version converts to on
+#                      change_date.
+# first_public_commit: The first commit whose enterprise/LICENSE names this
+#                      version as the Licensed Work. For 0.1.0 that is the
+#                      commit that added enterprise/LICENSE. CI derives it
+#                      from git for each version.
+# first_public_date:   The UTC committer date of first_public_commit.
+#
+# first_public_commit and first_public_date are absent for 0.1.0 until the
+# cutover merges. A follow-up PR records them.
+
+[[version]]
+version = "0.1.0"
+change_date = 2030-10-26
+change_license = "Apache-2.0"

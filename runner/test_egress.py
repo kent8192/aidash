@@ -5,6 +5,7 @@ import uuid
 from unittest.mock import Mock
 
 from control import Rejected, Runner
+from egress import environment
 
 
 class EgressIsolationTest(unittest.TestCase):
@@ -48,3 +49,19 @@ class EgressIsolationTest(unittest.TestCase):
                 runner.accept(dict(request, egress=lease))
             self.assertEqual(rejected.exception.code, 400)
         runner.kube.assert_not_called()
+
+
+class PackageIndexEnvironmentTest(unittest.TestCase):
+    def test_npm_keeps_gateway_rewritten_package_links_intact(self):
+        # The gateway already rewrites npm tarball links onto its own
+        # `__asset` paths. `replace-registry-host=always` would prefix those
+        # links with the registry path a second time (#679); `npmjs` only
+        # redirects registry.npmjs.org links, such as lockfile URLs.
+        operation = str(uuid.uuid4())
+        env = environment({'url': 'http://10.96.0.90:8950', 'token': operation + '.' + 'a' * 43})
+        self.assertEqual(env['NPM_CONFIG_REGISTRY'], env['AIDASH_EGRESS_URL'] + 'core.npm/')
+        self.assertEqual(env['NPM_CONFIG_REPLACE_REGISTRY_HOST'], 'npmjs')
+
+
+if __name__ == '__main__':
+    unittest.main()

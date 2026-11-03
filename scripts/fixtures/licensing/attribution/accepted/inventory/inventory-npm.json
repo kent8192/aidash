@@ -1,0 +1,5 @@
+{
+  "workspace": "web",
+  "ecosystem": "npm",
+  "packages": [{ "name": "react", "version": "19.0.0", "license": "MIT" }]
+}

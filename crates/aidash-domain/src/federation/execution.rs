@@ -8,6 +8,37 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Receiver-approved, content-free reasons that may cross a Federation boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Refusal {
+	CatalogApproval,
+	Policy,
+	PolicyAsk,
+	NodeUseDenied,
+	NodeUseAsk,
+	NodeUnreachable,
+	InvalidExecutor,
+}
+
+impl std::fmt::Display for Refusal {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str(match self {
+			Self::CatalogApproval => {
+				"the target Node has no Catalog Approval for the agent or its dependencies"
+			}
+			Self::Policy => {
+				"the target Node's policy denies federation.execute or its execution dependencies"
+			}
+			Self::PolicyAsk => "the target Node requires authority approval for execution",
+			Self::NodeUseDenied => "the target Node's policy denies node.use",
+			Self::NodeUseAsk => "the target Node requires authority approval for node.use",
+			Self::NodeUnreachable => "the target Node is unreachable",
+			Self::InvalidExecutor => "the target Agent subject has an incompatible type",
+		})
+	}
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Definition {

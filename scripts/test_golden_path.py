@@ -47,6 +47,33 @@ class ReconciliationTests(unittest.TestCase):
 
 
 class FixtureApprovalTests(unittest.TestCase):
+    def test_task_run_lookup_and_completion_use_the_selected_run(self):
+        run = {"id": "run-1", "phase": "RUNNING"}
+        with patch.object(golden_path, "api_request", side_effect=[
+            {"items": [run], "next_cursor": None}, {"run": run},
+            {"run": {"id": "run-1", "phase": "COMPLETED"}},
+        ]) as request:
+            self.assertEqual(golden_path.latest_task_run(self.base, "task-1", "subject-token"), run)
+            self.assertIsNone(golden_path.completed_run(self.base, "run-1", "subject-token"))
+            self.assertEqual(golden_path.completed_run(self.base, "run-1", "subject-token")["phase"], "COMPLETED")
+        self.assertEqual(request.call_args_list, [
+            call(self.base, "/api/tasks/task-1/runs", token="subject-token"),
+            call(self.base, "/api/runs/run-1", token="subject-token"),
+            call(self.base, "/api/runs/run-1", token="subject-token"),
+        ])
+
+    def test_external_requests_follow_a_short_page(self):
+        prompt = "Approve this exact external tool action once? Tool: research-http@1.0.0; call: {}"
+        responses = [{"items": [], "next_cursor": "hidden"},
+                     {"items": [{"id": "h1", "kind": "APPROVAL_REQUIRED", "prompt": prompt}], "next_cursor": None}, {}]
+        with patch.object(golden_path, "api_request", side_effect=responses) as request:
+            golden_path.approve_fixture_external_requests(self.base, "subject-token")
+        self.assertEqual(request.call_args_list, [
+            call(self.base, "/api/human-requests", token="subject-token"),
+            call(self.base, "/api/human-requests?cursor=hidden", token="subject-token"),
+            call(self.base, "/api/human-requests/h1/answer", {"approved": True}, token="subject-token"),
+        ])
+
     base = "http://node.invalid"
 
     def card(self, identifier, tool, **overrides):
@@ -71,11 +98,11 @@ class FixtureApprovalTests(unittest.TestCase):
         requests = [{"id": "h1", "kind": "APPROVAL_REQUIRED", "prompt": prompt},
                     {"id": "h2", "kind": "APPROVAL_REQUIRED", "prompt": prompt.replace("research-http", "payments")},
                     {"id": "h3", "kind": "APPROVAL_REQUIRED", "prompt": prompt, "response": {"approved": False}}]
-        responses = [{"human_requests": requests}, {}]
+        responses = [{"items": requests, "next_cursor": None}, {}]
         with patch.object(golden_path, "api_request", side_effect=responses) as request:
             golden_path.approve_fixture_external_requests(self.base, "subject-token")
         self.assertEqual(request.call_args_list, [
-            call(self.base, "/api/state", token="subject-token"),
+            call(self.base, "/api/human-requests", token="subject-token"),
             call(self.base, "/api/human-requests/h1/answer", {"approved": True}, token="subject-token"),
         ])
 

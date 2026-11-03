@@ -443,6 +443,7 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			));
 		}
 		"task_delegate" => {
+			contract.remote_exposure = true;
 			auth.flag = Some(AgentFlag::Delegation);
 			auth.requirements = vec![
 				LocalDelegation,
@@ -484,6 +485,7 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 			behavior.connection_request = name == "connection_request";
 		}
 		"agent_discover" => {
+			contract.remote_exposure = true;
 			behavior.effect = ToolEffect::ReadOnly;
 		}
 		"workspace_read" | "workspace_observe" | "workspace_wait" => {
@@ -672,8 +674,10 @@ mod tests {
 			selected(|c| c.remote_exposure),
 			[
 				"task_create",
+				"task_delegate",
 				"artifact_publish",
 				"workspace_message",
+				"agent_discover",
 				"workspace_read",
 				"workspace_observe",
 				"workspace_wait",
