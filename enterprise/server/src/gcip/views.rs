@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! The endpoints that the GCIP sign-in page calls.
 use aidash_server::authorization::services::boundary::AccessBoundary;
 use aidash_server::federation::Federation;

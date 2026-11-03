@@ -572,7 +572,9 @@ pub async fn materialize(
 		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
 	}
 	if input.expected_revision != area.revision {
-		return Err(Error::Conflict("AREA_REVISION_CHANGED".into()));
+		return Err(Error::Conflict(
+			aidash_domain::capabilities::errors::area_revision_changed(area.revision),
+		));
 	}
 	aidash_domain::registry::rules::validate_path(&input.path)?;
 	let mut entries = files(&area)?;

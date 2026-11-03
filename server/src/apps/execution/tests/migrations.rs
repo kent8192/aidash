@@ -68,8 +68,11 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0052_harness_contract_structured3"),
 	("registry", "0053_connection_request"),
 	("registry", "0054_remove_agent_cluster"),
-	("registry", "0055_attachment_tools"),
+	("registry", "0055_remove_structured_harness_contracts"),
+	("registry", "0056_attachment_tools"),
 	("execution", "0089_remove_agent_cluster"),
+	("execution", "0090_run_created_at"),
+	("execution", "0091_bounded_read_indexes"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -377,17 +380,105 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0090_policy_probe")
+		.get_migration("execution", "0092_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0089_remove_agent_cluster".to_owned()
+			"0091_bounded_read_indexes".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture
+		.migrate_excluding(&[
+			("execution", "0090_run_created_at"),
+			("execution", "0091_bounded_read_indexes"),
+		])
+		.await;
+	fixture.tenant_root("acme").await;
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
+	let workspace_id = Uuid::new_v4();
+	let workspace = Workspace::build()
+		.id(workspace_id)
+		.tenant("acme")
+		.node(node.clone())
+		.title("Migration")
+		.goal("Preserve creation time")
+		.state(json!({}).into())
+		.revision(0)
+		.finish();
+	Workspace::objects()
+		.create_with_conn(&mut connection, &workspace)
+		.await
+		.unwrap();
+	let run_id = Uuid::new_v4();
+	let old_time = chrono::DateTime::parse_from_rfc3339("2020-02-03T04:05:06Z")
+		.unwrap()
+		.with_timezone(&chrono::Utc);
+	let insert = Query::insert()
+		.into_table(Alias::new("runs"))
+		.columns(
+			[
+				"id",
+				"tenant",
+				"task_id",
+				"workspace_id",
+				"node",
+				"home_node",
+				"agent_id",
+				"agent_version",
+				"updated_at",
+			]
+			.map(Alias::new),
+		)
+		.values_panic::<_, reinhardt::query::Value>([
+			run_id.into(),
+			"acme".into(),
+			Uuid::new_v4().into(),
+			workspace_id.into(),
+			node.clone().into(),
+			format!("aidash://migration/{node}").into(),
+			"agent".into(),
+			"1".into(),
+			old_time.into(),
+		])
+		.to_string(PostgresQueryBuilder);
+	fixture.connection.execute(&insert, vec![]).await.unwrap();
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let select = Query::select()
+		.columns([Alias::new("created_at"), Alias::new("updated_at")])
+		.from(Alias::new("runs"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run_id)))
+		.to_string(PostgresQueryBuilder);
+	let (created, updated): (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) =
+		sqlx::query_as(&select).fetch_one(&pool).await.unwrap();
+	assert_eq!((created, updated), (old_time, old_time));
+	let update = Query::update()
+		.table(Alias::new("runs"))
+		.value(
+			Alias::new("updated_at"),
+			old_time + chrono::Duration::days(1),
+		)
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::value(run_id)))
+		.to_string(PostgresQueryBuilder);
+	fixture.connection.execute(&update, vec![]).await.unwrap();
+	let (created, updated): (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) =
+		sqlx::query_as(&select).fetch_one(&pool).await.unwrap();
+	assert_eq!(created, old_time);
+	assert_eq!(updated, old_time + chrono::Duration::days(1));
 }
 
 #[rstest]
@@ -756,8 +847,11 @@ async fn remove_agent_cluster_migrates_registry_drafts_requests_and_generation_t
 			!matches!(
 				(migration.app_label.as_str(), migration.name.as_str()),
 				("registry", "0054_remove_agent_cluster")
-					| ("registry", "0055_attachment_tools")
+					| ("registry", "0055_remove_structured_harness_contracts")
+					| ("registry", "0056_attachment_tools")
 					| ("execution", "0089_remove_agent_cluster")
+					| ("execution", "0090_run_created_at")
+					| ("execution", "0091_bounded_read_indexes")
 			)
 		})
 		.cloned()
@@ -1560,7 +1654,7 @@ async fn attachment_tools_migration_admits_and_reverses_the_new_contract(
 	}
 	let migration =
 		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
-			.get_migration("registry", "0055_attachment_tools")
+			.get_migration("registry", "0056_attachment_tools")
 			.await
 			.unwrap();
 	let mut executor =
@@ -2488,7 +2582,7 @@ async fn agent_plugin_settings_migration_validates_the_key_and_refuses_rollback_
 	};
 	let digest = format!("sha256:{}", "ab01".repeat(16));
 	// The current validator must accept both independently versioned contracts.
-	for version in ["legacy@1", "structured@1", "structured@2"] {
+	for version in ["legacy@1", "structured@3"] {
 		let mut combined = agent(json!({"acme":{"docs":{"tools":["search"]}}}));
 		combined["projection_version"] = json!("native");
 		combined["harness_contract"] = json!(version);
@@ -2711,7 +2805,7 @@ async fn harness_contract_rollback_refuses_stored_packages_and_snapshots(
 		.await
 		.unwrap();
 	let manifest =
-		json!({"entity":{"kind":"agent","config":{"harness_contract":"structured@1"}}}).to_string();
+		json!({"entity":{"kind":"agent","config":{"harness_contract":"structured@3"}}}).to_string();
 	sqlx::query("INSERT INTO marketplace_versions (key, document, repository, owner, package_id, version, kind, source_id, source_version, source_content) VALUES ('fixture', $1, 'r', 'o', 'p', '1', 'agent', 'a', '1', '')")
 		.bind(json!({"manifest_source":manifest})).execute(&pool).await.unwrap();
 	let error = executor
@@ -2739,7 +2833,7 @@ async fn harness_contract_rollback_refuses_stored_packages_and_snapshots(
 		.unwrap();
 	for snapshot in [
 		json!({"definitions":[{"definition":{"kind":"agent","config":{"harness_contract":"legacy@1"}}}]}),
-		json!({"foreign_agents":[{"definitions":[{"definition":{"kind":"agent","config":{"harness_contract":"structured@2"}}}]}]}),
+		json!({"foreign_agents":[{"definitions":[{"definition":{"kind":"agent","config":{"harness_contract":"structured@3"}}}]}]}),
 	] {
 		sqlx::query("INSERT INTO public.runs (context) VALUES ($1)")
 			.bind(json!({"binding_snapshot":snapshot}))
@@ -2804,6 +2898,195 @@ async fn harness_contract_rollback_refuses_stored_packages_and_snapshots(
 			.to_string()
 			.contains("Agent definitions declare harness_contract"),
 		"{error}"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn removed_harness_contracts_refuse_the_upgrade_while_still_stored(
+	#[future] fresh_database: MigrationFixture,
+) {
+	use aidash_server::apps::registry::{models::Definition, services::states::DefinitionKind};
+	// Arrange
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|m| {
+				m.app_label == "registry" && m.name == "0055_remove_structured_harness_contracts"
+			})
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	let agent = |contract: &str| {
+		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work",
+			"projection_version":"native","harness_contract":contract})
+	};
+	// The upgraded validator accepts only the kept versions.
+	for (contract, accepted) in [
+		("legacy@1", true),
+		("structured@1", false),
+		("structured@2", false),
+		("structured@3", true),
+	] {
+		assert_eq!(
+			contract_accepts(
+				&pool,
+				"aidash_agent_bindings_is_valid",
+				vec![agent(contract)]
+			)
+			.await,
+			accepted,
+			"{contract}"
+		);
+	}
+	// Rollback restores the 0054 validator.
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent("structured@1")]
+		)
+		.await
+	);
+	// Act / Assert: a package declaring a removed version refuses the upgrade.
+	// The fixture inserts directly, outside the Marketplace publication workflow.
+	sqlx::query("ALTER TABLE marketplace_versions DISABLE TRIGGER USER")
+		.execute(&pool)
+		.await
+		.unwrap();
+	let manifest =
+		json!({"entity":{"kind":"agent","config":{"harness_contract":"structured@1"}}}).to_string();
+	sqlx::query("INSERT INTO marketplace_versions (key, document, repository, owner, package_id, version, kind, source_id, source_version, source_content) VALUES ('fixture', $1, 'r', 'o', 'p', '1', 'agent', 'a', '1', '')")
+		.bind(json!({"manifest_source":manifest})).execute(&pool).await.unwrap();
+	let error = executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("packages declare structured@1 or structured@2"),
+		"{error}"
+	);
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent("structured@1")]
+		)
+		.await,
+		"the refused upgrade must keep the earlier validator"
+	);
+	sqlx::query("DELETE FROM marketplace_versions WHERE key = 'fixture'")
+		.execute(&pool)
+		.await
+		.unwrap();
+	// An Agent definition declaring a removed version refuses the upgrade.
+	fixture.tenant_root("acme").await;
+	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
+	let mut connection = lease.handle();
+	let model = json!({"id":"model","version":"1.0.0","kind":"model",
+		"name":{"en":"Model"},"description":{"en":"Migration test"},
+		"config":{"provider":"openrouter","model_id":"anthropic/model",
+			"endpoint":"http://127.0.0.1:1/v1","context_window":32768,"max_output_tokens":4096,
+			"modalities":["text"],"cost":{}}});
+	Definition::objects()
+		.create_with_conn(
+			&mut connection,
+			&Definition::build()
+				.tenant("acme")
+				.id("model")
+				.version("1.0.0")
+				.kind(DefinitionKind::Model)
+				.metadata(model.into())
+				.finish(),
+		)
+		.await
+		.unwrap();
+	let stored = Definition::build()
+		.tenant("acme")
+		.id("agent")
+		.version("1.0.0")
+		.kind(DefinitionKind::Agent)
+		.metadata(
+			json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},
+				"description":{"en":"Migration test"},"config":agent("structured@2")})
+			.into(),
+		)
+		.finish();
+	Definition::objects()
+		.create_with_conn(&mut connection, &stored)
+		.await
+		.unwrap();
+	let error = executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("Agent definitions declare structured@1 or structured@2"),
+		"{error}"
+	);
+	sqlx::query("DELETE FROM registry WHERE kind = 'agent'")
+		.execute(&pool)
+		.await
+		.unwrap();
+	// Isolate the Run snapshot guard from the unrelated Run lifecycle constraints.
+	sqlx::query("DROP TABLE public.runs CASCADE")
+		.execute(&pool)
+		.await
+		.unwrap();
+	sqlx::query("CREATE TABLE public.runs (context jsonb NOT NULL)")
+		.execute(&pool)
+		.await
+		.unwrap();
+	for snapshot in [
+		json!({"definitions":[{"definition":{"kind":"agent","config":{"harness_contract":"structured@1"}}}]}),
+		json!({"foreign_agents":[{"definitions":[{"definition":{"kind":"agent","config":{"harness_contract":"structured@2"}}}]}]}),
+	] {
+		sqlx::query("INSERT INTO public.runs (context) VALUES ($1)")
+			.bind(json!({"binding_snapshot":snapshot}))
+			.execute(&pool)
+			.await
+			.unwrap();
+		let error = executor
+			.apply_migrations(std::slice::from_ref(&migration))
+			.await
+			.unwrap_err();
+		assert!(
+			error
+				.to_string()
+				.contains("Runs pin Agent definitions declaring structured@1 or structured@2"),
+			"{error}"
+		);
+		sqlx::query("DELETE FROM public.runs")
+			.execute(&pool)
+			.await
+			.unwrap();
+	}
+	// With nothing stored, the upgrade applies and rejects the removed versions.
+	executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![agent("structured@1")]
+		)
+		.await
 	);
 }
 

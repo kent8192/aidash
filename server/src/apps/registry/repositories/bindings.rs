@@ -185,7 +185,7 @@ pub(crate) async fn authorized(
 	remote: bool,
 	configured: bool,
 ) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
-	authorized_mode(access, entry, remote, configured, false).await
+	authorized_mode(access, entry, remote, configured, false, None).await
 }
 
 /// [`authorized`] for a child agent's closure prepared under its delegating
@@ -197,7 +197,17 @@ pub(crate) async fn authorized_child(
 	entry: &aidash_domain::registry::Entry,
 	configured: bool,
 ) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
-	authorized_mode(access, entry, false, configured, true).await
+	authorized_mode(access, entry, false, configured, true, None).await
+}
+
+/// Resolve the receiver closure while retaining the failed dependency for refusal auditing.
+pub(crate) async fn authorized_peer(
+	access: &mut crate::authorization::access::Access,
+	entry: &aidash_domain::registry::Entry,
+	configured: bool,
+	failure: &mut Option<(aidash_domain::registry::EntityRef, u64)>,
+) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+	authorized_mode(access, entry, true, configured, false, Some(failure)).await
 }
 
 async fn authorized_mode(
@@ -206,6 +216,7 @@ async fn authorized_mode(
 	remote: bool,
 	configured: bool,
 	child: bool,
+	mut failure: Option<&mut Option<(aidash_domain::registry::EntityRef, u64)>>,
 ) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
 	let node = access.node_id.clone();
 	let snapshot = snapshot_mode(&mut access.tx, &node, entry, remote, false, configured).await?;
@@ -233,13 +244,24 @@ async fn authorized_mode(
 			None if child && definition.identity != snapshot.agent => root.to_vec(),
 			None => vec![],
 		};
-		let current = crate::authorization::catalog::closure_entry(
+		let reference = definition.identity.local();
+		let serial = access.decision_serial;
+		let current = match crate::authorization::catalog::closure_entry(
 			access,
-			&definition.identity.local(),
+			&reference,
 			"registry.read",
 			&users,
 		)
-		.await?;
+		.await
+		{
+			Ok(current) => current,
+			Err(error) => {
+				if let Some(failure) = failure.as_deref_mut() {
+					*failure = Some((reference, serial));
+				}
+				return Err(error);
+			}
+		};
 		if aidash_domain::registry::rules::digest(&serde_json::to_value(current)?)
 			!= definition.digest
 		{

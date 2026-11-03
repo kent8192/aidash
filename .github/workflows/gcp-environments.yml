@@ -65,7 +65,7 @@ jobs:
           WIF_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           WIF_REF_PROTECTED: ${{ github.ref_protected }}
         run: >-
-          python3 infra/gcp/sandbox/wif_probe.py
+          python3 enterprise/infra/gcp/sandbox/wif_probe.py
           --case protected-ref-without-environment
           --evidence "$RUNNER_TEMP/wif-evidence/result.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -96,7 +96,7 @@ jobs:
           WIF_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           WIF_REF_PROTECTED: ${{ github.ref_protected }}
         run: >-
-          python3 infra/gcp/sandbox/wif_probe.py
+          python3 enterprise/infra/gcp/sandbox/wif_probe.py
           --case unprotected-ref-with-environment
           --evidence "$RUNNER_TEMP/wif-evidence/result.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -154,7 +154,7 @@ jobs:
       - id: filter
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 infra/gcp/control/controller.py preflight
+        run: python3 enterprise/infra/gcp/control/controller.py preflight
       - name: Record the exact staging attempt before credentialed work
         if: >-
           steps.filter.outputs.proceed == 'true' &&
@@ -163,7 +163,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           DEVELOP_BRANCH: ${{ fromJSON(vars.AIDASH_GCP_CONFIG || '{}').develop_branch }}
-        run: python3 infra/gcp/control/releases.py attempt
+        run: python3 enterprise/infra/gcp/control/releases.py attempt
       - name: Publish the bounded staging attempt identity
         if: >-
           steps.filter.outputs.proceed == 'true' &&
@@ -208,7 +208,7 @@ jobs:
           service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
       - id: prepare
-        run: python3 infra/gcp/control/controller.py prepare
+        run: python3 enterprise/infra/gcp/control/controller.py prepare
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gcp-request-${{ github.run_id }}
@@ -245,7 +245,7 @@ jobs:
         env:
           SOURCE_SHA: ${{ needs.prepare.outputs.sha }}
           IMAGE_KIND: ${{ matrix.image }}
-        run: python3 trusted/infra/gcp/control/images.py build --kind "$IMAGE_KIND" --sha "$SOURCE_SHA" --source "$GITHUB_WORKSPACE/source" --directory "$RUNNER_TEMP/images"
+        run: python3 trusted/enterprise/infra/gcp/control/images.py build --kind "$IMAGE_KIND" --sha "$SOURCE_SHA" --source "$GITHUB_WORKSPACE/source" --directory "$RUNNER_TEMP/images"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gcp-image-${{ matrix.image }}-${{ github.run_id }}
@@ -288,7 +288,7 @@ jobs:
       - name: Publish immutable image digests without running the images
         env:
           SOURCE_SHA: ${{ needs.prepare.outputs.sha }}
-        run: python3 infra/gcp/control/images.py publish --sha "$SOURCE_SHA" --directory "$RUNNER_TEMP/images"
+        run: python3 enterprise/infra/gcp/control/images.py publish --sha "$SOURCE_SHA" --directory "$RUNNER_TEMP/images"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gcp-release-${{ github.run_id }}
@@ -355,12 +355,12 @@ jobs:
             release_file="$RUNNER_TEMP/release/release.json"
             test -s "$request_file"
             test -s "$release_file"
-            python3 infra/gcp/control/controller.py finish --request "$request_file" --release "$release_file"
+            python3 enterprise/infra/gcp/control/controller.py finish --request "$request_file" --release "$release_file"
           else
-            python3 infra/gcp/control/controller.py reconcile
+            python3 enterprise/infra/gcp/control/controller.py reconcile
           fi
       - name: Export sanitized staging evidence
-        run: python3 infra/gcp/control/controller.py receipt
+        run: python3 enterprise/infra/gcp/control/controller.py receipt
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: staging-receipt

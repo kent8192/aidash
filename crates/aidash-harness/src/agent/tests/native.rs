@@ -665,7 +665,7 @@ async fn structured_native_moves_harness_requirements_to_the_last_aidash_envelop
 	// Arrange
 	structured(
 		&mut canonical,
-		aidash_domain::harness_contract::HarnessContract::Structured1,
+		aidash_domain::harness_contract::HarnessContract::Structured3,
 	);
 	{
 		let state = Arc::get_mut(&mut canonical.backend.0).unwrap();
@@ -684,7 +684,7 @@ async fn structured_native_moves_harness_requirements_to_the_last_aidash_envelop
 	let requests = canonical.backend.0.requests.lock().unwrap();
 	let request = &requests[0];
 	let expected = aidash_domain::harness_contract::system_text(
-		aidash_domain::harness_contract::HarnessContract::Structured1,
+		aidash_domain::harness_contract::HarnessContract::Structured3,
 		ProjectionVersion::Native,
 		"Do the task",
 		&[],
@@ -731,7 +731,7 @@ async fn structured_usage_records_carry_the_pinned_contract_version(mut canonica
 	// Arrange
 	structured(
 		&mut canonical,
-		aidash_domain::harness_contract::HarnessContract::Structured2,
+		aidash_domain::harness_contract::HarnessContract::Structured3,
 	);
 	// Act
 	assert!(advance_sources(&mut canonical).await.is_err());
@@ -743,6 +743,6 @@ async fn structured_usage_records_carry_the_pinned_contract_version(mut canonica
 	assert_eq!(dispatch.projection_version, 3);
 	assert_eq!(
 		dispatch.harness_contract,
-		aidash_domain::harness_contract::HarnessContract::Structured2.number()
+		aidash_domain::harness_contract::HarnessContract::Structured3.number()
 	);
 }

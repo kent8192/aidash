@@ -287,7 +287,10 @@ def _variant_projection(variant):
 
 
 def _variant_harness_contract(variant):
-    """The numeric Harness Contract version an arm declares; absent means 1 (legacy@1)."""
+    """The numeric Harness Contract version an arm declares; absent means 1 (legacy@1).
+
+    Numbers 2 and 3 belonged to structured@1 and structured@2, removed by #532;
+    historical exports may still carry either spelling, so both stay readable."""
     value = variant.get("agent_fields", {}).get("harness_contract")
     if isinstance(value, bool):
         raise EvidenceError("arm harness_contract must be a version string or number")

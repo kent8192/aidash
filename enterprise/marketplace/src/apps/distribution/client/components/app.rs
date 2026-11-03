@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Public catalog and Account-owned Library routes.
 use super::super::hooks::{Load, Resource, use_hash_route, use_service};
 use crate::apps::distribution::{serializers::Acquisition, server_fn::*};

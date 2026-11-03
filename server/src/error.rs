@@ -39,6 +39,8 @@ pub enum Error {
 	/// A tool call the Run's authority refused; the API answers it like [`Error::Forbidden`].
 	#[error("forbidden")]
 	AuthorityRefused(Box<aidash_domain::tool::AuthorityRefusal>),
+	#[error("{0}")]
+	RemoteExecutionRefused(aidash_domain::federation::execution::Refusal),
 	/// The build's admission gate refused new work (402); the code is stable.
 	#[error("{0}")]
 	Refused(String),
@@ -130,6 +132,7 @@ impl Error {
 			Self::Forbidden | Self::AuthorityRefused(_) => {
 				(StatusCode::FORBIDDEN, "forbidden".into())
 			}
+			Self::RemoteExecutionRefused(reason) => (StatusCode::FORBIDDEN, reason.to_string()),
 			Self::Refused(code) => (StatusCode::PAYMENT_REQUIRED, code.clone()),
 			Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
 			Self::TenantDeleted => (StatusCode::GONE, self.to_string()),
@@ -234,6 +237,14 @@ impl Error {
 				serde_json::to_vec(&json!({"error": message})).expect("error envelope serializes"),
 			)
 			.with_header("Content-Type", "application/json");
+		if let Self::RemoteExecutionRefused(reason) = &self
+			&& let Some(code) = serde_json::to_value(reason)
+				.ok()
+				.and_then(|v| v.as_str().map(str::to_owned))
+			&& let Ok(value) = HeaderValue::from_str(&code)
+		{
+			response.headers.insert("x-aidash-execution-refusal", value);
+		}
 		if transaction_pending {
 			response.headers.insert(
 				"x-aidash-transaction-pending",
@@ -360,6 +371,9 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::Unauthorized => Self::Unauthorized,
 			ApplicationError::Forbidden => Self::Forbidden,
 			ApplicationError::AuthorityRefused(refusal) => Self::AuthorityRefused(refusal),
+			ApplicationError::RemoteExecutionRefused(reason) => {
+				Self::RemoteExecutionRefused(reason)
+			}
 			ApplicationError::External(message) => Self::External(message),
 			ApplicationError::ConnectionStoreUnavailable => Self::ConnectionStoreUnavailable,
 			ApplicationError::ToolNotDelivered {
@@ -430,6 +444,7 @@ impl From<Error> for aidash_application::Error {
 			// Work stopped by a Tenant Deletion pauses like any refused authority.
 			Error::Forbidden | Error::TenantDeleted => Self::Forbidden,
 			Error::AuthorityRefused(refusal) => Self::AuthorityRefused(refusal),
+			Error::RemoteExecutionRefused(reason) => Self::RemoteExecutionRefused(reason),
 			Error::Refused(code) => Self::Refused(code),
 			Error::Unauthorized => Self::Unauthorized,
 			Error::External(message) => Self::External(message),

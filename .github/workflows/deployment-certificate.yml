@@ -29,7 +29,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           AIDASH_GCP_CONFIG: ${{ vars.AIDASH_GCP_CONFIG }}
-        run: python3 infra/delivery/control/tls.py preflight
+        run: python3 enterprise/infra/delivery/control/tls.py preflight
 
   renew:
     needs: intake
@@ -56,4 +56,4 @@ jobs:
           AIDASH_ACME_EMAIL: ${{ vars.AIDASH_ACME_EMAIL }}
           AIDASH_TLS_RENEWAL_DAYS: ${{ vars.TLS_RENEWAL_DAYS }}
           CLOUDFLARE_CERTIFICATE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_CERTIFICATE_DNS_TOKEN }}
-        run: python3 infra/delivery/control/tls.py renew
+        run: python3 enterprise/infra/delivery/control/tls.py renew
