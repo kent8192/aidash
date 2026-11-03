@@ -111,6 +111,10 @@ impl SemanticConfigurationSession for Configuration {
 		assert_eq!(entry.index_revision, 1);
 		Ok(())
 	}
+	async fn rebuild_images(&mut self, _: Uuid, max_images: usize) -> Result<()> {
+		assert_eq!(max_images, spec().max_images);
+		self.touch("image_rebuild")
+	}
 	async fn history(&mut self, _: Uuid, revision: i64) -> Result<()> {
 		self.touch("history")?;
 		assert_eq!(revision, 1);
@@ -148,6 +152,7 @@ async fn configuring_commits_one_complete_immutable_generation() {
 			"active",
 			"reconfigure",
 			"schedule",
+			"image_rebuild",
 			"history",
 			"commit"
 		]
@@ -196,6 +201,7 @@ async fn identical_config_replays_before_size_checks_or_point_retirement() {
 #[case::active("active")]
 #[case::reconfigure("reconfigure")]
 #[case::schedule("schedule")]
+#[case::image_rebuild("image_rebuild")]
 #[case::history("history")]
 #[case::commit("commit")]
 #[tokio::test]

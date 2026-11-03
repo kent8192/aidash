@@ -392,6 +392,7 @@ export function EntityForm({
   const [kind, setKind] = useState(initial);
   const registration = useRef<{ body: string; key: string } | null>(null);
   const [modelSource, setModelSource] = useState("openrouter");
+  const [embeddingImage, setEmbeddingImage] = useState(true);
   const [modelName, setModelName] = useState("");
   const [customModelName, setCustomModelName] = useState<string | null>(null);
   const [defaultName] = useState(() => {
@@ -445,6 +446,9 @@ export function EntityForm({
                   instructions: s("instructions"),
                   schema_version: 1,
                   max_steps: 64,
+                  ...(s("reference_embedding")
+                    ? { reference_embedding: ref(s("reference_embedding")) }
+                    : {}),
                   ...core,
                   ...pluginConfig,
                 }
@@ -500,6 +504,9 @@ export function EntityForm({
                       model: s("model_id"),
                       model_version: s("model_version"),
                       dimensions: Number(s("dimensions")),
+                      inputs: d.has("embedding_image")
+                        ? ["text", "image"]
+                        : ["text"],
                     }
                   : kind === "decider"
                     ? {
@@ -699,6 +706,38 @@ export function EntityForm({
               change={setDocuments}
               busyChange={setReadingDocuments}
             />
+            {documents.some((document) =>
+              document.media_type.startsWith("image/"),
+            ) && (
+              <Field
+                label={
+                  ja ? "参照画像の埋め込みモデル" : "Reference image embedding"
+                }
+              >
+                <NativeSelect
+                  name="reference_embedding"
+                  required
+                  defaultValue=""
+                >
+                  <option value="">{t("choose")}</option>
+                  {data.registry
+                    .filter(
+                      (entry) =>
+                        entry.kind === "embedding" &&
+                        Array.isArray(entry.config.inputs) &&
+                        entry.config.inputs.includes("image"),
+                    )
+                    .map((entry) => (
+                      <option
+                        key={`${entry.id}@${entry.version}`}
+                        value={`${entry.id}@${entry.version}`}
+                      >
+                        {entry.id}@{entry.version}
+                      </option>
+                    ))}
+                </NativeSelect>
+              </Field>
+            )}
             <Check
               checked={coordinator}
               onChange={(e) => {
@@ -802,7 +841,13 @@ export function EntityForm({
           <>
             <Hint>{t("embeddingRegistryHelp")}</Hint>
             <Field label={t("provider")}>
-              <NativeSelect name="embedding_provider" defaultValue="openrouter">
+              <NativeSelect
+                name="embedding_provider"
+                defaultValue="openrouter"
+                onChange={(event) => {
+                  if (event.target.value === "openai") setEmbeddingImage(false);
+                }}
+              >
                 <option value="openrouter">OpenRouter</option>
                 <option value="openai">{t("openaiCompatible")}</option>
               </NativeSelect>
@@ -837,6 +882,13 @@ export function EntityForm({
                 />
               </Field>
             </div>
+            <Check
+              name="embedding_image"
+              checked={embeddingImage}
+              onChange={(event) => setEmbeddingImage(event.target.checked)}
+            >
+              {ja ? "画像入力に対応" : "Accept image input"}
+            </Check>
           </>
         ) : kind === "decider" ? (
           <>

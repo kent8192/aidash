@@ -13,6 +13,9 @@ pub enum GenerationEmbeddingUsagePurpose {
 	#[model_enum(value = "index")]
 	#[serde(rename = "index")]
 	Index,
+	#[model_enum(value = "reference")]
+	#[serde(rename = "reference")]
+	Reference,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ModelEnum)]

@@ -201,6 +201,10 @@ pub const TABLES: &[Table] = &[
 	audit("execution", "run_safety_stops"),
 	table("execution", "run_task_snapshots", TenantOwned),
 	table("execution", "runs", TenantOwned),
+	table("execution", "subnodes", TenantOwned),
+	table("execution", "subnode_members", TenantOwned),
+	table("execution", "subnode_operation_receipts", TenantOwned),
+	table("execution", "subnode_limits", TenantOwned),
 	table("execution", "url_intents", TenantOwned),
 	// federation
 	// cross-node transaction plumbing
@@ -361,6 +365,8 @@ pub const TABLES: &[Table] = &[
 	table("knowledge", "memory_units", TenantOwned),
 	table("knowledge", "semantic_collections", TenantOwned),
 	table("knowledge", "semantic_entries", TenantOwned),
+	table("knowledge", "semantic_image_ledgers", TenantOwned),
+	table("knowledge", "semantic_image_publications", TenantOwned),
 	table("knowledge", "semantic_history", TenantOwned),
 	table("knowledge", "semantic_indexes", TenantOwned),
 	table("knowledge", "semantic_points", TenantOwned),
@@ -388,6 +394,7 @@ pub const TABLES: &[Table] = &[
 	table("registry", "agent_incident_events", TenantOwned),
 	table("registry", "agent_incidents", TenantOwned),
 	table("registry", "agent_knowledge", TenantOwned),
+	table("registry", "agent_knowledge_images", TenantOwned),
 	table("registry", "agent_plugin_copies", TenantOwned),
 	table("registry", "marketplace_plugin_recalls", DeploymentWide),
 	table("registry", "agent_test_limits", TenantOwned),

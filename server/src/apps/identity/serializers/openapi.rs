@@ -31,6 +31,33 @@ use reinhardt::rest::openapi::OpenApiSchema;
 use serde_json::Value;
 
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
+	contracts.response::<_, aidash_domain::subnodes::SubnodeLimits>(
+		document,
+		views::tenant_administration::subnode_limits,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::tenant_administration::subnode_limits,
+		&["String"],
+	)?;
+	contracts.request::<_, aidash_domain::subnodes::SubnodeLimits>(
+		document,
+		views::tenant_administration::set_subnode_limits,
+	)?;
+	contracts.response::<_, aidash_domain::subnodes::SubnodeLimits>(
+		document,
+		views::tenant_administration::set_subnode_limits,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::tenant_administration::set_subnode_limits,
+		&["String"],
+	)?;
+
 	use super::desktop;
 	{
 		use super::data_protection::{Impact, Settings};
@@ -990,6 +1017,18 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		document,
 		views::remote_commands::handle,
 	)?;
+	contracts
+		.response::<_, crate::apps::identity::serializers::remote_execution_commands::AttachmentResponse>(
+			document,
+			views::remote_commands::thread_attachment,
+			200,
+			"application/json",
+		)?;
+	contracts
+		.request::<_, crate::apps::identity::serializers::remote_execution_commands::AttachmentInput>(
+			document,
+			views::remote_commands::thread_attachment,
+		)?;
 	contracts.response::<_, super::policies::CredentialRevocation>(
 		document,
 		views::policies::revoke_credential,

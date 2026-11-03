@@ -139,7 +139,7 @@ fn administrator_only() -> Error {
 	)
 }
 
-async fn authorized(access: &mut Access, id: Uuid, node: &str) -> Result<RunInspection> {
+pub(crate) async fn authorized(access: &mut Access, id: Uuid, node: &str) -> Result<RunInspection> {
 	let raw: crate::domain::run_state::RawRun = {
 		let query_bind_1 = id;
 		aidash_server::database::query_as(

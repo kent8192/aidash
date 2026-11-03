@@ -151,6 +151,8 @@ impl GenerationEmbeddingSession for Session {
 		let (purpose, run, entry) = match attempt.origin {
 			Origin::Query(run) => ("query", run, None),
 			Origin::Index(entry) => ("index", None, Some(entry)),
+			Origin::Reference => ("reference", None, None),
+			Origin::ReferenceQuery(run) => ("reference", Some(run), None),
 		};
 		let usage = EmbeddingAttempt {
 			id: attempt.id,

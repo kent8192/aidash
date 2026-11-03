@@ -66,6 +66,12 @@ impl RunGuardScope for RunGuard<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn reference_embedding_available(&mut self, reference: &EntityRef) -> Result<bool> {
+		crate::apps::registry::services::knowledge::embedding_available(self.access, reference)
+			.await
+			.map(|entry| entry.is_some())
+			.map_err(Into::into)
+	}
 	async fn closure_catalog(
 		&mut self,
 		reference: &EntityRef,

@@ -227,3 +227,4 @@ pub mod egress;
 
 pub mod oauth_clients;
 pub mod provider_tools;
+pub mod subnodes;

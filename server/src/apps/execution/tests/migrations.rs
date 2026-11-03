@@ -68,14 +68,24 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0052_harness_contract_structured3"),
 	("registry", "0053_connection_request"),
 	("registry", "0054_remove_agent_cluster"),
-	("registry", "0055_provider_tools"),
-	("registry", "0056_provider_warning_tools"),
+	("registry", "0061_provider_tools"),
+	("registry", "0062_provider_warning_tools"),
+	("registry", "0060_subnode_provider"),
 	("registry", "0055_remove_structured_harness_contracts"),
+	("registry", "0056_attachment_tools"),
 	("execution", "0089_remove_agent_cluster"),
-	("execution", "0090_provider_tool_usage"),
-	("execution", "0091_provider_container"),
+	("execution", "0097_provider_tool_usage"),
+	("execution", "0098_provider_container"),
+	("execution", "0094_subnodes"),
+	("execution", "0095_subnodes_row_level_security"),
+	("execution", "0096_subnodes_state"),
 	("execution", "0090_run_created_at"),
 	("execution", "0091_bounded_read_indexes"),
+	("execution", "0092_reference_embedding_usage"),
+	("execution", "0093_reference_embedding_usage_state"),
+	("registry", "0057_embedding_inputs"),
+	("registry", "0058_reference_images"),
+	("registry", "0059_reference_image_byte_state"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -116,7 +126,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	);
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0037_recovery_evidence_merge");
+	assert_eq!(knowledge[0].name, "0048_semantic_images_row_level_security");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -128,7 +138,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		76
+		83
 	);
 	let tables = migrations
 		.iter()
@@ -383,15 +393,12 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0092_policy_probe")
+		.get_migration("execution", "0099_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![(
-			"execution".to_owned(),
-			"0091_bounded_read_indexes".to_owned()
-		)]
+		vec![("execution".to_owned(), "0098_provider_container".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -406,6 +413,11 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 		.migrate_excluding(&[
 			("execution", "0090_run_created_at"),
 			("execution", "0091_bounded_read_indexes"),
+			("execution", "0092_reference_embedding_usage"),
+			("execution", "0093_reference_embedding_usage_state"),
+			("execution", "0094_subnodes"),
+			("execution", "0095_subnodes_row_level_security"),
+			("execution", "0096_subnodes_state"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -573,14 +585,14 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0015_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0019_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"workspaces".to_owned(),
-			"0014_remote_file_version_citations".to_owned()
+			"0018_attachment_wav_rendition_state".to_owned()
 		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
@@ -826,7 +838,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		76
+		83
 	);
 }
 
@@ -846,19 +858,10 @@ async fn remove_agent_cluster_migrates_registry_drafts_requests_and_generation_t
 	let baseline = plan
 		.migrations
 		.iter()
-		.filter(|migration| {
-			!matches!(
-				(migration.app_label.as_str(), migration.name.as_str()),
-				("registry", "0054_remove_agent_cluster")
-					| ("registry", "0055_provider_tools")
-					| ("registry", "0056_provider_warning_tools")
-					| ("registry", "0055_remove_structured_harness_contracts")
-					| ("execution", "0089_remove_agent_cluster")
-					| ("execution", "0090_provider_tool_usage")
-					| ("execution", "0091_provider_container")
-					| ("execution", "0090_run_created_at")
-					| ("execution", "0091_bounded_read_indexes")
-			)
+		.filter(|migration| match migration.app_label.as_str() {
+			"registry" => migration.name.as_str() < "0054_",
+			"execution" => migration.name.as_str() < "0089_",
+			_ => true,
 		})
 		.cloned()
 		.collect::<Vec<_>>();
@@ -1049,6 +1052,125 @@ async fn native_migrations_build_a_fresh_schema_and_preserve_records_on_replay(
 		.unwrap();
 	assert_eq!(loaded.title, "After native migration");
 	assert_eq!(loaded.state.0, json!({"keep":true}));
+}
+
+async fn assert_image_policies(pool: &PgPool) {
+	for table_name in [
+		"agent_knowledge_images",
+		"semantic_image_ledgers",
+		"semantic_image_publications",
+	] {
+		let table = Query::select()
+			.columns([
+				Alias::new("relrowsecurity"),
+				Alias::new("relforcerowsecurity"),
+			])
+			.from(Alias::new("pg_class"))
+			.and_where(Expr::col(Alias::new("relname")).eq(table_name))
+			.to_string(PostgresQueryBuilder);
+		let flags: (bool, bool) = sqlx::query_as(&table).fetch_one(pool).await.unwrap();
+		assert_eq!(flags, (true, true), "{table_name}");
+		let policy = Query::select()
+			.column(Alias::new("policyname"))
+			.from(Alias::new("pg_policies"))
+			.and_where(Expr::col(Alias::new("schemaname")).eq("public"))
+			.and_where(Expr::col(Alias::new("tablename")).eq(table_name))
+			.and_where(Expr::col(Alias::new("policyname")).eq("tenant_isolation"))
+			.to_string(PostgresQueryBuilder);
+		let name: String = sqlx::query_scalar(&policy).fetch_one(pool).await.unwrap();
+		assert_eq!(name, "tenant_isolation");
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn image_policy_migrations_reverse_safely(#[future] fresh_database: MigrationFixture) {
+	// Arrange: the actual migration graph installs all three policies.
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	assert_image_policies(&pool).await;
+	let source =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	// Act: undo the knowledge template migration through the real executor.
+	let migration = source
+		.get_migration("knowledge", "0048_semantic_images_row_level_security")
+		.await
+		.unwrap();
+	executor.rollback_migrations(&[migration]).await.unwrap();
+	// The earlier knowledge policies are restored and the registry policy remains.
+	assert_image_policies(&pool).await;
+
+	// Undo the registry model state and its table-creating migration in order.
+	for name in ["0059_reference_image_byte_state", "0058_reference_images"] {
+		let migration = source.get_migration("registry", name).await.unwrap();
+		executor.rollback_migrations(&[migration]).await.unwrap();
+	}
+	let table: Option<String> =
+		sqlx::query_scalar("SELECT to_regclass('public.agent_knowledge_images')::text")
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+	assert!(table.is_none());
+}
+
+#[rstest]
+#[tokio::test]
+async fn reference_embedding_usage_blocks_rollback_until_usage_is_removed(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	sqlx::query("CREATE TABLE generation_embedding_usage (purpose text NOT NULL CONSTRAINT generation_embedding_usage_purpose_check CHECK (purpose IN ('query', 'index')))")
+		.execute(&pool).await.unwrap();
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.all_migrations()
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|migration| {
+				migration.app_label == "execution"
+					&& migration.name == "0092_reference_embedding_usage"
+			})
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	sqlx::query("INSERT INTO generation_embedding_usage (purpose) VALUES ('reference')")
+		.execute(&pool)
+		.await
+		.unwrap();
+	let error = executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap_err();
+	assert!(
+		error
+			.to_string()
+			.contains("reference embedding usage exists"),
+		"{error}"
+	);
+	let retained: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM generation_embedding_usage WHERE purpose = 'reference'",
+	)
+	.fetch_one(&pool)
+	.await
+	.unwrap();
+	assert_eq!(retained, 1);
+	sqlx::query("DELETE FROM generation_embedding_usage")
+		.execute(&pool)
+		.await
+		.unwrap();
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
 }
 
 fn migration_context(url: &str) -> reinhardt::commands::CommandContext {
@@ -1636,6 +1758,51 @@ async fn constraint_definition(pool: &PgPool, name: &str) -> String {
 		.and_where(Expr::col("conname").eq(name))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query_scalar(&query).fetch_one(pool).await.unwrap()
+}
+
+#[rstest]
+#[tokio::test]
+async fn attachment_tools_migration_admits_and_reverses_the_new_contract(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let descriptor = serde_json::to_value(
+		aidash_domain::tool::providers::core_descriptor("aidash://fixture", "attachment_copy")
+			.unwrap(),
+	)
+	.unwrap();
+	let agent = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work", "remove_default":["attachment_copy"]});
+	for (function, value) in [
+		("aidash_descriptor_is_valid", descriptor.clone()),
+		("aidash_agent_bindings_is_valid", agent.clone()),
+	] {
+		assert!(contract_accepts(&pool, function, vec![value]).await);
+	}
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.get_migration("registry", "0056_attachment_tools")
+			.await
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	for (function, value) in [
+		("aidash_descriptor_is_valid", descriptor.clone()),
+		("aidash_agent_bindings_is_valid", agent.clone()),
+	] {
+		assert!(!contract_accepts(&pool, function, vec![value]).await);
+	}
+	executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	assert!(contract_accepts(&pool, "aidash_descriptor_is_valid", vec![descriptor]).await);
+	assert!(contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![agent]).await);
 }
 
 #[rstest]
@@ -3690,4 +3857,83 @@ async fn context_sources_migration_accepts_exact_native_policies_and_rejects_mis
 	let mut unknown = configured;
 	unknown["context_source"]["unknown"] = json!(true);
 	assert!(!accepts(unknown).await);
+}
+
+#[rstest]
+#[tokio::test]
+async fn subnode_provider_migration_accepts_exact_builtin_descriptors_and_reverses(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let operations = [
+		"subnode_create",
+		"subnode_task",
+		"subnode_add_member",
+		"subnode_remove_member",
+		"subnode_dissolve",
+		"subnode_message",
+	];
+	for operation in operations {
+		let descriptor = serde_json::to_value(
+			aidash_domain::tool::providers::core_descriptor("aidash://fixture", operation).unwrap(),
+		)
+		.unwrap();
+		assert!(
+			contract_accepts(
+				&pool,
+				"aidash_descriptor_is_valid",
+				vec![descriptor.clone()]
+			)
+			.await,
+			"{operation}"
+		);
+		let mut wrong = descriptor;
+		wrong["provider"] = json!("core.tasks@1");
+		assert!(
+			!contract_accepts(&pool, "aidash_descriptor_is_valid", vec![wrong]).await,
+			"{operation}"
+		);
+	}
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.get_migration("registry", "0060_subnode_provider")
+			.await
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	let connection = serde_json::to_value(
+		aidash_domain::tool::providers::core_descriptor("aidash://fixture", "connection_request")
+			.unwrap(),
+	)
+	.unwrap();
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_descriptor_is_valid",
+			vec![connection.clone()]
+		)
+		.await
+	);
+	let descriptor = serde_json::to_value(
+		aidash_domain::tool::providers::core_descriptor("aidash://fixture", "subnode_create")
+			.unwrap(),
+	)
+	.unwrap();
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_descriptor_is_valid",
+			vec![descriptor.clone()]
+		)
+		.await
+	);
+	executor.apply_migrations(&[migration]).await.unwrap();
+	assert!(contract_accepts(&pool, "aidash_descriptor_is_valid", vec![descriptor]).await);
+	assert!(contract_accepts(&pool, "aidash_descriptor_is_valid", vec![connection]).await);
 }

@@ -17,6 +17,36 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+fn decode_thread_attachment(
+	response: Value,
+	message_id: Uuid,
+	expected_digest: &str,
+) -> Result<(String, String, Vec<u8>)> {
+	use base64::Engine as _;
+	let filename = response["filename"]
+		.as_str()
+		.ok_or_else(|| Error::External("invalid attachment response".into()))?;
+	let media_type = response["media_type"]
+		.as_str()
+		.ok_or_else(|| Error::External("invalid attachment response".into()))?;
+	let encoded = response["content_base64"]
+		.as_str()
+		.ok_or_else(|| Error::External("invalid attachment response".into()))?;
+	let bytes = base64::engine::general_purpose::STANDARD
+		.decode(encoded)
+		.map_err(|_| Error::External("invalid attachment response".into()))?;
+	let digest = crate::apps::execution::repositories::capability_objects::digest(&bytes);
+	if response["message_id"] != json!(message_id)
+		|| bytes.len() > 8 * 1024 * 1024
+		|| response["size_bytes"].as_u64() != Some(bytes.len() as u64)
+		|| response["sha256"] != digest
+		|| digest != expected_digest
+	{
+		return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
+	}
+	Ok((filename.to_owned(), media_type.to_owned(), bytes))
+}
+
 #[derive(Clone)]
 pub struct Federation {
 	pub sandbox: aidash_runtime::sandbox::Sessions,
@@ -417,6 +447,61 @@ impl Home {
 			subject: None,
 		})
 	}
+	/// Fetch an immutable attachment from the direct Home without caching it.
+	pub(crate) async fn thread_attachment(
+		&self,
+		id: Uuid,
+		message_id: Uuid,
+		expected_digest: &str,
+	) -> Result<Option<(String, String, Vec<u8>)>> {
+		use aidash_application::ports::authorization::peer::PeerAdmissionRecords as _;
+		let grant = match crate::authorization::peer::admission::run_grant(
+			&self.federation.store,
+			&self.run,
+		)
+		.await
+		{
+			Ok(Some(grant)) => grant,
+			Ok(None) | Err(Error::Forbidden | Error::Unauthorized | Error::NotFound(_)) => {
+				return Ok(None);
+			}
+			Err(error) => return Err(error),
+		};
+		let Some(record) = crate::bootstrap::peer_admission_records(&self.federation.store)
+			.record(self.run.id)
+			.await?
+		else {
+			return Ok(None);
+		};
+		if record.grant_id != grant || record.source_node != self.run.home_node {
+			return Ok(None);
+		}
+		let sender = Sender {
+			tenant: aidash_domain::tenancy::TenantName::new(&record.tenant)?,
+			node: Some(record.node),
+			subject: Some(
+				record
+					.subject_chain
+					.first()
+					.cloned()
+					.ok_or(Error::Forbidden)?,
+			),
+		};
+		let response: Value = match crate::authorization::peer::authority_request(
+			&self.federation,
+			&sender,
+			&self.run.home_node,
+			"/thread-attachment/1/fetch",
+			&json!({"grant_id":grant,"admission_id":self.run.id,"attachment_id":id}),
+		)
+		.await
+		{
+			Ok(value) => value,
+			Err(Error::Forbidden | Error::Unauthorized | Error::NotFound(_)) => return Ok(None),
+			Err(error) => return Err(error),
+		};
+		decode_thread_attachment(response, message_id, expected_digest).map(Some)
+	}
 	pub(crate) async fn command<T: DeserializeOwned>(&self, op: &str, data: Value) -> Result<T> {
 		let preflight = async {
 			let grant =
@@ -503,6 +588,15 @@ impl Home {
 				.workspace_observation(self.run.workspace_id, offset, limit)
 				.await;
 		}
+		if !self.local() {
+			let limit = limit.clamp(1, aidash_domain::context::observation::MAX_LIMIT);
+			return self
+				.command(
+					"workspace_observation",
+					json!({"offset":offset,"limit":limit}),
+				)
+				.await;
+		}
 		let snapshot = self.snapshot().await?;
 		Ok(crate::context::observation::project(
 			&snapshot, offset, limit,
@@ -512,7 +606,7 @@ impl Home {
 		&self,
 		offset: usize,
 		limit: usize,
-		fits: F,
+		mut fits: F,
 	) -> Result<Option<(usize, Value)>>
 	where
 		F: FnMut(usize, &Value) -> Result<bool>,
@@ -521,6 +615,30 @@ impl Home {
 			return authority
 				.workspace_observation_fitted(self.run.workspace_id, offset, limit, fits)
 				.await;
+		}
+		if !self.local() {
+			let limit = limit.clamp(1, aidash_domain::context::observation::MAX_LIMIT);
+			let observation = self.observation(offset, limit).await?;
+			for candidate in (1..=limit).rev() {
+				let mut output = observation.clone();
+				for name in ["tasks", "artifacts", "events", "messages"] {
+					output[name]
+						.as_array_mut()
+						.ok_or_else(|| Error::External("invalid remote observation".into()))?
+						.truncate(candidate);
+					let page = &mut output["pages"][name];
+					let total = page["total"]
+						.as_u64()
+						.ok_or_else(|| Error::External("invalid remote observation".into()))?;
+					let end = (offset as u64).saturating_add(candidate as u64).min(total);
+					page["limit"] = json!(candidate);
+					page["next_offset"] = json!((end < total).then_some(end));
+				}
+				if fits(candidate, &output)? {
+					return Ok(Some((candidate, output)));
+				}
+			}
+			return Ok(None);
 		}
 		let snapshot = self.snapshot().await?;
 		crate::context::observation::fit_projection(&snapshot, offset, limit, fits)
@@ -596,6 +714,23 @@ impl Home {
 			json!({"kind":kind,"id":id,"offset":offset,"max_chars":max_chars.min(16000)}),
 		)
 		.await
+	}
+	pub(crate) async fn read_subnode_record_chunk(
+		&self,
+		workspace: Uuid,
+		kind: &str,
+		id: &str,
+		offset: usize,
+		max_chars: usize,
+	) -> Result<Value> {
+		let id = id
+			.parse::<Uuid>()
+			.map_err(|_| Error::Invalid("invalid workspace record id".into()))?;
+		let authority = self.authority.as_ref().ok_or(Error::Forbidden)?;
+		let record = authority
+			.subnode_workspace_record(self.execution_run()?, workspace, kind, id)
+			.await?;
+		crate::context::observation::chunk_record(record, kind, &id.to_string(), offset, max_chars)
 	}
 	pub(crate) async fn child_summary(&self, parent: Uuid) -> Result<ChildTaskSummary> {
 		let scope = self.tenancy().await?;
@@ -772,6 +907,26 @@ impl Home {
 				policy,
 				reason,
 			)
+			.await
+	}
+	pub(crate) async fn subnode_command(
+		&self,
+		key: &str,
+		command: &aidash_application::subnodes::Command,
+	) -> Result<Value> {
+		let authority = self.authority.as_ref().ok_or(Error::Forbidden)?;
+		authority
+			.subnode_command(&self.federation, self.execution_run()?, key, command)
+			.await
+	}
+	pub(crate) async fn subnode_create(
+		&self,
+		key: &str,
+		input: &aidash_application::subnodes::Create,
+	) -> Result<aidash_domain::subnodes::Subnode> {
+		let authority = self.authority.as_ref().ok_or(Error::Forbidden)?;
+		authority
+			.create_subnode(&self.federation, self.execution_run()?, key, input)
 			.await
 	}
 	pub async fn create_task(&self, key: &str, input: &NewTask) -> Result<Task> {

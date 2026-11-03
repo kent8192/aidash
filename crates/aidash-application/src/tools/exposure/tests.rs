@@ -27,6 +27,7 @@ const BINARY: &[u8] = &[0xff, 0xfe, 0x00, 0x01];
 
 #[derive(Default)]
 struct Operations {
+	intrinsic: BTreeMap<String, ToolSpec>,
 	specifications: BTreeMap<String, ToolSpec>,
 	direct: Vec<DirectSkill>,
 	files: BTreeMap<String, Vec<u8>>,
@@ -36,6 +37,16 @@ struct Operations {
 }
 #[async_trait]
 impl ToolOperations for Operations {
+	async fn subnode_command(&self, _: &str, _: &crate::subnodes::Command) -> Result<Value> {
+		panic!("unexpected Subnode effect")
+	}
+	async fn subnode_create(
+		&self,
+		_: &str,
+		_: &crate::subnodes::Create,
+	) -> Result<aidash_domain::subnodes::Subnode> {
+		panic!("unexpected tool effect: subnode_create")
+	}
 	async fn registered_skills(&self) -> Result<Vec<EntityRef>> {
 		panic!("unexpected tool effect: registered_skills")
 	}
@@ -86,6 +97,9 @@ impl ToolOperations for Operations {
 	}
 	async fn binding_specifications(&self) -> Result<BTreeMap<String, ToolSpec>> {
 		Ok(self.specifications.clone())
+	}
+	async fn intrinsic_subnode_specifications(&self) -> Result<BTreeMap<String, ToolSpec>> {
+		Ok(self.intrinsic.clone())
 	}
 	async fn direct_skills(&self) -> Result<Vec<DirectSkill>> {
 		Ok(self.direct.clone())
@@ -357,6 +371,31 @@ async fn search_and_describe_cover_tools_and_skills_of_the_snapshot(fixture: Fix
 		fixture.call("capability_describe", json!({"alias":"missing"})).await,
 		Err(error) if code(&error) == ("invalid", "UNKNOWN_CAPABILITY")
 	));
+}
+
+#[rstest]
+#[tokio::test]
+async fn subnode_intrinsics_are_present_and_mandatory_in_tool_catalog(mut fixture: Fixture) {
+	fixture.operations.intrinsic.insert(
+		"task_create".into(),
+		ToolSpec {
+			name: "task_create".into(),
+			description: "Coordinate work".into(),
+			parameters: json!({"type":"object"}),
+		},
+	);
+	let result = fixture
+		.call("capability_search", json!({"query":"task_create"}))
+		.await
+		.unwrap();
+	assert!(
+		result["results"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|entry| entry["alias"] == "task_create" && entry["loaded"] == true),
+		"{result}"
+	);
 }
 
 #[rstest]

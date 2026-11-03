@@ -13,6 +13,23 @@ use serde_json::json;
 
 mod plan;
 
+fn align_default_source_tools(declaration: &mut SourceDeclaration, identities: &[QualifiedRef]) {
+	for reference in declaration
+		.tools
+		.detail
+		.iter_mut()
+		.chain(declaration.tools.read.iter_mut())
+	{
+		if !identities.contains(reference)
+			&& let Some(saved) = identities.iter().find(|saved| {
+				saved.id == reference.id
+					&& saved.registry_deployment == reference.registry_deployment
+			}) {
+			*reference = saved.clone();
+		}
+	}
+}
+
 #[derive(Clone, Copy)]
 struct SourceQueryFrame<'a> {
 	task: &'a Task,
@@ -183,14 +200,19 @@ pub(super) enum Slot {
 	ResidentSkills,
 	RegistrySkills,
 	References,
+	ReferenceImages,
 	Skills,
 	Semantic,
 	Observation,
 }
 impl Slot {
+	fn requires_mandatory_delivery(self, remote: bool) -> bool {
+		matches!(self, Self::ReferenceImages) || (matches!(self, Self::Semantic) && remote)
+	}
 	fn name(self) -> &'static str {
 		match self {
 			Self::References => "references",
+			Self::ReferenceImages => "reference_images",
 			Self::Skills => "skills",
 			Self::RegistrySkills => "registry_skills",
 			Self::ResidentSkills => "resident_skills",
@@ -222,11 +244,13 @@ impl Slot {
 			};
 			return matches!(
 				(self, context.source),
-				(Self::References, NativeSource::PrivateReferences { .. })
-					| (
-						Self::Skills | Self::ResidentSkills,
-						NativeSource::SkillAttachments { .. } | NativeSource::SkillRoots { .. }
-					) | (
+				(
+					Self::References | Self::ReferenceImages,
+					NativeSource::PrivateReferences { .. }
+				) | (
+					Self::Skills | Self::ResidentSkills,
+					NativeSource::SkillAttachments { .. } | NativeSource::SkillRoots { .. }
+				) | (
 					Self::Semantic,
 					NativeSource::ConversationMemory { .. }
 						| NativeSource::SemanticMemory { .. }
@@ -258,7 +282,7 @@ impl Environment<'_> {
 				};
 			}
 		};
-		let semantic_query = matches!(slot, Slot::Semantic).then(|| {
+		let semantic_query = matches!(slot, Slot::Semantic | Slot::ReferenceImages).then(|| {
 			aidash_application::execution::semantic_context::query_material(
 				run,
 				frame.task,
@@ -267,7 +291,7 @@ impl Environment<'_> {
 			)
 		});
 		let resident_blocks = matches!(slot, Slot::ResidentSkills).then_some(frame.prepared);
-		let max_bytes = if matches!(slot, Slot::Semantic) {
+		let max_bytes = if matches!(slot, Slot::Semantic | Slot::ReferenceImages) {
 			frame.budget
 		} else {
 			MAX_SOURCE_BYTES
@@ -290,7 +314,21 @@ impl Environment<'_> {
 					aidash_domain::registry::bindings::sources::NativeContext,
 				>(binding.definition.config.clone())
 				{
-					Ok(native) => native.declaration(&binding.identity),
+					Ok(native) => {
+						let mut declaration =
+							native.declaration_for_snapshot(&binding.identity, snapshot);
+						if native.context_source.is_none() {
+							align_default_source_tools(
+								&mut declaration,
+								&snapshot
+									.bindings
+									.iter()
+									.map(|saved| saved.identity.clone())
+									.collect::<Vec<_>>(),
+							);
+						}
+						declaration
+					}
 					Err(_) => serde_json::from_value::<aidash_domain::memory::SourceConfig>(
 						binding.definition.config.clone(),
 					)
@@ -335,13 +373,13 @@ impl Environment<'_> {
 				));
 			}
 			// Required-Home is an admission property, never a user opt-in bit.
-			if matches!(slot, Slot::Semantic)
-				&& (snapshot.remote
+			if slot.requires_mandatory_delivery(
+				snapshot.remote
 					|| self
 						.authority
 						.as_ref()
-						.is_some_and(|authority| authority.is_remote()))
-			{
+						.is_some_and(|authority| authority.is_remote()),
+			) {
 				for (_, declaration, _) in &mut declarations {
 					declaration.required_home = true;
 					if matches!(
@@ -352,7 +390,11 @@ impl Environment<'_> {
 						} | PinPolicy::OnDemand
 					) {
 						return Err(aidash_application::Error::Invalid(
-							"required-Home context must retain its mandatory delivery".into(),
+							if matches!(slot, Slot::ReferenceImages) {
+								"reference image context must retain its mandatory delivery".into()
+							} else {
+								"required-Home context must retain its mandatory delivery".into()
+							},
 						));
 					}
 				}
@@ -1019,6 +1061,15 @@ impl Environment<'_> {
 						reference_offset += own.as_array().unwrap().len();
 					}
 				}
+				Slot::ReferenceImages => {
+					if let Some(items) = content.as_array() {
+						for (index, item) in items.iter().enumerate() {
+							if item.get("source") == Some(&serde_json::to_value(source)?) {
+								paths.push(format!("/{index}"));
+							}
+						}
+					}
+				}
 				Slot::Semantic => {
 					let workspace = matches!(
 						native.as_ref().map(|native| &native.source),
@@ -1329,6 +1380,24 @@ fn fragment_batches(fragments: &[Fragment], max_bytes: usize) -> Result<Vec<Vec<
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn default_source_uses_the_builtin_version_admitted_to_the_run() {
+		let node = "aidash://fixture";
+		let source = aidash_domain::registry::bindings::sources::NativeContext {
+			schema_version: 1,
+			source:
+				aidash_domain::registry::bindings::sources::NativeSource::WorkspaceObservation {},
+			context_source: None,
+		};
+		let mut declaration = source.declaration(&QualifiedRef::builtin(node, "workspace_read"));
+		let old = ["workspace_observe", "workspace_read"].map(|name| QualifiedRef {
+			version: "1.0.0".into(),
+			..QualifiedRef::builtin(node, name)
+		});
+		align_default_source_tools(&mut declaration, &old);
+		assert_eq!(declaration.tools.read, old);
+		assert_eq!(declaration.tools.detail, Some(old[0].clone()));
+	}
 	fn fragment(item: usize, bytes: usize) -> Fragment {
 		Fragment {
 			pointer: format!("/@text/{item}/{}", item + bytes),

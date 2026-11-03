@@ -14,6 +14,10 @@ pub trait RunGuardScope: Send {
 	async fn run_visible(&mut self, run: &RunMetadata) -> Result<bool>;
 	async fn cluster_targets(&mut self, workspace: Uuid) -> Result<Vec<String>>;
 	async fn catalog(&mut self, reference: &EntityRef, action: &str) -> Result<Entry>;
+	/// Existence and current Catalog Approval, independent of subject policy.
+	async fn reference_embedding_available(&mut self, _reference: &EntityRef) -> Result<bool> {
+		Err(crate::Error::Forbidden)
+	}
 	/// [`Self::catalog`] for a closure definition that only the closure agents
 	/// `users` use directly, so its Catalog Approval restriction applies to them.
 	async fn closure_catalog(

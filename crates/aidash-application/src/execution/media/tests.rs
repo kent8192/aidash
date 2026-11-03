@@ -12,6 +12,7 @@ fn id(value: u128) -> Uuid {
 }
 fn attachment(filename: &str, media_type: &str, content: Vec<u8>) -> MediaAttachment {
 	MediaAttachment {
+		id: id(99),
 		filename: filename.into(),
 		media_type: media_type.into(),
 		sha256: format!("{:x}", Sha256::digest(&content)),
@@ -63,12 +64,78 @@ fn model() -> ModelConfig {
 		estimate_diagnostics: None,
 	}
 }
+
+#[rstest]
+fn attachment_selection_checks_modality_routes_and_wav_fallback(mut model: ModelConfig) {
+	assert!(!thread_attachment_wav(&model, "image/png").unwrap());
+	model.media_routes = vec![routes(vec!["wav".into()])];
+	assert!(thread_attachment_wav(&model, "audio/mpeg").unwrap());
+	model.media_routes[0].expires_at = Utc::now() - Duration::seconds(1);
+	assert!(
+		matches!(thread_attachment_wav(&model, "audio/mpeg"), Err(Error::Invalid(message)) if message.contains("audio/mpeg") && message.contains("current route"))
+	);
+	model.modalities = vec!["text".into()];
+	let error = thread_attachment_wav(&model, "audio/ogg").unwrap_err();
+	assert!(
+		matches!(error, Error::Invalid(message) if message == "this model cannot read audio/ogg through any current route")
+	);
+}
+
+#[rstest]
+fn selected_audio_uses_wav_when_only_a_shared_route_accepts_it(mut model: ModelConfig) {
+	model.media_routes = vec![
+		routes(vec!["mp3".into()]),
+		routes(vec!["image/png".into(), "wav".into()]),
+	];
+	let audio = ModelMedia::ThreadAttachment(aidash_domain::media::ThreadAttachmentSelection {
+		attachment_id: id(4),
+		message_id: id(5),
+		expected_digest: "digest".into(),
+		wav: false,
+	});
+	let image = ModelMedia::ThreadAttachment(aidash_domain::media::ThreadAttachmentSelection {
+		attachment_id: id(6),
+		message_id: id(5),
+		expected_digest: "digest".into(),
+		wav: false,
+	});
+	let audio_parts = vec![
+		ContentPart::Text("audio".into()),
+		ContentPart::Audio {
+			format: "mp3".into(),
+			bytes: vec![],
+		},
+	];
+	let image_parts = vec![
+		ContentPart::Text("image".into()),
+		ContentPart::Image {
+			media_type: "image/png".into(),
+			bytes: vec![],
+		},
+	];
+	for reversed in [false, true] {
+		let selections = if reversed {
+			vec![image.clone(), audio.clone()]
+		} else {
+			vec![audio.clone(), image.clone()]
+		};
+		let parts = if reversed {
+			[image_parts.clone(), audio_parts.clone()].concat()
+		} else {
+			[audio_parts.clone(), image_parts.clone()].concat()
+		};
+		let selected = route_selected_renditions(&model, &selections, &parts).unwrap();
+		assert!(selected.iter().any(|item| matches!(item, ModelMedia::ThreadAttachment(value) if value.attachment_id == id(4) && value.wav)));
+		assert!(selected.iter().any(|item| matches!(item, ModelMedia::ThreadAttachment(value) if value.attachment_id == id(6) && !value.wav)));
+	}
+}
 #[derive(Default)]
 struct Scope {
 	rows: BTreeMap<Uuid, Vec<MediaAttachment>>,
 	calls: Vec<(&'static str, Uuid)>,
 	denied: Option<Uuid>,
 	fail: Option<Uuid>,
+	wav_size: Option<usize>,
 }
 #[fixture]
 fn scope() -> Scope {
@@ -92,6 +159,18 @@ impl MediaAttachments for Scope {
 			))));
 		}
 		Ok(self.rows.get(&message).cloned().unwrap_or_default())
+	}
+	async fn wav_rendition(
+		&mut self,
+		_workspace: Uuid,
+		attachment: &MediaAttachment,
+	) -> Result<Vec<u8>> {
+		self.calls.push(("wav", attachment.id));
+		let mut bytes = b"RIFF\x04\0\0\0WAVE".to_vec();
+		if let Some(size) = self.wav_size {
+			bytes.resize(size, 0);
+		}
+		Ok(bytes)
 	}
 }
 #[async_trait]
@@ -507,7 +586,7 @@ async fn attachment_read_faults_retain_their_identity_without_partial_output(
 	assert_eq!(scope.calls.last(), Some(&("attachments", id(2))));
 }
 use crate::ports::execution::media::SelectedMediaScope;
-use aidash_domain::media::{SelectedFile, Selection};
+use aidash_domain::media::{ModelFileSelection as Selection, SelectedFile};
 
 struct FileScope {
 	files: Vec<SelectedFile>,
@@ -515,7 +594,9 @@ struct FileScope {
 	calls: Vec<(&'static str, Uuid)>,
 	denied: bool,
 	read_fault: Option<Uuid>,
+	subnode_area: Option<(Uuid, Uuid)>,
 	page_images: BTreeMap<String, (String, Vec<u8>)>,
+	thread_attachments: BTreeMap<Uuid, (String, String, Vec<u8>)>,
 }
 #[fixture]
 fn file_scope() -> FileScope {
@@ -538,12 +619,16 @@ fn file_scope() -> FileScope {
 		calls: vec![],
 		denied: false,
 		read_fault: None,
+		subnode_area: None,
 		page_images: BTreeMap::new(),
+		thread_attachments: BTreeMap::new(),
 	}
 }
 fn selection(scope: &FileScope, file_id: Uuid) -> ModelMedia {
 	ModelMedia::File(Selection {
 		file_id,
+		workspace_id: None,
+		area_id: None,
 		expected_digest: scope
 			.files
 			.iter()
@@ -552,6 +637,60 @@ fn selection(scope: &FileScope, file_id: Uuid) -> ModelMedia {
 			.digest
 			.clone(),
 	})
+}
+
+#[rstest]
+#[tokio::test]
+async fn subnode_media_is_denied_unless_the_adapter_authorizes_that_area(
+	mut file_scope: FileScope,
+) {
+	let mut selected_file = match selection(&file_scope, id(1)) {
+		ModelMedia::File(file) => file,
+		_ => unreachable!(),
+	};
+	selected_file.workspace_id = Some(id(100));
+	selected_file.area_id = Some(id(101));
+	assert!(matches!(
+		selected(&mut file_scope, &[ModelMedia::File(selected_file)]).await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(
+		file_scope.calls,
+		vec![("snapshot", Uuid::nil()), ("subnode", id(101))]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn subnode_media_rechecks_area_and_digest_before_reading(mut file_scope: FileScope) {
+	file_scope.subnode_area = Some((id(100), id(101)));
+	let mut selected_file = match selection(&file_scope, id(1)) {
+		ModelMedia::File(file) => file,
+		_ => unreachable!(),
+	};
+	selected_file.workspace_id = Some(id(100));
+	selected_file.area_id = Some(id(101));
+	selected(&mut file_scope, &[ModelMedia::File(selected_file.clone())])
+		.await
+		.unwrap();
+	assert_eq!(
+		file_scope.calls,
+		vec![
+			("snapshot", Uuid::nil()),
+			("subnode", id(101)),
+			("read", id(1))
+		]
+	);
+	file_scope.calls.clear();
+	selected_file.expected_digest = "changed".into();
+	assert!(matches!(
+		selected(&mut file_scope, &[ModelMedia::File(selected_file)]).await,
+		Err(Error::Conflict(_))
+	));
+	assert_eq!(
+		file_scope.calls,
+		vec![("snapshot", Uuid::nil()), ("subnode", id(101))]
+	);
 }
 #[async_trait]
 impl SelectedMediaScope for FileScope {
@@ -563,6 +702,22 @@ impl SelectedMediaScope for FileScope {
 			Ok(self.files.clone())
 		}
 	}
+	async fn subnode_file(
+		&mut self,
+		workspace: Uuid,
+		area: Uuid,
+		file: Uuid,
+	) -> Result<SelectedFile> {
+		self.calls.push(("subnode", area));
+		if self.subnode_area != Some((workspace, area)) {
+			return Err(Error::Forbidden);
+		}
+		self.files
+			.iter()
+			.find(|entry| entry.file_id == file)
+			.cloned()
+			.ok_or_else(|| Error::NotFound("file unavailable".into()))
+	}
 	async fn read(&mut self, file: Uuid) -> Result<Vec<u8>> {
 		self.calls.push(("read", file));
 		if self.read_fault == Some(file) {
@@ -572,10 +727,90 @@ impl SelectedMediaScope for FileScope {
 		}
 		Ok(self.content[&file].clone())
 	}
+	async fn workspace_image(
+		&mut self,
+		area: Uuid,
+		generation: i64,
+		file: Uuid,
+		path: &str,
+	) -> Result<Option<SelectedFile>> {
+		self.calls.push(("workspace_image", area));
+		if self.denied {
+			return Err(Error::Forbidden);
+		}
+		if generation != 3 {
+			return Ok(None);
+		}
+		Ok(self
+			.files
+			.iter()
+			.find(|entry| entry.file_id == file && entry.path == path)
+			.cloned())
+	}
+	async fn thread_attachment(
+		&mut self,
+		selection: &aidash_domain::media::ThreadAttachmentSelection,
+	) -> Result<Option<(String, String, Vec<u8>)>> {
+		self.calls
+			.push(("thread_attachment", selection.attachment_id));
+		Ok(self
+			.thread_attachments
+			.get(&selection.attachment_id)
+			.cloned())
+	}
 	async fn page_image(&mut self, reference: &str) -> Result<Option<(String, Vec<u8>)>> {
 		self.calls.push(("page_image", Uuid::nil()));
 		Ok(self.page_images.get(reference).cloned())
 	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_workspace_match_opens_through_the_existing_model_media_reader(
+	mut file_scope: FileScope,
+) {
+	let file = file_scope.files[0].clone();
+	let selection = ModelMedia::WorkingImage(aidash_domain::media::WorkingImageSelection {
+		area_id: id(20),
+		generation: 3,
+		file_id: file.file_id,
+		path: file.path.clone(),
+		expected_digest: file.digest.clone(),
+	});
+	let output = selected(&mut file_scope, &[selection]).await.unwrap();
+	assert_eq!(
+		parts(&output),
+		vec![
+			json!({"text":"Selected file: inputs/saved.png"}),
+			json!({"image":"image/png","bytes":image().content})
+		]
+	);
+	assert_eq!(
+		file_scope.calls,
+		vec![
+			("snapshot", Uuid::nil()),
+			("workspace_image", id(20)),
+			("read", id(1))
+		]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_stale_workspace_image_never_reads_bytes(mut file_scope: FileScope) {
+	let file = file_scope.files[0].clone();
+	let selection = ModelMedia::WorkingImage(aidash_domain::media::WorkingImageSelection {
+		area_id: id(20),
+		generation: 2,
+		file_id: file.file_id,
+		path: file.path.clone(),
+		expected_digest: file.digest.clone(),
+	});
+	assert!(matches!(
+		selected(&mut file_scope, &[selection]).await,
+		Err(Error::NotFound(_))
+	));
+	assert!(!file_scope.calls.iter().any(|(call, _)| *call == "read"));
 }
 #[rstest]
 #[tokio::test]
@@ -655,6 +890,8 @@ async fn selected_missing_file_keeps_order_and_the_original_not_found(
 	}
 	selections.push(ModelMedia::File(Selection {
 		file_id: id(99),
+		workspace_id: None,
+		area_id: None,
 		expected_digest: "unavailable".into(),
 	}));
 	let error = selected(&mut file_scope, &selections).await.err().unwrap();
@@ -679,6 +916,8 @@ async fn selected_changed_digest_is_rejected_before_reading_that_file(
 	}
 	selections.push(ModelMedia::File(Selection {
 		file_id: id(2),
+		workspace_id: None,
+		area_id: None,
 		expected_digest: "stale digest".into(),
 	}));
 	let error = selected(&mut file_scope, &selections).await.err().unwrap();
@@ -742,6 +981,8 @@ async fn selected_duplicate_metadata_uses_the_first_matching_saved_file(mut file
 	file_scope.files.push(duplicate);
 	let selections = [ModelMedia::File(Selection {
 		file_id: id(1),
+		workspace_id: None,
+		area_id: None,
 		expected_digest: "later duplicate digest".into(),
 	})];
 	assert!(
@@ -893,4 +1134,123 @@ async fn escaped_attachment_labels_keep_the_selected_batch_within_dispatch_headr
 		required <= headroom,
 		"selected batch requires {required}, only {headroom} available"
 	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn chooses_a_common_route_and_only_renders_when_needed(
+	mut scope: Scope,
+	mut model: ModelConfig,
+) {
+	model.media_routes = vec![routes(vec!["image/png".into(), "wav".into()])];
+	let batch = load(
+		&mut scope,
+		id(10),
+		&[(7, id(1), 128000)],
+		&model,
+		Default::default(),
+	)
+	.await
+	.unwrap();
+	assert_eq!(parts(&batch.parts)[3]["audio"], "wav");
+	assert_eq!(
+		scope
+			.calls
+			.iter()
+			.filter(|(action, _)| *action == "wav")
+			.count(),
+		1
+	);
+	model.media_routes = vec![routes(vec!["image/png".into(), "wav".into(), "mp3".into()])];
+	scope.calls.clear();
+	let batch = load(
+		&mut scope,
+		id(10),
+		&[(7, id(1), 128000)],
+		&model,
+		Default::default(),
+	)
+	.await
+	.unwrap();
+	assert_eq!(parts(&batch.parts)[3]["audio"], "mp3");
+	assert!(!scope.calls.iter().any(|(action, _)| *action == "wav"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn does_not_combine_individually_supported_formats_from_different_routes(
+	mut scope: Scope,
+	mut model: ModelConfig,
+) {
+	model.media_routes = vec![routes(vec!["image/png".into()]), routes(vec!["wav".into()])];
+	assert!(matches!(
+		load(
+			&mut scope,
+			id(10),
+			&[(7, id(1), 128000)],
+			&model,
+			Default::default()
+		)
+		.await,
+		Err(Error::MediaRouteUnavailable { .. })
+	));
+	assert!(!scope.calls.iter().any(|(action, _)| *action == "wav"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn rendition_bytes_count_toward_the_inference_limit(
+	mut scope: Scope,
+	mut model: ModelConfig,
+) {
+	model.media_routes = vec![routes(vec!["image/png".into(), "wav".into()])];
+	scope.wav_size = Some(8 * 1024 * 1024 + 1);
+	let result = load(
+		&mut scope,
+		id(10),
+		&[(7, id(1), 128000)],
+		&model,
+		Default::default(),
+	)
+	.await;
+	assert!(matches!(result, Err(Error::Invalid(message)) if message.contains("byte limit")));
+}
+
+#[rstest]
+#[tokio::test]
+async fn selected_thread_attachment_reaches_model_input(mut file_scope: FileScope) {
+	file_scope.thread_attachments.insert(
+		id(99),
+		("picture.png".into(), "image/png".into(), image().content),
+	);
+	let selection = ModelMedia::ThreadAttachment(aidash_domain::media::ThreadAttachmentSelection {
+		attachment_id: id(99),
+		message_id: id(33),
+		expected_digest: "digest".into(),
+		wav: false,
+	});
+	let output = selected(&mut file_scope, &[selection]).await.unwrap();
+	assert_eq!(
+		parts(&output),
+		vec![
+			json!({"text":"Selected Thread Attachment: picture.png"}),
+			json!({"image":"image/png", "bytes":image().content})
+		]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn deleted_thread_attachment_yields_unavailable_notice(mut file_scope: FileScope) {
+	let selection = ModelMedia::ThreadAttachment(aidash_domain::media::ThreadAttachmentSelection {
+		attachment_id: id(99),
+		message_id: id(33),
+		expected_digest: "digest".into(),
+		wav: false,
+	});
+	let result = selected(&mut file_scope, &[selection]).await.unwrap();
+	assert!(
+		matches!(&result[..], [ContentPart::Text(notice)] if notice.contains("Thread Attachment unavailable") && notice.contains(&id(99).to_string()))
+	);
+	assert_eq!(file_scope.calls, vec![("thread_attachment", id(99))]);
 }

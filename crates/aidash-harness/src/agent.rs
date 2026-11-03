@@ -55,7 +55,9 @@ impl<'a> Executor<'a> {
 		match result {
 			Ok(value) => Ok(value),
 			Err(
-				Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message)),
+				Error::Invalid(message)
+				| Error::Refused(message)
+				| Error::Domain(aidash_domain::Error::Invalid(message)),
 			) => Ok(json!({"error":message})),
 			Err(Error::ToolNotDelivered {
 				message,
@@ -1245,7 +1247,7 @@ impl<'a> Executor<'a> {
 				run.context.exposure.activate();
 				let mut exposure = match deferred_exposure(run)? {
 					Some((snapshot, budgets)) => {
-						let catalog = exposure_catalog(self.environment, run, snapshot, &tools).await?;
+						let catalog = exposure_catalog(self.environment, run, snapshot, &tools, agent.harness_contract).await?;
 						let selection = exposure::select(&budgets, &catalog, &run.context.exposure)?;
 						if cached_sources.is_none() {
 							prepared_sources =
@@ -1518,7 +1520,7 @@ impl<'a> Executor<'a> {
 					.filter(|(alias, _)| exposure.as_ref().is_none_or(|selection| selection.tools.contains(*alias)))
 					.filter(|(_, tool)| !run_message_catchup || tool.contract().behavior.permits(ToolUseMode::MessageCatchUp))
 					.map(|(_, tool)| tool)
-					.map(|t| t.specification())
+					.map(|t| contract_tool_specification(t.as_ref(), contract))
 					.collect::<Vec<_>>();
 				let selected_media = thinking.selected_media.clone();
 				let media_headroom = self.environment.run_request_headroom(run).await?;
@@ -2490,6 +2492,17 @@ connection: None,
 						.await?;
 				}
 				if cursor >= result.tool_calls.len() {
+					// Preserve what the model learned from a selected Thread Attachment
+					// without advancing the cursor reserved for human Run inputs.
+					if !withheld
+						&& !result.text.trim().is_empty()
+						&& run.state.tool()?.inferred_selected_media.iter().any(|media| matches!(media, aidash_domain::media::ModelMedia::ThreadAttachment(_)))
+						&& (!result.tool_calls.is_empty() || !self.cites_invalid_evidence(run, &tools, &result.text).await?)
+					{
+						let mut context = run.context.clone();
+						record_media_observation(&mut context, &result.text, None, media_observation_budget(run.state.tool()?));
+						run.context = context;
+					}
 					if result.tool_calls.is_empty() {
 						if !run.state.tool()?.deferred_selected_media.is_empty() {
 							if !result.text.trim().is_empty() {
@@ -2673,7 +2686,7 @@ connection: None,
 						// advertised, as checked below for a sequential call.
 						let exposed = match deferred_exposure(run)? {
 							Some((snapshot, budgets)) => {
-								let catalog = exposure_catalog(self.environment, run, snapshot, &tools).await?;
+								let catalog = exposure_catalog(self.environment, run, snapshot, &tools, agent.harness_contract).await?;
 								Some(exposure::select(&budgets, &catalog, &run.context.exposure)?.tools)
 							}
 							None => None,
@@ -2722,7 +2735,7 @@ connection: None,
 				if let Some((snapshot, budgets)) = deferred_exposure(run)? {
 					// Every call is checked against the Exposure set its request
 					// advertised; Load/Unload in this response apply to the next one.
-					let catalog = exposure_catalog(self.environment, run, snapshot, &tools).await?;
+					let catalog = exposure_catalog(self.environment, run, snapshot, &tools, agent.harness_contract).await?;
 					if !exposure::select(&budgets, &catalog, &run.context.exposure)?.tools.contains(&call.name) {
 						let message = if exposure::select(&budgets, &catalog, &run.context.exposure.effective())?.tools.contains(&call.name) {
 							format!("capability {} was loaded in this response; call it after the next model request", call.name)
@@ -2974,9 +2987,16 @@ connection: None,
                 let (output, unfinished_key) = if research_result {
                     (store.invocation_finish(run, token, &key, &output).await?, None)
                 } else { (output, unfinished_key) };
-				if let Some(selection) =
-					contract.behavior.model_media_selection(&call.arguments, &output)
-				{
+				let mut selection = contract.behavior.model_media_selection(&call.arguments, &output);
+				if matches!(selection, Some(aidash_domain::media::ModelMedia::WorkingImage(_))) {
+					let entry = self.environment.catalog()
+						.get_for_run(&*run, &agent.model.id, &agent.model.version).await?;
+					let model: ModelConfig = serde_json::from_value(entry.config)?;
+					if !selection.as_ref().expect("image selection").supported_by(&model.modalities) {
+						selection = None;
+					}
+				}
+				if let Some(selection) = selection {
 					let mut selected = run.state.tool()?.selected_media.clone();
 					let deferred_count = run.state.tool()?.deferred_selected_media.len();
 					if selected.len() + deferred_count >= 8 {
@@ -3007,13 +3027,21 @@ connection: None,
 							.await;
 					};
 					match Box::pin(guard.model_media(&selections)).await {
-						Ok(parts) => {
+						Ok(mut parts) => {
 							let headroom = self.environment.run_request_headroom(run).await?;
-							let model_entry = self
-								.environment
-								.catalog().get_for_run(&*run, &agent.model.id, &agent.model.version)
-								.await?;
+							let model_entry = self.environment.catalog().get_for_run(&*run, &agent.model.id, &agent.model.version).await?;
 							let model: ModelConfig = serde_json::from_value(model_entry.config)?;
+							if let Some(adjusted) = aidash_application::execution::media::route_selected_renditions(&model, &selections, &parts)
+								&& adjusted != selections {
+								parts = match Box::pin(guard.model_media(&adjusted)).await {
+									Ok(parts) => parts,
+									Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => {
+										return self.tool_invocation_error(run, token, call, cursor, unfinished_key, message).await;
+									}
+									Err(error) => return Err(error),
+								};
+								selections = adjusted;
+							}
 							match check_model_media_headroom(headroom, parts, &model, agent.projection_version) {
 								Ok(()) => {}
 								Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => {
@@ -3045,7 +3073,9 @@ connection: None,
 						}
 						Err(error) => return Err(error),
 					}
-					run.state.tool_mut()?.selected_media = selected;
+					let progress = run.state.tool_mut()?;
+					progress.deferred_selected_media = selections[..deferred_count].to_vec();
+					progress.selected_media = selections[deferred_count..].to_vec();
 				}
                 let output = if invocation.status != "COMPLETED" && !research_result && run.state.tool()?.connection.as_ref().is_none_or(|state|state.cause.is_none()) {
                     store.invocation_finish(run, token, &key, &output).await?
@@ -3397,9 +3427,16 @@ async fn prepare_tool_result(
 			) else {
 				return Ok(PreparedResult::Skip);
 			};
-			let output = home
-				.read_record_chunk(kind, id, budget.offset, budget.requested)
-				.await?;
+			let output = if let Some(workspace) = call.arguments["workspace_id"].as_str() {
+				let workspace = workspace
+					.parse()
+					.map_err(|_| Error::Invalid("invalid workspace id".into()))?;
+				home.read_subnode_record_chunk(workspace, kind, id, budget.offset, budget.requested)
+					.await?
+			} else {
+				home.read_record_chunk(kind, id, budget.offset, budget.requested)
+					.await?
+			};
 			let size = fit_tool_result(context, call, "max_chars", budget, 0, |chars| {
 				workspace_read_result(&output, budget.requested, budget.offset, chars)
 			});
@@ -3600,24 +3637,55 @@ fn deferred_exposure(run: &Run) -> Result<Option<(&BindingSnapshot, exposure::De
 		serde_json::from_value::<AgentBindings>(agent.definition.config.clone())?.exposure_policy();
 	Ok(policy.budgets().map(|budgets| (snapshot, *budgets)))
 }
+/// Older Harness Contracts retain the original workspace reader's model-visible bytes.
+fn contract_tool_specification(
+	tool: &dyn ExecutionTool,
+	contract: aidash_domain::harness_contract::HarnessContract,
+) -> aidash_domain::provider::ToolSpec {
+	let mut spec = tool.specification();
+	if contract < aidash_domain::harness_contract::HarnessContract::Structured3
+		&& tool.contract().behavior.fitting == Some(ResultFitting::WorkspaceRecord)
+	{
+		spec.description = spec.description.replace(
+			" To read a Subnode created by this Run, pass its workspace_id.",
+			"",
+		);
+		if let Some(properties) = spec
+			.parameters
+			.get_mut("properties")
+			.and_then(Value::as_object_mut)
+		{
+			properties.remove("workspace_id");
+		}
+	}
+	spec
+}
 /// Discoverable capabilities over the specifications dispatch advertises.
 async fn exposure_catalog(
 	environment: &dyn ExecutionEnvironment,
 	run: &Run,
 	snapshot: &BindingSnapshot,
 	tools: &Tools,
+	contract: aidash_domain::harness_contract::HarnessContract,
 ) -> Result<Vec<exposure::Capability>> {
 	let specs = tools
 		.iter()
-		.map(|(alias, tool)| (alias.clone(), tool.specification()))
+		.map(|(alias, tool)| {
+			(
+				alias.clone(),
+				contract_tool_specification(tool.as_ref(), contract),
+			)
+		})
 		.collect();
 	let direct = environment.direct_skills(run).await?;
-	Ok(exposure::catalog(
-		snapshot,
-		&specs,
-		&direct,
-		run.context.plugin_tools.as_ref(),
-	)?)
+	let mut catalog =
+		exposure::catalog(snapshot, &specs, &direct, run.context.plugin_tools.as_ref())?;
+	let intrinsic = tools.iter().filter(|(name, tool)| {
+        aidash_domain::subnodes::COORDINATION_TOOLS.contains(&name.as_str())
+            && matches!(&tool.contract().identity, aidash_domain::tool::ToolIdentity::Builtin(id) if id == &format!("builtin:{name}"))
+    }).map(|(name, _)| (name.clone(), specs[name].clone())).collect();
+	exposure::include_subnode_intrinsics(snapshot, &mut catalog, &intrinsic)?;
+	Ok(catalog)
 }
 /// Resident blocks of the selected Skills: Registry bodies from the pinned
 /// snapshot, direct bodies from the Run's pinned Skill files.

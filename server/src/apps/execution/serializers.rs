@@ -27,3 +27,5 @@ pub mod research;
 pub mod run_inputs;
 
 pub(crate) mod openapi;
+
+pub mod subnodes;

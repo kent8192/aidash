@@ -16,6 +16,7 @@ pub async fn admit(
 	delegation: bool,
 ) -> Result<Task> {
 	let task = scope.task(task_id).await?.ok_or(Error::Forbidden)?;
+	scope.subnode_admission(&task, agent).await?;
 	let inherited = super::inherit(scope, task_id).await?;
 	let workspace = scope.workspace(task.workspace_id).await?;
 	scope.set_context(workspace.attributes.clone());
