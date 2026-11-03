@@ -667,3 +667,39 @@ async fn attachment_upload_accepts_eight_mib_through_the_http_stack(
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(body["size_bytes"], 8 * 1024 * 1024);
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn attachment_upload_accepts_large_files_and_rejects_over_limit(
+	#[future] scoped_channel: ScopedChannel,
+) {
+	let ScopedChannel {
+		app,
+		token,
+		workspace,
+		..
+	} = Box::pin(scoped_channel).await;
+	let (status, body) = upload(
+		&app,
+		&token,
+		&workspace,
+		Uuid::new_v4(),
+		&vec![b'x'; 1_200_000],
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let path = format!(
+		"/api/workspaces/{workspace}/attachments?filename=evidence.txt&media_type=text%2Fplain&idempotency_key={}",
+		Uuid::new_v4()
+	);
+	let client = client_for(&app.server.url, &token).await;
+	let response = client
+		.post_raw(
+			&path,
+			&vec![b'x'; 8 * 1024 * 1024 + 1],
+			"application/octet-stream",
+		)
+		.await
+		.unwrap();
+	assert_eq!(response.status_code(), 413);
+}

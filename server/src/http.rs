@@ -280,17 +280,16 @@ use std::{
 use tokio::sync::Semaphore;
 
 pub const BODY_LIMIT: usize = 1024 * 1024;
-
+/// Run media input allows 8 MiB in total, so one attachment may use all of it.
+const ATTACHMENT_BODY_LIMIT: usize = aidash_domain::workspaces::channels::MAX_ATTACHMENT_BYTES;
+const CHUNK_BODY_LIMIT: usize = 6 * 1024 * 1024;
+/// Request body limit for a path; only the exact upload routes exceed `BODY_LIMIT`.
 fn body_limit(path: &str) -> usize {
-	if let Some(rest) = path.strip_prefix("/api/workspaces/")
-		&& let Some(workspace) = rest.strip_suffix("/attachments")
-		&& uuid::Uuid::parse_str(workspace).is_ok()
-	{
-		8 * 1024 * 1024
-	} else if path.contains("/chunks") || path.contains("/scoped/files/") {
-		6 * 1024 * 1024
-	} else {
-		BODY_LIMIT
+	let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+	match segments.as_slice() {
+		["api", "workspaces", _, "attachments"] => ATTACHMENT_BODY_LIMIT,
+		_ if path.contains("/chunks") || path.contains("/scoped/files/") => CHUNK_BODY_LIMIT,
+		_ => BODY_LIMIT,
 	}
 }
 const MAX_RATE_BUCKETS: usize = 16_384;

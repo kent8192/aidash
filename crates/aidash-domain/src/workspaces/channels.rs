@@ -104,11 +104,14 @@ pub struct ChannelMessagePage {
 	pub next_before: Option<Uuid>,
 }
 
+/// One attachment may use the whole 8 MiB that a Run accepts as media input.
+pub const MAX_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
+
 pub fn validate_attachment(filename: &str, media_type: &str, content: &[u8]) -> Result<()> {
 	if content.is_empty() {
 		return Err(Error::Invalid("attachment must not be empty".into()));
 	}
-	if content.len() > 8 * 1024 * 1024 {
+	if content.len() > MAX_ATTACHMENT_BYTES {
 		return Err(Error::Invalid("attachment exceeds 8 MiB".into()));
 	}
 	if filename.is_empty()
