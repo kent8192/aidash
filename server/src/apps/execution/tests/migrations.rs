@@ -411,7 +411,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 	let workspace_id = Uuid::new_v4();
 	let scratch_space_id = fixture.scratch_space("acme").await;
 	let workspace = Workspace::build()
-		.scratch_space_id(scratch_space_id)
+		.scratch_space(scratch_space_id)
 		.created_by("alice")
 		.id(workspace_id)
 		.tenant("acme")
@@ -1045,7 +1045,7 @@ async fn native_migrations_build_a_fresh_schema_and_preserve_records_on_replay(
 	fixture.tenant_root("acme").await;
 	let scratch_space_id = fixture.scratch_space("acme").await;
 	let workspace = Workspace::build()
-		.scratch_space_id(scratch_space_id)
+		.scratch_space(scratch_space_id)
 		.created_by("alice")
 		.id(Uuid::new_v4())
 		.tenant("acme")
@@ -1371,7 +1371,7 @@ async fn management_refuses_fake_baseline_rollback_without_changing_data_or_hist
 	fixture.tenant_root("acme").await;
 	let scratch_space_id = fixture.scratch_space("acme").await;
 	let workspace = Workspace::build()
-		.scratch_space_id(scratch_space_id)
+		.scratch_space(scratch_space_id)
 		.created_by("alice")
 		.id(Uuid::new_v4())
 		.tenant("acme")
@@ -1559,7 +1559,7 @@ async fn escaped_whitespace_checks_still_reject_blank_content(
 	fixture.tenant_root("acme").await;
 	let scratch_space_id = fixture.scratch_space("acme").await;
 	let workspace = Workspace::build()
-		.scratch_space_id(scratch_space_id)
+		.scratch_space(scratch_space_id)
 		.created_by("alice")
 		.id(Uuid::new_v4())
 		.tenant("acme")
@@ -4013,7 +4013,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			Expr::col((Alias::new("w"), Alias::new("scratch_space_id")))
 				.equals((Alias::new("s"), Alias::new("id"))),
 		)
-		.and_where(Expr::col((Alias::new("w"), Alias::new("id"))).eq(workspace))
+		.and_where(Expr::col((Alias::new("w"), Alias::new("id"))).eq(Expr::value(workspace)))
 		.to_string(PostgresQueryBuilder);
 	let (_, starter, creator, assigned_node): (Uuid, String, String, String) =
 		sqlx::query_as(&sql).fetch_one(&pool).await.unwrap();
@@ -4024,14 +4024,14 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 	let sql = Query::select()
 		.column(Alias::new("created_by"))
 		.from(Alias::new("workspaces"))
-		.and_where(Expr::col("id").eq(task_workspace))
+		.and_where(Expr::col("id").eq(Expr::value(task_workspace)))
 		.to_string(PostgresQueryBuilder);
 	let (task_starter,): (String,) = sqlx::query_as(&sql).fetch_one(&pool).await.unwrap();
 	assert_eq!(task_starter, "early");
 	let sql = Query::select()
 		.columns(["scratch_space_id", "created_by"].map(Alias::new))
 		.from(Alias::new("workspaces"))
-		.and_where(Expr::col("id").eq(conversation_workspace))
+		.and_where(Expr::col("id").eq(Expr::value(conversation_workspace)))
 		.to_string(PostgresQueryBuilder);
 	let (selected, conversation_starter): (Uuid, String) =
 		sqlx::query_as(&sql).fetch_one(&pool).await.unwrap();
@@ -4039,14 +4039,14 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 	let sql = Query::select()
 		.column(Alias::new("creator"))
 		.from(Alias::new("scratch_spaces"))
-		.and_where(Expr::col("id").eq(selected))
+		.and_where(Expr::col("id").eq(Expr::value(selected)))
 		.to_string(PostgresQueryBuilder);
 	let (selected_creator,): (String,) = sqlx::query_as(&sql).fetch_one(&pool).await.unwrap();
 	assert_eq!(selected_creator, "carol");
 	let sql = Query::select()
 		.column(Alias::new("settings"))
 		.from(Alias::new("scratch_space_settings"))
-		.and_where(Expr::col("space_id").eq(selected))
+		.and_where(Expr::col("space_id").eq(Expr::value(selected)))
 		.to_string(PostgresQueryBuilder);
 	let (settings,): (serde_json::Value,) = sqlx::query_as(&sql).fetch_one(&pool).await.unwrap();
 	assert_eq!(
@@ -4058,7 +4058,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 	let sql = Query::select()
 		.column(Alias::new("scratch_space_id"))
 		.from(Alias::new("conversations"))
-		.and_where(Expr::col("workspace_id").eq(conversation_workspace))
+		.and_where(Expr::col("workspace_id").eq(Expr::value(conversation_workspace)))
 		.to_string(PostgresQueryBuilder);
 	let bindings: Vec<(Uuid,)> = sqlx::query_as(&sql).fetch_all(&pool).await.unwrap();
 	assert_eq!(bindings.len(), 2);
