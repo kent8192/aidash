@@ -31,7 +31,72 @@ use reinhardt::rest::openapi::OpenApiSchema;
 use serde_json::Value;
 
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
+	{
+		use super::manual_keys as k;
+		use views::manual_keys as v;
+		contracts.query::<_, k::RegistrationKeySelector>(document, v::registration_status)?;
+		contracts.request::<_, k::RegistrationKeyChange>(document, v::registration_change)?;
+		contracts.response::<_, k::ReceivingKeyStatus>(
+			document,
+			v::registration_status,
+			200,
+			"application/json",
+		)?;
+		contracts.response::<_, k::ReceivingKeyStatus>(
+			document,
+			v::registration_change,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, v::registration_status, &["String", "String"])?;
+		contracts.path(document, v::registration_change, &["String", "String"])?;
+	}
+	contracts.response::<_, aidash_domain::subnodes::SubnodeLimits>(
+		document,
+		views::tenant_administration::subnode_limits,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::tenant_administration::subnode_limits,
+		&["String"],
+	)?;
+	contracts.request::<_, aidash_domain::subnodes::SubnodeLimits>(
+		document,
+		views::tenant_administration::set_subnode_limits,
+	)?;
+	contracts.response::<_, aidash_domain::subnodes::SubnodeLimits>(
+		document,
+		views::tenant_administration::set_subnode_limits,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::tenant_administration::set_subnode_limits,
+		&["String"],
+	)?;
+
 	use super::desktop;
+	{
+		use super::data_protection::{Impact, Settings};
+		use aidash_domain::data_protection::DataProtection;
+		use views::data_protection as view;
+		contracts.response::<_, Settings>(document, view::get_policy, 200, "application/json")?;
+		contracts.path(document, view::get_policy, &["String"])?;
+		contracts.request::<_, DataProtection>(document, view::update_policy)?;
+		contracts.response::<_, Settings>(
+			document,
+			view::update_policy,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, view::update_policy, &["String"])?;
+		contracts.request::<_, DataProtection>(document, view::impact)?;
+		contracts.response::<_, Impact>(document, view::impact, 200, "application/json")?;
+		contracts.path(document, view::impact, &["String"])?;
+	}
 	use super::provider_credentials as pc;
 	use aidash_application::provider_credentials::Metadata;
 	use aidash_domain::provider_credentials::Binding as ProviderBinding;
@@ -69,6 +134,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 				"application/json",
 			)?;
 			contracts.path(document, views::nodes::list, &["String"])?;
+			contracts.query::<_, n::NodeList>(document, views::nodes::list)?;
 			contracts.request::<_, n::NodeCreation>(document, views::nodes::create)?;
 			contracts.response::<_, n::NodeRecord>(
 				document,
@@ -85,6 +151,35 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 				"application/json",
 			)?;
 			contracts.path(document, views::nodes::relabel, &["String", "String"])?;
+			contracts.request::<_, n::NodeDeletionRequest>(document, views::nodes::delete)?;
+			contracts.response::<_, n::NodeRecord>(
+				document,
+				views::nodes::make_default,
+				200,
+				"application/json",
+			)?;
+			contracts.path(document, views::nodes::make_default, &["String", "String"])?;
+			contracts.response::<_, n::NodeRecord>(
+				document,
+				views::nodes::delete,
+				200,
+				"application/json",
+			)?;
+			contracts.path(document, views::nodes::delete, &["String", "String"])?;
+			contracts.response::<_, n::NodeRecord>(
+				document,
+				views::nodes::restore,
+				200,
+				"application/json",
+			)?;
+			contracts.path(document, views::nodes::restore, &["String", "String"])?;
+			contracts.response::<_, n::NodeRecord>(
+				document,
+				views::nodes::purge,
+				200,
+				"application/json",
+			)?;
+			contracts.path(document, views::nodes::purge, &["String", "String"])?;
 			{
 				use super::node_registrations as r;
 				contracts.response::<_, Vec<r::RegistrationRecord>>(
@@ -972,6 +1067,18 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		document,
 		views::remote_commands::handle,
 	)?;
+	contracts
+		.response::<_, crate::apps::identity::serializers::remote_execution_commands::AttachmentResponse>(
+			document,
+			views::remote_commands::thread_attachment,
+			200,
+			"application/json",
+		)?;
+	contracts
+		.request::<_, crate::apps::identity::serializers::remote_execution_commands::AttachmentInput>(
+			document,
+			views::remote_commands::thread_attachment,
+		)?;
 	contracts.response::<_, super::policies::CredentialRevocation>(
 		document,
 		views::policies::revoke_credential,

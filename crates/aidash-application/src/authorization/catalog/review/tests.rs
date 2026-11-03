@@ -442,6 +442,7 @@ fn submission(review: &ApprovalReview, ids: &[&str]) -> ApprovalReviewSubmission
 					.find(|item| item.reference.id == *id)
 					.unwrap();
 				ReviewApproval {
+					provider_warning_acknowledged: false,
 					reference: item.reference.clone(),
 					digest: item.digest.clone().unwrap(),
 					expected_revision: item.expected_revision,
@@ -451,6 +452,26 @@ fn submission(review: &ApprovalReview, ids: &[&str]) -> ApprovalReviewSubmission
 			.collect(),
 		installations: vec![],
 	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn review_carries_exact_provider_warning_acknowledgment_to_approval() {
+	let mut fixture = Fixture::new(vec![tool("provider.openrouter.shell", "provider")]);
+	let review = review(&mut fixture, &reference("provider.openrouter.shell"))
+		.await
+		.unwrap();
+	assert!(
+		review.items[0]
+			.provider_warning
+			.as_deref()
+			.unwrap()
+			.contains("not deleted by Aidash")
+	);
+	let mut request = submission(&review, &["provider.openrouter.shell"]);
+	assert!(!plan(&review, &request).unwrap().approvals[0].provider_warning_acknowledged);
+	request.items[0].provider_warning_acknowledged = true;
+	assert!(plan(&review, &request).unwrap().approvals[0].provider_warning_acknowledged);
 }
 
 #[rstest]

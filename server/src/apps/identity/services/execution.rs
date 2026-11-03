@@ -39,6 +39,7 @@ pub(crate) async fn access_for_run(
 ) -> Result<Option<Access>> {
 	access_for_run_with_mode(store, run, durable_audit, false).await
 }
+
 /// A recovery proof must be read-only before binding the worker, whose initial
 /// workspace check would otherwise persist an authorization decision.
 pub(crate) async fn proof_for_run(
@@ -193,7 +194,458 @@ pub(crate) struct WorkerAuthority {
 	access: Arc<RwLock<Access>>,
 }
 
+fn unavailable_workspace_search(workspace: Uuid, disabled: bool) -> Value {
+	let mut result = json!({"workspace_id":workspace, "matches":[], "estimated_tokens":0,
+		"truncated":false, "workspace":{"status":"unavailable", "cause":if disabled {"disabled"} else {"missing"}}});
+	result["estimated_tokens"] =
+		json!(aidash_domain::context::estimated_tokens(&result.to_string()) + 16);
+	result
+}
+
+fn append_reference_matches(result: &mut Value, reference: Value, max_tokens: usize) -> Result<()> {
+	let reference = reference
+		.as_array()
+		.cloned()
+		.ok_or_else(|| Error::Invalid("invalid reference matches".into()))?;
+	let workspace_tokens = result["estimated_tokens"].as_u64().unwrap_or(0) as usize;
+	let (reference, truncated) = aidash_domain::registry::knowledge::fit_reference_matches(
+		reference,
+		workspace_tokens,
+		max_tokens,
+	);
+	result["reference_matches"] = json!(reference);
+	result["reference_truncated"] = json!(truncated);
+	Ok(())
+}
+
+#[cfg(test)]
+mod image_search_tests {
+	use super::*;
+	#[test]
+	fn missing_or_disabled_workspace_keeps_the_separate_reference_results() {
+		for disabled in [false, true] {
+			let mut result = unavailable_workspace_search(Uuid::nil(), disabled);
+			append_reference_matches(
+				&mut result,
+				json!([{"document":{"name":"diagram.png"}}]),
+				1000,
+			)
+			.unwrap();
+			assert_eq!(result["matches"], json!([]));
+			assert_eq!(result["workspace"]["status"], "unavailable");
+			assert_eq!(
+				result["workspace"]["cause"],
+				if disabled { "disabled" } else { "missing" }
+			);
+			assert_eq!(
+				result["reference_matches"][0]["document"]["name"],
+				"diagram.png"
+			);
+		}
+	}
+}
+
 impl WorkerAuthority {
+	pub(crate) async fn is_subnode_member(&self, run: &Run) -> Result<bool> {
+		let mut none = std::collections::BTreeMap::<String, ()>::new();
+		aidash_application::authorization::tools::filter_subnode(
+			&crate::bootstrap::agent_tool_repository(None, &self.access, run),
+			&mut none,
+			|_| unreachable!("empty map"),
+		)
+		.await
+		.map_err(Into::into)
+	}
+	pub(crate) async fn workspace_search(
+		&self,
+		store: &Store,
+		run: &Run,
+		input: Value,
+	) -> Result<Value> {
+		let image = if input.get("image").is_some_and(|value| !value.is_null()) {
+			let selected: aidash_domain::media::WorkingImageSelection =
+				serde_json::from_value(input["image"].clone())?;
+			Some(aidash_domain::semantic::retrieval::ImageQuery {
+				run_id: run.id,
+				area_id: selected.area_id,
+				generation: selected.generation,
+				file_id: selected.file_id,
+				path: selected.path,
+				expected_digest: selected.expected_digest,
+			})
+		} else {
+			None
+		};
+		let mut access = self.access.write().await;
+		let mut lease = crate::semantic::service::Lease::Inherited(&mut access);
+		lease.durable();
+		lease.workspace(run.workspace_id, "semantic.search").await?;
+		let reference = run
+			.context
+			.binding_snapshot
+			.as_deref()
+			.and_then(|snapshot| {
+				snapshot
+					.definitions
+					.iter()
+					.find(|entry| entry.identity == snapshot.agent)
+			})
+			.and_then(|entry| entry.definition.config.get("reference_embedding"))
+			.filter(|value| !value.is_null())
+			.map(|value| {
+				serde_json::from_value::<aidash_domain::registry::EntityRef>(value.clone())
+			})
+			.transpose()?;
+		if let Some(reference) = &reference {
+			aidash_application::generation::embedding::require_reference_policy(
+				&mut crate::bootstrap::generation_embedding_authority_scope(
+					lease.access().ok_or(Error::Forbidden)?,
+				),
+				store.deployment.as_str(),
+				reference,
+			)
+			.await?;
+		}
+		let index = crate::apps::knowledge::models::SemanticIndexe::locked(
+			&mut **lease.tx(),
+			run.workspace_id,
+			false,
+		)
+		.await?;
+		let spec: Option<aidash_domain::semantic::indexing::IndexingSpec> = index
+			.map(|index| serde_json::from_value(index.spec))
+			.transpose()?;
+		let limit = input["limit"].as_u64().map_or(5, |value| value as usize);
+		let max_tokens = input["max_tokens"]
+			.as_u64()
+			.map_or(4096, |value| value as usize);
+		if limit == 0 || limit > 20 || max_tokens == 0 || max_tokens > 32768 {
+			return Err(Error::Invalid("invalid semantic search limits".into()));
+		}
+		let search = crate::apps::knowledge::serializers::contracts::Search {
+			query: input["query"].as_str().unwrap_or_default().to_owned(),
+			image: image.clone(),
+			agent: None,
+			metadata: json!({}),
+			limit: input["limit"].as_u64().map_or_else(
+				|| spec.as_ref().map_or(5, |spec| spec.max_results.min(5)),
+				|value| {
+					spec.as_ref().map_or(value as usize, |spec| {
+						(value as usize).min(spec.max_results)
+					})
+				},
+			),
+			max_tokens: input["max_tokens"].as_u64().map_or_else(
+				|| spec.as_ref().map_or(4096, |spec| spec.max_result_tokens),
+				|value| {
+					spec.as_ref().map_or(value as usize, |spec| {
+						(value as usize).min(spec.max_result_tokens)
+					})
+				},
+			),
+		};
+		let mut result = if spec.as_ref().is_some_and(|spec| spec.enabled) {
+			serde_json::to_value(
+				crate::semantic::service::search_in(
+					store,
+					&mut lease,
+					run.workspace_id,
+					search,
+					Some(run.id),
+					None,
+				)
+				.await?,
+			)?
+		} else {
+			unavailable_workspace_search(run.workspace_id, spec.is_some())
+		};
+		if reference.is_some() {
+			use aidash_application::ports::semantic::retrieval::SemanticRetrievalSession;
+			let limit = limit.min(8);
+			let reference = if let Some(image) = &image {
+				let content = crate::bootstrap::semantic_retrieval_scope(store, &mut lease)
+					.query_image(
+						run.workspace_id,
+						image,
+						aidash_domain::semantic::indexing::default_max_image_bytes(),
+					)
+					.await?;
+				let found = crate::apps::registry::services::knowledge::reference_image_context(
+					lease.access().ok_or(Error::Forbidden)?,
+					store,
+					run,
+					aidash_domain::semantic::EmbeddingInput::Image {
+						media_type: &content.media_type,
+						bytes: &content.bytes,
+					},
+					limit,
+				)
+				.await?;
+				let current = crate::bootstrap::semantic_retrieval_scope(store, &mut lease)
+					.query_image(
+						run.workspace_id,
+						image,
+						aidash_domain::semantic::indexing::default_max_image_bytes(),
+					)
+					.await?;
+				if current.media_type != content.media_type || current.bytes != content.bytes {
+					return Err(Error::Conflict(
+						"image query changed during retrieval".into(),
+					));
+				}
+				found
+			} else {
+				crate::apps::registry::services::knowledge::reference_image_context(
+					lease.access().ok_or(Error::Forbidden)?,
+					store,
+					run,
+					aidash_domain::semantic::EmbeddingInput::Text(
+						input["query"].as_str().unwrap_or_default(),
+					),
+					limit,
+				)
+				.await?
+			};
+			append_reference_matches(
+				&mut result,
+				reference.unwrap_or_else(|| json!([])),
+				max_tokens,
+			)?;
+		}
+		Ok(result)
+	}
+	pub(crate) async fn workspace_image(
+		&self,
+		store: &Store,
+		run: &Run,
+		selection: &aidash_domain::media::WorkingImageSelection,
+		representation: &str,
+	) -> Result<Value> {
+		use crate::apps::execution::capabilities::{contracts::FileScope, service, sessions};
+		let mut access = self.access.write().await;
+		// `load` authorizes `file.read` on the selected Area itself.
+		sessions::current_own_area(&mut access, run).await?;
+		let area = sessions::load(&mut access, selection.area_id).await?;
+		if area.workspace_id != run.workspace_id || area.generation != selection.generation {
+			return Err(Error::Forbidden);
+		}
+		let file = service::files(&area)?
+			.into_iter()
+			.find(|file| {
+				file.file_id == selection.file_id
+					&& file.path == selection.path
+					&& matches!(file.scope, FileScope::Working | FileScope::Received)
+			})
+			.ok_or(Error::Forbidden)?;
+		if !file.media_type.starts_with("image/") {
+			return Err(Error::Invalid("selected File is not an image".into()));
+		}
+		let representation = match representation {
+			"metadata" => aidash_domain::capabilities::files::Representation::Metadata,
+			// The model's modalities are checked after the tool returns. Read only
+			// metadata here; the existing selected-media path applies model-input
+			// limits before opening bytes for an image-capable model.
+			"model_input" => aidash_domain::capabilities::files::Representation::Metadata,
+			_ => return Err(Error::Invalid("invalid File representation".into())),
+		};
+		let mut scope = crate::bootstrap::file_scope(Some(store), &mut access, Some(run));
+		let result = aidash_application::capabilities::files::read(
+			&mut scope,
+			&(&area).into(),
+			aidash_domain::capabilities::files::FileRead {
+				file_id: selection.file_id,
+				workspace_id: None,
+				area_id: None,
+				representation,
+				offset: None,
+				max_bytes: None,
+				expected_digest: Some(selection.expected_digest.clone()),
+			},
+		)
+		.await?;
+		let mut metadata = result["metadata"].clone();
+		metadata["name"] = json!(file.path.rsplit('/').next().unwrap_or(&file.path));
+		Ok(
+			json!({"status":"completed","metadata":metadata,"digest":result["digest"],"truncated":false}),
+		)
+	}
+
+	pub(crate) async fn message_with_files(
+		&self,
+		store: &Store,
+		run: &Run,
+		key: &str,
+		content: &str,
+		paths: &[String],
+	) -> Result<()> {
+		use sha2::{Digest, Sha256};
+		fn operation_id(run: Uuid, key: &str, position: usize) -> Uuid {
+			let mut hash = Sha256::new();
+			hash.update(run.as_bytes());
+			hash.update(key.as_bytes());
+			hash.update((position as u64).to_be_bytes());
+			let digest = hash.finalize();
+			Uuid::from_bytes(digest[..16].try_into().expect("digest has 16 bytes"))
+		}
+		let receipt_key = operation_id(run.id, key, 9);
+		let receipt_digest =
+			crate::registry::digest(&json!(["workspace_message_files", run.id, content, paths]));
+		let outer = self.access.read().await;
+		let mut access = Access::under_lease(&outer).await?;
+		let prepare: Result<_> = async {
+			let workspace = access.workspace(run.workspace_id).await?;
+			access.require(&workspace, "message.create").await?;
+			// Older successful posts predate the receipt below. The invocation
+			// journal has already checked this key's complete original input.
+			let principal = crate::registry::digest(
+				&json!({"tenant":access.identity.tenant,"subject":access.identity.subject}),
+			);
+			let principal =
+				crate::registry::digest(&json!({"principal":principal,"run_id":run.id}));
+			let message_key = format!(
+				"channel:{}:{}:{}",
+				run.workspace_id,
+				principal,
+				operation_id(run.id, key, 8)
+			);
+			use reinhardt::query::{
+				Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query,
+				QueryStatementBuilder as _,
+			};
+			let previous: Option<(Uuid, String, String, Option<Uuid>)> =
+				crate::database::native::query_as(
+					&Query::select()
+						.columns(["workspace_id", "sender", "content", "run_id"].map(Alias::new))
+						.from(Alias::new("messages"))
+						.and_where(Expr::col("idempotency_key").eq(Expr::value(message_key)))
+						.to_string(PostgresQueryBuilder),
+				)
+				.columns(&["workspace_id", "sender", "content", "run_id"])
+				.fetch_optional(&mut **access.tx)
+				.await?;
+			if let Some((workspace, sender, original, publisher)) = &previous
+				&& (*workspace != run.workspace_id
+					|| sender != &access.identity.subject
+					|| original != content
+					|| *publisher != Some(run.id))
+			{
+				return Err(Error::Conflict("message idempotency key reused".into()));
+			}
+			aidash_application::capabilities::files::snapshot_message_files_once(
+				&mut crate::bootstrap::file_scope(Some(store), &mut access, Some(run)),
+				&run.metadata(),
+				receipt_key,
+				&receipt_digest,
+				previous.is_some(),
+				paths,
+			)
+			.await
+			.map_err(Into::into)
+		}
+		.await;
+		let snapshots = match prepare {
+			Ok(Some(snapshots)) => snapshots,
+			Ok(None) => return access.finish(Ok(())).await,
+			Err(error) => return access.finish(Err(error)).await,
+		};
+		let mut lease = crate::collaboration::access::Lease::from_access(access);
+		let result: Result<()> = async {
+			let mut ids = Vec::with_capacity(snapshots.len());
+			for (index, (file, bytes)) in snapshots.iter().enumerate() {
+				let filename = file.path.rsplit('/').next().unwrap_or("").to_owned();
+				let input = crate::collaboration::ChannelAttachmentUploadQuery {
+					filename,
+					media_type: file.media_type.clone(),
+					idempotency_key: operation_id(run.id, key, index),
+				};
+				let attachment = crate::collaboration::attachments::upload_for_run(
+					store,
+					&mut lease,
+					run.workspace_id,
+					input,
+					bytes,
+					Some(run.id),
+				)
+				.await?;
+				ids.push(attachment.id);
+			}
+			let mut scope = crate::bootstrap::channel_scope(store, &mut lease);
+			scope.run_id = Some(run.id);
+			aidash_application::workspaces::channels::post(
+				&mut scope,
+				run.workspace_id,
+				aidash_application::workspaces::channels::MessageSubmission {
+					content,
+					thread_id: None,
+					idempotency_key: operation_id(run.id, key, 8),
+					attachment_ids: &ids,
+					citations: &[],
+				},
+			)
+			.await?;
+			crate::apps::execution::capabilities::sessions::cache(
+				lease.access_mut(),
+				receipt_key,
+				&receipt_digest,
+				&json!({"sent":true}),
+			)
+			.await?;
+			Ok(())
+		}
+		.await;
+		lease.finish(result).await
+	}
+	pub(crate) async fn copy_thread_attachment(
+		&self,
+		store: &Store,
+		run: &Run,
+		input: Value,
+	) -> Result<Value> {
+		let attachment_id: Uuid = serde_json::from_value(input["id"].clone())
+			.map_err(|_| Error::Invalid("invalid attachment id".into()))?;
+		let key: Uuid = serde_json::from_value(input["idempotency_key"].clone())
+			.map_err(|_| Error::Invalid("invalid idempotency key".into()))?;
+		let revision = input["expected_revision"]
+			.as_i64()
+			.ok_or_else(|| Error::Invalid("missing expected_revision".into()))?;
+		let path = input["path"]
+			.as_str()
+			.ok_or_else(|| Error::Invalid("missing path".into()))?
+			.to_owned();
+		let outer = self.access.read().await;
+		let access = Access::under_lease(&outer).await?;
+		let mut lease = crate::collaboration::access::Lease::from_access(access);
+		let result: Result<Value> = async {
+			let record = lease
+				.access_mut()
+				.workspace_record(run.workspace_id, "attachment", attachment_id)
+				.await?;
+			let message_id: Uuid = serde_json::from_value(record["message_id"].clone())?;
+			let (attachment, content) = aidash_application::workspaces::channels::download(
+				&mut crate::bootstrap::channel_scope(store, &mut lease),
+				run.workspace_id,
+				attachment_id,
+			)
+			.await?;
+			let digest = crate::apps::execution::repositories::capability_objects::digest(&content);
+			aidash_application::capabilities::files::copy_thread_attachment(
+				&mut crate::bootstrap::file_scope(Some(store), lease.access_mut(), Some(run)),
+				&run.metadata(),
+				key,
+				revision,
+				path,
+				message_id,
+				attachment_id,
+				attachment.media_type,
+				digest,
+				&content,
+			)
+			.await
+			.map_err(Into::into)
+		}
+		.await;
+		lease.finish(result).await
+	}
 	/// Resolve existing page and file selections before admitting another
 	/// Research page image, under the same worker authority lease.
 	pub(crate) async fn model_media(
@@ -203,7 +655,7 @@ impl WorkerAuthority {
 		selections: &[aidash_domain::media::ModelMedia],
 	) -> Result<Vec<crate::provider::ContentPart>> {
 		aidash_application::execution::media::selected(
-			&mut crate::bootstrap::selected_media(store, run, self.access.clone()),
+			&mut crate::bootstrap::selected_media(store, run, self.access.clone(), None),
 			selections,
 		)
 		.await
@@ -234,8 +686,15 @@ impl WorkerAuthority {
 		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
 		access.shared_area = shared_read;
-		let result =
-			crate::capabilities::service::invoke(store, &mut access, run, name, input, key).await;
+		let result = async {
+			crate::apps::execution::repositories::subnodes::require_writable(
+				access.tx.native_mut(),
+				run.workspace_id,
+			)
+			.await?;
+			crate::capabilities::service::invoke(store, &mut access, run, name, input, key).await
+		}
+		.await;
 		match access.finish(result).await {
 			Ok(result) => Ok(json!(result)),
 			Err(
@@ -781,6 +1240,326 @@ impl WorkerAuthority {
 		access.finish(result).await
 	}
 
+	pub(crate) async fn create_subnode(
+		&self,
+		f: &Federation,
+		run: &Run,
+		key: &str,
+		input: &aidash_application::subnodes::Create,
+	) -> Result<aidash_domain::subnodes::Subnode> {
+		use crate::apps::identity::repositories::subnodes::{
+			Creation, binding_authority, check_member_bindings, creator_can_use_binding,
+		};
+		let remote =
+			crate::apps::identity::services::peer::admission::run_grant(&f.store, &run.metadata())
+				.await?
+				.is_some();
+		let mut lease = self.access.write().await;
+		let node_address = format!("{}/{}", lease.node_id, run.node);
+		let creator =
+			aidash_domain::agent_subject(&node_address, &run.agent_id, &run.agent_version);
+		if lease.subjects.last() != Some(&creator) {
+			return Err(Error::Forbidden);
+		}
+		let resource = lease.node_resource(&run.node).await?;
+		let evaluation = lease.evaluation(
+			&creator,
+			&resource,
+			aidash_domain::identity::tenant_administration::SUBNODE_CREATE,
+		);
+		let mut decision = lease.snapshot.bundle.evaluate(&evaluation);
+		decision.revision = lease.snapshot.revision;
+		let allowed = decision.allowed;
+		lease.record(&[(evaluation, decision)]).await?;
+		if !allowed {
+			return Err(Error::Forbidden);
+		}
+		lease.set_node(run.node.clone());
+		let snapshot = run
+			.context
+			.binding_snapshot
+			.as_ref()
+			.ok_or_else(|| Error::Invalid("Run has no Binding snapshot".into()))?;
+		let mut usable = (**snapshot).clone();
+		usable.bindings.clear();
+		let config = aidash_domain::registry::AgentConfig::from_snapshot(snapshot)?;
+		for binding in &snapshot.bindings {
+			if binding.excluded_reason.is_some()
+				|| binding.definition.kind != "tool"
+				|| !creator_can_use_binding(&config, binding)?
+			{
+				continue;
+			}
+			let reference = binding.identity.local();
+			match catalog::tool_entry(
+				&mut lease,
+				&reference,
+				"tool.invoke",
+				binding.alias.as_deref().unwrap_or(&reference.id),
+			)
+			.await
+			{
+				Ok(entry) => {
+					if aidash_domain::registry::rules::digest(&serde_json::to_value(&entry)?)
+						!= binding.digest
+					{
+						continue;
+					}
+					match crate::marketplace::check_pinned(&mut lease, &entry).await {
+						Ok(()) => usable.bindings.push(binding.clone()),
+						Err(Error::Forbidden | Error::NotFound(_) | Error::AuthorityRefused(_)) => {
+						}
+						Err(error) => return Err(error),
+					}
+				}
+				Err(Error::Forbidden)
+				| Err(Error::NotFound(_))
+				| Err(Error::AuthorityRefused(_)) => {}
+				Err(error) => return Err(error),
+			}
+		}
+		let creator_authority = binding_authority(&usable, &config)?;
+		let mut members = std::collections::BTreeMap::new();
+		for agent in &input.members {
+			let entry = catalog::entry(&mut lease, agent, "agent.execute").await?;
+			crate::marketplace::check_pinned(&mut lease, &entry).await?;
+			let snapshot = crate::apps::registry::repositories::bindings::authorized_child(
+				&mut lease,
+				&entry,
+				f.store.provider_credentials.is_some(),
+			)
+			.await?;
+			if snapshot
+				.definitions
+				.iter()
+				.any(|definition| definition.definition.kind == "cluster")
+			{
+				return Err(Error::Refused(
+					"Subnode members cannot bind a Cluster".into(),
+				));
+			}
+			if !snapshot.agent_plugins.is_empty() {
+				return Err(Error::Refused(
+					"Agent Plugin tools cannot be constrained by a Subnode allowance".into(),
+				));
+			}
+			let config = aidash_domain::registry::AgentConfig::from_snapshot(&snapshot)?;
+			check_member_bindings(&usable, &snapshot, &config)?;
+			members.insert(
+				format!("{}@{}", agent.id, agent.version),
+				binding_authority(&snapshot, &config)?,
+			);
+		}
+		let mut access = Access::under_lease(&lease).await?;
+		let result = aidash_application::subnodes::create(
+			&mut Creation {
+				access: &mut access,
+				federation: f,
+				node_address,
+				remote,
+				creator_authority,
+				members,
+			},
+			&run.metadata(),
+			key,
+			input,
+		)
+		.await
+		.map_err(Into::into);
+		access.finish(result).await
+	}
+
+	pub(crate) async fn subnode_command(
+		&self,
+		f: &Federation,
+		run: &Run,
+		key: &str,
+		command: &aidash_application::subnodes::Command,
+	) -> Result<Value> {
+		use crate::apps::execution::models::subnodes::{SubnodeOperationReceipt, SubnodeRecord};
+		use crate::apps::identity::repositories::subnodes::{
+			Management, binding_authority, check_member_bindings, creator_binding_authority,
+		};
+		use aidash_application::ports::subnodes::ManageScope as _;
+		use aidash_application::subnodes::{self, Command};
+		use reinhardt::db::orm::Model;
+		let mut lease = self.access.write().await;
+		let tenant = lease.identity.tenant.clone();
+		let mut query =
+			SubnodeRecord::objects().filter(SubnodeRecord::field_tenant().eq(tenant.clone()));
+		query = match command {
+			Command::Task { id, .. }
+			| Command::Add { id, .. }
+			| Command::Remove { id, .. }
+			| Command::Dissolve { id } => query.filter(SubnodeRecord::field_id().eq(id.0)),
+			Command::Message { .. } => {
+				query.filter(SubnodeRecord::field_workspace_id().eq(run.workspace_id))
+			}
+		};
+		let record = query
+			.all_with_executor(lease.tx.native_mut())
+			.await
+			.map_err(reinhardt::core::exception::Error::from)?
+			.pop()
+			.ok_or(Error::Forbidden)?;
+		let subnode = record.domain(lease.tx.native_mut()).await?;
+		let is_creator = subnode.creator_run_id == run.id;
+		let is_member = subnode.workspace_id == run.workspace_id
+			&& subnode.members.iter().any(|member| {
+				member.agent_id == run.agent_id && member.agent_version == run.agent_version
+			});
+		if !is_creator && !is_member {
+			return Err(Error::Forbidden);
+		}
+		if matches!(command, Command::Task { .. } | Command::Dissolve { .. }) && !is_creator {
+			return Err(Error::Forbidden);
+		}
+		if matches!(command, Command::Message { .. }) && !is_member {
+			return Err(Error::Forbidden);
+		}
+		let tenancy = lease.identity.tenancy()?;
+		let creator = f.store.run(&tenancy, subnode.creator_run_id).await?;
+		let mut creator_authority = aidash_domain::subnodes::Allowance::default();
+		let mut candidate_authority = None;
+		let mut creator_bindings = None;
+		if matches!(command, Command::Add { .. } | Command::Task { .. }) {
+			lease.set_node(run.node.clone());
+			let (authority, bindings) =
+				creator_binding_authority(&mut lease, &creator, &subnode).await?;
+			creator_authority = authority;
+			creator_bindings = Some(bindings);
+		}
+		let candidate = match command {
+			Command::Add { agent, .. } => Some(agent),
+			Command::Task { .. } => Some(&subnode.leader),
+			_ => None,
+		};
+		if let Some(candidate) = candidate {
+			lease.set_node(run.node.clone());
+			let entry = catalog::entry(&mut lease, candidate, "agent.execute").await?;
+			crate::marketplace::check_pinned(&mut lease, &entry).await?;
+			let snapshot = crate::apps::registry::repositories::bindings::authorized_child(
+				&mut lease,
+				&entry,
+				f.store.provider_credentials.is_some(),
+			)
+			.await?;
+			if snapshot
+				.definitions
+				.iter()
+				.any(|definition| definition.definition.kind == "cluster")
+			{
+				return Err(Error::Refused(
+					"Subnode members cannot bind a Cluster".into(),
+				));
+			}
+			if !snapshot.agent_plugins.is_empty() {
+				return Err(Error::Refused(
+					"Agent Plugin tools cannot be constrained by a Subnode allowance".into(),
+				));
+			}
+			let config = aidash_domain::registry::AgentConfig::from_snapshot(&snapshot)?;
+			check_member_bindings(
+				creator_bindings
+					.as_ref()
+					.expect("candidate has creator bindings"),
+				&snapshot,
+				&config,
+			)?;
+			let required = binding_authority(&snapshot, &config)?;
+			aidash_domain::subnodes::member_fits(&required, &subnode.allowance)
+				.map_err(|error| Error::Refused(error.to_string()))?;
+			candidate_authority = Some(required);
+		}
+		let message_limit = if matches!(command, Command::Message { .. }) {
+			f.run_message_limit(&creator).await?
+		} else {
+			0
+		};
+		let mut access = Access::under_lease(&lease).await?;
+		let mut scope = Management {
+			access: &mut access,
+			federation: f,
+			creator_authority,
+			candidate_authority,
+			message_limit,
+		};
+		let locked = scope.lock(subnode.id).await?.ok_or(Error::Forbidden)?;
+		let creator = locked.creator_run_id == run.id;
+		let member = locked.workspace_id == run.workspace_id
+			&& locked.members.iter().any(|member| {
+				member.agent_id == run.agent_id && member.agent_version == run.agent_version
+			});
+		if (!member || matches!(command, Command::Task { .. } | Command::Dissolve { .. }))
+			&& !creator
+			|| (matches!(command, Command::Message { .. }) && !member)
+		{
+			return Err(Error::Forbidden);
+		}
+		let fingerprint = crate::registry::digest(&serde_json::to_value(command)?);
+		if let Some(previous) = SubnodeOperationReceipt::replay(
+			scope.access.tx.native_mut(),
+			&tenant,
+			run.id,
+			key,
+			&fingerprint,
+		)
+		.await?
+		{
+			return access.finish(Ok(previous)).await;
+		}
+		let result: Result<Value> = match command {
+			Command::Task { id, title, request } => {
+				subnodes::task(&mut scope, &run.metadata(), *id, key, title, request)
+					.await
+					.map(|task| json!({"task_id":task}))
+					.map_err(Into::into)
+			}
+			Command::Add { id, agent } => {
+				subnodes::add_member(&mut scope, &run.metadata(), *id, agent)
+					.await
+					.map(|()| json!({"added":true}))
+					.map_err(Into::into)
+			}
+			Command::Remove { id, agent } => {
+				subnodes::remove_member(&mut scope, &run.metadata(), *id, agent)
+					.await
+					.map(|()| json!({"removed":true}))
+					.map_err(Into::into)
+			}
+			Command::Dissolve { id } => subnodes::dissolve(&mut scope, &run.metadata(), *id)
+				.await
+				.map(|()| json!({"dissolved":true}))
+				.map_err(Into::into),
+			Command::Message { content } => {
+				subnodes::message(&mut scope, &run.metadata(), subnode.id, key, content)
+					.await
+					.map(|()| json!({"sent":true}))
+					.map_err(Into::into)
+			}
+		};
+		let result = match result {
+			Ok(value) => {
+				SubnodeOperationReceipt::save(
+					scope.access.tx.native_mut(),
+					&tenant,
+					run.id,
+					key,
+					&fingerprint,
+					value.clone(),
+				)
+				.await?;
+				Ok(value)
+			}
+			Err(error) => Err(error),
+		};
+		let result = access.finish(result).await;
+		if result.is_ok() {
+			f.notify.notify_waiters();
+		}
+		result
+	}
+
 	pub async fn create_task(
 		&self,
 		f: &Federation,
@@ -885,6 +1664,36 @@ impl WorkerAuthority {
 		let mut access = self.access.write().await;
 		crate::capabilities::skills::direct_file(store, &mut access, run, skill_id, digest, path)
 			.await
+	}
+	pub(crate) async fn subnode_workspace_record(
+		&self,
+		run: &Run,
+		workspace: Uuid,
+		kind: &str,
+		id: Uuid,
+	) -> Result<Value> {
+		use crate::apps::execution::models::subnodes::SubnodeRecord;
+		use reinhardt::db::orm::Model;
+		let mut lease = self.access.write().await;
+		let tenant = lease.identity.tenant.clone();
+		let matching = SubnodeRecord::objects()
+			.filter(SubnodeRecord::field_tenant().eq(tenant))
+			.filter(SubnodeRecord::field_workspace_id().eq(workspace))
+			.filter(SubnodeRecord::field_creator_run_id().eq(run.id))
+			.all_with_executor(lease.tx.native_mut())
+			.await
+			.map_err(reinhardt::core::exception::Error::from)?;
+		if matching.is_empty() {
+			return Err(Error::Forbidden);
+		}
+		let mut access = Access::under_lease(&lease).await?;
+		// The creator keeps its own Workspace and gains read access to this one;
+		// the producers of the Subnode's records may have read in the creator's.
+		access.context =
+			json!({"workspace_id":run.workspace_id,"subnode_read_workspaces":[workspace]});
+		let result = access.workspace_record(workspace, kind, id).await;
+
+		access.finish(result).await
 	}
 	pub async fn workspace_record(&self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Value> {
 		self.access
@@ -1298,6 +2107,26 @@ impl Guard {
 			result: result.map_err(Into::into),
 		}
 	}
+	pub(crate) async fn reference_image_context(
+		&self,
+		store: &Store,
+		query: &str,
+	) -> Result<Option<Value>> {
+		if self.remote.is_some() {
+			return Err(Error::Invalid(
+				"reference images are private to their owning node".into(),
+			));
+		}
+		let mut access = self.access.write().await;
+		crate::apps::registry::services::knowledge::reference_image_context(
+			&mut access,
+			store,
+			&self.run,
+			aidash_domain::semantic::EmbeddingInput::Text(query),
+			8,
+		)
+		.await
+	}
 	/// Reading a source for the main model does not permit disclosing it to a
 	/// separate selector. Policy sees the exact selector and destination set.
 	pub(crate) async fn context_source_disclosure(
@@ -1628,7 +2457,14 @@ impl Guard {
 		selections: &[aidash_domain::media::ModelMedia],
 	) -> Result<Vec<crate::provider::ContentPart>> {
 		aidash_application::execution::media::selected(
-			&mut crate::bootstrap::selected_media(store, &self.run, self.access.clone()),
+			&mut crate::bootstrap::selected_media(
+				store,
+				&self.run,
+				self.access.clone(),
+				self.remote
+					.as_ref()
+					.map(|f| crate::federation::Home::new(f.clone(), self.run.clone())),
+			),
 			selections,
 		)
 		.await
@@ -1637,13 +2473,14 @@ impl Guard {
 
 	pub async fn human_message_media(
 		&self,
+		store: &Store,
 		messages: &[(i64, Uuid, usize)],
 		model: &crate::registry::ModelConfig,
 		projection: aidash_domain::projection::ProjectionVersion,
 	) -> Result<HumanMediaBatch> {
 		let mut access = self.access.write().await;
 		aidash_application::execution::media::authorized(
-			&mut crate::bootstrap::scoped_media(&mut access),
+			&mut crate::bootstrap::scoped_media(&mut access, store),
 			self.run.workspace_id,
 			messages,
 			model,
@@ -1662,6 +2499,19 @@ impl Guard {
 			),
 			&self.run.metadata(),
 			&self.agent,
+		)
+		.await
+		.map_err(Into::into)
+	}
+
+	pub(crate) async fn subnode_tool_filter(
+		&self,
+		tools: &mut aidash_application::ports::execution::Tools,
+	) -> Result<bool> {
+		aidash_application::authorization::tools::filter_subnode(
+			&crate::bootstrap::agent_tool_repository(self.remote.as_ref(), &self.access, &self.run),
+			tools,
+			|tool| tool.contract(),
 		)
 		.await
 		.map_err(Into::into)
@@ -1822,6 +2672,7 @@ pub async fn details_page(
 	)
 	.await?;
 	Ok(RunDetails {
+		provider_tool_activity: details.provider_tool_activity,
 		egress_requests: details.egress_requests,
 		run: details.run,
 		invocations: details.invocations.into_iter().map(Into::into).collect(),
@@ -1889,3 +2740,6 @@ impl DeliveryGuard {
 pub(crate) mod management;
 #[path = "execution/safety_stop.rs"]
 pub(crate) mod safety_stop;
+
+#[path = "execution/subnodes.rs"]
+pub(crate) mod subnodes;

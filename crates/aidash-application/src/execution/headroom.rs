@@ -74,7 +74,26 @@ pub async fn media_routes(scope: &dyn Definitions, run: &RunMetadata) -> Result<
 		.definition
 		.clone();
 	let model: ModelConfig = serde_json::from_value(entry.config)?;
-	Ok(model.current_media_input_routes())
+	let mut routes = model.current_media_input_routes();
+	for route in &mut routes {
+		if route.iter().any(|mime| mime == "audio/wav") {
+			for mime in [
+				"audio/mpeg",
+				"audio/mp4",
+				"audio/x-m4a",
+				"audio/aac",
+				"audio/ogg",
+				"audio/webm",
+				"audio/flac",
+				"audio/x-flac",
+			] {
+				if !route.iter().any(|accepted| accepted == mime) {
+					route.push(mime.to_owned());
+				}
+			}
+		}
+	}
+	Ok(routes)
 }
 
 #[cfg(test)]

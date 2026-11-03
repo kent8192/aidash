@@ -2061,9 +2061,9 @@ test("upload failures retain their key and file limits apply before network use"
   await files.setInputFiles({
     name: "large.txt",
     mimeType: "text/plain",
-    buffer: Buffer.alloc(1024 * 1024 + 1),
+    buffer: Buffer.alloc(8 * 1024 * 1024 + 1),
   });
-  await expect(page.getByRole("alert")).toContainText("1 MiB");
+  await expect(page.getByRole("alert")).toContainText("8 MiB");
   expect(submissions).toHaveLength(0);
   await files.setInputFiles({
     name: "source.txt",

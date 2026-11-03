@@ -123,6 +123,8 @@ pub enum DeploymentScopeReason {
 	/// Finding the Tenant of a Run, a Workspace or a remote operation from the
 	/// row that records it, when the caller names only an id.
 	RunTenant,
+	/// Reading current Data Protection policies along a Run's delegation ancestry.
+	DataProtectionEvaluation,
 	/// Finding the owner, and so the Tenant, of a Plan Connection a Run's
 	/// admission pinned by id, before the owner's Tenant Scope opens.
 	PlanConnectionOwner,
@@ -143,6 +145,8 @@ pub enum DeploymentScopeReason {
 	/// Purging a deleted Tenant's data after its grace period, and deleting the
 	/// audit history that outlived a purge (ADR 0061).
 	TenantPurge,
+	/// Read-only discovery of Node purges; erasure uses the owning Tenant.
+	NodePurge,
 	/// The `demo-data` command and the sign-in step that fulfils Demo
 	/// Reservations. Each Tenant it fills is entered in that Tenant's own scope.
 	DemoData,
@@ -178,6 +182,7 @@ impl DeploymentScopeReason {
 			Self::IdentityStatus => "identity-status",
 			Self::FederationInbound => "federation-inbound",
 			Self::RunTenant => "run-tenant",
+			Self::DataProtectionEvaluation => "data-protection-evaluation",
 			Self::PlanConnectionOwner => "plan-connection-owner",
 			Self::OAuthAuthorization => "oauth-authorization",
 			Self::ActivityObserver => "activity-observer",
@@ -185,6 +190,7 @@ impl DeploymentScopeReason {
 			Self::MarketplaceDistribution => "marketplace-distribution",
 			Self::UsageSampling => "usage-sampling",
 			Self::TenantPurge => "tenant-purge",
+			Self::NodePurge => "node-purge",
 			Self::DemoData => "demo-data",
 			#[cfg(feature = "test-support")]
 			Self::TestFixture => "test-fixture",
@@ -222,10 +228,12 @@ impl DeploymentScopeReason {
 			| Self::DeploymentAdministratorList
 			| Self::FederationInbound
 			| Self::RunTenant
+			| Self::DataProtectionEvaluation
 			| Self::PlanConnectionOwner
 			| Self::ActivityObserver
 			| Self::PreviewGateway
-			| Self::UsageSampling => false,
+			| Self::UsageSampling
+			| Self::NodePurge => false,
 			#[cfg(feature = "test-support")]
 			Self::TestFixture => true,
 		}
@@ -272,12 +280,14 @@ mod tests {
 			DeploymentScopeReason::IdentityStatus,
 			DeploymentScopeReason::FederationInbound,
 			DeploymentScopeReason::RunTenant,
+			DeploymentScopeReason::DataProtectionEvaluation,
 			DeploymentScopeReason::PlanConnectionOwner,
 			DeploymentScopeReason::OAuthAuthorization,
 			DeploymentScopeReason::ActivityObserver,
 			DeploymentScopeReason::MarketplaceDistribution,
 			DeploymentScopeReason::UsageSampling,
 			DeploymentScopeReason::TenantPurge,
+			DeploymentScopeReason::NodePurge,
 			DeploymentScopeReason::DemoData,
 		];
 		let labels = reasons

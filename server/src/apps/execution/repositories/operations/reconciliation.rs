@@ -162,6 +162,11 @@ impl OperationReconciliationScope for Scope<'_> {
 	}
 	async fn load(&mut self, id: Uuid, run: Uuid) -> Result<Loaded> {
 		let run = self.access.run_for_interaction(run).await?;
+		crate::apps::execution::repositories::subnodes::require_writable(
+			self.access.tx.native_mut(),
+			run.workspace_id,
+		)
+		.await?;
 		let area = sessions::for_run(&mut self.access, &run).await?;
 		let operation = super::get(&mut self.access, id).await?;
 		let result = Loaded {
@@ -253,6 +258,7 @@ impl OperationReconciliationScope for Scope<'_> {
 			&& path == "/v1/operations"
 			&& let Some(input) = &mut body
 		{
+			input["usage_tenant"] = json!(self.access.identity.tenant);
 			super::super::egress::attach(self.store, &mut self.access, input).await?;
 		}
 		use aidash_application::ports::capabilities::runner::RunnerTransport as _;
@@ -365,22 +371,6 @@ impl OperationReconciliationScope for Scope<'_> {
 			.await
 			.map(|_| ())
 			.map_err(Into::into)
-	}
-	async fn pod_time(
-		&mut self,
-		operation: Uuid,
-		started_at: chrono::DateTime<chrono::Utc>,
-		ended_at: chrono::DateTime<chrono::Utc>,
-	) -> Result<()> {
-		self.store
-			.usage
-			.pod_time(aidash_application::usage::PodTime {
-				operation,
-				tenant: self.access.identity.tenant.clone(),
-				started_at,
-				ended_at,
-			})
-			.await
 	}
 	async fn finish(self: Box<Self>, result: Result<()>) -> Result<()> {
 		let Scope { access, .. } = *self;

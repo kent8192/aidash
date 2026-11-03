@@ -62,6 +62,8 @@ pub struct ReviewItem {
 	pub kind: String,
 	pub name: Localized,
 	pub description: Localized,
+	/// Disclosure required before approving this exact Provider tool.
+	pub provider_warning: Option<String>,
 	/// `digest(entry)`; absent only when the dependency is missing.
 	pub digest: Option<String>,
 	pub status: ReviewStatus,
@@ -106,6 +108,8 @@ pub struct ApprovalReview {
 #[serde(deny_unknown_fields)]
 pub struct ReviewApproval {
 	pub reference: EntityRef,
+	#[serde(default)]
+	pub provider_warning_acknowledged: bool,
 	pub digest: String,
 	pub expected_revision: i64,
 	/// An omitted restriction keeps the stored one; empty clears it.
@@ -333,6 +337,7 @@ pub async fn review(
 			kind: String::new(),
 			name: Localized::new(),
 			description: Localized::new(),
+			provider_warning: None,
 			digest: None,
 			status: if hidden_consumer {
 				ReviewStatus::NeedsOtherApprover
@@ -470,6 +475,10 @@ async fn review_item(
 		kind: entry.kind.clone(),
 		name: entry.name.clone(),
 		description: entry.description.clone(),
+		provider_warning: aidash_domain::tool::provider_tools::warning_acknowledgment(
+			&entry.id,
+			&entry.version,
+		),
 		digest: Some(digest(&serde_json::to_value(entry)?)),
 		status,
 		approved,
@@ -563,6 +572,7 @@ pub fn plan(review: &ApprovalReview, submission: &ApprovalReviewSubmission) -> R
 		}
 		approvals.push(Approval {
 			entry: item.reference.clone(),
+			provider_warning_acknowledged: item.provider_warning_acknowledged,
 			enabled: true,
 			expected_revision: item.expected_revision,
 			groups: if item.reference == review.root && reviewed.kind == "agent" {

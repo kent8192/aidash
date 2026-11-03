@@ -50,6 +50,37 @@ impl AgentToolRepository for AgentTools<'_> {
 }
 #[async_trait]
 impl AgentToolScope for Scope<'_> {
+	async fn subnode_allowance(&mut self) -> Result<Option<aidash_domain::subnodes::Allowance>> {
+		use crate::apps::execution::models::subnodes::{SubnodeMemberRecord, SubnodeRecord};
+		use reinhardt::db::orm::Model;
+		let tenant = self.access.identity.tenant.clone();
+		let rows = SubnodeRecord::objects()
+			.filter(SubnodeRecord::field_tenant().eq(tenant.clone()))
+			.filter(SubnodeRecord::field_workspace_id().eq(self.run.workspace_id))
+			.all_with_executor(self.access.tx.native_mut())
+			.await
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(crate::Error::from)?;
+		let Some(row) = rows.into_iter().next() else {
+			return Ok(None);
+		};
+		if row.state != "active" {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let members = SubnodeMemberRecord::objects()
+			.filter(SubnodeMemberRecord::field_tenant().eq(tenant))
+			.filter(SubnodeMemberRecord::field_subnode_id().eq(row.id))
+			.filter(SubnodeMemberRecord::field_agent_id().eq(self.run.agent_id.clone()))
+			.filter(SubnodeMemberRecord::field_agent_version().eq(self.run.agent_version.clone()))
+			.all_with_executor(self.access.tx.native_mut())
+			.await
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(crate::Error::from)?;
+		if members.is_empty() {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		Ok(Some(serde_json::from_value(row.allowance.0)?))
+	}
 	fn transaction_active(&self) -> bool {
 		self.access.tx.is_active()
 	}

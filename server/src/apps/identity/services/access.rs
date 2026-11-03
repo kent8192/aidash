@@ -18,6 +18,33 @@ use uuid::Uuid;
 #[path = "visibility.rs"]
 mod visibility;
 
+pub(super) fn subnode_workspace_write(action: &str) -> bool {
+	matches!(
+		action,
+		"workspace.update"
+			| "workspace.share"
+			| "task.create"
+			| "task.update"
+			| "task.claim"
+			| "task.delegate"
+			| "task.execute"
+			| "task.complete"
+			| "task.abandon"
+			| "artifact.create"
+			| "message.create"
+			| "message.update"
+			| "run.message"
+			| "run.control"
+			| "file.write"
+			| "file.delete"
+			| "file.restore"
+			| "file.receive"
+			| "file.transfer"
+			| "file.share"
+			| "semantic.index.manage"
+	)
+}
+
 /// Every input of one catalog admission decision: who decides, under which policy
 /// revision and inherited fence, with which evaluation context and audit mode, for
 /// which definition. A decision first made unaudited or with deferred audit is never
@@ -45,6 +72,10 @@ pub(crate) struct AccessTransaction {
 	/// with a savepoint rollback that may have released them (its lock epoch).
 	admissions: std::collections::BTreeMap<CatalogAdmission, crate::registry::Entry>,
 	admissions_epoch: u64,
+	// Node deletion takes the policy lock exclusively. A successful check is
+	// valid only while this transaction retains its policy lease.
+	live_nodes: std::collections::BTreeSet<(String, String)>,
+	live_nodes_epoch: u64,
 }
 
 impl AccessTransaction {
@@ -53,6 +84,8 @@ impl AccessTransaction {
 			transaction: Some(transaction),
 			admissions: Default::default(),
 			admissions_epoch: 0,
+			live_nodes: Default::default(),
+			live_nodes_epoch: 0,
 		}
 	}
 
@@ -69,12 +102,33 @@ impl AccessTransaction {
 	fn install(&mut self, transaction: crate::database::native::Transaction) {
 		debug_assert!(self.transaction.is_none());
 		self.admissions.clear();
+		self.live_nodes.clear();
 		self.transaction = Some(transaction);
 	}
 
 	fn take(&mut self) -> Option<crate::database::native::Transaction> {
 		self.admissions.clear();
+		self.live_nodes.clear();
 		self.transaction.take()
+	}
+
+	async fn require_live_node(&mut self, tenant: &str, node: &str) -> Result<()> {
+		let epoch = self
+			.transaction
+			.as_ref()
+			.ok_or_else(|| Error::Conflict("authorization transaction is suspended".into()))?
+			.lock_epoch();
+		if epoch != self.live_nodes_epoch {
+			self.live_nodes.clear();
+			self.live_nodes_epoch = epoch;
+		}
+		let key = (tenant.to_owned(), node.to_owned());
+		if !self.live_nodes.contains(&key) {
+			crate::apps::identity::repositories::nodes::require_live(&mut **self, tenant, node)
+				.await?;
+			self.live_nodes.insert(key);
+		}
+		Ok(())
 	}
 
 	pub(crate) fn admitted(&self, admission: &CatalogAdmission) -> Option<crate::registry::Entry> {
@@ -300,9 +354,7 @@ impl Access {
 		};
 		let mut tx = store.pool.begin(&identity.tenancy()?).await?;
 		let snapshot = Authorization::load_with_mode(&mut tx, tenant, exclusive).await?;
-		if !super::identity::enabled(&snapshot, subject) {
-			return Err(Error::Forbidden);
-		}
+		super::identity::require_live_subject(&mut *tx, &snapshot, subject).await?;
 		Ok(Self::from_transaction(
 			tx,
 			&store.pool,
@@ -399,6 +451,13 @@ impl Access {
 				.any(|s| !super::identity::enabled(&self.snapshot, s))
 		{
 			return Err(Error::Forbidden);
+		}
+		for subject in &subjects {
+			for node in super::identity::subject_nodes(&self.snapshot, subject)? {
+				self.tx
+					.require_live_node(&self.snapshot.bundle.tenant, node)
+					.await?;
+			}
 		}
 		if identity.credential_id != self.identity.credential_id {
 			identity.lock_credential(&mut self.tx).await?;
@@ -527,6 +586,12 @@ impl Access {
 				.install(self.pool.begin(&self.identity.tenancy()?).await?);
 		}
 		self.snapshot = self.identity.lock_with_mode(&mut self.tx, false).await?;
+		self.tx.live_nodes.clear();
+		if let Some(node) = &self.node {
+			self.tx
+				.require_live_node(&self.identity.tenant, node.as_str())
+				.await?;
+		}
 		let policy = self.pool.dashboard_policy();
 		crate::apps::identity::models::DashboardExecutionOrigin::require_current(
 			&mut **self.tx,
@@ -605,7 +670,7 @@ impl Access {
 		&mut self,
 		name: &aidash_domain::nodes::NodeName,
 	) -> Result<Resource> {
-		let node = crate::apps::identity::repositories::nodes::get(
+		let node = crate::apps::identity::repositories::nodes::get_live(
 			&mut *self.tx,
 			&self.identity.tenant,
 			name.as_str(),
@@ -621,7 +686,13 @@ impl Access {
 	/// Authorize work on an owned Node using its current policy attributes,
 	/// then select its Catalog and Federation identity.
 	pub(crate) async fn use_node(&mut self, name: aidash_domain::nodes::NodeName) -> Result<()> {
-		let resource = self.node_resource(&name).await?;
+		let resource = self
+			.node_resource(&name)
+			.await
+			.map_err(|error| match error {
+				Error::NotFound(_) => Error::Forbidden,
+				other => other,
+			})?;
 		self.require(
 			&resource,
 			aidash_domain::identity::tenant_administration::NODE_USE,
@@ -645,6 +716,9 @@ impl Access {
 		)
 		.scalar_one(&mut **self.tx)
 		.await?;
+		self.tx
+			.require_live_node(&self.identity.tenant, &name)
+			.await?;
 		Ok(aidash_domain::nodes::NodeName::parse(&name)?)
 	}
 
@@ -652,6 +726,9 @@ impl Access {
 	/// operation has named it, the Tenant's default Node otherwise.
 	pub(crate) async fn catalog_node(&mut self) -> Result<aidash_domain::nodes::NodeName> {
 		if let Some(node) = &self.node {
+			self.tx
+				.require_live_node(&self.identity.tenant, node.as_str())
+				.await?;
 			return Ok(node.clone());
 		}
 		let name: String = crate::database::native::query_scalar(
@@ -666,6 +743,9 @@ impl Access {
 		)
 		.scalar_one(&mut **self.tx)
 		.await?;
+		self.tx
+			.require_live_node(&self.identity.tenant, &name)
+			.await?;
 		let node = aidash_domain::nodes::NodeName::parse(&name)?;
 		self.set_node(node.clone());
 		Ok(node)
@@ -680,7 +760,74 @@ impl Access {
 		})
 	}
 
+	/// A dissolved Subnode Workspace is retained for reading and citations.
+	/// User mutations hold a shared Subnode lock until their transaction commits;
+	/// dissolution takes the exclusive lock. Worker mutations already hold it
+	/// through their narrower Subnode effect boundary.
+	pub(crate) async fn ensure_subnode_writable(&mut self, workspace: Uuid) -> Result<()> {
+		use reinhardt::db::orm::{QueryRow, execution::convert_values};
+		use reinhardt::query::LockType;
+		let (sql, values) = Query::select()
+			.column(Alias::new("state"))
+			.from(Alias::new("subnodes"))
+			.and_where(Expr::col("tenant").eq(self.identity.tenant.clone()))
+			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+			.lock(LockType::Share)
+			.build(PostgresQueryBuilder);
+		if let Some(row) = self
+			.tx
+			.native_mut()
+			.fetch_optional(&sql, convert_values(values))
+			.await?
+		{
+			let row = QueryRow::from_backend_row(row);
+			let state: String = row.get("state").ok_or(crate::Error::Forbidden)?;
+			if state != "active" {
+				return Err(Error::Forbidden);
+			}
+		}
+		Ok(())
+	}
+
 	pub async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
+		for subject in &self.subjects {
+			// Unknown subjects reach evaluation so their denial is audited.
+			if self.snapshot.bundle.subjects.contains_key(subject) {
+				for node in super::identity::subject_nodes(&self.snapshot, subject)? {
+					self.tx
+						.require_live_node(&self.snapshot.bundle.tenant, node)
+						.await?;
+				}
+			}
+		}
+		// A Subnode creator reads, but never writes, the Subnode's Workspace.
+		if self.inherited_lease && subnode_workspace_write(action) {
+			let workspace = resource
+				.attributes
+				.get("workspace_id")
+				.and_then(Value::as_str)
+				.or_else(|| (resource.kind == "workspace").then_some(resource.id.as_str()))
+				.and_then(|id| Uuid::parse_str(id).ok());
+			if workspace.is_some_and(|workspace| {
+				aidash_application::authorization::workspaces::subnode_read_workspace(
+					&self.context,
+					workspace,
+				)
+			}) {
+				return Ok(false);
+			}
+		}
+		if self.read_run.is_none() && subnode_workspace_write(action) {
+			let workspace = resource
+				.attributes
+				.get("workspace_id")
+				.and_then(Value::as_str)
+				.or_else(|| (resource.kind == "workspace").then_some(resource.id.as_str()))
+				.and_then(|id| Uuid::parse_str(id).ok());
+			if let Some(workspace) = workspace {
+				self.ensure_subnode_writable(workspace).await?;
+			}
+		}
 		aidash_application::authorization::lease::decide(
 			&mut crate::bootstrap::run_visibility_scope(self),
 			resource,

@@ -28,9 +28,13 @@ impl FederationRepository for Repository {
 
 #[async_trait]
 impl aidash_application::ports::federation::authority::Peers for Repository {
-	async fn route(&self, node: &str) -> Result<Route> {
+	async fn route(
+		&self,
+		node: &str,
+		request: &aidash_application::federation::inbound::RequestDigest<'_>,
+	) -> Result<Route> {
 		self.federation
-			.route(&self.sender, node)
+			.route_delivery(&self.sender, node, request)
 			.await
 			.map_err(Into::into)
 	}

@@ -9,6 +9,7 @@ struct Scope {
 	task: Task,
 	artifact: Artifact,
 	message: Message,
+	attachments: Vec<aidash_domain::media::MessageAttachment>,
 	event: Event,
 	calls: Vec<&'static str>,
 	reads: Vec<(Uuid, Uuid)>,
@@ -71,6 +72,7 @@ fn scope() -> Scope {
 			created_at: now,
 			run_id: None,
 		},
+		attachments: vec![],
 		event: Event {
 			sequence: 15,
 			id: Uuid::from_u128(14),
@@ -158,6 +160,33 @@ impl WorkspaceRecordScope for Scope {
 		self.touch("message")?;
 		self.reads.push((workspace, id));
 		Ok(self.found.then(|| self.message.clone()))
+	}
+	async fn message_attachments(
+		&mut self,
+		_: Uuid,
+		ids: &[Uuid],
+	) -> Result<Vec<aidash_domain::media::MessageAttachment>> {
+		Ok(self
+			.attachments
+			.iter()
+			.filter(|row| ids.contains(&row.message_id))
+			.cloned()
+			.collect())
+	}
+	async fn attachment_record(
+		&mut self,
+		_: Uuid,
+		id: Uuid,
+	) -> Result<Option<aidash_domain::media::AttachmentRecord>> {
+		Ok(self
+			.attachments
+			.iter()
+			.find(|row| row.attachment.id == id)
+			.map(|row| aidash_domain::media::AttachmentRecord {
+				message_id: row.message_id,
+				attachment: row.attachment.clone(),
+				sha256: "digest".into(),
+			}))
 	}
 	async fn event_record(&mut self, workspace: Uuid, id: Uuid) -> Result<Option<Event>> {
 		self.touch("event")?;
@@ -255,7 +284,11 @@ async fn a_record_returns_the_original_serialized_value_after_exact_membership_t
 		"workspace" => json!(scope.workspace),
 		"task" => json!(scope.task),
 		"artifact" => json!(scope.artifact),
-		"message" => json!(scope.message),
+		"message" => {
+			let mut value = json!(scope.message);
+			value["attachments"] = json!([]);
+			value
+		}
 		_ => json!(scope.event),
 	};
 	let result = record(&mut scope, Uuid::from_u128(1), kind, Uuid::from_u128(id))
@@ -556,4 +589,67 @@ async fn summary_dependencies_recheck_messages_without_tracking(
 	assert_eq!(readable, state == "readable");
 	assert!(scope.tracked.is_empty(), "a recheck records no new read");
 	assert!(!scope.calls.contains(&"track"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn message_record_includes_authorized_attachment_metadata(mut scope: Scope) {
+	scope
+		.attachments
+		.push(aidash_domain::media::MessageAttachment {
+			message_id: scope.message.id,
+			attachment: aidash_domain::media::ThreadAttachment {
+				id: Uuid::from_u128(99),
+				filename: "sample.wav".into(),
+				media_type: "audio/wav".into(),
+				size_bytes: 45,
+				width: None,
+				height: None,
+				duration_ms: Some(1000),
+			},
+		});
+	let id = scope.message.id;
+	let result = record(&mut scope, Uuid::from_u128(1), "message", id)
+		.await
+		.unwrap();
+	assert_eq!(result["attachments"][0]["duration_ms"], 1000);
+	assert!(result["attachments"][0].get("content").is_none());
+	scope.visible = false;
+	assert!(matches!(
+		record(&mut scope, Uuid::from_u128(1), "message", id).await,
+		Err(Error::Forbidden)
+	));
+}
+
+#[rstest]
+#[tokio::test]
+async fn attachment_record_requires_current_message_visibility(mut scope: Scope) {
+	let id = Uuid::from_u128(99);
+	let message_id = scope.message.id;
+	scope
+		.attachments
+		.push(aidash_domain::media::MessageAttachment {
+			message_id,
+			attachment: aidash_domain::media::ThreadAttachment {
+				id,
+				filename: "image.png".into(),
+				media_type: "image/png".into(),
+				size_bytes: 42,
+				width: Some(2),
+				height: Some(3),
+				duration_ms: None,
+			},
+		});
+	let output = record(&mut scope, Uuid::from_u128(1), "attachment", id)
+		.await
+		.unwrap();
+	assert_eq!(output["attachment"]["id"], json!(id));
+	assert_eq!(output["message_id"], json!(message_id));
+	assert_eq!(scope.tracked.last().unwrap().messages[0].id, message_id);
+	assert!(output["attachment"].get("content").is_none());
+	scope.visible = false;
+	assert!(matches!(
+		record(&mut scope, Uuid::from_u128(1), "attachment", id).await,
+		Err(Error::Forbidden)
+	));
 }

@@ -52,9 +52,14 @@ impl CatalogMutation for TenantCatalog<'_> {
 			)
 			.await
 	}
-	async fn history(&mut self, binding: &Binding, actor: &str) -> Result<()> {
+	async fn history(
+		&mut self,
+		binding: &Binding,
+		actor: &str,
+		provider_warning_acknowledgment: Option<&str>,
+	) -> Result<()> {
 		NativeMutation(&mut self.access.tx)
-			.history(binding, actor)
+			.history(binding, actor, provider_warning_acknowledgment)
 			.await
 	}
 }
@@ -165,7 +170,7 @@ pub(crate) async fn admit_agents(
 			continue;
 		}
 		let groups = rules::default_agent_groups(&access.snapshot.bundle);
-		rules::add_agent_subject(&mut access.snapshot.bundle, &subject, &groups)?;
+		rules::add_agent_subject(&mut access.snapshot.bundle, &subject, &node.node, &groups)?;
 		changed = true;
 	}
 	if changed {

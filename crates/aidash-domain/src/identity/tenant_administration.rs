@@ -37,13 +37,19 @@ pub const NODE_READ: &str = "node.read";
 pub const NODE_USE: &str = "node.use";
 /// Creating a Node, within "Nodes per Tenant".
 pub const NODE_CREATE: &str = "node.create";
-/// Changing a Node's label.
+/// Changing a Node's label or default selection.
 pub const NODE_UPDATE: &str = "node.update";
+/// Deleting and restoring Nodes, and reading their deletion management view.
+pub const NODE_DELETE: &str = "node.delete";
 /// Listing the Node Registrations of one of the Tenant's Nodes.
 pub const NODE_REGISTRATION_READ: &str = "node_registration.read";
 /// Registering a Node of another Tenant at one of the Tenant's Nodes, or
 /// changing that registration.
 pub const NODE_REGISTRATION_UPDATE: &str = "node_registration.update";
+/// Creating a Run-scoped Subnode; an agent must be explicitly granted this.
+pub const SUBNODE_CREATE: &str = "subnode.create";
+/// Changing the Tenant's Subnode limits.
+pub const SUBNODE_LIMITS_UPDATE: &str = "subnode.limits.update";
 /// Setting the Tenant's Workbench Test Limits within the Deployment's ceilings.
 pub const TEST_LIMITS_UPDATE: &str = "workbench.test_limits.update";
 /// Writing the Tenant's Workbench Test Profiles.
@@ -66,7 +72,7 @@ pub const CONNECTION_SCOPES_UPDATE: &str = "connection.scopes.update";
 pub const CONNECTION_ADMINISTER: &str = "connection.administer";
 
 /// Every action a Tenant's policy can permit to make a Tenant Administrator.
-pub const ACTIONS: [&str; 27] = [
+pub const ACTIONS: [&str; 29] = [
 	REGISTRATION_READ,
 	REGISTRATION_APPROVE,
 	REGISTRATION_REJECT,
@@ -86,9 +92,11 @@ pub const ACTIONS: [&str; 27] = [
 	PEER_MAPPING_UPDATE,
 	NODE_CREATE,
 	NODE_UPDATE,
+	NODE_DELETE,
 	NODE_REGISTRATION_READ,
 	NODE_REGISTRATION_UPDATE,
 	TEST_LIMITS_UPDATE,
+	SUBNODE_LIMITS_UPDATE,
 	TEST_PROFILE_UPDATE,
 	SECRET_MANAGE,
 	APPROVAL_READ,
@@ -143,9 +151,10 @@ pub fn resource_kind(action: &str) -> &'static str {
 		DECISION_READ => "decision",
 		CREDENTIAL_READ | CREDENTIAL_REVOKE => "credential",
 		PEER_MAPPING_READ | PEER_MAPPING_UPDATE => "peer_mapping",
-		NODE_READ | NODE_USE | NODE_UPDATE => "node",
+		NODE_READ | NODE_USE | NODE_UPDATE | NODE_DELETE | SUBNODE_CREATE => "node",
 		NODE_REGISTRATION_READ | NODE_REGISTRATION_UPDATE => "node_registration",
 		TEST_LIMITS_UPDATE => "test_limits",
+		SUBNODE_LIMITS_UPDATE => "tenant",
 		TEST_PROFILE_UPDATE => "test_profile",
 		APPROVAL_READ => "subject",
 		crate::approval_rules::MODE_AUTO | crate::approval_rules::MODE_BYPASS => {
@@ -256,6 +265,7 @@ pub fn add_user_subject(
 		subject.into(),
 		Subject {
 			kind: SubjectKind::User,
+			node: None,
 			groups: groups.clone(),
 			roles: BTreeSet::new(),
 			attributes: json!({}),
@@ -280,6 +290,7 @@ pub fn default_agent_groups(bundle: &PolicyBundle) -> BTreeSet<String> {
 pub fn add_agent_subject(
 	bundle: &mut PolicyBundle,
 	subject: &str,
+	node: &crate::nodes::NodeName,
 	groups: &BTreeSet<String>,
 ) -> Result<()> {
 	if bundle.subjects.contains_key(subject) {
@@ -290,6 +301,7 @@ pub fn add_agent_subject(
 		subject.into(),
 		Subject {
 			kind: SubjectKind::Agent,
+			node: Some(node.clone()),
 			groups: groups.clone(),
 			roles: BTreeSet::new(),
 			attributes: json!({}),

@@ -10,6 +10,9 @@ deployment:
   id: ""
   # Stable federation URL; defaults to the internal backend Service.
   endpoint: ""
+  # Public startup descriptor: offering and optional initial key.kms version only.
+  # null preserves the image/profile defaults. One identity keeps one Offering.
+  settings: null
 release:
   # Deployed commit; annotates the server/worker Deployments as aidash.run/source-sha.
   sourceSha: ""

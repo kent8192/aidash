@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 376,
+  "endpoint_count": 390,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -10988,8 +10988,8 @@
       ]
     },
     {
-      "name": "1023 remote-human-answer - Anonymous request is rejected",
-      "file": "contracts/1023-remote-human-answer.bru",
+      "name": "1023 remote_human_answer - Anonymous request is rejected",
+      "file": "contracts/1023-remote_human_answer.bru",
       "endpoint": "POST /api/tasks/{task}/remote-grants/{grant}/human-requests/answer",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -11000,8 +11000,8 @@
       ]
     },
     {
-      "name": "1024 remote-human-answer - Wrong JSON media type is rejected",
-      "file": "contracts/1024-remote-human-answer.bru",
+      "name": "1024 remote_human_answer - Wrong JSON media type is rejected",
+      "file": "contracts/1024-remote_human_answer.bru",
       "endpoint": "POST /api/tasks/{task}/remote-grants/{grant}/human-requests/answer",
       "scenario": "Wrong JSON media type is rejected",
       "status": 415,
@@ -11012,8 +11012,8 @@
       ]
     },
     {
-      "name": "1025 remote-human-answer - Malformed JSON cannot reach the use case",
-      "file": "contracts/1025-remote-human-answer.bru",
+      "name": "1025 remote_human_answer - Malformed JSON cannot reach the use case",
+      "file": "contracts/1025-remote_human_answer.bru",
       "endpoint": "POST /api/tasks/{task}/remote-grants/{grant}/human-requests/answer",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
@@ -16553,8 +16553,459 @@
       ]
     },
     {
-      "name": "1503 task-runs - Anonymous request is rejected",
-      "file": "contracts/1503-task-runs.bru",
+      "name": "1503 tenant-registration-keys - Anonymous receiving-key request is rejected",
+      "file": "contracts/1503-tenant-registration-keys.bru",
+      "endpoint": "GET /api/tenants/{tenant}/nodes/{node}/registration-keys",
+      "scenario": "Anonymous receiving-key request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1504 tenant-registration-keys - Subject bearer has no receiving-record administration authority",
+      "file": "contracts/1504-tenant-registration-keys.bru",
+      "endpoint": "GET /api/tenants/{tenant}/nodes/{node}/registration-keys",
+      "scenario": "Subject bearer has no receiving-record administration authority",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1505 tenant-registration-keys - Deployment Administrator has no Tenant authority over receiving records",
+      "file": "contracts/1505-tenant-registration-keys.bru",
+      "endpoint": "GET /api/tenants/{tenant}/nodes/{node}/registration-keys",
+      "scenario": "Deployment Administrator has no Tenant authority over receiving records",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1506 tenant-node-default - Anonymous Node lifecycle request is rejected",
+      "file": "contracts/1506-tenant-node-default.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/default",
+      "scenario": "Anonymous Node lifecycle request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1507 tenant-node-default - Subject bearer cannot administer the Node lifecycle",
+      "file": "contracts/1507-tenant-node-default.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/default",
+      "scenario": "Subject bearer cannot administer the Node lifecycle",
+      "status": 403,
+      "required_checks": [
+        "Rejected write preserves the target Node",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1508 tenant-node-default - Deployment Administrator has no Tenant authority over its Nodes",
+      "file": "contracts/1508-tenant-node-default.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/default",
+      "scenario": "Deployment Administrator has no Tenant authority over its Nodes",
+      "status": 403,
+      "required_checks": [
+        "Rejected write preserves the target Node",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1509 tenant-node-deletion - Anonymous Node lifecycle request is rejected",
+      "file": "contracts/1509-tenant-node-deletion.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/deletion",
+      "scenario": "Anonymous Node lifecycle request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1510 tenant-node-deletion - Subject bearer cannot administer the Node lifecycle",
+      "file": "contracts/1510-tenant-node-deletion.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/deletion",
+      "scenario": "Subject bearer cannot administer the Node lifecycle",
+      "status": 403,
+      "required_checks": [
+        "Rejected write preserves the target Node",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1511 tenant-node-deletion - Deployment Administrator has no Tenant authority over its Nodes",
+      "file": "contracts/1511-tenant-node-deletion.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/deletion",
+      "scenario": "Deployment Administrator has no Tenant authority over its Nodes",
+      "status": 403,
+      "required_checks": [
+        "Rejected write preserves the target Node",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1512 tenant-node-deletion - Malformed JSON cannot reach the use case",
+      "file": "contracts/1512-tenant-node-deletion.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/deletion",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected write preserves the target Node",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1513 tenant-node-purge - Anonymous Node lifecycle request is rejected",
+      "file": "contracts/1513-tenant-node-purge.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/purge",
+      "scenario": "Anonymous Node lifecycle request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1514 tenant-node-purge - Subject bearer cannot administer the Node lifecycle",
+      "file": "contracts/1514-tenant-node-purge.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/purge",
+      "scenario": "Subject bearer cannot administer the Node lifecycle",
+      "status": 403,
+      "required_checks": [
+        "Rejected write preserves the target Node",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1515 tenant-node-purge - Only a deleted Node can be purged",
+      "file": "contracts/1515-tenant-node-purge.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/purge",
+      "scenario": "Only a deleted Node can be purged",
+      "status": 409,
+      "required_checks": [
+        "Rejected write preserves the target Node",
+        "Exact HTTP 409",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1516 tenant-registration-keys-change - Anonymous receiving-key request is rejected",
+      "file": "contracts/1516-tenant-registration-keys-change.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/registration-keys",
+      "scenario": "Anonymous receiving-key request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1517 tenant-registration-keys-change - Subject bearer has no receiving-record administration authority",
+      "file": "contracts/1517-tenant-registration-keys-change.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/registration-keys",
+      "scenario": "Subject bearer has no receiving-record administration authority",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1518 tenant-registration-keys-change - Deployment Administrator has no Tenant authority over receiving records",
+      "file": "contracts/1518-tenant-registration-keys-change.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/registration-keys",
+      "scenario": "Deployment Administrator has no Tenant authority over receiving records",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1519 tenant-registration-keys-change - Malformed key change cannot reach record control",
+      "file": "contracts/1519-tenant-registration-keys-change.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/registration-keys",
+      "scenario": "Malformed key change cannot reach record control",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1520 tenant-registration-keys-change - A key change requires both typed CAS revisions",
+      "file": "contracts/1520-tenant-registration-keys-change.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/registration-keys",
+      "scenario": "A key change requires both typed CAS revisions",
+      "status": 422,
+      "required_checks": [
+        "Exact HTTP 422",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1521 tenant-node-restore - Anonymous Node lifecycle request is rejected",
+      "file": "contracts/1521-tenant-node-restore.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/restore",
+      "scenario": "Anonymous Node lifecycle request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1522 tenant-node-restore - Subject bearer cannot administer the Node lifecycle",
+      "file": "contracts/1522-tenant-node-restore.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/restore",
+      "scenario": "Subject bearer cannot administer the Node lifecycle",
+      "status": 403,
+      "required_checks": [
+        "Rejected write preserves the target Node",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1523 tenant-node-restore - Deployment Administrator has no Tenant authority over its Nodes",
+      "file": "contracts/1523-tenant-node-restore.bru",
+      "endpoint": "POST /api/tenants/{tenant}/nodes/{node}/restore",
+      "scenario": "Deployment Administrator has no Tenant authority over its Nodes",
+      "status": 403,
+      "required_checks": [
+        "Rejected write preserves the target Node",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1524 remotecommands-thread-attachment - Reject unsupported federation protocol",
+      "file": "contracts/1524-remotecommands-thread-attachment.bru",
+      "endpoint": "POST /federation/v0.1/thread-attachment/1/fetch",
+      "scenario": "Reject unsupported federation protocol",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Reject unsupported federation protocol contract"
+      ]
+    },
+    {
+      "name": "1525 remotecommands-thread-attachment - Reject the retired federation protocol 0.3",
+      "file": "contracts/1525-remotecommands-thread-attachment.bru",
+      "endpoint": "POST /federation/v0.1/thread-attachment/1/fetch",
+      "scenario": "Reject the retired federation protocol 0.3",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1526 remotecommands-thread-attachment - Require the Federation token",
+      "file": "contracts/1526-remotecommands-thread-attachment.bru",
+      "endpoint": "POST /federation/v0.1/thread-attachment/1/fetch",
+      "scenario": "Require the Federation token",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1527 remotecommands-thread-attachment - Refuse a token that does not verify",
+      "file": "contracts/1527-remotecommands-thread-attachment.bru",
+      "endpoint": "POST /federation/v0.1/thread-attachment/1/fetch",
+      "scenario": "Refuse a token that does not verify",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1528 tenant-data-protection - Anonymous request is rejected",
+      "file": "contracts/1528-tenant-data-protection.bru",
+      "endpoint": "GET /api/tenants/{tenant}/data-protection",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1529 tenant-data-protection - Deployment Administrator bearer is never a Tenant Administrator",
+      "file": "contracts/1529-tenant-data-protection.bru",
+      "endpoint": "GET /api/tenants/{tenant}/data-protection",
+      "scenario": "Deployment Administrator bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1530 tenant-data-protection - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1530-tenant-data-protection.bru",
+      "endpoint": "GET /api/tenants/{tenant}/data-protection",
+      "scenario": "Subject Credential bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1531 tenant-data-protection - Forged bearer cannot read or change Data Protection policy",
+      "file": "contracts/1531-tenant-data-protection.bru",
+      "endpoint": "GET /api/tenants/{tenant}/data-protection",
+      "scenario": "Forged bearer cannot read or change Data Protection policy",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1532 tenant-data-protection-update - Anonymous request is rejected",
+      "file": "contracts/1532-tenant-data-protection-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/data-protection",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1533 tenant-data-protection-update - Deployment Administrator bearer is never a Tenant Administrator",
+      "file": "contracts/1533-tenant-data-protection-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/data-protection",
+      "scenario": "Deployment Administrator bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1534 tenant-data-protection-update - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1534-tenant-data-protection-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/data-protection",
+      "scenario": "Subject Credential bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1535 tenant-data-protection-update - Forged bearer cannot read or change Data Protection policy",
+      "file": "contracts/1535-tenant-data-protection-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/data-protection",
+      "scenario": "Forged bearer cannot read or change Data Protection policy",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1536 tenant-data-protection-update - Malformed JSON cannot reach the use case",
+      "file": "contracts/1536-tenant-data-protection-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/data-protection",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1537 tenant-data-protection-impact - Anonymous request is rejected",
+      "file": "contracts/1537-tenant-data-protection-impact.bru",
+      "endpoint": "POST /api/tenants/{tenant}/data-protection/impact",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1538 tenant-data-protection-impact - Deployment Administrator bearer is never a Tenant Administrator",
+      "file": "contracts/1538-tenant-data-protection-impact.bru",
+      "endpoint": "POST /api/tenants/{tenant}/data-protection/impact",
+      "scenario": "Deployment Administrator bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1539 tenant-data-protection-impact - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1539-tenant-data-protection-impact.bru",
+      "endpoint": "POST /api/tenants/{tenant}/data-protection/impact",
+      "scenario": "Subject Credential bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1540 tenant-data-protection-impact - Forged bearer cannot read or change Data Protection policy",
+      "file": "contracts/1540-tenant-data-protection-impact.bru",
+      "endpoint": "POST /api/tenants/{tenant}/data-protection/impact",
+      "scenario": "Forged bearer cannot read or change Data Protection policy",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1541 tenant-data-protection-impact - Malformed JSON cannot reach the use case",
+      "file": "contracts/1541-tenant-data-protection-impact.bru",
+      "endpoint": "POST /api/tenants/{tenant}/data-protection/impact",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1542 task-runs - Anonymous request is rejected",
+      "file": "contracts/1542-task-runs.bru",
       "endpoint": "GET /api/tasks/{id}/runs",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -16564,8 +17015,8 @@
       ]
     },
     {
-      "name": "1504 task-runs - Deployment Administrator cannot read Tenant data",
-      "file": "contracts/1504-task-runs.bru",
+      "name": "1543 task-runs - Deployment Administrator cannot read Tenant data",
+      "file": "contracts/1543-task-runs.bru",
       "endpoint": "GET /api/tasks/{id}/runs",
       "scenario": "Deployment Administrator cannot read Tenant data",
       "status": 403,
@@ -16575,8 +17026,8 @@
       ]
     },
     {
-      "name": "1505 task-runs - Typed resource IDs reject invalid UUIDs",
-      "file": "contracts/1505-task-runs.bru",
+      "name": "1544 task-runs - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1544-task-runs.bru",
       "endpoint": "GET /api/tasks/{id}/runs",
       "scenario": "Typed resource IDs reject invalid UUIDs",
       "status": 400,
@@ -16586,8 +17037,8 @@
       ]
     },
     {
-      "name": "1506 task-runs - Missing scoped authority cannot disclose application data",
-      "file": "contracts/1506-task-runs.bru",
+      "name": "1545 task-runs - Missing scoped authority cannot disclose application data",
+      "file": "contracts/1545-task-runs.bru",
       "endpoint": "GET /api/tasks/{id}/runs",
       "scenario": "Missing scoped authority cannot disclose application data",
       "status": 403,
@@ -16597,8 +17048,8 @@
       ]
     },
     {
-      "name": "1507 task-runs - Paging rejects nonnumeric or malformed cursors",
-      "file": "contracts/1507-task-runs.bru",
+      "name": "1546 task-runs - Paging rejects nonnumeric or malformed cursors",
+      "file": "contracts/1546-task-runs.bru",
       "endpoint": "GET /api/tasks/{id}/runs",
       "scenario": "Paging rejects nonnumeric or malformed cursors",
       "status": 400,
@@ -16608,8 +17059,8 @@
       ]
     },
     {
-      "name": "1508 task-runs - Subject lists the readable Task's Runs",
-      "file": "contracts/1508-task-runs.bru",
+      "name": "1547 task-runs - Subject lists the readable Task's Runs",
+      "file": "contracts/1547-task-runs.bru",
       "endpoint": "GET /api/tasks/{id}/runs",
       "scenario": "Subject lists the readable Task's Runs",
       "status": 200,
@@ -16620,8 +17071,8 @@
       ]
     },
     {
-      "name": "1509 human-requests - Anonymous request is rejected",
-      "file": "contracts/1509-human-requests.bru",
+      "name": "1548 human-requests - Anonymous request is rejected",
+      "file": "contracts/1548-human-requests.bru",
       "endpoint": "GET /api/human-requests",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -16631,8 +17082,8 @@
       ]
     },
     {
-      "name": "1510 human-requests - Deployment Administrator cannot read Tenant data",
-      "file": "contracts/1510-human-requests.bru",
+      "name": "1549 human-requests - Deployment Administrator cannot read Tenant data",
+      "file": "contracts/1549-human-requests.bru",
       "endpoint": "GET /api/human-requests",
       "scenario": "Deployment Administrator cannot read Tenant data",
       "status": 403,
@@ -16642,8 +17093,8 @@
       ]
     },
     {
-      "name": "1511 human-requests - Malformed bearer syntax is rejected",
-      "file": "contracts/1511-human-requests.bru",
+      "name": "1550 human-requests - Malformed bearer syntax is rejected",
+      "file": "contracts/1550-human-requests.bru",
       "endpoint": "GET /api/human-requests",
       "scenario": "Malformed bearer syntax is rejected",
       "status": 401,
@@ -16653,8 +17104,8 @@
       ]
     },
     {
-      "name": "1512 human-requests - Application read preserves the typed response contract",
-      "file": "contracts/1512-human-requests.bru",
+      "name": "1551 human-requests - Application read preserves the typed response contract",
+      "file": "contracts/1551-human-requests.bru",
       "endpoint": "GET /api/human-requests",
       "scenario": "Application read preserves the typed response contract",
       "status": 200,
@@ -16665,12 +17116,162 @@
       ]
     },
     {
-      "name": "1513 human-requests - Paging rejects nonnumeric or malformed cursors",
-      "file": "contracts/1513-human-requests.bru",
+      "name": "1552 human-requests - Paging rejects nonnumeric or malformed cursors",
+      "file": "contracts/1552-human-requests.bru",
       "endpoint": "GET /api/human-requests",
       "scenario": "Paging rejects nonnumeric or malformed cursors",
       "status": 400,
       "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1553 run-subnodes - Anonymous request is rejected",
+      "file": "contracts/1553-run-subnodes.bru",
+      "endpoint": "GET /api/runs/{id}/subnodes",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1554 run-subnodes - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1554-run-subnodes.bru",
+      "endpoint": "GET /api/runs/{id}/subnodes",
+      "scenario": "Typed resource IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1555 run-subnodes - Deployment Administrator has no Tenant authority",
+      "file": "contracts/1555-run-subnodes.bru",
+      "endpoint": "GET /api/runs/{id}/subnodes",
+      "scenario": "Deployment Administrator has no Tenant authority",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1556 subnode-dissolve - Anonymous request is rejected",
+      "file": "contracts/1556-subnode-dissolve.bru",
+      "endpoint": "POST /api/subnodes/{id}/dissolve",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1557 subnode-dissolve - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1557-subnode-dissolve.bru",
+      "endpoint": "POST /api/subnodes/{id}/dissolve",
+      "scenario": "Typed resource IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1558 subnode-dissolve - Unrecognized bearer cannot mutate state",
+      "file": "contracts/1558-subnode-dissolve.bru",
+      "endpoint": "POST /api/subnodes/{id}/dissolve",
+      "scenario": "Unrecognized bearer cannot mutate state",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1559 tenant-subnode-limits - Anonymous request is rejected",
+      "file": "contracts/1559-tenant-subnode-limits.bru",
+      "endpoint": "GET /api/tenants/{tenant}/subnode-limits",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1560 tenant-subnode-limits - Deployment Administrator bearer is never a Tenant Administrator",
+      "file": "contracts/1560-tenant-subnode-limits.bru",
+      "endpoint": "GET /api/tenants/{tenant}/subnode-limits",
+      "scenario": "Deployment Administrator bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1561 tenant-subnode-limits - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1561-tenant-subnode-limits.bru",
+      "endpoint": "GET /api/tenants/{tenant}/subnode-limits",
+      "scenario": "Subject Credential bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1562 tenant-subnode-limits-update - Anonymous request is rejected",
+      "file": "contracts/1562-tenant-subnode-limits-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/subnode-limits",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1563 tenant-subnode-limits-update - Deployment Administrator bearer is never a Tenant Administrator",
+      "file": "contracts/1563-tenant-subnode-limits-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/subnode-limits",
+      "scenario": "Deployment Administrator bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1564 tenant-subnode-limits-update - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1564-tenant-subnode-limits-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/subnode-limits",
+      "scenario": "Subject Credential bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1565 tenant-subnode-limits-update - Malformed JSON cannot reach the use case",
+      "file": "contracts/1565-tenant-subnode-limits-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/subnode-limits",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
         "Exact HTTP 400",
         "Rejection is diagnostic and does not disclose SQL or credentials"
       ]

@@ -29,6 +29,11 @@ impl RunGuardScope for RunGuard<'_> {
 		&self.access.snapshot.bundle
 	}
 	async fn run_visible(&mut self, run: &RunMetadata) -> Result<bool> {
+		crate::apps::execution::repositories::node_cancellations::require_run_open(
+			&mut **self.access.tx,
+			run.id,
+		)
+		.await?;
 		self.access.run_visible(run).await.map_err(Into::into)
 	}
 	async fn cluster_targets(&mut self, workspace: Uuid) -> Result<Vec<String>> {
@@ -64,6 +69,12 @@ impl RunGuardScope for RunGuard<'_> {
 	async fn catalog(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
 		catalog::entry(self.access, reference, action)
 			.await
+			.map_err(Into::into)
+	}
+	async fn reference_embedding_available(&mut self, reference: &EntityRef) -> Result<bool> {
+		crate::apps::registry::services::knowledge::embedding_available(self.access, reference)
+			.await
+			.map(|entry| entry.is_some())
 			.map_err(Into::into)
 	}
 	async fn closure_catalog(

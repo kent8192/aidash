@@ -29,7 +29,6 @@ pub struct PolicyBundle {
 pub enum SubjectKind {
 	User,
 	Agent,
-	Node,
 	Service,
 }
 
@@ -44,6 +43,8 @@ fn attributes() -> Value {
 #[serde(deny_unknown_fields)]
 pub struct Subject {
 	pub kind: SubjectKind,
+	/// The owning Node for every non-user subject; users are Tenant-wide.
+	pub node: Option<crate::nodes::NodeName>,
 	#[serde(default)]
 	pub groups: BTreeSet<String>,
 	#[serde(default)]
@@ -205,13 +206,14 @@ fn matches_name(values: &BTreeSet<String>, name: &str) -> bool {
 }
 
 /// Actions an allow grants only by naming them. Each lets a Run act without a
-/// person's approval, so a wildcard grant, such as a Tenant Administrator's,
-/// never removes approvals by itself (ADR 0075, ADR 0076). A wildcard deny
+/// person's approval or creates a Subnode, so a wildcard grant, such as a Tenant
+/// Administrator's, does not confer them implicitly (ADR 0075, ADR 0076, ADR 0110). A wildcard deny
 /// still covers them.
 pub const EXPLICIT_ACTIONS: &[&str] = &[
 	"tool.call_unapproved",
 	"sampling.request_unapproved",
 	crate::approval_rules::MODE_BYPASS,
+	crate::identity::tenant_administration::SUBNODE_CREATE,
 ];
 
 fn matches_action(values: &BTreeSet<String>, action: &str, effect: &Effect) -> bool {
@@ -246,6 +248,11 @@ impl PolicyBundle {
 		}
 		for (name, subject) in &self.subjects {
 			identifier(name)?;
+			if (subject.kind == SubjectKind::User) != subject.node.is_none() {
+				return Err(Error::Invalid(
+					"users must not own a Node; every other subject requires a Node".into(),
+				));
+			}
 			if !subject.attributes.is_object() {
 				return Err(Error::Invalid(
 					"subject attributes must be an object".into(),

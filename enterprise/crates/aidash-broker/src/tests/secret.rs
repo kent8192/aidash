@@ -1074,6 +1074,8 @@ async fn provider_tokens_and_server_key_worker_issuers_are_refused() {
 		.unwrap()
 		.as_secs();
 	let provider = Claims {
+		provider_tools: vec![],
+		data_protection: Default::default(),
 		iss: "aidash-server".into(),
 		aud: AUDIENCE.into(),
 		iat: now,

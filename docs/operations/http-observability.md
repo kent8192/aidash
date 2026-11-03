@@ -31,8 +31,10 @@ Invalid limits fail startup. Bootstrap injects the validated settings into the
 Reinhardt Gateway shared by the public router.
 
 The native listener acquires an application admission permit before collecting a
-request body. It rejects bodies above 1 MiB by default, or 6 MiB for core
-capability and scoped file-transfer routes carrying Base64-encoded chunks, and
+request body. It rejects bodies above 1 MiB by default, 6 MiB for core
+capability and scoped file-transfer routes carrying Base64-encoded chunks, or
+8 MiB for exactly `POST /api/workspaces/{id}/attachments` (the attachment size
+limit), and
 times out incomplete body reception. The permit remains held through handler
 completion or cancellation. The native transport hook is supplied by
 [reinhardt-web#6737](https://github.com/kent8192/reinhardt-web/pull/6737).

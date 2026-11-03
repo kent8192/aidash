@@ -95,6 +95,7 @@ struct Scope {
 	principal: ExecutionPrincipal,
 	subjects: Vec<String>,
 	workspace: Option<Uuid>,
+	subnode_members: Option<Vec<EntityRef>>,
 	task: Task,
 	origin: CreatedTaskOrigin,
 	grant: Option<ExecutionGrant>,
@@ -118,6 +119,7 @@ fn scope() -> Scope {
 		},
 		subjects: vec!["root".into(), "producer".into()],
 		workspace: Some(id(3)),
+		subnode_members: None,
 		task: Task {
 			id: id(4),
 			workspace_id: id(3),
@@ -194,6 +196,9 @@ impl Scope {
 }
 #[async_trait]
 impl WorkerTaskScope for Scope {
+	async fn subnode_members(&mut self, _: Uuid) -> Result<Option<Vec<EntityRef>>> {
+		Ok(self.subnode_members.clone())
+	}
 	fn node_id(&self) -> &str {
 		&self.node
 	}
@@ -208,7 +213,13 @@ impl WorkerTaskScope for Scope {
 		self.touch("task_workspace")?;
 		Ok(self.workspace)
 	}
-	async fn assign(&mut self, task: Uuid, policy: &str, reason: &str) -> Result<Assignment> {
+	async fn assign(
+		&mut self,
+		task: Uuid,
+		policy: &str,
+		reason: &str,
+		_: Option<&[EntityRef]>,
+	) -> Result<Assignment> {
 		assert_eq!(task, self.task.id);
 		assert_eq!(policy, "policy");
 		assert_eq!(reason, "reason");
@@ -656,4 +667,30 @@ async fn delegation_faults_do_not_become_successful_retry_replies(
 		fail
 	);
 	assert_eq!(scope.calls.last(), Some(&fail));
+}
+
+#[rstest]
+#[tokio::test]
+async fn subnode_delegation_stays_within_current_members(mut scope: Scope, run: RunMetadata) {
+	let caller = EntityRef {
+		id: run.agent_id.clone(),
+		version: run.agent_version.clone(),
+	};
+	scope.subnode_members = Some(vec![caller.clone()]);
+	assert!(matches!(
+		delegate(&mut scope, &run, id(4), &run.home_node, &agent()).await,
+		Err(Error::Refused(_))
+	));
+	assert!(scope.calls.is_empty());
+	scope.subnode_members = Some(vec![caller, agent()]);
+	assert!(
+		delegate(&mut scope, &run, id(4), &run.home_node, &agent())
+			.await
+			.is_ok()
+	);
+	scope.subnode_members = Some(vec![]);
+	assert!(matches!(
+		create_task(&mut scope, &run, "key", &input()).await,
+		Err(Error::Forbidden)
+	));
 }

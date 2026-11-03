@@ -40,13 +40,13 @@ API_TIMEOUT = 60
 COMPACTION_DECIDER = {"id": "aidash.compaction-decider", "version": "1.0.0"}
 
 
-def api_request(base, path, body=None, token=TOKEN, headers=None):
+def api_request(base, path, body=None, token=TOKEN, headers=None, timeout=API_TIMEOUT):
     request = urllib.request.Request(
         base + path,
         data=None if body is None else json.dumps(body).encode(),
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", **(headers or {})},
     )
-    with urllib.request.urlopen(request, timeout=API_TIMEOUT) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.load(response)
 
 
@@ -89,8 +89,10 @@ def tenant_subject(base, label, subject, issue, agents=(), subject_kind="user", 
     from the host, which then approves the compaction Decider every Agent
     depends on. `agents` name Agents as subjects: `id@version` for one that
     executes on the Tenant's default Node, or the full subject of one that
-    executes elsewhere. The default Node is read with the credential, so Agent
-    subjects join the policy in a second replacement.
+    executes elsewhere. Every Agent subject belongs to this Tenant's local
+    default Node, even when its subject name identifies a remote Agent. The
+    default Node is read with the credential, so Agent subjects join the policy
+    in a second replacement.
     """
     tenant = api_request(base, "/api/tenants", {"label": label})["name"]
 
@@ -98,12 +100,18 @@ def tenant_subject(base, label, subject, issue, agents=(), subject_kind="user", 
         bundle = {"tenant": tenant, "subjects": subjects, "policies": [{"id": "fixture-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
         api_request(base, f"/api/authorization/{tenant}", {"expected_revision": revision, "bundle": bundle})
 
-    subjects = {subject: {"kind": subject_kind}, **(extra_subjects or {})}
+    # A non-user subject names its owning Node. Before any credential exists the
+    # Deployment Administrator reads it from the deleted-Node view purge uses.
+    owner = None
+    if subject_kind != "user":
+        owner = next(row for row in api_request(base, f"/api/tenants/{tenant}/nodes?include_deleted=true")
+                     if row["default"])["name"]
+    subjects = {subject: {"kind": subject_kind, "node": owner}, **(extra_subjects or {})}
     replace(subjects, 1)
     credential = issue(tenant, subject)
     if agents:
-        _, address = default_node(base, tenant, token=credential["token"])
-        subjects.update({(agent if "/agents/" in agent else f"{address}/agents/{agent}"): {"kind": "agent"} for agent in agents})
+        node, address = default_node(base, tenant, token=credential["token"])
+        subjects.update({(agent if "/agents/" in agent else f"{address}/agents/{agent}"): {"kind": "agent", "node": node} for agent in agents})
         replace(subjects, api_request(base, f"/api/authorization/{tenant}")["revision"])
     approve(base, tenant, credential["token"], [COMPACTION_DECIDER])
     return tenant, credential
@@ -138,15 +146,17 @@ def register_node(base, tenant, source_address, endpoint, administrator, reachab
                                     "atomic_transactions": True, "enabled": True, "expected_revision": existing[0]["revision"] if existing else 0})
 
 
-def generate_deployment_key(binary, directory, env):
+def generate_deployment_key(binary, directory, env, hosted_model_origins=()):
     """Create a Deployment Key in `directory` and return the settings directory that names it.
 
     Federation is on unless the settings turn it off; a Deployment federates
-    once its `[deployment.key]` file exists.
+    once its `[deployment.key]` file exists. `hosted_model_origins` declares
+    model servers the Deployment runs itself (ADR 0104).
     """
     directory = pathlib.Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / "base.toml").write_text(f'[deployment.key]\nfile = "{directory / "deployment-key.pem"}"\n')
+    (directory / "base.toml").write_text(f'[deployment]\nhosted_model_origins = {json.dumps(list(hosted_model_origins))}\n\n'
+                                         f'[deployment.key]\nfile = "{directory / "deployment-key.pem"}"\n')
     subprocess.run([str(pathlib.Path(binary).resolve().parent / "manage"), "deployment-key", "generate"], cwd=ROOT,
                    env={**env, "REINHARDT_SETTINGS_DIR": str(directory)}, stdout=subprocess.DEVNULL, check=True, timeout=120)
     return directory
@@ -616,8 +626,16 @@ def main():
     # Binding defaults include File Tools. Enable only disposable fixture
     # storage; command runners remain disabled in the Node's execution profile.
     profile_directory = tempfile.TemporaryDirectory(prefix="aidash-golden-profile-")
-    profile = pathlib.Path(profile_directory.name) / "profile.json"
-    profile.write_text(json.dumps({"admission": True, "storage": str(profile.parent / "storage")}))
+    # Each Deployment has its own database and therefore its own object ownership
+    # journal. Sharing storage would let either worker erase the other's objects
+    # as orphans, including attachments retained during Node deletion.
+    profiles = {}
+    for node in (node_a, node_b):
+        directory = pathlib.Path(profile_directory.name) / hashlib.sha256(node.encode()).hexdigest()
+        directory.mkdir()
+        profile = directory / "profile.json"
+        profile.write_text(json.dumps({"admission": True, "storage": str(directory / "storage")}))
+        profiles[node] = profile
     # Compaction Deciders name the Tenant's OpenRouter Provider Credential
     # (ADR 0041), so each Node runs a disposable PostgreSQL Provider Credential
     # Store whose keys exist only for this run.
@@ -728,7 +746,7 @@ def main():
         env = {**os.environ, "DATABASE_URL": database_url(login, database), "NATS_URL": f"nats://127.0.0.1:{nats_proxy.server_address[1]}", "AIDASH_DEPLOYMENT_ID": node, "AIDASH_ENDPOINT": f"http://127.0.0.1:{port}", "AIDASH_LISTEN": f"127.0.0.1:{port}", "AIDASH_API_TOKEN": TOKEN, "AIDASH_WEB_DIR": str(ROOT / "web/dist"), "AIDASH_KEYLESS_PRIVATE_ORIGINS": keyless_origins}
         # Browser fixtures create audit/history pages in bursts alongside UI polling.
         env["AIDASH_API_RATE_BURST"] = os.environ.get("AIDASH_API_RATE_BURST", "1000")
-        env["AIDASH_CAPABILITY_PROFILE"] = str(profile)
+        env["AIDASH_CAPABILITY_PROFILE"] = str(profiles[node])
         # Each Deployment holds its own Deployment Key, which it signs Federation tokens with.
         if keyed:
             env["REINHARDT_SETTINGS_DIR"] = str(key_directories[node])
@@ -756,7 +774,104 @@ def main():
         for proxy in browser_provider_proxies:
             proxy.start()
         browser_report = logs / "browser-report.json"
-        subprocess.run(["npx", "playwright", "test", *grep_args, "--reporter=list,json"], cwd=ROOT / "web", check=True, env={**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b, "AIDASH_E2E_KEYLESS_PORTS": ",".join(map(str, browser_provider_ports)), "AIDASH_E2E_KEYLESS_UPSTREAMS": keyless_upstreams.name, "AIDASH_E2E_TOKEN": tokens[base_a], "AIDASH_E2E_TENANT": tenant_a, "AIDASH_E2E_SUBJECT": "alice", **host_issuer_env(pathlib.Path(args.binary).resolve().parent / "manage", node_env(node_a, db_a, port_a, SERVER_LOGIN))})
+        browser_env = {**os.environ, "PLAYWRIGHT_JSON_OUTPUT_FILE": str(browser_report), "AIDASH_E2E_URL": base_a, "AIDASH_E2E_REMOTE_URL": base_b, "AIDASH_E2E_KEYLESS_PORTS": ",".join(map(str, browser_provider_ports)), "AIDASH_E2E_KEYLESS_UPSTREAMS": keyless_upstreams.name, "AIDASH_E2E_TOKEN": tokens[base_a], "AIDASH_E2E_TENANT": tenant_a, "AIDASH_E2E_SUBJECT": "alice", **host_issuer_env(pathlib.Path(args.binary).resolve().parent / "manage", node_env(node_a, db_a, port_a, SERVER_LOGIN))}
+        lifecycle_stop = threading.Event()
+        lifecycle_errors = []
+        lifecycle_thread = None
+        if args.browser_suite:
+            # This acceptance owner's context has only its isolated Subject credential.
+            # DB, Deployment Key and provider settings remain in node_env/launch.
+            lifecycle_dir = pathlib.Path(profile_directory.name) / "node-lifecycle"
+            lifecycle_dir.mkdir(mode=0o700)
+            # Node creation, default, deletion and restore are Tenant administration
+            # (ADR 0102): a Tenant Administrator acts through its browser Mapping.
+            lifecycle_tenant, lifecycle_subject = tenant_subject(
+                base_a, f"Node lifecycle {run_id}", "lifecycle-member", issue_a,
+                extra_subjects={"lifecycle-administrator": {"kind": "user", "node": None}})
+            lifecycle_administrator = administrator(base_a, lifecycle_tenant, "lifecycle-administrator")
+            sibling, _ = default_node(base_a, lifecycle_tenant, lifecycle_subject["token"])
+            target = lifecycle_administrator.api(f"/api/tenants/{lifecycle_tenant}/nodes", {"label": "Lifecycle target"})["name"]
+            context_path = lifecycle_dir / "context.json"
+            context_path.write_text(json.dumps({"tenant": lifecycle_tenant, "target": target, "sibling": sibling,
+                                                "subject": {"name": "lifecycle-member", "token": lifecycle_subject["token"]},
+                                                "administrator": lifecycle_administrator.headers()}))
+            context_path.chmod(0o600)
+            browser_env["AIDASH_E2E_NODE_LIFECYCLE_FIXTURE"] = str(context_path)
+
+            def lifecycle_worker():
+                child = None
+                evidence = {"tenant": lifecycle_tenant, "node": target, "source": source, "binary_sha256": binary_sha256}
+                try:
+                    request_path = lifecycle_dir / "purge-request.json"
+                    while not lifecycle_stop.wait(0.1):
+                        if request_path.exists():
+                            break
+                    else:
+                        return
+                    requested = json.loads(request_path.read_text())
+                    assert requested["tenant"] == lifecycle_tenant and requested["node"] == target, "Wrong lifecycle target"
+                    path = f"/api/tenants/{lifecycle_tenant}/nodes?include_deleted=true&offset=0&limit=25"
+                    row = next(row for row in api_request(base_a, path, timeout=5) if row["name"] == target)
+                    # A browser signal is not a receipt: reread the committed exact
+                    # deletion cycle from the actual owning database before launch.
+                    assert row["state"] == "deleting" and row["deletion"]["purge_step"] is not None, "Purge request not committed"
+                    assert row["deletion"]["id"] == requested["deletion_id"], "Wrong deletion cycle"
+                    assert row["retained_storage_bytes"] == requested["expected_bytes"] > 0, "Wrong retained payload amount"
+                    assert source == revision(), "Source changed before lifecycle worker"
+                    assert binary_sha256 == hashlib.sha256(pathlib.Path(args.binary).read_bytes()).hexdigest(), "Binary changed before lifecycle worker"
+                    evidence["worker_log"] = f"{db_a}-worker-{len(children)}.log"
+                    child = launch(node_a, db_a, port_a, "worker")
+                    evidence.update({"worker_pid": child.pid, "command": [str(pathlib.Path(args.binary).resolve()), "worker"],
+                                     "deletion_id": row["deletion"]["id"], "committed_step": row["deletion"]["purge_step"],
+                                     "retained_storage_bytes_before": row["retained_storage_bytes"]})
+                    deadline = time.monotonic() + 90
+                    while not lifecycle_stop.is_set() and time.monotonic() < deadline:
+                        if child.poll() is not None:
+                            raise RuntimeError("Owned lifecycle worker exited before purge")
+                        row = next(row for row in api_request(base_a, path, timeout=5) if row["name"] == target)
+                        if row["state"] == "purged":
+                            assert row["retained_storage_bytes"] == 0 and row["deletion"]["purged_at"], "Incomplete purge projection"
+                            evidence.update({"state": "purged", "retained_storage_bytes": 0, "purged_at": row["deletion"]["purged_at"]})
+                            break
+                        if lifecycle_stop.wait(0.2):
+                            break
+                    else:
+                        raise TimeoutError("Owned lifecycle worker did not complete purge")
+                    assert evidence.get("state") == "purged", "Browser ended before purge"
+                except Exception as error:
+                    # Do not copy request bodies, credentials or private IO errors.
+                    evidence["failure"] = type(error).__name__
+                    lifecycle_errors.append(type(error).__name__)
+                finally:
+                    if child is not None:
+                        try:
+                            if child.poll() is None:
+                                child.terminate()
+                            try:
+                                child.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                child.kill()
+                                child.wait(timeout=10)
+                        except Exception as error:
+                            evidence["cleanup_failure"] = type(error).__name__
+                            lifecycle_errors.append(type(error).__name__)
+                        evidence["worker_stopped"] = child.poll() is not None
+                    (lifecycle_dir / "worker-evidence.json").write_text(json.dumps(evidence, indent=2))
+
+            lifecycle_thread = threading.Thread(target=lifecycle_worker, name="node-lifecycle-worker")
+            lifecycle_thread.start()
+        try:
+            subprocess.run(["npx", "playwright", "test", *grep_args, "--reporter=list,json"], cwd=ROOT / "web", check=True, env=browser_env)
+        finally:
+            lifecycle_stop.set()
+            if lifecycle_thread is not None:
+                lifecycle_thread.join(timeout=30)
+                assert not lifecycle_thread.is_alive(), "Owned lifecycle worker cleanup did not finish"
+                # Sanitized evidence survives the private credential directory.
+                evidence_path = lifecycle_dir / "worker-evidence.json"
+                if evidence_path.exists():
+                    (logs / "node-lifecycle-worker.json").write_bytes(evidence_path.read_bytes())
+        assert not lifecycle_errors, f"Node lifecycle worker fixture failed: {lifecycle_errors}"
         return json.loads(browser_report.read_text())["stats"]["expected"]
 
     def launch(node, database, port, mode):
@@ -786,8 +901,12 @@ def main():
         provision(db_a)
         provision(db_b)
         for node, database, port in [(node_a, db_a, port_a), (node_b, db_b, port_b)]:
+            # Work from a Node of another Deployment runs under the strictest
+            # Data Protection Level, which no Tenant Keyless endpoint meets
+            # (ADR 0104), so each Node declares the scoped model server its own.
             key_directories[node] = generate_deployment_key(
-                args.binary, pathlib.Path(profile_directory.name) / f"deployment-key-{port}", node_env(node, database, port, OWNER_LOGIN, keyed=False))
+                args.binary, pathlib.Path(profile_directory.name) / f"deployment-key-{port}", node_env(node, database, port, OWNER_LOGIN, keyed=False),
+                hosted_model_origins=[f"http://127.0.0.1:{scoped_provider_port}"])
         migrate(node_a, db_a, port_a)
         migrate(node_b, db_b, port_b)
         launch(node_a, db_a, port_a, "server")

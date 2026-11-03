@@ -156,11 +156,8 @@ impl Store {
 			if wake_at > now && raw.control != RunControl::Cancelled {
 				continue;
 			}
-			let target = if raw.control == RunControl::Cancelled {
-				FailureTarget::Cancelled
-			} else {
-				target
-			};
+			// A saved disposition precedes later control changes. Cancellation
+			// stops new execution; it cannot replace an undelivered failure.
 			let metadata: Option<RunMetadata> = aidash_server::database::query_as(
 				&Query::update()
 					.table(a("runs"))
@@ -269,6 +266,23 @@ impl Store {
 			json!({"run_id":m.id,"task_id":m.task_id,"phase":state.phase(),"delivery_error":error}),
 		)
 		.await?;
+		// Failure delivery can itself be the terminal transition.
+		if state.phase().is_terminal() {
+			let reason = match state.phase() {
+				aidash_domain::RunPhase::Completed => "creator_completed",
+				aidash_domain::RunPhase::Failed => "creator_failed",
+				aidash_domain::RunPhase::Cancelled => "creator_cancelled",
+				_ => unreachable!("terminal Run phase"),
+			};
+			self.subnode_control_in(
+				&mut tx,
+				m.id,
+				aidash_domain::RunControlAction::Cancel,
+				aidash_domain::ControlSource::System,
+				Some(reason),
+			)
+			.await?;
+		}
 		// The failed worker's lease expired; its attempt cannot be finished by it.
 		let closed = if state.phase().is_terminal() {
 			crate::apps::execution::repositories::inference::close_pending(

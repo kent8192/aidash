@@ -291,10 +291,14 @@ async fn prepare(
 		suffix: instructions[suffix_start..].to_owned(),
 		state,
 	});
+	let documents: Vec<aidash_domain::registry::ReferenceDocument> =
+		serde_json::from_value(draft.documents.clone())?;
+	let visible = aidash_domain::registry::knowledge::visible_documents(&documents)?;
 	let mut request = ModelRequest {
+ provider_tools: vec![],
 		content_parts: Vec::new(),
 		instructions,
-		context: json!({"test_message":input.message,"private_references":draft.documents,"test_mode":input.mode,"profile_id":input.profile_id}).into(),
+		context: json!({"test_message":input.message,"private_references":visible,"test_mode":input.mode,"profile_id":input.profile_id}).into(),
 		tools: tool_specs,
 		max_output_tokens: (limits.max_output_tokens as u32).min(model_config.output_token_limit()),
 		response_format: None,
@@ -319,7 +323,7 @@ async fn prepare(
 		));
 	}
 	let context_window = model_config.context_window;
-	let model_provider = admission.models.provider(model_config)?;
+	let model_provider = admission.models.provider(&draft.tenant, model_config)?;
 	let fixtures = serde_json::to_value(&input.fixtures)?;
 	if fixtures.to_string().len() > 65_536 {
 		return Err(Error::Invalid("test fixtures exceed 64 KiB".into()));

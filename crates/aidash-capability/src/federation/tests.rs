@@ -31,6 +31,7 @@ fn claims() -> FederationClaims {
 		method: "POST".into(),
 		path: "/scoped/discover?limit=5".into(),
 		body: body_digest(b"{\"query\":\"x\"}"),
+		transition: None,
 	}
 }
 
@@ -277,6 +278,8 @@ async fn the_two_token_types_never_stand_in_for_each_other() {
 	);
 	let capability = crate::mint(
 		&Claims {
+			provider_tools: vec![],
+			data_protection: Default::default(),
 			iss: "worker".into(),
 			aud: "environment".into(),
 			iat: NOW,

@@ -203,7 +203,8 @@ mod controlled_context_composition {
 			"research",
 			"1.0.1",
 		);
-		policy["subjects"][&owner] = json!({"kind":"agent"});
+		policy["subjects"][&owner] =
+			json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 		assert_eq!(
 			request(
 				&app,
@@ -1111,6 +1112,9 @@ fn spec(endpoint: &str) -> IndexSpec {
 			model: "fixture".into(),
 			model_version: "1".into(),
 			dimensions: 3,
+			inputs: [aidash_domain::semantic::EmbeddingInputKind::Text]
+				.into_iter()
+				.collect(),
 		},
 		vector: VectorConfig {
 			provider: "postgres".into(),
@@ -1123,6 +1127,8 @@ fn spec(endpoint: &str) -> IndexSpec {
 		max_results: 10,
 		max_result_tokens: 4096,
 		max_input_bytes: 8192,
+		max_image_bytes: 8 * 1024 * 1024,
+		max_images: 256,
 	}
 }
 async fn configure(
@@ -1363,6 +1369,38 @@ async fn semantic_lifecycle_is_durable_revisioned_and_not_keyword_search(
 			)
 			.await
 			.unwrap()
+	);
+	// The private-network permission is not a hosted-model declaration. A
+	// policy raise must stop Keyless query embeddings from their next send.
+	{
+		use aidash_server::apps::identity::models::TenantDataProtection;
+		use reinhardt::db::orm::Model;
+		let policy = TenantDataProtection::build()
+			.tenant("acme")
+			.level("no_training")
+			.model_call_zdr(true)
+			.plan_connection_exempt(true)
+			.updated_at(chrono::Utc::now())
+			.updated_by("fixture")
+			.finish();
+		f.store
+			.pool
+			.atomic(&TEST_FIXTURE, async |tx| {
+				TenantDataProtection::objects()
+					.insert_with_executor(tx, &policy)
+					.await
+					.map_err(reinhardt::core::exception::Error::from)?;
+				Ok(())
+			})
+			.await
+			.unwrap();
+	}
+	let refused = search(&app, &token, workspace).await;
+	assert_eq!(refused.0, 400, "{}", refused.1);
+	assert!(
+		refused.1.to_string().contains("Tenant Keyless endpoints"),
+		"{}",
+		refused.1
 	);
 	drop(server);
 	dispose(f, &url, &schema).await;

@@ -13,7 +13,7 @@ struct Lease {
 }
 #[fixture]
 fn lease() -> Lease {
-	Lease{snapshot:Snapshot{revision:23,bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{"reader":{"kind":"user"},"delegate":{"kind":"agent"},"revoked":{"kind":"agent","enabled":false}},"policies":[{"id":"read","effect":"allow","subjects":{"any":true},"actions":["workspace.read"],"resources":{"kinds":["workspace"]}}]})).unwrap()},subjects:vec!["reader".into(),"delegate".into()],environment:json!({"transport":"worker","node_id":"aidash://local"}),records:vec![],fail:false}
+	Lease{snapshot:Snapshot{revision:23,bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{"reader":{"kind":"user"},"delegate":{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")},"revoked":{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"enabled":false}},"policies":[{"id":"read","effect":"allow","subjects":{"any":true},"actions":["workspace.read"],"resources":{"kinds":["workspace"]}}]})).unwrap()},subjects:vec!["reader".into(),"delegate".into()],environment:json!({"transport":"worker","node_id":"aidash://local"}),records:vec![],fail:false}
 }
 #[async_trait]
 impl AuthorizationLease for Lease {

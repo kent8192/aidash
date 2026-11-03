@@ -136,11 +136,15 @@ pub(crate) async fn call(
 	path: &str,
 	body: Option<&Value>,
 ) -> Result<Outcome> {
-	let path = path.split_once('?').map_or(path, |(path, _)| path);
 	let bytes = body
 		.map(serde_json::to_vec)
 		.transpose()?
 		.unwrap_or_default();
+	let request = RequestDigest {
+		method,
+		path,
+		body: &bytes,
+	};
 	let admitted = match accept(
 		Inbound {
 			receiver: route.target.clone(),
@@ -148,11 +152,7 @@ pub(crate) async fn call(
 			subject: route.subject.clone().unwrap_or_default(),
 			proof: Proof::InProcess,
 		},
-		&RequestDigest {
-			method,
-			path,
-			body: &bytes,
-		},
+		&request,
 		f,
 	)
 	.await
@@ -170,7 +170,8 @@ pub(crate) async fn call(
 			Err(error) => return Ok(error.into()),
 		}
 	};
-	Ok(dispatch(f, admitted, method, path, body).await)
+	let dispatch_path = path.split_once('?').map_or(path, |(path, _)| path);
+	Ok(dispatch(f, admitted, method, dispatch_path, body, &request).await)
 }
 
 /// Build a route's future on this function's frame and move it to the heap.
@@ -189,6 +190,7 @@ async fn dispatch(
 	method: &str,
 	path: &str,
 	body: Option<&Value>,
+	request: &RequestDigest<'_>,
 ) -> Outcome {
 	use crate::apps::identity::serializers::{
 		peer::DiscoveryInput, peer_admission, peer_execution::InspectInput, peer_reads,
@@ -216,7 +218,9 @@ async fn dispatch(
 		("POST", ["scoped", "execution", "admissions", id, "control"]) => {
 			let id = id!(id);
 			let input = checked!(body, peer_admission::RemoteExecutionControlInput);
-			respond(boxed(|| identity_peer::admission::control(f, admitted, id, input)).await)
+			respond(
+				boxed(|| identity_peer::admission::control(f, admitted, id, input, request)).await,
+			)
 		}
 		("POST", ["scoped", "execution", "admissions", id, "messages"]) => {
 			let id = id!(id);

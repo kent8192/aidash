@@ -154,7 +154,8 @@ async fn admit_streaming_agent(
 		"research",
 		"1.0.1",
 	);
-	policy["subjects"][subject] = json!({"kind":"agent"});
+	policy["subjects"][subject] =
+		json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 	let (status, body) = request(
 		app,
 		deployment_administrator,

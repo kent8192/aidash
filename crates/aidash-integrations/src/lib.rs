@@ -100,7 +100,12 @@ pub mod research;
 #[cfg(feature = "cloud-adapters")]
 pub mod egress;
 
+pub mod media;
+
 pub mod preview;
 
 #[cfg(feature = "cloud-adapters")]
 pub mod marketplace;
+
+#[cfg(feature = "cloud-adapters")]
+pub mod data_protection;

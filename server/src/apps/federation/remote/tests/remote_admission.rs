@@ -40,7 +40,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		&default_node(&b.store, "acme").await.to_string(),
 		"research",
 		"1.0.0",
-	)] = json!({"kind":"agent"});
+	)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 	assert_eq!(
 		request(
 			&aa,

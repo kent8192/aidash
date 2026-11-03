@@ -47,11 +47,17 @@ impl WorkspaceResourceScope for Reads<'_> {
 		self.access.resource(kind, id, attributes)
 	}
 	async fn owner(&mut self, id: Uuid, lock: bool) -> Result<Option<String>> {
-		let result: NativeResult<Option<String>> = async {
-			let query = if !lock {
-				Query::select()
+		let result: NativeResult<Option<String>> =
+			async {
+				let query =
+					if !lock {
+						Query::select()
 					.column(Alias::new("owner_subject"))
 					.from(Alias::new("authorization_workspaces"))
+					.and_where(crate::apps::identity::repositories::nodes::live_workspace_condition(
+						Expr::col((Alias::new("authorization_workspaces"), Alias::new("workspace_id"))).into(),
+						Expr::col((Alias::new("authorization_workspaces"), Alias::new("tenant"))).into(),
+					))
 					.and_where(
 						Condition::all()
 							.add(
@@ -66,10 +72,14 @@ impl WorkspaceResourceScope for Reads<'_> {
 							),
 					)
 					.to_string(PostgresQueryBuilder)
-			} else {
-				Query::select()
+					} else {
+						Query::select()
 					.column(Alias::new("owner_subject"))
 					.from(Alias::new("authorization_workspaces"))
+					.and_where(crate::apps::identity::repositories::nodes::live_workspace_condition(
+						Expr::col((Alias::new("authorization_workspaces"), Alias::new("workspace_id"))).into(),
+						Expr::col((Alias::new("authorization_workspaces"), Alias::new("tenant"))).into(),
+					))
 					.and_where(
 						Condition::all()
 							.add(
@@ -85,15 +95,15 @@ impl WorkspaceResourceScope for Reads<'_> {
 					)
 					.lock(LockType::Share)
 					.to_string(PostgresQueryBuilder)
-			};
-			let owner: Option<String> = crate::database::native::query_scalar(&query)
-				.bind(id)
-				.bind(&self.access.identity.tenant)
-				.scalar_optional(&mut **self.access.tx)
-				.await?;
-			Ok(owner)
-		}
-		.await;
+					};
+				let owner: Option<String> = crate::database::native::query_scalar(&query)
+					.bind(id)
+					.bind(&self.access.identity.tenant)
+					.scalar_optional(&mut **self.access.tx)
+					.await?;
+				Ok(owner)
+			}
+			.await;
 		result.map_err(Into::into)
 	}
 }
@@ -101,13 +111,18 @@ impl WorkspaceResourceScope for Reads<'_> {
 impl WorkspaceAuthorityScope for Reads<'_> {
 	async fn locked_owner(&mut self, id: Uuid) -> Result<Option<String>> {
 		let result: NativeResult<Option<String>> = async {
-			let owner: Option<String> = {
-				let query_bind_1 = id;
-				let query_bind_2 = &self.access.identity.tenant;
-				crate::database::native::query_scalar(
+			let owner: Option<String> =
+				{
+					let query_bind_1 = id;
+					let query_bind_2 = &self.access.identity.tenant;
+					crate::database::native::query_scalar(
 					&Query::select()
 						.column(Alias::new("owner_subject"))
 						.from(Alias::new("authorization_workspaces"))
+					.and_where(crate::apps::identity::repositories::nodes::live_workspace_condition(
+						Expr::col((Alias::new("authorization_workspaces"), Alias::new("workspace_id"))).into(),
+						Expr::col((Alias::new("authorization_workspaces"), Alias::new("tenant"))).into(),
+					))
 						.and_where(
 							Condition::all()
 								.add(
@@ -134,7 +149,7 @@ impl WorkspaceAuthorityScope for Reads<'_> {
 				)
 				.scalar_optional(&mut **self.access.tx)
 				.await?
-			};
+				};
 			Ok(owner)
 		}
 		.await;
@@ -145,13 +160,18 @@ impl WorkspaceAuthorityScope for Reads<'_> {
 	}
 	async fn all_owners(&mut self) -> Result<Vec<(Uuid, String)>> {
 		let result: NativeResult<Vec<(Uuid, String)>> = async {
-			let rows: Vec<(Uuid, String)> = {
-				let query_bind_1 = &self.access.identity.tenant;
-				crate::database::native::query_as(
+			let rows: Vec<(Uuid, String)> =
+				{
+					let query_bind_1 = &self.access.identity.tenant;
+					crate::database::native::query_as(
 					&Query::select()
 						.column(Alias::new("workspace_id"))
 						.column(Alias::new("owner_subject"))
 						.from(Alias::new("authorization_workspaces"))
+					.and_where(crate::apps::identity::repositories::nodes::live_workspace_condition(
+						Expr::col((Alias::new("authorization_workspaces"), Alias::new("workspace_id"))).into(),
+						Expr::col((Alias::new("authorization_workspaces"), Alias::new("tenant"))).into(),
+					))
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("tenant"))).eq(
 								SimpleExpr::CustomWithExpr(
@@ -167,7 +187,7 @@ impl WorkspaceAuthorityScope for Reads<'_> {
 				.columns(&["workspace_id", "owner_subject"])
 				.fetch_all(&mut **self.access.tx)
 				.await?
-			};
+				};
 			Ok(rows)
 		}
 		.await;
@@ -179,6 +199,17 @@ impl WorkspaceAuthorityScope for Reads<'_> {
 			query
 				.columns([Alias::new("workspace_id"), Alias::new("owner_subject")])
 				.from(Alias::new("authorization_workspaces"))
+				.and_where(
+					crate::apps::identity::repositories::nodes::live_workspace_condition(
+						Expr::col((
+							Alias::new("authorization_workspaces"),
+							Alias::new("workspace_id"),
+						))
+						.into(),
+						Expr::col((Alias::new("authorization_workspaces"), Alias::new("tenant")))
+							.into(),
+					),
+				)
 				.and_where(
 					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("tenant")))
 						.eq(Expr::cust("$1")),

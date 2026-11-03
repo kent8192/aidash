@@ -112,6 +112,7 @@ export function CreatorTools({
 }
 export function TrustTools({
   deploymentAdministrator,
+  offering,
   invitations,
   tenant,
   subject,
@@ -119,6 +120,7 @@ export function TrustTools({
   evidenceOpen = false,
 }: {
   deploymentAdministrator: boolean;
+  offering?: State["offering"];
   /** Whether this Deployment issues Invitations. */
   invitations: boolean;
   /** The selected Mapping's Tenant, whose Tenant Administrators manage it here. */
@@ -147,7 +149,7 @@ export function TrustTools({
         {deploymentAdministrator ? (
           <Suspense fallback={loading}>
             <DashboardIdentityAdministration />
-            <AuthorizationPage invitations={invitations} />
+            <AuthorizationPage invitations={invitations} offering={offering} />
           </Suspense>
         ) : tenant ? (
           <Suspense fallback={loading}>

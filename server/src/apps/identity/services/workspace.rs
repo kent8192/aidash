@@ -56,6 +56,9 @@ impl Access {
 	}
 
 	pub(crate) async fn require_workspace(&mut self, id: Uuid, action: &str) -> Result<()> {
+		if super::access::subnode_workspace_write(action) {
+			self.ensure_subnode_writable(id).await?;
+		}
 		aidash_application::authorization::workspaces::require(
 			&mut crate::bootstrap::run_visibility_scope(self),
 			id,
@@ -340,6 +343,7 @@ impl Workspaces {
 		)
 		.await
 		.map(|state| StateResponse {
+			offering: crate::bootstrap::build::offering().as_str().to_owned(),
 			access: crate::api_schema::AccessProfile::Subject {
 				tenant: self.identity.tenant.clone(),
 				subject: self.identity.subject.clone(),

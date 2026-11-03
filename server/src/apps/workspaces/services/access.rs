@@ -16,6 +16,9 @@ use uuid::Uuid;
 pub(crate) struct Lease(Box<Access>);
 
 impl Lease {
+	pub(crate) fn from_access(access: Access) -> Self {
+		Self(Box::new(access))
+	}
 	pub async fn begin(store: &Store, actor: Actor, workspace: Uuid, action: &str) -> Result<Self> {
 		Self::begin_with_workspace_read(store, actor, workspace, action, true).await
 	}
@@ -133,6 +136,9 @@ impl Lease {
 	}
 }
 impl NativeLease {
+	pub(crate) fn access_mut(&mut self) -> &mut Access {
+		&mut self.0
+	}
 	pub(crate) fn tx(&mut self) -> &mut dyn TransactionExecutor {
 		self.0.tx.as_mut()
 	}

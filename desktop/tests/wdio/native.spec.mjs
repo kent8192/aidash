@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { browser, $ } from "@wdio/globals";
+import { Key } from "webdriverio";
 
 const origins = JSON.parse(process.env.AIDASH_E2E_ORIGINS);
 const phase = process.env.AIDASH_E2E_PHASE;
@@ -46,7 +47,18 @@ async function add(name, origin) {
   await select("Manage connections");
   await textContains("Connect to Aidash");
   await $("main form input:not([type=url])").setValue(name);
-  await $("main form input[type=url]").setValue(origin);
+  const url = await $("main form input[type=url]");
+  if (process.platform === "win32") {
+    // WebView2's clear command can leave React's controlled value in place.
+    // Keyboard editing delivers the same input events as replacing a saved URL.
+    await url.click();
+    await browser.keys([Key.Control, "a"]);
+    await browser.keys(Key.Backspace);
+    await url.addValue(origin);
+  } else {
+    await url.setValue(origin);
+  }
+  assert.equal(await url.getValue(), origin);
   await button("Save and connect");
 }
 async function authorize() {

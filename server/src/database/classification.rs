@@ -161,6 +161,8 @@ pub const TABLES: &[Table] = &[
 	table("execution", "decision_evidence", TenantOwned),
 	table("execution", "decision_outcomes", TenantOwned),
 	table("execution", "decision_states", TenantOwned),
+	// One immutable trusted runner pin per Deployment; configuration, not Tenant data or audit.
+	table("execution", "runner_allocation_journals", DeploymentWide),
 	// per-model token statistics without Tenant content
 	table("execution", "estimate_calibration_samples", DeploymentWide),
 	table("execution", "events", TenantOwned),
@@ -173,6 +175,12 @@ pub const TABLES: &[Table] = &[
 	table("execution", "generation_remote_dispatches", TenantOwned),
 	table("execution", "generation_remote_finalizations", TenantOwned),
 	table("execution", "generation_remote_intents", TenantOwned),
+	table("execution", "node_cancellation_jobs", TenantOwned),
+	table(
+		"identity",
+		"authorization_remote_terminal_receipts",
+		TenantOwned,
+	),
 	table("execution", "generation_remote_usage", TenantOwned),
 	table("execution", "generation_requests", TenantOwned),
 	table("execution", "generation_summary_usage", TenantOwned),
@@ -201,6 +209,10 @@ pub const TABLES: &[Table] = &[
 	audit("execution", "run_safety_stops"),
 	table("execution", "run_task_snapshots", TenantOwned),
 	table("execution", "runs", TenantOwned),
+	table("execution", "subnodes", TenantOwned),
+	table("execution", "subnode_members", TenantOwned),
+	table("execution", "subnode_operation_receipts", TenantOwned),
+	table("execution", "subnode_limits", TenantOwned),
 	table("execution", "url_intents", TenantOwned),
 	// federation
 	// cross-node transaction plumbing
@@ -227,9 +239,11 @@ pub const TABLES: &[Table] = &[
 	table("federation", "authorization_remote_grants", TenantOwned),
 	table("federation", "delegations", TenantOwned),
 	// Node Registrations and their revisions: the receiving Node's Tenant
-	// decides whom its Node accepts (#241)
+	// decides whom its Node accepts (#241). Receiver-local keysets share that
+	// same Tenant RLS boundary; key learning creates no Deployment-wide trust.
 	table("federation", "node_registration_history", TenantOwned),
 	table("federation", "node_registrations", TenantOwned),
+	table("federation", "deployment_key_rollovers", DeploymentWide),
 	table("federation", "remote_run_message_fences", TenantOwned),
 	// identity
 	table("identity", "authorization_bundles", TenantOwned),
@@ -292,6 +306,8 @@ pub const TABLES: &[Table] = &[
 	// any scope opens (#241)
 	table("identity", "node_names", DeploymentWide),
 	table("identity", "nodes", TenantOwned),
+	// Deletion history outlives Node data and is expired by the audit sweep.
+	audit("identity", "node_deletions"),
 	// a person's own Approval Mode and Approval Rules (ADR 0076)
 	table("identity", "identity_approval_preferences", TenantOwned),
 	table("identity", "identity_approval_rules", TenantOwned),
@@ -319,6 +335,9 @@ pub const TABLES: &[Table] = &[
 	table("identity", "tenant_invitations", TenantOwned),
 	audit("identity", "tenant_retention_rule_history"),
 	table("identity", "tenant_retention_rules", TenantOwned),
+	table("identity", "tenant_data_protection", TenantOwned),
+	// policy revisions outlive the purge for the audit retention period (ADR 0061)
+	audit("identity", "tenant_data_protection_history"),
 	// Tenant Secret metadata (ADR 0051); the values are in the Secret Store
 	table("identity", "tenant_secrets", TenantOwned),
 	table("identity", "oauth_clients", TenantOwned),
@@ -358,6 +377,8 @@ pub const TABLES: &[Table] = &[
 	table("knowledge", "memory_units", TenantOwned),
 	table("knowledge", "semantic_collections", TenantOwned),
 	table("knowledge", "semantic_entries", TenantOwned),
+	table("knowledge", "semantic_image_ledgers", TenantOwned),
+	table("knowledge", "semantic_image_publications", TenantOwned),
 	table("knowledge", "semantic_history", TenantOwned),
 	table("knowledge", "semantic_indexes", TenantOwned),
 	table("knowledge", "semantic_points", TenantOwned),
@@ -385,6 +406,7 @@ pub const TABLES: &[Table] = &[
 	table("registry", "agent_incident_events", TenantOwned),
 	table("registry", "agent_incidents", TenantOwned),
 	table("registry", "agent_knowledge", TenantOwned),
+	table("registry", "agent_knowledge_images", TenantOwned),
 	table("registry", "agent_plugin_copies", TenantOwned),
 	table("registry", "marketplace_plugin_recalls", DeploymentWide),
 	table("registry", "agent_test_limits", TenantOwned),
@@ -413,3 +435,5 @@ pub const TABLES: &[Table] = &[
 
 #[cfg(test)]
 mod tests;
+
+pub mod node;

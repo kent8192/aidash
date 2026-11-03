@@ -47,6 +47,7 @@ pub async fn configure(
 		let entry = scope.reconfigure(id, current.revision).await?;
 		scope.schedule(&entry, &collection).await?;
 	}
+	scope.rebuild_images(workspace, spec.max_images).await?;
 	scope.history(workspace, current.revision).await?;
 	scope.commit().await?;
 	Ok(current)
@@ -60,6 +61,14 @@ pub async fn get_index(scope: &mut dyn SemanticEntriesSession, workspace: Uuid) 
 /// Public writes reserve the managed memory namespace before acquiring source authority.
 pub fn validate_public_put(input: &Put) -> Result<()> {
 	input.validate()?;
+	if matches!(
+		input.source,
+		aidash_domain::semantic::Source::WorkingImage { .. }
+	) {
+		return Err(Error::Invalid(
+			"Working Area images are indexed through File publication".into(),
+		));
+	}
 	if input.key.starts_with("agent-memory:")
 		|| input.key.starts_with("memory-unit:")
 		|| matches!(input.source, aidash_domain::semantic::Source::Unit { .. })
@@ -166,13 +175,19 @@ pub async fn entries(
 	scope.index(workspace, false).await?;
 	let mut visible = vec![];
 	for entry in scope.list(workspace).await? {
-		if scope.permits(&entry, "semantic.read").await?
-			&& (entry.deleted
-				|| scope
-					.source(workspace, &serde_json::from_value(entry.source.clone())?)
-					.await?
-					.is_some())
-		{
+		if !scope.permits(&entry, "semantic.read").await? {
+			continue;
+		}
+		let source = serde_json::from_value(entry.source.clone())?;
+		let source_visible =
+			if matches!(source, aidash_domain::semantic::Source::WorkingImage { .. }) {
+				scope.image_visible(workspace, &source).await?
+			} else if entry.deleted {
+				true
+			} else {
+				scope.source(workspace, &source).await?.is_some()
+			};
+		if source_visible {
 			visible.push(entry);
 		}
 	}
@@ -209,6 +224,14 @@ pub async fn change(
 	}
 	if !scope.permits(&entry, action).await? || !scope.permits(&entry, "semantic.read").await? {
 		return Err(Error::Forbidden);
+	}
+	if matches!(
+		serde_json::from_value::<aidash_domain::semantic::Source>(entry.source.clone())?,
+		aidash_domain::semantic::Source::WorkingImage { .. }
+	) {
+		return Err(Error::Invalid(
+			"Working Area images are managed through File publication".into(),
+		));
 	}
 	if !delete
 		&& !entry.deleted
@@ -269,6 +292,12 @@ pub async fn history(
 			if let Some(id) = row.entry_id {
 				let entry = scope.history_entry(id).await?;
 				if !scope.permits(&entry, "semantic.read").await? {
+					continue;
+				}
+				let source = serde_json::from_value(entry.source.clone())?;
+				if matches!(source, aidash_domain::semantic::Source::WorkingImage { .. })
+					&& !scope.image_visible(workspace, &source).await?
+				{
 					continue;
 				}
 			}

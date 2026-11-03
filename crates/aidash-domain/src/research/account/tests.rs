@@ -33,7 +33,10 @@ fn at(value: &str) -> DateTime<Utc> {
 fn complete_terms_are_required_whatever_the_date(mut terms: AccountTerms) {
 	assert!(terms.validate(SEARCH).is_ok());
 	terms.query_training_prohibited = false;
-	assert!(terms.validate(SEARCH).is_err());
+	assert!(
+		terms.validate(SEARCH).is_ok(),
+		"training is governed by the Tenant Data Protection Level"
+	);
 	terms.query_training_prohibited = true;
 	terms.monthly_base_fee_micro_usd = 20_000_000;
 	assert!(terms.validate(SEARCH).is_err());
@@ -61,6 +64,13 @@ fn a_terminated_account_admits_nothing_from_its_end(mut terms: AccountTerms) {
 
 #[rstest]
 fn terms_without_an_end_still_parse_and_have_no_termination(terms: AccountTerms) {
+	assert!(!terms.request_retention_prohibited);
+	assert!(
+		serde_json::to_value(&terms)
+			.unwrap()
+			.get("request_retention_prohibited")
+			.is_none()
+	);
 	assert_eq!(terms.terminated_at, None);
 	assert_eq!(terms.termination(), None);
 	assert!(

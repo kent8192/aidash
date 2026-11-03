@@ -747,10 +747,10 @@ class GuardV2IdentityTest(unittest.TestCase):
         request = {'protocol': 'aidash-runner/2', 'container_id': 'b' * 64, 'pod_uid': pod_uid,
                    'pod_name': 'scratch-' + digest, 'container_name': 'helpers',
                    'area_id': str(uuid.UUID(hex=digest[:32])), 'epoch': 1, 'image': 'image@sha256:' + 'c' * 64}
-        info = {'Runtime': {'Name': 'io.containerd.runsc.v1'}, 'Labels': {
+        info = {'ID': request['container_id'], 'Runtime': {'Name': 'io.containerd.runsc.v1'}, 'Labels': {
             'io.kubernetes.pod.namespace': node_guard.NAMESPACE, 'io.kubernetes.pod.uid': pod_uid,
             'io.kubernetes.container.name': 'helpers', 'io.kubernetes.pod.name': request['pod_name']}}
-        state = {'annotations': {'io.kubernetes.cri.image-name': request['image']}}
+        state = {'id': request['container_id'], 'annotations': {'io.kubernetes.cri.image-name': request['image']}}
         with patch.object(node_guard, 'command', side_effect=[json.dumps(info).encode(), json.dumps(state).encode()]):
             self.assertEqual(node_guard.validate(request)[1], pod_uid)
         info['Labels']['io.kubernetes.pod.name'] = 'scratch-' + 'd' * 48

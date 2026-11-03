@@ -5,6 +5,22 @@ use crate::{
 };
 use http::{HeaderMap, Method};
 
+/// The actual authenticated HTTP request binding, including its original query.
+/// Both admission and the later effect owner read the same request bytes.
+pub(crate) fn peer_request(
+	request: &reinhardt::Request,
+) -> Option<aidash_application::federation::inbound::RequestDigest<'_>> {
+	Some(aidash_application::federation::inbound::RequestDigest {
+		method: request.method.as_str(),
+		path: request
+			.uri
+			.path_and_query()?
+			.as_str()
+			.strip_prefix("/federation/v0.1")?,
+		body: request.body(),
+	})
+}
+
 /// The verified Federation caller of a request, set by the peer boundary and
 /// injected into the routes that serve other Nodes.
 #[derive(Clone)]
@@ -56,6 +72,13 @@ pub(crate) fn browser_deployment_administrator_allowed(method: &Method, path: &s
 			segments.as_slice(),
 			["", "tenants", _, "invitations"] | ["", "tenants", _, "invitations", _, "revoke"]
 		) {
+		return true;
+	}
+	// Deployment Administrators purge a deleted Node before its grace period
+	// ends (ADR 0083); every other Node change is Tenant administration.
+	if *method == Method::POST
+		&& matches!(segments.as_slice(), ["", "tenants", _, "nodes", _, "purge"])
+	{
 		return true;
 	}
 	path.starts_with("/dashboard/") || path.starts_with("/authorization/")

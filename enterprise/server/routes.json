@@ -25,6 +25,11 @@
     "offerings": ["cloud"]
   },
   {
+    "method": "GET",
+    "path": "/api/billing/accounts/{account}/usage",
+    "offerings": ["cloud"]
+  },
+  {
     "method": "POST",
     "path": "/api/billing/accounts/{account}/tier",
     "offerings": ["cloud"]

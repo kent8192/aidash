@@ -637,6 +637,47 @@ pub fn catalog(
 	Ok(result)
 }
 
+/// Add trusted intrinsic coordination specifications to a Run's catalog.
+/// Callers establish membership and tool identity before supplying these specs.
+pub fn include_subnode_intrinsics(
+	snapshot: &BindingSnapshot,
+	catalog: &mut Vec<Capability>,
+	intrinsic: &BTreeMap<String, ToolSpec>,
+) -> Result<()> {
+	for (name, spec) in intrinsic {
+		if !crate::subnodes::COORDINATION_TOOLS.contains(&name.as_str()) {
+			return Err(Error::Invalid(format!(
+				"not a Subnode coordination tool: {name}"
+			)));
+		}
+		if let Some(item) = catalog.iter_mut().find(|item| item.alias == *name) {
+			item.mandatory = true;
+			continue;
+		}
+		let detail = serde_json::to_value(spec)?;
+		catalog.push(Capability {
+			alias: name.clone(),
+			kind: CapabilityKind::Tool,
+			identity: CapabilityIdentity::Registry(QualifiedRef::builtin(
+				&snapshot.agent.registry_deployment,
+				name,
+			)),
+			digest: rules::digest(&detail),
+			name: name.clone(),
+			description: spec.description.clone(),
+			bundle: None,
+			companions: vec![],
+			companion_bytes: vec![],
+			definition_bytes: tool_bytes(spec)?,
+			detail,
+			mandatory: true,
+			eager: false,
+		});
+	}
+	catalog.sort_by(|a, b| a.alias.cmp(&b.alias));
+	Ok(())
+}
+
 /// The resident instruction block of a Skill whose body is in the request.
 pub fn resident_block(capability: &Capability, body: &str) -> String {
 	format!(

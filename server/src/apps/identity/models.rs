@@ -1,5 +1,6 @@
 //! Persistent records owned by the authorization app.
 mod authority;
+pub(in crate::apps::identity) use authority::authority_control;
 mod read_dependencies;
 
 mod authorization_bundles;
@@ -66,6 +67,8 @@ mod tenant_deletions;
 pub use tenant_deletions::TenantDeletion;
 mod tenants;
 pub use tenants::Tenant;
+mod node_deletions;
+pub use node_deletions::NodeDeletion;
 mod nodes;
 pub use nodes::{Node, NodeNameRoot};
 
@@ -105,6 +108,10 @@ pub mod secret_store;
 
 pub mod tenant_secrets;
 
+mod authorization_remote_terminal_receipts;
+pub use authorization_remote_terminal_receipts::AuthorizationRemoteTerminalReceipt;
+mod tenant_data_protection;
+pub use tenant_data_protection::{TenantDataProtection, TenantDataProtectionHistory};
 pub mod oauth_clients;
 
 pub mod oauth_connections;

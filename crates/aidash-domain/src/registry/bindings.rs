@@ -29,6 +29,7 @@ pub const REQUIRED_TOOLS: &[&str] = &["workspace_read", "human_request"];
 pub const DEFAULT_TOOLS: &[&str] = &[
 	"connection_request",
 	"workspace_observe",
+	"workspace_search",
 	"workspace_wait",
 	"skill_list",
 	"skill_load",
@@ -40,6 +41,7 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 	"agent_discover",
 	"artifact_publish",
 	"workspace_message",
+	"attachment_copy",
 	"memory_mutate",
 	"memory_recall",
 	"memory_reflect",
@@ -85,6 +87,9 @@ pub fn definition_references(
 			let config: AgentBindings = serde_json::from_value(entry.config.clone())?;
 			config.validate()?;
 			result.push((local(&config.model), "model".into()));
+			if let Some(embedding) = &config.reference_embedding {
+				result.push((local(embedding), "embedding".into()));
+			}
 			if let Some(summary) = config.context_summary() {
 				result.push((local(&summary.model), "model".into()));
 			}
@@ -199,6 +204,9 @@ pub fn reference_kind_matches(expected: &str, actual: &str) -> bool {
 pub struct AgentBindings {
 	pub schema_version: u8,
 	pub model: EntityRef,
+	/// Exact immutable embedding definition for private reference images.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reference_embedding: Option<EntityRef>,
 	#[serde(default)]
 	pub instructions: String,
 	#[serde(default)]
@@ -401,7 +409,31 @@ impl AgentBindings {
 		node: &str,
 		compaction_override: Option<&QualifiedRef>,
 	) -> Result<Vec<NormalizedBinding>> {
+		self.normalize_mode(node, compaction_override, 0)
+	}
+	fn normalize_version(
+		&self,
+		node: &str,
+		compaction_override: Option<&QualifiedRef>,
+		legacy: bool,
+	) -> Result<Vec<NormalizedBinding>> {
+		self.normalize_mode(node, compaction_override, if legacy { 1 } else { 0 })
+	}
+	fn normalize_mode(
+		&self,
+		node: &str,
+		compaction_override: Option<&QualifiedRef>,
+		mode: u8,
+	) -> Result<Vec<NormalizedBinding>> {
 		self.validate()?;
+		if mode != 0
+			&& self.remove_default.iter().any(|name| {
+				(mode == 1 && matches!(name.as_str(), "attachment_copy" | "workspace_search"))
+					|| (mode == 2 && name == "workspace_search")
+					|| (mode == 3 && name == "attachment_copy")
+			}) {
+			return Err(Error::Invalid("unknown historical default".into()));
+		}
 		crate::nodes::DeploymentId::parse(node)?;
 		let mut result = Vec::new();
 		let has_skills = self.bindings.iter().any(|b| b.kind == BindingKind::Skill);
@@ -409,11 +441,30 @@ impl AgentBindings {
 		let required_tools = policy.required_tools();
 		let support = policy.skill_support_tools();
 		for operation in required_tools.iter().chain(&policy.default_tools()) {
+			if (mode == 1 && matches!(*operation, "workspace_search" | "attachment_copy"))
+				|| (mode == 2 && *operation == "workspace_search")
+				|| (mode == 3 && *operation == "attachment_copy")
+			{
+				continue;
+			}
 			let required = required_tools.contains(operation);
 			if !required && self.remove_default.iter().any(|name| name == operation) {
 				continue;
 			}
-			let target = QualifiedRef::builtin(node, operation);
+			let mut target = QualifiedRef::builtin(node, operation);
+			if mode == 1 || (mode == 3 && *operation != "workspace_read") {
+				target.version = "1.0.0".into();
+			} else if mode == 2 && *operation == "workspace_read" {
+				target.version = "1.0.1".into();
+			} else if (mode == 0 || mode == 3)
+				&& *operation == "workspace_read"
+				&& let Some(binding) = self.bindings.iter().find(|b| {
+					b.target.id == target.id
+						&& b.target.registry_deployment == node
+						&& matches!(b.target.version.as_str(), "1.0.0" | "1.0.1" | "1.1.0")
+				}) {
+				target = binding.target.clone();
+			}
 			let explicit = self
 				.bindings
 				.iter()
@@ -504,11 +555,22 @@ impl Entry {
 			.binding_normalization
 			.as_ref()
 			.and_then(|saved| saved.compaction_override.as_ref());
-		let expected = config.normalize_with_compaction(node, replacement)?;
 		if let Some(saved) = &self.binding_normalization {
-			if saved.schema_version != BINDING_SCHEMA
-				|| saved.registry_deployment != node
-				|| saved.bindings != expected
+			if saved.schema_version != BINDING_SCHEMA || saved.registry_deployment != node {
+				return Err(Error::Invalid(
+					"Agent normalization differs from its immutable definition".into(),
+				));
+			}
+			let current = config.normalize_with_compaction(node, replacement);
+			let legacy = config.normalize_version(node, replacement, true);
+			if !current.is_ok_and(|expected| saved.bindings == expected)
+				&& !legacy.is_ok_and(|expected| saved.bindings == expected)
+				&& !config
+					.normalize_mode(node, replacement, 2)
+					.is_ok_and(|expected| saved.bindings == expected)
+				&& !config
+					.normalize_mode(node, replacement, 3)
+					.is_ok_and(|expected| saved.bindings == expected)
 			{
 				return Err(Error::Invalid(
 					"Agent normalization differs from its immutable definition".into(),
@@ -516,8 +578,34 @@ impl Entry {
 			}
 			return Ok(saved.bindings.clone());
 		}
-		Ok(expected)
+		config.normalize_with_compaction(node, replacement)
 	}
+
+	/// Whether this Agent version pins the builtin Tool that can select Thread Attachments.
+	/// This describes its Tools, not its model modalities, routes, or Run authority.
+	pub fn supports_thread_attachment_selection(&self, node: &str) -> Result<bool> {
+		if self.kind != "agent" {
+			return Err(Error::Invalid("expected Agent definition".into()));
+		}
+		Ok(self.normalized_bindings(node)?.iter().any(|item| {
+			item.binding.kind == BindingKind::Tool
+				&& attachment_selection_tool(&item.binding.target, &item.binding.narrow, node)
+		}))
+	}
+}
+
+fn attachment_selection_tool(identity: &QualifiedRef, narrow: &Narrowing, node: &str) -> bool {
+	identity.registry_deployment == node
+		&& identity.id == "aidash.workspace_read"
+		&& matches!(identity.version.as_str(), "1.0.1" | "1.1.0")
+		&& [("kind", "attachment"), ("representation", "model_input")]
+			.iter()
+			.all(|(key, value)| {
+				narrow
+					.scope
+					.get(*key)
+					.is_none_or(|values| values.contains(*value))
+			})
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
@@ -559,7 +647,14 @@ impl QualifiedRef {
 		Self {
 			registry_deployment: node.into(),
 			id: format!("aidash.{operation}"),
-			version: "1.0.0".into(),
+			version: if operation == "workspace_read" {
+				"1.1.0"
+			} else if matches!(operation, "workspace_observe" | "workspace_message") {
+				"1.0.1"
+			} else {
+				"1.0.0"
+			}
+			.into(),
 		}
 	}
 	pub fn resource_id(&self) -> String {
@@ -575,6 +670,9 @@ impl QualifiedRef {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Narrowing {
+	/// Provider-owned tools take immutable Binding parameters, never model arguments.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub provider_tool: Option<crate::tool::provider_tools::Parameters>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub decision: Option<crate::decision::Restrictions>,
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -608,6 +706,14 @@ impl Narrowing {
 				.or_insert(*ceiling);
 		}
 		let result = Self {
+			provider_tool: match (&self.provider_tool, &other.provider_tool) {
+				(Some(a), Some(b)) if a != b => {
+					return Err(Error::Invalid(
+						"conflicting pinned Provider tool parameters".into(),
+					));
+				}
+				(a, b) => a.clone().or_else(|| b.clone()),
+			},
 			decision: match (&self.decision, &other.decision) {
 				(Some(a), Some(b)) => Some(crate::decision::Restrictions {
 					threshold: if a.threshold.value() <= b.threshold.value() {
@@ -736,6 +842,13 @@ impl Binding {
 	}
 	pub fn validate(&self) -> Result<()> {
 		self.target.validate()?;
+		if self.narrow.provider_tool.is_some()
+			&& !matches!(self.kind, BindingKind::Tool | BindingKind::Bundle)
+		{
+			return Err(Error::Invalid(
+				"Provider tool parameters require a Tool or Bundle Binding".into(),
+			));
+		}
 		if self.kind == BindingKind::Decider {
 			if self.narrow.allowed_hosts.is_some()
 				|| !self.narrow.scope.is_empty()
@@ -883,6 +996,18 @@ pub struct BindingSnapshot {
 }
 
 impl BindingSnapshot {
+	/// Whether the admitted, pinned Tools can select a Thread Attachment for model input.
+	pub fn supports_thread_attachment_selection(&self) -> bool {
+		self.bindings.iter().any(|binding| {
+			binding.excluded_reason.is_none()
+				&& binding.definition.kind == "tool"
+				&& attachment_selection_tool(
+					&binding.identity,
+					&binding.narrow,
+					&self.agent.registry_deployment,
+				)
+		})
+	}
 	/// Whether the Agent's pinned model can be given a page image now (ADR
 	/// 0053): it declares image input and holds a current media route for the
 	/// PNG a viewed page is delivered as.
@@ -1191,6 +1316,21 @@ impl BindingSnapshot {
 				));
 			}
 			if binding.definition.kind == "tool" {
+				if let Some(tool) = binding.definition.config["provider"]
+					.as_str()
+					.and_then(crate::tool::provider_tools::declaration)
+				{
+					tool.validate(binding.narrow.provider_tool.as_ref().ok_or_else(|| {
+						Error::Invalid("Provider tool snapshot lacks pinned parameters".into())
+					})?)?;
+					let model_config: crate::model::ModelConfig =
+						serde_json::from_value(definitions[&model].definition.config.clone())?;
+					tool.eligible(&model_config)?;
+				} else if binding.narrow.provider_tool.is_some() {
+					return Err(Error::Invalid(
+						"Provider tool parameters require a Provider tool".into(),
+					));
+				}
 				if binding.alias.is_none()
 					|| binding
 						.provider_contract_digest
@@ -1242,8 +1382,14 @@ impl BindingSnapshot {
 		for operation in policy.required_tools() {
 			let identity = QualifiedRef::builtin(&self.agent.registry_deployment, operation);
 			if !self.bindings.iter().any(|binding| {
-				binding.identity == identity
-					&& binding.origin == BindingOrigin::Required
+				(binding.identity == identity
+					|| (operation == "workspace_read"
+						&& binding.identity.registry_deployment == identity.registry_deployment
+						&& binding.identity.id == identity.id
+						&& matches!(
+							binding.identity.version.as_str(),
+							"1.0.0" | "1.0.1" | "1.1.0"
+						))) && binding.origin == BindingOrigin::Required
 					&& binding.alias.as_deref() == Some(operation)
 					&& binding.excluded_reason.is_none()
 			}) {

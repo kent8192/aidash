@@ -9,7 +9,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Alert, Loading } from "../components/patterns";
+import { Alert, Loading, Notice } from "../components/patterns";
 import { createPortal } from "react-dom";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -50,6 +50,8 @@ import { senderLabel } from "./model";
 import { threadCopy } from "./thread-copy";
 import {
   mergeMessagePages,
+  attachmentWarningKey,
+  attachmentWarningText,
   submissionFor,
   validAttachments,
   type MessageSubmission,
@@ -315,6 +317,7 @@ function ConversationFeed({
       [target]: update(current[target] ?? emptyDraft),
     }));
   const inFlight = useRef(false);
+  const warnedAttachments = useRef<string | null>(null);
   const [sending, setSending] = useState(false),
     [opening, setOpening] = useState(false),
     [uploading, setUploading] = useState(false),
@@ -324,6 +327,7 @@ function ConversationFeed({
   const citations = fileCitations.citationsFor(target);
   const [error, setError] = useState(""),
     [sent, setSent] = useState(false);
+  const [readabilityNotice, setReadabilityNotice] = useState(false);
   const scroll = useRef<HTMLDivElement>(null),
     latest = useRef<HTMLElement>(null),
     textarea = useRef<HTMLTextAreaElement>(null),
@@ -395,10 +399,12 @@ function ConversationFeed({
     inFlight.current = true;
     setSending(true);
     setError("");
+    setReadabilityNotice(false);
     setQuota("");
     setSent(false);
     try {
       const attachmentIds: string[] = [];
+      const uploadedFiles: ChannelAttachment[] = [];
       for (const entry of draft.files) {
         let uploaded = entry.uploaded;
         if (!uploaded) {
@@ -416,8 +422,15 @@ function ConversationFeed({
           }));
         }
         attachmentIds.push(uploaded.id);
+        uploadedFiles.push(uploaded);
       }
       setUploading(false);
+      const warningKey = attachmentWarningKey(uploadedFiles);
+      if (warningKey && warnedAttachments.current !== warningKey) {
+        warnedAttachments.current = warningKey;
+        setReadabilityNotice(true);
+        return;
+      }
       const submission = submissionFor(
         pending.get(target) ?? null,
         workspace,
@@ -438,6 +451,7 @@ function ConversationFeed({
           : {}),
       });
       updateDraft(() => ({ text: "", files: [] }));
+      warnedAttachments.current = null;
       fileCitations.clear(target);
       pending.delete(target);
       setSent(true);
@@ -488,6 +502,7 @@ function ConversationFeed({
     }
     updateDraft((current) => ({ ...current, files: next }));
     setError("");
+    setReadabilityNotice(false);
     setSent(false);
   }
   function insert(prefix: string, suffix = "") {
@@ -791,6 +806,11 @@ function ConversationFeed({
             </Alert>
           )}
           {error && <Alert className="mx-4 mb-2">{error}</Alert>}
+          {readabilityNotice && (
+            <Notice tone="warning" className="mx-4 mb-2" role="status">
+              {words.attachmentSendAnyway}
+            </Notice>
+          )}
           {(!threadList || thread) && (
             <form
               className="shrink-0 border-t border-border p-3"
@@ -875,30 +895,37 @@ function ConversationFeed({
                 {draft.files.length > 0 && (
                   <ul className="flex flex-wrap gap-1.5 px-2 pb-2">
                     {draft.files.map((entry) => (
-                      <li
-                        key={entry.key}
-                        className="inline-flex h-6 max-w-full items-center gap-1.5 rounded-sm border border-border bg-surface pl-2 text-[11px]"
-                      >
-                        <FileText aria-hidden className="size-3 text-faint" />
-                        <span className="truncate font-mono">
-                          {entry.file.name}
+                      <li key={entry.key} className="max-w-full">
+                        <span className="inline-flex h-6 max-w-full items-center gap-1.5 rounded-sm border border-border bg-surface pl-2 text-[11px]">
+                          <FileText aria-hidden className="size-3 text-faint" />
+                          <span className="truncate font-mono">
+                            {entry.file.name}
+                          </span>
+                          <button
+                            type="button"
+                            className="grid size-6 place-items-center text-faint hover:text-foreground disabled:opacity-50"
+                            disabled={busy}
+                            aria-label={`${words.removeAttachment}: ${entry.file.name}`}
+                            onClick={() =>
+                              updateDraft((current) => ({
+                                ...current,
+                                files: current.files.filter(
+                                  (file) => file.key !== entry.key,
+                                ),
+                              }))
+                            }
+                          >
+                            <X className="size-3" />
+                          </button>
                         </span>
-                        <button
-                          type="button"
-                          className="grid size-6 place-items-center text-faint hover:text-foreground disabled:opacity-50"
-                          disabled={busy}
-                          aria-label={`${words.removeAttachment}: ${entry.file.name}`}
-                          onClick={() =>
-                            updateDraft((current) => ({
-                              ...current,
-                              files: current.files.filter(
-                                (file) => file.key !== entry.key,
-                              ),
-                            }))
-                          }
-                        >
-                          <X className="size-3" />
-                        </button>
+                        {entry.uploaded?.no_assigned_agent_can_read && (
+                          <p className="text-xs text-warning">
+                            {attachmentWarningText(
+                              entry.uploaded.media_type,
+                              words,
+                            )}
+                          </p>
+                        )}
                       </li>
                     ))}
                   </ul>

@@ -453,6 +453,9 @@ impl From<Error> for aidash_application::Error {
 			Error::Context(reason) => Self::Context(reason),
 			Error::DeciderOutage => Self::DeciderOutage,
 			Error::ContextOverflow => Self::ContextOverflow,
+			Error::MediaRouteUnavailable { model, candidates } => {
+				Self::MediaRouteUnavailable { model, candidates }
+			}
 			Error::SemanticUnavailable => Self::SemanticUnavailable,
 			Error::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
 			Error::ConnectionStoreUnavailable => Self::ConnectionStoreUnavailable,

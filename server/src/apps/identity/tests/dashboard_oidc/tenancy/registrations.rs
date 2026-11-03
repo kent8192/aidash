@@ -596,3 +596,761 @@ async fn registering_a_node_of_another_deployment_pins_the_key_it_publishes(
 	assert_eq!(disabled["enabled"], false);
 	d.finish().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn manual_registration_keys_require_record_authority_and_independent_confirmation(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+	#[from(common::native_peer)]
+	#[with("aidash://retained-peer")]
+	peer: common::PeerFuture,
+) {
+	let mut d = Deployment::new(runtime, open_rules()).await;
+	let alice = d.person("key-owner").await;
+	let bob = d.person("key-member").await;
+	let eve = d.person("other-owner").await;
+	let (tenant, context) = d.node_tenant(&alice, "Keys").await;
+	let node = d.default_node(&alice, &context, &tenant).await;
+	let member = d.admit(&tenant, &bob, "member", json!([])).await;
+	let (_, foreign) = d.node_tenant(&eve, "Other keys").await;
+	let (old, old_id) = key(7);
+	let (new, new_id) = key(9);
+	let (endpoint, requests) = serve(identity(&old, &old_id)).await;
+	d.federation
+		.store
+		.keyless
+		.permit_origin_of(&endpoint)
+		.unwrap();
+	let source = "aidash://calm-heron/able-oak-abcd1234";
+	let (status, created) = d.register(&alice, &context, &tenant, &node,
+        json!({"source_node":source,"endpoint":endpoint,"key_id":old_id.as_str(),"atomic_transactions":true,"enabled":true,"expected_revision":0})).await;
+	assert_eq!(status, 200, "{created}");
+	let route = format!("/api/tenants/{tenant}/nodes/{node}/registration-keys");
+	let quarantine = json!({"source_node":source,"expected_keys_revision":1,"expected_authorization_revision":1,"action":"quarantine"});
+	let (status, state) = d
+		.as_person(&alice, "POST", &route, Some(&context), quarantine.clone())
+		.await;
+	assert_eq!(status, 200, "{state}");
+	assert_eq!(state["quarantined"], true);
+	assert_eq!(state["keys_revision"], 2);
+	assert_eq!(state["authorization_revision"], 1);
+	for (person, acting) in [(&bob, &member), (&eve, &foreign)] {
+		let (status, body) = d
+			.as_person(person, "POST", &route, Some(acting), quarantine.clone())
+			.await;
+		assert_eq!(status, 403, "{body}");
+		assert_eq!(
+			d.as_person(
+				person,
+				"GET",
+				&format!("{route}?source_node={source}"),
+				Some(acting),
+				Value::Null
+			)
+			.await
+			.0,
+			403
+		);
+	}
+	let (status, current) = d
+		.as_person(
+			&alice,
+			"GET",
+			&format!("{route}?source_node={source}"),
+			Some(&context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{current}");
+	assert_eq!(current, state);
+
+	let (status, edited) = d
+		.register(
+			&alice,
+			&context,
+			&tenant,
+			&node,
+			json!({"source_node":source,"atomic_transactions":false,"enabled":false,"expected_revision":1}),
+		)
+		.await;
+	assert_eq!(status, 200, "{edited}");
+	let before = requests.load(Ordering::SeqCst);
+	let (status, _) = d.register(&alice, &context, &tenant, &node,
+        json!({"source_node":source,"endpoint":endpoint,"key_id":new_id.as_str(),"atomic_transactions":true,"enabled":true,"expected_revision":2})).await;
+	assert_eq!(
+		status, 409,
+		"generic replacement cannot bypass independent confirmation"
+	);
+	let mut confirm = json!({"source_node":source,"expected_keys_revision":2,"expected_authorization_revision":2,"action":"confirm","public_key_pem":new.public_key_pem(),"expected_key_id":old_id.as_str()});
+	let (status, _) = d
+		.as_person(&alice, "POST", &route, Some(&context), confirm.clone())
+		.await;
+	assert_eq!(status, 400);
+	confirm["expected_key_id"] = json!(new_id.as_str());
+	confirm["expected_authorization_revision"] = json!(1);
+	let (status, _) = d
+		.as_person(&alice, "POST", &route, Some(&context), confirm.clone())
+		.await;
+	assert_eq!(status, 409);
+	confirm["expected_authorization_revision"] = json!(2);
+	let (status, state) = d
+		.as_person(&alice, "POST", &route, Some(&context), confirm.clone())
+		.await;
+	assert_eq!(status, 200, "{state}");
+	assert_eq!(state["key_id"], new_id.as_str());
+	assert_eq!(state["keys_revision"], 3);
+	assert_eq!(state["authorization_revision"], 2);
+	assert_eq!(state["quarantined"], false);
+	assert_eq!(
+		state["enabled"], false,
+		"confirmation does not re-enable a registration"
+	);
+	assert_eq!(
+		requests.load(Ordering::SeqCst),
+		before,
+		"manual confirmation performs no discovery fetch"
+	);
+	let (status, _) = d
+		.as_person(&alice, "POST", &route, Some(&context), confirm)
+		.await;
+	assert_eq!(status, 409, "a stale crypto snapshot cannot write twice");
+	let (_, rows) = d
+		.registrations(&alice, &context, &tenant, &node, "registrations")
+		.await;
+	assert_eq!(rows[0]["revision"], 2);
+	assert_eq!(rows[0]["atomic_transactions"], false);
+	assert_eq!(rows[0]["enabled"], false);
+	assert_eq!(rows[0]["key_id"], new_id.as_str());
+	assert_eq!(rows[0]["updated_at"], edited["updated_at"]);
+	assert_eq!(rows[0]["actor"], edited["actor"]);
+	{
+		// The same-key/same-endpoint path changes real permission state even if
+		// independent confirmation replaces its repeated pin while it waits.
+		let racing_source = "aidash://calm-heron/bold-pine-1234abcd";
+		// A second Tenant Administrator edits permissions: a Deployment
+		// Administrator holds no registration authority (#484, ADR 0102).
+		let racer = d.person("registration-racer").await;
+		let racer_context = d
+			.admit(
+				&tenant,
+				&racer,
+				"registration-racer",
+				json!(["administrators"]),
+			)
+			.await;
+		let (status, initial) = d.register(&alice, &context, &tenant, &node,
+			json!({"source_node":racing_source,"endpoint":endpoint,"key_id":old_id.as_str(),"atomic_transactions":false,"enabled":true,"expected_revision":0})).await;
+		assert_eq!(status, 200, "{initial}");
+		assert_eq!(initial["atomic_transactions"], false);
+		assert_eq!(initial["revision"], 1);
+		let mut blocker = d
+			.federation
+			.store
+			.pool
+			.fixture_driver()
+			.begin()
+			.await
+			.unwrap();
+		let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+			.fetch_one(&mut *blocker)
+			.await
+			.unwrap();
+		sqlx::query(
+			"SELECT 1 FROM node_registrations WHERE tenant=$1 AND node=$2 AND source_node=$3 FOR UPDATE",
+		)
+		.bind(&tenant)
+		.bind(&node)
+		.bind(racing_source)
+		.fetch_one(&mut *blocker)
+		.await
+		.unwrap();
+		let manual = d.as_person(&alice, "POST", &route, Some(&context),
+			json!({"source_node":racing_source,"expected_keys_revision":1,"expected_authorization_revision":1,"action":"confirm","public_key_pem":new.public_key_pem(),"expected_key_id":new_id.as_str()}));
+		tokio::pin!(manual);
+		tokio::select! {
+			result = &mut manual => panic!("manual confirmation did not wait for its row: {result:?}"),
+			() = common::wait_for_blocked(&d.federation.store.pool, pid, 1) => {},
+		}
+		let registration_path = format!("/api/tenants/{tenant}/nodes/{node}/registrations");
+		// A separate authorized actor avoids sharing alice's browser session.
+		let permission = d.as_person(&racer, "POST", &registration_path, Some(&racer_context),
+			json!({"source_node":racing_source,"endpoint":endpoint,"key_id":old_id.as_str(),"atomic_transactions":true,"enabled":true,"expected_revision":1}));
+		tokio::pin!(permission);
+		tokio::select! {
+			result = &mut manual => panic!("manual confirmation escaped its row lock: {result:?}"),
+			result = &mut permission => panic!("permission edit did not wait behind confirmation: {result:?}"),
+			() = common::wait_for_blocked(&d.federation.store.pool, pid, 2) => {},
+		}
+		blocker.commit().await.unwrap();
+		let ((manual_status, confirmed), (permission_status, edited)) =
+			tokio::join!(manual, permission);
+		assert_eq!(manual_status, 200, "{confirmed}");
+		assert_eq!(confirmed["keys_revision"], 2);
+		assert_eq!(confirmed["authorization_revision"], 1);
+		// A Tenant Administrator's edit takes the policy and Tenant locks before
+		// it reads the pin, so it waits behind the confirmation and then refuses
+		// to replace the newly confirmed pin with the key it named.
+		assert_eq!(permission_status, 409, "{edited}");
+		assert_eq!(
+			edited,
+			json!({"error":"use independent key confirmation to replace an existing pin"})
+		);
+		// Naming the confirmed key keeps the pin and changes only permission.
+		let (permission_status, edited) = d.as_person(&racer, "POST", &registration_path, Some(&racer_context),
+			json!({"source_node":racing_source,"endpoint":endpoint,"key_id":new_id.as_str(),"atomic_transactions":true,"enabled":true,"expected_revision":1})).await;
+		assert_eq!(permission_status, 200, "{edited}");
+		assert_eq!(edited["revision"], 2);
+		assert_eq!(
+			edited["atomic_transactions"], true,
+			"false -> true is an actual permission change"
+		);
+		assert_eq!(edited["key_id"], new_id.as_str());
+		assert_eq!(edited["endpoint"], endpoint);
+		let (encoded, keys_revision, key_id, public_pem, stored_endpoint, authorization_revision, atomic_transactions, enabled):
+			(String, i64, String, String, String, i64, bool, bool) = sqlx::query_as(
+			"SELECT source_keys,keys_revision,source_key_id,source_public_key_pem,source_endpoint,revision,atomic_transactions,enabled FROM node_registrations WHERE tenant=$1 AND node=$2 AND source_node=$3")
+			.bind(&tenant).bind(&node).bind(racing_source).fetch_one(d.federation.store.pool.fixture_driver()).await.unwrap();
+		assert_eq!(authorization_revision, 2);
+		assert!(atomic_transactions);
+		assert!(enabled);
+		assert_eq!(keys_revision, 2);
+		assert_eq!(key_id, new_id.as_str());
+		assert_eq!(public_pem, new.public_key_pem());
+		assert_eq!(stored_endpoint, endpoint);
+		assert_eq!(
+			serde_json::from_str::<Value>(&encoded).unwrap(),
+			json!({
+				"current":{"key_id":new_id.as_str(),"public_key":new.public_key().to_bytes()},
+				"retiring":null,"quarantined":false,
+			})
+		);
+	}
+	// A genuine second Deployment and completed atomic journal, not the
+	// well-known-only stand-in above, require this exact pair after purge.
+	let peer = peer.await;
+	let remote = &peer.runtime.federation;
+	common::bootstrap(remote, &peer.application, "http://localhost:1").await;
+	d.federation.config.endpoint = d.app.url("");
+	d.app.context.set_singleton(d.federation.clone());
+	// The shared pairing helper administers registrations as a Mapping of
+	// subject `alice` (#484); the Deployment Administrator adds that subject.
+	let policy_path = format!("/api/authorization/{tenant}");
+	let (status, snapshot) = d
+		.as_deployment_administrator("GET", &policy_path, Value::Null)
+		.await;
+	assert_eq!(status, 200, "{snapshot}");
+	let mut bundle = snapshot["bundle"].clone();
+	bundle["subjects"]["alice"] = json!({"kind":"user","groups":["administrators"]});
+	let (status, body) = d
+		.as_deployment_administrator(
+			"POST",
+			&policy_path,
+			json!({"expected_revision":snapshot["revision"],"bundle":bundle}),
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	common::register_pair(
+		(&d.federation, &d.app, &tenant),
+		(remote, &peer.application, "acme"),
+	)
+	.await;
+	let local_address = d
+		.federation
+		.config
+		.deployment
+		.node(aidash_domain::nodes::NodeName::parse(&node).unwrap())
+		.to_string();
+	let retained_source = common::default_node(&remote.store, "acme")
+		.await
+		.to_string();
+	let (status, workspace) = d
+		.as_person(
+			&alice,
+			"POST",
+			"/api/workspaces",
+			Some(&context),
+			json!({"title":"Retained receiver", "goal":"Real atomic obligation", "node":node}),
+		)
+		.await;
+	assert_eq!(status, 200, "{workspace}");
+	let workspace_id = Uuid::parse_str(workspace["id"].as_str().unwrap()).unwrap();
+	let remote_workspace = remote
+		.store
+		.create_workspace(
+			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
+			"alice",
+			"Retained counterpart",
+			"Real atomic obligation",
+		)
+		.await
+		.unwrap();
+	let mut participants = vec![
+		json!({"node_id":local_address,"mutations":[{"kind":"workspace_state","workspace_id":workspace_id,"expected_revision":0,"state":{"committed":true}}]}),
+		json!({"node_id":retained_source,"mutations":[{"kind":"workspace_state","workspace_id":remote_workspace.id,"expected_revision":0,"state":{"committed":true}}]}),
+	];
+	participants.sort_by(|a, b| a["node_id"].as_str().cmp(&b["node_id"].as_str()));
+	let manifest: aidash_domain::transactions::Manifest = serde_json::from_value(json!({
+		"id":Uuid::new_v4(),"coordinator":retained_source,"isolation":"serializable",
+		"deadline":chrono::Utc::now()+chrono::Duration::minutes(5),"participants":participants,
+	}))
+	.unwrap();
+	use aidash_server::transactions::coordinator;
+	coordinator::submit(remote, &manifest).await.unwrap();
+	for _ in 0..20 {
+		if coordinator::status(remote, manifest.id)
+			.await
+			.unwrap()
+			.complete
+		{
+			break;
+		}
+		coordinator::advance(remote, manifest.id).await.unwrap();
+	}
+	let terminal = coordinator::status(remote, manifest.id).await.unwrap();
+	assert!(terminal.complete, "{terminal:?}");
+	assert_eq!(terminal.decision.as_deref(), Some("COMMIT"));
+	assert_eq!(
+		remote
+			.store
+			.workspace(&TEST_FIXTURE, remote_workspace.id)
+			.await
+			.unwrap()
+			.revision,
+		1
+	);
+	let (status, disabled) = d.register(&alice, &context, &tenant, &node,
+		json!({"source_node":retained_source,"atomic_transactions":false,"enabled":false,"expected_revision":1})).await;
+	assert_eq!(status, 200, "{disabled}");
+	assert_eq!(disabled["revision"], 2);
+	let retained_get = format!("{route}?source_node={retained_source}");
+	assert_eq!(
+		d.as_person(&alice, "GET", &retained_get, Some(&context), Value::Null)
+			.await
+			.0,
+		200
+	);
+
+	let (status, second) = d
+		.as_person(
+			&alice,
+			"POST",
+			&format!("/api/tenants/{tenant}/nodes"),
+			Some(&context),
+			json!({"label":"New default"}),
+		)
+		.await;
+	assert_eq!(status, 201, "{second}");
+	let second = second["name"].as_str().unwrap();
+	assert_eq!(
+		d.as_person(
+			&alice,
+			"POST",
+			&format!("/api/tenants/{tenant}/nodes/{second}/default"),
+			Some(&context),
+			Value::Null
+		)
+		.await
+		.0,
+		200
+	);
+	assert_eq!(
+		d.as_person(
+			&alice,
+			"POST",
+			&format!("/api/tenants/{tenant}/nodes/{node}/deletion"),
+			Some(&context),
+			json!({"confirmation":node})
+		)
+		.await
+		.0,
+		200
+	);
+	let (status, deleted) = d.as_person(&alice, "POST", &route, Some(&context), json!({"source_node":source,"expected_keys_revision":3,"expected_authorization_revision":2,"action":"quarantine"})).await;
+	assert_eq!(
+		status, 200,
+		"catalog-backed deleted Node trust remains manageable: {deleted}"
+	);
+	assert_eq!(deleted["quarantined"], true);
+	assert_eq!(deleted["enabled"], false);
+	assert_eq!(deleted["authorization_revision"], 2);
+	let carol = d.person("key-deployment-administrator").await;
+	sqlx::query("INSERT INTO dashboard_deployment_administrator_grants (identity_id) VALUES ($1)")
+		.bind(carol.identity)
+		.execute(d.federation.store.pool.driver())
+		.await
+		.unwrap();
+	let confirm = json!({"source_node":source,"expected_keys_revision":4,"expected_authorization_revision":2,"action":"confirm","public_key_pem":new.public_key_pem(),"expected_key_id":new_id.as_str()});
+	// Registration records are Tenant administration (#484, ADR 0102): the
+	// browser Deployment Administrator is refused and nothing is recorded.
+	let (status, refused) = d
+		.as_person(
+			&carol,
+			"POST",
+			&route,
+			Some("deployment_administrator"),
+			confirm.clone(),
+		)
+		.await;
+	assert_eq!(status, 403, "{refused}");
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_administration_history WHERE tenant = '{tenant}' AND node = '{node}' AND actor_kind = 'deployment_administrator' AND action LIKE 'node_registration.key_%'")).await, 0);
+	let (status, confirmed) = d
+		.as_person(&alice, "POST", &route, Some(&context), confirm)
+		.await;
+	assert_eq!(
+		status, 200,
+		"the Tenant Administrator retains record authority: {confirmed}"
+	);
+	assert_eq!(confirmed["enabled"], false);
+	assert_eq!(d.count(&format!("SELECT count(*) FROM dashboard_administration_history WHERE tenant = '{tenant}' AND node = '{node}' AND action IN ('node_registration.key_quarantine','node_registration.key_confirm')")).await, 5);
+	// Public purge followed by the real worker and finite catalog/all-cycle audit
+	// expiry physically removes the Node while its replayable participant remains.
+	use aidash_server::apps::identity::services::node_purge;
+	let (status, requested) = d
+		.as_deployment_administrator(
+			"POST",
+			&format!("/api/tenants/{tenant}/nodes/{node}/purge"),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{requested}");
+	let deletion = node_purge::claim(&d.federation.store)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|row| row.node == node)
+		.unwrap();
+	node_purge::purge_node(&d.federation.store, deletion)
+		.await
+		.unwrap();
+	sqlx::query("UPDATE node_deletions SET purged_at=clock_timestamp()-interval '366 days' WHERE tenant=$1 AND node=$2 AND restored_at IS NULL")
+		.bind(&tenant).bind(&node).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+	node_purge::erase_audit(&d.federation.store, 365)
+		.await
+		.unwrap();
+	for table in [
+		"nodes",
+		"node_deletions",
+		"dashboard_administration_history",
+		"authorization_catalog_history",
+	] {
+		let column = if table == "nodes" { "name" } else { "node" };
+		assert_eq!(
+			d.count(&format!(
+				"SELECT count(*) FROM {table} WHERE tenant='{tenant}' AND {column}='{node}'"
+			))
+			.await,
+			0,
+			"finite {table} must expire"
+		);
+	}
+	assert_eq!(
+		d.count(&format!(
+			"SELECT count(*) FROM workspaces WHERE id='{workspace_id}'"
+		))
+		.await,
+		0,
+		"actual Node payload was purged"
+	);
+	assert_eq!(
+		d.count(&format!(
+			"SELECT count(*) FROM node_names WHERE tenant='{tenant}' AND name='{node}'"
+		))
+		.await,
+		1
+	);
+	assert_eq!(
+		d.count(&format!(
+			"SELECT count(*) FROM atomic_participants WHERE id='{}' AND phase='COMMITTED'",
+			manifest.id
+		))
+		.await,
+		1
+	);
+	async fn retained_row(d: &Deployment, tenant: &str, node: &str, source: &str) -> Value {
+		sqlx::query_scalar(
+			"SELECT to_jsonb(r) FROM node_registrations r WHERE tenant=$1 AND node=$2 AND source_node=$3",
+		)
+		.bind(tenant)
+		.bind(node)
+		.bind(source)
+		.fetch_one(d.federation.store.pool.fixture_driver())
+		.await
+		.unwrap()
+	}
+	let original = retained_row(&d, &tenant, &node, &retained_source).await;
+	let (status, retained) = d
+		.as_person(&alice, "GET", &retained_get, Some(&context), Value::Null)
+		.await;
+	assert_eq!(
+		status, 200,
+		"current TA must read exact retained trust without catalog: {retained}"
+	);
+	assert_eq!(retained["keys_revision"], 1);
+	assert_eq!(retained["authorization_revision"], 2);
+	// Registration records are Tenant administration (#484, ADR 0102).
+	assert_eq!(
+		d.as_person(
+			&carol,
+			"GET",
+			&retained_get,
+			Some("deployment_administrator"),
+			Value::Null
+		)
+		.await
+		.0,
+		403
+	);
+	// The Tenant Administrator exercises both operations. Confirmation changes
+	// only crypto and never enables the disabled atomic permission/registration.
+	for (person, acting, revision, action) in [
+		(&alice, context.as_str(), 1, "quarantine"),
+		(&alice, context.as_str(), 2, "confirm"),
+		(&alice, context.as_str(), 3, "quarantine"),
+		(&alice, context.as_str(), 4, "confirm"),
+	] {
+		let mut input = json!({"source_node":retained_source,"expected_keys_revision":revision,"expected_authorization_revision":2,"action":action});
+		if action == "confirm" {
+			input["expected_key_id"] = json!(new_id.as_str());
+			input["public_key_pem"] = json!(new.public_key_pem());
+		}
+		let (status, state) = d
+			.as_person(person, "POST", &route, Some(acting), input)
+			.await;
+		assert_eq!(status, 200, "{action} after catalog expiry: {state}");
+		assert_eq!(state["keys_revision"], revision + 1);
+		assert_eq!(state["authorization_revision"], 2);
+		assert_eq!(state["enabled"], false);
+		assert_eq!(state["quarantined"], action == "quarantine");
+	}
+	let current = retained_row(&d, &tenant, &node, &retained_source).await;
+	let mut authority_before = original.clone();
+	let mut authority_after = current.clone();
+	for field in [
+		"source_keys",
+		"keys_revision",
+		"source_key_id",
+		"source_public_key_pem",
+	] {
+		authority_before.as_object_mut().unwrap().remove(field);
+		authority_after.as_object_mut().unwrap().remove(field);
+	}
+	assert_eq!(
+		authority_after, authority_before,
+		"all authorization/endpoint/actor/timestamp metadata remains unchanged"
+	);
+	assert_eq!(current["keys_revision"], 5);
+	assert_eq!(current["source_key_id"], new_id.as_str());
+	assert_eq!(current["source_public_key_pem"], new.public_key_pem());
+	let quarantine = json!({"source_node":retained_source,"expected_keys_revision":5,"expected_authorization_revision":2,"action":"quarantine"});
+	for (person, acting) in [(&bob, member.as_str()), (&eve, foreign.as_str())] {
+		assert_eq!(
+			d.as_person(person, "GET", &retained_get, Some(acting), Value::Null)
+				.await
+				.0,
+			403
+		);
+		assert_eq!(
+			d.as_person(person, "POST", &route, Some(acting), quarantine.clone())
+				.await
+				.0,
+			403
+		);
+	}
+	let wrong_tenant = foreign.split(':').nth(1).unwrap();
+	let unknown_node =
+		aidash_domain::nodes::NodeName::derived("unknown-retained-owner").to_string();
+	// Another Tenant's route is outside alice's Mapping (403); unknown tuples of
+	// her own Tenant are not found (404).
+	for (candidate_route, candidate_source, expected) in [
+		(
+			format!("/api/tenants/{wrong_tenant}/nodes/{node}/registration-keys"),
+			retained_source.as_str(),
+			403,
+		),
+		(
+			format!("/api/tenants/{tenant}/nodes/{unknown_node}/registration-keys"),
+			retained_source.as_str(),
+			404,
+		),
+		(route.clone(), source, 404), // helper has one real source, never this unrequired pair
+	] {
+		let (status, body) = d
+			.as_person(
+				&alice,
+				"GET",
+				&format!("{candidate_route}?source_node={candidate_source}"),
+				Some(&context),
+				Value::Null,
+			)
+			.await;
+		assert_eq!(status, expected, "wrong exact tuple: {body}");
+		let mut change = quarantine.clone();
+		change["source_node"] = json!(candidate_source);
+		assert_eq!(
+			d.as_person(&alice, "POST", &candidate_route, Some(&context), change)
+				.await
+				.0,
+			expected
+		);
+	}
+	for (key_revision, authorization_revision) in [(4, 2), (5, 1)] {
+		let mut stale = quarantine.clone();
+		stale["expected_keys_revision"] = json!(key_revision);
+		stale["expected_authorization_revision"] = json!(authorization_revision);
+		assert_eq!(
+			d.as_person(&alice, "POST", &route, Some(&context), stale)
+				.await
+				.0,
+			409
+		);
+	}
+	// A malformed actual journal is an integrity denial, not history authority.
+	sqlx::query("UPDATE atomic_participants SET digest='corrupt' WHERE id=$1")
+		.bind(manifest.id)
+		.execute(d.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(
+		d.as_person(&alice, "GET", &retained_get, Some(&context), Value::Null)
+			.await
+			.0,
+		409
+	);
+	assert_eq!(
+		d.as_person(&alice, "POST", &route, Some(&context), quarantine.clone())
+			.await
+			.0,
+		409
+	);
+	sqlx::query("UPDATE atomic_participants SET digest=$2 WHERE id=$1")
+		.bind(manifest.id)
+		.bind(manifest.digest().unwrap())
+		.execute(d.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(
+		retained_row(&d, &tenant, &node, &retained_source).await,
+		current,
+		"denials cannot mutate current trust"
+	);
+	// Reopen a fresh Store and production application over durable state.
+	let pool = d
+		.federation
+		.store
+		.pool
+		.options()
+		.clone()
+		.connect_with(d.federation.store.pool.connect_options().as_ref().clone())
+		.await
+		.unwrap();
+	let mut store =
+		aidash_server::store::Store::from_pool(pool, d.federation.config.deployment.clone())
+			.await
+			.unwrap();
+	store.egress = d.federation.store.egress.clone();
+	store.keyless = d.federation.store.keyless.clone();
+	let old_pool = d.federation.store.pool.clone();
+	let old_control = d.federation.store.control_pool.clone();
+	d.federation.store = store;
+	d.app = common::application(d.federation.clone()).await;
+	old_pool.close().await;
+	old_control.close().await;
+	assert_eq!(
+		retained_row(&d, &tenant, &node, &retained_source).await,
+		current
+	);
+	assert_eq!(
+		d.as_person(&alice, "GET", &retained_get, Some(&context), Value::Null)
+			.await
+			.1,
+		json!({"authorization_revision":2,"enabled":false,"key_id":new_id.as_str(),"keys_revision":5,"quarantined":false})
+	);
+	let mapping = context.rsplit(':').next().unwrap();
+	assert_eq!(
+		d.as_deployment_administrator(
+			"POST",
+			&format!("/api/dashboard/mappings/{mapping}/disable"),
+			json!({"expected_revision":1})
+		)
+		.await
+		.0,
+		204
+	);
+	assert_eq!(
+		d.as_person(&alice, "GET", &retained_get, Some(&context), Value::Null)
+			.await
+			.0,
+		403
+	);
+	assert_eq!(
+		d.as_person(&alice, "POST", &route, Some(&context), quarantine.clone())
+			.await
+			.0,
+		403
+	);
+	sqlx::query("DELETE FROM dashboard_deployment_administrator_grants WHERE identity_id=$1")
+		.bind(carol.identity)
+		.execute(d.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(
+		d.as_person(
+			&carol,
+			"GET",
+			&retained_get,
+			Some("deployment_administrator"),
+			Value::Null
+		)
+		.await
+		.0,
+		403
+	);
+	assert_eq!(
+		d.as_person(
+			&carol,
+			"POST",
+			&route,
+			Some("deployment_administrator"),
+			quarantine.clone()
+		)
+		.await
+		.0,
+		403
+	);
+	assert_eq!(
+		retained_row(&d, &tenant, &node, &retained_source).await,
+		current
+	);
+	let (status, deleted_tenant) = d
+		.as_deployment_administrator(
+			"POST",
+			&format!("/api/tenants/{tenant}/deletion"),
+			json!({"confirmation":tenant}),
+		)
+		.await;
+	assert_eq!(status, 200, "{deleted_tenant}");
+	// Registration records are Tenant administration (#484): the Deployment
+	// Administrator is refused, whether by its role or by the deletion.
+	for (method, path, body) in [
+		("GET", &retained_get, Value::Null),
+		("POST", &route, quarantine),
+	] {
+		let (status, response) = d.as_deployment_administrator(method, path, body).await;
+		assert!(
+			matches!(status, 403 | 410),
+			"{method} {path}: {status} {response}"
+		);
+	}
+	assert_eq!(
+		retained_row(&d, &tenant, &node, &retained_source).await,
+		current
+	);
+	peer.server.abort();
+	common::cleanup(
+		peer.runtime.federation.clone(),
+		&peer.runtime.url,
+		&peer.runtime.schema,
+	)
+	.await;
+	d.finish().await;
+}

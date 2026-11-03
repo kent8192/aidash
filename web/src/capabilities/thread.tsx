@@ -1,3 +1,4 @@
+import { ProviderToolActivity } from "../provider-tools";
 import { Input } from "../components/ui/input";
 import {
   Alert,
@@ -45,6 +46,7 @@ import { TransferHistory } from "./transfers";
 import { ResearchPanel, UrlIntentPicker, useResearch } from "./research";
 import { snapshotReadsPages, urlIntents } from "../research";
 import type { RunDetails } from "../generated/models";
+import { semanticEntries } from "../generated/aidash";
 type Session = {
   active_run_id: string | null;
   last_run_id: string | null;
@@ -193,6 +195,16 @@ function FileOperations({
   const filePreview = useFilePreview();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const imageIndex = useQuery({
+    queryKey: ["semantic", area.workspace_id, "entries"],
+    queryFn: () => semanticEntries(area.workspace_id),
+    enabled: area.manifest.some(
+      (file) =>
+        file.scope === "working" && file.media_type.startsWith("image/"),
+    ),
+    refetchInterval: 2000,
+    retry: false,
+  });
   const [read, setRead] = useState<{
     content?: string;
     next_offset?: number;
@@ -450,6 +462,30 @@ function FileOperations({
                     <Hint>
                       {f.scope} · {f.size} bytes
                     </Hint>
+                    {imageIndex.data
+                      ?.filter((entry) => {
+                        const source = entry.source as {
+                          kind?: string;
+                          area_id?: string;
+                          generation?: number;
+                          file_id?: string;
+                        } | null;
+                        return (
+                          !entry.deleted &&
+                          source?.kind === "working_image" &&
+                          source.area_id === area.id &&
+                          source.generation === area.generation &&
+                          source.file_id === f.file_id
+                        );
+                      })
+                      .map((entry) => (
+                        <Hint key={entry.id}>
+                          {entry.state}
+                          {entry.state === "UNSUPPORTED" && entry.last_error
+                            ? ` · ${t(({ modality: "semanticImageModality", too_large: "semanticImageTooLarge", limit: "semanticImageLimit" } as Record<string, string>)[entry.last_error] ?? entry.last_error)}`
+                            : ""}
+                        </Hint>
+                      ))}
                   </TableCell>
                   <TableCell>
                     <Button
@@ -928,10 +964,17 @@ export function ThreadCapabilities({
   const shownRun = useQuery({
     queryKey: ["run-agent", active],
     // The Run details carry the inspection under `run`.
-    queryFn: async ({ signal }) =>
-      (await apiFetch<RunDetails>(`/api/runs/${active}`, { signal })).run,
+    queryFn: async ({ signal }) => {
+      const details = await apiFetch<RunDetails>(`/api/runs/${active}`, {
+        signal,
+      });
+      return {
+        ...details.run,
+        provider_tool_activity: details.provider_tool_activity,
+      };
+    },
     enabled: !!active,
-    staleTime: Infinity,
+    refetchInterval: 2000,
     retry: false,
   });
   const pinned = agents.find(
@@ -1152,6 +1195,12 @@ export function ThreadCapabilities({
         areas={query.data?.items ?? []}
         loaded={query.isSuccess}
         onDeleted={onDeleted}
+      />
+      <ProviderToolActivity
+        context={shownRun.isError ? undefined : shownRun.data?.context}
+        journal={
+          shownRun.isError ? undefined : shownRun.data?.provider_tool_activity
+        }
       />
       {session.data?.last_run_id &&
         !session.data?.active_run_id &&

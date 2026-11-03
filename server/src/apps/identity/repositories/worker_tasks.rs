@@ -13,6 +13,8 @@ use aidash_domain::{
 	registry::EntityRef,
 };
 use async_trait::async_trait;
+use reinhardt::db::orm::{Model, QueryRow, execution::convert_values};
+use reinhardt::query::LockType;
 use reinhardt::query::{
 	Alias, ColumnRef, Expr, ExprTrait as _, OnConflict, PostgresQueryBuilder, Query,
 	QueryStatementBuilder as _, SimpleExpr,
@@ -24,6 +26,52 @@ pub(crate) struct WorkerTasks<'a> {
 }
 #[async_trait]
 impl WorkerTaskScope for WorkerTasks<'_> {
+	async fn subnode_members(&mut self, workspace: Uuid) -> Result<Option<Vec<EntityRef>>> {
+		use crate::apps::execution::models::subnodes::{SubnodeMemberRecord, SubnodeRecord};
+		let tenant = self.access.identity.tenant.clone();
+		let result: NativeResult<Option<Vec<EntityRef>>> = async {
+			// The same exclusive row lock must guard membership changes and ending.
+			// It keeps a target a member until delegated admission commits.
+			let (sql, values) = Query::select()
+				.column(ColumnRef::Asterisk)
+				.from(Alias::new("subnodes"))
+				.and_where(Expr::col("tenant").eq(tenant.clone()))
+				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.lock(LockType::Update)
+				.build(PostgresQueryBuilder);
+			let row = self
+				.access
+				.tx
+				.native_mut()
+				.fetch_optional(&sql, convert_values(values))
+				.await?;
+			let Some(row) = row else {
+				return Ok(None);
+			};
+			let record: SubnodeRecord =
+				serde_json::from_value(QueryRow::from_backend_row(row).data)?;
+			if record.state != "active" {
+				return Ok(Some(vec![]));
+			}
+			let members = SubnodeMemberRecord::objects()
+				.filter(SubnodeMemberRecord::field_tenant().eq(tenant))
+				.filter(SubnodeMemberRecord::field_subnode_id().eq(record.id))
+				.all_with_executor(self.access.tx.native_mut())
+				.await
+				.map_err(reinhardt::core::exception::Error::from)?;
+			Ok(Some(
+				members
+					.into_iter()
+					.map(|member| EntityRef {
+						id: member.agent_id,
+						version: member.agent_version,
+					})
+					.collect(),
+			))
+		}
+		.await;
+		result.map_err(Into::into)
+	}
 	fn node_id(&self) -> &str {
 		self.federation.config.deployment.as_str()
 	}
@@ -37,10 +85,23 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 	fn subjects(&self) -> &[String] {
 		&self.access.subjects
 	}
-	async fn assign(&mut self, task: Uuid, policy: &str, reason: &str) -> Result<Assignment> {
-		crate::generation::assign_in(self.federation, self.access, task, policy, reason)
-			.await
-			.map_err(Into::into)
+	async fn assign(
+		&mut self,
+		task: Uuid,
+		policy: &str,
+		reason: &str,
+		members: Option<&[EntityRef]>,
+	) -> Result<Assignment> {
+		crate::generation::assign_in_restricted(
+			self.federation,
+			self.access,
+			task,
+			policy,
+			reason,
+			members,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn record_output(&mut self, source: &RunMetadata, kind: &str, id: Uuid) -> Result<()> {
 		self.federation
@@ -187,52 +248,52 @@ impl WorkerTaskScope for WorkerTasks<'_> {
 	}
 	async fn insert_origin(&mut self, task: Uuid, source: Uuid) -> Result<()> {
 		let result: NativeResult<()> = async {
-			{
-				let query_bind_1 = task;
-				let query_bind_2 = source;
-				let query_bind_3 = &self.access.identity.tenant;
-				let query_bind_4 = &self.access.identity.subject;
-				let query_bind_5 = &self.access.subjects;
-				crate::database::native::query(
-					&Query::insert()
-						.into_table(Alias::new("authorization_task_origins"))
-						.columns([
-							Alias::new("task_id"),
-							Alias::new("source_run_id"),
-							Alias::new("tenant"),
-							Alias::new("root_subject"),
-							Alias::new("subject_chain"),
-						])
-						.from_subquery(
-							Query::select()
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_2.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_3.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_4.to_owned()).into()],
-								))
-								.expr(SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![crate::database::text_array(query_bind_5.to_owned())],
-								))
-								.to_owned(),
-						)
-						.on_conflict(OnConflict::columns(["task_id"]).do_nothing().to_owned())
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(&mut **self.access.tx)
-				.await?;
+			// Retain insertion-time source existence, not a perpetual Run lifetime.
+			let source_row = crate::database::native::query(
+				&Query::select()
+					.column(Alias::new("id"))
+					.from(Alias::new("runs"))
+					.and_where(Expr::col("id").eq(Expr::value(source)))
+					.and_where(
+						Expr::col("tenant")
+							.eq(crate::database::scope::tenant_of("tasks", "id", task)),
+					)
+					.lock(reinhardt::query::LockType::KeyShare)
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_optional(&mut **self.access.tx)
+			.await?;
+			if source_row.is_none() {
+				return Err(crate::Error::Forbidden);
 			}
+
+			crate::database::native::query(
+				&Query::insert()
+					.into_table(Alias::new("authorization_task_origins"))
+					.columns(
+						[
+							"task_id",
+							"source_run_id",
+							"tenant",
+							"root_subject",
+							"subject_chain",
+						]
+						.map(Alias::new),
+					)
+					.from_subquery(
+						Query::select()
+							.expr(Expr::value(task))
+							.expr(Expr::value(source))
+							.expr(Expr::value(&self.access.identity.tenant))
+							.expr(Expr::value(&self.access.identity.subject))
+							.expr(crate::database::text_array(self.access.subjects.clone()))
+							.to_owned(),
+					)
+					.on_conflict(OnConflict::columns(["task_id"]).do_nothing().to_owned())
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut **self.access.tx)
+			.await?;
 			Ok(())
 		}
 		.await;

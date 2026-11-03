@@ -19,6 +19,9 @@ pub struct RegistryVersion {
 	/// Whether the Tenant must approve it before use: every Tenant definition,
 	/// and the Sandboxed, research and Decider built-ins.
 	pub needs_approval: bool,
+	/// Disclosure shown only when approving this exact Provider tool version.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub provider_warning: Option<String>,
 	pub approval: Option<VersionApproval>,
 	pub history: Vec<ApprovalRecord>,
 	/// The agent subject an approval created, for an agent version (ADR 0062),
@@ -41,6 +44,8 @@ pub struct VersionApproval {
 }
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct ApprovalRecord {
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub provider_warning_acknowledgment: Option<String>,
 	pub revision: i64,
 	pub enabled: bool,
 	pub actor: String,

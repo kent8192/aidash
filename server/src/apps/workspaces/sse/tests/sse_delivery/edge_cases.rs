@@ -423,10 +423,19 @@ async fn browser_invalidation_closes_idle_and_unpolled_buffered_streams(
 		.await
 	}
 	.unwrap();
+	// The Mapping binds its own credential: disabling the Mapping or its
+	// identity stops that credential, while the fixture's bearer below stays
+	// independent of the browser state.
+	let mapping_credential = uuid::Uuid::parse_str(
+		common::issued_credential(&fixture.f.store, "acme", "alice").await["credential"]["id"]
+			.as_str()
+			.unwrap(),
+	)
+	.unwrap();
 	{
 		let query_bind_1 = mapping;
 		let query_bind_2 = identity;
-		let query_bind_3 = fixture.credential;
+		let query_bind_3 = mapping_credential;
 		sqlx::query(
 			&Query::insert()
 				.into_table(Alias::new("dashboard_mappings"))

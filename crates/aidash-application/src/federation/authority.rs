@@ -28,7 +28,16 @@ impl Client {
 		body: &Value,
 	) -> Result<T> {
 		let connection_call = is_connection_call(path, body);
-		let route = self.peers.route(node).await.map_err(|error| {
+		let bytes = serde_json::to_vec(body)?;
+		let request = super::inbound::RequestDigest {
+			method: "POST",
+			path,
+			body: &bytes,
+		};
+		let route = self.peers.route(node, &request).await.map_err(|error| {
+			if matches!(error, Error::Forbidden | Error::Unauthorized) {
+				return Error::Forbidden;
+			}
 			tracing::warn!(%node, %path, %error, "authority route failed");
 			if connection_call {
 				Error::ToolNotDelivered {
@@ -44,6 +53,9 @@ impl Client {
 			.request(&route, path, body)
 			.await
 			.map_err(|error| {
+				if matches!(error, Error::Forbidden | Error::Unauthorized) {
+					return Error::Forbidden;
+				}
 				tracing::warn!(%node, %path, %error, "authority request failed");
 				if connection_call && matches!(error, Error::ToolNotDelivered { .. }) {
 					error
