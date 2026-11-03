@@ -20,6 +20,8 @@ pub enum ToolTier {
 	Sandboxed,
 	/// A Research provider the Deployment offers; each Tenant approves it.
 	Research,
+	/// Executed inside a model request by its provider; Catalog Approval only.
+	Provider,
 	Integration,
 	Fixture,
 }
@@ -27,7 +29,7 @@ pub enum ToolTier {
 impl ToolTier {
 	/// Whether a built-in of this tier needs a Catalog Approval before use.
 	pub fn needs_approval(self) -> bool {
-		matches!(self, Self::Sandboxed | Self::Research)
+		matches!(self, Self::Sandboxed | Self::Research | Self::Provider)
 	}
 }
 
@@ -56,16 +58,21 @@ pub struct ToolDescriptor {
 
 pub fn core_provider(operation: &str) -> Option<&'static str> {
 	Some(match operation {
-		"workspace_read" | "workspace_observe" | "workspace_wait" | "workspace_message" => {
-			"core.workspace@1"
-		}
+		"workspace_read" | "workspace_observe" | "workspace_wait" | "workspace_message"
+		| "workspace_search" => "core.workspace@1",
 		"human_request" | "connection_request" => "core.human@1",
+		"subnode_create"
+		| "subnode_task"
+		| "subnode_add_member"
+		| "subnode_remove_member"
+		| "subnode_dissolve"
+		| "subnode_message" => "core.subnodes@1",
 		"task_create" | "task_delegate" | "agent_discover" | "task_assign" => "core.tasks@1",
 		"skill_list" | "skill_load" | "skill_read" | "skill_asset_read" => "core.skills@1",
 		"capability_search" | "capability_describe" | "capability_load" | "capability_unload" => {
 			"core.exposure@1"
 		}
-		"file_search" | "file_read" | "apply_patch" => "core.files@1",
+		"file_search" | "file_read" | "apply_patch" | "attachment_copy" => "core.files@1",
 		"artifact_publish" => "core.artifacts@1",
 		"memory_mutate" | "memory_recall" | "memory_reflect" => "core.memory@1",
 		"shell" | "shell_poll" | "shell_cancel" | "code_interpreter" | "python_poll"
@@ -138,6 +145,7 @@ pub fn research_contract(operation: ResearchOperation) -> ToolContract {
 		}
 	};
 	ToolContract {
+		provider_owned: false,
 		identity: ToolIdentity::Builtin(format!("research:{}", operation.as_str())),
 		authorization: ToolAuthorization {
 			flag: None,
@@ -278,12 +286,35 @@ impl ToolDescriptor {
 			}
 			let mut contract =
 				builtin_contract(&self.operation).expect("declared provider operation");
+			if self.operation == "workspace_read"
+				&& identity.id == "aidash.workspace_read"
+				&& matches!(identity.version.as_str(), "1.0.0" | "1.0.1")
+			{
+				contract.behavior.yields_model_media = false;
+			}
 			// Availability is resolved by Bindings, independently of target-resource authority.
 			contract.authorization.flag = None;
 			contract.authorization.core = None;
 			if self.operation == "human_request" {
 				contract.remote_exposure = true;
 			}
+			contract
+		} else if let Some(tool) = super::provider_tools::declaration(&self.provider) {
+			if self.tier != ToolTier::Provider
+				|| self.operation != tool.alias
+				|| self.transport.is_some()
+				|| self.lifecycle.is_some()
+				|| self.narrow != Narrowing::default()
+			{
+				return Err(Error::Invalid(
+					"incompatible Provider tool descriptor".into(),
+				));
+			}
+			let mut contract = research_contract(ResearchOperation::Search);
+			contract.identity = ToolIdentity::Builtin(tool.id.into());
+			contract.provider_owned = true;
+			contract.behavior.yields = vec![];
+			contract.behavior.disclosure_approval = false;
 			contract
 		} else if self.provider.starts_with("research.") {
 			let (operation, tier) = research_operation(&self.provider, &self.operation)
@@ -363,7 +394,11 @@ pub fn validate_restrictions(operation: &str, narrow: &Narrowing) -> Result<()> 
 		"skill_read" => (false, &["skill_id", "path"], &["max_chars"]),
 		_ => (false, &[], &[]),
 	};
-	if narrow.decision.is_some()
+	if narrow.provider_tool.is_some()
+		&& !super::provider_tools::TOOLS
+			.iter()
+			.any(|t| t.alias == operation)
+		|| narrow.decision.is_some()
 		|| !hosts && narrow.allowed_hosts.is_some()
 		|| narrow
 			.scope

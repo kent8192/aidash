@@ -40,6 +40,7 @@ pub mod tenants;
 
 pub mod node_purge;
 
+pub(crate) mod data_protection;
 pub(crate) mod manual_keys;
 pub mod oauth_clients;
 

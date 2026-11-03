@@ -258,6 +258,7 @@ impl Cloud {
 			endpoint: Provider::Openrouter.base_url().into(),
 			provider_credential: Some("openrouter".into()),
 			plan_connection: None,
+			wire_api: None,
 			request_timeout_secs: Some(5),
 			// The fake upstream holds a stream open for the broker's own stream
 			// tests; these cases cover the access path of a whole completion.
@@ -278,6 +279,7 @@ impl Cloud {
 	}
 	fn request() -> aidash_domain::provider::ModelRequest {
 		aidash_domain::provider::ModelRequest {
+			provider_tools: vec![],
 			instructions: "test".into(),
 			context: json!({}).into(),
 			tools: vec![],
@@ -294,6 +296,7 @@ impl Cloud {
 	fn scoped(&self, operation: CallOperation) -> Context {
 		let mut context = self.context.clone();
 		context.inference = Some(Inference {
+			provider_tools: vec![],
 			model: "author/model".into(),
 			operations: vec![operation],
 			max_output_tokens: 10,
@@ -446,6 +449,9 @@ async fn cloud_mint_routes_chat_media_discovery_embeddings_and_early_streaming()
 			model: "author/model".into(),
 			model_version: "1".into(),
 			dimensions: 2,
+			inputs: [aidash_domain::semantic::EmbeddingInputKind::Text]
+				.into_iter()
+				.collect(),
 		},
 		"test",
 	)
@@ -656,6 +662,57 @@ async fn expired_capability_is_non_retryable_without_remint_or_key_read() {
 }
 
 #[tokio::test]
+async fn an_observer_discovery_token_cannot_send_a_decision() {
+	let c = Cloud::new(false).await;
+	let id = c.context.provider_credential_id.unwrap();
+	*c.repo.bindings.lock().unwrap() = vec![Binding {
+		tenant: "tenant-a".into(),
+		provider: Provider::Openrouter,
+		provider_credential_id: Some(id),
+		revision: 1,
+	}];
+	let mut context = c.scoped(CallOperation::DecisionDiscovery);
+	context.run = None;
+	context.observation = Some(Uuid::from_u128(42));
+	let inference = context.inference.as_mut().unwrap();
+	inference.call = Some(Uuid::from_u128(43));
+	inference.max_output_tokens = 0;
+	inference.hosts = vec!["vendor".into()];
+	let access = c
+		.access
+		.resolve(
+			&context,
+			Provider::Openrouter.base_url(),
+			&AccessSource::Tenant {
+				provider: "openrouter".into(),
+			},
+		)
+		.await
+		.unwrap();
+	let client = reqwest::Client::new();
+	let response = client
+		.get(format!("{}/endpoints/zdr", access.endpoint))
+		.bearer_auth(access.bearer.expose_secret())
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(response.status(), 200);
+	let claim = c.signer.claims.lock().unwrap().last().unwrap().clone();
+	assert_eq!(claim.ops, vec![Operation::Discovery]);
+	assert!(claim.hosts.is_empty());
+	assert_eq!(claim.max_output_tokens, 1);
+	let response = client
+		.post(format!("{}/systemone", access.endpoint))
+		.bearer_auth(access.bearer.expose_secret())
+		.json(&decision())
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(response.status(), 403);
+	assert_eq!(c.fixture.provider.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn an_independent_observer_mints_and_relays_its_exact_decision_attempt() {
 	let c = Cloud::new(false).await;
 	let id = c.context.provider_credential_id.unwrap();
@@ -748,6 +805,37 @@ async fn an_independent_observer_mints_and_relays_its_exact_decision_attempt() {
 }
 
 #[tokio::test]
+async fn reference_maintenance_mints_only_the_embedding_operation() {
+	let c = Cloud::new(false).await;
+	let id = c.context.provider_credential_id.unwrap();
+	*c.repo.bindings.lock().unwrap() = vec![Binding {
+		tenant: "tenant-a".into(),
+		provider: Provider::Openrouter,
+		provider_credential_id: Some(id),
+		revision: 1,
+	}];
+	let mut context = c.scoped(CallOperation::Embeddings);
+	context.run = None;
+	context.maintenance = Some(MaintenancePurpose::ReferenceIndexing);
+	c.access
+		.resolve(
+			&context,
+			Provider::Openrouter.base_url(),
+			&AccessSource::Tenant {
+				provider: "openrouter".into(),
+			},
+		)
+		.await
+		.unwrap();
+	let claim = c.signer.claims.lock().unwrap().last().unwrap().clone();
+	assert_eq!(
+		serde_json::to_value(claim.sub).unwrap(),
+		json!({"maintenance":"reference_indexing","tenant":"tenant-a"})
+	);
+	assert_eq!(claim.ops, vec![aidash_capability::Operation::Embeddings]);
+}
+
+#[tokio::test]
 async fn runless_memory_inference_mints_exact_purposes_and_rebinds_per_call() {
 	let c = Cloud::new(false).await;
 	let id = c.context.provider_credential_id.unwrap();
@@ -805,6 +893,9 @@ async fn runless_memory_inference_mints_exact_purposes_and_rebinds_per_call() {
 		model: "author/model".into(),
 		model_version: "1".into(),
 		dimensions: 2,
+		inputs: [aidash_domain::semantic::EmbeddingInputKind::Text]
+			.into_iter()
+			.collect(),
 	};
 	aidash_integrations::semantic::embed(
 		c.access.as_ref(),

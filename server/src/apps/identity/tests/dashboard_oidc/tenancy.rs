@@ -958,6 +958,7 @@ async fn a_deployment_administrator_created_tenant_gets_its_first_administrator_
 		"node.create",
 		"node.update",
 		"node.delete",
+		"subnode.limits.update",
 		"approval.read",
 		"connection.scopes.update",
 		"connection.administer",

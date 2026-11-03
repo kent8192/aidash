@@ -28,6 +28,7 @@ fn config(
 		endpoint,
 		provider_credential: None,
 		plan_connection: None,
+		wire_api: None,
 		request_timeout_secs: None,
 		streaming: None,
 		stream_stall_timeout_secs: None,
@@ -153,6 +154,7 @@ async fn openrouter_enforces_zdr_and_preserves_reasoning_tools_and_usage(
 			let response = model
 				.infer(
 					ModelRequest {
+						provider_tools: vec![],
 						instructions: "Follow the task".into(),
 						context: json!({"task":"Read notes"}).into(),
 						tools: if with_tools {
@@ -224,6 +226,7 @@ async fn openrouter_sends_cache_control_only_to_opted_in_explicit_routes(
 	let mut fixture = completion_server.await;
 	let endpoint = format!("{}/api/v1/", fixture.server.url);
 	let ordered = |cache_breakpoints| ModelRequest {
+		provider_tools: vec![],
 		instructions: "Follow the task".into(),
 		context: ModelContext::Ordered(OrderedContext {
 			stable: r#"{"task":"Read notes","history":[{"n":1},{"n":2}]}"#.into(),
@@ -307,6 +310,7 @@ async fn openrouter_sends_ordered_native_image_and_audio_parts(
 	let response = model
 		.infer(
 			ModelRequest {
+				provider_tools: vec![],
 				instructions: "Inspect the media".into(),
 				context: json!({"run_message":"Describe the attachment"}).into(),
 				tools: vec![],
@@ -419,6 +423,7 @@ async fn media_route_lookup_obeys_the_total_inference_deadline(
 		Duration::from_secs(3),
 		model.infer(
 			ModelRequest {
+				provider_tools: vec![],
 				instructions: String::new(),
 				context: json!({}).into(),
 				tools: vec![],
@@ -521,6 +526,7 @@ async fn unavailable_zdr_endpoint_does_not_retry_without_zdr(
 		model
 			.infer(
 				ModelRequest {
+					provider_tools: vec![],
 					instructions: "test".into(),
 					context: json!({}).into(),
 					tools: vec![],
@@ -560,6 +566,7 @@ async fn upstream_media_rejection_keeps_its_status_and_safe_reason(
 	let error = model
 		.infer(
 			ModelRequest {
+				provider_tools: vec![],
 				instructions: "test".into(),
 				context: json!({}).into(),
 				tools: vec![],
@@ -597,6 +604,7 @@ async fn upstream_errors_cannot_echo_unrecognized_media_or_secret_data(
 	let error = model
 		.infer(
 			ModelRequest {
+				provider_tools: vec![],
 				instructions: "test".into(),
 				context: json!({}).into(),
 				tools: vec![],
@@ -743,6 +751,7 @@ async fn keyless_inference_to_an_unpermitted_private_origin_sends_nothing(
 	let result = model
 		.infer(
 			ModelRequest {
+				provider_tools: vec![],
 				instructions: "Follow the task".into(),
 				context: json!({"task":"Read notes"}).into(),
 				tools: vec![],

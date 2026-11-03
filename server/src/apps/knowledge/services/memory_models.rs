@@ -690,6 +690,7 @@ impl Models {
 			));
 		}
 		let request = ModelRequest {
+			provider_tools: vec![],
 			instructions: instruction.into(),
 			context: context.into(),
 			tools: vec![],
@@ -887,7 +888,7 @@ impl Models {
 					MaintenancePurpose::MemoryRetrieval
 				}),
 			)
-			.embed(&config, text),
+			.embed(&config, aidash_domain::semantic::EmbeddingInput::Text(text)),
 		)
 		.await
 		// A provider deadline or transport failure is the outage a Run retries

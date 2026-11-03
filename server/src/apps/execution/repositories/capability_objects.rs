@@ -43,6 +43,14 @@ impl PendingObject {
 		self.finish_in(access.tx.as_mut(), &access.identity.tenant, expected)
 			.await
 	}
+	pub(crate) async fn finish_for(
+		self,
+		tx: &mut crate::database::native::Transaction,
+		tenant: &str,
+		expected: Option<&str>,
+	) -> Result<(Uuid, String)> {
+		self.finish_in(tx.as_mut(), tenant, expected).await
+	}
 	pub(crate) async fn finish_in(
 		self,
 		tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
@@ -230,6 +238,26 @@ impl Runtime {
 		)
 		.await
 	}
+	pub(crate) async fn begin_object_for(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		tenant: &str,
+		area: Option<Uuid>,
+		kind: &str,
+		size: u64,
+		grandfather_existing: bool,
+	) -> Result<PendingObject> {
+		self.begin_object_with_quota(
+			tx.as_mut(),
+			tenant,
+			Uuid::new_v4(),
+			area,
+			kind,
+			size,
+			grandfather_existing,
+		)
+		.await
+	}
 	/// Exact retained-operation receipt owner only; this does not admit execution.
 	pub(crate) async fn begin_object_in(
 		&self,
@@ -240,9 +268,26 @@ impl Runtime {
 		kind: &str,
 		size: u64,
 	) -> Result<PendingObject> {
+		self.begin_object_with_quota(tx, tenant, id, area, kind, size, false)
+			.await
+	}
+	async fn begin_object_with_quota(
+		&self,
+		tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+		tenant: &str,
+		id: Uuid,
+		area: Option<Uuid>,
+		kind: &str,
+		size: u64,
+		grandfather_existing: bool,
+	) -> Result<PendingObject> {
 		let size = i64::try_from(size).map_err(|_| Error::Invalid("OBJECT_LIMIT".into()))?;
-		let limit = i64::try_from(self.0.retained_bytes)
-			.map_err(|_| Error::Invalid("invalid quota".into()))?;
+		let limit = if grandfather_existing {
+			i64::MAX
+		} else {
+			i64::try_from(self.0.retained_bytes)
+				.map_err(|_| Error::Invalid("invalid quota".into()))?
+		};
 		{
 			let query_bind_1 = tenant;
 			crate::database::native::query(

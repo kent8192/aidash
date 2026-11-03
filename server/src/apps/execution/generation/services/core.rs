@@ -41,19 +41,21 @@ pub async fn assign(
 	.await
 	.map_err(Into::into)
 }
-pub(crate) async fn assign_in(
+pub(crate) async fn assign_in_restricted(
 	f: &Federation,
 	access: &mut Access,
 	task_id: Uuid,
 	policy_id: &str,
 	reason: &str,
+	members: Option<&[aidash_domain::registry::EntityRef]>,
 ) -> Result<Assignment> {
-	aidash_application::generation::assignment::assign_in(
+	aidash_application::generation::assignment::assign_in_restricted(
 		&mut crate::bootstrap::generation_assignment_scope(f, access),
 		task_id,
 		policy_id,
 		reason,
 		&crate::bootstrap::registry_validation_for(&f.store),
+		members,
 	)
 	.await
 	.map_err(Into::into)

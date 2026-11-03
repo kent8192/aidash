@@ -28,6 +28,7 @@ pub enum Root {
 	Preview,
 	LivePreview,
 	EgressSession,
+	Subnode,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ownership {
@@ -69,7 +70,8 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "authorization_peer_mappings"
 		| "authorization_peer_mapping_history"
 		| "authorization_remote_admissions"
-		| "authorization_remote_grants" => Node("node"),
+		| "authorization_remote_grants"
+		| "subnodes" => Node("node"),
 		"nodes" => Audit,
 		"authorization_remote_terminal_receipts" => Recovery,
 		"node_registrations" => Registrations,
@@ -88,6 +90,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "identity_approval_preferences"
 		| "identity_approval_rules" => Subject("subject"),
 		"registry_requests" | "core_requests" => Subject("principal"),
+		"subnode_members" => Link("subnode_id", Subnode),
 		"identity_thread_approval_modes" => Link("thread_id", Thread),
 		"approval_observations" | "approval_observation_population" => Approvals,
 		"approval_observation_attempts" => Link("observation", Observation),
@@ -99,6 +102,8 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "channel_attachments"
 		| "channel_message_context"
 		| "authorization_workspaces"
+		| "semantic_image_ledgers"
+		| "semantic_image_publications"
 		| "semantic_indexes"
 		| "semantic_entries"
 		| "semantic_collections"
@@ -151,7 +156,8 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "research_journal_results"
 		| "research_sources"
 		| "run_inputs"
-		| "run_task_snapshots" => Link("run_id", Run),
+		| "run_task_snapshots"
+		| "subnode_operation_receipts" => Link("run_id", Run),
 		"generation_budgets" => Link("request_id", Request),
 		"generation_remote_usage" => RemoteUsageRows,
 		"generation_embedding_usage" => Link("workspace_id", Workspace),
@@ -268,6 +274,10 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "agent_drafts"
 		| "agent_incident_events"
 		| "agent_incidents"
+		| "agent_knowledge_images"
+		| "subnode_limits"
+		| "tenant_data_protection_history"
+		| "tenant_data_protection"
 		| "agent_knowledge"
 		| "agent_plugin_copies"
 		| "agent_test_limits"

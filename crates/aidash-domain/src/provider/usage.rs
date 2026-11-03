@@ -3,10 +3,12 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Usage exactly as the provider reported it. Each field is `None` when the
-/// provider omitted it or sent a value that is not a valid count.
+/// Usage exactly as the provider reported it. Scalar counts are `None` when
+/// omitted or invalid. An empty tool-use map means no counts were reported.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReportedUsage {
+	/// Provider-owned tool counts; never added to token usage or Request Estimates.
+	pub server_tool_use: std::collections::BTreeMap<String, u64>,
 	pub input_tokens: Option<u64>,
 	pub output_tokens: Option<u64>,
 	/// Breakdown of `input_tokens` served from the provider's prompt cache.

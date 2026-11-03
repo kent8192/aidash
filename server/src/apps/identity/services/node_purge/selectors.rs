@@ -51,6 +51,7 @@ impl Owners<'_> {
 			Preview => ("core_previews", "id"),
 			LivePreview => ("core_live_previews", "id"),
 			EgressSession => ("egress_sessions", "id"),
+			Subnode => ("subnodes", "id"),
 		};
 		Ok(Expr::from(col(table, field))
 			.in_subquery(
@@ -121,7 +122,24 @@ impl Owners<'_> {
 								.to_owned(),
 						),
 					)),
-			Objects => self.root(table, "area_id", Root::Area)?,
+			Objects => self
+				.root(table, "area_id", Root::Area)?
+				.or(Expr::from(col(table, "id")).in_subquery(
+					Query::select()
+						.column(Alias::new("object_id"))
+						.from(Alias::new("channel_attachments"))
+						.and_where(self.predicate("channel_attachments")?)
+						.and_where(Expr::col("object_id").is_not_null())
+						.to_owned(),
+				))
+				.or(Expr::from(col(table, "id")).in_subquery(
+					Query::select()
+						.column(Alias::new("wav_object_id"))
+						.from(Alias::new("channel_attachments"))
+						.and_where(self.predicate("channel_attachments")?)
+						.and_where(Expr::col("wav_object_id").is_not_null())
+						.to_owned(),
+				)),
 			CascadeTasks => self.root(table, "workspace_id", Root::Workspace)?,
 			SemanticJournals => ids(col(table, "id"), &self.journals),
 			SourceReads => Expr::exists(

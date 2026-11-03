@@ -22,7 +22,6 @@ import urllib.request
 ROOT = Path(__file__).resolve().parent.parent
 # The pinned kindest/node image ships ctr here, not at node_guard's /usr/bin/ctr
 # default. Pass it explicitly, as the Helm chart does with paths.ctr (#680).
-NODE_CTR = "/usr/local/bin/ctr"
 NODE = "kindest/node@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a"
 # The same pin the Runner image bundles; local setups still download it.
 PIN = json.loads((ROOT / "runner/gvisor.json").read_text())

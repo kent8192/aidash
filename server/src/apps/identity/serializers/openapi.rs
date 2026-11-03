@@ -51,7 +51,52 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		contracts.path(document, v::registration_status, &["String", "String"])?;
 		contracts.path(document, v::registration_change, &["String", "String"])?;
 	}
+	contracts.response::<_, aidash_domain::subnodes::SubnodeLimits>(
+		document,
+		views::tenant_administration::subnode_limits,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::tenant_administration::subnode_limits,
+		&["String"],
+	)?;
+	contracts.request::<_, aidash_domain::subnodes::SubnodeLimits>(
+		document,
+		views::tenant_administration::set_subnode_limits,
+	)?;
+	contracts.response::<_, aidash_domain::subnodes::SubnodeLimits>(
+		document,
+		views::tenant_administration::set_subnode_limits,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::tenant_administration::set_subnode_limits,
+		&["String"],
+	)?;
+
 	use super::desktop;
+	{
+		use super::data_protection::{Impact, Settings};
+		use aidash_domain::data_protection::DataProtection;
+		use views::data_protection as view;
+		contracts.response::<_, Settings>(document, view::get_policy, 200, "application/json")?;
+		contracts.path(document, view::get_policy, &["String"])?;
+		contracts.request::<_, DataProtection>(document, view::update_policy)?;
+		contracts.response::<_, Settings>(
+			document,
+			view::update_policy,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, view::update_policy, &["String"])?;
+		contracts.request::<_, DataProtection>(document, view::impact)?;
+		contracts.response::<_, Impact>(document, view::impact, 200, "application/json")?;
+		contracts.path(document, view::impact, &["String"])?;
+	}
 	use super::provider_credentials as pc;
 	use aidash_application::provider_credentials::Metadata;
 	use aidash_domain::provider_credentials::Binding as ProviderBinding;
@@ -1022,6 +1067,18 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		document,
 		views::remote_commands::handle,
 	)?;
+	contracts
+		.response::<_, crate::apps::identity::serializers::remote_execution_commands::AttachmentResponse>(
+			document,
+			views::remote_commands::thread_attachment,
+			200,
+			"application/json",
+		)?;
+	contracts
+		.request::<_, crate::apps::identity::serializers::remote_execution_commands::AttachmentInput>(
+			document,
+			views::remote_commands::thread_attachment,
+		)?;
 	contracts.response::<_, super::policies::CredentialRevocation>(
 		document,
 		views::policies::revoke_credential,

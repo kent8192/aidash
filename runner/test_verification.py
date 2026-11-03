@@ -35,6 +35,8 @@ class VerificationTest(unittest.TestCase):
         runner.kube = Mock()
         runner.writable_bytes = Mock(return_value=1 << 20)
         runner.update = Mock()
+        runner.allocation_harvested = Mock()
+        runner.close_allocation = Mock()
         return runner
 
     def test_only_known_command_kinds_are_accepted(self):

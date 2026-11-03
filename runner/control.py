@@ -1024,18 +1024,17 @@ class Runner(AllocationJournal):
             with self.lock:
                 self.active.discard(operation)
 
-    def refuse_export(self, operation, refused, pod_operation, **fields):
+    def refuse_export(self, operation, refused, _pod_operation, **fields):
         """End an operation whose Working Area export was refused.
 
         The refusal is certain and final: nothing is published, so the area
         keeps its previous revision, and the export is never retried.
         """
-        self.update(operation, status='failed', termination_confirmed=True, finished_at=time.time(),
-                    error=export_error(refused), **fields)
-        try:
-            self.kube(['delete', 'pod', self.pod_name(pod_operation), '--wait=false', '--force', '--grace-period=0'], check=False)
-        except Exception as cleanup_error:
-            print(f"Refused export cleanup {operation}: {cleanup_error}", file=sys.stderr, flush=True)
+        fields['output_harvested'] = True
+        record = self.update(operation, status='failed', termination_confirmed=True, finished_at=time.time(),
+                             error=export_error(refused), **fields)
+        self.allocation_harvested(record, idle=False)
+        self.close_allocation(record)
 
     def recover_stopped_shell(self, record):
         # Collector RPCs can fail before the Sentry's death becomes observable.
@@ -1053,8 +1052,6 @@ class Runner(AllocationJournal):
                 time.sleep(.25)
         collected = self.collect_stopped_output(record)
         if collected is None:
-            self.allocation_harvested(self.get(record['operation_id']), idle=False)
-            self.close_allocation(record)
             return
         exported, captured = collected
         operation = record['operation_id']
@@ -1100,8 +1097,6 @@ class Runner(AllocationJournal):
             raise Rejected(409, 'physical termination proof unavailable')
         collected = self.collect_stopped_output(record)
         if collected is None:
-            self.allocation_harvested(self.get(record['operation_id']), idle=False)
-            self.close_allocation(record)
             return
         exported, captured = collected
         self.update(record['operation_id'], output_harvested=True, stdout=captured['stdout'],

@@ -15,8 +15,17 @@ pub trait WorkerTaskScope: Send {
 	fn node_id(&self) -> &str;
 	fn identity(&self) -> ExecutionPrincipal;
 	fn subjects(&self) -> &[String];
+	/// None for an ordinary Workspace; otherwise the active Subnode members.
+	/// The Subnode membership lock is held through the delegated effect.
+	async fn subnode_members(&mut self, workspace: Uuid) -> Result<Option<Vec<EntityRef>>>;
 	async fn task_workspace(&mut self, task: Uuid) -> Result<Option<Uuid>>;
-	async fn assign(&mut self, task: Uuid, policy: &str, reason: &str) -> Result<Assignment>;
+	async fn assign(
+		&mut self,
+		task: Uuid,
+		policy: &str,
+		reason: &str,
+		members: Option<&[EntityRef]>,
+	) -> Result<Assignment>;
 	async fn record_output(&mut self, source: &RunMetadata, kind: &str, id: Uuid) -> Result<()>;
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;

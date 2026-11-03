@@ -172,8 +172,10 @@ pub(crate) mod node_purge;
 
 pub mod node_recovery;
 
+pub(crate) mod data_protection;
 pub(crate) mod manual_keys;
 pub mod oauth_clients;
+pub(crate) mod subnodes;
 
 pub mod connection_policy;
 

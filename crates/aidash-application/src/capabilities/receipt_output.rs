@@ -58,10 +58,12 @@ pub(super) async fn adopt(
 	for file in files {
 		let path = file["path"].as_str().ok_or(Error::Forbidden)?;
 		let size = file["size"].as_u64().ok_or(Error::Forbidden)?;
-		let (id, digest) =
+		let (id, digest, media_type) =
 			super::reconciliation::download_output(&mut *scope, receipt.id, file).await?;
-		retained.push(json!({"file_id":id,"path":path,"digest":digest,"size":size,"media_type":"application/octet-stream",
-			"scope":"working","provenance":{"kind":"stopped_operation","operation_id":receipt.id}}));
+		retained.push(
+			json!({"file_id":id,"path":path,"digest":digest,"size":size,"media_type":media_type,
+			"scope":"working","provenance":{"kind":"stopped_operation","operation_id":receipt.id}}),
+		);
 	}
 	let encoded_stdout = observed["stdout"].as_str().ok_or(Error::Forbidden)?;
 	check_encoding_budget(encoded_stdout, limits.output_bytes)?;

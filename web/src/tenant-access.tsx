@@ -1,3 +1,4 @@
+import { DataProtectionSettings } from "./data-protection";
 import { Connections } from "./connections/settings";
 import { OAuthClients } from "./connections/clients";
 import { ScopeCeilings } from "./connections/ceilings";
@@ -56,6 +57,13 @@ export function TenantAccess({
           />
           <ApprovalObservationReportPanel tenant={tenant} />
         </>
+      )}
+      {can("policy.read") && (
+        <DataProtectionSettings
+          key={tenant}
+          tenant={tenant}
+          canUpdate={can("policy.update")}
+        />
       )}
       <TenantIdentityAdministration
         key={tenant}

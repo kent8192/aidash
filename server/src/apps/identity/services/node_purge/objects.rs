@@ -144,15 +144,87 @@ pub(super) async fn ids(
 		.limit(limit)
 		.lock(LockType::Update)
 		.build(PostgresQueryBuilder);
-	tx.fetch_all(&sql, convert_values(values))
+	let mut selected = tx
+		.fetch_all(&sql, convert_values(values))
 		.await?
 		.into_iter()
-		.map(|r| {
-			r.get("id")
+		.map(|row| {
+			row.get("id")
 				.map_err(reinhardt::core::exception::Error::from)
 				.map_err(Into::into)
 		})
-		.collect()
+		.collect::<Result<BTreeSet<Uuid>>>()?;
+	// Deleting either object cascades its attachment row. Capture the whole
+	// connected set before erasing any file, including shared WAV renditions.
+	let mut frontier = selected.iter().copied().collect::<Vec<_>>();
+	while !frontier.is_empty() {
+		let references = selectors::ids(Expr::col("object_id").into(), &frontier)
+			.or(selectors::ids(Expr::col("wav_object_id").into(), &frontier));
+		let (sql, values) = Query::select()
+			.columns(["object_id", "wav_object_id"].map(Alias::new))
+			.from(Alias::new("channel_attachments"))
+			.and_where(Expr::col("tenant").eq(Expr::value(owners.tenant)))
+			.and_where(references.clone())
+			.and_where(selectors::not_true(
+				owners.predicate("channel_attachments")?,
+			))
+			.limit(1)
+			.build(PostgresQueryBuilder);
+		if tx
+			.fetch_optional(&sql, convert_values(values))
+			.await?
+			.is_some()
+		{
+			return Err(Error::Conflict(
+				"Node purge found an attachment object shared with a surviving owner".into(),
+			));
+		}
+		let (sql, values) = Query::select()
+			.columns(["object_id", "wav_object_id"].map(Alias::new))
+			.from(Alias::new("channel_attachments"))
+			.and_where(owners.predicate("channel_attachments")?)
+			.and_where(references)
+			.build(PostgresQueryBuilder);
+		let mut next = Vec::new();
+		for row in tx.fetch_all(&sql, convert_values(values)).await? {
+			let row = QueryRow::from_backend_row(row).data;
+			for field in ["object_id", "wav_object_id"] {
+				let value: Option<Uuid> = serde_json::from_value(row[field].clone())?;
+				if let Some(id) = value
+					&& selected.insert(id)
+				{
+					next.push(id);
+				}
+			}
+		}
+		frontier = next;
+	}
+	if !selected.is_empty() {
+		let ids = selected.iter().copied().collect::<Vec<_>>();
+		let (sql, values) = Query::select()
+			.expr(Expr::value(1_i32))
+			.from(Alias::new("core_objects"))
+			.and_where(Expr::col("tenant").eq(Expr::value(owners.tenant)))
+			.and_where(selectors::ids(Expr::col("id").into(), &ids))
+			.and_where(Expr::col("area_id").is_not_null())
+			.and_where(selectors::not_true(owners.root(
+				"core_objects",
+				"area_id",
+				crate::database::classification::node::Root::Area,
+			)?))
+			.limit(1)
+			.build(PostgresQueryBuilder);
+		if tx
+			.fetch_optional(&sql, convert_values(values))
+			.await?
+			.is_some()
+		{
+			return Err(Error::Conflict(
+				"Node purge found an attachment object owned by another area".into(),
+			));
+		}
+	}
+	Ok(selected.into_iter().collect())
 }
 pub(super) async fn erase(
 	store: &Store,

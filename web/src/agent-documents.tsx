@@ -6,7 +6,24 @@ import { Field, useI18n } from "./ui";
 import type { ReferenceDocument } from "./generated/models";
 
 const maxText = 65536;
+const maxImages = 8 * 1024 * 1024;
+type ImageReference = ReferenceDocument & { data_base64?: string };
 export async function extractDocument(file: File): Promise<ReferenceDocument> {
+  if (
+    ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.type)
+  ) {
+    if (file.size > maxImages) throw new Error("documentImageLimit");
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += 8192)
+      binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    return {
+      name: file.name,
+      media_type: file.type,
+      text: "",
+      data_base64: btoa(binary),
+    } as ImageReference;
+  }
   if (file.size > 10 * 1024 * 1024) throw new Error("documentFileLimit");
   let text = "";
   let media_type = "text/plain";
@@ -87,7 +104,7 @@ export function AgentDocuments({
       <Field label={t("documentUpload")}>
         <Input
           type="file"
-          accept=".pdf,.xlsx,.txt,.md,.csv"
+          accept=".pdf,.xlsx,.txt,.md,.csv,image/png,image/jpeg,image/gif,image/webp"
           multiple
           disabled={busy}
           onChange={async (event) => {
@@ -102,6 +119,21 @@ export function AgentDocuments({
                 throw new Error("documentCountLimit");
               const next = [...documents];
               for (const file of files) next.push(await extractDocument(file));
+              const imageBytes = next.reduce((total, document) => {
+                const encoded = (document as ImageReference).data_base64;
+                return (
+                  total +
+                  (encoded
+                    ? Math.floor((encoded.length * 3) / 4) -
+                      (encoded.endsWith("==")
+                        ? 2
+                        : encoded.endsWith("=")
+                          ? 1
+                          : 0)
+                    : 0)
+                );
+              }, 0);
+              if (imageBytes > maxImages) throw new Error("documentImageLimit");
               if (
                 new TextEncoder().encode(next.map((d) => d.text).join(""))
                   .length > maxText
@@ -133,7 +165,11 @@ export function AgentDocuments({
               className="flex min-w-0 items-start gap-2"
             >
               <Disclosure summary={document.name} className="min-w-0 flex-1">
-                <Pre>{document.text}</Pre>
+                {document.media_type.startsWith("image/") ? (
+                  <Hint>{document.media_type}</Hint>
+                ) : (
+                  <Pre>{document.text}</Pre>
+                )}
               </Disclosure>
               <Button
                 variant="ghost"

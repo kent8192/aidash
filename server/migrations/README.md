@@ -1,5 +1,16 @@
 # Aidash native migration history
 
+`registry/0057_embedding_inputs` through `0059_reference_image_byte_state`
+add image retrieval inputs, private reference images, model state and Tenant
+policies after `0056_attachment_tools`. `execution/0092_reference_embedding_usage`
+and `0093_reference_embedding_usage_state` record reference embedding usage after
+`0091_bounded_read_indexes`.
+
+`registry/0056_attachment_tools` (after `registry/0055_remove_structured_harness_contracts`) extends the existing PostgreSQL descriptor
+and Agent default validators for the built-in `attachment_copy` operation.
+The function bodies use SQL assets because Reinhardt has no typed operation
+for replacing PostgreSQL functions. Reversal refuses while definitions or Run
+snapshots still use the new operation.
 `registry/0054_remove_agent_cluster` removes the obsolete Agent config key from Registry definitions, Agent drafts and registration requests, then removes it from the Agent contract. `execution/0089_remove_agent_cluster` removes it from Generation policy templates and request definitions. PostgreSQL JSON updates and function replacement use SQL assets because Reinhardt migrations cannot express these transformations. Both are irreversible. Each owner-only atomic migration establishes Deployment Scope before its first row access because the native migration executor does not open scoped application transactions. The registry update temporarily disables the Marketplace writer fence within its transaction, retaining its other validation and reference triggers. Installed Registry copies change while immutable Marketplace versions and revisions stay untouched: old Marketplace versions must be republished and old installation revisions may no longer match. Run and Federation snapshots are unchanged; Runs using old snapshots fail and need cancellation. Surviving Run constraints and triggers do not call the Agent validator, so cancellation updates do not revalidate the retained snapshots. Catalog Approvals and Federation pins covering changed definitions need renewing.
 
 `execution/0081_lease_recoveries` updates the physical `runs.pending` default,
@@ -692,7 +703,7 @@ single Registry leaf without rewriting either history or changing stored data.
 state-only migration preserves the durable Research result history and leaves
 a single Execution head without changing either existing branch.
 
-`execution/0097_node_research_merge` joins Node cancellation and Research/approval
+`execution/0106_node_research_merge` joins Node cancellation and Research/approval
 histories with an empty state-only migration. Both existing histories and their
 rollback guards retain their identities; no schema or stored data changes.
 
@@ -702,7 +713,7 @@ Source histories, respectively. Both are empty state-only migrations. They
 preserve the existing migration identities and give each app one leaf without
 changing schema, retained inputs, or data.
 
-`execution/0098_node_plugin_merge` joins the Node cancellation and MCP
+`execution/0107_node_plugin_merge` joins the Node cancellation and MCP
 continuation heads after their Research history merges. The empty state-only
 migration preserves both histories and leaves one Execution head.
 `execution/0084_invocation_tenant_secrets` (after `execution/0083_harness_contract_state`)
@@ -734,6 +745,14 @@ matching model state.
 is an empty state-only migration: both independent column changes apply before
 the single Knowledge head, and no schema or model state is overwritten.
 
+`execution/0097_provider_tool_usage` stores provider-reported tool counts. `registry/0061_provider_tools` extends the current descriptor and Agent binding validation with Provider tool contracts, preserving the prior functions by delegation.
+
+`identity/0051_tenant_data_protection` adds each Tenant's current Data Protection Level and append-only setting history (#542). A missing row means Standard with model-call ZDR and the Plan Connection exemption enabled. Checks reject unknown levels and a Zero Data Retention policy with model-call ZDR disabled. `identity/0052_data_protection_row_level_security` applies the same forced Tenant-isolation policy as the other Tenant-owned tables; literal SQL is required because Reinhardt does not expose RLS policy operations.
+
+`identity/0053_tenant_data_protection_state` records those two tables in ORM migration state. It executes no DDL; references, validity checks and row-level policies remain in the preceding database-only migrations.
+
+`registry/0062_provider_warning_tools` extends the closed Provider tool validation functions with the warning-tier tools (advisor, subagent, model search, tool search, shell) without replacing the previous contracts; its reverse refuses to run while any such definition or pinned Run exists. `identity/0054_provider_warning_acknowledgment` adds the nullable exact disclosure text to `authorization_catalog_history`, filled only when a warning tool is approved. `execution/0098_provider_container` adds the nullable `runs.provider_container` pin (OpenRouter container id and network policy). OpenRouter has no container delete API, so the pin is kept after the Run ends.
+
 ## Run control provenance and Safety Stops (#485, ADR 0101)
 
 `execution/0075_run_control_provenance` (after `execution/0074_federated_preview_authority`)
@@ -762,6 +781,17 @@ CHECKs bound the reason to 1 to 1000 characters and tie `identity_id` to a brows
 through `RunSQL`, and `execution/0079_run_safety_stops_state` is the generated state-only
 snapshot that leaves the physical constraints and indexes to `0077`.
 
+`workspaces/0015_attachment_objects` adds an immutable object reference and
+optional decoded-media measurements to Thread Attachments. Existing inline bytes
+remain readable until startup backfill verifies and moves them; new attachments
+use `core_objects`. PostgreSQL nullability is changed with `RunSQL` because the
+pinned typed `AlterColumn` cannot express it (#6803). Reversal refuses while any
+attachment has no inline content. `0016_attachment_content_state` records the new fields and nullable bytea in
+ORM state. The object reference is Tenant-scoped and cascades
+on object deletion, allowing a deleted Tenant's object purge to run before row
+purge. The object store's intents recover uncommitted files after a crash.
+
+`workspaces/0017_attachment_wav_rendition` adds a nullable, tenant-scoped immutable WAV rendition reference and its integrity metadata. The three fields are set together when a route first needs the rendition; deleting the attachment makes both objects reclaimable. `0018_attachment_wav_rendition_state` records the fields in model state.
 `execution/0086_invocation_connections` (after `execution/0085_egress_secret_records`)
 adds nullable `invocations.connection_id` with a typed Reinhardt operation (#554,
 ADR 0100). It records the person's OAuth Connection used by dispatch, never a token.
@@ -807,19 +837,31 @@ existing identities and one leaf per app.
 
 ## Merged Node lifetime and Auth histories
 
-`identity/0062_node_auth_history_merge` joins the Common Auth origin binding,
+`identity/0066_node_auth_history_merge` joins the Common Auth origin binding,
 remote terminal receipts and task source lifetime histories.
-`execution/0096_node_lifetime_merge` joins Node cancellation jobs with Session
-Area lifetime state. `knowledge/0039_recovery_lifetime_merge` joins Home ledger
+`execution/0105_node_lifetime_merge` joins Node cancellation jobs with Session
+Area lifetime state. `knowledge/0050_recovery_lifetime_merge` joins Home ledger
 recovery eligibility and attempt evidence with remote-read source lifetimes.
-Each is an empty state-only migration that depends on every existing leaf of
-its app. Existing migration identities, dependencies, schema changes and
-rollback guards remain intact, with one head per app for future generation.
+Each is an empty state-only migration that joins its listed histories. The
+renumbered Node chains also follow the provider and semantic image histories,
+leaving one leaf each for Identity, Execution and Knowledge.
 
-`execution/0099_node_preview_merge` joins `execution/0098_node_plugin_merge`
+`execution/0108_node_preview_merge` joins `execution/0107_node_plugin_merge`
 with the Live preview, Safety Stop, Lease Recovery and Harness Contract history
 ending in `execution/0083_harness_contract_state`.
 `federation/0021_node_preview_origin_merge` joins Node registration recovery
 ownership with `federation/0013_registered_preview_origin`. Both are empty
-state-only migrations; existing identities, schema changes and rollback guards
-remain intact.
+state-only migrations; existing schema changes and rollback guards remain intact.
+Federation retains its pre-existing separate `0007_model_state` leaf alongside
+`0021_node_preview_origin_merge`.
+
+`execution/0094_subnodes`, `0095_subnodes_row_level_security`, and
+`0096_subnodes_state` create the Run-scoped Subnode tables, enforce Tenant
+row policies, and record their model state after `0089_remove_agent_cluster`.
+
+`registry/0060_subnode_provider` (after `registry/0059_reference_image_byte_state`) extends the PostgreSQL built-in Tool descriptor
+validator with the six `core.subnodes@1` operations (#660). Its reversible
+`RunSQL` replaces the PostgreSQL function body because Reinhardt migrations
+cannot express PL/pgSQL function definitions. Rolling back restores the
+previous descriptor contract; existing Subnode descriptors then cannot be
+rewritten until the migration is reapplied.

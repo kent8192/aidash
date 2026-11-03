@@ -59,6 +59,7 @@ pub fn overlay_config(target: &mut Value, overrides: &Value) -> Result<()> {
 		.as_object()
 		.ok_or_else(|| Error::Invalid("installation config must be an object".into()))?;
 	if object.contains_key("knowledge_digest")
+		|| object.contains_key("reference_embedding")
 		|| object.contains_key("core_capabilities")
 		|| object.contains_key("skill_attachments")
 		|| object.contains_key("skill_roots")

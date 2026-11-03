@@ -438,6 +438,11 @@ pub async fn retained_storage_bytes_in(
 			SimpleExpr::FunctionCall("coalesce".into_iden(), vec![sum, Expr::value(0i64).into()])
 				.cast_as(Alias::new("int8"));
 		let mut predicate = owners.predicate(table)?;
+		if table == "channel_attachments" {
+			// Stored originals are already counted through core_objects; only
+			// legacy inline bytes remain attributable to the attachment row.
+			predicate = predicate.and(Expr::col("object_id").is_null());
+		}
 		if table == "core_objects" {
 			predicate = predicate.or(Expr::col("tenant")
 				.eq(Expr::value(tenant))

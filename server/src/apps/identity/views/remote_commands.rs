@@ -21,3 +21,19 @@ pub async fn handle(
 	}
 	crate::http::json(api::handle(service.runtime.clone(), peer.0, input).await)
 }
+
+#[post(
+	"/federation/v0.1/thread-attachment/1/fetch",
+	name = "remotecommands-thread-attachment",
+	auth = "protected"
+)]
+pub async fn thread_attachment(
+	#[inject] service: Depends<RemoteCommands>,
+	#[inject] peer: InboundCall,
+	Json(input): Json<AttachmentInput>,
+) -> ViewResult<Response> {
+	if let Err(error) = crate::http::validate(&input) {
+		return Ok(error.http_response());
+	}
+	crate::http::json(api::thread_attachment(service.runtime.clone(), peer.0, input).await)
+}

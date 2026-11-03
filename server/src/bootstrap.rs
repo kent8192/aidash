@@ -137,6 +137,7 @@ pub async fn initialize_as(
 		.with_dashboard_policy(config.dashboard_policy())
 		.with_cache_salt(cache_salt)
 		.with_keyless_origins(settings.keyless_endpoints.origins()?)
+		.with_hosted_model_origins(settings.deployment.hosted_origins()?)
 		.with_egress(aidash_integrations::federation::Egress {
 			enabled: config.federation,
 			key: config.deployment_key.clone(),
@@ -144,6 +145,7 @@ pub async fn initialize_as(
 		})
 		// An invalid Deployment retention period refuses to start (ADR 0045).
 		.with_research_retention(settings.research_retention.rules()?)
+		.with_data_protection_floor(settings.deployment.data_protection_floor)
 		.with_test_limit_ceilings(settings.workbench_test_limits.ceilings()?)
 		.with_preview_limits(settings.preview_limits.limits()?)
 		.with_preview(
@@ -188,6 +190,7 @@ pub async fn initialize_as(
 		client,
 		notify: Arc::new(Notify::new()),
 	};
+	crate::apps::workspaces::repositories::attachment_backfill::run(&federation.store).await?;
 	// Persist removed restrictions even for inactive Identities before this
 	// policy can serve requests or start workers. Provider IO is unnecessary.
 	crate::apps::identity::services::sign_in::check_restrictions(&federation).await?;
@@ -877,6 +880,7 @@ pub(crate) fn channel_scope<'a>(
 		store,
 		lease,
 		federation: None,
+		run_id: None,
 	}
 }
 
@@ -1493,10 +1497,15 @@ pub(crate) fn worker_task_scope<'a>(
 }
 
 /// Ordered attachment bytes and current subject disclosure borrow the same Access lease.
-pub(crate) fn scoped_media(
-	access: &mut crate::authorization::access::Access,
-) -> crate::apps::workspaces::repositories::media::ScopedMedia<'_> {
-	crate::apps::workspaces::repositories::media::ScopedMedia { access }
+pub(crate) fn scoped_media<'a>(
+	access: &'a mut crate::authorization::access::Access,
+	store: &'a Store,
+) -> crate::apps::workspaces::repositories::media::ScopedMedia<'a> {
+	crate::apps::workspaces::repositories::media::ScopedMedia {
+		access,
+		store,
+		pending: None,
+	}
 }
 
 /// File selections resolve under one owned current-run authority guard and immutable snapshot.
@@ -1504,8 +1513,9 @@ pub(crate) fn selected_media<'a>(
 	store: &'a Store,
 	run: &'a aidash_domain::Run,
 	access: Arc<tokio::sync::RwLock<crate::authorization::access::Access>>,
+	home: Option<crate::federation::Home>,
 ) -> crate::apps::workspaces::repositories::media::SelectedMedia<'a> {
-	crate::apps::workspaces::repositories::media::SelectedMedia::new(store, run, access)
+	crate::apps::workspaces::repositories::media::SelectedMedia::new(store, run, access, home)
 }
 
 /// Current builtin and plugin authority borrows the same worker Access object.
@@ -2370,6 +2380,7 @@ impl aidash_application::ports::registry::workbench::sandbox::admission::Sandbox
 {
 	fn provider(
 		&self,
+		tenant: &str,
 		model: aidash_domain::model::ModelConfig,
 	) -> aidash_application::Result<Arc<dyn aidash_application::ports::ModelProvider>> {
 		// Sandbox requests are always Legacy, so they never need a salt.
@@ -2382,7 +2393,10 @@ impl aidash_application::ports::registry::workbench::sandbox::admission::Sandbox
 			self.clients.clone(),
 			model,
 			self.keyless.clone(),
-			Default::default(),
+			aidash_application::provider_access::Context {
+				tenant: tenant.to_owned(),
+				..Default::default()
+			},
 		)
 	}
 }
@@ -2393,7 +2407,11 @@ pub(crate) fn workbench_sandbox_models(runtime: &Federation) -> WorkbenchSandbox
 			permitted: runtime.store.provider_clients.permitted.clone(),
 			public: runtime.store.provider_clients.public.clone(),
 		},
-		keyless: keyless_provider_access(&runtime.store),
+		keyless: Arc::new(
+			crate::apps::identity::repositories::provider_credentials::AdmittedAccess {
+				store: runtime.store.clone(),
+			},
+		),
 	}
 }
 
@@ -2817,6 +2835,7 @@ pub(crate) fn admitted_model_provider(
 			},
 		),
 		aidash_application::provider_access::Context {
+			data_protection: Default::default(),
 			tenant,
 			run,
 			maintenance,
@@ -2841,6 +2860,7 @@ pub(crate) fn admitted_semantic_transport(
 		},
 	);
 	transport.embedding.context = aidash_application::provider_access::Context {
+		data_protection: Default::default(),
 		tenant,
 		run,
 		maintenance,

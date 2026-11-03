@@ -6,6 +6,7 @@ use aidash_domain::research::{
 	Operation,
 	citations::{self, EvidenceRef},
 };
+use aidash_domain::tool::Yield;
 
 const KNOWN: EvidenceRef = EvidenceRef(Uuid::from_u128(0xe1));
 const UNKNOWN: EvidenceRef = EvidenceRef(Uuid::from_u128(0xe2));
@@ -282,6 +283,7 @@ async fn a_native_model_turn_records_no_text_the_citation_gate_withheld(mut fixt
 	assert_eq!(
 		fixture.run.context.events().next(),
 		Some(&ContextEvent::Assistant {
+			provider_activity: vec![],
 			epoch: 4,
 			text: String::new(),
 			calls: vec!["call-0".into()],
@@ -749,4 +751,74 @@ async fn expired_view_results_are_revalidated_before_selecting_model_media(
 		matches!(fixture.run.context.events().last(), Some(ContextEvent::Tool{result,..}) if result["error"]["code"] == "result_expired")
 	);
 	assert_eq!(view.invocations(), usize::from(!replay));
+}
+
+#[rstest]
+#[tokio::test]
+async fn provider_tools_reported_sources_cannot_publish_source_citations(mut fixture: Fixture) {
+	let declaration =
+		aidash_domain::tool::provider_tools::declaration("openrouter:web_search").unwrap();
+	let descriptor = aidash_domain::tool::providers::ToolDescriptor {
+		registry_deployment: NODE.into(),
+		provider: declaration.id.into(),
+		operation: declaration.alias.into(),
+		default_alias: declaration.alias.into(),
+		tier: aidash_domain::tool::providers::ToolTier::Provider,
+		narrow: Default::default(),
+		transport: None,
+		lifecycle: None,
+	};
+	let mut tool = Scripted::new(
+		ToolSpec {
+			name: "provider_search".into(),
+			description: "Provider search".into(),
+			parameters: json!({"type":"object"}),
+		},
+		"workspace_read",
+	);
+	Arc::get_mut(&mut tool).unwrap().contract = descriptor
+		.declared_contract(QualifiedRef {
+			registry_deployment: NODE.into(),
+			id: "provider.openrouter.web_search".into(),
+			version: "1.0.0".into(),
+		})
+		.unwrap();
+	bind(&mut fixture, "provider_search", tool);
+	answer(
+		&mut fixture.run,
+		format!("Reported source [[cite:{UNKNOWN}]]."),
+	);
+	fixture
+		.run
+		.state
+		.tool_mut()
+		.unwrap()
+		.response
+		.provider_activity = vec![
+		json!({"type":"url_citation","url_citation":{"url":"https://example.com","id":UNKNOWN.to_string()}}),
+	];
+	advance_sources(&mut fixture).await.unwrap();
+	assert_eq!(last_write(&fixture).0, "run.citation_correction_required");
+	assert!(fixture.backend.0.artifacts.lock().unwrap().is_empty());
+	assert_eq!(checks(&fixture), 1);
+	assert!(
+		last_write(&fixture)
+			.1
+			.context
+			.events()
+			.any(|event| matches!(
+				event, ContextEvent::Assistant { provider_activity, .. } if !provider_activity.is_empty()
+			)),
+		"a rejected citation must not discard accepted Provider activity"
+	);
+	assert!(
+		last_write(&fixture)
+			.1
+			.context
+			.events()
+			.all(|event| !matches!(
+				event, ContextEvent::Assistant { text, .. } if text.contains("Reported source")
+			)),
+		"the answer the citation gate rejected must not be recorded"
+	);
 }

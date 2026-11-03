@@ -16,6 +16,9 @@ pub enum SemanticEntryState {
 	#[model_enum(value = "ERROR")]
 	#[serde(rename = "ERROR")]
 	Error,
+	#[model_enum(value = "UNSUPPORTED")]
+	#[serde(rename = "UNSUPPORTED")]
+	Unsupported,
 	#[model_enum(value = "REVOKED")]
 	#[serde(rename = "REVOKED")]
 	Revoked,
