@@ -11,6 +11,14 @@ use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use uuid::Uuid;
 
+struct ObjectReservation<'a> {
+	id: Uuid,
+	area: Option<Uuid>,
+	kind: &'a str,
+	size: u64,
+	grandfather_existing: bool,
+}
+
 pub(crate) struct PendingObject {
 	id: Uuid,
 	area: Option<Uuid>,
@@ -250,11 +258,13 @@ impl Runtime {
 		self.begin_object_with_quota(
 			tx.as_mut(),
 			tenant,
-			Uuid::new_v4(),
-			area,
-			kind,
-			size,
-			grandfather_existing,
+			ObjectReservation {
+				id: Uuid::new_v4(),
+				area,
+				kind,
+				size,
+				grandfather_existing,
+			},
 		)
 		.await
 	}
@@ -268,19 +278,32 @@ impl Runtime {
 		kind: &str,
 		size: u64,
 	) -> Result<PendingObject> {
-		self.begin_object_with_quota(tx, tenant, id, area, kind, size, false)
-			.await
+		self.begin_object_with_quota(
+			tx,
+			tenant,
+			ObjectReservation {
+				id,
+				area,
+				kind,
+				size,
+				grandfather_existing: false,
+			},
+		)
+		.await
 	}
 	async fn begin_object_with_quota(
 		&self,
 		tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 		tenant: &str,
-		id: Uuid,
-		area: Option<Uuid>,
-		kind: &str,
-		size: u64,
-		grandfather_existing: bool,
+		reservation: ObjectReservation<'_>,
 	) -> Result<PendingObject> {
+		let ObjectReservation {
+			id,
+			area,
+			kind,
+			size,
+			grandfather_existing,
+		} = reservation;
 		let size = i64::try_from(size).map_err(|_| Error::Invalid("OBJECT_LIMIT".into()))?;
 		let limit = if grandfather_existing {
 			i64::MAX

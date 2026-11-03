@@ -138,19 +138,16 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 				.collect(),
 		);
 	}
-	let mut conflicts = graph.detect_conflicts();
-	let federation = conflicts.remove("federation").unwrap();
-	assert_eq!(
-		federation
-			.iter()
-			.map(|key| key.name.as_str())
-			.collect::<Vec<_>>(),
-		vec!["0007_model_state", "0021_node_preview_origin_merge"]
-	);
+	// Cross-app dependencies consume federation/0007_model_state globally.
+	// The Node chain also extends 0013, so the global graph has one federation leaf.
+	let conflicts = graph.detect_conflicts();
 	assert!(
 		conflicts.is_empty(),
 		"unexpected migration leaves: {conflicts:?}"
 	);
+	let federation = graph.get_leaf_nodes_for_app("federation");
+	assert_eq!(federation.len(), 1);
+	assert_eq!(federation[0].name, "0021_node_preview_origin_merge");
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
 	assert_eq!(knowledge[0].name, "0050_recovery_lifetime_merge");
@@ -445,6 +442,23 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0094_subnodes"),
 			("execution", "0095_subnodes_row_level_security"),
 			("execution", "0096_subnodes_state"),
+			// Provider predecessor migrations also follow the excluded Subnode history.
+			("execution", "0097_provider_tool_usage"),
+			("execution", "0098_provider_container"),
+			// PR #502 Node migrations follow the provider history.
+			("execution", "0099_runner_allocation_journals"),
+			("execution", "0100_node_cancellation_jobs"),
+			("execution", "0101_node_cancellation_jobs_state"),
+			(
+				"execution",
+				"0102_node_cancellation_jobs_row_level_security",
+			),
+			("execution", "0103_session_area_lifetime"),
+			("execution", "0104_session_area_lifetime_state"),
+			("execution", "0105_node_lifetime_merge"),
+			("execution", "0106_node_research_merge"),
+			("execution", "0107_node_plugin_merge"),
+			("execution", "0108_node_preview_merge"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
