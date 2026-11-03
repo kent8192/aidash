@@ -45,6 +45,8 @@ pub trait SemanticConfigurationSession: Send {
 	async fn active(&mut self, workspace: Uuid) -> Result<Vec<Uuid>>;
 	async fn reconfigure(&mut self, id: Uuid, revision: i64) -> Result<Entry>;
 	async fn schedule(&mut self, entry: &Entry, collection: &str) -> Result<()>;
+	/// Re-evaluate image quota assignments in publication order for this generation.
+	async fn rebuild_images(&mut self, workspace: Uuid, max_images: usize) -> Result<()>;
 	async fn history(&mut self, workspace: Uuid, revision: i64) -> Result<()>;
 	async fn commit(self: Box<Self>) -> Result<()>;
 }
@@ -57,6 +59,10 @@ pub trait SemanticEntriesSession: Send {
 	fn saved(&mut self) -> Result<Value>;
 	async fn permits(&mut self, entry: &Entry, action: &str) -> Result<bool>;
 	async fn source(&mut self, workspace: Uuid, source: &Source) -> Result<Option<String>>;
+	/// Confirm that an image pointer still belongs to an Area the caller can read.
+	async fn image_visible(&mut self, _workspace: Uuid, _source: &Source) -> Result<bool> {
+		Ok(false)
+	}
 	async fn count(&mut self, workspace: Uuid) -> Result<i64>;
 	async fn put(&mut self, entry: Entry, authority: Value) -> Result<Entry>;
 	async fn schedule(&mut self, entry: &Entry, collection: &str) -> Result<()>;

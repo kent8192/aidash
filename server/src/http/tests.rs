@@ -50,6 +50,18 @@ fn expired_buckets_never_lock_new_callers_out() {
 
 #[tokio::test]
 async fn body_admission_owns_the_request_slot_and_uses_route_limits() {
+	assert_eq!(
+		super::request_body_limit(&http::Method::POST, "/api/agents/personal"),
+		12 * 1024 * 1024
+	);
+	assert_eq!(
+		super::request_body_limit(&http::Method::PUT, "/api/workbench/drafts/123"),
+		12 * 1024 * 1024
+	);
+	assert_eq!(
+		super::request_body_limit(&http::Method::POST, "/api/workbench/drafts/123/register"),
+		super::BODY_LIMIT
+	);
 	let protection = Protection::new(Settings {
 		concurrency: 1,
 		..Default::default()

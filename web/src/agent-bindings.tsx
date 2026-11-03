@@ -1,3 +1,9 @@
+import {
+  ProviderToolFields,
+  providerTool,
+  providerToolDefaults,
+  type ProviderToolParameters,
+} from "./provider-tools";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { NativeSelect } from "./components/ui/native-select";
@@ -20,6 +26,7 @@ export type Binding = {
   target: { registry_deployment: string; id: string; version: string };
   alias?: string;
   narrow: {
+    provider_tool?: ProviderToolParameters;
     allowed_hosts?: string[];
     scope?: Record<string, string[]>;
     limits?: Record<string, number>;
@@ -106,6 +113,8 @@ function Restrictions({
       onBlur={(e) => {
         try {
           const narrow = JSON.parse(e.target.value);
+          if (!narrow || typeof narrow !== "object" || Array.isArray(narrow))
+            throw new Error("object required");
           e.target.setCustomValidity("");
           change(narrow);
         } catch {
@@ -266,7 +275,13 @@ export function AgentBindings({
                   id: entry.id,
                   version: entry.version,
                 },
-                narrow: {},
+                narrow: providerTool(entry.id)
+                  ? {
+                      provider_tool: providerToolDefaults(
+                        providerTool(entry.id)!,
+                      ),
+                    }
+                  : {},
               },
             ],
           });
@@ -323,6 +338,18 @@ export function AgentBindings({
                     }
                   />
                 </Field>
+              )}
+              {providerTool(binding.target.id) && (
+                <ProviderToolFields
+                  tool={providerTool(binding.target.id)!}
+                  value={
+                    binding.narrow.provider_tool ??
+                    providerToolDefaults(providerTool(binding.target.id)!)
+                  }
+                  change={(provider_tool) =>
+                    update(i, { narrow: { ...binding.narrow, provider_tool } })
+                  }
+                />
               )}
               <Field label={ja ? "制限（JSON）" : "Restrictions (JSON)"}>
                 <Restrictions

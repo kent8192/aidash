@@ -52,7 +52,16 @@ pub(super) async fn invoke(name: &str, ctx: &ToolContext<'_>, input: Value) -> R
 	// A plugin tool belongs to no Binding: the Run's pin supplies it, exactly as dispatch does.
 	let mut specifications = ctx.operations.binding_specifications().await?;
 	specifications.extend(pinned_specifications(ctx.run.context.plugin_tools.as_ref()));
-	let (budgets, catalog) = catalog(ctx.run, &specifications, &direct)?;
+	let intrinsic = ctx.operations.intrinsic_subnode_specifications().await?;
+	specifications.extend(intrinsic.clone());
+	let (budgets, mut catalog) = catalog(ctx.run, &specifications, &direct)?;
+	let snapshot = ctx
+		.run
+		.context
+		.binding_snapshot
+		.as_ref()
+		.ok_or_else(|| Error::Invalid("Run has no admitted Binding snapshot".into()))?;
+	exposure::include_subnode_intrinsics(snapshot, &mut catalog, &intrinsic)?;
 	// Earlier Load/Unload results of this response are staged, not exposed.
 	let state = &ctx.run.context.exposure.effective();
 	Ok(match name {

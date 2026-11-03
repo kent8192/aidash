@@ -138,6 +138,12 @@ pub async fn duplicate<R: DraftRepository>(
 	if original.revision != input.expected_revision {
 		return Err(Error::Conflict("draft revision changed".into()));
 	}
+	if aidash_domain::registry::knowledge::contains_images(&original.documents) {
+		return Err(Error::Invalid(
+			"private reference images cannot be copied; register a new version from the originals"
+				.into(),
+		));
+	}
 	let id = Uuid::now_v7();
 	let mut entry: Entry = serde_json::from_value(original.entry.clone())?;
 	let source_id = entry.id.clone();

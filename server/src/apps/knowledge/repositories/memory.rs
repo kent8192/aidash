@@ -26,6 +26,9 @@ pub(crate) async fn source_invalidated(
 	use crate::Error;
 	Ok(match source {
 		Source::Memory { .. } => false,
+		// The Area gate may hide an image without deleting it. Image sources have
+		// no text to disclose here, so leave the subsequent authority check to refuse them.
+		Source::WorkingImage { .. } => false,
 		Source::Artifact { id } => crate::apps::workspaces::models::Artifact::read_in(
 			&mut **lease.tx(),
 			*id,

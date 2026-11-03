@@ -8,6 +8,17 @@ const CEILINGS: ReadCeilings = ReadCeilings {
 	search_bytes: 32768,
 };
 
+#[test]
+fn subnode_file_reads_are_not_batched_with_the_creators_working_area() {
+	let input = json!({
+		"file_id": uuid::Uuid::new_v4(),
+		"representation": "text",
+		"workspace_id": uuid::Uuid::new_v4(),
+		"area_id": uuid::Uuid::new_v4()
+	});
+	assert!(core_call("file_read", &input, CEILINGS).is_none());
+}
+
 #[rstest]
 #[case(ResourceAccess::Shared, ResourceAccess::Shared, false)]
 #[case(ResourceAccess::Shared, ResourceAccess::Exclusive, true)]

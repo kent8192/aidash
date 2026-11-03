@@ -1228,3 +1228,48 @@ async fn a_request_without_a_person_of_the_tenant_is_never_covered(
 
 	assert_eq!(job.status, "PENDING_APPROVAL");
 }
+
+#[rstest]
+#[tokio::test]
+async fn subnode_assignment_reuses_only_members_and_never_generates(
+	validation: DefinitionValidation,
+) {
+	let mut scope = Scope::new();
+	scope.ordinary("outsider", true, SubjectKind::Agent);
+	scope.ordinary("member", true, SubjectKind::Agent);
+	let members = [EntityRef {
+		id: "member".into(),
+		version: "1.0.0".into(),
+	}];
+	let result = assign_in_restricted(
+		&mut scope,
+		Uuid::from_u128(2),
+		"policy",
+		"work",
+		&validation,
+		Some(&members),
+	)
+	.await
+	.unwrap();
+	let Assignment::Existing { delegation } = result else {
+		panic!("expected member delegation")
+	};
+	assert_eq!(delegation.agent_id, "member");
+	assert_eq!(scope.effects, ["delegate"]);
+
+	let mut no_match = Scope::new();
+	no_match.ordinary("outsider", true, SubjectKind::Agent);
+	assert!(matches!(
+		assign_in_restricted(
+			&mut no_match,
+			Uuid::from_u128(2),
+			"policy",
+			"work",
+			&validation,
+			Some(&members)
+		)
+		.await,
+		Err(Error::Refused(_))
+	));
+	assert!(no_match.effects.is_empty());
+}

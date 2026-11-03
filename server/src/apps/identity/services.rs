@@ -37,6 +37,7 @@ pub mod tenant_secret_readiness;
 pub mod tenant_secrets;
 pub mod tenants;
 
+pub(crate) mod data_protection;
 pub mod oauth_clients;
 
 pub mod oauth_connections;

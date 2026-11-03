@@ -103,6 +103,63 @@ impl TenantAdministrations {
 		Ok(overview)
 	}
 
+	pub(crate) async fn subnode_limits(
+		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
+		tenant: String,
+	) -> Result<aidash_domain::subnodes::SubnodeLimits> {
+		let administrator = self.administrator(actor, origin, &tenant).await?;
+		let result = self
+			.runtime
+			.store
+			.pool
+			.atomic(&administrator.scope()?, async |tx| {
+				administrator.lock(tx, false).await?;
+				crate::apps::execution::models::subnodes::SubnodeLimitRecord::get(tx, &tenant).await
+			})
+			.await;
+		self.finish(&administrator, result).await
+	}
+
+	pub(crate) async fn set_subnode_limits(
+		&self,
+		actor: Actor,
+		origin: Option<BrowserOrigin>,
+		tenant: String,
+		input: aidash_domain::subnodes::SubnodeLimits,
+	) -> Result<aidash_domain::subnodes::SubnodeLimits> {
+		input
+			.validate()
+			.map_err(|error| Error::Invalid(error.to_string()))?;
+		let administrator = self.administrator(actor, origin, &tenant).await?;
+		let result = self
+			.runtime
+			.store
+			.pool
+			.atomic(&administrator.scope()?, async |tx| {
+				let snapshot = administrator.lock(tx, false).await?;
+				administrator
+					.require(
+						tx,
+						&snapshot,
+						aidash_domain::identity::tenant_administration::SUBNODE_LIMITS_UPDATE,
+						&tenant,
+						serde_json::json!({}),
+					)
+					.await?;
+				crate::apps::execution::models::subnodes::SubnodeLimitRecord::put(
+					tx,
+					&tenant,
+					&administrator.identity.subject,
+					input,
+				)
+				.await
+			})
+			.await;
+		self.finish(&administrator, result).await
+	}
+
 	pub(crate) async fn registrations(
 		&self,
 		actor: Actor,

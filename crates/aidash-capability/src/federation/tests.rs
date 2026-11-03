@@ -277,6 +277,8 @@ async fn the_two_token_types_never_stand_in_for_each_other() {
 	);
 	let capability = crate::mint(
 		&Claims {
+			provider_tools: vec![],
+			data_protection: Default::default(),
 			iss: "worker".into(),
 			aud: "environment".into(),
 			iat: NOW,

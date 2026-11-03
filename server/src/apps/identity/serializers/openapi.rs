@@ -31,7 +31,52 @@ use reinhardt::rest::openapi::OpenApiSchema;
 use serde_json::Value;
 
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
+	contracts.response::<_, aidash_domain::subnodes::SubnodeLimits>(
+		document,
+		views::tenant_administration::subnode_limits,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::tenant_administration::subnode_limits,
+		&["String"],
+	)?;
+	contracts.request::<_, aidash_domain::subnodes::SubnodeLimits>(
+		document,
+		views::tenant_administration::set_subnode_limits,
+	)?;
+	contracts.response::<_, aidash_domain::subnodes::SubnodeLimits>(
+		document,
+		views::tenant_administration::set_subnode_limits,
+		200,
+		"application/json",
+	)?;
+	contracts.path(
+		document,
+		views::tenant_administration::set_subnode_limits,
+		&["String"],
+	)?;
+
 	use super::desktop;
+	{
+		use super::data_protection::{Impact, Settings};
+		use aidash_domain::data_protection::DataProtection;
+		use views::data_protection as view;
+		contracts.response::<_, Settings>(document, view::get_policy, 200, "application/json")?;
+		contracts.path(document, view::get_policy, &["String"])?;
+		contracts.request::<_, DataProtection>(document, view::update_policy)?;
+		contracts.response::<_, Settings>(
+			document,
+			view::update_policy,
+			200,
+			"application/json",
+		)?;
+		contracts.path(document, view::update_policy, &["String"])?;
+		contracts.request::<_, DataProtection>(document, view::impact)?;
+		contracts.response::<_, Impact>(document, view::impact, 200, "application/json")?;
+		contracts.path(document, view::impact, &["String"])?;
+	}
 	use super::provider_credentials as pc;
 	use aidash_application::provider_credentials::Metadata;
 	use aidash_domain::provider_credentials::Binding as ProviderBinding;

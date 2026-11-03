@@ -912,6 +912,7 @@ async fn workspace_embedding_credential_is_pinned_with_environment_model_admissi
 		provider: "openrouter".into(),
 	};
 	let context = Context {
+		data_protection: Default::default(),
 		tenant: "beta".into(),
 		run: Some(run.id),
 		maintenance: None,
@@ -1140,11 +1141,19 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		.begin_in(&TenancyScope::tenant("beta").unwrap())
 		.await;
 	assert!(
-		admit(tx.as_mut(), run, "beta", &snapshot, true)
-			.await
-			.unwrap_err()
-			.to_string()
-			.contains("binding is missing")
+		admit(
+			tx.as_mut(),
+			run,
+			"beta",
+			&snapshot,
+			true,
+			Default::default(),
+			&Default::default()
+		)
+		.await
+		.unwrap_err()
+		.to_string()
+		.contains("binding is missing")
 	);
 	drop(tx);
 	service
@@ -1156,9 +1165,17 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		.begin_in(&TenancyScope::tenant("beta").unwrap())
 		.await;
 	// `beta` represents the receiving local Tenant, never the sender's Tenant `alpha`.
-	admit(tx.as_mut(), run, "beta", &snapshot, true)
-		.await
-		.unwrap();
+	admit(
+		tx.as_mut(),
+		run,
+		"beta",
+		&snapshot,
+		true,
+		Default::default(),
+		&Default::default(),
+	)
+	.await
+	.unwrap();
 	tx.commit().await.unwrap();
 	let access = AdmittedAccess {
 		store: f.runtime.store.clone(),
@@ -1167,6 +1184,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		provider: "openrouter".into(),
 	};
 	let mut context = Context {
+		data_protection: Default::default(),
 		tenant: "beta".into(),
 		run: Some(run),
 		maintenance: None,
@@ -1175,6 +1193,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		observation: None,
 	};
 	let mut maintenance = Context {
+		data_protection: Default::default(),
 		tenant: "beta".into(),
 		run: None,
 		maintenance: None,
@@ -1258,9 +1277,17 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		.database
 		.begin_in(&TenancyScope::tenant("beta").unwrap())
 		.await;
-	admit(tx.as_mut(), run, "beta", &snapshot, true)
-		.await
-		.unwrap();
+	admit(
+		tx.as_mut(),
+		run,
+		"beta",
+		&snapshot,
+		true,
+		Default::default(),
+		&Default::default(),
+	)
+	.await
+	.unwrap();
 	let pins = Pin::objects()
 		.filter(Pin::field_run_id().eq(run))
 		.all_with_executor(tx.as_mut())
@@ -1298,6 +1325,7 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 	};
 	let mut scoped = context.clone();
 	scoped.inference = Some(aidash_application::provider_access::Inference {
+		provider_tools: vec![],
 		model: "test/model".into(),
 		operations: vec![aidash_application::provider_access::Operation::Chat],
 		max_output_tokens: 1024,
@@ -1367,11 +1395,19 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		.begin_in(&TenancyScope::tenant("beta").unwrap())
 		.await;
 	assert!(
-		admit(tx.as_mut(), run, "beta", &snapshot, true)
-			.await
-			.unwrap_err()
-			.to_string()
-			.contains("not active")
+		admit(
+			tx.as_mut(),
+			run,
+			"beta",
+			&snapshot,
+			true,
+			Default::default(),
+			&Default::default()
+		)
+		.await
+		.unwrap_err()
+		.to_string()
+		.contains("not active")
 	);
 	drop(tx);
 	service
@@ -1383,18 +1419,34 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		.begin_in(&TenancyScope::tenant("beta").unwrap())
 		.await;
 	assert!(
-		admit(tx.as_mut(), Uuid::now_v7(), "beta", &snapshot, true)
-			.await
-			.unwrap_err()
-			.to_string()
-			.contains("binding is missing")
+		admit(
+			tx.as_mut(),
+			Uuid::now_v7(),
+			"beta",
+			&snapshot,
+			true,
+			Default::default(),
+			&Default::default()
+		)
+		.await
+		.unwrap_err()
+		.to_string()
+		.contains("binding is missing")
 	);
 	assert!(
-		admit(tx.as_mut(), Uuid::now_v7(), "beta", &snapshot, false)
-			.await
-			.unwrap_err()
-			.to_string()
-			.contains("Store is not configured")
+		admit(
+			tx.as_mut(),
+			Uuid::now_v7(),
+			"beta",
+			&snapshot,
+			false,
+			Default::default(),
+			&Default::default()
+		)
+		.await
+		.unwrap_err()
+		.to_string()
+		.contains("Store is not configured")
 	);
 }
 

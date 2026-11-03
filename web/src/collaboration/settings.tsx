@@ -52,6 +52,7 @@ import { useNodes } from "../nodes";
 import { NodesPage } from "../nodes-settings";
 import { registryDeployment } from "../node-selection";
 import { useTenantActions } from "../tenant-administration";
+import { SubnodeLimits } from "../subnode-limits";
 import { WorkbenchTestSettings } from "../workbench-test-settings";
 import { cn } from "../lib/utils";
 import { MarketplaceAdministration, ScopedMarketplace } from "../marketplace";
@@ -647,6 +648,13 @@ export function Configuration({
               can("workbench.test_profile.update")) && (
               <ToolSection title={t("workbenchTests")}>
                 <WorkbenchTestSettings tenant={data.access.tenant} can={can} />
+              </ToolSection>
+            )}
+          {section === "registry" &&
+            data.access.kind === "subject" &&
+            can("subnode.limits.update") && (
+              <ToolSection title={t("subnodeLimits")}>
+                <SubnodeLimits tenant={data.access.tenant} />
               </ToolSection>
             )}
           {section === "marketplace" &&

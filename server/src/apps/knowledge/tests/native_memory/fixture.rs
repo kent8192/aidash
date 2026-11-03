@@ -101,6 +101,25 @@ pub(super) async fn setup_endpoint_flags(
 ) -> (Store, Registry, Uuid) {
 	setup_endpoint_retention(database, bounds, endpoint, flags, None).await
 }
+/// Give a single scenario enough context for its complete recall envelope.
+pub(super) async fn setup_endpoint_flags_with_window(
+	database: &DatabaseFixture,
+	bounds: Bounds,
+	endpoint: &str,
+	flags: (bool, bool, bool),
+	context_window: u32,
+) -> (Store, Registry, Uuid) {
+	setup_endpoint_policy_with_window(
+		database,
+		bounds,
+		endpoint,
+		(flags, context_window),
+		None,
+		None,
+		None,
+	)
+	.await
+}
 pub(super) async fn setup_endpoint_retention(
 	database: &DatabaseFixture,
 	bounds: Bounds,
@@ -138,6 +157,28 @@ pub(super) async fn setup_endpoint_policy(
 	decay: Option<Decay>,
 	diversity_lambda_millionths: Option<u32>,
 ) -> (Store, Registry, Uuid) {
+	setup_endpoint_policy_with_window(
+		database,
+		bounds,
+		endpoint,
+		(flags, 34816),
+		unit_max_age_days,
+		decay,
+		diversity_lambda_millionths,
+	)
+	.await
+}
+
+async fn setup_endpoint_policy_with_window(
+	database: &DatabaseFixture,
+	bounds: Bounds,
+	endpoint: &str,
+	settings: ((bool, bool, bool), u32),
+	unit_max_age_days: Option<u32>,
+	decay: Option<Decay>,
+	diversity_lambda_millionths: Option<u32>,
+) -> (Store, Registry, Uuid) {
+	let (flags, context_window) = settings;
 	let store = Store::from_pool(
 		database.connection.clone().into_postgres().unwrap(),
 		aidash_domain::nodes::DeploymentId::parse("aidash://native-memory").unwrap(),
@@ -183,7 +224,7 @@ pub(super) async fn setup_endpoint_policy(
 		(
 			"model",
 			"m",
-			json!({"provider":"openrouter","model_id":"fixture","endpoint":endpoint,"context_window":34816,"max_output_tokens":8192,"modalities":["text"],"cost":{}}),
+			json!({"provider":"openrouter","model_id":"fixture","endpoint":endpoint,"context_window":context_window,"max_output_tokens":8192,"modalities":["text"],"cost":{}}),
 		),
 		(
 			"embedding",
@@ -293,7 +334,7 @@ pub(super) async fn setup_endpoint_policy(
 				embedding: serde_json::from_value(json!({"provider":"openai","endpoint":endpoint,"model":"fixture","model_version":"1.0.0","dimensions":3})).unwrap(),
 				vector: aidash_domain::semantic::VectorConfig { provider: "postgres".into(), endpoint: "local".into(), credential_env: None },
 				enabled: true, auto_context: false, max_sources: 64, max_results: 4,
-				max_result_tokens: 8192, max_input_bytes: 16384,
+				max_result_tokens: 8192, max_input_bytes: 16384, max_image_bytes: 8 * 1024 * 1024, max_images: 256,
 			},
 		},
 	).await.unwrap();

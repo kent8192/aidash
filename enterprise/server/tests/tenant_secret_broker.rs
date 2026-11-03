@@ -1094,6 +1094,8 @@ async fn tokens_are_refused_for_another_destination_secret_kind_audience_or_issu
 	assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
 
 	let provider = Claims {
+		provider_tools: vec![],
+		data_protection: Default::default(),
 		iss: "aidash-server".into(),
 		aud: AUDIENCE.into(),
 		iat: now(),
