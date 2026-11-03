@@ -84,6 +84,22 @@ async fn body_admission_owns_the_request_slot_and_uses_route_limits() {
 		http::StatusCode::SERVICE_UNAVAILABLE
 	);
 	drop(admitted);
+	let upload = "/api/workspaces/00000000-0000-0000-0000-000000000001/attachments"
+		.parse()
+		.unwrap();
+	let admitted = RequestAdmission::admit(
+		&protection,
+		RequestHead {
+			method: &method,
+			uri: &upload,
+			headers: &headers,
+			remote_addr: None,
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(admitted.max_body_size, 8 * 1024 * 1024);
+	drop(admitted);
 	let ordinary = "/api/tasks".parse().unwrap();
 	let admitted = RequestAdmission::admit(
 		&protection,

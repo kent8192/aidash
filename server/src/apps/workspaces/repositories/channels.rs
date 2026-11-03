@@ -14,7 +14,7 @@ use aidash_domain::{Message, workspaces::channels::*};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reinhardt::query::{
-	Alias, ColumnRef, Condition, Expr, ExprTrait, JoinType, LockType, OnConflict, Order,
+	Alias, ColumnRef, Condition, Expr, ExprTrait, IntoIden, JoinType, LockType, OnConflict, Order,
 	PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr, TableRef,
 };
 use serde_json::json;
@@ -25,6 +25,7 @@ pub(crate) struct NativeChannels<'a> {
 	pub(crate) store: &'a Store,
 	pub(crate) lease: &'a mut Lease,
 	pub(crate) federation: Option<&'a crate::federation::Federation>,
+	pub(crate) run_id: Option<Uuid>,
 }
 #[derive(Debug)]
 struct LinkRecord {
@@ -49,6 +50,7 @@ impl LinkRecord {
 			filename: self.filename.clone(),
 			media_type: self.media_type.clone(),
 			size_bytes: self.size_bytes,
+			no_assigned_agent_can_read: false,
 		}
 	}
 }
@@ -68,12 +70,36 @@ impl crate::database::Record for HistoryRecord {
 	}
 }
 #[async_trait]
+impl AttachmentObjects for NativeChannels<'_> {
+	async fn put_object(&mut self, bytes: &[u8], sha256: &str) -> Result<Uuid> {
+		let (id, actual) = self
+			.store
+			.capabilities
+			.put(self.lease.access_mut(), None, "thread_attachment", bytes)
+			.await?;
+		if actual != sha256 {
+			return Err(crate::Error::Conflict("OBJECT_INTEGRITY".into()).into());
+		}
+		Ok(id)
+	}
+	async fn read_object(&mut self, id: Uuid, sha256: &str, size: i64) -> Result<Vec<u8>> {
+		super::media::read_attachment_object(self.store, self.lease.access_mut(), id, sha256, size)
+			.await
+			.map_err(Into::into)
+	}
+}
+#[async_trait]
 impl ChannelScope for NativeChannels<'_> {
 	fn sender(&self) -> String {
 		self.lease.sender()
 	}
 	fn principal(&self) -> String {
-		self.lease.principal()
+		match self.run_id {
+			Some(run) => {
+				crate::registry::digest(&json!({"principal":self.lease.principal(), "run_id":run}))
+			}
+			None => self.lease.principal(),
+		}
 	}
 	async fn message(&mut self, workspace: Uuid, id: Uuid) -> Result<Message> {
 		self.lease.message(workspace, id).await.map_err(Into::into)
@@ -247,6 +273,21 @@ impl ChannelScope for NativeChannels<'_> {
 		content: &str,
 		key: &str,
 	) -> Result<Message> {
+		if let Some(run) = self.run_id {
+			let message = MessageRecord::append_in(
+				self.lease.tx().as_mut(),
+				workspace,
+				sender,
+				content,
+				key,
+				Some(run),
+			)
+			.await?;
+			self.store
+				.record_output_in(self.lease.tx(), Some(run), workspace, "message", message.id)
+				.await?;
+			return Ok(message);
+		}
 		self.store
 			.message_in_with_attachments(self.lease.tx(), workspace, sender, content, Some(key))
 			.await
@@ -489,6 +530,46 @@ impl ChannelScope for NativeChannels<'_> {
 		content: &[u8],
 	) -> Result<Option<AttachmentState>> {
 		let uploader = principal;
+		// Serialize replays before reserving quota for an object that may already exist.
+		let lock_key = format!(
+			"thread-attachment:{workspace}:{uploader}:{}",
+			input.idempotency_key
+		);
+		let lock = Query::select()
+			.expr(SimpleExpr::FunctionCall(
+				"pg_advisory_xact_lock".into_iden(),
+				vec![SimpleExpr::FunctionCall(
+					"hashtextextended".into_iden(),
+					vec![Expr::value(lock_key).into(), Expr::value(0_i64).into()],
+				)],
+			))
+			.to_string(PostgresQueryBuilder);
+		crate::database::native::query(&lock)
+			.execute(&mut **self.lease.tx())
+			.await?;
+		let query = Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("channel_attachments"))
+			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+			.and_where(Expr::col(Alias::new("uploaded_by")).eq(Expr::value(uploader)))
+			.and_where(
+				Expr::col(Alias::new("idempotency_key")).eq(Expr::value(input.idempotency_key)),
+			)
+			.to_string(PostgresQueryBuilder);
+		let existing: Option<Uuid> = crate::database::native::query_scalar(&query)
+			.scalar_optional(&mut **self.lease.tx())
+			.await?;
+		if existing.is_some() {
+			return Ok(None);
+		}
+		let size_bytes = i64::try_from(content.len())
+			.map_err(|_| crate::Error::Invalid("attachment is too large".into()))?;
+		let object_id = self.put_object(content, digest).await?;
+		let tenant = Query::select()
+			.column(Alias::new("tenant"))
+			.from(Alias::new("workspaces"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(workspace)))
+			.to_owned();
 		let insert = Query::insert()
 			.into_table(Alias::new("channel_attachments"))
 			.columns([
@@ -500,23 +581,28 @@ impl ChannelScope for NativeChannels<'_> {
 				Alias::new("media_type"),
 				Alias::new("sha256"),
 				Alias::new("size_bytes"),
-				Alias::new("content"),
+				Alias::new("object_id"),
+				Alias::new("width"),
+				Alias::new("height"),
+				Alias::new("duration_ms"),
 				Alias::new("tenant"),
 			])
-			.from_subquery(
-				Query::select()
-					.expr(Expr::cust("$1"))
-					.expr(Expr::cust("$2"))
-					.expr(Expr::cust("$3"))
-					.expr(Expr::cust("$4"))
-					.expr(Expr::cust("$5"))
-					.expr(Expr::cust("$6"))
-					.expr(Expr::cust("$7"))
-					.expr(Expr::cust("$8"))
-					.expr(Expr::cust("$9"))
-					.expr(Expr::cust("(SELECT tenant FROM workspaces WHERE id = $2)"))
-					.to_owned(),
-			)
+			.values_expr(vec![
+				Expr::value(Uuid::new_v4()).into(),
+				Expr::value(workspace).into(),
+				Expr::value(uploader.to_owned()).into(),
+				Expr::value(input.idempotency_key).into(),
+				Expr::value(input.filename.to_owned()).into(),
+				Expr::value(input.media_type.to_owned()).into(),
+				Expr::value(digest.to_owned()).into(),
+				Expr::value(size_bytes).into(),
+				Expr::value(object_id).into(),
+				Expr::value(input.measurements.width).into(),
+				Expr::value(input.measurements.height).into(),
+				Expr::value(input.measurements.duration_ms).into(),
+				Expr::subquery(tenant).into(),
+			])
+			.expect("one value per column")
 			.on_conflict(
 				OnConflict::columns([
 					Alias::new("workspace_id"),
@@ -529,20 +615,15 @@ impl ChannelScope for NativeChannels<'_> {
 			.returning_all()
 			.to_string(PostgresQueryBuilder);
 		let inserted: Option<AttachmentRecord> = crate::database::query_as(&insert)
-			.bind(Uuid::new_v4())
-			.bind(workspace)
-			.bind(uploader)
-			.bind(input.idempotency_key)
-			.bind(input.filename)
-			.bind(input.media_type)
-			.bind(digest)
-			.bind(
-				i64::try_from(content.len())
-					.map_err(|_| crate::Error::Invalid("attachment is too large".into()))?,
-			)
-			.bind(content)
 			.fetch_optional(&mut **self.lease.tx())
 			.await?;
+		if inserted.is_none() {
+			let tenant = self.lease.access_mut().identity.tenant.clone();
+			self.store
+				.capabilities
+				.erase_committed(self.lease.tx(), &tenant, object_id)
+				.await?;
+		}
 		Ok(inserted.map(Into::into))
 	}
 	async fn existing_attachment(

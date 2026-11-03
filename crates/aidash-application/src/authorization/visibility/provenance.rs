@@ -153,6 +153,13 @@ async fn source_invalidity(
 			Some(row) => artifact_visible(scope, &row).await?,
 			None => return Ok(Some(Failure::Invalidated)),
 		},
+		"attachment" => match scope.source_attachment_message(id, workspace).await? {
+			Some(row) if classify_outputs => {
+				message_visible(&mut ClassifiedOutputs { scope, pending }, &row).await?
+			}
+			Some(row) => message_visible(scope, &row).await?,
+			None => return Ok(Some(Failure::Invalidated)),
+		},
 		"message" => match scope.source_message(id, workspace).await? {
 			Some(row) if classify_outputs => {
 				message_visible(&mut ClassifiedOutputs { scope, pending }, &row).await?

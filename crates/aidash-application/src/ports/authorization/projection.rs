@@ -14,6 +14,12 @@ pub trait WorkspaceProjection: Send {
 	async fn task_visible(&mut self, row: &Task) -> Result<bool>;
 	async fn artifact_visible(&mut self, row: &Artifact) -> Result<bool>;
 	async fn message_visible(&mut self, row: &Message) -> Result<bool>;
+	/// Attachment metadata for already authorized messages, never bytes.
+	async fn message_attachments(
+		&mut self,
+		workspace: Uuid,
+		messages: &[Uuid],
+	) -> Result<Vec<aidash_domain::media::MessageAttachment>>;
 	/// Event disclosure within one scan; `runs` holds the scan's Run verdicts.
 	async fn event_visible(&mut self, row: &Event, runs: &mut RunVerdicts) -> Result<bool>;
 	async fn task_rows(&mut self, workspaces: &[Uuid], cursor: u64) -> Result<Vec<Task>>;

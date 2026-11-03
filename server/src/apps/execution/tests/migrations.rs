@@ -69,6 +69,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0053_connection_request"),
 	("registry", "0054_remove_agent_cluster"),
 	("registry", "0055_remove_structured_harness_contracts"),
+	("registry", "0056_attachment_tools"),
 	("execution", "0089_remove_agent_cluster"),
 	("execution", "0090_run_created_at"),
 	("execution", "0091_bounded_read_indexes"),
@@ -127,7 +128,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		76
+		78
 	);
 	let tables = migrations
 		.iter()
@@ -572,14 +573,14 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0015_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0019_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"workspaces".to_owned(),
-			"0014_remote_file_version_citations".to_owned()
+			"0018_attachment_wav_rendition_state".to_owned()
 		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
@@ -825,7 +826,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		76
+		78
 	);
 }
 
@@ -850,6 +851,7 @@ async fn remove_agent_cluster_migrates_registry_drafts_requests_and_generation_t
 				(migration.app_label.as_str(), migration.name.as_str()),
 				("registry", "0054_remove_agent_cluster")
 					| ("registry", "0055_remove_structured_harness_contracts")
+					| ("registry", "0056_attachment_tools")
 					| ("execution", "0089_remove_agent_cluster")
 					| ("execution", "0090_run_created_at")
 					| ("execution", "0091_bounded_read_indexes")
@@ -1634,6 +1636,51 @@ async fn constraint_definition(pool: &PgPool, name: &str) -> String {
 		.and_where(Expr::col("conname").eq(name))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query_scalar(&query).fetch_one(pool).await.unwrap()
+}
+
+#[rstest]
+#[tokio::test]
+async fn attachment_tools_migration_admits_and_reverses_the_new_contract(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let descriptor = serde_json::to_value(
+		aidash_domain::tool::providers::core_descriptor("aidash://fixture", "attachment_copy")
+			.unwrap(),
+	)
+	.unwrap();
+	let agent = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work", "remove_default":["attachment_copy"]});
+	for (function, value) in [
+		("aidash_descriptor_is_valid", descriptor.clone()),
+		("aidash_agent_bindings_is_valid", agent.clone()),
+	] {
+		assert!(contract_accepts(&pool, function, vec![value]).await);
+	}
+	let migration =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+			.get_migration("registry", "0056_attachment_tools")
+			.await
+			.unwrap();
+	let mut executor =
+		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	executor
+		.rollback_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	for (function, value) in [
+		("aidash_descriptor_is_valid", descriptor.clone()),
+		("aidash_agent_bindings_is_valid", agent.clone()),
+	] {
+		assert!(!contract_accepts(&pool, function, vec![value]).await);
+	}
+	executor
+		.apply_migrations(std::slice::from_ref(&migration))
+		.await
+		.unwrap();
+	assert!(contract_accepts(&pool, "aidash_descriptor_is_valid", vec![descriptor]).await);
+	assert!(contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![agent]).await);
 }
 
 #[rstest]

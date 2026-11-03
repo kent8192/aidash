@@ -54,8 +54,32 @@ pub async fn record(
 			if !scope.message_visible(&message).await? {
 				return Err(Error::Forbidden);
 			}
+			let attachments = scope.message_attachments(workspace_id, &[id]).await?;
 			snapshot.messages.push(message.clone());
-			json!(message)
+			let mut value = json!(message);
+			value["attachments"] = json!(
+				attachments
+					.into_iter()
+					.filter(|row| row.message_id == id)
+					.map(|row| row.attachment)
+					.collect::<Vec<_>>()
+			);
+			value
+		}
+		"attachment" => {
+			let attachment = scope
+				.attachment_record(workspace_id, id)
+				.await?
+				.ok_or(Error::Forbidden)?;
+			let message = scope
+				.message_record(workspace_id, attachment.message_id)
+				.await?
+				.ok_or(Error::Forbidden)?;
+			if !scope.message_visible(&message).await? {
+				return Err(Error::Forbidden);
+			}
+			snapshot.messages.push(message);
+			json!({"attachment": attachment.attachment, "message_id": attachment.message_id, "sha256": attachment.sha256})
 		}
 		"event" => {
 			if !scope.decide(&resource, "workspace.events").await? {

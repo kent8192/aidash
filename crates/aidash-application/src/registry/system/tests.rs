@@ -15,6 +15,25 @@ use std::{collections::BTreeMap, sync::Arc};
 
 const NODE: &str = "aidash://local";
 
+#[test]
+fn workspace_attachment_tools_keep_original_declarations_immutable() {
+	let validation = DefinitionValidation::new(Arc::new(Contracts));
+	let current = entries(&validation, NODE).unwrap();
+	let old = legacy_workspace_entries(&validation, NODE).unwrap();
+	assert_eq!(old.len(), 3);
+	for legacy in old {
+		assert_eq!(legacy.version, "1.0.0");
+		let new = current.iter().find(|entry| entry.id == legacy.id).unwrap();
+		assert_eq!(new.version, "1.0.1");
+		assert_ne!(new.description, legacy.description);
+		assert_eq!(new.config, legacy.config);
+		assert!(builtin_reference(&EntityRef {
+			id: legacy.id.clone(),
+			version: legacy.version.clone()
+		}));
+	}
+}
+
 /// Native core tools live outside the application builtin table.
 struct Contracts;
 impl Credentials for Contracts {
@@ -183,6 +202,24 @@ impl DefinitionWriter for Writer {
 	async fn insert_definition(&mut self, entry: &Entry) -> Result<bool> {
 		let key = (entry.id.clone(), entry.version.clone());
 		Ok(self.entries.insert(key, entry.clone()).is_none())
+	}
+}
+
+#[tokio::test]
+async fn seeding_an_existing_registry_preserves_old_workspace_declarations() {
+	let validation = DefinitionValidation::new(Arc::new(Contracts));
+	let original = legacy_workspace_entries(&validation, NODE).unwrap();
+	let mut writer = Writer::default();
+	for entry in &original {
+		writer.insert_definition(entry).await.unwrap();
+	}
+	seed(&mut writer, &validation, NODE).await.unwrap();
+	for entry in original {
+		assert_eq!(writer.definition(&entry.id, "1.0.0").await.unwrap(), entry);
+		assert_eq!(
+			writer.definition(&entry.id, "1.0.1").await.unwrap().version,
+			"1.0.1"
+		);
 	}
 }
 
