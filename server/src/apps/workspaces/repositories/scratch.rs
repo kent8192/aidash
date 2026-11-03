@@ -741,7 +741,7 @@ impl ScratchServices for NativeScratchServices<'_> {
 			return Ok((scratch_id, person));
 		}
 		let (sql, values) = Query::select()
-			.columns([Alias::new("scratch_space_id"), Alias::new("created_by")])
+			.column(Alias::new("scratch_space_id"))
 			.from(Alias::new("workspaces"))
 			.and_where(Expr::col("id").eq(Expr::value(run.workspace_id)))
 			.and_where(Expr::col("tenant").eq(Expr::value(access.identity.tenant.clone())))
@@ -758,11 +758,9 @@ impl ScratchServices for NativeScratchServices<'_> {
 			.get("scratch_space_id")
 			.map_err(err)
 			.map_err(crate::Error::from)?;
-		let starter = row
-			.get("created_by")
-			.map_err(err)
-			.map_err(crate::Error::from)?;
-		Ok((id, starter))
+		// The local execution grant binds this identity to the Run's root person.
+		// Workspace ownership alone is insufficient when a member starts the Run.
+		Ok((id, access.identity.subject.clone()))
 	}
 }
 

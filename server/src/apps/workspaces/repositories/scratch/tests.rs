@@ -482,7 +482,7 @@ async fn workspace_run_loses_scratch_authority_when_starter_is_removed(
 			json!({}).into_value(),
 			0_i64.into_value(),
 			space.id.into_value(),
-			"bob".into_value(),
+			"alice".into_value(),
 		])
 		.build(PostgresQueryBuilder);
 	tx.execute(&sql, convert_values(values)).await.unwrap();
