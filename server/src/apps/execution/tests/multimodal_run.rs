@@ -20,14 +20,36 @@ use tokio::sync::mpsc;
 
 use uuid::Uuid;
 
-async fn upload(
+const PNG: &[u8] = include_bytes!("support/media/pixel.png");
+const JPEG: &[u8] = include_bytes!("support/media/pixel.jpg");
+
+fn wav_bytes(size: usize) -> Vec<u8> {
+	let size = size.max(45);
+	let mut bytes = vec![0_u8; size];
+	bytes[..4].copy_from_slice(b"RIFF");
+	bytes[4..8].copy_from_slice(&((size - 8) as u32).to_le_bytes());
+	bytes[8..12].copy_from_slice(b"WAVE");
+	bytes[12..16].copy_from_slice(b"fmt ");
+	bytes[16..20].copy_from_slice(&16_u32.to_le_bytes());
+	bytes[20..22].copy_from_slice(&1_u16.to_le_bytes());
+	bytes[22..24].copy_from_slice(&1_u16.to_le_bytes());
+	bytes[24..28].copy_from_slice(&48_000_u32.to_le_bytes());
+	bytes[28..32].copy_from_slice(&48_000_u32.to_le_bytes());
+	bytes[32..34].copy_from_slice(&1_u16.to_le_bytes());
+	bytes[34..36].copy_from_slice(&8_u16.to_le_bytes());
+	bytes[36..40].copy_from_slice(b"data");
+	bytes[40..44].copy_from_slice(&((size - 44) as u32).to_le_bytes());
+	bytes
+}
+
+async fn upload_response(
 	app: &common::TestApplication,
 	token: &str,
 	workspace: &str,
 	name: &str,
 	mime: &str,
 	bytes: &[u8],
-) -> Value {
+) -> (u16, Value) {
 	let path = format!(
 		"/api/workspaces/{workspace}/attachments?filename={name}&media_type={}&idempotency_key={}",
 		mime.replace('/', "%2F"),
@@ -48,8 +70,19 @@ async fn upload(
 	.unwrap();
 	let status = response.status_code();
 	let body = response.json_value().unwrap();
-	assert_eq!(status, 200, "{body}");
+	(status, body)
+}
 
+async fn upload(
+	app: &common::TestApplication,
+	token: &str,
+	workspace: &str,
+	name: &str,
+	mime: &str,
+	bytes: &[u8],
+) -> Value {
+	let (status, body) = upload_response(app, token, workspace, name, mime, bytes).await;
+	assert_eq!(status, 200, "{body}");
 	body
 }
 
@@ -104,7 +137,7 @@ async fn verify_audio_batches(
 		.saturating_mul(4)
 		.saturating_sub(3_072)
 		.saturating_mul(16);
-	let first_audio = &case.first_audio[..case.first_audio.len().min(audio_limit)];
+	let first_audio = wav_bytes(case.first_audio.len().min(audio_limit));
 	if let Some(content) = &leading_text {
 		let (status, sent) = request(
 			app,
@@ -116,7 +149,7 @@ async fn verify_audio_batches(
 		.await;
 		assert_eq!(status, 200, "{sent}");
 	}
-	let mut second_audio = first_audio.to_vec();
+	let mut second_audio = first_audio.clone();
 	*second_audio.last_mut().unwrap() = 1;
 	let first = upload(
 		app,
@@ -124,7 +157,7 @@ async fn verify_audio_batches(
 		audio_workspace,
 		"first.wav",
 		"audio/wav",
-		first_audio,
+		&first_audio,
 	)
 	.await;
 	let second = upload(
@@ -186,7 +219,7 @@ async fn verify_audio_batches(
 	assert_eq!(
 		audio_batches,
 		vec![
-			base64::engine::general_purpose::STANDARD.encode(first_audio),
+			base64::engine::general_purpose::STANDARD.encode(&first_audio),
 			base64::engine::general_purpose::STANDARD.encode(&second_audio),
 		]
 	);
@@ -253,8 +286,7 @@ async fn verify_attachment_labels_count_toward_admission(
 	let audio_tokens = (f.run_message_limit(&run).await.unwrap() * 4)
 		.checked_sub(text_body.to_string().len() + 2 * 1024 + 160)
 		.unwrap();
-	let mut audio = vec![0_u8; audio_tokens * 16];
-	audio[..12].copy_from_slice(b"RIFF\0\0\0\0WAVE");
+	let audio = wav_bytes(audio_tokens * 16);
 	let long = upload(app, member, workspace, &long_name, "audio/wav", &audio).await;
 	let short = upload(app, member, workspace, short_name, "audio/wav", &audio).await;
 	let path = format!("/api/runs/{}/message", run.id);
@@ -363,15 +395,7 @@ async fn verify_expired_route_retry(
 		.into_iter()
 		.find(|run| run.workspace_id.to_string() == workspace)
 		.unwrap();
-	let image = upload(
-		app,
-		member,
-		workspace,
-		"retry.png",
-		"image/png",
-		b"\x89PNG\r\n\x1a\nretry",
-	)
-	.await;
+	let image = upload(app, member, workspace, "retry.png", "image/png", PNG).await;
 	let key = Uuid::new_v4();
 	let input = json!({"content":"retry", "idempotency_key":key, "attachment_ids":[image["id"]]});
 	let path = format!("/api/runs/{}/message", run.id);
@@ -482,18 +506,8 @@ async fn verify_separate_format_routes(
 		.find(|run| run.workspace_id.to_string() == workspace)
 		.unwrap();
 	let images = [
-		(
-			"first.png",
-			"image/png",
-			b"\x89PNG\r\n\x1a\nfirst".as_slice(),
-			"fixture/png",
-		),
-		(
-			"second.jpg",
-			"image/jpeg",
-			b"\xff\xd8\xffsecond".as_slice(),
-			"fixture/jpeg",
-		),
+		("first.png", "image/png", PNG, "fixture/png"),
+		("second.jpg", "image/jpeg", JPEG, "fixture/jpeg"),
 	];
 	for (name, mime, bytes, _) in images {
 		let attachment = upload(app, member, workspace, name, mime, bytes).await;
@@ -675,7 +689,13 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 			.unwrap()
 			.contains(&json!("audio/wav"))
 	);
-	let bad = upload(
+	assert!(
+		details["media_input_routes"][0]
+			.as_array()
+			.unwrap()
+			.contains(&json!("audio/mpeg"))
+	);
+	let (status, rejected) = upload_response(
 		&app,
 		&token,
 		&workspace,
@@ -684,16 +704,9 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		b"not a png",
 	)
 	.await;
-	let path = format!("/api/runs/{}/message", run.id);
-	let (status, rejected) = request(
-		&app,
-		&token,
-		"POST",
-		&path,
-		json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":[bad["id"]]}),
-	)
-	.await;
 	assert_eq!(status, 400, "{rejected}");
+	assert_eq!(rejected["error"], "MEDIA_UNDECODABLE");
+	let path = format!("/api/runs/{}/message", run.id);
 	assert!(
 		f.store
 			.run_inputs(&TEST_FIXTURE, run.id)
@@ -701,8 +714,41 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 			.unwrap()
 			.is_empty()
 	);
-	let mut large_audio = vec![0_u8; 512 * 1024];
-	large_audio[..12].copy_from_slice(b"RIFF\0\0\0\0WAVE");
+	// The route accepts WAV, but this MP3 would expand beyond the inference budget.
+	let long_audio = upload(
+		&app,
+		&token,
+		&workspace,
+		"long.mp3",
+		"audio/mpeg",
+		include_bytes!("support/media/too-long-for-wav.mp3"),
+	)
+	.await;
+	let long_id: Uuid = long_audio["id"].as_str().unwrap().parse().unwrap();
+	let (status, refused) = request(
+		&app,
+		&token,
+		"POST",
+		&path,
+		json!({"content":"", "idempotency_key":Uuid::new_v4(), "attachment_ids":[long_id]}),
+	)
+	.await;
+	assert_eq!(status, 400, "{refused}");
+	assert!(
+		refused["error"]
+			.as_str()
+			.unwrap()
+			.contains("too long to convert"),
+		"{refused}"
+	);
+	let (cached,): (Option<Uuid>,) =
+		sqlx::query_as("SELECT wav_object_id FROM channel_attachments WHERE id = $1")
+			.bind(long_id)
+			.fetch_one(f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert!(cached.is_none());
+	let large_audio = wav_bytes(512 * 1024);
 	let first_large = upload(
 		&app,
 		&token,
@@ -743,18 +789,10 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&workspace,
 		"sample.wav",
 		"audio/wav",
-		b"RIFF\0\0\0\0WAVEaudio",
+		&wav_bytes(100),
 	)
 	.await;
-	let image = upload(
-		&app,
-		&token,
-		&workspace,
-		"sample.png",
-		"image/png",
-		b"\x89PNG\r\n\x1a\nimage",
-	)
-	.await;
+	let image = upload(&app, &token, &workspace, "sample.png", "image/png", PNG).await;
 	assert_eq!(
 		request(
 			&app,
@@ -899,7 +937,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 	let mut image_ids = Vec::new();
 	let mut expected_urls = Vec::new();
 	for index in 0..10_u8 {
-		let mut bytes = b"\x89PNG\r\n\x1a\nmember".to_vec();
+		let mut bytes = PNG.to_vec();
 		bytes.push(b'0' + index);
 		let uploaded = upload(
 			&app,
@@ -1031,8 +1069,7 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		},
 	))
 	.await;
-	let mut near_window_audio = vec![0_u8; 700 * 1024];
-	near_window_audio[..12].copy_from_slice(b"RIFF\0\0\0\0WAVE");
+	let near_window_audio = wav_bytes(700 * 1024);
 	let leading_text = "retain this instruction ".repeat(450);
 	Box::pin(verify_audio_batches(
 		&app,
@@ -1060,6 +1097,95 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		&app, &f, &member,
 	))
 	.await;
+	// A route which only accepts WAV gets one immutable cached rendition of an MP3.
+	let (status, created) = request(&app, &member, "POST", "/api/conversations", json!({"title":"Audio rendition", "goal":"Inspect audio", "target":{"id":"research","version":"1.0.1"},"target_kind":"agent"})).await;
+	assert_eq!(status, 200, "{created}");
+	let workspace = created["workspace"]["id"].as_str().unwrap();
+	let run = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.workspace_id.to_string() == workspace)
+		.unwrap();
+	let source = include_bytes!("support/media/short.mp3");
+	let attachment = upload(&app, &member, workspace, "sample.mp3", "audio/mpeg", source).await;
+	let attachment_id: Uuid = attachment["id"].as_str().unwrap().parse().unwrap();
+	let key = Uuid::new_v4();
+	let path = format!("/api/runs/{}/message", run.id);
+	let input = json!({"content":"", "idempotency_key":key, "attachment_ids":[attachment_id]});
+	let (status, body) = request(&app, &member, "POST", &path, input.clone()).await;
+	assert_eq!(status, 200, "{body}");
+	let cached: (Uuid, Uuid, String, i64) = sqlx::query_as("SELECT object_id, wav_object_id, wav_sha256, wav_size_bytes FROM channel_attachments WHERE id = $1")
+		.bind(attachment_id).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
+	assert_ne!(cached.0, cached.1);
+	assert!(cached.3 > 44);
+	let storage = &f.store.capabilities.0.storage;
+	assert_eq!(
+		tokio::fs::read(storage.join(cached.0.simple().to_string()))
+			.await
+			.unwrap(),
+		source
+	);
+	let wav = tokio::fs::read(storage.join(cached.1.simple().to_string()))
+		.await
+		.unwrap();
+	assert_eq!(&wav[..4], b"RIFF");
+	assert_eq!(&wav[8..12], b"WAVE");
+	assert_eq!(wav.len() as i64, cached.3);
+	assert_eq!(request(&app, &member, "POST", &path, input).await.0, 200);
+	while received.try_recv().is_ok() {}
+	let mut saw_rendition = false;
+	for _ in 0..8 {
+		assert!(worker.worker_once().await.unwrap());
+		if let Ok(body) = received.try_recv() {
+			let parts = body["messages"][1]["content"].as_array().unwrap();
+			assert!(
+				parts
+					.iter()
+					.any(|part| part["input_audio"]["format"] == "wav"),
+				"{parts:?}"
+			);
+			saw_rendition = true;
+			break;
+		}
+	}
+	assert!(saw_rendition, "model did not receive the WAV rendition");
+	let again: (Uuid, Uuid, String, i64) = sqlx::query_as("SELECT object_id, wav_object_id, wav_sha256, wav_size_bytes FROM channel_attachments WHERE id = $1")
+		.bind(attachment_id).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
+	assert_eq!(again, cached);
+	// Removing the attachment releases both immutable objects through reclamation.
+	sqlx::query("DELETE FROM channel_attachments WHERE id = $1")
+		.bind(attachment_id)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let (stop, rx) = tokio::sync::watch::channel(false);
+	let reclaim = tokio::spawn(aidash_server::capabilities::reclamation::run(
+		f.store.clone(),
+		rx,
+	));
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+	loop {
+		let (count,): (i64,) =
+			sqlx::query_as("SELECT count(*) FROM core_objects WHERE id = $1 OR id = $2")
+				.bind(cached.0)
+				.bind(cached.1)
+				.fetch_one(f.store.pool.fixture_driver())
+				.await
+				.unwrap();
+		if count == 0 {
+			break;
+		}
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"attachment objects were not reclaimed"
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+	}
+	stop.send(true).unwrap();
+	reclaim.await.unwrap().unwrap();
 	drop(server);
 	cleanup(f, &url, &schema).await;
 }
@@ -1107,4 +1233,654 @@ fn media_router(
 				reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"content":"Done"}}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap()
 			}
 		})).into_server_router())
+}
+
+#[derive(Clone)]
+struct SelectedThreadRequests {
+	sender: mpsc::UnboundedSender<Value>,
+	receiver: Arc<std::sync::Mutex<Option<mpsc::UnboundedReceiver<Value>>>>,
+	attachment: Arc<std::sync::Mutex<Option<String>>>,
+	revision: Arc<std::sync::Mutex<i64>>,
+}
+#[rstest::fixture]
+fn selected_thread_requests() -> SelectedThreadRequests {
+	let (sender, receiver) = mpsc::unbounded_channel();
+	SelectedThreadRequests {
+		sender,
+		receiver: Arc::new(std::sync::Mutex::new(Some(receiver))),
+		attachment: Arc::new(std::sync::Mutex::new(None)),
+		revision: Arc::new(std::sync::Mutex::new(0)),
+	}
+}
+#[rstest::fixture]
+fn selected_thread_router(
+	#[from(selected_thread_requests)] requests: SelectedThreadRequests,
+) -> Arc<Router> {
+	let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+	Arc::new(reinhardt::test::stub::StubRouter::new()
+	.route("/v1/models/fixture/endpoints", http::Method::GET, reply(|_request: reinhardt::Request| async { reinhardt::Response::ok().with_json(&json!({"data":{"architecture":{"input_modalities":["text","image"]},"endpoints":[{"tag":"fixture/verified","context_length":128000}]}})).unwrap() }))
+	.route("/v1/endpoints/zdr", http::Method::GET, reply(|_request: reinhardt::Request| async { reinhardt::Response::ok().with_json(&json!({"data":[{"model_id":"fixture","tag":"fixture/verified"}]})).unwrap() }))
+	.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {
+		let body = request.json::<Value>().unwrap();
+		let requests = requests.clone();
+		let count = count.clone();
+		async move {
+			requests.sender.send(body).unwrap();
+			let step = count.fetch_add(1, Ordering::SeqCst);
+			let call = match step {
+				0 => Some(("workspace_observe", json!({}))),
+				1 | 6 | 7 | 9 => Some(("workspace_read", json!({"kind":"attachment", "id":requests.attachment.lock().unwrap().as_ref().unwrap(), "representation":"model_input"}))),
+				2 => Some(("attachment_copy", json!({"id":requests.attachment.lock().unwrap().as_ref().unwrap(), "path":"copied.png", "expected_revision":*requests.revision.lock().unwrap(), "idempotency_key":Uuid::new_v4()}))),
+				3 => Some(("workspace_message", json!({"content":"Agent snapshot", "files":["copied.png"]}))),
+				5 => Some(("workspace_observe", json!({}))),
+				_ => None,
+			};
+			let message = match call {
+				Some((name, arguments)) => json!({"content":if step == 2 { Some("The image is a pixel.") } else { None },"tool_calls":[{"id":format!("call-{step}"),"type":"function","function":{"name":name,"arguments":arguments.to_string()}}]}),
+				None => json!({"content":"Done"}),
+			};
+			reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":if matches!(step, 0..=3 | 5..=7 | 9) {"tool_calls"} else {"stop"},"message":message}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap()
+		}
+	})).into_server_router())
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn visible_thread_attachment_is_selected_for_the_next_model_request(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+	selected_thread_requests: SelectedThreadRequests,
+	#[from(selected_thread_router)]
+	#[with(selected_thread_requests.clone())]
+	_router: Arc<Router>,
+	#[future(awt)]
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
+) {
+	let mut received = selected_thread_requests
+		.receiver
+		.lock()
+		.unwrap()
+		.take()
+		.unwrap();
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, token, _) = common::bootstrap_with_area(&f, &app, &server.url).await;
+	policy["subjects"][aidash_server::domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+		"research",
+		"1.0.1",
+	)] = json!({"kind":"agent"});
+	policy["subjects"][aidash_server::domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+		"research-peer",
+		"1.0.1",
+	)] = json!({"kind":"agent"});
+	let (status, body) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let mut model = f.registry.get(&tenant, "model", "1.0.0").await.unwrap();
+	model.version = "1.0.1".into();
+	model.config["modalities"] = json!(["text", "image"]);
+	model.config["media_routes"] = json!([{"tag":"fixture/verified", "formats":["image/png"], "source":"fixture", "verified_at":chrono::Utc::now() - chrono::Duration::hours(1), "expires_at":chrono::Utc::now() + chrono::Duration::hours(1)}]);
+	let (status, body) = request(&app, &token, "POST", "/api/registry", json!(model)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(&app, &token, "POST", "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"model","version":"1.0.1"},"expected_revision":0,"enabled":true})).await;
+	assert_eq!(status, 200, "{body}");
+	let mut agent = f.registry.get(&tenant, "research", "1.0.0").await.unwrap();
+	agent.version = "1.0.1".into();
+	agent.binding_normalization = None;
+	agent.config["model"]["version"] = json!("1.0.1");
+	let mut peer = agent.clone();
+	peer.id = "research-peer".into();
+	let (status, body) = request(&app, &token, "POST", "/api/registry", json!(agent)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(&app, &token, "POST", "/api/registry", json!(peer)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(&app, &token, "POST", "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research-peer","version":"1.0.1"},"expected_revision":0,"enabled":true})).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(&app, &token, "POST", "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true})).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({"title":"Thread image", "goal":"Inspect the image", "target":{"id":"research","version":"1.0.1"}, "target_kind":"agent"})).await;
+	assert_eq!(status, 200, "{created}");
+	let run = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.workspace_id.to_string() == created["workspace"]["id"].as_str().unwrap())
+		.unwrap();
+	let workspace = run.workspace_id.to_string();
+	let (status, area) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/runs/{}/working-area", run.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{area}");
+	*selected_thread_requests.revision.lock().unwrap() = area["revision"].as_i64().unwrap();
+	let attachment = upload(&app, &token, &workspace, "selected.png", "image/png", PNG).await;
+	assert_eq!(
+		attachment["no_assigned_agent_can_read"], false,
+		"{attachment}"
+	);
+	let pdf = upload(
+		&app,
+		&token,
+		&workspace,
+		"notes.pdf",
+		"application/pdf",
+		b"test file",
+	)
+	.await;
+	assert_eq!(pdf["no_assigned_agent_can_read"], false, "{pdf}");
+	*selected_thread_requests.attachment.lock().unwrap() =
+		Some(attachment["id"].as_str().unwrap().to_owned());
+	let (status, body) = request(&app, &token, "POST", &format!("/api/workspaces/{workspace}/thread-messages"), json!({"content":"Please inspect", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"], pdf["id"]]})).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(
+		body["attachments"][0]["no_assigned_agent_can_read"], false,
+		"{body}"
+	);
+	// An unrelated corrupt attachment must not prevent copying the selected one.
+	sqlx::query("UPDATE channel_attachments SET sha256 = $1 WHERE id = $2")
+		.bind("0".repeat(64))
+		.bind(Uuid::parse_str(pdf["id"].as_str().unwrap()).unwrap())
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let worker = Harness {
+		federation: f.clone(),
+	};
+	let mut requests = Vec::new();
+	for _ in 0..30 {
+		worker.worker_once().await.unwrap();
+		while let Ok(body) = received.try_recv() {
+			requests.push(body);
+		}
+		if requests.len() >= 5 {
+			break;
+		}
+	}
+	assert!(requests.len() >= 5, "provider requests: {requests:?}");
+	let observation = requests[1].to_string();
+	assert!(observation.contains("selected.png"), "{observation}");
+	assert!(!observation.contains(&base64::engine::general_purpose::STANDARD.encode(PNG)));
+	assert!(
+		requests[2].to_string().contains("image_url"),
+		"{}",
+		requests[2]
+	);
+	let observed_run = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|item| item.id == run.id)
+		.unwrap();
+	assert_eq!(observed_run.context.media_inferred_seq, 0);
+	assert!(
+		observed_run.context.history.iter().any(|entry| matches!(
+			&entry.event,
+			aidash_domain::context::ContextEvent::ModelMediaObservation {
+				through_seq: None,
+				text,
+				..
+			} if text == "The image is a pixel."
+		)),
+		"selected media observation was not recorded"
+	);
+	let (status, history) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/workspaces/{workspace}/message-history"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{history}");
+	assert_eq!(
+		history["messages"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|item| item["message"]["content"] == "Please inspect")
+			.unwrap()["attachments"][0]["no_assigned_agent_can_read"],
+		false
+	);
+	let posted = history["messages"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["message"]["content"] == "Agent snapshot")
+		.expect("Agent A posted its file snapshot");
+	let posted_id = posted["attachments"][0]["id"].as_str().unwrap().to_owned();
+	assert_ne!(posted_id, attachment["id"].as_str().unwrap());
+	*selected_thread_requests.attachment.lock().unwrap() = Some(posted_id);
+	let (status, task) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/tasks"),
+		json!({"title":"Peer", "description":"Inspect Agent A's image"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{task}");
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{}/delegate", task["id"].as_str().unwrap()),
+		json!({"node_id":f.config.deployment, "agent":{"id":"research-peer", "version":"1.0.1"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	for _ in 0..30 {
+		worker.worker_once().await.unwrap();
+		while let Ok(body) = received.try_recv() {
+			requests.push(body);
+		}
+		if requests.len() >= 8 {
+			break;
+		}
+	}
+	assert!(requests.len() >= 8, "provider requests: {requests:?}");
+	assert!(requests[6].to_string().contains("Agent snapshot"));
+	assert!(
+		requests[7].to_string().contains("image_url"),
+		"{}",
+		requests[7]
+	);
+	assert!(
+		requests[7]
+			.to_string()
+			.contains(&base64::engine::general_purpose::STANDARD.encode(PNG))
+	);
+	let peer_run = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.task_id.to_string() == task["id"].as_str().unwrap())
+		.unwrap();
+	let selected_id = selected_thread_requests
+		.attachment
+		.lock()
+		.unwrap()
+		.clone()
+		.unwrap();
+	let mut ready = false;
+	for _ in 0..10 {
+		worker.worker_once().await.unwrap();
+		let current = f.store.run(&TEST_FIXTURE, peer_run.id).await.unwrap();
+		if let aidash_server::domain::RunState::Thinking(state) = &current.state
+			&& !state.selected_media.is_empty()
+		{
+			ready = true;
+			break;
+		}
+	}
+	assert!(ready, "Agent B did not retain its second selection");
+	sqlx::query("DELETE FROM channel_attachments WHERE id = $1")
+		.bind(Uuid::parse_str(&selected_id).unwrap())
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	for _ in 0..10 {
+		worker.worker_once().await.unwrap();
+		while let Ok(body) = received.try_recv() {
+			requests.push(body);
+		}
+		if requests.len() >= 9 {
+			break;
+		}
+	}
+	assert!(requests.len() >= 9, "provider requests: {requests:?}");
+	assert!(
+		requests[8]
+			.to_string()
+			.contains("Thread Attachment unavailable"),
+		"{}",
+		requests[8]
+	);
+	*selected_thread_requests.attachment.lock().unwrap() =
+		Some(attachment["id"].as_str().unwrap().to_owned());
+	let (status, task) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/tasks"),
+		json!({"title":"Text-only", "description":"Try the image"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{task}");
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{}/delegate", task["id"].as_str().unwrap()),
+		json!({"node_id":f.config.deployment, "agent":{"id":"research", "version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	for _ in 0..30 {
+		worker.worker_once().await.unwrap();
+		while let Ok(body) = received.try_recv() {
+			requests.push(body);
+		}
+		if requests.len() >= 11 {
+			break;
+		}
+	}
+	assert!(requests.len() >= 11, "provider requests: {requests:?}");
+	assert!(
+		requests[10]
+			.to_string()
+			.contains("this model cannot read image/png through any current route"),
+		"{}",
+		requests[10]
+	);
+	let (status, text_conversation) = request(&app, &token, "POST", "/api/conversations", json!({"title":"Text only", "goal":"Inspect", "target":{"id":"research","version":"1.0.0"}, "target_kind":"agent"})).await;
+	assert_eq!(status, 200, "{text_conversation}");
+	let text_workspace = text_conversation["workspace"]["id"].as_str().unwrap();
+	let text_image = upload(
+		&app,
+		&token,
+		text_workspace,
+		"unreadable.png",
+		"image/png",
+		PNG,
+	)
+	.await;
+	assert_eq!(
+		text_image["no_assigned_agent_can_read"], true,
+		"{text_image}"
+	);
+	let (status, message) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{text_workspace}/thread-messages"),
+		json!({"content":"Image", "idempotency_key":Uuid::new_v4(), "attachment_ids":[text_image["id"]]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{message}");
+	assert_eq!(
+		message["attachments"][0]["no_assigned_agent_can_read"],
+		true
+	);
+	let (status, next_task) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{text_workspace}/tasks"),
+		json!({"title":"Image reader", "description":"Inspect"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{next_task}");
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{}/delegate", next_task["id"].as_str().unwrap()),
+		json!({"node_id":f.config.deployment, "agent":{"id":"research-peer", "version":"1.0.1"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, listing) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/workspaces/{text_workspace}/message-history"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{listing}");
+	let listed = listing["messages"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|entry| entry["message"]["content"] == "Image")
+		.unwrap();
+	assert_eq!(
+		listed["attachments"][0]["no_assigned_agent_can_read"], false,
+		"{listing}"
+	);
+	drop(server);
+	cleanup(f, &url, &schema).await;
+}
+
+// This proxy forwards the actual harness request unchanged, adding only the
+// test credential. It records the ID of the inference that carried the media;
+// OpenRouter's generation API is the independent assertion at the boundary.
+#[derive(Clone, Default)]
+struct LiveMediaGenerations(Arc<std::sync::Mutex<Vec<String>>>);
+
+#[rstest::fixture]
+fn live_media_generations() -> LiveMediaGenerations {
+	LiveMediaGenerations::default()
+}
+
+fn live_media_model() -> String {
+	std::env::var("AIDASH_LIVE_MEDIA_MODEL")
+		.unwrap_or_else(|_| "google/gemini-3.1-flash-lite".into())
+}
+
+async fn live_discovery(path: &str) -> reinhardt::Response {
+	let key = std::env::var("OPENROUTER_API_KEY").expect("OPENROUTER_API_KEY is required");
+	let response = reqwest::Client::new()
+		.get(format!("https://openrouter.ai/api/v1/{path}"))
+		.bearer_auth(key)
+		.send()
+		.await
+		.expect("OpenRouter route discovery");
+	let status = response.status();
+	let answer: Value = response.json().await.expect("OpenRouter discovery JSON");
+	assert!(
+		status.is_success(),
+		"OpenRouter discovery HTTP {status}: {answer}"
+	);
+	reinhardt::Response::ok().with_json(&answer).unwrap()
+}
+
+#[rstest::fixture]
+fn live_media_router(
+	#[from(live_media_generations)] generations: LiveMediaGenerations,
+) -> Arc<Router> {
+	let discovery_path = format!("models/{}/endpoints", live_media_model());
+	let discovery_route = format!("/v1/{discovery_path}");
+	Arc::new(
+		reinhardt::test::stub::StubRouter::new()
+			.route(
+				&discovery_route,
+				http::Method::GET,
+				reply(move |_| {
+					let path = discovery_path.clone();
+					async move { live_discovery(&path).await }
+				}),
+			)
+			.route(
+				"/v1/endpoints/zdr",
+				http::Method::GET,
+				reply(|_| async { live_discovery("endpoints/zdr").await }),
+			)
+			.route(
+				"/v1/chat/completions",
+				http::Method::POST,
+				reply(move |request: reinhardt::Request| {
+					let body = request.json::<Value>().unwrap();
+					let generations = generations.clone();
+					async move {
+						let key = std::env::var("OPENROUTER_API_KEY")
+							.expect("OPENROUTER_API_KEY is required for live tests");
+						let response = reqwest::Client::new()
+							.post("https://openrouter.ai/api/v1/chat/completions")
+							.bearer_auth(key)
+							.json(&body)
+							.send()
+							.await
+							.expect("OpenRouter request");
+						let status = response.status();
+						let answer: Value =
+							response.json().await.expect("OpenRouter JSON response");
+						assert!(status.is_success(), "OpenRouter HTTP {status}: {answer}");
+						let media = body["messages"].as_array().is_some_and(|messages| {
+							messages.iter().any(|message| {
+								message["content"].as_array().is_some_and(|parts| {
+									parts.iter().any(|part| {
+										part["type"] == "image_url" || part["type"] == "input_audio"
+									})
+								})
+							})
+						});
+						if media {
+							generations
+								.0
+								.lock()
+								.unwrap()
+								.push(answer["id"].as_str().expect("generation ID").to_owned());
+						}
+						reinhardt::Response::ok().with_json(&answer).unwrap()
+					}
+				}),
+			)
+			.into_server_router(),
+	)
+}
+
+/// Run explicitly with `OPENROUTER_API_KEY=... cargo test -p aidash-server
+/// --test multimodal_run live_openrouter_thread_attachment -- --ignored --nocapture`.
+#[rstest::rstest]
+#[case::image("image/png", "selected.png", "num_media_prompt")]
+#[case::audio("audio/wav", "selected.wav", "num_input_audio_prompt")]
+#[tokio::test]
+#[ignore = "live: incurs OpenRouter charges and needs OPENROUTER_API_KEY"]
+async fn live_openrouter_thread_attachment(
+	#[case] mime: &str,
+	#[case] filename: &str,
+	#[case] stats_field: &str,
+	#[from(common::native_application)] fixture: common::ApplicationFuture,
+	live_media_generations: LiveMediaGenerations,
+	#[from(live_media_router)]
+	#[with(live_media_generations.clone())]
+	_router: Arc<Router>,
+	#[future(awt)]
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
+) {
+	let Ok(key) = std::env::var("OPENROUTER_API_KEY") else {
+		eprintln!("SKIP live OpenRouter attachment test: OPENROUTER_API_KEY is not set");
+		return;
+	};
+	if key.trim().is_empty() {
+		eprintln!("SKIP live OpenRouter attachment test: OPENROUTER_API_KEY is empty");
+		return;
+	}
+	let fixture = fixture.await;
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, token, _) = common::bootstrap_with_area(&f, &app, &server.url).await;
+	policy["subjects"][aidash_server::domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+		"research",
+		"1.0.1",
+	)] = json!({"kind":"agent"});
+	let (status, body) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let mut model = f.registry.get(&tenant, "model", "1.0.0").await.unwrap();
+	model.version = "1.0.1".into();
+	model.config["model_id"] = json!(live_media_model());
+	model.config["modalities"] = json!(["text", "image", "audio"]);
+	model.config["streaming"] = json!(false);
+	model.config["max_output_tokens"] = json!(256);
+	model.config["media_routes"] = json!([{"tag":std::env::var("AIDASH_LIVE_MEDIA_ROUTE").unwrap_or_else(|_| "google-vertex/us".into()), "formats":["image/png", "wav"], "source":"live-test", "verified_at":chrono::Utc::now() - chrono::Duration::minutes(1), "expires_at":chrono::Utc::now() + chrono::Duration::hours(1)}]);
+	let (status, body) = request(&app, &token, "POST", "/api/registry", json!(model)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(&app, &token, "POST", "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"model","version":"1.0.1"},"expected_revision":0,"enabled":true})).await;
+	assert_eq!(status, 200, "{body}");
+	let mut agent = f.registry.get(&tenant, "research", "1.0.0").await.unwrap();
+	agent.version = "1.0.1".into();
+	agent.binding_normalization = None;
+	agent.config["model"]["version"] = json!("1.0.1");
+	agent.config["instructions"] = json!(
+		"Use workspace_observe to find the attachment. Call workspace_read with kind attachment, its id, and representation model_input. Then describe the media briefly. Do not finish before viewing it."
+	);
+	let (status, body) = request(&app, &token, "POST", "/api/registry", json!(agent)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(&app, &token, "POST", "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true})).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({"title":"Live attachment", "goal":"Inspect the attached media using workspace_read representation model_input", "target":{"id":"research","version":"1.0.1"}, "target_kind":"agent"})).await;
+	assert_eq!(status, 200, "{created}");
+	let workspace = created["workspace"]["id"].as_str().unwrap();
+	let bytes = if mime.starts_with("image/") {
+		PNG.to_vec()
+	} else {
+		wav_bytes(48_044)
+	};
+	let attachment = upload(&app, &token, workspace, filename, mime, &bytes).await;
+	let (status, message) = request(&app, &token, "POST", &format!("/api/workspaces/{workspace}/thread-messages"), json!({"content":format!("Read attachment {} with workspace_read kind attachment representation model_input, then describe it.", attachment["id"].as_str().unwrap()), "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]})).await;
+	assert_eq!(status, 200, "{message}");
+	let worker = Harness {
+		federation: f.clone(),
+	};
+	for _ in 0..40 {
+		worker.worker_once().await.unwrap();
+		if !live_media_generations.0.lock().unwrap().is_empty() {
+			break;
+		}
+	}
+	let generation = live_media_generations
+		.0
+		.lock()
+		.unwrap()
+		.first()
+		.cloned()
+		.expect("Agent must select the attachment and send it to OpenRouter");
+	let client = reqwest::Client::new();
+	let mut stats = Value::Null;
+	for _ in 0..10 {
+		let response = client
+			.get("https://openrouter.ai/api/v1/generation")
+			.query(&[("id", &generation)])
+			.bearer_auth(&key)
+			.send()
+			.await
+			.unwrap();
+		if response.status().is_success() {
+			stats = response.json().await.unwrap();
+			if stats["data"][stats_field].as_u64().unwrap_or(0) >= 1 {
+				break;
+			}
+		}
+		tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+	}
+	assert!(
+		stats["data"][stats_field].as_u64().unwrap_or(0) >= 1,
+		"OpenRouter generation {generation}: {stats}"
+	);
+	drop(server);
+	cleanup(f, &url, &schema).await;
 }

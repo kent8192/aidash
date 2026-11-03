@@ -36,6 +36,7 @@ fn metadata(id: u128) -> ChannelAttachment {
 		filename: format!("{id}.txt"),
 		media_type: "text/plain".into(),
 		size_bytes: 1,
+		no_assigned_agent_can_read: false,
 	}
 }
 fn attachment(key: Uuid) -> AttachmentState {
@@ -48,7 +49,8 @@ fn attachment(key: Uuid) -> AttachmentState {
 		media_type: "text/plain".into(),
 		sha256: format!("{:x}", Sha256::digest(b"x")),
 		size_bytes: 1,
-		content: b"x".to_vec(),
+		content: Some(b"x".to_vec()),
+		object_id: None,
 		message_id: Some(Uuid::from_u128(2)),
 	}
 }
@@ -75,6 +77,17 @@ impl Fixture {
 		} else {
 			Ok(())
 		}
+	}
+}
+#[async_trait]
+impl crate::ports::channels::AttachmentObjects for Fixture {
+	async fn put_object(&mut self, _: &[u8], _: &str) -> Result<Uuid> {
+		self.record("object.put")?;
+		Ok(Uuid::from_u128(10))
+	}
+	async fn read_object(&mut self, _: Uuid, _: &str, _: i64) -> Result<Vec<u8>> {
+		self.record("object.read")?;
+		Ok(b"x".to_vec())
 	}
 }
 #[async_trait]
@@ -365,6 +378,7 @@ async fn upload_replay_compares_metadata_and_content_before_returning() {
 			filename: "10.txt",
 			media_type: "text/plain",
 			idempotency_key: key,
+			measurements: MediaMeasurements::default(),
 		},
 		b"changed",
 	)

@@ -252,11 +252,13 @@ pub(crate) fn http_tool(node: &str, id: &str, alias: &str) -> Entry {
 pub(crate) fn builtin_entries(node: &str) -> Vec<Entry> {
 	let mut entries: Vec<Entry> = crate::registry::system::operations()
 		.map(|name| {
-			entry(
+			let mut entry = entry(
 				&format!("aidash.{name}"),
 				"tool",
 				json!(core_descriptor(node, name).unwrap()),
-			)
+			);
+			entry.version = QualifiedRef::builtin(node, name).version;
+			entry
 		})
 		.collect();
 	let mut current = entries

@@ -71,30 +71,28 @@ impl NativeContext {
 		if self.context_source.is_some() {
 			return declaration;
 		}
-		let old = super::QualifiedRef::builtin(&identity.registry_deployment, "workspace_read");
-		let current = super::QualifiedRef {
-			version: "1.1.0".into(),
-			..old.clone()
-		};
-		let has = |target: &super::QualifiedRef| {
-			snapshot
+		for reference in declaration
+			.tools
+			.read
+			.iter_mut()
+			.chain(declaration.tools.write.iter_mut())
+			.chain(declaration.tools.detail.iter_mut())
+		{
+			if !snapshot
 				.bindings
 				.iter()
-				.any(|binding| &binding.identity == target && binding.excluded_reason.is_none())
-		};
-		if !has(&old) && has(&current) {
-			for reference in declaration
-				.tools
-				.read
-				.iter_mut()
-				.chain(declaration.tools.write.iter_mut())
-				.chain(declaration.tools.detail.iter_mut())
+				.any(|binding| binding.identity == *reference && binding.excluded_reason.is_none())
 			{
-				if *reference == old {
-					*reference = current.clone();
+				if let Some(saved) = snapshot.bindings.iter().find(|binding| {
+					binding.identity.id == reference.id
+						&& binding.identity.registry_deployment == reference.registry_deployment
+						&& binding.excluded_reason.is_none()
+				}) {
+					*reference = saved.identity.clone();
 				}
 			}
 		}
+
 		declaration
 	}
 	pub fn validate(&self, kind: &str) -> Result<()> {

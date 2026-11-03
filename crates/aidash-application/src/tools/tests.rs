@@ -94,6 +94,14 @@ impl ToolOperations for Operations {
 	async fn message(&self, _key: &str, _content: &str) -> Result<()> {
 		panic!("unexpected tool effect: message")
 	}
+	async fn message_with_files(&self, key: &str, content: &str, files: &[String]) -> Result<()> {
+		self.record("message.files");
+		self.inputs
+			.lock()
+			.unwrap()
+			.push((key.to_owned(), json!({"content":content,"files":files})));
+		Ok(())
+	}
 	async fn observation(&self, _offset: usize, _limit: usize) -> Result<Value> {
 		panic!("unexpected tool effect: observation")
 	}
@@ -379,6 +387,47 @@ async fn workspace_search_accepts_only_one_current_image_or_text_query(fixture: 
 	assert_eq!(
 		*fixture.operations.calls.lock().unwrap(),
 		["workspace.search", "workspace.search"]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn workspace_message_passes_paths_to_the_snapshot_operation_and_enforces_count(
+	fixture: Fixture,
+) {
+	let tool = builtins().remove("workspace_message").unwrap();
+	let context = ToolContext {
+		operations: &fixture.operations,
+		run: &fixture.run,
+	};
+	let output = tool
+		.invoke(
+			&context,
+			json!({"content":"sharing", "files":["image.png"]}),
+			"call-1",
+		)
+		.await
+		.unwrap();
+	assert_eq!(output["sent"], true);
+	assert_eq!(
+		fixture.operations.inputs.lock().unwrap()[0],
+		(
+			"call-1".to_owned(),
+			json!({"content":"sharing","files":["image.png"]})
+		)
+	);
+	assert!(
+		tool.invoke(
+			&context,
+			json!({"content":"too many", "files":vec!["x";9]}),
+			"call-2"
+		)
+		.await
+		.is_err()
+	);
+	assert_eq!(
+		fixture.operations.calls.lock().unwrap().as_slice(),
+		&["message.files"]
 	);
 }
 #[rstest]

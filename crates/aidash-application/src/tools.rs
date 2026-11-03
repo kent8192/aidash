@@ -382,8 +382,11 @@ impl Builtin {
 					.await?
 			)),
 			"workspace_message" => {
+				let files: Vec<String> = serde_json::from_value(
+					input.get("files").cloned().unwrap_or_else(|| json!([])),
+				)?;
 				ctx.operations
-					.message(key, required(&input, "content")?)
+					.message_with_files(key, required(&input, "content")?, &files)
 					.await?;
 				Ok(json!({"sent":true}))
 			}
@@ -401,6 +404,12 @@ impl Builtin {
 			"workspace_read" => {
 				let kind = required(&input, "kind")?;
 				let id = required(&input, "id")?;
+				if kind == "attachment" {
+					return ctx
+						.operations
+						.attachment(id, input["representation"] == "model_input")
+						.await;
+				}
 				if kind == "file" {
 					if input.get("offset").is_some() || input.get("max_chars").is_some() {
 						return Err(Error::Invalid(
@@ -455,6 +464,7 @@ impl Builtin {
 				}
 				ctx.operations.workspace_search(input).await
 			}
+			"attachment_copy" => ctx.operations.attachment_copy(input).await,
 			"workspace_wait" => {
 				Ok(json!({"wait_seconds":input["seconds"].as_u64().unwrap_or(2).clamp(1,60)}))
 			}
@@ -571,22 +581,22 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "workspace_message",
 			contract: aidash_domain::tool::builtin_contract("workspace_message")
 				.expect("declared builtin"),
-			description: "Send a message to the human and other agents sharing this workspace.",
-			schema: json!({"type":"object","required":["content"],"properties":{"content":string},"additionalProperties":false}),
+			description: "Send a message to the human and other agents sharing this workspace. Optionally attach snapshots of up to eight current Working Area files by path (8 MiB total).",
+			schema: json!({"type":"object","required":["content"],"properties":{"content":string,"files":{"type":"array","maxItems":8,"items":string}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_observe",
 			contract: aidash_domain::tool::builtin_contract("workspace_observe")
 				.expect("declared builtin"),
-			description: "Read a bounded summary of goal, tasks, artifact references, messages and recent event metadata. Use workspace_read for full records. Collections have separate totals and next_offset; events/messages are newest first. Refresh pagination if the workspace changes.",
+			description: "Read a bounded summary of goal, tasks, artifact references, messages and recent event metadata. Messages list Thread Attachment metadata without bytes. Use workspace_read for full records. Collections have separate totals and next_offset; events/messages are newest first. Refresh pagination if the workspace changes.",
 			schema: json!({"type":"object","properties":{"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_read",
 			contract: aidash_domain::tool::builtin_contract("workspace_read")
 				.expect("declared builtin"),
-			description: "Read an accessible workspace record, or open a matched File using its exact Area, generation, path and digest. Choose model_input to include an image in the next inference when the model supports images. Text records return bounded chunks with next_offset.",
-			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event","file"]},"id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000},"area_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"path":{"type":"string"},"expected_digest":{"type":"string"},"representation":{"enum":["metadata","model_input"]}},"additionalProperties":false}),
+			description: "Read an accessible workspace record or Thread Attachment, or open a matched File using its exact Area, generation, path and digest. Use representation=model_input to select an attachment or image for the next inference; use attachment_copy to save an attachment in the Working Area. Text records return bounded chunks with next_offset.",
+			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event","file","attachment"]},"id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000},"area_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"path":{"type":"string"},"expected_digest":{"type":"string"},"representation":{"enum":["metadata","model_input"]}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_search",
@@ -594,6 +604,13 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 				.expect("declared builtin"),
 			description: "Search the Workspace index by text or by an image in your own Working Area. Image matches are File pointers; open a match with workspace_read.",
 			schema: json!({"type":"object","properties":{"query":{"type":"string"},"image":{"type":"object","required":["area_id","generation","file_id","path","expected_digest"],"properties":{"area_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"file_id":{"type":"string"},"path":{"type":"string"},"expected_digest":{"type":"string"}},"additionalProperties":false},"limit":{"type":"integer","minimum":1,"maximum":20},"max_tokens":{"type":"integer","minimum":1,"maximum":32768}},"additionalProperties":false}),
+		},
+		Builtin {
+			name: "attachment_copy",
+			contract: aidash_domain::tool::builtin_contract("attachment_copy")
+				.expect("declared builtin"),
+			description: "Copy a visible Thread Attachment into the Working Area. Supply the current area revision and a unique idempotency key. The File records its source message and attachment.",
+			schema: json!({"type":"object","required":["id","path","expected_revision","idempotency_key"],"properties":{"id":string,"path":string,"expected_revision":{"type":"integer"},"idempotency_key":string},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_wait",
