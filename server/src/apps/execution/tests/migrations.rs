@@ -3880,6 +3880,12 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 		])
 		.to_string(PostgresQueryBuilder);
 	fixture.connection.execute(&insert, vec![]).await.unwrap();
+	let bundle = Query::insert()
+		.into_table(Alias::new("authorization_bundles"))
+		.columns(["tenant", "revision", "document"].map(Alias::new))
+		.values_panic::<_, reinhardt::query::Value>([tenant.into(), 1_i64.into(), json!({}).into()])
+		.to_string(PostgresQueryBuilder);
+	fixture.connection.execute(&bundle, vec![]).await.unwrap();
 	let owner = Query::insert()
 		.into_table(Alias::new("authorization_workspaces"))
 		.columns(["workspace_id", "tenant", "owner_subject"].map(Alias::new))
