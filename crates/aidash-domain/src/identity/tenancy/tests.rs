@@ -106,6 +106,7 @@ fn each_offering_supplies_its_column_of_defaults(
 			creation_total: 20,
 			invitations: true,
 			deletion_grace_days: 30,
+			node_deletion_grace_days: 30,
 			audit_retention_days: 365,
 			nodes_per_tenant: 10,
 		}
@@ -175,6 +176,7 @@ fn the_creator_administers_and_members_use() {
 		"alice".into(),
 		Subject {
 			kind: SubjectKind::User,
+			node: None,
 			groups: [MEMBERS.to_owned()].into(),
 			roles: BTreeSet::new(),
 			attributes: json!({}),
@@ -331,6 +333,7 @@ fn with_member(mut bundle: PolicyBundle, name: &str, group: &str) -> PolicyBundl
 		name.into(),
 		Subject {
 			kind: SubjectKind::User,
+			node: None,
 			groups: [group.to_owned()].into(),
 			roles: BTreeSet::new(),
 			attributes: json!({}),
@@ -471,7 +474,13 @@ fn invitations_last_at_most_seven_days(
 fn subnode_create_requires_a_named_agent_grant() {
 	use crate::identity::tenant_administration::{SUBNODE_CREATE, add_agent_subject};
 	let mut bundle = initial_policy("tenant", true).unwrap();
-	add_agent_subject(&mut bundle, "worker", &[MEMBERS.to_owned()].into()).unwrap();
+	add_agent_subject(
+		&mut bundle,
+		"worker",
+		&crate::nodes::NodeName::derived("fixture"),
+		&[MEMBERS.to_owned()].into(),
+	)
+	.unwrap();
 	assert!(!allows(&bundle, "worker", SUBNODE_CREATE));
 	let mut grant = bundle.policies[0].clone();
 	grant.id = "grant-subnode".into();

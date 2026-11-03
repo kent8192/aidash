@@ -61,7 +61,13 @@ export function useNodeSelection(tenant: string | null): NodeSelection {
       tenant === null ? null : localStorage.getItem(nodeStorageKey(tenant)),
     () => null,
   );
-  const nodes = list.isError ? none : (list.data ?? none);
+  const nodes = useMemo(
+    () =>
+      list.isError
+        ? none
+        : (list.data?.filter((node) => node.state === "live") ?? none),
+    [list.isError, list.data],
+  );
   const select = useCallback(
     (name: string) => {
       if (tenant === null) return;

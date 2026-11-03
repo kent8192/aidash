@@ -587,7 +587,7 @@ async fn person_only_actions_reject_agent_tokens_even_with_explicit_grants_and_d
 	let authorization = crate::authorization::Authorization {
 		pool: store.pool.clone(),
 	};
-	let bundle = serde_json::from_value(json!({"tenant":"acme","subjects":{"agent":{"kind":"agent"},"reader":{"kind":"agent"},"person":{"kind":"user"},"admin":{"kind":"user"}},"policies":[
+	let bundle = serde_json::from_value(json!({"tenant":"acme","subjects":{"agent":{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")},"reader":{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")},"person":{"kind":"user"},"admin":{"kind":"user"}},"policies":[
         {"id":"explicit-agent","effect":"allow","subjects":{"ids":["agent"]},"actions":["*"],"resources":{"kinds":["*"]}},
         {"id":"workspace-admin","effect":"allow","subjects":{"ids":["admin"]},"actions":["workspace.read","workspace.update","memory.read","memory.pin","memory.reactivate","registry.read"],"resources":{"kinds":["*"]}},
         {"id":"default-read","effect":"allow","subjects":{"ids":["reader","person"]},"actions":["workspace.read","memory.read","memory.pin","memory.reactivate","registry.read"],"resources":{"kinds":["*"]}}

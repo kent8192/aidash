@@ -207,7 +207,7 @@ async fn manual_retry_renews_only_the_retry_ledger_and_preserves_durable_budgets
 		&agent.id,
 		&agent.version,
 	);
-	let policy = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},owner:{"kind":"agent"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]});
+	let policy = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},owner:{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]});
 	authorization
 		.replace(
 			"acme",

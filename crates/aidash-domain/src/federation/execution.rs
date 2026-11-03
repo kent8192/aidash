@@ -173,3 +173,5 @@ mod tests;
 pub mod admission;
 
 pub mod home;
+
+pub mod settlement;

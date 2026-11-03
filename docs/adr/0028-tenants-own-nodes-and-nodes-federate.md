@@ -9,9 +9,11 @@ an agent could cooperate depended on where it was installed, not on who agreed.
 The hierarchy is now Deployment, then Tenant, then Node. A Node is an agent hub
 inside one Tenant with its own identity. Its subjects, Workspaces and Runs live
 in it, and execution happens inside it. Communication between any two Nodes is
-Federation: the sender is identified, the receiving Node must have explicitly
-registered it, and the receiver's authority decides. This holds within one
-Tenant, across Tenants and across Deployments.
+Federation: the sender is identified and the receiver's authority decides.
+Within one Tenant, its policy admits the sender without a Node Registration or
+Peer Mapping. Across Tenants, the receiving Node must have explicitly registered
+the sender, and a named subject needs a Peer Mapping. Deployment Keys
+authenticate exchanges across Deployments (ADR 0064).
 
 ## Considered Options
 

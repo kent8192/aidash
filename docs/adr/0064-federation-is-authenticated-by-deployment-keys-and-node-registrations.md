@@ -4,8 +4,8 @@ Federation used one shared bearer secret per pair of Deployments (a Peer Credent
 Deployment Administrators could configure. Once Nodes inside Tenants are the parties of
 Federation (ADR 0028), that model puts Aidash staff in the path of every cross-Deployment
 cooperation on Cloud, and a per-Node shared secret cannot be read back by the server on Cloud,
-where the Secret Store is write-only for the application host. Each Deployment therefore holds one
-Deployment Key and signs short-lived tokens that name the sending and the receiving Node. A
+where the Secret Store is write-only for the application host. Each Deployment therefore holds a
+Deployment signing identity and signs short-lived tokens that name the sending and receiving Node. A
 receiving Node accepts only Nodes that its Tenant Administrators registered, and the Node
 Registration pins the sending Deployment's public key. Within one Tenant there is no
 registration: the Tenant's policy decides over the sender's own subject.

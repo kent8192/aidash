@@ -116,3 +116,90 @@ fn a_home_is_local_only_for_its_own_node_in_its_own_deployment() {
 		node.as_str()
 	));
 }
+
+// Policy validation owns the subject-to-Node contract; transport fixtures do not.
+#[rstest]
+#[case::user("user", None, true)]
+#[case::user_with_node("user", Some("able-oak-abcd1234"), false)]
+#[case::agent("agent", Some("able-oak-abcd1234"), true)]
+#[case::agent_without_node("agent", None, false)]
+#[case::service("service", Some("able-oak-abcd1234"), true)]
+#[case::service_without_node("service", None, false)]
+#[case::node("node", Some("able-oak-abcd1234"), false)]
+#[case::node_without_owner("node", None, false)]
+fn policy_requires_explicit_node_ownership(
+	#[case] kind: &str,
+	#[case] node: Option<&str>,
+	#[case] valid: bool,
+) {
+	let mut subject = serde_json::json!({"kind": kind});
+	if let Some(node) = node {
+		subject["node"] = node.into();
+	}
+	let bundle = serde_json::from_value::<crate::policy::PolicyBundle>(
+		serde_json::json!({"tenant":"acme", "subjects":{"actor":subject}}),
+	);
+	assert_eq!(
+		bundle
+			.and_then(|bundle| bundle.validate().map_err(serde::de::Error::custom))
+			.is_ok(),
+		valid
+	);
+}
+
+#[rstest]
+#[case(1, true)]
+#[case(30, true)]
+#[case(90, true)]
+#[case(0, false)]
+#[case(91, false)]
+fn node_grace_is_finite_and_bounded(#[case] days: u32, #[case] valid: bool) {
+	assert_eq!(super::deletion::grace_days(days).is_ok(), valid);
+}
+
+#[test]
+fn node_restore_ends_at_the_recorded_deadline() {
+	use super::deletion::{self, Actor, Deletion};
+	use chrono::{Duration, TimeZone, Utc};
+	let now = Utc.with_ymd_and_hms(2026, 10, 23, 0, 0, 0).unwrap();
+	let deadline = deletion::purge_after(now, 30).unwrap();
+	assert_eq!(deadline, now + Duration::days(30));
+	let deletion = Deletion {
+		deleted_by: Actor::TenantAdministrator,
+		purge_after: deadline,
+		restored: false,
+		purged: false,
+	};
+	assert!(
+		deletion::check_restore(
+			&deletion,
+			Actor::TenantAdministrator,
+			deadline - Duration::nanoseconds(1)
+		)
+		.is_ok()
+	);
+	assert!(deletion::check_restore(&deletion, Actor::TenantAdministrator, deadline).is_err());
+	assert!(
+		deletion::check_restore(
+			&deletion,
+			Actor::DeploymentAdministrator,
+			deadline + Duration::nanoseconds(1)
+		)
+		.is_err()
+	);
+}
+
+#[rstest]
+#[case(false, 1, false)]
+#[case(true, 2, false)]
+#[case(false, 2, true)]
+fn node_deletion_preserves_the_default_and_last_live_node(
+	#[case] default: bool,
+	#[case] live_count: u32,
+	#[case] allowed: bool,
+) {
+	assert_eq!(
+		super::deletion::check_delete(default, live_count).is_ok(),
+		allowed
+	);
+}

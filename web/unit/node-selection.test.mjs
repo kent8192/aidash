@@ -14,6 +14,7 @@ const node = (name, options = {}) => ({
   label: options.label ?? name,
   address: `aidash://home/${name}`,
   default: options.default ?? false,
+  state: "live",
 });
 const nodes = [node("first", { default: true }), node("second")];
 
@@ -186,4 +187,16 @@ test("Deployment Administrator monitoring requires a valid Node address", () => 
     "https://home/first",
   ])
     assert.equal(isLocalRun({ home_node }, administrator), false);
+});
+
+test("a remembered deleted Node and deleted default never enter live selection", () => {
+  const lifecycle = [
+    { name: "deleted", default: true, state: "deleted" },
+    { name: "deleting", default: false, state: "deleting" },
+    { name: "purged", default: false, state: "purged" },
+    { name: "live", default: false, state: "live" },
+  ];
+  assert.equal(chooseNode(lifecycle, "deleted")?.name, "live");
+  assert.equal(chooseNode(lifecycle, "purged")?.name, "live");
+  assert.equal(chooseNode(lifecycle.slice(0, 3), "deleted"), undefined);
 });

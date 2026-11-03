@@ -98,7 +98,7 @@ fn repository() -> Repository {
 		revision: 7,
 		created_at: now,
 	};
-	let bundle:PolicyBundle=serde_json::from_value(json!({"tenant":"tenant","subjects":{"root":{"kind":"user","delegated_by":null},"parent":{"kind":"agent","delegated_by":"root"}}})).unwrap();
+	let bundle:PolicyBundle=serde_json::from_value(json!({"tenant":"tenant","subjects":{"root":{"kind":"user","delegated_by":null},"parent":{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"delegated_by":"root"}}})).unwrap();
 	let prepared = json!({"intent_id":Uuid::from_u128(4),"node_id":"aidash://executor","request_id":Uuid::from_u128(5),"agent":{"id":"agent","version":"1.0.0"},"status":"QUEUED","prepared":true,"expires_at":DateTime::<Utc>::from_timestamp(2000,0).unwrap()});
 	Repository {
 		principal: Principal::Subject {

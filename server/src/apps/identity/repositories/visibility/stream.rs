@@ -130,6 +130,14 @@ impl StreamAuthorityStore for Authority<'_> {
 				.and_where(col("c", "subject").eq(Expr::cust("$3")))
 				.and_where(col("c", "revoked_at").is_null())
 				.and_where(col("c", "expires_at").gt(Expr::cust("clock_timestamp()")));
+			if let Some(workspace) = workspace {
+				query.and_where(
+					crate::apps::identity::repositories::nodes::live_workspace_condition(
+						Expr::value(workspace).into(),
+						Expr::value(self.workspaces.identity.tenant.clone()).into(),
+					),
+				);
+			}
 			let current: Option<Current> =
 				crate::database::native::query_as(&query.to_string(PostgresQueryBuilder))
 					.bind(self.workspaces.identity.credential_id)
@@ -142,6 +150,24 @@ impl StreamAuthorityStore for Authority<'_> {
 							.in_scope(&self.workspaces.identity.tenancy()?),
 					)
 					.await?;
+			if let Some(current) = &current {
+				let snapshot = crate::authorization::Snapshot {
+					revision: current.revision,
+					bundle: serde_json::from_value(current.document.clone())?,
+				};
+				self.workspaces
+					.store
+					.pool
+					.atomic(&self.workspaces.identity.tenancy()?, async |tx| {
+						crate::authorization::identity::require_live_subject(
+							tx,
+							&snapshot,
+							&self.workspaces.identity.subject,
+						)
+						.await
+					})
+					.await?;
+			}
 			if let Some(current) = &current
 				&& current.mapping_id.is_some()
 			{

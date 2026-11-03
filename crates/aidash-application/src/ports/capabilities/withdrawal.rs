@@ -14,4 +14,6 @@ pub trait OperationWithdrawalScope: Send {
 pub trait OperationWithdrawalRepository: Send + Sync {
 	async fn lock(&self, area: Uuid, operation: Uuid) -> Result<Box<dyn OperationWithdrawalScope>>;
 	async fn cancel(&self, operation: Uuid) -> Result<Value>;
+	/// Positive proof for the original physical instance, operation and digest.
+	async fn cancel_bound(&self, operation: Uuid, digest: &str, instance: &str) -> Result<bool>;
 }

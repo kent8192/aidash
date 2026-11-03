@@ -617,7 +617,7 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 		use aidash_application::ports::subnodes::EndScope;
 		let mut cascade = crate::apps::execution::repositories::subnodes::Cascade {
 			store: &self.federation.store,
-			tx: &mut self.access.tx,
+			tx: self.access.tx.native_mut(),
 		};
 		cascade
 			.mark_ended(subnode.id, subnode.workspace_id, reason)

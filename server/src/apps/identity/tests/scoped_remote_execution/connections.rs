@@ -95,7 +95,8 @@ async fn install(p: &mut Pair, resource: &str) -> (Value, Value) {
 			Value::Null,
 		)
 		.await;
-		policy["bundle"]["subjects"][&subject] = json!({"kind":"agent"});
+		policy["bundle"]["subjects"][&subject] =
+			json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 		let (status, result) = request(
 			app,
 			&f.config.api_token,
@@ -493,6 +494,8 @@ async fn remote_personal_mcp_calls_stay_at_home_and_replay_without_credentials_c
 	)
 	.await;
 	policy["bundle"]["subjects"]["alice"]["kind"] = json!("service");
+	policy["bundle"]["subjects"]["alice"]["node"] =
+		json!(aidash_domain::nodes::NodeName::derived("acme"));
 	let (status, result) = request(
 		&p.aa,
 		&p.a.config.api_token,

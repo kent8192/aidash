@@ -54,10 +54,11 @@ class ExportRefusalTest(unittest.TestCase):
             work = root / 'work'
             work.mkdir()
             (work / 'link').symlink_to('/tmp')
-            area, pod = str(uuid.uuid4()), str(uuid.uuid4())
-            request = {'action': 'export', 'area_id': area, 'pod_uid': pod, 'epoch': 1, 'working_bytes': 1024}
+            area, pod, cid = str(uuid.uuid4()), str(uuid.uuid4()), 'a' * 64
+            request = {'action': 'export', 'area_id': area, 'pod_uid': pod, 'container_id': cid,
+                       'image': 'image', 'epoch': 1, 'working_bytes': 1024}
             with patch.object(node_guard, 'ROOT', root / 'state'), \
-                 patch.object(node_guard, 'validate', return_value=('cid', pod, area, {'status': 'stopped'})), \
+                 patch.object(node_guard, 'validate', return_value=(cid, pod, area, {'status': 'stopped'})), \
                  patch.object(node_guard, 'volume', return_value=work):
                 result = node_guard.handle(request)
             self.assertEqual(result, {'refused': {'reason': 'symlink', 'path': 'link', 'limit': None}})

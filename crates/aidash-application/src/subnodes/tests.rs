@@ -67,6 +67,7 @@ fn scope() -> Scope {
 	admin::add_agent_subject(
 		&mut bundle,
 		&creator,
+		&run.node,
 		&[tenancy::MEMBERS.to_string()].into(),
 	)
 	.unwrap();

@@ -75,6 +75,8 @@ pub(crate) struct Write<'a> {
 	pub atomic_transactions: bool,
 	pub enabled: bool,
 	pub actor: &'a str,
+	/// Permission edits/disabling retain the latest independently advanced pin.
+	pub preserve_keys: bool,
 }
 
 /// The Tenant that holds `name`, from the Deployment-wide record of Node names.
@@ -191,6 +193,12 @@ pub(crate) async fn insert(
 	write: &Write<'_>,
 ) -> Result<Option<NodeRegistration>> {
 	let (endpoint, pem, key_id) = write.counterpart.columns();
+	let source_keys = match write.counterpart {
+		Counterpart::SameDeployment => None,
+		Counterpart::OtherDeployment { key, .. } => Some(serde_json::to_string(
+			&aidash_application::federation::registrations::trusted_keys(key)?,
+		)?),
+	};
 	let (sql, values) = Query::insert()
 		.into_table(Alias::new("node_registrations"))
 		.columns(
@@ -202,6 +210,7 @@ pub(crate) async fn insert(
 				"source_dashboard_origin",
 				"source_public_key_pem",
 				"source_key_id",
+				"source_keys",
 				"atomic_transactions",
 				"enabled",
 				"revision",
@@ -217,6 +226,7 @@ pub(crate) async fn insert(
 			IntoValue::into_value(write.dashboard_origin.map(str::to_owned)),
 			IntoValue::into_value(pem.map(str::to_owned)),
 			IntoValue::into_value(key_id.map(str::to_owned)),
+			IntoValue::into_value(source_keys),
 			IntoValue::into_value(write.atomic_transactions),
 			IntoValue::into_value(write.enabled),
 			IntoValue::into_value(1_i64),
@@ -243,24 +253,37 @@ pub(crate) async fn update(
 	write: &Write<'_>,
 	expected_revision: i64,
 ) -> Result<Option<NodeRegistration>> {
-	let (endpoint, pem, key_id) = write.counterpart.columns();
-	let (sql, values) = Query::update()
-		.table(Alias::new("node_registrations"))
-		.value(
+	let mut query = Query::update();
+	query.table(Alias::new("node_registrations"));
+	// Endpoint selection must still agree with current locked trust. The
+	// preserved-key branch updates authorization only, leaving concurrent
+	// manual/normal trust changes and the endpoint untouched.
+	if !write.preserve_keys {
+		let (endpoint, _, _) = write.counterpart.columns();
+		query.value(
 			Alias::new("source_endpoint"),
 			Expr::value(endpoint.map(str::to_owned)),
-		)
+		);
+		if let Counterpart::OtherDeployment { key, .. } = write.counterpart {
+			let owner =
+				aidash_application::ports::federation::inbound::ReceivingKeyOwner::Registration {
+					tenant: TenantName::new(write.tenant)?,
+					node: NodeName::parse(write.node)?,
+					source_node: write.source_node.clone(),
+				};
+			let stored = super::receiving_keys::get_locked(tx, &owner).await?;
+			if stored.is_none_or(|stored| stored.keys.current.key_id != key.key_id) {
+				return Err(Error::Conflict(
+					"receiving key changed; use independent confirmation".into(),
+				));
+			}
+		}
+		// Existing trust is never reset by a permission/endpoint edit.
+	}
+	let (sql, values) = query
 		.value(
 			Alias::new("source_dashboard_origin"),
 			Expr::value(write.dashboard_origin.map(str::to_owned)),
-		)
-		.value(
-			Alias::new("source_public_key_pem"),
-			Expr::value(pem.map(str::to_owned)),
-		)
-		.value(
-			Alias::new("source_key_id"),
-			Expr::value(key_id.map(str::to_owned)),
 		)
 		.value(
 			Alias::new("atomic_transactions"),
@@ -287,25 +310,32 @@ pub(crate) async fn append_history(
 	tx: &mut dyn TransactionExecutor,
 	registration: &NodeRegistration,
 ) -> Result<()> {
-	let (endpoint, pem, key_id) = registration.counterpart.columns();
+	// Snapshot the latest crypto state with the authority revision's history.
+	// Crypto-only updates themselves do not append authorization history.
 	let (sql, values) = Query::insert()
 		.into_table(Alias::new("node_registration_history"))
-		.columns(COLUMNS.map(Alias::new))
-		.values_panic([
-			IntoValue::into_value(registration.tenant.as_str().to_owned()),
-			IntoValue::into_value(registration.node.as_str().to_owned()),
-			IntoValue::into_value(registration.source_node.to_string()),
-			IntoValue::into_value(endpoint.map(str::to_owned)),
-			IntoValue::into_value(registration.dashboard_origin.clone()),
-			IntoValue::into_value(pem.map(str::to_owned)),
-			IntoValue::into_value(key_id.map(str::to_owned)),
-			IntoValue::into_value(registration.atomic_transactions),
-			IntoValue::into_value(registration.enabled),
-			IntoValue::into_value(registration.revision),
-			IntoValue::into_value(registration.actor.clone()),
-			IntoValue::into_value(registration.created_at),
-			IntoValue::into_value(registration.updated_at),
-		])
+		.columns(
+			COLUMNS
+				.into_iter()
+				.chain(["source_keys", "keys_revision"])
+				.map(Alias::new),
+		)
+		.from_subquery(
+			Query::select()
+				.columns(
+					COLUMNS
+						.into_iter()
+						.chain(["source_keys", "keys_revision"])
+						.map(Alias::new),
+				)
+				.from(Alias::new("node_registrations"))
+				.and_where(Expr::col("tenant").eq(Expr::value(registration.tenant.as_str())))
+				.and_where(Expr::col("node").eq(Expr::value(registration.node.as_str())))
+				.and_where(
+					Expr::col("source_node").eq(Expr::value(registration.source_node.to_string())),
+				)
+				.to_owned(),
+		)
 		.build(PostgresQueryBuilder);
 	tx.execute(&sql, convert_values(values)).await?;
 	Ok(())

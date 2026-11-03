@@ -6,7 +6,7 @@ fn document() -> Value {
 		"tenant":"acme",
 		"subjects":{
 			"alice":{"kind":"user","groups":["writers"],"attributes":{"team":"research"}},
-			"worker":{"kind":"agent","roles":["reader"],"attributes":{"team":"research"},"delegated_by":"alice"}
+			"worker":{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"roles":["reader"],"attributes":{"team":"research"},"delegated_by":"alice"}
 		},
 		"groups":{"writers":{"roles":["editor"]}},
 		"roles":{"reader":{},"editor":{"inherits":["reader"]}},
