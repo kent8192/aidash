@@ -268,6 +268,13 @@ impl GenerationLive for NativeLive<'_> {
 			let query_bind_5 = &agent.version;
 			crate::database::query_as(&reinhardt::query::Query::select().expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk))).from(reinhardt::query::Alias::new("generation_requests")).and_where(SimpleExpr::CustomWithExpr("((tenant = ? AND (? || '/' || node || '/agents/' || agent_id || '@' || agent_version) = ANY(?)) OR (agent_id = ? AND agent_version = ?))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into(), Expr::value(query_bind_2.to_owned()).into(), crate::database::text_array(query_bind_3.to_owned()), Expr::value(query_bind_4.to_owned()).into(), Expr::value(query_bind_5.to_owned()).into()])).order_by_expr(reinhardt::query::SimpleExpr::from(reinhardt::query::Expr::col(reinhardt::query::Alias::new("id"))), reinhardt::query::Order::Asc).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_all(&mut **access.tx).await?
 		};
+		for job in &jobs {
+			crate::apps::execution::repositories::node_cancellations::require_generation_open(
+				&mut **access.tx,
+				job.id,
+			)
+			.await?;
+		}
 		Ok(jobs)
 	}
 	async fn policy_enabled(&mut self, job: &Request) -> aidash_application::Result<bool> {

@@ -61,7 +61,7 @@ def main():
         raise AssertionError('operation did not reach ' + repr(states))
 
     def prepare(code):
-        request = {'operation_id': str(uuid.uuid4()), 'area_id': str(uuid.uuid4()), 'epoch': 1, 'digest': hashlib.sha256(code.encode()).hexdigest(), 'kind': 'shell', 'code': code, 'seconds': 120, 'files': []}
+        request = {'operation_id': str(uuid.uuid4()), 'area_id': str(uuid.uuid4()), 'epoch': 1, 'usage_tenant': 'runner-recovery-fixture', 'digest': hashlib.sha256(code.encode()).hexdigest(), 'kind': 'shell', 'code': code, 'seconds': 120, 'files': []}
         call('/v1/operations', request)
         call('/v1/operations/' + request['operation_id'] + '/start', {})
         return request
@@ -83,7 +83,15 @@ def main():
         pods = json.loads(subprocess.check_output(kube + ['get', 'pods', '-l', 'aidash-area=' + unknown['area_id'], '-o', 'json']))['items']
         journal = json.loads((Path(runner['journal']) / (unknown['operation_id'] + '.json')).read_text())
         check('only the unknown fixture Pod is selected', len(pods) == 1 and pods[0]['metadata']['uid'] == journal['pod_uid'])
-        subprocess.run(kube + ['delete', 'pod', pods[0]['metadata']['name'], '--wait=true', '--timeout=60s'], check=True, stdout=subprocess.DEVNULL)
+        # This fault deliberately loses provider evidence. Production never removes
+        # this finalizer before capture; remove only this owned fixture's barrier.
+        subprocess.run(kube + ['delete', 'pod', pods[0]['metadata']['name'], '--wait=false'], check=True, stdout=subprocess.DEVNULL)
+        finalizers = pods[0]['metadata'].get('finalizers', [])
+        patch = [{'op':'test', 'path':'/metadata/uid', 'value':journal['pod_uid']},
+                 {'op':'test', 'path':'/metadata/finalizers', 'value':finalizers},
+                 {'op':'replace', 'path':'/metadata/finalizers', 'value':[f for f in finalizers if f != 'aidash.dev/allocation-receipt']}]
+        subprocess.run(kube + ['patch', 'pod', pods[0]['metadata']['name'], '--type=json', '-p', json.dumps(patch)], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(kube + ['wait', '--for=delete', 'pod/' + pods[0]['metadata']['name'], '--timeout=60s'], check=True, stdout=subprocess.DEVNULL)
         # Simulate unavailable node evidence for only this destroyed Pod. Other
         # Pods, including fresh deployment admission probes, use the real adapter.
         # This avoids pretending a recoverable, proven-stopped writer is unknown.

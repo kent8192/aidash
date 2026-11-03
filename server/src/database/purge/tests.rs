@@ -9,6 +9,8 @@ fn through(child: &str, parent: &str, column: &str) -> Reference {
 		child: child.into(),
 		parent: parent.into(),
 		columns: vec!["tenant".into(), column.into()],
+		parent_columns: vec!["tenant".into(), "id".into()],
+		updates_child: false,
 		cascades: false,
 	}
 }

@@ -12,6 +12,10 @@ export const defaultNode = {
   label: "Default",
   default: true,
   created_at: "2026-10-17T09:00:00Z",
+  state: "live",
+  deletion: null,
+  storage_retained_until_purge: false,
+  retained_storage_bytes: null,
 } as const;
 
 export async function routeTenantActions(

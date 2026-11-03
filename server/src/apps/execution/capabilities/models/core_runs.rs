@@ -1,5 +1,4 @@
 //! Persistent core_runs records.
-use reinhardt::db::associations::ForeignKeyField;
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
 
@@ -10,13 +9,9 @@ pub struct CoreRuns {
 	pub run_id: uuid::Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
-	#[rel(
-		foreign_key,
-		shared_fields = ["tenant"],
-		db_constraint = "core_runs_area_id_fkey",
-		db_index = false
-	)]
-	pub area: ForeignKeyField<crate::apps::execution::capabilities::models::CoreAreas>,
+	/// Historical source UUID; insertion checks same-Tenant existence.
+	#[field]
+	pub area_id: uuid::Uuid,
 	#[field]
 	pub sequence: i64,
 	#[field]

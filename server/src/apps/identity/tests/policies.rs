@@ -106,7 +106,7 @@ fn bundle() -> Value {
 		"tenant":"acme",
 		"subjects":{
 			"alice":{"kind":"user","roles":["editor"],"groups":["research"],"attributes":{"department":"research"}},
-			"agent":{"kind":"agent","roles":["editor"],"attributes":{"department":"research"},"delegated_by":"alice"}
+			"agent":{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"roles":["editor"],"attributes":{"department":"research"},"delegated_by":"alice"}
 		},
 		"groups":{"research":{"roles":["reader"]}},
 		"roles":{"reader":{},"editor":{"inherits":["reader"]}},
@@ -273,6 +273,15 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 	assert_eq!(own_state["workspaces"].as_array().unwrap().len(), 1);
 	assert_eq!(own_state["tasks"][0]["id"], task["id"]);
 	assert_eq!(own_state["registry"], json!([]));
+	assert_eq!(own_state["offering"], "self-hosted");
+	let (status, administrator_state) = get(&app, "/api/state").await;
+	assert_eq!(status, 200);
+	assert_eq!(administrator_state["offering"], "self-hosted");
+	assert_eq!(
+		administrator_state["access"]["kind"],
+		"deployment_administrator"
+	);
+	assert_eq!(administrator_state["registry"], json!([]));
 	let (_, other_state) = scoped_request(&app, other, "GET", "/api/state", Value::Null).await;
 	for key in [
 		"workspaces",

@@ -44,6 +44,61 @@ fn local_node(runtime: &Federation, manifest: &Manifest) -> String {
 		.to_owned()
 }
 
+/// Fresh participant work shares the policy lease with Node deletion. Durable
+/// finish/apply deliberately retains its original participant/decision authority.
+pub(crate) async fn require_live_participant_in(
+	tx: &mut dyn TransactionExecutor,
+	runtime: &Federation,
+	manifest: &Manifest,
+) -> crate::Result<()> {
+	let address = aidash_domain::nodes::NodeAddress::parse(&local_node(runtime, manifest))?;
+	let tenant = crate::apps::identity::repositories::node_registrations::name_tenant(
+		tx,
+		address.node.as_str(),
+	)
+	.await?
+	.ok_or(crate::Error::Forbidden)?;
+	crate::apps::identity::models::AuthorizationBundle::lock_snapshot(tx, &tenant, false).await?;
+	crate::apps::identity::repositories::nodes::require_live_locked(
+		tx,
+		&tenant,
+		address.node.as_str(),
+	)
+	.await?;
+	let participant = manifest
+		.local(&address.to_string())
+		.map_err(|_| Error::Forbidden)?;
+	for mutation in &participant.mutations {
+		use crate::apps::execution::repositories::node_cancellations;
+		match mutation {
+			aidash_domain::transactions::Mutation::FinishRun { run_id, .. } => {
+				node_cancellations::require_fresh_run(tx, &tenant, *run_id).await?
+			}
+			aidash_domain::transactions::Mutation::CompleteTask { task_id, .. } => {
+				node_cancellations::require_fresh_task(tx, &tenant, *task_id).await?
+			}
+			aidash_domain::transactions::Mutation::WorkspaceState { .. } => {}
+		}
+	}
+	Ok(())
+}
+
+pub(crate) async fn require_live_participant(
+	runtime: &Federation,
+	manifest: &Manifest,
+) -> crate::Result<()> {
+	runtime
+		.store
+		.control_pool
+		.atomic(
+			&aidash_application::tenancy::TenancyScope::Deployment(
+				aidash_application::tenancy::DeploymentScopeReason::AtomicParticipant,
+			),
+			async |tx| require_live_participant_in(tx, runtime, manifest).await,
+		)
+		.await
+}
+
 enum Transaction {
 	Standalone(Box<dyn TransactionExecutor>),
 	Admitted(Box<NativeAccess>),
@@ -131,6 +186,10 @@ impl ParticipantScope for Scope {
 			.map_err(Into::into)
 	}
 	async fn insert(&mut self, manifest: &Manifest, next: ParticipantPhase) -> Result<LocalStatus> {
+		if matches!(next, ParticipantPhase::Reserved) {
+			require_live_participant_in(self.transaction.executor(), &self.runtime, manifest)
+				.await?;
+		}
 		let node = local_node(&self.runtime, manifest);
 		let participant = manifest
 			.local(&node)
@@ -171,6 +230,7 @@ impl ParticipantScope for Scope {
 		.map_err(Into::into)
 	}
 	async fn validate_mutations(&mut self, manifest: &Manifest) -> Result<()> {
+		require_live_participant_in(self.transaction.executor(), &self.runtime, manifest).await?;
 		let node = local_node(&self.runtime, manifest);
 		let tx = self.transaction.executor();
 		AtomicParticipant::mutation_context(tx, manifest.id).await?;

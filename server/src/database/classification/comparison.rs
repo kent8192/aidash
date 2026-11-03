@@ -79,6 +79,11 @@ async fn observe(pool: &sqlx::PgPool) -> BTreeMap<String, Observed> {
 #[allow(dead_code)] // Unit tests of the comparison use `compare` alone.
 pub async fn check(pool: &sqlx::PgPool, tables: &[Table], list_file: &str) {
 	compare(&observe(pool).await, tables, list_file);
+	for table in tables {
+		if table.classification != Classification::DeploymentWide {
+			aidash_server::database::classification::node::ownership(table.name).unwrap();
+		}
+	}
 }
 
 /// Panic unless `tables` and `observed` name the same tables, once each, and

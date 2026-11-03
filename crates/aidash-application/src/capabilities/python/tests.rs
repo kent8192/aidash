@@ -33,6 +33,10 @@ impl PythonScope for Scope {
 		self.updates.push(record.clone());
 		Ok(())
 	}
+	async fn confirm_stopped(&mut self, _: &Record) -> Result<()> {
+		assert!(self.confirmed);
+		Ok(())
+	}
 	async fn cached(&mut self, _: Uuid, _: &str) -> Result<Option<Value>> {
 		panic!("unexpected replay lookup")
 	}

@@ -323,3 +323,60 @@ async fn catalog_admissions_end_with_their_transaction_or_a_savepoint_rollback()
 		"a new transaction holds none of the earlier locks"
 	);
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn node_liveness_is_rechecked_after_a_savepoint_rollback(
+	#[from(native_database::database)] database: native_database::DatabaseFuture,
+) {
+	let database = database.await;
+	let tenancy = database.tenant("acme").await;
+	let pool = database.pool().await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let mut tx = AccessTransaction::new(pool.begin(&tenancy).await.unwrap());
+	tx.savepoint("node_check").await.unwrap();
+	tx.require_live_node("acme", node.as_str()).await.unwrap();
+	tx.rollback_to_savepoint("node_check").await.unwrap();
+
+	// A later state change must be observed even if an earlier savepoint had
+	// checked this Node. The deletion stays inside this rolled-back fixture.
+	let query = Query::insert()
+		.into_table(Alias::new("node_deletions"))
+		.columns(
+			[
+				"id",
+				"tenant",
+				"node",
+				"deleted_at",
+				"deleted_by_kind",
+				"purge_after",
+				"purge_failures",
+			]
+			.map(Alias::new),
+		)
+		.from_subquery(
+			Query::select()
+				.expr(Expr::value(Uuid::new_v4()))
+				.expr(Expr::value("acme"))
+				.expr(Expr::value(node.as_str()))
+				.expr(Expr::cust("CURRENT_TIMESTAMP"))
+				.expr(Expr::value("deployment_administrator"))
+				.expr(Expr::cust("CURRENT_TIMESTAMP + INTERVAL '1 day'"))
+				.expr(Expr::value(0_i64))
+				.to_owned(),
+		)
+		.to_string(PostgresQueryBuilder);
+	crate::database::native::query(&query)
+		.execute(&mut **tx)
+		.await
+		.unwrap();
+	assert!(matches!(
+		tx.require_live_node("acme", node.as_str()).await,
+		Err(Error::Forbidden)
+	));
+	tx.take().unwrap().rollback().await.unwrap();
+	// A new transaction must not inherit either the prior result or deletion.
+	tx.install(pool.begin(&tenancy).await.unwrap());
+	tx.require_live_node("acme", node.as_str()).await.unwrap();
+	tx.take().unwrap().rollback().await.unwrap();
+}

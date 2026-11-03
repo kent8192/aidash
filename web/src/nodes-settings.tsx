@@ -1,3 +1,8 @@
+import {
+  ReceivingKeyControl,
+  DeletedNodeKeyControls,
+  KnownRegistrationKeyControls,
+} from "./receiving-key-controls";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check as Tick } from "lucide-react";
@@ -20,6 +25,7 @@ import {
   tenantNodesCreate,
 } from "./generated/aidash";
 import { useNodes } from "./nodes";
+import { NodeLifecycleSettings } from "./node-lifecycle-settings";
 import {
   changedRegistration,
   inOtherDeployment,
@@ -71,7 +77,10 @@ export function NodesPage({ data }: { data: State }) {
         select(created.name);
       } else await tenantNodeUpdate(path, labelling.name, { label });
       setLabelling(null);
-      await client.invalidateQueries({ queryKey: ["nodes", tenant] });
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["nodes", tenant] }),
+        client.invalidateQueries({ queryKey: ["node-lifecycle", tenant] }),
+      ]);
     } catch (reason) {
       setError(failure(reason));
     } finally {
@@ -149,6 +158,14 @@ export function NodesPage({ data }: { data: State }) {
           </RowList>
         )}
       </Panel>
+      {(can("node.delete") || can("node.update")) && (
+        <NodeLifecycleSettings
+          tenant={tenant}
+          canUpdate={can("node.update")}
+          canDelete={can("node.delete")}
+          offering={data.offering}
+        />
+      )}
       {selected && can("node_registration.read") && (
         <Registrations
           key={selected.name}
@@ -158,6 +175,12 @@ export function NodesPage({ data }: { data: State }) {
           own={registryDeployment(data)}
           editable={can("node_registration.update")}
         />
+      )}
+      {can("node_registration.read") && can("node_registration.update") && (
+        <>
+          <DeletedNodeKeyControls tenant={tenant} />
+          <KnownRegistrationKeyControls key={tenant} tenant={tenant} />
+        </>
       )}
       {labelling && (
         <Modal
@@ -349,6 +372,12 @@ function Registrations({
                 </div>
                 {editable && (
                   <div className="col-span-2 flex flex-wrap gap-1.5 md:col-span-1">
+                    {row.key_id && (
+                      <ReceivingKeyControl
+                        endpoint={`/api/tenants/${encodeURIComponent(tenant)}/nodes/${encodeURIComponent(node)}/registration-keys`}
+                        selector={{ source_node: row.source_node }}
+                      />
+                    )}
                     <Button
                       variant="outline"
                       size="sm"

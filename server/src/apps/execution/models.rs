@@ -47,4 +47,7 @@ pub(crate) use estimate_calibration::EstimateCalibrationSample;
 pub(crate) mod research;
 pub(crate) mod url_intents;
 
+pub(crate) mod runner_allocation_journal;
+
+pub(crate) mod node_cancellation_jobs;
 pub(crate) mod subnodes;

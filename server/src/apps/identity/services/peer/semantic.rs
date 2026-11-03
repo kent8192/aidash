@@ -80,7 +80,7 @@ pub(crate) async fn context(
 		metadata: json!({}),
 	};
 	operation.set_id()?;
-	journal::prepare(&f.store, tenancy, &operation, &description.semantic).await?;
+	let prepared = journal::prepare(&f.store, tenancy, &operation, &description.semantic).await?;
 	let receipt: Receipt = super::authority_request(
 		f,
 		&aidash_domain::federation::route::Sender {
@@ -122,23 +122,116 @@ pub(crate) async fn context(
 	{
 		return Err(Error::RemoteSemantic(Failure::ProviderContract));
 	}
-	let value = serde_json::to_value(&receipt)?;
-	// Persist before this function makes the text available to compaction/model
-	// construction. The Home keeps the accumulated dependencies across replays.
 	let mut tx = f.store.pool.begin(tenancy).await?;
-	crate::apps::knowledge::repositories::receiver_caches::record(&mut tx, run.id, &receipt)
-		.await?;
-	crate::database::native::query(
+	let value = persist_reply_in(
+		&f.store,
+		&mut tx,
+		run.id,
+		&operation,
+		&receipt,
+		prepared.fence,
+	)
+	.await?;
+	tx.commit().await?;
+	Ok(Some(value))
+}
+
+/// Persist only while this operation still owns its reply allowance. Source
+/// invalidation locks this same row and advances its fence before clearing body
+/// copies, so a preauthorized late reply cannot resurrect erased quotations.
+pub(crate) async fn persist_reply_in(
+	store: &crate::store::Store,
+	tx: &mut crate::database::native::Transaction,
+	run: Uuid,
+	operation: &Operation,
+	receipt: &Receipt,
+	prepared_fence: i64,
+) -> Result<Value> {
+	use crate::database::native;
+	use reinhardt::query::{ExprTrait, LockType};
+	let tenant = crate::database::scope::parent_tenant(&mut **tx, "runs", "id", run).await?;
+	let digest = operation.digest()?;
+	if receipt.operation_id != operation.id
+		|| receipt.operation_digest != digest
+		|| receipt.home_node != operation.home_node
+		|| receipt.grant_id != operation.grant_id
+		|| receipt.admission_id != run
+		|| operation.admission_id != run
+	{
+		return Err(Error::RemoteSemantic(Failure::ProviderContract));
+	}
+	let value = serde_json::to_value(receipt)?;
+	let row = native::query(
+		&Query::select()
+			.columns(["state", "fence", "receipt", "error"].map(Alias::new))
+			.from(Alias::new("semantic_remote_operations"))
+			.and_where(Expr::col("tenant").eq(Expr::value(&tenant)))
+			.and_where(Expr::col("id").eq(Expr::value(operation.id)))
+			.and_where(Expr::col("grant_id").eq(Expr::value(operation.grant_id)))
+			.and_where(Expr::col("admission_id").eq(Expr::value(run)))
+			.and_where(Expr::col("home_node").eq(Expr::value(&operation.home_node)))
+			.and_where(Expr::col("digest").eq(Expr::value(&digest)))
+			.lock(LockType::Update)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_optional(&mut **tx)
+	.await?
+	.ok_or(Error::RemoteSemantic(Failure::Invalidated))?;
+	let state: String = row.try_get("state")?;
+	let fence: i64 = row.try_get("fence")?;
+	match state.as_str() {
+		"INVALIDATED" => return Err(Error::RemoteSemantic(Failure::Invalidated)),
+		"CANCELLED" => return Err(Error::RemoteSemantic(Failure::Authority)),
+		"PAUSED" => {
+			let error: Option<String> = row.try_get("error")?;
+			return Err(Error::RemoteSemantic(
+				aidash_domain::semantic::remote::journal::reason(error.as_deref()),
+			));
+		}
+		"PENDING" if fence == prepared_fence => {}
+		"READY" => {
+			let cached: Option<Value> = row.try_get("receipt")?;
+			if cached.as_ref() != Some(&value) {
+				return Err(Error::RemoteSemantic(Failure::Invalidated));
+			}
+			if fence != prepared_fence {
+				// A local Home claim advances the shared operation fence. Only
+				// its already-completed exact reply with verified Home authority
+				// can satisfy this exception; READY alone is never enough.
+				let node: Option<String> = native::query_scalar(
+					&Query::select()
+						.column(Alias::new("node"))
+						.from(Alias::new("authorization_remote_grants"))
+						.and_where(Expr::col("tenant").eq(Expr::value(&tenant)))
+						.and_where(Expr::col("id").eq(Expr::value(operation.grant_id)))
+						.lock(LockType::KeyShare)
+						.to_string(PostgresQueryBuilder),
+				)
+				.scalar_optional(&mut **tx)
+				.await?;
+				let home = node
+					.and_then(|node| aidash_domain::nodes::NodeName::parse(&node).ok())
+					.map(|node| store.deployment.node(node).to_string());
+				if home.as_deref() != Some(operation.home_node.as_str()) {
+					return Err(Error::RemoteSemantic(Failure::Invalidated));
+				}
+			}
+		}
+		_ => return Err(Error::RemoteSemantic(Failure::Pending)),
+	}
+
+	crate::apps::knowledge::repositories::receiver_caches::record(tx, run, receipt).await?;
+	native::query(
 		&Query::insert()
 			.into_table(Alias::new("semantic_remote_receipts"))
 			.columns(["operation_id", "run_id", "digest", "receipt", "tenant"].map(Alias::new))
 			.from_subquery(
 				Query::select()
-					.expr(Expr::cust("$1"))
-					.expr(Expr::cust("$2"))
-					.expr(Expr::cust("$3"))
-					.expr(Expr::cust("$4"))
-					.expr(crate::database::scope::tenant())
+					.expr(Expr::value(operation.id))
+					.expr(Expr::value(run))
+					.expr(Expr::value(&digest))
+					.expr(Expr::value(value.clone()))
+					.expr(Expr::value(&tenant))
 					.to_owned(),
 			)
 			.on_conflict(
@@ -148,41 +241,20 @@ pub(crate) async fn context(
 			)
 			.to_string(PostgresQueryBuilder),
 	)
-	.bind(operation.id)
-	.bind(run.id)
-	.bind(operation.digest()?)
-	.bind(&value)
-	.execute(&mut *tx)
+	.execute(&mut **tx)
 	.await?;
-	{
-		let query_bind_1 = operation.id;
-		let query_bind_2 = &value;
-		crate::database::native::query(
-			&Query::update()
-				.table(Alias::new("semantic_remote_operations"))
-				.value(Alias::new("state"), "READY")
-				.value_expr(
-					Alias::new("receipt"),
-					SimpleExpr::CustomWithExpr(
-						"(?)".to_owned(),
-						vec![Expr::value(query_bind_2.to_owned()).into()],
-					),
-				)
-				.and_where(
-					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-						SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						),
-					),
-				)
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(&mut *tx)
-		.await?
-	};
-	tx.commit().await?;
-	Ok(Some(value))
+	native::query(
+		&Query::update()
+			.table(Alias::new("semantic_remote_operations"))
+			.value(Alias::new("state"), "READY")
+			.value(Alias::new("receipt"), value.clone())
+			.and_where(Expr::col("tenant").eq(Expr::value(&tenant)))
+			.and_where(Expr::col("id").eq(Expr::value(operation.id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut **tx)
+	.await?;
+	Ok(value)
 }
 
 pub(crate) async fn verify_operation(
@@ -243,7 +315,7 @@ pub(crate) async fn verify_in(
 	Ok(())
 }
 
-use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
+use reinhardt::query::QueryStatementBuilder as _;
 
 use aidash_application::federation::inbound::Admitted;
 

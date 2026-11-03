@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+pub mod rollover;
+
 pub const FEDERATION_TOKEN_TYPE: &str = "aidash-federation+jwt";
 
 /// How far ahead of the receiver's clock a sender's `iat` may be. Two
@@ -40,6 +42,10 @@ pub struct FederationClaims {
 	pub path: String,
 	/// `body_digest` of the request body.
 	pub body: String,
+	/// One predecessor-signed normal rollover proof, within the same 8192-byte
+	/// total wire limit. Already trusted signers need no trust update.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub transition: Option<String>,
 }
 
 /// The request a token is checked against.
@@ -91,6 +97,39 @@ impl FederationClaims {
 	/// Mint a token for one request, right before it is sent.
 	pub async fn mint(&self, signer: &dyn TokenSigner) -> Result<SecretString, SignError> {
 		jws::mint(self, FEDERATION_TOKEN_TYPE, &self.kid, signer).await
+	}
+
+	/// Authenticate a prospective successor and its complete request before an
+	/// admission adapter persists the trust transition. Use `verify` with the
+	/// current trust set for already accepted signers, including duplicate
+	/// requests carrying the same proof; a retiring key cannot introduce keys.
+	pub fn verify_with_transition(
+		token: &str,
+		trusted: &rollover::TrustedRolloverKey,
+		deployment: &str,
+		now: u64,
+		request: &RequestBinding<'_>,
+	) -> Result<Self, FederationFailure> {
+		let unverified = Self::unverified(token)?;
+		let compact = unverified
+			.transition
+			.as_deref()
+			.ok_or(FederationFailure::UnknownKid)?;
+		let transition = rollover::verify_transition(compact, trusted, deployment, now)?;
+		if unverified.iss != deployment
+			|| unverified.kid != transition.successor_kid
+			|| unverified.iat < transition.activates_at
+		{
+			return Err(FederationFailure::ClaimViolation);
+		}
+		let bytes = transition.successor_key_bytes()?;
+		let mut keys = PublicKeys::default();
+		keys.insert(
+			transition.successor_kid,
+			ed25519_dalek::VerifyingKey::from_bytes(&bytes)
+				.map_err(|_| FederationFailure::ClaimViolation)?,
+		);
+		Self::verify(token, &keys, now, request)
 	}
 
 	/// The claims of a token whose signature has not been checked. A receiver

@@ -14,13 +14,27 @@ offering = "self-hosted"
 
 When the table is absent, the Offering is `self-hosted`. Every command that loads settings refuses an Offering that its build does not run. It refuses before it connects to a database, and it names the Offerings that the build accepts.
 
-| Runs                                                          | Build      | `offering`              |
-| ------------------------------------------------------------- | ---------- | ----------------------- |
-| Self-hosted Deployments, `deploy/helm/aidash`, `compose.yaml` | Community  | `self-hosted` (default) |
-| Local development, Rust tests, acceptance, Bruno              | Community  | `self-hosted`           |
-| Aidash's GCP Environments                                     | Enterprise | `cloud`                 |
-| Local Enterprise development                                  | Enterprise | `cloud`                 |
-| A customer's Dedicated Deployment                             | Enterprise | `dedicated`             |
+| Runs                                                        | Build      | `offering`              |
+| ----------------------------------------------------------- | ---------- | ----------------------- |
+| Self-hosted Deployments, default Helm chart, `compose.yaml` | Community  | `self-hosted` (default) |
+| Local development, Rust tests, acceptance, Bruno            | Community  | `self-hosted`           |
+| Aidash's GCP Environments                                   | Enterprise | `cloud`                 |
+| Local Enterprise development                                | Enterprise | `cloud`                 |
+| A customer's Dedicated Deployment                           | Enterprise | `dedicated`             |
+
+The generic Helm chart also accepts a narrow public `deployment.settings`
+descriptor for the Offering and an optional initial KMS key-version reference;
+see [Deployment settings](../../deploy/helm/aidash/README.md#deployment-offering-and-initial-kms-key).
+Its read-only JSON source, selected by `AIDASH_DEPLOYMENT_SETTINGS`, layers over
+base/profile TOML for every server, worker and management settings consumer.
+Managed GCP Environments supply Cloud explicitly. A Dedicated Deployment uses a
+separate identity and the Enterprise image with `offering: dedicated`; switching
+one retained Deployment between Offerings is unsupported.
+
+The example profile leaves `personal_tenants` and `tenant_creation` unset so the
+selected Offering supplies their defaults: both are enabled for Cloud and
+disabled for Self-hosted/Dedicated. Explicit `[tenancy]` values still override
+those defaults; other Tenancy settings retain their existing values.
 
 ## Layout
 
