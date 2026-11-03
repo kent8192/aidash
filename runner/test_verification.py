@@ -120,8 +120,9 @@ class VerificationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             runner = self.runner(root)
             operation = str(uuid.uuid4())
+            pod_uid = str(uuid.uuid4())
             record = {'operation_id': operation, 'area_id': str(uuid.uuid4()), 'session_id': str(uuid.uuid4()),
-                      'pod_operation': 'existing', 'pod_uid': 'uid', 'request': request('python'),
+                      'pod_operation': 'existing', 'pod_uid': pod_uid, 'request': request('python'),
                       'digest': 'fixture', 'cancel_requested': False}
             runner.get = Mock(return_value=record)
             runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
@@ -129,7 +130,11 @@ class VerificationTest(unittest.TestCase):
             runner.active = {operation}
             runner.config['idle_seconds'] = 60
             runner.execution_limits = Mock(return_value={})
-            runner.pod = Mock(return_value={'metadata': {'uid': 'uid'},
+            runner.allocations = Path(root) / 'allocations'
+            runner.allocations.mkdir()
+            save(runner.allocations / (pod_uid + '.json'), {'resource_version': '101'})
+            runner.observe_allocation = Mock()
+            runner.pod = Mock(return_value={'metadata': {'uid': pod_uid, 'resourceVersion': '101'},
                 'spec': {'nodeName': 'node', 'containers': [{'image': 'image'}]},
                 'status': {'containerStatuses': [
                     {'name': 'execution', 'containerID': 'containerd://cid', 'state': {'running': {}}},
@@ -145,6 +150,9 @@ class VerificationTest(unittest.TestCase):
             self.assertEqual(record['error']['details'], refusal)
             self.assertTrue(record['termination_confirmed'])
             self.assertFalse(record['writer_frozen'])
+            runner.observe_allocation.assert_called_once()
+            runner.allocation_harvested.assert_called_once()
+            runner.close_allocation.assert_called_once()
             self.assertIn('terminate', [call.args[1] for call in runner.guard.call_args_list])
             session = json.loads((Path(root) / ('session-' + record['session_id'] + '.json')).read_text())
             self.assertEqual(session['status'], 'stopped')
