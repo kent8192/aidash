@@ -1,7 +1,6 @@
 //! Query-generated bindings for Workspaces that predate Scratch Spaces.
 use reinhardt::query::{
-	Alias, Expr, Func, OnConflict, Order, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
-	SimpleExpr,
+	Alias, Expr, Func, Order, PostgresQueryBuilder, Query, QueryStatementBuilder as _, SimpleExpr,
 };
 
 fn a(name: &str) -> Alias {
@@ -79,7 +78,6 @@ pub(crate) fn forward() -> String {
 			.map(a),
 		)
 		.from_subquery(spaces.to_owned())
-		.on_conflict(OnConflict::column(a("id")).do_nothing().to_owned())
 		.to_string(PostgresQueryBuilder);
 	let mut settings = Query::select();
 	settings
@@ -93,7 +91,6 @@ pub(crate) fn forward() -> String {
 		.into_table(a("scratch_space_settings"))
 		.columns(["space_id", "tenant", "settings"].map(a))
 		.from_subquery(settings.to_owned())
-		.on_conflict(OnConflict::column(a("space_id")).do_nothing().to_owned())
 		.to_string(PostgresQueryBuilder);
 	format!(
 		"SET LOCAL aidash.scope = 'deployment';\n{bindings};\n{insert_spaces};\n{insert_settings};\n{conversations};\n"
