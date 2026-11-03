@@ -569,14 +569,14 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0015_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0020_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"workspaces".to_owned(),
-			"0014_remote_file_version_citations".to_owned()
+			"0019_scratch_node_index".to_owned()
 		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
