@@ -77,7 +77,7 @@ impl WorkspaceMutations for NativeMutations<'_> {
 			services: &mut services,
 			person_override: None,
 		};
-		let scratch_id = aidash_application::scratch::select_for_conversation(
+		let scratch_id = aidash_application::scratch::select_for_workspace(
 			&mut scratch,
 			node,
 			title,

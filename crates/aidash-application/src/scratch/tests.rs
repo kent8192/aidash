@@ -400,7 +400,7 @@ async fn conversation_selects_an_accessible_space_or_creates_a_dedicated_one() {
 		..Default::default()
 	};
 	let node = NodeName::derived("conversation");
-	let id = select_for_conversation(&mut scope, &node, "New conversation", None, now)
+	let id = select_for_workspace(&mut scope, &node, "New conversation", None, now)
 		.await
 		.unwrap();
 	assert_eq!(scope.spaces[&id].creator, "alice");
@@ -410,7 +410,7 @@ async fn conversation_selects_an_accessible_space_or_creates_a_dedicated_one() {
 		HostAllowlist::Hosts(BTreeSet::new())
 	);
 	assert_eq!(
-		select_for_conversation(
+		select_for_workspace(
 			&mut scope,
 			&node,
 			"Other",
@@ -424,12 +424,12 @@ async fn conversation_selects_an_accessible_space_or_creates_a_dedicated_one() {
 	assert_eq!(scope.spaces[&id].last_used_at, now + Duration::days(1));
 	let other_node = NodeName::derived("other");
 	assert!(matches!(
-		select_for_conversation(&mut scope, &other_node, "Other", Some(id), now).await,
+		select_for_workspace(&mut scope, &other_node, "Other", Some(id), now).await,
 		Err(Error::Forbidden)
 	));
 	scope.person = "bob".into();
 	assert!(matches!(
-		select_for_conversation(&mut scope, &node, "Other", Some(id), now).await,
+		select_for_workspace(&mut scope, &node, "Other", Some(id), now).await,
 		Err(Error::Forbidden)
 	));
 }
@@ -464,7 +464,7 @@ async fn members_can_use_services_already_shared_with_the_space() {
 	scope.person = "bob".into();
 	scope.deny_references = true;
 	assert_eq!(
-		select_for_conversation(&mut scope, &space.node, "reuse", Some(space.id), now)
+		select_for_workspace(&mut scope, &space.node, "reuse", Some(space.id), now)
 			.await
 			.unwrap(),
 		space.id

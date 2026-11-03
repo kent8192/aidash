@@ -228,9 +228,9 @@ pub async fn delete(
 	scope.clear_contents(id).await
 }
 
-/// Select the immutable Scratch Space for a new conversation, creating one
-/// dedicated to that conversation when no existing space was requested.
-pub async fn select_for_conversation(
+/// Select the immutable Scratch Space for a new Workspace, creating one
+/// dedicated to that Workspace when no existing space was requested.
+pub async fn select_for_workspace(
 	scope: &mut dyn ScratchScope,
 	node: &NodeName,
 	name: &str,
