@@ -71,21 +71,9 @@ impl WorkerResumeScope for Scope<'_> {
 			true,
 		)
 		.await?;
-		let mut services = crate::apps::workspaces::repositories::scratch::NativeScratchServices {
-			policy: &self.federation.config.scratch_policy,
-		};
-		let mut adapter = crate::apps::workspaces::repositories::scratch::ScratchAdapter {
-			access: &mut self.access,
-			services: &mut services,
-			person_override: None,
-		};
-		let current = aidash_application::scratch::scratch_space_for_run(
-			&mut adapter,
-			self.run,
-			chrono::Utc::now(),
-		)
-		.await
-		.map_err(aidash_application::authorization::worker_entry::scratch_refusal)?;
+		let current = super::entry::resolve_scratch_space(self.federation, &self.access, self.run)
+			.await
+			.map_err(aidash_application::authorization::worker_entry::scratch_refusal)?;
 		if current != self.scratch_space_id {
 			return Err(
 				aidash_application::authorization::worker_entry::scratch_refusal(Error::Forbidden),

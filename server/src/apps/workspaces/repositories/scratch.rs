@@ -647,7 +647,9 @@ impl ScratchServices for NativeScratchServices<'_> {
 	) -> aidash_application::Result<(Uuid, String)> {
 		if !run.is_local(&access.node_id) {
 			// A receiver may only allocate for its own already-admitted Run.
-			// Locking the admission serializes concurrent lookups for this Run.
+			// A shared lock keeps the admission from changing meanwhile without
+			// blocking activation, which shares it too; the Node lock below
+			// serializes first allocation.
 			let tenant = access.identity.tenant.clone();
 			let (sql, values) = Query::select()
 				.column(Alias::new("credential_id"))
@@ -670,7 +672,7 @@ impl ScratchServices for NativeScratchServices<'_> {
 							.to_owned(),
 					),
 				)
-				.lock(LockType::Update)
+				.lock(LockType::Share)
 				.build(PostgresQueryBuilder);
 			let admission = access
 				.tx
