@@ -1460,7 +1460,12 @@ pub(crate) fn workspace_mutations<'a>(
 	access: &'a mut crate::authorization::access::Access,
 	store: &'a Store,
 ) -> crate::apps::workspaces::repositories::mutations::NativeMutations<'a> {
-	crate::apps::workspaces::repositories::mutations::NativeMutations { access, store }
+	crate::apps::workspaces::repositories::mutations::NativeMutations {
+		access,
+		store,
+		scratch_policy: None,
+		requested_scratch: None,
+	}
 }
 
 /// Worker task effects use the caller's inherited authority transaction.

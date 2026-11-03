@@ -48,6 +48,7 @@ impl ConversationScope for Fixture {
 		title: &str,
 		goal: &str,
 		_: Option<&aidash_domain::nodes::NodeName>,
+		_: Option<Uuid>,
 	) -> Result<Workspace> {
 		self.operations.push("workspace.create".into());
 		Ok(Workspace {

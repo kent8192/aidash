@@ -33,9 +33,14 @@ impl Access {
 		title: &str,
 		goal: &str,
 		node: Option<&aidash_domain::nodes::NodeName>,
+		scratch_space_id: Option<Uuid>,
+		policy: &crate::config::ScratchOperatorPolicy,
 	) -> Result<Workspace> {
+		let mut scope = crate::bootstrap::workspace_mutations(self, store);
+		scope.scratch_policy = Some(policy);
+		scope.requested_scratch = scratch_space_id;
 		aidash_application::workspaces::mutations::create(
-			&mut crate::bootstrap::workspace_mutations(self, store),
+			&mut scope,
 			Uuid::new_v4(),
 			title,
 			goal,
@@ -275,10 +280,12 @@ impl Workspaces {
 		title: &str,
 		goal: &str,
 		node: Option<&aidash_domain::nodes::NodeName>,
+		scratch_space_id: Option<Uuid>,
+		policy: &crate::config::ScratchOperatorPolicy,
 	) -> Result<Workspace> {
 		let mut access = Access::begin(&self.store, &self.identity).await?;
 		let result = access
-			.create_workspace(&self.store, title, goal, node)
+			.create_workspace(&self.store, title, goal, node, scratch_space_id, policy)
 			.await;
 		access.finish(result).await
 	}

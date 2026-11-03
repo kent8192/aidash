@@ -49,7 +49,13 @@ impl CollaborationManagement {
 			return Err(Error::Forbidden);
 		};
 		scope
-			.create(&input.title, &input.goal, input.node.as_ref())
+			.create(
+				&input.title,
+				&input.goal,
+				input.node.as_ref(),
+				input.scratch_space_id,
+				&f.config.scratch_policy,
+			)
 			.await
 	}
 	pub(crate) async fn workspace_get(&self, actor: Actor, id: Uuid) -> Result<WorkspaceSnapshot> {

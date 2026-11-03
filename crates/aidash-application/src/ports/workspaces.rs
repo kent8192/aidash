@@ -19,6 +19,7 @@ pub trait ConversationScope: Send {
 		title: &str,
 		goal: &str,
 		node: Option<&NodeName>,
+		scratch_space_id: Option<Uuid>,
 	) -> Result<Workspace>;
 	async fn workspace_context(&mut self, workspace: Uuid) -> Result<()>;
 	async fn require_workspace(&mut self, action: &str) -> Result<()>;

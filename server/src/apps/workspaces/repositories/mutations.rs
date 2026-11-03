@@ -8,6 +8,8 @@ use uuid::Uuid;
 pub(crate) struct NativeMutations<'a> {
 	pub(crate) access: &'a mut Access,
 	pub(crate) store: &'a Store,
+	pub(crate) scratch_policy: Option<&'a crate::config::ScratchOperatorPolicy>,
+	pub(crate) requested_scratch: Option<Uuid>,
 }
 #[async_trait]
 impl WorkspaceMutations for NativeMutations<'_> {
@@ -64,6 +66,26 @@ impl WorkspaceMutations for NativeMutations<'_> {
 		title: &str,
 		goal: &str,
 	) -> Result<Workspace> {
+		let policy = self.scratch_policy.ok_or_else(|| {
+			aidash_application::Error::Invalid(
+				"Scratch policy required for Workspace creation".into(),
+			)
+		})?;
+		let mut services = super::scratch::NativeScratchServices { policy };
+		let mut scratch = super::scratch::ScratchAdapter {
+			access: self.access,
+			services: &mut services,
+			person_override: None,
+		};
+		let scratch_id = aidash_application::scratch::select_for_conversation(
+			&mut scratch,
+			node,
+			title,
+			self.requested_scratch,
+			chrono::Utc::now(),
+		)
+		.await?;
+		let creator = self.access.identity.subject.clone();
 		self.store
 			.create_workspace_in(
 				&mut self.access.tx,
@@ -72,6 +94,8 @@ impl WorkspaceMutations for NativeMutations<'_> {
 				node,
 				title,
 				goal,
+				scratch_id,
+				&creator,
 			)
 			.await
 			.map_err(Into::into)

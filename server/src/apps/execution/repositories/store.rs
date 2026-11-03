@@ -809,8 +809,32 @@ impl Store {
 		.scalar_one(&mut *tx)
 		.await?;
 		let node = aidash_domain::nodes::NodeName::parse(&node)?;
+		let now = chrono::Utc::now();
+		let space = aidash_domain::scratch::ScratchSpace {
+			id: Uuid::new_v4(),
+			node: node.clone(),
+			name: title.to_owned(),
+			creator: owner.to_owned(),
+			state: aidash_domain::scratch::ScratchState::Active,
+			revision: 0,
+			wipe_generation: 0,
+			settings: aidash_domain::scratch::ScratchSettings::default(),
+			members: Default::default(),
+			created_at: now,
+			last_used_at: now,
+		};
+		crate::apps::workspaces::repositories::scratch::insert(&mut *tx, tenant, &space).await?;
 		let workspace = self
-			.create_workspace_in(&mut tx, Uuid::new_v4(), tenant, &node, title, goal)
+			.create_workspace_in(
+				&mut tx,
+				Uuid::new_v4(),
+				tenant,
+				&node,
+				title,
+				goal,
+				space.id,
+				owner,
+			)
 			.await?;
 		self.record_workspace_tenant_in(&mut tx, workspace.id, tenant, owner)
 			.await?;
@@ -851,6 +875,8 @@ impl Store {
 		node: &aidash_domain::nodes::NodeName,
 		title: &str,
 		goal: &str,
+		scratch_space_id: Uuid,
+		created_by: &str,
 	) -> Result<Workspace> {
 		nonempty(title, "title")?;
 		nonempty(goal, "goal")?;
@@ -867,6 +893,8 @@ impl Store {
 						Alias::new("title"),
 						Alias::new("goal"),
 						Alias::new("tenant"),
+						Alias::new("scratch_space_id"),
+						Alias::new("created_by"),
 					])
 					.from_subquery(
 						Query::select()
@@ -884,6 +912,8 @@ impl Store {
 								vec![Expr::value(query_bind_3.to_owned()).into()],
 							))
 							.expr(Expr::value(tenant.to_owned()))
+							.expr(Expr::value(scratch_space_id))
+							.expr(Expr::value(created_by.to_owned()))
 							.to_owned(),
 					)
 					.returning_all()

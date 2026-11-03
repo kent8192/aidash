@@ -24,7 +24,7 @@ pub async fn conversation(
 	input: ConversationRequest<'_>,
 ) -> Result<ConversationResponse> {
 	let workspace = scope
-		.create_workspace(input.title, input.goal, input.node)
+		.create_workspace(input.title, input.goal, input.node, input.scratch_space_id)
 		.await?;
 	scope.workspace_context(workspace.id).await?;
 	scope.require_workspace("workspace.read").await?;

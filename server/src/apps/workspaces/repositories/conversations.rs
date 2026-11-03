@@ -18,7 +18,7 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use reinhardt::query::{
-	Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
+	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -46,9 +46,17 @@ impl ConversationScope for NativeConversation<'_> {
 		title: &str,
 		goal: &str,
 		node: Option<&aidash_domain::nodes::NodeName>,
+		scratch_space_id: Option<Uuid>,
 	) -> Result<Workspace> {
 		self.access
-			.create_workspace(&self.federation.store, title, goal, node)
+			.create_workspace(
+				&self.federation.store,
+				title,
+				goal,
+				node,
+				scratch_space_id,
+				&self.federation.config.scratch_policy,
+			)
 			.await
 			.map_err(Into::into)
 	}
@@ -80,22 +88,28 @@ impl ConversationScope for NativeConversation<'_> {
 		name: &str,
 		requested: Option<Uuid>,
 	) -> Result<Uuid> {
-		let mut services = super::scratch::NativeScratchServices {
-			policy: &self.federation.config.scratch_policy,
-		};
-		let mut scope = super::scratch::ScratchAdapter {
-			access: self.access,
-			services: &mut services,
-			person_override: None,
-		};
-		aidash_application::scratch::select_for_conversation(
-			&mut scope,
-			&workspace.node,
-			name,
-			requested,
-			chrono::Utc::now(),
-		)
-		.await
+		let _ = name;
+		let (sql, values) = Query::select()
+			.column(Alias::new("scratch_space_id"))
+			.from(Alias::new("workspaces"))
+			.and_where(Expr::col("id").eq(Expr::value(workspace.id)))
+			.and_where(Expr::col("tenant").eq(Expr::value(self.access.identity.tenant.clone())))
+			.build(PostgresQueryBuilder);
+		let row = self
+			.access
+			.tx
+			.fetch_optional(&sql, reinhardt::db::orm::execution::convert_values(values))
+			.await
+			.map_err(crate::Error::from)?
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let id: Uuid = row
+			.get("scratch_space_id")
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(crate::Error::from)?;
+		if requested.is_some_and(|requested| requested != id) {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		Ok(id)
 	}
 	async fn create_conversation(
 		&mut self,
