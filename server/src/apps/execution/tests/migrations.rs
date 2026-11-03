@@ -4043,6 +4043,16 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 		.to_string(PostgresQueryBuilder);
 	let (selected_creator,): (String,) = sqlx::query_as(&sql).fetch_one(&pool).await.unwrap();
 	assert_eq!(selected_creator, "carol");
+	let sql = Query::select()
+		.column(Alias::new("settings"))
+		.from(Alias::new("scratch_space_settings"))
+		.and_where(Expr::col("space_id").eq(selected))
+		.to_string(PostgresQueryBuilder);
+	let (settings,): (serde_json::Value,) = sqlx::query_as(&sql).fetch_one(&pool).await.unwrap();
+	assert_eq!(
+		settings,
+		serde_json::to_value(aidash_domain::scratch::ScratchSettings::default()).unwrap()
+	);
 	assert_ne!(selected, existing_space);
 	assert_ne!(selected, other_space);
 	let sql = Query::select()
