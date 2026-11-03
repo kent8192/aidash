@@ -6828,7 +6828,14 @@ impl SubnodeRig {
 					.or_insert_with(|| json!([]))
 					.as_array_mut()
 					.unwrap();
-				for name in ["skill_list", "skill_load", "skill_read"] {
+				// Keep member defaults within the deliberately narrow test allowance.
+				for name in [
+					"skill_list",
+					"skill_load",
+					"skill_read",
+					"attachment_copy",
+					"workspace_search",
+				] {
 					if !defaults.contains(&json!(name)) {
 						defaults.push(json!(name));
 					}
