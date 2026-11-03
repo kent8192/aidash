@@ -806,9 +806,9 @@ impl Store {
 		title: &str,
 		goal: &str,
 	) -> Result<Workspace> {
+		let tenant = scope.tenant_name().ok_or(Error::Forbidden)?.as_str();
 		nonempty(title, "title")?;
 		nonempty(goal, "goal")?;
-		let tenant = scope.tenant_name().ok_or(Error::Forbidden)?.as_str();
 		let mut tx = self.pool.begin(scope).await?;
 		let node: String = crate::database::native::query_scalar(
 			&Query::select()
