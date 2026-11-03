@@ -1,4 +1,8 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 kent8192
+# SPDX-License-Identifier: BUSL-1.1
+# See enterprise/LICENSE.
+
 set -eu
 # Compose mounts URL credentials as files. Kubernetes may still use secretKeyRef.
 if [ -n "${AIDASH_MARKETPLACE_DATABASE_URL_FILE:-}" ]; then

@@ -110,6 +110,31 @@ pub(crate) struct Records<'a> {
 	pub(crate) store: &'a Store,
 }
 
+async fn record_missing_catalog(
+	access: &mut Access,
+	r: &EntityRef,
+	action: &str,
+) -> NativeResult<()> {
+	let resource = access.resource(
+		"registry_entry",
+		format!("{}@{}", r.id, r.version),
+		serde_json::json!({}),
+	);
+	let records = access
+		.subjects
+		.iter()
+		.map(|subject| {
+			let input = access.evaluation(subject, &resource, action);
+			let mut decision = access.snapshot.bundle.evaluate(&input);
+			decision.allowed = false;
+			decision.reason = "catalog_approval_missing".into();
+			decision.revision = access.snapshot.revision;
+			(input, decision)
+		})
+		.collect::<Vec<_>>();
+	access.record(&records).await
+}
+
 #[async_trait]
 impl<A, F> PeerInspectionScope for Scope<A, F>
 where
@@ -150,6 +175,24 @@ where
 	fn push_subject(&mut self, subject: String) {
 		self.access.subjects.push(subject)
 	}
+	async fn invalid_executor(&mut self, resource: &Resource) -> Result<()> {
+		let records = self
+			.access
+			.subjects
+			.iter()
+			.map(|subject| {
+				let input = self
+					.access
+					.evaluation(subject, resource, "federation.execute");
+				let mut decision = self.access.snapshot.bundle.evaluate(&input);
+				decision.allowed = false;
+				decision.reason = "invalid_executor_subject".into();
+				decision.revision = self.access.snapshot.revision;
+				(input, decision)
+			})
+			.collect::<Vec<_>>();
+		self.access.record(&records).await.map_err(Into::into)
+	}
 	fn context(&mut self) -> &mut Value {
 		&mut self.access.context
 	}
@@ -157,7 +200,24 @@ where
 		self.access.resource(kind, id, attrs)
 	}
 	async fn require(&mut self, r: &Resource, action: &str) -> Result<()> {
-		self.access.require(r, action).await.map_err(Into::into)
+		let denied = self.access.subjects.iter().any(|subject| {
+			let input = self.access.evaluation(subject, r, action);
+			let bundle = &self.access.snapshot.bundle;
+			Access::policy_explicit_deny(bundle, &bundle.evaluate(&input))
+		});
+		self.access
+			.require(r, action)
+			.await
+			.map_err(|error| match error {
+				crate::Error::Forbidden => {
+					aidash_application::Error::RemoteExecutionRefused(if denied {
+						aidash_domain::federation::execution::Refusal::Policy
+					} else {
+						aidash_domain::federation::execution::Refusal::PolicyAsk
+					})
+				}
+				other => other.into(),
+			})
 	}
 	async fn generation(&mut self, source: &str, input: &InspectInput) -> Result<Option<Value>> {
 		crate::generation::foreign::inspect(&mut self.access, source, input.task_id, &input.agent)
@@ -165,9 +225,22 @@ where
 			.map_err(Into::into)
 	}
 	async fn entry(&mut self, r: &EntityRef, action: &str) -> Result<Entry> {
-		crate::authorization::catalog::entry(&mut self.access, r, action)
-			.await
-			.map_err(Into::into)
+		let result =
+			crate::authorization::catalog::tool_entry(&mut self.access, r, action, "task_delegate")
+				.await;
+		if matches!(result, Err(crate::Error::Forbidden)) {
+			record_missing_catalog(&mut self.access, r, action).await?;
+		}
+		result.map_err(|error| match error {
+			crate::Error::AuthorityRefused(_) => aidash_application::Error::RemoteExecutionRefused(
+				if self.access.last_policy_explicit_deny {
+					aidash_domain::federation::execution::Refusal::Policy
+				} else {
+					aidash_domain::federation::execution::Refusal::PolicyAsk
+				},
+			),
+			other => other.into(),
+		})
 	}
 	async fn closure_entry(
 		&mut self,
@@ -175,9 +248,22 @@ where
 		action: &str,
 		users: &[EntityRef],
 	) -> Result<Entry> {
-		crate::authorization::catalog::closure_entry(&mut self.access, r, action, users)
-			.await
-			.map_err(Into::into)
+		let serial = self.access.decision_serial;
+		let result =
+			crate::authorization::catalog::closure_entry(&mut self.access, r, action, users).await;
+		if matches!(result, Err(crate::Error::Forbidden)) {
+			if self.access.decision_serial != serial {
+				return Err(aidash_application::Error::RemoteExecutionRefused(
+					if self.access.last_policy_explicit_deny {
+						aidash_domain::federation::execution::Refusal::Policy
+					} else {
+						aidash_domain::federation::execution::Refusal::PolicyAsk
+					},
+				));
+			}
+			record_missing_catalog(&mut self.access, r, action).await?;
+		}
+		result.map_err(Into::into)
 	}
 	fn entry_resource(&self, entry: &Entry) -> Resource {
 		crate::authorization::catalog::resource(&self.access, entry)
@@ -196,14 +282,30 @@ where
 		&mut self,
 		entry: &aidash_domain::registry::Entry,
 	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
-		crate::apps::registry::repositories::bindings::authorized(
+		let mut failure = None;
+		let result = crate::apps::registry::repositories::bindings::authorized_peer(
 			&mut self.access,
 			entry,
-			true,
 			self.runtime.borrow().store.provider_credentials.is_some(),
+			&mut failure,
 		)
-		.await
-		.map_err(Into::into)
+		.await;
+		if matches!(result, Err(crate::Error::Forbidden))
+			&& let Some((reference, serial)) = failure
+		{
+			let reason = if self.access.decision_serial != serial {
+				if self.access.last_policy_explicit_deny {
+					aidash_domain::federation::execution::Refusal::Policy
+				} else {
+					aidash_domain::federation::execution::Refusal::PolicyAsk
+				}
+			} else {
+				record_missing_catalog(&mut self.access, &reference, "registry.read").await?;
+				aidash_domain::federation::execution::Refusal::CatalogApproval
+			};
+			return Err(aidash_application::Error::RemoteExecutionRefused(reason));
+		}
+		result.map_err(Into::into)
 	}
 
 	async fn lineage(&mut self) -> Result<Vec<Ancestor>> {

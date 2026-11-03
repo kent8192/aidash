@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! The payment state of a Billing Account, behind one port. The rules read
 //! only this port and never name a payment processor, so the processor that
 //! fills it can change without touching them. Aidash holds the state itself:

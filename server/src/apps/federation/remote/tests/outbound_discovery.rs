@@ -799,3 +799,48 @@ async fn registry_verification_uses_the_receiving_nodes_policy_resource(
 		}
 	}
 }
+
+#[rstest]
+#[case::deny(true)]
+#[case::missing_allow(false)]
+#[tokio::test]
+async fn sibling_node_use_distinguishes_ancestor_deny_from_missing_allow(
+	#[future]
+	#[from(execution_fixtures::execution)]
+	execution: execution_fixtures::ExecutionFixture,
+	#[case] explicit_deny: bool,
+) {
+	use aidash_application::ports::federation::inbound::InboundRepository;
+	use aidash_domain::federation::execution::Refusal;
+	let fixture = Box::pin(execution).await;
+	let node = endpoint::default_node(&fixture.app.runtime.store, "acme").await;
+	let mut policy = fixture.policy.clone();
+	policy["subjects"]["ancestor"] = json!({"kind":"user"});
+	policy["subjects"]["alice"]["delegated_by"] = json!("ancestor");
+	if explicit_deny {
+		policy["policies"].as_array_mut().unwrap().push(json!({"id":"ancestor-deny-node","effect":"deny","subjects":{"ids":["ancestor"]},"actions":["node.use"],"resources":{"kinds":["node"]}}));
+	} else {
+		policy["policies"][0]["subjects"] = json!({"ids":["alice"]});
+	}
+	deployment_administrator(
+		&fixture.app,
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let result = fixture
+		.app
+		.runtime
+		.subject_may_use(&tenant, &node.node, "alice")
+		.await;
+	let expected = if explicit_deny {
+		Refusal::NodeUseDenied
+	} else {
+		Refusal::NodeUseAsk
+	};
+	assert!(
+		matches!(result, Err(aidash_application::Error::RemoteExecutionRefused(reason)) if reason == expected),
+		"{result:?}"
+	);
+}

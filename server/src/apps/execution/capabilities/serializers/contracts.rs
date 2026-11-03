@@ -298,6 +298,7 @@ pub struct AreaPage {
 pub struct Materialize {
 	pub idempotency_key: Uuid,
 	#[validate(range(min = 0))]
+	/// The working area revision: take it from the previous result's `revision`; a new area starts at 1.
 	pub expected_revision: i64,
 	pub source: MaterializeSource,
 	#[validate(length(min = 1, max = 4096))]
@@ -384,6 +385,7 @@ pub struct Shell {
 	pub command: String,
 	pub timeout_seconds: Option<u64>,
 	#[validate(range(min = 0))]
+	/// The working area revision: take it from the previous result's `revision`; a new area starts at 1.
 	pub expected_revision: i64,
 }
 
@@ -406,6 +408,7 @@ pub struct LivePreviewStop {}
 pub struct Patch {
 	pub idempotency_key: Uuid,
 	#[validate(range(min = 0))]
+	/// The working area revision: take it from the previous result's `revision`; a new area starts at 1.
 	pub expected_revision: i64,
 	/// Every changed path must have a SHA-256 digest, or null to require absence.
 	pub preconditions: std::collections::BTreeMap<String, Option<String>>,

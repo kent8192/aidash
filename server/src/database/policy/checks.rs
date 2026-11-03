@@ -117,7 +117,7 @@ pub fn assert_no_migration_writes_tenant_owned_rows(
 	known: &[&str],
 ) {
 	let statement = Regex::new(
-		r#"(?i)\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM|TRUNCATE(?:\s+TABLE)?|MERGE\s+INTO|COPY)\s+(?:ONLY\s+)?(?:public\.)?"?([a-z_][a-z0-9_]*)"#,
+		r#"(?i)\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM|TRUNCATE(?:\s+TABLE)?|MERGE\s+INTO|COPY)\s+(?:ONLY\s+)?(?:"?public"?\.)?"?([a-z_][a-z0-9_]*)"#,
 	)
 	.unwrap();
 	let writes = |sql: &str| {

@@ -35,7 +35,13 @@ pub enum Direction {
 
 #[async_trait]
 pub trait Meter: Send + Sync {
-	/// Atomically debits both the operation and this service's budget before forwarding bytes.
+	/// Atomically adds body bytes the gateway has streamed, in batches, to the
+	/// request record and to the operation's and this service's budgets. The
+	/// bytes are always committed, even past a limit. Afterwards the call
+	/// reports why the stream must stop: `Conflict(LIMIT_EXCEEDED)` when a
+	/// budget is exhausted, `Conflict(OPERATION_EXPIRED)` when the operation or
+	/// session ended or expired, and `Forbidden` when its authority was revoked
+	/// (see [`aidash_domain::egress::LIMIT_EXCEEDED`]).
 	async fn charge(&self, direction: Direction, bytes: usize) -> Result<()>;
 	/// Completes the metadata-only request record, including failures and partial bodies.
 	async fn finish(&self, status: u16, elapsed_ms: u64, error: Option<&str>) -> Result<()>;

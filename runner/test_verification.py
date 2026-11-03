@@ -68,6 +68,85 @@ class VerificationTest(unittest.TestCase):
             runner.recover_stopped_shell(record)
             return calls, runner.update.call_args.kwargs
 
+    def test_stopped_shell_export_refusal_is_final(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            refusal = {'reason': 'symlink', 'path': 'node_modules/.bin/tool', 'limit': None}
+            runner.guard = Mock(side_effect=lambda record, action, **kw: {
+                'status': {'termination_confirmed': True},
+                'export': {'refused': refusal},
+                'logs': {'stdout': '', 'truncated': True},
+            }[action])
+            record = {'operation_id': str(uuid.uuid4()), 'request': request('shell')}
+            runner.recover_stopped_shell(record)
+            recorded = runner.update.call_args.kwargs
+            self.assertEqual(recorded['status'], 'failed')
+            self.assertEqual(recorded['error']['code'], 'WORKING_EXPORT_REFUSED')
+            self.assertEqual(recorded['error']['details'], refusal)
+            self.assertTrue(recorded['termination_confirmed'])
+            self.assertNotIn('files', recorded)
+
+    def test_shell_refusal_finishes_without_recovery(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            operation = str(uuid.uuid4())
+            record = {'operation_id': operation, 'request': request('shell'), 'wire_digest': 'digest',
+                      'status': 'running', 'cancel_requested': False, 'started_at': time.time() - 1}
+            runner.get = Mock(return_value=record)
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.lock = threading.RLock()
+            runner.active = {operation}
+            runner.config['output_bytes'] = 1024
+            pod = {'metadata': {'uid': 'uid', 'annotations': {'aidash/digest': 'digest'}},
+                   'status': {'containerStatuses': [
+                       {'name': 'execution', 'state': {'terminated': {'exitCode': 0}}},
+                       {'name': 'collector', 'state': {'running': {}}}]}}
+            runner.pod = Mock(return_value=pod)
+            refusal = {'reason': 'symlink', 'path': 'node_modules/.bin/tool', 'limit': None}
+            def invoke(_, action, **kwargs):
+                body = {'logs': {'stdout': '', 'truncated': False}, 'export': {'refused': refusal}}[action[0]]
+                return Mock(stdout=json.dumps(body).encode())
+            runner.exec_collector = Mock(side_effect=invoke)
+            runner.recover_stopped_shell = Mock(side_effect=AssertionError('must not retry'))
+            runner.reconcile(operation)
+            self.assertEqual(record['status'], 'failed')
+            self.assertEqual(record['error']['details'], refusal)
+            self.assertTrue(record['termination_confirmed'])
+            runner.recover_stopped_shell.assert_not_called()
+
+    def test_python_refusal_stops_the_frozen_session(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            operation = str(uuid.uuid4())
+            record = {'operation_id': operation, 'area_id': str(uuid.uuid4()), 'session_id': str(uuid.uuid4()),
+                      'pod_operation': 'existing', 'pod_uid': 'uid', 'request': request('python'),
+                      'digest': 'fixture', 'cancel_requested': False}
+            runner.get = Mock(return_value=record)
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.lock = threading.RLock()
+            runner.active = {operation}
+            runner.config['idle_seconds'] = 60
+            runner.execution_limits = Mock(return_value={})
+            runner.pod = Mock(return_value={'metadata': {'uid': 'uid'},
+                'spec': {'nodeName': 'node', 'containers': [{'image': 'image'}]},
+                'status': {'containerStatuses': [
+                    {'name': 'execution', 'containerID': 'containerd://cid', 'state': {'running': {}}},
+                    {'name': 'collector', 'state': {'running': {}}}]}})
+            refusal = {'reason': 'hard_link', 'path': 'a', 'limit': None}
+            def guard(_, action, **kwargs):
+                return {'limits': {}, 'cell': {}, 'cell_status': {'status': 'completed', 'exit_code': 0},
+                        'freeze': {'writer_frozen': True}, 'export': {'refused': refusal},
+                        'terminate': {'termination_confirmed': True}}[action]
+            runner.guard = Mock(side_effect=guard)
+            runner.reconcile_python(operation)
+            self.assertEqual(record['status'], 'failed')
+            self.assertEqual(record['error']['details'], refusal)
+            self.assertTrue(record['termination_confirmed'])
+            self.assertFalse(record['writer_frozen'])
+            self.assertIn('terminate', [call.args[1] for call in runner.guard.call_args_list])
+            session = json.loads((Path(root) / ('session-' + record['session_id'] + '.json')).read_text())
+            self.assertEqual(session['status'], 'stopped')
+
     def test_a_stopped_check_records_its_output_without_exporting_files(self):
         calls, recorded = self.stopped("verify")
         self.assertNotIn("export", calls)

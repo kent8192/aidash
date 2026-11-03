@@ -1,6 +1,6 @@
 //! Identity owns the complete receiving-trust lifecycle transaction and locks.
 use super::super::{
-	models::AuthorizationBundle,
+	models::{AuthorizationBundle, AuthorizationDecision},
 	repositories::{nodes, receiving_keys},
 };
 use crate::{Result, database::native::Pool};
@@ -35,27 +35,53 @@ pub(crate) async fn subject_may_use(
 	receiver: &NodeName,
 	subject: &str,
 ) -> Result<bool> {
-	pool.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
-		let snapshot = AuthorizationBundle::lock_snapshot(tx, tenant.as_str(), false).await?;
-		if !aidash_domain::identity::authority::enabled(&snapshot.bundle, subject) {
-			return Ok(false);
+	let outcome = pool
+		.atomic(&TenancyScope::Tenant(tenant.clone()), async |tx| {
+			let snapshot = AuthorizationBundle::lock_snapshot(tx, tenant.as_str(), false).await?;
+			if !aidash_domain::identity::authority::enabled(&snapshot.bundle, subject) {
+				return Ok(None);
+			}
+			crate::authorization::identity::require_live_subject(tx, &snapshot, subject).await?;
+			let node = nodes::get_live(tx, tenant.as_str(), receiver.as_str()).await?;
+			let evaluation = Evaluation {
+				subject: subject.to_owned(),
+				action: NODE_USE.into(),
+				resource: Resource {
+					tenant: tenant.to_string(),
+					kind: "node".into(),
+					id: receiver.to_string(),
+					attributes: json!({"label": node.label, "default": node.default}),
+				},
+				environment: json!({"transport": "federation"}),
+			};
+			let mut decision = snapshot.bundle.evaluate(&evaluation);
+			decision.revision = snapshot.revision;
+			let explicit_deny = crate::authorization::access::Access::policy_explicit_deny(
+				&snapshot.bundle,
+				&decision,
+			);
+			if !decision.allowed {
+				AuthorizationDecision::append_many(
+					tx,
+					tenant.as_str(),
+					&[(evaluation, decision.clone())],
+				)
+				.await?;
+			}
+			Ok(Some((decision.allowed, explicit_deny)))
+		})
+		.await?;
+	match outcome {
+		None => Ok(false),
+		Some((true, _)) => Ok(true),
+		Some((false, explicit_deny)) => {
+			Err(crate::Error::RemoteExecutionRefused(if explicit_deny {
+				aidash_domain::federation::execution::Refusal::NodeUseDenied
+			} else {
+				aidash_domain::federation::execution::Refusal::NodeUseAsk
+			}))
 		}
-		crate::authorization::identity::require_live_subject(tx, &snapshot, subject).await?;
-		let node = nodes::get_live(tx, tenant.as_str(), receiver.as_str()).await?;
-		let evaluation = Evaluation {
-			subject: subject.to_owned(),
-			action: NODE_USE.into(),
-			resource: Resource {
-				tenant: tenant.to_string(),
-				kind: "node".into(),
-				id: receiver.to_string(),
-				attributes: json!({"label": node.label, "default": node.default}),
-			},
-			environment: json!({"transport": "federation"}),
-		};
-		Ok(snapshot.bundle.evaluate(&evaluation).allowed)
-	})
-	.await
+	}
 }
 
 pub(crate) async fn get(pool: &Pool, owner: &ReceivingKeyOwner) -> Result<Option<ReceivingKeys>> {

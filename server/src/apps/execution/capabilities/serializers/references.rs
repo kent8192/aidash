@@ -14,6 +14,7 @@ pub struct Upload {
 
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
+#[schemars(rename = "ReferenceChunk")]
 pub struct Chunk {
 	pub offset: u64,
 	/// Base64 bytes: exactly 4 MiB per sequential chunk, except the final chunk.

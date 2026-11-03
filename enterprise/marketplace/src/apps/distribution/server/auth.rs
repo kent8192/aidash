@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Product-local browser sessions. OAuth credentials never enter browser JSON.
 use crate::{Error, Marketplace, Result, json, store};
 use chrono::{DateTime, Duration, Utc};

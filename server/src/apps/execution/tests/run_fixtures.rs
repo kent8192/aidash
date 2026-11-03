@@ -34,6 +34,7 @@ pub fn run() -> Run {
 		error: None,
 		lease_owner: None,
 		lease_until: None,
+		created_at: Utc::now(),
 		updated_at: Utc::now(),
 		observed_input_seq: 0,
 		ledger_worker_ready: true,

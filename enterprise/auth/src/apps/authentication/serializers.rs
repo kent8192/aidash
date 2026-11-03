@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! HTTP DTOs. Tokens and passwords are never part of a stored page model.
 use serde::{Deserialize, Serialize};
 

@@ -20,6 +20,9 @@ import sys
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
+# The pinned kindest/node image ships ctr here, not at node_guard's /usr/bin/ctr
+# default. Pass it explicitly, as the Helm chart does with paths.ctr (#680).
+NODE_CTR = "/usr/local/bin/ctr"
 NODE = "kindest/node@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a"
 # The same pin the Runner image bundles; local setups still download it.
 PIN = json.loads((ROOT / "runner/gvisor.json").read_text())
@@ -141,12 +144,18 @@ Path('/opt/aidash').mkdir(exist_ok=True)
 '''
     run(docker + ["python3", "-"], data=configuration)
     run(docker + ["systemctl", "restart", "containerd"])
-    run(docker + ["python3", "-c", "from pathlib import Path; import sys; Path('/opt/aidash/node_guard.py').write_bytes(sys.stdin.buffer.read())"], data=(ROOT / "runner/node_guard.py").read_bytes())
+    run(docker + ["test", "-x", ctr])
+    # node_guard imports working_export from its own directory (#682).
+    for module in ("node_guard.py", "working_export.py"):
+        run(docker + ["python3", "-c", f"from pathlib import Path; import sys; Path('/opt/aidash/{module}').write_bytes(sys.stdin.buffer.read())"],
+            data=(ROOT / "runner" / module).read_bytes())
+
     service = f"""[Unit]
 Description=Aidash isolated runtime writer guardian
 After=containerd.service
 [Service]
 Environment=AIDASH_CTR_BINARY={ctr}
+
 ExecStart=/usr/bin/python3 /opt/aidash/node_guard.py watch
 Restart=always
 RestartSec=1
@@ -186,6 +195,7 @@ WantedBy=multi-user.target
             "runtime_class": "aidash-gvisor", "namespace": "aidash-sandbox", "journal": str(directory / "journal"),
             "kubectl": kubectl, "kubeconfig": str(kubeconfig), "listen_host": "127.0.0.1", "listen_port": args.port,
             "node_guard": docker + ["env", "AIDASH_CTR_BINARY=" + ctr, "python3", "/opt/aidash/node_guard.py"],
+
         },
     }
     write_private(directory / "profile.json", json.dumps(profile, indent=2) + "\n")

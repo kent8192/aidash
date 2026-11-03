@@ -8,6 +8,26 @@ pub async fn permits(
 	entry: &Entry,
 	action: &str,
 ) -> Result<bool> {
+	if !permits_resource(scope, entry, action).await? {
+		return Ok(false);
+	}
+	if scope.scoped() && action == "semantic.read" && !entry.deleted {
+		let decoded = serde_json::from_value(entry.source.clone())?;
+		if !matches!(decoded, Source::Memory { .. })
+			&& source(scope, entry.workspace_id, &decoded).await?.is_none()
+		{
+			return Ok(false);
+		}
+	}
+	Ok(true)
+}
+
+/// Check the semantic entry's own authority without resolving its source.
+pub async fn permits_resource(
+	scope: &mut dyn SemanticDisclosureScope,
+	entry: &Entry,
+	action: &str,
+) -> Result<bool> {
 	let scoped = scope.scoped();
 	if !scoped
 		&& !scope
@@ -24,14 +44,6 @@ pub async fn permits(
 		attributes["metadata"] = entry.metadata.clone();
 		let resource = scope.resource("semantic", &entry.id.to_string(), attributes.clone());
 		if !scope.decide(&resource, action).await? {
-			return Ok(false);
-		}
-	}
-	if scoped && action == "semantic.read" && !entry.deleted {
-		let decoded = serde_json::from_value(entry.source.clone())?;
-		if !matches!(decoded, Source::Memory { .. })
-			&& source(scope, entry.workspace_id, &decoded).await?.is_none()
-		{
 			return Ok(false);
 		}
 	}

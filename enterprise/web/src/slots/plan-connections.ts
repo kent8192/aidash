@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 import type { PlanConnectionApi } from "@/plan-connection-api";
 
 /** Cloud and Dedicated have no Plan endpoints or generated endpoint functions (#248). */

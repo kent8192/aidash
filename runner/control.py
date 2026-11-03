@@ -35,6 +35,24 @@ PROBE_PROTOCOL = "aidash-admission-probe/2"
 ALLOCATION_OBSERVATION_ATTEMPTS = 5
 
 
+# Guidance shown to the model when the collector refuses to export /work.
+EXPORT_GUIDANCE = {
+    'symlink': 'symlinks are not supported in /work: {path}; use npm install --no-bin-links, or keep dependency trees under /tmp',
+    'hard_link': 'hard-link aliases are not supported in /work: {path}; write independent copies, or keep dependency trees under /tmp',
+    'file_count': 'the working area holds at most {limit} files; remove files (first over the limit: {path}), or keep dependency trees under /tmp',
+    'bytes': 'the working area holds at most {limit} bytes; remove files (first over the limit: {path}), or keep large output under /tmp',
+    'unsafe_directory': 'unsupported directory in /work: {path}; rename or remove it, or use /tmp',
+    'unsafe_file': 'unsupported file in /work: {path}; keep only regular files with printable names, or use /tmp',
+}
+
+
+def export_error(refused):
+    """The typed tool error of an export refusal: final, never retried."""
+    message = EXPORT_GUIDANCE[refused['reason']].format(path=refused['path'], limit=refused['limit'])
+    return {'code': 'WORKING_EXPORT_REFUSED', 'message': message, 'details': refused, 'retryable': False}
+
+
+
 def termination_time(terminated, started_at, observed):
     """When a command stopped, for charging a Check's runtime. The controller
     polls, so `observed` can trail the stop, for example after a restart.
@@ -801,6 +819,17 @@ class Runner(AllocationJournal):
             self.update(operation, status="finishing", writer_frozen=memory_live, termination_confirmed=not memory_live,
                         stdout=result.get('stdout', ''), displays=result.get('displays', []), truncated=result.get('truncated', False))
             exported = self.guard(record, "export", working_bytes=self.writable_bytes(record))
+            if 'refused' in exported:
+                if memory_live:
+                    self.guard(record, 'terminate')
+                session = dict(session_id=record['session_id'], area_id=record['area_id'], operation_id=operation,
+                               pod_operation=pod_operation, pod_uid=record['pod_uid'], container_id=cid,
+                               status='stopped', last_used=time.time(), manifest=self.file_identity(record['request']['files']))
+                save(self.root / ('session-' + record['session_id'] + '.json'), session)
+                self.refuse_export(operation, exported['refused'], pod_operation, writer_frozen=False,
+                                   stdout=result.get('stdout', ''), truncated=result.get('truncated', False),
+                                   exit_code=result['exit_code'])
+                return
             directory = self.root / (operation + ".files")
             directory.mkdir(exist_ok=True, mode=0o700)
             for file in exported["files"]:
@@ -995,6 +1024,19 @@ class Runner(AllocationJournal):
             with self.lock:
                 self.active.discard(operation)
 
+    def refuse_export(self, operation, refused, pod_operation, **fields):
+        """End an operation whose Working Area export was refused.
+
+        The refusal is certain and final: nothing is published, so the area
+        keeps its previous revision, and the export is never retried.
+        """
+        self.update(operation, status='failed', termination_confirmed=True, finished_at=time.time(),
+                    error=export_error(refused), **fields)
+        try:
+            self.kube(['delete', 'pod', self.pod_name(pod_operation), '--wait=false', '--force', '--grace-period=0'], check=False)
+        except Exception as cleanup_error:
+            print(f"Refused export cleanup {operation}: {cleanup_error}", file=sys.stderr, flush=True)
+
     def recover_stopped_shell(self, record):
         # Collector RPCs can fail before the Sentry's death becomes observable.
         # Wait for exact-bound physical stop evidence; never replay the command
@@ -1009,7 +1051,12 @@ class Runner(AllocationJournal):
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(.25)
-        exported, captured = self.collect_stopped_output(record)
+        collected = self.collect_stopped_output(record)
+        if collected is None:
+            self.allocation_harvested(self.get(record['operation_id']), idle=False)
+            self.close_allocation(record)
+            return
+        exported, captured = collected
         operation = record['operation_id']
         self.update(operation, status='failed', exit_code=137, termination_confirmed=True,
                     output_harvested=True,
@@ -1023,6 +1070,9 @@ class Runner(AllocationJournal):
                     self.guard(record, 'export', working_bytes=self.writable_bytes(record)))
         captured = ({'stdout':record.get('stdout', '')} if record['request']['kind'] == 'python' else self.guard(record, 'logs'))
         operation = record['operation_id']
+        if 'refused' in exported:
+            self.refuse_export(operation, exported['refused'], operation, stdout=captured['stdout'], truncated=True, output_harvested=True)
+            return
         directory = self.root / (operation + '.files')
         directory.mkdir(exist_ok=True, mode=0o700)
         for file in exported['files']:
@@ -1048,7 +1098,12 @@ class Runner(AllocationJournal):
         # shell output.bin for Python's saved stdout/displays.
         if record.get('termination_confirmed') is not True or self.guard(record, 'status').get('termination_confirmed') is not True:
             raise Rejected(409, 'physical termination proof unavailable')
-        exported, captured = self.collect_stopped_output(record)
+        collected = self.collect_stopped_output(record)
+        if collected is None:
+            self.allocation_harvested(self.get(record['operation_id']), idle=False)
+            self.close_allocation(record)
+            return
+        exported, captured = collected
         self.update(record['operation_id'], output_harvested=True, stdout=captured['stdout'],
                     files=exported['files'], displays=record.get('displays', []), truncated=True)
         self.allocation_harvested(self.get(record['operation_id']), idle=False)
@@ -1146,6 +1201,10 @@ class Runner(AllocationJournal):
                         diagnostic = self.kube(["logs", self.pod_name(operation), "-c", "execution", "--limit-bytes=16384"]).stdout.decode(errors="replace")
                     exported = ({"files": []} if record["request"]["kind"] == "verify" else
                                 json.loads(self.exec_collector(operation, ["export", str(self.writable_bytes(record))], timeout=120).stdout))
+                    if 'refused' in exported:
+                        self.refuse_export(operation, exported['refused'], operation,
+                                           stdout=captured['stdout'], truncated=captured['truncated'])
+                        break
                     directory = self.root / (operation + ".files")
                     directory.mkdir(exist_ok=True, mode=0o700)
                     for file in exported["files"]:

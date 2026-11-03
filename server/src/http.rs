@@ -280,6 +280,18 @@ use std::{
 use tokio::sync::Semaphore;
 
 pub const BODY_LIMIT: usize = 1024 * 1024;
+/// Run media input allows 8 MiB in total, so one attachment may use all of it.
+const ATTACHMENT_BODY_LIMIT: usize = aidash_domain::workspaces::channels::MAX_ATTACHMENT_BYTES;
+const CHUNK_BODY_LIMIT: usize = 6 * 1024 * 1024;
+/// Request body limit for a path; only the exact upload routes exceed `BODY_LIMIT`.
+fn body_limit(path: &str) -> usize {
+	let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+	match segments.as_slice() {
+		["api", "workspaces", _, "attachments"] => ATTACHMENT_BODY_LIMIT,
+		_ if path.contains("/chunks") || path.contains("/scoped/files/") => CHUNK_BODY_LIMIT,
+		_ => BODY_LIMIT,
+	}
+}
 const MAX_RATE_BUCKETS: usize = 16_384;
 const PRUNE_INTERVAL: usize = 1024;
 const FULL_PRUNE_INTERVAL: Duration = Duration::from_secs(1);
@@ -396,11 +408,7 @@ impl Protection {
 impl RequestAdmission for Protection {
 	async fn admit(&self, head: RequestHead<'_>) -> std::result::Result<AdmittedRequest, Response> {
 		let path = head.uri.path();
-		let limit = if path.contains("/chunks") || path.contains("/scoped/files/") {
-			6 * 1024 * 1024
-		} else {
-			BODY_LIMIT
-		};
+		let limit = body_limit(path);
 		let Ok(permit) = self.permits.clone().try_acquire_owned() else {
 			// Overload is answered before `Gateway` runs, so finalize it here
 			// with the same request ID, private headers and HTTP metrics.
@@ -483,11 +491,7 @@ impl Middleware for Gateway {
 		let private = private_route(&path);
 		let sse = path == "/api/events/stream"
 			|| (path.starts_with("/api/runs/") && path.ends_with("/inference/stream"));
-		let limit = if path.contains("/chunks") || path.contains("/scoped/files/") {
-			6 * 1024 * 1024
-		} else {
-			BODY_LIMIT
-		};
+		let limit = body_limit(&path);
 		let response = if request.body().len() > limit {
 			Response::new(StatusCode::PAYLOAD_TOO_LARGE)
 				.with_body(b"request body too large".to_vec())

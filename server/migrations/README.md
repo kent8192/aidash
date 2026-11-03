@@ -152,6 +152,12 @@ search-path setting. Regression checks load the exact generated SQL through
 `FilesystemSource` and verify both initial gate values after migration and after
 complete reversal/reapplication.
 
+`execution/0090_run_created_at` also materializes its Run backfill through
+`migrationseeds`: it enters Deployment Scope and copies each existing Run's
+`updated_at` into its new `created_at` as an approximation. Later Runs receive
+their creation time when inserted; `execution/0091_bounded_read_indexes` sets
+the physical insert default and creates the ordered, state-filtered indexes.
+
 Reinhardt Query already provides builders for several of these statements; the
 remaining gap is their integration into migration operations and filesystem
 source loading. Retain the procedural constraints, lease fences, and visibility
@@ -780,6 +786,14 @@ The generated state-only checkpoint `execution/0083_harness_contract_state`
 drops that check from the ORM snapshot again, because it is enforced apart from
 model state like the earlier `inference_usage` checks. Rollback drops the
 evidence column and loses the recorded versions.
+
+`registry/0055_remove_structured_harness_contracts` (after
+`registry/0054_remove_agent_cluster`) stops the Agent Bindings validator from
+accepting the removed `structured@1` and `structured@2` (#532). Stored pins are
+not rewritten, because a Run Binding snapshot keeps a serde digest of each pinned
+definition that SQL cannot recompute; before any DDL, the migration refuses
+while Agent definitions, Marketplace packages or Run Binding snapshots still
+declare either version. Rollback restores the 0054 body.
 
 `registry/0052_harness_contract_structured3` lets the Agent Bindings validator accept
 `structured@3` (#532). Its rollback restores the 0050 body and refuses while
