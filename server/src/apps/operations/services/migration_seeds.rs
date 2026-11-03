@@ -36,19 +36,19 @@ fn assets() -> [(&'static str, String); 10] {
 			format!("{};\n", marketplace::backward()),
 		),
 		(
-			"workspaces/sql/forward/0017_conversation_scratch_space.sql",
+			"workspaces/sql/forward/0021_conversation_scratch_space.sql",
 			crate::apps::workspaces::services::migration_backfill::forward(),
 		),
 		(
-			"workspaces/sql/backward/0017_conversation_scratch_space.sql",
+			"workspaces/sql/backward/0021_conversation_scratch_space.sql",
 			crate::apps::workspaces::services::migration_backfill::backward(),
 		),
 		(
-			"workspaces/sql/forward/0020_workspace_scratch_space.sql",
+			"workspaces/sql/forward/0024_workspace_scratch_space.sql",
 			crate::apps::workspaces::services::workspace_scratch_backfill::forward(),
 		),
 		(
-			"workspaces/sql/backward/0020_workspace_scratch_space.sql",
+			"workspaces/sql/backward/0024_workspace_scratch_space.sql",
 			crate::apps::workspaces::services::workspace_scratch_backfill::backward(),
 		),
 		(
@@ -151,7 +151,7 @@ mod tests {
 			);
 		}
 		let migration = FilesystemSource::new(&root)
-			.get_migration("workspaces", "0017_conversation_scratch_space")
+			.get_migration("workspaces", "0021_conversation_scratch_space")
 			.await
 			.unwrap();
 		let Operation::RunSQL { sql, reverse_sql } = &migration.operations[1] else {
@@ -160,7 +160,7 @@ mod tests {
 		assert_eq!(sql, &expected[4].1);
 		assert_eq!(reverse_sql.as_deref(), Some(expected[5].1.as_str()));
 		let migration = FilesystemSource::new(&root)
-			.get_migration("workspaces", "0020_workspace_scratch_space")
+			.get_migration("workspaces", "0024_workspace_scratch_space")
 			.await
 			.unwrap();
 		let Operation::RunSQL { sql, reverse_sql } = &migration.operations[2] else {
