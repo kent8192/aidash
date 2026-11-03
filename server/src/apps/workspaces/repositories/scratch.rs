@@ -740,68 +740,29 @@ impl ScratchServices for NativeScratchServices<'_> {
 			}
 			return Ok((scratch_id, person));
 		}
-		let mut task = run.task_id;
-		for _ in 0..64 {
-			let (sql, values) = Query::select()
-				.columns([
-					(Alias::new("c"), Alias::new("scratch_space_id")),
-					(Alias::new("c"), Alias::new("created_by")),
-				])
-				.from_as(Alias::new("core_task_sessions"), Alias::new("s"))
-				.join(
-					reinhardt::query::JoinType::InnerJoin,
-					reinhardt::query::TableRef::table_alias(
-						Alias::new("conversations"),
-						Alias::new("c"),
-					),
-					Expr::col((Alias::new("s"), Alias::new("thread_id")))
-						.equals((Alias::new("c"), Alias::new("id"))),
-				)
-				.and_where(
-					Expr::col((Alias::new("s"), Alias::new("task_id"))).eq(Expr::value(task)),
-				)
-				.and_where(
-					Expr::col((Alias::new("s"), Alias::new("tenant")))
-						.eq(Expr::value(access.identity.tenant.clone())),
-				)
-				.build(PostgresQueryBuilder);
-			let row = access
-				.tx
-				.fetch_optional(&sql, convert_values(values))
-				.await
-				.map_err(crate::Error::from)?;
-			if let Some(row) = row {
-				let err = reinhardt::core::exception::Error::from;
-				let id = row
-					.get("scratch_space_id")
-					.map_err(err)
-					.map_err(crate::Error::from)?;
-				let starter = row
-					.get("created_by")
-					.map_err(err)
-					.map_err(crate::Error::from)?;
-				return Ok((id, starter));
-			}
-			let (sql, values) = Query::select()
-				.column(Alias::new("parent_id"))
-				.from(Alias::new("tasks"))
-				.and_where(Expr::col("id").eq(Expr::value(task)))
-				.and_where(Expr::col("tenant").eq(Expr::value(access.identity.tenant.clone())))
-				.and_where(Expr::col("parent_id").is_not_null())
-				.build(PostgresQueryBuilder);
-			let parent = access
-				.tx
-				.fetch_optional(&sql, convert_values(values))
-				.await
-				.map_err(crate::Error::from)?
-				.ok_or(aidash_application::Error::Forbidden)?;
-			let parent: Uuid = parent
-				.get("parent_id")
-				.map_err(reinhardt::core::exception::Error::from)
-				.map_err(crate::Error::from)?;
-			task = parent;
-		}
-		Err(aidash_application::Error::Forbidden)
+		let (sql, values) = Query::select()
+			.columns([Alias::new("scratch_space_id"), Alias::new("created_by")])
+			.from(Alias::new("workspaces"))
+			.and_where(Expr::col("id").eq(Expr::value(run.workspace_id)))
+			.and_where(Expr::col("tenant").eq(Expr::value(access.identity.tenant.clone())))
+			.and_where(Expr::col("node").eq(Expr::value(run.node.as_str().to_owned())))
+			.build(PostgresQueryBuilder);
+		let row = access
+			.tx
+			.fetch_optional(&sql, convert_values(values))
+			.await
+			.map_err(crate::Error::from)?
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let err = reinhardt::core::exception::Error::from;
+		let id = row
+			.get("scratch_space_id")
+			.map_err(err)
+			.map_err(crate::Error::from)?;
+		let starter = row
+			.get("created_by")
+			.map_err(err)
+			.map_err(crate::Error::from)?;
+		Ok((id, starter))
 	}
 }
 
