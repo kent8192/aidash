@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! The managed GCIP settings that Cloud Environments write reach the
 //! Enterprise sign-in, which refuses invalid ones before connecting to anything.
 use std::process::Command;

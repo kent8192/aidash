@@ -155,10 +155,72 @@ Redirects return through the gateway and cannot change the admitted origin or
 escape the base path. Gateway failures produce `EGRESS_UNAVAILABLE`; the Pod
 has no direct fallback route.
 
+The gateway debits body bytes in batches of 1 MiB per direction, and debits
+the remainder when a stream ends, fails or is interrupted, so the request
+record always holds the bytes actually streamed. A debit commits those bytes
+even when they take a counter past its limit, then stops the stream. A budget
+can therefore be exceeded by at most one batch (1 MiB plus one body chunk) per
+direction for each request streaming at that moment; once a counter is
+exhausted, the next request is refused before it starts. The stream's error,
+in both the request record and the client response, names the reason:
+
+| Code                    | Status | Meaning                                                           |
+| ----------------------- | ------ | ----------------------------------------------------------------- |
+| `egress_limit_exceeded` | 429    | A byte or request budget is exhausted.                            |
+| `operation_expired`     | 403    | The operation or Live preview ended, expired or no longer exists. |
+| `egress_forbidden`      | 403    | The Run's authority was revoked.                                  |
+| `EGRESS_UNAVAILABLE`    | 503    | The budget store could not record the debit.                      |
+
+A response whose headers were already sent ends with an incomplete body
+instead of a status.
+
 Run inspection lists the request time, operation, service, method, path,
 SHA-256 query digest, status, byte counts and duration. Bodies, header values
 and query contents are never recorded. A partially consumed response is
 recorded as interrupted rather than silently becoming a successful request.
+
+### Clone a GitHub repository
+
+The Execution Pod image includes `git`. It reaches GitHub through an External
+service; the gateway attaches the Tenant Secret, so Git needs no credential
+helper and the token never enters the Pod.
+
+1. Store a Tenant Secret, for example `github-git`, with hosts `["github.com"]`
+   and the value `Basic <base64(x-access-token:TOKEN)>`. The base64 text encodes
+   the literal username `x-access-token`, a colon and the token. Cloning needs
+   read access to the repository's contents; pushing needs write access.
+2. Register an `external_service`, for example with ID `github`, approve it
+   and bind it to the Agent:
+
+   ```json
+   {
+     "base_url": "https://github.com/",
+     "methods": ["GET", "POST"],
+     "secret": "github-git",
+     "authentication": { "type": "header", "name": "Authorization" }
+   }
+   ```
+
+3. Clone, fetch and push with the ordinary `https://github.com/` URL. Map it to
+   the gateway with `-c` on every command:
+
+   ```sh
+   git -c url."${AIDASH_EGRESS_URL}github/".insteadOf=https://github.com/ \
+     clone https://github.com/<owner>/<repo>.git
+   git -c url."${AIDASH_EGRESS_URL}github/".insteadOf=https://github.com/ fetch
+   ```
+
+   `AIDASH_EGRESS_URL` carries an operation token that ends with the operation.
+   Never write it into the repository's remote URL or Git configuration: a later
+   operation gets a new token, and the stored one fails.
+
+Archive downloads do not work. GitHub redirects them to the cross-origin
+`codeload` host, and the gateway refuses cross-origin redirects. Git's
+`info/refs` and `git-upload-pack` requests to a private repository were
+verified through the gateway. A complete clone of a large repository is still
+limited by [#683](https://github.com/kent8192/aidash/issues/683) (throughput)
+and by the Working Area's file rules
+([#682](https://github.com/kent8192/aidash/issues/682)).
 
 ## Self-hosted deployment
 
@@ -198,9 +260,11 @@ Without egress settings, sandbox networking remains deny-all.
 
 The Runner image includes Node.js 22 LTS, npm/npx and uv/uvx. Built-in
 External services `core.npm` and `core.pypi` need their own Tenant Catalog
-Approvals and Agent bindings. The operation sets npm's registry and
-`replace-registry-host`, and uv's index, to the gateway. Python downloads are
-disabled with `UV_PYTHON_DOWNLOADS=never`.
+Approvals and Agent bindings. The operation points npm's registry and uv's
+index at the gateway. npm's `replace-registry-host` stays `npmjs`, so lockfile
+links on registry.npmjs.org go through the gateway while the gateway's own
+rewritten links are used unchanged. Python downloads are disabled with
+`UV_PYTHON_DOWNLOADS=never`.
 
 Only these built-in indexes buffer index responses, up to 8 MiB, to rewrite
 package file addresses onto the gateway. npm files remain on

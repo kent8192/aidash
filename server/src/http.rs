@@ -290,6 +290,14 @@ fn request_body_limit(method: &http::Method, path: &str) -> usize {
 		|| (method == http::Method::PUT && draft)
 	{
 		12 * 1024 * 1024
+	} else if matches!(
+		path.trim_start_matches('/')
+			.split('/')
+			.collect::<Vec<_>>()
+			.as_slice(),
+		["api", "workspaces", _, "attachments"]
+	) {
+		aidash_domain::workspaces::channels::MAX_ATTACHMENT_BYTES
 	} else if path.contains("/chunks") || path.contains("/scoped/files/") {
 		6 * 1024 * 1024
 	} else {

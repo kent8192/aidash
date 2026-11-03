@@ -15,3 +15,9 @@ Decided on 2026-10-13 for #112. A Completion Candidate is identified by its Run,
 - The gate runs before `begin_final_completion`. New input during verification is accepted and invalidates the candidate. A Check already running finishes, and its evidence is reused if the content is unchanged.
 - No candidate is formed while one of the Run's operations is running or uncertain. A Received-scope write during verification invalidates the evidence, and the Check runs again without spending the Repair Allowance.
 - The gate recomputes the content digest when it commits completion.
+
+## Amendment (2026-11-02, #697)
+
+- A Completion Candidate's content is the Working Area's registered content (ADR 0111); commands no longer publish to the Working Area.
+- A Check runs in a Check Pod: a disposable Pod from the unmodified image of the Run's Scratch Space, with the registered content and the Scratch Space mounted read-only. Its file changes are discarded.
+- Whether the Completion Gate stays at all is decided in #698.

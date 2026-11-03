@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! How each GCIP External Identity was admitted: through the Shared Pool or
 //! bound to a named Tenant (#240, #266). Deployment-wide: it names a Tenant
 //! but belongs to none.

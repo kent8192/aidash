@@ -114,3 +114,44 @@ The server embeds the file and checks it against the SHA-256 of the upstream
 `tokenizer.json` at the pinned revision before it counts anything. The model
 card names its terms and links to them rather than shipping a notice file, so
 the notice is the text published at <https://www.apache.org/licenses/LICENSE-2.0.txt>.
+
+## Enterprise
+
+These materials are shipped under `enterprise/` but are not part of the
+Licensed Work. Each keeps its own terms, and the rest of `enterprise/` remains
+under [enterprise/LICENSE](enterprise/LICENSE).
+
+### IBM Plex fonts
+
+- Source: [IBM Plex](https://github.com/IBM/plex), packaged as
+  `@fontsource/ibm-plex-mono` and `@fontsource/ibm-plex-sans`
+- Revision: `5.3.0`, from `web/package-lock.json`
+- License: SIL Open Font License 1.1, in
+  [enterprise/auth/static/assets/fonts/mono/LICENSE](enterprise/auth/static/assets/fonts/mono/LICENSE)
+  and
+  [enterprise/auth/static/assets/fonts/sans/LICENSE](enterprise/auth/static/assets/fonts/sans/LICENSE)
+
+Files that contain upstream material:
+
+- `enterprise/auth/static/assets/fonts/mono/` and `enterprise/marketplace/static/assets/fonts/mono/`: IBM Plex Mono web fonts and their `@font-face` styles (copy)
+- `enterprise/auth/static/assets/fonts/sans/` and `enterprise/marketplace/static/assets/fonts/sans/`: IBM Plex Sans web fonts and their `@font-face` styles (copy)
+
+The two copies of each family are identical. Each directory keeps the
+`LICENSE` file that the font package ships.
+
+### Firebase browser modules
+
+- Source: [Firebase browser ESM](https://firebase.google.com/docs/web/alt-setup),
+  from `https://www.gstatic.com/firebasejs/13.0.0/`
+- Revision: `13.0.0`; `enterprise/auth/static/assets/vendor/provenance.json`
+  records the upstream and vendored SHA-256 digests
+- License: Apache-2.0, in
+  [enterprise/auth/static/assets/vendor/LICENSE](enterprise/auth/static/assets/vendor/LICENSE)
+
+Files that contain upstream material:
+
+- `enterprise/auth/static/assets/vendor/firebase-app.js`: the Firebase 13.0.0 App browser module, with a relative App import in Auth, removed development source-map references and whitespace normalization (copy)
+- `enterprise/auth/static/assets/vendor/firebase-auth.js`: the Firebase 13.0.0 Auth browser module, changed in the same way (copy)
+
+The `README.md` and `provenance.json` in that directory describe the vendored
+files and are Aidash material under `enterprise/LICENSE`.

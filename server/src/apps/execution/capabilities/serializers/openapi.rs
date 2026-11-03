@@ -359,7 +359,7 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			200,
 			"application/json",
 		)?;
-	contracts.request::<_, crate::apps::execution::capabilities::serializers::transfer::Chunk>(
+	contracts.request::<_, crate::apps::execution::capabilities::serializers::references::Chunk>(
 		document,
 		views::management::reference_chunk,
 	)?;

@@ -102,37 +102,28 @@ def hydrate():
 
 
 def export():
-    limit = int(sys.argv[2])
-    total = 0
-    files = []
-    # Caller must first observe the execution container terminated. This is
-    # never invoked concurrently with a live writer.
-    for directory, dirs, names in os.walk(ROOTS["working"], followlinks=False):
-        for name in dirs:
-            if not stat.S_ISDIR(os.lstat(Path(directory) / name).st_mode):
-                raise ValueError("unsafe directory")
-        for name in names:
-            path = Path(directory) / name
-            relative = path.relative_to(ROOTS["working"]).as_posix()
-            path_parts(relative)
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-            with os.fdopen(fd, "rb") as f:
-                st = os.fstat(f.fileno())
-                if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
-                    raise ValueError("unsafe file or hard-link alias")
-                total += st.st_size
-                if total > limit or len(files) >= 4096:
-                    raise ValueError("working file quota")
-                digest = hashlib.sha256()
-                size = 0
-                while data := f.read(1048576):
-                    digest.update(data)
-                    size += len(data)
-                if size != st.st_size:
-                    raise ValueError("file changed during collection")
-            files.append({"path": relative, "object_id": hashlib.sha256(relative.encode()).hexdigest(),
-                          "digest": digest.hexdigest(), "size": size})
-    json.dump({"files": files}, sys.stdout, separators=(",", ":"))
+    # The execution container has stopped before this is called. A refusal
+    # (link, alias, quota, unsafe name) is printed as data and exits cleanly,
+    # so the runner fails only this operation; it never prints an empty list.
+    directory = str(Path(__file__).resolve().parent)
+    if directory not in sys.path:
+        sys.path.insert(0, directory)
+    from working_export import collect
+
+    def open_file(root, relative):
+        parts = path_parts(relative)
+        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for part in parts[:-1]:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                os.close(fd)
+                fd = child
+            result = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+            return os.fdopen(result, "rb")
+        finally:
+            os.close(fd)
+
+    json.dump(collect(ROOTS["working"], int(sys.argv[2]), open_file), sys.stdout, separators=(",", ":"))
 
 
 def write_input():

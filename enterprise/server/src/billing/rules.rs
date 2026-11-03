@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Who may exist on Cloud, as pure rules over the facts the caller gathered.
 //! The stricter of a Tier and the Tenancy Rules applies: these rules add the
 //! Tier's limits and never relax what the Tenancy Rules decided.

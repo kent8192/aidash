@@ -10,7 +10,7 @@ ARG UV_SHA256_ARM64=9041c73c99fdc5892cf128140beb354eca9231d502068cc36e6cb53a8e59
 # Node.js LTS (npm, npx) and uv (uvx) run against the image's Python only.
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates curl xz-utils; \
+    apt-get install -y --no-install-recommends ca-certificates curl git xz-utils; \
     case "${TARGETARCH}" in \
         amd64) node_arch=x64; node_sha="${NODE_SHA256_AMD64}"; uv_arch=x86_64; uv_sha="${UV_SHA256_AMD64}" ;; \
         arm64) node_arch=arm64; node_sha="${NODE_SHA256_ARM64}"; uv_arch=aarch64; uv_sha="${UV_SHA256_ARM64}" ;; \
@@ -34,7 +34,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 ENV UV_PYTHON_DOWNLOADS=never UV_PYTHON=/usr/local/bin/python
 COPY requirements.lock /opt/aidash/requirements.lock
 RUN pip install --no-cache-dir --require-hashes -r /opt/aidash/requirements.lock
-COPY egress.py sandbox.py collector.py kernel.py python_cells.py probe.py extract.py install.py overlay.py /opt/aidash/
+COPY egress.py sandbox.py collector.py working_export.py kernel.py python_cells.py probe.py extract.py install.py overlay.py /opt/aidash/
 WORKDIR /work
 USER 10000:10000
 ENTRYPOINT ["python", "-I", "/opt/aidash/sandbox.py"]
