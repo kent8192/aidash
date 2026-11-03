@@ -89,13 +89,15 @@ impl WorkspaceMutations for NativeMutations<'_> {
 		self.store
 			.create_workspace_in(
 				&mut self.access.tx,
-				id,
-				&self.access.identity.tenant,
-				node,
-				title,
-				goal,
-				scratch_id,
-				&creator,
+				crate::store::WorkspaceInsert {
+					id,
+					tenant: &self.access.identity.tenant,
+					node,
+					title,
+					goal,
+					scratch_space_id: scratch_id,
+					created_by: &creator,
+				},
 			)
 			.await
 			.map_err(Into::into)

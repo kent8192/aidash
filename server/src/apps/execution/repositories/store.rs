@@ -38,6 +38,16 @@ pub struct RunStore {
 	pub scope: TenancyScope,
 }
 
+pub(crate) struct WorkspaceInsert<'a> {
+	pub id: Uuid,
+	pub tenant: &'a str,
+	pub node: &'a aidash_domain::nodes::NodeName,
+	pub title: &'a str,
+	pub goal: &'a str,
+	pub scratch_space_id: Uuid,
+	pub created_by: &'a str,
+}
+
 #[derive(Clone)]
 pub struct Store {
 	pub provider_key_material_reader:
@@ -827,13 +837,15 @@ impl Store {
 		let workspace = self
 			.create_workspace_in(
 				&mut tx,
-				Uuid::new_v4(),
-				tenant,
-				&node,
-				title,
-				goal,
-				space.id,
-				owner,
+				WorkspaceInsert {
+					id: Uuid::new_v4(),
+					tenant,
+					node: &node,
+					title,
+					goal,
+					scratch_space_id: space.id,
+					created_by: owner,
+				},
 			)
 			.await?;
 		self.record_workspace_tenant_in(&mut tx, workspace.id, tenant, owner)
@@ -870,14 +882,17 @@ impl Store {
 	pub(crate) async fn create_workspace_in(
 		&self,
 		tx: &mut crate::database::native::Transaction,
-		id: Uuid,
-		tenant: &str,
-		node: &aidash_domain::nodes::NodeName,
-		title: &str,
-		goal: &str,
-		scratch_space_id: Uuid,
-		created_by: &str,
+		input: WorkspaceInsert<'_>,
 	) -> Result<Workspace> {
+		let WorkspaceInsert {
+			id,
+			tenant,
+			node,
+			title,
+			goal,
+			scratch_space_id,
+			created_by,
+		} = input;
 		nonempty(title, "title")?;
 		nonempty(goal, "goal")?;
 		let w: Workspace = {
