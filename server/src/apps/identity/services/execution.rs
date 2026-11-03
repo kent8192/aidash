@@ -454,6 +454,8 @@ impl WorkerAuthority {
 			&(&area).into(),
 			aidash_domain::capabilities::files::FileRead {
 				file_id: selection.file_id,
+				workspace_id: None,
+				area_id: None,
 				representation,
 				offset: None,
 				max_bytes: None,
