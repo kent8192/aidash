@@ -607,10 +607,24 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	let builtin_count = aidash_application::registry::system::operations().count();
 	let (status, catalog) = request(&app, &token, "GET", "/api/registry", Value::Null).await;
 	assert_eq!(status, 200, "{catalog}");
-	// The Tenant's three approved definitions, the built-in tools, workspace
-	// observation Source, both Deciders, and the second workspace_read version.
-	// Listing a Decider grants no approval.
-	assert_eq!(catalog.as_array().unwrap().len(), 7 + builtin_count);
+	// The Tenant's three approved definitions, current built-in declarations,
+	// workspace observation Source, and both Deciders. Legacy versions are
+	// preserved for pinned Runs but are not automatically listed.
+	assert_eq!(catalog.as_array().unwrap().len(), 6 + builtin_count);
+	for (id, version) in [
+		("aidash.workspace_read", "1.1.0"),
+		("aidash.workspace_search", "1.0.0"),
+		("aidash.attachment_copy", "1.0.0"),
+	] {
+		assert!(
+			catalog
+				.as_array()
+				.unwrap()
+				.iter()
+				.any(|entry| entry["id"] == id && entry["version"] == version),
+			"missing {id}@{version}: {catalog}"
+		);
+	}
 	assert!(
 		catalog
 			.as_array()
@@ -660,8 +674,8 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		request(&app, other_token, "GET", "/api/registry", Value::Null).await;
 	assert_eq!(status, 200, "{other_catalog}");
 	let other_catalog = other_catalog.as_array().unwrap();
-	// Both immutable workspace_read versions are seeded for every Tenant.
-	assert_eq!(other_catalog.len(), builtin_count + 4);
+	// The current declarations are listed for every Tenant.
+	assert_eq!(other_catalog.len(), builtin_count + 3);
 	assert!(
 		other_catalog
 			.iter()
@@ -6828,7 +6842,14 @@ impl SubnodeRig {
 					.or_insert_with(|| json!([]))
 					.as_array_mut()
 					.unwrap();
-				for name in ["skill_list", "skill_load", "skill_read"] {
+				// Keep member defaults within the deliberately narrow test allowance.
+				for name in [
+					"skill_list",
+					"skill_load",
+					"skill_read",
+					"attachment_copy",
+					"workspace_search",
+				] {
 					if !defaults.contains(&json!(name)) {
 						defaults.push(json!(name));
 					}

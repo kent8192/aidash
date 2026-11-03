@@ -360,7 +360,10 @@ async fn existing_workspace_tool_versions_are_preserved_when_seeding_attachment_
 	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
 	for entry in old {
 		assert_eq!(
-			registry.get(&tenant, &entry.id, "1.0.0").await.unwrap(),
+			registry
+				.get(&tenant, &entry.id, &entry.version)
+				.await
+				.unwrap(),
 			entry
 		);
 		assert_eq!(
@@ -372,6 +375,22 @@ async fn existing_workspace_tool_versions_are_preserved_when_seeding_attachment_
 			"1.0.1"
 		);
 	}
+	let current = registry
+		.get(&tenant, "aidash.workspace_read", "1.1.0")
+		.await
+		.unwrap();
+	assert!(
+		current.schema["properties"]["kind"]["enum"]
+			.as_array()
+			.unwrap()
+			.contains(&json!("file"))
+	);
+	assert!(
+		current.schema["properties"]["kind"]["enum"]
+			.as_array()
+			.unwrap()
+			.contains(&json!("attachment"))
+	);
 }
 
 #[rstest]
