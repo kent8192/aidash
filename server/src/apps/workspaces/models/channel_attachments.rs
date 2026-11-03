@@ -35,8 +35,22 @@ pub struct ChannelAttachment {
 	pub size_bytes: i64,
 	#[field(default = 0)]
 	pub position: i32,
-	#[field]
-	pub content: Vec<u8>,
+	#[field(null = true)]
+	pub content: Option<Vec<u8>>,
+	#[field(null = true)]
+	pub object_id: Option<uuid::Uuid>,
+	#[field(null = true)]
+	pub width: Option<i32>,
+	#[field(null = true)]
+	pub height: Option<i32>,
+	#[field(null = true)]
+	pub duration_ms: Option<i64>,
+	#[field(null = true)]
+	pub wav_object_id: Option<uuid::Uuid>,
+	#[field(field_type = "text", null = true)]
+	pub wav_sha256: Option<String>,
+	#[field(null = true)]
+	pub wav_size_bytes: Option<i64>,
 	/// Denormalized business reference; the typed relation is authoritative.
 	#[field(db_column = "message_id", null = true)]
 	pub message_key: Option<uuid::Uuid>,
@@ -156,6 +170,13 @@ impl crate::database::Record for ChannelAttachment {
 			size_bytes: row.try_get("size_bytes")?,
 			position: row.try_get("position")?,
 			content: row.try_get("content")?,
+			object_id: row.try_get("object_id")?,
+			width: row.try_get("width")?,
+			height: row.try_get("height")?,
+			duration_ms: row.try_get("duration_ms")?,
+			wav_object_id: row.try_get("wav_object_id")?,
+			wav_sha256: row.try_get("wav_sha256")?,
+			wav_size_bytes: row.try_get("wav_size_bytes")?,
 			message_key: row.try_get("message_id")?,
 		})
 	}
@@ -172,6 +193,7 @@ impl From<ChannelAttachment> for aidash_domain::workspaces::channels::Attachment
 			sha256: row.sha256,
 			size_bytes: row.size_bytes,
 			content: row.content,
+			object_id: row.object_id,
 			message_id: row.message_key,
 		}
 	}

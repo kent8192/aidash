@@ -92,6 +92,9 @@ pub struct ChannelAttachment {
 	pub filename: String,
 	pub media_type: String,
 	pub size_bytes: i64,
+	/// Computed for the Workspace's currently assigned Agents, not persisted.
+	#[serde(default)]
+	pub no_assigned_agent_can_read: bool,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -153,7 +156,8 @@ pub struct AttachmentState {
 	pub media_type: String,
 	pub sha256: String,
 	pub size_bytes: i64,
-	pub content: Vec<u8>,
+	pub content: Option<Vec<u8>>,
+	pub object_id: Option<Uuid>,
 	pub message_id: Option<Uuid>,
 }
 impl AttachmentState {
@@ -163,6 +167,7 @@ impl AttachmentState {
 			filename: self.filename.clone(),
 			media_type: self.media_type.clone(),
 			size_bytes: self.size_bytes,
+			no_assigned_agent_can_read: false,
 		}
 	}
 }

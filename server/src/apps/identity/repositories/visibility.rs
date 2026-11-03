@@ -27,6 +27,87 @@ use uuid::Uuid;
 pub(crate) struct Reads<'a> {
 	pub access: &'a mut Access,
 }
+struct AttachmentMetadataRow {
+	message_id: Uuid,
+	id: Uuid,
+	filename: String,
+	media_type: String,
+	size_bytes: i64,
+	width: Option<i32>,
+	height: Option<i32>,
+	duration_ms: Option<i64>,
+}
+crate::native_record!(AttachmentMetadataRow {
+	message_id,
+	id,
+	filename,
+	media_type,
+	size_bytes,
+	width,
+	height,
+	duration_ms
+});
+
+async fn attachment_metadata(
+	access: &mut Access,
+	workspace: Uuid,
+	messages: &[Uuid],
+) -> Result<Vec<aidash_domain::media::MessageAttachment>> {
+	if messages.is_empty() {
+		return Ok(Vec::new());
+	}
+	let query = Query::select()
+		.columns(
+			[
+				"message_id",
+				"id",
+				"filename",
+				"media_type",
+				"size_bytes",
+				"width",
+				"height",
+				"duration_ms",
+			]
+			.map(Alias::new),
+		)
+		.from(Alias::new("channel_attachments"))
+		.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+		.and_where(
+			Expr::col(Alias::new("message_id")).is_in(messages.iter().copied().map(Expr::value)),
+		)
+		.order_by(Alias::new("position"), reinhardt::query::Order::Asc)
+		.order_by(Alias::new("id"), reinhardt::query::Order::Asc)
+		.to_string(PostgresQueryBuilder);
+	let rows: Vec<AttachmentMetadataRow> = crate::database::native::query_as(&query)
+		.columns(&[
+			"message_id",
+			"id",
+			"filename",
+			"media_type",
+			"size_bytes",
+			"width",
+			"height",
+			"duration_ms",
+		])
+		.fetch_all(&mut **access.tx)
+		.await?;
+	Ok(rows
+		.into_iter()
+		.map(|row| aidash_domain::media::MessageAttachment {
+			message_id: row.message_id,
+			attachment: aidash_domain::media::ThreadAttachment {
+				id: row.id,
+				filename: row.filename,
+				media_type: row.media_type,
+				size_bytes: row.size_bytes,
+				width: row.width,
+				height: row.height,
+				duration_ms: row.duration_ms,
+			},
+		})
+		.collect())
+}
+
 pub(crate) struct NativeReads<'a> {
 	pub access: &'a mut NativeAccess,
 }
