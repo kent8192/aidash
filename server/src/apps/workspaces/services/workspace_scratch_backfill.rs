@@ -27,13 +27,7 @@ fn owner(table: &str, column: &str, time_order: bool) -> SimpleExpr {
 pub(crate) fn forward() -> String {
 	let bindings = Query::update()
 		.table(a("workspaces"))
-		.value_expr(
-			a("scratch_space_id"),
-			Func::coalesce(vec![
-				owner("conversations", "scratch_space_id", true),
-				Expr::cust("gen_random_uuid()").into(),
-			]),
-		)
+		.value_expr(a("scratch_space_id"), Expr::cust("gen_random_uuid()"))
 		.value_expr(
 			a("created_by"),
 			Func::coalesce(vec![
@@ -102,7 +96,7 @@ pub(crate) fn forward() -> String {
 		.on_conflict(OnConflict::column(a("space_id")).do_nothing().to_owned())
 		.to_string(PostgresQueryBuilder);
 	format!(
-		"SET LOCAL aidash.scope = 'deployment';\n{bindings};\n{conversations};\n{insert_spaces};\n{insert_settings};\n"
+		"SET LOCAL aidash.scope = 'deployment';\n{bindings};\n{insert_spaces};\n{insert_settings};\n{conversations};\n"
 	)
 }
 

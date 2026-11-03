@@ -3940,7 +3940,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 		fixture.connection.execute(&sql, vec![]).await.unwrap();
 	}
 
-	// A conversation-created Workspace retains its previously selected space.
+	// A conversation-created Workspace receives its own space and binds all conversations to it.
 	let conversation_workspace = Uuid::new_v4();
 	let existing_space = fixture.scratch_space(tenant).await;
 	let sql = Query::insert()
@@ -4035,10 +4035,16 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 		.to_string(PostgresQueryBuilder);
 	let (selected, conversation_starter): (Uuid, String) =
 		sqlx::query_as(&sql).fetch_one(&pool).await.unwrap();
-	assert_eq!(
-		(selected, conversation_starter.as_str()),
-		(existing_space, "carol")
-	);
+	assert_eq!(conversation_starter, "carol");
+	let sql = Query::select()
+		.column(Alias::new("creator"))
+		.from(Alias::new("scratch_spaces"))
+		.and_where(Expr::col("id").eq(selected))
+		.to_string(PostgresQueryBuilder);
+	let (selected_creator,): (String,) = sqlx::query_as(&sql).fetch_one(&pool).await.unwrap();
+	assert_eq!(selected_creator, "carol");
+	assert_ne!(selected, existing_space);
+	assert_ne!(selected, other_space);
 	let sql = Query::select()
 		.column(Alias::new("scratch_space_id"))
 		.from(Alias::new("conversations"))
@@ -4046,5 +4052,5 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 		.to_string(PostgresQueryBuilder);
 	let bindings: Vec<(Uuid,)> = sqlx::query_as(&sql).fetch_all(&pool).await.unwrap();
 	assert_eq!(bindings.len(), 2);
-	assert!(bindings.iter().all(|(id,)| *id == existing_space));
+	assert!(bindings.iter().all(|(id,)| *id == selected));
 }
