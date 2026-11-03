@@ -418,6 +418,8 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0094_subnodes"),
 			("execution", "0095_subnodes_row_level_security"),
 			("execution", "0096_subnodes_state"),
+			("execution", "0097_provider_tool_usage"),
+			("execution", "0098_provider_container"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
