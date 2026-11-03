@@ -12,6 +12,9 @@ fn configuration() -> EmbeddingConfig {
 		model: "fixture".into(),
 		model_version: "1".into(),
 		dimensions: 2,
+		inputs: [aidash_domain::semantic::EmbeddingInputKind::Text]
+			.into_iter()
+			.collect(),
 	}
 }
 #[derive(Debug, thiserror::Error)]
@@ -47,13 +50,16 @@ impl SemanticEmbeddingScope for Scope {
 		&mut self,
 		workspace: Uuid,
 		config: &EmbeddingConfig,
-		text: &str,
+		input: aidash_domain::semantic::EmbeddingInput<'_>,
 		origin: Origin,
 	) -> Result<Option<Box<dyn EmbeddingAllowance>>> {
 		self.calls.lock().unwrap().push("reserve");
 		assert_eq!(workspace, Uuid::from_u128(1));
 		assert_eq!(*config, configuration());
-		assert_eq!(text, "query");
+		assert_eq!(
+			input,
+			aidash_domain::semantic::EmbeddingInput::Text("query")
+		);
 		assert!(matches!(origin, Origin::Query(Some(run)) if run==Uuid::from_u128(2)));
 		if self.reservation_fails {
 			return Err(Error::Forbidden);
@@ -74,10 +80,17 @@ struct Provider {
 }
 #[async_trait]
 impl EmbeddingProvider for Provider {
-	async fn embed(&self, config: &EmbeddingConfig, text: &str) -> Result<Embedding> {
+	async fn embed(
+		&self,
+		config: &EmbeddingConfig,
+		input: aidash_domain::semantic::EmbeddingInput<'_>,
+	) -> Result<Embedding> {
 		self.calls.lock().unwrap().push("provider");
 		assert_eq!(*config, configuration());
-		assert_eq!(text, "query");
+		assert_eq!(
+			input,
+			aidash_domain::semantic::EmbeddingInput::Text("query")
+		);
 		if let Some(failure) = self.failure {
 			Err(failure())
 		} else {
@@ -210,6 +223,10 @@ async fn provider_outage_keeps_conservative_charge_and_hides_provider_details(
 	|| Error::RemoteSemantic(aidash_domain::semantic::Failure::ProviderContract),
 	aidash_domain::semantic::Failure::ProviderContract
 )]
+#[case::model_not_found(
+	|| Error::RemoteSemantic(aidash_domain::semantic::Failure::EmbeddingModelNotFound),
+	aidash_domain::semantic::Failure::EmbeddingModelNotFound
+)]
 #[tokio::test]
 async fn provider_rejection_and_contract_violation_keep_their_typed_reason(
 	#[case] failure: fn() -> Error,
@@ -280,7 +297,7 @@ impl SemanticEmbeddingScope for TenantScope {
 		&mut self,
 		_: Uuid,
 		_: &EmbeddingConfig,
-		_: &str,
+		_: aidash_domain::semantic::EmbeddingInput<'_>,
 		_: Origin,
 	) -> Result<Option<Box<dyn EmbeddingAllowance>>> {
 		Ok(None)
@@ -289,7 +306,11 @@ impl SemanticEmbeddingScope for TenantScope {
 struct RevokedProvider;
 #[async_trait]
 impl EmbeddingProvider for RevokedProvider {
-	async fn embed(&self, _: &EmbeddingConfig, _: &str) -> Result<Embedding> {
+	async fn embed(
+		&self,
+		_: &EmbeddingConfig,
+		_: aidash_domain::semantic::EmbeddingInput<'_>,
+	) -> Result<Embedding> {
 		Err(Error::Invalid("Provider Credential is not active".into()))
 	}
 }
@@ -313,4 +334,70 @@ async fn revoked_tenant_embedding_remains_a_non_retryable_state_error() {
 	assert!(
 		matches!(error, Error::Invalid(ref message) if message == "Provider Credential is not active")
 	);
+}
+
+#[tokio::test]
+async fn image_input_is_reserved_before_provider_and_settled() {
+	use aidash_domain::semantic::{EmbeddingInput, EmbeddingInputKind};
+	struct ImageScope(Calls);
+	#[async_trait]
+	impl SemanticEmbeddingScope for ImageScope {
+		async fn reserve(
+			&mut self,
+			_: Uuid,
+			_: &EmbeddingConfig,
+			input: EmbeddingInput<'_>,
+			_: Origin,
+		) -> Result<Option<Box<dyn EmbeddingAllowance>>> {
+			assert!(matches!(
+				input,
+				EmbeddingInput::Image {
+					media_type: "image/png",
+					..
+				}
+			));
+			self.0.lock().unwrap().push("reserve");
+			Ok(Some(Box::new(Allowance {
+				calls: self.0.clone(),
+				reported: Arc::default(),
+				settlement_fails: false,
+			})))
+		}
+	}
+	struct ImageProvider(Calls);
+	#[async_trait]
+	impl EmbeddingProvider for ImageProvider {
+		async fn embed(&self, _: &EmbeddingConfig, input: EmbeddingInput<'_>) -> Result<Embedding> {
+			assert!(matches!(
+				input,
+				EmbeddingInput::Image {
+					media_type: "image/png",
+					..
+				}
+			));
+			self.0.lock().unwrap().push("provider");
+			Ok(Embedding {
+				vector: vec![1.0, 0.0],
+				tokens: Some(2),
+			})
+		}
+	}
+	let calls = Calls::default();
+	let mut config = configuration();
+	config.inputs.insert(EmbeddingInputKind::Image);
+	let result = invoke_input(
+		&mut ImageScope(calls.clone()),
+		&ImageProvider(calls.clone()),
+		Uuid::nil(),
+		&config,
+		EmbeddingInput::Image {
+			media_type: "image/png",
+			bytes: b"\x89PNG\r\n\x1a\n",
+		},
+		Origin::Query(None),
+	)
+	.await
+	.unwrap();
+	assert_eq!(result, vec![1.0, 0.0]);
+	assert_eq!(*calls.lock().unwrap(), ["reserve", "provider", "settle"]);
 }

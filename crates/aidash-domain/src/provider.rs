@@ -270,21 +270,7 @@ impl ContentPart {
 	fn validate(&self) -> Result<()> {
 		match self {
 			Self::Text(_) => Ok(()),
-			Self::Image { media_type, bytes } => {
-				let valid = match media_type.as_str() {
-					"image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
-					"image/jpeg" => bytes.starts_with(b"\xff\xd8\xff"),
-					"image/gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
-					"image/webp" => bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP"),
-					_ => false,
-				};
-				if !valid {
-					return Err(Error::Invalid(
-						"image MIME does not match a supported file signature".into(),
-					));
-				}
-				Ok(())
-			}
+			Self::Image { media_type, bytes } => validate_image(media_type, bytes),
 			Self::Audio { format, bytes } => {
 				let valid = match format.as_str() {
 					"wav" => bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE"),
@@ -319,6 +305,36 @@ impl ContentPart {
 	}
 }
 
+/// Validate a declared image MIME type against the supported file signatures.
+pub fn validate_image(media_type: &str, bytes: &[u8]) -> Result<()> {
+	let valid = match media_type {
+		"image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+		"image/jpeg" => bytes.starts_with(b"\xff\xd8\xff"),
+		"image/gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+		"image/webp" => bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP"),
+		_ => false,
+	};
+	if valid {
+		Ok(())
+	} else {
+		Err(Error::Invalid(
+			"image MIME does not match a supported file signature".into(),
+		))
+	}
+}
+
+/// Recognize only the same image signatures accepted for model inputs.
+pub fn detect_image(bytes: &[u8]) -> Option<&'static str> {
+	["image/png", "image/jpeg", "image/gif", "image/webp"]
+		.into_iter()
+		.find(|media_type| validate_image(media_type, bytes).is_ok())
+}
+
+/// Conservative provider-side image token estimate shared by inference and embeddings.
+pub fn image_token_allowance(byte_len: usize) -> Option<usize> {
+	4096usize.checked_add(byte_len.div_ceil(256))
+}
+
 /// A five-minute provider cache breakpoint, the provider default (ADR 0019).
 pub(crate) fn cache_control() -> Value {
 	json!({"type":"ephemeral"})
@@ -330,7 +346,7 @@ impl ModelRequest {
 			total.saturating_add(match part {
 				ContentPart::Text(_) => 0,
 				ContentPart::Image { bytes, .. } => {
-					4096_usize.saturating_add(bytes.len().div_ceil(256))
+					image_token_allowance(bytes.len()).unwrap_or(usize::MAX)
 				}
 				ContentPart::Audio { bytes, .. } => {
 					1024_usize.saturating_add(bytes.len().div_ceil(16))

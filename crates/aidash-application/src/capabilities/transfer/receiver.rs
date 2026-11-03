@@ -279,6 +279,10 @@ pub async fn commit(
         area.manifest=json!(entries);
         area.constraints.as_array_mut().ok_or(Error::Forbidden)?.push(json!({"kind":"received_scope","transfer_id":record.id,"owner":area.owner,"agent":aidash_domain::agent_subject(&description.target.node_id,&description.target.agent_id,&description.target.agent_version)}));
         scope.publish(&mut area).await?;
+        let published: Vec<FileEntry> = serde_json::from_value(area.manifest.clone())?;
+        for file in &mut delivered {
+            *file = published.iter().find(|entry| entry.file_id == file.file_id).cloned().ok_or_else(|| Error::Conflict("published file unavailable".into()))?;
+        }
         record.state="committed".into();record.expires_at=None;
         record.data["receipt"]=json!({"id":record.id,"node_id":description.target.node_id,"area_id":area.id,"revision":area.revision,"manifest_digest":description.manifest_digest,"files":delivered});
         scope.update(&mut record).await?;

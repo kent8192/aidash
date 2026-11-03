@@ -1,5 +1,11 @@
 # Aidash native migration history
 
+`registry/0057_embedding_inputs` through `0059_reference_image_byte_state`
+add image retrieval inputs, private reference images, model state and Tenant
+policies after `0056_attachment_tools`. `execution/0092_reference_embedding_usage`
+and `0093_reference_embedding_usage_state` record reference embedding usage after
+`0091_bounded_read_indexes`.
+
 `registry/0056_attachment_tools` (after `registry/0055_remove_structured_harness_contracts`) extends the existing PostgreSQL descriptor
 and Agent default validators for the built-in `attachment_copy` operation.
 The function bodies use SQL assets because Reinhardt has no typed operation

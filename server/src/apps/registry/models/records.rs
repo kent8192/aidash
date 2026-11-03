@@ -5,7 +5,7 @@ use super::{AgentKnowledge, Definition, RegistryRequest};
 use crate::apps::registry::serializers::contracts::Entry;
 use crate::{Error, Result};
 use aidash_domain::tenancy::TenantName;
-use reinhardt::db::orm::{Model, OrmExecutor};
+use reinhardt::db::orm::{Model, OrmExecutor, QueryRow};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -132,16 +132,38 @@ pub(crate) async fn documents<E: OrmExecutor>(
 	tenant: &TenantName,
 	entry: &Entry,
 ) -> Result<Option<Value>> {
-	Ok(AgentKnowledge::objects()
-		.filter(AgentKnowledge::field_tenant().eq(tenant.as_str().to_owned()))
-		.filter(AgentKnowledge::field_agent_key().eq(entry.id.clone()))
-		.filter(AgentKnowledge::field_agent_version().eq(entry.version.clone()))
-		.first_with_db(db)
+	private_column(db, tenant, entry, "documents").await
+}
+
+pub(crate) async fn image_index<E: OrmExecutor>(
+	db: &mut E,
+	tenant: &TenantName,
+	entry: &Entry,
+) -> Result<Option<Value>> {
+	private_column(db, tenant, entry, "image_index").await
+}
+
+async fn private_column<E: OrmExecutor>(
+	db: &mut E,
+	tenant: &TenantName,
+	entry: &Entry,
+	column: &str,
+) -> Result<Option<Value>> {
+	let (sql, values) = Query::select()
+		.column(Alias::new(column))
+		.from(Alias::new(AgentKnowledge::table_name()))
+		.and_where(Expr::col("tenant").eq(Expr::value(tenant.as_str())))
+		.and_where(Expr::col("agent_id").eq(Expr::value(&entry.id)))
+		.and_where(Expr::col("agent_version").eq(Expr::value(&entry.version)))
+		.build(PostgresQueryBuilder);
+	Ok(db
+		.fetch_optional(&sql, convert_values(values))
 		.await?
-		.map(|record| record.documents.0))
+		.and_then(|row| QueryRow::from_backend_row(row).data.get(column).cloned())
+		.filter(|value| !value.is_null()))
 }
 
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::query::{
-	Alias, Expr, OnConflict, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	Alias, Expr, ExprTrait, OnConflict, PostgresQueryBuilder, Query, QueryStatementBuilder,
 };

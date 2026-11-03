@@ -118,6 +118,9 @@ fn spec() -> IndexSpec {
 			model: "fixture".into(),
 			model_version: "1".into(),
 			dimensions: 8,
+			inputs: [aidash_domain::semantic::EmbeddingInputKind::Text]
+				.into_iter()
+				.collect(),
 		},
 		vector: VectorConfig {
 			provider: "postgres".into(),
@@ -130,6 +133,8 @@ fn spec() -> IndexSpec {
 		max_results: 5,
 		max_result_tokens: 128,
 		max_input_bytes: 256,
+		max_image_bytes: 8 * 1024 * 1024,
+		max_images: 256,
 	}
 }
 

@@ -160,3 +160,35 @@ async fn reference_mounts_do_not_create_automatic_document_fields() {
 		"manual reference mounts remain admitted"
 	);
 }
+
+#[tokio::test]
+async fn pinned_reference_images_have_a_separate_uncached_context_section() {
+	assert!(Slot::ReferenceImages.requires_mandatory_delivery(false));
+	assert!(Slot::ReferenceImages.requires_mandatory_delivery(true));
+	assert!(!Slot::Semantic.requires_mandatory_delivery(false));
+	let mut snapshot =
+		admitted(json!({"adapter":"private_references","digest":"b".repeat(64)})).await;
+	let agent = snapshot
+		.definitions
+		.iter_mut()
+		.find(|definition| definition.identity == snapshot.agent)
+		.unwrap();
+	agent.definition.config["reference_embedding"] = json!({"id":"embed","version":"1.0.0"});
+	let plan = compile_context_source_plan(Uuid::from_u128(5), &snapshot, true, false).unwrap();
+	let image = plan
+		.iter()
+		.find(|source| source.contribution_slot == "reference_images")
+		.unwrap();
+	assert_eq!(
+		image.target,
+		ContextSourceTarget::Pinned("reference_images".into())
+	);
+	assert_eq!(image.phase, ContextSourcePhase::BudgetedData);
+	assert_eq!(image.cache, ContextSourceCache::None);
+	assert!(image.refresh_each_step);
+	assert!(
+		plan.iter().any(
+			|source| source.target == ContextSourceTarget::Pinned("reference_documents".into())
+		)
+	);
+}

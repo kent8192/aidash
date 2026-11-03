@@ -90,7 +90,18 @@ pub trait FileScopePort: Send {
 		provenance: Value,
 	) -> Result<MountedFile>;
 	async fn previous_manifest(&mut self, area: &Area) -> Result<Value>;
+	async fn previous_generation(&mut self, area: &Area) -> Result<i64>;
 	async fn supersede(&mut self, area: &Area, file: Uuid) -> Result<()>;
 	async fn persist_manifest(&mut self, area: &Area) -> Result<()>;
 	async fn event(&mut self, workspace: Uuid, kind: &str, data: Value) -> Result<()>;
+	/// Persist ordered image changes in the same transaction as File publication.
+	async fn image_publication(
+		&mut self,
+		_area: &Area,
+		_changes: &[aidash_domain::semantic::indexing::ImageChange],
+	) -> Result<()> {
+		Err(crate::Error::External(
+			"image publication is unavailable".into(),
+		))
+	}
 }

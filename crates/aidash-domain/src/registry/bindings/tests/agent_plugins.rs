@@ -205,6 +205,47 @@ fn a_snapshot_without_plugins_keeps_its_bytes() {
 }
 
 #[test]
+fn implicit_workspace_source_uses_the_reader_version_in_the_snapshot() {
+	let snapshot = snapshot_of(&agent(), vec![]);
+	let mut native = sources::NativeContext {
+		schema_version: BINDING_SCHEMA,
+		source: sources::NativeSource::WorkspaceObservation {},
+		context_source: None,
+	};
+	let source = qualified("aidash.workspace-observation");
+	let declaration = native.declaration_for_snapshot(&source, &snapshot);
+	assert!(
+		declaration
+			.tools
+			.read
+			.iter()
+			.any(|tool| tool.id == "aidash.workspace_read" && tool.version == "1.1.0")
+	);
+	assert!(
+		!declaration
+			.tools
+			.read
+			.iter()
+			.any(|tool| tool.id == "aidash.workspace_read" && tool.version == "1.0.0")
+	);
+	let mut declared = native.declaration(&source);
+	for tool in &mut declared.tools.read {
+		if tool.id == "aidash.workspace_read" {
+			tool.version = "1.0.0".into();
+		}
+	}
+	native.context_source = Some(declared);
+	let explicit = native.declaration_for_snapshot(&source, &snapshot);
+	assert!(
+		explicit
+			.tools
+			.read
+			.iter()
+			.any(|tool| tool.id == "aidash.workspace_read" && tool.version == "1.0.0")
+	);
+}
+
+#[test]
 fn a_definition_records_its_plugins_and_the_settings_view_returns_them() {
 	let definition = agent_with(&[("acme-tools", &["lint"]), ("other-tools", &[])]);
 

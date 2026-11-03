@@ -84,7 +84,7 @@ pub trait EmbeddingProvider: Send + Sync {
 	async fn embed(
 		&self,
 		config: &aidash_domain::semantic::EmbeddingConfig,
-		text: &str,
+		input: aidash_domain::semantic::EmbeddingInput<'_>,
 	) -> Result<aidash_domain::semantic::Embedding>;
 }
 

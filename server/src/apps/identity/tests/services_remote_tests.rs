@@ -28,7 +28,7 @@ fn untrusted_inspections_cannot_substitute_or_omit_executor_definitions() {
 			matches!(
 				e.id.as_str(),
 				"aidash.workspace_read" | "aidash.human_request"
-			)
+			) && (e.id != "aidash.workspace_read" || e.version == "1.1.0")
 		}),
 	);
 	entries

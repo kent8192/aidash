@@ -110,6 +110,7 @@
                 "authority",
                 "invalidated",
                 "provider_contract",
+                "embedding_model_not_found",
                 "context_budget",
                 "durable_memory_budget",
                 "allowance",
@@ -367,6 +368,7 @@
                 "authority",
                 "invalidated",
                 "provider_contract",
+                "embedding_model_not_found",
                 "context_budget",
                 "durable_memory_budget",
                 "allowance",
@@ -1433,6 +1435,7 @@
                 "authority",
                 "invalidated",
                 "provider_contract",
+                "embedding_model_not_found",
                 "context_budget",
                 "durable_memory_budget",
                 "allowance",
@@ -1567,6 +1570,7 @@
                 "authority",
                 "invalidated",
                 "provider_contract",
+                "embedding_model_not_found",
                 "context_budget",
                 "durable_memory_budget",
                 "allowance",
@@ -1741,6 +1745,7 @@
                 "authority",
                 "invalidated",
                 "provider_contract",
+                "embedding_model_not_found",
                 "context_budget",
                 "durable_memory_budget",
                 "allowance",
@@ -1908,6 +1913,7 @@
                 "authority",
                 "invalidated",
                 "provider_contract",
+                "embedding_model_not_found",
                 "context_budget",
                 "durable_memory_budget",
                 "allowance",
@@ -2485,6 +2491,7 @@
                 "authority",
                 "invalidated",
                 "provider_contract",
+                "embedding_model_not_found",
                 "context_budget",
                 "durable_memory_budget",
                 "allowance",
@@ -2742,6 +2749,7 @@
                 "authority",
                 "invalidated",
                 "provider_contract",
+                "embedding_model_not_found",
                 "context_budget",
                 "durable_memory_budget",
                 "allowance",
@@ -23795,7 +23803,6 @@
             "source",
             "agent",
             "metadata",
-            "text",
             "score"
           ],
           "properties": {
@@ -30236,6 +30243,9 @@
               "$ref": "#/components/schemas/Selection"
             },
             {
+              "$ref": "#/components/schemas/WorkingImageSelection"
+            },
+            {
               "$ref": "#/components/schemas/PageImageSelection"
             }
           ],
@@ -30725,6 +30735,7 @@
                 "authority",
                 "invalidated",
                 "provider_contract",
+                "embedding_model_not_found",
                 "context_budget",
                 "durable_memory_budget",
                 "allowance",
@@ -32116,6 +32127,38 @@
               "additionalProperties": false
             }
           ]
+        },
+        "WorkingImageSelection": {
+          "type": "object",
+          "description": "A current Workspace image selected by its Area and immutable File version.",
+          "required": [
+            "area_id",
+            "generation",
+            "file_id",
+            "path",
+            "expected_digest"
+          ],
+          "properties": {
+            "area_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "expected_digest": {
+              "type": "string"
+            },
+            "file_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "generation": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
         },
         "Workspace": {
           "type": "object",
@@ -34127,6 +34170,9 @@
               "$ref": "#/components/schemas/Selection"
             },
             {
+              "$ref": "#/components/schemas/WorkingImageSelection"
+            },
+            {
               "$ref": "#/components/schemas/PageImageSelection"
             }
           ],
@@ -34616,6 +34662,7 @@
                 "authority",
                 "invalidated",
                 "provider_contract",
+                "embedding_model_not_found",
                 "context_budget",
                 "durable_memory_budget",
                 "allowance",
@@ -35998,6 +36045,38 @@
               "additionalProperties": false
             }
           ]
+        },
+        "WorkingImageSelection": {
+          "type": "object",
+          "description": "A current Workspace image selected by its Area and immutable File version.",
+          "required": [
+            "area_id",
+            "generation",
+            "file_id",
+            "path",
+            "expected_digest"
+          ],
+          "properties": {
+            "area_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "expected_digest": {
+              "type": "string"
+            },
+            "file_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "generation": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
         }
       }
     }
@@ -37645,6 +37724,9 @@
               "$ref": "#/components/schemas/Selection"
             },
             {
+              "$ref": "#/components/schemas/WorkingImageSelection"
+            },
+            {
               "$ref": "#/components/schemas/PageImageSelection"
             }
           ],
@@ -38134,6 +38216,7 @@
                 "authority",
                 "invalidated",
                 "provider_contract",
+                "embedding_model_not_found",
                 "context_budget",
                 "durable_memory_budget",
                 "allowance",
@@ -39378,6 +39461,38 @@
               "additionalProperties": false
             }
           ]
+        },
+        "WorkingImageSelection": {
+          "type": "object",
+          "description": "A current Workspace image selected by its Area and immutable File version.",
+          "required": [
+            "area_id",
+            "generation",
+            "file_id",
+            "path",
+            "expected_digest"
+          ],
+          "properties": {
+            "area_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "expected_digest": {
+              "type": "string"
+            },
+            "file_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "generation": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
         }
       }
     }
@@ -47628,7 +47743,7 @@
               "enum": ["secret_or_connection_missing"]
             }
           ],
-          "description": "Whether one exact version can be used now, and if not, what stands in the\nway. `Approved` means the Node's approval is enabled; a separate `widen`\nreports an approved restriction that no longer admits the root agent."
+          "description": "Whether one exact version can be used now, and if not, what stands in the\nway. `Approved` means the Node's approval is enabled; a separate `widen`\nreports an approved restriction that no longer admits every consumer."
         }
       }
     }

@@ -70,9 +70,9 @@ impl EmbeddingProvider for Transport {
 	async fn embed(
 		&self,
 		config: &EmbeddingConfig,
-		text: &str,
+		input: aidash_domain::semantic::EmbeddingInput<'_>,
 	) -> aidash_application::Result<Embedding> {
-		self.embedding.embed(config, text).await
+		self.embedding.embed(config, input).await
 	}
 }
 #[async_trait]

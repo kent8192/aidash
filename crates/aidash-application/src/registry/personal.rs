@@ -18,6 +18,28 @@ pub struct PersonalRegistration {
 	pub source: Entry,
 }
 
+/// Validate private image inputs before provider work or Registry writes.
+pub fn reference_images(
+	registration: &PersonalRegistration,
+) -> Result<
+	Option<(
+		aidash_domain::registry::EntityRef,
+		Vec<knowledge::ValidatedImage>,
+	)>,
+> {
+	let documents: Vec<ReferenceDocument> = serde_json::from_value(registration.documents.clone())?;
+	let images = knowledge::validated_images(&documents)?;
+	if images.is_empty() {
+		return Ok(None);
+	}
+	let config: aidash_domain::registry::bindings::AgentBindings =
+		serde_json::from_value(registration.entry.config.clone())?;
+	let reference = config.reference_embedding.ok_or_else(|| {
+		Error::Invalid("reference images require a pinned embedding definition".into())
+	})?;
+	Ok(Some((reference, images)))
+}
+
 /// Shape validation precedes transport-level idempotency-key parsing.
 pub fn validate_input(entry: Entry, documents: Vec<ReferenceDocument>) -> Result<PersonalDraft> {
 	if entry.binding_normalization.is_some() {
@@ -41,10 +63,13 @@ pub async fn prepare(
 	draft: PersonalDraft,
 	node: &str,
 ) -> Result<PersonalRegistration> {
-	let documents = serde_json::to_value(draft.documents)?;
+	let visible = knowledge::visible_documents(&draft.documents)?;
+	let (canonical, _) = knowledge::canonical_documents(&draft.documents)?;
+	let documents = serde_json::to_value(&canonical)?;
+	let raw_documents = serde_json::to_value(draft.documents)?;
 	let mut entry = draft.entry;
 	let source = super::bindings::private::attach(&mut entry, node, &documents)?;
-	let context = json!({"reference_documents":documents.clone()});
+	let context = json!({"reference_documents":visible});
 
 	let mut preview = super::bindings::private::Preview {
 		scope,
@@ -79,7 +104,7 @@ pub async fn prepare(
 		.and_then(|definition| definition.definition.binding_normalization.clone());
 	Ok(PersonalRegistration {
 		entry,
-		documents,
+		documents: raw_documents,
 		source,
 	})
 }
@@ -89,16 +114,55 @@ pub async fn register(
 	scope: &mut dyn PrivateKnowledgeScope,
 	validation: &DefinitionValidation,
 	mut registration: PersonalRegistration,
+	prepared: Option<(Entry, Vec<Vec<f32>>)>,
 	key: Uuid,
 	node: &str,
 ) -> Result<Entry> {
+	let documents: Vec<ReferenceDocument> = serde_json::from_value(registration.documents.clone())?;
+	let images = knowledge::validated_images(&documents)?;
+	let (canonical, image_data) = knowledge::canonical_documents(&documents)?;
+	let mut image_collection = if images.is_empty() {
+		None
+	} else {
+		let config: aidash_domain::registry::bindings::AgentBindings =
+			serde_json::from_value(registration.entry.config.clone())?;
+		let reference = config.reference_embedding.ok_or_else(|| {
+			Error::Invalid("reference images require a pinned embedding definition".into())
+		})?;
+		let (embedding, vectors) = prepared.ok_or_else(|| {
+			Error::Invalid("reference images were not embedded before registration".into())
+		})?;
+		if embedding.id != reference.id || embedding.version != reference.version {
+			return Err(Error::Conflict(
+				"reference embedding definition changed".into(),
+			));
+		}
+		// Build and validate the complete collection before the first Registry write.
+		Some(knowledge::ImageCollection::new(
+			"pending-agent",
+			&registration.entry.version,
+			embedding,
+			&documents,
+			vectors,
+		)?)
+	};
 	scope.assign_id(&mut registration.entry, Some(key)).await?;
+	if let Some(collection) = &mut image_collection {
+		collection.agent_id = registration.entry.id.clone();
+		collection.verify(
+			&registration.entry.id,
+			&registration.entry.version,
+			&collection.embedding,
+			&canonical,
+		)?;
+	}
 	scope.authorize(&registration.entry).await?;
 	let preview_source = registration.source.id.clone();
 	let mut input: aidash_domain::registry::bindings::AgentBindings =
 		serde_json::from_value(registration.entry.config.clone())?;
 	input.bindings.retain(|b| b.target.id != preview_source);
 	registration.entry.config = serde_json::to_value(input)?;
+	registration.documents = serde_json::to_value(&canonical)?;
 	registration.source =
 		super::bindings::private::attach(&mut registration.entry, node, &registration.documents)?;
 	registration.entry.normalize_agent(node)?;
@@ -110,6 +174,24 @@ pub async fn register(
 	scope
 		.insert_documents(&registration.source, registration.documents)
 		.await?;
+	if let Some(collection) = image_collection {
+		scope
+			.insert_image_data(&registration.source, image_data)
+			.await?;
+		if let Some(existing) = scope.image_index(&registration.source).await? {
+			let existing: knowledge::ImageCollection = serde_json::from_value(existing)?;
+			existing.verify(
+				&registration.entry.id,
+				&registration.entry.version,
+				&collection.embedding,
+				&canonical,
+			)?;
+		} else {
+			scope
+				.insert_image_index(&registration.source, serde_json::to_value(collection)?)
+				.await?;
+		}
+	}
 	if inserted {
 		scope
 			.append_event(
@@ -168,8 +250,10 @@ pub async fn automatic_documents(
 			continue;
 		}
 		let value = load(scope, &binding.definition).await?;
+		let stored: Vec<ReferenceDocument> = serde_json::from_value(value)?;
+		let visible = knowledge::visible_documents(&stored)?;
 		documents.extend(
-			value
+			visible
 				.as_array()
 				.ok_or_else(|| Error::Invalid("private Source requires a document list".into()))?
 				.iter()

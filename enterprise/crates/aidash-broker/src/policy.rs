@@ -133,6 +133,50 @@ fn media(part: &Value) -> Result<ContentPart, Failure> {
 	ContentPart::from_media(mime, bytes).map_err(|_| Failure::ClaimViolation)
 }
 
+/// The embedding adapter sends one image as a single inline media part.
+pub(crate) fn embedding_input(input: Option<&Value>) -> Result<(), Failure> {
+	let input = input.ok_or(Failure::ClaimViolation)?;
+	if input.is_string() {
+		return Ok(());
+	}
+	let [document] = input
+		.as_array()
+		.map(Vec::as_slice)
+		.ok_or(Failure::ClaimViolation)?
+	else {
+		return Err(Failure::ClaimViolation);
+	};
+	let document = document.as_object().ok_or(Failure::ClaimViolation)?;
+	if document.len() != 1 {
+		return Err(Failure::ClaimViolation);
+	}
+	let [part] = document
+		.get("content")
+		.and_then(Value::as_array)
+		.map(Vec::as_slice)
+		.ok_or(Failure::ClaimViolation)?
+	else {
+		return Err(Failure::ClaimViolation);
+	};
+	let fields = part.as_object().ok_or(Failure::ClaimViolation)?;
+	let image = fields
+		.get("image_url")
+		.and_then(Value::as_object)
+		.ok_or(Failure::ClaimViolation)?;
+	if fields.len() != 2
+		|| fields.get("type").and_then(Value::as_str) != Some("image_url")
+		|| image.len() != 1
+		|| !image.contains_key("url")
+	{
+		return Err(Failure::ClaimViolation);
+	}
+	let part = media(part)?;
+	if !ModelRequest::media_within_limits(&[part]) {
+		return Err(Failure::ClaimViolation);
+	}
+	Ok(())
+}
+
 /// `cache_breakpoints` is the signed authority for explicit prompt-cache writes. Only
 /// exactly `{"type":"ephemeral"}` on a `messages[*].content[*]` text part is allowed,
 /// at most four times; every other `cache_control` key is rejected.
