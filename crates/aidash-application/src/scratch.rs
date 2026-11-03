@@ -15,7 +15,7 @@ use crate::{Error, Result};
 /// `load` is a non-locking read.
 /// The scope supplies the authenticated person; all reads are Tenant-scoped.
 /// The Run binding resolves delegated Runs on the receiving Node. The returned
-/// person is the person who started the conversation, not the executing Agent.
+/// person is the Run's root person, not the executing Agent.
 #[async_trait]
 pub trait ScratchScope: Send {
 	fn person(&self) -> &str;
