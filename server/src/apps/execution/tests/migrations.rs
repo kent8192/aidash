@@ -4069,4 +4069,15 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 	let bindings: Vec<(Uuid,)> = sqlx::query_as(&sql).fetch_all(&pool).await.unwrap();
 	assert_eq!(bindings.len(), 2);
 	assert!(bindings.iter().all(|(id,)| *id == selected));
+	for column in ["scratch_space_id", "created_by"] {
+		let sql = Query::select()
+			.column(Alias::new("is_nullable"))
+			.from((Alias::new("information_schema"), Alias::new("columns")))
+			.and_where(Expr::col("table_schema").eq("public"))
+			.and_where(Expr::col("table_name").eq("workspaces"))
+			.and_where(Expr::col("column_name").eq(column))
+			.to_string(PostgresQueryBuilder);
+		let (nullable,): (String,) = sqlx::query_as(&sql).fetch_one(&pool).await.unwrap();
+		assert_eq!(nullable, "NO", "{column}");
+	}
 }
