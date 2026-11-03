@@ -722,7 +722,7 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "workspace_read",
 			contract: aidash_domain::tool::builtin_contract("workspace_read")
 				.expect("declared builtin"),
-			description: "Read an accessible workspace record or Thread Attachment, or open a matched File using its exact Area, generation, path and digest. Use representation=model_input to select an attachment or image for the next inference; use attachment_copy to save an attachment in the Working Area. Text records return bounded chunks with next_offset.",
+			description: "Read an accessible workspace record or Thread Attachment, or open a matched File using its exact Area, generation, path and digest. Use representation=model_input to select an attachment or image for the next inference; use attachment_copy to save an attachment in the Working Area. To read a Subnode created by this Run, pass its workspace_id. Text records return bounded chunks with next_offset.",
 			schema: json!({"type":"object","required":["kind","id"],"properties":{"kind":{"enum":["workspace","task","artifact","message","event","file","attachment"]},"id":string,"workspace_id":string,"offset":{"type":"integer","minimum":0},"max_chars":{"type":"integer","minimum":0,"maximum":16000},"area_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"path":{"type":"string"},"expected_digest":{"type":"string"},"representation":{"enum":["metadata","model_input"]}},"additionalProperties":false}),
 		},
 		Builtin {
