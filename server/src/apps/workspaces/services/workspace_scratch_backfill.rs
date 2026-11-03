@@ -43,6 +43,25 @@ pub(crate) fn forward() -> String {
 			]),
 		)
 		.to_string(PostgresQueryBuilder);
+	// Keep the conversation response's existing binding consistent with the
+	// owning Workspace when historical data contains more than one conversation.
+	let selected = Query::select()
+		.column(a("scratch_space_id"))
+		.from(a("workspaces"))
+		.and_where(
+			Expr::col((a("workspaces"), a("id"))).equals((a("conversations"), a("workspace_id"))),
+		)
+		.and_where(
+			Expr::col((a("workspaces"), a("tenant"))).equals((a("conversations"), a("tenant"))),
+		)
+		.to_owned();
+	let conversations = Query::update()
+		.table(a("conversations"))
+		.value_expr(
+			a("scratch_space_id"),
+			SimpleExpr::SubQuery(None, Box::new(selected)),
+		)
+		.to_string(PostgresQueryBuilder);
 	let mut spaces = Query::select();
 	spaces
 		.columns(["scratch_space_id", "tenant", "node", "title", "created_by"].map(a))
@@ -83,7 +102,7 @@ pub(crate) fn forward() -> String {
 		.on_conflict(OnConflict::column(a("space_id")).do_nothing().to_owned())
 		.to_string(PostgresQueryBuilder);
 	format!(
-		"SET LOCAL aidash.scope = 'deployment';\n{bindings};\n{insert_spaces};\n{insert_settings};\n"
+		"SET LOCAL aidash.scope = 'deployment';\n{bindings};\n{conversations};\n{insert_spaces};\n{insert_settings};\n"
 	)
 }
 

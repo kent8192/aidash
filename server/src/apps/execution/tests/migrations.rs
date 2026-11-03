@@ -3950,31 +3950,42 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 		])
 		.to_string(PostgresQueryBuilder);
 	fixture.connection.execute(&sql, vec![]).await.unwrap();
-	let sql = Query::insert()
-		.into_table(Alias::new("conversations"))
-		.columns(
-			[
-				"id",
-				"tenant",
-				"workspace_id",
-				"scratch_space_id",
-				"target",
-				"target_kind",
-				"created_by",
-			]
-			.map(Alias::new),
-		)
-		.values_panic::<_, reinhardt::query::Value>([
-			Uuid::new_v4().into(),
-			tenant.into(),
-			conversation_workspace.into(),
-			existing_space.into(),
-			"assistant".into(),
-			"agent".into(),
-			"carol".into(),
-		])
-		.to_string(PostgresQueryBuilder);
-	fixture.connection.execute(&sql, vec![]).await.unwrap();
+	let other_space = fixture.scratch_space(tenant).await;
+	for (selected, created_at) in [
+		(existing_space, "2020-01-01T00:00:00Z"),
+		(other_space, "2021-01-01T00:00:00Z"),
+	] {
+		let sql = Query::insert()
+			.into_table(Alias::new("conversations"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"workspace_id",
+					"scratch_space_id",
+					"target",
+					"target_kind",
+					"created_by",
+					"created_at",
+				]
+				.map(Alias::new),
+			)
+			.values_panic::<_, reinhardt::query::Value>([
+				Uuid::new_v4().into(),
+				tenant.into(),
+				conversation_workspace.into(),
+				selected.into(),
+				"assistant".into(),
+				"agent".into(),
+				"carol".into(),
+				chrono::DateTime::parse_from_rfc3339(created_at)
+					.unwrap()
+					.with_timezone(&chrono::Utc)
+					.into(),
+			])
+			.to_string(PostgresQueryBuilder);
+		fixture.connection.execute(&sql, vec![]).await.unwrap();
+	}
 
 	fixture.migrate().await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -4021,4 +4032,12 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 		(selected, conversation_starter.as_str()),
 		(existing_space, "carol")
 	);
+	let sql = Query::select()
+		.column(Alias::new("scratch_space_id"))
+		.from(Alias::new("conversations"))
+		.and_where(Expr::col("workspace_id").eq(conversation_workspace))
+		.to_string(PostgresQueryBuilder);
+	let bindings: Vec<(Uuid,)> = sqlx::query_as(&sql).fetch_all(&pool).await.unwrap();
+	assert_eq!(bindings.len(), 2);
+	assert!(bindings.iter().all(|(id,)| *id == existing_space));
 }
