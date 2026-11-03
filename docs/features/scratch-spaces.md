@@ -1,6 +1,6 @@
 # Scratch Spaces
 
-A Scratch Space is a persistent, disposable place for work on one Node. Choose an existing space when creating a Workspace or starting a conversation, or create a dedicated space. The Workspace keeps its choice for its lifetime. The creator and members can use and manage the space. An Agent can use it only while the person who started its Run may do so. A delegated Run uses a space on the receiving Node.
+A Scratch Space is a persistent, disposable place for work on one Node. Choose an existing space when creating a Workspace or starting a conversation, or create a dedicated space. The Workspace keeps its choice for its lifetime. The creator and members can use and manage the space. An Agent can use it only while the Workspace creator may do so. A delegated Run uses a space on the receiving Node.
 
 New spaces default to 100 GiB capacity, 14 days of idle expiry, four CPU cores, 16 GiB memory, and daily budgets of 100 GiB each for sent and received traffic. Idle expiry can be set from 1 to 365 days, or disabled. The allowed hosts default to common package, source, and container registries, narrowed by the Tenant's allowlist. Adding a host to a space cannot broaden that allowlist. Data sent to allowed hosts is outside Aidash's data protection guarantees.
 

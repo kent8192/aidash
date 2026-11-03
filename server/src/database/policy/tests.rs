@@ -41,6 +41,8 @@ const IN_DEPLOYMENT_SCOPE: &[&str] = &[
 	"execution.0089_remove_agent_cluster forward",
 	"execution.0090_run_created_at forward",
 	"registry.0054_remove_agent_cluster forward",
+	"workspaces.0021_conversation_scratch_space forward",
+	"workspaces.0024_workspace_scratch_space forward",
 ];
 
 #[rstest::rstest]
