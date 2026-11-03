@@ -167,6 +167,14 @@ export function OpenRouterModelPicker({
       )}
       <Hint>{t("modelCatalogHelp")}</Hint>
       <Hint>{t("modelZdr")}</Hint>
+      {/* Only an OpenRouter Provider Credential model reaches this picker. */}
+      <Field label={t("modelWireApi")}>
+        <NativeSelect name="wire_api" defaultValue="chat">
+          <option value="chat">{t("modelWireApiChat")}</option>
+          <option value="responses">{t("modelWireApiResponses")}</option>
+        </NativeSelect>
+      </Field>
+      <Hint>{t("modelWireApiHelp")}</Hint>
       <Field label="Reasoning Effort">
         <NativeSelect
           name="reasoning_effort"

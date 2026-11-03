@@ -60,6 +60,7 @@ export function reviewSubmission(
   selected: readonly string[],
   edits: RestrictionEdits,
   request?: string | null,
+  acknowledged: Readonly<Record<string, boolean>> = {},
 ): RequestApprovalReviewSubmission {
   const chosen = new Set(selected);
   const items = [];
@@ -82,6 +83,9 @@ export function reviewSubmission(
     } else if (item.digest) {
       items.push({
         reference: item.reference,
+        ...(acknowledged[itemKey(item)]
+          ? { provider_warning_acknowledged: true }
+          : {}),
         digest: item.digest,
         expected_revision: item.expected_revision,
         restriction: restrictionPayload(item, edits),

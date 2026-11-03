@@ -41,6 +41,9 @@ pub struct Run {
 	pub context: Json<Value>,
 	#[field]
 	pub pending: Json<Value>,
+	/// OpenRouter id and immutable network policy, pinned before the first shell send.
+	#[field(null = true)]
+	pub provider_container: Option<Json<Value>>,
 	#[field(default = 0)]
 	pub step: i32,
 	#[field(default = 0)]

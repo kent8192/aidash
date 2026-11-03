@@ -690,6 +690,7 @@ impl Models {
 			));
 		}
 		let request = ModelRequest {
+			provider_tools: vec![],
 			instructions: instruction.into(),
 			context: context.into(),
 			tools: vec![],

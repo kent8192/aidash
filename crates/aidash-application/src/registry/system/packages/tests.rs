@@ -51,7 +51,12 @@ fn validation(runner: bool) -> DefinitionValidation {
 fn sandboxed_and_research_groups_have_only_provider_owned_declarations_and_complete_lifecycles() {
 	let validation = validation(true);
 	let groups = declarations(&validation, "aidash://node").unwrap();
-	assert_eq!(groups.len(), SANDBOXED_GROUPS.len() + RESEARCH_GROUPS.len());
+	assert_eq!(
+		groups.len(),
+		SANDBOXED_GROUPS.len()
+			+ RESEARCH_GROUPS.len()
+			+ aidash_domain::tool::provider_tools::TOOLS.len()
+	);
 	for group in groups.into_iter().take(SANDBOXED_GROUPS.len()) {
 		assert_eq!(group.bundle.kind, "bundle");
 		let bundle: BundleConfig = serde_json::from_value(group.bundle.config.clone()).unwrap();
@@ -174,6 +179,28 @@ fn owners_cannot_declare_research_node_providers() {
 		crate::registry::system::reject_owner_definition(&entry),
 		Err(Error::Forbidden)
 	));
+}
+
+#[test]
+fn provider_tools_need_approval_and_cannot_be_replaced_or_distributed() {
+	let validation = validation(false);
+	let group = declarations(&validation, "aidash://node")
+		.unwrap()
+		.into_iter()
+		.find(|group| group.name == "provider_web_search")
+		.expect("Provider tool group");
+	group.verify_provider(&validation).unwrap();
+	let entry = group
+		.operations
+		.into_iter()
+		.next()
+		.expect("Provider tool definition");
+	assert!(!crate::registry::system::is_builtin(&entry));
+	assert!(crate::registry::system::reject_owner_definition(&entry).is_err());
+	assert!(crate::registry::system::reject_distribution(&entry).is_err());
+	let mut disguised = entry;
+	disguised.id = "owner.disguised".into();
+	assert!(crate::registry::system::reject_owner_definition(&disguised).is_err());
 }
 
 #[test]

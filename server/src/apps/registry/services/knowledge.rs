@@ -81,16 +81,12 @@ pub(crate) async fn embed_before_registration(
 				"reference embedding definition changed".into(),
 			));
 		}
-		let transport = if config.provider_credential.is_some() {
-			crate::bootstrap::admitted_semantic_transport(
-				store,
-				None,
-				identity.tenant.clone(),
-				Some(MaintenancePurpose::ReferenceIndexing),
-			)
-		} else {
-			crate::bootstrap::semantic_transport(store)
-		};
+		let transport = crate::bootstrap::admitted_semantic_transport(
+			store,
+			None,
+			identity.tenant.clone(),
+			Some(MaintenancePurpose::ReferenceIndexing),
+		);
 		let output = transport
 			.embed(
 				&config,

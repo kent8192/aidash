@@ -52,9 +52,14 @@ impl CatalogMutation for TenantCatalog<'_> {
 			)
 			.await
 	}
-	async fn history(&mut self, binding: &Binding, actor: &str) -> Result<()> {
+	async fn history(
+		&mut self,
+		binding: &Binding,
+		actor: &str,
+		provider_warning_acknowledgment: Option<&str>,
+	) -> Result<()> {
 		NativeMutation(&mut self.access.tx)
-			.history(binding, actor)
+			.history(binding, actor, provider_warning_acknowledgment)
 			.await
 	}
 }

@@ -47,6 +47,7 @@ fn model() -> ModelConfig {
 		endpoint: "https://provider.example/api".into(),
 		provider_credential: None,
 		plan_connection: None,
+		wire_api: None,
 		request_timeout_secs: None,
 		streaming: None,
 		stream_stall_timeout_secs: None,

@@ -168,6 +168,39 @@ pub async fn set_in_with_restriction(
 	scope: &mut dyn crate::ports::catalog::CatalogMutation,
 	change: CatalogChange<'_>,
 ) -> Result<aidash_domain::identity::catalog::Binding> {
+	set_in_with_restriction_acknowledged(scope, change, false).await
+}
+
+pub(super) fn validate_provider_acknowledgment(
+	reference: &EntityRef,
+	enabled: bool,
+	acknowledged: bool,
+) -> Result<()> {
+	if enabled
+		&& aidash_domain::tool::provider_tools::warning_reference(&reference.id, &reference.version)
+		&& !acknowledged
+	{
+		return Err(Error::Invalid(
+			"PROVIDER_TOOL_ACKNOWLEDGMENT_REQUIRED".into(),
+		));
+	}
+	Ok(())
+}
+
+pub(super) async fn set_in_with_restriction_acknowledged(
+	scope: &mut dyn crate::ports::catalog::CatalogMutation,
+	change: CatalogChange<'_>,
+	acknowledged: bool,
+) -> Result<aidash_domain::identity::catalog::Binding> {
+	validate_provider_acknowledgment(change.reference, change.enabled, acknowledged)?;
+	let disclosure = if change.enabled && acknowledged {
+		aidash_domain::tool::provider_tools::warning_acknowledgment(
+			&change.reference.id,
+			&change.reference.version,
+		)
+	} else {
+		None
+	};
 	aidash_domain::identity::catalog::validate_revision(change.expected_revision)?;
 	if let RestrictionChange::Replace(Some(restriction)) = &change.restriction {
 		restriction.validate()?;
@@ -186,7 +219,9 @@ pub async fn set_in_with_restriction(
 		)
 		.await?
 		.ok_or_else(|| Error::Conflict("catalog revision changed".into()))?;
-	scope.history(&binding, change.actor).await?;
+	scope
+		.history(&binding, change.actor, disclosure.as_deref())
+		.await?;
 	Ok(binding)
 }
 

@@ -181,6 +181,12 @@ impl Research<'_> {
 		if usage.sources >= self.limits.sources {
 			return Ok(failure(operation, Failure::SourceLimit));
 		}
+		if !self
+			.policy_permits(call.run, provider.account(), false)
+			.await?
+		{
+			return Ok(failure(operation, Failure::DataProtectionRefused));
+		}
 		let charge = match self.charge(operation, provider.account()).await? {
 			Ok(charge) => charge,
 			Err(blocked) => return Ok(blocked),
@@ -218,6 +224,14 @@ impl Research<'_> {
 		}
 		if let Some(blocked) = self.consume(call, operation, approval).await? {
 			return Ok(blocked);
+		}
+		if !self
+			.policy_permits(call.run, provider.account(), false)
+			.await?
+		{
+			return self
+				.settle_failure(call, operation, Failure::DataProtectionRefused, false)
+				.await;
 		}
 		let searched_at = Utc::now();
 		let results = match provider.search(&query).await {
@@ -364,6 +378,12 @@ impl Research<'_> {
 		if source.is_none() && usage.sources >= self.limits.sources {
 			return Ok(failure(operation, Failure::SourceLimit));
 		}
+		if !self
+			.policy_permits(call.run, provider.account(), provider.deployment_hosted())
+			.await?
+		{
+			return Ok(failure(operation, Failure::DataProtectionRefused));
+		}
 		let charge = match self.charge(operation, provider.account()).await? {
 			Ok(charge) => charge,
 			Err(blocked) => return Ok(blocked),
@@ -409,6 +429,14 @@ impl Research<'_> {
 		};
 		if let Some(blocked) = self.consume(call, operation, approval).await? {
 			return Ok(blocked);
+		}
+		if !self
+			.policy_permits(call.run, provider.account(), provider.deployment_hosted())
+			.await?
+		{
+			return self
+				.settle_failure(call, operation, Failure::DataProtectionRefused, false)
+				.await;
 		}
 		let page = match provider.fetch(&url).await {
 			Ok(page) => page,
@@ -711,6 +739,24 @@ impl Research<'_> {
 		})
 	}
 
+	/// Re-read the current promise before admitting or sending Research content.
+	async fn policy_permits(
+		&self,
+		run: Uuid,
+		terms: std::result::Result<Option<AccountTerms>, Failure>,
+		hosted: bool,
+	) -> Result<bool> {
+		let policy = self.store.data_protection(run).await?;
+		Ok(match terms {
+			Ok(Some(terms)) => policy
+				.permits(aidash_domain::data_protection::Destination::Research(
+					&terms,
+				))
+				.is_ok(),
+			Ok(None) => hosted || policy.level == aidash_domain::data_protection::Level::Standard,
+			Err(_) => true, // The ordinary account admission supplies the precise failure.
+		})
+	}
 	/// The charge of one `operation` request to the provider's Research
 	/// account, if it has one, once the month's charges leave room for it.
 	/// `Err` is the result to return instead of dispatching.

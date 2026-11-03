@@ -14,6 +14,12 @@ use std::net::SocketAddr;
 #[settings(fragment = true, section = "deployment", validate = false)]
 #[derive(Clone, Serialize, Deserialize, Validate)]
 pub struct DeploymentSettings {
+	/// Minimum Data Protection Level for every Tenant on this Deployment.
+	#[setting(default = "aidash_domain::data_protection::Level::Standard", leaf)]
+	pub data_protection_floor: aidash_domain::data_protection::Level,
+	/// Origins of models hosted by this Deployment, not merely network-permitted.
+	#[setting(default = "Vec::new()", leaf)]
+	pub hosted_model_origins: Vec<String>,
 	/// The Offering this Deployment runs. Each build accepts only its own
 	/// Offerings, so Cloud and Dedicated must state theirs.
 	#[setting(default = "Offering::SelfHosted", leaf)]
@@ -107,6 +113,8 @@ impl SettingsValidation for DeploymentSettings {
 	fn validate(&self, _profile: &Profile) -> ValidationResult {
 		ValidateRules::validate(self)
 			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
+		self.hosted_origins()
+			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
 		DeploymentId::parse(&self.id)
 			.map_err(|error| ValidationError::Constraint(error.to_string()))?;
 		validate_endpoint(&self.endpoint)
@@ -123,6 +131,15 @@ impl SettingsValidation for DeploymentSettings {
 			));
 		}
 		Ok(())
+	}
+}
+
+impl DeploymentSettings {
+	pub fn hosted_origins(&self) -> crate::Result<aidash_domain::keyless::PermittedOrigins> {
+		Ok(
+			aidash_domain::keyless::PermittedOrigins::parse(&self.hosted_model_origins)
+				.map_err(aidash_application::Error::from)?,
+		)
 	}
 }
 

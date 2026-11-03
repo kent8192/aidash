@@ -21,7 +21,7 @@ use aidash_domain::{
 	registry::bindings::{AgentBindings, BindingSnapshot},
 	research::citations,
 	semantic::{Failure, InputRead},
-	tool::{Continuation, ResultFitting, ToolIdentity, ToolUseMode, Yield},
+	tool::{Continuation, ResultFitting, ToolIdentity, ToolUseMode},
 	*,
 };
 use serde_json::{Value, json};
@@ -427,8 +427,8 @@ impl<'a> Executor<'a> {
 	}
 	/// The answer's Source citations and the cited references the Run's
 	/// evidence store does not hold, when the Run binds an operation that
-	/// declares `yields: Citations`. Declared behavior, not a tool name,
-	/// selects verification.
+	/// declares `yields: Citations` or exposes provider-owned tools. The latter
+	/// may report sources but cannot grant evidence authority.
 	async fn citation_check(
 		&self,
 		run: &Run,
@@ -437,7 +437,7 @@ impl<'a> Executor<'a> {
 	) -> Result<Option<(citations::Citations, Vec<citations::EvidenceRef>)>> {
 		if !tools
 			.values()
-			.any(|tool| tool.contract().behavior.yields(Yield::Citations))
+			.any(|tool| tool.contract().requires_citation_check())
 		{
 			return Ok(None);
 		}
@@ -1514,7 +1514,7 @@ impl<'a> Executor<'a> {
 				}
 				let withhold_answer_text = tools
 					.values()
-					.any(|tool| tool.contract().behavior.yields(Yield::Citations));
+					.any(|tool| tool.contract().requires_citation_check());
 				let mut specifications = tools
 					.iter()
 					.filter(|(alias, _)| exposure.as_ref().is_none_or(|selection| selection.tools.contains(*alias)))
@@ -1919,7 +1919,8 @@ impl<'a> Executor<'a> {
 					.map_err(|_| unreducible(guard))?;
 				let source_delivery = fit_source_delivery(&context,&request,&source_instruction_slots,guard.is_some_and(|authority|authority.is_remote()) || run.context.binding_snapshot.as_ref().is_some_and(|snapshot|snapshot.remote))?;
                 let source_request_digest=aidash_domain::registry::rules::digest(&serde_json::to_value(&request)?);
-                let request_estimate = request.request_estimate();
+                let provider_tools_enabled = !request.provider_tools.is_empty();
+				let request_estimate = request.request_estimate();
 				let request_tokens = request_estimate.tokens as usize;
 				let request_bytes = request.byte_estimate().total();
 				let media_inferred_seq_before_response = context.media_inferred_seq;
@@ -1952,8 +1953,9 @@ impl<'a> Executor<'a> {
 							requested_route: model_cfg.provider_route.as_ref().map(|route| route.tag.clone()),
 							shadow_estimates: diagnostic_estimates(&request, &model_cfg, agent.projection_version, run.step),
 							estimate: request_estimate.clone(),
-							// Media tokens are an allowance, not text, so they never calibrate.
-							calibration_sample: request.content_parts.is_empty(),
+							// Media allowances and provider-internal tool turns do not measure
+							// the tokenization of our initial text request.
+							calibration_sample: request.content_parts.is_empty() && !provider_tools_enabled,
 							cache_identity: request.cache_identity(),
 						},
 					)
@@ -2183,6 +2185,7 @@ impl<'a> Executor<'a> {
 				// an estimator defect, such as a wrong Token Encoding: the Run
 				// estimates in bytes from its next step (ADR 0017).
 				if let Some(reported) = result.reported.input_tokens
+					&& !provider_tools_enabled
 					&& context.estimate.underestimated(&request_estimate, reported)
 				{
 					metrics::counter!("aidash_estimate_underestimated_total", "estimator" => estimate.id())
@@ -2249,6 +2252,7 @@ connection: None,
 					mcp: None,
 				}));
 				run.error = None;
+				record_provider_turn(run, agent.projection_version)?;
 				store.save_run(run, token, "model.completed").await?;
 				metrics::histogram!("aidash_inference_accepted_seconds")
 					.record(started.elapsed().as_secs_f64());
@@ -2256,6 +2260,8 @@ connection: None,
 			})
 			.await?,
 			RunState::ToolCall(_) => Box::pin(async {
+				// Recover a pending response written before activity was journaled.
+				record_provider_turn(run, agent.projection_version)?;
 				// An old home replica can still accept a correction directly from
 				// an old executor. Wait for its upgraded database gate before any
 				// model output or final completion crosses this boundary.
@@ -3301,27 +3307,64 @@ async fn answer_at_deadline(home: &dyn ExecutionHome, request: Uuid) -> Result<H
 	}
 }
 
+/// Provider activity belongs to the accepted response, even if a later gate
+/// rejects its proposed answer. It is model-authored history, not evidence.
+/// The turn opens without text: the citation gate has not yet decided what of
+/// it may be kept, and [`record_model_turn`] adds what it keeps.
+fn record_provider_turn(run: &mut Run, version: ProjectionVersion) -> Result<()> {
+	let response = &run.state.tool()?.response;
+	if response.provider_activity.is_empty() {
+		return Ok(());
+	}
+	let calls = response.tool_calls.clone();
+	record_model_turn(run, version, "", &calls)
+}
+
 /// Open the Model Turn of a response, with the text it may keep and its
-/// calls, in a Native Run's Context Journal, once per response epoch however
-/// often this boundary is re-entered. Legacy and Ordered Runs never record
-/// one, so their requests keep their bytes.
+/// calls, once per response epoch however often this boundary is re-entered.
+/// Provider-owned activity also opens a turn in Legacy and Ordered Runs;
+/// ordinary responses retain their previous projection behavior.
 fn record_model_turn(
 	run: &mut Run,
 	version: ProjectionVersion,
 	text: &str,
 	calls: &[aidash_domain::provider::ToolCall],
 ) -> Result<()> {
-	if version != ProjectionVersion::Native {
+	let provider_activity = run.state.tool()?.response.provider_activity.clone();
+	if version != ProjectionVersion::Native && provider_activity.is_empty() {
 		return Ok(());
 	}
 	let epoch = run.state.tool()?.response_epoch;
-	let recorded = run.context.events().rev().any(
-		|event| matches!(event, ContextEvent::Assistant { epoch: recorded, .. } if *recorded == epoch),
+	let recorded = run.context.history.iter().rposition(
+		|entry| matches!(entry.event, ContextEvent::Assistant { epoch: recorded, .. } if recorded == epoch),
 	);
-	if recorded {
+	if let Some(index) = recorded {
+		// A Provider turn opened before the citation gate holds no text; add
+		// the text the gate kept. Its journal entry stays textless, as journal
+		// entries of superseded repair diagnostics keep their originals.
+		if text.is_empty() {
+			return Ok(());
+		}
+		let growth = context::tool_event_growth(
+			&run.context,
+			&ContextEvent::Assistant {
+				provider_activity: vec![],
+				epoch,
+				text: text.to_owned(),
+				calls: vec![],
+			},
+		);
+		if let ContextEvent::Assistant { text: kept, .. } = &mut run.context.history[index].event
+			&& kept.is_empty()
+		{
+			text.clone_into(kept);
+			let pending = run.state.tool_mut()?;
+			pending.request_tokens = pending.request_tokens.saturating_add(growth);
+		}
 		return Ok(());
 	}
 	let event = ContextEvent::Assistant {
+		provider_activity,
 		epoch,
 		text: text.to_owned(),
 		calls: calls.iter().map(|call| call.id.clone()).collect(),

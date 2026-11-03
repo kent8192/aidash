@@ -72,6 +72,11 @@ impl EmbeddingProvider for Transport {
 		config: &EmbeddingConfig,
 		input: aidash_domain::semantic::EmbeddingInput<'_>,
 	) -> aidash_application::Result<Embedding> {
+		if self.embedding.context.tenant.is_empty() {
+			return Err(aidash_application::Error::Invalid(
+				"embedding requires current Tenant policy context".into(),
+			));
+		}
 		self.embedding.embed(config, input).await
 	}
 }

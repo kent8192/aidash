@@ -53,6 +53,9 @@ pub async fn invoke_input(
 		.embed(config, input)
 		.await
 		.map_err(|error| match error {
+			// Pure destination-policy refusals occur before I/O and retain the
+			// Tenant's precise reason, including for Keyless embeddings.
+			Error::Domain(_) => error,
 			// A rejected key (401–403) or a broken response contract is not an
 			// outage: keep its typed reason so the Run pauses instead of retrying.
 			Error::RemoteSemantic(reason) if !reason.transient() => error,

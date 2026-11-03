@@ -68,10 +68,14 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0052_harness_contract_structured3"),
 	("registry", "0053_connection_request"),
 	("registry", "0054_remove_agent_cluster"),
+	("registry", "0061_provider_tools"),
+	("registry", "0062_provider_warning_tools"),
 	("registry", "0060_subnode_provider"),
 	("registry", "0055_remove_structured_harness_contracts"),
 	("registry", "0056_attachment_tools"),
 	("execution", "0089_remove_agent_cluster"),
+	("execution", "0097_provider_tool_usage"),
+	("execution", "0098_provider_container"),
 	("execution", "0094_subnodes"),
 	("execution", "0095_subnodes_row_level_security"),
 	("execution", "0096_subnodes_state"),
@@ -134,7 +138,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		82
+		83
 	);
 	let tables = migrations
 		.iter()
@@ -389,12 +393,12 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0097_policy_probe")
+		.get_migration("execution", "0099_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("execution".to_owned(), "0096_subnodes_state".to_owned())]
+		vec![("execution".to_owned(), "0098_provider_container".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -414,6 +418,8 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0094_subnodes"),
 			("execution", "0095_subnodes_row_level_security"),
 			("execution", "0096_subnodes_state"),
+			("execution", "0097_provider_tool_usage"),
+			("execution", "0098_provider_container"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -834,7 +840,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		82
+		83
 	);
 }
 

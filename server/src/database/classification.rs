@@ -323,6 +323,9 @@ pub const TABLES: &[Table] = &[
 	table("identity", "tenant_invitations", TenantOwned),
 	audit("identity", "tenant_retention_rule_history"),
 	table("identity", "tenant_retention_rules", TenantOwned),
+	table("identity", "tenant_data_protection", TenantOwned),
+	// policy revisions outlive the purge for the audit retention period (ADR 0061)
+	audit("identity", "tenant_data_protection_history"),
 	// Tenant Secret metadata (ADR 0051); the values are in the Secret Store
 	table("identity", "tenant_secrets", TenantOwned),
 	table("identity", "oauth_clients", TenantOwned),
