@@ -75,6 +75,46 @@ pub(crate) fn no_revision_references() -> reinhardt::query::SimpleExpr {
 	)
 	.into()
 }
+/// A superseded working object, a receipt or transfer snapshot, or a Thread
+/// Attachment object (or its WAV rendition) whose attachment row of the same
+/// Tenant was deleted. Callers still require no hold and no revision reference.
+fn reclaimable_working() -> Condition {
+	let kind = |value: &str| {
+		SimpleExpr::from(Expr::col((Alias::new("core_objects"), Alias::new("kind"))))
+			.eq(Expr::value(value.to_owned()))
+	};
+	let unreferenced = |column: &str| {
+		Expr::not_exists(
+			Query::select()
+				.expr(Expr::value(1_i32))
+				.from_as(Alias::new("channel_attachments"), Alias::new("a"))
+				.and_where(
+					SimpleExpr::from(Expr::col((Alias::new("a"), Alias::new("tenant")))).eq(
+						Expr::col((Alias::new("core_objects"), Alias::new("tenant"))),
+					),
+				)
+				.and_where(
+					SimpleExpr::from(Expr::col((Alias::new("a"), Alias::new(column))))
+						.eq(Expr::col((Alias::new("core_objects"), Alias::new("id")))),
+				)
+				.to_owned(),
+		)
+	};
+	Condition::any()
+		.add(kind("superseded_working"))
+		.add(
+			Condition::all()
+				.add(kind("thread_attachment"))
+				.add(unreferenced("object_id")),
+		)
+		.add(
+			Condition::all()
+				.add(kind("thread_attachment_wav"))
+				.add(unreferenced("wav_object_id")),
+		)
+		.add(kind("received"))
+		.add(kind("transfer_snapshot"))
+}
 pub(crate) struct Repository<'a> {
 	store: &'a Store,
 	orphan_cursor: tokio::sync::Mutex<Option<tokio::fs::ReadDir>>,
@@ -127,11 +167,7 @@ let ids: Vec<Uuid> = {
 					&Query::select()
 						.column(Alias::new("id"))
 						.from(Alias::new("core_objects"))
-						.and_where(Expr::col(Alias::new("kind")).is_in([
-							"superseded_working",
-							"received",
-							"transfer_snapshot",
-						]))
+						.cond_where(reclaimable_working())
 						.and_where(
 							Expr::col(Alias::new("id")).gt(Expr::value(query_bind_1.to_owned())),
 						)
@@ -562,14 +598,12 @@ impl ReclamationScope for Scope<'_> {
 						.and_where(
 							Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())),
 						)
-						.and_where(
-							Expr::col(Alias::new("kind"))
-                                .is_in(["superseded_working", "received", "transfer_snapshot"]),
-						)
+						.cond_where(reclaimable_working())
 						// A hold written between the selection and this lock refuses the
 						// erase instead of dropping the bytes a reference still names.
 						.and_where(no_active_hold())
-                        .and_where(no_revision_references())
+						.and_where(no_revision_references())
+						.lock(LockType::Update)
 						.to_string(PostgresQueryBuilder),
 				)
 				.scalar_optional(&mut *self.tx)

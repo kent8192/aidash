@@ -14,6 +14,28 @@ use reinhardt::query::{
 	QueryStatementBuilder as _, SimpleExpr,
 };
 use uuid::Uuid;
+struct AttachmentRecordRow {
+	message_id: Uuid,
+	id: Uuid,
+	filename: String,
+	media_type: String,
+	size_bytes: i64,
+	width: Option<i32>,
+	height: Option<i32>,
+	duration_ms: Option<i64>,
+	sha256: String,
+}
+crate::native_record!(AttachmentRecordRow {
+	message_id,
+	id,
+	filename,
+	media_type,
+	size_bytes,
+	width,
+	height,
+	duration_ms,
+	sha256
+});
 #[async_trait]
 impl WorkspaceRecordScope for Reads<'_> {
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
@@ -40,6 +62,13 @@ impl WorkspaceRecordScope for Reads<'_> {
 		Box::pin(self.access.artifact_visible(row))
 			.await
 			.map_err(Into::into)
+	}
+	async fn message_attachments(
+		&mut self,
+		workspace: Uuid,
+		messages: &[Uuid],
+	) -> Result<Vec<aidash_domain::media::MessageAttachment>> {
+		super::attachment_metadata(self.access, workspace, messages).await
 	}
 	async fn message_visible(&mut self, row: &Message) -> Result<bool> {
 		Box::pin(self.access.message_visible(row))
@@ -152,6 +181,59 @@ impl WorkspaceRecordScope for Reads<'_> {
 		}
 		.await;
 		result.map_err(Into::into)
+	}
+	async fn attachment_record(
+		&mut self,
+		workspace: Uuid,
+		id: Uuid,
+	) -> Result<Option<aidash_domain::media::AttachmentRecord>> {
+		let query = Query::select()
+			.columns(
+				[
+					"message_id",
+					"id",
+					"filename",
+					"media_type",
+					"size_bytes",
+					"width",
+					"height",
+					"duration_ms",
+					"sha256",
+				]
+				.map(Alias::new),
+			)
+			.from(Alias::new("channel_attachments"))
+			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+			.and_where(Expr::col(Alias::new("message_id")).is_not_null())
+			.to_string(PostgresQueryBuilder);
+		let row: Option<AttachmentRecordRow> = crate::database::native::query_as(&query)
+			.columns(&[
+				"message_id",
+				"id",
+				"filename",
+				"media_type",
+				"size_bytes",
+				"width",
+				"height",
+				"duration_ms",
+				"sha256",
+			])
+			.fetch_optional(&mut **self.access.tx)
+			.await?;
+		Ok(row.map(|row| aidash_domain::media::AttachmentRecord {
+			message_id: row.message_id,
+			sha256: row.sha256,
+			attachment: aidash_domain::media::ThreadAttachment {
+				id: row.id,
+				filename: row.filename,
+				media_type: row.media_type,
+				size_bytes: row.size_bytes,
+				width: row.width,
+				height: row.height,
+				duration_ms: row.duration_ms,
+			},
+		}))
 	}
 	async fn message_record(&mut self, workspace_id: Uuid, id: Uuid) -> Result<Option<Message>> {
 		let result: NativeResult<Option<Message>> = async {

@@ -56,6 +56,15 @@ pub(super) fn migration() -> Migration {
 					columns: vec!["tenant".into(), "area_id".into(), "revision".into()],
 				},
 				Constraint::ForeignKey {
+					name: "core_manifest_revisions_tenant_root_fkey".into(),
+					columns: vec!["tenant".into()],
+					referenced_table: "tenants".into(),
+					referenced_columns: vec!["name".into()],
+					on_delete: ForeignKeyAction::NoAction,
+					on_update: ForeignKeyAction::NoAction,
+					deferrable: None,
+				},
+				Constraint::ForeignKey {
 					name: "core_manifest_revisions_area_fkey".into(),
 					columns: vec!["tenant".into(), "area_id".into()],
 					referenced_table: "core_areas".into(),
@@ -89,6 +98,15 @@ pub(super) fn migration() -> Migration {
 						"holder_kind".into(),
 						"holder_id".into(),
 					],
+				},
+				Constraint::ForeignKey {
+					name: "core_blob_references_tenant_root_fkey".into(),
+					columns: vec!["tenant".into()],
+					referenced_table: "tenants".into(),
+					referenced_columns: vec!["name".into()],
+					on_delete: ForeignKeyAction::NoAction,
+					on_update: ForeignKeyAction::NoAction,
+					deferrable: None,
 				},
 				Constraint::ForeignKey {
 					name: "core_blob_references_blob_fkey".into(),

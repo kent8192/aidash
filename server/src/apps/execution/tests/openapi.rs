@@ -405,3 +405,18 @@ fn assert_references_resolve(value: &Value, document: &Value) {
 		_ => {}
 	}
 }
+
+#[rstest]
+fn reference_and_transfer_chunks_have_distinct_schemas(document: Value) {
+	let schemas = &document["components"]["schemas"];
+	let reference = &schemas["Request_ReferenceChunk"]["properties"];
+	assert!(reference["offset"].is_object());
+	assert!(reference["data"].is_object());
+	assert!(reference["transfer_id"].is_null());
+	assert!(schemas["Request_Chunk"].is_null());
+	assert_eq!(
+		document["paths"]["/api/references/{id}/chunks"]["post"]["requestBody"]["content"]["application/json"]
+			["schema"]["$ref"],
+		"#/components/schemas/Request_ReferenceChunk"
+	);
+}

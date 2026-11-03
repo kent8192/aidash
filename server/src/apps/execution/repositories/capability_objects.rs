@@ -26,6 +26,9 @@ pub(crate) struct PendingObject {
 	hash: Sha256,
 	pool: crate::database::native::Pool,
 	tenant: String,
+	/// Skips the retained-capacity refusal for bytes the Tenant already held
+	/// before they moved into the object store (legacy attachment backfill).
+	grandfather_existing: bool,
 }
 
 impl Drop for PendingObject {
@@ -53,8 +56,17 @@ impl PendingObject {
 		Ok(())
 	}
 	pub(crate) async fn finish(
-		mut self,
+		self,
 		access: &mut Access,
+		expected: Option<&str>,
+	) -> Result<(Uuid, String)> {
+		let tenant = access.identity.tenant.clone();
+		self.finish_for(&mut access.tx, &tenant, expected).await
+	}
+	pub(crate) async fn finish_for(
+		mut self,
+		tx: &mut crate::database::native::Transaction,
+		tenant: &str,
 		expected: Option<&str>,
 	) -> Result<(Uuid, String)> {
 		let hash = format!("{:x}", std::mem::take(&mut self.hash).finalize());
@@ -66,7 +78,7 @@ impl PendingObject {
 			.expect("pending upload file")
 			.sync_all()
 			.await?;
-		let tenant = access.identity.tenant.clone();
+		let tenant = tenant.to_owned();
 		// Persist the proposed digest before exposing a blob so a later
 		// maintenance pass can find a write whose DB transaction rolled back.
 		let intent_dir = self.runtime.0.storage.join(".intents");
@@ -106,9 +118,11 @@ impl PendingObject {
 			if changed != 1 {
 				return Err(Error::Conflict("UPLOAD_RESERVATION_CHANGED".into()));
 			}
-			self.runtime
-				.check_upload_quota(&mut tx, &tenant, 0, true)
-				.await?;
+			if !self.grandfather_existing {
+				self.runtime
+					.check_upload_quota(&mut tx, &tenant, 0, true)
+					.await?;
+			}
 			tx.commit().await?;
 		}
 		// The digest lock serializes writers without holding a Tenant quota row
@@ -208,7 +222,7 @@ impl PendingObject {
 				.map_err(Error::Invalid)?
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&mut **access.tx)
+		.execute(&mut **tx)
 		.await?;
 		Ok((self.id, hash))
 	}
@@ -285,6 +299,7 @@ impl Runtime {
 		tenant: &str,
 		id: Uuid,
 		size: i64,
+		grandfather_existing: bool,
 	) -> Result<()> {
 		let mut tx = pool.begin(&MAINTENANCE).await?;
 		let lock = format!("core-upload-quota:{tenant}");
@@ -300,8 +315,10 @@ impl Runtime {
 		.await?;
 		// Bound temporary spool usage before its digest is known. Once hashed,
 		// check retained capacity with deduplication before remote upload.
-		self.check_upload_quota(&mut tx, tenant, size, false)
-			.await?;
+		if !grandfather_existing {
+			self.check_upload_quota(&mut tx, tenant, size, false)
+				.await?;
+		}
 		crate::database::native::query(
 			&Query::insert()
 				.into_table(Alias::new("core_blob_uploads"))
@@ -705,9 +722,23 @@ impl Runtime {
 			self.reconcile_orphans(access).await?;
 			access.core_gc_complete = true;
 		}
-		let size = i64::try_from(size).map_err(|_| Error::Invalid("OBJECT_LIMIT".into()))?;
-		let pool = access.tx.native_mut().pool().clone();
 		let tenant = access.identity.tenant.clone();
+		self.begin_object_for(&mut access.tx, &tenant, area, kind, size, false)
+			.await
+	}
+
+	pub(crate) async fn begin_object_for(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		tenant: &str,
+		area: Option<Uuid>,
+		kind: &str,
+		size: u64,
+		grandfather_existing: bool,
+	) -> Result<PendingObject> {
+		let size = i64::try_from(size).map_err(|_| Error::Invalid("OBJECT_LIMIT".into()))?;
+		let pool = tx.pool().clone();
+		let tenant = tenant.to_owned();
 		tokio::fs::create_dir_all(&self.0.storage).await?;
 		if tokio::fs::symlink_metadata(&self.0.storage)
 			.await?
@@ -737,7 +768,7 @@ impl Runtime {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&mut **access.tx)
+			.execute(&mut **tx)
 			.await?
 		};
 		let intents = self.0.storage.join(".intents");
@@ -747,10 +778,15 @@ impl Runtime {
 		#[cfg(unix)]
 		intent_options.mode(0o600);
 		let mut intent = intent_options.open(intents.join(id.to_string())).await?;
-		intent.write_all(&serde_json::to_vec(&serde_json::json!({"id":id,"tenant":access.identity.tenant,"area_id":area,"kind":kind,"size":size}))?).await?;
+		intent
+			.write_all(&serde_json::to_vec(
+				&serde_json::json!({"id":id,"tenant":tenant,"area_id":area,"kind":kind,"size":size}),
+			)?)
+			.await?;
 		intent.sync_all().await?;
 		tokio::fs::File::open(&intents).await?.sync_all().await?;
-		self.reserve_upload(&pool, &tenant, id, size).await?;
+		self.reserve_upload(&pool, &tenant, id, size, grandfather_existing)
+			.await?;
 		let mut options = tokio::fs::OpenOptions::new();
 		options.read(true).write(true).create_new(true);
 		#[cfg(unix)]
@@ -773,6 +809,7 @@ impl Runtime {
 			hash: Sha256::new(),
 			pool,
 			tenant,
+			grandfather_existing,
 		})
 	}
 

@@ -1,5 +1,10 @@
 # Aidash native migration history
 
+`registry/0056_attachment_tools` (after `registry/0055_remove_structured_harness_contracts`) extends the existing PostgreSQL descriptor
+and Agent default validators for the built-in `attachment_copy` operation.
+The function bodies use SQL assets because Reinhardt has no typed operation
+for replacing PostgreSQL functions. Reversal refuses while definitions or Run
+snapshots still use the new operation.
 `registry/0054_remove_agent_cluster` removes the obsolete Agent config key from Registry definitions, Agent drafts and registration requests, then removes it from the Agent contract. `execution/0089_remove_agent_cluster` removes it from Generation policy templates and request definitions. PostgreSQL JSON updates and function replacement use SQL assets because Reinhardt migrations cannot express these transformations. Both are irreversible. Each owner-only atomic migration establishes Deployment Scope before its first row access because the native migration executor does not open scoped application transactions. The registry update temporarily disables the Marketplace writer fence within its transaction, retaining its other validation and reference triggers. Installed Registry copies change while immutable Marketplace versions and revisions stay untouched: old Marketplace versions must be republished and old installation revisions may no longer match. Run and Federation snapshots are unchanged; Runs using old snapshots fail and need cancellation. Surviving Run constraints and triggers do not call the Agent validator, so cancellation updates do not revalidate the retained snapshots. Catalog Approvals and Federation pins covering changed definitions need renewing.
 
 `execution/0081_lease_recoveries` updates the physical `runs.pending` default,
@@ -755,6 +760,17 @@ CHECKs bound the reason to 1 to 1000 characters and tie `identity_id` to a brows
 through `RunSQL`, and `execution/0079_run_safety_stops_state` is the generated state-only
 snapshot that leaves the physical constraints and indexes to `0077`.
 
+`workspaces/0015_attachment_objects` adds an immutable object reference and
+optional decoded-media measurements to Thread Attachments. Existing inline bytes
+remain readable until startup backfill verifies and moves them; new attachments
+use `core_objects`. PostgreSQL nullability is changed with `RunSQL` because the
+pinned typed `AlterColumn` cannot express it (#6803). Reversal refuses while any
+attachment has no inline content. `0016_attachment_content_state` records the new fields and nullable bytea in
+ORM state. The object reference is Tenant-scoped and cascades
+on object deletion, allowing a deleted Tenant's object purge to run before row
+purge. The object store's intents recover uncommitted files after a crash.
+
+`workspaces/0017_attachment_wav_rendition` adds a nullable, tenant-scoped immutable WAV rendition reference and its integrity metadata. The three fields are set together when a route first needs the rendition; deleting the attachment makes both objects reclaimable. `0018_attachment_wav_rendition_state` records the fields in model state.
 `execution/0086_invocation_connections` (after `execution/0085_egress_secret_records`)
 adds nullable `invocations.connection_id` with a typed Reinhardt operation (#554,
 ADR 0100). It records the person's OAuth Connection used by dispatch, never a token.

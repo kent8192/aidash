@@ -38,6 +38,7 @@ pub struct Requester {
 
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
+#[schemars(rename = "TransferChunk")]
 pub struct Chunk {
 	pub transfer_id: Uuid,
 	pub input_digest: String,
