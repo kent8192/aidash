@@ -108,3 +108,6 @@ pub mod preview;
 pub mod marketplace;
 
 pub mod blob_store;
+
+#[cfg(feature = "cloud-adapters")]
+pub mod data_protection;

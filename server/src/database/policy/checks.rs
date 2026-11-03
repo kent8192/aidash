@@ -77,7 +77,7 @@ pub fn assert_policy_migrations_run_the_rendered_template(
 					// This migration drops and recreates these undeployed object
 					// tables, so their policies have to be installed again.
 					assert!(
-						label == "execution.0093_content_object_references"
+						label == "execution.0100_content_object_references"
 							&& matches!(
 								table,
 								"core_objects" | "core_quotas" | "core_retention_files"

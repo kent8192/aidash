@@ -262,17 +262,22 @@ async fn reconcile(
 					entries.push(unchanged.clone());
 					continue;
 				}
+				// Reuse an output blob only when this Area already held it, keeping
+				// the media type that was detected when it was first downloaded.
 				let authorized = previous
 					.iter()
 					.chain(mounted.iter())
-					.any(|file| file.digest == digest && file.size == file_size);
-				let reusable = if authorized {
-					scope.reuse_output(digest, file_size).await?
-				} else {
-					None
+					.find(|file| file.digest == digest && file.size == file_size)
+					.map(|file| file.media_type.clone());
+				let reusable = match authorized {
+					Some(media_type) => scope
+						.reuse_output(digest, file_size)
+						.await?
+						.map(|file_id| (file_id, media_type)),
+					None => None,
 				};
-				let (file_id, digest) = match reusable {
-					Some(file_id) => (file_id, digest.to_owned()),
+				let (file_id, digest, media_type) = match reusable {
+					Some((file_id, media_type)) => (file_id, digest.to_owned(), media_type),
 					None => Box::pin(download_output(scope, id, file)).await?,
 				};
 				entries.push(MountedFile {
@@ -280,7 +285,7 @@ async fn reconcile(
 					path: path.into(),
 					digest,
 					size: file_size,
-					media_type: "application/octet-stream".into(),
+					media_type,
 					scope: FileScope::Working,
 					provenance: json!({"kind":"operation","operation_id":id}),
 				});
@@ -506,7 +511,7 @@ async fn download_output(
 	scope: &mut dyn OperationReconciliationScope,
 	operation: Uuid,
 	file: &Value,
-) -> Result<(Uuid, String)> {
+) -> Result<(Uuid, String, String)> {
 	let size = file["size"]
 		.as_u64()
 		.ok_or_else(|| Error::Invalid("invalid output size".into()))?;
@@ -521,6 +526,7 @@ async fn download_output(
 		.ok_or_else(|| Error::Invalid("invalid output digest".into()))?;
 	scope.begin_output(size).await?;
 	let mut offset = 0;
+	let mut prefix = Vec::with_capacity(12);
 	while offset < size {
 		let chunk = scope
 			.request(
@@ -540,10 +546,16 @@ async fn download_output(
 		{
 			return Err(Error::Conflict("output chunk integrity".into()));
 		}
+		let needed = 12_usize.saturating_sub(prefix.len());
+		prefix.extend_from_slice(&bytes[..bytes.len().min(needed)]);
 		offset += bytes.len() as u64;
 		scope.write_output(&bytes).await?;
 	}
-	scope.finish_output(expected).await
+	let (id, digest) = scope.finish_output(expected).await?;
+	let media_type = aidash_domain::provider::detect_image(&prefix)
+		.unwrap_or("application/octet-stream")
+		.to_owned();
+	Ok((id, digest, media_type))
 }
 #[cfg(test)]
 mod tests;

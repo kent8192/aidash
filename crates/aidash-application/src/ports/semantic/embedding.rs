@@ -16,7 +16,7 @@ pub trait SemanticEmbeddingScope: Send {
 		&mut self,
 		workspace: Uuid,
 		config: &EmbeddingConfig,
-		text: &str,
+		input: aidash_domain::semantic::EmbeddingInput<'_>,
 		origin: Origin,
 	) -> Result<Option<Box<dyn EmbeddingAllowance>>>;
 }

@@ -310,6 +310,7 @@ async fn http_claim_persists_owner_authority_for_native_streams_and_disconnect_s
 		.unwrap();
 	assert_eq!(leased.id, run.id);
 	leased.context.push(ContextEvent::Assistant {
+		provider_activity: vec![],
 		epoch: i64::from(leased.step),
 		text: response.text,
 		calls: response

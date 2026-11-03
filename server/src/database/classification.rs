@@ -205,6 +205,10 @@ pub const TABLES: &[Table] = &[
 	audit("execution", "run_safety_stops"),
 	table("execution", "run_task_snapshots", TenantOwned),
 	table("execution", "runs", TenantOwned),
+	table("execution", "subnodes", TenantOwned),
+	table("execution", "subnode_members", TenantOwned),
+	table("execution", "subnode_operation_receipts", TenantOwned),
+	table("execution", "subnode_limits", TenantOwned),
 	table("execution", "url_intents", TenantOwned),
 	// federation
 	// cross-node transaction plumbing
@@ -323,6 +327,9 @@ pub const TABLES: &[Table] = &[
 	table("identity", "tenant_invitations", TenantOwned),
 	audit("identity", "tenant_retention_rule_history"),
 	table("identity", "tenant_retention_rules", TenantOwned),
+	table("identity", "tenant_data_protection", TenantOwned),
+	// policy revisions outlive the purge for the audit retention period (ADR 0061)
+	audit("identity", "tenant_data_protection_history"),
 	// Tenant Secret metadata (ADR 0051); the values are in the Secret Store
 	table("identity", "tenant_secrets", TenantOwned),
 	table("identity", "oauth_clients", TenantOwned),
@@ -362,6 +369,8 @@ pub const TABLES: &[Table] = &[
 	table("knowledge", "memory_units", TenantOwned),
 	table("knowledge", "semantic_collections", TenantOwned),
 	table("knowledge", "semantic_entries", TenantOwned),
+	table("knowledge", "semantic_image_ledgers", TenantOwned),
+	table("knowledge", "semantic_image_publications", TenantOwned),
 	table("knowledge", "semantic_history", TenantOwned),
 	table("knowledge", "semantic_indexes", TenantOwned),
 	table("knowledge", "semantic_points", TenantOwned),
@@ -389,6 +398,7 @@ pub const TABLES: &[Table] = &[
 	table("registry", "agent_incident_events", TenantOwned),
 	table("registry", "agent_incidents", TenantOwned),
 	table("registry", "agent_knowledge", TenantOwned),
+	table("registry", "agent_knowledge_images", TenantOwned),
 	table("registry", "agent_plugin_copies", TenantOwned),
 	table("registry", "marketplace_plugin_recalls", DeploymentWide),
 	table("registry", "agent_test_limits", TenantOwned),

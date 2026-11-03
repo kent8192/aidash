@@ -465,3 +465,21 @@ fn invitations_last_at_most_seven_days(
 		expected
 	);
 }
+
+#[test]
+fn subnode_create_requires_a_named_agent_grant() {
+	use crate::identity::tenant_administration::{SUBNODE_CREATE, add_agent_subject};
+	let mut bundle = initial_policy("tenant", true).unwrap();
+	add_agent_subject(&mut bundle, "worker", &[MEMBERS.to_owned()].into()).unwrap();
+	assert!(!allows(&bundle, "worker", SUBNODE_CREATE));
+	let mut grant = bundle.policies[0].clone();
+	grant.id = "grant-subnode".into();
+	grant.subjects = SubjectSelector {
+		ids: ["worker".to_owned()].into(),
+		..Default::default()
+	};
+	grant.actions = [SUBNODE_CREATE.to_owned()].into();
+	bundle.policies.push(grant);
+	assert!(allows(&bundle, "worker", SUBNODE_CREATE));
+	assert!(!allows(&bundle, OWNER, SUBNODE_CREATE));
+}

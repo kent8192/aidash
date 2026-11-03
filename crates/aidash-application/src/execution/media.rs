@@ -289,7 +289,7 @@ pub async fn selected(
 	let files = if selections.is_empty()
 		|| selections
 			.iter()
-			.any(|selection| matches!(selection, ModelMedia::File(_)))
+			.any(|selection| matches!(selection, ModelMedia::File(_) | ModelMedia::WorkingImage(_)))
 	{
 		scope.current_files().await?
 	} else {
@@ -300,10 +300,24 @@ pub async fn selected(
 	for selection in selections {
 		let (label, media_type, bytes) = match selection {
 			ModelMedia::File(selection) => {
-				let file = files
-					.iter()
-					.find(|file| file.file_id == selection.file_id)
-					.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
+				let selected;
+				let file = match (selection.workspace_id, selection.area_id) {
+					(Some(workspace), Some(area)) => {
+						selected = scope
+							.subnode_file(workspace, area, selection.file_id)
+							.await?;
+						&selected
+					}
+					(None, None) => files
+						.iter()
+						.find(|file| file.file_id == selection.file_id)
+						.ok_or_else(|| Error::NotFound("file unavailable".into()))?,
+					_ => {
+						return Err(Error::Invalid(
+							"workspace_id and area_id must be supplied together".into(),
+						));
+					}
+				};
 				if file.digest != selection.expected_digest {
 					return Err(Error::Conflict("FILE_CHANGED".into()));
 				}
@@ -316,6 +330,34 @@ pub async fn selected(
 				(
 					format!("Selected file: {}", file.path),
 					file.media_type.clone(),
+					scope.read(file.file_id).await?,
+				)
+			}
+			ModelMedia::WorkingImage(selection) => {
+				let file = scope
+					.workspace_image(
+						selection.area_id,
+						selection.generation,
+						selection.file_id,
+						&selection.path,
+					)
+					.await?
+					.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
+				if file.digest != selection.expected_digest {
+					return Err(Error::Conflict("FILE_CHANGED".into()));
+				}
+				if !file.media_type.starts_with("image/") {
+					return Err(Error::Invalid("selected File is not an image".into()));
+				}
+				total = total.saturating_add(file.size);
+				if total > 8 * 1024 * 1024 {
+					return Err(Error::Invalid(
+						"model media input exceeds byte limit".into(),
+					));
+				}
+				(
+					format!("Selected file: {}", file.path),
+					file.media_type,
 					scope.read(file.file_id).await?,
 				)
 			}

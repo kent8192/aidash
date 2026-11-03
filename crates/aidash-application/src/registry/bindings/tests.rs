@@ -81,6 +81,11 @@ impl Catalog {
 		);
 		definition.version = reference.version.clone();
 		self.insert(definition);
+		if operation == "workspace_read" {
+			let mut current = self.entries[&reference].clone();
+			current.version = "1.0.1".into();
+			self.insert(current);
+		}
 		reference
 	}
 	fn bundle(&mut self, id: &str, members: Vec<QualifiedRef>) -> QualifiedRef {
@@ -173,9 +178,13 @@ async fn previously_normalized_agent_resolves_without_rewriting_its_builtin_bind
 	let mut agent = agent_entry(&agent_config());
 	agent.normalize_agent(NODE).unwrap();
 	let saved = agent.binding_normalization.as_mut().unwrap();
-	saved
-		.bindings
-		.retain(|binding| binding.binding.target.id != "aidash.attachment_copy");
+	// A normalization saved before #640 and #639 has neither default.
+	saved.bindings.retain(|binding| {
+		!matches!(
+			binding.binding.target.id.as_str(),
+			"aidash.attachment_copy" | "aidash.workspace_search"
+		)
+	});
 	for binding in &mut saved.bindings {
 		if matches!(
 			binding.binding.target.id.as_str(),
@@ -208,12 +217,10 @@ async fn previously_normalized_agent_resolves_without_rewriting_its_builtin_bind
 			.any(|binding| binding.identity.id == "aidash.workspace_read"
 				&& binding.identity.version == "1.0.0")
 	);
-	assert!(
-		!resolved
-			.bindings
-			.iter()
-			.any(|binding| binding.identity.id == "aidash.attachment_copy")
-	);
+	assert!(!resolved.bindings.iter().any(|binding| matches!(
+		binding.identity.id.as_str(),
+		"aidash.attachment_copy" | "aidash.workspace_search"
+	)));
 }
 
 #[rstest::rstest]
@@ -1742,7 +1749,11 @@ async fn receiver_export_rejects_a_custom_policy_hidden_under_the_system_source_
 	source.config = serde_json::to_value(native).unwrap();
 	// This is a valid, freshly admitted graph with correct digests, so rejection
 	// comes from the receiver export boundary rather than corrupt snapshot bytes.
-	let saved = snapshot(&mut catalog, &agent_config(), true).await.unwrap();
+	let mut config = agent_config();
+	config
+		.bindings
+		.push(Binding::tool(QualifiedRef::builtin(NODE, "workspace_read")));
+	let saved = snapshot(&mut catalog, &config, true).await.unwrap();
 	saved.validate().unwrap();
 	let error = ForeignAgentSnapshot::from_snapshot(saved).unwrap_err();
 	assert!(
@@ -2295,7 +2306,11 @@ async fn shared_read_claim_above_a_sequential_provider_is_rejected(#[case] descr
 	let mut config = agent_config();
 	let target = QualifiedRef::builtin(NODE, "workspace_read");
 	if descriptor {
-		catalog.entries.get_mut(&target).unwrap().config["narrow"]["concurrency"] =
+		let current = QualifiedRef {
+			version: "1.1.0".into(),
+			..target.clone()
+		};
+		catalog.entries.get_mut(&current).unwrap().config["narrow"]["concurrency"] =
 			json!("shared_read");
 	} else {
 		let mut read = Binding::tool(target);
@@ -2428,6 +2443,9 @@ async fn remote_home_receipt_obligation_rejects_on_demand_despite_false_declarat
 		serde_json::to_value(native).unwrap(),
 	));
 	let mut config = agent_config();
+	config
+		.bindings
+		.push(Binding::tool(QualifiedRef::builtin(NODE, "workspace_read")));
 	config.bindings.push(
 		serde_json::from_value(json!({"kind":"source","target":identity,"narrow":{}})).unwrap(),
 	);
@@ -2596,6 +2614,9 @@ async fn semantic_query_policy_agrees_including_implicit_defaults(
 	use aidash_domain::registry::bindings::sources::{NativeContext, NativeSource, OnUnavailable};
 	let mut catalog = Catalog::new();
 	let mut config = agent_config();
+	config
+		.bindings
+		.push(Binding::tool(QualifiedRef::builtin(NODE, "workspace_read")));
 	for (id, kind, source, query) in [
 		(
 			"query-memory",
@@ -2694,4 +2715,101 @@ async fn native_primary_memory_and_bank_source_pin_the_same_explicit_query_polic
 		.remove("context_source");
 	let error = snapshot(&mut catalog, &config, false).await.unwrap_err();
 	assert!(error.to_string().contains("query policy"), "{error}");
+}
+
+#[tokio::test]
+async fn provider_tools_bind_pinned_caps_and_only_loaded_tools_reach_requests() {
+	use aidash_domain::tool::provider_tools;
+	let mut catalog = Catalog::new();
+	let model = json!({"provider":"openrouter","provider_credential":"openrouter","model_id":"openai/gpt-4.1","endpoint":"https://openrouter.ai/api/v1","context_window":100000,"modalities":["text"],"cost":{}});
+	catalog.insert(entry("model", "model", model.clone()));
+	let declaration = provider_tools::declaration("openrouter:web_search").unwrap();
+	let descriptor = ToolDescriptor {
+		registry_deployment: NODE.into(),
+		provider: declaration.id.into(),
+		operation: declaration.alias.into(),
+		default_alias: declaration.alias.into(),
+		tier: ToolTier::Provider,
+		narrow: Default::default(),
+		transport: None,
+		lifecycle: None,
+	};
+	let tool = entry(
+		"provider.openrouter.web_search",
+		"tool",
+		serde_json::to_value(descriptor).unwrap(),
+	);
+	catalog.insert(tool);
+	let mut config = agent_config();
+	let mut binding = Binding::tool(reference("provider.openrouter.web_search"));
+	config.bindings.push(binding.clone());
+	assert!(
+		snapshot(&mut catalog, &config, false)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("requires parameters")
+	);
+	binding.narrow.provider_tool = Some(declaration.defaults());
+	*config.bindings.last_mut().unwrap() = binding;
+	let saved = snapshot(&mut catalog, &config, false).await.unwrap();
+	saved.validate().unwrap();
+	let mut context = aidash_domain::context::Context {
+		binding_snapshot: Some(Box::new(saved)),
+		..Default::default()
+	};
+	let specs = vec![aidash_domain::provider::ToolSpec {
+		name: declaration.alias.into(),
+		description: "Search".into(),
+		parameters: json!({"type":"object"}),
+	}];
+	let projection = aidash_domain::context::RequestProjection::Legacy;
+	let budget = aidash_domain::context::RequestBudget {
+		instructions: "Test",
+		tools: &specs,
+		max_output_tokens: 100,
+		window: 100000,
+		projection: &projection,
+		input_format: Default::default(),
+		estimate: Default::default(),
+	};
+	let request = budget.request(&context, &json!({}));
+	assert!(request.tools.is_empty());
+	assert_eq!(request.provider_tools[0].binding, declaration.defaults());
+	assert_eq!(request.input_body()["max_tool_calls"], 3);
+	let unloaded = aidash_domain::context::RequestBudget {
+		tools: &[],
+		..budget
+	};
+	assert!(
+		unloaded
+			.request(&context, &json!({}))
+			.provider_tools
+			.is_empty()
+	);
+	// A retained snapshot must reject tampering with the Binding parameters.
+	context
+		.binding_snapshot
+		.as_mut()
+		.unwrap()
+		.bindings
+		.iter_mut()
+		.find(|b| b.identity.id == "provider.openrouter.web_search")
+		.unwrap()
+		.narrow
+		.provider_tool
+		.as_mut()
+		.unwrap()
+		.max_tool_calls = 8;
+	assert!(context.binding_snapshot.unwrap().validate().is_err());
+	for field in ["provider_credential", "provider"] {
+		let mut denied = model.clone();
+		denied[field] = if field == "provider" {
+			json!("fixture")
+		} else {
+			Value::Null
+		};
+		catalog.insert(entry("model", "model", denied));
+		assert!(snapshot(&mut catalog, &config, false).await.is_err());
+	}
 }

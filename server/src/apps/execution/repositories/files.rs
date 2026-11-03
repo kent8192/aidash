@@ -273,6 +273,46 @@ impl FileScopePort for Scope<'_> {
 		)
 		.await
 	}
+	async fn subnode_area(
+		&mut self,
+		run: &RunMetadata,
+		workspace: Uuid,
+		area: Uuid,
+	) -> Result<Area> {
+		use crate::apps::execution::models::subnodes::SubnodeRecord;
+		use reinhardt::db::orm::Model;
+		if self.access.read_run != Some(run.id) {
+			return Err(Error::Forbidden);
+		}
+		let matches = SubnodeRecord::objects()
+			.filter(SubnodeRecord::field_tenant().eq(self.access.identity.tenant.clone()))
+			.filter(SubnodeRecord::field_workspace_id().eq(workspace))
+			.filter(SubnodeRecord::field_creator_run_id().eq(run.id))
+			.all_with_executor(self.access.tx.native_mut())
+			.await
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
+		if matches.is_empty() {
+			return Err(Error::Forbidden);
+		}
+		// Narrow the inherited Workspace only for this read. Session authorization
+		// still checks file.read and every source constraint against the creator.
+		let previous = std::mem::replace(
+			&mut self.access.context,
+			serde_json::json!({"workspace_id": workspace}),
+		);
+		let result = aidash_application::capabilities::sessions::load(
+			&mut crate::bootstrap::session_scope(None, self.access),
+			area,
+		)
+		.await;
+		self.access.context = previous;
+		let area = result?;
+		if area.workspace_id != workspace {
+			return Err(Error::Forbidden);
+		}
+		Ok(area)
+	}
 	async fn authorize(&mut self, area: &Area, action: &str) -> Result<()> {
 		aidash_application::capabilities::sessions::authorize(
 			&mut crate::bootstrap::session_scope(None, self.access),
@@ -473,6 +513,18 @@ impl FileScopePort for Scope<'_> {
 		result.map_err(Into::into)
 	}
 
+	async fn previous_generation(&mut self, area: &Area) -> Result<i64> {
+		let result: NativeResult<i64> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("generation"))
+				.from(Alias::new("core_areas"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area.id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut **self.access.tx)
+		.await;
+		result.map_err(Into::into)
+	}
 	async fn supersede(&mut self, area: &Area, file: Uuid) -> Result<()> {
 		let result: NativeResult<_> = async {
 			let access = &mut *self.access;
@@ -641,5 +693,57 @@ impl FileScopePort for Scope<'_> {
 			.await
 			.map(|_| ())
 			.map_err(Into::into)
+	}
+	async fn image_publication(
+		&mut self,
+		area: &Area,
+		changes: &[aidash_domain::semantic::indexing::ImageChange],
+	) -> Result<()> {
+		let access = &mut *self.access;
+		if area.tenant != access.identity.tenant {
+			return Err(Error::Forbidden);
+		}
+		crate::apps::knowledge::repositories::image_publications::lock_workspace(
+			&mut **access.tx,
+			area.workspace_id,
+		)
+		.await?;
+		let authority = if access.identity.subject == area.owner {
+			serde_json::json!({"credential":access.identity.credential_id,"tenant":access.identity.tenant,"subject":access.identity.subject,"subjects":access.subjects})
+		} else {
+			// Do not use another actor's credential to index the owner's Area.
+			serde_json::json!({"credential":null,"tenant":area.tenant,"subject":area.owner,"subjects":[]})
+		};
+		let changes = serde_json::to_value(changes)?;
+		// The Workspace lock assigns publication sequence in commit order.
+		let statement = Query::insert()
+			.into_table(Alias::new("semantic_image_publications"))
+			.columns(
+				[
+					"tenant",
+					"workspace_id",
+					"area_id",
+					"generation",
+					"changes",
+					"authority",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(area.tenant.clone()))
+					.expr(Expr::value(area.workspace_id))
+					.expr(Expr::value(area.id))
+					.expr(Expr::value(area.generation))
+					.expr(Expr::value(changes))
+					.expr(Expr::value(authority))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder);
+		crate::database::native::query(&statement)
+			.execute(&mut **access.tx)
+			.await
+			.map_err(Error::from)?;
+		Ok(())
 	}
 }

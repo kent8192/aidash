@@ -756,7 +756,9 @@ async fn a_conversation_with_a_memory_target_creates_the_workspace_index(
 	.await;
 	assert_eq!(status, 200, "{index}");
 	assert_eq!(index["revision"], 1);
-	assert_eq!(index["spec"]["embedding"], embedding);
+	let mut expected_embedding = embedding.clone();
+	expected_embedding["inputs"] = json!(["text"]);
+	assert_eq!(index["spec"]["embedding"], expected_embedding);
 	assert_eq!(index["spec"]["enabled"], true);
 	assert_eq!(index["spec"]["auto_context"], false);
 	let event: Value = sqlx::query_scalar(

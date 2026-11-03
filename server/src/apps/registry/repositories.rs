@@ -430,6 +430,11 @@ impl<E: OrmExecutor> PrivateKnowledgeRead for OrmScope<'_, E> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn image_index(&mut self, entry: &Entry) -> aidash_application::Result<Option<Value>> {
+		records::image_index(self.db, self.tenant, entry)
+			.await
+			.map_err(Into::into)
+	}
 }
 async fn private_documents<E: OrmExecutor>(
 	connection: &mut E,
@@ -480,6 +485,9 @@ async fn private_documents<E: OrmExecutor>(
 				&source,
 			)
 			.await?;
+			let stored: Vec<aidash_domain::registry::ReferenceDocument> =
+				serde_json::from_value(value)?;
+			let value = aidash_domain::registry::knowledge::visible_documents(&stored)?;
 			documents.extend(
 				value
 					.as_array()
@@ -492,11 +500,15 @@ async fn private_documents<E: OrmExecutor>(
 		}
 		return Ok(serde_json::json!(documents));
 	}
-	Ok(aidash_application::registry::personal::load(
+	let value = aidash_application::registry::personal::load(
 		&mut OrmScope::new(&mut *connection, tenant),
 		entry,
 	)
-	.await?)
+	.await?;
+	let stored: Vec<aidash_domain::registry::ReferenceDocument> = serde_json::from_value(value)?;
+	Ok(aidash_domain::registry::knowledge::visible_documents(
+		&stored,
+	)?)
 }
 
 pub mod marketplace_recalls;

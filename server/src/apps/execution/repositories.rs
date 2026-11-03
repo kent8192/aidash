@@ -197,3 +197,5 @@ pub(crate) mod previews;
 pub(crate) mod source_delivery;
 
 pub(crate) mod mcp_connections;
+pub(crate) mod provider_container;
+pub(crate) mod subnodes;

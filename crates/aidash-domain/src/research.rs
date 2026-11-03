@@ -64,6 +64,7 @@ impl Operation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Failure {
+	DataProtectionRefused,
 	InvalidInput,
 	UnknownSource,
 	UnknownDocument,
@@ -118,6 +119,7 @@ pub enum Failure {
 impl Failure {
 	pub fn code(self) -> &'static str {
 		match self {
+			Self::DataProtectionRefused => "data_protection_refused",
 			Self::InvalidInput => "invalid_input",
 			Self::UnknownSource => "unknown_source",
 			Self::UnknownDocument => "unknown_document",
@@ -157,6 +159,9 @@ impl Failure {
 	}
 	fn explanation(self) -> &'static str {
 		match self {
+			Self::DataProtectionRefused => {
+				"The Research provider account terms do not meet the current Data Protection Level."
+			}
 			Self::InvalidInput => "The request does not satisfy the research contract.",
 			Self::UnknownSource => "The source is not a Source record of this Run.",
 			Self::UnknownDocument => "The document is not a Document snapshot of this Run.",

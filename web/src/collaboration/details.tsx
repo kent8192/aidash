@@ -1,3 +1,4 @@
+import { ProviderToolActivity } from "../provider-tools";
 import { SafetyStopPanel } from "./safety-stop";
 import { ElicitationForm, elicitationMessage } from "./elicitation";
 import { RunCompactionDetails } from "../compaction-details";
@@ -57,6 +58,7 @@ import {
 import { GenerationAssignForm } from "../generation";
 import { RunResearchEvidence } from "../research-governance";
 import { EntityDetails } from "../entity-details";
+import { RunSubnodes } from "./subnodes";
 import { DeciderStartRefusal } from "../catalog-approval";
 import { unapprovedCompactionDecider } from "../catalog-approval-model";
 import { ArtifactList } from "./channel";
@@ -475,7 +477,9 @@ function RunPanel({
     initialPageParam: 0,
     queryFn: ({ pageParam }) => runGet(id, { offset: pageParam }),
     getNextPageParam: (last, pages) =>
-      last.invocations.length === 100 || last.egress_requests?.length === 100
+      last.invocations.length === 100 ||
+      last.egress_requests?.length === 100 ||
+      last.provider_tool_activity?.length === 100
         ? pages.length * 100
         : undefined,
     refetchInterval: 2000,
@@ -604,6 +608,7 @@ function RunPanel({
           }
         />
       )}
+      {!managed && <RunSubnodes run={id} node={node} agentLabel={agentLabel} />}
       {managed && <RemoteMemoryProvenance url={`/api/runs/${id}/semantic`} />}
       {managed && <RemoteRunManagement id={id} />}
       {controllable && (
@@ -845,6 +850,12 @@ function RunPanel({
           </div>
         )}
       </Panel>
+      <ProviderToolActivity
+        context={run.context}
+        journal={query.data?.pages.flatMap(
+          (page) => page.provider_tool_activity ?? [],
+        )}
+      />
       <Disclosure summary={t("context")}>
         <JsonView value={run.context} />
       </Disclosure>

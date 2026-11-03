@@ -514,6 +514,7 @@ mod pruning_rules {
 			research: None,
 			seq,
 			event: ContextEvent::Assistant {
+				provider_activity: vec![],
 				epoch: 1,
 				text: text.into(),
 				calls: calls.iter().map(|call| (*call).to_owned()).collect(),

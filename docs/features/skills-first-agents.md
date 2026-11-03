@@ -59,18 +59,18 @@ Sources: <https://github.com/anthropics/skills>, <https://github.com/openai/skil
 
 ## Personal reference documents
 
-The agent form accepts PDF, Excel `.xlsx`, and `.txt`/`.md`/`.csv` files. It extracts
+The agent form accepts PDF, Excel `.xlsx`, `.txt`/`.md`/`.csv`, and PNG, JPEG, GIF or WebP images. It extracts
 text in the browser, displays a preview, and allows removal before registration.
 PDF text retains page numbers; Excel values retain sheet names and cell addresses.
 It does not perform OCR, recalculate formulas, preserve formatting or images, or
-store the original binary. Old `.xls` files must first be converted to `.xlsx`.
+store the original text-document binary. Image originals are retained privately. Old `.xls` files must first be converted to `.xlsx`.
 
 Limits: eight files, 10 MiB per file, 200 PDF pages, and 64 KiB of extracted UTF-8
-text across all files. The selected model's context budget can impose a lower limit.
-No content is silently truncated. Files without extractable text are rejected.
+text across all files, and 8 MiB of image bytes across all images. The selected model's context budget can impose a lower limit.
+No content is silently truncated. Text documents without extractable text are rejected.
 PDF.js and ExcelJS are loaded only when their respective file types are selected.
 
-`POST /api/agents/personal` is Deployment Administrator-only and accepts an `entry`, `documents`,
+`POST /api/agents/personal` requires a Tenant Subject with `registry.create` and accepts an `entry`, `documents`,
 and a required `Idempotency-Key` UUID. Registration, private document storage, and
 the registration event share a database transaction. Retries preserve the assigned
 agent ID; changing documents with the same key is rejected. The server validates
@@ -79,14 +79,17 @@ extracted text and bounds independently of the browser.
 Documents live in `agent_knowledge`, bound to the exact agent ID/version. Registry
 entries contain only their SHA-256 digest. Registry reads, discovery, package
 metadata, and registration events do not include document names or contents.
-At inference time, the original agent loads its documents as reference data in the
-user context, separate from Skill and additional instructions. Execution sends this
+At inference time, the original agent loads extracted reference text and image names as reference data in the
+user context, separate from Skill and additional instructions. Image bytes are not loaded into every Run. Image references require an approved image-capable embedding pinned by the Agent version; registration embeds every image before atomically saving the documents and its private vector collection. Each Run queries that collection with the pinned definition, separately from Workspace retrieval. If the definition is missing, its Catalog Approval is withdrawn, or its provider no longer has the model, register a new Agent version; temporary provider outages retry. Execution sends this
 data to the configured model provider and may produce derived content in artifacts.
 Anyone authorized to run the agent can therefore cause it to use its attached data.
 
+For a generated Agent, the reference embedding must be the exact embedding
+version approved by every ancestor's Generation Policy. A mismatch is rejected
+explicitly and does not widen the policy's provider or usage limits.
+
 Private documents remain on their owning node; they are not transferred through
-package installation, cloning, or federation. Copies fail explicitly if their
-private documents are unavailable rather than executing without the references.
+package installation, cloning, or federation. Copies containing images fail explicitly; unavailable private documents likewise fail rather than executing without the references.
 Generation templates cannot contain a personal agent's document digest. To use
 personal documents, run the registered agent on its owning node. The first version
 has no separate document update/delete endpoint; use a new agent version to change

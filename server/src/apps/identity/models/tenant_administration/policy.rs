@@ -10,7 +10,7 @@ use reinhardt::db::orm::AtomicTransaction;
 use serde_json::{Value, json};
 
 impl TenantAdministrator {
-	pub(super) async fn locked_for(
+	pub(crate) async fn locked_for(
 		&self,
 		tx: &mut AtomicTransaction,
 		action: &str,

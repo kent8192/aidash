@@ -79,7 +79,7 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		),
 		(
 			"file_read",
-			"Read authorized text or metadata. Use model_input with an exact digest to include an image or audio file in the next model inference only.",
+			"Read authorized text or metadata. Set workspace_id and area_id together to read a Subnode you created. Use model_input with an exact digest to include an image or audio file in the next model inference only.",
 			schema::<FileRead>(),
 		),
 		(

@@ -315,6 +315,10 @@ impl DefinitionValidation {
 				m.validate_projection_versions()?;
 				m.validate_cache_mode()?;
 				m.validate_provider_route()?;
+				m.validate_wire_api()?;
+				if m.provider == "openrouter" {
+					aidash_domain::tool::provider_tools::reject_implicit_tools(&m.model_id)?;
+				}
 				m.validate_model_variant()?;
 				m.validate_estimate_diagnostics()?;
 				if m.provider_credential.is_some() || m.plan_connection.is_some() {

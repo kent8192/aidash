@@ -12,6 +12,7 @@ fn profile() -> AccountTerms {
 		review_after: now + chrono::Duration::days(1),
 		storage_permitted: true,
 		query_training_prohibited: true,
+		request_retention_prohibited: false,
 		evaluation_permitted: true,
 		retention_days: 90,
 		deletion_after_termination_days: 30,
@@ -106,7 +107,10 @@ fn account_terms_and_credential_are_checked(mut profile: AccountTerms) {
 	let brave = BraveSearch::new(lapsed, "token").unwrap();
 	assert_eq!(brave.account(), Err(Failure::AccountUnavailable));
 	profile.query_training_prohibited = false;
-	assert!(BraveSearch::new(profile, "token").is_err());
+	assert!(
+		BraveSearch::new(profile, "token").is_ok(),
+		"Tenant policy, rather than Deployment setup, governs training"
+	);
 }
 
 #[rstest]

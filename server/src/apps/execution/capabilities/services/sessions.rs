@@ -73,6 +73,20 @@ pub(crate) async fn for_run(access: &mut Access, run: &Run) -> Result<Area> {
 	.map(Into::into)
 	.map_err(Into::into)
 }
+/// The Run's own Working Area, checked current, or `None` for a Run admitted
+/// without one (no core capabilities). Reads of another authorized Area need
+/// no own Area; a bound Run must still hold its own.
+pub(crate) async fn current_own_area(access: &mut Access, run: &Run) -> Result<Option<Area>> {
+	if crate::apps::execution::repositories::sessions::run_area(access, run.id)
+		.await?
+		.is_none()
+	{
+		return Ok(None);
+	}
+	let own = for_run(access, run).await?;
+	require_current_run(access, &own, run).await?;
+	Ok(Some(own))
+}
 pub(crate) async fn require_current_run(access: &mut Access, area: &Area, run: &Run) -> Result<()> {
 	application::require_current_run(
 		&mut crate::bootstrap::session_scope(None, access),

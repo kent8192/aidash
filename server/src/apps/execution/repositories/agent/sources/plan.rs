@@ -22,6 +22,7 @@ impl Slot {
 				ContextSourcePhase::Instructions
 			}
 			Self::References => ContextSourcePhase::FixedData,
+			Self::ReferenceImages => ContextSourcePhase::BudgetedData,
 			Self::Observation => ContextSourcePhase::SnapshotData,
 			Self::Semantic => ContextSourcePhase::BudgetedData,
 		}
@@ -104,10 +105,12 @@ fn compile_context_source_plan(
 		Slot::RegistrySkills,
 		Slot::Skills,
 		Slot::References,
+		Slot::ReferenceImages,
 		Slot::Observation,
 		Slot::Semantic,
 	] {
 		if (matches!(slot, Slot::ResidentSkills) && !deferred)
+			|| (matches!(slot, Slot::ReferenceImages) && bindings.reference_embedding.is_none())
 			|| (matches!(slot, Slot::RegistrySkills | Slot::Skills) && deferred)
 			|| (matches!(slot, Slot::Skills) && !local_skills)
 		{
@@ -150,7 +153,7 @@ fn compile_context_source_plan(
 				.iter()
 				.map(|binding| binding.identity.clone())
 				.collect(),
-			refresh_each_step,
+			refresh_each_step: refresh_each_step || matches!(slot, Slot::ReferenceImages),
 		});
 	}
 	Ok(plan)
@@ -193,6 +196,7 @@ impl Environment<'_> {
 			"registry_skills" => Ok(Slot::RegistrySkills),
 			"skills" => Ok(Slot::Skills),
 			"references" => Ok(Slot::References),
+			"reference_images" => Ok(Slot::ReferenceImages),
 			"workspace" => Ok(Slot::Observation),
 			"semantic_memory" => Ok(Slot::Semantic),
 			_ => Err(aidash_application::Error::Forbidden),
@@ -243,6 +247,27 @@ impl Environment<'_> {
 				.await
 			}
 			Slot::References => self.documents(frame.entry).await.map(Some),
+			Slot::ReferenceImages => {
+				async {
+					let authority = self
+						.authority
+						.as_ref()
+						.ok_or(aidash_application::Error::Forbidden)?;
+					let query = aidash_application::execution::semantic_context::query_material(
+						run,
+						frame.task,
+						frame.inputs,
+						MAX_SOURCE_BYTES,
+					)?
+					.text;
+					authority
+						.guard
+						.reference_image_context(&self.federation.store, &query)
+						.await
+						.map_err(Into::into)
+				}
+				.await
+			}
 			Slot::Skills => self.skill_context(run).await.map(|text| Some(json!(text))),
 			Slot::Observation => self
 				.home(run)

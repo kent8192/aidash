@@ -162,6 +162,11 @@ impl OperationReconciliationScope for Scope<'_> {
 	}
 	async fn load(&mut self, id: Uuid, run: Uuid) -> Result<Loaded> {
 		let run = self.access.run_for_interaction(run).await?;
+		crate::apps::execution::repositories::subnodes::require_writable(
+			self.access.tx.native_mut(),
+			run.workspace_id,
+		)
+		.await?;
 		let area = sessions::for_run(&mut self.access, &run).await?;
 		let operation = super::get(&mut self.access, id).await?;
 		let result = Loaded {
