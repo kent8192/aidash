@@ -261,9 +261,7 @@ impl CreateScope for Creation<'_> {
 			.map_err(crate::Error::from)?
 			.ok_or(aidash_application::Error::Forbidden)?;
 		let row = reinhardt::db::orm::QueryRow::from_backend_row(row);
-		let scratch_space_id: Uuid = row
-			.get("scratch_space_id")
-			.ok_or(crate::Error::Forbidden)?;
+		let scratch_space_id: Uuid = row.get("scratch_space_id").ok_or(crate::Error::Forbidden)?;
 		let created_by: String = row.get("created_by").ok_or(crate::Error::Forbidden)?;
 		let workspace = self
 			.federation
