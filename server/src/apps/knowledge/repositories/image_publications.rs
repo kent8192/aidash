@@ -361,10 +361,9 @@ async fn bootstrap(lease: &mut Lease<'_>, workspace: Uuid, slots: &ImageSlots) -
 				.map(|change| (area, change.file_id(), change.path().to_owned())),
 		);
 	}
+	// Each Area's manifest is projected from its current revision row.
 	let areas = native::query(
-		&Query::select()
-			.columns(["id", "tenant", "owner", "generation", "manifest"].map(Alias::new))
-			.from(Alias::new("core_areas"))
+		&crate::apps::execution::repositories::sessions::select("core_areas")
 			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
 			.order_by("id", Order::Desc)
 			.to_string(PostgresQueryBuilder),
@@ -584,8 +583,12 @@ async fn probe_one_legacy(
 		if changed {
 			area.revision += 1;
 			area.manifest = serde_json::to_value(files)?;
+			// The new revision row also retains every blob its manifest names.
+			crate::apps::execution::repositories::files::record_revision(
+				access.tx.native_mut(), &area.tenant, &(&area).into(), &area.manifest,
+			).await?;
 			native::query(&Query::update().table(Alias::new("core_areas"))
-				.value("manifest", area.manifest.clone()).value("revision", area.revision)
+				.value("revision", area.revision)
 				.and_where(Expr::col("id").eq(Expr::value(area.id))).to_string(PostgresQueryBuilder))
 				.execute(&mut **access.tx).await?;
 			store.event(&mut access.tx, Some(workspace), "capability.files_changed", json!({"area_id":area.id,"revision":area.revision,"generation":area.generation})).await?;

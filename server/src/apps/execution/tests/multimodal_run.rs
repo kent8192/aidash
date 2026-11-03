@@ -1121,16 +1121,29 @@ async fn human_media_only_run_input_reaches_the_first_model_request_in_order(
 		.bind(attachment_id).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
 	assert_ne!(cached.0, cached.1);
 	assert!(cached.3 > 44);
-	let storage = &f.store.capabilities.0.storage;
-	assert_eq!(
-		tokio::fs::read(storage.join(cached.0.simple().to_string()))
-			.await
-			.unwrap(),
-		source
-	);
-	let wav = tokio::fs::read(storage.join(cached.1.simple().to_string()))
-		.await
-		.unwrap();
+	// Attachment objects are content-addressed blobs in the local store.
+	let blob = async |object: Uuid| {
+		let (tenant, digest): (String, String) =
+			sqlx::query_as("SELECT tenant, digest FROM core_objects WHERE id = $1")
+				.bind(object)
+				.fetch_one(f.store.pool.fixture_driver())
+				.await
+				.unwrap();
+		f.store
+			.capabilities
+			.0
+			.storage
+			.join("tenants")
+			.join(aidash_server::capabilities::objects::digest(
+				tenant.as_bytes(),
+			))
+			.join("sha256")
+			.join(&digest[..2])
+			.join(&digest[2..4])
+			.join(&digest)
+	};
+	assert_eq!(tokio::fs::read(blob(cached.0).await).await.unwrap(), source);
+	let wav = tokio::fs::read(blob(cached.1).await).await.unwrap();
 	assert_eq!(&wav[..4], b"RIFF");
 	assert_eq!(&wav[8..12], b"WAVE");
 	assert_eq!(wav.len() as i64, cached.3);

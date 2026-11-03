@@ -23,6 +23,29 @@ async fn upload(
 	)
 }
 
+/// Local blob store file holding an attachment object's content-addressed bytes.
+async fn object_blob(app: &EndpointFixture, object_id: Uuid) -> std::path::PathBuf {
+	let (tenant, digest): (String, String) =
+		sqlx::query_as("SELECT tenant, digest FROM core_objects WHERE id = $1")
+			.bind(object_id)
+			.fetch_one(app.runtime.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	app.runtime
+		.store
+		.capabilities
+		.0
+		.storage
+		.join("tenants")
+		.join(aidash_server::capabilities::objects::digest(
+			tenant.as_bytes(),
+		))
+		.join("sha256")
+		.join(&digest[..2])
+		.join(&digest[2..4])
+		.join(&digest)
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn attachment_upload_is_idempotent_and_download_requires_current_message_access(
@@ -183,20 +206,14 @@ async fn attachment_upload_is_idempotent_and_download_requires_current_message_a
 			.await
 			.unwrap();
 	assert!(inline.is_none());
-	let object_path = app
-		.runtime
-		.store
-		.capabilities
-		.0
-		.storage
-		.join(object_id.simple().to_string());
+	let object_path = object_blob(&app, object_id).await;
 	assert_eq!(
 		tokio::fs::read(&object_path).await.unwrap(),
 		b"Source evidence"
 	);
-	tokio::fs::write(&object_path, b"Tampered data!!")
-		.await
-		.unwrap();
+	// Blobs are verified when written and not re-hashed on every read (#697),
+	// so a read refuses bytes whose size no longer matches the object.
+	tokio::fs::write(&object_path, b"Tampered").await.unwrap();
 	assert_ne!(
 		alice_client.get(&download).await.unwrap().status_code(),
 		200
@@ -489,13 +506,7 @@ async fn startup_backfills_legacy_bytes_and_replay_keeps_the_same_object(
 			.await
 			.unwrap();
 	assert!(inline.is_none());
-	let path = app
-		.runtime
-		.store
-		.capabilities
-		.0
-		.storage
-		.join(first.simple().to_string());
+	let path = object_blob(&app, first).await;
 	assert_eq!(tokio::fs::read(path).await.unwrap(), b"legacy bytes");
 	start().await;
 	let (second,): (Uuid,) =
@@ -553,13 +564,8 @@ async fn deleting_a_thread_reclaims_its_attachment_object(#[future] scoped_chann
 			.fetch_one(app.runtime.store.pool.fixture_driver())
 			.await
 			.unwrap();
-	let path = app
-		.runtime
-		.store
-		.capabilities
-		.0
-		.storage
-		.join(object_id.simple().to_string());
+	let path = object_blob(&app, object_id).await;
+	assert!(path.exists());
 	let (status, message) = request(
 		&app,
 		&token,
