@@ -13,6 +13,23 @@ use serde_json::json;
 
 mod plan;
 
+fn align_default_source_tools(declaration: &mut SourceDeclaration, identities: &[QualifiedRef]) {
+	for reference in declaration
+		.tools
+		.detail
+		.iter_mut()
+		.chain(declaration.tools.read.iter_mut())
+	{
+		if !identities.contains(reference)
+			&& let Some(saved) = identities.iter().find(|saved| {
+				saved.id == reference.id
+					&& saved.registry_deployment == reference.registry_deployment
+			}) {
+			*reference = saved.clone();
+		}
+	}
+}
+
 #[derive(Clone, Copy)]
 struct SourceQueryFrame<'a> {
 	task: &'a Task,
@@ -290,7 +307,21 @@ impl Environment<'_> {
 					aidash_domain::registry::bindings::sources::NativeContext,
 				>(binding.definition.config.clone())
 				{
-					Ok(native) => native.declaration(&binding.identity),
+					Ok(native) => {
+						let mut declaration = native.declaration(&binding.identity);
+						if native.context_source.is_none() {
+							// Older admitted Agents retain the exact builtin versions they pinned.
+							align_default_source_tools(
+								&mut declaration,
+								&snapshot
+									.bindings
+									.iter()
+									.map(|saved| saved.identity.clone())
+									.collect::<Vec<_>>(),
+							);
+						}
+						declaration
+					}
 					Err(_) => serde_json::from_value::<aidash_domain::memory::SourceConfig>(
 						binding.definition.config.clone(),
 					)
@@ -1329,6 +1360,24 @@ fn fragment_batches(fragments: &[Fragment], max_bytes: usize) -> Result<Vec<Vec<
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn default_source_uses_the_builtin_version_admitted_to_the_run() {
+		let node = "aidash://fixture";
+		let source = aidash_domain::registry::bindings::sources::NativeContext {
+			schema_version: 1,
+			source:
+				aidash_domain::registry::bindings::sources::NativeSource::WorkspaceObservation {},
+			context_source: None,
+		};
+		let mut declaration = source.declaration(&QualifiedRef::builtin(node, "workspace_read"));
+		let old = ["workspace_observe", "workspace_read"].map(|name| QualifiedRef {
+			version: "1.0.0".into(),
+			..QualifiedRef::builtin(node, name)
+		});
+		align_default_source_tools(&mut declaration, &old);
+		assert_eq!(declaration.tools.read, old);
+		assert_eq!(declaration.tools.detail, Some(old[0].clone()));
+	}
 	fn fragment(item: usize, bytes: usize) -> Fragment {
 		Fragment {
 			pointer: format!("/@text/{item}/{}", item + bytes),

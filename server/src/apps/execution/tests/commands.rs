@@ -345,7 +345,7 @@ async fn migration_seed_command_detects_drift_and_regenerates_only_owned_assets(
 		})
 		.collect::<Vec<_>>();
 	paths.extend(["forward", "backward"].map(|direction| {
-		format!("workspaces/sql/{direction}/0017_conversation_scratch_space.sql")
+		format!("workspaces/sql/{direction}/0021_conversation_scratch_space.sql")
 	}));
 	paths.extend([
 		"execution/sql/forward/0090_run_created_at.sql".to_owned(),

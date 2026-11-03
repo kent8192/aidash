@@ -65,7 +65,7 @@ pub fn core_provider(operation: &str) -> Option<&'static str> {
 		"capability_search" | "capability_describe" | "capability_load" | "capability_unload" => {
 			"core.exposure@1"
 		}
-		"file_search" | "file_read" | "apply_patch" => "core.files@1",
+		"file_search" | "file_read" | "apply_patch" | "attachment_copy" => "core.files@1",
 		"artifact_publish" => "core.artifacts@1",
 		"memory_mutate" | "memory_recall" | "memory_reflect" => "core.memory@1",
 		"shell" | "shell_poll" | "shell_cancel" | "code_interpreter" | "python_poll"

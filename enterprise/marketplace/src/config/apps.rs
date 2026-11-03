@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Installed app registry for marketplace.
 //!
 //! `reinhardt-admin startapp` automatically appends new apps here.

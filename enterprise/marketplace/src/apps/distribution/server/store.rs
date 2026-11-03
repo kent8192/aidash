@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 kent8192
+// SPDX-License-Identifier: BUSL-1.1
+// See enterprise/LICENSE.
+
 //! Marketplace-owned ORM persistence. No Cloud model or table is reachable here.
 use super::super::models::Document;
 use crate::{Error, Result};

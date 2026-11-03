@@ -1,4 +1,5 @@
 //! Application services.
+pub(crate) mod readability;
 pub(crate) mod snapshots;
 pub use super::models::states;
 pub mod channels;
