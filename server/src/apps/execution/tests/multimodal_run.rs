@@ -1312,12 +1312,12 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
 		"research",
 		"1.0.1",
-	)] = json!({"kind":"agent"});
+	)] = json!({"kind":"agent", "node":aidash_domain::nodes::NodeName::derived("acme")});
 	policy["subjects"][aidash_server::domain::qualified_agent(
 		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
 		"research-peer",
 		"1.0.1",
-	)] = json!({"kind":"agent"});
+	)] = json!({"kind":"agent", "node":aidash_domain::nodes::NodeName::derived("acme")});
 	let (status, body) = request(
 		&app,
 		&f.config.api_token,
