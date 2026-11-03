@@ -16,6 +16,7 @@ struct Fixture {
 	task: Task,
 	memory: Option<MemoryEmbedding>,
 	index: Option<(EntityRef, EntityRef, IndexingSpec)>,
+	workspace_scratch: Option<Uuid>,
 }
 impl Fixture {
 	fn new(kind: &str) -> Self {
@@ -24,7 +25,7 @@ impl Fixture {
                 "id":"target", "version":"1", "kind":kind, "name":{"en":"Target"}, "description":{"en":"Fixture"},
                 "config":{"coordinator":{"id":"coordinator", "version":"2"}},
             })).unwrap(),
-            operations: vec![], denied: None, delegated_agent: None, memory: None, index: None,
+            operations: vec![], denied: None, delegated_agent: None, memory: None, index: None, workspace_scratch: None,
             task: Task {
                 id: Uuid::from_u128(3), workspace_id: Uuid::from_u128(1), title:"Title".into(), description:"Goal".into(),
                 status:TaskStatus::Open, requirements:json!({}), owner:None, created_by:"subject:fixture".into(),
@@ -48,8 +49,9 @@ impl ConversationScope for Fixture {
 		title: &str,
 		goal: &str,
 		_: Option<&aidash_domain::nodes::NodeName>,
-		_: Option<Uuid>,
+		scratch_space_id: Option<Uuid>,
 	) -> Result<Workspace> {
+		self.workspace_scratch = scratch_space_id;
 		self.operations.push("workspace.create".into());
 		Ok(Workspace {
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
@@ -235,6 +237,7 @@ async fn conversation_retains_the_selected_scratch_space() {
 	input.scratch_space_id = Some(selected);
 	let result = conversation(&mut scope, input).await.unwrap();
 	assert_eq!(result.conversation.scratch_space_id, selected);
+	assert_eq!(scope.workspace_scratch, Some(selected));
 }
 
 #[rstest::rstest]
