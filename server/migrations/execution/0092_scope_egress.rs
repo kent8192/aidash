@@ -16,6 +16,15 @@ ColumnDefinition::new("connections_in_window", FieldType::Integer).with_not_null
 ],
 constraints: vec![
 Constraint::ForeignKey {
+name: "egress_scope_state_tenant_fkey".into(),
+columns: vec!["tenant".into()],
+referenced_table: "tenants".into(),
+referenced_columns: vec!["name".into()],
+on_delete: ForeignKeyAction::NoAction,
+on_update: ForeignKeyAction::NoAction,
+deferrable: None
+},
+Constraint::ForeignKey {
 name: "egress_scope_state_node_fkey".into(),
 columns: vec!["tenant".into(), "node".into()],
 referenced_table: "nodes".into(),
@@ -50,6 +59,15 @@ ColumnDefinition::new("sent_bytes", FieldType::BigInteger).with_not_null(true),
 ColumnDefinition::new("received_bytes", FieldType::BigInteger).with_not_null(true),
 ],
 constraints: vec![
+Constraint::ForeignKey {
+name: "egress_scope_daily_tenant_fkey".into(),
+columns: vec!["tenant".into()],
+referenced_table: "tenants".into(),
+referenced_columns: vec!["name".into()],
+on_delete: ForeignKeyAction::NoAction,
+on_update: ForeignKeyAction::NoAction,
+deferrable: None
+},
 Constraint::ForeignKey {
 name: "egress_scope_daily_scope_fkey".into(),
 columns: vec!["tenant".into(), "node".into(), "scope_id".into()],
@@ -89,6 +107,15 @@ ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true),
 ],
 constraints: vec![
 Constraint::ForeignKey {
+name: "egress_scope_connections_tenant_fkey".into(),
+columns: vec!["tenant".into()],
+referenced_table: "tenants".into(),
+referenced_columns: vec!["name".into()],
+on_delete: ForeignKeyAction::NoAction,
+on_update: ForeignKeyAction::NoAction,
+deferrable: None
+},
+Constraint::ForeignKey {
 name: "egress_scope_connections_scope_fkey".into(),
 columns: vec!["tenant".into(), "node".into(), "scope_id".into()],
 referenced_table: "egress_scope_state".into(),
@@ -118,6 +145,15 @@ ColumnDefinition::new("created_at", FieldType::TimestampTz).with_not_null(true),
 ColumnDefinition::new("delivered_at", FieldType::TimestampTz),
 ],
 constraints: vec![
+Constraint::ForeignKey {
+name: "egress_scope_events_tenant_fkey".into(),
+columns: vec!["tenant".into()],
+referenced_table: "tenants".into(),
+referenced_columns: vec!["name".into()],
+on_delete: ForeignKeyAction::NoAction,
+on_update: ForeignKeyAction::NoAction,
+deferrable: None
+},
 Constraint::ForeignKey {
 name: "egress_scope_events_scope_fkey".into(),
 columns: vec!["tenant".into(), "node".into(), "scope_id".into()],
