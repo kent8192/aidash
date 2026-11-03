@@ -897,6 +897,9 @@ test("new request preserves the Japanese conversation creation contract", async 
 }) => {
   const { errors } = await setup(page, { subject: true, locale: "ja-JP" });
   let payload: unknown;
+  await page.route("**/api/scratch-spaces**", (route) =>
+    route.fulfill({ json: [{ id: "scratch-one", name: "共有領域" }] }),
+  );
   await page.route("**/api/conversations", (route) => {
     payload = route.request().postDataJSON();
     return route.fulfill({ json: { workspace: { id: "workspace-two" } } });
@@ -908,7 +911,12 @@ test("new request preserves the Japanese conversation creation contract", async 
   await dialog
     .getByLabel("ゴール", { exact: true })
     .fill("Rustフレームワークを比較して");
-  await dialog.getByRole("combobox").selectOption("researcher@1.0.0");
+  await dialog
+    .getByRole("combobox", { name: "コーディネーター" })
+    .selectOption("researcher@1.0.0");
+  await dialog
+    .getByRole("combobox", { name: "スクラッチスペース" })
+    .selectOption("scratch-one");
   await dialog
     .getByRole("button", { name: "新しいゴール", exact: true })
     .click();
@@ -920,6 +928,7 @@ test("new request preserves the Japanese conversation creation contract", async 
     goal: "Rustフレームワークを比較して",
     target: { id: "researcher", version: "1.0.0" },
     target_kind: "agent",
+    scratch_space_id: "scratch-one",
   });
   expect(errors).toEqual([]);
 });

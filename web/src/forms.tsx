@@ -245,6 +245,7 @@ export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
       {where.field}
       <Field label={t("scratchSpace")}>
         <NativeSelect
+          aria-label={t("scratchSpace")}
           value={scratchId}
           onChange={(event) =>
             setScratchChoice({ node: where.node, id: event.target.value })
