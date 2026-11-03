@@ -409,7 +409,10 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 	let mut connection = lease.handle();
 	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
 	let workspace_id = Uuid::new_v4();
+	let scratch_space_id = fixture.scratch_space("acme").await;
 	let workspace = Workspace::build()
+		.scratch_space_id(scratch_space_id)
+		.created_by("alice")
 		.id(workspace_id)
 		.tenant("acme")
 		.node(node.clone())
@@ -569,14 +572,14 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0020_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0021_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"workspaces".to_owned(),
-			"0019_scratch_node_index".to_owned()
+			"0020_workspace_scratch_space".to_owned()
 		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
@@ -718,6 +721,39 @@ impl MigrationFixture {
 		] {
 			self.connection.execute(&sql, vec![]).await.unwrap();
 		}
+	}
+
+	async fn scratch_space(&self, tenant: &str) -> Uuid {
+		let id = Uuid::new_v4();
+		let node = aidash_domain::nodes::NodeName::derived(tenant).to_string();
+		let insert = Query::insert()
+			.into_table(Alias::new("scratch_spaces"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"node",
+					"name",
+					"creator",
+					"state",
+					"created_at",
+					"last_used_at",
+				]
+				.map(Alias::new),
+			)
+			.values_panic::<_, reinhardt::query::Value>([
+				id.into(),
+				tenant.into(),
+				node.into(),
+				"Fixture".into(),
+				"alice".into(),
+				"active".into(),
+				chrono::Utc::now().into(),
+				chrono::Utc::now().into(),
+			])
+			.to_string(PostgresQueryBuilder);
+		self.connection.execute(&insert, vec![]).await.unwrap();
+		id
 	}
 
 	/// Applies the history as it was before Issue #243's migrations.
@@ -1007,7 +1043,10 @@ async fn native_migrations_build_a_fresh_schema_and_preserve_records_on_replay(
 	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
 	let mut connection = lease.handle();
 	fixture.tenant_root("acme").await;
+	let scratch_space_id = fixture.scratch_space("acme").await;
 	let workspace = Workspace::build()
+		.scratch_space_id(scratch_space_id)
+		.created_by("alice")
 		.id(Uuid::new_v4())
 		.tenant("acme")
 		.node(aidash_domain::nodes::NodeName::derived("acme").to_string())
@@ -1330,7 +1369,10 @@ async fn management_refuses_fake_baseline_rollback_without_changing_data_or_hist
 	fixture.migrate().await;
 	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
 	fixture.tenant_root("acme").await;
+	let scratch_space_id = fixture.scratch_space("acme").await;
 	let workspace = Workspace::build()
+		.scratch_space_id(scratch_space_id)
+		.created_by("alice")
 		.id(Uuid::new_v4())
 		.tenant("acme")
 		.node(aidash_domain::nodes::NodeName::derived("acme").to_string())
@@ -1515,7 +1557,10 @@ async fn escaped_whitespace_checks_still_reject_blank_content(
 	fixture.migrate().await;
 	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
 	fixture.tenant_root("acme").await;
+	let scratch_space_id = fixture.scratch_space("acme").await;
 	let workspace = Workspace::build()
+		.scratch_space_id(scratch_space_id)
+		.created_by("alice")
 		.id(Uuid::new_v4())
 		.tenant("acme")
 		.node(aidash_domain::nodes::NodeName::derived("acme").to_string())
@@ -3695,26 +3740,26 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0017_conversation_scratch_space"),
 			("workspaces", "0018_scratch_space_model_state"),
 			("workspaces", "0019_scratch_node_index"),
+			("workspaces", "0020_workspace_scratch_space"),
 		])
 		.await;
 	fixture.tenant_root("scratch-upgrade").await;
-	let lease = DatabaseConnectionLease::register(fixture.connection.clone()).unwrap();
-	let mut connection = lease.handle();
 	let node = aidash_domain::nodes::NodeName::derived("scratch-upgrade").to_string();
 	let workspace_id = Uuid::new_v4();
-	let workspace = Workspace::build()
-		.id(workspace_id)
-		.tenant("scratch-upgrade")
-		.node(node.clone())
-		.title("Legacy conversation")
-		.goal("Upgrade")
-		.state(json!({}).into())
-		.revision(0)
-		.finish();
-	Workspace::objects()
-		.create_with_conn(&mut connection, &workspace)
-		.await
-		.unwrap();
+	let sql = Query::insert()
+		.into_table(Alias::new("workspaces"))
+		.columns(["id", "tenant", "node", "title", "goal", "state", "revision"].map(Alias::new))
+		.values_panic::<_, reinhardt::query::Value>([
+			workspace_id.into(),
+			"scratch-upgrade".into(),
+			node.clone().into(),
+			"Legacy conversation".into(),
+			"Upgrade".into(),
+			json!({}).into(),
+			0_i64.into(),
+		])
+		.to_string(PostgresQueryBuilder);
+	fixture.connection.execute(&sql, vec![]).await.unwrap();
 	let ids = [Uuid::new_v4(), Uuid::new_v4()];
 	for id in ids {
 		let sql = Query::insert()
@@ -3747,7 +3792,9 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 		fixture.connection.execute(&sql, vec![]).await.unwrap();
 	}
 	let before_backfill = chrono::Utc::now();
-	fixture.migrate().await;
+	fixture
+		.migrate_excluding(&[("workspaces", "0020_workspace_scratch_space")])
+		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let query = Query::select()
 		.columns(
@@ -3797,4 +3844,181 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 		.to_string(PostgresQueryBuilder);
 	let (nullable,): (String,) = sqlx::query_as(&nullable).fetch_one(&pool).await.unwrap();
 	assert_eq!(nullable, "NO");
+}
+
+#[rstest]
+#[tokio::test]
+async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture
+		.migrate_excluding(&[("workspaces", "0020_workspace_scratch_space")])
+		.await;
+	fixture.tenant_root("scratch-workspace-upgrade").await;
+	let tenant = "scratch-workspace-upgrade";
+	let workspace = Uuid::new_v4();
+	let node = aidash_domain::nodes::NodeName::derived(tenant).to_string();
+	let insert = Query::insert()
+		.into_table(Alias::new("workspaces"))
+		.columns(["id", "tenant", "node", "title", "goal", "state", "revision"].map(Alias::new))
+		.values_panic::<_, reinhardt::query::Value>([
+			workspace.into(),
+			tenant.into(),
+			node.clone().into(),
+			"Old workspace".into(),
+			"Upgrade".into(),
+			json!({}).into(),
+			0_i64.into(),
+		])
+		.to_string(PostgresQueryBuilder);
+	fixture.connection.execute(&insert, vec![]).await.unwrap();
+	let owner = Query::insert()
+		.into_table(Alias::new("authorization_workspaces"))
+		.columns(["workspace_id", "tenant", "owner_subject"].map(Alias::new))
+		.values_panic::<_, reinhardt::query::Value>([
+			workspace.into(),
+			tenant.into(),
+			"alice".into(),
+		])
+		.to_string(PostgresQueryBuilder);
+	fixture.connection.execute(&owner, vec![]).await.unwrap();
+	// A Workspace without an owner record falls back to the earliest Task.
+	let task_workspace = Uuid::new_v4();
+	let insert = Query::insert()
+		.into_table(Alias::new("workspaces"))
+		.columns(["id", "tenant", "node", "title", "goal", "state", "revision"].map(Alias::new))
+		.values_panic::<_, reinhardt::query::Value>([
+			task_workspace.into(),
+			tenant.into(),
+			node.clone().into(),
+			"Task workspace".into(),
+			"Upgrade".into(),
+			json!({}).into(),
+			0_i64.into(),
+		])
+		.to_string(PostgresQueryBuilder);
+	fixture.connection.execute(&insert, vec![]).await.unwrap();
+	for (creator, created_at) in [
+		("early", "2020-01-01T00:00:00Z"),
+		("late", "2021-01-01T00:00:00Z"),
+	] {
+		let sql = Query::insert()
+			.into_table(Alias::new("tasks"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"workspace_id",
+					"title",
+					"description",
+					"created_by",
+					"created_at",
+				]
+				.map(Alias::new),
+			)
+			.values_panic::<_, reinhardt::query::Value>([
+				Uuid::new_v4().into(),
+				tenant.into(),
+				task_workspace.into(),
+				"Task".into(),
+				"Upgrade".into(),
+				creator.into(),
+				chrono::DateTime::parse_from_rfc3339(created_at)
+					.unwrap()
+					.with_timezone(&chrono::Utc)
+					.into(),
+			])
+			.to_string(PostgresQueryBuilder);
+		fixture.connection.execute(&sql, vec![]).await.unwrap();
+	}
+
+	// A conversation-created Workspace retains its previously selected space.
+	let conversation_workspace = Uuid::new_v4();
+	let existing_space = fixture.scratch_space(tenant).await;
+	let sql = Query::insert()
+		.into_table(Alias::new("workspaces"))
+		.columns(["id", "tenant", "node", "title", "goal", "state", "revision"].map(Alias::new))
+		.values_panic::<_, reinhardt::query::Value>([
+			conversation_workspace.into(),
+			tenant.into(),
+			node.clone().into(),
+			"Conversation".into(),
+			"Upgrade".into(),
+			json!({}).into(),
+			0_i64.into(),
+		])
+		.to_string(PostgresQueryBuilder);
+	fixture.connection.execute(&sql, vec![]).await.unwrap();
+	let sql = Query::insert()
+		.into_table(Alias::new("conversations"))
+		.columns(
+			[
+				"id",
+				"tenant",
+				"workspace_id",
+				"scratch_space_id",
+				"target",
+				"target_kind",
+				"created_by",
+			]
+			.map(Alias::new),
+		)
+		.values_panic::<_, reinhardt::query::Value>([
+			Uuid::new_v4().into(),
+			tenant.into(),
+			conversation_workspace.into(),
+			existing_space.into(),
+			"assistant".into(),
+			"agent".into(),
+			"carol".into(),
+		])
+		.to_string(PostgresQueryBuilder);
+	fixture.connection.execute(&sql, vec![]).await.unwrap();
+
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let sql = Query::select()
+		.columns(
+			[
+				("w", "scratch_space_id"),
+				("w", "created_by"),
+				("s", "creator"),
+				("s", "node"),
+			]
+			.map(|(table, column)| (Alias::new(table), Alias::new(column))),
+		)
+		.from_as(Alias::new("workspaces"), Alias::new("w"))
+		.join(
+			reinhardt::query::JoinType::InnerJoin,
+			reinhardt::query::TableRef::table_alias(Alias::new("scratch_spaces"), Alias::new("s")),
+			Expr::col((Alias::new("w"), Alias::new("scratch_space_id")))
+				.equals((Alias::new("s"), Alias::new("id"))),
+		)
+		.and_where(Expr::col((Alias::new("w"), Alias::new("id"))).eq(workspace))
+		.to_string(PostgresQueryBuilder);
+	let (_, starter, creator, assigned_node): (Uuid, String, String, String) =
+		sqlx::query_as(&sql).fetch_one(&pool).await.unwrap();
+	assert_eq!(
+		(starter.as_str(), creator.as_str(), assigned_node.as_str()),
+		("alice", "alice", node.as_str())
+	);
+	let sql = Query::select()
+		.column(Alias::new("created_by"))
+		.from(Alias::new("workspaces"))
+		.and_where(Expr::col("id").eq(task_workspace))
+		.to_string(PostgresQueryBuilder);
+	let (task_starter,): (String,) = sqlx::query_as(&sql).fetch_one(&pool).await.unwrap();
+	assert_eq!(task_starter, "early");
+	let sql = Query::select()
+		.columns(["scratch_space_id", "created_by"].map(Alias::new))
+		.from(Alias::new("workspaces"))
+		.and_where(Expr::col("id").eq(conversation_workspace))
+		.to_string(PostgresQueryBuilder);
+	let (selected, conversation_starter): (Uuid, String) =
+		sqlx::query_as(&sql).fetch_one(&pool).await.unwrap();
+	assert_eq!(
+		(selected, conversation_starter.as_str()),
+		(existing_space, "carol")
+	);
 }

@@ -11,6 +11,61 @@ use uuid::Uuid;
 
 const SOURCE: &str = "aidash://source";
 
+async fn fixture_scratch_space(
+	f: &aidash_server::federation::Federation,
+	tenant: &str,
+	node: &str,
+) -> Uuid {
+	let id = Uuid::new_v4();
+	let now = chrono::Utc::now();
+	let sql = Query::insert()
+		.into_table(Alias::new("scratch_spaces"))
+		.columns(
+			[
+				"id",
+				"tenant",
+				"node",
+				"name",
+				"creator",
+				"state",
+				"created_at",
+				"last_used_at",
+			]
+			.map(Alias::new),
+		)
+		.values_panic::<_, reinhardt::query::Value>([
+			id.into(),
+			tenant.into(),
+			node.into(),
+			"Graph fixture".into(),
+			"alice".into(),
+			"active".into(),
+			now.into(),
+			now.into(),
+		])
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&sql)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let sql = Query::insert()
+		.into_table(Alias::new("scratch_space_settings"))
+		.columns(["space_id", "tenant", "settings"].map(Alias::new))
+		.values_panic::<_, reinhardt::query::Value>([
+			id.into(),
+			tenant.into(),
+			serde_json::to_value(aidash_domain::scratch::ScratchSettings::default())
+				.unwrap()
+				.into(),
+		])
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&sql)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	id
+}
+
 use common::Source;
 
 async fn graph(
@@ -191,6 +246,12 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	.await;
 	assert_eq!(status, 200, "{written}");
 	let other_workspace = Uuid::new_v4();
+	let other_space = fixture_scratch_space(
+		&f,
+		"other",
+		aidash_domain::nodes::NodeName::derived("other").as_str(),
+	)
+	.await;
 	{
 		let query_bind_1 = other_workspace;
 		sqlx::query(
@@ -202,6 +263,8 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 					Alias::new("goal"),
 					Alias::new("tenant"),
 					Alias::new("node"),
+					Alias::new("scratch_space_id"),
+					Alias::new("created_by"),
 				])
 				.from_subquery(
 					reinhardt::query::Query::select()
@@ -215,6 +278,8 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 						.expr(Expr::cust(
 							"(SELECT name FROM nodes WHERE tenant = 'other' AND is_default)",
 						))
+						.expr(Expr::value(other_space))
+						.expr(Expr::value("alice"))
 						.to_owned(),
 				)
 				.to_string(PostgresQueryBuilder),
@@ -714,6 +779,7 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 	)
 	.await;
 	assert_eq!(status, 200, "{mapping}");
+	let scratch_space = fixture_scratch_space(&f, "sparse", source.receiver.node.as_str()).await;
 	let ids: Vec<Uuid> = (1..=4096).map(Uuid::from_u128).collect();
 	for chunk in ids.chunks(256) {
 		let mut workspaces = Query::insert();
@@ -723,6 +789,8 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 			Alias::new("goal"),
 			Alias::new("tenant"),
 			Alias::new("node"),
+			Alias::new("scratch_space_id"),
+			Alias::new("created_by"),
 		]);
 		let mut authorities = Query::insert();
 		authorities
@@ -739,6 +807,8 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 				IntoValue::into_value("Hidden goal"),
 				IntoValue::into_value("sparse"),
 				IntoValue::into_value(source.receiver.node.as_str()),
+				IntoValue::into_value(scratch_space),
+				IntoValue::into_value("alice"),
 			]);
 			authorities.values_panic([
 				IntoValue::into_value(*id),
@@ -766,6 +836,8 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 					Alias::new("goal"),
 					Alias::new("tenant"),
 					Alias::new("node"),
+					Alias::new("scratch_space_id"),
+					Alias::new("created_by"),
 				])
 				.from_subquery(
 					reinhardt::query::Query::select()
@@ -779,6 +851,8 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 						.expr(Expr::cust(
 							"(SELECT name FROM nodes WHERE tenant = 'sparse' AND is_default)",
 						))
+						.expr(Expr::value(scratch_space))
+						.expr(Expr::value("alice"))
 						.to_owned(),
 				)
 				.to_string(PostgresQueryBuilder),

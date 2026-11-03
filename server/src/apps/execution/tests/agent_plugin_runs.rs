@@ -249,6 +249,25 @@ async fn world(fixture: ApplicationFixture, down: bool) -> World {
 	)
 	.await;
 	assert_eq!(status, 200, "{workspace}");
+	// A Workspace created without a conversation has a dedicated space before
+	// its Run reaches worker admission.
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let (status, spaces) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/scratch-spaces?node={node}"),
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 200, "{spaces}");
+	assert!(
+		spaces
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|space| space["name"] == "Plugin work" && space["creator"] == "alice")
+	);
 	let (status, task) = request(
 		&app,
 		&token,

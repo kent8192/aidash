@@ -425,3 +425,124 @@ async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
 	}
 	assert_eq!(spaces[0], spaces[1]);
 }
+
+#[rstest]
+#[tokio::test]
+async fn workspace_run_loses_scratch_authority_when_starter_is_removed(
+	#[future] database: DatabaseFixture,
+) {
+	use crate::apps::identity::services::{access::Access, identity::SubjectIdentity};
+	use aidash_application::scratch::scratch_space_for_run;
+	use reinhardt::query::{IntoValue as _, QueryStatementBuilder as _};
+	use serde_json::json;
+
+	let database = database.await;
+	let tenant = "workspace-scratch-revoke";
+	let scope = database.tenant(tenant).await;
+	let node = NodeName::derived(tenant);
+	let workspace = Uuid::new_v4();
+	let now = Utc::now();
+	let mut space = ScratchSpace {
+		id: Uuid::new_v4(),
+		node: node.clone(),
+		name: "Shared".into(),
+		creator: "alice".into(),
+		state: ScratchState::Active,
+		revision: 0,
+		wipe_generation: 0,
+		settings: ScratchSettings::default(),
+		members: BTreeSet::from(["bob".into()]),
+		created_at: now,
+		last_used_at: now,
+	};
+	let mut tx = database.begin_in(&scope).await;
+	insert(&mut *tx, tenant, &space).await.unwrap();
+	let (sql, values) = Query::insert()
+		.into_table(Alias::new("workspaces"))
+		.columns(
+			[
+				"id",
+				"tenant",
+				"node",
+				"title",
+				"goal",
+				"state",
+				"revision",
+				"scratch_space_id",
+				"created_by",
+			]
+			.map(Alias::new),
+		)
+		.values_panic([
+			workspace.into_value(),
+			tenant.into_value(),
+			node.as_str().into_value(),
+			"Shared work".into_value(),
+			"Work".into_value(),
+			json!({}).into_value(),
+			0_i64.into_value(),
+			space.id.into_value(),
+			"bob".into_value(),
+		])
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, convert_values(values)).await.unwrap();
+	tx.commit().await.unwrap();
+	let bundle: aidash_domain::policy::PolicyBundle = serde_json::from_value(json!({
+        "tenant":tenant,"subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},
+        "policies":[{"id":"all","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]
+    })).unwrap();
+	let identity = SubjectIdentity {
+		http_session: None,
+		credential_id: Uuid::new_v4(),
+		tenant: tenant.into(),
+		subject: "bob".into(),
+	};
+	let snapshot = aidash_application::authorization::Snapshot {
+		revision: 1,
+		bundle,
+	};
+	let pool = database.pool().await;
+	let mut access = Access::from_transaction(
+		database.begin_in(&scope).await,
+		&pool,
+		"aidash://receiver",
+		None,
+		&identity,
+		snapshot,
+	);
+	access.subjects = vec!["bob".into()];
+	access.audit = false;
+	let raw: aidash_domain::RawRun = serde_json::from_value(json!({
+		"id":Uuid::new_v4(), "task_id":Uuid::new_v4(), "workspace_id":workspace, "node":node,
+		"home_node":format!("aidash://receiver/{node}"), "agent_id":"agent", "agent_version":"1",
+		"phase":"READY", "control":"ACTIVE", "step":0, "revision":0, "observed_input_seq":0,
+		"ledger_worker_ready":true, "error":null, "lease_owner":null, "lease_until":null,
+		"updated_at":now, "context":aidash_domain::context::Context::default(),
+		"pending":{"state_version":1,"data":{},"recovery":{"retry":null,"lease_recoveries":0}}
+	}))
+	.unwrap();
+	let run = raw.decode().unwrap();
+	let policy = crate::config::ScratchOperatorPolicy::default();
+	let mut services = NativeScratchServices { policy: &policy };
+	let mut adapter = ScratchAdapter {
+		access: &mut access,
+		services: &mut services,
+		person_override: None,
+	};
+	assert_eq!(
+		scratch_space_for_run(&mut adapter, &run, now)
+			.await
+			.unwrap(),
+		space.id
+	);
+	space.members.clear();
+	save(&mut **adapter.access.tx, tenant, &space)
+		.await
+		.unwrap();
+	assert!(matches!(
+		scratch_space_for_run(&mut adapter, &run, now).await,
+		Err(aidash_application::Error::Forbidden)
+	));
+	drop(adapter);
+	access.finish(Ok(())).await.unwrap();
+}
