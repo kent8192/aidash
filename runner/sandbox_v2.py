@@ -79,12 +79,56 @@ def enter_user_root(root, cwd, docker_enabled):
     drop_user_capabilities(docker_enabled)
 
 
+def save_image_environment(store, environ):
+    """Capture image-provided environment outside the guest filesystem."""
+    import json
+    import uuid
+    from pathlib import Path
+    store = Path(store)
+    values = {key: value for key, value in environ.items()
+              if not key.startswith(('AIDASH_', 'KUBERNETES_')) and key != 'HOSTNAME'}
+    data = json.dumps(values, separators=(',', ':')).encode()
+    if len(data) > 131072:
+        raise ValueError('image environment exceeds the limit')
+    temporary = store / ('environment.' + uuid.uuid4().hex + '.new')
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'wb') as file:
+            file.write(data)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, store / 'environment.json')
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def image_environment(root):
+    import json
+    fd = os.open(os.path.join(os.path.dirname(root), 'environment.json'), os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, 'rb') as file:
+        data = file.read(131073)
+    if len(data) > 131072:
+        raise ValueError('image environment exceeds the limit')
+    values = json.loads(data)
+    if not isinstance(values, dict) or any(not isinstance(k, str) or not isinstance(v, str)
+            or not k or '=' in k or '\x00' in k or '\x00' in v for k, v in values.items()):
+        raise ValueError('invalid image environment')
+    environment = {key: value for key, value in values.items()
+                   if not key.startswith(('AIDASH_', 'KUBERNETES_'))}
+    for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'NO_PROXY', 'no_proxy'):
+        if key in os.environ:
+            environment[key] = os.environ[key]
+    return environment
+
+
 def chroot_command(root, cwd, argv, docker_enabled):
     """Enter the persistent system root and permanently reduce user authority."""
     if not argv:
         raise ValueError('command is required')
+    validate_system_root(root)
+    environment = image_environment(root)
     enter_user_root(root, cwd, docker_enabled)
-    os.execvp(argv[0], argv)
+    os.execvpe(argv[0], argv, environment)
 
 
 def run_admission_probe(root, docker_enabled, kind, targets):
@@ -367,6 +411,7 @@ if __name__ == '__main__':
         from pathlib import Path
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from execution_pod import initialize_system_root
+        save_image_environment('/scratch-image', os.environ)
         initialize_system_root('/', '/scratch-image', reset=os.environ.get('AIDASH_RESET_SYSTEM') == 'true')
         raise SystemExit(0)
     if sys.argv[1:] == ['bootstrap']:

@@ -132,6 +132,27 @@ class SystemTreeTest(unittest.TestCase):
             self.assertEqual((root / 'usr' / 'bin' / 'base').read_text(), 'image')
 
 
+class ImageEnvironmentRegressionTest(unittest.TestCase):
+    def test_image_environment_is_applied_only_to_guest_commands(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from sandbox_v2 import chroot_command, save_image_environment
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'rootfs'
+            root.mkdir()
+            save_image_environment(root.parent, {'PATH': '/opt/rust/bin:/usr/bin', 'CARGO_HOME': '/cargo',
+                                                 'AIDASH_PROCESS_LIMIT': 'evil'})
+            with patch('sandbox_v2.enter_user_root'), patch('os.execvpe') as execute, \
+                 patch.dict('os.environ', {'AIDASH_PROCESS_LIMIT': '128', 'HTTPS_PROXY': 'http://proxy'}, clear=True):
+                chroot_command(str(root), '.', ['/bin/sh'], False)
+            env = execute.call_args.args[2]
+            self.assertEqual(env['PATH'], '/opt/rust/bin:/usr/bin')
+            self.assertEqual(env['CARGO_HOME'], '/cargo')
+            self.assertEqual(env['HTTPS_PROXY'], 'http://proxy')
+            self.assertNotIn('AIDASH_PROCESS_LIMIT', env)
+
+
 class StartupStorageRegressionTest(unittest.TestCase):
     def test_stale_staging_is_removed_before_reusing_existing_root(self):
         import tempfile
@@ -1302,7 +1323,7 @@ from sandbox_v2 import chroot_command
 os.environ['AIDASH_PROCESS_LIMIT'] = '128'
 def execute(*args):
     print(*resource.getrlimit(resource.RLIMIT_NPROC))
-with patch('os.chroot'), patch('os.chdir'), patch('sandbox_v2.validate_system_root'), patch('sandbox_v2.drop_user_capabilities'), patch('os.execvp', execute):
+with patch('os.chroot'), patch('os.chdir'), patch('sandbox_v2.validate_system_root'), patch('sandbox_v2.image_environment', return_value={}), patch('sandbox_v2.drop_user_capabilities'), patch('os.execvpe', execute):
     chroot_command('/rootfs', '.', ['/bin/true'], False)
 """
         result = subprocess.run([sys.executable, '-c', code], cwd=os.path.dirname(__file__),
@@ -1712,4 +1733,3 @@ class ReviewRegressionTest(unittest.TestCase):
                 controller._execute_command(operation)
             result = controller.command_result(operation)
             self.assertEqual((result['status'], result['exit_code'], result['stdout']), ('completed', 127, 'b2s='))
-
