@@ -463,12 +463,9 @@ class ExecutionPodController:
             raise ExecutionPodError('admission_failed', 'Execution Pod identity evidence is incomplete')
         evidence = self.backend.guard_execution_pod(pod, settings, 'execution', container_id, epoch)
         self._record_guard(pod, 'execution', container_id, epoch, host_evidence=evidence)
-        python = ['/.aidash-helpers/loader', '--library-path',
-                  '/.aidash-helpers/lib:/.aidash-helpers/python/lib',
-                  '/.aidash-helpers/python/bin/python3', '-I', '/.aidash-helpers/user_probe.py']
         mode = 'docker' if settings['docker_enabled'] else 'normal'
         result = self.backend.kube(['exec', name, '-c', 'execution', '--'] +
-            helper_command('chroot', mode, '/scratch-system/image-root/rootfs', '.', *python))
+            helper_command('probe', mode, '/scratch-system/image-root/rootfs', 'user'))
         try:
             report = json.loads(result.stdout)
             verify_user_probe(report, docker=settings['docker_enabled'],
@@ -550,13 +547,9 @@ print(json.dumps(r))'''
                     time.sleep(.1)
                 else:
                     raise ValueError('network UDP positive controls unavailable')
-            python = ['/.aidash-helpers/loader', '--library-path',
-                      '/.aidash-helpers/lib:/.aidash-helpers/python/lib',
-                      '/.aidash-helpers/python/bin/python3', '-I', '/.aidash-helpers/network_probe.py',
-                      'docker' if settings['docker_enabled'] else 'normal', json.dumps(targets)]
             mode = 'docker' if settings['docker_enabled'] else 'normal'
             result = self.backend.kube(['exec', pod_name, '-c', 'execution', '--'] +
-                helper_command('chroot', mode, '/scratch-system/image-root/rootfs', '.', *python), timeout=45)
+                helper_command('probe', mode, '/scratch-system/image-root/rootfs', 'network', json.dumps(targets)), timeout=45)
             report = json.loads(result.stdout)
             spoof_seen = False
             if settings['docker_enabled']:
@@ -1432,6 +1425,8 @@ def verify_user_probe(report, *, docker, processes):
                        or report.get('process_limit_enforced') is not True
                        or report.get('process_limit_unraiseable') is not True):
         raise ValueError('user process ceiling is not enforced')
+    if any(report.get(key) is not True for key in ('system_absent', 'user_namespace_blocked', 'proc_root_blocked')):
+        raise ValueError('chroot isolation evidence is incomplete')
     if report.get('service_account_absent') is not True:
         raise ValueError('service account token is exposed')
     if report.get('root_writable') is not True or report.get('helpers_read_only') is not True:

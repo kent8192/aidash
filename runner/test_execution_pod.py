@@ -955,9 +955,13 @@ class RootAdmissionTest(unittest.TestCase):
         report = {'uid': 0, 'kernel': '4.19.0-gvisor', 'no_new_privs': 1,
                   'caps': {name: 0 for name in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')},
                   'process_limit': [128, 128], 'process_limit_enforced': True, 'process_limit_unraiseable': True,
+                  'system_absent': True, 'user_namespace_blocked': True, 'proc_root_blocked': True,
                   'service_account_absent': True, 'raw_socket': False,
                   'root_writable': True, 'helpers_read_only': True}
         verify_user_probe(report, docker=False, processes=128)
+        for key in ('system_absent', 'user_namespace_blocked', 'proc_root_blocked'):
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, 'chroot'):
+                verify_user_probe(dict(report, **{key: False}), docker=False, processes=128)
         for field in report['caps']:
             for capability in (18, 21):
                 bad = dict(report, caps=dict(report['caps'], **{field: 1 << capability}))
@@ -1004,6 +1008,29 @@ class RootAdmissionTest(unittest.TestCase):
                     node_guard.handle(request)
 
 
+class TrustedProbeRegressionTest(unittest.TestCase):
+    def test_rejects_symlinked_system_root(self):
+        import tempfile
+        from pathlib import Path
+        from sandbox_v2 import validate_system_root
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / 'image-root'
+            image.mkdir()
+            (image / 'rootfs').symlink_to('/')
+            with self.assertRaises(ValueError):
+                validate_system_root(str(image / 'rootfs'))
+
+    def test_probe_runs_after_chroot_without_executing_untrusted_loader(self):
+        import os
+        from unittest.mock import patch
+        from sandbox_v2 import run_admission_probe
+        with patch('sandbox_v2.enter_user_root') as enter, \
+             patch('user_probe.probe', return_value={'evidence': True}), \
+             patch('os.execvp', side_effect=AssertionError('untrusted exec')):
+            self.assertEqual(run_admission_probe('/rootfs', False, 'user', None), {'evidence': True})
+            enter.assert_called_once_with('/rootfs', '.', False)
+
+
 class ExecProcessLimitTest(unittest.TestCase):
     def test_chroot_exec_applies_limit_to_new_process(self):
         import os
@@ -1016,7 +1043,7 @@ from sandbox_v2 import chroot_command
 os.environ['AIDASH_PROCESS_LIMIT'] = '128'
 def execute(*args):
     print(*resource.getrlimit(resource.RLIMIT_NPROC))
-with patch('os.chroot'), patch('os.chdir'), patch('sandbox_v2.drop_user_capabilities'), patch('os.execvp', execute):
+with patch('os.chroot'), patch('os.chdir'), patch('sandbox_v2.validate_system_root'), patch('sandbox_v2.drop_user_capabilities'), patch('os.execvp', execute):
     chroot_command('/rootfs', '.', ['/bin/true'], False)
 """
         result = subprocess.run([sys.executable, '-c', code], cwd=os.path.dirname(__file__),
@@ -1290,6 +1317,7 @@ class DockerAdmissionTest(unittest.TestCase):
                            'CapBnd': allowed, 'CapAmb': 0},
                   'process_limit': [128, 128], 'process_limit_enforced': False,
                   'process_limit_unraiseable': True, 'service_account_absent': True,
+                  'system_absent': True, 'user_namespace_blocked': True, 'proc_root_blocked': True,
                   'raw_socket': True, 'root_writable': True, 'helpers_read_only': True}
         verify_user_probe(report, docker=True, processes=128)
         with self.assertRaisesRegex(ValueError, 'raw'):

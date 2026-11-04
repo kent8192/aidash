@@ -1,4 +1,5 @@
 """Admission evidence from an actual root user child, never from bootstrap."""
+import ctypes
 import errno
 import json
 import os
@@ -81,12 +82,22 @@ def probe():
         raw_socket = True
     except OSError:
         raw_socket = False
+    libc = ctypes.CDLL(None, use_errno=True)
+    ctypes.set_errno(0)
+    user_namespace_blocked = libc.unshare(0x10000000) == -1 and ctypes.get_errno() == errno.EPERM
+    try:
+        os.readlink('/proc/1/root')
+        proc_root_blocked = False
+    except OSError as error:
+        proc_root_blocked = error.errno in (errno.EACCES, errno.EPERM)
     filename = '.aidash-admission-' + str(os.getpid())
     return {'uid': os.getuid(), 'kernel': os.uname().release,
             'no_new_privs': int(fields['NoNewPrivs']),
             'caps': {key: int(fields[key], 16) for key in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')},
             'process_limit': [soft, hard], 'process_limit_unraiseable': unraiseable,
             'process_limit_enforced': process_limit_probe(hard), 'raw_socket': raw_socket,
+            'system_absent': not os.path.lexists('/scratch-system'),
+            'user_namespace_blocked': user_namespace_blocked, 'proc_root_blocked': proc_root_blocked,
             'service_account_absent': not Path('/var/run/secrets/kubernetes.io/serviceaccount/token').exists(),
             'root_writable': writable('/' + filename),
             'helpers_read_only': not writable('/.aidash-helpers/' + filename)}

@@ -49,12 +49,23 @@ def drop_user_capabilities(docker_enabled):
     check(libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0))
 
 
-def chroot_command(root, cwd, argv, docker_enabled):
-    """Enter the persistent system root and permanently reduce user authority."""
-    if not isinstance(cwd, str) or not argv:
-        raise ValueError('cwd and command are required')
+def validate_system_root(root):
+    """Reject attacker-controlled links in the privileged chroot path."""
+    import stat
+    root = os.path.abspath(root)
+    if root == '/' or os.path.realpath(root) == '/':
+        raise ValueError('system root cannot be the container root')
+    for path in (os.path.dirname(root), root):
+        if not stat.S_ISDIR(os.lstat(path).st_mode):
+            raise ValueError('system root must be a directory without symlinks')
+
+
+def enter_user_root(root, cwd, docker_enabled):
+    if not isinstance(cwd, str):
+        raise ValueError('cwd is required')
     if cwd.startswith('/') or '..' in cwd.split('/'):
         raise ValueError('cwd must be relative to /scratch')
+    validate_system_root(root)
     import resource
     process_limit = int(os.environ['AIDASH_PROCESS_LIMIT'])
     if process_limit < 32:
@@ -66,7 +77,30 @@ def chroot_command(root, cwd, argv, docker_enabled):
         raise ValueError('cwd must resolve beneath /scratch')
     os.chdir(target)
     drop_user_capabilities(docker_enabled)
+
+
+def chroot_command(root, cwd, argv, docker_enabled):
+    """Enter the persistent system root and permanently reduce user authority."""
+    if not argv:
+        raise ValueError('command is required')
+    enter_user_root(root, cwd, docker_enabled)
     os.execvp(argv[0], argv)
+
+
+def run_admission_probe(root, docker_enabled, kind, targets):
+    # Load trusted code and dependencies before entering the writable image.
+    import json
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import user_probe
+    import network_probe
+    enter_user_root(root, '.', docker_enabled)
+    if kind == 'user':
+        return user_probe.probe()
+    if kind == 'network':
+        return network_probe.probe(json.loads(targets), docker_enabled)
+    raise ValueError('invalid probe kind')
 
 
 def mount_rootfs(docker_enabled):
@@ -74,6 +108,7 @@ def mount_rootfs(docker_enabled):
     import stat
 
     root = '/scratch-system/image-root/rootfs'
+    validate_system_root(root)
     libc = ctypes.CDLL(None, use_errno=True)
     runtime = root
     for component in ('run', 'aidash'):
@@ -382,6 +417,12 @@ if __name__ == '__main__':
     if len(sys.argv) == 3 and sys.argv[1] == 'result':
         import json
         print(json.dumps(read_result(sys.argv[2])))
+        raise SystemExit(0)
+    if len(sys.argv) in (5, 6) and sys.argv[1] == 'probe' and sys.argv[2] in ('docker', 'normal'):
+        import json
+        result = run_admission_probe(sys.argv[3], sys.argv[2] == 'docker', sys.argv[4],
+                                     sys.argv[5] if len(sys.argv) == 6 else None)
+        print(json.dumps(result, separators=(',', ':')))
         raise SystemExit(0)
     if len(sys.argv) >= 6 and sys.argv[1] == 'chroot' and sys.argv[2] in ('docker', 'normal'):
         chroot_command(sys.argv[3], sys.argv[4], sys.argv[5:], sys.argv[2] == 'docker')
