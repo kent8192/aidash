@@ -300,19 +300,36 @@ forwards absolute-form requests. It checks the scope's host allowlist and reject
 non-public resolved addresses even when all hosts are enabled. All-host access
 also requires the operator's Offering setting. The default traffic allowance is
 100 GiB sent and 100 GiB received per scope per UTC day, with no request-count
-limit. The default anomaly rule suspends the scope after more than 600 new
-connection attempts in one minute, including hosts denied by the allowlist; an operator must lift the suspension. Hosts longer than 253 bytes are rejected. The authority
-must emit an operator notification when it suspends a scope. Each gateway
-instance permits at most 64 concurrent proxy connections per scope by default,
-using a separate pool from the External service listener. Idle proxy connections
-close after five minutes and every proxy connection closes after 24 hours. The
-gateway rechecks suspension at least every five seconds, including while idle.
-The authority must verify opaque credentials in constant time, using fixed-length
-random tokens; credentials are excluded from connection records and logs.
+limit. External service traffic is accounted in batches after forwarding; each
+active stream can exceed a limit by up to one batch plus one chunk. Once a
+scope or service budget is exhausted, new admissions are refused until the next
+UTC day. The default anomaly rule suspends the scope after more than 600 new
+connection attempts in one minute, including hosts denied by the allowlist; an
+operator must lift the suspension. Hosts longer than 253 bytes are rejected. The
+authority must emit an operator notification when it suspends a scope.
+
+Each gateway instance defaults to 64 simultaneous tunnels per scope, 32 per
+Tenant and 1,024 overall. The Tenant and global limits can be configured in the
+capability profile; the Tenant limit must be positive and lower than the global
+limit. Capacity exhaustion identifies the scope, Tenant or global limit in its
+error code. DNS resolution and a stalled client write each have a 30-second
+deadline. Idle tunnels close after five minutes and all tunnels close after 24
+hours. The gateway reauthenticates the credential and reloads scope and host
+policy every five seconds, including while idle. Revocation or a narrowed host
+allowlist closes an existing tunnel. Three consecutive failed or timed-out
+checks close it as `egress_authority_unavailable`; they are not reported as a
+suspension. The authority must verify opaque credentials in constant time, using
+fixed-length random tokens; credentials are excluded from records and logs.
+
+Connection and event row retention remains a follow-up; operators must account
+for their storage until an automatic retention policy is implemented.
 
 Connection records contain scope, host, port, sent and received byte counts,
-duration and outcome, rather than request paths or bodies. An interrupted
-connection may retain unused reserved budget if the gateway terminates before
+duration and outcome, rather than request paths or bodies. Invalid targets are
+recorded when a bounded host and port can be parsed; malformed targets without
+one are rejected without retaining the raw request. A record is created
+before the connection starts and updated when it ends; a process crash or
+sustained audit-store failure can leave its last byte counts incomplete. An interrupted connection may retain unused reserved budget if the gateway terminates before
 returning it. The separate path-level External service route remains responsible
 for attaching Tenant Secrets; scope-based admission for that route is not yet
 wired. Its integration route is `/v2/services/<service>/<path>` with the scope
