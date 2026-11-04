@@ -195,6 +195,7 @@ class FullDiskRegressionTest(unittest.TestCase):
             self.assertEqual(len(calls), 2)
             self.assertFalse(reserve.exists())
             self.assertFalse(disk_tolerant_track(lambda: (_ for _ in ()).throw(OSError(errno.ENOSPC, 'full')), reserve))
+            self.assertFalse(disk_tolerant_track(lambda: (_ for _ in ()).throw(OSError(errno.EDQUOT, 'quota')), reserve))
 
 
 class ImageEnvironmentRegressionTest(unittest.TestCase):

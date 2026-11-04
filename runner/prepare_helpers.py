@@ -34,7 +34,7 @@ def prepare_space_reserve(path, size=16 << 20):
         finally:
             os.close(fd)
     except OSError as error:
-        if error.errno not in (errno.ENOSPC, errno.EOPNOTSUPP, errno.ENOSYS):
+        if error.errno not in (errno.ENOSPC, errno.EDQUOT, errno.EOPNOTSUPP, errno.ENOSYS):
             raise
 
 

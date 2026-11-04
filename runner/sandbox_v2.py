@@ -261,7 +261,7 @@ def disk_tolerant_track(action, reserve, on_full=None):
         action()
         return True
     except OSError as error:
-        if error.errno != errno.ENOSPC:
+        if error.errno not in (errno.ENOSPC, errno.EDQUOT):
             raise
     if on_full is not None:
         on_full.set()
@@ -273,7 +273,7 @@ def disk_tolerant_track(action, reserve, on_full=None):
         action()
         return True
     except OSError as error:
-        if error.errno != errno.ENOSPC:
+        if error.errno not in (errno.ENOSPC, errno.EDQUOT):
             raise
         return False
 

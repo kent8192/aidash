@@ -61,7 +61,7 @@ def write_status(path):
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     except OSError as error:
-        return 'full' if error.errno == errno.ENOSPC else 'denied'
+        return 'full' if error.errno in (errno.ENOSPC, errno.EDQUOT) else 'denied'
     else:
         os.close(fd)
         os.unlink(path)
