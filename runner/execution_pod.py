@@ -2,6 +2,9 @@
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock, RLock
 
+STOP_RETRY_SECONDS = 15 * 60
+LATE_RESULT_SECONDS = 24 * 60 * 60
+
 
 def helper_command(*args):
     """Use the injected read-only loader, interpreter, and helper script."""
@@ -417,6 +420,7 @@ class ExecutionPodController:
         self.viewers = {}
         self.admit_locks = {}
         self.lifecycle_locks = {}
+        self.command_stop_locks = [RLock() for _ in range(64)]
 
     def _space_lock(self, scratch_space_id):
         with self.lock:
@@ -698,12 +702,63 @@ print(json.dumps(r))'''
             return self._stop(scratch_space_id)
 
     def _stop(self, scratch_space_id):
+        import json
+        import time
+        from control import save
         from control import scratch_resource_name
         name = scratch_resource_name(scratch_space_id)
         self._clear_admitted_uid(scratch_space_id)
         self._interrupt_space_commands(scratch_space_id)
-        self._terminate_recorded_pod(scratch_space_id)
-        self.backend.kube(['delete', 'pod', name, '--ignore-not-found', '--wait=true'])
+        path = self.backend.root / 'execution-v2-spaces' / (name + '.json')
+        try:
+            prior = json.loads(path.read_bytes()) if path.exists() else {}
+            since = prior.get('stop_requested_at')
+            if since is not None and time.time() >= since + STOP_RETRY_SECONDS:
+                raise ExecutionPodError('termination_unconfirmed', 'Node guard retry window expired')
+            self._terminate_recorded_pod(scratch_space_id)
+        except Exception:
+            self._mark_space_unconfirmed(scratch_space_id)
+            state = json.loads(path.read_bytes())
+            since = state.setdefault('stop_requested_at', time.time())
+            save(path, state)
+            if time.time() < since + STOP_RETRY_SECONDS:
+                raise
+            guard = state.get('guard') or {}
+            node = guard.get('cluster_node')
+            node_uid = guard.get('node_uid')
+            pod = self._get('pod', name)
+            registered = self._get('node', node) if node else None
+            if not node_uid or (registered or {}).get('metadata', {}).get('uid') != node_uid:
+                raise ExecutionPodError('termination_unconfirmed',
+                    'The node is absent; a Deployment Administrator must verify the writer stopped')
+            uid = (pod or {}).get('metadata', {}).get('uid')
+            if (not uid or guard.get('pod_uid') != uid
+                    or pod.get('spec', {}).get('nodeName') != node):
+                raise ExecutionPodError('termination_unconfirmed', 'The original Pod cannot be bound to a normal deletion')
+            endpoint = '/api/v1/namespaces/' + self.config['namespace'] + '/pods/' + name
+            self.backend.kube(['delete', '--raw', endpoint, '-f', '-'],
+                              json.dumps({'preconditions':{'uid':uid}}).encode(), timeout=70)
+            try:
+                self.backend.kube(['wait', '--for=delete', 'pod/' + name, '--timeout=60s'], timeout=70)
+            except Exception:
+                if self._get('pod', name) is not None:
+                    raise
+            # A completed normal delete proves kubelet stopped the Pod only while its node remains registered.
+            registered = self._get('node', node)
+            if (registered or {}).get('metadata', {}).get('uid') != node_uid or self._get('pod', name):
+                raise ExecutionPodError('termination_unconfirmed', 'Pod deletion or node presence is unconfirmed')
+            if guard:
+                guard['terminated'] = True
+                state.setdefault('terminated_pods', []).append(guard['pod_uid'])
+            state['termination_unconfirmed'] = False
+            state.pop('stop_requested_at', None)
+            save(path, state)
+        else:
+            try:
+                self.backend.kube(['delete', 'pod', name, '--ignore-not-found', '--wait=true'])
+            except Exception:
+                self._mark_space_unconfirmed(scratch_space_id)
+                raise
         self._clear_space_unconfirmed(scratch_space_id)
         with self.lock:
             queue = self.queues.pop(scratch_space_id, None)
@@ -748,10 +803,18 @@ print(json.dumps(r))'''
         from control import save
         name = pod['metadata']['name']
         path = self.backend.root / 'execution-v2-spaces' / (name + '.json')
+        node_name = pod['spec']['nodeName']
+        node = self._get('node', node_name)
+        node_uid = (node or {}).get('metadata', {}).get('uid')
+        if not node_uid:
+            raise ExecutionPodError('admission_failed', 'Execution Pod node identity is unavailable')
         with self.lock:
             state = json.loads(path.read_bytes())
+            prior = state.get('guard') or {}
+            if prior.get('pod_uid') == pod['metadata']['uid'] and prior.get('node_uid') != node_uid:
+                raise ExecutionPodError('admission_failed', 'Execution Pod node identity changed')
             state['guard'] = {'pod_name': name, 'pod_uid': pod['metadata']['uid'],
-                              'cluster_node': pod['spec']['nodeName'], 'container_name': container_name,
+                              'cluster_node': node_name, 'node_uid': node_uid, 'container_name': container_name,
                               'container_id': container_id, 'epoch': epoch, 'terminated': False,
                               'image': self.config['helper_image']}
             if host_evidence is not None:
@@ -812,6 +875,7 @@ print(json.dumps(r))'''
             if path.exists():
                 state = json.loads(path.read_bytes())
                 state['termination_unconfirmed'] = False
+                state.pop('stop_requested_at', None)
                 save(path, state)
 
     def _require_space_termination_confirmed(self, scratch_space_id):
@@ -1004,22 +1068,50 @@ print(json.dumps(r))'''
         except FileNotFoundError:
             raise ExecutionPodError('command_not_found', 'Command does not exist') from None
 
-    def _update_command(self, operation_id, **fields):
+    def _update_command(self, operation_id, *, allow_late=False, **fields):
         import time
         from control import save
         with self.lock:
             record = self._read_command(operation_id)
-            if record.get('status') == 'interrupted' and fields.get('status') != 'interrupted':
+            if allow_late and record.get('status') != 'interrupted':
                 return record
-            if fields.get('status') in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted'):
+            terminal = ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted')
+            if (record.get('status') in terminal and fields.get('status') != record.get('status')
+                    and not (allow_late and record.get('status') == 'interrupted')):
+                return record
+            if allow_late:
+                record.pop('error_code', None)
+                record.pop('message', None)
+            if fields.get('status') in terminal:
                 fields.setdefault('terminal_at', time.time())
             record.update(fields)
             save(self._command_path(operation_id), record)
             return record
 
-    def command_result(self, operation_id):
+    def command_result(self, operation_id, *, retry_stop=True, observe_late=True):
         import base64
         import json
+        import time
+        record = self._read_command(operation_id)
+        if (observe_late and record.get('status') == 'interrupted'
+                and time.time() - record.get('terminal_at', 0) < LATE_RESULT_SECONDS):
+            try:
+                pod = self._get('pod', record['pod'])
+                if pod and pod.get('metadata', {}).get('uid') == record['pod_uid']:
+                    observed = self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
+                                                 helper_command('result', operation_id), check=False, timeout=5)
+                    adopted = False
+                    if observed.returncode == 0:
+                        outcome = json.loads(observed.stdout)
+                        if (outcome.get('operation_id') == operation_id and outcome.get('run_id') == record['run_id']
+                                and outcome.get('status') in ('completed', 'timed_out', 'stopped')):
+                            self._update_command(operation_id, allow_late=True, outcome='known',
+                                                 **{key: outcome[key] for key in ('status', 'exit_code', 'error_code', 'message') if key in outcome})
+                            adopted = True
+                    if not adopted and retry_stop and record.get('stop_pending'):
+                        self._stop_untracked_command(record)
+            except Exception:
+                pass
         with self.lock:
             record = self._read_command(operation_id)
             result = {key: record[key] for key in ('operation_id', 'scratch_space_id', 'run_id',
@@ -1075,7 +1167,7 @@ print(json.dumps(r))'''
                 prior = self._read_command(operation_id)
                 if prior.get('request_digest') != digest:
                     raise ExecutionPodError('command_conflict', 'Operation ID was already used for another command')
-                return self.command_result(operation_id)
+                return self.command_result(operation_id, observe_late=False)
         pod = self._get('pod', name)
         with self.lock:
             # Different Spaces use different lifecycle locks, so another Space
@@ -1084,7 +1176,7 @@ print(json.dumps(r))'''
                 prior = self._read_command(operation_id)
                 if prior.get('request_digest') != digest:
                     raise ExecutionPodError('command_conflict', 'Operation ID was already used for another command')
-                return self.command_result(operation_id)
+                return self.command_result(operation_id, observe_late=False)
             if not pod or pod.get('status', {}).get('phase') != 'Running':
                 raise ExecutionPodError('pod_unavailable', 'Execution Pod is not running')
             uid = pod.get('metadata', {}).get('uid')
@@ -1121,7 +1213,7 @@ print(json.dumps(r))'''
                 future = queue.submit(run_id, operation_id, self._execute_command, background=background)
             self.futures[operation_id] = future
             future.add_done_callback(lambda done: self._cancelled_command(operation_id, done))
-            return self.command_result(operation_id)
+            return self.command_result(operation_id, observe_late=False)
 
     def _cancelled_command(self, operation_id, future):
         with self.lock:
@@ -1144,7 +1236,7 @@ print(json.dumps(r))'''
         import json
         import time
         name, operation_id = record['pod'], record['operation_id']
-        missing_since = time.monotonic()
+        missing_since = None
         while deadline is None or time.monotonic() < deadline:
             if self._read_command(operation_id).get('status') == 'interrupted':
                 return None
@@ -1154,18 +1246,23 @@ print(json.dumps(r))'''
                 if observed.returncode == 0:
                     return json.loads(observed.stdout)
                 pod = self._get('pod', name)
-                if (not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']
-                        or pod.get('status', {}).get('phase') != 'Running'):
+                if not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']:
+                    return None
+                if pod.get('status', {}).get('phase') in ('Failed', 'Succeeded'):
                     return None
                 running = self.backend.kube(['exec', name, '-c', 'execution', '--'] +
                                             helper_command('running', operation_id), check=False)
                 if running.returncode == 0 and json.loads(running.stdout).get('running') is True:
-                    missing_since = time.monotonic()
-                elif time.monotonic() - missing_since > 30:
-                    return None
+                    missing_since = None
+                elif running.returncode == 0:
+                    if missing_since is None:
+                        missing_since = time.monotonic()
+                    elif time.monotonic() - missing_since >= 30:
+                        return None
+                else:
+                    missing_since = None
             except Exception:
-                if time.monotonic() - missing_since > 30:
-                    return None
+                missing_since = None
             time.sleep(.5)
         return None
 
@@ -1210,9 +1307,10 @@ print(json.dumps(r))'''
             if (transport['transport_timed_out'] or not isinstance(outcome, dict)
                     or outcome.get('operation_id') != operation_id or outcome.get('run_id') != record['run_id']
                     or outcome.get('status') not in ('completed', 'timed_out', 'stopped')):
-                self._stop_matching_pod(record['scratch_space_id'], uid)
-                self._update_command(operation_id, status='interrupted', outcome='unknown',
+                transport['output']['truncated'] = True
+                self._update_command(operation_id, status='interrupted', outcome='unknown', stop_pending=True,
                                      **transport['output'])
+                self._stop_untracked_command(record)
             else:
                 if (record.get('kind') == 'python_cell' and
                     (outcome['status'] in ('timed_out', 'stopped') or
@@ -1232,16 +1330,63 @@ print(json.dumps(r))'''
         except Exception as error:
             if self._read_command(operation_id)['status'] == 'interrupted':
                 return
-            try:
-                self._stop_matching_pod(record['scratch_space_id'], uid)
-            except Exception as stop_error:
-                self._mark_space_unconfirmed(record['scratch_space_id'])
-                error = RuntimeError(str(error) + '; termination unconfirmed: ' + str(stop_error))
-            self._update_command(operation_id, status='interrupted', outcome='unknown',
+            self._update_command(operation_id, status='interrupted', outcome='unknown', stop_pending=True,
                                  error_code='command_interrupted', message=str(error) or type(error).__name__)
+            self._stop_untracked_command(record)
         finally:
             with self.lock:
                 self.live_output.pop(operation_id, None)
+
+    def _stop_untracked_command(self, record):
+        import uuid
+        operation_id = record['operation_id']
+        gate = self.command_stop_locks[uuid.UUID(operation_id).int % len(self.command_stop_locks)]
+        with gate:
+            current = self._read_command(operation_id)
+            if current.get('status') != 'interrupted' or not current.get('stop_pending'):
+                return
+            self._stop_untracked_command_locked(current)
+
+    def _stop_untracked_command_locked(self, record):
+        import time
+        try:
+            pod = self._get('pod', record['pod'])
+        except Exception:
+            return
+        if not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']:
+            return
+        try:
+            self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
+                              helper_command('stop', record['operation_id']))
+            with self.lock:
+                current = self._read_command(record['operation_id'])
+                if current.get('status') == 'interrupted':
+                    self._update_command(record['operation_id'], status='interrupted', stop_pending=False,
+                                         terminal_at=current['terminal_at'])
+        except Exception:
+            with self.lock:
+                latest = self._read_command(record['operation_id'])
+                if latest.get('status') != 'interrupted' or not latest.get('stop_pending'):
+                    return
+                since = latest.get('stop_failure_at')
+                if since is None:
+                    since = time.time()
+                    self._update_command(record['operation_id'], status='interrupted', stop_failure_at=since,
+                                         terminal_at=latest['terminal_at'])
+                if time.time() < since + STOP_RETRY_SECONDS:
+                    return
+            try:
+                if self.command_result(record['operation_id'], retry_stop=False)['status'] != 'interrupted':
+                    return
+                current = self._get('pod', record['pod'])
+            except Exception:
+                return
+            if not current or current.get('metadata', {}).get('uid') != record['pod_uid']:
+                return
+            try:
+                self._stop_matching_pod(record['scratch_space_id'], record['pod_uid'])
+            except Exception:
+                self._mark_space_unconfirmed(record['scratch_space_id'])
 
     def _stop_python_interpreter(self, operation_id):
         import time
@@ -1302,6 +1447,8 @@ print(json.dumps(r))'''
         record = self._read_command(operation_id)
         if not record.get('background'):
             raise ExecutionPodError('not_background', 'Command is not a background process')
+        if record['status'] == 'interrupted':
+            return self.command_result(operation_id)
         return self._stop_command(operation_id)
 
     def _stop_command(self, operation_id):
@@ -1310,9 +1457,9 @@ print(json.dumps(r))'''
         with self.lock:
             future = self.futures.get(operation_id)
         if record['status'] == 'queued' and future and future.cancel():
-            return self.command_result(operation_id)
+            return self.command_result(operation_id, retry_stop=False)
         if record['status'] in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted'):
-            return self.command_result(operation_id)
+            return self.command_result(operation_id, retry_stop=False)
         pod = self._get('pod', record['pod'])
         if not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']:
             raise ExecutionPodError('pod_interrupted', 'The original Execution Pod is unavailable')
@@ -1325,7 +1472,7 @@ print(json.dumps(r))'''
                 self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] + helper_command('stop', operation_id))
                 return {'operation_id': operation_id, 'status': 'stopping'}
             except Exception as error:
-                current = self.command_result(operation_id)
+                current = self.command_result(operation_id, retry_stop=False)
                 if current['status'] in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted'):
                     return current
                 if time.monotonic() >= deadline:
@@ -1473,6 +1620,12 @@ print(json.dumps(r))'''
         if path.exists():
             prior = json.loads(path.read_bytes())
             record = self._read_command(prior['operation_id'])
+            if record['status'] == 'interrupted':
+                observed = self.command_result(prior['operation_id'], retry_stop=False)
+                if observed['status'] == 'interrupted':
+                    raise ExecutionPodError('session_interrupted',
+                                            'The previous Python session outcome is unknown; it cannot be restarted yet')
+                record = self._read_command(prior['operation_id'])
             pod = self._get('pod', scratch_resource_name(scratch_space_id))
             if (record['status'] in ('queued', 'running') and pod
                     and pod.get('metadata', {}).get('uid') == record.get('pod_uid')):
@@ -1507,7 +1660,7 @@ print(json.dumps(r))'''
                 prior = self._read_command(operation_id)
                 if prior.get('client_digest') != original_digest:
                     raise ExecutionPodError('command_conflict', 'Operation ID was already used for another command')
-                return self.command_result(operation_id)
+                return self.command_result(operation_id, observe_late=False)
         code = request['code']
         if not isinstance(code, str) or '\x00' in code or len(code.encode('utf-8')) > 65536:
             raise ValueError('Python code exceeds the limit')

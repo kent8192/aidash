@@ -94,6 +94,7 @@
         "runner": {
           "type": "object",
           "properties": {
+            "uncertainRetentionSeconds": { "type": "integer", "minimum": 1 },
             "enabled": {
               "type": "boolean"
             },

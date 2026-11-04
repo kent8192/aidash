@@ -108,8 +108,10 @@ pub const DISCLOSURE: &str = "Sandboxed code may send this External service anyt
 pub const UNAVAILABLE: &str = "EGRESS_UNAVAILABLE";
 /// A budget counter reached its limit: the gateway stops the stream.
 pub const LIMIT_EXCEEDED: &str = "egress_limit_exceeded";
-/// The operation or Live preview session ended, expired or no longer exists.
+/// The operation token expired or its operation is missing, or the Live preview ended or expired.
 pub const OPERATION_EXPIRED: &str = "operation_expired";
+/// The Run or operation is no longer active.
+pub const OPERATION_INACTIVE: &str = "operation_inactive";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]

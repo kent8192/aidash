@@ -450,6 +450,8 @@ pub struct OperationResult {
 	pub truncated: bool,
 	pub effects_may_have_occurred: bool,
 	pub error: Option<super::errors::CapabilityError>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub output_stale_seconds: Option<u64>,
 }
 
 use uuid::Uuid;

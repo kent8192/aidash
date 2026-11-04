@@ -26,6 +26,28 @@ physical interpreter freeze/termination before admitting work. The node adapter
 also verifies cgroup CPU/memory/process ceilings and disables swap for the
 sandbox cgroup. A Kubernetes pod-deletion response alone is not termination
 proof. Missing support makes execution unavailable; there is no host fallback.
+When Kubernetes is unreachable, the Runner keeps tracking an accepted command
+and retries output, status and cancellation requests. The saved Area remains
+readable and busy; a new command receives `AREA_BUSY`. Polling reports the age
+of the last output preview. Egress is refused after the command's time limit.
+After a further 30-second grace period, the Runner requests a stop and polling
+reports that the stop is unconfirmed. The Run may continue with the saved files.
+
+If the stop is still unconfirmed 30 minutes later, the Runner requests a normal
+Pod deletion and keeps the Area busy until deletion completes. A completed
+normal deletion proves the Pod stopped; an API response accepting deletion
+alone does not. If stopped output cannot be read, the Runner retries for 30
+minutes, then reopens the Area with its last saved files and reports that the
+command's changes were not saved. It continues trying to retain the output
+without publishing it for 24 hours by default; the Runner profile's
+`uncertain_retention_seconds` overrides this interval. The Helm setting is
+`execution.runner.uncertainRetentionSeconds`.
+
+If a Pod will not disappear, a Deployment Administrator should inspect its
+deletion timestamp, node health, node guard logs and allocation receipt and
+finalizer. Restore the API server, node and guard so the Runner can confirm the
+stop and release its finalizer. Do not force-delete a Pod whose node or writer
+may still be running; keep the Area fenced until termination can be confirmed.
 The fork probe first creates a child, then lowers its own hard process limit to
 8 and verifies that further forks receive `EAGAIN`. It records both that probe
 limit and the configured inherited limit. The node adapter separately verifies

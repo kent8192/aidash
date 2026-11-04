@@ -297,11 +297,13 @@ class ChartsTest(unittest.TestCase):
                      'sandboxNamespace': 'aidash-pr-1-sandbox', 'trustedNamespace': 'aidash-pr-1-trusted',
                      'installerNamespace': 'aidash-pr-1-installer',
                      'runtimeClass': {'create': True, 'name': 'aidash-gvisor-pr-1'},
-                     'runner': {'enabled': True, 'existingSecret': 'app-runner', 'image': 'control' + DIGEST},
+                     'runner': {'enabled': True, 'existingSecret': 'app-runner', 'image': 'control' + DIGEST,
+                                'uncertainRetentionSeconds': 23},
                      'guard': {'enabled': True, 'image': 'control' + DIGEST}}
         values = dict(self.base, execution=execution)
         objects = render(self.aidash, values, 'app', namespace='aidash-pr-1')
         runner_profile = json.loads(select(objects, 'ConfigMap', '-execution-profile')['data']['profile.json'])
+        self.assertEqual(runner_profile['runner']['uncertain_retention_seconds'], 23)
         runner_container = select(objects, 'Deployment', '-execution-runner')['spec']['template']['spec']['containers'][0]
         runner_token = next(item['valueFrom'] for item in runner_container['env'] if item['name'] == 'AIDASH_CORE_RUNNER_TOKEN')
         service = select(objects, 'Service', '-execution-runner')
@@ -608,6 +610,8 @@ class ChartsTest(unittest.TestCase):
         rules = select(objects, 'Role', '-sandbox')['rules']
         self.assertTrue(any('persistentvolumeclaims' in rule.get('resources', []) and
                             {'get', 'create', 'delete'} <= set(rule['verbs']) for rule in rules))
+        runtime_rules = select(objects, 'ClusterRole', '-runtime')['rules']
+        self.assertIn({'apiGroups': [''], 'resources': ['nodes'], 'verbs': ['get']}, runtime_rules)
 
     def test_execution_privileges_scheduling_and_independent_trusted_images(self):
         execution = {'createNamespaces': True, 'sandboxImage': 'sandbox@sha256:' + 'a' * 64,
