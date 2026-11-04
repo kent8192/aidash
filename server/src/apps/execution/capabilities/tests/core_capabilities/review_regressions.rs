@@ -1614,13 +1614,16 @@ async fn node_deletion_retries_original_terminal_writer_without_rewriting_output
 					(&output["files"][0], b"new".as_slice()),
 					(&output["output_file"], b"recovered partial".as_slice()),
 				] {
-					let id = file["file_id"].as_str().unwrap().parse::<Uuid>().unwrap();
-					assert_eq!(
-						tokio::fs::read(c.root.join(id.simple().to_string()))
-							.await
-							.unwrap(),
-						bytes
-					);
+					let digest = file["digest"].as_str().unwrap();
+					let path = c
+						.root
+						.join("tenants")
+						.join(aidash_server::capabilities::objects::digest(b"acme"))
+						.join("sha256")
+						.join(&digest[..2])
+						.join(&digest[2..4])
+						.join(digest);
+					assert_eq!(tokio::fs::read(path).await.unwrap(), bytes);
 				}
 				let mut semantic = result.clone();
 				semantic.as_object_mut().unwrap().remove("stopped_output");

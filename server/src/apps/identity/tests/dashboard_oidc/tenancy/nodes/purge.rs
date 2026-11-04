@@ -3,6 +3,36 @@ use super::*;
 use aidash_server::apps::identity::services::node_purge;
 use aidash_server::capabilities::services::core::{Profile, Runtime};
 
+fn fixture_bytes(file: Uuid) -> Vec<u8> {
+	file.as_bytes()[..4].to_vec()
+}
+fn blob_path(root: &std::path::Path, tenant: &str, file: Uuid) -> std::path::PathBuf {
+	let digest = aidash_server::capabilities::objects::digest(&fixture_bytes(file));
+	root.join("tenants")
+		.join(aidash_server::capabilities::objects::digest(
+			tenant.as_bytes(),
+		))
+		.join("sha256")
+		.join(&digest[..2])
+		.join(&digest[2..4])
+		.join(digest)
+}
+async fn seed_blob(d: &Deployment, tenant: &str, file: Uuid) {
+	let bytes = fixture_bytes(file);
+	let digest = aidash_server::capabilities::objects::digest(&bytes);
+	sqlx::query("INSERT INTO core_blobs (tenant,digest,size) VALUES ($1,$2,4)")
+		.bind(tenant)
+		.bind(digest)
+		.execute(d.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let path = blob_path(&d.federation.store.capabilities.0.storage, tenant, file);
+	tokio::fs::create_dir_all(path.parent().unwrap())
+		.await
+		.unwrap();
+	tokio::fs::write(path, bytes).await.unwrap();
+}
+
 /// The worker owns cleanup, so its fixture records an already committed deletion
 /// directly. Lifecycle HTTP transitions have their own primary tests.
 async fn request_purge(d: &Deployment, tenant: &str, node: &str) -> Uuid {
@@ -18,22 +48,29 @@ async fn object(d: &Deployment, tenant: &str, workspace: Uuid, file: Uuid) {
 	sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,workspace_id,thread_id) VALUES ($1,$2,'fixture-home','agent','owner',$3,$4)")
 		.bind(area).bind(tenant).bind(workspace).bind(Uuid::new_v4())
 		.execute(d.federation.store.pool.fixture_driver()).await.unwrap();
-	sqlx::query("INSERT INTO core_objects (id,tenant,area_id,kind,digest,size) VALUES ($1,$2,$3,'working','digest',4)")
-		.bind(file).bind(tenant).bind(area)
-		.execute(d.federation.store.pool.fixture_driver()).await.unwrap();
-	sqlx::query("INSERT INTO core_quotas (tenant,used_bytes) VALUES ($1,4) ON CONFLICT (tenant) DO UPDATE SET used_bytes=core_quotas.used_bytes+4")
-		.bind(tenant).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
-	tokio::fs::write(
-		d.federation
-			.store
-			.capabilities
-			.0
-			.storage
-			.join(file.simple().to_string()),
-		b"data",
+	sqlx::query(
+		"INSERT INTO core_manifest_revisions (tenant,area_id,revision,manifest) VALUES ($1,$2,1,'[]')",
 	)
+	.bind(tenant)
+	.bind(area)
+	.execute(d.federation.store.pool.fixture_driver())
 	.await
 	.unwrap();
+	seed_blob(d, tenant, file).await;
+	sqlx::query(
+		"INSERT INTO core_objects (id,tenant,area_id,kind,digest,size) VALUES ($1,$2,$3,'working',$4,4)",
+	)
+	.bind(file)
+	.bind(tenant)
+	.bind(area)
+	.bind(aidash_server::capabilities::objects::digest(
+		&fixture_bytes(file),
+	))
+	.execute(d.federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	sqlx::query("INSERT INTO core_quotas (tenant,used_bytes) VALUES ($1,4) ON CONFLICT (tenant) DO UPDATE SET used_bytes=core_quotas.used_bytes+4")
+		.bind(tenant).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
 }
 
 async fn subjects(
@@ -79,21 +116,21 @@ async fn subjects(
 async fn provisional(d: &Deployment, tenant: &str, owner: &str) -> Uuid {
 	let file = Uuid::new_v4();
 	let record = Uuid::new_v4();
-	sqlx::query("INSERT INTO core_objects (id,tenant,kind,digest,size) VALUES ($1,$2,'reference_original','digest',4)").bind(file).bind(tenant).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
-	let descriptor = json!({"file_id":file,"path":"original","digest":"digest","size":4,"media_type":"text/plain","scope":"references","provenance":{"kind":"reference","reference_id":record}});
-	sqlx::query("INSERT INTO core_records (id,tenant,owner,kind,state,revision,data) VALUES ($1,$2,$3,'reference','ready',1,$4)").bind(record).bind(tenant).bind(owner).bind(json!({"original":descriptor,"chunks":[]})).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
-	sqlx::query("INSERT INTO core_quotas (tenant,used_bytes) VALUES ($1,4) ON CONFLICT (tenant) DO UPDATE SET used_bytes=core_quotas.used_bytes+4").bind(tenant).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
-	tokio::fs::write(
-		d.federation
-			.store
-			.capabilities
-			.0
-			.storage
-			.join(file.simple().to_string()),
-		b"data",
+	seed_blob(d, tenant, file).await;
+	let digest = aidash_server::capabilities::objects::digest(&fixture_bytes(file));
+	sqlx::query(
+		"INSERT INTO core_objects (id,tenant,kind,digest,size) VALUES ($1,$2,'reference_original',$3,4)",
 	)
+	.bind(file)
+	.bind(tenant)
+	.bind(&digest)
+	.execute(d.federation.store.pool.fixture_driver())
 	.await
 	.unwrap();
+	let descriptor = json!({"file_id":file,"path":"original","digest":digest,"size":4,"media_type":"text/plain","scope":"references","provenance":{"kind":"reference","reference_id":record}});
+	sqlx::query("INSERT INTO core_records (id,tenant,owner,kind,state,revision,data) VALUES ($1,$2,$3,'reference','ready',1,$4)").bind(record).bind(tenant).bind(owner).bind(json!({"original":descriptor,"chunks":[]})).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+	sqlx::query("INSERT INTO core_quotas (tenant,used_bytes) VALUES ($1,4) ON CONFLICT (tenant) DO UPDATE SET used_bytes=core_quotas.used_bytes+4").bind(tenant).execute(d.federation.store.pool.fixture_driver()).await.unwrap();
+
 	file
 }
 async fn shared_secrets(d: &Deployment, tenant: &str) -> (Uuid, Uuid) {
@@ -500,7 +537,7 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 	assert!(
 		matches!(error,aidash_server::Error::Conflict(ref reason) if reason.contains("durable cancellation settlement"))
 	);
-	assert!(storage.path().join(work[0].1.simple().to_string()).exists());
+	assert!(blob_path(storage.path(), &tenant, work[0].1).exists());
 	sqlx::query("DELETE FROM node_cancellation_jobs WHERE id=$1 AND tenant=$2 AND node=$3")
 		.bind(job)
 		.bind(&tenant)
@@ -509,7 +546,7 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 		.await
 		.unwrap();
 	// A real unlink error must preserve row anchors and record a resumable step.
-	let path = storage.path().join(work[0].1.simple().to_string());
+	let path = blob_path(storage.path(), &tenant, work[0].1);
 	tokio::fs::remove_file(&path).await.unwrap();
 	tokio::fs::create_dir(&path).await.unwrap();
 	assert!(
@@ -528,7 +565,9 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 		1
 	);
 	tokio::fs::remove_dir(&path).await.unwrap();
-	tokio::fs::write(&path, b"data").await.unwrap();
+	tokio::fs::write(&path, fixture_bytes(work[0].1))
+		.await
+		.unwrap();
 
 	for claimed in node_purge::claim(&d.federation.store).await.unwrap() {
 		node_purge::purge_node(&d.federation.store, claimed)
@@ -544,8 +583,8 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 		.await,
 		0
 	);
-	assert!(!storage.path().join(work[0].1.simple().to_string()).exists());
-	for (workspace, file) in &work[1..] {
+	assert!(!blob_path(storage.path(), &tenant, work[0].1).exists());
+	for (index, (workspace, file)) in work[1..].iter().enumerate() {
 		assert_eq!(
 			d.count(&format!(
 				"SELECT count(*) FROM workspaces WHERE id='{workspace}'"
@@ -554,10 +593,14 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 			1
 		);
 		assert_eq!(
-			tokio::fs::read(storage.path().join(file.simple().to_string()))
-				.await
-				.unwrap(),
-			b"data"
+			tokio::fs::read(blob_path(
+				storage.path(),
+				if index == 0 { &tenant } else { &foreign_tenant },
+				*file
+			))
+			.await
+			.unwrap(),
+			fixture_bytes(*file)
 		);
 	}
 	assert_eq!(
@@ -691,10 +734,10 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 		.unwrap();
 	assert_eq!(used, 12);
 	for file in [owned_orphan, owned_provisional] {
-		assert!(!storage.path().join(file.simple().to_string()).exists());
+		assert!(!blob_path(storage.path(), &tenant, file).exists());
 	}
 	for file in [user_orphan, shared_provisional] {
-		assert!(storage.path().join(file.simple().to_string()).exists());
+		assert!(blob_path(storage.path(), &tenant, file).exists());
 	}
 	assert_eq!(
 		d.count(&format!(
@@ -815,7 +858,7 @@ async fn node_purge_erases_owned_files_and_rows_and_preserves_sibling_and_tenant
 	);
 	// Retrying a completed sweep neither resurrects nor reclaims sibling files.
 	node_purge::sweep(&d.federation.store, 365).await.unwrap();
-	assert!(storage.path().join(work[1].1.simple().to_string()).exists());
+	assert!(blob_path(storage.path(), &tenant, work[1].1).exists());
 	let (status, management) = d
 		.as_deployment_administrator("GET", &management_path, Value::Null)
 		.await;
@@ -1411,7 +1454,7 @@ async fn node_purge_stalls_before_unlink_and_preserves_surviving_reference_and_r
 		assert!(error.to_string().contains(expected), "{error}");
 	}
 	assert_eq!(d.count(&format!("SELECT count(*) FROM node_deletions WHERE id='{deletion}' AND purge_step='capability_objects' AND purge_failures=1 AND purge_lease IS NULL")).await,1);
-	assert!(storage.path().join(file.simple().to_string()).exists());
+	assert!(blob_path(storage.path(), &tenant, file).exists());
 	assert_eq!(
 		d.count(&format!(
 			"SELECT count(*) FROM core_objects WHERE id='{file}'"
@@ -1526,12 +1569,12 @@ async fn node_purge_drains_mutual_reads_and_invalidates_body_caches_while_preser
 	node_purge::purge_node(&d.federation.store, first)
 		.await
 		.unwrap();
-	assert!(!storage.path().join(work[0].1.simple().to_string()).exists());
+	assert!(!blob_path(storage.path(), &tenant, work[0].1).exists());
 	assert_eq!(
-		tokio::fs::read(storage.path().join(work[1].1.simple().to_string()))
+		tokio::fs::read(blob_path(storage.path(), &tenant, work[1].1))
 			.await
 			.unwrap(),
-		b"data"
+		fixture_bytes(work[1].1)
 	);
 	assert_eq!(
 		d.count(&format!(
@@ -1558,7 +1601,7 @@ async fn node_purge_drains_mutual_reads_and_invalidates_body_caches_while_preser
 	node_purge::purge_node(&d.federation.store, claimed.pop().unwrap())
 		.await
 		.unwrap();
-	assert!(!storage.path().join(work[1].1.simple().to_string()).exists());
+	assert!(!blob_path(storage.path(), &tenant, work[1].1).exists());
 	for table in [
 		"memory_remote_reads",
 		"memory_units",
@@ -1587,10 +1630,10 @@ async fn node_purge_drains_mutual_reads_and_invalidates_body_caches_while_preser
 		1
 	);
 	assert_eq!(
-		tokio::fs::read(storage.path().join(work[2].1.simple().to_string()))
+		tokio::fs::read(blob_path(storage.path(), &tenant, work[2].1))
 			.await
 			.unwrap(),
-		b"data"
+		fixture_bytes(work[2].1)
 	);
 	d.finish().await;
 }
@@ -1720,7 +1763,7 @@ async fn node_audit_expiry_after_whole_tenant_purge_does_not_starve_live_tenant_
 		node_purge::purge_node(&d.federation.store, claimed)
 			.await
 			.unwrap();
-		assert!(!storage.path().join(file.simple().to_string()).exists());
+		assert!(!blob_path(storage.path(), &tenant, file).exists());
 		assert_eq!(
 			d.count(&format!(
 				"SELECT count(*) FROM workspaces WHERE id='{workspace}'"
