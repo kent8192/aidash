@@ -12,5 +12,6 @@ pub trait WorkerEntryRepository<S: Send>: Send + Sync {
 		run: &RunMetadata,
 		read_context: bool,
 	) -> Result<AgentConfig>;
+	async fn scratch_space(&self, scope: &mut S, run: &Run) -> Result<uuid::Uuid>;
 	async fn initialize(&self, scope: &S, run: &Run, agent: &AgentConfig) -> Result<()>;
 }

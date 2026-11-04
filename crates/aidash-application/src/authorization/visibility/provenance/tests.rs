@@ -218,6 +218,7 @@ impl ReadProvenanceScope for Scope {
 	) -> Result<Option<Conversation>> {
 		self.lookup("conversation", id, workspace)?;
 		Ok((!self.missing).then(|| Conversation {
+			scratch_space_id: uuid::Uuid::nil(),
 			id,
 			workspace_id: workspace,
 			created_by: "stored-author".into(),

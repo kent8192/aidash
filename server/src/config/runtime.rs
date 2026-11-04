@@ -4,6 +4,7 @@ use std::env;
 
 #[derive(Clone)]
 pub struct Config {
+	pub scratch_policy: ScratchOperatorPolicy,
 	pub deployment: aidash_domain::nodes::DeploymentId,
 	pub endpoint: String,
 	pub database_url: String,
@@ -39,6 +40,13 @@ pub struct Config {
 	pub dashboard_origin: String,
 }
 
+#[derive(Clone, Default)]
+pub struct ScratchOperatorPolicy {
+	pub ceilings: aidash_domain::scratch::ScratchCeilings,
+	pub docker_tenants: std::collections::BTreeSet<String>,
+	pub tenant_hosts: std::collections::BTreeMap<String, Vec<String>>,
+	pub tenant_images: std::collections::BTreeMap<String, Vec<String>>,
+}
 pub use crate::apps::identity::serializers::settings::{OidcConfig, SessionConfig};
 
 pub const PROTOCOL_VERSION: &str = aidash_domain::federation::protocol::CURRENT;
@@ -145,6 +153,20 @@ impl Config {
 		let node = &settings.deployment;
 		let web_dir = settings.core.base_dir.join(&node.web_dir);
 		Ok(Self {
+			scratch_policy: ScratchOperatorPolicy {
+				ceilings: aidash_domain::scratch::ScratchCeilings {
+					capacity_bytes: node.scratch_capacity_bytes,
+					cpu_millis: node.scratch_cpu_millis,
+					memory_bytes: node.scratch_memory_bytes,
+					daily_sent_bytes: node.scratch_daily_sent_bytes,
+					daily_received_bytes: node.scratch_daily_received_bytes,
+					docker_allowed: node.scratch_docker_allowed,
+					all_hosts_allowed: node.scratch_all_hosts_allowed,
+				},
+				docker_tenants: node.scratch_docker_tenants.iter().cloned().collect(),
+				tenant_hosts: node.scratch_tenant_hosts.clone(),
+				tenant_images: node.scratch_tenant_images.clone(),
+			},
 			deployment: aidash_domain::nodes::DeploymentId::parse(&node.id)?,
 			endpoint: node.endpoint.clone(),
 			database_url: database.to_url(),

@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 pub(crate) struct Resume<'a> {
+	pub(crate) scratch_space_id: uuid::Uuid,
 	pub(crate) federation: &'a Federation,
 	pub(crate) remote: Option<&'a Federation>,
 	pub(crate) access: &'a Arc<RwLock<Access>>,
@@ -23,6 +24,7 @@ pub(crate) struct Resume<'a> {
 	pub(crate) agent: &'a AgentConfig,
 }
 struct Scope<'a> {
+	scratch_space_id: uuid::Uuid,
 	federation: &'a Federation,
 	access: OwnedRwLockWriteGuard<Access>,
 	run: &'a Run,
@@ -41,8 +43,21 @@ impl WorkerResumeRepository for Resume<'_> {
 		))
 		.await
 	}
+	async fn guard_remote_scratch(&self) -> Result<()> {
+		let access = self.access.read().await;
+		let current = super::entry::resolve_scratch_space(self.federation, &access, self.run)
+			.await
+			.map_err(aidash_application::authorization::worker_entry::scratch_refusal)?;
+		if current != self.scratch_space_id {
+			return Err(
+				aidash_application::authorization::worker_entry::scratch_refusal(Error::Forbidden),
+			);
+		}
+		Ok(())
+	}
 	async fn lease(&self) -> Result<Box<dyn WorkerResumeScope + '_>> {
 		Ok(Box::new(Scope {
+			scratch_space_id: self.scratch_space_id,
 			federation: self.federation,
 			access: self.access.clone().write_owned().await,
 			run: self.run,
@@ -67,9 +82,16 @@ impl WorkerResumeScope for Scope<'_> {
 			&mut self.access,
 			true,
 		)
-		.await
-		.map(|_| ())
-		.map_err(Into::into)
+		.await?;
+		let current = super::entry::resolve_scratch_space(self.federation, &self.access, self.run)
+			.await
+			.map_err(aidash_application::authorization::worker_entry::scratch_refusal)?;
+		if current != self.scratch_space_id {
+			return Err(
+				aidash_application::authorization::worker_entry::scratch_refusal(Error::Forbidden),
+			);
+		}
+		Ok(())
 	}
 	async fn inference(&mut self) -> Result<()> {
 		aidash_application::authorization::inference::authorize(

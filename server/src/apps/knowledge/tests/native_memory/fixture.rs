@@ -101,7 +101,7 @@ pub(super) async fn setup_endpoint_flags(
 ) -> (Store, Registry, Uuid) {
 	setup_endpoint_retention(database, bounds, endpoint, flags, None).await
 }
-/// Give a single scenario enough context for its complete recall envelope.
+/// Give the Run scenario a real Tenant starter and room for its recall envelope.
 pub(super) async fn setup_endpoint_flags_with_window(
 	database: &DatabaseFixture,
 	bounds: Bounds,
@@ -113,7 +113,7 @@ pub(super) async fn setup_endpoint_flags_with_window(
 		database,
 		bounds,
 		endpoint,
-		(flags, context_window),
+		(flags, context_window, "alice"),
 		None,
 		None,
 		None,
@@ -161,7 +161,7 @@ pub(super) async fn setup_endpoint_policy(
 		database,
 		bounds,
 		endpoint,
-		(flags, 34816),
+		(flags, 34816, "deployment_administrator"),
 		unit_max_age_days,
 		decay,
 		diversity_lambda_millionths,
@@ -173,12 +173,12 @@ async fn setup_endpoint_policy_with_window(
 	database: &DatabaseFixture,
 	bounds: Bounds,
 	endpoint: &str,
-	settings: ((bool, bool, bool), u32),
+	settings: ((bool, bool, bool), u32, &str),
 	unit_max_age_days: Option<u32>,
 	decay: Option<Decay>,
 	diversity_lambda_millionths: Option<u32>,
 ) -> (Store, Registry, Uuid) {
-	let (flags, context_window) = settings;
+	let (flags, context_window, workspace_owner) = settings;
 	let store = Store::from_pool(
 		database.connection.clone().into_postgres().unwrap(),
 		aidash_domain::nodes::DeploymentId::parse("aidash://native-memory").unwrap(),
@@ -318,7 +318,7 @@ async fn setup_endpoint_policy_with_window(
 	let workspace = store
 		.create_workspace(
 			&aidash_application::tenancy::TenancyScope::tenant("acme").unwrap(),
-			"deployment_administrator",
+			workspace_owner,
 			"Memory",
 			"Keep current evidence",
 		)

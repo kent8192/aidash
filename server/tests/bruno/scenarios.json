@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 390,
+  "endpoint_count": 399,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -17127,8 +17127,323 @@
       ]
     },
     {
-      "name": "1553 run-subnodes - Anonymous request is rejected",
-      "file": "contracts/1553-run-subnodes.bru",
+      "name": "1553 scratch-create - Anonymous request is rejected",
+      "file": "contracts/1553-scratch-create.bru",
+      "endpoint": "POST /api/scratch-spaces",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1554 scratch-create - Wrong JSON media type is rejected",
+      "file": "contracts/1554-scratch-create.bru",
+      "endpoint": "POST /api/scratch-spaces",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1555 scratch-create - Malformed JSON cannot reach the use case",
+      "file": "contracts/1555-scratch-create.bru",
+      "endpoint": "POST /api/scratch-spaces",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1556 scratch-list - Anonymous request is rejected",
+      "file": "contracts/1556-scratch-list.bru",
+      "endpoint": "GET /api/scratch-spaces",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1557 scratch-list - Malformed bearer syntax is rejected",
+      "file": "contracts/1557-scratch-list.bru",
+      "endpoint": "GET /api/scratch-spaces",
+      "scenario": "Malformed bearer syntax is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1558 scratch-list - Deployment Administrator has no Tenant authority",
+      "file": "contracts/1558-scratch-list.bru",
+      "endpoint": "GET /api/scratch-spaces",
+      "scenario": "Deployment Administrator has no Tenant authority",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1559 scratch-limits - Anonymous request is rejected",
+      "file": "contracts/1559-scratch-limits.bru",
+      "endpoint": "GET /api/scratch-spaces/limits",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1560 scratch-limits - Malformed bearer syntax is rejected",
+      "file": "contracts/1560-scratch-limits.bru",
+      "endpoint": "GET /api/scratch-spaces/limits",
+      "scenario": "Malformed bearer syntax is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1561 scratch-limits - Deployment Administrator has no Tenant authority",
+      "file": "contracts/1561-scratch-limits.bru",
+      "endpoint": "GET /api/scratch-spaces/limits",
+      "scenario": "Deployment Administrator has no Tenant authority",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1562 scratch-read - Anonymous request is rejected",
+      "file": "contracts/1562-scratch-read.bru",
+      "endpoint": "GET /api/scratch-spaces/{id}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1563 scratch-read - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1563-scratch-read.bru",
+      "endpoint": "GET /api/scratch-spaces/{id}",
+      "scenario": "Typed resource IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1564 scratch-read - Deployment Administrator has no Tenant authority",
+      "file": "contracts/1564-scratch-read.bru",
+      "endpoint": "GET /api/scratch-spaces/{id}",
+      "scenario": "Deployment Administrator has no Tenant authority",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1565 scratch-settings - Anonymous request is rejected",
+      "file": "contracts/1565-scratch-settings.bru",
+      "endpoint": "PUT /api/scratch-spaces/{id}/settings",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1566 scratch-settings - Wrong JSON media type is rejected",
+      "file": "contracts/1566-scratch-settings.bru",
+      "endpoint": "PUT /api/scratch-spaces/{id}/settings",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1567 scratch-settings - Malformed JSON cannot reach the use case",
+      "file": "contracts/1567-scratch-settings.bru",
+      "endpoint": "PUT /api/scratch-spaces/{id}/settings",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1568 scratch-member-add - Anonymous request is rejected",
+      "file": "contracts/1568-scratch-member-add.bru",
+      "endpoint": "POST /api/scratch-spaces/{id}/members",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1569 scratch-member-add - Wrong JSON media type is rejected",
+      "file": "contracts/1569-scratch-member-add.bru",
+      "endpoint": "POST /api/scratch-spaces/{id}/members",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1570 scratch-member-add - Malformed JSON cannot reach the use case",
+      "file": "contracts/1570-scratch-member-add.bru",
+      "endpoint": "POST /api/scratch-spaces/{id}/members",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1571 scratch-member-remove - Anonymous request is rejected",
+      "file": "contracts/1571-scratch-member-remove.bru",
+      "endpoint": "POST /api/scratch-spaces/{id}/members/remove",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1572 scratch-member-remove - Wrong JSON media type is rejected",
+      "file": "contracts/1572-scratch-member-remove.bru",
+      "endpoint": "POST /api/scratch-spaces/{id}/members/remove",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1573 scratch-member-remove - Malformed JSON cannot reach the use case",
+      "file": "contracts/1573-scratch-member-remove.bru",
+      "endpoint": "POST /api/scratch-spaces/{id}/members/remove",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1574 scratch-clear - Anonymous request is rejected",
+      "file": "contracts/1574-scratch-clear.bru",
+      "endpoint": "POST /api/scratch-spaces/{id}/clear",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1575 scratch-clear - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1575-scratch-clear.bru",
+      "endpoint": "POST /api/scratch-spaces/{id}/clear",
+      "scenario": "Typed resource IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1576 scratch-clear - Unrecognized bearer cannot mutate state",
+      "file": "contracts/1576-scratch-clear.bru",
+      "endpoint": "POST /api/scratch-spaces/{id}/clear",
+      "scenario": "Unrecognized bearer cannot mutate state",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1577 scratch-delete - Anonymous request is rejected",
+      "file": "contracts/1577-scratch-delete.bru",
+      "endpoint": "DELETE /api/scratch-spaces/{id}",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1578 scratch-delete - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1578-scratch-delete.bru",
+      "endpoint": "DELETE /api/scratch-spaces/{id}",
+      "scenario": "Typed resource IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1579 scratch-delete - Unrecognized bearer cannot mutate state",
+      "file": "contracts/1579-scratch-delete.bru",
+      "endpoint": "DELETE /api/scratch-spaces/{id}",
+      "scenario": "Unrecognized bearer cannot mutate state",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1580 run-subnodes - Anonymous request is rejected",
+      "file": "contracts/1580-run-subnodes.bru",
       "endpoint": "GET /api/runs/{id}/subnodes",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -17138,8 +17453,8 @@
       ]
     },
     {
-      "name": "1554 run-subnodes - Typed resource IDs reject invalid UUIDs",
-      "file": "contracts/1554-run-subnodes.bru",
+      "name": "1581 run-subnodes - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1581-run-subnodes.bru",
       "endpoint": "GET /api/runs/{id}/subnodes",
       "scenario": "Typed resource IDs reject invalid UUIDs",
       "status": 400,
@@ -17149,8 +17464,8 @@
       ]
     },
     {
-      "name": "1555 run-subnodes - Deployment Administrator has no Tenant authority",
-      "file": "contracts/1555-run-subnodes.bru",
+      "name": "1582 run-subnodes - Deployment Administrator has no Tenant authority",
+      "file": "contracts/1582-run-subnodes.bru",
       "endpoint": "GET /api/runs/{id}/subnodes",
       "scenario": "Deployment Administrator has no Tenant authority",
       "status": 403,
@@ -17160,8 +17475,8 @@
       ]
     },
     {
-      "name": "1556 subnode-dissolve - Anonymous request is rejected",
-      "file": "contracts/1556-subnode-dissolve.bru",
+      "name": "1583 subnode-dissolve - Anonymous request is rejected",
+      "file": "contracts/1583-subnode-dissolve.bru",
       "endpoint": "POST /api/subnodes/{id}/dissolve",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -17172,8 +17487,8 @@
       ]
     },
     {
-      "name": "1557 subnode-dissolve - Typed resource IDs reject invalid UUIDs",
-      "file": "contracts/1557-subnode-dissolve.bru",
+      "name": "1584 subnode-dissolve - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1584-subnode-dissolve.bru",
       "endpoint": "POST /api/subnodes/{id}/dissolve",
       "scenario": "Typed resource IDs reject invalid UUIDs",
       "status": 400,
@@ -17184,8 +17499,8 @@
       ]
     },
     {
-      "name": "1558 subnode-dissolve - Unrecognized bearer cannot mutate state",
-      "file": "contracts/1558-subnode-dissolve.bru",
+      "name": "1585 subnode-dissolve - Unrecognized bearer cannot mutate state",
+      "file": "contracts/1585-subnode-dissolve.bru",
       "endpoint": "POST /api/subnodes/{id}/dissolve",
       "scenario": "Unrecognized bearer cannot mutate state",
       "status": 401,
@@ -17196,8 +17511,8 @@
       ]
     },
     {
-      "name": "1559 tenant-subnode-limits - Anonymous request is rejected",
-      "file": "contracts/1559-tenant-subnode-limits.bru",
+      "name": "1586 tenant-subnode-limits - Anonymous request is rejected",
+      "file": "contracts/1586-tenant-subnode-limits.bru",
       "endpoint": "GET /api/tenants/{tenant}/subnode-limits",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -17207,8 +17522,8 @@
       ]
     },
     {
-      "name": "1560 tenant-subnode-limits - Deployment Administrator bearer is never a Tenant Administrator",
-      "file": "contracts/1560-tenant-subnode-limits.bru",
+      "name": "1587 tenant-subnode-limits - Deployment Administrator bearer is never a Tenant Administrator",
+      "file": "contracts/1587-tenant-subnode-limits.bru",
       "endpoint": "GET /api/tenants/{tenant}/subnode-limits",
       "scenario": "Deployment Administrator bearer is never a Tenant Administrator",
       "status": 403,
@@ -17218,8 +17533,8 @@
       ]
     },
     {
-      "name": "1561 tenant-subnode-limits - Subject Credential bearer is never a Tenant Administrator",
-      "file": "contracts/1561-tenant-subnode-limits.bru",
+      "name": "1588 tenant-subnode-limits - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1588-tenant-subnode-limits.bru",
       "endpoint": "GET /api/tenants/{tenant}/subnode-limits",
       "scenario": "Subject Credential bearer is never a Tenant Administrator",
       "status": 403,
@@ -17229,8 +17544,8 @@
       ]
     },
     {
-      "name": "1562 tenant-subnode-limits-update - Anonymous request is rejected",
-      "file": "contracts/1562-tenant-subnode-limits-update.bru",
+      "name": "1589 tenant-subnode-limits-update - Anonymous request is rejected",
+      "file": "contracts/1589-tenant-subnode-limits-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/subnode-limits",
       "scenario": "Anonymous request is rejected",
       "status": 401,
@@ -17241,8 +17556,8 @@
       ]
     },
     {
-      "name": "1563 tenant-subnode-limits-update - Deployment Administrator bearer is never a Tenant Administrator",
-      "file": "contracts/1563-tenant-subnode-limits-update.bru",
+      "name": "1590 tenant-subnode-limits-update - Deployment Administrator bearer is never a Tenant Administrator",
+      "file": "contracts/1590-tenant-subnode-limits-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/subnode-limits",
       "scenario": "Deployment Administrator bearer is never a Tenant Administrator",
       "status": 403,
@@ -17253,8 +17568,8 @@
       ]
     },
     {
-      "name": "1564 tenant-subnode-limits-update - Subject Credential bearer is never a Tenant Administrator",
-      "file": "contracts/1564-tenant-subnode-limits-update.bru",
+      "name": "1591 tenant-subnode-limits-update - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1591-tenant-subnode-limits-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/subnode-limits",
       "scenario": "Subject Credential bearer is never a Tenant Administrator",
       "status": 403,
@@ -17265,8 +17580,8 @@
       ]
     },
     {
-      "name": "1565 tenant-subnode-limits-update - Malformed JSON cannot reach the use case",
-      "file": "contracts/1565-tenant-subnode-limits-update.bru",
+      "name": "1592 tenant-subnode-limits-update - Malformed JSON cannot reach the use case",
+      "file": "contracts/1592-tenant-subnode-limits-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/subnode-limits",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,

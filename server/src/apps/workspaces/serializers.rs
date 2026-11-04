@@ -17,3 +17,5 @@ pub mod management;
 pub mod tasks;
 
 pub(crate) mod openapi;
+
+pub(crate) mod scratch;

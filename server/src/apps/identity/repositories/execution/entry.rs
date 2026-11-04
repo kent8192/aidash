@@ -38,6 +38,9 @@ impl WorkerEntryRepository<Access> for Entries<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn scratch_space(&self, scope: &mut Access, run: &Run) -> Result<uuid::Uuid> {
+		resolve_scratch_space(self.federation, scope, run).await
+	}
 	async fn initialize(&self, scope: &Access, run: &Run, agent: &AgentConfig) -> Result<()> {
 		let mut initialization = Access::under_lease(scope).await?;
 		let result = crate::capabilities::sessions::initialize(
@@ -49,4 +52,31 @@ impl WorkerEntryRepository<Access> for Entries<'_> {
 		.await;
 		initialization.finish(result).await.map_err(Into::into)
 	}
+}
+
+/// Resolve a Run's Scratch Space in its own short transaction. The space,
+/// admission and Node rows it locks must not stay locked for the Run's whole
+/// worker lease, which would block activation replays, Node updates and other
+/// Runs sharing the space.
+pub(crate) async fn resolve_scratch_space(
+	federation: &Federation,
+	lease: &Access,
+	run: &Run,
+) -> Result<uuid::Uuid> {
+	let mut resolution = Access::under_lease(lease).await?;
+	let mut services = crate::apps::workspaces::repositories::scratch::NativeScratchServices {
+		policy: &federation.config.scratch_policy,
+	};
+	let mut adapter = crate::apps::workspaces::repositories::scratch::ScratchAdapter {
+		access: &mut resolution,
+		services: &mut services,
+		person_override: None,
+	};
+	let result =
+		aidash_application::scratch::scratch_space_for_run(&mut adapter, run, chrono::Utc::now())
+			.await;
+	resolution
+		.finish(result.map_err(Into::into))
+		.await
+		.map_err(Into::into)
 }

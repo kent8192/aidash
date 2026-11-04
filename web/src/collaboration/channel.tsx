@@ -607,6 +607,10 @@ export function Channel({
           <p className="line-clamp-1 text-xs text-muted-foreground md:text-[13px]">
             {workspace.goal}
           </p>
+          <p className="text-xs text-muted-foreground">
+            {t("scratchSpace")}:{" "}
+            <span className="font-mono">{workspace.scratch_space_id}</span>
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <button

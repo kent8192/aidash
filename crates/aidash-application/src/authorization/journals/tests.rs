@@ -7,6 +7,7 @@ use serde_json::json;
 fn snapshot() -> WorkspaceSnapshot {
 	WorkspaceSnapshot {
 		workspace: Workspace {
+			scratch_space_id: uuid::Uuid::nil(),
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: Uuid::from_u128(1),
 			title: "workspace".into(),
