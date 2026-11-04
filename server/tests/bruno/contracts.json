@@ -30445,63 +30445,6 @@
             ],
             "type": "object"
           },
-          "ChildTaskChange": {
-            "properties": {
-              "revision": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "status": {
-                "$ref": "#/components/schemas/TaskStatus"
-              },
-              "task_id": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": ["task_id", "status", "revision"],
-            "type": "object"
-          },
-          "ChildTaskSummary": {
-            "properties": {
-              "has_failed": {
-                "type": "boolean"
-              },
-              "has_pending": {
-                "type": "boolean"
-              },
-              "open_tasks": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "terminal_fingerprint": {
-                "items": {
-                  "format": "uint8",
-                  "maximum": 255,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "maxItems": 16,
-                "minItems": 16,
-                "type": "array"
-              },
-              "terminal_tasks": {
-                "items": {
-                  "$ref": "#/components/schemas/ChildTaskChange"
-                },
-                "type": "array"
-              }
-            },
-            "required": [
-              "has_pending",
-              "has_failed",
-              "open_tasks",
-              "terminal_fingerprint",
-              "terminal_tasks"
-            ],
-            "type": "object"
-          },
           "CompletionBasis": {
             "description": "How a Task came to be completed. Only `Verified` means Checks passed.",
             "enum": ["verified", "not_required", "excepted"],
@@ -32463,16 +32406,9 @@
                 "minimum": 0,
                 "type": "integer"
               },
-              "remote_task_summary": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/ChildTaskSummary"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "Last remote child Task snapshot observed before inference."
+              "remote_task_fingerprint": {
+                "description": "Fingerprint of remote terminal child Tasks observed before inference.",
+                "type": ["string", "null"]
               },
               "retry": {
                 "anyOf": [
@@ -33806,9 +33742,6 @@
                     "enum": ["workspace"],
                     "type": "string"
                   },
-                  "remote_fingerprint": {
-                    "type": ["string", "null"]
-                  },
                   "resume": {
                     "$ref": "#/components/schemas/ResumeState"
                   },
@@ -33817,13 +33750,7 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "reason",
-                  "wake_at",
-                  "cursor",
-                  "remote_fingerprint",
-                  "resume"
-                ],
+                "required": ["reason", "wake_at", "cursor", "resume"],
                 "type": "object"
               },
               {
@@ -34786,63 +34713,6 @@
               "check_digest",
               "capability_digest",
               "content_digest"
-            ],
-            "type": "object"
-          },
-          "ChildTaskChange": {
-            "properties": {
-              "revision": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "status": {
-                "$ref": "#/components/schemas/TaskStatus"
-              },
-              "task_id": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": ["task_id", "status", "revision"],
-            "type": "object"
-          },
-          "ChildTaskSummary": {
-            "properties": {
-              "has_failed": {
-                "type": "boolean"
-              },
-              "has_pending": {
-                "type": "boolean"
-              },
-              "open_tasks": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "terminal_fingerprint": {
-                "items": {
-                  "format": "uint8",
-                  "maximum": 255,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "maxItems": 16,
-                "minItems": 16,
-                "type": "array"
-              },
-              "terminal_tasks": {
-                "items": {
-                  "$ref": "#/components/schemas/ChildTaskChange"
-                },
-                "type": "array"
-              }
-            },
-            "required": [
-              "has_pending",
-              "has_failed",
-              "open_tasks",
-              "terminal_fingerprint",
-              "terminal_tasks"
             ],
             "type": "object"
           },
@@ -36634,16 +36504,9 @@
                 "minimum": 0,
                 "type": "integer"
               },
-              "remote_task_summary": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/ChildTaskSummary"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "Last remote child Task snapshot observed before inference."
+              "remote_task_fingerprint": {
+                "description": "Fingerprint of remote terminal child Tasks observed before inference.",
+                "type": ["string", "null"]
               },
               "retry": {
                 "anyOf": [
@@ -37564,19 +37427,6 @@
             ],
             "type": "object"
           },
-          "TaskStatus": {
-            "enum": [
-              "OPEN",
-              "CLAIMED",
-              "RUNNING",
-              "COMPLETED",
-              "FAILED",
-              "BLOCKED",
-              "CANCELLED",
-              "ABANDONED"
-            ],
-            "type": "string"
-          },
           "TerminalState": {
             "additionalProperties": false,
             "type": "object"
@@ -37983,9 +37833,6 @@
                     "enum": ["workspace"],
                     "type": "string"
                   },
-                  "remote_fingerprint": {
-                    "type": ["string", "null"]
-                  },
                   "resume": {
                     "$ref": "#/components/schemas/ResumeState"
                   },
@@ -37994,13 +37841,7 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "reason",
-                  "wake_at",
-                  "cursor",
-                  "remote_fingerprint",
-                  "resume"
-                ],
+                "required": ["reason", "wake_at", "cursor", "resume"],
                 "type": "object"
               },
               {
@@ -38627,63 +38468,6 @@
               "check_digest",
               "capability_digest",
               "content_digest"
-            ],
-            "type": "object"
-          },
-          "ChildTaskChange": {
-            "properties": {
-              "revision": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "status": {
-                "$ref": "#/components/schemas/TaskStatus"
-              },
-              "task_id": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": ["task_id", "status", "revision"],
-            "type": "object"
-          },
-          "ChildTaskSummary": {
-            "properties": {
-              "has_failed": {
-                "type": "boolean"
-              },
-              "has_pending": {
-                "type": "boolean"
-              },
-              "open_tasks": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "terminal_fingerprint": {
-                "items": {
-                  "format": "uint8",
-                  "maximum": 255,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "maxItems": 16,
-                "minItems": 16,
-                "type": "array"
-              },
-              "terminal_tasks": {
-                "items": {
-                  "$ref": "#/components/schemas/ChildTaskChange"
-                },
-                "type": "array"
-              }
-            },
-            "required": [
-              "has_pending",
-              "has_failed",
-              "open_tasks",
-              "terminal_fingerprint",
-              "terminal_tasks"
             ],
             "type": "object"
           },
@@ -40414,16 +40198,9 @@
                 "minimum": 0,
                 "type": "integer"
               },
-              "remote_task_summary": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/ChildTaskSummary"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "Last remote child Task snapshot observed before inference."
+              "remote_task_fingerprint": {
+                "description": "Fingerprint of remote terminal child Tasks observed before inference.",
+                "type": ["string", "null"]
               },
               "retry": {
                 "anyOf": [
@@ -41199,19 +40976,6 @@
             ],
             "type": "object"
           },
-          "TaskStatus": {
-            "enum": [
-              "OPEN",
-              "CLAIMED",
-              "RUNNING",
-              "COMPLETED",
-              "FAILED",
-              "BLOCKED",
-              "CANCELLED",
-              "ABANDONED"
-            ],
-            "type": "string"
-          },
           "TerminalState": {
             "additionalProperties": false,
             "type": "object"
@@ -41618,9 +41382,6 @@
                     "enum": ["workspace"],
                     "type": "string"
                   },
-                  "remote_fingerprint": {
-                    "type": ["string", "null"]
-                  },
                   "resume": {
                     "$ref": "#/components/schemas/ResumeState"
                   },
@@ -41629,13 +41390,7 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "reason",
-                  "wake_at",
-                  "cursor",
-                  "remote_fingerprint",
-                  "resume"
-                ],
+                "required": ["reason", "wake_at", "cursor", "resume"],
                 "type": "object"
               },
               {
@@ -54247,63 +54002,6 @@
             ],
             "type": "object"
           },
-          "ChildTaskChange": {
-            "properties": {
-              "revision": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "status": {
-                "$ref": "#/components/schemas/TaskStatus"
-              },
-              "task_id": {
-                "format": "uuid",
-                "type": "string"
-              }
-            },
-            "required": ["task_id", "status", "revision"],
-            "type": "object"
-          },
-          "ChildTaskSummary": {
-            "properties": {
-              "has_failed": {
-                "type": "boolean"
-              },
-              "has_pending": {
-                "type": "boolean"
-              },
-              "open_tasks": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "terminal_fingerprint": {
-                "items": {
-                  "format": "uint8",
-                  "maximum": 255,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "maxItems": 16,
-                "minItems": 16,
-                "type": "array"
-              },
-              "terminal_tasks": {
-                "items": {
-                  "$ref": "#/components/schemas/ChildTaskChange"
-                },
-                "type": "array"
-              }
-            },
-            "required": [
-              "has_pending",
-              "has_failed",
-              "open_tasks",
-              "terminal_fingerprint",
-              "terminal_tasks"
-            ],
-            "type": "object"
-          },
           "CompletionBasis": {
             "description": "How a Task came to be completed. Only `Verified` means Checks passed.",
             "enum": ["verified", "not_required", "excepted"],
@@ -56031,16 +55729,9 @@
                 "minimum": 0,
                 "type": "integer"
               },
-              "remote_task_summary": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/ChildTaskSummary"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "Last remote child Task snapshot observed before inference."
+              "remote_task_fingerprint": {
+                "description": "Fingerprint of remote terminal child Tasks observed before inference.",
+                "type": ["string", "null"]
               },
               "retry": {
                 "anyOf": [
@@ -56832,19 +56523,6 @@
             ],
             "type": "object"
           },
-          "TaskStatus": {
-            "enum": [
-              "OPEN",
-              "CLAIMED",
-              "RUNNING",
-              "COMPLETED",
-              "FAILED",
-              "BLOCKED",
-              "CANCELLED",
-              "ABANDONED"
-            ],
-            "type": "string"
-          },
           "TerminalState": {
             "additionalProperties": false,
             "type": "object"
@@ -57251,9 +56929,6 @@
                     "enum": ["workspace"],
                     "type": "string"
                   },
-                  "remote_fingerprint": {
-                    "type": ["string", "null"]
-                  },
                   "resume": {
                     "$ref": "#/components/schemas/ResumeState"
                   },
@@ -57262,13 +56937,7 @@
                     "type": "string"
                   }
                 },
-                "required": [
-                  "reason",
-                  "wake_at",
-                  "cursor",
-                  "remote_fingerprint",
-                  "resume"
-                ],
+                "required": ["reason", "wake_at", "cursor", "resume"],
                 "type": "object"
               },
               {

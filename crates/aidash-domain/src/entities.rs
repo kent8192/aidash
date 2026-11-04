@@ -207,15 +207,37 @@ pub struct ChildTaskSummary {
 	pub has_pending: bool,
 	pub has_failed: bool,
 	pub open_tasks: u64,
+	#[serde(with = "fingerprint_hex")]
+	#[schemars(with = "String")]
 	pub terminal_fingerprint: [u8; 16],
-	pub terminal_tasks: Vec<ChildTaskChange>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
-pub struct ChildTaskChange {
-	pub task_id: Uuid,
-	pub status: TaskStatus,
-	pub revision: i64,
+mod fingerprint_hex {
+	use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
+
+	pub fn serialize<S: Serializer>(value: &[u8; 16], serializer: S) -> Result<S::Ok, S::Error> {
+		let encoded: String = value.iter().map(|byte| format!("{byte:02x}")).collect();
+		serializer.serialize_str(&encoded)
+	}
+
+	pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 16], D::Error> {
+		let text = String::deserialize(deserializer)?;
+		if text.len() != 32
+			|| !text
+				.bytes()
+				.all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+		{
+			return Err(D::Error::custom(
+				"expected a 32-character lowercase hexadecimal fingerprint",
+			));
+		}
+		let mut value = [0; 16];
+		for (index, byte) in value.iter_mut().enumerate() {
+			*byte = u8::from_str_radix(&text[index * 2..index * 2 + 2], 16)
+				.map_err(D::Error::custom)?;
+		}
+		Ok(value)
+	}
 }
 
 impl ChildTaskSummary {
@@ -252,11 +274,6 @@ impl ChildTaskSummary {
 			for (slot, byte) in self.terminal_fingerprint.iter_mut().zip(digest.finalize()) {
 				*slot ^= byte;
 			}
-			self.terminal_tasks.push(ChildTaskChange {
-				task_id: id,
-				status,
-				revision,
-			});
 		}
 	}
 }

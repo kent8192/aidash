@@ -473,7 +473,8 @@ async fn remote_home_child_summary_observes_terminal_transition(
 	};
 	let (status, before) = fetch().await;
 	assert_eq!(status, 200, "{before}");
-	assert!(before["terminal_tasks"].as_array().unwrap().is_empty());
+	let fingerprint = before["terminal_fingerprint"].as_str().unwrap();
+	assert_eq!(fingerprint.len(), 32);
 	sqlx::query("UPDATE tasks SET status = 'COMPLETED' WHERE id = $1")
 		.bind(id)
 		.execute(a.store.pool.fixture_driver())
@@ -481,13 +482,8 @@ async fn remote_home_child_summary_observes_terminal_transition(
 		.unwrap();
 	let (status, after) = fetch().await;
 	assert_eq!(status, 200, "{after}");
-	assert!(
-		after["terminal_tasks"]
-			.as_array()
-			.unwrap()
-			.iter()
-			.any(|v| v["task_id"] == id.to_string())
-	);
+	assert_ne!(after["terminal_fingerprint"], fingerprint);
+	assert!(serde_json::to_vec(&after).unwrap().len() < 128);
 	drop(aa);
 	drop(ba);
 	cleanup(a, &au, &aschema).await;

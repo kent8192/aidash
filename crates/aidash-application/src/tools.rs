@@ -743,7 +743,7 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "workspace_wait",
 			contract: aidash_domain::tool::builtin_contract("workspace_wait")
 				.expect("declared builtin"),
-			description: "Wait without inference for a Task you created or delegated to finish, block or fail, or for a message or person. The default is 60 minutes while your Tasks remain unfinished and 5 minutes otherwise; the maximum is 60 minutes. The result summarizes changes.",
+			description: "Wait without inference for a Task you created or delegated to finish, block or fail, or for a message or person. The default is 60 minutes while your Tasks remain unfinished and 5 minutes otherwise; the maximum is 60 minutes. The result summarizes changes. For remote Tasks, use workspace_observe to read details after a change.",
 			schema: json!({"type":"object","properties":{"seconds":{"type":"integer","minimum":1,"maximum":3600}},"additionalProperties":false}),
 		},
 		Builtin {

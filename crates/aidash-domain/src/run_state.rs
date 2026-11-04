@@ -260,7 +260,6 @@ pub enum WaitingState {
 	Workspace {
 		wake_at: DateTime<Utc>,
 		cursor: i64,
-		remote_fingerprint: Option<String>,
 		resume: ResumeState,
 	},
 	/// An accepted command is rechecked when it settles or its ceiling arrives.
@@ -428,9 +427,9 @@ pub struct RecoveryState {
 	/// Last workspace event delivered to this Run.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub workspace_event_cursor: Option<i64>,
-	/// Last remote child Task snapshot observed before inference.
+	/// Fingerprint of remote terminal child Tasks observed before inference.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub remote_task_summary: Option<crate::ChildTaskSummary>,
+	pub remote_task_fingerprint: Option<String>,
 	/// Transport-proven, still-unsatisfied refusals. Tool result JSON never populates these.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub connection_refusals: Vec<ConnectionRefusal>,

@@ -1525,9 +1525,11 @@ async fn an_expired_operation_is_reported_as_expired_not_as_an_exhausted_budget(
 		.await
 		.unwrap();
 	assert_eq!(audit.received.load(Ordering::Relaxed), CHUNK as u64);
-	let upload = futures_util::stream::iter(
-		(0..32).map(|_| Ok::<_, std::io::Error>(Bytes::from(vec![1; CHUNK]))),
-	);
+	// Avoid leaving an unread multi-chunk body that can reset the client
+	// before it receives the gateway's expired-operation response.
+	let upload = futures_util::stream::iter(std::iter::once(Ok::<_, std::io::Error>(Bytes::from(
+		vec![1; CHUNK],
+	))));
 	let response = reqwest::Client::new()
 		.post(format!("{origin}/v1/operation-token/images/upload"))
 		.body(reqwest::Body::wrap_stream(upload))

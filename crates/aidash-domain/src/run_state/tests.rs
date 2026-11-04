@@ -43,17 +43,25 @@ fn current_storage_covers_every_phase_and_wait_continuation() {
 			RunPhase::Waiting,
 			json!({"reason":"timer","wake_at":date,"resume":resume}),
 		));
+		cases.push((
+			RunPhase::Waiting,
+			json!({"reason":"workspace","wake_at":date,"cursor":42,"resume":resume}),
+		));
 	}
 	cases.extend([
 		(RunPhase::Waiting,json!({"reason":"dependencies","wake_at":date,"resume":{}})),
-		(RunPhase::Waiting,json!({"reason":"children","wake_at":date,"resume":thinking_data()})),
+		(RunPhase::Waiting,json!({"reason":"operation","operation_id":id,"wake_at":date,"resume":tool_data()})),
 		(RunPhase::Waiting,json!({"reason":"approval","approval":{"source":"capability","approval_id":id},"resume":tool_data()})),
 		(RunPhase::Waiting,json!({"reason":"approval","approval":{"source":"home","request_id":id,"key":"run:9:0","call":{"id":"call-1","name":"echo","arguments":{}},"expires_at":date},"resume":tool_data()})),
 		(RunPhase::Waiting,json!({"reason":"reconciliation","request_id":id,"key":"run:9:0","resume":tool_data()})),
 		(RunPhase::Waiting,json!({"reason":"failure_delivery","target":"FAILED","wake_at":date,"last_delivery_error":null}))
 	]);
 	for (phase, data) in cases {
-		let input = envelope(data);
+		let event_wait = matches!(data["reason"].as_str(), Some("workspace" | "operation"));
+		let mut input = envelope(data);
+		if event_wait {
+			input["requires"] = json!(["event_wait"]);
+		}
 		let (state, recovery) = decode(phase, input.clone()).unwrap();
 		assert_eq!(state.phase(), phase);
 		assert_eq!(encode(&state, &recovery).unwrap(), input);
@@ -536,5 +544,29 @@ fn legacy_lease_flags_are_read_and_saved_as_counters() {
 		assert_eq!(recovery.lease_recoveries, count);
 		let saved = encode(&state, &recovery).unwrap();
 		assert!(saved["recovery"].get("lease_recovered").is_none());
+	}
+}
+
+#[rstest::rstest]
+fn child_task_summary_has_a_bounded_round_trip_and_validates_its_fingerprint() {
+	let mut summary = crate::ChildTaskSummary::default();
+	for id in 0..1_000 {
+		summary.include_task(Uuid::from_u128(id), crate::TaskStatus::Completed, 1);
+	}
+	let encoded = serde_json::to_value(&summary).unwrap();
+	assert!(serde_json::to_vec(&encoded).unwrap().len() < 128);
+	assert_eq!(encoded["terminal_fingerprint"].as_str().unwrap().len(), 32);
+	assert_eq!(
+		serde_json::from_value::<crate::ChildTaskSummary>(encoded.clone()).unwrap(),
+		summary
+	);
+	for invalid in [
+		"abc",
+		"G0000000000000000000000000000000",
+		"００００００００００００００００",
+	] {
+		let mut value = encoded.clone();
+		value["terminal_fingerprint"] = json!(invalid);
+		assert!(serde_json::from_value::<crate::ChildTaskSummary>(value).is_err());
 	}
 }

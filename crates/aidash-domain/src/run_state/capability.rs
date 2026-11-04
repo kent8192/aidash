@@ -110,7 +110,7 @@ impl RecoveryState {
 					.map(|_| PersistedCapability::EventWait),
 			)
 			.chain(
-				self.remote_task_summary
+				self.remote_task_fingerprint
 					.as_ref()
 					.map(|_| PersistedCapability::EventWait),
 			)

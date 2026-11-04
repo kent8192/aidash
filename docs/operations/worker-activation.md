@@ -90,7 +90,9 @@ including jitter. A dead owner's existing 30-second lease must expire first.
 An operation wait is due on completion, newer input, or its ceiling. A workspace
 wait is due on newer input, a relevant Task event after its durable cursor, or its
 ceiling; Task events are coalesced for two seconds. A remote Home is checked every
-15 seconds without invoking the model. Paused Runs are not leased until resumed.
+15 seconds without invoking the model. Its fixed-size terminal fingerprint reports a
+change without listing Tasks; the Agent uses `workspace_observe` for details. Paused
+Runs are not leased until resumed.
 Compatible schema is retained on binary rollback. Before enabling incompatible
 future Run semantics, stop incompatible old workers; a notification is not a
 compatibility upgrade mechanism.

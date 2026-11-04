@@ -559,13 +559,18 @@ async fn a_matching_existing_grant_returns_the_original_delivered_reply_without_
 	assert!(result.delivered);
 	assert!(!scope.calls.contains(&"delegate"));
 	assert_eq!(
+		scope.outputs,
+		vec![(id(1), id(3), "delegated_task".into(), id(4))]
+	);
+	assert_eq!(
 		scope.calls,
 		vec![
 			"task_workspace",
 			"task_read",
 			"task_resource",
 			"task.delegate",
-			"grant"
+			"grant",
+			"output.delegated_task"
 		]
 	);
 }

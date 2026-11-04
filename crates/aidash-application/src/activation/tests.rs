@@ -114,7 +114,6 @@ async fn workspace_wait_selects_input_or_a_coalesced_task_event(
 		&RunState::Waiting(Box::new(WaitingState::Workspace {
 			wake_at: now + chrono::Duration::minutes(5),
 			cursor: 4,
-			remote_fingerprint: None,
 			resume: aidash_domain::ResumeState::ToolCall(Box::default()),
 		})),
 		&Default::default(),
@@ -149,7 +148,6 @@ async fn a_workspace_wait_on_a_remote_home_is_polled_without_waiting_for_the_cei
 		&RunState::Waiting(Box::new(WaitingState::Workspace {
 			wake_at: now + chrono::Duration::hours(1),
 			cursor: 0,
-			remote_fingerprint: Some("00".into()),
 			resume: aidash_domain::ResumeState::Thinking(Default::default()),
 		})),
 		&Default::default(),

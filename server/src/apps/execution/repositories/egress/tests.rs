@@ -333,7 +333,6 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		aidash_domain::run_state::WaitingState::Workspace {
 			wake_at: Utc::now() + chrono::Duration::hours(1),
 			cursor: 0,
-			remote_fingerprint: None,
 			resume: aidash_domain::ResumeState::Thinking(Default::default()),
 		},
 	));
@@ -457,22 +456,67 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		aidash_application::Error::RunLockContended
 	));
 	drop(claim_scope);
+	// Reconciliation takes NO KEY UPDATE: it serializes state changes while
+	// allowing the request's foreign-key check to acquire KEY SHARE. Neither
+	// admission nor metering should queue behind that lock.
+	let mut reconciliation = db.begin().await.unwrap();
+	sqlx::query("SELECT id FROM core_operations WHERE id = $1 FOR NO KEY UPDATE")
+		.bind(operation)
+		.fetch_one(&mut *reconciliation)
+		.await
+		.unwrap();
+	let mut competing_reconciliation = db.begin().await.unwrap();
+	let locked =
+		sqlx::query("SELECT id FROM core_operations WHERE id = $1 FOR NO KEY UPDATE NOWAIT")
+			.bind(operation)
+			.fetch_one(&mut *competing_reconciliation)
+			.await
+			.unwrap_err();
+	assert_eq!(
+		locked
+			.as_database_error()
+			.and_then(|error| error.code())
+			.as_deref(),
+		Some("55P03")
+	);
+	competing_reconciliation.rollback().await.unwrap();
 	let gateway = Gateway::new(f.store.clone());
 	let first = tokio::time::timeout(
 		std::time::Duration::from_secs(5),
 		gateway.admit(token, "images", "POST", "upload", &digest),
 	)
 	.await
-	.expect("admission waited for the Run lock")
+	.expect("admission waited for the Run or Operation lock")
 	.unwrap();
 	tokio::time::timeout(
 		std::time::Duration::from_secs(5),
 		first.meter.charge(Direction::Sent, 0),
 	)
 	.await
-	.expect("debit waited for the Run lock")
+	.expect("debit waited for the Run or Operation lock")
 	.unwrap();
+	reconciliation.rollback().await.unwrap();
 	claim.rollback().await.unwrap();
+	// A request-record insertion must not take a KEY SHARE lock on the Run:
+	// activation still uses FOR UPDATE NOWAIT and must claim concurrently.
+	let mut pending_request = db.begin().await.unwrap();
+	sqlx::query("INSERT INTO egress_requests (id, tenant, run_id, operation_id, session_id, service, method, path, query_digest, status, sent_bytes, received_bytes, duration_ms, via, error, secret_id, secret_version, secret_host, created_at) SELECT $1, tenant, run_id, operation_id, session_id, service, method, path, query_digest, status, sent_bytes, received_bytes, duration_ms, via, error, secret_id, secret_version, secret_host, created_at FROM egress_requests WHERE id = $2")
+		.bind(Uuid::new_v4())
+		.bind(first.request)
+		.execute(&mut *pending_request)
+		.await
+		.unwrap();
+	let mut claim_while_admitting = activation.claim_scope().await.unwrap();
+	assert!(
+		claim_while_admitting
+			.lock_run(run.id)
+			.await
+			.unwrap()
+			.is_some(),
+		"uncommitted request insertion blocked Run activation"
+	);
+	drop(claim_while_admitting);
+	pending_request.rollback().await.unwrap();
 	assert!(matches!(
 		Gateway::new(f.store.clone())
 			.admit(
@@ -503,7 +547,7 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		async move { meter.charge(Direction::Sent, 1).await }
 	});
 	let results = futures_util::future::join_all(attempts).await;
-	// Debits are serialized on the operation and always commit the bytes the
+	// Debits are serialized on the budgets and always commit the bytes the
 	// gateway already streamed. The debit that reaches the limit, and every
 	// later one, reports exhaustion after committing.
 	assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 3);

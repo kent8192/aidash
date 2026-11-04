@@ -4919,16 +4919,22 @@ async fn remote_workspace_poll_stays_asleep_until_a_child_finishes(mut fixture: 
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.remote_home = true;
 	*state.child_summary.lock().unwrap() = Some(ChildTaskSummary::default());
+	fixture.run.recovery.remote_task_fingerprint = Some(ChildTaskSummary::default().fingerprint());
 	fixture.run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
 		wake_at: chrono::Utc::now() + chrono::Duration::minutes(5),
 		cursor: 0,
-		remote_fingerprint: Some("00000000000000000000000000000000".into()),
 		resume: ResumeState::Thinking(ThinkingState::default()),
 	}));
 	advance_sources(&mut fixture).await.unwrap();
 	assert!(matches!(fixture.run.state, RunState::Waiting(_)));
+	let child = Uuid::new_v4();
+	let mut running = ChildTaskSummary::default();
+	running.include_task(child, TaskStatus::Running, 1);
+	*fixture.backend.0.child_summary.lock().unwrap() = Some(running);
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(matches!(fixture.run.state, RunState::Waiting(_)));
 	let mut completed = ChildTaskSummary::default();
-	completed.include_task(Uuid::new_v4(), TaskStatus::Completed, 1);
+	completed.include_task(child, TaskStatus::Completed, 2);
 	*fixture.backend.0.child_summary.lock().unwrap() = Some(completed);
 	advance_sources(&mut fixture).await.unwrap();
 	assert!(matches!(fixture.run.state, RunState::Thinking(_)));
@@ -4937,7 +4943,43 @@ async fn remote_workspace_poll_stays_asleep_until_a_child_finishes(mut fixture: 
 
 #[rstest]
 #[tokio::test]
-async fn remote_child_resuming_does_not_wake_the_waiter(mut fixture: Fixture) {
+async fn remote_wait_result_reports_fingerprint_change_without_task_details(mut fixture: Fixture) {
+	let wait = Scripted::new(
+		ToolSpec {
+			name: "workspace_wait".into(),
+			description: "Wait".into(),
+			parameters: json!({"type":"object"}),
+		},
+		"workspace_wait",
+	);
+	*wait.outputs.lock().unwrap() = [json!({"wait_seconds":300})].into();
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.remote_home = true;
+	state.custom.insert("workspace_wait".into(), wait);
+	state.workspace_events.lock().unwrap().push(WorkspaceEvent {
+		generation: 2,
+		task_id: Uuid::new_v4(),
+		status: "COMPLETED".into(),
+	});
+	*state.child_summary.lock().unwrap() = Some(ChildTaskSummary::default());
+	fixture.run.recovery.remote_task_fingerprint = Some(ChildTaskSummary::default().fingerprint());
+	respond(
+		&mut fixture.run,
+		vec![call("call-1", "workspace_wait", json!({}))],
+	);
+	advance_sources(&mut fixture).await.unwrap();
+	let mut completed = ChildTaskSummary::default();
+	completed.include_task(Uuid::new_v4(), TaskStatus::Completed, 1);
+	*fixture.backend.0.child_summary.lock().unwrap() = Some(completed);
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(fixture.run.context.events().any(|event| matches!(event, ContextEvent::Tool { result, .. } if result == &json!({"reason":"workspace_event","changes":[{"kind":"terminal_tasks_changed"}],"open_tasks":0}))));
+	assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn remote_child_resuming_changes_the_fingerprint_and_wakes_the_waiter(mut fixture: Fixture) {
 	let id = Uuid::new_v4();
 	let mut before = ChildTaskSummary::default();
 	before.include_task(id, TaskStatus::Blocked, 1);
@@ -4946,15 +4988,14 @@ async fn remote_child_resuming_does_not_wake_the_waiter(mut fixture: Fixture) {
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.remote_home = true;
 	*state.child_summary.lock().unwrap() = Some(running);
-	fixture.run.recovery.remote_task_summary = Some(before.clone());
+	fixture.run.recovery.remote_task_fingerprint = Some(before.fingerprint());
 	fixture.run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
 		wake_at: chrono::Utc::now() + chrono::Duration::minutes(5),
 		cursor: 0,
-		remote_fingerprint: Some(before.fingerprint()),
 		resume: ResumeState::Thinking(ThinkingState::default()),
 	}));
 	advance_sources(&mut fixture).await.unwrap();
-	assert!(matches!(fixture.run.state, RunState::Waiting(_)));
+	assert!(matches!(fixture.run.state, RunState::Thinking(_)));
 }
 
 #[rstest]
@@ -4968,11 +5009,10 @@ async fn remote_child_reentering_blocked_wakes_the_waiter(mut fixture: Fixture) 
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.remote_home = true;
 	*state.child_summary.lock().unwrap() = Some(after);
-	fixture.run.recovery.remote_task_summary = Some(before.clone());
+	fixture.run.recovery.remote_task_fingerprint = Some(before.fingerprint());
 	fixture.run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
 		wake_at: chrono::Utc::now() + chrono::Duration::minutes(5),
 		cursor: 0,
-		remote_fingerprint: Some(before.fingerprint()),
 		resume: ResumeState::Thinking(ThinkingState::default()),
 	}));
 	advance_sources(&mut fixture).await.unwrap();

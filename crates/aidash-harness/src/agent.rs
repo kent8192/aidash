@@ -1124,7 +1124,7 @@ impl<'a> Executor<'a> {
 			}
 			RunState::Thinking(thinking) => Box::pin(async {
 				if !home.local() {
-					run.recovery.remote_task_summary = Some(home.child_summary(run.task_id).await?);
+					run.recovery.remote_task_fingerprint = Some(home.child_summary(run.task_id).await?.fingerprint());
 				}
 				self.environment.reconcile_run_messages(run).await?;
 				// An accepted remote correction is durable even if its first home
@@ -2559,7 +2559,6 @@ connection: None,
 								run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
 									wake_at: chrono::Utc::now() + chrono::Duration::hours(1),
 									cursor: run.recovery.workspace_event_cursor.unwrap_or(0),
-									remote_fingerprint: run.recovery.remote_task_summary.as_ref().map(|summary| summary.fingerprint()),
 									resume: ResumeState::Thinking(ThinkingState::default()),
 								}));
 							}
@@ -2654,7 +2653,6 @@ connection: None,
 								run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
 									wake_at: chrono::Utc::now() + chrono::Duration::hours(1),
 									cursor: run.recovery.workspace_event_cursor.unwrap_or(0),
-									remote_fingerprint: run.recovery.remote_task_summary.as_ref().map(|summary| summary.fingerprint()),
 									resume: ResumeState::Thinking(ThinkingState::default()),
 								}));
 								store.save_run(run, token, "run.waiting").await?;
@@ -3124,7 +3122,6 @@ connection: None,
 					run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
 						wake_at: chrono::Utc::now() + chrono::Duration::seconds(seconds),
 						cursor: run.recovery.workspace_event_cursor.unwrap_or(0),
-						remote_fingerprint: run.recovery.remote_task_summary.as_ref().map(|summary| summary.fingerprint()),
 						resume: ResumeState::ToolCall(Box::new(run.state.tool()?.clone())),
 					}));
 					store.save_run(run, token, "run.waiting_for_workspace").await?;
@@ -3309,36 +3306,25 @@ connection: None,
 				}
 				run.state = match waiting {
 					WaitingState::Dependencies { resume, .. } => RunState::Ready(resume),
-					WaitingState::Workspace { wake_at, cursor, remote_fingerprint, mut resume } => {
+					WaitingState::Workspace { wake_at, cursor, mut resume } => {
 						let inputs = store.run_inputs(run.id).await?;
 						let observed = match &resume { ResumeState::ToolCall(state) => state.included_input_seq, _ => run.observed_input_seq };
 						let input = inputs.last().is_some_and(|input| input.seq > observed);
 						let events = store.workspace_events(run, cursor).await?;
 						let remote = if !home.local() { Some(home.child_summary(run.task_id).await?) } else { None };
-						let remote_changed = remote.as_ref().is_some_and(|summary| {
-							if let Some(previous) = &run.recovery.remote_task_summary {
-								summary.terminal_tasks.iter().any(|task| !previous.terminal_tasks.contains(task))
-							} else {
-								remote_fingerprint.as_ref().is_some_and(|previous| *previous != summary.fingerprint())
-							}
-						});
+						let remote_changed = remote.as_ref().is_some_and(|summary| run.recovery.remote_task_fingerprint.as_ref().is_some_and(|previous| *previous != summary.fingerprint()));
 						if !input && events.is_empty() && !remote_changed && chrono::Utc::now() < wake_at {
-							let remote_fingerprint = remote.as_ref().map(|summary| summary.fingerprint()).or(remote_fingerprint);
-							if let Some(summary) = remote { run.recovery.remote_task_summary = Some(summary); }
-							run.state = RunState::Waiting(Box::new(WaitingState::Workspace { wake_at, cursor, remote_fingerprint, resume }));
+							if let Some(summary) = remote { run.recovery.remote_task_fingerprint = Some(summary.fingerprint()); }
+							run.state = RunState::Waiting(Box::new(WaitingState::Workspace { wake_at, cursor, resume }));
 							store.save_run(run, token, "run.waiting_for_workspace").await?;
 							return Ok(());
 						}
 						if let Some(last) = events.last() { run.recovery.workspace_event_cursor = Some(last.generation); }
-						let mut changes = events.iter().map(|event| json!({"task_id":event.task_id,"status":event.status})).collect::<Vec<_>>();
-						if remote_changed && let Some(summary) = &remote {
-							let previous = run.recovery.remote_task_summary.as_ref();
-							changes.extend(summary.terminal_tasks.iter().filter(|task| previous.is_none_or(|previous| !previous.terminal_tasks.contains(task))).take(20).map(|task| json!({"task_id":task.task_id,"status":task.status})));
-							if changes.is_empty() { changes.push(json!({"kind":"terminal_tasks_changed"})); }
-						}
-						if let Some(summary) = remote { run.recovery.remote_task_summary = Some(summary); }
+						let mut changes = if home.local() { events.iter().map(|event| json!({"task_id":event.task_id,"status":event.status})).collect::<Vec<_>>() } else { Vec::new() };
+						if remote_changed { changes.push(json!({"kind":"terminal_tasks_changed"})); }
+						if let Some(summary) = &remote { run.recovery.remote_task_fingerprint = Some(summary.fingerprint()); }
 						let reason = if input { "input" } else if !events.is_empty() || remote_changed { "workspace_event" } else { "ceiling" };
-						let open_tasks = if home.local() { store.unfinished_owned_tasks(run).await? } else { home.child_summary(run.task_id).await?.open_tasks };
+						let open_tasks = if let Some(summary) = &remote { summary.open_tasks } else { store.unfinished_owned_tasks(run).await? };
 						if let ResumeState::ToolCall(state) = &mut resume {
 							state.wait_result = Some(json!({"reason":reason,"changes":changes,"open_tasks":open_tasks}));
 						}

@@ -426,8 +426,8 @@ async fn live(
 	operation: Uuid,
 ) -> Result<(Access, aidash_domain::Run)> {
 	let mut access = Access::begin(store, identity).await?;
-	// Read the operation without locking first, to retain the Run-before-operation
-	// lock order used by normal operation reconciliation.
+	// Read the Operation without locking; recheck its committed state below
+	// after resolving the Run and current authority.
 	let op = super::super::capabilities::models::CoreOperations::objects()
 		.filter(super::super::capabilities::models::CoreOperations::field_id().eq(operation))
 		.all_with_executor(&mut **access.tx)
@@ -462,7 +462,7 @@ async fn live(
 	if current.phase().is_terminal() || current.control != aidash_domain::RunControl::Active {
 		return Err(expired());
 	}
-	let operation = super::operations::get(&mut access, operation).await?;
+	let operation = super::operations::get_unlocked(&mut access, operation).await?;
 	if !matches!(operation.state.as_str(), "submitted" | "running")
 		|| operation.result["termination_confirmed"] == true
 	{
@@ -870,6 +870,35 @@ impl Authority for Gateway {
 				.checked_add_signed(chrono::Duration::seconds(seconds))
 				.ok_or(Error::Forbidden)?
 				.min(lease.expires_at);
+			let id = Uuid::now_v7();
+			// The record names where a value went, never what it was. A service
+			// without a Tenant Secret leaves all three columns null.
+			let secret_host = secret_host(secret.as_ref(), &definition);
+			let record = RequestRecord::build()
+				.id(id)
+				.tenant(identity.tenant.clone())
+				.run_id(run.id)
+				.operation_id(Some(operation))
+				.session_id(None)
+				.service(service.to_owned())
+				.method(method.to_owned())
+				.path(path.to_owned())
+				.query_digest(query_digest.to_owned())
+				.status(0)
+				.sent_bytes(0)
+				.received_bytes(0)
+				.duration_ms(0)
+				.via("operation".to_owned())
+				.error(Some("stream_interrupted".to_owned()))
+				.secret_id(secret.as_ref().map(|secret| secret.id))
+				.secret_version(secret.as_ref().map(|secret| secret.version.clone()))
+				.secret_host(secret_host)
+				.created_at(Utc::now())
+				.finish();
+			RequestRecord::objects()
+				.insert_with_executor(&mut **access.tx, &record)
+				.await
+				.map_err(reinhardt::core::exception::Error::from)?;
 			let mut total = lock_budget(&mut access, operation, "")
 				.await?
 				.ok_or(Error::Forbidden)?;
@@ -906,35 +935,6 @@ impl Authority for Gateway {
 					.await
 					.map_err(reinhardt::core::exception::Error::from)?;
 			}
-			let id = Uuid::now_v7();
-			// The record names where a value went, never what it was. A service
-			// without a Tenant Secret leaves all three columns null.
-			let secret_host = secret_host(secret.as_ref(), &definition);
-			let record = RequestRecord::build()
-				.id(id)
-				.tenant(identity.tenant.clone())
-				.run_id(run.id)
-				.operation_id(Some(operation))
-				.session_id(None)
-				.service(service.to_owned())
-				.method(method.to_owned())
-				.path(path.to_owned())
-				.query_digest(query_digest.to_owned())
-				.status(0)
-				.sent_bytes(0)
-				.received_bytes(0)
-				.duration_ms(0)
-				.via("operation".to_owned())
-				.error(Some("stream_interrupted".to_owned()))
-				.secret_id(secret.as_ref().map(|secret| secret.id))
-				.secret_version(secret.as_ref().map(|secret| secret.version.clone()))
-				.secret_host(secret_host)
-				.created_at(Utc::now())
-				.finish();
-			RequestRecord::objects()
-				.insert_with_executor(&mut **access.tx, &record)
-				.await
-				.map_err(reinhardt::core::exception::Error::from)?;
 			access.finish(Ok(())).await?;
 			Ok(Admission {
 				gateway_origin: settings.endpoint.clone(),
@@ -1060,6 +1060,7 @@ async fn record_operation_bytes(
 		exhausted: false,
 		expired: false,
 	};
+	add_to_record(tx, request, direction, bytes).await?;
 	for service in ["", service] {
 		let mut row = Budget::objects()
 			.filter(Budget::field_operation_id().eq(operation))
@@ -1100,7 +1101,6 @@ async fn record_operation_bytes(
 			.await
 			.map_err(reinhardt::core::exception::Error::from)?;
 	}
-	add_to_record(tx, request, direction, bytes).await?;
 	Ok(recorded)
 }
 
