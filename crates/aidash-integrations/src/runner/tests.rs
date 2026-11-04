@@ -1,4 +1,7 @@
 use super::*;
+use aidash_application::ports::capabilities::execution_pod::{
+	CommandRequest, ExecutionPodError, ExecutionPodErrorCode, ExecutionPodRuntime,
+};
 use axum::{
 	Json, Router,
 	body::Body,
@@ -28,6 +31,19 @@ impl Drop for Server {
 }
 async fn fixture() -> (Server, RunnerHttp, Arc<Keys>) {
 	let app = Router::new()
+        .route("/v2/commands/submit", post(|headers: HeaderMap, Json(body): Json<Value>| async move {
+            assert_eq!(headers["authorization"], "Bearer before-rotation");
+            assert_eq!(body["scratch_space_id"], "space-a");
+            assert_eq!(body["run_id"], "run-a");
+            assert_eq!(body["background"], true);
+            Json(json!({"operation_id":body["operation_id"],"scratch_space_id":"space-a","run_id":"run-a","status":"queued","background":true}))
+        }))
+        .route("/v2/pods/stop", post(|| async { (StatusCode::CONFLICT, Json(json!({"code":"termination_unconfirmed","message":"guard unavailable"}))) }))
+        .route("/v2/pods/delete", post(|| async { Json(json!({"deleted":false})) }))
+        .route("/v2/runs/cancel", post(|Json(body): Json<Value>| async move {
+            assert_eq!(body, json!({"scratch_space_id":"space-a","run_id":"run-a"}));
+            Json(json!({"cancelled_waiting":true}))
+        }))
 		.route(
 			"/reply",
 			post(|headers: HeaderMap, Json(body): Json<Value>| async move {
@@ -194,4 +210,26 @@ async fn the_configured_cluster_runner_requires_a_credential_before_connecting()
 	};
 	assert!(matches!(client.request("GET", "/v1/health", None).await,
 		Err(Error::Conflict(message)) if message.starts_with("RUNTIME_UNAVAILABLE:")));
+}
+
+#[tokio::test]
+async fn execution_pod_requests_preserve_identity_and_remote_failure_codes() {
+	let (_server, client, _) = fixture().await;
+	let request = CommandRequest {
+		operation_id: "op".into(),
+		scratch_space_id: "space-a".into(),
+		run_id: "run-a".into(),
+		code: "sleep 10".into(),
+		cwd: None,
+		timeout_seconds: None,
+		background: true,
+	};
+	let accepted = client.execute(&request).await.unwrap();
+	assert_eq!(accepted.status, "queued");
+	assert_eq!(accepted.run_id.as_deref(), Some("run-a"));
+	client.cancel_waiting("space-a", "run-a").await.unwrap();
+	assert!(
+		matches!(client.stop("space-a").await, Err(ExecutionPodError::Remote { code, message }) if code == ExecutionPodErrorCode::TerminationUnconfirmed && message == "guard unavailable")
+	);
+	assert!(client.delete("space-a").await.is_err());
 }

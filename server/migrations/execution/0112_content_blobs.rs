@@ -5,7 +5,7 @@ use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
 	Migration::new("0112_content_blobs", "execution")
-		.add_dependency("execution", "0108_node_preview_merge")
+		.add_dependency("execution", "0111_scope_egress_state")
 		.atomic(true)
 		.database_only(true)
 		.add_operation(Operation::CreateTable {

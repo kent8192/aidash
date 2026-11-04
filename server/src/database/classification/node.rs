@@ -72,7 +72,11 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "authorization_peer_mapping_history"
 		| "authorization_remote_admissions"
 		| "authorization_remote_grants"
-		| "subnodes" => Node("node"),
+		| "subnodes"
+		| "egress_scope_state"
+		| "egress_scope_daily"
+		| "egress_scope_connections"
+		| "egress_scope_events" => Node("node"),
 		"nodes" => Audit,
 		"authorization_remote_terminal_receipts" => Recovery,
 		"node_registrations" => Registrations,

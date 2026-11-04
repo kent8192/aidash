@@ -178,6 +178,20 @@ execution:
   runtimeClass:
     create: false
     name: ""
+  pods:
+    enabled: false
+    helperImage: ""
+    storageClassName: ""
+    admissionCapacityBytes: 5368709120
+    maxCpu: 256
+    maxMemoryBytes: 1099511627776
+    maxCapacityBytes: 1099511627776
+    allowDocker: false
+    dockerRuntimeClass: ""
+    proxy:
+      endpoint: ""
+      namespace: ""
+      podSelector: {}
   gvisor:
     version: "20260921.0"
     sha256: "3dd478770dd751d09c257ba14d739b179348a36c5f2d9e954b773f5f90bff646"
@@ -228,6 +242,9 @@ execution:
     # Reserve an unused Service IP in the cluster's Service CIDR before enabling.
     clusterIP: ""
     port: 8950
+    # Per gateway instance; the Tenant limit must be below the global limit.
+    proxyGlobalTunnels: 1024
+    proxyTenantTunnels: 32
     limits:
       { sent_bytes: 1073741824, received_bytes: 1073741824, requests: 1000 }
   limits:

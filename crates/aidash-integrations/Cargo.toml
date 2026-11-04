@@ -16,7 +16,7 @@ tonic-prost = { version = "0.14", optional = true }
 bytes = "1"
 object_store = { version = "0.14.2", features = ["aws", "gcp"] }
 tokio-util = { version = "0.7", features = ["io"] }
-hyper = { version = "1", features = ["server", "http1"] }
+hyper = { version = "1", features = ["client", "server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "http1"] }
 http-body-util = "0.1"
 secrecy = "0.10"
@@ -123,6 +123,7 @@ authentication = ["dep:reinhardt", "dep:prost", "dep:tonic-prost"]
 test-support = []
 
 [dev-dependencies]
+aidash-application = { workspace = true, features = ["test-support"] }
 rcgen = "0.14"
 tokio-stream = { version = "0.1", features = ["net"] }
 # The live Token Encoding checks count requests (ADR 0017).

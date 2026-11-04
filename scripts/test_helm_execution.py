@@ -370,6 +370,16 @@ class ChartsTest(unittest.TestCase):
         self.assertEqual(runner['endpoint'], 'http://10.96.0.90:8950')
         self.assertEqual(runner['pod_selector'], service['selector'])
         self.assertEqual(runner['limits'], {'sent_bytes': 1 << 30, 'received_bytes': 1 << 30, 'requests': 1000})
+        self.assertEqual((runner.get('proxy_global_tunnels'), runner.get('proxy_tenant_tunnels')), (1024, 32))
+        custom_egress = dict(execution['egress'], proxyGlobalTunnels=240, proxyTenantTunnels=24)
+        custom = render(self.aidash, dict(values, execution=dict(execution, egress=custom_egress)), 'app', namespace='tenant-app')
+        for role in ('server', 'worker'):
+            settings = json.loads(self.mounted(custom, role, 'AIDASH_CAPABILITY_PROFILE'))['egress']
+            self.assertEqual((settings['proxy_global_tunnels'], settings['proxy_tenant_tunnels']), (240, 24))
+        custom_runner = json.loads(select(custom, 'ConfigMap', '-execution-profile')['data']['profile.json'])['egress']
+        self.assertEqual((custom_runner['proxy_global_tunnels'], custom_runner['proxy_tenant_tunnels']), (240, 24))
+        with self.assertRaises(subprocess.CalledProcessError):
+            render(self.aidash, dict(values, execution=dict(execution, egress=dict(custom_egress, proxyTenantTunnels=240))), 'app', namespace='tenant-app')
         policy = select(objects, 'NetworkPolicy', '-egress-internal')['spec']
         self.assertEqual(policy['podSelector']['matchLabels'], service['selector'])
         ingress = policy['ingress'][-1]
@@ -576,6 +586,28 @@ class ChartsTest(unittest.TestCase):
             for invalid in ({'highAvailability': {'enabled': True}}, {'workloadKind': 'DaemonSet'}):
                 with self.subTest(chart=chart, invalid=invalid), self.assertRaises(subprocess.CalledProcessError):
                     render(chart, dict(values, **invalid))
+
+    def test_execution_pod_v2_configures_separate_docker_runtime_and_claim_permissions(self):
+        execution = {'createNamespaces': True, 'sandboxImage': 'sandbox' + DIGEST,
+                     'runtimeClass': {'create': True},
+                     'runner': {'enabled': True, 'existingSecret': 'runner', 'image': 'trusted-runner' + DIGEST},
+                     'guard': {'enabled': True, 'image': 'trusted-guard' + DIGEST},
+                     'pods': {'enabled': True, 'helperImage': 'trusted-runner' + DIGEST,
+                              'storageClassName': 'bounded', 'allowDocker': True,
+                              'proxy': {'endpoint': 'http://10.96.0.90:8950', 'namespace': 'gateway',
+                                        'podSelector': {'app': 'proxy'}}}}
+        objects = render(self.aidash, dict(self.base, execution=execution,
+                                           environment={'nodeSelector': {'pool': 'execution'}}))
+        self.assertEqual(select(objects, 'RuntimeClass', '-runsc-docker')['handler'], 'runsc-docker')
+        self.assertEqual(select(objects, 'Namespace', '-sandbox')['metadata']['labels']['pod-security.kubernetes.io/enforce'], 'privileged')
+        profile = select(objects, 'ConfigMap', '-profile')
+        settings = json.loads(profile['data']['execution-pods.json'])
+        self.assertEqual(settings['storage_class'], 'bounded')
+        self.assertEqual(settings['proxy_selector'], {'app': 'proxy'})
+        self.assertTrue(settings['allow_docker'])
+        rules = select(objects, 'Role', '-sandbox')['rules']
+        self.assertTrue(any('persistentvolumeclaims' in rule.get('resources', []) and
+                            {'get', 'create', 'delete'} <= set(rule['verbs']) for rule in rules))
 
     def test_execution_privileges_scheduling_and_independent_trusted_images(self):
         execution = {'createNamespaces': True, 'sandboxImage': 'sandbox@sha256:' + 'a' * 64,

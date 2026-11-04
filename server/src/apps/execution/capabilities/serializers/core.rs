@@ -92,6 +92,17 @@ pub struct EgressSettings {
 	#[serde(default)]
 	pub pod_selector: std::collections::BTreeMap<String, String>,
 	pub listen: std::net::SocketAddr,
+	#[serde(default = "default_proxy_global_tunnels")]
+	pub proxy_global_tunnels: usize,
+	#[serde(default = "default_proxy_tenant_tunnels")]
+	pub proxy_tenant_tunnels: usize,
 	#[serde(default)]
 	pub limits: aidash_domain::egress::Limits,
+}
+
+fn default_proxy_global_tunnels() -> usize {
+	1024
+}
+fn default_proxy_tenant_tunnels() -> usize {
+	32
 }

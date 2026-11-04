@@ -12,7 +12,7 @@ Provider descriptors. Required/default Builtins and approved Sandboxed Bundles d
 the exposed tool set. The runtime gate below verifies these implementations. Registry
 declarations and catalog approvals do not grant authority over target resources.
 
-## Supported execution boundary
+## Supported execution boundary (runner/1)
 
 Shell, Python and document parsing require the `aidash-runner/1` controller,
 Kubernetes, the `aidash-gvisor` RuntimeClass and the trusted node lifecycle adapter
@@ -38,6 +38,93 @@ in `runner/requirements.lock`. The runtime image's final OCI digest is recorded
 by the setup command and the admission result. Admission is required separately
 on each architecture and deployment; a local arm64 result does not certify an
 amd64 deployment.
+
+## Execution Pods (runner/2)
+
+The v2 runtime is opt-in and exposes a separate `aidash-runner/2` control
+protocol. Existing shell and Python tools continue to use v1 until they are
+retargeted. The server must authorize access to a Scratch Space and pass its
+opaque ID, pinned image, CPU, memory, capacity, Docker setting and Tenant ID
+when Docker is enabled. The Runner creates one gVisor Pod and one PVC for that
+ID. A quota-enforcing storage class with a `Delete` reclaim policy and a
+controller deletion finalizer is required; a `Retain` volume is refused. Purge
+is acknowledged only after the bound PV disappears. Preserve the Runner journal
+across restarts; it records operation and volume identities and prevents replay.
+
+A trusted, read-only injected helper copies the image filesystem into the PVC
+on first start, then runs commands as root in that persisted root. `/scratch`
+contains user files; the copied system tree lives separately on the same PVC.
+Installed packages survive Pod restarts. Reset replaces the system tree from the
+image and preserves `/scratch`. The change log records cheap mtime/size diffs
+at active-command transitions and periodically while commands run. An interval
+with one command is attributed to its Run; overlapping commands produce an
+`ambiguous` record listing the Runs. The index does not capture every possible
+metadata-only change, and a sudden Pod loss can lose the latest interval.
+
+The Runner queues foreground commands beyond eight simultaneous commands per
+Pod; background processes have a separate pool of 16. The
+default deadline is ten minutes and the maximum is 60 minutes. Foreground
+commands waiting for a Run may be cancelled; background processes expose their
+starting Run and bounded logs. Commands interrupted by a lost Pod or node have
+an unknown outcome and are never replayed. Python interpreters are per Run.
+The Pod stops after 30 minutes without a command or Live preview viewer;
+background processes alone do not extend its life. Preview and MCP integration
+with the application remains for wave 2.
+
+Admission gates user-image startup on a node guard which binds the Pod UID and
+sandbox to host cgroup CPU, memory and pids limits. It independently checks
+termination before a new writer starts. Normal-mode commands lose SYS_ADMIN,
+NET_ADMIN, NET_RAW and SYS_CHROOT from all capability sets including the bounding set and
+run with `no_new_privs`; admission runs a user process to verify this and the
+guest process limit. The v2 guest ceiling defaults to 512 tasks and can be set
+with `v2_processes` in the Execution Pod configuration. There is no service-account token. Network admission checks
+the effective Kubernetes NetworkPolicies and probes a reachable peer Pod, node,
+metadata endpoint and external destination, allowing only the Egress gateway.
+It fails closed when its positive controls cannot be reached. Network probes
+currently require IPv4. The CNI must enforce policy against raw and spoofed
+packets; Docker-mode admission also runs raw packet negative controls.
+
+In Docker mode, guest root can leave the chroot and modify PVC bookkeeping;
+the change log and reset are best-effort. Command results use the controller
+exec stream rather than trusting the PVC result files. A nonce-framed result
+distinguishes command exit codes from transport failures.
+
+Docker mode requires a separate gVisor RuntimeClass with `net-raw` enabled and
+is restricted to nodes labeled and tainted for that Tenant. User processes retain
+SYS_ADMIN, NET_ADMIN and NET_RAW inside gVisor and `/var/lib/docker` is tmpfs.
+A guest root with SYS_ADMIN can change or bypass the guest PID limit, so that
+limit is best-effort in Docker mode. The enforced boundary is the Sentry's host
+cgroup CPU, memory and pids limits, verified by the node guard and inaccessible
+to guest root. A fork bomb can exhaust resources on the Tenant-dedicated nodes;
+it does not acquire resources reserved for another Tenant's nodes.
+
+To enable the v2 controller in Helm, configure `execution.pods.enabled`, a
+trusted digest-pinned `helperImage`, `storageClassName`, and the private IP
+`proxy.endpoint`, `proxy.namespace` and `proxy.podSelector`. Set `allowDocker`
+only after provisioning the separate Docker RuntimeClass and Tenant-dedicated
+nodes. The controller performs a disposable admission test before serving v2
+requests and reports a typed failure if prerequisites or cleanup fail. For a
+local kind installation, `setup-capability-runtime.py --execution-pods` accepts
+`--helper-image`, `--storage-class`, `--proxy-endpoint`, `--proxy-namespace`
+and one or more `--proxy-selector key=value` arguments; `--allow-docker` is
+optional. Provision the enforcing storage class and Egress gateway separately.
+
+Known limits of this runtime, which no tool uses yet. Keep it disabled in
+production until wave 2 of #697 has run it on a live gVisor cluster:
+
+- Docker mode has no boundary inside the Pod. A user process keeps `SYS_ADMIN`,
+  so it can attack the trusted supervisor, the admission probe and the result
+  framing nonce. Only the Tenant-dedicated node and host limits contain it. Do
+  not trust Docker-mode admission evidence or result frames against a malicious
+  user.
+- The image-root init container still runs the helper loader against the Tenant
+  image, whose `/etc/ld.so.preload` is honoured. Such code runs without mount
+  capabilities and sees only its own `image-root` subPath, and the controller
+  refuses a symlinked root before `chroot`.
+- Full-disk recovery, the guest process ceiling and admission are covered by
+  unit tests against mocks and have not been exercised on a real PVC and gVisor.
+- Images that need more than the fixed startup deadline to pull and copy fail.
+  There is no progress-based extension.
 
 ## Reproduce the runtime gate
 
@@ -296,7 +383,17 @@ in remote Runs. See
 [deferred capability exposure](registry-capabilities.md#deferred-capability-exposure).
 
 The outbound broker enforces configured HTTPS origins, public DNS/IP checks,
-per-hop scope and bounded responses. Shell/Python have no general network proxy.
+per-hop scope and bounded responses. Shell/Python have no general network proxy
+in the currently wired runtime. The Scratch Space proxy integration contract and
+its remaining authority wiring are described in [Tenant Secrets and sandbox
+egress](../tenant-secrets.md#scratch-space-proxy-integration). The `egress`
+profile accepts `proxy_tenant_tunnels` (default 32) and
+`proxy_global_tunnels` (default 1024) for each gateway instance. The Tenant
+value must be positive and strictly less than the global value. Helm deployments
+set these with `execution.egress.proxyTenantTunnels` and
+`execution.egress.proxyGlobalTunnels`. Scope authority is connected in a later
+integration wave.
+
 An approval binds the original requester, invocation, targets and current policy;
 upper-policy denial cannot be approved away. Authenticated services belong in
 separately configured integrations. Never copy their tokens into Python, Shell,

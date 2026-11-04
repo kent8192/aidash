@@ -14,4 +14,7 @@ profile_path = directory / "profile.json"
 profile = json.loads(profile_path.read_text())
 os.environ[profile["runner"]["token_env"]] = (directory / "token").read_text().strip()
 os.environ["AIDASH_CAPABILITY_PROFILE"] = str(profile_path)
+execution_pods = directory / 'execution-pods.json'
+if execution_pods.exists():
+    os.environ['AIDASH_EXECUTION_POD_CONFIG'] = str(execution_pods)
 os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve().parent.parent / "runner/control.py")])

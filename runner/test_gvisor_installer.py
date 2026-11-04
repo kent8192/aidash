@@ -37,6 +37,18 @@ class InstallerTest(unittest.TestCase):
         installer.install(self.root, installer.GVISOR_VERSION, self.sha, 'x86_64',
                           self.read_archive, self.restart)
 
+    def test_raw_socket_handler_is_separate_from_default_runtime(self):
+        import tomllib
+        self.install()
+        config = tomllib.loads((self.root / 'etc/containerd/config.toml').read_text())
+        runtimes = config['plugins']['io.containerd.grpc.v1.cri']['containerd']['runtimes']
+        self.assertEqual(runtimes['runsc']['options']['ConfigPath'], '/etc/containerd/runsc.toml')
+        self.assertEqual(runtimes['runsc-docker']['options']['ConfigPath'], '/etc/containerd/runsc-docker.toml')
+        normal = tomllib.loads((self.root / 'etc/containerd/runsc.toml').read_text())
+        docker = tomllib.loads((self.root / 'etc/containerd/runsc-docker.toml').read_text())
+        self.assertNotIn('net-raw', normal['runsc_config'])
+        self.assertEqual(docker['runsc_config']['net-raw'], 'true')
+
     def test_idempotence_verifies_every_archive_binary_and_repairs_tampering(self):
         self.install()
         self.install()
@@ -61,7 +73,9 @@ class InstallerTest(unittest.TestCase):
     def test_incompatible_runtime_and_containerd_version_are_refused(self):
         config = self.root / 'etc/containerd/config.toml'
         drain = Mock()
-        for text in ('version = 3\n', 'version = 2\n[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc]\nruntime_type="other"\n'):
+        for text in ('version = 3\n',
+                     'version = 2\n[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc]\nruntime_type="other"\n',
+                     'version = 2\n[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc-docker]\nruntime_type="other"\n'):
             config.write_text(text)
             with self.assertRaises(ValueError):
                 installer.install(self.root, installer.GVISOR_VERSION, self.sha, 'x86_64',

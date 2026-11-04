@@ -117,6 +117,14 @@ impl Runtime {
 		}
 		if let Some(egress) = &profile.egress {
 			egress.limits.validate()?;
+			if egress.proxy_tenant_tunnels == 0
+				|| egress.proxy_tenant_tunnels >= egress.proxy_global_tunnels
+				|| egress.proxy_global_tunnels > tokio::sync::Semaphore::MAX_PERMITS
+			{
+				return Err(Error::Invalid(
+					"invalid Egress proxy tunnel capacity".into(),
+				));
+			}
 			let endpoint = reqwest::Url::parse(&egress.endpoint)
 				.map_err(|_| Error::Invalid("invalid Egress endpoint".into()))?;
 			let internal = endpoint

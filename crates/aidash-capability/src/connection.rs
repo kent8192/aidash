@@ -116,7 +116,10 @@ impl ConnectionClaims {
 				sub,
 				max_response_bytes,
 			} => {
-				if matches!(sub, SecretSubject::Operation { .. }) {
+				if !matches!(
+					sub,
+					SecretSubject::Run { .. } | SecretSubject::Workbench { .. }
+				) {
 					return Err(Failure::ClaimViolation);
 				}
 				return SecretClaims {

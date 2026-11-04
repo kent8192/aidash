@@ -8,6 +8,9 @@
 installer, which mounts the host root, lives where the Runner has no rights. */ -}}
 {{- $installer := $e.installerNamespace | default (printf "%s-installer" .Release.Name) -}}
 {{- $runtime := include "aidash.runtimeClassName" . -}}
+{{- $dockerRuntime := $e.pods.dockerRuntimeClass | default (printf "%s-docker" $runtime) -}}
+{{- if and $e.pods.enabled (or (not $e.runner.enabled) (not $e.guard.enabled)) -}}{{ fail "execution.pods.enabled requires the Runner and node guard" }}{{- end -}}
+{{- if and $e.pods.enabled $e.pods.allowDocker (eq $dockerRuntime $runtime) -}}{{ fail "Docker needs a separate raw-socket RuntimeClass" }}{{- end -}}
 {{- $selector := mergeOverwrite (deepCopy .Values.nodeSelector) .Values.environment.nodeSelector -}}
 {{- $tolerations := concat .Values.tolerations .Values.environment.tolerations -}}
 {{- $guardState := $e.paths.guardState | default (printf "/var/lib/aidash-node-guard/%s" .Release.Name) -}}
@@ -51,7 +54,7 @@ kind: Namespace
 metadata:
   name: {{ $namespace | quote }}
   labels:
-    pod-security.kubernetes.io/enforce: {{ ternary "restricted" "privileged" (eq $namespace $sandbox) }}
+    pod-security.kubernetes.io/enforce: {{ ternary "restricted" "privileged" (and (eq $namespace $sandbox) (not $e.pods.enabled)) }}
     pod-security.kubernetes.io/enforce-version: {{ $e.podSecurityVersion }}
 {{- end }}
 {{- end }}
@@ -62,6 +65,20 @@ kind: RuntimeClass
 metadata:
   name: {{ $runtime | quote }}
 handler: runsc
+scheduling:
+  nodeSelector:
+    {{ $e.gvisor.label }}: {{ $e.gvisor.version | quote }}
+  {{- with $tolerations }}
+  tolerations: {{ toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- if and $e.runtimeClass.create $e.pods.enabled $e.pods.allowDocker }}
+---
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: {{ $dockerRuntime | quote }}
+handler: runsc-docker
 scheduling:
   nodeSelector:
     {{ $e.gvisor.label }}: {{ $e.gvisor.version | quote }}
@@ -238,9 +255,12 @@ rules:
   - apiGroups: [""]
     resources: [pods/log]
     verbs: [get]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, list, watch, create, delete]
   - apiGroups: [networking.k8s.io]
     resources: [networkpolicies]
-    verbs: [get, create, patch]
+    verbs: [get, list, create, patch, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -273,8 +293,13 @@ metadata:
 rules:
   - apiGroups: [node.k8s.io]
     resources: [runtimeclasses]
-    resourceNames: [{{ $runtime | quote }}]
+    resourceNames: [{{ $runtime | quote }}{{ if and $e.pods.enabled $e.pods.allowDocker }}, {{ $dockerRuntime | quote }}{{ end }}]
     verbs: [get]
+  {{- if $e.pods.enabled }}
+  - apiGroups: [""]
+    resources: [persistentvolumes]
+    verbs: [get]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -308,6 +333,21 @@ data:
     {{- $profile := dict "runner" $runner -}}
     {{- if $e.egress.enabled -}}{{- $_ := set $profile "egress" (include "aidash.egressSettings" . | fromJson) -}}{{- end -}}
     {{- toJson (mergeOverwrite (deepCopy $e.limits) $profile) | nindent 4 }}
+  {{- if $e.pods.enabled }}
+  execution-pods.json: |-
+    {{- $helper := required "execution.pods.helperImage must be digest pinned" $e.pods.helperImage -}}
+    {{- if not (regexMatch "@sha256:[0-9a-f]{64}$" $helper) -}}{{ fail "execution.pods.helperImage must be digest pinned" }}{{- end -}}
+    {{- $proxy := required "execution.pods.proxy.endpoint is required" $e.pods.proxy.endpoint -}}
+    {{- $proxyNamespace := required "execution.pods.proxy.namespace is required" $e.pods.proxy.namespace -}}
+    {{- $proxySelector := required "execution.pods.proxy.podSelector is required" $e.pods.proxy.podSelector -}}
+    {{- $pods := dict "enabled" true "helper_image" $helper "allow_docker" $e.pods.allowDocker
+          "docker_runtime_class" $dockerRuntime "admission_capacity_bytes" (int64 $e.pods.admissionCapacityBytes)
+          "max_cpu" (int $e.pods.maxCpu) "max_memory_bytes" (int64 $e.pods.maxMemoryBytes)
+          "max_capacity_bytes" (int64 $e.pods.maxCapacityBytes) "proxy_endpoint" $proxy
+          "proxy_namespace" $proxyNamespace "proxy_selector" $proxySelector -}}
+    {{- if $e.pods.storageClassName -}}{{- $_ := set $pods "storage_class" $e.pods.storageClassName -}}{{- end -}}
+    {{- toJson $pods | nindent 4 }}
+  {{- end }}
 ---
 apiVersion: apps/v1
 kind: {{ include "aidash.workloadKind" . }}
@@ -340,6 +380,9 @@ spec:
           command: [python3, -I, /opt/aidash/control.py]
           env:
             - { name: AIDASH_CAPABILITY_PROFILE, value: /etc/aidash/profile.json }
+            {{- if $e.pods.enabled }}
+            - { name: AIDASH_EXECUTION_POD_CONFIG, value: /etc/aidash/execution-pods.json }
+            {{- end }}
             - name: AIDASH_CORE_RUNNER_TOKEN
               valueFrom: { secretKeyRef: { name: {{ $secret | quote }}, key: {{ $e.runner.tokenKey | quote }} } }
           securityContext:
