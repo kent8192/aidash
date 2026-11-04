@@ -191,7 +191,7 @@ A response counts as complete once all its bytes are handed to the server's
 HTTP layer, so a client that disconnects at the very end can still appear as a
 success.
 
-A record starts with status 0. The final debit and record are retried for about
+A record starts with status 0 and the error `stream_interrupted`. The final debit and record are retried for about
 60 seconds when storage is unavailable, so a record that stays at status 0 has
 an unknown outcome: the process stopped first or storage stayed unavailable.
 
@@ -199,7 +199,7 @@ Failures that leave no record are visible to the operator of the Deployment.
 Unexpected admission failures and abandoned retries log an error, and upstream
 failures log a warning. These lines name the service, method and cause, never
 the token, path, query or header values. Sandboxed code sees only the code in
-the table above. `/metrics` exposes:
+the table above. The metrics listener (`AIDASH_METRICS_LISTEN`) exposes:
 
 | Counter                                   | Labels             | Counts                                               |
 | ----------------------------------------- | ------------------ | ---------------------------------------------------- |
