@@ -932,11 +932,14 @@ print(json.dumps(r))'''
             raise ExecutionPodError('command_not_found', 'Command does not exist') from None
 
     def _update_command(self, operation_id, **fields):
+        import time
         from control import save
         with self.lock:
             record = self._read_command(operation_id)
             if record.get('status') == 'interrupted' and fields.get('status') != 'interrupted':
                 return record
+            if fields.get('status') in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted'):
+                fields.setdefault('terminal_at', time.time())
             record.update(fields)
             save(self._command_path(operation_id), record)
             return record
@@ -1121,18 +1124,27 @@ print(json.dumps(r))'''
                 self.live_output.pop(operation_id, None)
 
     def cancel_run(self, scratch_space_id, run_id):
+        import json
         from control import scratch_resource_name
         scratch_resource_name(scratch_space_id)
         if not isinstance(run_id, str) or not run_id:
             raise ValueError('run_id must be a nonempty string')
-        with self.lock:
-            queue = self.queues.get(scratch_space_id)
-        if queue:
-            queue.cancel_waiting(run_id)
+        with self._space_lock(scratch_space_id):
+            with self.lock:
+                queue = self.queues.get(scratch_space_id)
+            if queue:
+                queue.cancel_waiting(run_id)
+            directory = self.backend.root / 'execution-v2'
+            for path in directory.glob('*.json') if directory.exists() else ():
+                record = json.loads(path.read_bytes())
+                if (record.get('scratch_space_id') == scratch_space_id and record.get('run_id') == run_id
+                        and not record.get('background') and record.get('status') in ('queued', 'running')):
+                    self._stop_command(record['operation_id'])
         return {'cancelled_waiting': True}
 
     def background_processes(self, scratch_space_id):
         import json
+        import time
         from control import scratch_resource_name
 
         scratch_resource_name(scratch_space_id)
@@ -1140,11 +1152,17 @@ print(json.dumps(r))'''
         if not directory.exists():
             return {'processes': []}
         result = []
+        terminal = {'completed', 'timed_out', 'stopped', 'cancelled', 'interrupted'}
         for path in directory.glob('*.json'):
             record = json.loads(path.read_bytes())
             if (record.get('scratch_space_id') == scratch_space_id and record.get('background')
                     and record.get('kind') != 'python_session'):
-                result.append(self.command_result(record['operation_id']))
+                finished = record.get('terminal_at') or record.get('accepted_at')
+                if record.get('status') in terminal and finished and time.time() - finished > 7 * 86400:
+                    continue
+                result.append({key: record[key] for key in ('operation_id', 'scratch_space_id', 'run_id',
+                              'status', 'background', 'outcome', 'exit_code', 'truncated',
+                              'error_code', 'message') if key in record})
         return {'processes': sorted(result, key=lambda item: item['operation_id'])}
 
     def stop_background(self, operation_id):
@@ -1152,6 +1170,11 @@ print(json.dumps(r))'''
         record = self._read_command(operation_id)
         if not record.get('background'):
             raise ExecutionPodError('not_background', 'Command is not a background process')
+        return self._stop_command(operation_id)
+
+    def _stop_command(self, operation_id):
+        import time
+        record = self._read_command(operation_id)
         with self.lock:
             future = self.futures.get(operation_id)
         if record['status'] == 'queued' and future and future.cancel():

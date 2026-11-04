@@ -277,7 +277,12 @@ class ExecutionPodControllerTest(unittest.TestCase):
         import threading
         from execution_pod import CommandQueue, ExecutionPodController
 
-        controller = ExecutionPodController(object(), {}, admitted=True)
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        controller = ExecutionPodController(SimpleNamespace(root=Path(directory.name)), {}, admitted=True)
         release = threading.Event()
         queues = {space: CommandQueue() for space in ('one', 'two')}
         controller.queues.update(queues)
@@ -820,6 +825,54 @@ class RecoveryRegressionTest(unittest.TestCase):
                                         'termination_unconfirmed': True}))
             controller.stop('s')
             controller._require_space_termination_confirmed('s')
+
+
+class BackgroundListingRegressionTest(unittest.TestCase):
+    def test_listing_omits_output_and_old_terminal_records(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+            for op, status, finished in [('e6ded09d-f783-4ce8-98e9-dbfca68884f1', 'running', None),
+                                         ('e6ded09d-f783-4ce8-98e9-dbfca68884f2', 'completed', 1)]:
+                controller._command_path(op).write_text(json.dumps({'operation_id': op, 'scratch_space_id': 's',
+                    'run_id': 'r', 'background': True, 'status': status, 'terminal_at': finished,
+                    'stdout': 'large', 'stderr': 'large'}))
+            with patch('time.time', return_value=1000000):
+                listed = controller.background_processes('s')['processes']
+            self.assertEqual(len(listed), 1)
+            self.assertNotIn('stdout', listed[0])
+            self.assertNotIn('stderr', listed[0])
+
+
+class RunCancellationRegressionTest(unittest.TestCase):
+    def test_cancel_signals_running_foreground_but_leaves_background(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            class Backend:
+                root = Path(directory)
+                calls = []
+                def kube(self, args, **kwargs):
+                    self.calls.append(args)
+                    if args[0] == 'get':
+                        return SimpleNamespace(stdout=b'{"metadata":{"uid":"pod-uid"}}')
+                    return SimpleNamespace(stdout=b'')
+            controller = ExecutionPodController(Backend(), {}, admitted=True)
+            for op, background in [('e6ded09d-f783-4ce8-98e9-dbfca68884f1', False),
+                                   ('e6ded09d-f783-4ce8-98e9-dbfca68884f2', True)]:
+                controller._command_path(op).write_text(json.dumps({'operation_id': op, 'scratch_space_id': 's',
+                    'run_id': 'r', 'background': background, 'status': 'running', 'pod': 'pod', 'pod_uid': 'pod-uid'}))
+            controller.cancel_run('s', 'r')
+            calls = [call for call in controller.backend.calls if call[0] == 'exec']
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0][-1], 'e6ded09d-f783-4ce8-98e9-dbfca68884f1')
 
 
 class IdlePodTest(unittest.TestCase):

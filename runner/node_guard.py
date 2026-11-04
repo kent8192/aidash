@@ -475,7 +475,7 @@ def handle(request):
         if (previous and not previous_stopped and not bound and not transition
                 and previous.get('protocol') == 'aidash-runner/2'
                 and request.get('protocol') == 'aidash-runner/2'):
-            raise ValueError('previous execution sentry is still live')
+            raise ValueError('stale binding: previous execution sentry is still live')
         if previous and (request['epoch'] < previous['epoch'] or
                          request['epoch'] == previous['epoch'] and previous['container_id'] != cid and not transition):
             raise ValueError('stale execution epoch')
