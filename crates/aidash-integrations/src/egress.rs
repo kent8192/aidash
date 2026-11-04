@@ -121,6 +121,14 @@ impl Refusal {
 			Error::Conflict(code) if code == aidash_domain::egress::OPERATION_EXPIRED => {
 				Self::EXPIRED
 			}
+			Error::Refused(code) if code == "egress_budget_exhausted" => Self {
+				status: StatusCode::TOO_MANY_REQUESTS,
+				code: "egress_budget_exhausted",
+			},
+			Error::Refused(code) if code == "egress_suspended" => Self {
+				status: StatusCode::FORBIDDEN,
+				code: "egress_suspended",
+			},
 			Error::Forbidden | Error::Unauthorized | Error::AuthorityRefused(_) => Self::FORBIDDEN,
 			_ => Self::UNAVAILABLE,
 		}
@@ -297,12 +305,108 @@ impl Drop for Completion {
 
 /// The listener must be bound only on a cluster-internal interface. Its token
 /// is an operation credential, never a Tenant Secret or a Deployment secret.
+/// Fails a socket write that makes no progress for the configured interval.
+struct WriteDeadline<S> {
+	inner: S,
+	timeout: Duration,
+	blocked: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+}
+impl<S> WriteDeadline<S> {
+	fn new(inner: S, timeout: Duration) -> Self {
+		Self {
+			inner,
+			timeout,
+			blocked: None,
+		}
+	}
+	fn pending(
+		&mut self,
+		cx: &mut std::task::Context<'_>,
+	) -> std::task::Poll<std::io::Result<usize>> {
+		use std::future::Future;
+		let timer = self
+			.blocked
+			.get_or_insert_with(|| Box::pin(tokio::time::sleep(self.timeout)));
+		if timer.as_mut().poll(cx).is_ready() {
+			std::task::Poll::Ready(Err(std::io::Error::new(
+				std::io::ErrorKind::TimedOut,
+				"egress_write_timeout",
+			)))
+		} else {
+			std::task::Poll::Pending
+		}
+	}
+}
+impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for WriteDeadline<S> {
+	fn poll_read(
+		mut self: std::pin::Pin<&mut Self>,
+		cx: &mut std::task::Context<'_>,
+		buf: &mut tokio::io::ReadBuf<'_>,
+	) -> std::task::Poll<std::io::Result<()>> {
+		std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+	}
+}
+impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for WriteDeadline<S> {
+	fn poll_write(
+		mut self: std::pin::Pin<&mut Self>,
+		cx: &mut std::task::Context<'_>,
+		buf: &[u8],
+	) -> std::task::Poll<std::io::Result<usize>> {
+		match std::pin::Pin::new(&mut self.inner).poll_write(cx, buf) {
+			std::task::Poll::Ready(result) => {
+				self.blocked = None;
+				std::task::Poll::Ready(result)
+			}
+			std::task::Poll::Pending => self.pending(cx),
+		}
+	}
+	fn poll_flush(
+		mut self: std::pin::Pin<&mut Self>,
+		cx: &mut std::task::Context<'_>,
+	) -> std::task::Poll<std::io::Result<()>> {
+		match std::pin::Pin::new(&mut self.inner).poll_flush(cx) {
+			std::task::Poll::Ready(result) => {
+				self.blocked = None;
+				std::task::Poll::Ready(result)
+			}
+			std::task::Poll::Pending => self.pending(cx).map(|result| result.map(|_| ())),
+		}
+	}
+	fn poll_shutdown(
+		mut self: std::pin::Pin<&mut Self>,
+		cx: &mut std::task::Context<'_>,
+	) -> std::task::Poll<std::io::Result<()>> {
+		match std::pin::Pin::new(&mut self.inner).poll_shutdown(cx) {
+			std::task::Poll::Ready(result) => {
+				self.blocked = None;
+				std::task::Poll::Ready(result)
+			}
+			std::task::Poll::Pending => self.pending(cx).map(|result| result.map(|_| ())),
+		}
+	}
+}
+
 pub async fn serve(
 	listener: TcpListener,
 	authority: Arc<dyn Authority>,
 	stopping: watch::Receiver<bool>,
 ) -> crate::Result<()> {
-	serve_with_scopes(listener, authority, None, stopping).await
+	serve_with_scopes(listener, authority, None, ProxyLimits::default(), stopping).await
+}
+
+/// Per-instance proxy capacity. Tenant capacity must be lower than global capacity.
+#[derive(Clone, Copy, Debug)]
+pub struct ProxyLimits {
+	pub global_concurrent: usize,
+	pub tenant_concurrent: usize,
+}
+impl Default for ProxyLimits {
+	fn default() -> Self {
+		Self {
+			global_concurrent: 1024,
+			tenant_concurrent: 32,
+		}
+	}
 }
 
 /// Serve legacy External service calls and, when configured, scope proxy calls.
@@ -310,8 +414,17 @@ pub async fn serve_with_scopes(
 	listener: TcpListener,
 	authority: Arc<dyn Authority>,
 	scopes: Option<Arc<dyn aidash_application::egress::EgressScopes>>,
+	limits: ProxyLimits,
 	mut stopping: watch::Receiver<bool>,
 ) -> crate::Result<()> {
+	if limits.tenant_concurrent == 0
+		|| limits.tenant_concurrent >= limits.global_concurrent
+		|| limits.global_concurrent > tokio::sync::Semaphore::MAX_PERMITS
+	{
+		return Err(aidash_application::Error::Invalid(
+			"invalid Egress proxy tunnel capacity".into(),
+		));
+	}
 	let client = reqwest::Client::builder()
 		.redirect(reqwest::redirect::Policy::none())
 		.no_proxy()
@@ -329,7 +442,7 @@ pub async fn serve_with_scopes(
 		.map_err(crate::http_error)?;
 	let slots = Arc::new(tokio::sync::Semaphore::new(128));
 	let mut connections = tokio::task::JoinSet::new();
-	let tunnels = Arc::new(proxy::TunnelManager::new(stopping.clone()));
+	let tunnels = Arc::new(proxy::TunnelManager::new(stopping.clone(), limits));
 	loop {
 		if *stopping.borrow() || stopping.has_changed().is_err() {
 			connections.abort_all();
@@ -341,17 +454,25 @@ pub async fn serve_with_scopes(
 			_ = stopping.changed() => {},
 			Some(_) = connections.join_next(), if !connections.is_empty() => {},
 			accepted = listener.accept() => {
-				let (socket, _) = accepted.map_err(|_| aidash_application::Error::External("Egress listener unavailable".into()))?;
+				let (socket, _) = match accepted {
+					Ok(accepted) => accepted,
+					Err(error) => {
+						tracing::warn!(%error, "Egress accept failed; retrying");
+						tokio::select! { _ = tokio::time::sleep(Duration::from_secs(1)) => {}, _ = stopping.changed() => {} }
+						continue;
+					}
+				};
 				let Ok(permit) = slots.clone().try_acquire_owned() else { continue; };
 				let authority = authority.clone(); let client = client.clone(); let public = public.clone(); let scopes = scopes.clone(); let tunnels = tunnels.clone();
 				connections.spawn(async move {
 					let permit = Arc::new(std::sync::Mutex::new(Some(permit)));
+					let connection_lease = Arc::new(std::sync::Mutex::new(None));
 					let service = service_fn(move |request| {
-						let authority=authority.clone(); let client=client.clone(); let public=public.clone(); let scopes=scopes.clone(); let permit=permit.clone(); let tunnels=tunnels.clone();
+						let authority=authority.clone(); let client=client.clone(); let public=public.clone(); let scopes=scopes.clone(); let permit=permit.clone(); let tunnels=tunnels.clone(); let connection_lease=connection_lease.clone();
 						async move {
 							let response = if request.method() == hyper::Method::CONNECT || request.uri().scheme().is_some() {
 								let connect = request.method() == hyper::Method::CONNECT;
-								let mut response = match scopes { Some(scopes) => proxy::forward(request, scopes, tunnels, permit).await, None => failure(StatusCode::SERVICE_UNAVAILABLE, "egress_scope_unavailable") };
+								let mut response = match scopes { Some(scopes) => proxy::forward(request, scopes, tunnels, permit, connection_lease).await, None => failure(StatusCode::SERVICE_UNAVAILABLE, "egress_scope_unavailable") };
 								if !connect || response.status() != StatusCode::OK { response.headers_mut().insert(hyper::header::CONNECTION, hyper::header::HeaderValue::from_static("close")); }
 								response
 							} else { forward(request, authority, client, public, scopes).await };
@@ -360,7 +481,7 @@ pub async fn serve_with_scopes(
 					});
 					let _ = hyper::server::conn::http1::Builder::new().timer(TokioTimer::new())
 						.header_read_timeout(IDLE).max_headers(64)
-						.serve_connection(TokioIo::new(socket), service).with_upgrades().await;
+						.serve_connection(TokioIo::new(WriteDeadline::new(socket, IDLE)), service).with_upgrades().await;
 				});
 			}
 		}

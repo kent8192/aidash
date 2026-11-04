@@ -814,7 +814,7 @@ impl aidash_application::egress::EgressScopes for ScopeServiceFixture {
 		_: &str,
 	) -> Result<Admission> {
 		let scope = self.scopes.resolve(credential).await?;
-		self.scopes.check_active(&scope).await?;
+		self.scopes.check_active(&scope, credential).await?;
 		if service != "images" {
 			return Err(aidash_application::Error::Forbidden);
 		}
@@ -844,8 +844,12 @@ impl aidash_application::egress::EgressScopes for ScopeServiceFixture {
 	) -> Result<()> {
 		self.scopes.admit_connection(scope).await
 	}
-	async fn check_active(&self, scope: &aidash_application::egress::ScopeSettings) -> Result<()> {
-		self.scopes.check_active(scope).await
+	async fn check_active(
+		&self,
+		scope: &aidash_application::egress::ScopeSettings,
+		credential: &str,
+	) -> Result<aidash_application::egress::ScopeSettings> {
+		self.scopes.check_active(scope, credential).await
 	}
 	async fn debit(
 		&self,
@@ -935,6 +939,7 @@ async fn external_service_accepts_scope_credential_without_forwarding_it() {
 		listener,
 		authority,
 		Some(scopes),
+		ProxyLimits::default(),
 		stopping,
 	));
 	let client = reqwest::Client::builder()
@@ -992,6 +997,16 @@ impl Meter for BudgetMeter {
 		if self.expired {
 			return Err(aidash_application::Error::Conflict(
 				aidash_domain::egress::OPERATION_EXPIRED.into(),
+			));
+		}
+		if self.limit == 0 {
+			return Err(aidash_application::Error::Refused(
+				"egress_budget_exhausted".into(),
+			));
+		}
+		if self.limit == 1 {
+			return Err(aidash_application::Error::Refused(
+				"egress_suspended".into(),
 			));
 		}
 		if used >= self.limit {
@@ -1220,6 +1235,35 @@ async fn an_exhausted_upload_budget_is_reported_as_the_limit_not_the_upstream() 
 }
 
 #[tokio::test]
+async fn scoped_refusals_are_reported_on_upload() {
+	for (limit, status, code) in [
+		(0, StatusCode::TOO_MANY_REQUESTS, "egress_budget_exhausted"),
+		(1, StatusCode::FORBIDDEN, "egress_suspended"),
+	] {
+		let (origin, audit, tasks, stop) = metered_gateway(limit, false).await;
+		let upload = futures_util::stream::iter(
+			(0..32).map(|_| Ok::<_, std::io::Error>(Bytes::from(vec![1; CHUNK]))),
+		);
+		let response = reqwest::Client::new()
+			.post(format!("{origin}/v1/operation-token/images/upload"))
+			.body(reqwest::Body::wrap_stream(upload))
+			.send()
+			.await
+			.unwrap();
+		assert_eq!(response.status(), status);
+		assert_eq!(
+			response.text().await.unwrap(),
+			format!(r#"{{"error":"{code}"}}"#)
+		);
+		assert_eq!(
+			*audit.finished_records.lock().unwrap(),
+			vec![(status.as_u16(), Some(code.into()))]
+		);
+		shutdown(tasks, stop).await;
+	}
+}
+
+#[tokio::test]
 async fn an_expired_operation_is_reported_as_expired_not_as_an_exhausted_budget() {
 	let (origin, audit, tasks, stop) = metered_gateway(u64::MAX, true).await;
 	let response = reqwest::get(format!("{origin}/v1/operation-token/images/download/1"))
@@ -1264,4 +1308,18 @@ fn a_rewritten_package_index_never_forwards_the_clients_accept_encoding() {
 	assert!(request_header_forwarded("accept-encoding", &[], false));
 	assert!(request_header_forwarded("accept", &[], true));
 	assert!(!request_header_forwarded("cookie", &[], false));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stalled_client_write_times_out() {
+	use tokio::io::AsyncWriteExt;
+	let (socket, _client) = tokio::io::duplex(1);
+	let task = tokio::spawn(async move {
+		let mut socket = WriteDeadline::new(socket, Duration::from_secs(2));
+		socket.write_all(b"ab").await
+	});
+	tokio::task::yield_now().await;
+	tokio::time::advance(Duration::from_secs(3)).await;
+	let error = task.await.unwrap().unwrap_err();
+	assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
 }

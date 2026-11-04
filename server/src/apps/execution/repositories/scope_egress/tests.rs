@@ -14,6 +14,18 @@ impl Meter for AuditMeter {
 		Ok(())
 	}
 }
+struct FailedAuditMeter;
+#[async_trait]
+impl Meter for FailedAuditMeter {
+	async fn charge(&self, _: Direction, _: usize) -> aidash_application::Result<()> {
+		Err(aidash_application::Error::External(
+			"audit unavailable".into(),
+		))
+	}
+	async fn finish(&self, _: u16, _: u64, _: Option<&str>) -> aidash_application::Result<()> {
+		Ok(())
+	}
+}
 #[async_trait]
 impl ScopeAuthority for Authority {
 	async fn authenticate(&self, credential: &str) -> aidash_application::Result<ScopeSettings> {
@@ -100,6 +112,30 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 	let durable = DurableScopes::new(federation.store.clone(), Arc::new(Authority(scope.clone())));
 	assert!(durable.resolve("invalid").await.is_err());
 	durable.resolve("credential").await.unwrap();
+	let mut connection = ConnectionRecord {
+		id: Uuid::new_v4(),
+		scope: scope.id.clone(),
+		host: "registry.npmjs.org".into(),
+		port: 443,
+		sent_bytes: 0,
+		received_bytes: 0,
+		duration_ms: 0,
+		outcome: "interrupted".into(),
+	};
+	durable.record(connection.clone()).await.unwrap();
+	connection.sent_bytes = 7;
+	connection.outcome = "completed".into();
+	durable.record(connection.clone()).await.unwrap();
+	let recorded: (i64, i64) = sqlx::query_as("SELECT count(*), COALESCE(sum(sent_bytes), 0)::bigint FROM egress_scope_connections WHERE id = $1")
+		.bind(connection.id).fetch_one(federation.store.pool.fixture_driver()).await.unwrap();
+	assert_eq!(recorded, (1, 7));
+	let invalid_target = ConnectionRecord {
+		id: Uuid::new_v4(),
+		port: 0,
+		outcome: "invalid_proxy_target".into(),
+		..connection.clone()
+	};
+	durable.record(invalid_target).await.unwrap();
 	let mut other = federation
 		.store
 		.pool
@@ -134,7 +170,7 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 		.await
 		.unwrap();
 	durable
-		.debit(&scope, Direction::Sent, 3, day)
+		.debit(&scope, Direction::Sent, 2, day)
 		.await
 		.unwrap();
 	let first = durable
@@ -155,6 +191,44 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 			.to_string()
 			.contains("egress_budget_exhausted")
 	);
+	let recorded: i64 = sqlx::query_scalar(
+		"SELECT received_bytes FROM egress_scope_daily WHERE scope_id = $1 AND service = 'maps'",
+	)
+	.bind(scope.id.scratch_space)
+	.fetch_one(federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		recorded, 6,
+		"already forwarded bytes remain charged after an over-limit debit"
+	);
+	let failed_audit = ScopedMeter {
+		durable: durable.clone(),
+		settings: scope.clone(),
+		service: "maps".into(),
+		limits: None,
+		inner: Arc::new(FailedAuditMeter),
+	};
+	assert!(failed_audit.charge(Direction::Received, 1).await.is_err());
+	let total: i64 = sqlx::query_scalar(
+		"SELECT received_bytes FROM egress_scope_daily WHERE scope_id = $1 AND service = ''",
+	)
+	.bind(scope.id.scratch_space)
+	.fetch_one(federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(total, 7, "audit failure must not refund forwarded bytes");
+	for _ in 0..2 {
+		assert!(
+			durable
+				.admit_external("credential", "maps", "GET", "/", "digest")
+				.await
+				.err()
+				.unwrap()
+				.to_string()
+				.contains("egress_budget_exhausted")
+		);
+	}
 	durable.admit_connection(&scope).await.unwrap();
 	assert!(
 		durable
@@ -164,7 +238,7 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 			.to_string()
 			.contains("egress_suspended")
 	);
-	assert!(durable.check_active(&scope).await.is_err());
+	assert!(durable.check_active(&scope, "credential").await.is_err());
 	let events: i64 = sqlx::query_scalar(
 		"SELECT count(*) FROM egress_scope_events WHERE scope_id = $1 AND kind = 'suspended'",
 	)
@@ -175,4 +249,33 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 	assert_eq!(events, 1);
 	durable.lift_suspension(&scope.id).await.unwrap();
 	durable.admit_connection(&scope).await.unwrap();
+	durable
+		.debit(&scope, Direction::Sent, 1, day)
+		.await
+		.unwrap();
+	for _ in 0..2 {
+		assert!(
+			durable
+				.admit_connection(&scope)
+				.await
+				.unwrap_err()
+				.to_string()
+				.contains("egress_budget_exhausted")
+		);
+	}
+}
+
+#[test]
+fn storage_counter_ceiling_cannot_turn_a_budget_into_unlimited_traffic() {
+	let row = ScopeDaily::build()
+		.id(Uuid::new_v4())
+		.tenant("acme".to_owned())
+		.node("node".to_owned())
+		.scope_id(Uuid::new_v4())
+		.day("2026-01-01".to_owned())
+		.service(String::new())
+		.sent_bytes(i64::MAX)
+		.received_bytes(0)
+		.finish();
+	assert!(budget_available(&row, u64::MAX, u64::MAX).is_err());
 }

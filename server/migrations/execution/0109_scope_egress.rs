@@ -126,7 +126,7 @@ deferrable: None
 },
 Constraint::Check {
 name: "egress_scope_connection_valid".into(),
-expression: "char_length(host) <= 255 AND port BETWEEN 1 AND 65535 AND sent_bytes >= 0 AND received_bytes >= 0 AND duration_ms >= 0".into()
+expression: "char_length(host) <= 255 AND (port BETWEEN 1 AND 65535 OR (port = 0 AND outcome IN ('interrupted', 'invalid_proxy_target'))) AND sent_bytes >= 0 AND received_bytes >= 0 AND duration_ms >= 0".into()
 }
 ],
 without_rowid: None,

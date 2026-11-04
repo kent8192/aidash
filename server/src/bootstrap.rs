@@ -269,10 +269,16 @@ impl RuntimeTasks {
 				federation.store.clone(),
 			));
 			let stopping = receiver.clone();
+			let limits = aidash_integrations::egress::ProxyLimits {
+				global_concurrent: egress.proxy_global_tunnels,
+				tenant_concurrent: egress.proxy_tenant_tunnels,
+			};
 			tasks.spawn_service(runtime_task(async move {
-				aidash_integrations::egress::serve(listener, authority, stopping)
-					.await
-					.map_err(Into::into)
+				aidash_integrations::egress::serve_with_scopes(
+					listener, authority, None, limits, stopping,
+				)
+				.await
+				.map_err(Into::into)
 			}));
 		}
 		if event_streams.is_some()

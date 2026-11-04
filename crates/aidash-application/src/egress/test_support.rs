@@ -95,6 +95,16 @@ impl EgressScopes for MemoryScopes {
 		if s.suspended {
 			return Err(Error::Refused("egress_suspended".into()));
 		}
+		let usage = s
+			.usage
+			.get(&chrono::Utc::now().date_naive())
+			.copied()
+			.unwrap_or_default();
+		if usage.0 >= self.settings.budget.sent_bytes
+			|| usage.1 >= self.settings.budget.received_bytes
+		{
+			return Err(Error::Refused("egress_budget_exhausted".into()));
+		}
 		if s.window.elapsed() >= Duration::from_secs(60) {
 			s.window = Instant::now();
 			s.connections = 0;
@@ -107,14 +117,15 @@ impl EgressScopes for MemoryScopes {
 		}
 		Ok(())
 	}
-	async fn check_active(&self, scope: &ScopeSettings) -> Result<()> {
+	async fn check_active(&self, scope: &ScopeSettings, credential: &str) -> Result<ScopeSettings> {
+		let current = self.resolve(credential).await?;
 		self.check(&scope.id)?;
 		let mut state = self.state.lock().unwrap();
 		state.checks += 1;
 		if state.suspended {
 			return Err(Error::Refused("egress_suspended".into()));
 		}
-		Ok(())
+		Ok(current)
 	}
 	async fn debit(
 		&self,
@@ -164,7 +175,16 @@ impl EgressScopes for MemoryScopes {
 	}
 	async fn record(&self, record: ConnectionRecord) -> Result<()> {
 		self.check(&record.scope)?;
-		self.state.lock().unwrap().records.push(record);
+		let mut state = self.state.lock().unwrap();
+		if let Some(existing) = state
+			.records
+			.iter_mut()
+			.find(|existing| existing.id == record.id)
+		{
+			*existing = record;
+		} else {
+			state.records.push(record);
+		}
 		Ok(())
 	}
 	async fn lift_suspension(&self, scope: &ScopeId) -> Result<()> {
@@ -228,12 +248,24 @@ mod tests {
 				.await
 				.is_err()
 		);
+		assert!(
+			authority
+				.admit_connection(&scope)
+				.await
+				.unwrap_err()
+				.to_string()
+				.contains("egress_budget_exhausted")
+		);
 		authority
 			.refund(&scope, Direction::Sent, 1, day)
 			.await
 			.unwrap();
 		authority
 			.debit(&scope, Direction::Sent, 1, day)
+			.await
+			.unwrap();
+		authority
+			.refund(&scope, Direction::Sent, 1, day)
 			.await
 			.unwrap();
 		authority.admit_connection(&scope).await.unwrap();

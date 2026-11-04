@@ -4686,6 +4686,14 @@ async fn scope_egress_rows_are_tenant_bound_and_purged_with_the_node(
 	);
 	sqlx::query("INSERT INTO egress_scope_connections (id, tenant, node, scope_id, host, port, sent_bytes, received_bytes, duration_ms, outcome, created_at) VALUES ($1, 'acme', $2, $3, 'example.com', 443, 1, 2, 3, 'completed', now())")
 		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await.unwrap();
+	sqlx::query("INSERT INTO egress_scope_connections (id, tenant, node, scope_id, host, port, sent_bytes, received_bytes, duration_ms, outcome, created_at) VALUES ($1, 'acme', $2, $3, 'example.com', 0, 0, 0, 0, 'invalid_proxy_target', now())")
+		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await.unwrap();
+	let invalid_completed = sqlx::query("INSERT INTO egress_scope_connections (id, tenant, node, scope_id, host, port, sent_bytes, received_bytes, duration_ms, outcome, created_at) VALUES ($1, 'acme', $2, $3, 'example.com', 0, 0, 0, 0, 'completed', now())")
+		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await;
+	assert!(
+		invalid_completed.is_err(),
+		"port zero cannot represent a completed connection"
+	);
 	sqlx::query("INSERT INTO egress_scope_events (id, tenant, node, scope_id, kind, created_at) VALUES ($1, 'acme', $2, $3, 'suspended', now())")
 		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await.unwrap();
 	sqlx::query("DELETE FROM nodes WHERE tenant = 'acme' AND name = $1")

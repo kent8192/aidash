@@ -97,6 +97,8 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 			namespace: None,
 			pod_selector: Default::default(),
 			listen: "127.0.0.1:0".parse().unwrap(),
+			proxy_global_tunnels: 1024,
+			proxy_tenant_tunnels: 32,
 			limits,
 		},
 	);

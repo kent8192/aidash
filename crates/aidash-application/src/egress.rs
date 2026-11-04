@@ -100,6 +100,8 @@ pub struct ScopeSettings {
 /// Metadata for a completed connection; URL paths and bodies are never recorded.
 #[derive(Clone, Debug)]
 pub struct ConnectionRecord {
+	/// Stable identity permits retries and updates to the same live record.
+	pub id: Uuid,
 	pub scope: aidash_domain::egress::ScopeId,
 	pub host: String,
 	pub port: u16,
@@ -152,8 +154,8 @@ pub trait EgressScopes: Send + Sync {
 	/// Atomically checks suspension, counts a new connection in the current
 	/// minute, and suspends and notifies the operator on anomaly.
 	async fn admit_connection(&self, scope: &ScopeSettings) -> Result<()>;
-	/// Fail if an operator or anomaly stop has suspended the scope.
-	async fn check_active(&self, scope: &ScopeSettings) -> Result<()>;
+	/// Reauthenticate the credential, fail on suspension and return current policy.
+	async fn check_active(&self, scope: &ScopeSettings, credential: &str) -> Result<ScopeSettings>;
 	/// Atomically rejects suspended scopes and reserves bytes against the daily budget.
 	async fn debit(
 		&self,
@@ -169,6 +171,7 @@ pub trait EgressScopes: Send + Sync {
 		bytes: u64,
 		day: chrono::NaiveDate,
 	) -> Result<()>;
+	/// Idempotently inserts or updates a connection by record ID.
 	async fn record(&self, record: ConnectionRecord) -> Result<()>;
 	async fn lift_suspension(&self, scope: &aidash_domain::egress::ScopeId) -> Result<()>;
 }

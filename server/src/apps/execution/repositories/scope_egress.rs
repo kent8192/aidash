@@ -83,6 +83,7 @@ impl DurableScopes {
 		bytes: u64,
 		day: NaiveDate,
 		service: Option<(&str, aidash_domain::egress::Limits)>,
+		forwarded: bool,
 	) -> Result<()> {
 		let current = self.live(&settings.id).await.map_err(Error::from)?;
 		let bytes = i64::try_from(bytes).map_err(|_| Error::Forbidden)?;
@@ -100,14 +101,14 @@ impl DurableScopes {
 			Direction::Sent => current.budget.sent_bytes,
 			Direction::Received => current.budget.received_bytes,
 		};
-		add(&mut total, direction, bytes, max)?;
+		let mut exhausted = charge_row(&mut total, direction, bytes, max, forwarded)?;
 		let service_row = if let Some((name, limits)) = service {
 			let mut row = daily(&mut tx, &current.id, day, name).await?;
 			let max = match direction {
 				Direction::Sent => limits.sent_bytes,
 				Direction::Received => limits.received_bytes,
 			};
-			add(&mut row, direction, bytes, max)?;
+			exhausted |= charge_row(&mut row, direction, bytes, max, forwarded)?;
 			Some(row)
 		} else {
 			None
@@ -122,7 +123,11 @@ impl DurableScopes {
 				.await
 				.map_err(reinhardt::core::exception::Error::from)?;
 		}
-		tx.commit().await
+		tx.commit().await?;
+		if exhausted {
+			return Err(Error::Conflict("egress_budget_exhausted".into()));
+		}
+		Ok(())
 	}
 	async fn refund_usage(
 		&self,
@@ -206,6 +211,7 @@ async fn daily(
 	Ok(row)
 }
 fn add(row: &mut ScopeDaily, direction: Direction, bytes: i64, max: u64) -> Result<()> {
+	let max = max.min(i64::MAX as u64);
 	let counter = match direction {
 		Direction::Sent => &mut row.sent_bytes,
 		Direction::Received => &mut row.received_bytes,
@@ -215,6 +221,52 @@ fn add(row: &mut ScopeDaily, direction: Direction, bytes: i64, max: u64) -> Resu
 		.filter(|v| *v >= 0 && (*v as u64) <= max)
 		.ok_or_else(|| Error::Conflict("egress_budget_exhausted".into()))?;
 	*counter = next;
+	Ok(())
+}
+fn charge_row(
+	row: &mut ScopeDaily,
+	direction: Direction,
+	bytes: i64,
+	max: u64,
+	forwarded: bool,
+) -> Result<bool> {
+	if !forwarded {
+		add(row, direction, bytes, max)?;
+		return Ok(false);
+	}
+	let counter = match direction {
+		Direction::Sent => &mut row.sent_bytes,
+		Direction::Received => &mut row.received_bytes,
+	};
+	*counter = counter.saturating_add(bytes);
+	Ok(bytes > 0 && (*counter as u64) >= max.min(i64::MAX as u64))
+}
+// PostgreSQL counters are signed; reaching their maximum must fail closed even
+// if a future authority supplies a larger unsigned budget.
+fn budget_available(row: &ScopeDaily, sent: u64, received: u64) -> Result<()> {
+	if row.sent_bytes as u64 >= sent.min(i64::MAX as u64)
+		|| row.received_bytes as u64 >= received.min(i64::MAX as u64)
+	{
+		return Err(Error::Conflict("egress_budget_exhausted".into()));
+	}
+	Ok(())
+}
+async fn check_budget(
+	tx: &mut Transaction,
+	settings: &ScopeSettings,
+	service: Option<(&str, aidash_domain::egress::Limits)>,
+) -> Result<()> {
+	let day = Utc::now().date_naive();
+	let total = daily(tx, &settings.id, day, "").await?;
+	budget_available(
+		&total,
+		settings.budget.sent_bytes,
+		settings.budget.received_bytes,
+	)?;
+	if let Some((name, limits)) = service {
+		let row = daily(tx, &settings.id, day, name).await?;
+		budget_available(&row, limits.sent_bytes, limits.received_bytes)?;
+	}
 	Ok(())
 }
 fn application_error(error: Error) -> aidash_application::Error {
@@ -246,7 +298,7 @@ impl EgressScopes for DurableScopes {
 		digest: &str,
 	) -> aidash_application::Result<Admission> {
 		let settings = self.resolve(credential).await?;
-		self.check_active(&settings).await?;
+		let settings = self.check_active(&settings, credential).await?;
 		let mut admission = self
 			.authority
 			.admit_external(credential, &settings.id, service, method, path, digest)
@@ -258,6 +310,21 @@ impl EgressScopes for DurableScopes {
 			return Err(aidash_application::Error::Forbidden);
 		}
 		let limits = admission.definition.limits;
+		let result: Result<()> = async {
+			let mut tx = self
+				.store
+				.pool
+				.begin(&TenancyScope::tenant(&settings.id.tenant)?)
+				.await?;
+			let state = locked_state(&mut tx, &settings.id).await?;
+			if state.suspended {
+				return Err(Error::Conflict("egress_suspended".into()));
+			}
+			check_budget(&mut tx, &settings, limits.map(|l| (service, l))).await?;
+			tx.commit().await
+		}
+		.await;
+		result.map_err(application_error)?;
 		admission.meter = Arc::new(ScopedMeter {
 			durable: self.clone(),
 			settings,
@@ -279,6 +346,7 @@ impl EgressScopes for DurableScopes {
 			if state.suspended {
 				return Err(Error::Conflict("egress_suspended".into()));
 			}
+			check_budget(&mut tx, &current, None).await?;
 			let now = Utc::now();
 			if now.signed_duration_since(state.window_started_at) >= chrono::Duration::minutes(1) {
 				state.window_started_at = now;
@@ -322,7 +390,15 @@ impl EgressScopes for DurableScopes {
 			Err(error) => Err(application_error(error)),
 		}
 	}
-	async fn check_active(&self, settings: &ScopeSettings) -> aidash_application::Result<()> {
+	async fn check_active(
+		&self,
+		settings: &ScopeSettings,
+		credential: &str,
+	) -> aidash_application::Result<ScopeSettings> {
+		let authenticated = self.authority.authenticate(credential).await?;
+		if authenticated.id != settings.id {
+			return Err(aidash_application::Error::Forbidden);
+		}
 		let current = self.live(&settings.id).await?;
 		let result: Result<()> = async {
 			let mut tx = self
@@ -337,7 +413,8 @@ impl EgressScopes for DurableScopes {
 			tx.commit().await
 		}
 		.await;
-		result.map_err(application_error)
+		result.map_err(application_error)?;
+		Ok(current)
 	}
 	async fn debit(
 		&self,
@@ -346,7 +423,7 @@ impl EgressScopes for DurableScopes {
 		bytes: u64,
 		day: NaiveDate,
 	) -> aidash_application::Result<()> {
-		self.charge(settings, direction, bytes, day, None)
+		self.charge(settings, direction, bytes, day, None, false)
 			.await
 			.map_err(application_error)
 	}
@@ -369,8 +446,14 @@ impl EgressScopes for DurableScopes {
 				.pool
 				.begin(&TenancyScope::tenant(&record.scope.tenant)?)
 				.await?;
+			let existing = ScopeConnection::objects()
+				.filter(ScopeConnection::field_id().eq(record.id))
+				.all_with_executor(&mut *tx)
+				.await
+				.map_err(reinhardt::core::exception::Error::from)?
+				.pop();
 			let row = ScopeConnection::build()
-				.id(Uuid::new_v4())
+				.id(record.id)
 				.tenant(record.scope.tenant)
 				.node(record.scope.node)
 				.scope_id(record.scope.scratch_space)
@@ -380,12 +463,23 @@ impl EgressScopes for DurableScopes {
 				.received_bytes(i64::try_from(record.received_bytes).map_err(|_| Error::Forbidden)?)
 				.duration_ms(i64::try_from(record.duration_ms).map_err(|_| Error::Forbidden)?)
 				.outcome(record.outcome)
-				.created_at(Utc::now())
+				.created_at(
+					existing
+						.as_ref()
+						.map_or_else(Utc::now, |row| row.created_at),
+				)
 				.finish();
-			ScopeConnection::objects()
-				.insert_with_executor(&mut *tx, &row)
-				.await
-				.map_err(reinhardt::core::exception::Error::from)?;
+			if existing.is_some() {
+				ScopeConnection::objects()
+					.save_with_executor(&mut *tx, &row)
+					.await
+					.map_err(reinhardt::core::exception::Error::from)?;
+			} else {
+				ScopeConnection::objects()
+					.insert_with_executor(&mut *tx, &row)
+					.await
+					.map_err(reinhardt::core::exception::Error::from)?;
+			}
 			tx.commit().await
 		}
 		.await;
@@ -423,34 +517,20 @@ struct ScopedMeter {
 impl Meter for ScopedMeter {
 	async fn charge(&self, direction: Direction, bytes: usize) -> aidash_application::Result<()> {
 		let day = Utc::now().date_naive();
-		self.durable
+		let result = self
+			.durable
 			.charge(
 				&self.settings,
 				direction,
 				bytes as u64,
 				day,
 				self.limits.map(|l| (self.service.as_str(), l)),
+				true,
 			)
 			.await
-			.map_err(application_error)?;
-		if let Err(error) = self.inner.charge(direction, bytes).await {
-			if self
-				.durable
-				.refund_usage(
-					&self.settings.id,
-					direction,
-					bytes as u64,
-					day,
-					self.limits.map(|_| self.service.as_str()),
-				)
-				.await
-				.is_err()
-			{
-				tracing::error!("Scope External service reservation refund failed");
-			}
-			return Err(error);
-		}
-		Ok(())
+			.map_err(application_error);
+		let audit = self.inner.charge(direction, bytes).await;
+		result.and(audit)
 	}
 	async fn finish(
 		&self,
