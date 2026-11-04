@@ -328,9 +328,11 @@ Connection records contain scope, host, port, sent and received byte counts,
 duration and outcome, rather than request paths or bodies. Invalid targets are
 recorded when a bounded host and port can be parsed; malformed targets without
 one are rejected without retaining the raw request. A record is created
-before the connection starts and updated when it ends; a process crash or
-sustained audit-store failure can leave its last byte counts incomplete. An interrupted connection may retain unused reserved budget if the gateway terminates before
-returning it. The separate path-level External service route remains responsible
+before the connection starts and updated when it ends. If the initial record
+cannot be written after retries, the gateway refuses the connection with
+`egress_audit_unavailable`. A process crash or sustained audit-store failure
+can leave the record's byte counts incomplete. An interrupted connection may
+retain unused reserved budget if the gateway terminates before returning it. The separate path-level External service route remains responsible
 for attaching Tenant Secrets; scope-based admission for that route is not yet
 wired. Its integration route is `/v2/services/<service>/<path>` with the scope
 credential in `Authorization: Bearer <scope-credential>`. The gateway removes
