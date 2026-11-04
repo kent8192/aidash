@@ -23,8 +23,8 @@ async fn space_and_settings_are_tenant_scoped_and_transactional(
 		name: "Project".into(),
 		creator: "alice".into(),
 		state: ScratchState::Active,
-		revision: 0,
-		wipe_generation: 0,
+		revision: 4,
+		wipe_generation: 3,
 		settings: ScratchSettings::default(),
 		members: BTreeSet::from(["bob".into()]),
 		created_at: now,
@@ -67,6 +67,8 @@ async fn space_and_settings_are_tenant_scoped_and_transactional(
 		.unwrap()
 		.unwrap();
 	assert_eq!(loaded.members, BTreeSet::from(["bob".into()]));
+	assert_eq!(loaded.revision, 4);
+	assert_eq!(loaded.wipe_generation, 3);
 	space.members.insert("carol".into());
 	space.settings.idle_expiry_days = None;
 	space.tombstone();

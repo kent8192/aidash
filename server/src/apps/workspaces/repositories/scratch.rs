@@ -12,11 +12,15 @@ use reinhardt::db::{
 	orm::{Model, execution::convert_values},
 };
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, IntoValue, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	Alias, Expr, ExprTrait, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder,
 };
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::apps::workspaces::models::{
+	ScratchSpace as SpaceRecord, ScratchSpaceMember as MemberRecord,
+	ScratchSpaceSettings as SettingsRecord,
+};
 use crate::{Error, Result, apps::identity::services::access::Access};
 
 /// Locks the row before loading dependent settings and members. The Tenant is
@@ -74,18 +78,15 @@ async fn load_with_lock(
 		.ok_or_else(|| Error::NotFound("Scratch Space settings".into()))?
 		.settings
 		.0;
-	let (sql, values) = Query::select()
-		.column(Alias::new("subject"))
-		.from(Alias::new("scratch_space_members"))
-		.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
-		.and_where(Expr::col("space_id").eq(Expr::value(id)))
-		.build(PostgresQueryBuilder);
-	let members: BTreeSet<String> = tx
-		.fetch_all(&sql, convert_values(values))
-		.await?
-		.iter()
-		.map(|row| row.get("subject").map_err(err))
-		.collect::<std::result::Result<_, _>>()?;
+	let members: BTreeSet<String> = MemberRecord::objects()
+		.filter(MemberRecord::field_tenant().eq(tenant))
+		.filter(MemberRecord::field_space_id().eq(id))
+		.all_with_executor(tx)
+		.await
+		.map_err(err)?
+		.into_iter()
+		.map(|row| row.subject)
+		.collect();
 	Ok(Some(ScratchSpace {
 		id,
 		node: node.parse()?,
@@ -107,47 +108,38 @@ pub(crate) async fn insert(
 	tenant: &str,
 	space: &ScratchSpace,
 ) -> Result<()> {
+	let err = reinhardt::core::exception::Error::from;
 	let state = serde_json::to_value(space.state)?
 		.as_str()
 		.ok_or_else(|| Error::Invalid("invalid Scratch Space state".into()))?
 		.to_owned();
-	let (sql, values) = Query::insert()
-		.into_table(Alias::new("scratch_spaces"))
-		.columns(
-			[
-				"id",
-				"tenant",
-				"node",
-				"name",
-				"creator",
-				"state",
-				"created_at",
-				"last_used_at",
-			]
-			.map(Alias::new),
-		)
-		.values_panic([
-			IntoValue::into_value(space.id),
-			IntoValue::into_value(tenant.to_owned()),
-			IntoValue::into_value(space.node.as_str().to_owned()),
-			IntoValue::into_value(space.name.clone()),
-			IntoValue::into_value(space.creator.clone()),
-			IntoValue::into_value(state),
-			IntoValue::into_value(space.created_at),
-			IntoValue::into_value(space.last_used_at),
-		])
-		.build(PostgresQueryBuilder);
-	tx.execute(&sql, convert_values(values)).await?;
-	let (sql, values) = Query::insert()
-		.into_table(Alias::new("scratch_space_settings"))
-		.columns(["space_id", "tenant", "settings"].map(Alias::new))
-		.values_panic([
-			IntoValue::into_value(space.id),
-			IntoValue::into_value(tenant.to_owned()),
-			IntoValue::into_value(serde_json::to_value(&space.settings)?),
-		])
-		.build(PostgresQueryBuilder);
-	tx.execute(&sql, convert_values(values)).await?;
+	let row = SpaceRecord::build()
+		.id(space.id)
+		.tenant(tenant.to_owned())
+		.node(space.node.as_str().to_owned())
+		.name(space.name.clone())
+		.creator(space.creator.clone())
+		.state(state)
+		.revision(space.revision)
+		.wipe_generation(space.wipe_generation)
+		.created_at(space.created_at)
+		.last_used_at(space.last_used_at)
+		.finish();
+	SpaceRecord::objects()
+		.insert_with_executor(tx, &row)
+		.await
+		.map_err(err)?;
+	let settings = SettingsRecord::build()
+		.space_id(space.id)
+		.tenant(tenant.to_owned())
+		.settings(reinhardt::db::orm::Json(serde_json::to_value(
+			&space.settings,
+		)?))
+		.finish();
+	SettingsRecord::objects()
+		.insert_with_executor(tx, &settings)
+		.await
+		.map_err(err)?;
 	write_members(tx, tenant, space).await
 }
 
@@ -156,18 +148,33 @@ async fn write_members(
 	tenant: &str,
 	space: &ScratchSpace,
 ) -> Result<()> {
-	for subject in &space.members {
-		let (sql, values) = Query::insert()
-			.into_table(Alias::new("scratch_space_members"))
-			.columns(["id", "tenant", "space_id", "subject"].map(Alias::new))
-			.values_panic([
-				IntoValue::into_value(Uuid::new_v4()),
-				IntoValue::into_value(tenant.to_owned()),
-				IntoValue::into_value(space.id),
-				IntoValue::into_value(subject.clone()),
-			])
-			.build(PostgresQueryBuilder);
-		tx.execute(&sql, convert_values(values)).await?;
+	let err = reinhardt::core::exception::Error::from;
+	let rows = MemberRecord::objects()
+		.filter(MemberRecord::field_tenant().eq(tenant))
+		.filter(MemberRecord::field_space_id().eq(space.id))
+		.all_with_executor(tx)
+		.await
+		.map_err(err)?;
+	let existing: BTreeSet<_> = rows.iter().map(|row| row.subject.clone()).collect();
+	for row in rows {
+		if !space.members.contains(&row.subject) {
+			MemberRecord::objects()
+				.delete_with_executor(tx, row.id)
+				.await
+				.map_err(err)?;
+		}
+	}
+	for subject in space.members.difference(&existing) {
+		let row = MemberRecord::build()
+			.id(Uuid::new_v4())
+			.tenant(tenant.to_owned())
+			.space_id(space.id)
+			.subject(subject.clone())
+			.finish();
+		MemberRecord::objects()
+			.insert_with_executor(tx, &row)
+			.await
+			.map_err(err)?;
 	}
 	Ok(())
 }
@@ -178,49 +185,41 @@ pub(crate) async fn save(
 	tenant: &str,
 	space: &ScratchSpace,
 ) -> Result<()> {
-	let state = serde_json::to_value(space.state)?
+	let err = reinhardt::core::exception::Error::from;
+	let mut row = SpaceRecord::objects()
+		.filter(SpaceRecord::field_tenant().eq(tenant))
+		.filter(SpaceRecord::field_id().eq(space.id))
+		.all_with_executor(tx)
+		.await
+		.map_err(err)?
+		.pop()
+		.ok_or_else(|| Error::NotFound("Scratch Space".into()))?;
+	row.state = serde_json::to_value(space.state)?
 		.as_str()
 		.ok_or_else(|| Error::Invalid("invalid Scratch Space state".into()))?
 		.to_owned();
-	let (sql, values) = Query::update()
-		.table(Alias::new("scratch_spaces"))
-		.value(Alias::new("state"), state)
-		.value(Alias::new("revision"), space.revision)
-		.value(Alias::new("last_used_at"), space.last_used_at)
-		.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
-		.and_where(Expr::col("id").eq(Expr::value(space.id)))
-		.build(PostgresQueryBuilder);
-	if tx
-		.execute(&sql, convert_values(values))
-		.await?
-		.rows_affected
-		!= 1
-	{
-		return Err(Error::NotFound("Scratch Space".into()));
+	row.revision = space.revision;
+	row.last_used_at = space.last_used_at;
+	SpaceRecord::objects()
+		.save_with_executor(tx, &row)
+		.await
+		.map_err(err)?;
+	let mut settings = SettingsRecord::objects()
+		.filter(SettingsRecord::field_tenant().eq(tenant))
+		.filter(SettingsRecord::field_space_id().eq(space.id))
+		.all_with_executor(tx)
+		.await
+		.map_err(err)?
+		.pop()
+		.ok_or_else(|| Error::NotFound("Scratch Space settings".into()))?;
+	let updated = serde_json::to_value(&space.settings)?;
+	if settings.settings.0 != updated {
+		settings.settings = reinhardt::db::orm::Json(updated);
+		SettingsRecord::objects()
+			.save_with_executor(tx, &settings)
+			.await
+			.map_err(err)?;
 	}
-	let (sql, values) = Query::update()
-		.table(Alias::new("scratch_space_settings"))
-		.value(
-			Alias::new("settings"),
-			serde_json::to_value(&space.settings)?,
-		)
-		.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
-		.and_where(Expr::col("space_id").eq(Expr::value(space.id)))
-		.build(PostgresQueryBuilder);
-	if tx
-		.execute(&sql, convert_values(values))
-		.await?
-		.rows_affected
-		!= 1
-	{
-		return Err(Error::NotFound("Scratch Space settings".into()));
-	}
-	let (sql, values) = Query::delete()
-		.from_table(Alias::new("scratch_space_members"))
-		.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
-		.and_where(Expr::col("space_id").eq(Expr::value(space.id)))
-		.build(PostgresQueryBuilder);
-	tx.execute(&sql, convert_values(values)).await?;
 	write_members(tx, tenant, space).await
 }
 
@@ -248,19 +247,21 @@ pub(crate) async fn ids_on_node(
 }
 
 pub(crate) async fn delete(tx: &mut dyn TransactionExecutor, tenant: &str, id: Uuid) -> Result<()> {
-	let (sql, values) = Query::delete()
-		.from_table(Alias::new("scratch_spaces"))
-		.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
-		.and_where(Expr::col("id").eq(Expr::value(id)))
-		.build(PostgresQueryBuilder);
-	if tx
-		.execute(&sql, convert_values(values))
-		.await?
-		.rows_affected
-		!= 1
-	{
+	let err = reinhardt::core::exception::Error::from;
+	let found = SpaceRecord::objects()
+		.filter(SpaceRecord::field_tenant().eq(tenant))
+		.filter(SpaceRecord::field_id().eq(id))
+		.select_for_update()
+		.all_with_executor(tx)
+		.await
+		.map_err(err)?;
+	if found.is_empty() {
 		return Err(Error::NotFound("Scratch Space".into()));
 	}
+	SpaceRecord::objects()
+		.delete_with_executor(tx, id)
+		.await
+		.map_err(err)?;
 	Ok(())
 }
 

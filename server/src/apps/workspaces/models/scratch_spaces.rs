@@ -20,9 +20,13 @@ pub struct ScratchSpace {
 	pub creator: String,
 	#[field(field_type = "text")]
 	pub state: String,
+	#[field]
 	pub revision: i64,
+	#[field]
 	pub wipe_generation: i64,
+	#[field]
 	pub created_at: DateTime<Utc>,
+	#[field]
 	pub last_used_at: DateTime<Utc>,
 }
 
@@ -44,6 +48,7 @@ pub struct ScratchSpaceMember {
 	pub id: Uuid,
 	#[field(field_type = "text")]
 	pub tenant: String,
+	#[field]
 	pub space_id: Uuid,
 	#[field(field_type = "text")]
 	pub subject: String,
