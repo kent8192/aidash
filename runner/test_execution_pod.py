@@ -827,6 +827,32 @@ class AdmissionLifecycleRegressionTest(unittest.TestCase):
                     'scratch_space_id': 's', 'run_id': 'r', 'code': 'true'})
             self.assertEqual(error.exception.code, 'admission_unverified')
 
+    def test_stopping_one_space_does_not_hold_controller_lock_on_kubernetes(self):
+        import tempfile
+        import threading
+        from pathlib import Path
+        from types import SimpleNamespace
+        from execution_pod import ExecutionPodController
+        started, release = threading.Event(), threading.Event()
+        with tempfile.TemporaryDirectory() as directory:
+            class Backend:
+                root = Path(directory)
+                def kube(self, args, **kwargs):
+                    if args[0] == 'delete':
+                        started.set()
+                        release.wait(3)
+                    return SimpleNamespace(stdout=b'')
+            controller = ExecutionPodController(Backend(), {}, admitted=True)
+            worker = threading.Thread(target=controller.stop, args=('s',))
+            worker.start()
+            try:
+                self.assertTrue(started.wait(2))
+                self.assertTrue(controller.lock.acquire(timeout=.5))
+                controller.lock.release()
+            finally:
+                release.set()
+                worker.join(3)
+
     def test_failed_delete_does_not_reuse_terminated_pod_admission(self):
         import tempfile
         from pathlib import Path
