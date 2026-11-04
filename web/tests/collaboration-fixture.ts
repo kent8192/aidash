@@ -29,6 +29,7 @@ export function fixture(reference = false) {
   const workspaces = [
     {
       id: "workspace-one",
+      scratch_space_id: "11111111-1111-4111-8111-111111111111",
       node: defaultNode.name,
       title: "Research",
       goal: "Find reliable evidence",
@@ -38,6 +39,7 @@ export function fixture(reference = false) {
     },
     {
       id: "workspace-two",
+      scratch_space_id: "22222222-2222-4222-8222-222222222222",
       node: defaultNode.name,
       title: "Planning",
       goal: "Plan the next release",

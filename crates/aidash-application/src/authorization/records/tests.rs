@@ -29,6 +29,7 @@ fn scope() -> Scope {
 	let workspace = Uuid::from_u128(1);
 	Scope {
 		workspace: Workspace {
+			scratch_space_id: uuid::Uuid::nil(),
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id: workspace,
 			title: "workspace".into(),

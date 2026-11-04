@@ -3,7 +3,8 @@ use crate::{Result, ports::authorization::resume::WorkerResumeRepository};
 use std::time::Duration;
 pub async fn resume(repository: &dyn WorkerResumeRepository) -> Result<()> {
 	if repository.remote() {
-		return repository.refresh_remote().await;
+		repository.refresh_remote().await?;
+		return repository.guard_remote_scratch().await;
 	}
 	let mut delay = Duration::from_millis(250);
 	loop {

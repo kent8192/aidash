@@ -171,17 +171,18 @@ application migrates using its scoped role. Reversal preserves borrowed
 extensions and drops only extensions created by this history.
 A final context operation sets the public search path before typed reverse operations run.
 
+The conversation Scratch Space backfill is generated with Reinhardt Query by `workspaces::services::migration_backfill`. The `migrationseeds` command checks its forward and reverse assets for drift. It assigns each pre-existing conversation a dedicated space with the conversation creator and default settings.
+
 The two baseline seed mutations and their inverses are built with Reinhardt Query
 in the owning federation and marketplace apps. `manage migrationseeds --check`
 compares their rendered PostgreSQL statements with the four canonical SQL assets.
-`manage migrationseeds --write` regenerates only those assets without reading
+`manage migrationseeds --write` regenerates the registered seed and backfill assets without reading
 runtime credentials or opening a database. Regeneration is for an **unapplied**
 history; never rewrite an applied migration. The native filesystem source parses
 static Rust syntax without executing arbitrary function calls, so these generated
 assets remain literal `include_str!` payloads in the native graph. This is
 materialized Query output, not a handwritten DML exception or a second migration
-engine. The sole raw statement in the forward seed assets is the transaction-local
-search-path setting. Regression checks load the exact generated SQL through
+engine. The forward seed assets also set the transaction-local search path or deployment scope where needed. Regression checks load the exact generated SQL through
 `FilesystemSource` and verify both initial gate values after migration and after
 complete reversal/reapplication.
 
@@ -876,6 +877,10 @@ ownership with `federation/0013_registered_preview_origin`. Both are empty
 state-only migrations; existing schema changes and rollback guards remain intact.
 Federation retains its pre-existing separate `0007_model_state` leaf alongside
 `0021_node_preview_origin_merge`.
+
+`identity/0067_scratch_member_policy` uses a Reinhardt Query-generated data asset to add `scratch.create` only to unchanged default member policies. It opens Deployment Scope before updating Tenant policy bundles and increments their revisions. Its reverse is a no-op: later policy edits cannot be distinguished safely from the migrated grant, so rollback preserves them. `migrationseeds` checks both Query-generated assets for drift.
+
+`workspaces/0019_scratch_spaces` adds Node-owned Scratch Spaces, their Tenant-scoped settings, and membership. Composite foreign keys keep each child and its parent in the same Tenant. `0020_scratch_spaces_row_level_security` applies the standard Tenant row policies. Reinhardt has no row-policy migration operation, so this migration uses the reversible policy SQL template. `0021_conversation_scratch_space` fixes each conversation to one Scratch Space in the same Tenant. `0022_scratch_space_model_state` records the ORM relationship state without changing the database-enforced constraints. The Query-generated `migrationseeds` assets backfill conversations before enforcing the binding. `0024_workspace_scratch_space` moves Run resolution to Workspace bindings, creating a dedicated space for each Workspace. It recovers the starter from Workspace ownership, a conversation, or the earliest Task. `0025_scratch_workspace_model_state` records the ORM relationship without changing the physical foreign key. A cleared space retains a tombstone while conversations still reference it; runtime reclamation is delivered separately.
 
 `execution/0094_subnodes`, `0095_subnodes_row_level_security`, and
 `0096_subnodes_state` create the Run-scoped Subnode tables, enforce Tenant

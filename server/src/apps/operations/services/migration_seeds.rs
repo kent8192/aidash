@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub struct MigrationSeeds;
 
-fn assets() -> [(&'static str, String); 6] {
+fn assets() -> [(&'static str, String); 12] {
 	use crate::apps::{
 		federation::services::migration_seed as federation,
 		marketplace::services::migration_seed as marketplace,
@@ -36,12 +36,39 @@ fn assets() -> [(&'static str, String); 6] {
 			format!("{};\n", marketplace::backward()),
 		),
 		(
+			"workspaces/sql/forward/0021_conversation_scratch_space.sql",
+			crate::apps::workspaces::services::migration_backfill::forward(),
+		),
+		(
+			"workspaces/sql/backward/0021_conversation_scratch_space.sql",
+			crate::apps::workspaces::services::migration_backfill::backward(),
+		),
+		(
+			"workspaces/sql/forward/0024_workspace_scratch_space.sql",
+			crate::apps::workspaces::services::workspace_scratch_backfill::forward(),
+		),
+		(
+			"workspaces/sql/backward/0024_workspace_scratch_space.sql",
+			crate::apps::workspaces::services::workspace_scratch_backfill::backward(),
+		),
+		(
 			"execution/sql/forward/0090_run_created_at.sql",
 			crate::apps::execution::services::migration_backfill::forward(),
 		),
 		(
 			"execution/sql/backward/0090_run_created_at.sql",
 			crate::apps::execution::services::migration_backfill::backward(),
+		),
+		(
+			"identity/sql/forward/0067_scratch_member_policy.sql",
+			format!(
+				"SET LOCAL aidash.scope = 'deployment';\n{};\n",
+				crate::apps::identity::services::scratch_policy_backfill::forward()
+			),
+		),
+		(
+			"identity/sql/backward/0067_scratch_member_policy.sql",
+			crate::apps::identity::services::scratch_policy_backfill::backward(),
 		),
 	]
 }
@@ -135,6 +162,31 @@ mod tests {
 			);
 		}
 		let migration = FilesystemSource::new(&root)
+			.get_migration("workspaces", "0021_conversation_scratch_space")
+			.await
+			.unwrap();
+		let Operation::RunSQL { sql, reverse_sql } = &migration.operations[1] else {
+			panic!("missing conversation backfill");
+		};
+		assert_eq!(sql, &expected[4].1);
+		assert_eq!(reverse_sql.as_deref(), Some(expected[5].1.as_str()));
+		let migration = FilesystemSource::new(&root)
+			.get_migration("workspaces", "0024_workspace_scratch_space")
+			.await
+			.unwrap();
+		let Operation::RunSQL { sql, reverse_sql } = &migration.operations[2] else {
+			panic!("missing Workspace backfill");
+		};
+		assert_eq!(sql, &expected[6].1);
+		assert_eq!(reverse_sql.as_deref(), Some(expected[7].1.as_str()));
+		let migration = FilesystemSource::new(&root)
+			.get_migration("identity", "0067_scratch_member_policy")
+			.await
+			.unwrap();
+		assert!(migration.database_only);
+		assert!(matches!(migration.operations.as_slice(),
+			[Operation::RunSQL { sql, reverse_sql: Some(reverse) }] if sql == &expected[10].1 && reverse == &expected[11].1));
+		let migration = FilesystemSource::new(&root)
 			.get_migration("execution", "0090_run_created_at")
 			.await
 			.unwrap();
@@ -144,7 +196,7 @@ mod tests {
 				.iter()
 				.any(|operation| matches!(operation,
 					Operation::RunSQL { sql, reverse_sql }
-					if sql == &expected[4].1 && reverse_sql.as_deref() == Some(expected[5].1.as_str())
+					if sql == &expected[8].1 && reverse_sql.as_deref() == Some(expected[9].1.as_str())
 				))
 		);
 	}

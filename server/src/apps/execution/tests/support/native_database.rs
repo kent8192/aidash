@@ -69,6 +69,29 @@ pub(super) async fn wait_for_pgroonga(pool: &PgPool, timeout: Duration) -> Resul
 	}
 }
 
+/// Give a fixture Workspace a valid Scratch Space on the same Tenant and Node.
+#[allow(dead_code)] // This support module is shared by independently compiled suites.
+pub async fn fixture_scratch_space(
+	pool: &PgPool,
+	tenant: &str,
+	node: &str,
+	creator: &str,
+) -> uuid::Uuid {
+	let id = uuid::Uuid::new_v4();
+	sqlx::query("INSERT INTO scratch_spaces (id, tenant, node, name, creator, state, created_at, last_used_at) VALUES ($1, $2, $3, 'Fixture', $4, 'active', clock_timestamp(), clock_timestamp())")
+		.bind(id).bind(tenant).bind(node).bind(creator).execute(pool).await.unwrap();
+	sqlx::query(
+		"INSERT INTO scratch_space_settings (space_id, tenant, settings) VALUES ($1, $2, $3)",
+	)
+	.bind(id)
+	.bind(tenant)
+	.bind(serde_json::to_value(aidash_domain::scratch::ScratchSettings::default()).unwrap())
+	.execute(pool)
+	.await
+	.unwrap();
+	id
+}
+
 /// A native migration graph on Reinhardt's disposable PostgreSQL fixture.
 #[allow(dead_code)] // Each integration binary consumes a different subset of the shared fixture.
 #[derive(Clone)]

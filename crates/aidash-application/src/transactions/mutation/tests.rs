@@ -119,6 +119,7 @@ impl MutationScope for Scope {
 	) -> Result<Workspace> {
 		self.call("workspace")?;
 		Ok(Workspace {
+			scratch_space_id: uuid::Uuid::nil(),
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			id,
 			title: "Workspace".into(),

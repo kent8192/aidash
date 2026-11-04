@@ -19,13 +19,21 @@ pub trait ConversationScope: Send {
 		title: &str,
 		goal: &str,
 		node: Option<&NodeName>,
+		scratch_space_id: Option<Uuid>,
 	) -> Result<Workspace>;
 	async fn workspace_context(&mut self, workspace: Uuid) -> Result<()>;
 	async fn require_workspace(&mut self, action: &str) -> Result<()>;
 	async fn registry_entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry>;
+	async fn select_scratch_space(
+		&mut self,
+		workspace: &Workspace,
+		name: &str,
+		requested: Option<Uuid>,
+	) -> Result<Uuid>;
 	async fn create_conversation(
 		&mut self,
 		workspace: Uuid,
+		scratch_space_id: Uuid,
 		target: &EntityRef,
 		target_kind: &str,
 	) -> Result<Conversation>;
