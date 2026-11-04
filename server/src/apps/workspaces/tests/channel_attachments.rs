@@ -762,3 +762,49 @@ async fn startup_grandfathers_legacy_attachments_above_retained_limit(
         .bind(id).fetch_one(app.runtime.store.pool.fixture_driver()).await.unwrap();
 	assert_eq!(charged, limit + legacy.len() as i64);
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn metered_storage_counts_stored_attachments_once_and_inline_bytes_separately(
+	#[future] scoped_channel: ScopedChannel,
+) {
+	let ScopedChannel {
+		app,
+		token,
+		workspace,
+		..
+	} = Box::pin(scoped_channel).await;
+	let workspace_id = Uuid::parse_str(&workspace).unwrap();
+	let tenant: String = sqlx::query_scalar("SELECT tenant FROM workspaces WHERE id=$1")
+		.bind(workspace_id)
+		.fetch_one(app.runtime.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	async fn sampled(app: &crate::endpoint::EndpointFixture, tenant: &str) -> u64 {
+		aidash_server::apps::execution::services::storage_usage::samples(
+			&app.runtime.store,
+			chrono::Utc::now(),
+		)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|s| s.tenant == tenant)
+		.unwrap()
+		.bytes
+	}
+	let before = sampled(&app, &tenant).await;
+	let bytes = b"stored and metered";
+	let (status, uploaded) = upload(&app, &token, &workspace, Uuid::new_v4(), bytes).await;
+	assert_eq!(status, 200, "{uploaded}");
+	assert_eq!(sampled(&app, &tenant).await, before + bytes.len() as u64);
+	let id: Uuid = uploaded["id"].as_str().unwrap().parse().unwrap();
+	let inline = b"inline";
+	sqlx::query("INSERT INTO channel_attachments (id,tenant,workspace_id,uploaded_by,idempotency_key,filename,media_type,sha256,size_bytes,content) SELECT $1,tenant,workspace_id,uploaded_by,$2,'inline','text/plain',$3,$4,$5 FROM channel_attachments WHERE id=$6")
+        .bind(Uuid::new_v4()).bind(Uuid::new_v4())
+        .bind(aidash_server::capabilities::objects::digest(inline)).bind(inline.len() as i64)
+        .bind(inline.as_slice()).bind(id).execute(app.runtime.store.pool.fixture_driver()).await.unwrap();
+	assert_eq!(
+		sampled(&app, &tenant).await,
+		before + bytes.len() as u64 + inline.len() as u64
+	);
+}

@@ -9,7 +9,9 @@ use aidash_application::usage::StorageSample;
 use chrono::{DateTime, Utc};
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::db::orm::{QueryRow, execution::convert_values};
-use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
+use reinhardt::query::{
+	Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder,
+};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
@@ -41,15 +43,20 @@ pub async fn samples(store: &Store, now: DateTime<Utc>) -> Result<Vec<StorageSam
 		.map(|tenant| (tenant.into_inner(), 0))
 		.collect();
 	for (table, size) in SOURCES {
-		let (sql, values) = Query::select()
+		let mut query = Query::select();
+		query
 			.column(Alias::new("tenant"))
 			.expr_as(
 				Expr::cust(format!("COALESCE(SUM({size}), 0)::bigint")),
 				Alias::new("bytes"),
 			)
 			.from(Alias::new(table))
-			.group_by_col(Alias::new("tenant"))
-			.build(PostgresQueryBuilder);
+			.group_by_col(Alias::new("tenant"));
+		if table == "channel_attachments" {
+			// Object-backed originals are already counted as distinct blobs.
+			query.and_where(Expr::col(Alias::new("object_id")).is_null());
+		}
+		let (sql, values) = query.build(PostgresQueryBuilder);
 		let rows = store
 			.pool
 			.atomic(&scope, async |tx| {
