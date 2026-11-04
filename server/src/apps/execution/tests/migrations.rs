@@ -4694,6 +4694,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0023_scratch_node_index"),
 			("workspaces", "0024_workspace_scratch_space"),
 			("workspaces", "0025_scratch_workspace_model_state"),
+			("workspaces", "0026_scratch_binding_indexes"),
 		])
 		.await;
 	fixture.tenant_root("scratch-upgrade").await;
@@ -4749,6 +4750,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 		.migrate_excluding(&[
 			("workspaces", "0024_workspace_scratch_space"),
 			("workspaces", "0025_scratch_workspace_model_state"),
+			("workspaces", "0026_scratch_binding_indexes"),
 		])
 		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -4812,6 +4814,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 		.migrate_excluding(&[
 			("workspaces", "0024_workspace_scratch_space"),
 			("workspaces", "0025_scratch_workspace_model_state"),
+			("workspaces", "0026_scratch_binding_indexes"),
 		])
 		.await;
 	fixture.tenant_root("scratch-workspace-upgrade").await;
