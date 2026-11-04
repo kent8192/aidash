@@ -1001,6 +1001,44 @@ class GuardV2IdentityTest(unittest.TestCase):
                 node_guard.validate(request)
 
 
+class GuardReviewRegressionTest(unittest.TestCase):
+    def test_cleanup_handoff_preserves_v2_binding(self):
+        import json
+        import tempfile
+        import uuid
+        from pathlib import Path
+        from unittest.mock import patch
+        import node_guard
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = {'container_id': 'a' * 64, 'pod_uid': str(uuid.uuid4()),
+                      'area_id': str(uuid.uuid4()), 'epoch': 1, 'image': 'pinned', 'terminated': True,
+                      'protocol': 'aidash-runner/2', 'pod_name': 'scratch-' + 'b' * 48, 'container_name': 'execution'}
+            with patch.object(node_guard, 'ROOT', root):
+                node_guard.handoff_cleanup(root / 'current.json', record)
+            pending = json.loads((root / 'runtime-cleanup' / ('a' * 64 + '.json')).read_text())
+            for key in ('protocol', 'pod_name', 'container_name'):
+                self.assertEqual(pending[key], record[key])
+
+    def test_new_v2_binding_cannot_replace_live_previous_sentry(self):
+        import json
+        import tempfile
+        import uuid
+        from pathlib import Path
+        from unittest.mock import patch
+        import node_guard
+        with tempfile.TemporaryDirectory() as directory:
+            root, area = Path(directory), str(uuid.uuid4())
+            old = {'protocol': 'aidash-runner/2', 'area_id': area, 'pod_uid': str(uuid.uuid4()),
+                   'container_id': 'a' * 64, 'epoch': 1, 'image': 'pinned', 'terminated': False}
+            (root / (area + '.json')).write_text(json.dumps(old))
+            request = dict(old, action='v2_limits', pod_uid=str(uuid.uuid4()), container_id='b' * 64, epoch=2)
+            with patch.object(node_guard, 'ROOT', root), patch.object(node_guard, 'gone', return_value=False), \
+                 patch.object(node_guard, 'validate', return_value=('b' * 64, request['pod_uid'], area, {'pid': 42})):
+                with self.assertRaisesRegex(ValueError, 'previous.*live'):
+                    node_guard.handle(request)
+
+
 class GuardV2CapacityTest(unittest.TestCase):
     def test_unbounded_or_ambiguous_persistent_storage_is_rejected(self):
         import tempfile

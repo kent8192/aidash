@@ -186,7 +186,7 @@ def handoff_cleanup(path, record):
                    ('container_id', 'pod_uid', 'area_id', 'epoch', 'image', 'terminated')}
         pending.update(native_cleanup_root=record.get('native_cleanup_root', RUNTIME),
                        native_cleanup_namespace=record.get('native_cleanup_namespace', NAMESPACE))
-        for key in ('sentry_pid', 'sentry_start'):
+        for key in ('sentry_pid', 'sentry_start', 'protocol', 'pod_name', 'container_name'):
             if key in record:
                 pending[key] = record[key]
         directory = ROOT / 'runtime-cleanup'
@@ -472,6 +472,10 @@ def handle(request):
                       and previous.get('epoch') == request.get('epoch')
                       and previous.get('sentry_pid') == state.get('pid')
                       and request.get('container_name') == 'execution')
+        if (previous and not previous_stopped and not bound and not transition
+                and previous.get('protocol') == 'aidash-runner/2'
+                and request.get('protocol') == 'aidash-runner/2'):
+            raise ValueError('previous execution sentry is still live')
         if previous and (request['epoch'] < previous['epoch'] or
                          request['epoch'] == previous['epoch'] and previous['container_id'] != cid and not transition):
             raise ValueError('stale execution epoch')
