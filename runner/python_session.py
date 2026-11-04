@@ -8,6 +8,7 @@ import struct
 import sys
 import time
 import traceback
+import threading
 
 _MAX_MESSAGE = 64 * 1048576
 
@@ -39,16 +40,86 @@ def _send(connection, value):
 class _Output(io.TextIOBase):
     def __init__(self, limit):
         self.limit, self.data, self.truncated = limit, bytearray(), False
+        self.lock = threading.Lock()
+
+    def add(self, raw):
+        with self.lock:
+            chunk = raw[:max(0, self.limit - len(self.data))]
+            self.data.extend(chunk)
+            self.truncated |= len(chunk) != len(raw)
 
     def write(self, text):
-        raw = str(text).encode('utf-8', errors='replace')
-        chunk = raw[:max(0, self.limit - len(self.data))]
-        self.data.extend(chunk)
-        self.truncated |= len(chunk) != len(raw)
+        self.add(str(text).encode('utf-8', errors='replace'))
         return len(text)
 
     def value(self):
-        return self.data.decode('utf-8', errors='replace')
+        with self.lock:
+            return self.data.decode('utf-8', errors='replace')
+
+
+class _DescriptorCapture:
+    """Drain native output with one bounded collector for the life of a session."""
+    def __init__(self):
+        self.read_fd, self.write_fd = os.pipe()
+        self.saved = (os.dup(1), os.dup(2))
+        os.dup2(self.write_fd, 1)
+        os.dup2(self.write_fd, 2)
+        self.lock = threading.Lock()
+        self.output = None
+        self.marker = None
+        self.event = None
+        self.thread = threading.Thread(target=self._drain, daemon=True)
+        self.thread.start()
+
+    def _drain(self):
+        pending = b''
+        while True:
+            chunk = os.read(self.read_fd, 65536)
+            if not chunk:
+                break
+            pending += chunk
+            with self.lock:
+                marker = self.marker
+                position = pending.find(marker) if marker else -1
+                if position >= 0:
+                    if self.output:
+                        self.output.add(pending[:position])
+                    pending = pending[position + len(marker):]
+                    self.marker = None
+                    self.event.set()
+                if self.marker:
+                    keep = min(len(pending), len(self.marker) - 1)
+                    data, pending = pending[:len(pending) - keep], pending[len(pending) - keep:]
+                else:
+                    data, pending = pending, b''
+                if self.output:
+                    self.output.add(data)
+
+    def _barrier(self):
+        marker = b'\x00aidash-capture-' + os.urandom(32) + b'\x00'
+        event = threading.Event()
+        with self.lock:
+            self.marker, self.event = marker, event
+        os.write(self.write_fd, marker)
+        if not event.wait(5):
+            raise RuntimeError('Python output collector did not drain')
+
+    def begin(self, output):
+        self._barrier()
+        with self.lock:
+            self.output = output
+
+    def end(self):
+        self._barrier()
+        with self.lock:
+            self.output = None
+
+    def close(self):
+        os.dup2(self.saved[0], 1)
+        os.dup2(self.saved[1], 2)
+        for fd in (*self.saved, self.write_fd):
+            os.close(fd)
+
 
 
 def send_cell(path, code, timeout, output_bytes, *, cwd='.'):
@@ -80,6 +151,7 @@ def serve(path):
     if os.path.lexists(path):
         raise FileExistsError('Python session socket already exists')
     namespace = {'__name__': '__main__'}
+    capture = _DescriptorCapture()
     scratch_root = os.path.realpath(os.getcwd())
     last_used = time.monotonic()
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
@@ -111,6 +183,7 @@ def serve(path):
                             raise ValueError('invalid Python output limit')
                         output = _Output(limit)
                         status = 'completed'
+                        capture.begin(output)
                         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
                             try:
                                 try:
@@ -124,6 +197,7 @@ def serve(path):
                             except BaseException:
                                 status = 'failed'
                                 traceback.print_exc()
+                        capture.end()
                         _send(connection, {'status': status, 'stdout': output.value(),
                                            'truncated': output.truncated})
                     except Exception as error:
@@ -134,6 +208,7 @@ def serve(path):
                             pass
                     last_used = time.monotonic()
         finally:
+            capture.close()
             try:
                 os.unlink(path)
             except FileNotFoundError:

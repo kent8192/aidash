@@ -964,6 +964,33 @@ class PythonSessionTest(unittest.TestCase):
                 server.wait(timeout=3)
                 server.stderr.close()
 
+    def test_cell_captures_file_descriptors_and_subprocess_output(self):
+        import os
+        import subprocess
+        import sys
+        import tempfile
+        import time
+        from pathlib import Path
+        from python_session import send_cell
+        with tempfile.TemporaryDirectory() as directory:
+            socket_path = str(Path(directory) / 'session.sock')
+            server = subprocess.Popen([sys.executable, '-I', 'python_session.py', 'serve', socket_path],
+                                      cwd=Path(__file__).parent, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            try:
+                deadline = time.monotonic() + 3
+                while not os.path.exists(socket_path) and time.monotonic() < deadline:
+                    time.sleep(.01)
+                result = send_cell(socket_path, "import os, subprocess; os.write(1, b'fd!'); subprocess.run(['/bin/echo', 'child'])", 2, 128)
+                self.assertIn('fd!', result['stdout'])
+                self.assertIn('child', result['stdout'])
+                limited = send_cell(socket_path, "__import__('os').write(2, b'x' * 1000)", 2, 10)
+                self.assertEqual(len(limited['stdout']), 10)
+                self.assertTrue(limited['truncated'])
+            finally:
+                server.terminate()
+                server.wait(timeout=3)
+                server.stderr.close()
+
     def test_cell_output_is_bounded(self):
         import os
         import subprocess
