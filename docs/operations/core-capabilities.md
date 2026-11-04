@@ -100,7 +100,7 @@ it does not acquire resources reserved for another Tenant's nodes.
 
 To enable the v2 controller in Helm, configure `execution.pods.enabled`, a
 trusted digest-pinned `helperImage`, `storageClassName`, and the private IP
-`proxy.endpoint`, `proxy.namespace` and `proxy.selector`. Set `allowDocker`
+`proxy.endpoint`, `proxy.namespace` and `proxy.podSelector`. Set `allowDocker`
 only after provisioning the separate Docker RuntimeClass and Tenant-dedicated
 nodes. The controller performs a disposable admission test before serving v2
 requests and reports a typed failure if prerequisites or cleanup fail. For a
@@ -108,6 +108,23 @@ local kind installation, `setup-capability-runtime.py --execution-pods` accepts
 `--helper-image`, `--storage-class`, `--proxy-endpoint`, `--proxy-namespace`
 and one or more `--proxy-selector key=value` arguments; `--allow-docker` is
 optional. Provision the enforcing storage class and Egress gateway separately.
+
+Known limits of this runtime, which no tool uses yet. Keep it disabled in
+production until wave 2 of #697 has run it on a live gVisor cluster:
+
+- Docker mode has no boundary inside the Pod. A user process keeps `SYS_ADMIN`,
+  so it can attack the trusted supervisor, the admission probe and the result
+  framing nonce. Only the Tenant-dedicated node and host limits contain it. Do
+  not trust Docker-mode admission evidence or result frames against a malicious
+  user.
+- The image-root init container still runs the helper loader against the Tenant
+  image, whose `/etc/ld.so.preload` is honoured. Such code runs without mount
+  capabilities and sees only its own `image-root` subPath, and the controller
+  refuses a symlinked root before `chroot`.
+- Full-disk recovery, the guest process ceiling and admission are covered by
+  unit tests against mocks and have not been exercised on a real PVC and gVisor.
+- Images that need more than the fixed startup deadline to pull and copy fail.
+  There is no progress-based extension.
 
 ## Reproduce the runtime gate
 

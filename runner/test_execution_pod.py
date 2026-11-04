@@ -1493,6 +1493,16 @@ class RootAdmissionTest(unittest.TestCase):
 
 
 class TrustedProbeRegressionTest(unittest.TestCase):
+    def test_probe_cannot_be_traced_by_live_user_processes(self):
+        from unittest.mock import MagicMock, patch
+        import sandbox_v2
+        libc = MagicMock()
+        libc.prctl.return_value = 0
+        with patch.object(sandbox_v2, 'enter_user_root'), patch('ctypes.CDLL', return_value=libc), \
+                patch('user_probe.probe', return_value={'evidence': True}):
+            self.assertEqual(sandbox_v2.run_admission_probe('/rootfs', False, 'user', None), {'evidence': True})
+        libc.prctl.assert_called_once_with(sandbox_v2._PR_SET_DUMPABLE, 0, 0, 0, 0)
+
     def test_rejects_symlinked_system_root(self):
         import tempfile
         from pathlib import Path
@@ -1506,9 +1516,9 @@ class TrustedProbeRegressionTest(unittest.TestCase):
 
     def test_probe_runs_after_chroot_without_executing_untrusted_loader(self):
         import os
-        from unittest.mock import patch
+        from unittest.mock import MagicMock, patch
         from sandbox_v2 import run_admission_probe
-        with patch('sandbox_v2.enter_user_root') as enter, \
+        with patch('ctypes.CDLL', return_value=MagicMock(**{'prctl.return_value': 0})), patch('sandbox_v2.enter_user_root') as enter, \
              patch('user_probe.probe', return_value={'evidence': True}), \
              patch('os.execvp', side_effect=AssertionError('untrusted exec')):
             self.assertEqual(run_admission_probe('/rootfs', False, 'user', None), {'evidence': True})
@@ -1868,6 +1878,8 @@ class ReviewRegressionTest(unittest.TestCase):
         _, pod = execution_manifests(settings, config)
         image = next(item for item in pod['spec']['initContainers'] if item['name'] == 'image-root')
         self.assertEqual(next(m for m in image['volumeMounts'] if m['name'] == 'scratch')['subPath'], 'image-root')
+        blanked = {item['name'] for item in image['env'] if item['value'] == ''}
+        self.assertLessEqual({'LD_PRELOAD', 'LD_AUDIT', 'LD_LIBRARY_PATH', 'PYTHONPATH', 'PYTHONHOME'}, blanked)
         self.assertIn('-I', image['command'])
         env = {item['name']:item['value'] for item in image['env']}
         for name in ('LD_PRELOAD','LD_LIBRARY_PATH','PYTHONPATH','PYTHONHOME'):

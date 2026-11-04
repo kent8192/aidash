@@ -336,7 +336,7 @@ def execution_manifests(settings, config):
                                 '/.aidash-helpers/lib:/.aidash-helpers/python/lib',
                                 '/.aidash-helpers/python/bin/python3', '-I',
                                 '/.aidash-helpers/sandbox_v2.py', 'init'],
-                    'env': [{'name': key, 'value': ''} for key in ('LD_PRELOAD', 'LD_LIBRARY_PATH', 'PYTHONPATH', 'PYTHONHOME')] +
+                    'env': [{'name': key, 'value': ''} for key in ('LD_PRELOAD', 'LD_AUDIT', 'LD_LIBRARY_PATH', 'PYTHONPATH', 'PYTHONHOME')] +
                            [{'name': 'AIDASH_RESET_SYSTEM', 'value': str(bool(settings.get('_reset_system'))).lower()}],
                     'securityContext': image_security, 'resources': {'limits': limits},
                     'volumeMounts': [{'name': 'scratch', 'mountPath': '/scratch-image', 'subPath': 'image-root'},
