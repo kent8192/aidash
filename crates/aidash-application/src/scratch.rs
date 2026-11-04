@@ -48,12 +48,12 @@ pub trait ScratchScope: Send {
 	async fn load_for_update(&mut self, id: ScratchSpaceId) -> Result<ScratchSpace>;
 	async fn list(&mut self, node: &NodeName) -> Result<Vec<ScratchSpace>>;
 	async fn save(&mut self, space: &ScratchSpace) -> Result<()>;
+	/// Update last use only when it is older than a minute.
+	async fn touch(&mut self, id: ScratchSpaceId, now: DateTime<Utc>) -> Result<()>;
 	async fn delete(&mut self, id: ScratchSpaceId) -> Result<()>;
 	/// Record a durable deletion request in this transaction; the adapter must
 	/// prevent the old contents from being used after the transaction commits.
 	async fn clear_contents(&mut self, id: ScratchSpaceId) -> Result<()>;
-	/// Find the creator Run when this workspace belongs to a Subnode.
-	async fn subnode_creator_run(&mut self, workspace: uuid::Uuid) -> Result<Option<Run>>;
 	async fn run_binding(&mut self, run: &Run) -> Result<(ScratchSpaceId, String)>;
 }
 
@@ -195,8 +195,10 @@ pub async fn add_member(
 		return Err(Error::Invalid("member is required".into()));
 	}
 	let mut space = read_for_update(scope, id, now).await?;
+	scope
+		.validate_members(&std::collections::BTreeSet::from([member.to_owned()]))
+		.await?;
 	space.members.insert(member.to_owned());
-	scope.validate_members(&space.members).await?;
 	scope.save(&space).await
 }
 
@@ -258,8 +260,7 @@ pub async fn select_for_workspace(
 			return Err(Error::Forbidden);
 		}
 		let (ceilings, tenant_hosts) = scope.limits(node).await?;
-		let mut effective = space.settings.clone();
-		effective.allowed_hosts = effective.allowed_hosts.intersection(&tenant_hosts);
+		let effective = space.settings.effective_for(&ceilings, &tenant_hosts);
 		effective.validate(&ceilings, &tenant_hosts)?;
 		scope.validate_runtime(node, &effective).await?;
 		if !space.is_expired(now) {
@@ -268,7 +269,7 @@ pub async fn select_for_workspace(
 		}
 		return Ok(id);
 	}
-	let (_, tenant_hosts) = scope.limits(node).await?;
+	let (ceilings, tenant_hosts) = scope.limits(node).await?;
 
 	let space = ScratchSpace {
 		id: uuid::Uuid::new_v4(),
@@ -279,7 +280,7 @@ pub async fn select_for_workspace(
 		state: ScratchState::Active,
 		revision: 0,
 		wipe_generation: 0,
-		settings: ScratchSettings::for_tenant(&tenant_hosts),
+		settings: ScratchSettings::for_policy(&ceilings, &tenant_hosts),
 		created_at: now,
 		last_used_at: now,
 	};
@@ -292,12 +293,13 @@ pub async fn scratch_space_for_run(
 	run: &Run,
 	now: DateTime<Utc>,
 ) -> Result<ScratchSpaceId> {
-	let creator = scope.subnode_creator_run(run.workspace_id).await?;
-	let binding_run = creator.as_ref().unwrap_or(run);
-	let (id, starter) = scope.run_binding(binding_run).await?;
+	let (id, starter) = scope.run_binding(run).await?;
 	// Run admission already checks the executing Node's authority; here the
 	// starter only has to still be allowed to use the space.
-	let mut space = scope.load_for_update(id).await?;
+	let mut space = scope.load(id).await?;
+	if space.is_expired(now) {
+		space = scope.load_for_update(id).await?;
+	}
 	require_use(&space, &starter, now)?;
 	if space.node != run.node {
 		return Err(Error::Forbidden);
@@ -306,15 +308,15 @@ pub async fn scratch_space_for_run(
 	// space was created. Recheck them without narrowing shared services to the
 	// executing Agent's individual Registry permissions.
 	let (ceilings, tenant_hosts) = scope.limits(&space.node).await?;
-	let mut effective = space.settings.clone();
-	effective.allowed_hosts = effective.allowed_hosts.intersection(&tenant_hosts);
+	let effective = space.settings.effective_for(&ceilings, &tenant_hosts);
 	effective.validate(&ceilings, &tenant_hosts)?;
 	scope.validate_runtime(&space.node, &effective).await?;
-	let expired = space.is_expired(now);
-	space.last_used_at = space.last_used_at.max(now);
-	scope.save(&space).await?;
-	if expired {
+	if space.is_expired(now) {
+		space.last_used_at = space.last_used_at.max(now);
+		scope.save(&space).await?;
 		scope.clear_contents(id).await?;
+	} else {
+		scope.touch(id, now).await?;
 	}
 	Ok(id)
 }

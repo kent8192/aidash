@@ -163,6 +163,25 @@ impl ScratchSettings {
 		}
 	}
 
+	/// Settings enforced for use under the current operator and Tenant limits.
+	pub fn effective_for(&self, ceilings: &ScratchCeilings, tenant_hosts: &HostAllowlist) -> Self {
+		let mut effective = self.clone();
+		effective.capacity_bytes = effective.capacity_bytes.min(ceilings.capacity_bytes);
+		effective.cpu_millis = effective.cpu_millis.min(ceilings.cpu_millis);
+		effective.memory_bytes = effective.memory_bytes.min(ceilings.memory_bytes);
+		effective.daily_sent_bytes = effective.daily_sent_bytes.min(ceilings.daily_sent_bytes);
+		effective.daily_received_bytes = effective
+			.daily_received_bytes
+			.min(ceilings.daily_received_bytes);
+		effective.allowed_hosts = effective.allowed_hosts.intersection(tenant_hosts);
+		effective
+	}
+
+	/// Default settings restricted to the current operator and Tenant limits.
+	pub fn for_policy(ceilings: &ScratchCeilings, tenant_hosts: &HostAllowlist) -> Self {
+		Self::for_tenant(tenant_hosts).effective_for(ceilings, tenant_hosts)
+	}
+
 	pub fn validate(&self, ceilings: &ScratchCeilings, tenant_hosts: &HostAllowlist) -> Result<()> {
 		if self.capacity_bytes == 0
 			|| self.capacity_bytes > ceilings.capacity_bytes

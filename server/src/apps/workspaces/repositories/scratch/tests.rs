@@ -47,6 +47,46 @@ async fn space_and_settings_are_tenant_scoped_and_transactional(
 	assert!(read.is_some());
 	reader.rollback().await.unwrap();
 	writer.rollback().await.unwrap();
+	// A foreign-key check holds KEY SHARE. A stale touch must not wait for it,
+	// and repeated fresh touches must leave the first timestamp intact.
+	let mut key_holder = database.begin_in(&tenant_a).await;
+	let (sql, values) = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("scratch_spaces"))
+		.and_where(Expr::col("id").eq(Expr::value(space.id)))
+		.lock(LockType::KeyShare)
+		.build(PostgresQueryBuilder);
+	key_holder
+		.fetch_optional(&sql, convert_values(values))
+		.await
+		.unwrap();
+	let mut runner = database.begin_in(&tenant_a).await;
+	let later = now + chrono::Duration::minutes(2);
+	tokio::time::timeout(
+		std::time::Duration::from_secs(5),
+		touch(&mut *runner, "scratch-a", space.id, later),
+	)
+	.await
+	.expect("a touch must not block a foreign-key check")
+	.unwrap();
+	touch(
+		&mut *runner,
+		"scratch-a",
+		space.id,
+		later + chrono::Duration::seconds(30),
+	)
+	.await
+	.unwrap();
+	let touched = load_with_lock(&mut *runner, "scratch-a", space.id, false)
+		.await
+		.unwrap()
+		.unwrap();
+	assert_eq!(
+		touched.last_used_at.timestamp_micros(),
+		later.timestamp_micros()
+	);
+	runner.rollback().await.unwrap();
+	key_holder.rollback().await.unwrap();
 	let mut neighbour = space.clone();
 	neighbour.id = Uuid::new_v4();
 	neighbour.node = NodeName::derived("scratch-b");
@@ -645,4 +685,40 @@ async fn workspace_run_loses_scratch_authority_when_starter_is_removed(
 	));
 	drop(adapter);
 	access.finish(Ok(())).await.unwrap();
+}
+
+#[rstest]
+#[tokio::test]
+async fn listing_filters_by_membership_and_loads_members(#[future] database: DatabaseFixture) {
+	let database = database.await;
+	let tenant = database.tenant("scratch-list").await;
+	let now = Utc::now();
+	let mut space = ScratchSpace {
+		id: Uuid::new_v4(),
+		node: NodeName::derived("scratch-list"),
+		name: "Private".into(),
+		creator: "alice".into(),
+		state: ScratchState::Active,
+		revision: 0,
+		wipe_generation: 0,
+		settings: ScratchSettings::default(),
+		members: BTreeSet::new(),
+		created_at: now,
+		last_used_at: now,
+	};
+	let mut tx = database.begin_in(&tenant).await;
+	insert(&mut *tx, "scratch-list", &space).await.unwrap();
+	let hidden = space.id;
+	space.id = Uuid::new_v4();
+	space.creator = "carol".into();
+	space.members.insert("bob".into());
+	insert(&mut *tx, "scratch-list", &space).await.unwrap();
+	let result = list_visible(&mut *tx, "scratch-list", space.node.as_str(), "bob")
+		.await
+		.unwrap();
+	assert_eq!(result.len(), 1);
+	assert_ne!(result[0].id, hidden);
+	assert_eq!(result[0].members, BTreeSet::from(["bob".into()]));
+	assert_eq!(result[0].id, space.id);
+	tx.rollback().await.unwrap();
 }

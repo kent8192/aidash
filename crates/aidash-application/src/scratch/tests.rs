@@ -12,12 +12,13 @@ struct Memory {
 	node_people: Vec<String>,
 	spaces: BTreeMap<Uuid, ScratchSpace>,
 	binding: Option<(Uuid, String)>,
-	creator: Option<(Uuid, Run)>,
 	bound_run: Option<Uuid>,
 	cleared: Vec<Uuid>,
 	read_loads: usize,
 	locked_loads: usize,
 	runtime_hosts: Vec<HostAllowlist>,
+	runtime_settings: Vec<ScratchSettings>,
+	ceilings: Option<ScratchCeilings>,
 }
 
 #[async_trait]
@@ -42,7 +43,7 @@ impl ScratchScope for Memory {
 	}
 	async fn limits(&mut self, _: &NodeName) -> Result<(ScratchCeilings, HostAllowlist)> {
 		Ok((
-			ScratchCeilings::default(),
+			self.ceilings.clone().unwrap_or_default(),
 			HostAllowlist::Hosts(BTreeSet::from(["example.com".into()])),
 		))
 	}
@@ -60,6 +61,7 @@ impl ScratchScope for Memory {
 	}
 	async fn validate_runtime(&mut self, _: &NodeName, settings: &ScratchSettings) -> Result<()> {
 		self.runtime_hosts.push(settings.allowed_hosts.clone());
+		self.runtime_settings.push(settings.clone());
 		Ok(())
 	}
 	async fn validate_owner(&mut self, person: &str) -> Result<()> {
@@ -105,6 +107,13 @@ impl ScratchScope for Memory {
 		self.spaces.insert(space.id, space.clone());
 		Ok(())
 	}
+	async fn touch(&mut self, id: Uuid, now: DateTime<Utc>) -> Result<()> {
+		let space = self.spaces.get_mut(&id).unwrap();
+		if space.last_used_at < now - Duration::minutes(1) {
+			space.last_used_at = now;
+		}
+		Ok(())
+	}
 	async fn delete(&mut self, id: Uuid) -> Result<()> {
 		self.spaces.remove(&id);
 		Ok(())
@@ -113,12 +122,6 @@ impl ScratchScope for Memory {
 		self.cleared.push(id);
 		self.spaces.get_mut(&id).unwrap().wipe_generation += 1;
 		Ok(())
-	}
-	async fn subnode_creator_run(&mut self, workspace: Uuid) -> Result<Option<Run>> {
-		Ok(self
-			.creator
-			.as_ref()
-			.and_then(|(id, run)| (*id == workspace).then(|| run.clone())))
 	}
 	async fn run_binding(&mut self, run: &Run) -> Result<(Uuid, String)> {
 		self.bound_run = Some(run.id);
@@ -379,31 +382,6 @@ async fn listing_shows_only_spaces_available_to_the_person_on_that_node() {
 }
 
 #[tokio::test]
-async fn subnode_run_uses_the_creator_runs_scratch_space() {
-	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
-	let mut scope = Memory {
-		person: "alice".into(),
-		..Default::default()
-	};
-	let space = space(now);
-	create(&mut scope, &space).await.unwrap();
-	let creator =
-		crate::test_support::run_of(crate::test_support::snapshot("aidash://local", "agent"));
-	let mut child = creator.clone();
-	child.id = Uuid::new_v4();
-	child.workspace_id = Uuid::new_v4();
-	scope.creator = Some((child.workspace_id, creator.clone()));
-	scope.binding = Some((space.id, "alice".into()));
-	assert_eq!(
-		scratch_space_for_run(&mut scope, &child, now)
-			.await
-			.unwrap(),
-		space.id
-	);
-	assert_eq!(scope.bound_run, Some(creator.id));
-}
-
-#[tokio::test]
 async fn conversation_selects_an_accessible_space_or_creates_a_dedicated_one() {
 	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
 	let mut scope = Memory {
@@ -642,4 +620,106 @@ async fn extending_expiry_cannot_restore_expired_contents() {
 		.await
 		.unwrap();
 	assert_eq!(scope.spaces[&space.id].wipe_generation, 1);
+}
+
+#[tokio::test]
+async fn existing_default_settings_follow_reduced_resource_ceilings() {
+	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+	let mut scope = Memory {
+		person: "alice".into(),
+		..Default::default()
+	};
+	let space = space(now);
+	create(&mut scope, &space).await.unwrap();
+	let ceilings = ScratchCeilings {
+		capacity_bytes: 50 * 1024 * 1024 * 1024,
+		cpu_millis: 2000,
+		memory_bytes: 8 * 1024 * 1024 * 1024,
+		daily_sent_bytes: 10 * 1024 * 1024 * 1024,
+		daily_received_bytes: 20 * 1024 * 1024 * 1024,
+		..ScratchCeilings::default()
+	};
+	scope.ceilings = Some(ceilings.clone());
+	let mut run =
+		crate::test_support::run_of(crate::test_support::snapshot("aidash://local", "agent"));
+	run.node = space.node.clone();
+	scope.binding = Some((space.id, "alice".into()));
+	assert_eq!(
+		scratch_space_for_run(&mut scope, &run, now).await.unwrap(),
+		space.id
+	);
+	let settings = scope.runtime_settings.last().unwrap();
+	assert_eq!(
+		(
+			settings.capacity_bytes,
+			settings.cpu_millis,
+			settings.memory_bytes,
+			settings.daily_sent_bytes,
+			settings.daily_received_bytes
+		),
+		(
+			ceilings.capacity_bytes,
+			ceilings.cpu_millis,
+			ceilings.memory_bytes,
+			ceilings.daily_sent_bytes,
+			ceilings.daily_received_bytes
+		)
+	);
+	assert_eq!(scope.spaces[&space.id].settings, space.settings);
+}
+
+#[tokio::test]
+async fn dedicated_space_defaults_fit_current_resource_ceilings() {
+	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+	let ceilings = ScratchCeilings {
+		cpu_millis: 2000,
+		memory_bytes: 8 * 1024 * 1024 * 1024,
+		..ScratchCeilings::default()
+	};
+	let mut scope = Memory {
+		person: "alice".into(),
+		ceilings: Some(ceilings.clone()),
+		..Default::default()
+	};
+	let node = NodeName::derived("limited");
+	let id = select_for_workspace(&mut scope, &node, "Limited", None, now)
+		.await
+		.unwrap();
+	assert_eq!(scope.spaces[&id].settings.cpu_millis, ceilings.cpu_millis);
+	assert_eq!(
+		scope.spaces[&id].settings.memory_bytes,
+		ceilings.memory_bytes
+	);
+}
+
+#[tokio::test]
+async fn disabled_existing_member_does_not_block_new_member() {
+	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+	let mut scope = Memory {
+		person: "alice".into(),
+		..Default::default()
+	};
+	let mut space = space(now);
+	space.members.insert("disabled".into());
+	let id = space.id;
+	scope.spaces.insert(id, space);
+	add_member(&mut scope, id, now, "bob").await.unwrap();
+	assert!(scope.spaces[&id].members.contains("bob"));
+}
+
+#[tokio::test]
+async fn fresh_run_admission_does_not_lock_the_space() {
+	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+	let mut scope = Memory {
+		person: "alice".into(),
+		..Default::default()
+	};
+	let space = space(now);
+	create(&mut scope, &space).await.unwrap();
+	let mut run =
+		crate::test_support::run_of(crate::test_support::snapshot("aidash://local", "agent"));
+	run.node = space.node.clone();
+	scope.binding = Some((space.id, "alice".into()));
+	scratch_space_for_run(&mut scope, &run, now).await.unwrap();
+	assert_eq!(scope.locked_loads, 0);
 }

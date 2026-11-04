@@ -1,5 +1,5 @@
 //! Scratch Space persistence on a caller-owned Tenant transaction.
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use aidash_domain::{
 	Run,
@@ -223,8 +223,8 @@ pub(crate) async fn save(
 	write_members(tx, tenant, space).await
 }
 
-/// Return the IDs on one Node; each space is subsequently locked and checked.
-pub(crate) async fn ids_on_node(
+#[cfg(test)]
+async fn ids_on_node(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
 	node: &str,
@@ -244,6 +244,122 @@ pub(crate) async fn ids_on_node(
 		.iter()
 		.map(|row| row.get("id").map_err(err))
 		.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+/// Read only spaces visible to the caller, with bounded batch reads for their
+/// settings and members. The SQL visibility filter precedes the limit.
+async fn list_visible(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	node: &str,
+	person: &str,
+) -> Result<Vec<ScratchSpace>> {
+	let membership = Query::select()
+		.column(Alias::new("space_id"))
+		.from(Alias::new("scratch_space_members"))
+		.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+		.and_where(Expr::col("subject").eq(person.to_owned()))
+		.to_owned();
+	let (sql, values) = Query::select()
+		.columns(
+			[
+				"id",
+				"node",
+				"name",
+				"creator",
+				"state",
+				"revision",
+				"wipe_generation",
+				"created_at",
+				"last_used_at",
+			]
+			.map(Alias::new),
+		)
+		.from(Alias::new("scratch_spaces"))
+		.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+		.and_where(Expr::col("node").eq(node.to_owned()))
+		.and_where(Expr::col("state").eq("active"))
+		.and_where(
+			Expr::col("creator")
+				.eq(person.to_owned())
+				.or(Expr::col("id").in_subquery(membership)),
+		)
+		.order_by(Alias::new("created_at"), reinhardt::query::Order::Desc)
+		.order_by(Alias::new("id"), reinhardt::query::Order::Asc)
+		.limit(500)
+		.build(PostgresQueryBuilder);
+	let rows = tx.fetch_all(&sql, convert_values(values)).await?;
+	if rows.is_empty() {
+		return Ok(Vec::new());
+	}
+	let err = reinhardt::core::exception::Error::from;
+	let ids: Vec<Uuid> = rows
+		.iter()
+		.map(|row| row.get("id").map_err(err))
+		.collect::<std::result::Result<_, _>>()?;
+	let settings = SettingsRecord::objects()
+		.filter(SettingsRecord::field_tenant().eq(tenant))
+		.filter(SettingsRecord::field_space_id().is_in(ids.clone()))
+		.all_with_executor(tx)
+		.await
+		.map_err(err)?;
+	let mut settings: BTreeMap<_, _> = settings
+		.into_iter()
+		.map(|row| (row.space_id, row.settings.0))
+		.collect();
+	let member_rows = MemberRecord::objects()
+		.filter(MemberRecord::field_tenant().eq(tenant))
+		.filter(MemberRecord::field_space_id().is_in(ids))
+		.all_with_executor(tx)
+		.await
+		.map_err(err)?;
+	let mut members: BTreeMap<Uuid, BTreeSet<String>> = BTreeMap::new();
+	for row in member_rows {
+		members.entry(row.space_id).or_default().insert(row.subject);
+	}
+	let mut spaces = Vec::with_capacity(rows.len());
+	for row in rows {
+		let id: Uuid = row.get("id").map_err(err)?;
+		let node: String = row.get("node").map_err(err)?;
+		let state: String = row.get("state").map_err(err)?;
+		spaces.push(ScratchSpace {
+			id,
+			node: node.parse()?,
+			name: row.get("name").map_err(err)?,
+			creator: row.get("creator").map_err(err)?,
+			state: serde_json::from_value(Value::String(state))?,
+			revision: row.get("revision").map_err(err)?,
+			wipe_generation: row.get("wipe_generation").map_err(err)?,
+			settings: serde_json::from_value(
+				settings
+					.remove(&id)
+					.ok_or_else(|| Error::NotFound("Scratch Space settings".into()))?,
+			)?,
+			members: members.remove(&id).unwrap_or_default(),
+			created_at: row.get("created_at").map_err(err)?,
+			last_used_at: row.get("last_used_at").map_err(err)?,
+		});
+	}
+	Ok(spaces)
+}
+
+/// Touch the space at most once per minute without locking a foreign key.
+async fn touch(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	id: Uuid,
+	now: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+	let (sql, values) = Query::update()
+		.table(Alias::new("scratch_spaces"))
+		.value(Alias::new("last_used_at"), now)
+		.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+		.and_where(Expr::col("id").eq(Expr::value(id)))
+		.and_where(Expr::col("state").eq("active"))
+		.and_where(Expr::col("last_used_at").lt(Expr::value(now - chrono::Duration::minutes(1))))
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, convert_values(values)).await?;
+	Ok(())
 }
 
 pub(crate) async fn delete(tx: &mut dyn TransactionExecutor, tenant: &str, id: Uuid) -> Result<()> {
@@ -492,23 +608,24 @@ impl aidash_application::scratch::ScratchScope for ScratchAdapter<'_> {
 	}
 	async fn list(&mut self, node: &NodeName) -> aidash_application::Result<Vec<ScratchSpace>> {
 		let tenant = self.access.identity.tenant.clone();
-		let ids = ids_on_node(&mut **self.access.tx, &tenant, node.as_str())
+		let person = self.person().to_owned();
+		list_visible(&mut **self.access.tx, &tenant, node.as_str(), &person)
 			.await
-			.map_err(aidash_application::Error::from)?;
-		let mut spaces = Vec::with_capacity(ids.len());
-		for id in ids {
-			if let Some(space) = load_with_lock(&mut **self.access.tx, &tenant, id, false)
-				.await
-				.map_err(aidash_application::Error::from)?
-			{
-				spaces.push(space);
-			}
-		}
-		Ok(spaces)
+			.map_err(Into::into)
 	}
 	async fn save(&mut self, space: &ScratchSpace) -> aidash_application::Result<()> {
 		let tenant = self.access.identity.tenant.clone();
 		save(&mut **self.access.tx, &tenant, space)
+			.await
+			.map_err(Into::into)
+	}
+	async fn touch(
+		&mut self,
+		id: Uuid,
+		now: chrono::DateTime<chrono::Utc>,
+	) -> aidash_application::Result<()> {
+		let tenant = self.access.identity.tenant.clone();
+		touch(&mut **self.access.tx, &tenant, id, now)
 			.await
 			.map_err(Into::into)
 	}
@@ -520,10 +637,6 @@ impl aidash_application::scratch::ScratchScope for ScratchAdapter<'_> {
 	}
 	async fn clear_contents(&mut self, id: Uuid) -> aidash_application::Result<()> {
 		self.services.clear_contents(self.access, id).await
-	}
-	async fn subnode_creator_run(&mut self, _: Uuid) -> aidash_application::Result<Option<Run>> {
-		// Subnodes are not in the develop schema. Replace this when #670 lands.
-		Ok(None)
 	}
 	async fn run_binding(&mut self, run: &Run) -> aidash_application::Result<(Uuid, String)> {
 		self.services.run_binding(self.access, run).await
@@ -759,7 +872,7 @@ impl NativeScratchServices<'_> {
 					services: self,
 					person_override: Some(person.clone()),
 				};
-				let (_, tenant_hosts) =
+				let (ceilings, tenant_hosts) =
 					aidash_application::scratch::ScratchScope::limits(&mut scope, &run.node)
 						.await?;
 
@@ -773,7 +886,7 @@ impl NativeScratchServices<'_> {
 					state: ScratchState::Active,
 					revision: 0,
 					wipe_generation: 0,
-					settings: ScratchSettings::for_tenant(&tenant_hosts),
+					settings: ScratchSettings::for_policy(&ceilings, &tenant_hosts),
 					created_at: now,
 					last_used_at: now,
 				};
