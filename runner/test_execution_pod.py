@@ -1515,7 +1515,6 @@ class TrustedProbeRegressionTest(unittest.TestCase):
                 validate_system_root(str(image / 'rootfs'))
 
     def test_probe_runs_after_chroot_without_executing_untrusted_loader(self):
-        import os
         from unittest.mock import MagicMock, patch
         from sandbox_v2 import run_admission_probe
         with patch('ctypes.CDLL', return_value=MagicMock(**{'prctl.return_value': 0})), patch('sandbox_v2.enter_user_root') as enter, \

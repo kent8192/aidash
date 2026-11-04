@@ -453,7 +453,6 @@ class ExecutionPodController:
         return json.loads(result.stdout) if result.stdout.strip() else None
 
     def _admit_pod(self, name, settings):
-        import json
         import time
 
         with self.lock:
@@ -1019,7 +1018,6 @@ print(json.dumps(r))'''
     def command_result(self, operation_id):
         import base64
         import json
-        import time
         with self.lock:
             record = self._read_command(operation_id)
             result = {key: record[key] for key in ('operation_id', 'scratch_space_id', 'run_id',
@@ -1279,7 +1277,6 @@ print(json.dumps(r))'''
         return {'processes': sorted(result, key=lambda item: item['operation_id'])}
 
     def stop_background(self, operation_id):
-        import time
         record = self._read_command(operation_id)
         if not record.get('background'):
             raise ExecutionPodError('not_background', 'Command is not a background process')
