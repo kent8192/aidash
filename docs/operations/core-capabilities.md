@@ -76,7 +76,8 @@ sandbox to host cgroup CPU, memory and pids limits. It independently checks
 termination before a new writer starts. Normal-mode commands lose SYS_ADMIN,
 NET_ADMIN, NET_RAW and SYS_CHROOT from all capability sets including the bounding set and
 run with `no_new_privs`; admission runs a user process to verify this and the
-guest process limit. There is no service-account token. Network admission checks
+guest process limit. The v2 guest ceiling defaults to 512 tasks and can be set
+with `v2_processes` in the Execution Pod configuration. There is no service-account token. Network admission checks
 the effective Kubernetes NetworkPolicies and probes a reachable peer Pod, node,
 metadata endpoint and external destination, allowing only the Egress gateway.
 It fails closed when its positive controls cannot be reached. Network probes
@@ -85,9 +86,8 @@ packets; Docker-mode admission also runs raw packet negative controls.
 
 In Docker mode, guest root can leave the chroot and modify PVC bookkeeping;
 the change log and reset are best-effort. Command results use the controller
-exec stream rather than trusting the PVC result files. Exit codes 123–127 are
-reserved for transport and lifecycle outcomes and are reported as interrupted
-when a command itself returns them.
+exec stream rather than trusting the PVC result files. A nonce-framed result
+distinguishes command exit codes from transport failures.
 
 Docker mode requires a separate gVisor RuntimeClass with `net-raw` enabled and
 is restricted to nodes labeled and tainted for that Tenant. User processes retain

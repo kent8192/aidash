@@ -168,6 +168,16 @@ class StartupStorageRegressionTest(unittest.TestCase):
             self.assertFalse(initialize_system_root(image, store))
             self.assertFalse(stale.exists())
 
+    def test_v2_process_limit_is_independent_of_legacy_limit(self):
+        from execution_pod import execution_manifests
+        settings = {'scratch_space_id': 's', 'image': 'image@sha256:' + 'a' * 64, 'cpu': 2,
+                    'memory_bytes': 2 << 30, 'capacity_bytes': 2 << 30, 'docker_enabled': False}
+        config = {'runtime_class': 'gvisor', 'helper_image': 'helper@sha256:' + 'b' * 64,
+                  'namespace': 'sandbox', 'processes': 128}
+        _, pod = execution_manifests(settings, config)
+        env = {item['name']: item.get('value') for item in pod['spec']['containers'][0]['env']}
+        self.assertEqual(env['AIDASH_PROCESS_LIMIT'], '512')
+
     def test_tmp_is_memory_bounded_and_ephemeral_storage_has_a_limit(self):
         from execution_pod import execution_manifests
         settings = {'scratch_space_id': 's', 'image': 'image@sha256:' + 'a' * 64, 'cpu': 2,

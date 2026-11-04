@@ -269,7 +269,7 @@ def execution_manifests(settings, config):
                          ('capacity_bytes', min(config.get('max_capacity_bytes', 1 << 40), 1 << 40))):
         if type(ceiling) is not int or ceiling <= 0 or settings[key] > ceiling:
             raise ValueError(key + ' exceeds the Deployment ceiling')
-    processes = config.get('processes', 128)
+    processes = config.get('v2_processes', 512)
     if type(processes) is not int or processes < 32:
         raise ValueError('processes must be an integer of at least 32')
     docker = settings['docker_enabled']
@@ -518,7 +518,7 @@ class ExecutionPodController:
         try:
             report = json.loads(result.stdout)
             verify_user_probe(report, docker=settings['docker_enabled'],
-                              processes=self.config.get('processes', 128))
+                              processes=self.config.get('v2_processes', 512))
         except (ValueError, KeyError, TypeError) as error:
             raise ExecutionPodError('admission_failed', 'User isolation probe failed: ' + str(error)) from error
         self._record_guard(pod, 'execution', container_id, epoch, host_evidence=evidence, user_evidence=report)
