@@ -17,6 +17,7 @@ struct Memory {
 	cleared: Vec<Uuid>,
 	read_loads: usize,
 	locked_loads: usize,
+	runtime_hosts: Vec<HostAllowlist>,
 }
 
 #[async_trait]
@@ -57,7 +58,8 @@ impl ScratchScope for Memory {
 		}
 		Ok(())
 	}
-	async fn validate_runtime(&mut self, _: &NodeName, _: &ScratchSettings) -> Result<()> {
+	async fn validate_runtime(&mut self, _: &NodeName, settings: &ScratchSettings) -> Result<()> {
+		self.runtime_hosts.push(settings.allowed_hosts.clone());
 		Ok(())
 	}
 	async fn validate_owner(&mut self, person: &str) -> Result<()> {
@@ -568,5 +570,76 @@ async fn expired_space_is_visible_and_revived_on_authorized_run() {
 			.unwrap(),
 		space.id
 	);
+	assert_eq!(scope.spaces[&space.id].wipe_generation, 1);
+}
+
+#[tokio::test]
+async fn runtime_hosts_follow_a_narrowed_tenant_policy() {
+	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+	let mut scope = Memory {
+		person: "alice".into(),
+		..Default::default()
+	};
+	let mut space = space(now);
+	create(&mut scope, &space).await.unwrap();
+	space.settings.allowed_hosts = HostAllowlist::Hosts(BTreeSet::from([
+		"example.com".into(),
+		"withdrawn.example".into(),
+	]));
+	scope.spaces.insert(space.id, space.clone());
+	let mut run =
+		crate::test_support::run_of(crate::test_support::snapshot("aidash://local", "agent"));
+	run.node = space.node.clone();
+	scope.binding = Some((space.id, "alice".into()));
+	assert_eq!(
+		scratch_space_for_run(&mut scope, &run, now).await.unwrap(),
+		space.id
+	);
+	assert_eq!(
+		scope.runtime_hosts.last(),
+		Some(&HostAllowlist::Hosts(BTreeSet::from(
+			["example.com".into()]
+		)))
+	);
+	assert_eq!(
+		scope.spaces[&space.id].settings.allowed_hosts,
+		space.settings.allowed_hosts
+	);
+	scope
+		.spaces
+		.get_mut(&space.id)
+		.unwrap()
+		.settings
+		.allowed_hosts = HostAllowlist::All;
+	assert_eq!(
+		scratch_space_for_run(&mut scope, &run, now).await.unwrap(),
+		space.id
+	);
+	assert_eq!(
+		scope.runtime_hosts.last(),
+		Some(&HostAllowlist::Hosts(BTreeSet::from(
+			["example.com".into()]
+		)))
+	);
+	assert_eq!(
+		scope.spaces[&space.id].settings.allowed_hosts,
+		HostAllowlist::All
+	);
+}
+
+#[tokio::test]
+async fn extending_expiry_cannot_restore_expired_contents() {
+	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+	let mut scope = Memory {
+		person: "alice".into(),
+		..Default::default()
+	};
+	let mut space = space(now);
+	create(&mut scope, &space).await.unwrap();
+	let expired = now + Duration::days(15);
+	space.settings.idle_expiry_days = None;
+	update_settings(&mut scope, space.id, expired, 0, space.settings)
+		.await
+		.unwrap();
 	assert_eq!(scope.spaces[&space.id].wipe_generation, 1);
 }

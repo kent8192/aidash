@@ -46,6 +46,16 @@ pub fn default_public_hosts() -> BTreeSet<String> {
 }
 
 impl HostAllowlist {
+	/// Restrict destinations to those permitted by both policies.
+	pub fn intersection(&self, other: &Self) -> Self {
+		match (self, other) {
+			(Self::All, value) | (value, Self::All) => value.clone(),
+			(Self::Hosts(left), Self::Hosts(right)) => {
+				Self::Hosts(left.intersection(right).cloned().collect())
+			}
+		}
+	}
+
 	fn narrows(&self, tenant: &Self, all_allowed: bool) -> bool {
 		match (self, tenant) {
 			(Self::All, Self::All) => all_allowed,

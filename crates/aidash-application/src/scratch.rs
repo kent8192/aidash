@@ -169,12 +169,20 @@ pub async fn update_settings(
 		.cloned()
 		.collect();
 	scope.validate_references(&space.node, &additions).await?;
+	let expired = space.is_expired(now);
+	if expired {
+		space.last_used_at = space.last_used_at.max(now);
+	}
 	space.settings = settings;
 	space.revision = space
 		.revision
 		.checked_add(1)
 		.ok_or_else(|| Error::Conflict("Scratch Space revision exhausted".into()))?;
-	scope.save(&space).await
+	scope.save(&space).await?;
+	if expired {
+		scope.clear_contents(id).await?;
+	}
+	Ok(())
 }
 
 pub async fn add_member(
@@ -250,8 +258,10 @@ pub async fn select_for_workspace(
 			return Err(Error::Forbidden);
 		}
 		let (ceilings, tenant_hosts) = scope.limits(node).await?;
-		space.settings.validate(&ceilings, &tenant_hosts)?;
-		scope.validate_runtime(node, &space.settings).await?;
+		let mut effective = space.settings.clone();
+		effective.allowed_hosts = effective.allowed_hosts.intersection(&tenant_hosts);
+		effective.validate(&ceilings, &tenant_hosts)?;
+		scope.validate_runtime(node, &effective).await?;
 		if !space.is_expired(now) {
 			space.last_used_at = space.last_used_at.max(now);
 			scope.save(&space).await?;
@@ -296,8 +306,10 @@ pub async fn scratch_space_for_run(
 	// space was created. Recheck them without narrowing shared services to the
 	// executing Agent's individual Registry permissions.
 	let (ceilings, tenant_hosts) = scope.limits(&space.node).await?;
-	space.settings.validate(&ceilings, &tenant_hosts)?;
-	scope.validate_runtime(&space.node, &space.settings).await?;
+	let mut effective = space.settings.clone();
+	effective.allowed_hosts = effective.allowed_hosts.intersection(&tenant_hosts);
+	effective.validate(&ceilings, &tenant_hosts)?;
+	scope.validate_runtime(&space.node, &effective).await?;
 	let expired = space.is_expired(now);
 	space.last_used_at = space.last_used_at.max(now);
 	scope.save(&space).await?;
