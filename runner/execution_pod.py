@@ -1215,10 +1215,10 @@ print(json.dumps(r))'''
                                      **transport['output'])
             else:
                 if (record.get('kind') == 'python_cell' and
-                    (outcome['status'] == 'timed_out' or
+                    (outcome['status'] in ('timed_out', 'stopped') or
                      (outcome['status'] == 'completed' and outcome.get('exit_code') != 0))):
                     try:
-                        self.stop_background(record['session_operation_id'])
+                        self._stop_python_interpreter(record['session_operation_id'])
                     except Exception:
                         self._stop_matching_pod(record['scratch_space_id'], uid)
                 self._update_command(operation_id, status=outcome['status'],
@@ -1242,6 +1242,19 @@ print(json.dumps(r))'''
         finally:
             with self.lock:
                 self.live_output.pop(operation_id, None)
+
+    def _stop_python_interpreter(self, operation_id):
+        import time
+        result = self.stop_background(operation_id)
+        deadline = time.monotonic() + 10
+        while True:
+            status = result.get('status')
+            if status in ('completed', 'timed_out', 'stopped', 'cancelled'):
+                return
+            if status == 'interrupted' or time.monotonic() >= deadline:
+                raise ExecutionPodError('stop_failed', 'Python interpreter termination could not be confirmed')
+            time.sleep(.1)
+            result = self.command_result(operation_id)
 
     def cancel_run(self, scratch_space_id, run_id):
         import json

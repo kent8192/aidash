@@ -955,6 +955,74 @@ class ReviewThreadRegressionTest(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text())['last_command_at'], 3600)
 
 
+class PythonCancellationRegressionTest(unittest.TestCase):
+    def test_stopped_cell_waits_for_its_interpreter_to_stop(self):
+        import json
+        import tempfile
+        import threading
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        cell = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        session = 'e6ded09d-f783-4ce8-98e9-dbfca68884f2'
+        requested = threading.Event()
+        with tempfile.TemporaryDirectory() as directory:
+            backend = SimpleNamespace(root=Path(directory), command=['kubectl'], environment={},
+                                      kube=Mock(return_value=SimpleNamespace(returncode=0, stdout=b'')))
+            controller = ExecutionPodController(backend, {}, admitted=True)
+            cell_record = {'operation_id': cell, 'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod',
+                           'pod_uid': 'uid', 'docker_enabled': False, 'background': False, 'timeout_seconds': 5,
+                           'cwd': '.', 'code': 'true', 'status': 'queued', 'kind': 'python_cell',
+                           'session_operation_id': session}
+            controller._command_path(cell).write_text(json.dumps(cell_record))
+            controller._command_path(session).write_text(json.dumps({'operation_id': session,
+                'scratch_space_id': 's', 'run_id': 'r', 'background': True, 'status': 'running'}))
+            controller.stop_background = Mock(side_effect=lambda _: (requested.set() or {'status': 'stopping'}))
+            controller._await_normal_result = Mock(return_value={'operation_id': cell, 'run_id': 'r', 'status': 'stopped'})
+            transport = {'exit_code': 0, 'transport_timed_out': False,
+                         'output': {'stdout': '', 'stderr': '', 'truncated': False}}
+            with patch('execution_pod.drain_process', return_value=transport):
+                worker = threading.Thread(target=controller._execute_command, args=(cell,))
+                worker.start()
+                try:
+                    self.assertTrue(requested.wait(2))
+                    self.assertEqual(controller.command_result(cell)['status'], 'running')
+                    controller._update_command(session, status='stopped')
+                    worker.join(3)
+                    self.assertFalse(worker.is_alive())
+                    self.assertEqual(controller.command_result(cell)['status'], 'stopped')
+                finally:
+                    controller._update_command(session, status='stopped')
+                    worker.join(3)
+
+
+    def test_unconfirmed_interpreter_stop_retires_original_pod(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        cell = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        with tempfile.TemporaryDirectory() as directory:
+            backend = SimpleNamespace(root=Path(directory), command=['kubectl'], environment={},
+                                      kube=Mock(return_value=SimpleNamespace(returncode=0, stdout=b'')))
+            controller = ExecutionPodController(backend, {}, admitted=True)
+            controller._command_path(cell).write_text(json.dumps({'operation_id': cell, 'scratch_space_id': 's',
+                'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid', 'docker_enabled': False, 'background': False,
+                'timeout_seconds': 5, 'cwd': '.', 'code': 'true', 'status': 'queued', 'kind': 'python_cell',
+                'session_operation_id': 'e6ded09d-f783-4ce8-98e9-dbfca68884f2'}))
+            controller._await_normal_result = Mock(return_value={'operation_id': cell, 'run_id': 'r', 'status': 'stopped'})
+            controller._stop_python_interpreter = Mock(side_effect=RuntimeError('unconfirmed'))
+            controller._stop_matching_pod = Mock()
+            transport = {'exit_code': 0, 'transport_timed_out': False,
+                         'output': {'stdout': '', 'stderr': '', 'truncated': False}}
+            with patch('execution_pod.drain_process', return_value=transport):
+                controller._execute_command(cell)
+            controller._stop_matching_pod.assert_called_once_with('s', 'uid')
+
+
 class ConcurrentOperationOwnershipRegressionTest(unittest.TestCase):
     def test_same_operation_id_cannot_be_claimed_by_two_spaces(self):
         import tempfile
