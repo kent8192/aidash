@@ -880,9 +880,6 @@ test("conversation is the landing view, with contextual progress and account set
     page.getByRole("heading", { name: "# Research", exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText("11111111-1111-4111-8111-111111111111"),
-  ).toBeVisible();
-  await expect(
     page.getByRole("button", { name: "New request", exact: true }),
   ).toBeVisible();
   await expect(
@@ -2774,6 +2771,140 @@ test("topology renders each discovered Node once with its agents and cross-Node 
   await expect(topology.locator("path[marker-end]")).toHaveCount(1);
   expect(errors).toEqual([]);
 });
+
+const boundSpaceId = "11111111-1111-4111-8111-111111111111";
+const boundSpace = `/api/scratch-spaces/${boundSpaceId}`;
+const namedSpace = {
+  id: boundSpaceId,
+  node: defaultNode.name,
+  name: "Tabechao build",
+  creator: "alice",
+  members: [],
+  state: "active",
+  revision: 0,
+  wipe_generation: 0,
+  created_at: "2026-01-01T00:00:00Z",
+  last_used_at: "2026-01-01T00:00:00Z",
+  expired: false,
+  settings: {
+    capacity_bytes: 1073741824,
+    idle_expiry_days: 14,
+    allowed_hosts: { kind: "hosts", hosts: [] },
+    execution_image: null,
+    external_services: [],
+    cpu_millis: 1000,
+    memory_bytes: 1073741824,
+    daily_sent_bytes: 1073741824,
+    daily_received_bytes: 1073741824,
+    docker_enabled: false,
+  },
+};
+
+for (const locale of ["en-US", "ja-JP"] as const) {
+  const ja = locale === "ja-JP";
+  test(`conversation header names its Scratch Space and links to it in ${locale}`, async ({
+    page,
+  }) => {
+    const { errors } = await setup(page, { subject: true, locale });
+    await page.route("**/api/scratch-spaces**", (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === boundSpace) return route.fulfill({ json: namedSpace });
+      if (path.endsWith("/limits"))
+        return route.fulfill({
+          json: {
+            ceilings: {
+              capacity_bytes: 10737418240,
+              cpu_millis: 4000,
+              memory_bytes: 10737418240,
+              daily_sent_bytes: 10737418240,
+              daily_received_bytes: 10737418240,
+              docker_allowed: false,
+              all_hosts_allowed: false,
+            },
+            tenant_hosts: { kind: "hosts", hosts: [] },
+          },
+        });
+      return route.fulfill({ json: [namedSpace] });
+    });
+    await page.goto("/collaboration?channel=workspace-one");
+    await expect(page.getByText(boundSpaceId)).toHaveCount(0);
+    await page
+      .getByRole("link", { name: "Tabechao build", exact: true })
+      .click();
+    await expect(page).toHaveURL(/\/settings\?/);
+    await expect(page).toHaveURL(/view=node/);
+    await expect(page).toHaveURL(/channel=workspace-one/);
+    const chooser = page.getByLabel(
+      ja ? "スクラッチスペースを選択" : "Choose a Scratch Space",
+      { exact: true },
+    );
+    await expect(chooser).toHaveValue(boundSpaceId);
+    await expect(chooser).toBeInViewport();
+    expect(errors).toEqual([]);
+  });
+
+  test(`conversation header warns about an expired Scratch Space in ${locale}`, async ({
+    page,
+  }) => {
+    await setup(page, { subject: true, locale });
+    await page.route(`**${boundSpace}`, (route) =>
+      route.fulfill({ json: { ...namedSpace, expired: true } }),
+    );
+    await page.goto("/collaboration?channel=workspace-one");
+    await expect(
+      page.getByRole("link", { name: "Tabechao build", exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        ja
+          ? "期限切れ。次の実行時に内容が消去されます"
+          : "Expired; contents will be cleared on the next Run",
+      ),
+    ).toBeVisible();
+  });
+
+  for (const status of [403, 404]) {
+    test(`conversation header hides a Scratch Space refused with ${status} in ${locale}`, async ({
+      page,
+    }) => {
+      await setup(page, { subject: true, locale });
+      await page.route(`**${boundSpace}`, (route) =>
+        route.fulfill({ status, json: { error: "refused" } }),
+      );
+      await page.goto("/collaboration?channel=workspace-one");
+      await expect(
+        page.getByText(
+          ja ? "使えないスクラッチスペース" : "Unavailable Scratch Space",
+          { exact: true },
+        ),
+      ).toBeVisible();
+      await expect(page.getByText(boundSpaceId)).toHaveCount(0);
+    });
+  }
+
+  test(`conversation header reports a failed Scratch Space read in ${locale}`, async ({
+    page,
+  }) => {
+    await setup(page, { subject: true, locale });
+    await page.route(`**${boundSpace}`, (route) =>
+      route.fulfill({ status: 500, json: { error: "unavailable" } }),
+    );
+    await page.goto("/collaboration?channel=workspace-one");
+    await expect(
+      page.getByText(
+        ja
+          ? "スクラッチスペースを読み込めませんでした"
+          : "Could not load the Scratch Space",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        ja ? "使えないスクラッチスペース" : "Unavailable Scratch Space",
+      ),
+    ).toHaveCount(0);
+  });
+}
 
 for (const locale of ["en-US", "ja-JP"] as const) {
   test(`Scratch Space creation and destructive confirmations in ${locale}`, async ({

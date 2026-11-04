@@ -1,11 +1,13 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { bytesFromGiB, millisFromCores } from "./scratch-settings";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { ApiError, dashboardContext, transportGeneration } from "./transport";
 import {
   scratchList,
   scratchCreate,
   scratchLimits,
+  scratchRead,
   scratchSettings,
   scratchMemberAdd,
   scratchMemberRemove,
@@ -289,11 +291,55 @@ function Edit({
     </div>
   );
 }
-export function ScratchSpacesSettings() {
+/** Names the Scratch Space of an open Workspace. Reading a Workspace does not
+ *  grant the space, so only people who may use it learn its name; the server
+ *  refuses everyone else, and refuses a deleted space the same way. */
+export function WorkspaceScratchSpace({
+  id,
+  channel,
+}: {
+  id: string;
+  channel: string;
+}) {
+  const { t } = useI18n();
+  const space = useQuery({
+    queryKey: ["scratch-space", id, dashboardContext(), transportGeneration()],
+    queryFn: ({ signal }) => scratchRead(id, { signal }),
+    retry: false,
+  });
+  if (space.isError) {
+    const refused =
+      space.error instanceof ApiError &&
+      (space.error.status === 403 || space.error.status === 404);
+    return (
+      <p className="text-xs text-muted-foreground">
+        {t(refused ? "scratchUnavailable" : "scratchReadError")}
+      </p>
+    );
+  }
+  return (
+    <p className="text-xs break-words text-muted-foreground">
+      {t("scratchSpace")}:{" "}
+      {space.data && (
+        <Link
+          to="/$section"
+          params={{ section: "settings" }}
+          // The channel keeps the Workspace's Node selected in settings.
+          search={{ view: "node", channel, focus: space.data.id }}
+          className="text-brand underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
+        >
+          {space.data.name}
+        </Link>
+      )}
+      {space.data?.expired && <> · {t("scratchExpired")}</>}
+    </p>
+  );
+}
+export function ScratchSpacesSettings({ focus }: { focus?: string }) {
   const { t } = useI18n();
   const { selected } = useNodes();
   const node = selected?.name;
-  const [id, setId] = useState("");
+  const [id, setId] = useState(focus ?? "");
   const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState(false);
@@ -319,8 +365,13 @@ export function ScratchSpacesSettings() {
     queryFn: () => scratchLimits({ node: node ?? "" }),
   });
   const space = list.data?.find((value) => value.id === id);
+  const section = useRef<HTMLElement>(null);
+  const focused = !!focus && !!list.data?.some((value) => value.id === focus);
+  useEffect(() => {
+    if (focused) section.current?.scrollIntoView({ block: "start" });
+  }, [focused]);
   return (
-    <section className="grid gap-3">
+    <section ref={section} className="grid gap-3">
       <h2>{t("scratchSpace")}</h2>
       <Notice>{t("scratchOutsideGuarantees")}</Notice>
       <Field label={t("scratchNewName")}>
