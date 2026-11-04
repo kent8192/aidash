@@ -225,13 +225,15 @@ let ids: Vec<Uuid> = {
 	async fn orphans(&self) -> Result<()> {
 		prune_revisions(self.store).await?;
 		let mut cursor = self.orphan_cursor.lock().await;
-		self.store
+		let reconciliation = self
+			.store
 			.capabilities
 			.reconcile_orphan_batch(&self.store.pool, &mut cursor)
-			.await?;
-		reclaim_unreferenced_blobs(self.store)
-			.await
-			.map_err(Into::into)
+			.await;
+		drop(cursor);
+		let reclamation = reclaim_unreferenced_blobs(self.store).await;
+		reconciliation?;
+		reclamation.map_err(Into::into)
 	}
 }
 

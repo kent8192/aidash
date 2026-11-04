@@ -119,7 +119,7 @@ impl PendingObject {
 		// Publish the reservation's digest before uploading, so GC must wait
 		// until the caller's publication has committed or rolled back.
 		{
-			let mut tx = self.pool.begin(&MAINTENANCE).await?;
+			let mut tx = self.pool.begin(&TenancyScope::tenant(&tenant)?).await?;
 			let changed = crate::database::native::query(
 				&Query::update()
 					.table(Alias::new("core_blob_uploads"))
@@ -143,7 +143,7 @@ impl PendingObject {
 		}
 		// The digest lock serializes writers without holding a Tenant quota row
 		// while the object store receives bytes.
-		let mut blob_tx = self.pool.begin(&MAINTENANCE).await?;
+		let mut blob_tx = self.pool.begin(&TenancyScope::tenant(&tenant)?).await?;
 		let lock = format!("core-blob:{tenant}:{hash}");
 		crate::database::native::query(
 			&Query::select()
@@ -324,7 +324,7 @@ impl Runtime {
 		size: i64,
 		grandfather_existing: bool,
 	) -> Result<()> {
-		let mut tx = pool.begin(&MAINTENANCE).await?;
+		let mut tx = pool.begin(&TenancyScope::tenant(tenant)?).await?;
 		let lock = format!("core-upload-quota:{tenant}");
 		crate::database::native::query(
 			&Query::select()
@@ -419,7 +419,7 @@ impl Runtime {
 		tenant: &str,
 		id: Uuid,
 	) -> Result<bool> {
-		let mut tx = pool.begin(&MAINTENANCE).await?;
+		let mut tx = pool.begin(&TenancyScope::tenant(tenant)?).await?;
 		let lock = format!("core-object:{id}");
 		let acquired: bool = crate::database::native::query_scalar(
 			&Query::select()
@@ -651,10 +651,17 @@ impl Runtime {
 			}
 			let mut bytes = vec![];
 			file.take(8193).read_to_end(&mut bytes).await?;
-			let intent: serde_json::Value = serde_json::from_slice(&bytes)?;
+			let intent: serde_json::Value = match serde_json::from_slice(&bytes) {
+				Ok(intent) => intent,
+				Err(error) => {
+					tracing::warn!(%id, %error, "skipping malformed object ownership intent");
+					continue;
+				}
+			};
 			if intent["id"] != id.to_string() || intent["tenant"].as_str().is_none_or(str::is_empty)
 			{
-				return Err(Error::Conflict("invalid object ownership intent".into()));
+				tracing::warn!(%id, "skipping invalid object ownership intent");
+				continue;
 			}
 			if let Some(hash) = intent["digest"].as_str() {
 				let digest = hash
@@ -851,13 +858,23 @@ impl Runtime {
 		intent_options.write(true).create_new(true);
 		#[cfg(unix)]
 		intent_options.mode(0o600);
-		let mut intent = intent_options.open(intents.join(id.to_string())).await?;
+		let temporary = intents.join(format!(".{id}.new"));
+		let final_path = intents.join(id.to_string());
+		// The object advisory lock serializes writers of this id. Preserve an
+		// existing intent instead of replacing its recovery evidence.
+		match tokio::fs::symlink_metadata(&final_path).await {
+			Ok(_) => return Err(Error::Conflict("OBJECT_INTENT_EXISTS".into())),
+			Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+			Err(error) => return Err(error.into()),
+		}
+		let mut intent = intent_options.open(&temporary).await?;
 		intent
 			.write_all(&serde_json::to_vec(
 				&serde_json::json!({"id":id,"tenant":tenant,"area_id":area,"kind":kind,"size":size}),
 			)?)
 			.await?;
 		intent.sync_all().await?;
+		tokio::fs::rename(&temporary, &final_path).await?;
 		tokio::fs::File::open(&intents).await?.sync_all().await?;
 		self.reserve_upload(&pool, &tenant, id, size, grandfather_existing)
 			.await?;
@@ -929,7 +946,13 @@ impl Runtime {
 				return Err(Error::Conflict("unsafe object ownership intent".into()));
 			}
 			let metadata: serde_json::Value =
-				serde_json::from_slice(&tokio::fs::read(entry.path()).await?)?;
+				match serde_json::from_slice(&tokio::fs::read(entry.path()).await?) {
+					Ok(metadata) => metadata,
+					Err(error) => {
+						tracing::warn!(%id, %error, "skipping malformed object ownership intent");
+						continue;
+					}
+				};
 			if metadata["tenant"] != access.identity.tenant {
 				continue;
 			}
