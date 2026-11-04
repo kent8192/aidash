@@ -951,9 +951,12 @@ impl ErasureScope for Erasure<'_> {
 		.map_err(Into::into)
 	}
 	async fn reclaim_blob(&mut self, tenant: &str, digest: &str) -> Result<()> {
-		super::reclamation::reclaim_blob(self.store, &mut self.tx, tenant, digest)
-			.await
-			.map_err(Into::into)
+		// Each digest commits independently, so a later object-store delete
+		// cannot hold the quota row acquired for an earlier digest.
+		let mut tx = self.store.pool.begin(&MAINTENANCE).await?;
+		super::reclamation::reclaim_blob(self.store, &mut tx, tenant, digest).await?;
+		tx.commit().await?;
+		Ok(())
 	}
 	async fn release_holds(&mut self, area: &Area) -> Result<()> {
 		let result: NativeResult<()> = async {

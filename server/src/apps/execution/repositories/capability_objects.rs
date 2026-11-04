@@ -306,6 +306,7 @@ impl Runtime {
 						}
 					}
 				}
+				tracing::warn!(%id, "upload reservation cleanup retries exhausted");
 			});
 		}
 	}
@@ -438,16 +439,19 @@ impl Runtime {
 		.await?;
 		if let Some(Some(hash)) = digest {
 			let lock = format!("core-blob:{tenant}:{hash}");
-			crate::database::native::query(
+			let acquired: bool = crate::database::native::query_scalar(
 				&Query::select()
 					.expr(SimpleExpr::CustomWithExpr(
-						"(pg_advisory_xact_lock(hashtextextended(?, 0)))".into(),
+						"(pg_try_advisory_xact_lock(hashtextextended(?, 0)))".into(),
 						vec![Expr::value(lock).into()],
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&mut *tx)
+			.scalar_one(&mut *tx)
 			.await?;
+			if !acquired {
+				return Ok(false);
+			}
 			let committed: Option<String> = crate::database::native::query_scalar(
 				&Query::select()
 					.column(Alias::new("digest"))
@@ -739,15 +743,8 @@ impl Runtime {
 			access.core_gc_complete = true;
 		}
 		let tenant = access.identity.tenant.clone();
-		self.begin_object_in(
-			&mut access.tx,
-			&tenant,
-			Uuid::new_v4(),
-			area,
-			kind,
-			size,
-		)
-		.await
+		self.begin_object_in(&mut access.tx, &tenant, Uuid::new_v4(), area, kind, size)
+			.await
 	}
 	pub(crate) async fn begin_object_for(
 		&self,

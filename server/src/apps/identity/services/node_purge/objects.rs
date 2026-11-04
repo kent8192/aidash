@@ -281,16 +281,19 @@ pub(super) async fn erase(
 		if digests.is_empty() {
 			return Ok(true);
 		}
-		for digest in digests {
-			crate::apps::execution::repositories::reclamation::reclaim_blob(
-				store,
-				tx,
-				owners.tenant,
-				&digest,
-			)
-			.await?;
-		}
-		return Ok(false);
+		// The purge driver commits each batch before the next: reclaim a single
+		// digest so object-store I/O never spans several quota updates.
+		let digest = &digests[0];
+		let reclaimed = crate::apps::execution::repositories::reclamation::reclaim_blob(
+			store,
+			tx,
+			owners.tenant,
+			digest,
+		)
+		.await?;
+		// A busy candidate belongs to the ordinary sweep; do not spin while
+		// retaining the Node purge's fencing locks.
+		return Ok(!reclaimed);
 	}
 	release_references(&mut **tx, owners, &batch).await?;
 	for id in batch {

@@ -14,7 +14,7 @@ use aidash_application::{
 use aidash_domain::capabilities::records::Record;
 use async_trait::async_trait;
 use reinhardt::query::{
-	Alias, Condition, Expr, ExprTrait as _, LockType, PostgresQueryBuilder, Query,
+	Alias, Condition, Expr, ExprTrait as _, LockBehavior, LockType, PostgresQueryBuilder, Query,
 	QueryStatementBuilder as _, SimpleExpr,
 };
 use serde_json::Value;
@@ -412,18 +412,21 @@ pub(crate) async fn reclaim_blob(
 	tx: &mut crate::database::native::Transaction,
 	tenant: &str,
 	digest: &str,
-) -> NativeResult<()> {
+) -> NativeResult<bool> {
 	let lock = format!("core-blob:{tenant}:{digest}");
-	crate::database::native::query(
+	let acquired: bool = crate::database::native::query_scalar(
 		&Query::select()
 			.expr(SimpleExpr::CustomWithExpr(
-				"(pg_advisory_xact_lock(hashtextextended(?, 0)))".into(),
+				"(pg_try_advisory_xact_lock(hashtextextended(?, 0)))".into(),
 				vec![Expr::value(lock).into()],
 			))
 			.to_string(PostgresQueryBuilder),
 	)
-	.execute(&mut **tx)
+	.scalar_one(&mut **tx)
 	.await?;
+	if !acquired {
+		return Ok(false);
+	}
 	// A new logical reference takes a foreign-key key-share lock on this row.
 	// Lock it before checking references and deleting bytes so that publication
 	// cannot commit a reference between the check and physical deletion.
@@ -434,12 +437,12 @@ pub(crate) async fn reclaim_blob(
 			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
 			.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(digest)))
 			.lock(LockType::Update)
+			.lock_behavior(LockBehavior::SkipLocked)
 			.to_string(PostgresQueryBuilder),
 	)
 	.scalar_optional(&mut **tx)
 	.await?;
-	let Some(size) = size else { return Ok(()) };
-	super::capability_objects::lock_tenant_quota(tx, tenant).await?;
+	let Some(size) = size else { return Ok(false) };
 	let mut referenced = false;
 	for table in ["core_objects", "core_blob_references", "core_blob_uploads"] {
 		let id: Option<Uuid> = crate::database::native::query_scalar(
@@ -474,6 +477,7 @@ pub(crate) async fn reclaim_blob(
 		)
 		.execute(&mut **tx)
 		.await?;
+		super::capability_objects::lock_tenant_quota(tx, tenant).await?;
 		crate::database::native::query(
 			&Query::update()
 				.table(Alias::new("core_quotas"))
@@ -486,8 +490,9 @@ pub(crate) async fn reclaim_blob(
 		)
 		.execute(&mut **tx)
 		.await?;
+		return Ok(true);
 	}
-	Ok(())
+	Ok(false)
 }
 
 #[async_trait]
