@@ -40,6 +40,7 @@ const BEFORE_POLICIES: &[&str] = &[
 const IN_DEPLOYMENT_SCOPE: &[&str] = &[
 	"execution.0089_remove_agent_cluster forward",
 	"execution.0090_run_created_at forward",
+	"identity.0067_scratch_member_policy forward",
 	"registry.0054_remove_agent_cluster forward",
 	"workspaces.0021_conversation_scratch_space forward",
 	"workspaces.0024_workspace_scratch_space forward",
