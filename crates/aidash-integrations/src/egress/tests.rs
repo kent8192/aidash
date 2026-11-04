@@ -5,13 +5,15 @@ use async_trait::async_trait;
 use axum::{Router, body::Body as AxumBody, extract::State, routing::any};
 use std::sync::{
 	Mutex,
-	atomic::{AtomicU64, Ordering},
+	atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use tokio::sync::Notify;
 use uuid::Uuid;
 
 #[derive(Default)]
 struct Audit {
+	stopped: AtomicBool,
+	stall_charge: AtomicBool,
 	sent: AtomicU64,
 	received: AtomicU64,
 	charges: AtomicU64,
@@ -21,7 +23,23 @@ struct Audit {
 }
 #[async_trait]
 impl Meter for Audit {
+	async fn check_active(&self) -> Result<()> {
+		if self.stopped.load(Ordering::Acquire) {
+			return Err(aidash_application::Error::Conflict(
+				aidash_domain::egress::OPERATION_EXPIRED.into(),
+			));
+		}
+		Ok(())
+	}
 	async fn charge(&self, direction: Direction, bytes: usize) -> Result<()> {
+		if self.stall_charge.load(Ordering::Acquire) {
+			std::future::pending::<()>().await;
+		}
+		if self.stopped.load(Ordering::Acquire) {
+			return Err(aidash_application::Error::Conflict(
+				aidash_domain::egress::OPERATION_EXPIRED.into(),
+			));
+		}
 		self.charges.fetch_add(1, Ordering::Relaxed);
 		match direction {
 			Direction::Sent => &self.sent,
@@ -39,6 +57,107 @@ impl Meter for Audit {
 		Ok(())
 	}
 }
+
+#[tokio::test]
+async fn a_stopped_operation_interrupts_an_idle_response() {
+	let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let upstream_url = format!("http://{}/", upstream.local_addr().unwrap());
+	let upstream_task = tokio::spawn(async move {
+		axum::serve(
+			upstream,
+			Router::new().route(
+				"/{*path}",
+				any(|| async {
+					let stream = async_stream::stream! {
+						yield Ok::<_, std::io::Error>(Bytes::from_static(b"started"));
+						std::future::pending::<()>().await;
+					};
+					AxumBody::from_stream(stream)
+				}),
+			),
+		)
+		.await
+		.unwrap();
+	});
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let origin = format!("http://{}", listener.local_addr().unwrap());
+	let audit = Arc::new(Audit::default());
+	let (stop, receiver) = watch::channel(false);
+	let gateway = tokio::spawn(serve(
+		listener,
+		Arc::new(FixtureAuthority {
+			upstream: upstream_url,
+			origin: origin.clone(),
+			audit: audit.clone(),
+		}),
+		receiver,
+	));
+	let response = reqwest::get(format!("{origin}/v1/operation-token/images/idle"))
+		.await
+		.unwrap();
+	let mut body = response.bytes_stream();
+	assert_eq!(
+		body.next().await.unwrap().unwrap(),
+		Bytes::from_static(b"started")
+	);
+	audit.stall_charge.store(true, Ordering::Release);
+	audit.stopped.store(true, Ordering::Release);
+	let next = tokio::time::timeout(Duration::from_secs(6), body.next())
+		.await
+		.expect("idle response was not interrupted after stop");
+	assert!(matches!(next, Some(Err(_))), "expected an interrupted body");
+	stop.send(true).unwrap();
+	gateway.await.unwrap().unwrap();
+	upstream_task.abort();
+}
+#[tokio::test]
+async fn a_stopped_operation_releases_an_unread_response() {
+	let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let upstream_url = format!("http://{}/", upstream.local_addr().unwrap());
+	let upstream_task = tokio::spawn(async move {
+		axum::serve(
+			upstream,
+			Router::new().route(
+				"/{*path}",
+				any(|| async {
+					let stream = futures_util::stream::repeat_with(|| {
+						Ok::<_, std::io::Error>(Bytes::from(vec![7; 64 * 1024]))
+					});
+					AxumBody::from_stream(stream)
+				}),
+			),
+		)
+		.await
+		.unwrap();
+	});
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let origin = format!("http://{}", listener.local_addr().unwrap());
+	let audit = Arc::new(Audit::default());
+	let (stop, receiver) = watch::channel(false);
+	let gateway = tokio::spawn(serve(
+		listener,
+		Arc::new(FixtureAuthority {
+			upstream: upstream_url,
+			origin: origin.clone(),
+			audit: audit.clone(),
+		}),
+		receiver,
+	));
+	let response = reqwest::get(format!("{origin}/v1/operation-token/images/large"))
+		.await
+		.unwrap();
+	// Let the unread client fill its network buffers and stall the response.
+	tokio::time::sleep(Duration::from_millis(500)).await;
+	audit.stopped.store(true, Ordering::Release);
+	tokio::time::timeout(Duration::from_secs(6), audit.finished.notified())
+		.await
+		.expect("the unread response retained its upstream after stop");
+	drop(response);
+	stop.send(true).unwrap();
+	gateway.await.unwrap().unwrap();
+	upstream_task.abort();
+}
+
 struct FixtureAuthority {
 	upstream: String,
 	origin: String,
@@ -1211,9 +1330,11 @@ async fn an_exhausted_budget_stops_a_download_after_at_most_one_batch_over() {
 #[tokio::test]
 async fn an_exhausted_upload_budget_is_reported_as_the_limit_not_the_upstream() {
 	let (origin, audit, tasks, stop) = metered_gateway(BATCH_BYTES, false).await;
-	let upload = futures_util::stream::iter(
-		(0..64).map(|_| Ok::<_, std::io::Error>(Bytes::from(vec![1; CHUNK]))),
-	);
+	// Reach the limit without leaving additional client bytes to race the
+	// gateway's refusal and reset the socket before its response is read.
+	let upload = futures_util::stream::iter(std::iter::once(Ok::<_, std::io::Error>(Bytes::from(
+		vec![1; BATCH_BYTES as usize],
+	))));
 	let response = reqwest::Client::new()
 		.post(format!("{origin}/v1/operation-token/images/upload"))
 		.body(reqwest::Body::wrap_stream(upload))

@@ -242,6 +242,29 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 	access.finish(Ok(())).await.unwrap();
 	let token = request["egress"]["token"].as_str().unwrap();
 	let digest = "a".repeat(64);
+	// Admission must not wait behind an activation claim on the Run row.
+	let mut claim = f.store.pool.fixture_driver().begin().await.unwrap();
+	sqlx::query("SELECT id FROM runs WHERE id = $1 FOR UPDATE")
+		.bind(run.id)
+		.fetch_one(&mut *claim)
+		.await
+		.unwrap();
+	let gateway = Gateway::new(f.store.clone());
+	let first = tokio::time::timeout(
+		std::time::Duration::from_secs(5),
+		gateway.admit(token, "images", "POST", "upload", &digest),
+	)
+	.await
+	.expect("admission waited for the Run lock")
+	.unwrap();
+	tokio::time::timeout(
+		std::time::Duration::from_secs(5),
+		first.meter.charge(Direction::Sent, 0),
+	)
+	.await
+	.expect("debit waited for the Run lock")
+	.unwrap();
+	claim.rollback().await.unwrap();
 	assert!(matches!(
 		Gateway::new(f.store.clone())
 			.admit(
@@ -254,16 +277,15 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 			.await,
 		Err(aidash_application::Error::Forbidden)
 	));
-	let first = Gateway::new(f.store.clone())
-		.admit(token, "images", "POST", "upload", &digest)
-		.await
-		.unwrap();
 	first.meter.charge(Direction::Sent, 6).await.unwrap();
 	// A fresh gateway instance sees the same durable operation budget.
-	let second = Gateway::new(f.store.clone())
-		.admit(token, "images", "GET", "download", &digest)
-		.await
-		.unwrap();
+	let gateway = Gateway::new(f.store.clone());
+	let admissions = futures_util::future::join_all(
+		(0..8).map(|_| gateway.admit(token, "images", "GET", "download", &digest)),
+	)
+	.await;
+	assert_eq!(admissions.iter().filter(|result| result.is_ok()).count(), 1);
+	let second = admissions.into_iter().find_map(Result::ok).unwrap();
 	let attempts = (0..8).map(|i| {
 		let meter = if i % 2 == 0 {
 			first.meter.clone()
@@ -321,7 +343,7 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 			.all(|r| r.error.is_none() && r.query_digest == digest && r.status >= 200)
 	);
 	tx.commit().await.unwrap();
-	live_preview_credentials(&f, &identity, &run, area.id).await;
+	let preview_meter = live_preview_credentials(&f, &identity, &run, area.id).await;
 	auth.set_catalog(
 		"acme",
 		&run.node,
@@ -356,10 +378,19 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 	.await
 	.unwrap();
 	first.meter.charge(Direction::Sent, 0).await.unwrap();
+	first.meter.check_active().await.unwrap();
 	f.store
 		.control(&scope, run.id, aidash_domain::RunControlAction::Cancel)
 		.await
 		.unwrap();
+	assert!(matches!(
+		first.meter.check_active().await,
+		Err(aidash_application::Error::Conflict(code)) if code == aidash_domain::egress::OPERATION_EXPIRED
+	));
+	assert!(matches!(
+		preview_meter.check_active().await,
+		Err(aidash_application::Error::Conflict(code)) if code == aidash_domain::egress::OPERATION_EXPIRED
+	));
 	// An ended operation is reported as such, not as a revoked authority or an
 	// exhausted budget, and the bytes streamed before the refusal still count.
 	assert!(matches!(
@@ -392,7 +423,7 @@ async fn live_preview_credentials(
 	identity: &crate::authorization::identity::SubjectIdentity,
 	run: &aidash_domain::Run,
 	area: Uuid,
-) {
+) -> std::sync::Arc<dyn aidash_application::egress::Meter> {
 	use crate::apps::execution::repositories::egress::{page_token, session_token};
 	use secrecy::ExposeSecret;
 	let preview = Uuid::now_v7();
@@ -425,6 +456,7 @@ async fn live_preview_credentials(
 		.admit(&pod, "secured-images", "GET", "/", &digest)
 		.await
 		.unwrap();
+	let preview_meter = pod.meter.clone();
 	assert_eq!(
 		pod.credential.as_ref().unwrap().expose_secret(),
 		"live-preview-secret-canary"
@@ -499,6 +531,7 @@ async fn live_preview_credentials(
 	assert!(
 		matches!(&grants[0].subject, aidash_capability::tenant_secret::SecretSubject::Operation { operation, tenant } if *operation == preview && tenant == "acme")
 	);
+	preview_meter
 }
 
 struct RunnerReply {

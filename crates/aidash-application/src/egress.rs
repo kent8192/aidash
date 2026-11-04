@@ -35,6 +35,10 @@ pub enum Direction {
 
 #[async_trait]
 pub trait Meter: Send + Sync {
+	/// Recheck authority even when no body bytes are flowing.
+	async fn check_active(&self) -> Result<()> {
+		Ok(())
+	}
 	/// Atomically adds body bytes the gateway has streamed, in batches, to the
 	/// request record and to the operation's and this service's budgets. The
 	/// bytes are always committed, even past a limit. Afterwards the call
