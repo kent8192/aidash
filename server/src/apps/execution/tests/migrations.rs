@@ -629,14 +629,14 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0026_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0027_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"workspaces".to_owned(),
-			"0025_scratch_workspace_model_state".to_owned()
+			"0026_scratch_binding_indexes".to_owned()
 		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
