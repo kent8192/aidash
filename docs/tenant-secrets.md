@@ -316,7 +316,7 @@ limit. Capacity exhaustion returns `egress_tunnel_limit`,
 deadline. Idle tunnels close after five minutes and all tunnels close after 24
 hours. The gateway reauthenticates the credential and reloads scope and host
 policy every five seconds, including while idle. Revocation or a narrowed host
-allowlist closes an existing tunnel. Three consecutive failed or timed-out
+allowlist closes an existing tunnel. Three consecutive transient errors or timed-out
 checks close it as `egress_authority_unavailable`; they are not reported as a
 suspension. The authority must verify opaque credentials in constant time, using
 fixed-length random tokens; credentials are excluded from records and logs.
