@@ -106,6 +106,11 @@ def initialize_system_root(image_root, store, *, reset=False):
     image_root, store = Path(image_root), Path(store)
     store.mkdir(mode=0o700, parents=True, exist_ok=True)
     root, backup = store / 'rootfs', store / 'rootfs.previous'
+    for stale in store.glob('rootfs.*.new'):
+        if stale.is_symlink() or not stale.is_dir():
+            stale.unlink()
+        else:
+            shutil.rmtree(stale)
     if root.is_symlink() or backup.is_symlink():
         raise ValueError('system root must not be a symlink')
     if not root.exists() and backup.exists():
@@ -291,18 +296,22 @@ def execution_manifests(settings, config):
                      'capabilities': {'drop': ['ALL']},
                      'seccompProfile': {'type': 'RuntimeDefault'}}
     volumes = [{'name': 'scratch', 'persistentVolumeClaim': {'claimName': name}},
-               {'name': 'helpers', 'emptyDir': {}}]
+               {'name': 'helpers', 'emptyDir': {}},
+               {'name': 'tmp', 'emptyDir': {'medium': 'Memory',
+                                            'sizeLimit': str(min(settings['memory_bytes'], 1 << 30))}}]
     mounts = [{'name': 'scratch', 'mountPath': '/scratch-system'},
-              {'name': 'helpers', 'mountPath': '/.aidash-helpers', 'readOnly': True}]
+              {'name': 'helpers', 'mountPath': '/.aidash-helpers', 'readOnly': True},
+              {'name': 'tmp', 'mountPath': '/tmp'}]
     if docker:
         volumes.append({'name': 'docker', 'emptyDir': {'medium': 'Memory'}})
         mounts.append({'name': 'docker', 'mountPath': '/docker-storage'})
-    limits = {'cpu': str(settings['cpu']), 'memory': str(settings['memory_bytes'])}
+    limits = {'cpu': str(settings['cpu']), 'memory': str(settings['memory_bytes']),
+              'ephemeral-storage': str(1 << 30)}
     podspec = {'runtimeClassName': config['docker_runtime_class'] if docker else config['runtime_class'],
                'restartPolicy': 'Never',
                'automountServiceAccountToken': False, 'enableServiceLinks': False,
                'hostNetwork': False, 'hostPID': False, 'hostIPC': False,
-               'resources': {'limits': limits},
+               'resources': {'limits': {key: limits[key] for key in ('cpu', 'memory')}},
                'initContainers': [
                    {'name': 'helpers', 'image': config['helper_image'],
                     'command': ['python3', '-I', '/opt/aidash/prepare_helpers.py'],
@@ -612,7 +621,7 @@ print(json.dumps(r))'''
             return {'protocol': 'aidash-runner/2', 'pod': name, 'claim': name}
         try:
             self._admit_pod(name, settings)
-            self.backend.kube(['wait', '--for=condition=Ready', 'pod/' + name, '--timeout=120s'], timeout=130)
+            self.backend.kube(['wait', '--for=condition=Ready', 'pod/' + name, '--timeout=1800s'], timeout=1810)
             admitted_uid = self._verify_running_pod(name, settings)
             verified = self._get('pod', name)
             uid = verified.get('metadata', {}).get('uid') if verified else None

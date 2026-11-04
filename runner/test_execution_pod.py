@@ -132,6 +132,36 @@ class SystemTreeTest(unittest.TestCase):
             self.assertEqual((root / 'usr' / 'bin' / 'base').read_text(), 'image')
 
 
+class StartupStorageRegressionTest(unittest.TestCase):
+    def test_stale_staging_is_removed_before_reusing_existing_root(self):
+        import tempfile
+        from pathlib import Path
+        from execution_pod import initialize_system_root
+        with tempfile.TemporaryDirectory() as directory:
+            image, store = Path(directory) / 'image', Path(directory) / 'store'
+            image.mkdir()
+            (store / 'rootfs').mkdir(parents=True)
+            stale = store / 'rootfs.old.new'
+            stale.mkdir()
+            (stale / 'partial').write_text('data')
+            self.assertFalse(initialize_system_root(image, store))
+            self.assertFalse(stale.exists())
+
+    def test_tmp_is_memory_bounded_and_ephemeral_storage_has_a_limit(self):
+        from execution_pod import execution_manifests
+        settings = {'scratch_space_id': 's', 'image': 'image@sha256:' + 'a' * 64, 'cpu': 2,
+                    'memory_bytes': 2 << 30, 'capacity_bytes': 2 << 30, 'docker_enabled': False}
+        config = {'runtime_class': 'gvisor', 'helper_image': 'helper@sha256:' + 'b' * 64, 'namespace': 'sandbox'}
+        _, pod = execution_manifests(settings, config)
+        spec = pod['spec']
+        execution = spec['containers'][0]
+        tmp = next(m for m in execution['volumeMounts'] if m['mountPath'] == '/tmp')
+        volume = next(v for v in spec['volumes'] if v['name'] == tmp['name'])
+        self.assertEqual(volume['emptyDir']['medium'], 'Memory')
+        self.assertGreater(int(volume['emptyDir']['sizeLimit']), 0)
+        self.assertIn('ephemeral-storage', execution['resources']['limits'])
+
+
 class ProcessCapabilityTest(unittest.TestCase):
     @unittest.skipUnless(__import__('sys').platform.startswith('linux'), 'Linux capabilities required')
     def test_normal_command_cannot_regain_docker_capabilities(self):
@@ -279,7 +309,9 @@ class ExecutionPodControllerTest(unittest.TestCase):
         class Backend:
             def __init__(self):
                 self.objects = {}
+                self.calls = []
             def kube(self, args, data=None, **_kwargs):
+                self.calls.append(args)
                 if args[0] == 'get':
                     obj = self.objects.get((args[1], args[2]))
                     return SimpleNamespace(stdout=json.dumps(obj).encode() if obj else b'')
@@ -320,6 +352,9 @@ class ExecutionPodControllerTest(unittest.TestCase):
             resource = first.result(timeout=3)
             self.assertEqual(second.result(timeout=3), resource)
         controller._verify_running_pod.assert_called_once()
+        waits = [args for args in backend.calls if args[0] == 'wait']
+        self.assertEqual(len(waits), 1)
+        self.assertIn('--timeout=1800s', waits[0])
         controller.stop('id')
         self.assertIn(('pvc', resource['claim']), backend.objects)
         self.assertNotIn(('pod', resource['pod']), backend.objects)
