@@ -83,3 +83,91 @@ pub struct RequestRecord {
 	#[field]
 	pub created_at: DateTime<Utc>,
 }
+
+/// Durable suspension and connection-rate state for a Scratch Space.
+#[model(app_label = "execution", table_name = "egress_scope_state")]
+#[derive(Serialize, Deserialize)]
+pub struct ScopeState {
+	#[field(primary_key = true)]
+	pub scope_id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
+	#[field(field_type = "text")]
+	pub node: String,
+	#[field]
+	pub suspended: bool,
+	#[field]
+	pub window_started_at: DateTime<Utc>,
+	#[field]
+	pub connections_in_window: i32,
+}
+
+/// Scope totals use an empty service; other rows hold a service's daily limit.
+#[model(app_label = "execution", table_name = "egress_scope_daily")]
+#[derive(Serialize, Deserialize)]
+pub struct ScopeDaily {
+	#[field(primary_key = true)]
+	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
+	#[field(field_type = "text")]
+	pub node: String,
+	#[field]
+	pub scope_id: Uuid,
+	#[field(field_type = "text")]
+	pub day: String,
+	#[field(field_type = "text")]
+	pub service: String,
+	#[field]
+	pub sent_bytes: i64,
+	#[field]
+	pub received_bytes: i64,
+}
+
+/// Metadata only: request paths and payloads are deliberately absent.
+#[model(app_label = "execution", table_name = "egress_scope_connections")]
+#[derive(Serialize, Deserialize)]
+pub struct ScopeConnection {
+	#[field(primary_key = true)]
+	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
+	#[field(field_type = "text")]
+	pub node: String,
+	#[field]
+	pub scope_id: Uuid,
+	#[field(field_type = "text")]
+	pub host: String,
+	#[field]
+	pub port: i32,
+	#[field]
+	pub sent_bytes: i64,
+	#[field]
+	pub received_bytes: i64,
+	#[field]
+	pub duration_ms: i64,
+	#[field(field_type = "text")]
+	pub outcome: String,
+	#[field]
+	pub created_at: DateTime<Utc>,
+}
+
+/// Notification outbox: a stop and its event are committed together.
+#[model(app_label = "execution", table_name = "egress_scope_events")]
+#[derive(Serialize, Deserialize)]
+pub struct ScopeEvent {
+	#[field(primary_key = true)]
+	pub id: Uuid,
+	#[field(field_type = "text")]
+	pub tenant: String,
+	#[field(field_type = "text")]
+	pub node: String,
+	#[field]
+	pub scope_id: Uuid,
+	#[field(field_type = "text")]
+	pub kind: String,
+	#[field]
+	pub created_at: DateTime<Utc>,
+	#[field(null = true)]
+	pub delivered_at: Option<DateTime<Utc>>,
+}

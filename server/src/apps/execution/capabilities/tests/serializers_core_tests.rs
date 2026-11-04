@@ -57,6 +57,17 @@ fn egress_profiles_require_an_internal_ip_runner_and_positive_cumulative_limits(
 			crate::capabilities::Runtime::new(serde_json::from_value(rejected).unwrap()).is_err()
 		);
 	}
+	let mut configured = value.clone();
+	configured["egress"]["proxy_global_tunnels"] = json!(200);
+	configured["egress"]["proxy_tenant_tunnels"] = json!(20);
+	assert!(
+		crate::capabilities::Runtime::new(serde_json::from_value(configured.clone()).unwrap())
+			.is_ok()
+	);
+	configured["egress"]["proxy_tenant_tunnels"] = json!(200);
+	assert!(
+		crate::capabilities::Runtime::new(serde_json::from_value(configured).unwrap()).is_err()
+	);
 	let mut rejected = value.clone();
 	rejected["runner"] = Value::Null;
 	assert!(crate::capabilities::Runtime::new(serde_json::from_value(rejected).unwrap()).is_err());
