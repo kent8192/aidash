@@ -117,6 +117,16 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("marketplace", "0011_tenant_owned_row_level_security"),
 ];
 
+/// The content-store cutover deliberately refuses downgrade to UUID storage.
+const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
+	("execution", "0113_content_object_references"),
+	("execution", "0114_content_object_state"),
+	("execution", "0115_blob_reservations"),
+	("execution", "0116_blob_reservations_state"),
+	("execution", "0117_blob_receipt_references"),
+	("execution", "0118_blob_uploads"),
+];
+
 async fn history_size() -> usize {
 	FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"))
 		.all_migrations()
@@ -1597,15 +1607,21 @@ async fn out_of_order_physical_reversal_keeps_the_native_ledger(
 
 #[rstest]
 #[tokio::test]
-async fn complete_baseline_reverses_and_reapplies_through_the_management_graph(
+async fn pre_content_store_baseline_reverses_and_reapplies_through_the_management_graph(
 	#[future] fresh_database: MigrationFixture,
 ) {
 	// Arrange
 	let fixture = fresh_database.await;
-	fixture.migrate().await;
+	fixture
+		.migrate_excluding(CONTENT_STORE_CUTOVER_MIGRATIONS)
+		.await;
 	assert_baseline_seed_data(&fixture.connection).await;
 	let before = recorded_keys(&fixture.connection).await;
-	let mut command = deployment_command(&fixture.url, fixture.directory.path());
+	let mut command = deployment_command_excluding(
+		&fixture.url,
+		fixture.directory.path(),
+		CONTENT_STORE_CUTOVER_MIGRATIONS,
+	);
 	command.args(["migrate", "operations", "zero"]);
 	// Act
 	let output = tokio::time::timeout(Duration::from_secs(35), command.output())
@@ -1651,7 +1667,9 @@ async fn complete_baseline_reverses_and_reapplies_through_the_management_graph(
 		.await
 		.unwrap();
 	assert!(extensions.is_empty());
-	fixture.migrate().await;
+	fixture
+		.migrate_excluding(CONTENT_STORE_CUTOVER_MIGRATIONS)
+		.await;
 	assert_eq!(recorded_keys(&fixture.connection).await, before);
 	assert_baseline_seed_data(&fixture.connection).await;
 }
@@ -4727,4 +4745,90 @@ async fn subnode_provider_migration_accepts_exact_builtin_descriptors_and_revers
 	executor.apply_migrations(&[migration]).await.unwrap();
 	assert!(contract_accepts(&pool, "aidash_descriptor_is_valid", vec![descriptor]).await);
 	assert!(contract_accepts(&pool, "aidash_descriptor_is_valid", vec![connection]).await);
+}
+
+#[rstest]
+#[tokio::test]
+async fn content_store_cutover_discards_only_rows_naming_legacy_objects(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture
+		.migrate_excluding(CONTENT_STORE_CUTOVER_MIGRATIONS)
+		.await;
+	fixture.tenant_root("acme").await;
+	let pool = PgPool::connect(&fixture.url).await.unwrap();
+	let workspace = Uuid::new_v4();
+	let area = Uuid::new_v4();
+	let object = Uuid::new_v4();
+	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
+	sqlx::query("INSERT INTO workspaces (id,tenant,node,title,goal) VALUES ($1,'acme',$2,'Migration','Exercise cutover')")
+        .bind(workspace).bind(&node).execute(&pool).await.unwrap();
+	sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,workspace_id,thread_id,revision,manifest) VALUES ($1,'acme','home','agent','alice',$2,$3,7,'[]')")
+        .bind(area).bind(workspace).bind(Uuid::new_v4()).execute(&pool).await.unwrap();
+	sqlx::query("INSERT INTO core_objects (id,tenant,kind,digest,size) VALUES ($1,'acme','thread_attachment',$2,1)")
+        .bind(object).bind("a".repeat(64)).execute(&pool).await.unwrap();
+	let attached = Uuid::new_v4();
+	let wav = Uuid::new_v4();
+	let inline = Uuid::new_v4();
+	for (id, original, rendition) in [
+		(attached, Some(object), None),
+		(wav, None, Some(object)),
+		(inline, None, None),
+	] {
+		sqlx::query("INSERT INTO channel_attachments (id,tenant,workspace_id,uploaded_by,idempotency_key,filename,media_type,sha256,size_bytes,content,object_id,wav_object_id,wav_sha256,wav_size_bytes) VALUES ($1,'acme',$2,'alice',$3,'file','text/plain',$4,1,$5,$6,$7,$8,$9)")
+            .bind(id).bind(workspace).bind(Uuid::new_v4()).bind("a".repeat(64))
+            .bind(if original.is_some() { None } else { Some(vec![b'x']) })
+            .bind(original).bind(rendition).bind(rendition.map(|_| "b".repeat(64))).bind(rendition.map(|_| 1_i64))
+            .execute(&pool).await.unwrap();
+	}
+	for kind in [
+		"reference",
+		"transfer_in",
+		"transfer_out",
+		"collaboration",
+		"cleanup",
+		"deletion_confirmation",
+	] {
+		sqlx::query("INSERT INTO core_records (id,tenant,owner,kind,state,data) VALUES ($1,'acme','alice',$2,'ready','{}')")
+            .bind(Uuid::new_v4()).bind(kind).execute(&pool).await.unwrap();
+	}
+	fixture.migrate().await;
+	let surviving: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM channel_attachments ORDER BY id")
+		.fetch_all(&pool)
+		.await
+		.unwrap();
+	assert_eq!(surviving, vec![inline]);
+	let kinds: Vec<String> = sqlx::query_scalar("SELECT kind FROM core_records ORDER BY kind")
+		.fetch_all(&pool)
+		.await
+		.unwrap();
+	assert_eq!(kinds, vec!["deletion_confirmation"]);
+	let manifest: serde_json::Value = sqlx::query_scalar(
+		"SELECT manifest FROM core_manifest_revisions WHERE tenant='acme' AND area_id=$1 AND revision=7",
+	)
+	.bind(area)
+	.fetch_one(&pool)
+	.await
+	.unwrap();
+	assert_eq!(manifest, json!([]));
+	let before = recorded_keys(&fixture.connection).await;
+	let mut reverse = deployment_command(&fixture.url, fixture.directory.path());
+	reverse.args(["migrate", "execution", "0112_content_blobs"]);
+	let output = tokio::time::timeout(Duration::from_secs(60), reverse.output())
+		.await
+		.unwrap()
+		.unwrap();
+	assert!(!output.status.success());
+	let errors = String::from_utf8_lossy(&output.stderr);
+	assert!(
+		errors.contains("execution 0113_content_object_references is irreversible"),
+		"{errors}"
+	);
+	assert_eq!(
+		recorded_keys(&fixture.connection).await,
+		before,
+		"rollback must stop before dismantling later content-store tables"
+	);
+	pool.close().await;
 }

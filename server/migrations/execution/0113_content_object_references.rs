@@ -28,9 +28,8 @@ pub(super) fn migration() -> Migration {
 					.with_default(Some("'[]'::jsonb".into())),
 			),
 		})
-		// The Thread Attachment references block dropping `core_objects`. They are
-		// added back to the recreated table below; a development database that
-		// holds attachments is recreated, as its object bytes are discarded.
+		// The SQL cutover deletes attachment rows naming discarded UUID objects
+		// before these foreign keys are added to the recreated table.
 		.add_operation(Operation::DropConstraintDefinition {
 			table: "channel_attachments".into(),
 			constraint: Constraint::ForeignKey {
