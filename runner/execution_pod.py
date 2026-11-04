@@ -616,6 +616,7 @@ print(json.dumps(r))'''
             self._interrupt_space_commands(scratch_space_id)
             self._terminate_recorded_pod(scratch_space_id)
             self.backend.kube(['delete', 'pod', name, '--ignore-not-found', '--wait=true'])
+            self._clear_space_unconfirmed(scratch_space_id)
         return {'stopped': True}
 
     def _interrupt_space_commands(self, scratch_space_id):
@@ -670,8 +671,6 @@ print(json.dumps(r))'''
         path = self.backend.root / 'execution-v2-spaces' / (name + '.json')
         state = json.loads(path.read_bytes()) if path.exists() else {}
         guard = state.get('guard')
-        if state.get('termination_unconfirmed') and (not guard or guard.get('terminated')):
-            raise ExecutionPodError('termination_unconfirmed', 'The previous Pod termination cannot be proven')
         if expected_uid and (not guard or guard.get('pod_uid') != expected_uid):
             if expected_uid in state.get('terminated_pods', []):
                 return
@@ -702,8 +701,22 @@ print(json.dumps(r))'''
             image_started = any(item.get('state', {}).get('running') is not None or
                                 item.get('state', {}).get('terminated') is not None
                                 for item in statuses.get('initContainerStatuses', []) if item.get('name') == 'image-root')
-            if statuses.get('phase') != 'Pending' or image_started or statuses.get('containerStatuses'):
+            execution_started = any('running' in item.get('state', {}) or 'terminated' in item.get('state', {})
+                                    for item in statuses.get('containerStatuses', []))
+            if statuses.get('phase') != 'Pending' or image_started or execution_started:
                 raise ExecutionPodError('termination_unconfirmed', 'No node guard binding exists for the running Pod')
+        if state.get('termination_unconfirmed') and not guard and not current:
+            raise ExecutionPodError('termination_unconfirmed', 'The previous Pod termination cannot be proven')
+
+    def _clear_space_unconfirmed(self, scratch_space_id):
+        import json
+        from control import save, scratch_resource_name
+        path = self.backend.root / 'execution-v2-spaces' / (scratch_resource_name(scratch_space_id) + '.json')
+        with self.lock:
+            if path.exists():
+                state = json.loads(path.read_bytes())
+                state['termination_unconfirmed'] = False
+                save(path, state)
 
     def _require_space_termination_confirmed(self, scratch_space_id):
         import json
@@ -743,6 +756,7 @@ print(json.dumps(r))'''
                     raise ExecutionPodError('purge_unconfirmed', 'Claim lost its recorded volume binding')
             self._terminate_recorded_pod(scratch_space_id)
             self.backend.kube(['delete', 'pod', name, '--ignore-not-found', '--wait=true'])
+            self._clear_space_unconfirmed(scratch_space_id)
             self.backend.kube(['delete', 'pvc', name, '--ignore-not-found', '--wait=true'])
             if volume:
                 deadline = time.monotonic() + 120
@@ -814,7 +828,10 @@ print(json.dumps(r))'''
         # Retire each affected Pod before admitting any new work.
         for scratch_id, pod_uid in {(record['scratch_space_id'], record.get('pod_uid'))
                                     for _, record in records if record['status'] == 'running'}:
-            self._stop_matching_pod(scratch_id, pod_uid)
+            try:
+                self._stop_matching_pod(scratch_id, pod_uid)
+            except Exception:
+                self._mark_space_unconfirmed(scratch_id)
         for path, record in records:
             if record['status'] == 'running':
                 record.update(status='interrupted', outcome='unknown')
@@ -1150,21 +1167,23 @@ print(json.dumps(r))'''
         if not directory.exists():
             return
         for path in directory.glob('*.json'):
-            space = json.loads(path.read_bytes())
-            scratch_id = space['scratch_space_id']
-            with self.lock:
-                # Re-read under the same lock used by command acceptance so an
-                # accepted command cannot race an idle deletion.
-                space = json.loads(path.read_bytes())
-                if current - space['last_command_at'] < 1800 or self.foreground_jobs.get(scratch_id, 0):
-                    continue
-                viewers = self.viewers.get(scratch_id, {})
-                self.viewers[scratch_id] = {key: expiry for key, expiry in viewers.items() if expiry > current}
-                if self.viewers[scratch_id]:
-                    continue
-                pod = self._get('pod', scratch_resource_name(scratch_id))
-                if pod:
-                    self.stop(scratch_id)
+            try:
+                with self.lock:
+                    space = json.loads(path.read_bytes())
+                    scratch_id = space['scratch_space_id']
+                    unconfirmed = space.get('termination_unconfirmed', False)
+                    if not unconfirmed:
+                        if current - space['last_command_at'] < 1800 or self.foreground_jobs.get(scratch_id, 0):
+                            continue
+                        viewers = self.viewers.get(scratch_id, {})
+                        self.viewers[scratch_id] = {key: expiry for key, expiry in viewers.items() if expiry > current}
+                        if self.viewers[scratch_id]:
+                            continue
+                    if unconfirmed or self._get('pod', scratch_resource_name(scratch_id)):
+                        self.stop(scratch_id)
+            except Exception as error:
+                import sys
+                print('Execution Pod idle cleanup failed: ' + str(error), file=sys.stderr, flush=True)
 
     def start_idle_monitor(self):
         import sys

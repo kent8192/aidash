@@ -607,6 +607,71 @@ class CommandJournalTest(unittest.TestCase):
             self.assertTrue(second['eof'])
 
 
+class RecoveryRegressionTest(unittest.TestCase):
+    def test_recovery_retires_commands_even_when_guard_is_unavailable(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            backend = Mock(root=Path(directory))
+            controller = ExecutionPodController(backend, {}, admitted=True)
+            operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+            path = controller._command_path(operation)
+            path.write_text(json.dumps({'operation_id': operation, 'scratch_space_id': 's',
+                                        'pod_uid': 'uid', 'status': 'running'}))
+            controller._stop_matching_pod = Mock(side_effect=RuntimeError('node gone'))
+            controller.recover_commands()
+            self.assertEqual(json.loads(path.read_text())['status'], 'interrupted')
+            with self.assertRaisesRegex(RuntimeError, 'termination'):
+                controller._require_space_termination_confirmed('s')
+
+    def test_idle_monitor_retries_unconfirmed_spaces_independently(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+            controller.touch_space('first', now=1)
+            controller.touch_space('second', now=1)
+            controller._mark_space_unconfirmed('first')
+            controller._mark_space_unconfirmed('second')
+            calls = []
+            def stop(space):
+                calls.append(space)
+                if len(calls) == 1:
+                    raise RuntimeError('node unavailable')
+            controller.stop = stop
+            controller.stop_idle(now=2)
+            self.assertEqual(set(calls), {'first', 'second'})
+
+    def test_pending_container_status_can_be_deleted_after_failed_start(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from control import scratch_resource_name
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            class Backend:
+                root = Path(directory)
+                def kube(self, args, **kwargs):
+                    if args[0] == 'get':
+                        return SimpleNamespace(stdout=json.dumps({'metadata': {'uid': 'pending'},
+                            'status': {'phase': 'Pending', 'containerStatuses': [
+                                {'name': 'execution', 'state': {'waiting': {}}}]}}).encode())
+                    return SimpleNamespace(stdout=b'')
+            controller = ExecutionPodController(Backend(), {}, admitted=True)
+            path = Path(directory) / 'execution-v2-spaces' / (scratch_resource_name('s') + '.json')
+            path.parent.mkdir()
+            path.write_text(json.dumps({'scratch_space_id': 's', 'last_command_at': 1,
+                                        'termination_unconfirmed': True}))
+            controller.stop('s')
+            controller._require_space_termination_confirmed('s')
+
+
 class IdlePodTest(unittest.TestCase):
     def test_live_viewers_and_foreground_work_keep_pod_but_background_does_not(self):
         import tempfile
