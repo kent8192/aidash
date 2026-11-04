@@ -163,6 +163,7 @@ metadata:
 spec:
   podSelector:
     matchLabels: { aidash-sandbox: "true" }
+    matchExpressions: [{ key: aidash-v2, operator: DoesNotExist }]
   policyTypes: [Ingress]
   ingress:
     - from:

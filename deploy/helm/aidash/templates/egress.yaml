@@ -35,6 +35,13 @@ spec:
               kubernetes.io/metadata.name: {{ include "aidash.sandboxNamespace" . | quote }}
           podSelector:
             matchLabels: { aidash-sandbox: "true" }
+        {{- if .Values.execution.pods.enabled }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ include "aidash.sandboxNamespace" . | quote }}
+          podSelector:
+            matchExpressions: [{ key: aidash-canary, operator: Exists }]
+        {{- end }}
         - podSelector:
             matchLabels:
               app.kubernetes.io/instance: {{ .Release.Name }}

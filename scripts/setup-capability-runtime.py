@@ -53,6 +53,13 @@ def main():
                         help="Real interpreter idle timeout (1..1800; default unchanged)")
     parser.add_argument("--observe-allocations", action="store_true",
                         help="Capture allowlisted provider evidence before the controller observes it")
+    parser.add_argument('--execution-pods', action='store_true', help='Enable protocol 2 admission')
+    parser.add_argument('--helper-image', help='Digest-pinned trusted Execution Pod helper image')
+    parser.add_argument('--storage-class', help='Quota-enforcing CSI storage class with Delete reclaim policy')
+    parser.add_argument('--proxy-endpoint', help='Internal Egress gateway IP origin')
+    parser.add_argument('--proxy-namespace', help='Egress gateway namespace')
+    parser.add_argument('--proxy-selector', action='append', default=[], help='Egress gateway label key=value')
+    parser.add_argument('--allow-docker', action='store_true', help='Allow Tenant-dedicated Docker Pods')
     args = parser.parse_args()
     if not re.fullmatch(r"aidash-[a-z0-9][a-z0-9-]{0,35}", args.name):
         parser.error("name must begin with aidash- and contain lowercase letters/digits/hyphens")
@@ -60,6 +67,19 @@ def main():
         parser.error("port must be between 1024 and 65535")
     if not 1 <= args.idle_seconds <= 1800:
         parser.error("idle-seconds must be between 1 and 1800")
+    if args.allow_docker and not args.execution_pods:
+        parser.error('--allow-docker requires --execution-pods')
+    if args.execution_pods:
+        if not args.helper_image or not re.search(r'@sha256:[0-9a-f]{64}$', args.helper_image):
+            parser.error('--execution-pods requires a digest-pinned --helper-image')
+        if not all((args.storage_class, args.proxy_endpoint, args.proxy_namespace, args.proxy_selector)):
+            parser.error('--execution-pods requires storage class, proxy endpoint, namespace and selector')
+        selector = {}
+        for entry in args.proxy_selector:
+            key, separator, value = entry.partition('=')
+            if not separator or not key or not value or key in selector:
+                parser.error('--proxy-selector requires unique key=value labels')
+            selector[key] = value
     executables = {name: shutil.which(name) for name in ("docker", "kind", "kubectl", "helm")}
     if not all(executables.values()):
         parser.error("docker, kind, kubectl and helm must be installed")
@@ -137,8 +157,10 @@ nodes:
     run(docker + ["apt-get", "install", "-y", "--no-install-recommends", "python3"])
     configuration = b'''from pathlib import Path
 Path('/etc/containerd/runsc.toml').write_text('[runsc_config]\\n  platform = "systrap"\\n')
+Path('/etc/containerd/runsc-docker.toml').write_text('[runsc_config]\\n  platform = "systrap"\\n  net-raw = "true"\\n')
 with Path('/etc/containerd/config.toml').open('a') as f:
  f.write('\\n[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc]\\n runtime_type = "io.containerd.runsc.v1"\\n [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc.options]\\n  TypeUrl = "io.containerd.runsc.v1.options"\\n  ConfigPath = "/etc/containerd/runsc.toml"\\n')
+ f.write('\\n[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc-docker]\\n runtime_type = "io.containerd.runsc.v1"\\n [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runsc-docker.options]\\n  TypeUrl = "io.containerd.runsc.v1.options"\\n  ConfigPath = "/etc/containerd/runsc-docker.toml"\\n')
 Path('/opt/aidash').mkdir(exist_ok=True)
 '''
     run(docker + ["python3", "-"], data=configuration)
@@ -166,8 +188,10 @@ WantedBy=multi-user.target
     run(docker + ["systemctl", "enable", "--now", "aidash-node-guard"])
     resources = {"apiVersion": "v1", "kind": "List", "items": [
         {"apiVersion": "node.k8s.io/v1", "kind": "RuntimeClass", "metadata": {"name": "aidash-gvisor"}, "handler": "runsc"},
+        {"apiVersion": "node.k8s.io/v1", "kind": "RuntimeClass", "metadata": {"name": "aidash-gvisor-docker"}, "handler": "runsc-docker"},
         {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": "aidash-sandbox", "labels": {
-            "pod-security.kubernetes.io/enforce": "restricted", "pod-security.kubernetes.io/enforce-version": "v1.34"}}},
+            "pod-security.kubernetes.io/enforce": "privileged" if args.execution_pods else "restricted",
+            "pod-security.kubernetes.io/enforce-version": "v1.34"}}},
     ]}
     run(kube + ["apply", "-f", "-"], data=json.dumps(resources).encode())
     tag = "docker.io/library/aidash-sandbox:" + args.name
@@ -198,6 +222,12 @@ WantedBy=multi-user.target
         },
     }
     write_private(directory / "profile.json", json.dumps(profile, indent=2) + "\n")
+    if args.execution_pods:
+        execution_pods = {'enabled': True, 'helper_image': args.helper_image, 'storage_class': args.storage_class,
+                          'proxy_endpoint': args.proxy_endpoint, 'proxy_namespace': args.proxy_namespace,
+                          'proxy_selector': selector, 'docker_runtime_class': 'aidash-gvisor-docker',
+                          'allow_docker': args.allow_docker}
+        write_private(directory / 'execution-pods.json', json.dumps(execution_pods, indent=2) + '\n')
     write_private(directory / "token", secrets.token_urlsafe(48) + "\n")
     print(json.dumps({"cluster": args.name, "profile": str(directory / "profile.json"), "image": image,
                       "next": f"python3 {ROOT / 'scripts/start-capability-runner.py'} {directory}"}, indent=2))
