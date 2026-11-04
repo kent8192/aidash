@@ -5016,6 +5016,16 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 	);
 	assert_ne!(selected, existing_space);
 	assert_ne!(selected, other_space);
+	let old_spaces = Query::select()
+		.column(Alias::new("id"))
+		.from(Alias::new("scratch_spaces"))
+		.and_where(Expr::col("id").is_in([existing_space, other_space].map(Expr::value)))
+		.to_string(PostgresQueryBuilder);
+	let remaining: Vec<(Uuid,)> = sqlx::query_as(&old_spaces).fetch_all(&pool).await.unwrap();
+	assert!(
+		remaining.is_empty(),
+		"the superseded conversation spaces must be removed"
+	);
 	let sql = Query::select()
 		.column(Alias::new("scratch_space_id"))
 		.from(Alias::new("conversations"))
