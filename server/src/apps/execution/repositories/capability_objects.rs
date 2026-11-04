@@ -21,6 +21,7 @@ struct ObjectReservation<'a> {
 	kind: &'a str,
 	size: u64,
 	grandfather_existing: bool,
+	conversion_credit: i64,
 }
 
 pub(crate) struct PendingObject {
@@ -37,6 +38,7 @@ pub(crate) struct PendingObject {
 	/// Skips the retained-capacity refusal for bytes the Tenant already held
 	/// before they moved into the object store (legacy attachment backfill).
 	grandfather_existing: bool,
+	conversion_credit: i64,
 }
 
 impl Drop for PendingObject {
@@ -136,7 +138,7 @@ impl PendingObject {
 			}
 			if !self.grandfather_existing {
 				self.runtime
-					.check_upload_quota(&mut tx, &tenant, 0, true)
+					.check_upload_quota(&mut tx, &tenant, 0, true, self.conversion_credit)
 					.await?;
 			}
 			tx.commit().await?;
@@ -211,6 +213,7 @@ impl PendingObject {
 					self.size as i64,
 					"used_bytes",
 					self.grandfather_existing,
+					self.conversion_credit,
 				)
 				.await?;
 			crate::database::native::query(
@@ -339,7 +342,7 @@ impl Runtime {
 		// Bound temporary spool usage before its digest is known. Once hashed,
 		// check retained capacity with deduplication before remote upload.
 		if !grandfather_existing {
-			self.check_upload_quota(&mut tx, tenant, size, false)
+			self.check_upload_quota(&mut tx, tenant, size, false, 0)
 				.await?;
 		}
 		crate::database::native::query(
@@ -362,21 +365,26 @@ impl Runtime {
 		tenant: &str,
 		additional: i64,
 		include_used: bool,
+		conversion_credit: i64,
 	) -> Result<()> {
 		// Serialize the capacity check with commits that charge retained bytes.
 		// The lock is released with this short reservation transaction, before
 		// any bytes are sent to the object store.
-		self.adjust_quota_tx(tx, tenant, 0, "used_bytes", false)
+		self.adjust_quota_tx(tx, tenant, 0, "used_bytes", false, 0)
 			.await?;
-		let used: i64 = crate::database::native::query_scalar(
+		let (used, reserved): (i64, i64) = crate::database::native::query_as(
 			&Query::select()
-				.column(Alias::new("used_bytes"))
+				.columns([Alias::new("used_bytes"), Alias::new("reserved_bytes")])
 				.from(Alias::new("core_quotas"))
 				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_one(&mut **tx)
+		.columns(&["used_bytes", "reserved_bytes"])
+		.fetch_one(&mut **tx)
 		.await?;
+		if conversion_credit < 0 || conversion_credit > reserved {
+			return Err(Error::Conflict("TRANSFER_RESERVATION_CHANGED".into()));
+		}
 		let reservations: Vec<(Option<String>, i64)> = crate::database::native::query_as(
 			&Query::select()
 				.columns([Alias::new("digest"), Alias::new("size")])
@@ -399,8 +407,14 @@ impl Runtime {
 		.columns(&["digest", "size"])
 		.fetch_all(&mut **tx)
 		.await?;
+		let committed = if include_used {
+			used.checked_add(reserved - conversion_credit)
+				.ok_or_else(|| Error::Conflict("STORAGE_QUOTA".into()))?
+		} else {
+			0
+		};
 		let mut total = additional
-			.checked_add(if include_used { used } else { 0 })
+			.checked_add(committed)
 			.ok_or_else(|| Error::Conflict("STORAGE_QUOTA".into()))?;
 		let mut digests = std::collections::HashMap::new();
 		for (digest, size) in reservations {
@@ -753,6 +767,19 @@ impl Runtime {
 		kind: &str,
 		size: u64,
 	) -> Result<PendingObject> {
+		self.begin_object_converting(access, area, kind, size, 0)
+			.await
+	}
+	/// The credit is owned by a serialized inbound transfer and will be
+	/// released in the caller's publication transaction.
+	pub(crate) async fn begin_object_converting(
+		&self,
+		access: &mut Access,
+		area: Option<Uuid>,
+		kind: &str,
+		size: u64,
+		conversion_credit: i64,
+	) -> Result<PendingObject> {
 		tokio::fs::create_dir_all(&self.0.storage).await?;
 		if tokio::fs::symlink_metadata(&self.0.storage)
 			.await?
@@ -768,8 +795,19 @@ impl Runtime {
 			access.core_gc_complete = true;
 		}
 		let tenant = access.identity.tenant.clone();
-		self.begin_object_in(&mut access.tx, &tenant, Uuid::new_v4(), area, kind, size)
-			.await
+		self.begin_object_with_quota(
+			&mut access.tx,
+			&tenant,
+			ObjectReservation {
+				id: Uuid::new_v4(),
+				area,
+				kind,
+				size,
+				grandfather_existing: false,
+				conversion_credit,
+			},
+		)
+		.await
 	}
 	pub(crate) async fn begin_object_for(
 		&self,
@@ -789,6 +827,7 @@ impl Runtime {
 				kind,
 				size,
 				grandfather_existing,
+				conversion_credit: 0,
 			},
 		)
 		.await
@@ -812,6 +851,7 @@ impl Runtime {
 				kind,
 				size,
 				grandfather_existing: false,
+				conversion_credit: 0,
 			},
 		)
 		.await
@@ -828,6 +868,7 @@ impl Runtime {
 			kind,
 			size,
 			grandfather_existing,
+			conversion_credit,
 		} = reservation;
 		let size = i64::try_from(size).map_err(|_| Error::Invalid("OBJECT_LIMIT".into()))?;
 		let pool = tx.pool().clone();
@@ -912,6 +953,7 @@ impl Runtime {
 			pool,
 			tenant,
 			grandfather_existing,
+			conversion_credit,
 		})
 	}
 
@@ -1266,12 +1308,17 @@ impl Runtime {
 	}
 	pub(crate) async fn reserve(&self, access: &mut Access, bytes: i64) -> Result<()> {
 		let tenant = access.identity.tenant.clone();
+		if bytes > 0 {
+			self.check_upload_quota(access.tx.native_mut(), &tenant, bytes, true, 0)
+				.await?;
+		}
 		self.adjust_quota_tx(
 			access.tx.native_mut(),
 			&tenant,
 			bytes,
 			"reserved_bytes",
 			false,
+			0,
 		)
 		.await
 	}
@@ -1282,6 +1329,7 @@ impl Runtime {
 		bytes: i64,
 		column: &str,
 		grandfather_existing: bool,
+		conversion_credit: i64,
 	) -> Result<()> {
 		{
 			let query_bind_1 = tenant;
@@ -1349,6 +1397,14 @@ impl Runtime {
 					} else {
 						Expr::value(true).eq(true)
 					})
+					.and_where(if column == "used_bytes" && bytes > 0 && !grandfather_existing {
+						Expr::col(Alias::new("used_bytes"))
+							.add(Expr::col(Alias::new("reserved_bytes")))
+							.sub(Expr::value(conversion_credit))
+							.add(Expr::value(bytes))
+							.lte(query_bind_3)
+					} else { Expr::value(true).eq(true) })
+					.and_where(Expr::col(Alias::new("reserved_bytes")).gte(conversion_credit))
 					.to_string(PostgresQueryBuilder),
 			)
 			.execute(&mut **tx)

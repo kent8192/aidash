@@ -162,6 +162,7 @@ pub async fn prepare(
         if serde_json::from_value::<Vec<FileEntry>>(area.manifest.clone())?.iter().map(|f|f.size).sum::<u64>()+total+scope.retained_bytes(&area).await?>scope.limits()?.working_bytes {return Err(Error::Conflict("RECIPIENT_QUOTA".into()));}
         // Reserve both provisional chunks and final immutable objects. Actual
         // allocation consumes this reservation transactionally, never twice.
+		scope.lock_conversion().await?;
         scope.reserve((2*total) as i64).await?;
         let data=json!({"description":description,"generation":area.generation,"mapped_credential":scope.credential(),"chunks":{},"reserved":2*total});
         let record=scope.insert(input.transfer_id,Some(area.id),"transfer_in","staging",data,Some(description.expires_at)).await?;
@@ -213,6 +214,7 @@ pub async fn chunk(
 		if reserved < bytes.len() as i64 {
 			return Err(Error::Conflict("TRANSFER_RESERVATION_CHANGED".into()));
 		}
+		scope.lock_conversion().await?;
 		let (file_id, digest) = scope.put_staging(&bytes).await?;
 		scope.reserve(-(bytes.len() as i64)).await?;
 		record.data["chunks"][key] = json!(FileEntry {
@@ -261,11 +263,14 @@ pub async fn commit(
         let total=description.files.iter().map(|f|f.size).sum::<u64>();
         if entries.len()+description.files.len()>4096||entries.iter().map(|f|f.size).sum::<u64>()+total+scope.retained_bytes(&area).await?>scope.limits()?.working_bytes {return Err(Error::Conflict("RECIPIENT_QUOTA".into()));}
         let mut delivered=vec![];
+		scope.lock_conversion().await?;
+		let mut conversion_credit = 0i64;
         for (index,file) in description.files.iter().enumerate() {
             let reserved=record.data["reserved"].as_i64().ok_or(Error::Forbidden)?;
             if reserved<file.size as i64 {return Err(Error::Conflict("TRANSFER_RESERVATION_CHANGED".into()));}
             record.data["reserved"]=json!(reserved-file.size as i64);
-            scope.begin_received(area.id,file.size).await?;
+			conversion_credit = conversion_credit.checked_add(i64::try_from(file.size).map_err(|_| Error::Forbidden)?).ok_or(Error::Forbidden)?;
+            scope.begin_received(area.id,file.size,conversion_credit).await?;
             let mut offset=0;
             while offset<file.size {
                 let chunk:FileEntry=serde_json::from_value(record.data["chunks"][format!("{index}:{offset}")].clone()).map_err(|_|Error::Conflict("TRANSFER_INCOMPLETE".into()))?;

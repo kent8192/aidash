@@ -361,20 +361,52 @@ impl ReceiverScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn lock_conversion(&mut self) -> Result<()> {
+		let access = self.authority.get_mut();
+		let lock = format!("core-transfer-conversion:{}", access.identity.tenant);
+		crate::database::native::query(
+			&Query::select()
+				.expr(SimpleExpr::CustomWithExpr(
+					"(pg_advisory_xact_lock(hashtextextended(?, 0)))".into(),
+					vec![Expr::value(lock).into()],
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut **access.tx)
+		.await?;
+		Ok(())
+	}
 	async fn put_staging(&mut self, bytes: &[u8]) -> Result<(Uuid, String)> {
-		self.store
+		let mut pending = self
+			.store
 			.ok_or_else(missing)?
 			.capabilities
-			.put(self.authority.get_mut(), None, "transfer_staging", bytes)
+			.begin_object_converting(
+				self.authority.get_mut(),
+				None,
+				"transfer_staging",
+				bytes.len() as u64,
+				bytes.len() as i64,
+			)
+			.await?;
+		pending.write_block(bytes).await?;
+		pending
+			.finish(self.authority.get_mut(), None)
 			.await
 			.map_err(Into::into)
 	}
-	async fn begin_received(&mut self, area: Uuid, size: u64) -> Result<()> {
+	async fn begin_received(&mut self, area: Uuid, size: u64, credit: i64) -> Result<()> {
 		self.pending = Some(
 			self.store
 				.ok_or_else(missing)?
 				.capabilities
-				.begin_object(self.authority.get_mut(), Some(area), "received", size)
+				.begin_object_converting(
+					self.authority.get_mut(),
+					Some(area),
+					"received",
+					size,
+					credit,
+				)
 				.await?,
 		);
 		Ok(())

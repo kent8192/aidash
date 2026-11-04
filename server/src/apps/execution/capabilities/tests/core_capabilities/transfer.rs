@@ -1316,3 +1316,56 @@ async fn remote_recipients_use_the_sending_runs_node_and_its_registration(
 	assert_eq!(status, 403, "{body}");
 	c.close().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn reserved_transfer_capacity_survives_unrelated_uploads_and_its_own_conversion(
+	#[future] two_nodes: TransferFixture,
+) {
+	use base64::Engine;
+	let mut c = Box::pin(two_nodes).await;
+	let bytes = "immutable 東京\n".as_bytes();
+	let used: i64 = sqlx::query_scalar("SELECT used_bytes FROM core_quotas WHERE tenant='acme'")
+		.fetch_optional(c.b.f.store.pool.fixture_driver())
+		.await
+		.unwrap()
+		.unwrap_or(0);
+	let mut profile = (*c.b.f.store.capabilities.0).clone();
+	profile.retained_bytes = used as u64 + (bytes.len() * 2) as u64;
+	profile.working_bytes = profile.retained_bytes;
+	c.b.f.store.capabilities = Runtime::new(profile).unwrap();
+	c.b.app.context.set_singleton(c.b.f.clone());
+	let (_, pending) = prepare_file(&c).await;
+	let transfer: Uuid = serde_json::from_value(pending["transfer_id"].clone()).unwrap();
+	let data: Value = sqlx::query_scalar("SELECT data FROM core_records WHERE id=$1")
+		.bind(transfer)
+		.fetch_one(c.a.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let identity =
+		json!({"transfer_id":transfer,"input_digest":data["description"]["input_digest"]});
+	let (status, prepared) = peer_request(&c.b, &c.a, "prepare", identity.clone()).await;
+	assert_eq!(status, 200, "{prepared}");
+	let (upload_status, upload) = request(&c.b.app, &c.b.token, "POST", &path_for_patch(c.receiver.id),
+        json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"other.txt":null},"patch":"*** Begin Patch\n*** Add File: other.txt\n+x\n*** End Patch"})).await;
+	let mut chunk = identity.clone();
+	chunk["file"] = json!(0);
+	chunk["offset"] = json!(0);
+	chunk["data"] = json!(base64::engine::general_purpose::STANDARD.encode(bytes));
+	let (chunk_status, chunk_result) = peer_request(&c.b, &c.a, "chunk", chunk).await;
+	let (commit_status, committed) = peer_request(&c.b, &c.a, "commit", identity).await;
+	c.close().await;
+	assert_eq!(
+		upload_status, 409,
+		"unrelated upload consumed reserved capacity: {upload}"
+	);
+	assert_eq!(upload["error"]["code"], "STORAGE_QUOTA");
+	assert_eq!(
+		chunk_status, 200,
+		"reserved chunk must be admitted: {chunk_result}"
+	);
+	assert_eq!(
+		commit_status, 200,
+		"reserved final object must be admitted: {committed}"
+	);
+}

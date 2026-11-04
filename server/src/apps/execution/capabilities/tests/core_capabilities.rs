@@ -1840,14 +1840,17 @@ mod publication_storage_tests;
 #[path = "core_capabilities/reference_reclamation.rs"]
 mod reference_reclamation_tests;
 
+#[path = "core_capabilities/transfer_quota.rs"]
+mod transfer_quota_tests;
+
 #[path = "core_capabilities/upload_scope.rs"]
 mod upload_scope_tests;
 
-#[path = "core_capabilities/torn_intents.rs"]
-mod torn_intents_tests;
-
 #[path = "core_capabilities/quota_dedup.rs"]
 mod quota_dedup_tests;
+
+#[path = "core_capabilities/torn_intents.rs"]
+mod torn_intents_tests;
 
 #[path = "core_capabilities/reclamation_lock.rs"]
 mod reclamation_lock_tests;
