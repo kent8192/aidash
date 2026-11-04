@@ -59,7 +59,7 @@ async fn load_with_lock(
 		.and_where(Expr::col("tenant").eq(Expr::value(tenant.to_owned())))
 		.and_where(Expr::col("id").eq(Expr::value(id)));
 	if lock {
-		query.lock(LockType::Update);
+		query.lock(LockType::NoKeyUpdate);
 	}
 	let (sql, values) = query.build(PostgresQueryBuilder);
 	let Some(row) = tx.fetch_optional(&sql, convert_values(values)).await? else {

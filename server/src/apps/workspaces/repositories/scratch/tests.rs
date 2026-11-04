@@ -61,6 +61,14 @@ async fn space_and_settings_are_tenant_scoped_and_transactional(
 		.await
 		.unwrap();
 	let mut runner = database.begin_in(&tenant_a).await;
+	tokio::time::timeout(
+		std::time::Duration::from_secs(5),
+		load(&mut *runner, "scratch-a", space.id),
+	)
+	.await
+	.expect("a space mutation must not block a foreign-key check")
+	.unwrap()
+	.unwrap();
 	let later = now + chrono::Duration::minutes(2);
 	tokio::time::timeout(
 		std::time::Duration::from_secs(5),
