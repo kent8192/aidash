@@ -1241,9 +1241,11 @@ async fn scoped_refusals_are_reported_on_upload() {
 		(1, StatusCode::FORBIDDEN, "egress_suspended"),
 	] {
 		let (origin, audit, tasks, stop) = metered_gateway(limit, false).await;
-		let upload = futures_util::stream::iter(
-			(0..32).map(|_| Ok::<_, std::io::Error>(Bytes::from(vec![1; CHUNK]))),
-		);
+		// A single chunk reaches the final debit without leaving a large unread
+		// request body that can reset the client socket before it sees the refusal.
+		let upload = futures_util::stream::iter(std::iter::once(Ok::<_, std::io::Error>(
+			Bytes::from(vec![1; CHUNK]),
+		)));
 		let response = reqwest::Client::new()
 			.post(format!("{origin}/v1/operation-token/images/upload"))
 			.body(reqwest::Body::wrap_stream(upload))
