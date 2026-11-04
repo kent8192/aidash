@@ -377,9 +377,9 @@ impl Runtime {
 		)
 		.scalar_one(&mut **tx)
 		.await?;
-		let reservations: Vec<i64> = crate::database::native::query_scalar(
+		let reservations: Vec<(Option<String>, i64)> = crate::database::native::query_as(
 			&Query::select()
-				.column(Alias::new("size"))
+				.columns([Alias::new("digest"), Alias::new("size")])
 				.from(Alias::new("core_blob_uploads"))
 				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
 				// Once a blob is charged it must not also consume a pending
@@ -396,17 +396,28 @@ impl Runtime {
 				))
 				.to_string(PostgresQueryBuilder),
 		)
-		.scalar_all(&mut **tx)
+		.columns(&["digest", "size"])
+		.fetch_all(&mut **tx)
 		.await?;
-		let total = reservations
-			.into_iter()
-			.try_fold(
-				additional
-					.checked_add(if include_used { used } else { 0 })
-					.ok_or_else(|| Error::Conflict("STORAGE_QUOTA".into()))?,
-				i64::checked_add,
-			)
+		let mut total = additional
+			.checked_add(if include_used { used } else { 0 })
 			.ok_or_else(|| Error::Conflict("STORAGE_QUOTA".into()))?;
+		let mut digests = std::collections::HashMap::new();
+		for (digest, size) in reservations {
+			// Retained storage charges identical content once. Before hashing,
+			// each reservation still counts independently against spool capacity.
+			if include_used && let Some(digest) = digest {
+				if let Some(previous) = digests.insert(digest, size) {
+					if previous != size {
+						return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
+					}
+					continue;
+				}
+			}
+			total = total
+				.checked_add(size)
+				.ok_or_else(|| Error::Conflict("STORAGE_QUOTA".into()))?;
+		}
 		if total > self.0.retained_bytes as i64 {
 			return Err(Error::Conflict("STORAGE_QUOTA".into()));
 		}

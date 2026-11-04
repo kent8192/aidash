@@ -1846,6 +1846,9 @@ mod upload_scope_tests;
 #[path = "core_capabilities/torn_intents.rs"]
 mod torn_intents_tests;
 
+#[path = "core_capabilities/quota_dedup.rs"]
+mod quota_dedup_tests;
+
 #[path = "core_capabilities/reclamation_lock.rs"]
 mod reclamation_lock_tests;
 
