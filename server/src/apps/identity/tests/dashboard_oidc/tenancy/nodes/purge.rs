@@ -1886,3 +1886,168 @@ async fn node_audit_expiry_after_whole_tenant_purge_does_not_starve_live_tenant_
 	);
 	d.finish().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn node_purge_releases_owned_references_and_preserves_shared_blob(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	async fn seed_area(
+		d: &Deployment,
+		root: &std::path::Path,
+		tenant: &str,
+		workspace: Uuid,
+		node: &str,
+		files: &[(&[u8], Uuid)],
+	) -> Uuid {
+		let pool = d.federation.store.pool.fixture_driver();
+		let area = Uuid::new_v4();
+		let home = format!("{}/{node}", d.federation.config.deployment);
+		sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,workspace_id,thread_id) VALUES ($1,$2,$3,'agent','alice',$4,$5)")
+            .bind(area).bind(tenant).bind(home.to_string()).bind(workspace).bind(Uuid::new_v4()).execute(pool).await.unwrap();
+		let mut manifest = vec![];
+		for (index, (bytes, id)) in files.iter().enumerate() {
+			let digest = aidash_server::capabilities::objects::digest(bytes);
+			let path = root
+				.join("tenants")
+				.join(aidash_server::capabilities::objects::digest(
+					tenant.as_bytes(),
+				))
+				.join("sha256")
+				.join(&digest[..2])
+				.join(&digest[2..4])
+				.join(&digest);
+			tokio::fs::create_dir_all(path.parent().unwrap())
+				.await
+				.unwrap();
+			tokio::fs::write(path, bytes).await.unwrap();
+			sqlx::query("INSERT INTO core_blobs (tenant,digest,size) VALUES ($1,$2,$3) ON CONFLICT (tenant,digest) DO NOTHING")
+                .bind(tenant).bind(&digest).bind(bytes.len() as i64).execute(pool).await.unwrap();
+			sqlx::query("INSERT INTO core_objects (id,tenant,area_id,kind,digest,size) VALUES ($1,$2,$3,'working',$4,$5)")
+                .bind(id).bind(tenant).bind(area).bind(&digest).bind(bytes.len() as i64).execute(pool).await.unwrap();
+			manifest.push(json!({"file_id":id,"path":format!("{index}.txt"),"digest":digest,"size":bytes.len(),"media_type":"text/plain","scope":"working","provenance":{}}));
+		}
+		sqlx::query(
+			"INSERT INTO core_manifest_revisions (tenant,area_id,revision,manifest) VALUES ($1,$2,1,$3)",
+		)
+		.bind(tenant)
+		.bind(area)
+		.bind(json!(manifest))
+		.execute(pool)
+		.await
+		.unwrap();
+		for (bytes, id) in files {
+			let digest = aidash_server::capabilities::objects::digest(bytes);
+			sqlx::query("INSERT INTO core_blob_references (id,tenant,digest,holder_kind,holder_id,object_id,area_id,revision) VALUES ($1,$2,$3,'revision',$4,$5,$6,1)")
+                .bind(Uuid::new_v4()).bind(tenant).bind(&digest).bind(format!("{area}:1:{id}"))
+                .bind(id).bind(area).execute(pool).await.unwrap();
+		}
+		area
+	}
+	let mut d = Deployment::new(
+		runtime,
+		TenancyRules {
+			nodes_per_tenant: 2,
+			..open_rules()
+		},
+	)
+	.await;
+	let storage = tempfile::tempdir().unwrap();
+	d.federation.store.capabilities = Runtime::new(Profile {
+		storage: storage.path().to_owned(),
+		..Profile::default()
+	})
+	.unwrap();
+	let alice = d.person("alice").await;
+	let (tenant, context) = d.node_tenant(&alice, "Shared blobs").await;
+	let sibling = d.nodes_of(&alice, &context, &tenant).await[0]["name"]
+		.as_str()
+		.unwrap()
+		.to_owned();
+	let (_, target) = d.create_node(&alice, &context, &tenant, "Delete").await;
+	let target = target["name"].as_str().unwrap().to_owned();
+	let (_, target_workspace) = d.workspace_on(&alice, &context, Some(&target)).await;
+	let (_, sibling_workspace) = d.workspace_on(&alice, &context, Some(&sibling)).await;
+	let target_workspace = Uuid::parse_str(target_workspace["id"].as_str().unwrap()).unwrap();
+	let sibling_workspace = Uuid::parse_str(sibling_workspace["id"].as_str().unwrap()).unwrap();
+	let exclusive = b"exclusive bytes";
+	let shared = b"shared bytes";
+	let target_exclusive = Uuid::new_v4();
+	let target_shared = Uuid::new_v4();
+	let sibling_shared = Uuid::new_v4();
+	let target_area = seed_area(
+		&d,
+		storage.path(),
+		&tenant,
+		target_workspace,
+		&target,
+		&[
+			(exclusive.as_slice(), target_exclusive),
+			(shared.as_slice(), target_shared),
+		],
+	)
+	.await;
+	let sibling_area = seed_area(
+		&d,
+		storage.path(),
+		&tenant,
+		sibling_workspace,
+		&sibling,
+		&[(shared.as_slice(), sibling_shared)],
+	)
+	.await;
+	let pool = d.federation.store.pool.fixture_driver();
+	sqlx::query("INSERT INTO core_quotas (tenant,used_bytes) VALUES ($1,$2) ON CONFLICT (tenant) DO UPDATE SET used_bytes=$2")
+        .bind(&tenant).bind((exclusive.len()+shared.len()) as i64).execute(pool).await.unwrap();
+	request_purge(&d, &tenant, &target).await;
+	let claimed = node_purge::claim(&d.federation.store)
+		.await
+		.unwrap()
+		.pop()
+		.unwrap();
+	node_purge::purge_node(&d.federation.store, claimed)
+		.await
+		.unwrap();
+	let exclusive_digest = aidash_server::capabilities::objects::digest(exclusive);
+	let shared_digest = aidash_server::capabilities::objects::digest(shared);
+	let path = |digest: &str| {
+		storage
+			.path()
+			.join("tenants")
+			.join(aidash_server::capabilities::objects::digest(
+				tenant.as_bytes(),
+			))
+			.join("sha256")
+			.join(&digest[..2])
+			.join(&digest[2..4])
+			.join(digest)
+	};
+	assert!(!path(&exclusive_digest).exists());
+	assert_eq!(tokio::fs::read(path(&shared_digest)).await.unwrap(), shared);
+	let refs: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM core_blob_references WHERE tenant=$1 AND area_id=$2",
+	)
+	.bind(&tenant)
+	.bind(target_area)
+	.fetch_one(pool)
+	.await
+	.unwrap();
+	let surviving: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM core_blob_references WHERE tenant=$1 AND area_id=$2 AND object_id=$3",
+	)
+	.bind(&tenant)
+	.bind(sibling_area)
+	.bind(sibling_shared)
+	.fetch_one(pool)
+	.await
+	.unwrap();
+	let used: i64 = sqlx::query_scalar("SELECT used_bytes FROM core_quotas WHERE tenant=$1")
+		.bind(&tenant)
+		.fetch_one(pool)
+		.await
+		.unwrap();
+	assert_eq!(refs, 0);
+	assert_eq!(surviving, 1);
+	assert_eq!(used, shared.len() as i64);
+	d.finish().await;
+}
