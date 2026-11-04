@@ -136,6 +136,10 @@ File versions it identifies until the receipt record is removed; a recovery
 snapshot keeps its versions until it expires or is released. Reclamation
 removes bytes only after all references are gone.
 
+Receipt records have no automatic retention or removal policy. Their referenced
+bytes remain charged to the Tenant until the records are removed, including
+after the associated Working Area is deleted.
+
 The capability profile's `storage` path is a private, persistent local staging
 and ownership-intent directory. With the default `blob_storage` setting it is
 also the object-store root: Tenant-specific directories contain
