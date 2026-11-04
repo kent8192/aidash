@@ -1582,10 +1582,10 @@ mod tests {
 		let lifted = request(address, "Proxy-Authorization: Bearer token\r\n").await;
 		assert!(lifted.contains("egress_destination_forbidden"));
 		tokio::time::timeout(std::time::Duration::from_secs(3), async {
-			while !scopes
+			while scopes
 				.records()
 				.first()
-				.is_some_and(|record| record.outcome == "refused")
+				.is_none_or(|record| record.outcome != "refused")
 			{
 				tokio::task::yield_now().await;
 			}
