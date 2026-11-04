@@ -228,7 +228,8 @@ impl CleanupScope for Scope<'_> {
 			let area: Option<NativeArea> = {
 				let query_bind_1 = &access.identity.tenant;
 				let query_bind_2 = id;
-				crate::database::native::query_as(
+				sessions::locked_area(
+					&mut **access.tx,
 					&sessions::select("core_areas")
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("tenant"))).eq(
@@ -246,10 +247,9 @@ impl CleanupScope for Scope<'_> {
 								),
 							),
 						)
-						.lock(LockType::Update)
-						.to_string(PostgresQueryBuilder),
+						.to_owned(),
+					LockType::Update,
 				)
-				.fetch_optional(&mut **access.tx)
 				.await?
 			};
 			Ok(area)
@@ -847,7 +847,8 @@ impl ErasureScope for Erasure<'_> {
 			let area: NativeArea = {
 				let query_bind_1 = snapshot.area_id.ok_or(Error::Forbidden)?;
 				let query_bind_2 = &snapshot.tenant;
-				crate::database::native::query_as(
+				sessions::locked_area(
+					&mut **tx,
 					&sessions::select("core_areas")
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
@@ -865,11 +866,11 @@ impl ErasureScope for Erasure<'_> {
 								),
 							),
 						)
-						.lock(LockType::Update)
-						.to_string(PostgresQueryBuilder),
+						.to_owned(),
+					LockType::Update,
 				)
-				.fetch_one(&mut **tx)
 				.await?
+				.ok_or_else(|| crate::Error::NotFound("area unavailable".into()))?
 			};
 			let record: NativeRecord = {
 				let query_bind_1 = snapshot.id;

@@ -136,14 +136,14 @@ impl RetentionScope for Scope<'_> {
 			let tenant = self.access.identity.tenant.clone();
 			// The publication that would supersede a cited version takes the same
 			// row lock, so the manifest read here cannot change under us.
-			crate::database::native::query_as(
+			super::sessions::locked_area(
+				&mut **self.access.tx,
 				&super::sessions::select("core_areas")
 					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
 					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
-					.lock(LockType::Update)
-					.to_string(PostgresQueryBuilder),
+					.to_owned(),
+				LockType::Update,
 			)
-			.fetch_optional(&mut **self.access.tx)
 			.await
 		}
 		.await;

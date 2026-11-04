@@ -34,7 +34,7 @@ pub(super) async fn wait_for_channel_thread_lock_waiters(pool: &sqlx::PgPool, mi
 	}
 }
 
-async fn wait_for_blocked_connection(pool: &sqlx::PgPool, blocker: i32) -> i32 {
+pub(super) async fn wait_for_blocked_connection(pool: &sqlx::PgPool, blocker: i32) -> i32 {
 	use reinhardt::query::{Alias, Expr, IntoIden, PostgresQueryBuilder, Query, SimpleExpr};
 	let query = Query::select()
 		.column(Alias::new("pid"))
@@ -338,6 +338,13 @@ async fn thread_deletion_pages_more_than_one_hundred_owned_areas(
 			.execute(c.f.store.pool.fixture_driver())
 			.await
 			.unwrap();
+		fixture_revision(
+			c.f.store.pool.fixture_driver(),
+			extra.id,
+			extra.revision,
+			json!([]),
+		)
+		.await;
 	}
 	let areas: Vec<(Uuid, i64)> = {
 		let query_bind_1 = workspace;
