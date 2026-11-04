@@ -420,13 +420,14 @@ impl Runtime {
 		for (digest, size) in reservations {
 			// Retained storage charges identical content once. Before hashing,
 			// each reservation still counts independently against spool capacity.
-			if include_used && let Some(digest) = digest {
-				if let Some(previous) = digests.insert(digest, size) {
-					if previous != size {
-						return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
-					}
-					continue;
+			if include_used
+				&& let Some(digest) = digest
+				&& let Some(previous) = digests.insert(digest, size)
+			{
+				if previous != size {
+					return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
 				}
+				continue;
 			}
 			total = total
 				.checked_add(size)
