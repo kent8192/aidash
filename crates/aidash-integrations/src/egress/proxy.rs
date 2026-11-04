@@ -580,6 +580,10 @@ pub(super) async fn forward(
 			return super::failure(status, code);
 		}
 	};
+	if let Err(error) = scopes.admit_connection(&scope).await {
+		let (status, code) = refusal(&error);
+		return super::failure(status, code);
+	}
 	let connect = request.method() == Method::CONNECT;
 	let parsed = if connect {
 		request
@@ -602,10 +606,6 @@ pub(super) async fn forward(
 	let Some(port) = url.port_or_known_default() else {
 		return super::failure(StatusCode::BAD_REQUEST, "invalid_proxy_target");
 	};
-	if let Err(error) = scopes.admit_connection(&scope).await {
-		let (status, code) = refusal(&error);
-		return super::failure(status, code);
-	}
 	let mut audit = Audit {
 		id: uuid::Uuid::new_v4(),
 		manager: manager.clone(),
@@ -1629,7 +1629,9 @@ mod tests {
 
 	#[tokio::test]
 	async fn oversized_host_is_rejected_without_an_audit_row() {
-		let scopes = Arc::new(MemoryScopes::new("token".into(), test_settings()));
+		let mut settings = test_settings();
+		settings.anomaly.connections_per_minute = 2;
+		let scopes = Arc::new(MemoryScopes::new("token".into(), settings));
 		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 		let address = listener.local_addr().unwrap();
 		let (stop, receiver) = tokio::sync::watch::channel(false);
@@ -1647,14 +1649,22 @@ mod tests {
 			"d".repeat(63),
 		]
 		.join(".");
-		let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
-		client.write_all(format!("CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\nProxy-Authorization: Bearer token\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
-		let mut response = String::new();
-		client.read_to_string(&mut response).await.unwrap();
-		assert!(response.contains("invalid_proxy_target"));
+		for attempt in 0..3 {
+			let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+			client.write_all(format!("CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\nProxy-Authorization: Bearer token\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+			let mut response = String::new();
+			client.read_to_string(&mut response).await.unwrap();
+			assert!(response.contains(if attempt == 2 {
+				"egress_suspended"
+			} else {
+				"invalid_proxy_target"
+			}));
+		}
+
 		stop.send(true).unwrap();
 		task.await.unwrap().unwrap();
 		assert!(scopes.records().is_empty());
+		assert_eq!(scopes.notifications(), 1);
 	}
 
 	#[tokio::test]

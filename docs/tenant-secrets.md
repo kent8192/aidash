@@ -304,8 +304,8 @@ limit. External service traffic is accounted in batches after forwarding; each
 active stream can exceed a limit by up to one batch plus one chunk. Once a
 scope or service budget is exhausted, new admissions are refused until the next
 UTC day. The default anomaly rule suspends the scope after more than 600 new
-connection attempts in one minute, including hosts denied by the allowlist; an
-operator must lift the suspension. Hosts longer than 253 bytes are rejected. The
+authenticated connection attempts in one minute, including invalid targets and
+hosts denied by the allowlist; an operator must lift the suspension. Hosts longer than 253 bytes are rejected. The
 authority must emit an operator notification when it suspends a scope.
 
 Each gateway instance defaults to 64 simultaneous tunnels per scope, 32 per
