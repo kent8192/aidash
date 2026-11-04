@@ -122,6 +122,11 @@ def initialize_system_root(image_root, store, *, reset=False):
         os.replace(backup, root)
     if root.exists() and not reset:
         return False
+    if reset:
+        if root.exists():
+            shutil.rmtree(root)
+        if backup.exists():
+            shutil.rmtree(backup)
     staging = store / ('rootfs.' + uuid.uuid4().hex + '.new')
     excluded = {'scratch', 'scratch-system', 'scratch-image', 'proc', 'sys', 'dev', 'tmp', '.aidash-helpers'}
     copied_links = {}
@@ -302,10 +307,12 @@ def execution_manifests(settings, config):
                      'seccompProfile': {'type': 'RuntimeDefault'}}
     volumes = [{'name': 'scratch', 'persistentVolumeClaim': {'claimName': name}},
                {'name': 'helpers', 'emptyDir': {}},
+               {'name': 'operations', 'emptyDir': {'medium': 'Memory', 'sizeLimit': str(64 << 20)}},
                {'name': 'tmp', 'emptyDir': {'medium': 'Memory',
                                             'sizeLimit': str(min(settings['memory_bytes'], 1 << 30))}}]
     mounts = [{'name': 'scratch', 'mountPath': '/scratch-system'},
               {'name': 'helpers', 'mountPath': '/.aidash-helpers', 'readOnly': True},
+              {'name': 'operations', 'mountPath': '/scratch-system/operations'},
               {'name': 'tmp', 'mountPath': '/tmp'}]
     if docker:
         volumes.append({'name': 'docker', 'emptyDir': {'medium': 'Memory'}})
@@ -1205,8 +1212,13 @@ print(json.dumps(r))'''
                     except Exception:
                         self._stop_matching_pod(record['scratch_space_id'], uid)
                 self._update_command(operation_id, status=outcome['status'],
-                                     **({'exit_code': outcome['exit_code']} if 'exit_code' in outcome else {}),
+                                     **{key: outcome[key] for key in ('exit_code', 'error_code', 'message') if key in outcome},
                                      **transport['output'])
+                try:
+                    self.backend.kube(['exec', name, '-c', 'execution', '--'] +
+                                      helper_command('forget', operation_id), check=False)
+                except Exception:
+                    pass  # The Pod's bounded temporary journal is reclaimed when it stops.
         except Exception as error:
             if self._read_command(operation_id)['status'] == 'interrupted':
                 return
@@ -1645,7 +1657,7 @@ def verify_user_probe(report, *, docker, processes):
         raise ValueError('chroot isolation evidence is incomplete')
     if report.get('service_account_absent') is not True:
         raise ValueError('service account token is exposed')
-    if report.get('root_writable') is not True or report.get('helpers_read_only') is not True:
+    if (report.get('root_writable') is not True and report.get('root_full') is not True) or report.get('helpers_read_only') is not True:
         raise ValueError('system root or helper mount protection is invalid')
     caps = report.get('caps', {})
     names = ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')

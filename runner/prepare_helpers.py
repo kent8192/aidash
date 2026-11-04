@@ -24,6 +24,20 @@ def prepare_image_subpath(image_root):
     image_root.mkdir(parents=True, exist_ok=True)
 
 
+def prepare_space_reserve(path, size=16 << 20):
+    import errno
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            os.posix_fallocate(fd, 0, size)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError as error:
+        if error.errno not in (errno.ENOSPC, errno.EOPNOTSUPP, errno.ENOSYS):
+            raise
+
+
 def main():
     process_limit = int(os.environ['AIDASH_PROCESS_LIMIT'])
     if process_limit < 32:
@@ -51,6 +65,7 @@ def main():
     for name in ('sandbox_v2.py', 'execution_pod.py', 'control.py', 'python_session.py', 'network_probe.py', 'user_probe.py'):
         shutil.copy2(Path('/opt/aidash') / name, destination / name)
     Path('/scratch-system/scratch').mkdir(parents=True, exist_ok=True)
+    prepare_space_reserve('/scratch-system/.space-reserve')
     prepare_image_subpath('/scratch-system/image-root')
     os.chmod(destination / 'loader', 0o755)
     (destination / '.guard-waiting').touch()

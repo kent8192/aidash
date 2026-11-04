@@ -132,6 +132,71 @@ class SystemTreeTest(unittest.TestCase):
             self.assertEqual((root / 'usr' / 'bin' / 'base').read_text(), 'image')
 
 
+class FullDiskRegressionTest(unittest.TestCase):
+    def test_operations_journal_has_independent_bounded_storage(self):
+        from execution_pod import execution_manifests
+        settings = {'scratch_space_id': 's', 'image': 'image@sha256:' + 'a' * 64, 'cpu': 2,
+                    'memory_bytes': 2 << 30, 'capacity_bytes': 2 << 30, 'docker_enabled': False}
+        config = {'runtime_class': 'gvisor', 'helper_image': 'helper@sha256:' + 'b' * 64, 'namespace': 'sandbox'}
+        _, pod = execution_manifests(settings, config)
+        mount = next(item for item in pod['spec']['containers'][0]['volumeMounts']
+                     if item['mountPath'] == '/scratch-system/operations')
+        volume = next(item for item in pod['spec']['volumes'] if item['name'] == mount['name'])
+        self.assertEqual(volume['emptyDir']['medium'], 'Memory')
+        self.assertGreater(int(volume['emptyDir']['sizeLimit']), 0)
+
+    def test_completed_operation_bookkeeping_is_released(self):
+        import tempfile
+        from pathlib import Path
+        from sandbox_v2 import forget_operation
+        operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for suffix in ('.started', '.json', '.running'):
+                (root / (operation + suffix)).write_text('record')
+            (root / 'unrelated').write_text('keep')
+            forget_operation(operation, root)
+            self.assertEqual([path.name for path in root.iterdir()], ['unrelated'])
+
+    def test_reset_releases_old_root_before_copying_new_image(self):
+        import tempfile
+        import shutil
+        from pathlib import Path
+        from unittest.mock import patch
+        from execution_pod import initialize_system_root
+        with tempfile.TemporaryDirectory() as directory:
+            image, store = Path(directory) / 'image', Path(directory) / 'store'
+            image.mkdir()
+            (image / 'new').write_text('image')
+            (store / 'rootfs').mkdir(parents=True)
+            (store / 'rootfs' / 'old').write_text('old')
+            original_copy = shutil.copytree
+            def copy(*args, **kwargs):
+                self.assertFalse((store / 'rootfs').exists())
+                return original_copy(*args, **kwargs)
+            with patch('shutil.copytree', side_effect=copy):
+                initialize_system_root(image, store, reset=True)
+            self.assertTrue((store / 'rootfs' / 'new').exists())
+
+    def test_full_disk_releases_reserve_and_retries_tracking(self):
+        import errno
+        import tempfile
+        from pathlib import Path
+        from sandbox_v2 import disk_tolerant_track
+        with tempfile.TemporaryDirectory() as directory:
+            reserve = Path(directory) / 'reserve'
+            reserve.write_bytes(b'space')
+            calls = []
+            def tracker():
+                calls.append(1)
+                if reserve.exists():
+                    raise OSError(errno.ENOSPC, 'full')
+            self.assertTrue(disk_tolerant_track(tracker, reserve))
+            self.assertEqual(len(calls), 2)
+            self.assertFalse(reserve.exists())
+            self.assertFalse(disk_tolerant_track(lambda: (_ for _ in ()).throw(OSError(errno.ENOSPC, 'full')), reserve))
+
+
 class ImageEnvironmentRegressionTest(unittest.TestCase):
     def test_image_environment_is_applied_only_to_guest_commands(self):
         import tempfile
@@ -1330,6 +1395,9 @@ class RootAdmissionTest(unittest.TestCase):
                   'service_account_absent': True, 'raw_socket': False,
                   'root_writable': True, 'helpers_read_only': True}
         verify_user_probe(report, docker=False, processes=128)
+        verify_user_probe(dict(report, root_writable=False, root_full=True), docker=False, processes=128)
+        with self.assertRaisesRegex(ValueError, 'system root'):
+            verify_user_probe(dict(report, root_writable=False, root_full=False), docker=False, processes=128)
         for key in ('system_absent', 'user_namespace_blocked', 'proc_root_blocked'):
             with self.subTest(key=key), self.assertRaisesRegex(ValueError, 'chroot'):
                 verify_user_probe(dict(report, **{key: False}), docker=False, processes=128)

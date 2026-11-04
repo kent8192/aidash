@@ -57,15 +57,19 @@ def process_limit_probe(limit):
     return enforced
 
 
-def writable(path):
+def write_status(path):
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    except OSError:
-        return False
+    except OSError as error:
+        return 'full' if error.errno == errno.ENOSPC else 'denied'
     else:
         os.close(fd)
         os.unlink(path)
-        return True
+        return 'writable'
+
+
+def writable(path):
+    return write_status(path) == 'writable'
 
 
 def probe():
@@ -91,6 +95,7 @@ def probe():
     except OSError as error:
         proc_root_blocked = error.errno in (errno.EACCES, errno.EPERM)
     filename = '.aidash-admission-' + str(os.getpid())
+    root_status = write_status('/' + filename)
     return {'uid': os.getuid(), 'kernel': os.uname().release,
             'no_new_privs': int(fields['NoNewPrivs']),
             'caps': {key: int(fields[key], 16) for key in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')},
@@ -99,7 +104,7 @@ def probe():
             'system_absent': not os.path.lexists('/scratch-system'),
             'user_namespace_blocked': user_namespace_blocked, 'proc_root_blocked': proc_root_blocked,
             'service_account_absent': not Path('/var/run/secrets/kubernetes.io/serviceaccount/token').exists(),
-            'root_writable': writable('/' + filename),
+            'root_writable': root_status == 'writable', 'root_full': root_status == 'full',
             'helpers_read_only': not writable('/.aidash-helpers/' + filename)}
 
 

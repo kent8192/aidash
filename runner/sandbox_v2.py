@@ -255,6 +255,29 @@ def run_supervised(argv, timeout, stop_requested=None):
     return {'status': 'termination_unconfirmed'}
 
 
+def disk_tolerant_track(action, reserve, on_full=None):
+    import errno
+    try:
+        action()
+        return True
+    except OSError as error:
+        if error.errno != errno.ENOSPC:
+            raise
+    if on_full is not None:
+        on_full.set()
+    try:
+        os.unlink(reserve)
+    except FileNotFoundError:
+        pass
+    try:
+        action()
+        return True
+    except OSError as error:
+        if error.errno != errno.ENOSPC:
+            raise
+        return False
+
+
 def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, *, expected_pod_uid,
                       record_changes=True):
     """Execute once, persist its outcome, and record its observed system changes."""
@@ -304,28 +327,42 @@ def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, 
     os.replace(pending_running, running)
     interval_stop = threading.Event()
     interval_errors = []
+    disk_full = threading.Event()
+    tracking_started = False
     if record_changes:
-        change_interval(root, '/scratch-system', operation_id, run_id)
+        tracking_started = disk_tolerant_track(
+            lambda: change_interval(root, '/scratch-system', operation_id, run_id),
+            '/scratch-system/.space-reserve', disk_full)
+        if not tracking_started:
+            disk_full.set()
         def track():
             while not interval_stop.wait(2):
                 try:
-                    change_interval(root, '/scratch-system')
+                    if not disk_tolerant_track(lambda: change_interval(root, '/scratch-system'),
+                                               '/scratch-system/.space-reserve', disk_full):
+                        disk_full.set()
                 except Exception as error:
                     interval_errors.append(error)
                     stopping.set()
                     return
-        tracker = threading.Thread(target=track, daemon=True)
-        tracker.start()
+        if tracking_started:
+            tracker = threading.Thread(target=track, daemon=True)
+            tracker.start()
     argv = helper_command('chroot', 'docker' if docker_enabled else 'normal', root, cwd, '/bin/sh', '-c', code)
     try:
         result = run_supervised(argv, timeout, stop_requested=stopping)
     finally:
-        if record_changes:
+        if tracking_started:
             interval_stop.set()
             tracker.join()
-            change_interval(root, '/scratch-system', operation_id, run_id, finished=True)
+            if not disk_tolerant_track(
+                    lambda: change_interval(root, '/scratch-system', operation_id, run_id, finished=True),
+                    '/scratch-system/.space-reserve', disk_full):
+                disk_full.set()
     if interval_errors:
         raise RuntimeError('change tracking failed: ' + str(interval_errors[0]))
+    if disk_full.is_set():
+        result.update(error_code='disk_full', message='System change tracking was incomplete because the Scratch Space is full')
     result.update(operation_id=operation_id, run_id=run_id)
     temporary = state / (operation_id + '.new')
     with temporary.open('x', encoding='utf-8') as file:
@@ -390,6 +427,15 @@ def log_chunk(path, offset, limit):
     return {'data': base64.b64encode(data).decode('ascii'), 'next_offset': offset + len(data), 'eof': eof}
 
 
+def forget_operation(operation_id, directory='/scratch-system/operations'):
+    import uuid
+    from pathlib import Path
+    if str(uuid.UUID(operation_id)) != operation_id:
+        raise ValueError('canonical operation UUID required')
+    for suffix in ('.started', '.running', '.running.new', '.new', '.json'):
+        (Path(directory) / (operation_id + suffix)).unlink(missing_ok=True)
+
+
 def operation_running(operation_id):
     import json
     import uuid
@@ -429,8 +475,9 @@ if __name__ == '__main__':
         from pathlib import Path
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from execution_pod import initialize_system_root
-        save_image_environment('/scratch-image', os.environ)
-        initialize_system_root('/', '/scratch-image', reset=os.environ.get('AIDASH_RESET_SYSTEM') == 'true')
+        copied = initialize_system_root('/', '/scratch-image', reset=os.environ.get('AIDASH_RESET_SYSTEM') == 'true')
+        if copied or not (Path('/scratch-image') / 'environment.json').exists():
+            save_image_environment('/scratch-image', os.environ)
         raise SystemExit(0)
     if sys.argv[1:] == ['bootstrap']:
         import resource
@@ -470,6 +517,9 @@ if __name__ == '__main__':
     if len(sys.argv) == 4 and sys.argv[1] == 'changes':
         import json
         print(json.dumps(log_chunk('/scratch-system/changes.jsonl', int(sys.argv[2]), int(sys.argv[3]))))
+        raise SystemExit(0)
+    if len(sys.argv) == 3 and sys.argv[1] == 'forget':
+        forget_operation(sys.argv[2])
         raise SystemExit(0)
     if len(sys.argv) == 3 and sys.argv[1] == 'running':
         import json
