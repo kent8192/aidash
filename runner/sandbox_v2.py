@@ -55,6 +55,11 @@ def chroot_command(root, cwd, argv, docker_enabled):
         raise ValueError('cwd and command are required')
     if cwd.startswith('/') or '..' in cwd.split('/'):
         raise ValueError('cwd must be relative to /scratch')
+    import resource
+    process_limit = int(os.environ['AIDASH_PROCESS_LIMIT'])
+    if process_limit < 32:
+        raise ValueError('invalid guest process ceiling')
+    resource.setrlimit(resource.RLIMIT_NPROC, (process_limit, process_limit))
     os.chroot(root)
     target = os.path.realpath(os.path.join('/scratch', cwd))
     if os.path.commonpath(['/scratch', target]) != '/scratch':

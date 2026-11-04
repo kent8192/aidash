@@ -421,11 +421,6 @@ class ExecutionPodController:
                     evidence = self.backend.guard_execution_pod(pod, settings, container_name, container_id, epoch)
                     self._record_guard(pod, container_name, container_id, epoch, host_evidence=evidence)
                     if container_name == 'helpers':
-                        probe = self.backend.kube(['exec', name, '-c', 'helpers', '--', 'python3', '-c',
-                            'import json,resource;print(json.dumps(resource.getrlimit(resource.RLIMIT_NPROC)))'])
-                        wanted = self.config.get('processes', 128)
-                        if json.loads(probe.stdout) != [wanted, wanted]:
-                            raise ExecutionPodError('admission_failed', 'Guest process ceiling does not match the profile')
                         self.backend.kube(['exec', name, '-c', 'helpers', '--', 'python3', '-c',
                                            "from pathlib import Path;Path('/helpers/.guard-ready').touch()"])
                     return

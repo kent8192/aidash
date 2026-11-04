@@ -887,6 +887,26 @@ class RootAdmissionTest(unittest.TestCase):
                     node_guard.handle(request)
 
 
+class ExecProcessLimitTest(unittest.TestCase):
+    def test_chroot_exec_applies_limit_to_new_process(self):
+        import os
+        import subprocess
+        import sys
+        code = r"""
+import os, resource
+from unittest.mock import patch
+from sandbox_v2 import chroot_command
+os.environ['AIDASH_PROCESS_LIMIT'] = '128'
+def execute(*args):
+    print(*resource.getrlimit(resource.RLIMIT_NPROC))
+with patch('os.chroot'), patch('os.chdir'), patch('sandbox_v2.drop_user_capabilities'), patch('os.execvp', execute):
+    chroot_command('/rootfs', '.', ['/bin/true'], False)
+"""
+        result = subprocess.run([sys.executable, '-c', code], cwd=os.path.dirname(__file__),
+                                capture_output=True, text=True, check=True)
+        self.assertEqual(result.stdout.strip(), '128 128')
+
+
 class AdmissionGateOrderTest(unittest.TestCase):
     def test_guard_checks_cgroup_before_releasing_user_image(self):
         import json
@@ -911,9 +931,6 @@ class AdmissionGateOrderTest(unittest.TestCase):
                 if '.guard-waiting' in args[-1]:
                     events.append('waiting')
                     return SimpleNamespace(stdout=b'', returncode=0)
-                if 'getrlimit' in args[-1]:
-                    events.append('process-limit')
-                    return SimpleNamespace(stdout=b'[128,128]', returncode=0)
                 events.append('release')
                 return SimpleNamespace(stdout=b'', returncode=0)
             def guard_execution_pod(self, *_args):
@@ -922,7 +939,7 @@ class AdmissionGateOrderTest(unittest.TestCase):
         controller._record_guard = Mock()
         controller._record_volume = Mock()
         controller._admit_pod('scratch-' + 'a' * 48, {'scratch_space_id': 'scratch'})
-        self.assertEqual(events, ['waiting', 'guard', 'process-limit', 'release'])
+        self.assertEqual(events, ['waiting', 'guard', 'release'])
 
     def test_network_evidence_requires_gateway_and_denies_all_other_targets(self):
         from execution_pod import verify_network_probe
