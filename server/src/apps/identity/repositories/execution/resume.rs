@@ -43,6 +43,18 @@ impl WorkerResumeRepository for Resume<'_> {
 		))
 		.await
 	}
+	async fn guard_remote_scratch(&self) -> Result<()> {
+		let access = self.access.read().await;
+		let current = super::entry::resolve_scratch_space(self.federation, &access, self.run)
+			.await
+			.map_err(aidash_application::authorization::worker_entry::scratch_refusal)?;
+		if current != self.scratch_space_id {
+			return Err(
+				aidash_application::authorization::worker_entry::scratch_refusal(Error::Forbidden),
+			);
+		}
+		Ok(())
+	}
 	async fn lease(&self) -> Result<Box<dyn WorkerResumeScope + '_>> {
 		Ok(Box::new(Scope {
 			scratch_space_id: self.scratch_space_id,
