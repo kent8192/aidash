@@ -390,6 +390,24 @@ def log_chunk(path, offset, limit):
     return {'data': base64.b64encode(data).decode('ascii'), 'next_offset': offset + len(data), 'eof': eof}
 
 
+def operation_running(operation_id):
+    import json
+    import uuid
+    from pathlib import Path
+    if str(uuid.UUID(operation_id)) != operation_id:
+        raise ValueError('canonical operation UUID required')
+    path = Path('/scratch-system/operations') / (operation_id + '.running')
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, 'rb') as file:
+            record = json.load(file)
+        if record.get('pod_uid') != os.environ.get('AIDASH_POD_UID'):
+            return False
+        return process_start_time(record['pid']) == record['start_time']
+    except (FileNotFoundError, ProcessLookupError):
+        return False
+
+
 def read_result(operation_id):
     import json
     import uuid
@@ -452,6 +470,10 @@ if __name__ == '__main__':
     if len(sys.argv) == 4 and sys.argv[1] == 'changes':
         import json
         print(json.dumps(log_chunk('/scratch-system/changes.jsonl', int(sys.argv[2]), int(sys.argv[3]))))
+        raise SystemExit(0)
+    if len(sys.argv) == 3 and sys.argv[1] == 'running':
+        import json
+        print(json.dumps({'running': operation_running(sys.argv[2])}))
         raise SystemExit(0)
     if len(sys.argv) == 3 and sys.argv[1] == 'result':
         import json

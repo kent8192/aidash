@@ -543,6 +543,41 @@ class CommandTransportTest(unittest.TestCase):
         self.assertTrue(result['transport_timed_out'])
 
 
+class ReconnectedCommandRegressionTest(unittest.TestCase):
+    def test_lost_stream_waits_for_supervisor_result_without_stopping_pod(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodController
+        operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        with tempfile.TemporaryDirectory() as directory:
+            class Backend:
+                root, command, environment = Path(directory), ['kubectl'], {}
+                attempts = 0
+                def kube(self, args, **kwargs):
+                    if args[0] == 'get':
+                        return SimpleNamespace(stdout=b'{"metadata":{"uid":"uid"},"status":{"phase":"Running"}}', returncode=0)
+                    if 'result' in args:
+                        self.attempts += 1
+                        if self.attempts == 1:
+                            return SimpleNamespace(stdout=b'', returncode=1)
+                        return SimpleNamespace(stdout=json.dumps({'operation_id': operation, 'run_id': 'r',
+                            'status': 'completed', 'exit_code': 127}).encode(), returncode=0)
+                    return SimpleNamespace(stdout=b'{"running":true}', returncode=0)
+            controller = ExecutionPodController(Backend(), {}, admitted=True)
+            controller._command_path(operation).write_text(json.dumps({'operation_id': operation, 'scratch_space_id': 's',
+                'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid', 'docker_enabled': False, 'background': False,
+                'timeout_seconds': 5, 'cwd': '.', 'code': 'true', 'status': 'queued'}))
+            transport = {'exit_code': 1, 'transport_timed_out': False,
+                         'output': {'stdout': '', 'stderr': '', 'truncated': False}}
+            with patch('execution_pod.drain_process', return_value=transport), patch('time.sleep'):
+                controller._execute_command(operation)
+            self.assertEqual(controller.command_result(operation)['exit_code'], 127)
+            self.assertEqual(controller.backend.attempts, 2)
+
+
 class DockerFramingRegressionTest(unittest.TestCase):
     def test_framed_result_survives_bounded_output_and_preserves_exit_code(self):
         import json

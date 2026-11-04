@@ -996,6 +996,7 @@ print(json.dumps(r))'''
     def command_result(self, operation_id):
         import base64
         import json
+        import time
         with self.lock:
             record = self._read_command(operation_id)
             result = {key: record[key] for key in ('operation_id', 'scratch_space_id', 'run_id',
@@ -1109,8 +1110,37 @@ print(json.dumps(r))'''
                 self.touch_space(scratch_id)
             self.futures.pop(operation_id, None)
 
-    def _execute_command(self, operation_id):
+    def _await_normal_result(self, record, deadline):
         import json
+        import time
+        name, operation_id = record['pod'], record['operation_id']
+        missing_since = time.monotonic()
+        while deadline is None or time.monotonic() < deadline:
+            if self._read_command(operation_id).get('status') == 'interrupted':
+                return None
+            try:
+                observed = self.backend.kube(['exec', name, '-c', 'execution', '--'] +
+                                             helper_command('result', operation_id), check=False)
+                if observed.returncode == 0:
+                    return json.loads(observed.stdout)
+                pod = self._get('pod', name)
+                if (not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']
+                        or pod.get('status', {}).get('phase') != 'Running'):
+                    return None
+                running = self.backend.kube(['exec', name, '-c', 'execution', '--'] +
+                                            helper_command('running', operation_id), check=False)
+                if running.returncode == 0 and json.loads(running.stdout).get('running') is True:
+                    missing_since = time.monotonic()
+                elif time.monotonic() - missing_since > 30:
+                    return None
+            except Exception:
+                if time.monotonic() - missing_since > 30:
+                    return None
+            time.sleep(.5)
+        return None
+
+    def _execute_command(self, operation_id):
+        import time
         with self.lock:
             record = self._read_command(operation_id)
             if record['status'] != 'queued':
@@ -1130,6 +1160,7 @@ print(json.dumps(r))'''
         try:
             limit = self.config.get('output_bytes', getattr(self.backend, 'config', {}).get('output_bytes', 8388608))
             transport_timeout = None if record['background'] else record['timeout_seconds'] + 180
+            result_deadline = None if transport_timeout is None else time.monotonic() + transport_timeout
             if record['docker_enabled']:
                 import secrets
                 nonce = secrets.token_hex(32)
@@ -1141,9 +1172,11 @@ print(json.dumps(r))'''
             if record['docker_enabled']:
                 outcome = transport.get('framed_result')
             else:
-                observed = self.backend.kube(['exec', name, '-c', 'execution', '--'] +
-                                             helper_command('result', operation_id), check=False)
-                outcome = json.loads(observed.stdout) if observed.returncode == 0 else None
+                outcome = self._await_normal_result(record, result_deadline)
+                if self._read_command(operation_id)['status'] == 'interrupted':
+                    return
+                if transport['exit_code'] != 0:
+                    transport['output']['truncated'] = True
             if (transport['transport_timed_out'] or not isinstance(outcome, dict)
                     or outcome.get('operation_id') != operation_id or outcome.get('run_id') != record['run_id']
                     or outcome.get('status') not in ('completed', 'timed_out', 'stopped')):
