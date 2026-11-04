@@ -18,6 +18,23 @@ fn result(record: &Record) -> Result<CleanupResult> {
 fn files(area: &Area) -> Result<Vec<FileEntry>> {
 	Ok(serde_json::from_value(area.manifest.clone())?)
 }
+async fn active_mounts(
+	scope: &mut dyn CleanupScope,
+	files: Vec<FileEntry>,
+) -> Result<Vec<FileEntry>> {
+	let mut active = Vec::with_capacity(files.len());
+	for file in files {
+		if matches!(file.scope, FileScope::References) && file.provenance["kind"] == "reference" {
+			let id = serde_json::from_value::<Uuid>(file.provenance["id"].clone());
+			match id {
+				Ok(id) if scope.reference_active(id).await? => {}
+				_ => continue,
+			}
+		}
+		active.push(file);
+	}
+	Ok(active)
+}
 pub async fn load(scope: &mut dyn CleanupScope, id: Uuid, action: &str) -> Result<Area> {
 	let area: Area = scope
 		.load_area(id)
@@ -168,6 +185,9 @@ pub async fn prepare(
 		}
 		// Retain the already verified snapshot itself. The expiry worker locks
 		// this same area and record, so it cannot erase the bytes after Keep.
+		let snapshot = serde_json::from_value::<Vec<FileEntry>>(recovery.data["snapshot"].clone())?;
+		let snapshot = active_mounts(scope, snapshot).await?;
+		recovery.data["snapshot"] = json!(snapshot);
 		area.manifest = recovery.data["snapshot"].clone();
 		area.state = "retained".into();
 		area.generation += 1;
@@ -223,12 +243,11 @@ pub async fn prepare(
 		area.epoch += 1;
 		area.generation += 1;
 		area.state = "cleaning".into();
-		area.manifest = json!(
-			files(&area)?
-				.into_iter()
-				.filter(|f| matches!(f.scope, FileScope::References))
-				.collect::<Vec<_>>()
-		);
+		let mounts = files(&area)?
+			.into_iter()
+			.filter(|f| matches!(f.scope, FileScope::References))
+			.collect();
+		area.manifest = json!(active_mounts(scope, mounts).await?);
 		scope.publish(&mut area).await?;
 		scope.persist(&area, false).await?;
 		scope.cancel_runs(&area).await?;

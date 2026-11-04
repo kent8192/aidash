@@ -210,6 +210,23 @@ impl CleanupScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn reference_active(&mut self, id: Uuid) -> Result<bool> {
+		let state: Option<String> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("state"))
+				.from(Alias::new("core_records"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+				.and_where(
+					Expr::col(Alias::new("tenant")).eq(Expr::value(&self.access.identity.tenant)),
+				)
+				.and_where(Expr::col(Alias::new("kind")).eq("reference"))
+				.lock(LockType::Share)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **self.access.tx)
+		.await?;
+		Ok(state.as_deref() == Some("ready"))
+	}
 	async fn message(&mut self, workspace: Uuid, id: Uuid) -> Result<()> {
 		self.access
 			.workspace_record(workspace, "message", id)

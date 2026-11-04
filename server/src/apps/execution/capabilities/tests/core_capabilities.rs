@@ -1837,6 +1837,9 @@ mod reference_dispatch_tests;
 #[path = "core_capabilities/publication_storage.rs"]
 mod publication_storage_tests;
 
+#[path = "core_capabilities/reference_reclamation.rs"]
+mod reference_reclamation_tests;
+
 #[path = "core_capabilities/reclamation_lock.rs"]
 mod reclamation_lock_tests;
 

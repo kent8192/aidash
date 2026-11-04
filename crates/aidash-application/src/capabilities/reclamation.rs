@@ -115,22 +115,26 @@ pub async fn reclaim(repository: &dyn ReclamationRepository, id: Uuid) -> Result
 				}
 				record.data["chunks"] = json!([]);
 				if removing {
+					let mut pending = false;
 					for key in ["original", "extraction"] {
 						if let Some(file) =
 							serde_json::from_value::<Option<FileEntry>>(record.data[key].clone())?
 						{
+							if scope.object_named(&record.tenant, file.file_id).await? {
+								pending = true;
+								continue;
+							}
 							files.push(file);
 						}
 						record.data[key] = Value::Null;
 					}
-					record.state = if record.state == "revoked" {
-						"revoked"
-					} else {
-						"expired"
+					if record.state != "revoked" && !pending {
+						record.state = "expired".into();
 					}
-					.into();
-					record.expires_at = None;
-					record.data["objects_released"] = json!(true);
+					if !pending {
+						record.expires_at = None;
+					}
+					record.data["objects_released"] = json!(!pending);
 				}
 			}
 			_ => return Err(Error::Forbidden),

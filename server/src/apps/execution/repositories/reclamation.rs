@@ -620,6 +620,53 @@ impl ReclamationScope for Scope<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
+	async fn object_named(&mut self, tenant: &str, id: Uuid) -> Result<bool> {
+		// The object row fences new FK references until the caller's erase.
+		// Do not wait behind a publisher that may itself need this record.
+		let object = || {
+			Query::select()
+				.column(Alias::new("id"))
+				.from(Alias::new("core_objects"))
+				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+				.to_owned()
+		};
+		let locked: Option<Uuid> = crate::database::native::query_scalar(
+			&object()
+				.lock(LockType::Update)
+				.lock_behavior(LockBehavior::SkipLocked)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut *self.tx)
+		.await?;
+		if locked.is_none() {
+			let existing: Option<Uuid> =
+				crate::database::native::query_scalar(&object().to_string(PostgresQueryBuilder))
+					.scalar_optional(&mut *self.tx)
+					.await?;
+			return Ok(existing.is_some());
+		}
+		for (table, column) in [
+			("core_blob_references", "object_id"),
+			("core_retention_files", "file_id"),
+		] {
+			let found: Option<Uuid> = crate::database::native::query_scalar(
+				&Query::select()
+					.column(Alias::new(column))
+					.from(Alias::new(table))
+					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+					.and_where(Expr::col(Alias::new(column)).eq(Expr::value(id)))
+					.limit(1)
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_optional(&mut *self.tx)
+			.await?;
+			if found.is_some() {
+				return Ok(true);
+			}
+		}
+		Ok(false)
+	}
 	async fn working_tenant(&mut self, id: Uuid) -> Result<Option<String>> {
 		let result: NativeResult<Option<String>> = async {
 			let tenant: Option<String> = {

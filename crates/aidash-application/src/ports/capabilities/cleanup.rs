@@ -32,6 +32,8 @@ pub trait CleanupScope: Send {
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	async fn sources(&mut self, workspace: Uuid, constraints: &Value) -> Result<()>;
+	/// Keep only Reference mounts whose source is still ready.
+	async fn reference_active(&mut self, id: Uuid) -> Result<bool>;
 	async fn message(&mut self, workspace: Uuid, id: Uuid) -> Result<()>;
 	async fn visible_thread(&mut self, thread: Uuid) -> Result<()>;
 	async fn load_area(&mut self, id: Uuid) -> Result<Option<Area>>;

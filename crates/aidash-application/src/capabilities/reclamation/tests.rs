@@ -122,6 +122,9 @@ impl ReclamationScope for Scope {
 		state.calls.push("object-kind".into());
 		Ok(Some(state.kind.clone()))
 	}
+	async fn object_named(&mut self, _: &str, _: Uuid) -> Result<bool> {
+		Ok(false)
+	}
 	async fn working_tenant(&mut self, _: Uuid) -> Result<Option<String>> {
 		Err(Error::Forbidden)
 	}

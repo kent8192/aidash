@@ -29,6 +29,8 @@ pub trait ReclamationScope: Send {
 	async fn release_quota(&mut self, tenant: &str, reserved: i64) -> Result<()>;
 	async fn release_transfer_refs(&mut self, tenant: &str, id: Uuid) -> Result<()>;
 	async fn object_kind(&mut self, id: Uuid, tenant: &str) -> Result<Option<String>>;
+	/// Lock the object and report whether another durable owner still names it.
+	async fn object_named(&mut self, tenant: &str, id: Uuid) -> Result<bool>;
 	async fn working_tenant(&mut self, id: Uuid) -> Result<Option<String>>;
 	async fn erase(&mut self, tenant: &str, id: Uuid) -> Result<()>;
 	async fn update(&mut self, record: &mut Record) -> Result<()>;
