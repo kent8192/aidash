@@ -276,3 +276,67 @@ and its wheel-selection API/UI have been removed; use uv through the gateway.
 File previews, Retained versions and message citations are described in
 [File previews and Retained versions](file-previews-and-retained-versions.md).
 Live previews follow with [#405](https://github.com/kent8192/aidash/issues/405).
+
+## Scratch Space proxy integration
+
+The scope-authenticated forward proxy is an integration component. The server
+has not yet connected it to Scratch Space credentials or durable scope policy;
+the operation-token gateway described above remains the active route.
+
+Once that authority and the Execution Pod runtime are connected, the Pod needs
+`HTTPS_PROXY` and `HTTP_PROXY` set to the internal Egress gateway. The gateway
+accepts HTTP Basic proxy authentication with the scope credential as the password
+(for example, `http://scope:<scope-credential>@<gateway-host>:<gateway-port>`;
+URL-encode the credential). Set `NO_PROXY` only for explicitly permitted local
+endpoints and the exact gateway host, for example
+`localhost,127.0.0.1,::1,<gateway-host>`. The gateway exemption lets callers
+reach its path-level External service route directly. Do not exempt metadata
+addresses or the cluster network. The Pod's network policy must enforce the
+same boundary regardless of these environment variables. The scope credential
+is not a Tenant Secret, and Tenant Secret values never enter the Pod.
+
+For CONNECT, the gateway tunnels TLS without inspecting it. For plain HTTP it
+forwards absolute-form requests. It checks the scope's host allowlist and rejects
+non-public resolved addresses even when all hosts are enabled. All-host access
+also requires the operator's Offering setting. The default traffic allowance is
+100 GiB sent and 100 GiB received per scope per UTC day, with no request-count
+limit. External service traffic is accounted in batches after forwarding; each
+active stream can exceed a limit by up to one batch plus one chunk. Once a
+scope or service budget is exhausted, new admissions are refused until the next
+UTC day. The default anomaly rule suspends the scope after more than 600 new
+authenticated connection attempts in one minute, including invalid targets and
+hosts denied by the allowlist; an operator must lift the suspension. Hosts longer than 253 bytes are rejected. The
+authority must emit an operator notification when it suspends a scope.
+
+Each gateway instance defaults to 64 simultaneous tunnels per scope, 32 per
+Tenant and 1,024 overall. The Tenant and global limits can be configured in the
+capability profile; the Tenant limit must be positive and lower than the global
+limit. Capacity exhaustion returns `egress_tunnel_limit`,
+`egress_tenant_tunnel_limit` or `egress_global_tunnel_limit`. DNS resolution and a stalled client write each have a 30-second
+deadline. Idle tunnels close after five minutes and all tunnels close after 24
+hours. The gateway reauthenticates the credential and reloads scope and host
+policy every five seconds, including while idle. Revocation or a narrowed host
+allowlist closes an existing tunnel. Three consecutive transient errors or timed-out
+checks close it as `egress_authority_unavailable`; they are not reported as a
+suspension. The authority must verify opaque credentials in constant time, using
+fixed-length random tokens; credentials are excluded from records and logs.
+
+Connection and event row retention remains a follow-up; operators must account
+for their storage until an automatic retention policy is implemented.
+
+Connection records contain scope, host, port, sent and received byte counts,
+duration and outcome, rather than request paths or bodies. Invalid targets are
+recorded when a bounded host and port can be parsed; malformed targets without
+one are rejected without retaining the raw request. A record is created
+before the connection starts and updated when it ends. If the initial record
+cannot be written after retries, the gateway refuses the connection with
+`egress_audit_unavailable`. A process crash or sustained audit-store failure
+can leave the record's byte counts incomplete. Tunnel budget reservations and
+refunds each have a five-second deadline. An interrupted connection or timed-out
+refund may retain unused reserved budget. The separate path-level External service route remains responsible
+for attaching Tenant Secrets; scope-based admission for that route is not yet
+wired. Its integration route is `/v2/services/<service>/<path>` with the scope
+credential in `Authorization: Bearer <scope-credential>`. The gateway removes
+that header before forwarding and attaches the External service's Tenant Secret
+separately. The legacy `/v1/<operation-token>/<service>/<path>` route continues
+to use operation admission until the scope authority is connected.

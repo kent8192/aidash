@@ -4,6 +4,106 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+/// The identity used to account for one Scratch Space's traffic.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ScopeId {
+	pub tenant: String,
+	pub node: String,
+	pub scratch_space: uuid::Uuid,
+}
+
+/// Registry and anonymous container-pull destinations enabled by default.
+pub const DEFAULT_ALLOWED_HOSTS: &[&str] = &[
+	"registry.npmjs.org",
+	"pypi.org",
+	"files.pythonhosted.org",
+	"crates.io",
+	"index.crates.io",
+	"static.crates.io",
+	"proxy.golang.org",
+	"sum.golang.org",
+	"github.com",
+	"codeload.github.com",
+	"objects.githubusercontent.com",
+	"deb.debian.org",
+	"security.debian.org",
+	"archive.ubuntu.com",
+	"security.ubuntu.com",
+	"registry-1.docker.io",
+	"auth.docker.io",
+	"production.cloudflare.docker.com",
+	"ghcr.io",
+	"pkg-containers.githubusercontent.com",
+	"quay.io",
+	"cdn.quay.io",
+];
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AllowedHosts {
+	pub hosts: Vec<String>,
+	pub allow_all: bool,
+}
+impl Default for AllowedHosts {
+	fn default() -> Self {
+		Self {
+			hosts: DEFAULT_ALLOWED_HOSTS
+				.iter()
+				.map(|host| (*host).to_owned())
+				.collect(),
+			allow_all: false,
+		}
+	}
+}
+impl AllowedHosts {
+	pub fn permits(&self, host: &str, operator_allows_all: bool) -> bool {
+		if host.is_empty() || !host.is_ascii() {
+			return false;
+		}
+		if self.allow_all && operator_allows_all {
+			return true;
+		}
+		let host = host.to_ascii_lowercase();
+		self.hosts.iter().any(|pattern| {
+			let pattern = pattern.to_ascii_lowercase();
+			if let Some(suffix) = pattern.strip_prefix("*.") {
+				!suffix.is_empty()
+					&& host
+						.strip_suffix(suffix)
+						.is_some_and(|prefix| prefix.ends_with('.') && prefix.len() > 1)
+			} else {
+				host == pattern
+			}
+		})
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DailyBudget {
+	pub sent_bytes: u64,
+	pub received_bytes: u64,
+}
+impl Default for DailyBudget {
+	fn default() -> Self {
+		Self {
+			sent_bytes: 100 * (1 << 30),
+			received_bytes: 100 * (1 << 30),
+		}
+	}
+}
+
+/// A scope is suspended when its new connections exceed this per-minute limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnomalyRule {
+	pub connections_per_minute: u32,
+}
+impl Default for AnomalyRule {
+	fn default() -> Self {
+		Self {
+			connections_per_minute: 600,
+		}
+	}
+}
+
 pub const DISCLOSURE: &str = "Sandboxed code may send this External service anything it can read, including Tenant data in the Working Area. Individual requests are not approved. Aidash's zero data retention and Usage Record guarantees do not apply to these calls.";
 pub const UNAVAILABLE: &str = "EGRESS_UNAVAILABLE";
 /// A budget counter reached its limit: the gateway stops the stream.

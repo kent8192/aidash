@@ -172,3 +172,22 @@ fn sealed_clients_bind_issuer_client_id_redirect_and_refuse_unknown_kinds_versio
 		assert!(sealed::open(bad).is_err());
 	}
 }
+
+#[test]
+fn scratch_scope_cannot_authorize_connection_forwarding() {
+	let claim = claims(ConnectionOperation::Forward {
+		version: "3".into(),
+		destination: Destination {
+			origin: "https://mcp.example".into(),
+			path_prefix: "/mcp/".into(),
+		},
+		methods: vec!["POST".into()],
+		sub: SecretSubject::ScratchSpace {
+			tenant: "tenant".into(),
+			node: "node".into(),
+			space: Uuid::new_v4(),
+		},
+		max_response_bytes: None,
+	});
+	assert!(claim.validate().is_err());
+}

@@ -66,7 +66,7 @@ impl Authority for FixtureAuthority {
 			gateway_origin: self.origin.clone(),
 			destination: Destination::Permitted,
 			request: Uuid::new_v4(),
-			operation: Uuid::new_v4(),
+			operation: Some(Uuid::new_v4()),
 			session: None,
 			service: service.into(),
 			definition: ExternalService {
@@ -420,7 +420,7 @@ impl Authority for BrokerAuthority {
 			gateway_origin: self.origin.clone(),
 			destination: Destination::PublicOnly,
 			request: Uuid::new_v4(),
-			operation: Uuid::new_v4(),
+			operation: Some(Uuid::new_v4()),
 			session: None,
 			service: service.into(),
 			definition: self.definition.clone(),
@@ -682,7 +682,7 @@ impl Authority for DirectAuthority {
 			gateway_origin: self.origin.clone(),
 			destination: Destination::Permitted,
 			request: Uuid::new_v4(),
-			operation: Uuid::new_v4(),
+			operation: Some(Uuid::new_v4()),
 			session: None,
 			service: service.into(),
 			definition: ExternalService {
@@ -794,6 +794,190 @@ fn a_brokered_request_keeps_the_service_path_exactly() {
 	}
 }
 
+struct ScopeServiceFixture {
+	scopes: Arc<aidash_application::egress::test_support::MemoryScopes>,
+	upstream: String,
+	origin: String,
+	audit: Arc<Audit>,
+}
+#[async_trait]
+impl aidash_application::egress::EgressScopes for ScopeServiceFixture {
+	async fn resolve(&self, credential: &str) -> Result<aidash_application::egress::ScopeSettings> {
+		self.scopes.resolve(credential).await
+	}
+	async fn admit_external(
+		&self,
+		credential: &str,
+		service: &str,
+		_: &str,
+		_: &str,
+		_: &str,
+	) -> Result<Admission> {
+		let scope = self.scopes.resolve(credential).await?;
+		self.scopes.check_active(&scope, credential).await?;
+		if service != "images" {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		Ok(Admission {
+			gateway_origin: self.origin.clone(),
+			destination: Destination::Permitted,
+			request: Uuid::new_v4(),
+			operation: None,
+			session: None,
+			service: service.into(),
+			definition: ExternalService {
+				base_url: self.upstream.clone(),
+				methods: vec!["GET".into()],
+				secret: Some("image-key".into()),
+				authentication: Default::default(),
+				limits: None,
+			},
+			expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
+			credential: Some("canary-tenant-secret".into()),
+			route: None,
+			meter: self.audit.clone(),
+		})
+	}
+	async fn admit_connection(
+		&self,
+		scope: &aidash_application::egress::ScopeSettings,
+	) -> Result<()> {
+		self.scopes.admit_connection(scope).await
+	}
+	async fn check_active(
+		&self,
+		scope: &aidash_application::egress::ScopeSettings,
+		credential: &str,
+	) -> Result<aidash_application::egress::ScopeSettings> {
+		self.scopes.check_active(scope, credential).await
+	}
+	async fn debit(
+		&self,
+		scope: &aidash_application::egress::ScopeSettings,
+		direction: Direction,
+		bytes: u64,
+		day: chrono::NaiveDate,
+	) -> Result<()> {
+		self.scopes.debit(scope, direction, bytes, day).await
+	}
+	async fn refund(
+		&self,
+		scope: &aidash_application::egress::ScopeSettings,
+		direction: Direction,
+		bytes: u64,
+		day: chrono::NaiveDate,
+	) -> Result<()> {
+		self.scopes.refund(scope, direction, bytes, day).await
+	}
+	async fn record(&self, record: aidash_application::egress::ConnectionRecord) -> Result<()> {
+		self.scopes.record(record).await
+	}
+	async fn lift_suspension(&self, scope: &aidash_domain::egress::ScopeId) -> Result<()> {
+		self.scopes.lift_suspension(scope).await
+	}
+}
+
+#[tokio::test]
+async fn external_service_accepts_scope_credential_without_forwarding_it() {
+	use aidash_application::egress::{ScopeSettings, test_support::MemoryScopes};
+	use aidash_domain::egress::{AllowedHosts, AnomalyRule, DailyBudget, ScopeId};
+	let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let upstream_url = format!("http://{}/", upstream.local_addr().unwrap());
+	let upstream_task = tokio::spawn(async move {
+		axum::serve(
+			upstream,
+			Router::new().route(
+				"/{*path}",
+				any(|request: Request<AxumBody>| async move {
+					assert_eq!(
+						request.headers()["authorization"],
+						"Bearer canary-tenant-secret"
+					);
+					assert!(request.headers().get("proxy-authorization").is_none());
+					if request.uri().path() == "/redirect" {
+						return Response::builder()
+							.status(StatusCode::FOUND)
+							.header("location", "/next")
+							.body(AxumBody::empty())
+							.unwrap();
+					}
+					Response::new(AxumBody::from("ok"))
+				}),
+			),
+		)
+		.await
+		.unwrap();
+	});
+	let settings = ScopeSettings {
+		id: ScopeId {
+			tenant: "tenant".into(),
+			node: "node".into(),
+			scratch_space: Uuid::new_v4(),
+		},
+		allowed_hosts: AllowedHosts::default(),
+		budget: DailyBudget::default(),
+		anomaly: AnomalyRule::default(),
+		operator_allows_all: false,
+		tunnel_limits: Default::default(),
+	};
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let origin = format!("http://{}", listener.local_addr().unwrap());
+	let audit = Arc::new(Audit::default());
+	let authority = Arc::new(FixtureAuthority {
+		upstream: upstream_url.clone(),
+		origin: origin.clone(),
+		audit: audit.clone(),
+	});
+	let scopes = Arc::new(ScopeServiceFixture {
+		scopes: Arc::new(MemoryScopes::new("scope-token".into(), settings)),
+		upstream: upstream_url,
+		origin: origin.clone(),
+		audit,
+	});
+	let (stop, stopping) = watch::channel(false);
+	let gateway = tokio::spawn(serve_with_scopes(
+		listener,
+		authority,
+		Some(scopes),
+		ProxyLimits::default(),
+		stopping,
+	));
+	let client = reqwest::Client::builder()
+		.redirect(reqwest::redirect::Policy::none())
+		.build()
+		.unwrap();
+	let url = format!("{origin}/v2/services/images/photo?private=yes");
+	assert_eq!(
+		client
+			.get(&url)
+			.bearer_auth("wrong")
+			.send()
+			.await
+			.unwrap()
+			.status(),
+		StatusCode::FORBIDDEN
+	);
+	let response = client
+		.get(&url)
+		.bearer_auth("scope-token")
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(response.status(), StatusCode::OK);
+	assert_eq!(response.text().await.unwrap(), "ok");
+	let redirect = client
+		.get(format!("{origin}/v2/services/images/redirect"))
+		.bearer_auth("scope-token")
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(redirect.status(), StatusCode::FOUND);
+	assert_eq!(redirect.headers()["location"], "/v2/services/images/next");
+	stop.send(true).unwrap();
+	gateway.await.unwrap().unwrap();
+	upstream_task.abort();
+}
+
 /// Commits every debit like the server meter, then refuses once a counter
 /// reaches `limit` or when the operation has expired.
 struct BudgetMeter {
@@ -813,6 +997,16 @@ impl Meter for BudgetMeter {
 		if self.expired {
 			return Err(aidash_application::Error::Conflict(
 				aidash_domain::egress::OPERATION_EXPIRED.into(),
+			));
+		}
+		if self.limit == 0 {
+			return Err(aidash_application::Error::Refused(
+				"egress_budget_exhausted".into(),
+			));
+		}
+		if self.limit == 1 {
+			return Err(aidash_application::Error::Refused(
+				"egress_suspended".into(),
 			));
 		}
 		if used >= self.limit {
@@ -1041,6 +1235,37 @@ async fn an_exhausted_upload_budget_is_reported_as_the_limit_not_the_upstream() 
 }
 
 #[tokio::test]
+async fn scoped_refusals_are_reported_on_upload() {
+	for (limit, status, code) in [
+		(0, StatusCode::TOO_MANY_REQUESTS, "egress_budget_exhausted"),
+		(1, StatusCode::FORBIDDEN, "egress_suspended"),
+	] {
+		let (origin, audit, tasks, stop) = metered_gateway(limit, false).await;
+		// A single chunk reaches the final debit without leaving a large unread
+		// request body that can reset the client socket before it sees the refusal.
+		let upload = futures_util::stream::iter(std::iter::once(Ok::<_, std::io::Error>(
+			Bytes::from(vec![1; CHUNK]),
+		)));
+		let response = reqwest::Client::new()
+			.post(format!("{origin}/v1/operation-token/images/upload"))
+			.body(reqwest::Body::wrap_stream(upload))
+			.send()
+			.await
+			.unwrap();
+		assert_eq!(response.status(), status);
+		assert_eq!(
+			response.text().await.unwrap(),
+			format!(r#"{{"error":"{code}"}}"#)
+		);
+		assert_eq!(
+			*audit.finished_records.lock().unwrap(),
+			vec![(status.as_u16(), Some(code.into()))]
+		);
+		shutdown(tasks, stop).await;
+	}
+}
+
+#[tokio::test]
 async fn an_expired_operation_is_reported_as_expired_not_as_an_exhausted_budget() {
 	let (origin, audit, tasks, stop) = metered_gateway(u64::MAX, true).await;
 	let response = reqwest::get(format!("{origin}/v1/operation-token/images/download/1"))
@@ -1085,4 +1310,18 @@ fn a_rewritten_package_index_never_forwards_the_clients_accept_encoding() {
 	assert!(request_header_forwarded("accept-encoding", &[], false));
 	assert!(request_header_forwarded("accept", &[], true));
 	assert!(!request_header_forwarded("cookie", &[], false));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stalled_client_write_times_out() {
+	use tokio::io::AsyncWriteExt;
+	let (socket, _client) = tokio::io::duplex(1);
+	let task = tokio::spawn(async move {
+		let mut socket = WriteDeadline::new(socket, Duration::from_secs(2));
+		socket.write_all(b"ab").await
+	});
+	tokio::task::yield_now().await;
+	tokio::time::advance(Duration::from_secs(3)).await;
+	let error = task.await.unwrap().unwrap_err();
+	assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
 }

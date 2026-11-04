@@ -104,6 +104,9 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0057_embedding_inputs"),
 	("registry", "0058_reference_images"),
 	("registry", "0059_reference_image_byte_state"),
+	("execution", "0109_scope_egress"),
+	("execution", "0110_scope_egress_row_level_security"),
+	("execution", "0111_scope_egress_state"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -162,7 +165,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		102
+		103
 	);
 	let tables = migrations
 		.iter()
@@ -417,12 +420,12 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0109_policy_probe")
+		.get_migration("execution", "0112_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("execution".to_owned(), "0108_node_preview_merge".to_owned())]
+		vec![("execution".to_owned(), "0111_scope_egress_state".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -459,6 +462,9 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0106_node_research_merge"),
 			("execution", "0107_node_plugin_merge"),
 			("execution", "0108_node_preview_merge"),
+			("execution", "0109_scope_egress"),
+			("execution", "0110_scope_egress_row_level_security"),
+			("execution", "0111_scope_egress_state"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -926,7 +932,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		102
+		103
 	);
 }
 
@@ -5044,6 +5050,81 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			.to_string(PostgresQueryBuilder);
 		let (nullable,): (String,) = sqlx::query_as(&sql).fetch_one(&pool).await.unwrap();
 		assert_eq!(nullable, "NO", "{column}");
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn scope_egress_rows_are_tenant_bound_and_purged_with_the_node(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	fixture.tenant_root("acme").await;
+	fixture.tenant_root("beta").await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
+	let other_node = aidash_domain::nodes::NodeName::derived("beta").to_string();
+	let indexes: Vec<String> = sqlx::query_scalar("SELECT indexdef FROM pg_indexes WHERE tablename IN ('egress_scope_connections', 'egress_scope_events')").fetch_all(&pool).await.unwrap();
+	assert!(
+		indexes
+			.iter()
+			.any(|definition| definition.contains("egress_scope_connections")
+				&& definition.contains("(tenant, node, scope_id)"))
+	);
+	assert!(
+		indexes
+			.iter()
+			.any(|definition| definition.contains("egress_scope_events")
+				&& definition.contains("(tenant, node, scope_id)"))
+	);
+	assert!(
+		indexes
+			.iter()
+			.any(|definition| definition.contains("egress_scope_events")
+				&& definition.contains("delivered_at IS NULL"))
+	);
+	let scope = Uuid::new_v4();
+	sqlx::query("INSERT INTO egress_scope_state (scope_id, tenant, node, suspended, window_started_at, connections_in_window) VALUES ($1, 'acme', $2, false, now(), 0)")
+		.bind(scope).bind(&node).execute(&pool).await.unwrap();
+	sqlx::query("INSERT INTO egress_scope_daily (id, tenant, node, scope_id, day, service, sent_bytes, received_bytes) VALUES ($1, 'acme', $2, $3, CURRENT_DATE::text, '', 1, 2)")
+		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await.unwrap();
+	let foreign = sqlx::query("INSERT INTO egress_scope_daily (id, tenant, node, scope_id, day, service, sent_bytes, received_bytes) VALUES ($1, 'beta', $2, $3, CURRENT_DATE::text, '', 1, 2)")
+		.bind(Uuid::new_v4()).bind(&other_node).bind(scope).execute(&pool).await;
+	assert!(
+		foreign.is_err(),
+		"a different Tenant cannot refer to the scope"
+	);
+	sqlx::query("INSERT INTO egress_scope_connections (id, tenant, node, scope_id, host, port, sent_bytes, received_bytes, duration_ms, outcome, created_at) VALUES ($1, 'acme', $2, $3, 'example.com', 443, 1, 2, 3, 'completed', now())")
+		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await.unwrap();
+	sqlx::query("INSERT INTO egress_scope_connections (id, tenant, node, scope_id, host, port, sent_bytes, received_bytes, duration_ms, outcome, created_at) VALUES ($1, 'acme', $2, $3, 'example.com', 0, 0, 0, 0, 'invalid_proxy_target', now())")
+		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await.unwrap();
+	let invalid_completed = sqlx::query("INSERT INTO egress_scope_connections (id, tenant, node, scope_id, host, port, sent_bytes, received_bytes, duration_ms, outcome, created_at) VALUES ($1, 'acme', $2, $3, 'example.com', 0, 0, 0, 0, 'completed', now())")
+		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await;
+	assert!(
+		invalid_completed.is_err(),
+		"port zero cannot represent a completed connection"
+	);
+	sqlx::query("INSERT INTO egress_scope_events (id, tenant, node, scope_id, kind, created_at) VALUES ($1, 'acme', $2, $3, 'suspended', now())")
+		.bind(Uuid::new_v4()).bind(&node).bind(scope).execute(&pool).await.unwrap();
+	sqlx::query("DELETE FROM nodes WHERE tenant = 'acme' AND name = $1")
+		.bind(&node)
+		.execute(&pool)
+		.await
+		.unwrap();
+	for table in [
+		"egress_scope_state",
+		"egress_scope_daily",
+		"egress_scope_connections",
+		"egress_scope_events",
+	] {
+		let count: i64 =
+			sqlx::query_scalar(&format!("SELECT count(*) FROM {table} WHERE scope_id = $1"))
+				.bind(scope)
+				.fetch_one(&pool)
+				.await
+				.unwrap();
+		assert_eq!(count, 0, "{table} survives Node purge");
 	}
 }
 

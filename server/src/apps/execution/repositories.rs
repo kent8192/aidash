@@ -200,3 +200,6 @@ pub(crate) mod source_delivery;
 pub(crate) mod mcp_connections;
 pub(crate) mod provider_container;
 pub(crate) mod subnodes;
+
+/// Scope egress persistence adapter, composed with live Scratch Space authority.
+pub mod scope_egress;

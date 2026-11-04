@@ -121,6 +121,14 @@ impl Refusal {
 			Error::Conflict(code) if code == aidash_domain::egress::OPERATION_EXPIRED => {
 				Self::EXPIRED
 			}
+			Error::Refused(code) if code == "egress_budget_exhausted" => Self {
+				status: StatusCode::TOO_MANY_REQUESTS,
+				code: "egress_budget_exhausted",
+			},
+			Error::Refused(code) if code == "egress_suspended" => Self {
+				status: StatusCode::FORBIDDEN,
+				code: "egress_suspended",
+			},
 			Error::Forbidden | Error::Unauthorized | Error::AuthorityRefused(_) => Self::FORBIDDEN,
 			_ => Self::UNAVAILABLE,
 		}
@@ -297,11 +305,126 @@ impl Drop for Completion {
 
 /// The listener must be bound only on a cluster-internal interface. Its token
 /// is an operation credential, never a Tenant Secret or a Deployment secret.
+/// Fails a socket write that makes no progress for the configured interval.
+struct WriteDeadline<S> {
+	inner: S,
+	timeout: Duration,
+	blocked: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+}
+impl<S> WriteDeadline<S> {
+	fn new(inner: S, timeout: Duration) -> Self {
+		Self {
+			inner,
+			timeout,
+			blocked: None,
+		}
+	}
+	fn pending(
+		&mut self,
+		cx: &mut std::task::Context<'_>,
+	) -> std::task::Poll<std::io::Result<usize>> {
+		use std::future::Future;
+		let timer = self
+			.blocked
+			.get_or_insert_with(|| Box::pin(tokio::time::sleep(self.timeout)));
+		if timer.as_mut().poll(cx).is_ready() {
+			std::task::Poll::Ready(Err(std::io::Error::new(
+				std::io::ErrorKind::TimedOut,
+				"egress_write_timeout",
+			)))
+		} else {
+			std::task::Poll::Pending
+		}
+	}
+}
+impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for WriteDeadline<S> {
+	fn poll_read(
+		mut self: std::pin::Pin<&mut Self>,
+		cx: &mut std::task::Context<'_>,
+		buf: &mut tokio::io::ReadBuf<'_>,
+	) -> std::task::Poll<std::io::Result<()>> {
+		std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+	}
+}
+impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for WriteDeadline<S> {
+	fn poll_write(
+		mut self: std::pin::Pin<&mut Self>,
+		cx: &mut std::task::Context<'_>,
+		buf: &[u8],
+	) -> std::task::Poll<std::io::Result<usize>> {
+		match std::pin::Pin::new(&mut self.inner).poll_write(cx, buf) {
+			std::task::Poll::Ready(result) => {
+				self.blocked = None;
+				std::task::Poll::Ready(result)
+			}
+			std::task::Poll::Pending => self.pending(cx),
+		}
+	}
+	fn poll_flush(
+		mut self: std::pin::Pin<&mut Self>,
+		cx: &mut std::task::Context<'_>,
+	) -> std::task::Poll<std::io::Result<()>> {
+		match std::pin::Pin::new(&mut self.inner).poll_flush(cx) {
+			std::task::Poll::Ready(result) => {
+				self.blocked = None;
+				std::task::Poll::Ready(result)
+			}
+			std::task::Poll::Pending => self.pending(cx).map(|result| result.map(|_| ())),
+		}
+	}
+	fn poll_shutdown(
+		mut self: std::pin::Pin<&mut Self>,
+		cx: &mut std::task::Context<'_>,
+	) -> std::task::Poll<std::io::Result<()>> {
+		match std::pin::Pin::new(&mut self.inner).poll_shutdown(cx) {
+			std::task::Poll::Ready(result) => {
+				self.blocked = None;
+				std::task::Poll::Ready(result)
+			}
+			std::task::Poll::Pending => self.pending(cx).map(|result| result.map(|_| ())),
+		}
+	}
+}
+
 pub async fn serve(
 	listener: TcpListener,
 	authority: Arc<dyn Authority>,
+	stopping: watch::Receiver<bool>,
+) -> crate::Result<()> {
+	serve_with_scopes(listener, authority, None, ProxyLimits::default(), stopping).await
+}
+
+/// Per-instance proxy capacity. Tenant capacity must be lower than global capacity.
+#[derive(Clone, Copy, Debug)]
+pub struct ProxyLimits {
+	pub global_concurrent: usize,
+	pub tenant_concurrent: usize,
+}
+impl Default for ProxyLimits {
+	fn default() -> Self {
+		Self {
+			global_concurrent: 1024,
+			tenant_concurrent: 32,
+		}
+	}
+}
+
+/// Serve legacy External service calls and, when configured, scope proxy calls.
+pub async fn serve_with_scopes(
+	listener: TcpListener,
+	authority: Arc<dyn Authority>,
+	scopes: Option<Arc<dyn aidash_application::egress::EgressScopes>>,
+	limits: ProxyLimits,
 	mut stopping: watch::Receiver<bool>,
 ) -> crate::Result<()> {
+	if limits.tenant_concurrent == 0
+		|| limits.tenant_concurrent >= limits.global_concurrent
+		|| limits.global_concurrent > tokio::sync::Semaphore::MAX_PERMITS
+	{
+		return Err(aidash_application::Error::Invalid(
+			"invalid Egress proxy tunnel capacity".into(),
+		));
+	}
 	let client = reqwest::Client::builder()
 		.redirect(reqwest::redirect::Policy::none())
 		.no_proxy()
@@ -319,27 +442,46 @@ pub async fn serve(
 		.map_err(crate::http_error)?;
 	let slots = Arc::new(tokio::sync::Semaphore::new(128));
 	let mut connections = tokio::task::JoinSet::new();
+	let tunnels = Arc::new(proxy::TunnelManager::new(stopping.clone(), limits));
 	loop {
-		if *stopping.borrow() {
+		if *stopping.borrow() || stopping.has_changed().is_err() {
 			connections.abort_all();
+			while connections.join_next().await.is_some() {}
+			tunnels.drain().await;
 			return Ok(());
 		}
 		tokio::select! {
 			_ = stopping.changed() => {},
 			Some(_) = connections.join_next(), if !connections.is_empty() => {},
 			accepted = listener.accept() => {
-				let (socket, _) = accepted.map_err(|_| aidash_application::Error::External("Egress listener unavailable".into()))?;
+				let (socket, _) = match accepted {
+					Ok(accepted) => accepted,
+					Err(error) => {
+						tracing::warn!(%error, "Egress accept failed; retrying");
+						tokio::select! { _ = tokio::time::sleep(Duration::from_secs(1)) => {}, _ = stopping.changed() => {} }
+						continue;
+					}
+				};
 				let Ok(permit) = slots.clone().try_acquire_owned() else { continue; };
-				let authority = authority.clone(); let client = client.clone(); let public = public.clone();
+				let authority = authority.clone(); let client = client.clone(); let public = public.clone(); let scopes = scopes.clone(); let tunnels = tunnels.clone();
 				connections.spawn(async move {
-					let _permit = permit;
+					let permit = Arc::new(std::sync::Mutex::new(Some(permit)));
+					let connection_lease = Arc::new(std::sync::Mutex::new(None));
 					let service = service_fn(move |request| {
-						let authority=authority.clone(); let client=client.clone(); let public=public.clone();
-						async move { Ok::<_,Infallible>(forward(request, authority, client, public).await) }
+						let authority=authority.clone(); let client=client.clone(); let public=public.clone(); let scopes=scopes.clone(); let permit=permit.clone(); let tunnels=tunnels.clone(); let connection_lease=connection_lease.clone();
+						async move {
+							let response = if request.method() == hyper::Method::CONNECT || request.uri().scheme().is_some() {
+								let connect = request.method() == hyper::Method::CONNECT;
+								let mut response = match scopes { Some(scopes) => proxy::forward(request, scopes, tunnels, permit, connection_lease).await, None => failure(StatusCode::SERVICE_UNAVAILABLE, "egress_scope_unavailable") };
+								if !connect || response.status() != StatusCode::OK { response.headers_mut().insert(hyper::header::CONNECTION, hyper::header::HeaderValue::from_static("close")); }
+								response
+							} else { forward(request, authority, client, public, scopes).await };
+							Ok::<_,Infallible>(response)
+						}
 					});
 					let _ = hyper::server::conn::http1::Builder::new().timer(TokioTimer::new())
 						.header_read_timeout(IDLE).max_headers(64)
-						.serve_connection(TokioIo::new(socket), service).await;
+						.serve_connection(TokioIo::new(WriteDeadline::new(socket, IDLE)), service).with_upgrades().await;
 				});
 			}
 		}
@@ -501,13 +643,46 @@ async fn forward(
 	authority: Arc<dyn Authority>,
 	client: reqwest::Client,
 	public: reqwest::Client,
+	scopes: Option<Arc<dyn aidash_application::egress::EgressScopes>>,
 ) -> Response<Body> {
-	if !request.uri().path().starts_with("/v1/") || request.uri().scheme().is_some() {
+	if request.uri().scheme().is_some() {
 		return failure(StatusCode::NOT_FOUND, "egress_route_not_found");
 	}
-	let route = request.uri().path()[4..].to_owned();
-	let Some((token, remainder)) = route.split_once('/') else {
-		return failure(StatusCode::UNAUTHORIZED, "egress_token_required");
+	let request_path = request.uri().path();
+	let scoped = request_path.starts_with("/v2/services/");
+	let route = if scoped {
+		request_path[13..].to_owned()
+	} else if let Some(path) = request_path.strip_prefix("/v1/") {
+		path.to_owned()
+	} else {
+		return failure(StatusCode::NOT_FOUND, "egress_route_not_found");
+	};
+	let scope_token = if scoped {
+		let mut values = request
+			.headers()
+			.get_all(hyper::header::AUTHORIZATION)
+			.iter();
+		let token = values
+			.next()
+			.and_then(|v| v.to_str().ok())
+			.and_then(|s| s.split_once(' '))
+			.filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+			.map(|(_, token)| token)
+			.filter(|s| !s.is_empty());
+		if values.next().is_some() || token.is_none() {
+			return failure(StatusCode::UNAUTHORIZED, "egress_token_required");
+		}
+		token.map(str::to_owned)
+	} else {
+		None
+	};
+	let (token, remainder) = if let Some(token) = scope_token.as_deref() {
+		(token, route.as_str())
+	} else {
+		let Some((token, remainder)) = route.split_once('/') else {
+			return failure(StatusCode::UNAUTHORIZED, "egress_token_required");
+		};
+		(token, remainder)
 	};
 	let (service, path) = remainder.split_once('/').unwrap_or((remainder, ""));
 	if token.len() > 512
@@ -520,6 +695,9 @@ async fn forward(
 		return failure(StatusCode::BAD_REQUEST, "invalid_egress_route");
 	}
 	let asset = if let Some(encoded) = path.strip_prefix("__asset/") {
+		if scoped {
+			return failure(StatusCode::BAD_REQUEST, "invalid_egress_path");
+		}
 		let decoded = URL_SAFE_NO_PAD
 			.decode(encoded)
 			.ok()
@@ -543,16 +721,33 @@ async fn forward(
 		"{:x}",
 		Sha256::digest(query.as_deref().unwrap_or("").as_bytes())
 	);
-	let admission = match authority
-		.admit(
-			token,
-			service,
-			request.method().as_str(),
-			audit_path,
-			&query_digest,
-		)
-		.await
-	{
+	let admitted = if scoped {
+		match scopes {
+			Some(scopes) => {
+				scopes
+					.admit_external(
+						token,
+						service,
+						request.method().as_str(),
+						audit_path,
+						&query_digest,
+					)
+					.await
+			}
+			None => Err(aidash_application::Error::Forbidden),
+		}
+	} else {
+		authority
+			.admit(
+				token,
+				service,
+				request.method().as_str(),
+				audit_path,
+				&query_digest,
+			)
+			.await
+	};
+	let admission = match admitted {
 		Ok(value) => value,
 		Err(aidash_application::Error::Forbidden | aidash_application::Error::Unauthorized) => {
 			return failure(StatusCode::FORBIDDEN, "egress_forbidden");
@@ -564,6 +759,14 @@ async fn forward(
 		}
 		Err(aidash_application::Error::Conflict(_)) => {
 			return Refusal::LIMIT.response();
+		}
+		Err(aidash_application::Error::Refused(message))
+			if message == "egress_budget_exhausted" =>
+		{
+			return failure(StatusCode::TOO_MANY_REQUESTS, "egress_budget_exhausted");
+		}
+		Err(aidash_application::Error::Refused(message)) if message == "egress_suspended" => {
+			return failure(StatusCode::FORBIDDEN, "egress_suspended");
 		}
 		Err(aidash_application::Error::Invalid(message)) if message == "secret_unavailable" => {
 			return failure(StatusCode::FAILED_DEPENDENCY, "secret_unavailable");
@@ -585,7 +788,7 @@ async fn forward(
 		completion.finish(Some("operation_expired")).await;
 		return failure(StatusCode::FORBIDDEN, "egress_expired");
 	}
-	let index = admission.definition.builtin_index(service);
+	let index = !scoped && admission.definition.builtin_index(service);
 	if asset.is_some() && !index {
 		completion.finish(Some("invalid_package_service")).await;
 		return failure(StatusCode::FORBIDDEN, "egress_forbidden");
@@ -779,8 +982,13 @@ async fn forward(
 			return failure(StatusCode::BAD_GATEWAY, "egress_redirect_refused");
 		};
 		let relative = redirected.path().strip_prefix(base.path()).unwrap_or("");
+		let prefix = if scoped {
+			format!("/v2/services/{service}/{relative}")
+		} else {
+			format!("/v1/{token}/{service}/{relative}")
+		};
 		let rewritten = format!(
-			"/v1/{token}/{service}/{relative}{}",
+			"{prefix}{}",
 			redirected
 				.query()
 				.map(|q| format!("?{q}"))
@@ -936,3 +1144,5 @@ async fn forward(
 
 #[cfg(test)]
 mod tests;
+
+mod proxy;
