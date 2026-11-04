@@ -1,5 +1,5 @@
 // reinhardt-migration-source: 1
-// Logical ORM state: physical foreign keys and uniqueness remain enforced by 0015 and 0017.
+// Logical ORM state: physical foreign keys and uniqueness remain enforced by 0019 and 0021.
 // Reinhardt expresses relation state as constraint DDL; this state-only operation never executes SQL.
 
 use reinhardt::db::migrations::prelude::*;

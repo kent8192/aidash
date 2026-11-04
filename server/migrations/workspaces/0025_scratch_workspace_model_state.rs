@@ -1,5 +1,5 @@
 // reinhardt-migration-source: 1
-// Logical ORM relationship state; the physical foreign key was created by 0020.
+// Logical ORM relationship state; the physical foreign key was created by 0024.
 
 use reinhardt::db::migrations::FieldType;
 use reinhardt::db::migrations::prelude::*;
