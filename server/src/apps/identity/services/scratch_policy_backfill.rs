@@ -34,6 +34,17 @@ pub(crate) fn forward() -> String {
 		.to_string(PostgresQueryBuilder)
 }
 
+/// Reversal preserves policy edits made after this data migration.
+pub(crate) fn backward() -> String {
+	use reinhardt::query::{Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
+	format!(
+		"{};\n",
+		Query::select()
+			.expr(Expr::value(1))
+			.to_string(PostgresQueryBuilder)
+	)
+}
+
 #[cfg(test)]
 mod tests {
 	use crate::apps::execution::test_database::{DatabaseFixture, database};

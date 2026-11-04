@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub struct MigrationSeeds;
 
-fn assets() -> [(&'static str, String); 11] {
+fn assets() -> [(&'static str, String); 12] {
 	use crate::apps::{
 		federation::services::migration_seed as federation,
 		marketplace::services::migration_seed as marketplace,
@@ -65,6 +65,10 @@ fn assets() -> [(&'static str, String); 11] {
 				"SET LOCAL aidash.scope = 'deployment';\n{};\n",
 				crate::apps::identity::services::scratch_policy_backfill::forward()
 			),
+		),
+		(
+			"identity/sql/backward/0067_scratch_member_policy.sql",
+			crate::apps::identity::services::scratch_policy_backfill::backward(),
 		),
 	]
 }
@@ -181,7 +185,7 @@ mod tests {
 			.unwrap();
 		assert!(migration.database_only);
 		assert!(matches!(migration.operations.as_slice(),
-			[Operation::RunSQL { sql, reverse_sql: None }] if sql == &expected[10].1));
+			[Operation::RunSQL { sql, reverse_sql: Some(reverse) }] if sql == &expected[10].1 && reverse == &expected[11].1));
 		let migration = FilesystemSource::new(&root)
 			.get_migration("execution", "0090_run_created_at")
 			.await
