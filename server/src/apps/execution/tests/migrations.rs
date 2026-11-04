@@ -107,10 +107,27 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0109_scope_egress"),
 	("execution", "0110_scope_egress_row_level_security"),
 	("execution", "0111_scope_egress_state"),
+	("execution", "0112_content_blobs"),
+	("execution", "0113_content_object_references"),
+	("execution", "0114_content_object_state"),
+	("execution", "0115_blob_reservations"),
+	("execution", "0116_blob_reservations_state"),
+	("execution", "0117_blob_receipt_references"),
+	("execution", "0118_blob_uploads"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
 	("marketplace", "0011_tenant_owned_row_level_security"),
+];
+
+/// Exclude the content-store cutover to seed legacy data for its migration test.
+const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
+	("execution", "0113_content_object_references"),
+	("execution", "0114_content_object_state"),
+	("execution", "0115_blob_reservations"),
+	("execution", "0116_blob_reservations_state"),
+	("execution", "0117_blob_receipt_references"),
+	("execution", "0118_blob_uploads"),
 ];
 
 async fn history_size() -> usize {
@@ -165,7 +182,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		103
+		105
 	);
 	let tables = migrations
 		.iter()
@@ -420,12 +437,12 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0112_policy_probe")
+		.get_migration("execution", "0119_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("execution".to_owned(), "0111_scope_egress_state".to_owned())]
+		vec![("execution".to_owned(), "0118_blob_uploads".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -465,6 +482,13 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0109_scope_egress"),
 			("execution", "0110_scope_egress_row_level_security"),
 			("execution", "0111_scope_egress_state"),
+			("execution", "0112_content_blobs"),
+			("execution", "0113_content_object_references"),
+			("execution", "0114_content_object_state"),
+			("execution", "0115_blob_reservations"),
+			("execution", "0116_blob_reservations_state"),
+			("execution", "0117_blob_receipt_references"),
+			("execution", "0118_blob_uploads"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -932,7 +956,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		103
+		105
 	);
 }
 
@@ -5205,4 +5229,107 @@ async fn subnode_provider_migration_accepts_exact_builtin_descriptors_and_revers
 	executor.apply_migrations(&[migration]).await.unwrap();
 	assert!(contract_accepts(&pool, "aidash_descriptor_is_valid", vec![descriptor]).await);
 	assert!(contract_accepts(&pool, "aidash_descriptor_is_valid", vec![connection]).await);
+}
+
+#[rstest]
+#[tokio::test]
+async fn content_store_cutover_discards_only_rows_naming_legacy_objects(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture
+		.migrate_excluding(CONTENT_STORE_CUTOVER_MIGRATIONS)
+		.await;
+	fixture.tenant_root("acme").await;
+	let pool = PgPool::connect(&fixture.url).await.unwrap();
+	let workspace = Uuid::new_v4();
+	let area = Uuid::new_v4();
+	let object = Uuid::new_v4();
+	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
+	let scratch = fixture.scratch_space("acme").await;
+	sqlx::query("INSERT INTO workspaces (id,tenant,node,title,goal,scratch_space_id,created_by) VALUES ($1,'acme',$2,'Migration','Exercise cutover',$3,'alice')")
+        .bind(workspace).bind(&node).bind(scratch).execute(&pool).await.unwrap();
+	sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,workspace_id,thread_id,revision,manifest) VALUES ($1,'acme','home','agent','alice',$2,$3,7,'[]')")
+        .bind(area).bind(workspace).bind(Uuid::new_v4()).execute(&pool).await.unwrap();
+	sqlx::query("INSERT INTO core_objects (id,tenant,kind,digest,size) VALUES ($1,'acme','thread_attachment',$2,1)")
+        .bind(object).bind("a".repeat(64)).execute(&pool).await.unwrap();
+	let attached = Uuid::new_v4();
+	let wav = Uuid::new_v4();
+	let inline = Uuid::new_v4();
+	for (id, original, rendition) in [
+		(attached, Some(object), None),
+		(wav, None, Some(object)),
+		(inline, None, None),
+	] {
+		sqlx::query("INSERT INTO channel_attachments (id,tenant,workspace_id,uploaded_by,idempotency_key,filename,media_type,sha256,size_bytes,content,object_id,wav_object_id,wav_sha256,wav_size_bytes) VALUES ($1,'acme',$2,'alice',$3,'file','text/plain',$4,1,$5,$6,$7,$8,$9)")
+            .bind(id).bind(workspace).bind(Uuid::new_v4()).bind("a".repeat(64))
+            .bind(if original.is_some() { None } else { Some(vec![b'x']) })
+            .bind(original).bind(rendition).bind(rendition.map(|_| "b".repeat(64))).bind(rendition.map(|_| 1_i64))
+            .execute(&pool).await.unwrap();
+	}
+	for kind in [
+		"reference",
+		"transfer_in",
+		"transfer_out",
+		"collaboration",
+		"cleanup",
+		"deletion_confirmation",
+	] {
+		sqlx::query("INSERT INTO core_records (id,tenant,owner,kind,state,data) VALUES ($1,'acme','alice',$2,'ready','{}')")
+            .bind(Uuid::new_v4()).bind(kind).execute(&pool).await.unwrap();
+	}
+	fixture.migrate().await;
+	let surviving: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM channel_attachments ORDER BY id")
+		.fetch_all(&pool)
+		.await
+		.unwrap();
+	assert_eq!(surviving, vec![inline]);
+	let kinds: Vec<String> = sqlx::query_scalar("SELECT kind FROM core_records ORDER BY kind")
+		.fetch_all(&pool)
+		.await
+		.unwrap();
+	assert_eq!(kinds, vec!["deletion_confirmation"]);
+	let manifest: serde_json::Value = sqlx::query_scalar(
+		"SELECT manifest FROM core_manifest_revisions WHERE tenant='acme' AND area_id=$1 AND revision=7",
+	)
+	.bind(area)
+	.fetch_one(&pool)
+	.await
+	.unwrap();
+	assert_eq!(manifest, json!([]));
+	// The reverse also discards rows naming objects created after cutover.
+	let current = Uuid::new_v4();
+	let new_attachment = Uuid::new_v4();
+	let digest = "c".repeat(64);
+	sqlx::query("INSERT INTO core_blobs (tenant,digest,size) VALUES ('acme',$1,1)")
+		.bind(&digest)
+		.execute(&pool)
+		.await
+		.unwrap();
+	sqlx::query("INSERT INTO core_objects (id,tenant,kind,digest,size) VALUES ($1,'acme','thread_attachment',$2,1)")
+		.bind(current).bind(&digest).execute(&pool).await.unwrap();
+	sqlx::query("INSERT INTO channel_attachments (id,tenant,workspace_id,uploaded_by,idempotency_key,filename,media_type,sha256,size_bytes,object_id) VALUES ($1,'acme',$2,'alice',$3,'new','text/plain',$4,1,$5)")
+		.bind(new_attachment).bind(workspace).bind(Uuid::new_v4()).bind(&digest).bind(current).execute(&pool).await.unwrap();
+	let mut reverse = deployment_command(&fixture.url, fixture.directory.path());
+	reverse.args(["migrate", "execution", "0112_content_blobs"]);
+	let output = tokio::time::timeout(Duration::from_secs(60), reverse.output())
+		.await
+		.unwrap()
+		.unwrap();
+	assert!(
+		output.status.success(),
+		"{}",
+		String::from_utf8_lossy(&output.stderr)
+	);
+	let remaining: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM channel_attachments ORDER BY id")
+		.fetch_all(&pool)
+		.await
+		.unwrap();
+	assert_eq!(remaining, vec![inline]);
+	let constraints: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_constraint WHERE conrelid='public.core_retention_files'::regclass AND conname IN ('retention_file_size','core_retention_files_hold_file_key','core_retention_files_hold_fkey','core_retention_files_tenant_fkey','core_retention_files_object_fkey')").fetch_one(&pool).await.unwrap();
+	assert_eq!(
+		constraints, 5,
+		"reverse must restore the legacy retention constraints"
+	);
+	pool.close().await;
 }

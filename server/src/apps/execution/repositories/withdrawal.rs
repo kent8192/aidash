@@ -45,7 +45,8 @@ impl OperationWithdrawalRepository for Repository<'_> {
 		// state: a stale worker snapshot cannot declare a dispatched writer safe.
 		let area: Area = {
 			let query_bind_1 = operation.area_id;
-			crate::database::native::query_as(
+			sessions::locked_area(
+				&mut *tx,
 				&sessions::select("core_areas")
 					.and_where(
 						reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
@@ -55,11 +56,11 @@ impl OperationWithdrawalRepository for Repository<'_> {
 							),
 						),
 					)
-					.lock(LockType::Update)
-					.to_string(PostgresQueryBuilder),
+					.to_owned(),
+				LockType::Update,
 			)
-			.fetch_one(&mut *tx)
 			.await?
+			.ok_or_else(|| crate::Error::NotFound("area unavailable".into()))?
 		};
 		let operation: Operation = {
 			let query_bind_1 = operation.id;

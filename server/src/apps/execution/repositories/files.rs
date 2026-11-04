@@ -31,11 +31,11 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use reinhardt::query::{
-	Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
-	SimpleExpr,
+	Alias, Expr, ExprTrait as _, IntoValue as _, OnConflict, PostgresQueryBuilder, Query,
+	QueryStatementBuilder as _,
 };
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 use uuid::Uuid;
 pub(crate) struct Scope<'a> {
 	pub(crate) store: Option<&'a Store>,
@@ -43,7 +43,100 @@ pub(crate) struct Scope<'a> {
 	pub(crate) run: Option<&'a Run>,
 	pub(crate) pending: Option<PendingObject>,
 }
-struct Reader(tokio::io::BufReader<tokio::fs::File>);
+struct Reader {
+	inner: tokio::io::BufReader<aidash_application::ports::blob_store::BlobReader>,
+	store: std::sync::Arc<dyn aidash_application::ports::blob_store::BlobStore>,
+	tenant: String,
+	digest: aidash_domain::capabilities::Digest,
+	size: u64,
+}
+/// Atomically retain one immutable revision and every logical object it names.
+pub(crate) async fn record_revision(
+	tx: &mut crate::database::native::Transaction,
+	tenant: &str,
+	area: &Area,
+	manifest: &Value,
+) -> NativeResult<()> {
+	crate::database::native::query(
+		&Query::insert()
+			.into_table(Alias::new("core_manifest_revisions"))
+			.columns(["tenant", "area_id", "revision", "manifest"].map(Alias::new))
+			.values(vec![
+				tenant.to_owned().into(),
+				area.id.into(),
+				area.revision.into(),
+				manifest.clone().into_value(),
+			])
+			.map_err(NativeError::Invalid)?
+			.on_conflict(
+				OnConflict::columns(["tenant", "area_id", "revision"].map(Alias::new))
+					.do_nothing()
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut **tx)
+	.await?;
+	let stored: Value = crate::database::native::query_scalar(
+		&Query::select()
+			.column(Alias::new("manifest"))
+			.from(Alias::new("core_manifest_revisions"))
+			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+			.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area.id)))
+			.and_where(Expr::col(Alias::new("revision")).eq(Expr::value(area.revision)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&mut **tx)
+	.await?;
+	if stored != *manifest {
+		return Err(NativeError::Conflict("AREA_REVISION_CHANGED".into()));
+	}
+	let mut entries: Vec<FileEntry> = serde_json::from_value(manifest.clone())?;
+	entries.sort_by(|a, b| a.digest.cmp(&b.digest).then(a.file_id.cmp(&b.file_id)));
+	for file in entries {
+		let holder = format!("{}:{}:{}", area.id, area.revision, file.file_id);
+		crate::database::native::query(
+			&Query::insert()
+				.into_table(Alias::new("core_blob_references"))
+				.columns(
+					[
+						"id",
+						"tenant",
+						"digest",
+						"holder_kind",
+						"holder_id",
+						"object_id",
+						"area_id",
+						"revision",
+					]
+					.map(Alias::new),
+				)
+				.values(vec![
+					Uuid::new_v4().into(),
+					tenant.to_owned().into(),
+					file.digest.into(),
+					"revision".into(),
+					holder.into(),
+					file.file_id.into(),
+					area.id.into(),
+					area.revision.into(),
+				])
+				.map_err(NativeError::Invalid)?
+				.on_conflict(
+					OnConflict::columns(
+						["tenant", "digest", "holder_kind", "holder_id"].map(Alias::new),
+					)
+					.do_nothing()
+					.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut **tx)
+		.await?;
+	}
+	Ok(())
+}
+
 fn missing() -> Error {
 	Error::External("file repository scope invariant".into())
 }
@@ -74,24 +167,37 @@ impl From<NativeMaterialize> for Materialize {
 #[async_trait]
 impl VerifiedFile for Reader {
 	async fn read_range(&mut self, offset: u64, limit: u64) -> Result<Vec<u8>> {
-		let result: NativeResult<Vec<u8>> = async {
-			self.0.seek(std::io::SeekFrom::Start(offset)).await?;
-			let mut bytes = vec![];
-			(&mut self.0).take(limit).read_to_end(&mut bytes).await?;
-			Ok(bytes)
+		if offset > self.size {
+			return Err(Error::Invalid("INVALID_READ_RANGE".into()));
 		}
-		.await;
-		result.map_err(Into::into)
+		let end = offset.saturating_add(limit).min(self.size);
+		if end == offset {
+			return Ok(Vec::new());
+		}
+		let mut reader = self
+			.store
+			.get(&self.tenant, self.digest, Some(offset..end))
+			.await?
+			.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
+		let mut bytes = vec![];
+		reader
+			.read_to_end(&mut bytes)
+			.await
+			.map_err(|e| Error::External(e.to_string()))?;
+		if bytes.len() as u64 != end - offset {
+			return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
+		}
+		Ok(bytes)
 	}
 	async fn fill_buf(&mut self) -> Result<&[u8]> {
-		self.0
+		self.inner
 			.fill_buf()
 			.await
 			.map_err(NativeError::from)
 			.map_err(Into::into)
 	}
 	fn consume(&mut self, count: usize) {
-		self.0.consume(count);
+		self.inner.consume(count);
 	}
 }
 #[async_trait]
@@ -383,32 +489,30 @@ impl FileScopePort for Scope<'_> {
 		result.map_err(Into::into)
 	}
 	async fn previous_manifest(&mut self, area: &Area) -> Result<Value> {
-		let result: NativeResult<_> = async {
+		let result: NativeResult<Value> = async {
 			let access = &mut *self.access;
-			let previous = {
-				let query_bind_1 = area.id;
-				crate::database::native::query_scalar(
-					&Query::select()
-						.column(Alias::new("manifest"))
-						.from(Alias::new("core_areas"))
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-								SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								),
-							),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.scalar_one(&mut **access.tx)
-				.await?
-			};
+			let previous: Option<Value> = crate::database::native::query_scalar(
+				&Query::select()
+					.column(Alias::new("manifest"))
+					.from(Alias::new("core_manifest_revisions"))
+					.and_where(
+						Expr::col(Alias::new("tenant")).eq(Expr::value(&access.identity.tenant)),
+					)
+					.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area.id)))
+					.and_where(Expr::col(Alias::new("revision")).eq(Expr::value(area.revision)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_optional(&mut **access.tx)
+			.await?;
+			let previous = previous.unwrap_or_else(|| serde_json::json!([]));
+			let tenant = access.identity.tenant.clone();
+			record_revision(access.tx.native_mut(), &tenant, area, &previous).await?;
 			Ok(previous)
 		}
 		.await;
 		result.map_err(Into::into)
 	}
+
 	async fn previous_generation(&mut self, area: &Area) -> Result<i64> {
 		let result: NativeResult<i64> = crate::database::native::query_scalar(
 			&Query::select()
@@ -453,55 +557,29 @@ impl FileScopePort for Scope<'_> {
 		result.map_err(Into::into)
 	}
 	async fn persist_manifest(&mut self, area: &Area) -> Result<()> {
-		let result: NativeResult<_> = async {
+		let result: NativeResult<()> = async {
 			let access = &mut *self.access;
-			{
-				let query_bind_1 = area.id;
-				let query_bind_2 = &area.manifest;
-				let query_bind_3 = &area.constraints;
-				let query_bind_4 = area.revision;
-				crate::database::native::query(
-					&Query::update()
-						.table(Alias::new("core_areas"))
-						.value_expr(
-							Alias::new("manifest"),
-							SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_2.to_owned()).into()],
-							),
-						)
-						.value_expr(
-							Alias::new("constraints"),
-							SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_3.to_owned()).into()],
-							),
-						)
-						.value_expr(
-							Alias::new("revision"),
-							SimpleExpr::CustomWithExpr(
-								"(?)".to_owned(),
-								vec![Expr::value(query_bind_4.to_owned()).into()],
-							),
-						)
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-								SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								),
-							),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.execute(&mut **access.tx)
-				.await?
-			};
+			let tenant = access.identity.tenant.clone();
+			record_revision(access.tx.native_mut(), &tenant, area, &area.manifest).await?;
+			crate::database::native::query(
+				&Query::update()
+					.table(Alias::new("core_areas"))
+					.value(Alias::new("constraints"), area.constraints.clone())
+					.value(Alias::new("revision"), area.revision)
+					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area.id)))
+					.and_where(
+						Expr::col(Alias::new("tenant")).eq(Expr::value(&access.identity.tenant)),
+					)
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut **access.tx)
+			.await?;
 			Ok(())
 		}
 		.await;
 		result.map_err(Into::into)
 	}
+
 	async fn open(&mut self, file: &MountedFile) -> Result<Box<dyn VerifiedFile>> {
 		let row: FileEntry = file.clone().into();
 		let file = self
@@ -510,7 +588,23 @@ impl FileScopePort for Scope<'_> {
 			.capabilities
 			.verified(self.access, &row)
 			.await?;
-		Ok(Box::new(Reader(tokio::io::BufReader::new(file))))
+		let store = self
+			.store
+			.ok_or_else(missing)?
+			.capabilities
+			.blob_store()
+			.await?;
+		let digest = row
+			.digest
+			.parse()
+			.map_err(|_| Error::Conflict("OBJECT_INTEGRITY".into()))?;
+		Ok(Box::new(Reader {
+			inner: tokio::io::BufReader::new(file),
+			store,
+			tenant: self.access.identity.tenant.clone(),
+			digest,
+			size: row.size,
+		}))
 	}
 	async fn cached(&mut self, key: Uuid, digest: &str) -> Result<Option<Value>> {
 		sessions::cached(self.access, key, digest)

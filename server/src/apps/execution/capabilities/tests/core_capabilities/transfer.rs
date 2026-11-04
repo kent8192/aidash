@@ -274,9 +274,13 @@ async fn chunked_transfer(#[future] two_nodes: TransferFixture) -> ChunkedTransf
 	bytes.extend_from_slice("final 東京\n".as_bytes());
 	let id = Uuid::new_v4();
 	let digest = aidash_server::capabilities::objects::digest(&bytes);
-	tokio::fs::write(c.a.root.join(id.simple().to_string()), &bytes)
-		.await
-		.unwrap();
+	fixture_blob(
+		c.a.f.store.pool.fixture_driver(),
+		&c.a.root,
+		&digest,
+		&bytes,
+	)
+	.await;
 	// A text-only recipient must be able to receive media for storage or tools.
 	let file = json!({"file_id":id,"path":"large.svg","digest":digest,"size":bytes.len(),"media_type":"image/svg+xml","scope":"working","provenance":{"kind":"explicit-transport-fixture"}});
 	let mut tx = c.a.f.store.pool.fixture_driver().begin().await.unwrap();
@@ -315,22 +319,14 @@ async fn chunked_transfer(#[future] two_nodes: TransferFixture) -> ChunkedTransf
 	.execute(&mut *tx)
 	.await
 	.unwrap();
-	{
-		let query_bind_1 = Uuid::parse_str(area["id"].as_str().unwrap()).unwrap();
-		let query_bind_2 = json!([file]);
-		sqlx::query(
-			&Query::update()
-				.table(Alias::new("core_areas"))
-				.value_expr(Alias::new("manifest"), Expr::value(query_bind_2.to_owned()))
-				.value(Alias::new("revision"), 2)
-				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(query_bind_1.to_owned())))
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(&mut *tx)
-		.await
-	}
-	.unwrap();
 	tx.commit().await.unwrap();
+	fixture_revision(
+		c.a.f.store.pool.fixture_driver(),
+		Uuid::parse_str(area["id"].as_str().unwrap()).unwrap(),
+		2,
+		json!([file]),
+	)
+	.await;
 	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":id,"expected_digest":digest}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.b.f.config.deployment.as_str(), "acme").to_string(),"agent_id":c.receiver.agent_id,"agent_version":c.receiver.agent_version,"thread_id":c.b.task}});
 	let (status, pending) = request(
 		&c.a.app,
@@ -455,11 +451,20 @@ async fn chunks_resume_out_of_order_after_both_servers_restart_without_duplicate
 	.await;
 	assert_eq!(area["manifest"].as_array().unwrap().len(), 1);
 	assert_eq!(area["revision"], 2);
-	let id = Uuid::parse_str(area["manifest"][0]["file_id"].as_str().unwrap()).unwrap();
+	let digest = area["manifest"][0]["digest"].as_str().unwrap();
+	let tenant = aidash_server::capabilities::objects::digest(b"acme");
 	assert_eq!(
-		tokio::fs::read(c.b.root.join(id.simple().to_string()))
-			.await
-			.unwrap(),
+		tokio::fs::read(
+			c.b.root
+				.join("tenants")
+				.join(tenant)
+				.join("sha256")
+				.join(&digest[..2])
+				.join(&digest[2..4])
+				.join(digest)
+		)
+		.await
+		.unwrap(),
 		fixture.bytes
 	);
 	fixture.peers.close().await;
@@ -1070,17 +1075,20 @@ async fn staged_transfer_callbacks_recheck_marketplace_dependency_approvals(
 		sqlx::query_scalar(
 			&Query::select()
 				.column(Alias::new("manifest"))
-				.from(Alias::new("core_areas"))
+				.from(Alias::new("core_manifest_revisions"))
 				.and_where(SimpleExpr::CustomWithExpr(
-					"(thread_id=?)".to_owned(),
+					"(area_id IN (SELECT id FROM core_areas WHERE thread_id=?))".to_owned(),
 					vec![Expr::value(query_bind_1.to_owned()).into()],
 				))
+				.order_by(Alias::new("revision"), reinhardt::query::Order::Desc)
+				.limit(1)
 				.to_string(PostgresQueryBuilder),
 		)
-		.fetch_one(c.b.f.store.pool.fixture_driver())
+		.fetch_optional(c.b.f.store.pool.fixture_driver())
 		.await
 	}
-	.unwrap();
+	.unwrap()
+	.unwrap_or_else(|| json!([]));
 	assert_eq!(visible, json!([]), "staged files must remain invisible");
 	c.close().await;
 }
@@ -1307,4 +1315,57 @@ async fn remote_recipients_use_the_sending_runs_node_and_its_registration(
 	let (status, body) = request(&c.a.app, &c.a.token, "GET", &path, Value::Null).await;
 	assert_eq!(status, 403, "{body}");
 	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn reserved_transfer_capacity_survives_unrelated_uploads_and_its_own_conversion(
+	#[future] two_nodes: TransferFixture,
+) {
+	use base64::Engine;
+	let mut c = Box::pin(two_nodes).await;
+	let bytes = "immutable 東京\n".as_bytes();
+	let used: i64 = sqlx::query_scalar("SELECT used_bytes FROM core_quotas WHERE tenant='acme'")
+		.fetch_optional(c.b.f.store.pool.fixture_driver())
+		.await
+		.unwrap()
+		.unwrap_or(0);
+	let mut profile = (*c.b.f.store.capabilities.0).clone();
+	profile.retained_bytes = used as u64 + (bytes.len() * 2) as u64;
+	profile.working_bytes = profile.retained_bytes;
+	c.b.f.store.capabilities = Runtime::new(profile).unwrap();
+	c.b.app.context.set_singleton(c.b.f.clone());
+	let (_, pending) = prepare_file(&c).await;
+	let transfer: Uuid = serde_json::from_value(pending["transfer_id"].clone()).unwrap();
+	let data: Value = sqlx::query_scalar("SELECT data FROM core_records WHERE id=$1")
+		.bind(transfer)
+		.fetch_one(c.a.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let identity =
+		json!({"transfer_id":transfer,"input_digest":data["description"]["input_digest"]});
+	let (status, prepared) = peer_request(&c.b, &c.a, "prepare", identity.clone()).await;
+	assert_eq!(status, 200, "{prepared}");
+	let (upload_status, upload) = request(&c.b.app, &c.b.token, "POST", &path_for_patch(c.receiver.id),
+        json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"other.txt":null},"patch":"*** Begin Patch\n*** Add File: other.txt\n+x\n*** End Patch"})).await;
+	let mut chunk = identity.clone();
+	chunk["file"] = json!(0);
+	chunk["offset"] = json!(0);
+	chunk["data"] = json!(base64::engine::general_purpose::STANDARD.encode(bytes));
+	let (chunk_status, chunk_result) = peer_request(&c.b, &c.a, "chunk", chunk).await;
+	let (commit_status, committed) = peer_request(&c.b, &c.a, "commit", identity).await;
+	c.close().await;
+	assert_eq!(
+		upload_status, 409,
+		"unrelated upload consumed reserved capacity: {upload}"
+	);
+	assert_eq!(upload["error"]["code"], "STORAGE_QUOTA");
+	assert_eq!(
+		chunk_status, 200,
+		"reserved chunk must be admitted: {chunk_result}"
+	);
+	assert_eq!(
+		commit_status, 200,
+		"reserved final object must be admitted: {committed}"
+	);
 }

@@ -31,11 +31,49 @@ impl Scope<'_> {
 	}
 }
 pub(crate) fn select(table: &str) -> reinhardt::query::SelectStatement {
-	Query::select()
-		.column(ColumnRef::Asterisk)
-		.from(Alias::new(table))
-		.to_owned()
+	let mut query = Query::select();
+	query.column(ColumnRef::Asterisk).from(Alias::new(table));
+	if table == "core_areas" {
+		let manifest = Query::select()
+			.column(Alias::new("manifest"))
+			.from(Alias::new("core_manifest_revisions"))
+			.and_where(
+				Expr::col((Alias::new("core_manifest_revisions"), Alias::new("tenant")))
+					.equals((Alias::new("core_areas"), Alias::new("tenant"))),
+			)
+			.and_where(
+				Expr::col((Alias::new("core_manifest_revisions"), Alias::new("area_id")))
+					.equals((Alias::new("core_areas"), Alias::new("id"))),
+			)
+			.and_where(
+				Expr::col((
+					Alias::new("core_manifest_revisions"),
+					Alias::new("revision"),
+				))
+				.equals((Alias::new("core_areas"), Alias::new("revision"))),
+			)
+			.to_owned();
+		query.expr_as(Expr::subquery(manifest), Alias::new("manifest"));
+	}
+	query.to_owned()
 }
+
+/// Lock first, then read in a fresh READ COMMITTED snapshot. A subquery in
+/// the locking statement cannot see a revision committed while that lock waits.
+pub(crate) async fn locked_area(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	query: &reinhardt::query::SelectStatement,
+	lock: LockType,
+) -> NativeResult<Option<NativeArea>> {
+	let mut locking = query.clone();
+	crate::database::native::query(&locking.lock(lock).to_string(PostgresQueryBuilder))
+		.execute(&mut *tx)
+		.await?;
+	crate::database::native::query_as(&query.to_string(PostgresQueryBuilder))
+		.fetch_optional(&mut *tx)
+		.await
+}
+
 /// Working area bound to a core run: `None` when the run is not a core run, `Some(None)`
 /// when its area is absent from the caller's tenant.
 pub(crate) async fn run_area(
@@ -161,7 +199,8 @@ impl SessionScope for Scope<'_> {
 			let area: Option<NativeArea> = {
 				let query_bind_1 = id;
 				let query_bind_2 = &access.identity.tenant;
-				crate::database::native::query_as(
+				locked_area(
+					&mut **access.tx,
 					&select("core_areas")
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
@@ -179,10 +218,9 @@ impl SessionScope for Scope<'_> {
 								),
 							),
 						)
-						.lock(lock)
-						.to_string(PostgresQueryBuilder),
+						.to_owned(),
+					lock,
 				)
-				.fetch_optional(&mut **access.tx)
 				.await?
 			};
 			Ok(area)
@@ -442,6 +480,7 @@ impl SessionScope for Scope<'_> {
 				.deployment
 				.node(access.workspace_node(task.workspace_id).await?)
 				.to_string();
+			let new_area_id = Uuid::new_v4();
 			crate::database::native::query(
 				&Query::insert()
 					.into_table(Alias::new("core_areas"))
@@ -481,13 +520,31 @@ impl SessionScope for Scope<'_> {
 					)
 					.to_string(PostgresQueryBuilder),
 			)
-			.bind(Uuid::new_v4())
+			.bind(new_area_id)
 			.bind(&access.identity.tenant)
 			.bind(&home)
 			.bind(task.workspace_id)
 			.bind(thread)
 			.bind(agent_id)
 			.bind(&access.identity.subject)
+			.execute(&mut **access.tx)
+			.await?;
+			// Only the newly inserted Area has this fresh id. A conflicting
+			// existing Area already owns its current revision.
+			crate::database::native::query(
+				&Query::insert()
+					.into_table(Alias::new("core_manifest_revisions"))
+					.columns(["tenant", "area_id", "revision", "manifest"].map(Alias::new))
+					.from_subquery(
+						Query::select()
+							.columns(["tenant", "id", "revision"].map(Alias::new))
+							.expr(Expr::value(serde_json::json!([])))
+							.from(Alias::new("core_areas"))
+							.and_where(Expr::col(Alias::new("id")).eq(Expr::value(new_area_id)))
+							.to_owned(),
+					)
+					.to_string(PostgresQueryBuilder),
+			)
 			.execute(&mut **access.tx)
 			.await?;
 			let area: NativeArea = {
@@ -497,7 +554,8 @@ impl SessionScope for Scope<'_> {
 				let query_bind_4 = agent_id;
 				let query_bind_5 = home.as_str();
 				let query_bind_6 = &access.identity.subject;
-				crate::database::native::query_as(
+				locked_area(
+					&mut **access.tx,
 					&select("core_areas")
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("tenant"))).eq(
@@ -545,11 +603,11 @@ impl SessionScope for Scope<'_> {
 								),
 							),
 						)
-						.lock(LockType::Update)
-						.to_string(PostgresQueryBuilder),
+						.to_owned(),
+					LockType::Update,
 				)
-				.fetch_one(&mut **access.tx)
 				.await?
+				.ok_or_else(|| crate::Error::NotFound("area unavailable".into()))?
 			};
 			Ok(area)
 		}

@@ -202,7 +202,7 @@ async fn keep_converts_the_existing_recovery_snapshot_to_retained_storage(
 	);
 	assert_eq!(restored["owner"], "alice");
 	// A consumed retained snapshot becomes ordinary working storage. Replacing
-	// it must free its object and quota without deleting the restored area.
+	// it permits the unheld old version to be reclaimed.
 	let (status, admitted) = request(&f.c.app, &f.c.token, "POST", &format!("/api/workspaces/{}/threads/{}/agents/research/runs", f.workspace, f.new_thread["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Continue restored work","description":"Replace the saved file"})).await;
 	assert_eq!(status, 200, "{admitted}");
 	let (_, session) = request(
@@ -244,7 +244,6 @@ async fn keep_converts_the_existing_recovery_snapshot_to_retained_storage(
 		.unwrap();
 	assert_eq!(kind, "superseded_working");
 	let WorkerControl { stop, receiver: rx } = control_1;
-	// Act: collect superseded bytes after the recovery snapshot has been patched.
 	let worker = tokio::spawn(aidash_server::capabilities::operations::run(
 		f.c.f.store.clone(),
 		rx,
@@ -256,24 +255,21 @@ async fn keep_converts_the_existing_recovery_snapshot_to_retained_storage(
 			.fetch_optional(f.c.f.store.pool.fixture_driver())
 			.await
 			.unwrap();
-		if kind.is_none() {
+		let used: i64 = sqlx::query_scalar(&quota)
+			.fetch_one(f.c.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+		if kind.is_none()
+			&& used == baseline - old["size"].as_i64().unwrap() + b"replacement\n".len() as i64
+		{
 			break;
 		}
 		assert!(
 			tokio::time::Instant::now() < deadline,
-			"replaced retained bytes were not reclaimed"
+			"old version not reclaimed: {kind:?}, used={used}"
 		);
 		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 	}
-	assert!(!f.c.root.join(old_id.simple().to_string()).exists());
-	let used: i64 = sqlx::query_scalar(&quota)
-		.fetch_one(f.c.f.store.pool.fixture_driver())
-		.await
-		.unwrap();
-	assert_eq!(
-		used,
-		baseline - old["size"].as_i64().unwrap() + b"replacement\n".len() as i64
-	);
 	stop.send(true).unwrap();
 	worker.await.unwrap().unwrap();
 	f.c.close().await;
@@ -725,3 +721,44 @@ async fn occupied_restoration_destination_preserves_both_areas(
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 
 use reinhardt::query::SimpleExpr;
+
+#[rstest::rstest]
+#[tokio::test]
+async fn keeping_a_recovery_snapshot_drops_a_revoked_reference_mount(
+	#[future] recovery_fixture: RecoveryFixture,
+) {
+	let f = Box::pin(recovery_fixture).await;
+	let reference = Uuid::new_v4();
+	let missing_file = Uuid::new_v4();
+	let cleanup: Uuid = serde_json::from_value(f.cleaned["operation_id"].clone()).unwrap();
+	let entry = json!({"file_id":missing_file,"path":format!("{reference}/old.txt"),"digest":"a".repeat(64),"size":1,"media_type":"text/plain","scope":"references","provenance":{"kind":"reference","id":reference}});
+	let pool = f.c.f.store.pool.fixture_driver();
+	sqlx::query("INSERT INTO core_records (id,tenant,owner,kind,state,data) VALUES ($1,'acme','alice','reference','revoked',$2)")
+        .bind(reference).bind(json!({"chunks":[],"original":null,"extraction":null,"objects_released":true})).execute(pool).await.unwrap();
+	sqlx::query("UPDATE core_records SET data=jsonb_set(data,'{snapshot}',(data->'snapshot') || $1::jsonb) WHERE id=$2")
+        .bind(json!([entry])).bind(cleanup).execute(pool).await.unwrap();
+	let area = f.area["id"].as_str().unwrap();
+	let (status, result) = request(&f.c.app, &f.c.token, "POST", &format!("/api/working-areas/{area}/cleanup"),
+        json!({"idempotency_key":Uuid::new_v4(),"expected_revision":f.cleaned["revision"],"choice":"keep"})).await;
+	let manifest: Value = sqlx::query_scalar("SELECT r.manifest FROM core_areas a JOIN core_manifest_revisions r ON r.tenant=a.tenant AND r.area_id=a.id AND r.revision=a.revision WHERE a.id=$1")
+        .bind(Uuid::parse_str(area).unwrap()).fetch_one(pool).await.unwrap();
+	f.c.close().await;
+	assert_eq!(
+		status, 200,
+		"Keep must not republish revoked objects: {result}"
+	);
+	assert!(
+		manifest
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|file| file["file_id"] != json!(missing_file))
+	);
+	assert!(
+		manifest
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|file| file["path"] == "saved.txt")
+	);
+}

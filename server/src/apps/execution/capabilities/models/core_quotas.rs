@@ -9,4 +9,6 @@ pub struct CoreQuotas {
 	pub tenant: String,
 	#[field]
 	pub used_bytes: i64,
+	#[field]
+	pub reserved_bytes: i64,
 }

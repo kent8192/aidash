@@ -78,22 +78,28 @@ pub struct Area {
 	pub constraints: Value,
 	pub next_sequence: i64,
 }
-crate::native_record!(Area {
-	id,
-	tenant,
-	home_node,
-	workspace_id,
-	thread_id,
-	agent_id,
-	owner,
-	generation,
-	revision,
-	epoch,
-	state,
-	manifest,
-	constraints,
-	next_sequence
-});
+impl crate::database::native::Decode for Area {
+	fn decode(row: &crate::database::native::Row, _: &[&str]) -> crate::Result<Self> {
+		Ok(Self {
+			id: row.try_get("id")?,
+			tenant: row.try_get("tenant")?,
+			home_node: row.try_get("home_node")?,
+			workspace_id: row.try_get("workspace_id")?,
+			thread_id: row.try_get("thread_id")?,
+			agent_id: row.try_get("agent_id")?,
+			owner: row.try_get("owner")?,
+			generation: row.try_get("generation")?,
+			revision: row.try_get("revision")?,
+			epoch: row.try_get("epoch")?,
+			state: row.try_get("state")?,
+			constraints: row.try_get("constraints")?,
+			next_sequence: row.try_get("next_sequence")?,
+			manifest: row
+				.try_get::<Option<Value>>("manifest")?
+				.ok_or_else(|| crate::Error::Invalid("missing area manifest revision".into()))?,
+		})
+	}
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 pub struct Envelope {

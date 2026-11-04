@@ -621,7 +621,7 @@ impl ChannelScope for NativeChannels<'_> {
 			let tenant = self.lease.access_mut().identity.tenant.clone();
 			self.store
 				.capabilities
-				.erase_committed(self.lease.tx(), &tenant, object_id)
+				.erase_committed(self.lease.tx(), &tenant, object_id, false)
 				.await?;
 		}
 		Ok(inserted.map(Into::into))

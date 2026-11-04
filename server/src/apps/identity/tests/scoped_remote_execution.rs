@@ -32,6 +32,36 @@ use tokio::sync::Mutex;
 use tokio::sync::Notify;
 use uuid::Uuid;
 
+/// A four-byte blob whose content is unique to this file, so Node purge cannot
+/// find it referenced by a sibling.
+fn fixture_blob_path(f: &Federation, file: Uuid) -> std::path::PathBuf {
+	let digest = aidash_server::capabilities::objects::digest(&file.as_bytes()[..4]);
+	f.store
+		.capabilities
+		.0
+		.storage
+		.join("tenants")
+		.join(aidash_server::capabilities::objects::digest(b"acme"))
+		.join("sha256")
+		.join(&digest[..2])
+		.join(&digest[2..4])
+		.join(digest)
+}
+async fn seed_fixture_blob(f: &Federation, file: Uuid) -> String {
+	let digest = aidash_server::capabilities::objects::digest(&file.as_bytes()[..4]);
+	sqlx::query("INSERT INTO core_blobs(tenant,digest,size) VALUES ('acme',$1,4)")
+		.bind(&digest)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let path = fixture_blob_path(f, file);
+	tokio::fs::create_dir_all(path.parent().unwrap())
+		.await
+		.unwrap();
+	tokio::fs::write(path, &file.as_bytes()[..4]).await.unwrap();
+	digest
+}
+
 /// The address of `f`'s default Node of the fixture Tenant, where its Runs
 /// execute and its Workspaces live.
 fn node_of(f: &Federation) -> String {
@@ -8606,20 +8636,11 @@ async fn node_deletion_retries_delegated_stop_until_receiver_and_home_settle(
 			let file = Uuid::new_v4();
 			sqlx::query("INSERT INTO core_areas(id,tenant,home_node,agent_id,owner,workspace_id,thread_id) VALUES ($1,'acme',$2,'fixture','alice',$3,$4)")
                 .bind(area).bind(node_of(f)).bind(workspace).bind(Uuid::new_v4()).execute(f.store.pool.fixture_driver()).await.unwrap();
-			sqlx::query("INSERT INTO core_objects(id,tenant,area_id,kind,digest,size) VALUES ($1,'acme',$2,'working','fixture',4)")
-                .bind(file).bind(area).execute(f.store.pool.fixture_driver()).await.unwrap();
+			let digest = seed_fixture_blob(f, file).await;
+			sqlx::query("INSERT INTO core_objects(id,tenant,area_id,kind,digest,size) VALUES ($1,'acme',$2,'working',$3,4)")
+                .bind(file).bind(area).bind(digest).execute(f.store.pool.fixture_driver()).await.unwrap();
 			sqlx::query("INSERT INTO core_quotas(tenant,used_bytes) VALUES ('acme',4) ON CONFLICT(tenant) DO UPDATE SET used_bytes=core_quotas.used_bytes+4")
                 .execute(f.store.pool.fixture_driver()).await.unwrap();
-			tokio::fs::write(
-				f.store
-					.capabilities
-					.0
-					.storage
-					.join(file.simple().to_string()),
-				b"data",
-			)
-			.await
-			.unwrap();
 			file
 		}
 		let target_file = owned_file(&p.b, target_workspace.id).await;
@@ -8773,14 +8794,7 @@ async fn node_deletion_retries_delegated_stop_until_receiver_and_home_settle(
 			assert!(
 				matches!(error,aidash_server::Error::Conflict(ref why) if why.contains("terminal execution recovery evidence"))
 			);
-			assert!(
-				p.b.store
-					.capabilities
-					.0
-					.storage
-					.join(target_file.simple().to_string())
-					.exists()
-			);
+			assert!(fixture_blob_path(&p.b, target_file).exists());
 			let preserved: Value = sqlx::query_scalar(
 				"SELECT activation FROM authorization_remote_terminal_receipts WHERE tenant='acme' AND id=$1",
 			)
@@ -8828,14 +8842,7 @@ async fn node_deletion_retries_delegated_stop_until_receiver_and_home_settle(
 			assert!(
 				matches!(error,aidash_server::Error::Conflict(ref why) if why.contains("recovery registration dependency"))
 			);
-			assert!(
-				p.b.store
-					.capabilities
-					.0
-					.storage
-					.join(target_file.simple().to_string())
-					.exists()
-			);
+			assert!(fixture_blob_path(&p.b, target_file).exists());
 			// Restore only the exact fixture keyset, with all metadata unchanged.
 			sqlx::query("UPDATE node_registrations SET source_keys=$3 WHERE tenant='acme' AND node=$1 AND source_node=$2")
                 .bind(receiver.node.as_str()).bind(node_of(&p.a)).bind(encoded)
@@ -8882,22 +8889,8 @@ async fn node_deletion_retries_delegated_stop_until_receiver_and_home_settle(
 			assert_eq!(after, before);
 		}
 		drop(accepted_app);
-		assert!(
-			!p.b.store
-				.capabilities
-				.0
-				.storage
-				.join(target_file.simple().to_string())
-				.exists()
-		);
-		assert!(
-			p.b.store
-				.capabilities
-				.0
-				.storage
-				.join(keeper_file.simple().to_string())
-				.exists()
-		);
+		assert!(!fixture_blob_path(&p.b, target_file).exists());
+		assert!(fixture_blob_path(&p.b, keeper_file).exists());
 		let saved: Value = sqlx::query_scalar(
 			"SELECT activation FROM authorization_remote_terminal_receipts WHERE id=$1",
 		)
@@ -9610,12 +9603,12 @@ async fn local_terminal_cancel_preserves_request_and_trust(
 	let file = Uuid::new_v4();
 	sqlx::query("INSERT INTO core_areas(id,tenant,home_node,agent_id,owner,workspace_id,thread_id) VALUES($1,'acme',$2,'fixture','alice',$3,$4)")
 		.bind(area).bind(receiver.to_string()).bind(receiver_workspace).bind(Uuid::new_v4()).execute(f.store.pool.fixture_driver()).await.unwrap();
-	sqlx::query("INSERT INTO core_objects(id,tenant,area_id,kind,digest,size) VALUES($1,'acme',$2,'working','fixture',4)")
-		.bind(file).bind(area).execute(f.store.pool.fixture_driver()).await.unwrap();
+	let digest = seed_fixture_blob(&f, file).await;
+	sqlx::query("INSERT INTO core_objects(id,tenant,area_id,kind,digest,size) VALUES($1,'acme',$2,'working',$3,4)")
+		.bind(file).bind(area).bind(digest).execute(f.store.pool.fixture_driver()).await.unwrap();
 	sqlx::query("INSERT INTO core_quotas(tenant,used_bytes) VALUES('acme',4) ON CONFLICT(tenant) DO UPDATE SET used_bytes=core_quotas.used_bytes+4")
 		.execute(f.store.pool.fixture_driver()).await.unwrap();
-	let file_path = directory.path().join(file.simple().to_string());
-	tokio::fs::write(&file_path, b"data").await.unwrap();
+	let file_path = fixture_blob_path(&f, file);
 	let keeper = common::second_node_in(f.store.pool.fixture_driver(), "acme").await;
 	for (path, body) in [
 		(

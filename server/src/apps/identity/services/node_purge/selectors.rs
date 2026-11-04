@@ -53,6 +53,7 @@ impl Owners<'_> {
 			EgressSession => ("egress_sessions", "id"),
 			Subnode => ("subnodes", "id"),
 			ScratchSpace => ("scratch_spaces", "id"),
+			Record => ("core_records", "id"),
 		};
 		Ok(Expr::from(col(table, field))
 			.in_subquery(

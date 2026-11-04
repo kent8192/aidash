@@ -101,9 +101,13 @@ async fn selected_file_media_preserves_order_and_duplicate_bytes_through_worker_
 	for (path, bytes) in images {
 		let file = Uuid::new_v4();
 		let digest = aidash_server::capabilities::objects::digest(bytes);
-		tokio::fs::write(storage.path().join(file.simple().to_string()), bytes)
-			.await
-			.unwrap();
+		fixture_blob(
+			c.f.store.pool.fixture_driver(),
+			storage.path(),
+			&digest,
+			bytes,
+		)
+		.await;
 		let query = Query::insert()
 			.into_table(Alias::new("core_objects"))
 			.columns(["id", "tenant", "area_id", "kind", "digest", "size"].map(Alias::new))
@@ -127,17 +131,13 @@ async fn selected_file_media_preserves_order_and_duplicate_bytes_through_worker_
 			.unwrap();
 		files.push(json!({"file_id":file,"path":path,"size":bytes.len(),"digest":digest,"media_type":"image/png","scope":"working","provenance":{"kind":"media-fixture"}}));
 	}
-	let query = Query::update()
-		.table(Alias::new("core_areas"))
-		.value_expr(Alias::new("manifest"), Expr::cust("$2"))
-		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
-		.to_string(PostgresQueryBuilder);
-	sqlx::query(&query)
-		.bind(area_id)
-		.bind(json!(files))
-		.execute(c.f.store.pool.fixture_driver())
-		.await
-		.unwrap();
+	fixture_revision(
+		c.f.store.pool.fixture_driver(),
+		area_id,
+		area["revision"].as_i64().unwrap(),
+		json!(files),
+	)
+	.await;
 	*selections.lock().unwrap()=[1,0,1].map(|i|json!({"file_id":files[i]["file_id"],"expected_digest":files[i]["digest"],"representation":"model_input"})).to_vec();
 	// Act: real worker authority resolves each persisted selection and sends it to inference.
 	let worker = Harness {

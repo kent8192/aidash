@@ -13,6 +13,7 @@ struct State {
 	released_holds: usize,
 	open: usize,
 	fail_update: bool,
+	fail_reclaim: bool,
 }
 struct Repository(Arc<Mutex<State>>);
 struct Scope {
@@ -60,6 +61,15 @@ impl ErasureScope for Scope {
 	}
 	async fn objects(&mut self, _: &Area) -> Result<Vec<Uuid>> {
 		Ok(self.state.lock().unwrap().objects.clone())
+	}
+	async fn digest(&mut self, _: &str, id: Uuid) -> Result<Option<String>> {
+		Ok(Some(id.to_string()))
+	}
+	async fn reclaim_blob(&mut self, _: &str, _: &str) -> Result<()> {
+		if self.state.lock().unwrap().fail_reclaim {
+			return Err(Error::External("blob deletion failed".into()));
+		}
+		Ok(())
 	}
 	async fn erase(&mut self, _: &str, id: Uuid) -> Result<()> {
 		self.erased.push(id);
@@ -144,6 +154,7 @@ fn fixture(state: &str) -> Repository {
 		released_holds: 0,
 		open: 0,
 		fail_update: false,
+		fail_reclaim: false,
 	})))
 }
 #[tokio::test]
@@ -157,7 +168,7 @@ async fn deleting_preserves_the_recovery_snapshot_and_commits_its_event() {
 	assert_eq!(state.erased, vec![state.objects[1]]);
 	assert_eq!(state.released_holds, 1);
 	assert_eq!(state.events.len(), 1);
-	assert_eq!(state.commits, 1);
+	assert_eq!(state.commits, 2);
 	assert_eq!(state.rollbacks, 0);
 	assert_eq!(state.open, 0);
 }
@@ -179,6 +190,29 @@ async fn record_failure_rolls_back_deletion_and_area_transition() {
 	assert_eq!(state.commits, 0);
 	assert_eq!(state.rollbacks, 1);
 	assert_eq!(state.open, 0);
+}
+#[tokio::test]
+async fn blob_deletion_failure_keeps_cleanup_pending_until_retry() {
+	let repository = fixture("deleting");
+	let snapshot = {
+		let mut state = repository.0.lock().unwrap();
+		state.fail_reclaim = true;
+		state.record.clone()
+	};
+	assert!(erase_job(&repository, snapshot.clone()).await.is_err());
+	{
+		let mut state = repository.0.lock().unwrap();
+		assert_eq!(state.record.state, "deleting");
+		assert_eq!(state.area.state, "cleaning");
+		assert!(state.record.data["erasure_digests"].is_array());
+		assert_eq!(state.commits, 1);
+		state.fail_reclaim = false;
+	}
+	erase_job(&repository, snapshot).await.unwrap();
+	let state = repository.0.lock().unwrap();
+	assert_eq!(state.record.state, "recoverable");
+	assert_eq!(state.area.state, "recoverable");
+	assert_eq!(state.commits, 2);
 }
 #[tokio::test]
 async fn kept_snapshot_cannot_be_erased_by_a_previously_selected_job() {
@@ -212,7 +246,7 @@ async fn recovery_expiry_erases_only_snapshot_owned_bytes_and_advances_the_fence
 		(state.area.generation, state.area.epoch, state.area.revision),
 		(8, 3, 5)
 	);
-	assert_eq!(state.commits, 1);
+	assert_eq!(state.commits, 2);
 	assert_eq!(state.open, 0);
 }
 #[tokio::test]

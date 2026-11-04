@@ -11,6 +11,7 @@ struct State {
 	calls: Vec<String>,
 	scopes: usize,
 	quota_failure: bool,
+	erased: bool,
 	observed: Value,
 }
 #[derive(Clone)]
@@ -18,6 +19,7 @@ struct Repository(Arc<Mutex<State>>);
 struct Scope {
 	state: Arc<Mutex<State>>,
 	pending: Option<Record>,
+	pending_erase: bool,
 }
 impl Drop for Scope {
 	fn drop(&mut self) {
@@ -53,6 +55,7 @@ fn repository() -> Repository {
 		calls: vec![],
 		scopes: 0,
 		quota_failure: false,
+		erased: false,
 		observed: json!({"status":"cancelling","termination_confirmed":false}),
 	})))
 }
@@ -63,6 +66,7 @@ impl ReclamationRepository for Repository {
 		Ok(Box::new(Scope {
 			state: self.0.clone(),
 			pending: None,
+			pending_erase: false,
 		}))
 	}
 	async fn retained(&self, _: Uuid) -> Result<Vec<Uuid>> {
@@ -101,12 +105,25 @@ impl ReclamationScope for Scope {
 			Ok(())
 		}
 	}
+	async fn release_transfer_refs(&mut self, tenant: &str, id: Uuid) -> Result<()> {
+		assert_eq!(tenant, "tenant");
+		assert_eq!(id, Uuid::from_u128(1));
+		self.state
+			.lock()
+			.unwrap()
+			.calls
+			.push("release-transfer-refs".into());
+		Ok(())
+	}
 	async fn object_kind(&mut self, id: Uuid, tenant: &str) -> Result<Option<String>> {
 		assert_eq!(id, file().file_id);
 		assert_eq!(tenant, "tenant");
 		let mut state = self.state.lock().unwrap();
 		state.calls.push("object-kind".into());
 		Ok(Some(state.kind.clone()))
+	}
+	async fn object_named(&mut self, _: &str, _: Uuid) -> Result<bool> {
+		Ok(false)
 	}
 	async fn working_tenant(&mut self, _: Uuid) -> Result<Option<String>> {
 		Err(Error::Forbidden)
@@ -115,6 +132,7 @@ impl ReclamationScope for Scope {
 		assert_eq!(tenant, "tenant");
 		assert_eq!(id, file().file_id);
 		self.state.lock().unwrap().calls.push("erase".into());
+		self.pending_erase = true;
 		Ok(())
 	}
 	async fn update(&mut self, record: &mut Record) -> Result<()> {
@@ -148,6 +166,7 @@ impl ReclamationScope for Scope {
 		match result {
 			Ok(true) => {
 				state.calls.push("commit".into());
+				state.erased |= self.pending_erase;
 				if let Some(record) = &self.pending {
 					state.record = record.clone();
 				}
@@ -181,9 +200,33 @@ async fn expired_transfer_release_commits_ownership_and_preserves_prior_effect_u
 	assert_eq!(state.record.data["objects_released"], true);
 	assert_eq!(
 		state.calls,
-		vec!["lock-record", "object-kind", "erase", "update", "commit"]
+		vec![
+			"lock-record",
+			"release-transfer-refs",
+			"object-kind",
+			"erase",
+			"update",
+			"commit"
+		]
 	);
 	assert_eq!(state.scopes, 0);
+}
+
+#[rstest]
+#[tokio::test]
+async fn delivered_transfer_receipt_keeps_its_snapshot_until_the_record_is_removed(
+	repository: Repository,
+) {
+	{
+		let mut state = repository.0.lock().unwrap();
+		state.record.state = "delivered".into();
+		state.record.expires_at = None;
+		state.record.data["receipt"] = json!({"id":"receipt"});
+	}
+	reclaim(&repository, Uuid::from_u128(1)).await.unwrap();
+	let state = repository.0.lock().unwrap();
+	assert_eq!(state.record.data["receipt_retained"], true);
+	assert_eq!(state.calls, vec!["lock-record", "update", "commit"]);
 }
 
 #[rstest]
@@ -210,6 +253,7 @@ async fn an_unexpired_transfer_cannot_release_its_objects(repository: Repository
 #[rstest]
 #[tokio::test]
 async fn a_foreign_object_namespace_rolls_back_the_release_marker(repository: Repository) {
+	inbound(&repository);
 	repository.0.lock().unwrap().kind = "working".into();
 	assert!(matches!(
 		reclaim(&repository, Uuid::from_u128(1)).await,
@@ -229,7 +273,7 @@ fn inbound(repository: &Repository) {
 }
 #[rstest]
 #[tokio::test]
-async fn inbound_quota_release_precedes_object_deletion_and_commits_with_the_record(
+async fn inbound_quota_release_follows_object_deletion_and_commits_with_the_record(
 	repository: Repository,
 ) {
 	inbound(&repository);
@@ -239,16 +283,17 @@ async fn inbound_quota_release_precedes_object_deletion_and_commits_with_the_rec
 		state.calls,
 		vec![
 			"lock-record",
-			"quota",
 			"object-kind",
 			"erase",
 			"update",
+			"quota",
 			"commit"
 		]
 	);
 	assert_eq!(state.record.state, "expired");
 	assert_eq!(state.record.data["reserved"], 0);
 	assert_eq!(state.record.data["chunks"], json!({}));
+	assert!(state.erased);
 	assert_eq!(state.scopes, 0);
 }
 
@@ -261,8 +306,19 @@ async fn quota_failure_preserves_the_reservation_and_does_not_delete_bytes(repos
 		matches!(reclaim(&repository,Uuid::from_u128(1)).await,Err(Error::External(message)) if message=="quota failed")
 	);
 	let state = repository.0.lock().unwrap();
-	assert_eq!(state.calls, vec!["lock-record", "quota", "rollback"]);
+	assert_eq!(
+		state.calls,
+		vec![
+			"lock-record",
+			"object-kind",
+			"erase",
+			"update",
+			"quota",
+			"rollback"
+		]
+	);
 	assert_eq!(state.record.data["reserved"], 7);
+	assert!(!state.erased);
 	assert_eq!(state.scopes, 0);
 }
 

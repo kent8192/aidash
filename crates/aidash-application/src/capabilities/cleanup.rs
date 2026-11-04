@@ -18,6 +18,23 @@ fn result(record: &Record) -> Result<CleanupResult> {
 fn files(area: &Area) -> Result<Vec<FileEntry>> {
 	Ok(serde_json::from_value(area.manifest.clone())?)
 }
+async fn active_mounts(
+	scope: &mut dyn CleanupScope,
+	files: Vec<FileEntry>,
+) -> Result<Vec<FileEntry>> {
+	let mut active = Vec::with_capacity(files.len());
+	for file in files {
+		if matches!(file.scope, FileScope::References) && file.provenance["kind"] == "reference" {
+			let id = serde_json::from_value::<Uuid>(file.provenance["id"].clone());
+			match id {
+				Ok(id) if scope.reference_active(id).await? => {}
+				_ => continue,
+			}
+		}
+		active.push(file);
+	}
+	Ok(active)
+}
 pub async fn load(scope: &mut dyn CleanupScope, id: Uuid, action: &str) -> Result<Area> {
 	let area: Area = scope
 		.load_area(id)
@@ -168,6 +185,9 @@ pub async fn prepare(
 		}
 		// Retain the already verified snapshot itself. The expiry worker locks
 		// this same area and record, so it cannot erase the bytes after Keep.
+		let snapshot = serde_json::from_value::<Vec<FileEntry>>(recovery.data["snapshot"].clone())?;
+		let snapshot = active_mounts(scope, snapshot).await?;
+		recovery.data["snapshot"] = json!(snapshot);
 		area.manifest = recovery.data["snapshot"].clone();
 		area.state = "retained".into();
 		area.generation += 1;
@@ -223,12 +243,11 @@ pub async fn prepare(
 		area.epoch += 1;
 		area.generation += 1;
 		area.state = "cleaning".into();
-		area.manifest = json!(
-			files(&area)?
-				.into_iter()
-				.filter(|f| matches!(f.scope, FileScope::References))
-				.collect::<Vec<_>>()
-		);
+		let mounts = files(&area)?
+			.into_iter()
+			.filter(|f| matches!(f.scope, FileScope::References))
+			.collect();
+		area.manifest = json!(active_mounts(scope, mounts).await?);
 		scope.publish(&mut area).await?;
 		scope.persist(&area, false).await?;
 		scope.cancel_runs(&area).await?;
@@ -351,9 +370,9 @@ pub async fn restore(scope: &mut dyn CleanupScope, id: Uuid, input: Restore) -> 
 }
 pub async fn erase_job(repository: &dyn CleanupRepository, snapshot: Record) -> Result<()> {
 	let mut scope = repository.begin().await?;
+	let mut staged = false;
 	let result = async {
 		let (mut area, mut record) = scope.locked(&snapshot).await?;
-
 		let expiring = matches!(record.state.as_str(), "restored" | "recoverable")
 			&& record.expires_at.is_some_and(|t| t <= Utc::now());
 		if !expiring && !matches!(record.state.as_str(), "deleting" | "cleanup_failed") {
@@ -366,18 +385,47 @@ pub async fn erase_job(repository: &dyn CleanupRepository, snapshot: Record) -> 
 			.filter(|f| !matches!(f.scope, FileScope::References))
 			.map(|f| f.file_id)
 			.collect::<std::collections::BTreeSet<_>>();
-		if expiring {
-			// The recoverable snapshot kept the holds until it expired; the
-			// Retained versions now follow the erased snapshot.
-			scope.release_holds(&area).await?;
-			if record.state == "recoverable"
-				&& (area.state != "recoverable" || record.data["generation"] != area.generation)
+		if !record.data["erasure_digests"].is_array() {
+			if expiring {
+				if record.state == "recoverable"
+					&& (area.state != "recoverable" || record.data["generation"] != area.generation)
+				{
+					return Err(Error::Conflict("CLEANUP_GENERATION_CHANGED".into()));
+				}
+			} else if area.generation != record.data["generation"]
+				|| !matches!(area.state.as_str(), "cleaning" | "cleanup_failed")
 			{
 				return Err(Error::Conflict("CLEANUP_GENERATION_CHANGED".into()));
 			}
-			for id in snapshot_ids {
+			scope.release_holds(&area).await?;
+			let ids: Vec<Uuid> = if expiring {
+				snapshot_ids.iter().copied().collect()
+			} else {
+				scope
+					.objects(&area)
+					.await?
+					.into_iter()
+					.filter(|id| !snapshot_ids.contains(id))
+					.collect()
+			};
+			let mut digests = std::collections::BTreeSet::new();
+			for id in ids {
+				if let Some(digest) = scope.digest(&area.tenant, id).await? {
+					digests.insert(digest);
+				}
 				scope.erase(&area.tenant, id).await?;
 			}
+			record.data["erasure_digests"] = json!(digests);
+			scope.update_area(&area).await?;
+			scope.update_record(&mut record).await?;
+			staged = true;
+			return Ok(true);
+		}
+		for digest in serde_json::from_value::<Vec<String>>(record.data["erasure_digests"].clone())?
+		{
+			scope.reclaim_blob(&area.tenant, &digest).await?;
+		}
+		if expiring {
 			if record.state == "recoverable" {
 				area.state = "deleted".into();
 				area.generation += 1;
@@ -388,20 +436,6 @@ pub async fn erase_job(repository: &dyn CleanupRepository, snapshot: Record) -> 
 			record.data["snapshot"] = json!([]);
 			record.expires_at = None;
 		} else {
-			if area.generation != record.data["generation"]
-				|| !matches!(area.state.as_str(), "cleaning" | "cleanup_failed")
-			{
-				return Err(Error::Conflict("CLEANUP_GENERATION_CHANGED".into()));
-			}
-			// A non-recoverable cleanup removes every hold, so the versions it
-			// keeps are erased with the rest of the Working Area.
-			scope.release_holds(&area).await?;
-			let ids: Vec<Uuid> = scope.objects(&area).await?;
-			for id in ids {
-				if !snapshot_ids.contains(&id) {
-					scope.erase(&area.tenant, id).await?;
-				}
-			}
 			record.state = if record.data["choice"] == "recoverable" {
 				"recoverable"
 			} else {
@@ -410,6 +444,7 @@ pub async fn erase_job(repository: &dyn CleanupRepository, snapshot: Record) -> 
 			.into();
 			area.state = record.state.clone();
 		}
+		record.data["erasure_digests"] = Value::Null;
 		scope.update_area(&area).await?;
 		scope.update_record(&mut record).await?;
 		scope
@@ -422,8 +457,13 @@ pub async fn erase_job(repository: &dyn CleanupRepository, snapshot: Record) -> 
 		Ok(true)
 	}
 	.await;
-	scope.finish(result).await
+	scope.finish(result).await?;
+	if staged {
+		Box::pin(erase_job(repository, snapshot)).await?;
+	}
+	Ok(())
 }
+
 pub async fn sweep(repository: &dyn CleanupRepository, cursor: &mut Uuid) -> Result<()> {
 	let jobs = repository.jobs(*cursor).await?;
 	if jobs.is_empty() {

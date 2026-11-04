@@ -28,6 +28,7 @@ struct Trace {
 	failure: Option<(String, bool)>,
 	/// Request bodies sent to the runner.
 	bodies: Vec<Value>,
+	reusable: Option<Uuid>,
 }
 #[derive(Clone)]
 struct Repository(Arc<Mutex<Trace>>);
@@ -106,6 +107,7 @@ fn repository() -> Repository {
 		commit: false,
 		failure: None,
 		bodies: vec![],
+		reusable: None,
 	})))
 }
 impl Repository {
@@ -190,6 +192,15 @@ impl OperationReconciliationScope for Scope {
 	}
 	async fn request(&mut self, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
 		self.0.call(&format!("request:{method}:{path}"))?;
+		// Tests that set no download read the `abc` output chunk.
+		if method == "GET"
+			&& path.contains("/files/")
+			&& self.0.0.lock().unwrap().download.is_null()
+		{
+			return Ok(
+				json!({"data":STANDARD.encode("abc"),"offset":0,"size":3,"digest":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}),
+			);
+		}
 		if path == "/v1/operations" {
 			assert!(body.as_ref().unwrap()["operation_id"] == json!(Uuid::from_u128(1)));
 		}
@@ -219,6 +230,15 @@ impl OperationReconciliationScope for Scope {
 	}
 	async fn verified(&mut self, _: &MountedFile) -> Result<()> {
 		self.0.call("verified")
+	}
+	async fn reuse_output(&mut self, digest: &str, size: u64) -> Result<Option<Uuid>> {
+		self.0.call("reuse_output")?;
+		assert_eq!(
+			digest,
+			"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+		);
+		assert_eq!(size, 3);
+		Ok(self.0.0.lock().unwrap().reusable)
 	}
 	async fn begin_output(&mut self, _: u64) -> Result<()> {
 		self.0.call("begin_output")
@@ -266,11 +286,13 @@ async fn exported_file_media_type_follows_verified_image_signature(
 	#[case] expected: &str,
 ) {
 	let object = "a".repeat(64);
+	// Output digests are validated as lowercase SHA-256 hex.
+	let digest = "d".repeat(64);
 	{
 		let mut trace = repository.0.lock().unwrap();
-		trace.observed = json!({"status":"completed","termination_confirmed":true,"executed":true,"files":[{"path":path,"object_id":object,"digest":"digest","size":bytes.len()}],"stdout":STANDARD.encode("stdout"),"displays":[],"exit_code":0});
+		trace.observed = json!({"status":"completed","termination_confirmed":true,"executed":true,"files":[{"path":path,"object_id":object,"digest":digest,"size":bytes.len()}],"stdout":STANDARD.encode("stdout"),"displays":[],"exit_code":0});
 		trace.download =
-			json!({"data":STANDARD.encode(bytes),"offset":0,"size":bytes.len(),"digest":"digest"});
+			json!({"data":STANDARD.encode(bytes),"offset":0,"size":bytes.len(),"digest":digest});
 	}
 	run(&repository).await.unwrap();
 	assert_eq!(
@@ -500,6 +522,77 @@ async fn completed_output_publication_advances_revision_before_persisting_and_em
 	assert!(publish < persist && persist < event);
 	assert!(trace.commit);
 }
+#[rstest]
+#[tokio::test]
+async fn publication_reuses_an_area_blob_without_downloading_it(repository: Repository) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.reusable = Some(Uuid::from_u128(55));
+		trace.area.manifest = json!([{"file_id":Uuid::from_u128(30),"path":"old/path","digest":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","size":3,"media_type":"application/octet-stream","scope":"working","provenance":{}}]);
+		trace.observed = json!({"status":"completed","termination_confirmed":true,"executed":true,
+            "files":[{"path":"new/path", "object_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "digest":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "size":3}],
+            "stdout":STANDARD.encode("stdout"), "displays":[], "exit_code":0});
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(trace.published[0].file_id, Uuid::from_u128(55));
+	assert_eq!(trace.published[0].path, "new/path");
+	assert!(
+		!trace
+			.calls
+			.iter()
+			.any(
+				|call| (call.starts_with("request:GET:") && call.contains("/files/"))
+					|| call == "begin_output"
+			)
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn runner_cannot_reuse_an_unmounted_tenant_blob(repository: Repository) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.reusable = Some(Uuid::from_u128(55));
+		trace.observed = json!({"status":"completed","termination_confirmed":true,"executed":true,
+			"files":[{"path":"stolen", "object_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "digest":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "size":3}],
+			"stdout":STANDARD.encode("stdout"), "displays":[], "exit_code":0});
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert!(!trace.calls.iter().any(|call| call == "reuse_output"));
+	assert!(
+		trace
+			.calls
+			.iter()
+			.any(|call| call.starts_with("request:GET:") && call.contains("/files/"))
+	);
+	assert!(trace.calls.iter().any(|call| call == "finish_output"));
+	assert_ne!(trace.published[0].file_id, Uuid::from_u128(55));
+}
+
+#[rstest]
+#[tokio::test]
+async fn mounted_operation_input_can_be_reused_without_download(repository: Repository) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.reusable = Some(Uuid::from_u128(55));
+		trace.files = serde_json::from_value(json!([{"file_id":Uuid::from_u128(30),"path":"mounted","digest":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad","size":3,"media_type":"application/octet-stream","scope":"references","provenance":{}}])).unwrap();
+		trace.observed = json!({"status":"completed","termination_confirmed":true,"executed":true,
+			"files":[{"path":"copy", "object_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "digest":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "size":3}],
+			"stdout":STANDARD.encode("stdout"), "displays":[], "exit_code":0});
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(trace.published[0].file_id, Uuid::from_u128(55));
+	assert!(
+		!trace
+			.calls
+			.iter()
+			.any(|call| call.starts_with("request:GET:") && call.contains("/files/"))
+	);
+}
+
 #[rstest]
 #[case::completed("completed")]
 #[case::cancelled("cancelled")]

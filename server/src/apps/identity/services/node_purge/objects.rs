@@ -226,6 +226,41 @@ pub(super) async fn ids(
 	}
 	Ok(selected.into_iter().collect())
 }
+/// A revision or receipt reference restricts its object. A surviving owner's
+/// reference blocks the purge; the purged owner's references go with the batch.
+async fn release_references(
+	tx: &mut dyn TransactionExecutor,
+	owners: &Owners<'_>,
+	batch: &[Uuid],
+) -> Result<()> {
+	let selected = selectors::ids(Expr::col("object_id").into(), batch);
+	let (sql, values) = Query::select()
+		.expr(Expr::value(1_i32))
+		.from(Alias::new("core_blob_references"))
+		.and_where(Expr::col("tenant").eq(Expr::value(owners.tenant)))
+		.and_where(selected.clone())
+		.and_where(selectors::not_true(
+			owners.predicate("core_blob_references")?,
+		))
+		.limit(1)
+		.build(PostgresQueryBuilder);
+	if tx
+		.fetch_optional(&sql, convert_values(values))
+		.await?
+		.is_some()
+	{
+		return Err(Error::Conflict(
+			"Node purge found a file referenced by a surviving owner".into(),
+		));
+	}
+	let (sql, values) = Query::delete()
+		.from_table(Alias::new("core_blob_references"))
+		.and_where(Expr::col("tenant").eq(Expr::value(owners.tenant)))
+		.and_where(selected)
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, convert_values(values)).await?;
+	Ok(())
+}
 pub(super) async fn erase(
 	store: &Store,
 	tx: &mut native::Transaction,
@@ -235,12 +270,36 @@ pub(super) async fn erase(
 	// recovery/preflight checks before this first filesystem operation.
 	let batch = ids(&mut **tx, owners, OBJECT_BATCH).await?;
 	if batch.is_empty() {
-		return Ok(true);
+		// The object rows committed in earlier batches. Blob bytes are shared
+		// across the Tenant, so only digests nothing names any more are erased.
+		let digests = crate::apps::execution::repositories::reclamation::unreferenced_blobs(
+			&mut **tx,
+			owners.tenant,
+			OBJECT_BATCH,
+		)
+		.await?;
+		if digests.is_empty() {
+			return Ok(true);
+		}
+		// The purge driver commits each batch before the next: reclaim a single
+		// digest so object-store I/O never spans several quota updates.
+		let digest = &digests[0];
+		let reclaimed = crate::apps::execution::repositories::reclamation::reclaim_blob(
+			store,
+			tx,
+			owners.tenant,
+			digest,
+		)
+		.await?;
+		// A busy candidate belongs to the ordinary sweep; do not spin while
+		// retaining the Node purge's fencing locks.
+		return Ok(!reclaimed);
 	}
+	release_references(&mut **tx, owners, &batch).await?;
 	for id in batch {
 		store
 			.capabilities
-			.erase_committed(tx, owners.tenant, id)
+			.erase_committed(tx, owners.tenant, id, true)
 			.await?;
 	}
 	Ok(false)

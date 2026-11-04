@@ -141,7 +141,9 @@ test("an isolated Node retains real attachment bytes until a normal worker purge
   await page.addInitScript(() =>
     localStorage.setItem("aidash-locale", "en-US"),
   );
-  const openManagement = async (stored = "Stored data") => {
+  const openManagement = async (
+    stored = "Logical stored data (shared bytes may be counted more than once)",
+  ) => {
     const initial = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname === "/api/tenants" &&
@@ -222,7 +224,9 @@ test("an isolated Node retains real attachment bytes until a normal worker purge
     });
     expect(record.state).toBe("deleted");
     expect(record.retained_storage_bytes).toBe(targetBytes.byteLength);
-    await openManagement("Retained data");
+    await openManagement(
+      "Retained logical data (shared bytes may be counted more than once)",
+    );
     return record;
   };
   const deleted = await remove();
@@ -232,7 +236,7 @@ test("an isolated Node retains real attachment bytes until a normal worker purge
   expect(retained.deletion?.purge_after).toBe(deleted.deletion!.purge_after);
   expect(retained.retained_storage_bytes).toBe(targetBytes.byteLength);
   await expect(target).toContainText(
-    `Retained data: ${targetBytes.byteLength.toLocaleString("en-US")} bytes`,
+    `Retained logical data (shared bytes may be counted more than once): ${targetBytes.byteLength.toLocaleString("en-US")} bytes`,
   );
   const live = await request.get(tenantPath, { headers: subject });
   expect(live.status()).toBe(200);
@@ -268,7 +272,7 @@ test("an isolated Node retains real attachment bytes until a normal worker purge
     exact: true,
   });
   await expect(purgeDialog).toContainText(
-    `Retained data: ${targetBytes.byteLength.toLocaleString("en-US")} bytes`,
+    `Retained logical data (shared bytes may be counted more than once): ${targetBytes.byteLength.toLocaleString("en-US")} bytes`,
   );
   await purgeDialog
     .getByLabel("Type the Node name to confirm")
@@ -314,7 +318,9 @@ test("an isolated Node retains real attachment bytes until a normal worker purge
     secondDeletion.deletion!.purge_after,
   );
   await expect(target).toContainText("Purged");
-  await expect(target).toContainText("Stored data: 0 bytes");
+  await expect(target).toContainText(
+    "Logical stored data (shared bytes may be counted more than once): 0 bytes",
+  );
   // Workspace ownership lookup returns Forbidden; attachment download conceals
   // it as NotFound. The sibling read proves this Subject's authority stays live.
   expect(

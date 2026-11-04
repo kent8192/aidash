@@ -374,9 +374,10 @@ pub async fn erase_audit(store: &Store, retention_days: u32) -> Result<()> {
 	Ok(())
 }
 
-/// Exact retained file bytes for an already-authorized management response.
+/// Logical retained file bytes for an already-authorized management response.
+/// Content shared by multiple logical files can be counted more than once.
 /// Call only for a bounded management page/lifecycle response, never the hot
-/// ordinary Node selector. This is storage footprint, not a billing projection.
+/// ordinary Node selector. This is not a billing or physical-space projection.
 /// Store wrapper for independent reads; lifecycle/list callers must reuse their
 /// existing transaction through [`retained_storage_bytes_in`].
 pub async fn retained_storage_bytes(store: &Store, tenant: &str, node: &str) -> Result<u64> {

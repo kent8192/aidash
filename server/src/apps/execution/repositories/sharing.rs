@@ -126,7 +126,8 @@ impl SharingScope for Scope<'_> {
 				let query_bind_4 = &target.agent_id;
 				let query_bind_5 = store.deployment.as_str();
 				let query_bind_6 = &access.identity.subject;
-				crate::database::native::query_as(
+				sessions::locked_area(
+					&mut **access.tx,
 					&sessions::select("core_areas")
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("tenant"))).eq(
@@ -171,10 +172,9 @@ impl SharingScope for Scope<'_> {
 								),
 							),
 						)
-						.lock(LockType::Update)
-						.to_string(PostgresQueryBuilder),
+						.to_owned(),
+					LockType::Update,
 				)
-				.fetch_optional(&mut **access.tx)
 				.await?
 			})
 		}

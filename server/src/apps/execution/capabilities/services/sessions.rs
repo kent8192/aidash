@@ -1,6 +1,6 @@
 //! Native entry points adapt session DTOs to shared application authority and workflows.
 use super::contracts::{Area, SessionStatus};
-pub(crate) use crate::apps::execution::repositories::sessions::select;
+pub(crate) use crate::apps::execution::repositories::sessions::{locked_area, select};
 use crate::{
 	Result,
 	authorization::access::Access,

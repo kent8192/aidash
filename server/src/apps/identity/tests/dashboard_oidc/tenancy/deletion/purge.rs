@@ -524,3 +524,67 @@ async fn a_purge_step_that_meets_a_restore_deletes_nothing(
 	assert_eq!(d.rows_of(&tenant).await, before);
 	d.finish().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn purge_removes_uncommitted_blob_keys_and_intents_only_for_the_deleted_tenant(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let mut d = Deployment::new(runtime, open_rules()).await;
+	let alice = d.person("orphan-alice").await;
+	let bob = d.person("orphan-bob").await;
+	let (tenant, context) = d.tenant_of(&alice, "Orphan owner").await;
+	let (neighbour, _) = d.tenant_of(&bob, "Other owner").await;
+	let directory = tempfile::tempdir().unwrap();
+	let mut profile = (*d.federation.store.capabilities.0).clone();
+	profile.storage = directory.path().to_owned();
+	d.federation.store.capabilities = aidash_server::capabilities::Runtime::new(profile).unwrap();
+	d.app.context.set_singleton(d.federation.clone());
+	let digest = aidash_server::capabilities::objects::digest(b"orphan");
+	let mut paths = Vec::new();
+	for owner in [&tenant, &neighbour] {
+		let hash = aidash_server::capabilities::objects::digest(owner.as_bytes());
+		let blob = directory
+			.path()
+			.join("tenants")
+			.join(&hash)
+			.join("sha256")
+			.join(&digest[..2])
+			.join(&digest[2..4])
+			.join(&digest);
+		let temporary = directory
+			.path()
+			.join("temporary")
+			.join(&hash)
+			.join("abandoned");
+		let id = Uuid::new_v4();
+		let intent = directory.path().join(".intents").join(id.to_string());
+		let spool = directory.path().join(id.simple().to_string());
+		for path in [&blob, &temporary, &intent] {
+			tokio::fs::create_dir_all(path.parent().unwrap())
+				.await
+				.unwrap();
+		}
+		tokio::fs::write(&blob, b"orphan").await.unwrap();
+		tokio::fs::write(&temporary, b"orphan").await.unwrap();
+		tokio::fs::write(
+			&intent,
+			serde_json::to_vec(&json!({"id":id,"tenant":owner,"digest":digest})).unwrap(),
+		)
+		.await
+		.unwrap();
+		tokio::fs::write(&spool, b"orphan").await.unwrap();
+		paths.push([blob, temporary, intent, spool]);
+	}
+	let (status, body) = d.delete(&alice, &context, &tenant).await;
+	assert_eq!(status, 200, "{body}");
+	d.grace_period_ends(&tenant).await;
+	d.sweep().await;
+	for path in &paths[0] {
+		assert!(!path.exists(), "purge left {path:?}");
+	}
+	for path in &paths[1] {
+		assert!(path.exists(), "purge removed neighbour {path:?}");
+	}
+	d.finish().await;
+}

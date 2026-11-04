@@ -210,6 +210,23 @@ impl CleanupScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn reference_active(&mut self, id: Uuid) -> Result<bool> {
+		let state: Option<String> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("state"))
+				.from(Alias::new("core_records"))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+				.and_where(
+					Expr::col(Alias::new("tenant")).eq(Expr::value(&self.access.identity.tenant)),
+				)
+				.and_where(Expr::col(Alias::new("kind")).eq("reference"))
+				.lock(LockType::Share)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **self.access.tx)
+		.await?;
+		Ok(state.as_deref() == Some("ready"))
+	}
 	async fn message(&mut self, workspace: Uuid, id: Uuid) -> Result<()> {
 		self.access
 			.workspace_record(workspace, "message", id)
@@ -228,7 +245,8 @@ impl CleanupScope for Scope<'_> {
 			let area: Option<NativeArea> = {
 				let query_bind_1 = &access.identity.tenant;
 				let query_bind_2 = id;
-				crate::database::native::query_as(
+				sessions::locked_area(
+					&mut **access.tx,
 					&sessions::select("core_areas")
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("tenant"))).eq(
@@ -246,10 +264,9 @@ impl CleanupScope for Scope<'_> {
 								),
 							),
 						)
-						.lock(LockType::Update)
-						.to_string(PostgresQueryBuilder),
+						.to_owned(),
+					LockType::Update,
 				)
-				.fetch_optional(&mut **access.tx)
 				.await?
 			};
 			Ok(area)
@@ -847,7 +864,8 @@ impl ErasureScope for Erasure<'_> {
 			let area: NativeArea = {
 				let query_bind_1 = snapshot.area_id.ok_or(Error::Forbidden)?;
 				let query_bind_2 = &snapshot.tenant;
-				crate::database::native::query_as(
+				sessions::locked_area(
+					&mut **tx,
 					&sessions::select("core_areas")
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
@@ -865,11 +883,11 @@ impl ErasureScope for Erasure<'_> {
 								),
 							),
 						)
-						.lock(LockType::Update)
-						.to_string(PostgresQueryBuilder),
+						.to_owned(),
+					LockType::Update,
 				)
-				.fetch_one(&mut **tx)
 				.await?
+				.ok_or_else(|| crate::Error::NotFound("area unavailable".into()))?
 			};
 			let record: NativeRecord = {
 				let query_bind_1 = snapshot.id;
@@ -925,6 +943,7 @@ impl ErasureScope for Erasure<'_> {
 									vec![Expr::value(query_bind_2.to_owned()).into()],
 								)),
 						)
+						.and_where(super::reclamation::no_revision_references())
 						.to_string(PostgresQueryBuilder),
 				)
 				.scalar_all(&mut **tx)
@@ -934,6 +953,27 @@ impl ErasureScope for Erasure<'_> {
 		}
 		.await;
 		result.map_err(Into::into)
+	}
+	async fn digest(&mut self, tenant: &str, id: Uuid) -> Result<Option<String>> {
+		crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("digest"))
+				.from(Alias::new("core_objects"))
+				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut *self.tx)
+		.await
+		.map_err(Into::into)
+	}
+	async fn reclaim_blob(&mut self, tenant: &str, digest: &str) -> Result<()> {
+		// Each digest commits independently, so a later object-store delete
+		// cannot hold the quota row acquired for an earlier digest.
+		let mut tx = self.store.pool.begin(&MAINTENANCE).await?;
+		super::reclamation::reclaim_blob(self.store, &mut tx, tenant, digest).await?;
+		tx.commit().await?;
+		Ok(())
 	}
 	async fn release_holds(&mut self, area: &Area) -> Result<()> {
 		let result: NativeResult<()> = async {
@@ -946,6 +986,34 @@ impl ErasureScope for Erasure<'_> {
 			)
 			.execute(&mut *self.tx)
 			.await?;
+			if matches!(
+				area.state.as_str(),
+				"cleaning" | "cleanup_failed" | "recoverable"
+			) {
+				crate::database::native::query(
+					&Query::delete()
+						.from_table(Alias::new("core_manifest_revisions"))
+						.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&area.tenant)))
+						.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area.id)))
+						.and_where(Expr::col(Alias::new("revision")).ne(Expr::value(area.revision)))
+						.to_string(PostgresQueryBuilder),
+				)
+				.execute(&mut *self.tx)
+				.await?;
+				// A receipt can outlive its deleted Area. Once the receipt is
+				// removed, these objects must enter the ordinary superseded sweep.
+				crate::database::native::query(
+					&Query::update()
+						.table(Alias::new("core_objects"))
+						.value(Alias::new("kind"), "superseded_working")
+						.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&area.tenant)))
+						.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area.id)))
+						.and_where(Expr::col(Alias::new("kind")).eq(Expr::value("working")))
+						.to_string(PostgresQueryBuilder),
+				)
+				.execute(&mut *self.tx)
+				.await?;
+			}
 			Ok(())
 		}
 		.await;
@@ -954,12 +1022,13 @@ impl ErasureScope for Erasure<'_> {
 	async fn erase(&mut self, tenant: &str, id: Uuid) -> Result<()> {
 		self.store
 			.capabilities
-			.erase_committed(&mut self.tx, tenant, id)
+			.erase_committed(&mut self.tx, tenant, id, false)
 			.await
 			.map_err(Into::into)
 	}
 	async fn update_area(&mut self, area: &Area) -> Result<()> {
 		let result: NativeResult<()> = async {
+			super::files::record_revision(&mut self.tx, &area.tenant, area, &area.manifest).await?;
 			let tx = &mut self.tx;
 			{
 				let query_bind_1 = area.id;

@@ -3,6 +3,21 @@ use serde::{Deserialize, Serialize};
 use crate::apps::execution::capabilities::services::core::*;
 use std::path::PathBuf;
 
+/// Backend for Tenant-owned content-addressed blobs. `storage` remains the
+/// local staging directory and the local backend root.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BlobStorage {
+	#[default]
+	Local,
+	S3 {
+		bucket: String,
+	},
+	Gcs {
+		bucket: String,
+	},
+}
+
 /// The Node's execution profile. Agents can never raise these ceilings.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(default, deny_unknown_fields)]
@@ -14,6 +29,7 @@ pub struct Profile {
 	pub outbound_origins: Vec<String>,
 	pub package_origins: Vec<String>,
 	pub storage: PathBuf,
+	pub blob_storage: BlobStorage,
 	pub working_bytes: u64,
 	pub retained_bytes: u64,
 	pub temporary_bytes: u64,

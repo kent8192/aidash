@@ -88,25 +88,39 @@ async fn keeper(node: &Node) -> (String, Uuid) {
 	(name, workspace.id)
 }
 
+fn fixture_bytes(id: Uuid) -> Vec<u8> {
+	id.as_bytes()[..4].to_vec()
+}
+fn fixture_blob_path(root: &std::path::Path, id: Uuid) -> std::path::PathBuf {
+	let digest = aidash_server::capabilities::objects::digest(&fixture_bytes(id));
+	root.join("tenants")
+		.join(aidash_server::capabilities::objects::digest(b"acme"))
+		.join("sha256")
+		.join(&digest[..2])
+		.join(&digest[2..4])
+		.join(digest)
+}
 async fn file(node: &Node, workspace: Uuid) -> Uuid {
 	let area = Uuid::new_v4();
 	let id = Uuid::new_v4();
 	let driver = node.f.store.pool.fixture_driver();
 	sqlx::query("INSERT INTO core_areas(id,tenant,home_node,agent_id,owner,workspace_id,thread_id) VALUES ($1,'acme',$2,'fixture','alice',$3,$4)")
         .bind(area).bind(&node.address).bind(workspace).bind(Uuid::new_v4()).execute(driver).await.unwrap();
-	sqlx::query("INSERT INTO core_objects(id,tenant,area_id,kind,digest,size) VALUES ($1,'acme',$2,'working','fixture',4)").bind(id).bind(area).execute(driver).await.unwrap();
+	sqlx::query("INSERT INTO core_manifest_revisions (tenant,area_id,revision,manifest) VALUES ('acme',$1,1,'[]')").bind(area).execute(driver).await.unwrap();
+	let bytes = fixture_bytes(id);
+	let digest = aidash_server::capabilities::objects::digest(&bytes);
+	sqlx::query("INSERT INTO core_blobs(tenant,digest,size) VALUES ('acme',$1,4)")
+		.bind(&digest)
+		.execute(driver)
+		.await
+		.unwrap();
+	sqlx::query("INSERT INTO core_objects(id,tenant,area_id,kind,digest,size) VALUES ($1,'acme',$2,'working',$3,4)").bind(id).bind(area).bind(&digest).execute(driver).await.unwrap();
 	sqlx::query("INSERT INTO core_quotas(tenant,used_bytes) VALUES ('acme',4) ON CONFLICT(tenant) DO UPDATE SET used_bytes=core_quotas.used_bytes+4").execute(driver).await.unwrap();
-	tokio::fs::write(
-		node.f
-			.store
-			.capabilities
-			.0
-			.storage
-			.join(id.simple().to_string()),
-		b"data",
-	)
-	.await
-	.unwrap();
+	let path = fixture_blob_path(&node.f.store.capabilities.0.storage, id);
+	tokio::fs::create_dir_all(path.parent().unwrap())
+		.await
+		.unwrap();
+	tokio::fs::write(path, bytes).await.unwrap();
 	id
 }
 
@@ -379,18 +393,8 @@ async fn node_purge_terminal_reply_retries_after_physical_erasure_audit_expiry_a
 	);
 	let original_b = disable(&b, &target_b, &a.address).await;
 	purge_and_expire(&b, &target_b).await;
-	assert!(
-		!storage_b
-			.path()
-			.join(target_file_b.simple().to_string())
-			.exists()
-	);
-	assert!(
-		storage_b
-			.path()
-			.join(kept_file_b.simple().to_string())
-			.exists()
-	);
+	assert!(!fixture_blob_path(storage_b.path(), target_file_b).exists());
+	assert!(fixture_blob_path(storage_b.path(), kept_file_b).exists());
 	assert_eq!(trust_row(&b, &target_b, &a.address).await, original_b);
 	let unrelated: i64 = sqlx::query_scalar(
 		"SELECT count(*) FROM node_registrations WHERE tenant='acme' AND node=$1 AND source_node=$2",
@@ -411,18 +415,8 @@ async fn node_purge_terminal_reply_retries_after_physical_erasure_audit_expiry_a
 	// A completed coordinator journal still serves exact decision retries.
 	let original_a = disable(&a, &target_a, &b.address).await;
 	purge_and_expire(&a, &target_a).await;
-	assert!(
-		!storage_a
-			.path()
-			.join(target_file_a.simple().to_string())
-			.exists()
-	);
-	assert!(
-		storage_a
-			.path()
-			.join(kept_file_a.simple().to_string())
-			.exists()
-	);
+	assert!(!fixture_blob_path(storage_a.path(), target_file_a).exists());
+	assert!(fixture_blob_path(storage_a.path(), kept_file_a).exists());
 	assert_eq!(trust_row(&a, &target_a, &b.address).await, original_a);
 	a.restart().await;
 	let body = serde_json::to_vec(&manifest).unwrap();

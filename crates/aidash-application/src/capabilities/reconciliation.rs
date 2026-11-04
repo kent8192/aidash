@@ -203,6 +203,9 @@ async fn reconcile(
 				return Box::pin(refuse_export(scope, &area, operation, &observed, error)).await;
 			}
 			let previous = serde_json::from_value::<Vec<MountedFile>>(area.manifest.clone())?;
+			// A digest supplied by the runner is not authority to read an
+			// arbitrary Tenant blob. Only the Area or this operation's mounted
+			// inputs can authorize a download-free reuse.
 			let mut entries = previous
 				.iter()
 				.filter(|file| !matches!(file.scope, FileScope::Working))
@@ -215,6 +218,11 @@ async fn reconcile(
 			if let Some(error) = quota_refusal(&entries, exported, limits.working_bytes)? {
 				return Box::pin(refuse_export(scope, &area, operation, &observed, error)).await;
 			}
+			let mounted = if exported.is_empty() {
+				Vec::new()
+			} else {
+				scope.upload_files(&operation).await?
+			};
 			let mut size = entries.iter().map(|file| file.size).sum::<u64>();
 			let mut seen = std::collections::BTreeSet::new();
 			for file in exported {
@@ -224,6 +232,19 @@ async fn reconcile(
 					return Err(Error::Invalid("invalid runner paths".into()));
 				}
 				let file_size = file["size"].as_u64().ok_or(Error::Forbidden)?;
+				let object_id = file["object_id"]
+					.as_str()
+					.ok_or_else(|| Error::Invalid("invalid output id".into()))?;
+				if object_id.len() != 64 || !object_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+				{
+					return Err(Error::Invalid("invalid output id".into()));
+				}
+				let digest = file["digest"]
+					.as_str()
+					.ok_or_else(|| Error::Invalid("invalid output digest".into()))?;
+				digest
+					.parse::<aidash_domain::capabilities::Digest>()
+					.map_err(|_| Error::Invalid("invalid output digest".into()))?;
 				size = size.checked_add(file_size).ok_or(Error::Forbidden)?;
 				if size > limits.working_bytes {
 					return Err(Error::Conflict("runner file quota".into()));
@@ -238,8 +259,24 @@ async fn reconcile(
 					entries.push(unchanged.clone());
 					continue;
 				}
-				let (file_id, digest, media_type) =
-					Box::pin(download_output(scope, id, file)).await?;
+				// Reuse an output blob only when this Area already held it, keeping
+				// the media type that was detected when it was first downloaded.
+				let authorized = previous
+					.iter()
+					.chain(mounted.iter())
+					.find(|file| file.digest == digest && file.size == file_size)
+					.map(|file| file.media_type.clone());
+				let reusable = match authorized {
+					Some(media_type) => scope
+						.reuse_output(digest, file_size)
+						.await?
+						.map(|file_id| (file_id, media_type)),
+					None => None,
+				};
+				let (file_id, digest, media_type) = match reusable {
+					Some((file_id, media_type)) => (file_id, digest.to_owned(), media_type),
+					None => Box::pin(download_output(scope, id, file)).await?,
+				};
 				entries.push(MountedFile {
 					file_id,
 					path: path.into(),
