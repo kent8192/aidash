@@ -7464,12 +7464,19 @@
                 "minimum": 0,
                 "type": ["integer", "null"]
               },
+              "operation_deadline": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
               "operation_id": {
                 "format": "uuid",
                 "type": "string"
               },
               "output": {
                 "type": "string"
+              },
+              "output_unchanged": {
+                "type": "boolean"
               },
               "policy_revision": {
                 "format": "int64",
@@ -7510,7 +7517,6 @@
               "session_id",
               "displays",
               "exit_code",
-              "output",
               "next_offset",
               "truncated",
               "effects_may_have_occurred",
@@ -7691,12 +7697,19 @@
                 "minimum": 0,
                 "type": ["integer", "null"]
               },
+              "operation_deadline": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
               "operation_id": {
                 "format": "uuid",
                 "type": "string"
               },
               "output": {
                 "type": "string"
+              },
+              "output_unchanged": {
+                "type": "boolean"
               },
               "policy_revision": {
                 "format": "int64",
@@ -7737,7 +7750,6 @@
               "session_id",
               "displays",
               "exit_code",
-              "output",
               "next_offset",
               "truncated",
               "effects_may_have_occurred",
@@ -7864,12 +7876,19 @@
                 "minimum": 0,
                 "type": ["integer", "null"]
               },
+              "operation_deadline": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
               "operation_id": {
                 "format": "uuid",
                 "type": "string"
               },
               "output": {
                 "type": "string"
+              },
+              "output_unchanged": {
+                "type": "boolean"
               },
               "policy_revision": {
                 "format": "int64",
@@ -7910,7 +7929,6 @@
               "session_id",
               "displays",
               "exit_code",
-              "output",
               "next_offset",
               "truncated",
               "effects_may_have_occurred",
@@ -30427,6 +30445,63 @@
             ],
             "type": "object"
           },
+          "ChildTaskChange": {
+            "properties": {
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "status": {
+                "$ref": "#/components/schemas/TaskStatus"
+              },
+              "task_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["task_id", "status", "revision"],
+            "type": "object"
+          },
+          "ChildTaskSummary": {
+            "properties": {
+              "has_failed": {
+                "type": "boolean"
+              },
+              "has_pending": {
+                "type": "boolean"
+              },
+              "open_tasks": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "terminal_fingerprint": {
+                "items": {
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "maxItems": 16,
+                "minItems": 16,
+                "type": "array"
+              },
+              "terminal_tasks": {
+                "items": {
+                  "$ref": "#/components/schemas/ChildTaskChange"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "has_pending",
+              "has_failed",
+              "open_tasks",
+              "terminal_fingerprint",
+              "terminal_tasks"
+            ],
+            "type": "object"
+          },
           "CompletionBasis": {
             "description": "How a Task came to be completed. Only `Verified` means Checks passed.",
             "enum": ["verified", "not_required", "excepted"],
@@ -32388,6 +32463,17 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "remote_task_summary": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ChildTaskSummary"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Last remote child Task snapshot observed before inference."
+              },
               "retry": {
                 "anyOf": [
                   {
@@ -32407,6 +32493,11 @@
                     "type": "null"
                   }
                 ]
+              },
+              "workspace_event_cursor": {
+                "description": "Last workspace event delivered to this Run.",
+                "format": "int64",
+                "type": ["integer", "null"]
               }
             },
             "required": ["retry"],
@@ -33583,6 +33674,9 @@
                   }
                 ]
               },
+              "wait_result": {
+                "description": "A woken wait's result, awaiting delivery at this cursor."
+              },
               "workspace_observation_plan": {
                 "anyOf": [
                   {
@@ -33702,6 +33796,61 @@
             "oneOf": [
               {
                 "additionalProperties": false,
+                "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
+                "properties": {
+                  "cursor": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "reason": {
+                    "enum": ["workspace"],
+                    "type": "string"
+                  },
+                  "remote_fingerprint": {
+                    "type": ["string", "null"]
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ResumeState"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reason",
+                  "wake_at",
+                  "cursor",
+                  "remote_fingerprint",
+                  "resume"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "An accepted command is rechecked when it settles or its ceiling arrives.",
+                "properties": {
+                  "operation_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "enum": ["operation"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ToolCallState"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": ["reason", "operation_id", "wake_at", "resume"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
                 "properties": {
                   "reason": {
                     "enum": ["dependencies"],
@@ -33709,24 +33858,6 @@
                   },
                   "resume": {
                     "$ref": "#/components/schemas/ReadyState"
-                  },
-                  "wake_at": {
-                    "format": "date-time",
-                    "type": "string"
-                  }
-                },
-                "required": ["reason", "wake_at", "resume"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "reason": {
-                    "enum": ["children"],
-                    "type": "string"
-                  },
-                  "resume": {
-                    "$ref": "#/components/schemas/ThinkingState"
                   },
                   "wake_at": {
                     "format": "date-time",
@@ -34655,6 +34786,63 @@
               "check_digest",
               "capability_digest",
               "content_digest"
+            ],
+            "type": "object"
+          },
+          "ChildTaskChange": {
+            "properties": {
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "status": {
+                "$ref": "#/components/schemas/TaskStatus"
+              },
+              "task_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["task_id", "status", "revision"],
+            "type": "object"
+          },
+          "ChildTaskSummary": {
+            "properties": {
+              "has_failed": {
+                "type": "boolean"
+              },
+              "has_pending": {
+                "type": "boolean"
+              },
+              "open_tasks": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "terminal_fingerprint": {
+                "items": {
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "maxItems": 16,
+                "minItems": 16,
+                "type": "array"
+              },
+              "terminal_tasks": {
+                "items": {
+                  "$ref": "#/components/schemas/ChildTaskChange"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "has_pending",
+              "has_failed",
+              "open_tasks",
+              "terminal_fingerprint",
+              "terminal_tasks"
             ],
             "type": "object"
           },
@@ -36446,6 +36634,17 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "remote_task_summary": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ChildTaskSummary"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Last remote child Task snapshot observed before inference."
+              },
               "retry": {
                 "anyOf": [
                   {
@@ -36465,6 +36664,11 @@
                     "type": "null"
                   }
                 ]
+              },
+              "workspace_event_cursor": {
+                "description": "Last workspace event delivered to this Run.",
+                "format": "int64",
+                "type": ["integer", "null"]
               }
             },
             "required": ["retry"],
@@ -37360,6 +37564,19 @@
             ],
             "type": "object"
           },
+          "TaskStatus": {
+            "enum": [
+              "OPEN",
+              "CLAIMED",
+              "RUNNING",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED",
+              "CANCELLED",
+              "ABANDONED"
+            ],
+            "type": "string"
+          },
           "TerminalState": {
             "additionalProperties": false,
             "type": "object"
@@ -37634,6 +37851,9 @@
                   }
                 ]
               },
+              "wait_result": {
+                "description": "A woken wait's result, awaiting delivery at this cursor."
+              },
               "workspace_observation_plan": {
                 "anyOf": [
                   {
@@ -37753,6 +37973,61 @@
             "oneOf": [
               {
                 "additionalProperties": false,
+                "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
+                "properties": {
+                  "cursor": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "reason": {
+                    "enum": ["workspace"],
+                    "type": "string"
+                  },
+                  "remote_fingerprint": {
+                    "type": ["string", "null"]
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ResumeState"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reason",
+                  "wake_at",
+                  "cursor",
+                  "remote_fingerprint",
+                  "resume"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "An accepted command is rechecked when it settles or its ceiling arrives.",
+                "properties": {
+                  "operation_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "enum": ["operation"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ToolCallState"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": ["reason", "operation_id", "wake_at", "resume"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
                 "properties": {
                   "reason": {
                     "enum": ["dependencies"],
@@ -37760,24 +38035,6 @@
                   },
                   "resume": {
                     "$ref": "#/components/schemas/ReadyState"
-                  },
-                  "wake_at": {
-                    "format": "date-time",
-                    "type": "string"
-                  }
-                },
-                "required": ["reason", "wake_at", "resume"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "reason": {
-                    "enum": ["children"],
-                    "type": "string"
-                  },
-                  "resume": {
-                    "$ref": "#/components/schemas/ThinkingState"
                   },
                   "wake_at": {
                     "format": "date-time",
@@ -38370,6 +38627,63 @@
               "check_digest",
               "capability_digest",
               "content_digest"
+            ],
+            "type": "object"
+          },
+          "ChildTaskChange": {
+            "properties": {
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "status": {
+                "$ref": "#/components/schemas/TaskStatus"
+              },
+              "task_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["task_id", "status", "revision"],
+            "type": "object"
+          },
+          "ChildTaskSummary": {
+            "properties": {
+              "has_failed": {
+                "type": "boolean"
+              },
+              "has_pending": {
+                "type": "boolean"
+              },
+              "open_tasks": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "terminal_fingerprint": {
+                "items": {
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "maxItems": 16,
+                "minItems": 16,
+                "type": "array"
+              },
+              "terminal_tasks": {
+                "items": {
+                  "$ref": "#/components/schemas/ChildTaskChange"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "has_pending",
+              "has_failed",
+              "open_tasks",
+              "terminal_fingerprint",
+              "terminal_tasks"
             ],
             "type": "object"
           },
@@ -40100,6 +40414,17 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "remote_task_summary": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ChildTaskSummary"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Last remote child Task snapshot observed before inference."
+              },
               "retry": {
                 "anyOf": [
                   {
@@ -40119,6 +40444,11 @@
                     "type": "null"
                   }
                 ]
+              },
+              "workspace_event_cursor": {
+                "description": "Last workspace event delivered to this Run.",
+                "format": "int64",
+                "type": ["integer", "null"]
               }
             },
             "required": ["retry"],
@@ -40869,6 +41199,19 @@
             ],
             "type": "object"
           },
+          "TaskStatus": {
+            "enum": [
+              "OPEN",
+              "CLAIMED",
+              "RUNNING",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED",
+              "CANCELLED",
+              "ABANDONED"
+            ],
+            "type": "string"
+          },
           "TerminalState": {
             "additionalProperties": false,
             "type": "object"
@@ -41143,6 +41486,9 @@
                   }
                 ]
               },
+              "wait_result": {
+                "description": "A woken wait's result, awaiting delivery at this cursor."
+              },
               "workspace_observation_plan": {
                 "anyOf": [
                   {
@@ -41262,6 +41608,61 @@
             "oneOf": [
               {
                 "additionalProperties": false,
+                "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
+                "properties": {
+                  "cursor": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "reason": {
+                    "enum": ["workspace"],
+                    "type": "string"
+                  },
+                  "remote_fingerprint": {
+                    "type": ["string", "null"]
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ResumeState"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reason",
+                  "wake_at",
+                  "cursor",
+                  "remote_fingerprint",
+                  "resume"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "An accepted command is rechecked when it settles or its ceiling arrives.",
+                "properties": {
+                  "operation_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "enum": ["operation"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ToolCallState"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": ["reason", "operation_id", "wake_at", "resume"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
                 "properties": {
                   "reason": {
                     "enum": ["dependencies"],
@@ -41269,24 +41670,6 @@
                   },
                   "resume": {
                     "$ref": "#/components/schemas/ReadyState"
-                  },
-                  "wake_at": {
-                    "format": "date-time",
-                    "type": "string"
-                  }
-                },
-                "required": ["reason", "wake_at", "resume"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "reason": {
-                    "enum": ["children"],
-                    "type": "string"
-                  },
-                  "resume": {
-                    "$ref": "#/components/schemas/ThinkingState"
                   },
                   "wake_at": {
                     "format": "date-time",
@@ -53864,6 +54247,63 @@
             ],
             "type": "object"
           },
+          "ChildTaskChange": {
+            "properties": {
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "status": {
+                "$ref": "#/components/schemas/TaskStatus"
+              },
+              "task_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["task_id", "status", "revision"],
+            "type": "object"
+          },
+          "ChildTaskSummary": {
+            "properties": {
+              "has_failed": {
+                "type": "boolean"
+              },
+              "has_pending": {
+                "type": "boolean"
+              },
+              "open_tasks": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "terminal_fingerprint": {
+                "items": {
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "maxItems": 16,
+                "minItems": 16,
+                "type": "array"
+              },
+              "terminal_tasks": {
+                "items": {
+                  "$ref": "#/components/schemas/ChildTaskChange"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "has_pending",
+              "has_failed",
+              "open_tasks",
+              "terminal_fingerprint",
+              "terminal_tasks"
+            ],
+            "type": "object"
+          },
           "CompletionBasis": {
             "description": "How a Task came to be completed. Only `Verified` means Checks passed.",
             "enum": ["verified", "not_required", "excepted"],
@@ -55591,6 +56031,17 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "remote_task_summary": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ChildTaskSummary"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Last remote child Task snapshot observed before inference."
+              },
               "retry": {
                 "anyOf": [
                   {
@@ -55610,6 +56061,11 @@
                     "type": "null"
                   }
                 ]
+              },
+              "workspace_event_cursor": {
+                "description": "Last workspace event delivered to this Run.",
+                "format": "int64",
+                "type": ["integer", "null"]
               }
             },
             "required": ["retry"],
@@ -56376,6 +56832,19 @@
             ],
             "type": "object"
           },
+          "TaskStatus": {
+            "enum": [
+              "OPEN",
+              "CLAIMED",
+              "RUNNING",
+              "COMPLETED",
+              "FAILED",
+              "BLOCKED",
+              "CANCELLED",
+              "ABANDONED"
+            ],
+            "type": "string"
+          },
           "TerminalState": {
             "additionalProperties": false,
             "type": "object"
@@ -56650,6 +57119,9 @@
                   }
                 ]
               },
+              "wait_result": {
+                "description": "A woken wait's result, awaiting delivery at this cursor."
+              },
               "workspace_observation_plan": {
                 "anyOf": [
                   {
@@ -56769,6 +57241,61 @@
             "oneOf": [
               {
                 "additionalProperties": false,
+                "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
+                "properties": {
+                  "cursor": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "reason": {
+                    "enum": ["workspace"],
+                    "type": "string"
+                  },
+                  "remote_fingerprint": {
+                    "type": ["string", "null"]
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ResumeState"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reason",
+                  "wake_at",
+                  "cursor",
+                  "remote_fingerprint",
+                  "resume"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "An accepted command is rechecked when it settles or its ceiling arrives.",
+                "properties": {
+                  "operation_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "enum": ["operation"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ToolCallState"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": ["reason", "operation_id", "wake_at", "resume"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
                 "properties": {
                   "reason": {
                     "enum": ["dependencies"],
@@ -56776,24 +57303,6 @@
                   },
                   "resume": {
                     "$ref": "#/components/schemas/ReadyState"
-                  },
-                  "wake_at": {
-                    "format": "date-time",
-                    "type": "string"
-                  }
-                },
-                "required": ["reason", "wake_at", "resume"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "reason": {
-                    "enum": ["children"],
-                    "type": "string"
-                  },
-                  "resume": {
-                    "$ref": "#/components/schemas/ThinkingState"
                   },
                   "wake_at": {
                     "format": "date-time",
