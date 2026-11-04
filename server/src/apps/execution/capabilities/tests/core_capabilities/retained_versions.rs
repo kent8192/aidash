@@ -743,3 +743,78 @@ async fn identical_files_share_one_tenant_blob_across_areas_and_survive_one_rele
 	worker.await.unwrap().unwrap();
 	c.close().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn retained_manifest_uses_the_covering_hold_revision_and_requires_a_live_hold(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let c = Box::pin(capability_fixture).await;
+	let run = admit(&c).await;
+	let (status, created) = request(&c.app, &c.token, "POST", &path_for_patch(run.id),
+        json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"index.html":null,"app.js":null},"patch":"*** Begin Patch\n*** Add File: index.html\n+<html>page</html>\n*** Add File: app.js\n+old()\n*** End Patch"})).await;
+	assert_eq!(status, 200, "{created}");
+	let (_, area) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		&format!("/api/runs/{}/working-area", run.id),
+		Value::Null,
+	)
+	.await;
+	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
+	let entries = area["manifest"].as_array().unwrap();
+	let html: Uuid = serde_json::from_value(
+		entries.iter().find(|f| f["path"] == "index.html").unwrap()["file_id"].clone(),
+	)
+	.unwrap();
+	let original = entries.iter().find(|f| f["path"] == "app.js").unwrap();
+	let original_id: Uuid = serde_json::from_value(original["file_id"].clone()).unwrap();
+	let holder = Holder::Message {
+		message_id: source(&c, run.workspace_id, "hold this page").await,
+	};
+	aidash_server::capabilities::retention::retain_for(
+		&c.f,
+		actor(&c).await,
+		area_id,
+		html,
+		holder.clone(),
+	)
+	.await
+	.unwrap();
+	let (status, replaced) = request(&c.app, &c.token, "POST", &path_for_patch(run.id),
+        json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":{"app.js":original["digest"]},"patch":"*** Begin Patch\n*** Update File: app.js\n@@\n-old()\n+new()\n*** End Patch"})).await;
+	assert_eq!(status, 200, "{replaced}");
+	let retained = aidash_server::capabilities::retention::retained_manifest_for(
+		&c.f,
+		actor(&c).await,
+		area_id,
+		html,
+	)
+	.await
+	.unwrap()
+	.unwrap();
+	assert_eq!(
+		retained
+			.iter()
+			.find(|f| f.path == "app.js")
+			.unwrap()
+			.file_id,
+		original_id
+	);
+	aidash_server::capabilities::retention::release_for(&c.f, actor(&c).await, &holder)
+		.await
+		.unwrap();
+	assert!(
+		aidash_server::capabilities::retention::retained_manifest_for(
+			&c.f,
+			actor(&c).await,
+			area_id,
+			html
+		)
+		.await
+		.unwrap()
+		.is_none()
+	);
+	c.close().await;
+}
