@@ -1040,6 +1040,24 @@ class BackgroundListingRegressionTest(unittest.TestCase):
             self.assertNotIn('stderr', listed[0])
 
 
+    def test_recent_interrupt_retains_old_background_command_in_listing(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+            operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+            controller._command_path(operation).write_text(json.dumps({'operation_id': operation,
+                'scratch_space_id': 's', 'run_id': 'r', 'background': True, 'status': 'running', 'accepted_at': 1}))
+            with patch('time.time', return_value=1000000):
+                controller._interrupt_space_commands('s')
+                listed = controller.background_processes('s')['processes']
+            self.assertEqual(len(listed), 1)
+            self.assertEqual(listed[0]['status'], 'interrupted')
+
+
 class PurgeLocalDataRegressionTest(unittest.TestCase):
     def test_purge_removes_only_the_deleted_spaces_journals(self):
         import json

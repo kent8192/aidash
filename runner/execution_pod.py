@@ -713,6 +713,7 @@ print(json.dumps(r))'''
 
     def _interrupt_space_commands(self, scratch_space_id):
         import json
+        import time
         from control import save
         directory = self.backend.root / 'execution-v2'
         if not directory.exists():
@@ -723,7 +724,7 @@ print(json.dumps(r))'''
                 if record.get('scratch_space_id') == scratch_space_id and record.get('status') in ('queued', 'running'):
                     prior = record['status']
                     record.update(status='interrupted' if prior == 'running' else 'cancelled',
-                                  outcome='unknown' if prior == 'running' else 'not_started')
+                                  outcome='unknown' if prior == 'running' else 'not_started', terminal_at=time.time())
                     save(path, record)
                     future = self.futures.get(record.get('operation_id'))
                     if prior == 'queued' and future:
@@ -960,6 +961,7 @@ print(json.dumps(r))'''
     def recover_commands(self):
         """Retire incomplete executions without ever replaying their commands."""
         import json
+        import time
         from control import save
 
         directory = self.backend.root / 'execution-v2'
@@ -983,6 +985,7 @@ print(json.dumps(r))'''
                 record.update(status='interrupted', outcome='unknown')
             else:
                 record.update(status='cancelled', outcome='not_started')
+            record['terminal_at'] = time.time()
             save(path, record)
 
     def _command_path(self, operation_id):
