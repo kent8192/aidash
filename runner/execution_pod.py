@@ -368,7 +368,28 @@ class ExecutionPodController:
         self.foreground_jobs = {}
         self.viewers = {}
         self.admit_locks = {}
+        self.lifecycle_locks = {}
         self.session_executor = ThreadPoolExecutor(max_workers=128, thread_name_prefix='python-session')
+
+    def _space_lock(self, scratch_space_id):
+        with self.lock:
+            return self.lifecycle_locks.setdefault(scratch_space_id, RLock())
+
+    def _admitted_uid(self, scratch_space_id):
+        import json
+        from control import scratch_resource_name
+        path = self.backend.root / 'execution-v2-spaces' / (scratch_resource_name(scratch_space_id) + '.json')
+        with self.lock:
+            return json.loads(path.read_bytes()).get('admitted_pod_uid') if path.exists() else None
+
+    def _set_admitted_uid(self, scratch_space_id, uid):
+        import json
+        from control import save, scratch_resource_name
+        path = self.backend.root / 'execution-v2-spaces' / (scratch_resource_name(scratch_space_id) + '.json')
+        with self.lock:
+            state = json.loads(path.read_bytes())
+            state['admitted_pod_uid'] = uid
+            save(path, state)
 
     def _get(self, kind, name):
         import json
@@ -456,6 +477,7 @@ class ExecutionPodController:
             raise ExecutionPodError('admission_failed', 'User isolation probe failed: ' + str(error)) from error
         self._record_guard(pod, 'execution', container_id, epoch, host_evidence=evidence, user_evidence=report)
         self._verify_network_pod(pod, settings, container_id, epoch)
+        return pod['metadata']['uid']
 
     def _verify_network_pod(self, pod, settings, container_id, epoch):
         import ipaddress
@@ -557,6 +579,10 @@ print(json.dumps(r))'''
             self.backend.kube(['delete', 'networkpolicy', canary_name, '--ignore-not-found', '--wait=true'])
 
     def ensure(self, settings):
+        with self._space_lock(settings['scratch_space_id']):
+            return self._ensure(settings)
+
+    def _ensure(self, settings):
         import hashlib
         import json
 
@@ -572,26 +598,34 @@ print(json.dumps(r))'''
                 item['value'] = 'false'
         fingerprint = hashlib.sha256(json.dumps(fingerprint_spec, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         pod['metadata']['annotations'] = {'aidash.run/spec-digest': fingerprint}
-        with self.lock:
-            self._require_space_termination_confirmed(settings['scratch_space_id'])
-            existing_claim = self._get('pvc', name)
-            if existing_claim is None:
-                self.backend.kube(['create', '-f', '-'], json.dumps(claim).encode())
-            else:
-                current = existing_claim['spec']['resources']['requests']['storage']
-                if current != claim['spec']['resources']['requests']['storage']:
-                    raise ExecutionPodError('capacity_mismatch', 'Scratch Space capacity differs from the existing claim')
-            existing_pod = self._get('pod', name)
-            if existing_pod is None:
-                pod['metadata']['annotations']['aidash.run/epoch'] = str(self.reserve_epoch(settings['scratch_space_id']))
-                self.backend.kube(['create', '-f', '-'], json.dumps(pod).encode())
-                self.touch_space(settings['scratch_space_id'])
-            elif existing_pod.get('metadata', {}).get('annotations', {}).get('aidash.run/spec-digest') != fingerprint:
-                raise ExecutionPodError('settings_mismatch', 'Existing Execution Pod has different settings')
+        self._require_space_termination_confirmed(settings['scratch_space_id'])
+        existing_claim = self._get('pvc', name)
+        if existing_claim is None:
+            self.backend.kube(['create', '-f', '-'], json.dumps(claim).encode())
+        else:
+            current = existing_claim['spec']['resources']['requests']['storage']
+            if current != claim['spec']['resources']['requests']['storage']:
+                raise ExecutionPodError('capacity_mismatch', 'Scratch Space capacity differs from the existing claim')
+        existing_pod = self._get('pod', name)
+        if existing_pod is None:
+            self._terminate_recorded_pod(settings['scratch_space_id'])
+            pod['metadata']['annotations']['aidash.run/epoch'] = str(self.reserve_epoch(settings['scratch_space_id']))
+            self.backend.kube(['create', '-f', '-'], json.dumps(pod).encode())
+            self.touch_space(settings['scratch_space_id'])
+        elif existing_pod.get('metadata', {}).get('annotations', {}).get('aidash.run/spec-digest') != fingerprint:
+            raise ExecutionPodError('settings_mismatch', 'Existing Execution Pod has different settings')
+        uid = existing_pod.get('metadata', {}).get('uid') if existing_pod else None
+        if uid and uid == self._admitted_uid(settings['scratch_space_id']):
+            return {'protocol': 'aidash-runner/2', 'pod': name, 'claim': name}
         try:
             self._admit_pod(name, settings)
             self.backend.kube(['wait', '--for=condition=Ready', 'pod/' + name, '--timeout=120s'], timeout=130)
-            self._verify_running_pod(name, settings)
+            admitted_uid = self._verify_running_pod(name, settings)
+            verified = self._get('pod', name)
+            uid = verified.get('metadata', {}).get('uid') if verified else None
+            if not uid or uid != admitted_uid:
+                raise ExecutionPodError('admission_failed', 'Verified Pod identity changed')
+            self._set_admitted_uid(settings['scratch_space_id'], uid)
         except ExecutionPodError:
             try:
                 self.stop(settings['scratch_space_id'])
@@ -610,13 +644,16 @@ print(json.dumps(r))'''
         return {'protocol': 'aidash-runner/2', 'pod': name, 'claim': name}
 
     def stop(self, scratch_space_id):
+        with self._space_lock(scratch_space_id):
+            return self._stop(scratch_space_id)
+
+    def _stop(self, scratch_space_id):
         from control import scratch_resource_name
         name = scratch_resource_name(scratch_space_id)
-        with self.lock:
-            self._interrupt_space_commands(scratch_space_id)
-            self._terminate_recorded_pod(scratch_space_id)
-            self.backend.kube(['delete', 'pod', name, '--ignore-not-found', '--wait=true'])
-            self._clear_space_unconfirmed(scratch_space_id)
+        self._interrupt_space_commands(scratch_space_id)
+        self._terminate_recorded_pod(scratch_space_id)
+        self.backend.kube(['delete', 'pod', name, '--ignore-not-found', '--wait=true'])
+        self._clear_space_unconfirmed(scratch_space_id)
         return {'stopped': True}
 
     def _interrupt_space_commands(self, scratch_space_id):
@@ -641,7 +678,7 @@ print(json.dumps(r))'''
         name = scratch_resource_name(scratch_space_id)
         if not isinstance(pod_uid, str) or not pod_uid:
             raise ExecutionPodError('pod_identity_missing', 'Cannot verify the original Pod identity')
-        with self.lock:
+        with self._space_lock(scratch_space_id):
             current = self._get('pod', name)
             self._terminate_recorded_pod(scratch_space_id, expected_uid=pod_uid)
             if current and current.get('metadata', {}).get('uid') == pod_uid:
@@ -738,33 +775,36 @@ print(json.dumps(r))'''
             save(path, state)
 
     def delete(self, scratch_space_id):
+        with self._space_lock(scratch_space_id):
+            return self._delete(scratch_space_id)
+
+    def _delete(self, scratch_space_id):
         import json
         import time
         from control import scratch_resource_name
         name = scratch_resource_name(scratch_space_id)
-        with self.lock:
-            path = self.backend.root / 'execution-v2-spaces' / (name + '.json')
-            state = json.loads(path.read_bytes()) if path.exists() else {}
-            claim = self._get('pvc', name)
-            volume = self._volume_for_purge(claim) if claim and claim.get('spec', {}).get('volumeName') else None
-            if volume:
-                self._record_volume(scratch_space_id, volume)
-            elif state.get('volume'):
-                volume = state['volume']
+        path = self.backend.root / 'execution-v2-spaces' / (name + '.json')
+        state = json.loads(path.read_bytes()) if path.exists() else {}
+        claim = self._get('pvc', name)
+        volume = self._volume_for_purge(claim) if claim and claim.get('spec', {}).get('volumeName') else None
+        if volume:
+            self._record_volume(scratch_space_id, volume)
+        elif state.get('volume'):
+            volume = state['volume']
+            current = self._get('pv', volume['name'])
+            if claim and current:
+                raise ExecutionPodError('purge_unconfirmed', 'Claim lost its recorded volume binding')
+        self._terminate_recorded_pod(scratch_space_id)
+        self.backend.kube(['delete', 'pod', name, '--ignore-not-found', '--wait=true'])
+        self._clear_space_unconfirmed(scratch_space_id)
+        self.backend.kube(['delete', 'pvc', name, '--ignore-not-found', '--wait=true'])
+        if volume:
+            deadline = time.monotonic() + 120
+            while time.monotonic() < deadline:
                 current = self._get('pv', volume['name'])
-                if claim and current:
-                    raise ExecutionPodError('purge_unconfirmed', 'Claim lost its recorded volume binding')
-            self._terminate_recorded_pod(scratch_space_id)
-            self.backend.kube(['delete', 'pod', name, '--ignore-not-found', '--wait=true'])
-            self._clear_space_unconfirmed(scratch_space_id)
-            self.backend.kube(['delete', 'pvc', name, '--ignore-not-found', '--wait=true'])
-            if volume:
-                deadline = time.monotonic() + 120
-                while time.monotonic() < deadline:
-                    current = self._get('pv', volume['name'])
-                    if not current or current.get('metadata', {}).get('uid') != volume['uid']:
-                        self._mark_purged(scratch_space_id)
-                        return {'deleted': True}
+                if not current or current.get('metadata', {}).get('uid') != volume['uid']:
+                    self._mark_purged(scratch_space_id)
+                    return {'deleted': True}
                     time.sleep(.5)
                 raise ExecutionPodError('purge_unconfirmed', 'Persistent volume deletion was not confirmed')
             if state.get('guard') and not state.get('purged'):
@@ -883,6 +923,10 @@ print(json.dumps(r))'''
             return result
 
     def submit_command(self, request, *, kind='shell', session_operation_id=None, client_digest=None):
+        with self._space_lock(request['scratch_space_id']):
+            return self._submit_command(request, kind=kind, session_operation_id=session_operation_id, client_digest=client_digest)
+
+    def _submit_command(self, request, *, kind='shell', session_operation_id=None, client_digest=None):
         import hashlib
         import json
         import time
@@ -919,12 +963,15 @@ print(json.dumps(r))'''
                 if prior.get('request_digest') != digest:
                     raise ExecutionPodError('command_conflict', 'Operation ID was already used for another command')
                 return self.command_result(operation_id)
-            pod = self._get('pod', name)
+        pod = self._get('pod', name)
+        with self.lock:
             if not pod or pod.get('status', {}).get('phase') != 'Running':
                 raise ExecutionPodError('pod_unavailable', 'Execution Pod is not running')
             uid = pod.get('metadata', {}).get('uid')
             if not isinstance(uid, str) or not uid:
                 raise ExecutionPodError('pod_unavailable', 'Execution Pod UID is unavailable')
+            if self._admitted_uid(scratch_id) != uid:
+                raise ExecutionPodError('admission_unverified', 'Execution Pod has not passed admission')
             containers = pod.get('spec', {}).get('containers', [])
             execution = next((item for item in containers if item.get('name') == 'execution'), None)
             if execution is None:
@@ -1093,11 +1140,14 @@ print(json.dumps(r))'''
                 time.sleep(.1)
 
     def reset(self, settings):
+        with self._space_lock(settings['scratch_space_id']):
+            return self._reset(settings)
+
+    def _reset(self, settings):
         if not self.admitted:
             raise ExecutionPodError('admission_unverified', 'Execution Pod admission has not been verified')
-        with self.lock:
-            self.stop(settings['scratch_space_id'])
-            result = self.ensure(dict(settings, _reset_system=True))
+        self.stop(settings['scratch_space_id'])
+        result = self.ensure(dict(settings, _reset_system=True))
         return dict(result, reset=True)
 
     def change_log(self, scratch_space_id, offset=0, limit=65536):
@@ -1143,6 +1193,7 @@ print(json.dumps(r))'''
                 'scratch_space_id': scratch_space_id, 'last_command_at': time.time()}
             state['epoch'] = state.get('epoch', 0) + 1
             state.pop('guard', None)
+            state.pop('admitted_pod_uid', None)
             save(path, state)
             return state['epoch']
 
@@ -1168,17 +1219,18 @@ print(json.dumps(r))'''
             return
         for path in directory.glob('*.json'):
             try:
-                with self.lock:
-                    space = json.loads(path.read_bytes())
-                    scratch_id = space['scratch_space_id']
-                    unconfirmed = space.get('termination_unconfirmed', False)
-                    if not unconfirmed:
-                        if current - space['last_command_at'] < 1800 or self.foreground_jobs.get(scratch_id, 0):
-                            continue
-                        viewers = self.viewers.get(scratch_id, {})
-                        self.viewers[scratch_id] = {key: expiry for key, expiry in viewers.items() if expiry > current}
-                        if self.viewers[scratch_id]:
-                            continue
+                scratch_id = json.loads(path.read_bytes())['scratch_space_id']
+                with self._space_lock(scratch_id):
+                    with self.lock:
+                        space = json.loads(path.read_bytes())
+                        unconfirmed = space.get('termination_unconfirmed', False)
+                        if not unconfirmed:
+                            if current - space['last_command_at'] < 1800 or self.foreground_jobs.get(scratch_id, 0):
+                                continue
+                            viewers = self.viewers.get(scratch_id, {})
+                            self.viewers[scratch_id] = {key: expiry for key, expiry in viewers.items() if expiry > current}
+                            if self.viewers[scratch_id]:
+                                continue
                     if unconfirmed or self._get('pod', scratch_resource_name(scratch_id)):
                         self.stop(scratch_id)
             except Exception as error:
@@ -1213,6 +1265,10 @@ print(json.dumps(r))'''
         return directory / (key + '.json')
 
     def start_python(self, scratch_space_id, run_id):
+        with self._space_lock(scratch_space_id):
+            return self._start_python(scratch_space_id, run_id)
+
+    def _start_python(self, scratch_space_id, run_id):
         import json
         import shlex
         import uuid
@@ -1221,23 +1277,22 @@ print(json.dumps(r))'''
         if not self.admitted:
             raise ExecutionPodError('admission_unverified', 'Execution Pod admission has not been verified')
         path = self._python_session_path(scratch_space_id, run_id)
-        with self.lock:
-            if path.exists():
-                prior = json.loads(path.read_bytes())
-                record = self._read_command(prior['operation_id'])
-                pod = self._get('pod', scratch_resource_name(scratch_space_id))
-                if (record['status'] in ('queued', 'running') and pod
-                        and pod.get('metadata', {}).get('uid') == record.get('pod_uid')):
-                    return prior
-            operation_id = str(uuid.uuid4())
-            socket_path = '/run/aidash/' + operation_id + '.sock'
-            code = 'exec ' + shlex.join(python_helper_command('serve', socket_path))
-            self.submit_command({'operation_id': operation_id, 'scratch_space_id': scratch_space_id,
-                                 'run_id': run_id, 'code': code, 'background': True}, kind='python_session')
-            session = {'operation_id': operation_id, 'scratch_space_id': scratch_space_id,
-                       'run_id': run_id, 'socket_path': socket_path}
-            save(path, session)
-            return session
+        if path.exists():
+            prior = json.loads(path.read_bytes())
+            record = self._read_command(prior['operation_id'])
+            pod = self._get('pod', scratch_resource_name(scratch_space_id))
+            if (record['status'] in ('queued', 'running') and pod
+                    and pod.get('metadata', {}).get('uid') == record.get('pod_uid')):
+                return prior
+        operation_id = str(uuid.uuid4())
+        socket_path = '/run/aidash/' + operation_id + '.sock'
+        code = 'exec ' + shlex.join(python_helper_command('serve', socket_path))
+        self.submit_command({'operation_id': operation_id, 'scratch_space_id': scratch_space_id,
+                             'run_id': run_id, 'code': code, 'background': True}, kind='python_session')
+        session = {'operation_id': operation_id, 'scratch_space_id': scratch_space_id,
+                   'run_id': run_id, 'socket_path': socket_path}
+        save(path, session)
+        return session
 
     def python_cell(self, request):
         import base64

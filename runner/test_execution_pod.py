@@ -287,6 +287,7 @@ class ExecutionPodControllerTest(unittest.TestCase):
                     obj = json.loads(data)
                     kind = 'pvc' if obj['kind'] == 'PersistentVolumeClaim' else 'pod'
                     if kind == 'pod':
+                        obj['metadata']['uid'] = 'pod-uid'
                         obj['status'] = {'phase': 'Pending'}
                     self.objects[(kind, obj['metadata']['name'])] = obj
                 elif args[0] == 'delete':
@@ -303,9 +304,22 @@ class ExecutionPodControllerTest(unittest.TestCase):
                     'memory_bytes': 1 << 30, 'capacity_bytes': 1 << 30, 'docker_enabled': False}
         controller = ExecutionPodController(backend, config, admitted=True)
         controller._admit_pod = Mock()
-        controller._verify_running_pod = Mock()
-        resource = controller.ensure(settings)
-        self.assertEqual(controller.ensure(settings), resource)
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        started, release = threading.Event(), threading.Event()
+        def verify(*args):
+            started.set()
+            self.assertTrue(release.wait(3))
+            return 'pod-uid'
+        controller._verify_running_pod = Mock(side_effect=verify)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(controller.ensure, settings)
+            self.assertTrue(started.wait(3))
+            second = pool.submit(controller.ensure, settings)
+            release.set()
+            resource = first.result(timeout=3)
+            self.assertEqual(second.result(timeout=3), resource)
+        controller._verify_running_pod.assert_called_once()
         controller.stop('id')
         self.assertIn(('pvc', resource['claim']), backend.objects)
         self.assertNotIn(('pod', resource['pod']), backend.objects)
@@ -574,6 +588,8 @@ class CommandJournalTest(unittest.TestCase):
                 return SimpleNamespace(stdout=json.dumps(body).encode(), returncode=0)
         with tempfile.TemporaryDirectory() as directory:
             controller = ExecutionPodController(Backend(directory), {'output_bytes': 1024}, admitted=True)
+            controller.touch_space('scratch')
+            controller._set_admitted_uid('scratch', 'pod-uid')
             request = {'operation_id': operation, 'scratch_space_id': 'scratch', 'run_id': 'run',
                        'code': 'echo hi'}
             captured = {'exit_code': 0, 'transport_timed_out': False,
@@ -605,6 +621,42 @@ class CommandJournalTest(unittest.TestCase):
             self.assertFalse(first['eof'])
             self.assertEqual(base64.b64decode(second['data']), b'defgh')
             self.assertTrue(second['eof'])
+
+
+class AdmissionLifecycleRegressionTest(unittest.TestCase):
+    def test_unverified_running_pod_rejects_commands(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from execution_pod import ExecutionPodController, ExecutionPodError
+        class Backend:
+            def __init__(self, root): self.root = Path(root)
+            def kube(self, *args, **kwargs):
+                return SimpleNamespace(stdout=json.dumps({'metadata': {'uid': 'pod-uid'},
+                    'status': {'phase': 'Running'}, 'spec': {'containers': [{'name': 'execution'}]}}).encode())
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Backend(directory), {}, admitted=True)
+            with self.assertRaises(ExecutionPodError) as error:
+                controller.submit_command({'operation_id': 'e6ded09d-f783-4ce8-98e9-dbfca68884f1',
+                    'scratch_space_id': 's', 'run_id': 'r', 'code': 'true'})
+            self.assertEqual(error.exception.code, 'admission_unverified')
+
+    def test_reset_does_not_hold_controller_lock_while_ensuring(self):
+        import threading
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        controller = ExecutionPodController(Mock(), {}, admitted=True)
+        controller.stop = Mock()
+        def ensure(settings):
+            obtained = []
+            thread = threading.Thread(target=lambda: (controller.lock.acquire(), obtained.append(True), controller.lock.release()))
+            thread.start()
+            thread.join(.5)
+            self.assertEqual(obtained, [True])
+            return {}
+        controller.ensure = ensure
+        controller.reset({'scratch_space_id': 's'})
 
 
 class RecoveryRegressionTest(unittest.TestCase):
