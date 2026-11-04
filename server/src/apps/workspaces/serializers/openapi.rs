@@ -19,18 +19,17 @@ use crate::apps::workspaces::serializers::management::MessageInput;
 use crate::apps::workspaces::serializers::management::StateInput;
 use crate::apps::workspaces::serializers::management::WorkspaceInput;
 use crate::apps::workspaces::serializers::scratch::{
-	ScratchCreate, ScratchLimits, ScratchList, ScratchMember,
+	ScratchCreate, ScratchLimits, ScratchList, ScratchMember, ScratchView,
 };
 use crate::apps::workspaces::serializers::tasks::ConversationResponse;
 use crate::apps::workspaces::serializers::tasks::PageQuery;
 use crate::apps::workspaces::serializers::tasks::TaskPage;
 use crate::{Result, config::openapi::Contracts};
-use aidash_domain::scratch::ScratchSpace;
 use reinhardt::rest::openapi::OpenApiSchema;
 
 pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) -> Result<()> {
 	contracts.request::<_, ScratchCreate>(document, views::scratch::create)?;
-	contracts.response::<_, ScratchSpace>(
+	contracts.response::<_, ScratchView>(
 		document,
 		views::scratch::create,
 		200,
@@ -44,13 +43,13 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		"application/json",
 	)?;
 	contracts.query::<_, ScratchList>(document, views::scratch::list)?;
-	contracts.response::<_, Vec<ScratchSpace>>(
+	contracts.response::<_, Vec<ScratchView>>(
 		document,
 		views::scratch::list,
 		200,
 		"application/json",
 	)?;
-	contracts.response::<_, ScratchSpace>(
+	contracts.response::<_, ScratchView>(
 		document,
 		views::scratch::read,
 		200,

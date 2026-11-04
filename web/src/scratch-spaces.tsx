@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, dashboardContext, transportGeneration } from "./transport";
 import {
   scratchList,
+  scratchCreate,
   scratchLimits,
   scratchSettings,
   scratchMemberAdd,
@@ -13,7 +14,7 @@ import {
 } from "./generated/aidash";
 import type {
   ScratchSettings as Settings,
-  ScratchSpace as Space,
+  ScratchView as Space,
   ScratchLimits as Limits,
 } from "./generated/models";
 import { useI18n } from "./ui";
@@ -259,13 +260,19 @@ function Edit({
       <Hint>{t("scratchClearExplanation")}</Hint>
       <Button
         disabled={saving}
-        onClick={() => void act(() => scratchClear(space.id))}
+        onClick={() => {
+          if (window.confirm(`${space.name}: ${t("scratchClearConfirm")}`))
+            void act(() => scratchClear(space.id));
+        }}
       >
         {t("scratchClear")}
       </Button>
       <Button
         disabled={saving}
-        onClick={() => void act(() => scratchDelete(space.id))}
+        onClick={() => {
+          if (window.confirm(`${space.name}: ${t("scratchDeleteConfirm")}`))
+            void act(() => scratchDelete(space.id));
+        }}
       >
         {t("scratchDelete")}
       </Button>
@@ -287,6 +294,9 @@ export function ScratchSpacesSettings() {
   const { selected } = useNodes();
   const node = selected?.name;
   const [id, setId] = useState("");
+  const [name, setName] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState(false);
   const client = useQueryClient();
   const list = useQuery({
     queryKey: [
@@ -313,6 +323,30 @@ export function ScratchSpacesSettings() {
     <section className="grid gap-3">
       <h2>{t("scratchSpace")}</h2>
       <Notice>{t("scratchOutsideGuarantees")}</Notice>
+      <Field label={t("scratchNewName")}>
+        <Input value={name} onChange={(e) => setName(e.target.value)} />
+      </Field>
+      <Button
+        disabled={!node || !name.trim() || creating}
+        onClick={() => {
+          if (!node) return;
+          setCreating(true);
+          setCreateError(false);
+          void scratchCreate({ node, name: name.trim() })
+            .then((created) => {
+              setName("");
+              setId(created.id);
+              return client.invalidateQueries({
+                queryKey: ["scratch-spaces", node],
+              });
+            })
+            .catch(() => setCreateError(true))
+            .finally(() => setCreating(false));
+        }}
+      >
+        {t("scratchCreate")}
+      </Button>
+      {createError && <Notice role="alert">{t("scratchCreateError")}</Notice>}
       <Field label={t("scratchChoose")}>
         <NativeSelect value={id} onChange={(e) => setId(e.target.value)}>
           <option value="">{t("scratchChoose")}</option>
@@ -326,6 +360,7 @@ export function ScratchSpacesSettings() {
       {(list.isError || limits.isError) && (
         <Notice role="alert">{t("scratchLoadError")}</Notice>
       )}
+      {space?.expired && <Notice>{t("scratchExpired")}</Notice>}
       {space && limits.data && (
         <Edit
           key={`${node}:${space.id}`}

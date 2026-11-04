@@ -880,6 +880,9 @@ test("conversation is the landing view, with contextual progress and account set
     page.getByRole("heading", { name: "# Research", exact: true }),
   ).toBeVisible();
   await expect(
+    page.getByText("11111111-1111-4111-8111-111111111111"),
+  ).toBeVisible();
+  await expect(
     page.getByRole("button", { name: "New request", exact: true }),
   ).toBeVisible();
   await expect(
@@ -2771,3 +2774,126 @@ test("topology renders each discovered Node once with its agents and cross-Node 
   await expect(topology.locator("path[marker-end]")).toHaveCount(1);
   expect(errors).toEqual([]);
 });
+
+for (const locale of ["en-US", "ja-JP"] as const) {
+  test(`Scratch Space creation and destructive confirmations in ${locale}`, async ({
+    page,
+  }) => {
+    const ja = locale === "ja-JP";
+    await setup(page, { subject: true, locale });
+    let created = false;
+    let cleared = 0;
+    let deleted = 0;
+    const space = {
+      id: "space-one",
+      node: defaultNode.name,
+      name: "Project",
+      creator: "alice",
+      members: [],
+      state: "active",
+      revision: 0,
+      wipe_generation: 0,
+      created_at: "2026-01-01T00:00:00Z",
+      last_used_at: "2026-01-01T00:00:00Z",
+      expired: true,
+      settings: {
+        capacity_bytes: 1073741824,
+        idle_expiry_days: 14,
+        allowed_hosts: { kind: "hosts", hosts: [] },
+        execution_image: null,
+        external_services: [],
+        cpu_millis: 1000,
+        memory_bytes: 1073741824,
+        daily_sent_bytes: 1073741824,
+        daily_received_bytes: 1073741824,
+        docker_enabled: false,
+      },
+    };
+    await page.route("**/api/scratch-spaces**", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname.endsWith("/limits"))
+        return route.fulfill({
+          json: {
+            ceilings: {
+              capacity_bytes: 10737418240,
+              cpu_millis: 4000,
+              memory_bytes: 10737418240,
+              daily_sent_bytes: 10737418240,
+              daily_received_bytes: 10737418240,
+              docker_allowed: false,
+              all_hosts_allowed: false,
+            },
+            tenant_hosts: { kind: "hosts", hosts: [] },
+          },
+        });
+      if (url.pathname.endsWith("/clear")) {
+        cleared++;
+        return route.fulfill({ status: 204 });
+      }
+      if (route.request().method() === "DELETE") {
+        deleted++;
+        return route.fulfill({ status: 204 });
+      }
+      if (route.request().method() === "POST") {
+        expect(route.request().postDataJSON()).toMatchObject({
+          name: "Project",
+          node: defaultNode.name,
+        });
+        created = true;
+        return route.fulfill({ json: space });
+      }
+      return route.fulfill({ json: created ? [space] : [] });
+    });
+    await page.goto("/settings?view=node");
+    await page
+      .getByLabel(
+        ja ? "新しいスクラッチスペースの名前" : "New Scratch Space name",
+      )
+      .fill("Project");
+    await page
+      .getByRole("button", {
+        name: ja ? "スクラッチスペースを作成" : "Create Scratch Space",
+        exact: true,
+      })
+      .click();
+    await expect(
+      page.getByText(
+        ja
+          ? "期限切れ。次の実行時に内容が消去されます"
+          : "Expired; contents will be cleared on the next Run",
+      ),
+    ).toBeVisible();
+    page.once("dialog", (dialog) => dialog.dismiss());
+    await page
+      .getByRole("button", {
+        name: ja ? "スクラッチスペースを消去" : "Clear Scratch Space",
+        exact: true,
+      })
+      .click();
+    expect(cleared).toBe(0);
+    page.once("dialog", (dialog) => dialog.accept());
+    await page
+      .getByRole("button", {
+        name: ja ? "スクラッチスペースを消去" : "Clear Scratch Space",
+        exact: true,
+      })
+      .click();
+    await expect.poll(() => cleared).toBe(1);
+    page.once("dialog", (dialog) => dialog.dismiss());
+    await page
+      .getByRole("button", {
+        name: ja ? "スクラッチスペースを削除" : "Delete Scratch Space",
+        exact: true,
+      })
+      .click();
+    expect(deleted).toBe(0);
+    page.once("dialog", (dialog) => dialog.accept());
+    await page
+      .getByRole("button", {
+        name: ja ? "スクラッチスペースを削除" : "Delete Scratch Space",
+        exact: true,
+      })
+      .click();
+    await expect.poll(() => deleted).toBe(1);
+  });
+}

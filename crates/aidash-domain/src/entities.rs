@@ -174,6 +174,7 @@ impl TaskStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Workspace {
 	pub id: Uuid,
+	pub scratch_space_id: Uuid,
 	/// The Node of its Tenant that the Workspace, its Tasks and its Runs belong to.
 	pub node: crate::nodes::NodeName,
 	pub title: String,

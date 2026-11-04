@@ -255,6 +255,7 @@ export function GoalForm({ data, submit }: { data: State; submit: Submit }) {
           {spaces.data?.map((space) => (
             <option key={space.id} value={space.id}>
               {space.name} · {space.id.slice(0, 8)}
+              {space.expired ? ` · ${t("scratchExpired")}` : ""}
             </option>
           ))}
         </NativeSelect>

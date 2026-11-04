@@ -36,6 +36,7 @@ macro_rules! record {
 }
 record!(Workspace {
 	id,
+	scratch_space_id,
 	node,
 	title,
 	goal,

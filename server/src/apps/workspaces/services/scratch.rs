@@ -1,7 +1,7 @@
 //! Transactional, Tenant-authorized Scratch Space operations.
 use super::super::{
 	repositories::scratch::{NativeScratchServices, ScratchAdapter},
-	serializers::scratch::{ScratchCreate, ScratchSettingsUpdate},
+	serializers::scratch::{ScratchCreate, ScratchSettingsUpdate, ScratchView},
 };
 use crate::{
 	Error, Result,
@@ -54,8 +54,8 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 				let settings = if let Some(settings) = input.settings {
 					settings
 				} else {
-					let (_, tenant_hosts) = scope.limits(&input.node).await?;
-					ScratchSettings::for_tenant(&tenant_hosts)
+					let (ceilings, tenant_hosts) = scope.limits(&input.node).await?;
+					ScratchSettings::for_policy(&ceilings, &tenant_hosts)
 				};
 				let space = ScratchSpace {
 					id: Uuid::new_v4(),
@@ -71,18 +71,24 @@ pub(crate) async fn execute(f: &Federation, actor: Actor, op: Operation) -> Resu
 					last_used_at: now,
 				};
 				app::create(&mut scope, &space).await?;
-				serde_json::to_value(space)?
+				serde_json::to_value(ScratchView::new(space, now))?
 			}
-			Operation::List(node) => {
-				serde_json::to_value(app::list(&mut scope, &node, now).await?)?
-			}
+			Operation::List(node) => serde_json::to_value(
+				app::list(&mut scope, &node, now)
+					.await?
+					.into_iter()
+					.map(|space| ScratchView::new(space, now))
+					.collect::<Vec<_>>(),
+			)?,
 			Operation::Limits(node) => {
 				let person = scope.person().to_owned();
 				scope.require_node_use(&node, &person).await?;
 				let (ceilings, tenant_hosts) = scope.limits(&node).await?;
 				json!({"ceilings": ceilings, "tenant_hosts": tenant_hosts})
 			}
-			Operation::Read(id) => serde_json::to_value(app::read(&mut scope, id, now).await?)?,
+			Operation::Read(id) => {
+				serde_json::to_value(ScratchView::new(app::read(&mut scope, id, now).await?, now))?
+			}
 			Operation::Settings(id, value) => {
 				app::update_settings(&mut scope, id, now, value.revision, value.settings).await?;
 				json!({"sent":true})
