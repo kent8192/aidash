@@ -249,6 +249,17 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		.fetch_one(&mut *claim)
 		.await
 		.unwrap();
+	use aidash_application::ports::activation::ActivationRepository as _;
+	let activation = crate::bootstrap::activation_repository(crate::harness::Harness {
+		federation: f.clone(),
+	});
+	let mut claim_scope = activation.claim_scope().await.unwrap();
+	let contention = claim_scope.lock_run(run.id).await.err().unwrap();
+	assert!(matches!(
+		contention,
+		aidash_application::Error::RunLockContended
+	));
+	drop(claim_scope);
 	let gateway = Gateway::new(f.store.clone());
 	let first = tokio::time::timeout(
 		std::time::Duration::from_secs(5),
