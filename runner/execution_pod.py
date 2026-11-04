@@ -796,8 +796,12 @@ print(json.dumps(r))'''
         import json
         from control import scratch_resource_name
         path = self.backend.root / 'execution-v2-spaces' / (scratch_resource_name(scratch_space_id) + '.json')
-        if path.exists() and json.loads(path.read_bytes()).get('termination_unconfirmed'):
-            raise ExecutionPodError('termination_unconfirmed', 'A previous Pod termination has not been confirmed')
+        if path.exists():
+            state = json.loads(path.read_bytes())
+            if state.get('purging'):
+                raise ExecutionPodError('purge_in_progress', 'Scratch Space purge is in progress')
+            if state.get('termination_unconfirmed'):
+                raise ExecutionPodError('termination_unconfirmed', 'A previous Pod termination has not been confirmed')
 
     def _mark_space_unconfirmed(self, scratch_space_id):
         import json
@@ -812,8 +816,53 @@ print(json.dumps(r))'''
             save(path, state)
 
     def delete(self, scratch_space_id):
+        import json
+        import time
+        from concurrent.futures import wait
+        from control import save, scratch_resource_name
+        name = scratch_resource_name(scratch_space_id)
         with self._space_lock(scratch_space_id):
-            return self._delete(scratch_space_id)
+            claim = self._get('pvc', name)
+            if claim and claim.get('spec', {}).get('volumeName'):
+                self._volume_for_purge(claim)
+            with self.lock:
+                path = self.backend.root / 'execution-v2-spaces' / (name + '.json')
+                path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                state = json.loads(path.read_bytes()) if path.exists() else {
+                    'scratch_space_id': scratch_space_id, 'last_command_at': time.time()}
+                state['purging'] = True
+                save(path, state)
+                directory = self.backend.root / 'execution-v2'
+                operations = []
+                for record_path in directory.glob('*.json') if directory.exists() else ():
+                    record = json.loads(record_path.read_bytes())
+                    if record.get('scratch_space_id') == scratch_space_id:
+                        future = self.futures.get(record.get('operation_id'))
+                        if future:
+                            operations.append(future)
+            self._stop(scratch_space_id)
+        if operations:
+            _, pending = wait(operations, timeout=30)
+            if pending:
+                raise ExecutionPodError('purge_unconfirmed', 'Command workers have not finished')
+        with self._space_lock(scratch_space_id):
+            result = self._delete(scratch_space_id)
+            self._purge_local_state(scratch_space_id)
+            return result
+
+    def _purge_local_state(self, scratch_space_id):
+        import json
+        from control import scratch_resource_name
+        with self.lock:
+            for directory in ('execution-v2', 'execution-v2-python'):
+                root = self.backend.root / directory
+                for path in root.glob('*.json') if root.exists() else ():
+                    if json.loads(path.read_bytes()).get('scratch_space_id') == scratch_space_id:
+                        path.unlink()
+            path = self.backend.root / 'execution-v2-spaces' / (scratch_resource_name(scratch_space_id) + '.json')
+            path.unlink(missing_ok=True)
+            self.foreground_jobs.pop(scratch_space_id, None)
+            self.viewers.pop(scratch_space_id, None)
 
     def _delete(self, scratch_space_id):
         import json
@@ -1044,10 +1093,16 @@ print(json.dumps(r))'''
             return self.command_result(operation_id)
 
     def _cancelled_command(self, operation_id, future):
-        if future.cancelled():
-            self._update_command(operation_id, status='cancelled', outcome='not_started')
         with self.lock:
-            record = self._read_command(operation_id)
+            try:
+                if future.cancelled():
+                    self._update_command(operation_id, status='cancelled', outcome='not_started')
+                record = self._read_command(operation_id)
+            except ExecutionPodError as error:
+                if error.code != 'command_not_found':
+                    raise
+                self.futures.pop(operation_id, None)
+                return
             if not record['background']:
                 scratch_id = record['scratch_space_id']
                 self.foreground_jobs[scratch_id] = max(0, self.foreground_jobs.get(scratch_id, 0) - 1)

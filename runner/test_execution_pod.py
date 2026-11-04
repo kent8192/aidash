@@ -885,6 +885,33 @@ class BackgroundListingRegressionTest(unittest.TestCase):
             self.assertNotIn('stderr', listed[0])
 
 
+class PurgeLocalDataRegressionTest(unittest.TestCase):
+    def test_purge_removes_only_the_deleted_spaces_journals(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            class Backend:
+                root = Path(directory)
+                def kube(self, args, **kwargs):
+                    return SimpleNamespace(stdout=b'')
+            controller = ExecutionPodController(Backend(), {}, admitted=True)
+            for op, space in [('e6ded09d-f783-4ce8-98e9-dbfca68884f1', 's'),
+                              ('e6ded09d-f783-4ce8-98e9-dbfca68884f2', 'other')]:
+                controller._command_path(op).write_text(json.dumps({'operation_id': op, 'scratch_space_id': space,
+                    'status': 'running', 'code': 'secret', 'stdout': 'data'}))
+            for space in ('s', 'other'):
+                controller.touch_space(space)
+                controller._python_session_path(space, 'r').write_text(json.dumps({'scratch_space_id': space}))
+            controller.delete('s')
+            self.assertFalse(controller._command_path('e6ded09d-f783-4ce8-98e9-dbfca68884f1').exists())
+            self.assertTrue(controller._command_path('e6ded09d-f783-4ce8-98e9-dbfca68884f2').exists())
+            self.assertFalse(controller._python_session_path('s', 'r').exists())
+            self.assertTrue(controller._python_session_path('other', 'r').exists())
+
+
 class RunCancellationRegressionTest(unittest.TestCase):
     def test_cancel_signals_running_foreground_but_leaves_background(self):
         import json
