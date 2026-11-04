@@ -311,8 +311,8 @@ authority must emit an operator notification when it suspends a scope.
 Each gateway instance defaults to 64 simultaneous tunnels per scope, 32 per
 Tenant and 1,024 overall. The Tenant and global limits can be configured in the
 capability profile; the Tenant limit must be positive and lower than the global
-limit. Capacity exhaustion identifies the scope, Tenant or global limit in its
-error code. DNS resolution and a stalled client write each have a 30-second
+limit. Capacity exhaustion returns `egress_tunnel_limit`,
+`egress_tenant_tunnel_limit` or `egress_global_tunnel_limit`. DNS resolution and a stalled client write each have a 30-second
 deadline. Idle tunnels close after five minutes and all tunnels close after 24
 hours. The gateway reauthenticates the credential and reloads scope and host
 policy every five seconds, including while idle. Revocation or a narrowed host
