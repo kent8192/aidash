@@ -59,6 +59,12 @@ pub enum SecretSubject {
 	Run { run: String, call: Uuid },
 	/// An Egress operation, a Live preview or a stdio session.
 	Operation { operation: Uuid, tenant: String },
+	/// A request from one Scratch Space, independent of any Run.
+	ScratchSpace {
+		tenant: String,
+		node: String,
+		space: Uuid,
+	},
 	/// A Workbench test call.
 	Workbench { tenant: String, call: Uuid },
 }
@@ -102,12 +108,22 @@ impl SecretClaims {
 			SecretSubject::Operation { operation, .. } if operation.is_nil() => {
 				return Err(Failure::ClaimViolation);
 			}
-			SecretSubject::Operation { tenant, .. } | SecretSubject::Workbench { tenant, .. }
+			SecretSubject::Operation { tenant, .. }
+			| SecretSubject::ScratchSpace { tenant, .. }
+			| SecretSubject::Workbench { tenant, .. }
 				if tenant != &self.tenant =>
 			{
 				return Err(Failure::Tenant);
 			}
 			SecretSubject::Workbench { call, .. } if call.is_nil() => {
+				return Err(Failure::ClaimViolation);
+			}
+			SecretSubject::ScratchSpace { node, space, .. }
+				if node.is_empty()
+					|| node.len() > 256
+					|| node.chars().any(char::is_control)
+					|| space.is_nil() =>
+			{
 				return Err(Failure::ClaimViolation);
 			}
 			_ => {}

@@ -99,6 +99,11 @@ async fn round_trips_every_attach_and_subject() {
 				operation: Uuid::from_u128(6),
 				tenant: "tenant-a".into(),
 			},
+			SecretSubject::ScratchSpace {
+				tenant: "tenant-a".into(),
+				node: "node-a".into(),
+				space: Uuid::from_u128(8),
+			},
 			SecretSubject::Workbench {
 				tenant: "tenant-a".into(),
 				call: Uuid::from_u128(7),
@@ -512,4 +517,36 @@ async fn a_token_without_the_optional_response_bound_still_verifies() {
 	let payload: serde_json::Value =
 		serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
 	assert!(payload.get("max_response_bytes").is_none());
+}
+
+#[test]
+fn scratch_scope_subject_is_tenant_bound_and_nonempty() {
+	let mut value = claims();
+	value.sub = SecretSubject::ScratchSpace {
+		tenant: "tenant-a".into(),
+		node: "node-a".into(),
+		space: Uuid::from_u128(8),
+	};
+	assert!(value.validate().is_ok());
+	let encoded = serde_json::to_value(&value.sub).unwrap();
+	let decoded: SecretSubject = serde_json::from_value(encoded).unwrap();
+	assert_eq!(decoded, value.sub);
+	value.sub = SecretSubject::ScratchSpace {
+		tenant: "tenant-b".into(),
+		node: "node-a".into(),
+		space: Uuid::from_u128(8),
+	};
+	assert!(value.validate().is_err());
+	value.sub = SecretSubject::ScratchSpace {
+		tenant: "tenant-a".into(),
+		node: "".into(),
+		space: Uuid::from_u128(8),
+	};
+	assert!(value.validate().is_err());
+	value.sub = SecretSubject::ScratchSpace {
+		tenant: "tenant-a".into(),
+		node: "node-a".into(),
+		space: Uuid::nil(),
+	};
+	assert!(value.validate().is_err());
 }

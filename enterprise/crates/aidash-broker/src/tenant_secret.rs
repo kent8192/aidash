@@ -704,6 +704,7 @@ pub(crate) fn subject_kind(subject: &SecretSubject) -> &'static str {
 	match subject {
 		SecretSubject::Run { .. } => "run",
 		SecretSubject::Operation { .. } => "operation",
+		SecretSubject::ScratchSpace { .. } => "scratch_space",
 		SecretSubject::Workbench { .. } => "workbench",
 	}
 }

@@ -866,7 +866,7 @@ impl Authority for GatewayAuthority {
 			gateway_origin: "http://gateway.test".into(),
 			destination: Address::Permitted,
 			request: Uuid::new_v4(),
-			operation: Uuid::new_v4(),
+			operation: Some(Uuid::new_v4()),
 			session: None,
 			service: service.into(),
 			definition,

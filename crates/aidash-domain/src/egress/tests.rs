@@ -85,6 +85,32 @@ fn operation_budgets_accumulate_across_requests_and_refuse_overflow() {
 }
 
 #[test]
+fn scratch_scope_host_allowlist_respects_dns_label_boundaries() {
+	let hosts = AllowedHosts {
+		hosts: vec!["registry.npmjs.org".into(), "*.example.com".into()],
+		allow_all: false,
+	};
+	for host in ["REGISTRY.NPMJS.ORG", "a.example.com", "a.b.example.com"] {
+		assert!(hosts.permits(host, false), "{host}");
+	}
+	for host in ["example.com", "badexample.com", "example.com.evil", ""] {
+		assert!(!hosts.permits(host, false), "{host}");
+	}
+	let all = AllowedHosts {
+		hosts: vec![],
+		allow_all: true,
+	};
+	assert!(!all.permits("other.example", false));
+	assert!(all.permits("other.example", true));
+}
+
+#[test]
+fn scratch_scope_daily_budget_defaults_to_100_gib_per_direction() {
+	assert_eq!(DailyBudget::default().sent_bytes, 100 * (1 << 30));
+	assert_eq!(DailyBudget::default().received_bytes, 100 * (1 << 30));
+}
+
+#[test]
 fn recorded_bytes_always_count_and_report_a_reached_limit() {
 	let limits = Limits {
 		sent_bytes: 10,

@@ -6,6 +6,13 @@ policies after `0056_attachment_tools`. `execution/0092_reference_embedding_usag
 and `0093_reference_embedding_usage_state` record reference embedding usage after
 `0091_bounded_read_indexes`.
 
+`execution/0109_scope_egress` (after `0108_node_preview_merge`) adds Node-owned scope state, per-day counters,
+connection metadata and stop events. Its composite references bind every child
+to the same Tenant, Node and scope, and Node deletion cascades through them.
+`0110` applies forced Tenant row policies; Reinhardt cannot express those
+policies as schema operations, so the migration uses SQL assets. `0111` records
+the corresponding model state.
+
 `registry/0056_attachment_tools` (after `registry/0055_remove_structured_harness_contracts`) extends the existing PostgreSQL descriptor
 and Agent default validators for the built-in `attachment_copy` operation.
 The function bodies use SQL assets because Reinhardt has no typed operation
