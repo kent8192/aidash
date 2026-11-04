@@ -1435,13 +1435,17 @@ async fn stopped_uncertain_output_without_an_ack_flag_is_adopted_and_acknowledge
 				(&output["files"][0], b"new".as_slice()),
 				(&output["output_file"], b"recovered partial".as_slice()),
 			] {
-				let file: Uuid = serde_json::from_value(file["file_id"].clone()).unwrap();
-				assert_eq!(
-					tokio::fs::read(c.root.join(file.simple().to_string()))
-						.await
-						.unwrap(),
-					bytes
-				);
+				let digest = file["digest"].as_str().unwrap();
+				assert_eq!(digest, aidash_server::capabilities::objects::digest(bytes));
+				let blob = c
+					.root
+					.join("tenants")
+					.join(aidash_server::capabilities::objects::digest(b"acme"))
+					.join("sha256")
+					.join(&digest[..2])
+					.join(&digest[2..4])
+					.join(digest);
+				assert_eq!(tokio::fs::read(blob).await.unwrap(), bytes);
 			}
 			break;
 		}
