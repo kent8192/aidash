@@ -364,7 +364,6 @@ impl ScratchAdapter<'_> {
 					&& match subject.kind {
 						SubjectKind::User => true,
 						SubjectKind::Service | SubjectKind::Agent => delegated,
-						SubjectKind::Node => false,
 					}
 			})
 	}
