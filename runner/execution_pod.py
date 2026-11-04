@@ -429,6 +429,17 @@ class ExecutionPodController:
             state['admitted_pod_uid'] = uid
             save(path, state)
 
+    def _clear_admitted_uid(self, scratch_space_id, expected_uid=None):
+        import json
+        from control import save, scratch_resource_name
+        path = self.backend.root / 'execution-v2-spaces' / (scratch_resource_name(scratch_space_id) + '.json')
+        with self.lock:
+            if path.exists():
+                state = json.loads(path.read_bytes())
+                if expected_uid is None or state.get('admitted_pod_uid') == expected_uid:
+                    state.pop('admitted_pod_uid', None)
+                    save(path, state)
+
     def _get(self, kind, name):
         import json
         result = self.backend.kube(['get', kind, name, '-o', 'json', '--ignore-not-found'])
@@ -681,6 +692,7 @@ print(json.dumps(r))'''
     def _stop(self, scratch_space_id):
         from control import scratch_resource_name
         name = scratch_resource_name(scratch_space_id)
+        self._clear_admitted_uid(scratch_space_id)
         self._interrupt_space_commands(scratch_space_id)
         self._terminate_recorded_pod(scratch_space_id)
         self.backend.kube(['delete', 'pod', name, '--ignore-not-found', '--wait=true'])
@@ -716,6 +728,7 @@ print(json.dumps(r))'''
         if not isinstance(pod_uid, str) or not pod_uid:
             raise ExecutionPodError('pod_identity_missing', 'Cannot verify the original Pod identity')
         with self._space_lock(scratch_space_id):
+            self._clear_admitted_uid(scratch_space_id, expected_uid=pod_uid)
             current = self._get('pod', name)
             self._terminate_recorded_pod(scratch_space_id, expected_uid=pod_uid)
             if current and current.get('metadata', {}).get('uid') == pod_uid:

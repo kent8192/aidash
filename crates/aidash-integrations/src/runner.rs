@@ -40,7 +40,7 @@ impl RunnerHttp {
 		let client = reqwest::Client::builder()
 			.no_proxy()
 			.timeout(Duration::from_secs(if path.starts_with("/v2/pods/") {
-				600
+				1900
 			} else if path.starts_with("/v2/") {
 				30
 			} else {

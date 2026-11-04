@@ -752,6 +752,25 @@ class AdmissionLifecycleRegressionTest(unittest.TestCase):
                     'scratch_space_id': 's', 'run_id': 'r', 'code': 'true'})
             self.assertEqual(error.exception.code, 'admission_unverified')
 
+    def test_failed_delete_does_not_reuse_terminated_pod_admission(self):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            class Backend:
+                root = Path(directory)
+                def kube(self, args, **kwargs):
+                    if args[0] == 'delete':
+                        raise RuntimeError('API unavailable')
+                    return SimpleNamespace(stdout=b'{"metadata":{"uid":"pod-uid"},"status":{"phase":"Pending"}}')
+            controller = ExecutionPodController(Backend(), {}, admitted=True)
+            controller.touch_space('s')
+            controller._set_admitted_uid('s', 'pod-uid')
+            with self.assertRaisesRegex(RuntimeError, 'unavailable'):
+                controller.stop('s')
+            self.assertIsNone(controller._admitted_uid('s'))
+
     def test_reset_does_not_hold_controller_lock_while_ensuring(self):
         import threading
         from unittest.mock import Mock
