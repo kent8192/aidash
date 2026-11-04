@@ -117,7 +117,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("marketplace", "0011_tenant_owned_row_level_security"),
 ];
 
-/// The content-store cutover deliberately refuses downgrade to UUID storage.
+/// Exclude the content-store cutover to seed legacy data for its migration test.
 const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0113_content_object_references"),
 	("execution", "0114_content_object_state"),
@@ -1607,21 +1607,15 @@ async fn out_of_order_physical_reversal_keeps_the_native_ledger(
 
 #[rstest]
 #[tokio::test]
-async fn pre_content_store_baseline_reverses_and_reapplies_through_the_management_graph(
+async fn complete_baseline_reverses_and_reapplies_through_the_management_graph(
 	#[future] fresh_database: MigrationFixture,
 ) {
 	// Arrange
 	let fixture = fresh_database.await;
-	fixture
-		.migrate_excluding(CONTENT_STORE_CUTOVER_MIGRATIONS)
-		.await;
+	fixture.migrate().await;
 	assert_baseline_seed_data(&fixture.connection).await;
 	let before = recorded_keys(&fixture.connection).await;
-	let mut command = deployment_command_excluding(
-		&fixture.url,
-		fixture.directory.path(),
-		CONTENT_STORE_CUTOVER_MIGRATIONS,
-	);
+	let mut command = deployment_command(&fixture.url, fixture.directory.path());
 	command.args(["migrate", "operations", "zero"]);
 	// Act
 	let output = tokio::time::timeout(Duration::from_secs(35), command.output())
@@ -1667,9 +1661,7 @@ async fn pre_content_store_baseline_reverses_and_reapplies_through_the_managemen
 		.await
 		.unwrap();
 	assert!(extensions.is_empty());
-	fixture
-		.migrate_excluding(CONTENT_STORE_CUTOVER_MIGRATIONS)
-		.await;
+	fixture.migrate().await;
 	assert_eq!(recorded_keys(&fixture.connection).await, before);
 	assert_baseline_seed_data(&fixture.connection).await;
 }
@@ -4812,23 +4804,39 @@ async fn content_store_cutover_discards_only_rows_naming_legacy_objects(
 	.await
 	.unwrap();
 	assert_eq!(manifest, json!([]));
-	let before = recorded_keys(&fixture.connection).await;
+	// The reverse also discards rows naming objects created after cutover.
+	let current = Uuid::new_v4();
+	let new_attachment = Uuid::new_v4();
+	let digest = "c".repeat(64);
+	sqlx::query("INSERT INTO core_blobs (tenant,digest,size) VALUES ('acme',$1,1)")
+		.bind(&digest)
+		.execute(&pool)
+		.await
+		.unwrap();
+	sqlx::query("INSERT INTO core_objects (id,tenant,kind,digest,size) VALUES ($1,'acme','thread_attachment',$2,1)")
+		.bind(current).bind(&digest).execute(&pool).await.unwrap();
+	sqlx::query("INSERT INTO channel_attachments (id,tenant,workspace_id,uploaded_by,idempotency_key,filename,media_type,sha256,size_bytes,object_id) VALUES ($1,'acme',$2,'alice',$3,'new','text/plain',$4,1,$5)")
+		.bind(new_attachment).bind(workspace).bind(Uuid::new_v4()).bind(&digest).bind(current).execute(&pool).await.unwrap();
 	let mut reverse = deployment_command(&fixture.url, fixture.directory.path());
 	reverse.args(["migrate", "execution", "0112_content_blobs"]);
 	let output = tokio::time::timeout(Duration::from_secs(60), reverse.output())
 		.await
 		.unwrap()
 		.unwrap();
-	assert!(!output.status.success());
-	let errors = String::from_utf8_lossy(&output.stderr);
 	assert!(
-		errors.contains("execution 0113_content_object_references is irreversible"),
-		"{errors}"
+		output.status.success(),
+		"{}",
+		String::from_utf8_lossy(&output.stderr)
 	);
+	let remaining: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM channel_attachments ORDER BY id")
+		.fetch_all(&pool)
+		.await
+		.unwrap();
+	assert_eq!(remaining, vec![inline]);
+	let constraints: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_constraint WHERE conrelid='public.core_retention_files'::regclass AND conname IN ('retention_file_size','core_retention_files_hold_file_key','core_retention_files_hold_fkey','core_retention_files_tenant_fkey','core_retention_files_object_fkey')").fetch_one(&pool).await.unwrap();
 	assert_eq!(
-		recorded_keys(&fixture.connection).await,
-		before,
-		"rollback must stop before dismantling later content-store tables"
+		constraints, 5,
+		"reverse must restore the legacy retention constraints"
 	);
 	pool.close().await;
 }

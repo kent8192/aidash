@@ -1,13 +1,14 @@
 # Aidash native migration history
 
-`execution/0113_content_object_references` is an irreversible undeployed
+`execution/0113_content_object_references` is a destructive undeployed
 content-store cutover. It discards UUID-backed objects, resets existing Working
 Area manifests, deletes Thread Attachment rows whose original or WAV object ID
 is set, and deletes `reference`, `transfer_in`, `transfer_out`, `collaboration`,
 and `cleanup` core records that can name those objects. Inline-only attachments
 and unrelated records remain. Its owner-only SQL asset opens Deployment Scope
-before writing Tenant rows. The `0118` rollback also stops before later tables
-are removed. Restore a pre-cutover backup instead of reversing this chain.
+before writing Tenant rows. The reverse restores the legacy schema and clears
+rows naming content-store objects; it cannot restore discarded bytes. Restore a
+pre-cutover backup to recover data.
 
 `registry/0057_embedding_inputs` through `0059_reference_image_byte_state`
 add image retrieval inputs, private reference images, model state and Tenant

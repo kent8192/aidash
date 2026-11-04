@@ -93,8 +93,8 @@ secret bytes belong only in the trusted services' environment.
    references and resets Working Area manifests. It deletes Thread Attachment
    rows with original or WAV object IDs and `reference`, `transfer_in`,
    `transfer_out`, `collaboration`, and `cleanup` records that can name those
-   objects. Inline-only attachments and unrelated records remain. The migration
-   is irreversible; restore a pre-cutover backup if needed.
+   objects. Inline-only attachments and unrelated records remain. Reversal restores the legacy schema but discards content-store objects and
+   rows that name them; restore a pre-cutover backup to recover data.
 2. Run admission and the runtime gate against the deployed isolation profile.
 3. Approve the exact Sandboxed bundles in the Tenant. Register explicit Skill or
    reference Sources, create a Binding-only version of a selected Agent and

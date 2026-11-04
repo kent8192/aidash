@@ -76,6 +76,56 @@ pub(super) fn migration() -> Migration {
 			mysql_options: None,
 			operator_class: None,
 		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "core_retention_files".into(),
+			constraint: Constraint::Check {
+					name: "retention_file_size".into(),
+					expression: "size >= 0".into(),
+				},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "core_retention_files".into(),
+			constraint: Constraint::Unique {
+					name: "core_retention_files_hold_file_key".into(),
+					columns: vec!["hold_id".into(), "file_id".into()],
+				},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "core_retention_files".into(),
+			constraint: Constraint::ForeignKey {
+					name: "core_retention_files_hold_fkey".into(),
+					columns: vec!["tenant".into(), "hold_id".into()],
+					referenced_table: "core_retention_holds".into(),
+					referenced_columns: vec!["tenant".into(), "id".into()],
+					on_delete: ForeignKeyAction::Cascade,
+					on_update: ForeignKeyAction::Restrict,
+					deferrable: None,
+				},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "core_retention_files".into(),
+			constraint: Constraint::ForeignKey {
+					name: "core_retention_files_tenant_fkey".into(),
+					columns: vec!["tenant".into()],
+					referenced_table: "tenants".into(),
+					referenced_columns: vec!["name".into()],
+					on_delete: ForeignKeyAction::Cascade,
+					on_update: ForeignKeyAction::Restrict,
+					deferrable: None,
+				},
+		})
+		.add_operation(Operation::DropConstraintDefinition {
+			table: "core_retention_files".into(),
+			constraint: Constraint::ForeignKey {
+					name: "core_retention_files_object_fkey".into(),
+					columns: vec!["tenant".into(), "file_id".into()],
+					referenced_table: "core_objects".into(),
+					referenced_columns: vec!["tenant".into(), "id".into()],
+					on_delete: ForeignKeyAction::Cascade,
+					on_update: ForeignKeyAction::Restrict,
+					deferrable: None,
+				},
+		})
 		.add_operation(Operation::DropTable {
 			name: "core_retention_files".into(),
 		})
