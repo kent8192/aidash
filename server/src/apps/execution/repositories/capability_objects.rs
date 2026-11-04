@@ -205,7 +205,13 @@ impl PendingObject {
 				)
 				.await?;
 			self.runtime
-				.adjust_quota_tx(&mut blob_tx, &tenant, self.size as i64, "used_bytes")
+				.adjust_quota_tx(
+					&mut blob_tx,
+					&tenant,
+					self.size as i64,
+					"used_bytes",
+					self.grandfather_existing,
+				)
 				.await?;
 			crate::database::native::query(
 				&Query::insert()
@@ -360,7 +366,8 @@ impl Runtime {
 		// Serialize the capacity check with commits that charge retained bytes.
 		// The lock is released with this short reservation transaction, before
 		// any bytes are sent to the object store.
-		self.adjust_quota_tx(tx, tenant, 0, "used_bytes").await?;
+		self.adjust_quota_tx(tx, tenant, 0, "used_bytes", false)
+			.await?;
 		let used: i64 = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("used_bytes"))
@@ -1225,8 +1232,14 @@ impl Runtime {
 	}
 	pub(crate) async fn reserve(&self, access: &mut Access, bytes: i64) -> Result<()> {
 		let tenant = access.identity.tenant.clone();
-		self.adjust_quota_tx(access.tx.native_mut(), &tenant, bytes, "reserved_bytes")
-			.await
+		self.adjust_quota_tx(
+			access.tx.native_mut(),
+			&tenant,
+			bytes,
+			"reserved_bytes",
+			false,
+		)
+		.await
 	}
 	async fn adjust_quota_tx(
 		&self,
@@ -1234,6 +1247,7 @@ impl Runtime {
 		tenant: &str,
 		bytes: i64,
 		column: &str,
+		grandfather_existing: bool,
 	) -> Result<()> {
 		{
 			let query_bind_1 = tenant;
@@ -1262,7 +1276,11 @@ impl Runtime {
 		let changed = {
 			let query_bind_1 = tenant;
 			let query_bind_2 = bytes;
-			let query_bind_3 = self.0.retained_bytes as i64;
+			let query_bind_3 = if grandfather_existing {
+				i64::MAX
+			} else {
+				self.0.retained_bytes as i64
+			};
 			crate::database::native::query(
 				&Query::update()
 					.table(Alias::new("core_quotas"))

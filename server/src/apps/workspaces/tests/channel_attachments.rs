@@ -709,3 +709,56 @@ async fn attachment_upload_accepts_eight_mib_through_the_http_stack(
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(body["size_bytes"], 8 * 1024 * 1024);
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn startup_grandfathers_legacy_attachments_above_retained_limit(
+	#[future] scoped_channel: ScopedChannel,
+) {
+	let ScopedChannel {
+		app,
+		token,
+		workspace,
+		..
+	} = Box::pin(scoped_channel).await;
+	let (status, uploaded) = upload(&app, &token, &workspace, Uuid::new_v4(), b"original").await;
+	assert_eq!(status, 200, "{uploaded}");
+	let id: Uuid = uploaded["id"].as_str().unwrap().parse().unwrap();
+	let legacy = b"legacy content over quota";
+	let digest = aidash_server::capabilities::objects::digest(legacy);
+	sqlx::query(
+		"UPDATE channel_attachments SET content=$1, object_id=NULL, sha256=$2, size_bytes=$3 WHERE id=$4",
+	)
+	.bind(legacy.as_slice())
+	.bind(&digest)
+	.bind(legacy.len() as i64)
+	.bind(id)
+	.execute(app.runtime.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let limit = app.runtime.store.capabilities.0.retained_bytes as i64;
+	sqlx::query("UPDATE core_quotas SET used_bytes=$1 WHERE tenant=(SELECT tenant FROM channel_attachments WHERE id=$2)")
+        .bind(limit).bind(id).execute(app.runtime.store.pool.fixture_driver()).await.unwrap();
+	let mut settings = crate::endpoint::settings_for(&app.database.url);
+	settings.deployment.id = app.runtime.config.deployment.to_string();
+	let context = reinhardt::InjectionContext::builder(reinhardt::SingletonScope::new()).build();
+	aidash_server::bootstrap::initialize(&context, &settings, app.database.connection.clone())
+		.await
+		.expect("existing inline bytes must not prevent startup");
+	let (object, inline): (Uuid, Option<Vec<u8>>) =
+		sqlx::query_as("SELECT object_id, content FROM channel_attachments WHERE id=$1")
+			.bind(id)
+			.fetch_one(app.runtime.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert!(inline.is_none());
+	assert_eq!(
+		tokio::fs::read(object_blob(&app, object).await)
+			.await
+			.unwrap(),
+		legacy
+	);
+	let charged: i64 = sqlx::query_scalar("SELECT used_bytes FROM core_quotas WHERE tenant=(SELECT tenant FROM channel_attachments WHERE id=$1)")
+        .bind(id).fetch_one(app.runtime.store.pool.fixture_driver()).await.unwrap();
+	assert_eq!(charged, limit + legacy.len() as i64);
+}
