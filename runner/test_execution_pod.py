@@ -1781,11 +1781,14 @@ class PurgeSafetyTest(unittest.TestCase):
         class Backend:
             def __init__(self, root):
                 self.root, self.deleted = Path(root), False
+                self.pv_after_delete = 0
             def kube(self, args, data=None, **_kwargs):
                 if args[0] == 'get':
                     if args[1] == 'pvc':
                         body = {'metadata': {'uid': 'claim-uid'}, 'spec': {'volumeName': 'volume-1'}}
-                    elif args[1] == 'pv' and not self.deleted:
+                    elif args[1] == 'pv' and (not self.deleted or self.pv_after_delete < 2):
+                        if self.deleted:
+                            self.pv_after_delete += 1
                         body = {'metadata': {'uid': 'volume-uid', 'finalizers': ['external-provisioner.volume.kubernetes.io/finalizer']},
                                 'spec': {'persistentVolumeReclaimPolicy': 'Delete', 'claimRef': {'uid': 'claim-uid'}}}
                     else:
@@ -1798,7 +1801,10 @@ class PurgeSafetyTest(unittest.TestCase):
             backend = Backend(directory)
             controller = ExecutionPodController(backend, {}, admitted=True)
             controller.touch_space('scratch')
-            self.assertEqual(controller.delete('scratch'), {'deleted': True})
+            from unittest.mock import patch
+            with patch('time.sleep'):
+                self.assertEqual(controller.delete('scratch'), {'deleted': True})
+            self.assertEqual(backend.pv_after_delete, 2)
 
 
 class DockerAdmissionTest(unittest.TestCase):

@@ -911,11 +911,11 @@ print(json.dumps(r))'''
                 if not current or current.get('metadata', {}).get('uid') != volume['uid']:
                     self._mark_purged(scratch_space_id)
                     return {'deleted': True}
-                    time.sleep(.5)
-                raise ExecutionPodError('purge_unconfirmed', 'Persistent volume deletion was not confirmed')
-            if state.get('guard') and not state.get('purged'):
-                raise ExecutionPodError('purge_unconfirmed', 'Persistent volume identity is unavailable')
-            self._mark_purged(scratch_space_id)
+                time.sleep(.5)
+            raise ExecutionPodError('purge_unconfirmed', 'Persistent volume deletion was not confirmed')
+        if state.get('guard') and not state.get('purged'):
+            raise ExecutionPodError('purge_unconfirmed', 'Persistent volume identity is unavailable')
+        self._mark_purged(scratch_space_id)
         return {'deleted': True}
 
     def _volume_for_purge(self, claim):
