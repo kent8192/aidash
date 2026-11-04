@@ -1078,6 +1078,13 @@ print(json.dumps(r))'''
                 return self.command_result(operation_id)
         pod = self._get('pod', name)
         with self.lock:
+            # Different Spaces use different lifecycle locks, so another Space
+            # may have claimed this operation while the Pod lookup was running.
+            if path.exists():
+                prior = self._read_command(operation_id)
+                if prior.get('request_digest') != digest:
+                    raise ExecutionPodError('command_conflict', 'Operation ID was already used for another command')
+                return self.command_result(operation_id)
             if not pod or pod.get('status', {}).get('phase') != 'Running':
                 raise ExecutionPodError('pod_unavailable', 'Execution Pod is not running')
             uid = pod.get('metadata', {}).get('uid')

@@ -955,6 +955,50 @@ class ReviewThreadRegressionTest(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text())['last_command_at'], 3600)
 
 
+class ConcurrentOperationOwnershipRegressionTest(unittest.TestCase):
+    def test_same_operation_id_cannot_be_claimed_by_two_spaces(self):
+        import tempfile
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController, ExecutionPodError
+        operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        rendezvous, release, worker_started = threading.Barrier(2), threading.Event(), threading.Event()
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(SimpleNamespace(root=Path(directory)), {}, admitted=True)
+            def get(_kind, _name):
+                rendezvous.wait(timeout=3)
+                return {'metadata': {'uid': 'uid'}, 'status': {'phase': 'Running'},
+                        'spec': {'containers': [{'name': 'execution'}]}}
+            controller._get = get
+            controller._admitted_uid = Mock(return_value='uid')
+            starts = []
+            def execute(op):
+                starts.append(op)
+                worker_started.set()
+                release.wait(3)
+            controller._execute_command = execute
+            def submit(space):
+                try:
+                    return controller.submit_command({'operation_id': operation, 'scratch_space_id': space,
+                                                      'run_id': 'run', 'code': 'true'})
+                except ExecutionPodError as error:
+                    return error.code
+            try:
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    results = list(pool.map(submit, ('space-a', 'space-b')))
+                self.assertEqual(sum(item == 'command_conflict' for item in results), 1)
+                self.assertEqual(sum(isinstance(item, dict) for item in results), 1)
+                self.assertTrue(worker_started.wait(2))
+                self.assertEqual(len(starts), 1)
+            finally:
+                release.set()
+                for queue in controller.queues.values():
+                    queue.close()
+
+
 class RecoveryRegressionTest(unittest.TestCase):
     def test_recovery_retires_commands_even_when_guard_is_unavailable(self):
         import json
