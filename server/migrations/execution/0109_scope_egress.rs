@@ -168,4 +168,22 @@ without_rowid: None,
 interleave_in_parent: None,
 partition: None
 })
+.add_operation(Operation::CreateIndex {
+table: "egress_scope_connections".into(),
+columns: vec!["tenant".into(), "node".into(), "scope_id".into()],
+unique: false, index_type: Some(IndexType::BTree), where_clause: None,
+concurrently: false, expressions: None, mysql_options: None, operator_class: None,
+})
+.add_operation(Operation::CreateIndex {
+table: "egress_scope_events".into(),
+columns: vec!["tenant".into(), "node".into(), "scope_id".into()],
+unique: false, index_type: Some(IndexType::BTree), where_clause: None,
+concurrently: false, expressions: None, mysql_options: None, operator_class: None,
+})
+.add_operation(Operation::CreateIndex {
+table: "egress_scope_events".into(),
+columns: vec!["created_at".into(), "id".into()],
+unique: false, index_type: Some(IndexType::BTree), where_clause: Some("delivered_at IS NULL".into()),
+concurrently: false, expressions: None, mysql_options: None, operator_class: None,
+})
 }

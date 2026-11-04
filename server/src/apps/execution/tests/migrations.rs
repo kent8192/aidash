@@ -4654,6 +4654,25 @@ async fn scope_egress_rows_are_tenant_bound_and_purged_with_the_node(
 	let pool = fixture.connection.clone().into_postgres().unwrap();
 	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
 	let other_node = aidash_domain::nodes::NodeName::derived("beta").to_string();
+	let indexes: Vec<String> = sqlx::query_scalar("SELECT indexdef FROM pg_indexes WHERE tablename IN ('egress_scope_connections', 'egress_scope_events')").fetch_all(&pool).await.unwrap();
+	assert!(
+		indexes
+			.iter()
+			.any(|definition| definition.contains("egress_scope_connections")
+				&& definition.contains("(tenant, node, scope_id)"))
+	);
+	assert!(
+		indexes
+			.iter()
+			.any(|definition| definition.contains("egress_scope_events")
+				&& definition.contains("(tenant, node, scope_id)"))
+	);
+	assert!(
+		indexes
+			.iter()
+			.any(|definition| definition.contains("egress_scope_events")
+				&& definition.contains("delivered_at IS NULL"))
+	);
 	let scope = Uuid::new_v4();
 	sqlx::query("INSERT INTO egress_scope_state (scope_id, tenant, node, suspended, window_started_at, connections_in_window) VALUES ($1, 'acme', $2, false, now(), 0)")
 		.bind(scope).bind(&node).execute(&pool).await.unwrap();
