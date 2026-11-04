@@ -29,6 +29,7 @@ pub enum Root {
 	LivePreview,
 	EgressSession,
 	Subnode,
+	Record,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ownership {
@@ -200,6 +201,9 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		// A Live preview's Egress request has no core operation (develop #405).
 		"egress_requests" => Either("operation_id", Operation, "session_id", EgressSession),
 		"egress_budgets" => Link("operation_id", Operation),
+		"core_manifest_revisions" => Link("area_id", Area),
+		// Each reference is a revision of an Area or a receipt of a record.
+		"core_blob_references" => Either("area_id", Area, "record_id", Record),
 		"core_retention_holds" => Link("area_id", Area),
 		"core_retention_files" => Link("hold_id", RetentionHold),
 		"message_file_versions" => Link("message_id", Message),
@@ -299,7 +303,11 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "billing_storage_samples"
 		| "billing_subscriptions"
 		| "billing_coverage_periods"
-		| "gcip_admissions" => Shared,
+		| "gcip_admissions"
+		// Content blobs are deduplicated across the Tenant, so they have no Node:
+		// a blob goes when no object, reference or upload names its digest.
+		| "core_blobs"
+		| "core_blob_uploads" => Shared,
 		_ => {
 			// A reviewed build's canonical DeploymentWide classification itself
 			// proves that this table has no Node owner. New Tenant-owned tables

@@ -175,9 +175,13 @@ node isolation before setting the profile path on the API and Worker services.
 The runner token is referenced by environment-variable name in the profile;
 secret bytes belong only in the trusted services' environment.
 
-1. Deploy the additive database migration while admission is disabled. Preserve
-   the existing database, working objects and runner journal through upgrades
-   within the supported allocation-journal format described below.
+1. Apply the content-store migrations while admission is disabled. This
+   undeployed cutover discards the previous UUID objects and their retained
+   references and resets Working Area manifests. It deletes Thread Attachment
+   rows with original or WAV object IDs and `reference`, `transfer_in`,
+   `transfer_out`, `collaboration`, and `cleanup` records that can name those
+   objects. Inline-only attachments and unrelated records remain. Reversal restores the legacy schema but discards content-store objects and
+   rows that name them; restore a pre-cutover backup to recover data.
 2. Run admission and the runtime gate against the deployed isolation profile.
 3. Approve the exact Sandboxed bundles in the Tenant. Register explicit Skill or
    reference Sources, create a Binding-only version of a selected Agent and
@@ -211,13 +215,61 @@ the services. Re-enabling admission requires an explicit new Python session
 acknowledgement; historical Python code is never replayed to rebuild memory.
 Do not down-migrate or remove storage to disable the feature.
 
+## Working Area storage
+
+Working Area objects use SHA-256 content addresses. A Tenant has its own blob
+namespace; its Working Areas, retained File versions, receipts and recovery
+snapshots can refer to the same bytes without storing or charging them twice.
+Each publication creates an immutable Area revision. The current revision and
+revisions protected by an active retention hold remain available; the sweep
+removes other superseded revisions. A transfer or sharing receipt retains the
+File versions it identifies until the receipt record is removed; a recovery
+snapshot keeps its versions until it expires or is released. Reclamation
+removes bytes only after all references are gone.
+
+Receipt records have no automatic retention or removal policy. Their referenced
+bytes remain charged to the Tenant until the records are removed, including
+after the associated Working Area is deleted.
+
+The capability profile's `storage` path is a private, persistent local staging
+and ownership-intent directory. With the default `blob_storage` setting it is
+also the object-store root: Tenant-specific directories contain
+`sha256/ab/cd/<digest>`. API and Worker processes sharing a store must also
+share the staging and intent directory so recovery can reconcile interrupted
+uploads. Keep this directory writable only by the trusted services.
+
+To select a cloud bucket, add one of these objects to the profile:
+
+```json
+{ "blob_storage": { "type": "s3", "bucket": "aidash-blobs" } }
+```
+
+```json
+{ "blob_storage": { "type": "gcs", "bucket": "aidash-blobs" } }
+```
+
+The S3 adapter uses the standard AWS environment configuration for region,
+credentials and an optional compatible endpoint. It requires atomic
+copy-if-absent support through conditional multipart completion. GCS uses
+application-default credentials. Give the trusted API and Worker identities
+permission to read, write, copy and delete objects in the selected bucket.
+Configure a bucket lifecycle rule to remove abandoned multipart uploads and
+stale `temporary/` objects after an appropriate recovery interval. Credential
+material belongs in the service environment, not the profile.
+
+Retained usage counts each Tenant's distinct blob once, including content kept
+by revisions or recovery. In-flight transfer and upload reservations are
+accounted separately. Identical bytes in different Tenants remain physically
+separate. Tenant purge removes committed and orphaned blob keys, temporary
+keys, and local upload intents.
+
 ## Initial ceilings
 
 | Resource                               | Default                                                          |
 | -------------------------------------- | ---------------------------------------------------------------- |
 | CPU / memory / processes               | 2 CPUs / 2 GiB / 128                                             |
 | Working files / temporary scratch      | 1 GiB / 256 MiB per area                                         |
-| Retained objects                       | 10 GiB per tenant, including snapshots and staging               |
+| Retained objects                       | 10 GiB per Tenant, counted once per distinct blob                |
 | Ordinary / maximum execution           | 120 / 600 seconds                                                |
 | Package installation                   | 300 seconds                                                      |
 | Idle interpreter                       | 30 minutes                                                       |

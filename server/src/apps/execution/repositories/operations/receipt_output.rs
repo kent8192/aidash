@@ -222,7 +222,7 @@ impl ReceiptOutputScope for Scope<'_> {
 				.store
 				.capabilities
 				.begin_object_in(
-					tx.as_mut(),
+					&mut tx,
 					&current.tenant,
 					*id,
 					Some(current.area_id),

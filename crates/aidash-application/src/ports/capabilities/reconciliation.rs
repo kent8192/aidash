@@ -43,6 +43,8 @@ pub trait OperationReconciliationScope: Send {
 	async fn upload_files(&mut self, operation: &Snapshot) -> Result<Vec<MountedFile>>;
 	async fn read_chunk(&mut self, file: &MountedFile, offset: u64) -> Result<Vec<u8>>;
 	async fn verified(&mut self, file: &MountedFile) -> Result<()>;
+	/// Create a new logical reference to an existing Tenant blob, if present.
+	async fn reuse_output(&mut self, digest: &str, size: u64) -> Result<Option<Uuid>>;
 	async fn begin_output(&mut self, size: u64) -> Result<()>;
 	async fn write_output(&mut self, bytes: &[u8]) -> Result<()>;
 	async fn finish_output(&mut self, expected: &str) -> Result<(Uuid, String)>;

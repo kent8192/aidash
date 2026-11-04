@@ -49,7 +49,6 @@ async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidat
 				"owner",
 				"workspace_id",
 				"thread_id",
-				"manifest",
 			]
 			.map(Alias::new),
 		)
@@ -61,6 +60,21 @@ async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidat
 			"member".into(),
 			workspace_id.into(),
 			Uuid::new_v4().into(),
+		])
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&sql)
+		.execute(app.runtime.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	// The Area's current manifest is its revision 1 row; the unknown image is a
+	// content-addressed blob in the local store.
+	let sql = Query::insert()
+		.into_table(Alias::new("core_manifest_revisions"))
+		.columns(["tenant", "area_id", "revision", "manifest"].map(Alias::new))
+		.values_panic::<_, reinhardt::query::Value>([
+			"endpoint".into(),
+			area.into(),
+			1_i64.into(),
 			manifest.into(),
 		])
 		.to_string(PostgresQueryBuilder);
@@ -68,9 +82,39 @@ async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidat
 		.execute(app.runtime.store.pool.fixture_driver())
 		.await
 		.unwrap();
-	let storage = &app.runtime.store.capabilities.0.storage;
-	tokio::fs::create_dir_all(storage).await.unwrap();
-	tokio::fs::write(storage.join(unknown.simple().to_string()), image_bytes)
+	let blob = app
+		.runtime
+		.store
+		.capabilities
+		.0
+		.storage
+		.join("tenants")
+		.join(aidash_server::capabilities::objects::digest(b"endpoint"))
+		.join("sha256")
+		.join(&image_digest[..2])
+		.join(&image_digest[2..4])
+		.join(&image_digest);
+	tokio::fs::create_dir_all(blob.parent().unwrap())
+		.await
+		.unwrap();
+	tokio::fs::write(&blob, image_bytes).await.unwrap();
+	// Every manifest entry names a Tenant blob, so a later revision can retain it.
+	let sql = Query::insert()
+		.into_table(Alias::new("core_blobs"))
+		.columns(["tenant", "digest", "size"].map(Alias::new))
+		.values_panic::<_, reinhardt::query::Value>([
+			"endpoint".into(),
+			image_digest.clone().into(),
+			(image_bytes.len() as i64).into(),
+		])
+		.values_panic::<_, reinhardt::query::Value>([
+			"endpoint".into(),
+			"11".repeat(32).into(),
+			4_i64.into(),
+		])
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&sql)
+		.execute(app.runtime.store.pool.fixture_driver())
 		.await
 		.unwrap();
 	let sql = Query::insert()
@@ -83,6 +127,14 @@ async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidat
 			"working".into(),
 			image_digest.into(),
 			(image_bytes.len() as i64).into(),
+		])
+		.values_panic::<_, reinhardt::query::Value>([
+			known.into(),
+			"endpoint".into(),
+			area.into(),
+			"working".into(),
+			"11".repeat(32).into(),
+			4_i64.into(),
 		])
 		.to_string(PostgresQueryBuilder);
 	sqlx::query(&sql)
@@ -270,15 +322,16 @@ async fn legacy_images_without_an_owner_run_wait_without_blocking_other_candidat
 		),
 		"{rows:?}"
 	);
-	let sql = Query::select()
-		.column("manifest")
-		.from(Alias::new("core_areas"))
-		.and_where(Expr::col("id").eq(Expr::value(area)))
-		.to_string(PostgresQueryBuilder);
-	let manifest: Value = sqlx::query_scalar(&sql)
-		.fetch_one(app.runtime.store.pool.fixture_driver())
-		.await
-		.unwrap();
+	// The Area's current manifest is the revision row its `revision` points at.
+	let manifest: Value = sqlx::query_scalar(
+		"SELECT m.manifest FROM core_manifest_revisions m JOIN core_areas a \
+		 ON a.tenant = m.tenant AND a.id = m.area_id AND a.revision = m.revision \
+		 WHERE a.id = $1",
+	)
+	.bind(area)
+	.fetch_one(app.runtime.store.pool.fixture_driver())
+	.await
+	.unwrap();
 	assert_eq!(manifest[0]["media_type"], "image/png");
 }
 

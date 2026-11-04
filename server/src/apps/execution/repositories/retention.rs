@@ -18,7 +18,7 @@ use aidash_domain::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reinhardt::query::{
-	Alias, ColumnRef, Expr, ExprTrait as _, IntoValue as _, JoinType, LockType, OnConflict, Order,
+	Alias, Expr, ExprTrait as _, IntoValue as _, JoinType, LockType, OnConflict, Order,
 	PostgresQueryBuilder, Query, QueryStatementBuilder as _, TableRef,
 };
 use serde_json::Value;
@@ -136,16 +136,14 @@ impl RetentionScope for Scope<'_> {
 			let tenant = self.access.identity.tenant.clone();
 			// The publication that would supersede a cited version takes the same
 			// row lock, so the manifest read here cannot change under us.
-			crate::database::native::query_as(
-				&Query::select()
-					.column(ColumnRef::Asterisk)
-					.from(Alias::new("core_areas"))
+			super::sessions::locked_area(
+				&mut **self.access.tx,
+				&super::sessions::select("core_areas")
 					.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
 					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
-					.lock(LockType::Update)
-					.to_string(PostgresQueryBuilder),
+					.to_owned(),
+				LockType::Update,
 			)
-			.fetch_optional(&mut **self.access.tx)
 			.await
 		}
 		.await;
@@ -396,9 +394,11 @@ impl RetentionScope for Scope<'_> {
 	) -> Result<Option<Vec<RetainedFile>>> {
 		let result: NativeResult<Option<Vec<RetainedFile>>> = async {
 			let tenant = self.access.identity.tenant.clone();
-			let hold: Option<Uuid> = crate::database::native::query_scalar(
+
+			let hold: Option<(Uuid, i64)> = crate::database::native::query_as(
 				&Query::select()
 					.column((Alias::new("f"), Alias::new("hold_id")))
+					.column((Alias::new("h"), Alias::new("revision")))
 					.from_as(Alias::new("core_retention_files"), Alias::new("f"))
 					.join(
 						JoinType::InnerJoin,
@@ -424,11 +424,30 @@ impl RetentionScope for Scope<'_> {
 					.limit(1)
 					.to_string(PostgresQueryBuilder),
 			)
-			.scalar_optional(&mut **self.access.tx)
+			.columns(&["hold_id", "revision"])
+			.fetch_optional(&mut **self.access.tx)
 			.await?;
-			let Some(hold) = hold else {
+			let Some((hold, revision)) = hold else {
 				return Ok(None);
 			};
+			// Only the covering active hold identifies the snapshot. A later
+			// revision may name the same file with different sibling assets.
+			let manifest: Option<Value> = crate::database::native::query_scalar(
+				&Query::select()
+					.column(Alias::new("manifest"))
+					.from(Alias::new("core_manifest_revisions"))
+					.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(&tenant)))
+					.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area)))
+					.and_where(Expr::col(Alias::new("revision")).eq(Expr::value(revision)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_optional(&mut **self.access.tx)
+			.await?;
+			if let Some(manifest) = manifest {
+				let files: Vec<aidash_domain::capabilities::operations::MountedFile> =
+					serde_json::from_value(manifest)?;
+				return Ok(Some(files.iter().map(RetainedFile::from).collect()));
+			}
 			let rows: Vec<FileRow> = crate::database::native::query_as(
 				&Query::select()
 					.column(Alias::new("file_id"))

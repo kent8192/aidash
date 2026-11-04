@@ -831,14 +831,18 @@ test("Node management switches the default, confirms deletion and falls back to 
   ).toHaveCount(0);
   await second.getByRole("button", { name: "Make default" }).click();
   await expect(second).toContainText("Default");
-  await expect(first).toContainText("Stored data: 4,096 bytes");
+  await expect(first).toContainText(
+    "Logical stored data (shared bytes may be counted more than once): 4,096 bytes",
+  );
   await page
     .locator('[data-node="first"]')
     .getByRole("button", { name: "Work here" })
     .click();
   await first.getByRole("button", { name: "Delete Node", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Delete Node", exact: true });
-  await expect(dialog).toContainText("Stored data: 4,096 bytes");
+  await expect(dialog).toContainText(
+    "Logical stored data (shared bytes may be counted more than once): 4,096 bytes",
+  );
   await expect(
     dialog.getByRole("button", { name: "Delete Node", exact: true }),
   ).toBeDisabled();
@@ -849,7 +853,9 @@ test("Node management switches the default, confirms deletion and falls back to 
   await expect(dialog).toBeHidden();
   await expect(first).toContainText("Deleted");
   await expect(first).toContainText("2099");
-  await expect(first).toContainText("Retained data: 4,096 bytes");
+  await expect(first).toContainText(
+    "Retained logical data (shared bytes may be counted more than once): 4,096 bytes",
+  );
   await expect(
     second.getByRole("button", { name: "Delete Node", exact: true }),
   ).toHaveCount(0);
@@ -955,7 +961,9 @@ test("a Deployment Administrator explicitly opens a Tenant's Node management and
     name: "Purge Node permanently",
     exact: true,
   });
-  await expect(dialog).toContainText("Retained data: 8,192 bytes");
+  await expect(dialog).toContainText(
+    "Retained logical data (shared bytes may be counted more than once): 8,192 bytes",
+  );
   await expect(dialog).toContainText(
     "Storage charges continue under the current Cloud billing terms",
   );
@@ -1041,7 +1049,9 @@ test("Node management pages retained records and offers no recovery for purged o
   await expect(page.locator("[data-lifecycle-node]")).toHaveCount(2);
   const permanent = page.locator('[data-lifecycle-node="permanent"]');
   await expect(permanent).toContainText("Purged");
-  await expect(permanent).toContainText("Stored data: 0 bytes");
+  await expect(permanent).toContainText(
+    "Logical stored data (shared bytes may be counted more than once): 0 bytes",
+  );
   await expect(permanent.getByRole("button")).toHaveCount(0);
   await expect(page.locator('[data-lifecycle-node="expired"]')).toContainText(
     "The restore deadline has passed",
@@ -1072,7 +1082,9 @@ test("an unavailable measured amount cannot become zero or confirm deletion", as
   await page.goto("/settings?view=nodes");
   const row = page.locator('[data-lifecycle-node="second"]');
   await expect(row).toContainText("Stored amount is unavailable");
-  await expect(row).not.toContainText("Stored data: 0 bytes");
+  await expect(row).not.toContainText(
+    "Logical stored data (shared bytes may be counted more than once): 0 bytes",
+  );
   await row.getByRole("button", { name: "Delete Node", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Delete Node", exact: true });
   await dialog.getByLabel("Type the Node name to confirm").fill("second");

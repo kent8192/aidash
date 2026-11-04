@@ -602,12 +602,25 @@ async fn stored_bytes_are_sampled_daily_through_physical_purge_except_for_delete
 	let (alice, bob) = (d.person("alice").await, d.person("bob").await);
 	let (kept, _) = d.tenant_of(&alice).await;
 	let (deleted, _) = d.tenant_of(&bob).await;
-	for (tenant, size) in [(&kept, 1000_i64), (&kept, 234), (&deleted, 77)] {
+	for (index, (tenant, size)) in [(&kept, 1000_i64), (&kept, 234), (&deleted, 77)]
+		.into_iter()
+		.enumerate()
+	{
+		// Every object names the content-addressed blob that holds its bytes.
+		let digest = format!("{index:064x}");
+		sqlx::query("INSERT INTO core_blobs (tenant, digest, size) VALUES ($1, $2, $3)")
+			.bind(tenant)
+			.bind(&digest)
+			.bind(size)
+			.execute(d.federation.store.pool.fixture_driver())
+			.await
+			.unwrap();
 		sqlx::query(
-			"INSERT INTO core_objects (id, tenant, kind, digest, size, created_at) VALUES ($1, $2, 'blob', 'digest', $3, clock_timestamp())",
+			"INSERT INTO core_objects (id, tenant, kind, digest, size, created_at) VALUES ($1, $2, 'blob', $3, $4, clock_timestamp())",
 		)
 		.bind(Uuid::new_v4())
 		.bind(tenant)
+		.bind(&digest)
 		.bind(size)
 		.execute(d.federation.store.pool.fixture_driver())
 		.await
@@ -731,6 +744,25 @@ async fn stored_bytes_are_sampled_daily_through_physical_purge_except_for_delete
 	);
 	// Removing one source must leave the other physically retained bytes metered.
 	sqlx::query("DELETE FROM core_objects WHERE tenant = $1")
+		.bind(&kept)
+		.execute(pool)
+		.await
+		.unwrap();
+	let retained =
+		aidash_server::apps::execution::services::storage_usage::samples(&d.federation.store, now)
+			.await
+			.unwrap();
+	assert_eq!(
+		retained
+			.iter()
+			.find(|sample| sample.tenant == kept)
+			.unwrap()
+			.bytes,
+		1234 + 4000,
+		"unreclaimed blobs remain billable"
+	);
+	// Simulate physical garbage collection after the last logical owner is gone.
+	sqlx::query("DELETE FROM core_blobs WHERE tenant = $1")
 		.bind(&kept)
 		.execute(pool)
 		.await
@@ -1756,6 +1788,7 @@ async fn coverage_moves_share_one_half_open_boundary(
 		node: String,
 		workspace: Uuid,
 		file: Uuid,
+		path: std::path::PathBuf,
 	}
 
 	// Full rows include generated fact/sample IDs, not only equivalent totals.
@@ -1787,26 +1820,48 @@ async fn coverage_moves_share_one_half_open_boundary(
 		sqlx::query("INSERT INTO core_areas (id,tenant,home_node,agent_id,owner,workspace_id,thread_id) VALUES ($1,$2,$3,'fixture-agent','owner',$4,$5)")
 			.bind(area).bind(tenant).bind(address).bind(workspace).bind(Uuid::new_v4())
 			.execute(pool).await.unwrap();
-		sqlx::query("INSERT INTO core_objects (id,tenant,area_id,kind,digest,size) VALUES ($1,$2,$3,'working',$4,$5)")
-			.bind(file).bind(tenant).bind(area).bind(format!("sha256:{:x}", Sha256::digest(bytes)))
-			.bind(i64::try_from(bytes.len()).unwrap()).execute(pool).await.unwrap();
-		sqlx::query("INSERT INTO core_quotas (tenant,used_bytes) VALUES ($1,$2) ON CONFLICT (tenant) DO UPDATE SET used_bytes=core_quotas.used_bytes+EXCLUDED.used_bytes")
-			.bind(tenant).bind(i64::try_from(bytes.len()).unwrap()).execute(pool).await.unwrap();
-		tokio::fs::write(
-			d.federation
-				.store
-				.capabilities
-				.0
-				.storage
-				.join(file.simple().to_string()),
-			bytes,
+		sqlx::query(
+			"INSERT INTO core_manifest_revisions (tenant,area_id,revision,manifest) VALUES ($1,$2,1,'[]')",
 		)
+		.bind(tenant)
+		.bind(area)
+		.execute(pool)
 		.await
 		.unwrap();
+		let digest = aidash_server::capabilities::objects::digest(bytes);
+		let size = i64::try_from(bytes.len()).unwrap();
+		sqlx::query("INSERT INTO core_blobs (tenant,digest,size) VALUES ($1,$2,$3)")
+			.bind(tenant)
+			.bind(&digest)
+			.bind(size)
+			.execute(pool)
+			.await
+			.unwrap();
+		sqlx::query("INSERT INTO core_objects (id,tenant,area_id,kind,digest,size) VALUES ($1,$2,$3,'working',$4,$5)").bind(file).bind(tenant).bind(area).bind(&digest).bind(size).execute(pool).await.unwrap();
+		sqlx::query("INSERT INTO core_quotas (tenant,used_bytes) VALUES ($1,$2) ON CONFLICT (tenant) DO UPDATE SET used_bytes=core_quotas.used_bytes+EXCLUDED.used_bytes").bind(tenant).bind(size).execute(pool).await.unwrap();
+		let path = d
+			.federation
+			.store
+			.capabilities
+			.0
+			.storage
+			.join("tenants")
+			.join(aidash_server::capabilities::objects::digest(
+				tenant.as_bytes(),
+			))
+			.join("sha256")
+			.join(&digest[..2])
+			.join(&digest[2..4])
+			.join(digest);
+		tokio::fs::create_dir_all(path.parent().unwrap())
+			.await
+			.unwrap();
+		tokio::fs::write(&path, bytes).await.unwrap();
 		OwnedFile {
 			node,
 			workspace,
 			file,
+			path,
 		}
 	}
 
@@ -2146,18 +2201,8 @@ async fn coverage_moves_share_one_half_open_boundary(
 	}
 	let frozen = frozen.unwrap();
 	let [target, sibling] = owned_files.unwrap();
-	assert_eq!(
-		tokio::fs::read(storage.path().join(target.file.simple().to_string()))
-			.await
-			.unwrap(),
-		b"gone"
-	);
-	assert_eq!(
-		tokio::fs::read(storage.path().join(sibling.file.simple().to_string()))
-			.await
-			.unwrap(),
-		b"keep-data"
-	);
+	assert_eq!(tokio::fs::read(&target.path).await.unwrap(), b"gone");
+	assert_eq!(tokio::fs::read(&sibling.path).await.unwrap(), b"keep-data");
 	let node_path = format!("/api/tenants/{tenant}/nodes/{}", target.node);
 	let (status, deleted) = d
 		.call(
@@ -2192,18 +2237,8 @@ async fn coverage_moves_share_one_half_open_boundary(
 	node_purge::purge_node(&d.federation.store, claimed)
 		.await
 		.unwrap();
-	assert!(
-		!storage
-			.path()
-			.join(target.file.simple().to_string())
-			.exists()
-	);
-	assert_eq!(
-		tokio::fs::read(storage.path().join(sibling.file.simple().to_string()))
-			.await
-			.unwrap(),
-		b"keep-data"
-	);
+	assert!(!target.path.exists());
+	assert_eq!(tokio::fs::read(&sibling.path).await.unwrap(), b"keep-data");
 	let remaining: (i64, i64, i64, i64) = sqlx::query_as(
 		"SELECT (SELECT count(*) FROM workspaces WHERE id=$1), (SELECT count(*) FROM core_objects WHERE id=$2), (SELECT count(*) FROM workspaces WHERE id=$3), (SELECT count(*) FROM core_objects WHERE id=$4)",
 	)
@@ -2322,12 +2357,7 @@ async fn coverage_moves_share_one_half_open_boundary(
 		.await;
 	assert_eq!(status, 200, "{workspace}");
 	assert_eq!(workspace["workspace"]["id"], json!(sibling.workspace));
-	assert_eq!(
-		tokio::fs::read(storage.path().join(sibling.file.simple().to_string()))
-			.await
-			.unwrap(),
-		b"keep-data"
-	);
+	assert_eq!(tokio::fs::read(&sibling.path).await.unwrap(), b"keep-data");
 	d.finish().await;
 }
 

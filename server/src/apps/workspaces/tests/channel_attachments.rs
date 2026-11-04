@@ -23,6 +23,29 @@ async fn upload(
 	)
 }
 
+/// Local blob store file holding an attachment object's content-addressed bytes.
+async fn object_blob(app: &EndpointFixture, object_id: Uuid) -> std::path::PathBuf {
+	let (tenant, digest): (String, String) =
+		sqlx::query_as("SELECT tenant, digest FROM core_objects WHERE id = $1")
+			.bind(object_id)
+			.fetch_one(app.runtime.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	app.runtime
+		.store
+		.capabilities
+		.0
+		.storage
+		.join("tenants")
+		.join(aidash_server::capabilities::objects::digest(
+			tenant.as_bytes(),
+		))
+		.join("sha256")
+		.join(&digest[..2])
+		.join(&digest[2..4])
+		.join(&digest)
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn attachment_upload_is_idempotent_and_download_requires_current_message_access(
@@ -183,20 +206,14 @@ async fn attachment_upload_is_idempotent_and_download_requires_current_message_a
 			.await
 			.unwrap();
 	assert!(inline.is_none());
-	let object_path = app
-		.runtime
-		.store
-		.capabilities
-		.0
-		.storage
-		.join(object_id.simple().to_string());
+	let object_path = object_blob(&app, object_id).await;
 	assert_eq!(
 		tokio::fs::read(&object_path).await.unwrap(),
 		b"Source evidence"
 	);
-	tokio::fs::write(&object_path, b"Tampered data!!")
-		.await
-		.unwrap();
+	// Blobs are verified when written and not re-hashed on every read (#697),
+	// so a read refuses bytes whose size no longer matches the object.
+	tokio::fs::write(&object_path, b"Tampered").await.unwrap();
 	assert_ne!(
 		alice_client.get(&download).await.unwrap().status_code(),
 		200
@@ -489,13 +506,7 @@ async fn startup_backfills_legacy_bytes_and_replay_keeps_the_same_object(
 			.await
 			.unwrap();
 	assert!(inline.is_none());
-	let path = app
-		.runtime
-		.store
-		.capabilities
-		.0
-		.storage
-		.join(first.simple().to_string());
+	let path = object_blob(&app, first).await;
 	assert_eq!(tokio::fs::read(path).await.unwrap(), b"legacy bytes");
 	start().await;
 	let (second,): (Uuid,) =
@@ -553,13 +564,8 @@ async fn deleting_a_thread_reclaims_its_attachment_object(#[future] scoped_chann
 			.fetch_one(app.runtime.store.pool.fixture_driver())
 			.await
 			.unwrap();
-	let path = app
-		.runtime
-		.store
-		.capabilities
-		.0
-		.storage
-		.join(object_id.simple().to_string());
+	let path = object_blob(&app, object_id).await;
+	assert!(path.exists());
 	let (status, message) = request(
 		&app,
 		&token,
@@ -702,4 +708,103 @@ async fn attachment_upload_accepts_eight_mib_through_the_http_stack(
 	let (status, body) = upload(&app, &token, &workspace, Uuid::new_v4(), &bytes).await;
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(body["size_bytes"], 8 * 1024 * 1024);
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn startup_grandfathers_legacy_attachments_above_retained_limit(
+	#[future] scoped_channel: ScopedChannel,
+) {
+	let ScopedChannel {
+		app,
+		token,
+		workspace,
+		..
+	} = Box::pin(scoped_channel).await;
+	let (status, uploaded) = upload(&app, &token, &workspace, Uuid::new_v4(), b"original").await;
+	assert_eq!(status, 200, "{uploaded}");
+	let id: Uuid = uploaded["id"].as_str().unwrap().parse().unwrap();
+	let legacy = b"legacy content over quota";
+	let digest = aidash_server::capabilities::objects::digest(legacy);
+	sqlx::query(
+		"UPDATE channel_attachments SET content=$1, object_id=NULL, sha256=$2, size_bytes=$3 WHERE id=$4",
+	)
+	.bind(legacy.as_slice())
+	.bind(&digest)
+	.bind(legacy.len() as i64)
+	.bind(id)
+	.execute(app.runtime.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let limit = app.runtime.store.capabilities.0.retained_bytes as i64;
+	sqlx::query("UPDATE core_quotas SET used_bytes=$1 WHERE tenant=(SELECT tenant FROM channel_attachments WHERE id=$2)")
+        .bind(limit).bind(id).execute(app.runtime.store.pool.fixture_driver()).await.unwrap();
+	let mut settings = crate::endpoint::settings_for(&app.database.url);
+	settings.deployment.id = app.runtime.config.deployment.to_string();
+	let context = reinhardt::InjectionContext::builder(reinhardt::SingletonScope::new()).build();
+	aidash_server::bootstrap::initialize(&context, &settings, app.database.connection.clone())
+		.await
+		.expect("existing inline bytes must not prevent startup");
+	let (object, inline): (Uuid, Option<Vec<u8>>) =
+		sqlx::query_as("SELECT object_id, content FROM channel_attachments WHERE id=$1")
+			.bind(id)
+			.fetch_one(app.runtime.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert!(inline.is_none());
+	assert_eq!(
+		tokio::fs::read(object_blob(&app, object).await)
+			.await
+			.unwrap(),
+		legacy
+	);
+	let charged: i64 = sqlx::query_scalar("SELECT used_bytes FROM core_quotas WHERE tenant=(SELECT tenant FROM channel_attachments WHERE id=$1)")
+        .bind(id).fetch_one(app.runtime.store.pool.fixture_driver()).await.unwrap();
+	assert_eq!(charged, limit + legacy.len() as i64);
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn metered_storage_counts_stored_attachments_once_and_inline_bytes_separately(
+	#[future] scoped_channel: ScopedChannel,
+) {
+	let ScopedChannel {
+		app,
+		token,
+		workspace,
+		..
+	} = Box::pin(scoped_channel).await;
+	let workspace_id = Uuid::parse_str(&workspace).unwrap();
+	let tenant: String = sqlx::query_scalar("SELECT tenant FROM workspaces WHERE id=$1")
+		.bind(workspace_id)
+		.fetch_one(app.runtime.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	async fn sampled(app: &crate::endpoint::EndpointFixture, tenant: &str) -> u64 {
+		aidash_server::apps::execution::services::storage_usage::samples(
+			&app.runtime.store,
+			chrono::Utc::now(),
+		)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|s| s.tenant == tenant)
+		.unwrap()
+		.bytes
+	}
+	let before = sampled(&app, &tenant).await;
+	let bytes = b"stored and metered";
+	let (status, uploaded) = upload(&app, &token, &workspace, Uuid::new_v4(), bytes).await;
+	assert_eq!(status, 200, "{uploaded}");
+	assert_eq!(sampled(&app, &tenant).await, before + bytes.len() as u64);
+	let id: Uuid = uploaded["id"].as_str().unwrap().parse().unwrap();
+	let inline = b"inline";
+	sqlx::query("INSERT INTO channel_attachments (id,tenant,workspace_id,uploaded_by,idempotency_key,filename,media_type,sha256,size_bytes,content) SELECT $1,tenant,workspace_id,uploaded_by,$2,'inline','text/plain',$3,$4,$5 FROM channel_attachments WHERE id=$6")
+        .bind(Uuid::new_v4()).bind(Uuid::new_v4())
+        .bind(aidash_server::capabilities::objects::digest(inline)).bind(inline.len() as i64)
+        .bind(inline.as_slice()).bind(id).execute(app.runtime.store.pool.fixture_driver()).await.unwrap();
+	assert_eq!(
+		sampled(&app, &tenant).await,
+		before + bytes.len() as u64 + inline.len() as u64
+	);
 }

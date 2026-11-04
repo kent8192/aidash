@@ -86,6 +86,122 @@ use aidash_server::{
 use serde_json::Value;
 use uuid::Uuid;
 
+async fn fixture_blob(pool: &sqlx::PgPool, root: &std::path::Path, digest: &str, bytes: &[u8]) {
+	use reinhardt::query::{Alias, OnConflict, PostgresQueryBuilder, Query};
+	let tenant_hash = aidash_server::capabilities::objects::digest(b"acme");
+	let path = root
+		.join("tenants")
+		.join(tenant_hash)
+		.join("sha256")
+		.join(&digest[..2])
+		.join(&digest[2..4])
+		.join(digest);
+	tokio::fs::create_dir_all(path.parent().unwrap())
+		.await
+		.unwrap();
+	tokio::fs::write(path, bytes).await.unwrap();
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("core_blobs"))
+			.columns(["tenant", "digest", "size"].map(Alias::new))
+			.values(vec![
+				"acme".into(),
+				digest.into(),
+				(bytes.len() as i64).into(),
+			])
+			.unwrap()
+			.on_conflict(
+				OnConflict::columns(["tenant", "digest"].map(Alias::new))
+					.do_nothing()
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(pool)
+	.await
+	.unwrap();
+}
+
+async fn fixture_revision(pool: &sqlx::PgPool, area: Uuid, revision: i64, files: Value) {
+	use reinhardt::query::{Alias, Expr, IntoValue as _, PostgresQueryBuilder, Query};
+	let mut tx = pool.begin().await.unwrap();
+	sqlx::query(
+		&Query::delete()
+			.from_table(Alias::new("core_manifest_revisions"))
+			.and_where(Expr::col(Alias::new("tenant")).eq("acme"))
+			.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area)))
+			.and_where(Expr::col(Alias::new("revision")).eq(revision))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	sqlx::query(
+		&Query::insert()
+			.into_table(Alias::new("core_manifest_revisions"))
+			.columns(["tenant", "area_id", "revision", "manifest"].map(Alias::new))
+			.values(vec![
+				"acme".into(),
+				area.into(),
+				revision.into(),
+				files.clone().into_value(),
+			])
+			.unwrap()
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	for file in files.as_array().unwrap() {
+		let id: Uuid = serde_json::from_value(file["file_id"].clone()).unwrap();
+		let digest = file["digest"].as_str().unwrap();
+		let holder = format!("{area}:{revision}:{id}");
+		sqlx::query(
+			&Query::insert()
+				.into_table(Alias::new("core_blob_references"))
+				.columns(
+					[
+						"id",
+						"tenant",
+						"digest",
+						"holder_kind",
+						"holder_id",
+						"object_id",
+						"area_id",
+						"revision",
+					]
+					.map(Alias::new),
+				)
+				.values(vec![
+					Uuid::new_v4().into(),
+					"acme".into(),
+					digest.into(),
+					"revision".into(),
+					holder.into(),
+					id.into(),
+					area.into(),
+					revision.into(),
+				])
+				.unwrap()
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	}
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("core_areas"))
+			.value(Alias::new("revision"), revision)
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(area)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+}
+
 #[derive(Clone)]
 struct CoreFixture {
 	_storage: Arc<tempfile::TempDir>,
@@ -1168,7 +1284,6 @@ async fn reusable_grants_require_explicit_scope_and_revocation_withdraws_reuse(
 #[rstest::rstest]
 #[tokio::test]
 async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixture: CoreFixture) {
-	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let c = capability_fixture.await;
 	let sender = admit(&c).await;
 	let mut reader =
@@ -1240,33 +1355,13 @@ async fn local_shares_are_fixed_recipient_owned_copies(#[future] capability_fixt
 	// File transfer is byte-opaque: even an image asset can be shared with a
 	// text-only recipient for storage or processing by its tools.
 	area["manifest"][0]["media_type"] = json!("image/svg+xml");
-	{
-		let query_bind_1 = area["id"].as_str().unwrap().parse::<Uuid>().unwrap();
-		let query_bind_2 = &area["manifest"];
-		sqlx::query(
-			&Query::update()
-				.table(Alias::new("core_areas"))
-				.value_expr(
-					Alias::new("manifest"),
-					SimpleExpr::CustomWithExpr(
-						"(?)".to_owned(),
-						vec![Expr::value(query_bind_2.to_owned()).into()],
-					),
-				)
-				.and_where(
-					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("id"))).eq(
-						SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						),
-					),
-				)
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(c.f.store.pool.fixture_driver())
-		.await
-	}
-	.unwrap();
+	fixture_revision(
+		c.f.store.pool.fixture_driver(),
+		area["id"].as_str().unwrap().parse().unwrap(),
+		area["revision"].as_i64().unwrap(),
+		area["manifest"].clone(),
+	)
+	.await;
 	let source = &area["manifest"][0];
 	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":source["file_id"],"expected_digest":source["digest"]}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),"agent_id":"reader","agent_version":"1.1.0","thread_id":task["id"]}});
 	let share_path = format!("/api/runs/{}/files/share", sender.id);
@@ -1741,6 +1836,24 @@ mod reference_dispatch_tests;
 #[cfg(feature = "capability-runtime-tests")]
 #[path = "core_capabilities/publication_storage.rs"]
 mod publication_storage_tests;
+
+#[path = "core_capabilities/reference_reclamation.rs"]
+mod reference_reclamation_tests;
+
+#[path = "core_capabilities/transfer_quota.rs"]
+mod transfer_quota_tests;
+
+#[path = "core_capabilities/upload_scope.rs"]
+mod upload_scope_tests;
+
+#[path = "core_capabilities/quota_dedup.rs"]
+mod quota_dedup_tests;
+
+#[path = "core_capabilities/torn_intents.rs"]
+mod torn_intents_tests;
+
+#[path = "core_capabilities/reclamation_lock.rs"]
+mod reclamation_lock_tests;
 
 #[path = "core_capabilities/review_regressions.rs"]
 mod review_regression_tests;

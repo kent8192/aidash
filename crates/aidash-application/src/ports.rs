@@ -221,5 +221,6 @@ pub mod retention;
 pub mod accounts;
 pub mod context_source;
 
+pub mod blob_store;
 pub mod oauth;
 pub mod subnodes;

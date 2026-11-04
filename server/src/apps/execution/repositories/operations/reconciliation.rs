@@ -307,6 +307,19 @@ impl OperationReconciliationScope for Scope<'_> {
 			.map(|_| ())
 			.map_err(Into::into)
 	}
+	async fn reuse_output(&mut self, digest: &str, size: u64) -> Result<Option<Uuid>> {
+		self.store
+			.capabilities
+			.reference_blob(
+				&mut self.access,
+				self.area.as_ref().expect("reconciliation scope loaded").id,
+				"working",
+				digest,
+				size,
+			)
+			.await
+			.map_err(Into::into)
+	}
 	async fn begin_output(&mut self, size: u64) -> Result<()> {
 		if self.pending.is_some() {
 			return Err(aidash_application::Error::External(

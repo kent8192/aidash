@@ -13,25 +13,36 @@ pub async fn reclaim(repository: &dyn ReclamationRepository, id: Uuid) -> Result
 
 		let expired = record.expires_at.is_some_and(|at| at <= Utc::now());
 		let mut files = vec![];
+		let mut release_quota = 0;
 		match record.kind.as_str() {
 			"transfer_out" => {
 				if record.data["objects_released"] == true
+					|| record.data["receipt_retained"] == true
 					|| !(expired || matches!(record.state.as_str(), "delivered" | "blocked"))
 				{
 					return Ok(false);
 				}
-				files = serde_json::from_value::<Vec<FileEntry>>(
-					record.data["description"]["files"].clone(),
-				)?;
-				if expired && !matches!(record.state.as_str(), "delivered" | "blocked") {
-					record.state = if record.data["commit_attempted"] == true {
-						"expired_unconfirmed"
-					} else {
-						"expired"
+				if record.data["receipt"].is_object() {
+					// A delivered receipt keeps its source snapshots until the
+					// owning record is removed.
+					record.data["receipt_retained"] = json!(true);
+				} else {
+					files = serde_json::from_value::<Vec<FileEntry>>(
+						record.data["description"]["files"].clone(),
+					)?;
+					scope
+						.release_transfer_refs(&record.tenant, record.id)
+						.await?;
+					if expired && !matches!(record.state.as_str(), "delivered" | "blocked") {
+						record.state = if record.data["commit_attempted"] == true {
+							"expired_unconfirmed"
+						} else {
+							"expired"
+						}
+						.into();
 					}
-					.into();
+					record.data["objects_released"] = json!(true);
 				}
-				record.data["objects_released"] = json!(true);
 			}
 			"transfer_in" => {
 				if record.data["objects_released"] == true
@@ -47,9 +58,7 @@ pub async fn reclaim(repository: &dyn ReclamationRepository, id: Uuid) -> Result
 					files.push(serde_json::from_value::<FileEntry>(value.clone())?);
 				}
 				let reserved = record.data["reserved"].as_i64().ok_or(Error::Forbidden)?;
-				if reserved > 0 {
-					scope.release_quota(&record.tenant, reserved).await?;
-				}
+				release_quota = reserved;
 				if record.state != "committed" {
 					record.state = "expired".into();
 				}
@@ -106,22 +115,26 @@ pub async fn reclaim(repository: &dyn ReclamationRepository, id: Uuid) -> Result
 				}
 				record.data["chunks"] = json!([]);
 				if removing {
+					let mut pending = false;
 					for key in ["original", "extraction"] {
 						if let Some(file) =
 							serde_json::from_value::<Option<FileEntry>>(record.data[key].clone())?
 						{
+							if scope.object_named(&record.tenant, file.file_id).await? {
+								pending = true;
+								continue;
+							}
 							files.push(file);
 						}
 						record.data[key] = Value::Null;
 					}
-					record.state = if record.state == "revoked" {
-						"revoked"
-					} else {
-						"expired"
+					if record.state != "revoked" && !pending {
+						record.state = "expired".into();
 					}
-					.into();
-					record.expires_at = None;
-					record.data["objects_released"] = json!(true);
+					if !pending {
+						record.expires_at = None;
+					}
+					record.data["objects_released"] = json!(!pending);
 				}
 			}
 			_ => return Err(Error::Forbidden),
@@ -139,6 +152,9 @@ pub async fn reclaim(repository: &dyn ReclamationRepository, id: Uuid) -> Result
 			}
 		}
 		scope.update(&mut record).await?;
+		if release_quota > 0 {
+			scope.release_quota(&record.tenant, release_quota).await?;
+		}
 		Ok(true)
 	}
 	.await;

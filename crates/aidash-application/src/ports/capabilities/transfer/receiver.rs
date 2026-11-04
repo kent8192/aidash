@@ -18,8 +18,10 @@ pub trait ReceiverScope: TransferScope {
 	async fn recipient_rows(&mut self, cursor: Option<Uuid>) -> Result<Vec<Area>>;
 	async fn versions(&mut self, area: &Area) -> Result<Vec<String>>;
 	async fn reserve(&mut self, bytes: i64) -> Result<()>;
+	/// Fence reservation creation and conversion against other transfers of this Tenant.
+	async fn lock_conversion(&mut self) -> Result<()>;
 	async fn put_staging(&mut self, bytes: &[u8]) -> Result<(Uuid, String)>;
-	async fn begin_received(&mut self, area: Uuid, size: u64) -> Result<()>;
+	async fn begin_received(&mut self, area: Uuid, size: u64, credit: i64) -> Result<()>;
 	async fn write_pending(&mut self, bytes: &[u8]) -> Result<()>;
 	async fn finish_pending(&mut self, digest: &str) -> Result<(Uuid, String)>;
 	async fn read_file(&mut self, file: &MountedFile) -> Result<Vec<u8>>;
