@@ -153,7 +153,9 @@ pub fn resource_kind(action: &str) -> &'static str {
 		DECISION_READ => "decision",
 		CREDENTIAL_READ | CREDENTIAL_REVOKE => "credential",
 		PEER_MAPPING_READ | PEER_MAPPING_UPDATE => "peer_mapping",
-		NODE_READ | NODE_USE | NODE_UPDATE | NODE_DELETE | SCRATCH_CREATE | SUBNODE_CREATE => "node",
+		NODE_READ | NODE_USE | NODE_UPDATE | NODE_DELETE | SCRATCH_CREATE | SUBNODE_CREATE => {
+			"node"
+		}
 		NODE_REGISTRATION_READ | NODE_REGISTRATION_UPDATE => "node_registration",
 		TEST_LIMITS_UPDATE => "test_limits",
 		SUBNODE_LIMITS_UPDATE => "tenant",
