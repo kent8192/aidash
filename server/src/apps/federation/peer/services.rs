@@ -4,3 +4,6 @@
 
 pub(crate) mod key_commands;
 pub mod management;
+
+pub(crate) mod identity;
+pub(crate) mod key_sources;

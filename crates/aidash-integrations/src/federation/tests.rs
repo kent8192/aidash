@@ -80,6 +80,7 @@ pub(crate) fn transport(key: &Arc<TestKey>, origin: &str) -> HttpTransport {
 		egress: Egress {
 			enabled: true,
 			key: Some(key.clone()),
+			keys: None,
 		},
 	}
 }
@@ -306,6 +307,7 @@ async fn nothing_is_sent_while_federation_is_off_or_keyless() {
 	client.egress = Egress {
 		enabled: true,
 		key: None,
+		keys: None,
 	};
 	assert!(matches!(
 		client
@@ -484,4 +486,113 @@ async fn composite_authority_responses_can_complete_after_the_leaf_deadline(
 	} else {
 		assert_eq!(result.unwrap().body, json!({"completed":true}));
 	}
+}
+
+#[tokio::test]
+async fn outbound_uses_selected_signer_and_embeds_transition_without_changing_request_binding() {
+	use aidash_application::federation::key::{
+		DeploymentKeyPublication, DeploymentKeys, FederationSigning,
+	};
+	use aidash_capability::federation::rollover::{
+		RolloverClaims, TrustedRolloverKey, mint_transition,
+	};
+	use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+	struct Selected {
+		key: Arc<TestKey>,
+		proof: String,
+		available: bool,
+	}
+	#[async_trait]
+	impl DeploymentKeys for Selected {
+		async fn signing(&self, _: u64) -> Result<FederationSigning> {
+			if !self.available {
+				return Err(Error::External("scheduled source unavailable".into()));
+			}
+			Ok(FederationSigning {
+				key: self.key.clone(),
+				transition: Some(self.proof.clone()),
+			})
+		}
+		async fn publication(&self, _: u64) -> Result<DeploymentKeyPublication> {
+			unreachable!("outbound signing does not fetch public identity")
+		}
+	}
+	let predecessor_signer = InMemorySigner::new("unused".into(), [8; 32]);
+	let predecessor = Arc::new(TestKey {
+		id: DeploymentKeyId::of_public_key(predecessor_signer.public_key().as_bytes()),
+		pem: predecessor_signer.public_key_pem(),
+		signer: predecessor_signer,
+	});
+	let successor = TestKey::new();
+	let now = chrono::Utc::now().timestamp() as u64;
+	let proof = mint_transition(
+		&RolloverClaims {
+			deployment: "aidash://local".into(),
+			predecessor_kid: predecessor.id.to_string(),
+			successor_kid: successor.id.to_string(),
+			successor_public_key: URL_SAFE_NO_PAD.encode(successor.signer.public_key().as_bytes()),
+			published_at: now - 86_400,
+			activates_at: now,
+			retires_at: now + 604_800,
+		},
+		&Signing(predecessor.as_ref()),
+	)
+	.await
+	.unwrap();
+	let (server, mut client, route, _) = fixture().await;
+	client.egress.key = Some(predecessor.clone());
+	client.egress.keys = Some(Arc::new(Selected {
+		key: successor.clone(),
+		proof: proof.clone(),
+		available: true,
+	}));
+	let body = json!({"operation": "once"});
+	let response = client
+		.send(&route, "POST", "/reply/200?attempt=2", Some(&body))
+		.await
+		.unwrap();
+	let echoed: Value = response.json().await.unwrap();
+	let token = echoed["headers"]["authorization"]
+		.as_str()
+		.unwrap()
+		.strip_prefix("Bearer ")
+		.unwrap();
+	let binding = RequestBinding {
+		protocol: CURRENT,
+		method: "POST",
+		path: "/reply/200?attempt=2",
+		body: &serde_json::to_vec(&body).unwrap(),
+	};
+	let trusted = TrustedRolloverKey {
+		kid: predecessor.id.to_string(),
+		public_key_pem: predecessor.pem.clone(),
+	};
+	let claims =
+		FederationClaims::verify_with_transition(token, &trusted, "aidash://local", now, &binding)
+			.unwrap();
+	assert_eq!(claims.kid, successor.id.to_string());
+	assert_eq!(claims.transition.as_deref(), Some(proof.as_str()));
+	let wrong = RequestBinding {
+		path: "/reply/200?attempt=3",
+		..binding
+	};
+	assert!(
+		FederationClaims::verify_with_transition(token, &trusted, "aidash://local", now, &wrong)
+			.is_err()
+	);
+	client.egress.keys = Some(Arc::new(Selected {
+		key: successor,
+		proof,
+		available: false,
+	}));
+	assert!(
+		matches!(
+			client
+				.send(&route, "POST", "/reply/200?attempt=2", Some(&body))
+				.await,
+			Err(Error::External(_))
+		),
+		"scheduled signer failure cannot use the raw predecessor fallback"
+	);
+	drop(server);
 }

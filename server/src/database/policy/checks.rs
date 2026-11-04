@@ -45,9 +45,8 @@ fn enabled(sql: &str) -> Vec<String> {
 		.collect()
 }
 
-/// Every policy migration in `migrations` runs nothing but the rendered
-/// template, and together they enable the `owned` tables and no other. Returns
-/// how many operations enable tables.
+/// Every policy migration runs the rendered template. Together they enable
+/// the `owned` tables and no other. Returns how many operations enable tables.
 pub fn assert_policy_migrations_run_the_rendered_template(
 	migrations: &[Migration],
 	owned: &BTreeSet<&str>,
@@ -64,20 +63,17 @@ pub fn assert_policy_migrations_run_the_rendered_template(
 			}
 			policies += 1;
 			let tables = tables.iter().map(String::as_str).collect::<Vec<_>>();
-			// The operation holds nothing but the template.
 			let label = format!("{}.{}", migration.app_label, migration.name);
-			assert_eq!(sql, enable(&tables), "{label}");
-			assert_eq!(
-				reverse_sql,
-				Some(disable(&tables).as_str()),
-				"{label} reversed"
-			);
+			let forward = enable(&tables);
+			let backward = disable(&tables);
+			assert_eq!(sql, forward, "{label}");
+			assert_eq!(reverse_sql, Some(backward.as_str()), "{label} reversed");
 			for table in tables {
 				if !covered.insert(table.to_owned()) {
 					// This migration drops and recreates these undeployed object
 					// tables, so their policies have to be installed again.
 					assert!(
-						label == "execution.0100_content_object_references"
+						label == "execution.0113_content_object_references"
 							&& matches!(
 								table,
 								"core_objects" | "core_quotas" | "core_retention_files"

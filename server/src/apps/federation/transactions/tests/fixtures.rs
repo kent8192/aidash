@@ -223,6 +223,15 @@ impl Node {
 		)
 	}
 
+	/// A POST of Tenant administration (Nodes, Node registrations) as the
+	/// Tenant Administrator's browser Mapping (#484, ADR 0102).
+	pub async fn post(&self, path: &str, body: &Value) -> (u16, Value) {
+		self.administrator()
+			.await
+			.send("POST", path, body.clone())
+			.await
+	}
+
 	/// A GET with the shared Deployment Administrator bearer, for the routes
 	/// that administer the Deployment and the refusals of everything else.
 	pub async fn administrator_get(&self, path: &str) -> (u16, Value) {
@@ -233,6 +242,26 @@ impl Node {
 				"Authorization",
 				format!("Bearer {}", self.f.config.api_token),
 			)
+			.send()
+			.await
+			.unwrap();
+		(
+			response.status_code(),
+			response.json_value().unwrap_or(Value::Null),
+		)
+	}
+
+	/// A POST with the shared Deployment Administrator bearer, such as an
+	/// immediate Node purge (ADR 0083).
+	pub async fn administrator_post(&self, path: &str, body: &Value) -> (u16, Value) {
+		let response = self
+			.peer_client
+			.request(http::Method::POST, path)
+			.header(
+				"Authorization",
+				format!("Bearer {}", self.f.config.api_token),
+			)
+			.json(body)
 			.send()
 			.await
 			.unwrap();

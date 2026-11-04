@@ -78,7 +78,7 @@ async fn conversation_member_recalls_empty_bank_after_reading_coordinator(
 	let node = aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme");
 	let coordinator_subject = aidash_domain::qualified_agent(&node, "coordinator", "1.0.0");
 	let member_subject = aidash_domain::qualified_agent(&node, "a", "1.0.0");
-	let mut policy = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},(coordinator_subject.clone()):{"kind":"agent"},(member_subject.clone()):{"kind":"agent"}},"policies":[
+	let mut policy = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},(coordinator_subject.clone()):{"kind":"agent", "node":node.node.as_str()},(member_subject.clone()):{"kind":"agent", "node":node.node.as_str()}},"policies":[
 		{"id":"all","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}
 	]});
 	let authorization = Authorization {

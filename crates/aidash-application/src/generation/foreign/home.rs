@@ -136,6 +136,7 @@ pub async fn request(
 			);
 			let value = Subject {
 				kind: SubjectKind::Agent,
+				node: Some(aidash_domain::nodes::NodeAddress::parse(&home_node)?.node),
 				roles: Default::default(),
 				groups: Default::default(),
 				attributes: json!({"generation_intent":intent.id,"remote_node":input.node_id}),

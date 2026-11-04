@@ -344,12 +344,10 @@ async fn prune_revisions(store: &Store) -> NativeResult<()> {
 	Ok(())
 }
 
-/// Reap only blobs whose object and reference removals already committed.
-async fn reclaim_unreferenced_blobs(store: &Store) -> NativeResult<()> {
+/// Blobs nothing names any more: no object, reference or upload.
+fn unreferenced_blobs_query() -> reinhardt::query::SelectStatement {
 	let mut query = Query::select();
-	query
-		.columns(["tenant", "digest"].map(Alias::new))
-		.from(Alias::new("core_blobs"));
+	query.from(Alias::new("core_blobs"));
 	for table in ["core_objects", "core_blob_references", "core_blob_uploads"] {
 		query.and_where(Expr::not_exists(
 			Query::select()
@@ -366,11 +364,41 @@ async fn reclaim_unreferenced_blobs(store: &Store) -> NativeResult<()> {
 				.to_owned(),
 		));
 	}
-	let candidates: Vec<(String, String)> =
-		crate::database::native::query_as(&query.limit(16).to_string(PostgresQueryBuilder))
-			.columns(&["tenant", "digest"])
-			.fetch_all(store.pool.in_scope(&MAINTENANCE))
-			.await?;
+	query
+}
+/// One Tenant's unreferenced digests, for a purge that just released its objects.
+pub(crate) async fn unreferenced_blobs(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	tenant: &str,
+	limit: u64,
+) -> crate::Result<Vec<String>> {
+	let (sql, values) = unreferenced_blobs_query()
+		.column(Alias::new("digest"))
+		.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+		.limit(limit)
+		.build(PostgresQueryBuilder);
+	tx.fetch_all(&sql, reinhardt::db::orm::execution::convert_values(values))
+		.await?
+		.into_iter()
+		.map(|row| {
+			row.get("digest")
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(Into::into)
+		})
+		.collect()
+}
+
+/// Reap only blobs whose object and reference removals already committed.
+async fn reclaim_unreferenced_blobs(store: &Store) -> NativeResult<()> {
+	let candidates: Vec<(String, String)> = crate::database::native::query_as(
+		&unreferenced_blobs_query()
+			.columns(["tenant", "digest"].map(Alias::new))
+			.limit(16)
+			.to_string(PostgresQueryBuilder),
+	)
+	.columns(&["tenant", "digest"])
+	.fetch_all(store.pool.in_scope(&MAINTENANCE))
+	.await?;
 	for (tenant, digest) in candidates {
 		let mut tx = store.pool.begin(&MAINTENANCE).await?;
 		reclaim_blob(store, &mut tx, &tenant, &digest).await?;

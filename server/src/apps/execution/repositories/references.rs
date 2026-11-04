@@ -424,6 +424,13 @@ impl ReferenceScope for Scope<'_> {
 			.map_err(Into::into)
 	}
 	async fn request(&mut self, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
+		let mut body = body;
+		if method == "POST"
+			&& path == "/v1/operations"
+			&& let Some(input) = &mut body
+		{
+			input["usage_tenant"] = json!(self.authority.get().identity.tenant);
+		}
 		use aidash_application::ports::capabilities::runner::RunnerTransport as _;
 		crate::bootstrap::operation_runner(self.store.ok_or_else(missing)?)?
 			.request(method, path, body.as_ref())

@@ -1672,6 +1672,7 @@ async fn admission_pins_the_roots_connection_and_refuses_everything_else(
 		use reinhardt::db::orm::{Json, Model};
 		let node = common::default_node(&f.store, "alpha").await;
 		let receipt = AuthorizationRemoteAdmission::build()
+			.cancelled(false)
 			.id(run)
 			.node(node.node)
 			.source_node("aidash://remote/alpha/default".to_owned())

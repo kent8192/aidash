@@ -85,7 +85,7 @@ test("subject dashboard completes a conversation and clears expired access", asy
       `tenant-${id}`,
     );
     const policy = (
-      subjects: Record<string, { kind: string }>,
+      subjects: Record<string, { kind: string; node?: string }>,
       revision: number,
     ) => ({
       expected_revision: revision,
@@ -117,7 +117,10 @@ test("subject dashboard completes a conversation and clears expired access", asy
       policy(
         {
           alice: { kind: "user" },
-          [`${node.address}/agents/${id}@1.0.0`]: { kind: "agent" },
+          [`${node.address}/agents/${id}@1.0.0`]: {
+            kind: "agent",
+            node: node.name,
+          },
         },
         2,
       ),

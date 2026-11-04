@@ -1841,7 +1841,10 @@ async fn the_decider_is_told_only_what_enabled_users_wrote_and_where_the_call_go
 	let mut scope = advising(empowered(), ApprovalMode::Auto, vec![]);
 	scope.bundle.subjects.insert(
 		"helper".into(),
-		serde_json::from_value(json!({"kind":"agent"})).unwrap(),
+		serde_json::from_value(
+			json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")}),
+		)
+		.unwrap(),
 	);
 	scope.bundle.subjects.insert(
 		"gone".into(),

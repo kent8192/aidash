@@ -1,3 +1,4 @@
+use crate::apps::execution::repositories::node_cancellations::home_commands;
 use crate::apps::federation::remote::repositories::routes;
 use crate::{
 	Error, Result,
@@ -247,6 +248,23 @@ impl Federation {
 			.await?
 			.ok_or_else(routes::unregistered)
 	}
+	/// Delivery of an immutable durable obligation may outlive its sending Node.
+	pub(crate) async fn route_delivery(
+		&self,
+		sender: &Sender,
+		node: &str,
+		request: &aidash_application::federation::inbound::RequestDigest<'_>,
+	) -> Result<Route> {
+		let target =
+			aidash_domain::nodes::NodeAddress::parse(node).map_err(|_| routes::unregistered())?;
+		self.store
+			.pool
+			.atomic(&TenancyScope::Tenant(sender.tenant.clone()), async |tx| {
+				routes::route_delivery(tx, &self.config.deployment, sender, &target, request).await
+			})
+			.await?
+			.ok_or_else(routes::unregistered)
+	}
 	/// Every Node the sender addresses.
 	pub async fn routes(&self, sender: &Sender) -> Result<Vec<Route>> {
 		self.store
@@ -412,7 +430,7 @@ impl Home {
 	}
 	/// The Node at which this remote Run executes, as the Home's callbacks are
 	/// sent from it. A callback acts as the Node and names no subject.
-	async fn admitted_sender(&self) -> Result<Sender> {
+	async fn admitted_sender(&self, operation: &str, data: &Value) -> Result<Sender> {
 		let scope = self.tenancy().await?;
 		let tenant = scope.tenant_name().ok_or(Error::Forbidden)?.clone();
 		let node: String = self
@@ -424,6 +442,7 @@ impl Home {
 				use reinhardt::query::{
 					Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
 				};
+				home_commands::require_in(tx, tenant.as_str(), &self.run, operation, data).await?;
 				let (sql, values) = Query::select()
 					.column(Alias::new("node"))
 					.from(Alias::new("authorization_remote_admissions"))
@@ -508,7 +527,7 @@ impl Home {
 				crate::authorization::peer::admission::run_grant(&self.federation.store, &self.run)
 					.await?
 					.ok_or(Error::Forbidden)?;
-			let sender = self.admitted_sender().await?;
+			let sender = self.admitted_sender(op, &data).await?;
 			Ok::<_, Error>((grant, sender))
 		}
 		.await;

@@ -213,7 +213,7 @@ async fn stale_and_rejected_receipts_cannot_starve_new_terminal_payload_acknowle
 		bytes[0] = 0;
 		let id = Uuid::from_bytes(bytes);
 		if index >= 20 {
-			let observed=runner(&c,reqwest::Method::POST,"/v1/operations",Some(json!({"operation_id":id,"area_id":Uuid::new_v4(),"epoch":1,"digest":"receipt-fixture","kind":"shell","code":":","seconds":30,"files":[{"file_id":Uuid::new_v4(),"path":"not-uploaded","scope":"working","size":1,"digest":aidash_server::capabilities::objects::digest(b"x")}]}))).await;
+			let observed=runner(&c,reqwest::Method::POST,"/v1/operations",Some(json!({"operation_id":id,"area_id":Uuid::new_v4(),"epoch":1,"digest":"receipt-fixture","usage_tenant":"acme","kind":"shell","code":":","seconds":30,"files":[{"file_id":Uuid::new_v4(),"path":"not-uploaded","scope":"working","size":1,"digest":aidash_server::capabilities::objects::digest(b"x")}]}))).await;
 			assert_eq!(observed["status"], "awaiting_files");
 			staged.push(id);
 		}
@@ -233,7 +233,7 @@ async fn stale_and_rejected_receipts_cannot_starve_new_terminal_payload_acknowle
 	let mut bytes = *Uuid::new_v4().as_bytes();
 	bytes[0] = 254;
 	let fresh = Uuid::from_bytes(bytes);
-	runner(&c,reqwest::Method::POST,"/v1/operations",Some(json!({"operation_id":fresh,"area_id":Uuid::new_v4(),"epoch":1,"digest":"fresh-receipt","kind":"shell","code":"printf fresh-payload","seconds":30,"files":[]}))).await;
+	runner(&c,reqwest::Method::POST,"/v1/operations",Some(json!({"operation_id":fresh,"area_id":Uuid::new_v4(),"epoch":1,"digest":"fresh-receipt","usage_tenant":"acme","kind":"shell","code":"printf fresh-payload","seconds":30,"files":[]}))).await;
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
 	loop {
 		let observed = runner(

@@ -163,6 +163,7 @@ async fn a_nested_subject_is_delegated_only_by_the_last_current_ancestor(
 		"ancestor".into(),
 		Subject {
 			kind: SubjectKind::Agent,
+			node: Some(job.node.clone()),
 			enabled: true,
 			roles: BTreeSet::new(),
 			groups: BTreeSet::new(),

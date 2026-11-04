@@ -144,8 +144,10 @@ pub(crate) mod dashboard;
 
 pub(crate) mod personal_tenant;
 
+pub(crate) mod node_deletions;
 pub(crate) mod node_registrations;
 pub(crate) mod nodes;
+pub(crate) mod receiving_keys;
 pub(crate) mod tenant_deletions;
 pub(crate) mod tenant_purge;
 pub(crate) mod tenants;
@@ -166,7 +168,12 @@ pub mod secret_store;
 
 pub mod tenant_secrets;
 
+pub(crate) mod node_purge;
+
+pub mod node_recovery;
+
 pub(crate) mod data_protection;
+pub(crate) mod manual_keys;
 pub mod oauth_clients;
 pub(crate) mod subnodes;
 

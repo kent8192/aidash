@@ -156,11 +156,8 @@ impl Store {
 			if wake_at > now && raw.control != RunControl::Cancelled {
 				continue;
 			}
-			let target = if raw.control == RunControl::Cancelled {
-				FailureTarget::Cancelled
-			} else {
-				target
-			};
+			// A saved disposition precedes later control changes. Cancellation
+			// stops new execution; it cannot replace an undelivered failure.
 			let metadata: Option<RunMetadata> = aidash_server::database::query_as(
 				&Query::update()
 					.table(a("runs"))

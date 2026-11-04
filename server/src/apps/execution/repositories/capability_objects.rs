@@ -15,6 +15,14 @@ use uuid::Uuid;
 // with many files still owns its object locks.
 static UPLOAD_CLEANUP: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
+struct ObjectReservation<'a> {
+	id: Uuid,
+	area: Option<Uuid>,
+	kind: &'a str,
+	size: u64,
+	grandfather_existing: bool,
+}
+
 pub(crate) struct PendingObject {
 	runtime: Runtime,
 	id: Uuid,
@@ -60,12 +68,20 @@ impl PendingObject {
 		access: &mut Access,
 		expected: Option<&str>,
 	) -> Result<(Uuid, String)> {
-		let tenant = access.identity.tenant.clone();
-		self.finish_for(&mut access.tx, &tenant, expected).await
+		self.finish_in(access.tx.as_mut(), &access.identity.tenant, expected)
+			.await
 	}
 	pub(crate) async fn finish_for(
-		mut self,
+		self,
 		tx: &mut crate::database::native::Transaction,
+		tenant: &str,
+		expected: Option<&str>,
+	) -> Result<(Uuid, String)> {
+		self.finish_in(tx.as_mut(), tenant, expected).await
+	}
+	pub(crate) async fn finish_in(
+		mut self,
+		tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
 		tenant: &str,
 		expected: Option<&str>,
 	) -> Result<(Uuid, String)> {
@@ -222,7 +238,7 @@ impl PendingObject {
 				.map_err(Error::Invalid)?
 				.to_string(PostgresQueryBuilder),
 		)
-		.execute(&mut **tx)
+		.execute(tx)
 		.await?;
 		Ok((self.id, hash))
 	}
@@ -723,10 +739,16 @@ impl Runtime {
 			access.core_gc_complete = true;
 		}
 		let tenant = access.identity.tenant.clone();
-		self.begin_object_for(&mut access.tx, &tenant, area, kind, size, false)
-			.await
+		self.begin_object_in(
+			&mut access.tx,
+			&tenant,
+			Uuid::new_v4(),
+			area,
+			kind,
+			size,
+		)
+		.await
 	}
-
 	pub(crate) async fn begin_object_for(
 		&self,
 		tx: &mut crate::database::native::Transaction,
@@ -736,6 +758,55 @@ impl Runtime {
 		size: u64,
 		grandfather_existing: bool,
 	) -> Result<PendingObject> {
+		self.begin_object_with_quota(
+			tx,
+			tenant,
+			ObjectReservation {
+				id: Uuid::new_v4(),
+				area,
+				kind,
+				size,
+				grandfather_existing,
+			},
+		)
+		.await
+	}
+	/// Exact retained-operation receipt owner only; this does not admit execution.
+	pub(crate) async fn begin_object_in(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		tenant: &str,
+		id: Uuid,
+		area: Option<Uuid>,
+		kind: &str,
+		size: u64,
+	) -> Result<PendingObject> {
+		self.begin_object_with_quota(
+			tx,
+			tenant,
+			ObjectReservation {
+				id,
+				area,
+				kind,
+				size,
+				grandfather_existing: false,
+			},
+		)
+		.await
+	}
+	async fn begin_object_with_quota(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		tenant: &str,
+		reservation: ObjectReservation<'_>,
+	) -> Result<PendingObject> {
+		let ObjectReservation {
+			id,
+			area,
+			kind,
+			size,
+			grandfather_existing,
+		} = reservation;
 		let size = i64::try_from(size).map_err(|_| Error::Invalid("OBJECT_LIMIT".into()))?;
 		let pool = tx.pool().clone();
 		let tenant = tenant.to_owned();
@@ -755,7 +826,6 @@ impl Runtime {
 			tokio::fs::set_permissions(&self.0.storage, std::fs::Permissions::from_mode(0o700))
 				.await?;
 		}
-		let id = Uuid::new_v4();
 		// Ownership survives a database rollback or process crash. The advisory
 		// lock keeps a collector from mistaking an uncommitted object for an orphan.
 		{
@@ -768,7 +838,7 @@ impl Runtime {
 					))
 					.to_string(PostgresQueryBuilder),
 			)
-			.execute(&mut **tx)
+			.execute(&mut *tx)
 			.await?
 		};
 		let intents = self.0.storage.join(".intents");
