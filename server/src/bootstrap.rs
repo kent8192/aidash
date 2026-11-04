@@ -1491,7 +1491,12 @@ pub(crate) fn workspace_mutations<'a>(
 	access: &'a mut crate::authorization::access::Access,
 	store: &'a Store,
 ) -> crate::apps::workspaces::repositories::mutations::NativeMutations<'a> {
-	crate::apps::workspaces::repositories::mutations::NativeMutations { access, store }
+	crate::apps::workspaces::repositories::mutations::NativeMutations {
+		access,
+		store,
+		scratch_policy: None,
+		requested_scratch: None,
+	}
 }
 
 /// Worker task effects use the caller's inherited authority transaction.
@@ -1610,8 +1615,10 @@ pub(crate) fn worker_resume_repository<'a>(
 	access: &'a Arc<tokio::sync::RwLock<crate::authorization::access::Access>>,
 	run: &'a crate::domain::Run,
 	agent: &'a crate::registry::AgentConfig,
+	scratch_space_id: uuid::Uuid,
 ) -> crate::apps::identity::repositories::execution::resume::Resume<'a> {
 	crate::apps::identity::repositories::execution::resume::Resume {
+		scratch_space_id,
 		federation,
 		remote,
 		access,

@@ -14,6 +14,7 @@ pub trait WorkerResumeScope: Send {
 pub trait WorkerResumeRepository: Send + Sync {
 	fn remote(&self) -> bool;
 	async fn refresh_remote(&self) -> Result<()>;
+	async fn guard_remote_scratch(&self) -> Result<()>;
 	async fn lease(&self) -> Result<Box<dyn WorkerResumeScope + '_>>;
 	async fn wait(&self, delay: Duration);
 }

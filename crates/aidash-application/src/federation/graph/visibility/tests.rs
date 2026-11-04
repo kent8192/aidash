@@ -19,6 +19,7 @@ fn scope() -> Scope {
 #[fixture]
 fn conversation() -> Candidate {
 	Candidate::Conversation(Conversation {
+		scratch_space_id: uuid::Uuid::nil(),
 		created_by: "subject".into(),
 		id: Uuid::new_v4(),
 		workspace_id: Uuid::new_v4(),

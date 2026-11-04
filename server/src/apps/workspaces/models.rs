@@ -25,3 +25,6 @@ mod workspaces;
 pub use workspaces::Workspace;
 
 pub mod states;
+
+mod scratch_spaces;
+pub use scratch_spaces::{ScratchSpace, ScratchSpaceMember, ScratchSpaceSettings};

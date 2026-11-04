@@ -18,7 +18,7 @@ use aidash_domain::{
 };
 use async_trait::async_trait;
 use reinhardt::query::{
-	Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
+	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder, SimpleExpr,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -46,9 +46,17 @@ impl ConversationScope for NativeConversation<'_> {
 		title: &str,
 		goal: &str,
 		node: Option<&aidash_domain::nodes::NodeName>,
+		scratch_space_id: Option<Uuid>,
 	) -> Result<Workspace> {
 		self.access
-			.create_workspace(&self.federation.store, title, goal, node)
+			.create_workspace(
+				&self.federation.store,
+				title,
+				goal,
+				node,
+				scratch_space_id,
+				&self.federation.config.scratch_policy,
+			)
 			.await
 			.map_err(Into::into)
 	}
@@ -74,9 +82,39 @@ impl ConversationScope for NativeConversation<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn select_scratch_space(
+		&mut self,
+		workspace: &Workspace,
+		name: &str,
+		requested: Option<Uuid>,
+	) -> Result<Uuid> {
+		let _ = name;
+		let (sql, values) = Query::select()
+			.column(Alias::new("scratch_space_id"))
+			.from(Alias::new("workspaces"))
+			.and_where(Expr::col("id").eq(Expr::value(workspace.id)))
+			.and_where(Expr::col("tenant").eq(Expr::value(self.access.identity.tenant.clone())))
+			.build(PostgresQueryBuilder);
+		let row = self
+			.access
+			.tx
+			.fetch_optional(&sql, reinhardt::db::orm::execution::convert_values(values))
+			.await
+			.map_err(crate::Error::from)?
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let id: Uuid = row
+			.get("scratch_space_id")
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(crate::Error::from)?;
+		if requested.is_some_and(|requested| requested != id) {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		Ok(id)
+	}
 	async fn create_conversation(
 		&mut self,
 		workspace_id: Uuid,
+		scratch_space_id: Uuid,
 		target: &EntityRef,
 		target_kind: &str,
 	) -> Result<Conversation> {
@@ -92,6 +130,7 @@ impl ConversationScope for NativeConversation<'_> {
 					.columns([
 						Alias::new("id"),
 						Alias::new("workspace_id"),
+						Alias::new("scratch_space_id"),
 						Alias::new("target"),
 						Alias::new("target_kind"),
 						Alias::new("created_by"),
@@ -107,6 +146,7 @@ impl ConversationScope for NativeConversation<'_> {
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_2.to_owned()).into()],
 							))
+							.expr(Expr::value(scratch_space_id))
 							.expr(SimpleExpr::CustomWithExpr(
 								"(?)".to_owned(),
 								vec![Expr::value(query_bind_3.to_owned()).into()],

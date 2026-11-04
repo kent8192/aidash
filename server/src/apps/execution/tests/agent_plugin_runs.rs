@@ -249,6 +249,25 @@ async fn world(fixture: ApplicationFixture, down: bool) -> World {
 	)
 	.await;
 	assert_eq!(status, 200, "{workspace}");
+	// A Workspace created without a conversation has a dedicated space before
+	// its Run reaches worker admission.
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let (status, spaces) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/scratch-spaces?node={node}"),
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 200, "{spaces}");
+	assert!(
+		spaces
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|space| space["name"] == "Plugin work" && space["creator"] == "alice")
+	);
 	let (status, task) = request(
 		&app,
 		&token,
@@ -1201,6 +1220,62 @@ async fn worker_loss_during_a_live_callback_reconciles_the_original_send_once(
 		1
 	);
 	assert_eq!(round_journal(&world).await.len(), send_count);
+	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
+	drop(world);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn workspace_api_binds_a_selected_existing_scratch_space(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: ApplicationFixture,
+) {
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+	};
+
+	let world = world(fixture, false).await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let (status, spaces) = request(
+		&world.app,
+		&world.token,
+		"GET",
+		&format!("/api/scratch-spaces?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{spaces}");
+	let spaces = spaces.as_array().unwrap();
+	let selected: uuid::Uuid = serde_json::from_value(
+		spaces
+			.iter()
+			.find(|space| space["name"] == "Plugin work")
+			.unwrap()["id"]
+			.clone(),
+	)
+	.unwrap();
+	let (status, workspace) = request(
+		&world.app,
+		&world.token,
+		"POST",
+		"/api/workspaces",
+		json!({"title":"Reuse","goal":"Use existing space","scratch_space_id":selected}),
+	)
+	.await;
+	assert_eq!(status, 200, "{workspace}");
+	let id: uuid::Uuid = serde_json::from_value(workspace["id"].clone()).unwrap();
+	let query = Query::select()
+		.column(Alias::new("scratch_space_id"))
+		.from(Alias::new("workspaces"))
+		.and_where(Expr::col("id").eq(Expr::value(id)))
+		.to_string(PostgresQueryBuilder);
+	let (bound,): (uuid::Uuid,) = sqlx::query_as(&query)
+		.fetch_one(world.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(bound, selected);
 	let (url, schema, f) = (world.url.clone(), world.schema.clone(), world.f.clone());
 	drop(world);
 	cleanup(f, &url, &schema).await;

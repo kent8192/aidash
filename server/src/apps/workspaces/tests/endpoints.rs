@@ -17,6 +17,7 @@ async fn workspace_round_trip_and_revision_conflict_preserve_saved_state(
 	let created = workspace(&member, "Workspace over HTTP").await;
 	let id: Uuid = serde_json::from_value(created["id"].clone()).unwrap();
 	let path = format!("/api/workspaces/{id}");
+	let scratch: Uuid = serde_json::from_value(created["scratch_space_id"].clone()).unwrap();
 	// Act
 	let updated = member
 		.patch(&path, &json!({"revision":0,"state":{"step":1}}), "json")
@@ -30,15 +31,15 @@ async fn workspace_round_trip_and_revision_conflict_preserve_saved_state(
 	// Assert
 	assert_eq!(assert_json(updated, 200)["revision"], 1);
 	assert_json(stale, 409);
-	assert_eq!(
-		assert_json(snapshot, 200)["workspace"]["state"],
-		json!({"step":1})
-	);
+	let snapshot = assert_json(snapshot, 200);
+	assert_eq!(snapshot["workspace"]["state"], json!({"step":1}));
+	assert_eq!(snapshot["workspace"]["scratch_space_id"], json!(scratch));
 	let saved = Workspace::objects()
 		.filter(Workspace::field_id().eq(id))
 		.get_with_db(&mut app.database.lease.handle())
 		.await
 		.unwrap();
+	assert_eq!(saved.scratch_space_id, scratch);
 	assert_eq!(saved.revision, 1);
 	assert_eq!(*saved.state, json!({"step":1}));
 }

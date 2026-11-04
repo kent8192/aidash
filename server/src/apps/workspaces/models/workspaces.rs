@@ -1,7 +1,7 @@
 //! Persistent workspaces records.
 
 use chrono::{DateTime, Utc};
-use reinhardt::db::orm::Json;
+use reinhardt::db::{associations::ForeignKeyField, orm::Json};
 use reinhardt::model;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -16,6 +16,10 @@ pub struct Workspace {
 	/// The Node of the Tenant that the Workspace belongs to.
 	#[field(field_type = "text")]
 	pub node: String,
+	#[rel(foreign_key, shared_fields = ["tenant"], db_constraint = "workspaces_scratch_space_fkey", db_index = false)]
+	pub scratch_space: ForeignKeyField<crate::apps::workspaces::models::ScratchSpace>,
+	#[field(field_type = "text")]
+	pub created_by: String,
 	#[field(field_type = "text")]
 	pub title: String,
 	#[field(field_type = "text")]

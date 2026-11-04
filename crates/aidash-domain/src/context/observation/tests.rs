@@ -8,6 +8,7 @@ fn snapshot(rows: usize) -> WorkspaceSnapshot {
 	let now = Utc::now();
 	WorkspaceSnapshot {
 		workspace: Workspace {
+			scratch_space_id: uuid::Uuid::nil(),
 			id: workspace_id,
 			node: "brave-otter-k3m9q2xa".parse().unwrap(),
 			title: "\0".repeat(256),

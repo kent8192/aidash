@@ -52,6 +52,7 @@ impl Owners<'_> {
 			LivePreview => ("core_live_previews", "id"),
 			EgressSession => ("egress_sessions", "id"),
 			Subnode => ("subnodes", "id"),
+			ScratchSpace => ("scratch_spaces", "id"),
 			Record => ("core_records", "id"),
 		};
 		Ok(Expr::from(col(table, field))

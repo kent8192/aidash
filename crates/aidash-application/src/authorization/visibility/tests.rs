@@ -462,6 +462,7 @@ impl EventVisibilityScope for Events {
 	) -> Result<Option<Conversation>> {
 		self.lookup("conversation", id, workspace)?;
 		Ok(self.present.then(|| Conversation {
+			scratch_space_id: uuid::Uuid::nil(),
 			id,
 			workspace_id: workspace.unwrap(),
 			created_by: "root".into(),

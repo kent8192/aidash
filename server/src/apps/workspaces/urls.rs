@@ -1,11 +1,29 @@
 //! Application endpoint registration and access policies.
-use super::views::{channels, management};
+use super::views::{channels, management, scratch};
 use crate::apps::identity::services::boundary::AccessBoundary;
 use reinhardt::UnifiedRouter;
 
 pub fn url_patterns() -> UnifiedRouter {
 	UnifiedRouter::new().server(|server| {
 		server
+			.endpoint(scratch::create)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(scratch::list)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(scratch::limits)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(scratch::read)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(scratch::settings)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(scratch::add_member)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(scratch::remove_member)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(scratch::clear)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(scratch::remove)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::task_list)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::workspace_create)

@@ -3,10 +3,28 @@
 use crate::Error;
 use crate::{Result, ports::authorization::worker_entry::WorkerEntryRepository};
 use aidash_domain::{Run, RunControl, RunMetadata, registry::AgentConfig};
+
+/// A Scratch Space authority denial is a named, fail-closed worker refusal.
+pub fn scratch_refusal(error: Error) -> Error {
+	match error {
+		Error::Forbidden
+		| Error::Unauthorized
+		| Error::NotFound(_)
+		| Error::Domain(aidash_domain::Error::Invalid(_)) => {
+			Error::AuthorityRefused(Box::new(aidash_domain::tool::AuthorityRefusal {
+				tool: "scratch_space".into(),
+				check: aidash_domain::tool::RefusalCheck::Policy,
+				action: Some("scratch.use".into()),
+			}))
+		}
+		other => other,
+	}
+}
 pub struct WorkerEntry<S> {
 	pub scope: S,
 	pub agent: AgentConfig,
 	pub remote: bool,
+	pub scratch_space_id: Option<uuid::Uuid>,
 }
 async fn acquire<S: Send>(
 	repository: &dyn WorkerEntryRepository<S>,
@@ -18,6 +36,7 @@ async fn acquire<S: Send>(
 			scope,
 			agent,
 			remote: true,
+			scratch_space_id: None,
 		});
 	}
 	let Some(mut scope) = repository.local_lease(run, true).await? else {
@@ -28,13 +47,20 @@ async fn acquire<S: Send>(
 		scope,
 		agent,
 		remote: false,
+		scratch_space_id: None,
 	})
 }
 pub async fn execution<S: Send>(
 	repository: &dyn WorkerEntryRepository<S>,
 	run: &Run,
 ) -> Result<WorkerEntry<S>> {
-	let entry = acquire(repository, &run.metadata(), true).await?;
+	let mut entry = acquire(repository, &run.metadata(), true).await?;
+	entry.scratch_space_id = Some(
+		repository
+			.scratch_space(&mut entry.scope, run)
+			.await
+			.map_err(scratch_refusal)?,
+	);
 	if !entry.remote
 		&& entry.agent.core_capabilities.enabled()
 		&& run.control != RunControl::Cancelled

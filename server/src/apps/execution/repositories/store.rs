@@ -38,6 +38,16 @@ pub struct RunStore {
 	pub scope: TenancyScope,
 }
 
+pub(crate) struct WorkspaceInsert<'a> {
+	pub id: Uuid,
+	pub tenant: &'a str,
+	pub node: &'a aidash_domain::nodes::NodeName,
+	pub title: &'a str,
+	pub goal: &'a str,
+	pub scratch_space_id: Uuid,
+	pub created_by: &'a str,
+}
+
 #[derive(Clone)]
 pub struct Store {
 	pub provider_key_material_reader:
@@ -827,6 +837,8 @@ impl Store {
 		goal: &str,
 	) -> Result<Workspace> {
 		let tenant = scope.tenant_name().ok_or(Error::Forbidden)?.as_str();
+		nonempty(title, "title")?;
+		nonempty(goal, "goal")?;
 		let mut tx = self.pool.begin(scope).await?;
 		let node: String = crate::database::native::query_scalar(
 			&Query::select()
@@ -839,8 +851,34 @@ impl Store {
 		.scalar_one(&mut *tx)
 		.await?;
 		let node = aidash_domain::nodes::NodeName::parse(&node)?;
+		let now = chrono::Utc::now();
+		let space = aidash_domain::scratch::ScratchSpace {
+			id: Uuid::new_v4(),
+			node: node.clone(),
+			name: title.to_owned(),
+			creator: owner.to_owned(),
+			state: aidash_domain::scratch::ScratchState::Active,
+			revision: 0,
+			wipe_generation: 0,
+			settings: aidash_domain::scratch::ScratchSettings::default(),
+			members: Default::default(),
+			created_at: now,
+			last_used_at: now,
+		};
+		crate::apps::workspaces::repositories::scratch::insert(&mut *tx, tenant, &space).await?;
 		let workspace = self
-			.create_workspace_in(&mut tx, Uuid::new_v4(), tenant, &node, title, goal)
+			.create_workspace_in(
+				&mut tx,
+				WorkspaceInsert {
+					id: Uuid::new_v4(),
+					tenant,
+					node: &node,
+					title,
+					goal,
+					scratch_space_id: space.id,
+					created_by: owner,
+				},
+			)
 			.await?;
 		self.record_workspace_tenant_in(&mut tx, workspace.id, tenant, owner)
 			.await?;
@@ -876,12 +914,17 @@ impl Store {
 	pub(crate) async fn create_workspace_in(
 		&self,
 		tx: &mut crate::database::native::Transaction,
-		id: Uuid,
-		tenant: &str,
-		node: &aidash_domain::nodes::NodeName,
-		title: &str,
-		goal: &str,
+		input: WorkspaceInsert<'_>,
 	) -> Result<Workspace> {
+		let WorkspaceInsert {
+			id,
+			tenant,
+			node,
+			title,
+			goal,
+			scratch_space_id,
+			created_by,
+		} = input;
 		nonempty(title, "title")?;
 		nonempty(goal, "goal")?;
 		let w: Workspace = {
@@ -897,6 +940,8 @@ impl Store {
 						Alias::new("title"),
 						Alias::new("goal"),
 						Alias::new("tenant"),
+						Alias::new("scratch_space_id"),
+						Alias::new("created_by"),
 					])
 					.from_subquery(
 						Query::select()
@@ -914,6 +959,8 @@ impl Store {
 								vec![Expr::value(query_bind_3.to_owned()).into()],
 							))
 							.expr(Expr::value(tenant.to_owned()))
+							.expr(Expr::value(scratch_space_id))
+							.expr(Expr::value(created_by.to_owned()))
 							.to_owned(),
 					)
 					.returning_all()
