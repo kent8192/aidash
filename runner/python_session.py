@@ -51,7 +51,7 @@ class _Output(io.TextIOBase):
         return self.data.decode('utf-8', errors='replace')
 
 
-def send_cell(path, code, timeout, output_bytes):
+def send_cell(path, code, timeout, output_bytes, *, cwd='.'):
     if not isinstance(code, str) or len(code.encode('utf-8')) > 65536:
         raise ValueError('Python code exceeds the limit')
     if type(timeout) is not int or not 1 <= timeout <= 3600:
@@ -72,7 +72,7 @@ def send_cell(path, code, timeout, output_bytes):
             time.sleep(.05)
     with connection:
         connection.settimeout(max(.001, deadline - time.monotonic()))
-        _send(connection, {'code': code, 'output_bytes': output_bytes})
+        _send(connection, {'code': code, 'output_bytes': output_bytes, 'cwd': cwd})
         return _receive(connection)
 
 
@@ -80,6 +80,7 @@ def serve(path):
     if os.path.lexists(path):
         raise FileExistsError('Python session socket already exists')
     namespace = {'__name__': '__main__'}
+    scratch_root = os.path.realpath(os.getcwd())
     last_used = time.monotonic()
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(path)
@@ -97,6 +98,13 @@ def serve(path):
                     try:
                         request = _receive(connection, 131072)
                         code, limit = request['code'], request['output_bytes']
+                        cwd = request['cwd']
+                        if not isinstance(cwd, str) or cwd.startswith('/') or '..' in cwd.split('/') or '\x00' in cwd:
+                            raise ValueError('cwd must be relative to /scratch')
+                        target = os.path.realpath(os.path.join(scratch_root, cwd))
+                        if os.path.commonpath([scratch_root, target]) != scratch_root:
+                            raise ValueError('cwd must resolve beneath /scratch')
+                        os.chdir(target)
                         if not isinstance(code, str) or len(code.encode('utf-8')) > 65536:
                             raise ValueError('Python code exceeds the limit')
                         if type(limit) is not int or not 1 <= limit <= 8388608:
@@ -135,9 +143,10 @@ def serve(path):
 if __name__ == '__main__':
     if len(sys.argv) == 3 and sys.argv[1] == 'serve':
         serve(sys.argv[2])
-    elif len(sys.argv) == 6 and sys.argv[1] == 'cell':
+    elif len(sys.argv) == 7 and sys.argv[1] == 'cell':
         import base64
         code = base64.b64decode(sys.argv[5], validate=True).decode('utf-8')
-        print(json.dumps(send_cell(sys.argv[2], code, int(sys.argv[3]), int(sys.argv[4]))))
+        cwd = base64.b64decode(sys.argv[6], validate=True).decode('utf-8')
+        print(json.dumps(send_cell(sys.argv[2], code, int(sys.argv[3]), int(sys.argv[4]), cwd=cwd)))
     else:
         raise SystemExit('invalid Python session request')

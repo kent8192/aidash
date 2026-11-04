@@ -296,7 +296,6 @@ class ExecutionPodControllerTest(unittest.TestCase):
             release.set()
             for queue in queues.values():
                 queue.close()
-            controller.session_executor.shutdown(wait=True)
 
     def test_ensure_is_idempotent_and_stop_preserves_claim(self):
         import json
@@ -596,7 +595,6 @@ class CommandJournalTest(unittest.TestCase):
                 'status': 'running', 'pod': 'pod', 'pod_uid': 'pod-uid'}))
             self.assertEqual(controller.stop_background(operation)['status'], 'stopping')
             self.assertEqual(backend.attempts, 2)
-            controller.session_executor.shutdown(wait=True)
 
     def test_command_result_is_journaled_and_repeated_id_is_not_replayed(self):
         import json
@@ -692,6 +690,71 @@ class AdmissionLifecycleRegressionTest(unittest.TestCase):
             return {}
         controller.ensure = ensure
         controller.reset({'scratch_space_id': 's'})
+
+
+class ReviewThreadRegressionTest(unittest.TestCase):
+    def test_kubernetes_storage_quantities_compare_by_value(self):
+        from execution_pod import quantity_bytes
+        for value in ('1000000000', '1G', '1000000k', '1e9'):
+            with self.subTest(value=value):
+                self.assertEqual(quantity_bytes(value), 1000000000)
+        self.assertEqual(quantity_bytes('1Gi'), 1073741824)
+        self.assertNotEqual(quantity_bytes('1G'), quantity_bytes('1Gi'))
+        with self.assertRaises(ValueError):
+            quantity_bytes('1banana')
+
+    def test_python_session_capacity_is_per_space(self):
+        import threading
+        from execution_pod import CommandQueue
+        first, second = CommandQueue(), CommandQueue()
+        release = threading.Event()
+        started = threading.Barrier(9)
+        try:
+            for _ in range(8):
+                first.submit_session('hold', lambda _: (started.wait(timeout=3), release.wait(3)))
+            started.wait(timeout=3)
+            self.assertEqual(second.submit_session('other', lambda value: value).result(timeout=2), 'other')
+        finally:
+            release.set()
+            first.close()
+            second.close()
+
+    def test_stopping_a_space_retires_its_executor_without_waiting_for_workers(self):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from execution_pod import CommandQueue, ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            class Backend:
+                root = Path(directory)
+                def kube(self, args, **kwargs):
+                    return SimpleNamespace(stdout=b'')
+            controller = ExecutionPodController(Backend(), {}, admitted=True)
+            queue = CommandQueue()
+            controller.queues['s'] = queue
+            controller.stop('s')
+            self.assertNotIn('s', controller.queues)
+            with self.assertRaises(RuntimeError):
+                queue.submit('r', 'command', lambda value: value)
+
+    def test_foreground_completion_refreshes_idle_timestamp(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock, patch
+        from control import scratch_resource_name
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+            operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+            controller.touch_space('s', now=1)
+            controller.foreground_jobs['s'] = 1
+            controller._command_path(operation).write_text(json.dumps({'operation_id': operation,
+                'scratch_space_id': 's', 'background': False, 'status': 'completed'}))
+            with patch('time.time', return_value=3600):
+                controller._cancelled_command(operation, Mock(cancelled=lambda: False))
+            path = Path(directory) / 'execution-v2-spaces' / (scratch_resource_name('s') + '.json')
+            self.assertEqual(json.loads(path.read_text())['last_command_at'], 3600)
 
 
 class RecoveryRegressionTest(unittest.TestCase):
@@ -816,6 +879,33 @@ class PythonSessionTest(unittest.TestCase):
                 second = send_cell(socket_path, 'value + 1', 2, 1024)
                 self.assertEqual(first['status'], 'completed')
                 self.assertEqual(second['stdout'], '42\n')
+            finally:
+                server.terminate()
+                server.wait(timeout=3)
+                server.stderr.close()
+
+    def test_each_cell_uses_its_requested_working_directory(self):
+        import os
+        import subprocess
+        import sys
+        import tempfile
+        import time
+        from pathlib import Path
+        from python_session import send_cell
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'child').mkdir()
+            socket_path = str(root / 'session.sock')
+            server = subprocess.Popen([sys.executable, '-I', str(Path(__file__).resolve().parent / 'python_session.py'),
+                                       'serve', socket_path], cwd=root, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            try:
+                deadline = time.monotonic() + 3
+                while not os.path.exists(socket_path) and time.monotonic() < deadline:
+                    time.sleep(.01)
+                result = send_cell(socket_path, "open('relative', 'w').write('ok')", 2, 1024, cwd='child')
+                self.assertEqual(result['status'], 'completed')
+                self.assertEqual((root / 'child' / 'relative').read_text(), 'ok')
+                self.assertEqual(send_cell(socket_path, "__import__('os').getcwd()", 2, 1024)['stdout'], repr(str(root.resolve())) + '\n')
             finally:
                 server.terminate()
                 server.wait(timeout=3)
@@ -1411,7 +1501,6 @@ class ReviewRegressionTest(unittest.TestCase):
                 with self.subTest(field=field), self.assertRaises(ValueError):
                     controller.submit_command(request)
             self.assertFalse(list((Path(d) / 'execution-v2').glob('*.json')))
-            controller.session_executor.shutdown(wait=True)
 
     def test_init_only_mounts_system_subpath(self):
         from execution_pod import execution_manifests
@@ -1451,7 +1540,6 @@ class ReviewRegressionTest(unittest.TestCase):
             path.write_text(json.dumps({'terminated_pods':['old'], 'guard':{'pod_uid':'new','terminated':False}}))
             controller._terminate_recorded_pod('space', expected_uid='old')
             self.assertFalse(json.loads(path.read_text()).get('termination_unconfirmed', False))
-            controller.session_executor.shutdown(wait=True)
 
     def test_stopping_marks_running_unknown_and_late_results_cannot_replace_it(self):
         import json
@@ -1471,7 +1559,6 @@ class ReviewRegressionTest(unittest.TestCase):
             result = json.loads(path.read_text())
             self.assertEqual((result['status'], result['outcome']), ('interrupted', 'unknown'))
             self.assertNotIn('exit_code', result)
-            controller.session_executor.shutdown(wait=True)
 
     def test_docker_stream_reserves_local_transport_failure_code(self):
         from sandbox_v2 import docker_supervisor_exit_code
@@ -1506,4 +1593,3 @@ class ReviewRegressionTest(unittest.TestCase):
                 controller._execute_command(operation)
             result = controller.command_result(operation)
             self.assertEqual((result['status'], result['exit_code']), ('completed', 1))
-            controller.session_executor.shutdown(wait=True)

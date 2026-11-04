@@ -22,6 +22,7 @@ class CommandQueue:
     def __init__(self):
         self._executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix='execution-pod')
         self._background = ThreadPoolExecutor(max_workers=16, thread_name_prefix='execution-background')
+        self._sessions = ThreadPoolExecutor(max_workers=8, thread_name_prefix='python-session')
         self._lock = Lock()
         self._waiting = {}
 
@@ -50,9 +51,13 @@ class CommandQueue:
         for future in pending:
             future.cancel()
 
-    def close(self):
-        self._executor.shutdown(wait=True, cancel_futures=True)
-        self._background.shutdown(wait=True, cancel_futures=True)
+    def submit_session(self, operation_id, execute):
+        return self._sessions.submit(execute, operation_id)
+
+    def close(self, *, wait=True):
+        self._executor.shutdown(wait=wait, cancel_futures=True)
+        self._background.shutdown(wait=wait, cancel_futures=True)
+        self._sessions.shutdown(wait=wait, cancel_futures=True)
 
 
 def system_tree_index(root):
@@ -356,6 +361,31 @@ def execution_manifests(settings, config):
     return claim, pod
 
 
+def quantity_bytes(value):
+    """Parse a Kubernetes storage quantity without losing precision."""
+    import re
+    from decimal import Decimal, InvalidOperation
+    match = re.fullmatch(r'([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))([eE][+-]?[0-9]+|[numkMGTPE]|[KMGTPE]i)?', str(value))
+    if not match:
+        raise ValueError('invalid Kubernetes storage quantity')
+    number, suffix = match.groups()
+    try:
+        result = Decimal(number)
+        if suffix and suffix.startswith(('e', 'E')) and len(suffix) > 1 and suffix[1] in '+-0123456789':
+            result *= Decimal(10) ** int(suffix[1:])
+        elif suffix in ('n', 'u', 'm'):
+            result *= {'n': Decimal('1e-9'), 'u': Decimal('1e-6'), 'm': Decimal('1e-3')}[suffix]
+        elif suffix and suffix.endswith('i'):
+            result *= 1024 ** ('KMGTPE'.index(suffix[0]) + 1)
+        elif suffix:
+            result *= 1000 ** ('kMGTPE'.index(suffix) + 1)
+        if not result.is_finite() or result < 0:
+            raise ValueError('invalid Kubernetes storage quantity')
+        return result
+    except (InvalidOperation, OverflowError) as error:
+        raise ValueError('invalid Kubernetes storage quantity') from error
+
+
 class ExecutionPodError(RuntimeError):
     """Typed failure returned by the Execution Pod protocol."""
 
@@ -378,7 +408,6 @@ class ExecutionPodController:
         self.viewers = {}
         self.admit_locks = {}
         self.lifecycle_locks = {}
-        self.session_executor = ThreadPoolExecutor(max_workers=128, thread_name_prefix='python-session')
 
     def _space_lock(self, scratch_space_id):
         with self.lock:
@@ -606,7 +635,7 @@ print(json.dumps(r))'''
             self.backend.kube(['create', '-f', '-'], json.dumps(claim).encode())
         else:
             current = existing_claim['spec']['resources']['requests']['storage']
-            if current != claim['spec']['resources']['requests']['storage']:
+            if quantity_bytes(current) != settings['capacity_bytes']:
                 raise ExecutionPodError('capacity_mismatch', 'Scratch Space capacity differs from the existing claim')
         existing_pod = self._get('pod', name)
         if existing_pod is None:
@@ -656,6 +685,11 @@ print(json.dumps(r))'''
         self._terminate_recorded_pod(scratch_space_id)
         self.backend.kube(['delete', 'pod', name, '--ignore-not-found', '--wait=true'])
         self._clear_space_unconfirmed(scratch_space_id)
+        with self.lock:
+            queue = self.queues.pop(scratch_space_id, None)
+            self.viewers.pop(scratch_space_id, None)
+        if queue:
+            queue.close(wait=False)
         return {'stopped': True}
 
     def _interrupt_space_commands(self, scratch_space_id):
@@ -664,16 +698,17 @@ print(json.dumps(r))'''
         directory = self.backend.root / 'execution-v2'
         if not directory.exists():
             return
-        for path in directory.glob('*.json'):
-            record = json.loads(path.read_bytes())
-            if record.get('scratch_space_id') == scratch_space_id and record.get('status') in ('queued', 'running'):
-                prior = record['status']
-                record.update(status='interrupted' if prior == 'running' else 'cancelled',
-                              outcome='unknown' if prior == 'running' else 'not_started')
-                save(path, record)
-                future = self.futures.get(record.get('operation_id'))
-                if prior == 'queued' and future:
-                    future.cancel()
+        with self.lock:
+            for path in directory.glob('*.json'):
+                record = json.loads(path.read_bytes())
+                if record.get('scratch_space_id') == scratch_space_id and record.get('status') in ('queued', 'running'):
+                    prior = record['status']
+                    record.update(status='interrupted' if prior == 'running' else 'cancelled',
+                                  outcome='unknown' if prior == 'running' else 'not_started')
+                    save(path, record)
+                    future = self.futures.get(record.get('operation_id'))
+                    if prior == 'queued' and future:
+                        future.cancel()
 
     def _stop_matching_pod(self, scratch_space_id, pod_uid):
         from control import scratch_resource_name
@@ -994,12 +1029,12 @@ print(json.dumps(r))'''
             self.touch_space(scratch_id)
             if not background:
                 self.foreground_jobs[scratch_id] = self.foreground_jobs.get(scratch_id, 0) + 1
+            if scratch_id not in self.queues:
+                self.queues[scratch_id] = CommandQueue()
+            queue = self.queues[scratch_id]
             if kind == 'python_session':
-                future = self.session_executor.submit(self._execute_command, operation_id)
+                future = queue.submit_session(operation_id, self._execute_command)
             else:
-                if scratch_id not in self.queues:
-                    self.queues[scratch_id] = CommandQueue()
-                queue = self.queues[scratch_id]
                 future = queue.submit(run_id, operation_id, self._execute_command, background=background)
             self.futures[operation_id] = future
             future.add_done_callback(lambda done: self._cancelled_command(operation_id, done))
@@ -1013,6 +1048,7 @@ print(json.dumps(r))'''
             if not record['background']:
                 scratch_id = record['scratch_space_id']
                 self.foreground_jobs[scratch_id] = max(0, self.foreground_jobs.get(scratch_id, 0) - 1)
+                self.touch_space(scratch_id)
             self.futures.pop(operation_id, None)
 
     def _execute_command(self, operation_id):
@@ -1327,7 +1363,8 @@ print(json.dumps(r))'''
         output_limit = self.config.get('output_bytes', getattr(self.backend, 'config', {}).get('output_bytes', 8388608))
         cell_limit = max(1, min(8388608, (output_limit - 4096) // 6))
         encoded = base64.b64encode(code.encode('utf-8')).decode('ascii')
-        command = shlex.join(python_helper_command('cell', session['socket_path'], str(seconds), str(cell_limit), encoded))
+        cwd_encoded = base64.b64encode(request.get('cwd', '.').encode('utf-8')).decode('ascii')
+        command = shlex.join(python_helper_command('cell', session['socket_path'], str(seconds), str(cell_limit), encoded, cwd_encoded))
         return self.submit_command({'operation_id': operation_id, 'scratch_space_id': request['scratch_space_id'],
                                     'run_id': request['run_id'], 'code': command,
                                     'cwd': request.get('cwd', '.'), 'timeout_seconds': seconds},
