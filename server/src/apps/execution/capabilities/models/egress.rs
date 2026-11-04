@@ -59,6 +59,8 @@ pub struct RequestRecord {
 	pub path: String,
 	#[field(field_type = "text")]
 	pub query_digest: String,
+	/// 0 until the outcome is settled. A row that stays 0 was never settled, so
+	/// its outcome is unknown: the process stopped or storage stayed unavailable.
 	#[field]
 	pub status: i32,
 	#[field]

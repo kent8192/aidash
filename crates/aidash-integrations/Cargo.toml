@@ -124,6 +124,10 @@ test-support = []
 
 [dev-dependencies]
 aidash-application = { workspace = true, features = ["test-support"] }
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+  "fmt",
+] }
 rcgen = "0.14"
 tokio-stream = { version = "0.1", features = ["net"] }
 # The live Token Encoding checks count requests (ADR 0017).

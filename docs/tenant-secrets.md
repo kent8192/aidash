@@ -172,12 +172,40 @@ in both the request record and the client response, names the reason:
 | `EGRESS_UNAVAILABLE`    | 503    | The budget store could not record the debit.                      |
 
 A response whose headers were already sent ends with an incomplete body
-instead of a status.
+instead of a status. A temporary `EGRESS_UNAVAILABLE` also stops the stream, but
+keeps its unbilled bytes and retries them in the background.
+
+A response with a `Content-Length` settles after its last byte is handed on. A
+final debit that reaches a limit is recorded but can no longer stop that
+response; the next request is refused.
+
+The gateway serves 128 connections at once. Beyond that it answers
+`503 egress_connection_limit`, and when too many refusals are in progress it
+drops the connection unanswered.
 
 Run inspection lists the request time, operation, service, method, path,
 SHA-256 query digest, status, byte counts and duration. Bodies, header values
 and query contents are never recorded. A partially consumed response is
 recorded as interrupted rather than silently becoming a successful request.
+A response counts as complete once all its bytes are handed to the server's
+HTTP layer, so a client that disconnects at the very end can still appear as a
+success.
+
+A record starts with status 0. The final debit and record are retried for about
+60 seconds when storage is unavailable, so a record that stays at status 0 has
+an unknown outcome: the process stopped first or storage stayed unavailable.
+
+Failures that leave no record are visible to the operator of the Deployment.
+Unexpected admission failures and abandoned retries log an error, and upstream
+failures log a warning. These lines name the service, method and cause, never
+the token, path, query or header values. Sandboxed code sees only the code in
+the table above. `/metrics` exposes:
+
+| Counter                                   | Labels             | Counts                                               |
+| ----------------------------------------- | ------------------ | ---------------------------------------------------- |
+| `aidash_egress_refused_total`             | `reason`           | Requests refused before a record exists.             |
+| `aidash_egress_connections_refused_total` | `outcome`          | Connections `answered` or `dropped` when full.       |
+| `aidash_egress_settle_failures_total`     | `stage`, `outcome` | Failed debits and records: `retried` or `abandoned`. |
 
 ### Clone a GitHub repository
 

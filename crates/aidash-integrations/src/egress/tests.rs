@@ -1050,9 +1050,9 @@ impl Authority for MeterAuthority {
 
 const CHUNK: usize = 64 * 1024;
 
-/// An upstream whose `/download/{n}` streams `n` 64 KiB chunks, `/broken`
-/// streams 40 chunks and then fails, and `/upload` drains the request body
-/// before it answers.
+/// An upstream whose `/download/{n}` streams `n` 64 KiB chunks, `/sized/{n}`
+/// streams them with a `Content-Length`, `/broken` streams 40 chunks and then
+/// fails, and `/upload` drains the request body before it answers.
 async fn metered_gateway(
 	limit: u64,
 	expired: bool,
@@ -1077,6 +1077,21 @@ async fn metered_gateway(
 									.map(|_| Ok::<_, std::io::Error>(Bytes::from(vec![7; CHUNK]))),
 							);
 							AxumBody::from_stream(chunks)
+						},
+					),
+				)
+				.route(
+					"/sized/{n}",
+					any(
+						|axum::extract::Path(n): axum::extract::Path<usize>| async move {
+							let chunks = futures_util::stream::iter(
+								(0..n)
+									.map(|_| Ok::<_, std::io::Error>(Bytes::from(vec![7; CHUNK]))),
+							);
+							Response::builder()
+								.header("content-length", n * CHUNK)
+								.body(AxumBody::from_stream(chunks))
+								.unwrap()
 						},
 					),
 				)
@@ -1162,6 +1177,45 @@ async fn a_large_download_is_debited_in_batches_and_totals_the_streamed_bytes() 
 	// 10 MiB in 1 MiB batches, not one debit per chunk.
 	assert!(audit.charges.load(Ordering::Relaxed) <= 11);
 	assert_eq!(*audit.finished_records.lock().unwrap(), vec![(200, None)]);
+	shutdown(tasks, stop).await;
+}
+
+/// Hyper stops polling a body once `Content-Length` bytes are written, so this
+/// path never reaches the end of the stream (#710).
+#[tokio::test]
+async fn a_download_with_a_content_length_is_recorded_as_complete() {
+	let (origin, audit, tasks, stop) = metered_gateway(u64::MAX, false).await;
+	let response = reqwest::get(format!("{origin}/v1/operation-token/images/sized/40"))
+		.await
+		.unwrap();
+	assert_eq!(response.content_length(), Some(40 * CHUNK as u64));
+	let (total, clean) = drain(response).await;
+	assert!(clean);
+	assert_eq!(total, 40 * CHUNK);
+	tokio::time::timeout(Duration::from_secs(5), audit.finished.notified())
+		.await
+		.unwrap();
+	assert_eq!(audit.received.load(Ordering::Relaxed), total as u64);
+	assert_eq!(*audit.finished_records.lock().unwrap(), vec![(200, None)]);
+	shutdown(tasks, stop).await;
+}
+
+#[tokio::test]
+async fn a_download_the_client_abandons_is_recorded_as_interrupted() {
+	let (origin, audit, tasks, stop) = metered_gateway(u64::MAX, false).await;
+	// Far more than the socket buffers hold, so the gateway is still writing.
+	let mut response = reqwest::get(format!("{origin}/v1/operation-token/images/sized/1600"))
+		.await
+		.unwrap();
+	response.chunk().await.unwrap().unwrap();
+	drop(response);
+	tokio::time::timeout(Duration::from_secs(5), audit.finished.notified())
+		.await
+		.unwrap();
+	assert_eq!(
+		*audit.finished_records.lock().unwrap(),
+		vec![(200, Some("stream_interrupted".into()))]
+	);
 	shutdown(tasks, stop).await;
 }
 
@@ -1324,4 +1378,396 @@ async fn a_stalled_client_write_times_out() {
 	tokio::time::advance(Duration::from_secs(3)).await;
 	let error = task.await.unwrap().unwrap_err();
 	assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+}
+
+/// What the gateway logs and counts on this test's thread. `#[tokio::test]` runs
+/// every task on one thread, so spawned connections are observed too.
+struct Observed {
+	logs: Arc<Mutex<Vec<u8>>>,
+	metrics: metrics_exporter_prometheus::PrometheusHandle,
+	_log: tracing::subscriber::DefaultGuard,
+	_metrics: metrics::LocalRecorderGuard<'static>,
+}
+impl Observed {
+	fn start() -> Self {
+		struct Writer(Arc<Mutex<Vec<u8>>>);
+		impl std::io::Write for Writer {
+			fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+				self.0.lock().unwrap().extend_from_slice(bytes);
+				Ok(bytes.len())
+			}
+			fn flush(&mut self) -> std::io::Result<()> {
+				Ok(())
+			}
+		}
+		let logs = Arc::new(Mutex::new(Vec::new()));
+		let writer = logs.clone();
+		let subscriber = tracing_subscriber::fmt()
+			.with_max_level(tracing::Level::TRACE)
+			.with_writer(move || Writer(writer.clone()))
+			.finish();
+		let recorder = Box::leak(Box::new(
+			metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder(),
+		));
+		let metrics = recorder.handle();
+		Self {
+			logs,
+			metrics,
+			_log: tracing::subscriber::set_default(subscriber),
+			_metrics: metrics::set_default_local_recorder(recorder),
+		}
+	}
+
+	fn logs(&self) -> String {
+		String::from_utf8_lossy(&self.logs.lock().unwrap()).into_owned()
+	}
+
+	fn count(&self, series: &str) -> u64 {
+		self.metrics
+			.render()
+			.lines()
+			.find_map(|line| line.strip_prefix(series)?.trim().parse().ok())
+			.unwrap_or(0)
+	}
+}
+
+/// An admission that fails with a message repeating what the request carried.
+struct UnavailableAuthority;
+#[async_trait]
+impl Authority for UnavailableAuthority {
+	async fn admit(&self, token: &str, _: &str, _: &str, path: &str, _: &str) -> Result<Admission> {
+		Err(aidash_application::Error::External(format!(
+			"pool timed out while admitting {token} for {path}"
+		)))
+	}
+}
+
+async fn gateway_with(
+	authority: Arc<dyn Authority>,
+) -> (String, tokio::task::JoinHandle<()>, watch::Sender<bool>) {
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let origin = format!("http://{}", listener.local_addr().unwrap());
+	let (stop, receiver) = watch::channel(false);
+	let gateway = tokio::spawn(async move { serve(listener, authority, receiver).await.unwrap() });
+	(origin, gateway, stop)
+}
+
+#[tokio::test]
+async fn an_unexpected_admission_failure_is_logged_and_counted_without_the_request_contents() {
+	let observed = Observed::start();
+	let (origin, gateway, stop) = gateway_with(Arc::new(UnavailableAuthority)).await;
+	let response = reqwest::get(format!(
+		"{origin}/v1/operation-token/images/private-path?q=private-query"
+	))
+	.await
+	.unwrap();
+	assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+	assert_eq!(
+		response.text().await.unwrap(),
+		r#"{"error":"EGRESS_UNAVAILABLE"}"#,
+		"the Sandbox sees only the code"
+	);
+	let logs = observed.logs();
+	assert!(logs.contains("Egress admission failed"), "{logs}");
+	assert!(logs.contains("pool timed out"), "{logs}");
+	assert!(logs.contains("images"), "{logs}");
+	assert!(logs.contains("GET"), "{logs}");
+	for private in ["operation-token", "private-path", "private-query"] {
+		assert!(!logs.contains(private), "{private} in {logs}");
+	}
+	assert_eq!(
+		observed.count(r#"aidash_egress_refused_total{reason="EGRESS_UNAVAILABLE"}"#),
+		1
+	);
+	shutdown(vec![gateway], stop).await;
+}
+
+#[tokio::test]
+async fn an_expected_refusal_is_counted_by_reason_and_not_logged_as_an_error() {
+	let observed = Observed::start();
+	let (origin, _audit, tasks, stop) = metered_gateway(u64::MAX, false).await;
+	let response = reqwest::get(format!("{origin}/v1/wrong-token/images/download/1"))
+		.await
+		.unwrap();
+	assert_eq!(response.status(), StatusCode::FORBIDDEN);
+	assert_eq!(
+		observed.count(r#"aidash_egress_refused_total{reason="egress_forbidden"}"#),
+		1
+	);
+	assert!(!observed.logs().contains("ERROR"), "{}", observed.logs());
+	shutdown(tasks, stop).await;
+}
+
+#[tokio::test]
+async fn an_unreachable_upstream_is_logged_with_its_cause_and_without_the_url() {
+	let observed = Observed::start();
+	// Nothing listens on a port that was just released.
+	let unused = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let upstream = format!("http://{}/", unused.local_addr().unwrap());
+	drop(unused);
+	let authority = FixtureAuthority {
+		upstream,
+		origin: "http://gateway.invalid".into(),
+		audit: Arc::new(Audit::default()),
+	};
+	let audit = authority.audit.clone();
+	let (origin, gateway, stop) = gateway_with(Arc::new(authority)).await;
+	let response = reqwest::get(format!("{origin}/v1/operation-token/images/private-path"))
+		.await
+		.unwrap();
+	assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+	assert_eq!(
+		*audit.finished_records.lock().unwrap(),
+		vec![(502, Some("upstream_unavailable".into()))]
+	);
+	let logs = observed.logs();
+	assert!(logs.contains("Egress upstream failed"), "{logs}");
+	assert!(logs.to_lowercase().contains("connect"), "{logs}");
+	for private in ["operation-token", "private-path", "canary-tenant-secret"] {
+		assert!(!logs.contains(private), "{private} in {logs}");
+	}
+	shutdown(vec![gateway], stop).await;
+}
+
+#[tokio::test]
+async fn full_connection_slots_answer_with_a_named_503_and_then_drop() {
+	use tokio::io::{AsyncReadExt, AsyncWriteExt};
+	let observed = Observed::start();
+	let (origin, _audit, tasks, stop) = metered_gateway(u64::MAX, false).await;
+	let address = origin.trim_start_matches("http://").to_owned();
+	let mut held = Vec::new();
+	for _ in 0..CONNECTION_SLOTS {
+		held.push(tokio::net::TcpStream::connect(&address).await.unwrap());
+	}
+
+	let mut refused = tokio::net::TcpStream::connect(&address).await.unwrap();
+	refused
+		.write_all(b"GET /v1/operation-token/images/download/1 HTTP/1.1\r\nhost: gateway\r\n\r\n")
+		.await
+		.unwrap();
+	let mut answer = Vec::new();
+	tokio::time::timeout(Duration::from_secs(5), refused.read_to_end(&mut answer))
+		.await
+		.unwrap()
+		.unwrap();
+	let answer = String::from_utf8_lossy(&answer);
+	assert!(answer.starts_with("HTTP/1.1 503"), "{answer}");
+	assert!(answer.contains(CONNECTION_LIMIT), "{answer}");
+
+	// Silent clients occupy every refusal, so the next connection is dropped.
+	for _ in 0..REFUSAL_SLOTS {
+		held.push(tokio::net::TcpStream::connect(&address).await.unwrap());
+	}
+	let mut dropped = tokio::net::TcpStream::connect(&address).await.unwrap();
+	let mut nothing = Vec::new();
+	let _ = tokio::time::timeout(Duration::from_secs(1), dropped.read_to_end(&mut nothing))
+		.await
+		.expect("the connection is closed before the refusal window ends");
+	assert!(nothing.is_empty());
+
+	assert_eq!(
+		observed.count(r#"aidash_egress_connections_refused_total{outcome="answered"}"#),
+		1 + REFUSAL_SLOTS as u64
+	);
+	assert_eq!(
+		observed.count(r#"aidash_egress_connections_refused_total{outcome="dropped"}"#),
+		1
+	);
+	assert_eq!(
+		observed
+			.logs()
+			.matches("Egress connection slots are full")
+			.count(),
+		1,
+		"the log is thinned"
+	);
+	drop(held);
+	shutdown(tasks, stop).await;
+}
+
+/// Fails the given number of calls of each kind, then succeeds.
+#[derive(Default)]
+struct FlakyMeter {
+	audit: Audit,
+	charge_failures: AtomicU64,
+	finish_failures: AtomicU64,
+}
+impl FlakyMeter {
+	fn failing(charges: u64, finishes: u64) -> Arc<Self> {
+		Arc::new(Self {
+			charge_failures: AtomicU64::new(charges),
+			finish_failures: AtomicU64::new(finishes),
+			..Default::default()
+		})
+	}
+}
+fn take_failure(left: &AtomicU64) -> Result<()> {
+	match left.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1)) {
+		Ok(_) => Err(aidash_application::Error::External("pool timed out".into())),
+		Err(_) => Ok(()),
+	}
+}
+#[async_trait]
+impl Meter for FlakyMeter {
+	async fn charge(&self, direction: Direction, bytes: usize) -> Result<()> {
+		take_failure(&self.charge_failures)?;
+		self.audit.charge(direction, bytes).await
+	}
+	async fn finish(&self, status: u16, elapsed: u64, error: Option<&str>) -> Result<()> {
+		take_failure(&self.finish_failures)?;
+		self.audit.finish(status, elapsed, error).await
+	}
+}
+
+fn completion(meter: Arc<dyn Meter>, expected: Option<u64>) -> Completion {
+	Completion {
+		debits: Arc::new(Debits::new(
+			meter,
+			Label {
+				service: "images".into(),
+				method: "GET".into(),
+			},
+		)),
+		started: Instant::now(),
+		deadline: tokio::time::Instant::now() + Duration::from_secs(600),
+		status: 200,
+		expected,
+		finished: false,
+	}
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_complete_download_settles_after_a_storage_stall() {
+	let observed = Observed::start();
+	let meter = FlakyMeter::failing(3, 3);
+	let completion = completion(meter.clone(), Some(100));
+	completion.debits.count(Direction::Received, 100);
+	drop(completion);
+	tokio::time::sleep(SETTLE_BUDGET).await;
+	assert_eq!(meter.audit.received.load(Ordering::Relaxed), 100);
+	assert_eq!(
+		*meter.audit.finished_records.lock().unwrap(),
+		vec![(200, None)]
+	);
+	assert_eq!(
+		observed.count(r#"aidash_egress_settle_failures_total{stage="debit",outcome="retried"}"#),
+		3
+	);
+	assert!(!observed.logs().contains("ERROR"), "{}", observed.logs());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_shorter_body_than_its_content_length_is_recorded_as_interrupted() {
+	let meter = FlakyMeter::failing(0, 0);
+	let completion = completion(meter.clone(), Some(100));
+	completion.debits.count(Direction::Received, 99);
+	drop(completion);
+	tokio::time::sleep(Duration::from_secs(1)).await;
+	assert_eq!(meter.audit.received.load(Ordering::Relaxed), 99);
+	assert_eq!(
+		*meter.audit.finished_records.lock().unwrap(),
+		vec![(200, Some("stream_interrupted".into()))]
+	);
+}
+
+#[tokio::test(start_paused = true)]
+async fn settling_gives_up_with_an_error_and_leaves_the_record_unsettled() {
+	let observed = Observed::start();
+	let meter = FlakyMeter::failing(u64::MAX, u64::MAX);
+	let completion = completion(meter.clone(), Some(100));
+	completion.debits.count(Direction::Received, 100);
+	drop(completion);
+	tokio::time::sleep(SETTLE_BUDGET * 2).await;
+	assert!(meter.audit.finished_records.lock().unwrap().is_empty());
+	for (stage, message) in [
+		("debit", "Egress debit abandoned"),
+		("record", "Egress request record abandoned"),
+	] {
+		assert_eq!(
+			observed.count(&format!(
+				r#"aidash_egress_settle_failures_total{{stage="{stage}",outcome="abandoned"}}"#
+			)),
+			1
+		);
+		assert!(observed.logs().contains(message), "{}", observed.logs());
+	}
+	assert!(
+		observed.logs().contains("pool timed out"),
+		"{}",
+		observed.logs()
+	);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_temporary_debit_failure_stops_the_stream_but_keeps_its_bytes() {
+	let observed = Observed::start();
+	let meter = FlakyMeter::failing(1, 0);
+	let debits = Debits::new(
+		meter.clone(),
+		Label {
+			service: "images".into(),
+			method: "GET".into(),
+		},
+	);
+	debits.count(Direction::Received, 100);
+	let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
+	assert_eq!(
+		debits
+			.flush(Direction::Received, deadline)
+			.await
+			.unwrap_err()
+			.code,
+		aidash_domain::egress::UNAVAILABLE
+	);
+	assert!(
+		observed.logs().contains("pool timed out"),
+		"{}",
+		observed.logs()
+	);
+	drop(debits);
+	tokio::time::sleep(Duration::from_secs(1)).await;
+	assert_eq!(meter.audit.received.load(Ordering::Relaxed), 100);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_final_record_retries_without_holding_the_response() {
+	let meter = FlakyMeter::failing(0, 2);
+	let mut completion = completion(meter.clone(), None);
+	completion.close(None).await;
+	assert!(
+		meter.audit.finished_records.lock().unwrap().is_empty(),
+		"the first attempt failed and the rest run in the background"
+	);
+	tokio::time::sleep(Duration::from_secs(5)).await;
+	assert_eq!(
+		*meter.audit.finished_records.lock().unwrap(),
+		vec![(200, None)]
+	);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refused_final_debit_is_recorded_and_not_retried() {
+	struct Refusing(Audit);
+	#[async_trait]
+	impl Meter for Refusing {
+		async fn charge(&self, _: Direction, _: usize) -> Result<()> {
+			self.0.charges.fetch_add(1, Ordering::Relaxed);
+			Err(aidash_application::Error::Conflict(
+				aidash_domain::egress::LIMIT_EXCEEDED.into(),
+			))
+		}
+		async fn finish(&self, status: u16, elapsed: u64, error: Option<&str>) -> Result<()> {
+			self.0.finish(status, elapsed, error).await
+		}
+	}
+	let meter = Arc::new(Refusing(Audit::default()));
+	let completion = completion(meter.clone(), Some(100));
+	completion.debits.count(Direction::Received, 100);
+	drop(completion);
+	tokio::time::sleep(SETTLE_BUDGET).await;
+	assert_eq!(meter.0.charges.load(Ordering::Relaxed), 1);
+	assert_eq!(
+		*meter.0.finished_records.lock().unwrap(),
+		vec![(200, Some("egress_limit_exceeded".into()))]
+	);
 }

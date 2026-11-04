@@ -999,6 +999,23 @@ async fn charge_session(
 	Ok(())
 }
 
+/// A decision that the operation may not continue, as opposed to a failure to
+/// find out. The gateway reads the same errors as a refusal, and charges again
+/// after anything else (see `Meter::charge`).
+fn stops_stream(error: &Error) -> bool {
+	match error {
+		Error::Forbidden
+		| Error::Unauthorized
+		| Error::AuthorityRefused(_)
+		| Error::TenantDeleted => true,
+		Error::Conflict(code) => {
+			code == aidash_domain::egress::OPERATION_EXPIRED
+				|| code == aidash_domain::egress::LIMIT_EXCEEDED
+		}
+		_ => false,
+	}
+}
+
 async fn add_to_record(
 	tx: &mut crate::database::native::Transaction,
 	request: Uuid,
@@ -1125,7 +1142,7 @@ impl Meter for RequestMeter {
 				}
 				// The bytes already crossed the gateway, so they still count
 				// although the operation can no longer use it.
-				Err(refusal) => {
+				Err(refusal) if stops_stream(&refusal) => {
 					let mut tx = self
 						.store
 						.pool
@@ -1143,6 +1160,8 @@ impl Meter for RequestMeter {
 					tx.commit().await?;
 					return Err(refusal);
 				}
+				// Nothing decided about this operation, and nothing committed.
+				Err(error) => return Err(error),
 			};
 			if recorded.expired {
 				return Err(expired());
@@ -1192,5 +1211,7 @@ impl Meter for RequestMeter {
 	}
 }
 
+#[cfg(test)]
+mod charge_tests;
 #[cfg(test)]
 mod session_tests;

@@ -35,6 +35,26 @@ const SECRET_CALL: &str = "x-aidash-secret-call";
 const BATCH_BYTES: u64 = 1024 * 1024;
 /// How long a failed or interrupted stream may take to debit its remainder.
 const FLUSH_GRACE: Duration = Duration::from_secs(5);
+/// How long a finished request keeps trying to settle its last debit and its
+/// record in the background, which outlasts a storage stall of about a minute.
+/// A record that is still not settled when this runs out, or when the process
+/// stops, keeps status 0: its outcome is unknown.
+const SETTLE_BUDGET: Duration = Duration::from_secs(60);
+/// One settling attempt. Longer than the database pool's 10 s acquire timeout,
+/// so that a stalled attempt reports the pool's error instead of this timeout.
+const SETTLE_ATTEMPT: Duration = Duration::from_secs(15);
+const SETTLE_MAX_DELAY: Duration = Duration::from_secs(15);
+/// Connections served at once. Beyond this a connection is refused.
+const CONNECTION_SLOTS: usize = 128;
+/// Refused connections answered at once, and for how long each. Sandboxed code
+/// can open connections freely, so answering them must be bounded too; beyond
+/// this a connection is dropped unanswered.
+const REFUSAL_SLOTS: usize = 8;
+const REFUSAL_WINDOW: Duration = Duration::from_secs(2);
+/// Sandboxed code can fill the slots at will, so the log is thinned. The
+/// counter stays exact.
+const REFUSAL_LOG_INTERVAL: Duration = Duration::from_secs(10);
+const CONNECTION_LIMIT: &str = "egress_connection_limit";
 
 fn failure(status: StatusCode, code: &'static str) -> Response<Body> {
 	Response::builder()
@@ -50,6 +70,150 @@ fn failure(status: StatusCode, code: &'static str) -> Response<Body> {
 }
 /// A broker-owned error never carries a value to the sandbox: the gateway
 /// reports the code alone (ADR 0095).
+/// Refuses a request before its record exists, so that the count is all that
+/// is left of it.
+fn refuse(status: StatusCode, code: &'static str) -> Response<Body> {
+	metrics::counter!("aidash_egress_refused_total", "reason" => code).increment(1);
+	failure(status, code)
+}
+
+/// An error and its sources on one line. Reqwest's own message only says that
+/// a request failed; the reason is further down.
+fn causes(error: &dyn std::error::Error) -> String {
+	let mut text = error.to_string();
+	let mut source = error.source();
+	while let Some(next) = source {
+		text.push_str(": ");
+		text.push_str(&next.to_string());
+		source = next.source();
+	}
+	text
+}
+
+/// External URLs can contain credentials; never keep them in a log line.
+fn upstream_cause(error: reqwest::Error) -> String {
+	causes(&error.without_url())
+}
+
+/// A request's name in logs. The token, path, query and header values stay out.
+struct Label {
+	service: String,
+	method: String,
+}
+
+fn settle_failure(stage: &'static str, outcome: &'static str) {
+	metrics::counter!("aidash_egress_settle_failures_total", "stage" => stage, "outcome" => outcome)
+		.increment(1);
+}
+
+/// The time left to settle one request, and the wait between its attempts.
+struct Settling {
+	give_up: tokio::time::Instant,
+	delay: Duration,
+}
+impl Settling {
+	fn new() -> Self {
+		Self {
+			give_up: tokio::time::Instant::now() + SETTLE_BUDGET,
+			delay: Duration::from_secs(1),
+		}
+	}
+
+	/// Waits for the next attempt, or returns false when the time is up.
+	async fn wait(&mut self) -> bool {
+		let left = self
+			.give_up
+			.saturating_duration_since(tokio::time::Instant::now());
+		if left.is_zero() {
+			return false;
+		}
+		tokio::time::sleep(self.delay.min(left)).await;
+		self.delay = (self.delay * 2).min(SETTLE_MAX_DELAY);
+		true
+	}
+}
+
+/// Charges bytes that have already crossed the gateway. A refusal has committed
+/// them (see [`Meter::charge`]) and is returned; anything else has not, so it is
+/// tried again.
+async fn charge_settling(
+	meter: &dyn Meter,
+	label: &Label,
+	direction: Direction,
+	bytes: u64,
+	settling: &mut Settling,
+) -> Option<Refusal> {
+	let bytes = bytes.min(usize::MAX as u64) as usize;
+	loop {
+		let cause = match tokio::time::timeout(SETTLE_ATTEMPT, meter.charge(direction, bytes)).await
+		{
+			Ok(Ok(())) => return None,
+			Ok(Err(error)) => {
+				let refusal = Refusal::of(&error);
+				if !refusal.temporary() {
+					return Some(refusal);
+				}
+				error.to_string()
+			}
+			Err(_) => "attempt timed out".to_owned(),
+		};
+		if !settling.wait().await {
+			settle_failure("debit", "abandoned");
+			tracing::error!(
+				service = %label.service,
+				method = %label.method,
+				bytes,
+				%cause,
+				"Egress debit abandoned; these bytes are not charged"
+			);
+			return None;
+		}
+		settle_failure("debit", "retried");
+		tracing::debug!(service = %label.service, %cause, "Egress debit failed; retrying");
+	}
+}
+
+async fn record_settling(
+	meter: &dyn Meter,
+	label: &Label,
+	status: u16,
+	elapsed: u64,
+	error: Option<&str>,
+	settling: &mut Settling,
+) {
+	loop {
+		let cause = match tokio::time::timeout(SETTLE_ATTEMPT, meter.finish(status, elapsed, error))
+			.await
+		{
+			Ok(Ok(())) => return,
+			Ok(Err(error)) => error.to_string(),
+			Err(_) => "attempt timed out".to_owned(),
+		};
+		if !settling.wait().await {
+			settle_failure("record", "abandoned");
+			tracing::error!(
+				service = %label.service,
+				method = %label.method,
+				status,
+				%cause,
+				"Egress request record abandoned; it keeps status 0"
+			);
+			return;
+		}
+		settle_failure("record", "retried");
+		tracing::debug!(service = %label.service, %cause, "Egress record failed; retrying");
+	}
+}
+
+fn upstream_failed(label: &Label, cause: &str) {
+	tracing::warn!(
+		service = %label.service,
+		method = %label.method,
+		%cause,
+		"Egress upstream failed"
+	);
+}
+
 fn broker_failure(code: &str) -> (StatusCode, &'static str) {
 	match code {
 		"secret_unavailable" => (StatusCode::FAILED_DEPENDENCY, "secret_unavailable"),
@@ -137,6 +301,11 @@ impl Refusal {
 	fn response(self) -> Response<Body> {
 		failure(self.status, self.code)
 	}
+
+	/// Not a decision about this request: the store could not be asked.
+	fn temporary(self) -> bool {
+		self.code == aidash_domain::egress::UNAVAILABLE
+	}
 }
 
 /// Body bytes streamed but not yet debited, per direction. A flush takes the
@@ -144,18 +313,30 @@ impl Refusal {
 /// last handle debits whatever an abandoned stream left.
 struct Debits {
 	meter: Arc<dyn Meter>,
+	label: Arc<Label>,
 	sent: AtomicU64,
 	received: AtomicU64,
+	/// Bytes whose debit failed without committing. They are charged again only
+	/// when the last handle drops, because the stream they came from has already
+	/// failed and must not wait on the store a second time.
+	failed_sent: AtomicU64,
+	failed_received: AtomicU64,
+	/// Every response body byte handed on so far, debited or not.
+	handed: AtomicU64,
 	/// The upload's refusal. Reqwest reports a failed request body only as a
 	/// failed request, so the response path reads the real cause here.
 	refused: OnceLock<Refusal>,
 }
 impl Debits {
-	fn new(meter: Arc<dyn Meter>) -> Self {
+	fn new(meter: Arc<dyn Meter>, label: Label) -> Self {
 		Self {
 			meter,
+			label: Arc::new(label),
 			sent: AtomicU64::new(0),
 			received: AtomicU64::new(0),
+			failed_sent: AtomicU64::new(0),
+			failed_received: AtomicU64::new(0),
+			handed: AtomicU64::new(0),
 			refused: OnceLock::new(),
 		}
 	}
@@ -167,11 +348,22 @@ impl Debits {
 		}
 	}
 
+	fn keep_failed(&self, direction: Direction, bytes: u64) {
+		match direction {
+			Direction::Sent => &self.failed_sent,
+			Direction::Received => &self.failed_received,
+		}
+		.fetch_add(bytes, Ordering::Relaxed);
+	}
+
 	/// Counts bytes before they are handed on, so a stream dropped while it
 	/// waits to be polled again still debits them.
 	fn count(&self, direction: Direction, bytes: usize) {
 		self.pending(direction)
 			.fetch_add(bytes as u64, Ordering::Relaxed);
+		if matches!(direction, Direction::Received) {
+			self.handed.fetch_add(bytes as u64, Ordering::Relaxed);
+		}
 	}
 
 	/// Debits the pending bytes once a whole batch has accumulated.
@@ -195,18 +387,35 @@ impl Debits {
 		if bytes == 0 {
 			return Ok(());
 		}
-		let bytes = usize::try_from(bytes).map_err(|_| Refusal::LIMIT)?;
-		match tokio::time::timeout_at(deadline, self.meter.charge(direction, bytes)).await {
+		let amount = usize::try_from(bytes).map_err(|_| Refusal::LIMIT)?;
+		match tokio::time::timeout_at(deadline, self.meter.charge(direction, amount)).await {
 			Ok(Ok(())) => Ok(()),
-			Ok(Err(error)) => Err(Refusal::of(&error)),
-			Err(_) => Err(Refusal::EXPIRED),
+			Ok(Err(error)) => {
+				let refusal = Refusal::of(&error);
+				if refusal.temporary() {
+					self.keep_failed(direction, bytes);
+					settle_failure("debit", "retried");
+					tracing::error!(
+						service = %self.label.service,
+						method = %self.label.method,
+						cause = %error,
+						"Egress debit failed; stopping the stream"
+					);
+				}
+				Err(refusal)
+			}
+			Err(_) => {
+				// The cancelled charge did not commit either.
+				self.keep_failed(direction, bytes);
+				Err(Refusal::EXPIRED)
+			}
 		}
 	}
 }
 impl Drop for Debits {
 	fn drop(&mut self) {
-		let sent = *self.sent.get_mut();
-		let received = *self.received.get_mut();
+		let sent = *self.sent.get_mut() + *self.failed_sent.get_mut();
+		let received = *self.received.get_mut() + *self.failed_received.get_mut();
 		if sent == 0 && received == 0 {
 			return;
 		}
@@ -214,14 +423,12 @@ impl Drop for Debits {
 			return;
 		};
 		let meter = self.meter.clone();
+		let label = self.label.clone();
 		runtime.spawn(async move {
+			let mut settling = Settling::new();
 			for (direction, bytes) in [(Direction::Sent, sent), (Direction::Received, received)] {
 				if bytes > 0 {
-					let _ = tokio::time::timeout(
-						FLUSH_GRACE,
-						meter.charge(direction, bytes.min(usize::MAX as u64) as usize),
-					)
-					.await;
+					charge_settling(&*meter, &label, direction, bytes, &mut settling).await;
 				}
 			}
 		});
@@ -235,6 +442,8 @@ struct Completion {
 	started: Instant,
 	deadline: tokio::time::Instant,
 	status: u16,
+	/// The `Content-Length` the client was promised, if any.
+	expected: Option<u64>,
 	finished: bool,
 }
 impl Completion {
@@ -256,18 +465,27 @@ impl Completion {
 			return;
 		}
 		self.finished = true;
-		if self
-			.debits
-			.meter
-			.finish(
-				self.status,
-				self.started.elapsed().as_millis().min(u64::MAX as u128) as u64,
-				error,
-			)
-			.await
-			.is_err()
-		{
-			tracing::error!("Egress request audit could not be completed");
+		let elapsed = self.started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+		let meter = self.debits.meter.clone();
+		if let Err(cause) = meter.finish(self.status, elapsed, error).await {
+			settle_failure("record", "retried");
+			tracing::debug!(%cause, "Egress record failed; retrying in the background");
+			// The client does not wait for a stalled store.
+			let label = self.debits.label.clone();
+			let status = self.status;
+			let error = error.map(str::to_owned);
+			tokio::spawn(async move {
+				let mut settling = Settling::new();
+				record_settling(
+					&*meter,
+					&label,
+					status,
+					elapsed,
+					error.as_deref(),
+					&mut settling,
+				)
+				.await;
+			});
 		}
 	}
 
@@ -290,14 +508,44 @@ impl Drop for Completion {
 			let debits = self.debits.clone();
 			let status = self.status;
 			let elapsed = self.started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+			// Hyper stops polling a body once it has written `Content-Length`
+			// bytes, so a complete response with a known length ends here rather
+			// than at the end of its stream. Complete means handed to Hyper: the
+			// client may still disconnect before it reads them, and a refused
+			// final debit can no longer stop them.
+			let handed = debits.handed.load(Ordering::Relaxed);
+			let complete = self.expected.is_some_and(|expected| handed >= expected);
 			tokio::spawn(async move {
-				let deadline = tokio::time::Instant::now() + FLUSH_GRACE;
-				let _ = debits.flush(Direction::Sent, deadline).await;
-				let _ = debits.flush(Direction::Received, deadline).await;
-				let _ = debits
-					.meter
-					.finish(status, elapsed, Some("stream_interrupted"))
-					.await;
+				let mut settling = Settling::new();
+				let mut refused = None;
+				for direction in [Direction::Sent, Direction::Received] {
+					let bytes = debits.pending(direction).swap(0, Ordering::Relaxed);
+					if bytes > 0 {
+						let refusal = charge_settling(
+							&*debits.meter,
+							&debits.label,
+							direction,
+							bytes,
+							&mut settling,
+						)
+						.await;
+						refused = refused.or(refusal);
+					}
+				}
+				let error = if complete {
+					refused.map(|refusal| refusal.code)
+				} else {
+					Some("stream_interrupted")
+				};
+				record_settling(
+					&*debits.meter,
+					&debits.label,
+					status,
+					elapsed,
+					error,
+					&mut settling,
+				)
+				.await;
 			});
 		}
 	}
@@ -440,7 +688,9 @@ pub async fn serve_with_scopes(
 		.read_timeout(IDLE)
 		.build()
 		.map_err(crate::http_error)?;
-	let slots = Arc::new(tokio::sync::Semaphore::new(128));
+	let slots = Arc::new(tokio::sync::Semaphore::new(CONNECTION_SLOTS));
+	let refusals = Arc::new(tokio::sync::Semaphore::new(REFUSAL_SLOTS));
+	let mut refused = RefusedConnections::default();
 	let mut connections = tokio::task::JoinSet::new();
 	let tunnels = Arc::new(proxy::TunnelManager::new(stopping.clone(), limits));
 	loop {
@@ -462,7 +712,14 @@ pub async fn serve_with_scopes(
 						continue;
 					}
 				};
-				let Ok(permit) = slots.clone().try_acquire_owned() else { continue; };
+				let Ok(permit) = slots.clone().try_acquire_owned() else {
+					let answering = refusals.clone().try_acquire_owned();
+					refused.note(answering.is_ok());
+					if let Ok(permit) = answering {
+						connections.spawn(async move { let _permit = permit; refuse_connection(socket).await; });
+					}
+					continue;
+				};
 				let authority = authority.clone(); let client = client.clone(); let public = public.clone(); let scopes = scopes.clone(); let tunnels = tunnels.clone();
 				connections.spawn(async move {
 					let permit = Arc::new(std::sync::Mutex::new(Some(permit)));
@@ -486,6 +743,53 @@ pub async fn serve_with_scopes(
 			}
 		}
 	}
+}
+
+/// Connections refused since the last log line.
+#[derive(Default)]
+struct RefusedConnections {
+	unlogged: u64,
+	logged_at: Option<Instant>,
+}
+impl RefusedConnections {
+	fn note(&mut self, answered: bool) {
+		let outcome = if answered { "answered" } else { "dropped" };
+		metrics::counter!("aidash_egress_connections_refused_total", "outcome" => outcome)
+			.increment(1);
+		self.unlogged += 1;
+		if self
+			.logged_at
+			.is_none_or(|at| at.elapsed() >= REFUSAL_LOG_INTERVAL)
+		{
+			tracing::warn!(
+				refused = self.unlogged,
+				slots = CONNECTION_SLOTS,
+				"Egress connection slots are full"
+			);
+			self.unlogged = 0;
+			self.logged_at = Some(Instant::now());
+		}
+	}
+}
+
+/// Reads the request head first: closing a socket with unread data resets it,
+/// which can destroy the answer on its way to the client.
+async fn refuse_connection(socket: tokio::net::TcpStream) {
+	let service = service_fn(|_| async {
+		let mut response = failure(StatusCode::SERVICE_UNAVAILABLE, CONNECTION_LIMIT);
+		response.headers_mut().insert(
+			hyper::header::CONNECTION,
+			hyper::header::HeaderValue::from_static("close"),
+		);
+		Ok::<_, Infallible>(response)
+	});
+	let serving = hyper::server::conn::http1::Builder::new()
+		.timer(TokioTimer::new())
+		.keep_alive(false)
+		.header_read_timeout(REFUSAL_WINDOW)
+		.max_headers(64)
+		.serve_connection(TokioIo::new(socket), service);
+	let _ = tokio::time::timeout(REFUSAL_WINDOW, serving).await;
 }
 
 fn target(admission: &Admission, path: &str, query: Option<&str>) -> Result<Url, BoxError> {
@@ -646,7 +950,7 @@ async fn forward(
 	scopes: Option<Arc<dyn aidash_application::egress::EgressScopes>>,
 ) -> Response<Body> {
 	if request.uri().scheme().is_some() {
-		return failure(StatusCode::NOT_FOUND, "egress_route_not_found");
+		return refuse(StatusCode::NOT_FOUND, "egress_route_not_found");
 	}
 	let request_path = request.uri().path();
 	let scoped = request_path.starts_with("/v2/services/");
@@ -655,7 +959,7 @@ async fn forward(
 	} else if let Some(path) = request_path.strip_prefix("/v1/") {
 		path.to_owned()
 	} else {
-		return failure(StatusCode::NOT_FOUND, "egress_route_not_found");
+		return refuse(StatusCode::NOT_FOUND, "egress_route_not_found");
 	};
 	let scope_token = if scoped {
 		let mut values = request
@@ -670,7 +974,7 @@ async fn forward(
 			.map(|(_, token)| token)
 			.filter(|s| !s.is_empty());
 		if values.next().is_some() || token.is_none() {
-			return failure(StatusCode::UNAUTHORIZED, "egress_token_required");
+			return refuse(StatusCode::UNAUTHORIZED, "egress_token_required");
 		}
 		token.map(str::to_owned)
 	} else {
@@ -680,7 +984,7 @@ async fn forward(
 		(token, route.as_str())
 	} else {
 		let Some((token, remainder)) = route.split_once('/') else {
-			return failure(StatusCode::UNAUTHORIZED, "egress_token_required");
+			return refuse(StatusCode::UNAUTHORIZED, "egress_token_required");
 		};
 		(token, remainder)
 	};
@@ -692,11 +996,11 @@ async fn forward(
 			.bytes()
 			.all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
 	{
-		return failure(StatusCode::BAD_REQUEST, "invalid_egress_route");
+		return refuse(StatusCode::BAD_REQUEST, "invalid_egress_route");
 	}
 	let asset = if let Some(encoded) = path.strip_prefix("__asset/") {
 		if scoped {
-			return failure(StatusCode::BAD_REQUEST, "invalid_egress_path");
+			return refuse(StatusCode::BAD_REQUEST, "invalid_egress_path");
 		}
 		let decoded = URL_SAFE_NO_PAD
 			.decode(encoded)
@@ -704,7 +1008,7 @@ async fn forward(
 			.and_then(|b| String::from_utf8(b).ok())
 			.and_then(|s| Url::parse(&s).ok());
 		let Some(url) = decoded.filter(|u| package_url(service, u)) else {
-			return failure(StatusCode::BAD_REQUEST, "invalid_package_url");
+			return refuse(StatusCode::BAD_REQUEST, "invalid_package_url");
 		};
 		Some(url)
 	} else {
@@ -750,38 +1054,63 @@ async fn forward(
 	let admission = match admitted {
 		Ok(value) => value,
 		Err(aidash_application::Error::Forbidden | aidash_application::Error::Unauthorized) => {
-			return failure(StatusCode::FORBIDDEN, "egress_forbidden");
+			return refuse(StatusCode::FORBIDDEN, "egress_forbidden");
 		}
 		Err(aidash_application::Error::Conflict(code))
 			if code == aidash_domain::egress::OPERATION_EXPIRED =>
 		{
-			return Refusal::EXPIRED.response();
+			return refuse(Refusal::EXPIRED.status, Refusal::EXPIRED.code);
 		}
 		Err(aidash_application::Error::Conflict(_)) => {
-			return Refusal::LIMIT.response();
+			return refuse(Refusal::LIMIT.status, Refusal::LIMIT.code);
 		}
 		Err(aidash_application::Error::Refused(message))
 			if message == "egress_budget_exhausted" =>
 		{
-			return failure(StatusCode::TOO_MANY_REQUESTS, "egress_budget_exhausted");
+			return refuse(StatusCode::TOO_MANY_REQUESTS, "egress_budget_exhausted");
 		}
 		Err(aidash_application::Error::Refused(message)) if message == "egress_suspended" => {
-			return failure(StatusCode::FORBIDDEN, "egress_suspended");
+			return refuse(StatusCode::FORBIDDEN, "egress_suspended");
 		}
 		Err(aidash_application::Error::Invalid(message)) if message == "secret_unavailable" => {
-			return failure(StatusCode::FAILED_DEPENDENCY, "secret_unavailable");
+			return refuse(StatusCode::FAILED_DEPENDENCY, "secret_unavailable");
 		}
-		Err(_) => return failure(StatusCode::SERVICE_UNAVAILABLE, "EGRESS_UNAVAILABLE"),
+		// The Sandbox sees only the code; the cause stays in the server's log. Where
+		// an error's text came from is not under this function's control, so what
+		// the request itself carried is taken back out.
+		Err(error) => {
+			let cause = error
+				.to_string()
+				.replace(token, "[token]")
+				.replace(audit_path, "[path]");
+			tracing::error!(
+				service,
+				method = %request.method(),
+				%cause,
+				"Egress admission failed"
+			);
+			return refuse(
+				StatusCode::SERVICE_UNAVAILABLE,
+				aidash_domain::egress::UNAVAILABLE,
+			);
+		}
 	};
 	let remaining = (admission.expires_at - chrono::Utc::now())
 		.to_std()
 		.unwrap_or_default();
 	let deadline = tokio::time::Instant::now() + remaining;
 	let mut completion = Completion {
-		debits: Arc::new(Debits::new(admission.meter.clone())),
+		debits: Arc::new(Debits::new(
+			admission.meter.clone(),
+			Label {
+				service: service.to_owned(),
+				method: request.method().to_string(),
+			},
+		)),
 		started: Instant::now(),
 		deadline,
 		status: 502,
+		expected: None,
 		finished: false,
 	};
 	if remaining.is_zero() {
@@ -916,7 +1245,7 @@ async fn forward(
 	.await
 	{
 		Ok(Ok(response)) => response,
-		_ => {
+		failed => {
 			// A refused upload debit fails the request; report the refusal
 			// rather than an unreachable upstream.
 			if let Some(refusal) = completion.debits.refused.get().copied() {
@@ -924,6 +1253,11 @@ async fn forward(
 				completion.finish(Some(refusal.code)).await;
 				return refusal.response();
 			}
+			let cause = match failed {
+				Ok(Err(error)) => upstream_cause(error),
+				_ => "the operation deadline passed".to_owned(),
+			};
+			upstream_failed(&completion.debits.label, &cause);
 			completion.finish(Some("upstream_unavailable")).await;
 			return failure(StatusCode::BAD_GATEWAY, "EGRESS_UNAVAILABLE");
 		}
@@ -1040,7 +1374,12 @@ async fn forward(
 			let bytes = match next {
 				Ok(Ok(Some(Ok(bytes)))) => bytes,
 				Ok(Ok(None)) => break,
-				_ => {
+				failed => {
+					let cause = match failed {
+						Ok(Ok(Some(Err(error)))) => upstream_cause(error),
+						_ => "timed out".to_owned(),
+					};
+					upstream_failed(&completion.debits.label, &cause);
 					completion.finish(Some("index_unavailable")).await;
 					return failure(StatusCode::BAD_GATEWAY, "package_index_unavailable");
 				}
@@ -1106,12 +1445,16 @@ async fn forward(
 		*result.headers_mut() = headers;
 		return result;
 	}
+	completion.expected = headers
+		.get(hyper::header::CONTENT_LENGTH)
+		.and_then(|value| value.to_str().ok())
+		.and_then(|value| value.parse().ok());
 	let debits = completion.debits.clone();
 	let output = async_stream::try_stream! {
 		loop {
 			let next = match tokio::time::timeout_at(deadline,tokio::time::timeout(IDLE,downstream.next())).await {
 				Ok(Ok(next)) => next,
-				_ => { completion.finish(Some("egress_timeout")).await; Err(io_error("egress_timeout"))?; unreachable!() }
+				_ => { upstream_failed(&debits.label, "timed out"); completion.finish(Some("egress_timeout")).await; Err(io_error("egress_timeout"))?; unreachable!() }
 			};
 			let Some(bytes) = next else {
 				// The final debit can still refuse; the client then sees an
@@ -1121,9 +1464,10 @@ async fn forward(
 			};
 			let bytes = match bytes {
 				Ok(bytes) => bytes,
-				Err(_) => {
+				Err(error) => {
 					// An upstream that echoes the upload fails when the upload's
 					// debit was refused; that refusal is the real cause.
+					if debits.refused.get().is_none() { upstream_failed(&debits.label, &upstream_cause(error)); }
 					let code = debits.refused.get().map_or("upstream_interrupted", |refusal| refusal.code);
 					completion.finish(Some(code)).await; Err(io_error(code))?; unreachable!()
 				}

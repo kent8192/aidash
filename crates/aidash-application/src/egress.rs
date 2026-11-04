@@ -41,7 +41,8 @@ pub trait Meter: Send + Sync {
 	/// reports why the stream must stop: `Conflict(LIMIT_EXCEEDED)` when a
 	/// budget is exhausted, `Conflict(OPERATION_EXPIRED)` when the operation or
 	/// session ended or expired, and `Forbidden` when its authority was revoked
-	/// (see [`aidash_domain::egress::LIMIT_EXCEEDED`]).
+	/// (see [`aidash_domain::egress::LIMIT_EXCEEDED`]). Any other error means
+	/// the bytes were not committed, and the caller charges them again.
 	async fn charge(&self, direction: Direction, bytes: usize) -> Result<()>;
 	/// Completes the metadata-only request record, including failures and partial bodies.
 	async fn finish(&self, status: u16, elapsed_ms: u64, error: Option<&str>) -> Result<()>;
