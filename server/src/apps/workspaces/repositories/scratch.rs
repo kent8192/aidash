@@ -348,10 +348,8 @@ pub(crate) struct ScratchAdapter<'a> {
 }
 
 impl ScratchAdapter<'_> {
-	/// Spaces belong to enabled people. A delegated Run's space instead
-	/// belongs to its Peer Mapping's credential subject, which is always an
-	/// exportable service or agent credential; only that allocation sets
-	/// `person_override`.
+	/// Users and services may own spaces. An Agent may own only the space
+	/// allocated for its delegated Peer Mapping credential.
 	fn may_own(&self, person: &str) -> bool {
 		let delegated = self.person_override.is_some();
 		self.access
@@ -362,8 +360,8 @@ impl ScratchAdapter<'_> {
 			.is_some_and(|subject| {
 				subject.enabled
 					&& match subject.kind {
-						SubjectKind::User => true,
-						SubjectKind::Service | SubjectKind::Agent => delegated,
+						SubjectKind::User | SubjectKind::Service => true,
+						SubjectKind::Agent => delegated,
 					}
 			})
 	}
@@ -644,6 +642,16 @@ impl ScratchServices for NativeScratchServices<'_> {
 		access: &mut Access,
 		run: &Run,
 	) -> aidash_application::Result<(Uuid, String)> {
+		self.run_binding_metadata(access, &run.metadata()).await
+	}
+}
+
+impl NativeScratchServices<'_> {
+	pub(crate) async fn run_binding_metadata(
+		&mut self,
+		access: &mut Access,
+		run: &aidash_domain::RunMetadata,
+	) -> aidash_application::Result<(Uuid, String)> {
 		if !run.is_local(&access.node_id) {
 			// A receiver may only allocate for its own already-admitted Run.
 			// A shared lock keeps the admission from changing meanwhile without
@@ -705,22 +713,8 @@ impl ScratchServices for NativeScratchServices<'_> {
 			if !access.subjects.contains(&person) {
 				return Err(aidash_application::Error::Forbidden);
 			}
-			// Serialize first allocation on the receiving Node, including different
-			// Runs of the same home Workspace. UUIDv8 is domain-separated from
-			// user-created UUIDv4 spaces and stable across retries.
-			let (sql, values) = Query::select()
-				.column(Alias::new("name"))
-				.from(Alias::new("nodes"))
-				.and_where(Expr::col("tenant").eq(Expr::value(tenant.clone())))
-				.and_where(Expr::col("name").eq(Expr::value(run.node.as_str().to_owned())))
-				.lock(LockType::Update)
-				.build(PostgresQueryBuilder);
-			access
-				.tx
-				.fetch_optional(&sql, convert_values(values))
-				.await
-				.map_err(crate::Error::from)?
-				.ok_or(aidash_application::Error::Forbidden)?;
+			// UUIDv8 is domain-separated from user-created UUIDv4 spaces and stable
+			// across retries. Existing spaces need no Node allocation lock.
 			let scratch_id = remote_space_id(
 				&tenant,
 				&run.node,
@@ -728,6 +722,29 @@ impl ScratchServices for NativeScratchServices<'_> {
 				run.workspace_id,
 				&person,
 			);
+			if let Some(space) = load_with_lock(&mut **access.tx, &tenant, scratch_id, false)
+				.await
+				.map_err(aidash_application::Error::from)?
+			{
+				if space.node != run.node || space.creator != person {
+					return Err(aidash_application::Error::Forbidden);
+				}
+				return Ok((scratch_id, person));
+			}
+			// Serialize first allocation without blocking foreign-key checks.
+			let (sql, values) = Query::select()
+				.column(Alias::new("name"))
+				.from(Alias::new("nodes"))
+				.and_where(Expr::col("tenant").eq(Expr::value(tenant.clone())))
+				.and_where(Expr::col("name").eq(Expr::value(run.node.as_str().to_owned())))
+				.lock(LockType::NoKeyUpdate)
+				.build(PostgresQueryBuilder);
+			access
+				.tx
+				.fetch_optional(&sql, convert_values(values))
+				.await
+				.map_err(crate::Error::from)?
+				.ok_or(aidash_application::Error::Forbidden)?;
 			let existing = load(&mut **access.tx, &tenant, scratch_id)
 				.await
 				.map_err(aidash_application::Error::from)?;
@@ -781,10 +798,19 @@ impl ScratchServices for NativeScratchServices<'_> {
 			.get("scratch_space_id")
 			.map_err(err)
 			.map_err(crate::Error::from)?;
-		let starter = row
+		let starter: String = row
 			.get("created_by")
 			.map_err(err)
 			.map_err(crate::Error::from)?;
+		if !access
+			.snapshot
+			.bundle
+			.subjects
+			.get(&starter)
+			.is_some_and(|subject| subject.enabled)
+		{
+			return Err(aidash_application::Error::Forbidden);
+		}
 		Ok((id, starter))
 	}
 }

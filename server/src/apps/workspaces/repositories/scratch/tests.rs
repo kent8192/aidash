@@ -242,7 +242,7 @@ async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
 	let peer_credentials = [Uuid::new_v4(), Uuid::new_v4()];
 	let bundle: aidash_domain::policy::PolicyBundle = serde_json::from_value(json!({
         "tenant": tenant,
-        "subjects": {mapped: {"kind":mapped_kind}, "node-peer": {"kind":"node"}, "service-peer": {"kind":"service"}},
+        "subjects": {mapped: {"kind":mapped_kind, "node": if mapped_kind == "user" { None } else { Some(node.as_str()) }}, "node-peer": {"kind":"service", "node":node.as_str()}, "service-peer": {"kind":"service", "node":node.as_str()}},
         "policies": [{"id":"node-use", "effect":"allow", "subjects":{"any":true}, "actions":["node.use", "scratch.create"], "resources":{"kinds":["node"]}}]
     })).unwrap();
 	let mut tx = database.begin_in(&scope).await;
@@ -412,27 +412,92 @@ async fn delegated_space_belongs_to_mapped_person_for_node_and_service_peers(
 		access.audit = false;
 		let policy = crate::config::ScratchOperatorPolicy::default();
 		let mut services = NativeScratchServices { policy: &policy };
+		// A foreign-key check on this Node must not block reuse of a space.
+		let mut held_node = if spaces.is_empty() {
+			None
+		} else {
+			let mut tx = database.begin_in(&scope).await;
+			let (sql, values) = Query::select()
+				.column(Alias::new("name"))
+				.from(Alias::new("nodes"))
+				.and_where(Expr::col("tenant").eq(tenant.as_str()))
+				.and_where(Expr::col("name").eq(node.as_str()))
+				.lock(LockType::KeyShare)
+				.build(PostgresQueryBuilder);
+			tx.fetch_optional(&sql, convert_values(values))
+				.await
+				.unwrap()
+				.unwrap();
+			Some(tx)
+		};
 		let mut adapter = ScratchAdapter {
 			access: &mut access,
 			services: &mut services,
 			person_override: None,
 		};
-		let (id, starter) = adapter.run_binding(&run).await.unwrap();
+		let (id, starter) =
+			tokio::time::timeout(std::time::Duration::from_secs(5), adapter.run_binding(&run))
+				.await
+				.expect("reusing a delegated space must not wait for a Node foreign-key lock")
+				.unwrap();
+		if let Some(tx) = held_node.take() {
+			tx.rollback().await.unwrap();
+		}
 		assert_eq!(starter, mapped);
 		let space = adapter.load_for_update(id).await.unwrap();
 		assert_eq!(space.creator, mapped);
 		assert!(space.may_use(mapped));
-		// Outside a delegated allocation only a person may own a space.
+		// Outside delegated allocation, users and services may own a space.
 		adapter.person_override = None;
 		assert_eq!(
 			adapter.validate_owner(mapped).await.is_ok(),
-			mapped_kind == "user"
+			mapped_kind != "agent"
 		);
+		if mapped_kind == "service" {
+			let dedicated = aidash_application::scratch::select_for_workspace(
+				&mut adapter,
+				&node,
+				"Service workspace",
+				None,
+				Utc::now(),
+			)
+			.await
+			.unwrap();
+			assert_eq!(adapter.load(dedicated).await.unwrap().creator, peer);
+		}
 		spaces.push(id);
 		drop(adapter);
+		let inherited = crate::apps::identity::repositories::subnodes::subnode_scratch_binding(
+			&mut access,
+			&run.metadata(),
+			&policy,
+		)
+		.await
+		.unwrap();
+		assert_eq!(inherited, (id, mapped.to_owned()));
+		if spaces.len() == 2 {
+			let mut adapter = ScratchAdapter {
+				access: &mut access,
+				services: &mut services,
+				person_override: None,
+			};
+			assert_eq!(
+				aidash_application::scratch::scratch_space_for_run(
+					&mut adapter,
+					&run,
+					Utc::now() + chrono::Duration::days(16),
+				)
+				.await
+				.unwrap(),
+				id
+			);
+		}
 		services.clear_contents(&mut access, id).await.unwrap();
 		let reloaded = load(&mut **access.tx, tenant, id).await.unwrap().unwrap();
-		assert_eq!(reloaded.wipe_generation as usize, spaces.len());
+		assert_eq!(
+			reloaded.wipe_generation as usize,
+			spaces.len() + usize::from(spaces.len() == 2)
+		);
 		assert_eq!(reloaded.state, ScratchState::Active);
 		access.finish(Ok(())).await.unwrap();
 	}
@@ -508,7 +573,7 @@ async fn workspace_run_loses_scratch_authority_when_starter_is_removed(
 		http_session: None,
 		credential_id: Uuid::new_v4(),
 		tenant: tenant.into(),
-		subject: "bob".into(),
+		subject: "alice".into(),
 	};
 	let snapshot = aidash_application::authorization::Snapshot {
 		revision: 1,
@@ -523,7 +588,7 @@ async fn workspace_run_loses_scratch_authority_when_starter_is_removed(
 		&identity,
 		snapshot,
 	);
-	access.subjects = vec!["bob".into()];
+	access.subjects = vec!["alice".into()];
 	access.audit = false;
 	let raw: aidash_domain::RawRun = serde_json::from_value(json!({
 		"id":Uuid::new_v4(), "task_id":Uuid::new_v4(), "workspace_id":workspace, "node":node,
@@ -548,6 +613,26 @@ async fn workspace_run_loses_scratch_authority_when_starter_is_removed(
 			.unwrap(),
 		space.id
 	);
+	adapter
+		.access
+		.snapshot
+		.bundle
+		.subjects
+		.get_mut("bob")
+		.unwrap()
+		.enabled = false;
+	assert!(matches!(
+		scratch_space_for_run(&mut adapter, &run, now).await,
+		Err(aidash_application::Error::Forbidden)
+	));
+	adapter
+		.access
+		.snapshot
+		.bundle
+		.subjects
+		.get_mut("bob")
+		.unwrap()
+		.enabled = true;
 	space.members.clear();
 	save(&mut **adapter.access.tx, tenant, &space)
 		.await

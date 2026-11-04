@@ -129,6 +129,16 @@ pub(crate) fn creator_can_use_binding(
 			.is_none_or(|core| core.permitted(&config.core_capabilities)))
 }
 
+pub(crate) async fn subnode_scratch_binding(
+	access: &mut Access,
+	run: &RunMetadata,
+	policy: &crate::config::ScratchOperatorPolicy,
+) -> Result<(Uuid, String)> {
+	let mut services =
+		crate::apps::workspaces::repositories::scratch::NativeScratchServices { policy };
+	services.run_binding_metadata(access, run).await
+}
+
 pub(crate) struct Creation<'a> {
 	pub access: &'a mut Access,
 	pub federation: &'a Federation,
@@ -245,24 +255,9 @@ impl CreateScope for Creation<'_> {
 		let tenant = self.access.identity.tenant.clone();
 		let workspace_id = Uuid::new_v4();
 		let title = input.title.as_deref().unwrap_or("Subnode");
-		// A Subnode works in its creator's Scratch Space, under the same starter (#697).
-		let (sql, values) = Query::select()
-			.columns([Alias::new("scratch_space_id"), Alias::new("created_by")])
-			.from(Alias::new("workspaces"))
-			.and_where(Expr::col("id").eq(Expr::value(run.workspace_id)))
-			.and_where(Expr::col("tenant").eq(Expr::value(tenant.clone())))
-			.build(PostgresQueryBuilder);
-		let row = self
-			.access
-			.tx
-			.native_mut()
-			.fetch_optional(&sql, convert_values(values))
-			.await
-			.map_err(crate::Error::from)?
-			.ok_or(aidash_application::Error::Forbidden)?;
-		let row = reinhardt::db::orm::QueryRow::from_backend_row(row);
-		let scratch_space_id: Uuid = row.get("scratch_space_id").ok_or(crate::Error::Forbidden)?;
-		let created_by: String = row.get("created_by").ok_or(crate::Error::Forbidden)?;
+		let (scratch_space_id, created_by) =
+			subnode_scratch_binding(self.access, run, &self.federation.config.scratch_policy)
+				.await?;
 		let workspace = self
 			.federation
 			.store
