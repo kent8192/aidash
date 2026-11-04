@@ -301,7 +301,7 @@ non-public resolved addresses even when all hosts are enabled. All-host access
 also requires the operator's Offering setting. The default traffic allowance is
 100 GiB sent and 100 GiB received per scope per UTC day, with no request-count
 limit. The default anomaly rule suspends the scope after more than 600 new
-connections in one minute; an operator must lift the suspension. The authority
+connection attempts in one minute, including hosts denied by the allowlist; an operator must lift the suspension. Hosts longer than 253 bytes are rejected. The authority
 must emit an operator notification when it suspends a scope. Each gateway
 instance permits at most 64 concurrent proxy connections per scope by default,
 using a separate pool from the External service listener. Idle proxy connections

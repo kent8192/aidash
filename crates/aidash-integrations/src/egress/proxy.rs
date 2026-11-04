@@ -473,8 +473,15 @@ pub(super) async fn forward(
 	let Some(host) = url.host_str() else {
 		return super::failure(StatusCode::BAD_REQUEST, "invalid_proxy_target");
 	};
+	if host.len() > 253 {
+		return super::failure(StatusCode::BAD_REQUEST, "invalid_proxy_target");
+	}
 	let host = host.to_owned();
 	let port = url.port_or_known_default().unwrap();
+	if let Err(error) = scopes.admit_connection(&scope).await {
+		let (status, code) = refusal(&error);
+		return super::failure(status, code);
+	}
 	let mut audit = Audit {
 		scopes: scopes.clone(),
 		scope: scope.id.clone(),
@@ -497,10 +504,6 @@ pub(super) async fn forward(
 	};
 	// Authenticated proxy traffic is now bounded by the independent pool.
 	drop(listener_permit.lock().unwrap().take());
-	if let Err(error) = scopes.admit_connection(&scope).await {
-		let (status, code) = refusal(&error);
-		return super::failure(status, code);
-	}
 	let addresses = match public_addresses(&host, port).await {
 		Ok(addresses) => addresses,
 		Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
@@ -1021,6 +1024,34 @@ mod tests {
 		stop.send(true).unwrap();
 		gateway.await.unwrap().unwrap();
 	}
+	#[tokio::test]
+	async fn forbidden_hosts_count_toward_anomaly_suspension() {
+		let mut settings = test_settings();
+		settings.anomaly.connections_per_minute = 2;
+		let scopes = Arc::new(MemoryScopes::new("token".into(), settings));
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = listener.local_addr().unwrap();
+		let (stop, receiver) = tokio::sync::watch::channel(false);
+		let server = tokio::spawn(super::super::serve_with_scopes(
+			listener,
+			Arc::new(DenyLegacy),
+			Some(scopes.clone()),
+			receiver,
+		));
+		for index in 0..3 {
+			let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+			client.write_all(format!("CONNECT denied{index}.example:443 HTTP/1.1\r\nHost: denied{index}.example:443\r\nProxy-Authorization: Bearer token\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+			let mut response = String::new();
+			client.read_to_string(&mut response).await.unwrap();
+			if index == 2 {
+				assert!(response.contains("egress_suspended"), "{response}");
+			}
+		}
+		assert_eq!(scopes.notifications(), 1);
+		stop.send(true).unwrap();
+		server.await.unwrap().unwrap();
+	}
+
 	#[tokio::test]
 	async fn absolute_http_forwards_without_proxy_credentials_and_records_wire_bytes() {
 		use hyper::{Request, Response, service::service_fn};
