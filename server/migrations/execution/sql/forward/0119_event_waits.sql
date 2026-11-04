@@ -35,9 +35,9 @@ BEGIN
 	       AND o.tenant = NEW.tenant AND r.phase NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
         ORDER BY 1
     LOOP
-        -- Serializing producers for a Run makes the persisted generation cursor
-        -- safe even when a Task transition overlaps the wait's commit.
-        PERFORM id FROM runs WHERE id = target AND tenant = NEW.tenant FOR UPDATE;
+        -- A dedicated Run-keyed advisory lock orders producer commits without
+        -- taking the Run row or reversing cancellation's row-lock order.
+        PERFORM pg_advisory_xact_lock(hashtextextended('aidash:workspace-wait:' || target::text, 71500644));
         PERFORM aidash_request_activation(target, 'workspace_task:' || NEW.id::text || ':' || NEW.status);
     END LOOP;
     RETURN NEW;
@@ -58,7 +58,7 @@ BEGIN
     SELECT status INTO task_status FROM tasks
      WHERE id = NEW.resource_id AND tenant = NEW.tenant;
     IF task_status IN ('COMPLETED', 'FAILED', 'CANCELLED', 'ABANDONED', 'BLOCKED') THEN
-        PERFORM id FROM runs WHERE id = NEW.run_id AND tenant = NEW.tenant FOR UPDATE;
+        PERFORM pg_advisory_xact_lock(hashtextextended('aidash:workspace-wait:' || NEW.run_id::text, 71500644));
         PERFORM aidash_request_activation(NEW.run_id, 'workspace_task:' || NEW.resource_id::text || ':' || task_status);
     END IF;
     RETURN NEW;

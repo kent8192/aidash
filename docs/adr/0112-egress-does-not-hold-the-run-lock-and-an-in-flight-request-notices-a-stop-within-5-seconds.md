@@ -1,6 +1,6 @@
 # Egress does not hold the Run lock, and an in-flight request notices a stop within 5 seconds
 
-Decided on 2026-11-04 for #715. Egress admission and metering read Run control without locking the Run row. Admission locks the operation's total budget and then its service budget for the short transaction that updates them. It calls the Runner before taking either budget lock. Live preview sessions use their own budget lock. A request started after a stop commits is refused; an in-flight request checks its authority at least every five seconds and is cut when the Run stops. A request that passed its check immediately before a stop may still leave the gateway.
+Decided on 2026-11-04 for #715. Egress admission and metering read Run control without locking the Run row. Admission locks the operation's total budget and then its service budget for the short transaction that updates them. It calls the Runner before taking either budget lock. Live preview sessions use their own budget lock. A request started after a stop commits is refused; an in-flight request checks its authority at least every five seconds and is cut when the Run stops. A request that passed its check immediately before a stop may still leave the gateway. When the authority cannot be reached, a request survives up to three failed checks because a stop cannot be committed during such an outage either.
 
 ## Considered Options
 

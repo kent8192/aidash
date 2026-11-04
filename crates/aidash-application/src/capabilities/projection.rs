@@ -58,11 +58,15 @@ pub async fn result(
 		end -= 1;
 	}
 	let output = String::from_utf8_lossy(&bytes[start..end]).into_owned();
-	let output_unchanged = output.is_empty();
-	let next_offset = Some(
-		base.checked_add(end)
-			.ok_or_else(|| Error::Invalid("INVALID_READ_RANGE".into()))?,
+	let active = matches!(
+		operation.state,
+		"prepared" | "submitted" | "running" | "cancelling"
 	);
+	let output_unchanged = output.is_empty() && (active || offset > 0);
+	let cursor = base
+		.checked_add(end)
+		.ok_or_else(|| Error::Invalid("INVALID_READ_RANGE".into()))?;
+	let next_offset = (active || end < bytes.len()).then_some(cursor);
 	Ok(OperationResult {
 		operation_id: operation.id,
 		kind: operation.kind.to_owned(),

@@ -800,17 +800,21 @@ async fn forward(
 		let mut interval = tokio::time::interval(Duration::from_secs(4));
 		interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 		interval.tick().await;
+		let mut failures = 0;
 		loop {
 			interval.tick().await;
 			match tokio::time::timeout(Duration::from_secs(1), meter.check_active()).await {
-				Ok(Ok(())) => {}
-				Ok(Err(error)) => {
+				Ok(Ok(())) => failures = 0,
+				Ok(Err(error)) if Refusal::of(&error) != Refusal::UNAVAILABLE => {
 					let _ = active_tx.send(Some(Refusal::of(&error)));
 					break;
 				}
-				Err(_) => {
-					let _ = active_tx.send(Some(Refusal::UNAVAILABLE));
-					break;
+				_ => {
+					failures += 1;
+					if failures >= 3 {
+						let _ = active_tx.send(Some(Refusal::UNAVAILABLE));
+						break;
+					}
 				}
 			}
 		}

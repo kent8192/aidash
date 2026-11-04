@@ -57,6 +57,58 @@ async fn polling_at_the_output_end_omits_unchanged_output_and_keeps_the_cursor()
 	assert_eq!(unchanged["next_offset"], 6);
 }
 #[tokio::test]
+async fn ended_operations_only_offer_a_cursor_when_stored_output_remains() {
+	let data = json!({"output_file": output_file()});
+	let input = json!({});
+	let mut reader = Reader {
+		bytes: "ééab".as_bytes().to_vec(),
+		limit: 3,
+		reads: 0,
+	};
+	let first = result(&mut reader, &view("completed", &input, &data), 0)
+		.await
+		.unwrap();
+	assert_eq!(first.next_offset, Some(2));
+	let last = result(&mut reader, &view("completed", &input, &data), 4)
+		.await
+		.unwrap();
+	assert_eq!(last.output, "ab");
+	assert_eq!(last.next_offset, None);
+	assert!(!last.output_unchanged);
+	let repeated = result(&mut reader, &view("completed", &input, &data), 6)
+		.await
+		.unwrap();
+	assert_eq!(repeated.next_offset, None);
+	assert!(repeated.output_unchanged);
+	let empty = result(&mut reader, &view("completed", &input, &json!({})), 0)
+		.await
+		.unwrap();
+	assert_eq!(empty.next_offset, None);
+	assert!(
+		!empty.output_unchanged,
+		"a first empty result is not a repeated poll"
+	);
+}
+
+#[tokio::test]
+async fn every_active_operation_retains_its_cursor_at_the_current_end() {
+	let input = json!({});
+	let data = json!({"preview":"a"});
+	let mut reader = Reader {
+		bytes: vec![],
+		limit: 16,
+		reads: 0,
+	};
+	for state in ["prepared", "submitted", "running", "cancelling"] {
+		let page = result(&mut reader, &view(state, &input, &data), 1)
+			.await
+			.unwrap();
+		assert_eq!(page.next_offset, Some(1), "{state}");
+		assert!(page.output_unchanged, "{state}");
+	}
+}
+
+#[tokio::test]
 async fn a_sliding_running_preview_uses_absolute_output_offsets() {
 	let input = json!({});
 	let mut reader = Reader {

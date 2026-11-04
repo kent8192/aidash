@@ -14,6 +14,9 @@ use uuid::Uuid;
 struct Audit {
 	stopped: AtomicBool,
 	stall_charge: AtomicBool,
+	slow_checks: AtomicU64,
+	failed_checks: AtomicU64,
+	check_started: Notify,
 	sent: AtomicU64,
 	received: AtomicU64,
 	charges: AtomicU64,
@@ -24,6 +27,27 @@ struct Audit {
 #[async_trait]
 impl Meter for Audit {
 	async fn check_active(&self) -> Result<()> {
+		self.check_started.notify_one();
+		if self
+			.slow_checks
+			.fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+				remaining.checked_sub(1)
+			})
+			.is_ok()
+		{
+			tokio::time::sleep(Duration::from_secs(2)).await;
+		}
+		if self
+			.failed_checks
+			.fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+				remaining.checked_sub(1)
+			})
+			.is_ok()
+		{
+			return Err(aidash_application::Error::External(
+				"authority unavailable".into(),
+			));
+		}
 		if self.stopped.load(Ordering::Acquire) {
 			return Err(aidash_application::Error::Conflict(
 				aidash_domain::egress::OPERATION_EXPIRED.into(),
@@ -56,6 +80,109 @@ impl Meter for Audit {
 		self.finished.notify_one();
 		Ok(())
 	}
+}
+
+async fn idle_monitor_fixture(
+	audit: Arc<Audit>,
+) -> (
+	reqwest::Response,
+	watch::Sender<bool>,
+	tokio::task::JoinHandle<crate::Result<()>>,
+	tokio::task::JoinHandle<()>,
+) {
+	let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let upstream_url = format!("http://{}/", upstream.local_addr().unwrap());
+	let upstream_task = tokio::spawn(async move {
+		axum::serve(
+			upstream,
+			Router::new().route(
+				"/{*path}",
+				any(|| async {
+					let stream = async_stream::stream! {
+						yield Ok::<_, std::io::Error>(Bytes::from_static(b"started"));
+						std::future::pending::<()>().await;
+					};
+					AxumBody::from_stream(stream)
+				}),
+			),
+		)
+		.await
+		.unwrap();
+	});
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let origin = format!("http://{}", listener.local_addr().unwrap());
+	let (stop, receiver) = watch::channel(false);
+	let gateway = tokio::spawn(serve(
+		listener,
+		Arc::new(FixtureAuthority {
+			upstream: upstream_url,
+			origin: origin.clone(),
+			audit,
+		}),
+		receiver,
+	));
+	let response = reqwest::get(format!("{origin}/v1/operation-token/images/idle"))
+		.await
+		.unwrap();
+	(response, stop, gateway, upstream_task)
+}
+
+#[tokio::test]
+async fn a_slow_authority_check_does_not_cut_a_healthy_stream() {
+	let audit = Arc::new(Audit::default());
+	audit.slow_checks.store(1, Ordering::Release);
+	let (response, stop, gateway, upstream) = idle_monitor_fixture(audit.clone()).await;
+	let mut body = response.bytes_stream();
+	assert_eq!(
+		body.next().await.unwrap().unwrap(),
+		Bytes::from_static(b"started")
+	);
+	tokio::time::timeout(Duration::from_secs(6), audit.check_started.notified())
+		.await
+		.unwrap();
+	tokio::time::sleep(Duration::from_millis(1200)).await;
+	assert!(
+		tokio::time::timeout(Duration::from_millis(200), body.next())
+			.await
+			.is_err(),
+		"one slow authority check must not cut the stream"
+	);
+	audit.stopped.store(true, Ordering::Release);
+	let next = tokio::time::timeout(Duration::from_secs(6), body.next())
+		.await
+		.expect("revocation did not stop the stream");
+	assert!(matches!(next, Some(Err(_))));
+	stop.send(true).unwrap();
+	gateway.await.unwrap().unwrap();
+	upstream.abort();
+}
+
+#[tokio::test]
+async fn three_consecutive_authority_failures_cut_the_stream() {
+	let audit = Arc::new(Audit::default());
+	audit.failed_checks.store(3, Ordering::Release);
+	let (response, stop, gateway, upstream) = idle_monitor_fixture(audit.clone()).await;
+	let mut body = response.bytes_stream();
+	assert_eq!(
+		body.next().await.unwrap().unwrap(),
+		Bytes::from_static(b"started")
+	);
+	tokio::time::timeout(Duration::from_secs(6), audit.check_started.notified())
+		.await
+		.unwrap();
+	assert!(
+		tokio::time::timeout(Duration::from_secs(1), body.next())
+			.await
+			.is_err(),
+		"the first authority failure must not cut the stream"
+	);
+	let next = tokio::time::timeout(Duration::from_secs(10), body.next())
+		.await
+		.expect("three failures did not stop the stream");
+	assert!(matches!(next, Some(Err(_))));
+	stop.send(true).unwrap();
+	gateway.await.unwrap().unwrap();
+	upstream.abort();
 }
 
 #[tokio::test]

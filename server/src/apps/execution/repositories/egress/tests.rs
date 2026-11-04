@@ -308,6 +308,8 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 			.fetch_one(db)
 			.await
 			.unwrap();
+	// A finishing Task must not acquire the parent Run row, even while the
+	// parent is committing its wait.
 	let mut waiting_tx = db.begin().await.unwrap();
 	sqlx::query("SELECT id FROM runs WHERE id = $1 FOR UPDATE")
 		.bind(run.id)
@@ -323,11 +325,10 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 			.await
 			.unwrap();
 	});
-	tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-	assert!(
-		!finishing.is_finished(),
-		"Task completion should serialize with the Run wait commit"
-	);
+	tokio::time::timeout(std::time::Duration::from_secs(3), finishing)
+		.await
+		.expect("Task transition blocked on its parent's Run row")
+		.unwrap();
 	let wait = aidash_domain::RunState::Waiting(Box::new(
 		aidash_domain::run_state::WaitingState::Workspace {
 			wake_at: Utc::now() + chrono::Duration::hours(1),
@@ -344,7 +345,76 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		.await
 		.unwrap();
 	waiting_tx.commit().await.unwrap();
-	finishing.await.unwrap();
+
+	// Two producers for the same Run allocate generations in commit order,
+	// without locking the Run row in either transaction.
+	let mut children = Vec::new();
+	for title in ["First producer", "Second producer"] {
+		let next = f
+			.store
+			.create_task(
+				&scope,
+				workspace.id,
+				&serde_json::from_value(
+					json!({"title":title,"description":"Event order","parent_id":task.id}),
+				)
+				.unwrap(),
+				"alice",
+				None,
+			)
+			.await
+			.unwrap();
+		sqlx::query("INSERT INTO authorization_task_origins (task_id, tenant, source_run_id, root_subject, subject_chain) VALUES ($1, 'acme', $2, 'alice', ARRAY['alice','fixture-agent'])")
+			.bind(next.id).bind(run.id).execute(db).await.unwrap();
+		children.push(next.id);
+	}
+	let mut first_tx = db.begin().await.unwrap();
+	sqlx::query("UPDATE tasks SET status = 'COMPLETED' WHERE id = $1")
+		.bind(children[0])
+		.execute(&mut *first_tx)
+		.await
+		.unwrap();
+	let mut claim_tx = db.begin().await.unwrap();
+	sqlx::query("SELECT id FROM runs WHERE id = $1 FOR UPDATE NOWAIT")
+		.bind(run.id)
+		.fetch_one(&mut *claim_tx)
+		.await
+		.expect("uncommitted Task transition locked its parent's Run row");
+	claim_tx.rollback().await.unwrap();
+	let db_for_second = db.clone();
+	let second_id = children[1];
+	let second = tokio::spawn(async move {
+		sqlx::query("UPDATE tasks SET status = 'COMPLETED' WHERE id = $1")
+			.bind(second_id)
+			.execute(&db_for_second)
+			.await
+			.unwrap();
+	});
+	tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+	assert!(
+		!second.is_finished(),
+		"producer generations must follow commit order"
+	);
+	first_tx.commit().await.unwrap();
+	tokio::time::timeout(std::time::Duration::from_secs(3), second)
+		.await
+		.unwrap()
+		.unwrap();
+	let generations: Vec<i64> = sqlx::query_scalar("SELECT generation FROM run_activations WHERE run_id = $1 AND reason IN ($2, $3) ORDER BY generation")
+		.bind(run.id).bind(format!("workspace_task:{}:COMPLETED", children[0]))
+		.bind(format!("workspace_task:{}:COMPLETED", children[1]))
+		.fetch_all(db).await.unwrap();
+	assert_eq!(generations.len(), 2);
+	let first_generation: i64 = sqlx::query_scalar(
+		"SELECT generation FROM run_activations WHERE run_id = $1 AND reason = $2",
+	)
+	.bind(run.id)
+	.bind(format!("workspace_task:{}:COMPLETED", children[0]))
+	.fetch_one(db)
+	.await
+	.unwrap();
+	assert_eq!(generations[0], first_generation);
+
 	let activation = crate::bootstrap::activation_repository(crate::harness::Harness {
 		federation: f.clone(),
 	});
