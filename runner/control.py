@@ -986,15 +986,14 @@ class Runner(AllocationJournal):
                     deadline = started + record['request']['seconds'] + 30
                     if not record.get('termination_confirmed') and now >= deadline:
                         record = self.update(operation, status='cancelling', cancel_requested=True)
-                        if now >= started + record['request']['seconds'] + STOP_WATCH_SECONDS:
+                        if now >= started + record['request']['seconds'] + STOP_WATCH_SECONDS and now - last_warning >= 60:
                             try:
                                 self.allocation_harvested(record)
                                 self.close_allocation(record)
                             except Exception as cleanup_error:
                                 error = cleanup_error
-                            if now - last_warning >= 60:
-                                print(f"Deployment Administrator: awaiting Python Pod deletion for {operation}: {error}", file=sys.stderr, flush=True)
-                                last_warning = now
+                            print(f"Deployment Administrator: awaiting Python Pod deletion for {operation}: {error}", file=sys.stderr, flush=True)
+                            last_warning = now
                     time.sleep(1)
         finally:
             with self.lock:
@@ -1411,14 +1410,71 @@ class Runner(AllocationJournal):
         sync_directory(directory)
         return exported, captured
 
+    def collector_holds_output(self, record):
+        # A finished execution container leaves no runsc state for the guard to
+        # read, while its collector still serves /work, so reading stays possible.
+        if record['request']['kind'] == 'python':
+            return False
+        try:
+            pod = self.pod(record['operation_id'])
+        except Exception:
+            return False
+        if not pod or pod['metadata']['uid'] != record.get('pod_uid'):
+            return False
+        states = {s['name']: s.get('state', {}) for s in pod.get('status', {}).get('containerStatuses', [])}
+        return 'terminated' in states.get('execution', {}) and 'running' in states.get('collector', {})
+
+    def read_collector_files(self, operation, exported):
+        directory = self.root / (operation + ".files")
+        directory.mkdir(exist_ok=True, mode=0o700)
+        for file in exported["files"]:
+            output_path = directory / file["object_id"]
+            digest = hashlib.sha256()
+            with output_path.open("wb") as output:
+                offset = 0
+                while offset < file["size"]:
+                    data = self.exec_collector(operation, ["read", file["path"], str(offset)]).stdout
+                    if not data or offset + len(data) > file["size"]:
+                        raise RuntimeError("output file length changed")
+                    output.write(data)
+                    digest.update(data)
+                    offset += len(data)
+                output.flush()
+                os.fsync(output.fileno())
+            if digest.hexdigest() != file["digest"]:
+                raise RuntimeError("output file digest changed")
+        sync_directory(directory)
+
+    def collect_through_collector(self, record):
+        operation, kind = record['operation_id'], record['request']['kind']
+        captured = json.loads(self.exec_collector(operation, ["logs", str(self.config["output_bytes"]), "final",
+                                                              *(["tail"] if kind == "verify" else [])]).stdout)
+        exported = ({"files": []} if kind == "verify" else
+                    json.loads(self.exec_collector(operation, ["export", str(self.writable_bytes(record))], timeout=120).stdout))
+        if 'refused' in exported:
+            raise StoppedExportRefused(exported['refused'])
+        self.read_collector_files(operation, exported)
+        return exported, captured
+
     def harvest_stopped_output(self, record):
         # Never re-run code, reinterpret the semantic outcome, or substitute
         # shell output.bin for Python's saved stdout/displays.
-        if record.get('termination_confirmed') is not True or self.guard(record, 'status').get('termination_confirmed') is not True:
+        if record.get('termination_confirmed') is not True:
             raise Rejected(409, 'physical termination proof unavailable')
-        collected = self.collect_stopped_output(record, refuse=False)
+        collected = None
+        if self.collector_holds_output(record):
+            try:
+                collected = self.collect_through_collector(record)
+            except StoppedExportRefused:
+                raise
+            except Exception as error:
+                print(f"Collector harvest {record['operation_id']}: {error}", file=sys.stderr, flush=True)
         if collected is None:
-            return
+            if self.guard(record, 'status').get('termination_confirmed') is not True:
+                raise Rejected(409, 'physical termination proof unavailable')
+            collected = self.collect_stopped_output(record, refuse=False)
+            if collected is None:
+                return
         exported, captured = collected
         self.update(record['operation_id'], output_harvested=True, stdout=captured['stdout'],
                     files=exported['files'], displays=record.get('displays', []), truncated=True)
@@ -1494,16 +1550,15 @@ class Runner(AllocationJournal):
                     deadline = started + record['request']['seconds'] + 30
                     if not record.get('termination_confirmed') and now >= deadline:
                         record = self.update(operation, status='cancelling', cancel_requested=True)
-                        if now >= started + record['request']['seconds'] + STOP_WATCH_SECONDS:
+                        if now >= started + record['request']['seconds'] + STOP_WATCH_SECONDS and now - last_warning >= 60:
                             # A normal completed Pod deletion means kubelet stopped every container.
                             try:
                                 self.allocation_harvested(record)
                                 self.close_allocation(record)
                             except Exception as cleanup_error:
                                 error = cleanup_error
-                            if now - last_warning >= 60:
-                                print(f"Deployment Administrator: awaiting Pod deletion for {operation}: {error}", file=sys.stderr, flush=True)
-                                last_warning = now
+                            print(f"Deployment Administrator: awaiting Pod deletion for {operation}: {error}", file=sys.stderr, flush=True)
+                            last_warning = now
                     time.sleep(1)
         finally:
             with self.lock:
@@ -1589,7 +1644,7 @@ class Runner(AllocationJournal):
                     if time.time() <= started + current['request']['seconds'] + 30:
                         raise
                     if self.guard(current, 'terminate').get('termination_confirmed') is not True:
-                        raise RuntimeError('sandbox termination not confirmed')
+                        raise RuntimeError('sandbox termination not confirmed') from None
                     current = self.update(operation, status='finishing', termination_confirmed=True,
                                           stop_confirmed_at=current.get('stop_confirmed_at') or time.time())
                     self.recover_stopped_shell(current)
@@ -1626,25 +1681,7 @@ class Runner(AllocationJournal):
                     self.refuse_export(operation, exported['refused'], operation,
                                        stdout=captured['stdout'], truncated=captured['truncated'])
                     break
-                directory = self.root / (operation + ".files")
-                directory.mkdir(exist_ok=True, mode=0o700)
-                for file in exported["files"]:
-                    output_path = directory / file["object_id"]
-                    digest = hashlib.sha256()
-                    with output_path.open("wb") as output:
-                        offset = 0
-                        while offset < file["size"]:
-                            data = self.exec_collector(operation, ["read", file["path"], str(offset)]).stdout
-                            if not data or offset + len(data) > file["size"]:
-                                raise RuntimeError("output file length changed")
-                            output.write(data)
-                            digest.update(data)
-                            offset += len(data)
-                        output.flush()
-                        os.fsync(output.fileno())
-                    if digest.hexdigest() != file["digest"]:
-                        raise RuntimeError("output file digest changed")
-                sync_directory(directory)
+                self.read_collector_files(operation, exported)
                 self.update(operation, status="cancelled" if current["cancel_requested"] else
                             ("completed" if terminal["exitCode"] == 0 else "failed"),
                             output_harvested=True, finished_at=time.time(), stdout=captured["stdout"],

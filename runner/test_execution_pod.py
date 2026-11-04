@@ -858,7 +858,7 @@ class ReconnectedCommandRegressionTest(unittest.TestCase):
             for phase in ('Pending', 'Unknown'):
                 controller._get.return_value['status']['phase'] = phase
                 calls = [0]
-                def later_result(args, **kwargs):
+                def later_result(args, calls=calls, **kwargs):
                     if 'result' in args:
                         calls[0] += 1
                         return SimpleNamespace(returncode=1 if calls[0] == 1 else 0,

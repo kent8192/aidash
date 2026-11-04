@@ -36,7 +36,7 @@ class VerificationTest(unittest.TestCase):
                 record = {'operation_id':operation, 'request':request(kind), 'status':'starting',
                           'executed':False, 'startup_at':time.time(), 'wire_digest':'digest'}
                 runner.get = Mock(return_value=record)
-                runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+                runner.update = Mock(side_effect=lambda _, record=record, **changes: record.update(changes) or record.copy())
                 runner.pod = Mock(side_effect=[None, RuntimeError('observation failed')])
                 runner.manifest = Mock(return_value={})
                 runner.kube.return_value = Mock(stderr=b'')
@@ -51,8 +51,8 @@ class VerificationTest(unittest.TestCase):
                 operation = str(uuid.uuid4())
                 record = {'operation_id':operation, 'request':request(kind), 'status':'starting',
                           'executed':False, 'startup_at':time.time(), 'wire_digest':'expected'}
-                runner.get = Mock(side_effect=lambda _: record.copy())
-                runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+                runner.get = Mock(side_effect=lambda _, record=record: record.copy())
+                runner.update = Mock(side_effect=lambda _, record=record, **changes: record.update(changes) or record.copy())
                 runner.pod = Mock(return_value={'metadata':{'uid':'replacement', 'annotations':{'aidash/digest':'other'}}})
                 runner.active = {operation}
                 with patch('time.sleep', side_effect=AssertionError('must not retry')):
@@ -85,14 +85,14 @@ class VerificationTest(unittest.TestCase):
                 operation = str(uuid.uuid4())
                 record = {'operation_id':operation, 'request':request(kind), 'status':'starting',
                           'executed':False, 'startup_at':10, 'pod_uid':'uid'}
-                runner.get = Mock(side_effect=lambda _: record.copy())
-                runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+                runner.get = Mock(side_effect=lambda _, record=record: record.copy())
+                runner.update = Mock(side_effect=lambda _, record=record, **changes: record.update(changes) or record.copy())
                 runner.active = {operation}
                 once = Mock(side_effect=RuntimeError('API unavailable'))
                 setattr(runner, '_reconcile_python_once' if kind == 'python' else '_reconcile_shell_once', once)
                 now = [128]
-                with patch('time.time', side_effect=lambda: now[0]), \
-                     patch('time.sleep', side_effect=lambda _: now.__setitem__(0, now[0] + 1)):
+                with patch('time.time', side_effect=lambda now=now: now[0]), \
+                     patch('time.sleep', side_effect=lambda _, now=now: now.__setitem__(0, now[0] + 1)):
                     (runner.reconcile_python if kind == 'python' else runner.reconcile)(operation)
                 self.assertGreaterEqual(once.call_count, 2)
                 self.assertEqual(record['status'], 'failed')
@@ -264,6 +264,45 @@ class VerificationTest(unittest.TestCase):
             runner.close_allocation.assert_called_once()
             self.assertEqual(record['status'], 'uncertain')
             self.assertTrue(record['termination_confirmed'])
+
+    def test_past_stop_retention_asks_for_deletion_once_a_minute(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            operation = str(uuid.uuid4())
+            record = {'operation_id':operation, 'request':request('shell'), 'status':'running',
+                      'executed':True, 'cancel_requested':False, 'pod_uid':'uid', 'running_at':1}
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.active = {operation}
+            runner._reconcile_shell_once = Mock(side_effect=[RuntimeError('stuck')] * 5 + [SandboxGone()])
+            with patch('time.time', return_value=4000), patch('time.sleep'), contextlib.redirect_stderr(io.StringIO()):
+                runner.reconcile(operation)
+            runner.close_allocation.assert_called_once()
+
+    def test_late_harvest_reads_through_the_collector_of_a_finished_command(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            operation = str(uuid.uuid4())
+            record = {'operation_id':operation, 'request':request('shell'), 'status':'uncertain',
+                      'termination_confirmed':True, 'pod_uid':'uid', 'stdout':'', 'files':[]}
+            data = b'kept'
+            file = {'path':'out.txt', 'object_id':'object', 'size':len(data), 'digest':hashlib.sha256(data).hexdigest()}
+            runner.config['output_bytes'] = 1024
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.pod = Mock(return_value={'metadata':{'uid':'uid'}, 'status':{'containerStatuses':[
+                {'name':'execution', 'state':{'terminated':{'exitCode':0}}}, {'name':'collector', 'state':{'running':{}}}]}})
+            # The guard cannot see a container that already finished.
+            runner.guard = Mock(side_effect=RuntimeError('runsc state failed'))
+            replies = {'logs':json.dumps({'stdout':'b3V0', 'truncated':False}).encode(),
+                       'export':json.dumps({'files':[file]}).encode(), 'read':data}
+            runner.exec_collector = Mock(side_effect=lambda _, action, **kwargs: Mock(stdout=replies[action[0]]))
+            runner.harvest_stopped_output(record)
+            self.assertTrue(record['output_harvested'])
+            self.assertEqual(record['files'], [file])
+            self.assertEqual((Path(root) / (operation + '.files') / 'object').read_bytes(), data)
+            runner.guard.assert_not_called()
+            runner.close_allocation.assert_called_once()
 
     def test_stopped_unreadable_output_waits_then_reopens_as_uncertain(self):
         with tempfile.TemporaryDirectory() as root:

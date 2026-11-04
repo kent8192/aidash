@@ -730,11 +730,11 @@ print(json.dumps(r))'''
             registered = self._get('node', node) if node else None
             if not node_uid or (registered or {}).get('metadata', {}).get('uid') != node_uid:
                 raise ExecutionPodError('termination_unconfirmed',
-                    'The node is absent; a Deployment Administrator must verify the writer stopped')
+                    'The node is absent; a Deployment Administrator must verify the writer stopped') from None
             uid = (pod or {}).get('metadata', {}).get('uid')
             if (not uid or guard.get('pod_uid') != uid
                     or pod.get('spec', {}).get('nodeName') != node):
-                raise ExecutionPodError('termination_unconfirmed', 'The original Pod cannot be bound to a normal deletion')
+                raise ExecutionPodError('termination_unconfirmed', 'The original Pod cannot be bound to a normal deletion') from None
             endpoint = '/api/v1/namespaces/' + self.config['namespace'] + '/pods/' + name
             self.backend.kube(['delete', '--raw', endpoint, '-f', '-'],
                               json.dumps({'preconditions':{'uid':uid}}).encode(), timeout=70)
@@ -746,7 +746,7 @@ print(json.dumps(r))'''
             # A completed normal delete proves kubelet stopped the Pod only while its node remains registered.
             registered = self._get('node', node)
             if (registered or {}).get('metadata', {}).get('uid') != node_uid or self._get('pod', name):
-                raise ExecutionPodError('termination_unconfirmed', 'Pod deletion or node presence is unconfirmed')
+                raise ExecutionPodError('termination_unconfirmed', 'Pod deletion or node presence is unconfirmed') from None
             if guard:
                 guard['terminated'] = True
                 state.setdefault('terminated_pods', []).append(guard['pod_uid'])
