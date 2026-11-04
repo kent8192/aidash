@@ -57,8 +57,8 @@ pub trait ScratchScope: Send {
 	async fn run_binding(&mut self, run: &Run) -> Result<(ScratchSpaceId, String)>;
 }
 
-fn require_use(space: &ScratchSpace, person: &str, now: DateTime<Utc>) -> Result<()> {
-	if !space.may_use(person) || space.is_expired(now) {
+fn require_use(space: &ScratchSpace, person: &str, _now: DateTime<Utc>) -> Result<()> {
+	if !space.may_use(person) {
 		return Err(Error::Forbidden);
 	}
 	Ok(())
@@ -252,8 +252,10 @@ pub async fn select_for_workspace(
 		let (ceilings, tenant_hosts) = scope.limits(node).await?;
 		space.settings.validate(&ceilings, &tenant_hosts)?;
 		scope.validate_runtime(node, &space.settings).await?;
-		space.last_used_at = space.last_used_at.max(now);
-		scope.save(&space).await?;
+		if !space.is_expired(now) {
+			space.last_used_at = space.last_used_at.max(now);
+			scope.save(&space).await?;
+		}
 		return Ok(id);
 	}
 	let (_, tenant_hosts) = scope.limits(node).await?;
@@ -296,8 +298,12 @@ pub async fn scratch_space_for_run(
 	let (ceilings, tenant_hosts) = scope.limits(&space.node).await?;
 	space.settings.validate(&ceilings, &tenant_hosts)?;
 	scope.validate_runtime(&space.node, &space.settings).await?;
+	let expired = space.is_expired(now);
 	space.last_used_at = space.last_used_at.max(now);
 	scope.save(&space).await?;
+	if expired {
+		scope.clear_contents(id).await?;
+	}
 	Ok(id)
 }
 

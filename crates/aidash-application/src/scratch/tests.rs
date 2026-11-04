@@ -515,3 +515,58 @@ async fn a_workspace_gets_its_dedicated_space_without_scratch_create() {
 		Err(Error::Forbidden)
 	));
 }
+
+#[tokio::test]
+async fn expired_space_is_visible_and_revived_on_authorized_run() {
+	let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+	let mut scope = Memory {
+		person: "alice".into(),
+		..Default::default()
+	};
+	let space = space(now);
+	create(&mut scope, &space).await.unwrap();
+	let expired = now + Duration::days(15);
+	assert!(
+		read(&mut scope, space.id, expired)
+			.await
+			.unwrap()
+			.is_expired(expired)
+	);
+	assert_eq!(
+		list(&mut scope, &space.node, expired).await.unwrap().len(),
+		1
+	);
+	assert_eq!(
+		select_for_workspace(&mut scope, &space.node, "Next", Some(space.id), expired)
+			.await
+			.unwrap(),
+		space.id
+	);
+	assert!(scope.spaces[&space.id].is_expired(expired));
+	let mut run =
+		crate::test_support::run_of(crate::test_support::snapshot("aidash://local", "agent"));
+	run.node = space.node.clone();
+	scope.binding = Some((space.id, "mallory".into()));
+	assert!(
+		scratch_space_for_run(&mut scope, &run, expired)
+			.await
+			.is_err()
+	);
+	assert!(scope.cleared.is_empty());
+	scope.binding = Some((space.id, "alice".into()));
+	assert_eq!(
+		scratch_space_for_run(&mut scope, &run, expired)
+			.await
+			.unwrap(),
+		space.id
+	);
+	assert_eq!(scope.spaces[&space.id].wipe_generation, 1);
+	assert!(!scope.spaces[&space.id].is_expired(expired));
+	assert_eq!(
+		scratch_space_for_run(&mut scope, &run, expired)
+			.await
+			.unwrap(),
+		space.id
+	);
+	assert_eq!(scope.spaces[&space.id].wipe_generation, 1);
+}
