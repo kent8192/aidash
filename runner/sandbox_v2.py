@@ -298,23 +298,6 @@ def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, 
     return result
 
 
-def docker_supervisor_exit_code(outcome):
-    """Reserve kubectl's local-error code and distinguish lifecycle outcomes."""
-    status = outcome['status']
-    if status == 'timed_out':
-        return 124
-    if status == 'stopped':
-        return 125
-    if status != 'completed':
-        return 126
-    code = outcome.get('exit_code')
-    if code == 1:
-        return 123
-    if type(code) is not int or code < 0 or 123 <= code <= 127 or code > 255:
-        return 126
-    return code
-
-
 def process_start_time(pid):
     with open(f'/proc/{pid}/stat', encoding='ascii') as file:
         # comm is parenthesized and may itself contain spaces or parentheses.
@@ -401,11 +384,22 @@ if __name__ == '__main__':
     if (len(sys.argv) == 10 and sys.argv[1] == 'supervise' and sys.argv[2] in ('docker', 'normal')
             and sys.argv[3] in ('command', 'session')):
         seconds = None if sys.argv[7] == 'background' else int(sys.argv[7])
+        token = None
+        if sys.argv[2] == 'docker':
+            import re
+            token = sys.stdin.buffer.readline(66).strip()
+            if not re.fullmatch(b'[0-9a-f]{64}', token):
+                raise ValueError('invalid result nonce')
+            null = os.open('/dev/null', os.O_RDONLY)
+            os.dup2(null, 0)
+            os.close(null)
         outcome = supervise_command(sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[9], seconds,
                                     sys.argv[2] == 'docker', expected_pod_uid=sys.argv[8],
                                     record_changes=sys.argv[3] == 'command')
-        if sys.argv[2] == 'docker':
-            raise SystemExit(docker_supervisor_exit_code(outcome))
+        if token is not None:
+            import json
+            frame = b'\x1eaidash-result:' + token + b':' + json.dumps(outcome, separators=(',', ':')).encode() + b'\n'
+            os.write(2, frame)
         raise SystemExit(0 if outcome['status'] in ('completed', 'timed_out', 'stopped') else 1)
     if len(sys.argv) == 3 and sys.argv[1] == 'stop':
         stop_operation(sys.argv[2])

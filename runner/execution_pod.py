@@ -1065,7 +1065,7 @@ print(json.dumps(r))'''
         mode = 'docker' if record['docker_enabled'] else 'normal'
         deadline = 'background' if record['background'] else str(record['timeout_seconds'])
         kind = 'session' if record.get('kind') == 'python_session' else 'command'
-        argv = self.backend.command + ['exec', name, '-c', 'execution', '--'] + helper_command(
+        argv = self.backend.command + ['exec'] + (['-i'] if record['docker_enabled'] else []) + [name, '-c', 'execution', '--'] + helper_command(
             'supervise', mode, kind, operation_id, record['run_id'], record['cwd'], deadline, uid, record['code'])
 
         def publish(output):
@@ -1075,19 +1075,16 @@ print(json.dumps(r))'''
         try:
             limit = self.config.get('output_bytes', getattr(self.backend, 'config', {}).get('output_bytes', 8388608))
             transport_timeout = None if record['background'] else record['timeout_seconds'] + 180
-            transport = drain_process(argv, self.backend.environment, limit, transport_timeout, publish)
+            if record['docker_enabled']:
+                import secrets
+                nonce = secrets.token_hex(32)
+                transport = drain_process(argv, self.backend.environment, limit, transport_timeout, publish, frame_token=nonce)
+            else:
+                transport = drain_process(argv, self.backend.environment, limit, transport_timeout, publish)
             if self._read_command(operation_id)['status'] == 'interrupted':
                 return
             if record['docker_enabled']:
-                code = transport['exit_code']
-                if transport['transport_timed_out'] or code in (1, 126, 127) or code < 0:
-                    outcome = None
-                elif code == 124:
-                    outcome = {'operation_id': operation_id, 'run_id': record['run_id'], 'status': 'timed_out'}
-                elif code == 125:
-                    outcome = {'operation_id': operation_id, 'run_id': record['run_id'], 'status': 'stopped'}
-                else:
-                    outcome = {'operation_id': operation_id, 'run_id': record['run_id'], 'status': 'completed', 'exit_code': 1 if code == 123 else code}
+                outcome = transport.get('framed_result')
             else:
                 observed = self.backend.kube(['exec', name, '-c', 'execution', '--'] +
                                              helper_command('result', operation_id), check=False)
@@ -1435,7 +1432,43 @@ class BoundedOutput:
                 'truncated': self.truncated}
 
 
-def drain_process(argv, environment, output_limit, timeout, on_output=None):
+class _ResultFrameReader:
+    def __init__(self, token, output):
+        self.prefix = b'\x1eaidash-result:' + token.encode('ascii') + b':'
+        self.output = output
+        self.pending = b''
+        self.result = None
+
+    def add(self, chunk, *, final=False):
+        import json
+        self.pending += chunk
+        while self.pending:
+            position = self.pending.find(self.prefix)
+            if position < 0:
+                count = len(self.pending) if final else max(0, len(self.pending) - len(self.prefix) + 1)
+                self.output.add('stderr', self.pending[:count])
+                self.pending = self.pending[count:]
+                return
+            if position:
+                self.output.add('stderr', self.pending[:position])
+                self.pending = self.pending[position:]
+            end = self.pending.find(b'\n', len(self.prefix))
+            if end < 0 and len(self.pending) < 8192 and not final:
+                return
+            if end >= 0 and end < 8192:
+                try:
+                    parsed = json.loads(self.pending[len(self.prefix):end])
+                except (ValueError, UnicodeDecodeError):
+                    parsed = None
+                if isinstance(parsed, dict) and self.result is None:
+                    self.result = parsed
+                    self.pending = self.pending[end + 1:]
+                    continue
+            self.output.add('stderr', self.pending[:1])
+            self.pending = self.pending[1:]
+
+
+def drain_process(argv, environment, output_limit, timeout, on_output=None, *, frame_token=None):
     """Drain a trusted transport without buffering unbounded command output."""
     import os
     import selectors
@@ -1444,8 +1477,15 @@ def drain_process(argv, environment, output_limit, timeout, on_output=None):
     import time
 
     output = BoundedOutput(output_limit)
-    process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+    frame = _ResultFrameReader(frame_token, output) if frame_token else None
+    process = subprocess.Popen(argv, stdin=subprocess.PIPE if frame else subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, env=environment, start_new_session=True)
+    if frame:
+        try:
+            process.stdin.write((frame_token + '\n').encode('ascii'))
+            process.stdin.close()
+        except BrokenPipeError:
+            pass
     expires = None if timeout is None else time.monotonic() + timeout
     timed_out = False
     last_publish = 0.0
@@ -1464,7 +1504,10 @@ def drain_process(argv, environment, output_limit, timeout, on_output=None):
                 for key, _ in selector.select(.1):
                     chunk = os.read(key.fileobj.fileno(), 65536)
                     if chunk:
-                        output.add(key.data, chunk)
+                        if frame and key.data == 'stderr':
+                            frame.add(chunk)
+                        else:
+                            output.add(key.data, chunk)
                         if on_output and time.monotonic() - last_publish >= .5:
                             on_output(output.public())
                             last_publish = time.monotonic()
@@ -1481,7 +1524,10 @@ def drain_process(argv, environment, output_limit, timeout, on_output=None):
                 process.wait()
             for key in list(selector.get_map().values()):
                 key.fileobj.close()
-    return {'exit_code': exit_code, 'transport_timed_out': timed_out, 'output': output.public()}
+    if frame:
+        frame.add(b'', final=True)
+    return {'exit_code': exit_code, 'transport_timed_out': timed_out, 'output': output.public(),
+            'framed_result': frame.result if frame else None}
 
 
 def verify_user_probe(report, *, docker, processes):
