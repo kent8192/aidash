@@ -57,7 +57,11 @@ async fn node_purge_source_record_retains_tenant_existence_and_historical_revisi
 		.await
 		.unwrap();
 		sqlx::query("INSERT INTO nodes (name,tenant,label,is_default,created_at,created_by_kind) VALUES ($1,'other','Other',true,clock_timestamp(),'deployment_administrator')").bind(&foreign).execute(pool).await.unwrap();
-		sqlx::query("INSERT INTO workspaces (id,tenant,node,title,goal,state,revision) VALUES ($1,'other',$2,'Other','Other','{}',1)").bind(other_workspace).bind(foreign).execute(pool).await.unwrap();
+		let scratch = crate::apps::execution::test_database::fixture_scratch_space(
+			pool, "other", &foreign, "reader",
+		)
+		.await;
+		sqlx::query("INSERT INTO workspaces (id,tenant,node,title,goal,state,revision,scratch_space_id,created_by) VALUES ($1,'other',$2,'Other','Other','{}',1,$3,'reader')").bind(other_workspace).bind(foreign).bind(scratch).execute(pool).await.unwrap();
 		source_bank = Uuid::new_v4();
 		sqlx::query(
 			"INSERT INTO memory_banks (id,tenant,home,workspace_id,revision) VALUES ($1,'other',$2,$3,1)",

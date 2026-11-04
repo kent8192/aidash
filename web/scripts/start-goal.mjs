@@ -62,7 +62,9 @@ try {
   await dialog
     .getByLabel("ゴール", { exact: true })
     .fill("Rust製Webフレームワークについて競合調査して");
-  await dialog.getByRole("combobox").selectOption("research-cluster@1.0.0");
+  await dialog
+    .getByRole("combobox", { name: "コーディネーター" })
+    .selectOption("research-cluster@1.0.0");
   const created = page.waitForResponse(
     (response) =>
       response.url().endsWith("/api/conversations") &&

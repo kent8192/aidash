@@ -49,7 +49,13 @@ impl CollaborationManagement {
 			return Err(Error::Forbidden);
 		};
 		scope
-			.create(&input.title, &input.goal, input.node.as_ref())
+			.create(
+				&input.title,
+				&input.goal,
+				input.node.as_ref(),
+				input.scratch_space_id,
+				&f.config.scratch_policy,
+			)
 			.await
 	}
 	pub(crate) async fn workspace_get(&self, actor: Actor, id: Uuid) -> Result<WorkspaceSnapshot> {
@@ -135,11 +141,14 @@ impl CollaborationManagement {
 		interaction::conversation(
 			&f,
 			&identity,
-			&input.title,
-			&input.goal,
-			&input.target,
-			&input.target_kind,
-			input.node.as_ref(),
+			aidash_application::workspaces::ConversationRequest {
+				title: &input.title,
+				goal: &input.goal,
+				target: &input.target,
+				target_kind: &input.target_kind,
+				node: input.node.as_ref(),
+				scratch_space_id: input.scratch_space_id,
+			},
 		)
 		.await
 	}

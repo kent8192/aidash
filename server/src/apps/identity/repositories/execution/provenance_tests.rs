@@ -41,7 +41,11 @@ async fn node_purge_pruned_source_keeps_descendant_admission_federated(
 	.await
 	.unwrap();
 	let workspace = Uuid::new_v4();
-	sqlx::query("INSERT INTO workspaces (id,tenant,node,title,goal,state,revision) VALUES ($1,'acme',$2,'Origin','Origin','{}',1)").bind(workspace).bind(&node).execute(driver).await.unwrap();
+	let scratch = crate::apps::execution::test_database::fixture_scratch_space(
+		driver, "acme", &node, "reader",
+	)
+	.await;
+	sqlx::query("INSERT INTO workspaces (id,tenant,node,title,goal,state,revision,scratch_space_id,created_by) VALUES ($1,'acme',$2,'Origin','Origin','{}',1,$3,'reader')").bind(workspace).bind(&node).bind(scratch).execute(driver).await.unwrap();
 	sqlx::query("INSERT INTO authorization_workspaces (workspace_id,tenant,owner_subject) VALUES ($1,'acme','reader')").bind(workspace).execute(driver).await.unwrap();
 	let sibling = aidash_domain::nodes::NodeName::derived("sibling").to_string();
 	sqlx::query(
@@ -53,7 +57,11 @@ async fn node_purge_pruned_source_keeps_descendant_admission_federated(
 	.unwrap();
 	sqlx::query("INSERT INTO nodes(name,tenant,label,is_default,created_at,created_by_kind) VALUES ($1,'acme','Sibling',false,clock_timestamp(),'deployment_administrator')").bind(&sibling).execute(driver).await.unwrap();
 	let sibling_workspace = Uuid::new_v4();
-	sqlx::query("INSERT INTO workspaces(id,tenant,node,title,goal,state,revision) VALUES ($1,'acme',$2,'Sibling','Sibling','{}',1)").bind(sibling_workspace).bind(&sibling).execute(driver).await.unwrap();
+	let sibling_scratch = crate::apps::execution::test_database::fixture_scratch_space(
+		driver, "acme", &sibling, "reader",
+	)
+	.await;
+	sqlx::query("INSERT INTO workspaces(id,tenant,node,title,goal,state,revision,scratch_space_id,created_by) VALUES ($1,'acme',$2,'Sibling','Sibling','{}',1,$3,'reader')").bind(sibling_workspace).bind(&sibling).bind(sibling_scratch).execute(driver).await.unwrap();
 	sqlx::query("INSERT INTO authorization_workspaces(workspace_id,tenant,owner_subject) VALUES ($1,'acme','reader')").bind(sibling_workspace).execute(driver).await.unwrap();
 	let foreign_workspace = Uuid::new_v4();
 	let foreign_node = aidash_domain::nodes::NodeName::derived("other").to_string();
@@ -66,7 +74,14 @@ async fn node_purge_pruned_source_keeps_descendant_admission_federated(
 	.await
 	.unwrap();
 	sqlx::query("INSERT INTO nodes(name,tenant,label,is_default,created_at,created_by_kind) VALUES ($1,'other','Other',true,clock_timestamp(),'deployment_administrator')").bind(&foreign_node).execute(driver).await.unwrap();
-	sqlx::query("INSERT INTO workspaces(id,tenant,node,title,goal,state,revision) VALUES ($1,'other',$2,'Other','Other','{}',1)").bind(foreign_workspace).bind(&foreign_node).execute(driver).await.unwrap();
+	let foreign_scratch = crate::apps::execution::test_database::fixture_scratch_space(
+		driver,
+		"other",
+		&foreign_node,
+		"reader",
+	)
+	.await;
+	sqlx::query("INSERT INTO workspaces(id,tenant,node,title,goal,state,revision,scratch_space_id,created_by) VALUES ($1,'other',$2,'Other','Other','{}',1,$3,'reader')").bind(foreign_workspace).bind(&foreign_node).bind(foreign_scratch).execute(driver).await.unwrap();
 	sqlx::query("INSERT INTO authorization_bundles(tenant,revision,document) VALUES ('other',1,'{\"tenant\":\"other\"}')").execute(driver).await.unwrap();
 	sqlx::query("INSERT INTO authorization_workspaces(workspace_id,tenant,owner_subject) VALUES ($1,'other','reader')").bind(foreign_workspace).execute(driver).await.unwrap();
 	let credential = Uuid::new_v4();

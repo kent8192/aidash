@@ -129,6 +129,16 @@ pub(crate) fn creator_can_use_binding(
 			.is_none_or(|core| core.permitted(&config.core_capabilities)))
 }
 
+pub(crate) async fn subnode_scratch_binding(
+	access: &mut Access,
+	run: &RunMetadata,
+	policy: &crate::config::ScratchOperatorPolicy,
+) -> Result<(Uuid, String)> {
+	let mut services =
+		crate::apps::workspaces::repositories::scratch::NativeScratchServices { policy };
+	services.run_binding_metadata(access, run).await
+}
+
 pub(crate) struct Creation<'a> {
 	pub access: &'a mut Access,
 	pub federation: &'a Federation,
@@ -245,16 +255,23 @@ impl CreateScope for Creation<'_> {
 		let tenant = self.access.identity.tenant.clone();
 		let workspace_id = Uuid::new_v4();
 		let title = input.title.as_deref().unwrap_or("Subnode");
+		let (scratch_space_id, created_by) =
+			subnode_scratch_binding(self.access, run, &self.federation.config.scratch_policy)
+				.await?;
 		let workspace = self
 			.federation
 			.store
 			.create_workspace_in(
 				&mut self.access.tx,
-				workspace_id,
-				&tenant,
-				&run.node,
-				title,
-				title,
+				crate::apps::execution::repositories::store::WorkspaceInsert {
+					id: workspace_id,
+					tenant: &tenant,
+					node: &run.node,
+					title,
+					goal: title,
+					scratch_space_id,
+					created_by: &created_by,
+				},
 			)
 			.await?;
 		self.federation

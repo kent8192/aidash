@@ -7,7 +7,7 @@ use super::{
 use crate::apps::execution::models::HumanRequest as HumanRequestRecord;
 use crate::{
 	Error, Result, apps::workspaces::serializers::tasks::ConversationResponse, domain::*,
-	federation::Federation, registry::EntityRef,
+	federation::Federation,
 };
 use reinhardt::query::{Alias, Condition, Expr, PostgresQueryBuilder, Query};
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
@@ -68,22 +68,12 @@ impl Access {
 pub async fn conversation(
 	f: &Federation,
 	identity: &SubjectIdentity,
-	title: &str,
-	goal: &str,
-	target: &EntityRef,
-	target_kind: &str,
-	node: Option<&aidash_domain::nodes::NodeName>,
+	input: aidash_application::workspaces::ConversationRequest<'_>,
 ) -> Result<ConversationResponse> {
 	let mut access = Access::begin(&f.store, identity).await?;
 	let result = aidash_application::workspaces::conversation(
 		&mut crate::bootstrap::conversation_scope(f, &mut access),
-		aidash_application::workspaces::ConversationRequest {
-			title,
-			goal,
-			target,
-			target_kind,
-			node,
-		},
+		input,
 	)
 	.await
 	.map_err(Into::into);

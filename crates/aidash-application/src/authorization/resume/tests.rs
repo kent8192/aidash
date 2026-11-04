@@ -18,6 +18,7 @@ struct Failure {
 struct State {
 	remote: bool,
 	remote_denied: bool,
+	remote_scratch_denied: bool,
 	attempts: VecDeque<Failure>,
 	calls: Vec<String>,
 	delays: Vec<Duration>,
@@ -35,6 +36,7 @@ fn repository() -> Repository {
 	Repository(Arc::new(Mutex::new(State {
 		remote: false,
 		remote_denied: false,
+		remote_scratch_denied: false,
 		attempts: VecDeque::new(),
 		calls: vec![],
 		delays: vec![],
@@ -77,6 +79,15 @@ impl WorkerResumeRepository for Repository {
 		let mut state = self.0.lock().unwrap();
 		state.calls.push("remote_refresh".into());
 		if state.remote_denied {
+			Err(Error::Forbidden)
+		} else {
+			Ok(())
+		}
+	}
+	async fn guard_remote_scratch(&self) -> Result<()> {
+		let mut state = self.0.lock().unwrap();
+		state.calls.push("remote_scratch".into());
+		if state.remote_scratch_denied {
 			Err(Error::Forbidden)
 		} else {
 			Ok(())
@@ -247,10 +258,28 @@ async fn remote_resume_uses_current_admission_and_never_falls_back_to_local_scop
 		result.unwrap();
 	}
 	let state = repository.0.lock().unwrap();
-	assert_eq!(state.calls, vec!["remote_refresh"]);
+	assert_eq!(
+		state.calls,
+		if denied {
+			vec!["remote_refresh"]
+		} else {
+			vec!["remote_refresh", "remote_scratch"]
+		}
+	);
 	assert_eq!(state.leases, 0);
 	assert!(state.delays.is_empty());
 }
+#[rstest]
+#[tokio::test]
+async fn remote_resume_refuses_revoked_scratch_space(repository: Repository) {
+	{
+		let mut state = repository.0.lock().unwrap();
+		state.remote = true;
+		state.remote_scratch_denied = true;
+	}
+	assert!(matches!(resume(&repository).await, Err(Error::Forbidden)));
+}
+
 #[rstest]
 #[case::refresh("refresh")]
 #[case::inference("inference")]

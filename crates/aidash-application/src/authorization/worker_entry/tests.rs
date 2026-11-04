@@ -129,6 +129,10 @@ impl WorkerEntryRepository<Scope> for Repository {
 		assert_eq!(self.0.lock().unwrap().alive, 1);
 		self.step("initialize").await
 	}
+	async fn scratch_space(&self, _: &mut Scope, _: &Run) -> Result<Uuid> {
+		self.step("scratch").await?;
+		Ok(Uuid::from_u128(42))
+	}
 }
 #[rstest]
 #[case::enabled(true, RunControl::Active, true)]
@@ -148,7 +152,8 @@ async fn local_execution_authorizes_before_optional_initialization(
 	let entry = execution(&repository, &run).await.unwrap();
 	assert!(!entry.remote);
 	assert_eq!(entry.agent.core_capabilities.enabled(), files);
-	let mut expected = vec!["receiver", "local", "authorize_execution"];
+	let mut expected = vec!["receiver", "local", "authorize_execution", "scratch"];
+	assert_eq!(entry.scratch_space_id, Some(Uuid::from_u128(42)));
 	if initialized {
 		expected.push("initialize");
 	}
@@ -175,7 +180,12 @@ async fn scoped_receivers_keep_their_agent_without_entering_the_local_path(
 	.unwrap();
 	assert!(entry.remote);
 	assert!(entry.scope.remote);
-	assert_eq!(repository.0.lock().unwrap().calls, vec!["receiver"]);
+	let expected = if delivery_only {
+		vec!["receiver"]
+	} else {
+		vec!["receiver", "scratch"]
+	};
+	assert_eq!(repository.0.lock().unwrap().calls, expected);
 	drop(entry);
 	assert_eq!(repository.0.lock().unwrap().alive, 0);
 }
@@ -218,7 +228,8 @@ async fn delivery_checks_current_authority_without_decoding_context_or_initializ
 #[case::receiver("receiver", 0)]
 #[case::local("local", 1)]
 #[case::guard("authorize_execution", 2)]
-#[case::initialization("initialize", 3)]
+#[case::scratch("scratch", 3)]
+#[case::initialization("initialize", 4)]
 #[tokio::test]
 async fn every_entry_denial_stops_before_effects_and_releases_owned_authority(
 	repository: Repository,
@@ -227,13 +238,23 @@ async fn every_entry_denial_stops_before_effects_and_releases_owned_authority(
 	#[case] last: usize,
 ) {
 	repository.0.lock().unwrap().failure = Some(failure);
-	assert!(matches!(
-		execution(&repository, &run).await,
-		Err(Error::Forbidden)
-	));
+	let result = execution(&repository, &run).await;
+	if failure == "scratch" {
+		assert!(
+			matches!(result, Err(Error::AuthorityRefused(ref refusal)) if refusal.tool == "scratch_space")
+		);
+	} else {
+		assert!(matches!(result, Err(Error::Forbidden)));
+	}
 	let state = repository.0.lock().unwrap();
-	let mut expected =
-		vec!["receiver", "local", "authorize_execution", "initialize"][..=last].to_vec();
+	let mut expected = vec![
+		"receiver",
+		"local",
+		"authorize_execution",
+		"scratch",
+		"initialize",
+	][..=last]
+		.to_vec();
 	if last >= 2 {
 		expected.push("drop");
 	}

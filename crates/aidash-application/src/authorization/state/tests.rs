@@ -14,6 +14,7 @@ fn id(value: u128) -> Uuid {
 }
 fn workspace() -> Workspace {
 	Workspace {
+		scratch_space_id: uuid::Uuid::nil(),
 		node: "brave-otter-k3m9q2xa".parse().unwrap(),
 		id: id(1),
 		title: "saved workspace".into(),
@@ -95,6 +96,7 @@ fn human(value: u128, visible: bool) -> HumanRequest {
 }
 fn conversation(value: u128, visible: bool) -> Conversation {
 	Conversation {
+		scratch_space_id: uuid::Uuid::nil(),
 		id: id(value),
 		workspace_id: id(1),
 		target: "saved-target".into(),

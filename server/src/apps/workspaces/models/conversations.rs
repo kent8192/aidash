@@ -9,6 +9,13 @@ use serde::{Deserialize, Serialize};
 #[model(app_label = "workspaces", table_name = "conversations")]
 #[derive(Serialize, Deserialize)]
 pub struct Conversation {
+	#[rel(
+		foreign_key,
+		shared_fields = ["tenant"],
+		db_constraint = "conversations_scratch_space_fkey",
+		db_index = false
+	)]
+	pub scratch_space: ForeignKeyField<crate::apps::workspaces::models::ScratchSpace>,
 	#[field(primary_key = true)]
 	pub id: uuid::Uuid,
 	#[field(field_type = "text")]
@@ -37,6 +44,8 @@ impl crate::database::Record for Conversation {
 		let kind: String = row.try_get("target_kind")?;
 		let target_kind = serde_json::from_value(serde_json::Value::String(kind))?;
 		Ok(Self {
+			scratch_space_id: row.try_get("scratch_space_id")?,
+			scratch_space: ForeignKeyField::new(),
 			id: row.try_get("id")?,
 			tenant: row.try_get("tenant")?,
 			workspace_id: row.try_get("workspace_id")?,
@@ -51,6 +60,7 @@ impl crate::database::Record for Conversation {
 impl From<Conversation> for aidash_domain::Conversation {
 	fn from(record: Conversation) -> Self {
 		Self {
+			scratch_space_id: record.scratch_space_id,
 			id: record.id,
 			workspace_id: record.workspace_id,
 			target: record.target,

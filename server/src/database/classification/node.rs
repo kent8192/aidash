@@ -29,6 +29,7 @@ pub enum Root {
 	LivePreview,
 	EgressSession,
 	Subnode,
+	ScratchSpace,
 	Record,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +74,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "authorization_remote_admissions"
 		| "authorization_remote_grants"
 		| "subnodes"
+		| "scratch_spaces"
 		| "egress_scope_state"
 		| "egress_scope_daily"
 		| "egress_scope_connections"
@@ -96,6 +98,7 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "identity_approval_rules" => Subject("subject"),
 		"registry_requests" | "core_requests" => Subject("principal"),
 		"subnode_members" => Link("subnode_id", Subnode),
+		"scratch_space_settings" | "scratch_space_members" => Link("space_id", ScratchSpace),
 		"identity_thread_approval_modes" => Link("thread_id", Thread),
 		"approval_observations" | "approval_observation_population" => Approvals,
 		"approval_observation_attempts" => Link("observation", Observation),
