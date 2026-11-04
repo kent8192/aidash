@@ -344,6 +344,8 @@ def execution_manifests(settings, config):
                ],
                'containers': [{'name': 'execution', 'image': config['helper_image'],
                                'command': helper_command('bootstrap'),
+                               'readinessProbe': {'exec': {'command': helper_command('ready')},
+                                                  'periodSeconds': 2, 'timeoutSeconds': 5},
                                'env': [{'name': 'AIDASH_DOCKER_ENABLED', 'value': str(docker).lower()},
                                        {'name': 'AIDASH_PROCESS_LIMIT', 'value': str(processes)},
                                        {'name': 'AIDASH_POD_UID',

@@ -474,6 +474,43 @@ def read_result(operation_id):
     return json.loads(data)
 
 
+BOOTSTRAP_READY_PATH = '/scratch-system/operations/.bootstrap-ready'
+BOOTSTRAP_TRACKER_PATH = '/scratch-system/change-tracker.json'
+
+
+def bootstrap_ready():
+    uid = os.environ.get('AIDASH_POD_UID', '')
+    if not uid or len(uid.encode('utf-8')) > 256:
+        return False
+    try:
+        fd = os.open(BOOTSTRAP_READY_PATH, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, 'rb') as file:
+            return file.read(257) == uid.encode('utf-8')
+    except OSError:
+        return False
+
+
+def bootstrap():
+    import resource
+    import signal
+    from pathlib import Path
+    uid = os.environ.get('AIDASH_POD_UID', '')
+    if not uid or len(uid.encode('utf-8')) > 256:
+        raise ValueError('invalid Execution Pod UID')
+    Path(BOOTSTRAP_READY_PATH).unlink(missing_ok=True)
+    process_limit = int(os.environ['AIDASH_PROCESS_LIMIT'])
+    if process_limit < 32:
+        raise ValueError('invalid guest process ceiling')
+    resource.setrlimit(resource.RLIMIT_NPROC, (process_limit, process_limit))
+    mount_rootfs(os.environ.get('AIDASH_DOCKER_ENABLED') == 'true')
+    Path(BOOTSTRAP_TRACKER_PATH).unlink(missing_ok=True)
+    fd = os.open(BOOTSTRAP_READY_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'wb') as file:
+        file.write(uid.encode('utf-8'))
+    while True:
+        signal.pause()
+
+
 if __name__ == '__main__':
     import sys
     if sys.argv[1:] == ['init']:
@@ -485,17 +522,9 @@ if __name__ == '__main__':
             save_image_environment('/scratch-image', os.environ)
         raise SystemExit(0)
     if sys.argv[1:] == ['bootstrap']:
-        import resource
-        import signal
-        process_limit = int(os.environ['AIDASH_PROCESS_LIMIT'])
-        if process_limit < 32:
-            raise ValueError('invalid guest process ceiling')
-        resource.setrlimit(resource.RLIMIT_NPROC, (process_limit, process_limit))
-        mount_rootfs(os.environ.get('AIDASH_DOCKER_ENABLED') == 'true')
-        from pathlib import Path
-        (Path('/scratch-system') / 'change-tracker.json').unlink(missing_ok=True)
-        while True:
-            signal.pause()
+        bootstrap()
+    if sys.argv[1:] == ['ready']:
+        raise SystemExit(0 if bootstrap_ready() else 1)
     if (len(sys.argv) == 10 and sys.argv[1] == 'supervise' and sys.argv[2] in ('docker', 'normal')
             and sys.argv[3] in ('command', 'session')):
         seconds = None if sys.argv[7] == 'background' else int(sys.argv[7])

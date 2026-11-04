@@ -1295,6 +1295,41 @@ class PythonSessionMappingTest(unittest.TestCase):
             self.assertEqual(controller.submit_command.call_count, 2)
 
 
+class BootstrapReadinessRegressionTest(unittest.TestCase):
+    def test_bootstrap_reports_ready_only_after_mounts_and_initialization(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        import sandbox_v2
+        with tempfile.TemporaryDirectory() as directory:
+            marker = str(Path(directory) / 'ready')
+            tracker = str(Path(directory) / 'tracker')
+            Path(tracker).write_text('stale')
+            def mount(_docker):
+                self.assertFalse(sandbox_v2.bootstrap_ready())
+                self.assertTrue(Path(tracker).exists())
+            with patch.object(sandbox_v2, 'BOOTSTRAP_READY_PATH', marker, create=True), \
+                 patch.object(sandbox_v2, 'BOOTSTRAP_TRACKER_PATH', tracker, create=True), \
+                 patch.dict('os.environ', {'AIDASH_POD_UID': 'pod-uid', 'AIDASH_PROCESS_LIMIT': '128'}), \
+                 patch('resource.setrlimit'), patch.object(sandbox_v2, 'mount_rootfs', side_effect=mount), \
+                 patch('signal.pause', side_effect=InterruptedError):
+                with self.assertRaises(InterruptedError):
+                    sandbox_v2.bootstrap()
+                self.assertTrue(sandbox_v2.bootstrap_ready())
+                self.assertFalse(Path(tracker).exists())
+                with patch.dict('os.environ', {'AIDASH_POD_UID': 'other'}):
+                    self.assertFalse(sandbox_v2.bootstrap_ready())
+
+    def test_execution_container_readiness_uses_bootstrap_handshake(self):
+        from execution_pod import execution_manifests, helper_command
+        settings = {'scratch_space_id': 's', 'image': 'image@sha256:' + 'a' * 64, 'cpu': 2,
+                    'memory_bytes': 2 << 30, 'capacity_bytes': 2 << 30, 'docker_enabled': False}
+        config = {'runtime_class': 'gvisor', 'helper_image': 'helper@sha256:' + 'b' * 64, 'namespace': 'sandbox'}
+        _, pod = execution_manifests(settings, config)
+        probe = pod['spec']['containers'][0]['readinessProbe']
+        self.assertEqual(probe['exec']['command'], helper_command('ready'))
+
+
 class GuardV2IdentityTest(unittest.TestCase):
     def test_guard_binds_scratch_pod_uid_container_and_runtime(self):
         import json
