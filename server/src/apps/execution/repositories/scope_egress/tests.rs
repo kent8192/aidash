@@ -132,6 +132,8 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 	let invalid_target = ConnectionRecord {
 		id: Uuid::new_v4(),
 		port: 0,
+		sent_bytes: 0,
+		received_bytes: 0,
 		outcome: "invalid_proxy_target".into(),
 		..connection.clone()
 	};
