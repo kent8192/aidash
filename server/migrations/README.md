@@ -1,5 +1,10 @@
 # Aidash native migration history
 
+`execution/0119_event_waits` requests Run activation in the transaction that
+finishes an operation or changes an owned Task to a terminal or blocked state.
+PostgreSQL trigger functions require SQL assets because
+Reinhardt migrations cannot express their bodies.
+
 `execution/0113_content_object_references` is a destructive undeployed
 content-store cutover. It discards UUID-backed objects, resets existing Working
 Area manifests, deletes Thread Attachment rows whose original or WAV object ID

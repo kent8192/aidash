@@ -29,8 +29,13 @@ pub struct OperationResult {
 	pub session_id: Option<Uuid>,
 	pub displays: Vec<FileEntry>,
 	pub exit_code: Option<i64>,
+	#[serde(default, skip_serializing_if = "String::is_empty")]
 	pub output: String,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub output_unchanged: bool,
 	pub next_offset: Option<usize>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub operation_deadline: Option<chrono::DateTime<chrono::Utc>>,
 	pub truncated: bool,
 	pub effects_may_have_occurred: bool,
 	pub error: Option<crate::capabilities::errors::CapabilityError>,

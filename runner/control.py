@@ -896,7 +896,8 @@ class Runner(AllocationJournal):
                     break
                 if result["status"] == "uncertain":
                     raise RuntimeError("Python reply uncertain; code will not be replayed")
-                self.update(operation, stdout=result.get("stdout", ""), truncated=result.get("truncated", False))
+                self.update(operation, stdout=result.get("stdout", ""), stdout_offset=result.get("stdout_offset", 0),
+                            truncated=result.get("truncated", False))
                 pod = self.pod(pod_operation)
                 if not pod or any("terminated" in s.get("state", {}) for s in pod.get("status", {}).get("containerStatuses", [])):
                     self.guard(record, "terminate")
@@ -1326,8 +1327,9 @@ class Runner(AllocationJournal):
                 # children, avoiding needless processes during the fork check.
                 # Ordinary operation previews continue while execution runs.
                 if hydrated and operation != self.admission_operation and time.monotonic() - preview_at > 1:
-                    captured = json.loads(self.exec_collector(operation, ["logs", "16384"]).stdout)
-                    self.update(operation, stdout=captured["stdout"], truncated=captured["truncated"])
+                    captured = json.loads(self.exec_collector(operation, ["logs", "16384", "window"]).stdout)
+                    self.update(operation, stdout=captured["stdout"], stdout_offset=captured["offset"],
+                                truncated=captured["truncated"])
                     preview_at = time.monotonic()
                 if not hydrated and time.monotonic() > startup_deadline:
                     raise RuntimeError("sandbox startup not confirmed")

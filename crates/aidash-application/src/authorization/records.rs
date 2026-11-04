@@ -130,10 +130,7 @@ pub async fn children(
 ) -> Result<ChildTaskSummary> {
 	let resource = scope.workspace(workspace_id).await?;
 	scope.require(&resource, "workspace.read").await?;
-	let mut summary = ChildTaskSummary {
-		has_pending: false,
-		has_failed: false,
-	};
+	let mut summary = ChildTaskSummary::default();
 	let mut after = None;
 	loop {
 		let rows = scope.children(workspace_id, parent_id, after).await?;
@@ -148,7 +145,7 @@ pub async fn children(
 				continue;
 			}
 			visible_ids.push(row.id);
-			summary.include_status(row.status);
+			summary.include_task(row.id, row.status, row.revision);
 		}
 		scope.track_tasks(workspace_id, &visible_ids).await?;
 		if exhausted {

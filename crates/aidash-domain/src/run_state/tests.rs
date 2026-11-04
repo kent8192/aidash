@@ -263,6 +263,20 @@ fn a_tool_batch_end_requires_the_tool_batch_capability() {
 	let (plain, recovery) = decode(RunPhase::ToolCall, envelope(tool_data())).unwrap();
 	assert!(StateRequirements::of(&plain, &recovery).is_empty());
 }
+#[test]
+fn an_operation_wait_requires_a_worker_that_understands_event_waits() {
+	let data = json!({"reason":"operation","operation_id":"0b31d0f7-cd83-4f5a-adb8-0d23abb44ebf","wake_at":"2030-01-01T00:00:00Z","resume":tool_data()});
+	let (state, recovery) =
+		decode(RunPhase::Waiting, requiring(&["event_wait"], data.clone())).unwrap();
+	assert_eq!(
+		StateRequirements::of(&state, &recovery).names(),
+		["event_wait"]
+	);
+	assert_eq!(
+		encode(&state, &recovery).unwrap(),
+		requiring(&["event_wait"], data)
+	);
+}
 #[rstest::rstest]
 fn degraded_context_requires_the_degraded_context_capability() {
 	// Arrange: a step ran with Degraded context (ADR 0059).

@@ -201,19 +201,62 @@ pub struct Task {
 	pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 pub struct ChildTaskSummary {
 	pub has_pending: bool,
 	pub has_failed: bool,
+	pub open_tasks: u64,
+	pub terminal_fingerprint: [u8; 16],
+	pub terminal_tasks: Vec<ChildTaskChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
+pub struct ChildTaskChange {
+	pub task_id: Uuid,
+	pub status: TaskStatus,
+	pub revision: i64,
 }
 
 impl ChildTaskSummary {
+	pub fn fingerprint(&self) -> String {
+		self.terminal_fingerprint
+			.iter()
+			.map(|byte| format!("{byte:02x}"))
+			.collect()
+	}
 	pub fn include_status(&mut self, status: TaskStatus) {
-		self.has_pending |= !matches!(status, TaskStatus::Completed | TaskStatus::Abandoned);
+		let pending = !matches!(status, TaskStatus::Completed | TaskStatus::Abandoned);
+		self.has_pending |= pending;
+		self.open_tasks += u64::from(pending);
 		self.has_failed |= matches!(
 			status,
 			TaskStatus::Failed | TaskStatus::Blocked | TaskStatus::Cancelled
 		);
+	}
+	pub fn include_task(&mut self, id: Uuid, status: TaskStatus, revision: i64) {
+		use sha2::{Digest, Sha256};
+		self.include_status(status);
+		if matches!(
+			status,
+			TaskStatus::Completed
+				| TaskStatus::Failed
+				| TaskStatus::Cancelled
+				| TaskStatus::Abandoned
+				| TaskStatus::Blocked
+		) {
+			let mut digest = Sha256::new();
+			digest.update(id.as_bytes());
+			digest.update(status.as_str().as_bytes());
+			digest.update(revision.to_be_bytes());
+			for (slot, byte) in self.terminal_fingerprint.iter_mut().zip(digest.finalize()) {
+				*slot ^= byte;
+			}
+			self.terminal_tasks.push(ChildTaskChange {
+				task_id: id,
+				status,
+				revision,
+			});
+		}
 	}
 }
 

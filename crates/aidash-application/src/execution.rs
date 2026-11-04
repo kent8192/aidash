@@ -920,10 +920,11 @@ pub enum FrameworkResult {
 	Approval(Uuid),
 	Human(Uuid),
 	Wait(i64),
+	Operation { id: Uuid, seconds: i64 },
 }
 
 impl FrameworkResult {
-	pub fn decode(contract: &ToolContract, output: &Value) -> Result<Self> {
+	pub fn decode(contract: &ToolContract, output: &Value, input: &Value) -> Result<Self> {
 		#[derive(serde::Deserialize)]
 		struct ApprovalView {
 			approval_id: Uuid,
@@ -960,6 +961,24 @@ impl FrameworkResult {
 			Continuation::Wait => {
 				let view: WaitView = serde_json::from_value(output.clone())?;
 				Ok(view.wait_seconds.map_or(Self::Ordinary, Self::Wait))
+			}
+			Continuation::Operation => {
+				let active = matches!(
+					output["status"].as_str(),
+					Some("prepared" | "submitted" | "running" | "cancelling")
+				);
+				let seconds =
+					i64::try_from(input["wait_seconds"].as_u64().unwrap_or(300).min(3600))
+						.expect("bounded wait");
+				if active && seconds > 0 {
+					let id =
+						serde_json::from_value(output["operation_id"].clone()).map_err(|_| {
+							Error::Invalid("operation result is missing a valid ID".into())
+						})?;
+					Ok(Self::Operation { id, seconds })
+				} else {
+					Ok(Self::Ordinary)
+				}
 			}
 			_ => Ok(Self::Ordinary),
 		}

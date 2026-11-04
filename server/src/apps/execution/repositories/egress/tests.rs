@@ -240,6 +240,134 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 	let mut request = json!({"operation_id":operation,"seconds":120});
 	attach(&f.store, &mut access, &mut request).await.unwrap();
 	access.finish(Ok(())).await.unwrap();
+	let db = f.store.pool.fixture_driver();
+	sqlx::query("UPDATE core_operations SET state = 'submitted' WHERE id = $1")
+		.bind(operation)
+		.execute(db)
+		.await
+		.unwrap();
+	let count: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM run_activations WHERE run_id = $1 AND reason = 'operation_finished'",
+	)
+	.bind(run.id)
+	.fetch_one(db)
+	.await
+	.unwrap();
+	assert_eq!(count, 0, "starting an operation must not wake the Run");
+	sqlx::query("UPDATE core_operations SET state = 'completed' WHERE id = $1")
+		.bind(operation)
+		.execute(db)
+		.await
+		.unwrap();
+	let count: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM run_activations WHERE run_id = $1 AND reason = 'operation_finished'",
+	)
+	.bind(run.id)
+	.fetch_one(db)
+	.await
+	.unwrap();
+	assert_eq!(count, 1, "finishing an operation must request activation");
+	sqlx::query("UPDATE core_operations SET state = 'running' WHERE id = $1")
+		.bind(operation)
+		.execute(db)
+		.await
+		.unwrap();
+	// A Task finishing after the decision to wait must survive the wait commit.
+	let child = f
+		.store
+		.create_task(
+			&scope,
+			workspace.id,
+			&serde_json::from_value(
+				json!({"title":"Child", "description":"Wait race", "parent_id":task.id}),
+			)
+			.unwrap(),
+			"alice",
+			None,
+		)
+		.await
+		.unwrap();
+	sqlx::query("INSERT INTO authorization_task_origins (task_id, tenant, source_run_id, root_subject, subject_chain) VALUES ($1, 'acme', $2, 'alice', ARRAY['alice','fixture-agent'])")
+		.bind(child.id).bind(run.id).execute(db).await.unwrap();
+	sqlx::query("UPDATE tasks SET status = 'RUNNING', owner = 'alice' WHERE id = $1")
+		.bind(child.id)
+		.execute(db)
+		.await
+		.unwrap();
+	let count: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM run_activations WHERE run_id = $1 AND reason LIKE 'workspace_task:%'",
+	)
+	.bind(run.id)
+	.fetch_one(db)
+	.await
+	.unwrap();
+	assert_eq!(count, 0, "a Task starting must not wake its parent");
+	let (old_phase, old_pending): (String, sqlx::types::Json<serde_json::Value>) =
+		sqlx::query_as("SELECT phase, pending FROM runs WHERE id = $1")
+			.bind(run.id)
+			.fetch_one(db)
+			.await
+			.unwrap();
+	let mut waiting_tx = db.begin().await.unwrap();
+	sqlx::query("SELECT id FROM runs WHERE id = $1 FOR UPDATE")
+		.bind(run.id)
+		.fetch_one(&mut *waiting_tx)
+		.await
+		.unwrap();
+	let db_for_task = db.clone();
+	let child_id = child.id;
+	let finishing = tokio::spawn(async move {
+		sqlx::query("UPDATE tasks SET status = 'COMPLETED' WHERE id = $1")
+			.bind(child_id)
+			.execute(&db_for_task)
+			.await
+			.unwrap();
+	});
+	tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+	assert!(
+		!finishing.is_finished(),
+		"Task completion should serialize with the Run wait commit"
+	);
+	let wait = aidash_domain::RunState::Waiting(Box::new(
+		aidash_domain::run_state::WaitingState::Workspace {
+			wake_at: Utc::now() + chrono::Duration::hours(1),
+			cursor: 0,
+			remote_fingerprint: None,
+			resume: aidash_domain::ResumeState::Thinking(Default::default()),
+		},
+	));
+	let pending = aidash_domain::run_state::encode(&wait, &Default::default()).unwrap();
+	sqlx::query("UPDATE runs SET phase = 'WAITING', pending = $2 WHERE id = $1")
+		.bind(run.id)
+		.bind(sqlx::types::Json(pending))
+		.execute(&mut *waiting_tx)
+		.await
+		.unwrap();
+	waiting_tx.commit().await.unwrap();
+	finishing.await.unwrap();
+	let activation = crate::bootstrap::activation_repository(crate::harness::Harness {
+		federation: f.clone(),
+	});
+	use aidash_application::ports::activation::ActivationRepository as _;
+	let mut scheduling = activation.claim_scope().await.unwrap();
+	let raw = scheduling.lock_run(run.id).await.unwrap().unwrap();
+	let now = Utc::now();
+	let due =
+		aidash_application::activation::due(scheduling.as_mut(), &raw, now, activation.node_id())
+			.await
+			.unwrap();
+	assert!(
+		due.is_some_and(|due| due <= now + chrono::Duration::seconds(3)),
+		"the committed wait must see the Task event"
+	);
+	drop(scheduling);
+	sqlx::query("UPDATE runs SET phase = $2, pending = $3 WHERE id = $1")
+		.bind(run.id)
+		.bind(old_phase)
+		.bind(old_pending)
+		.execute(db)
+		.await
+		.unwrap();
 	let token = request["egress"]["token"].as_str().unwrap();
 	let digest = "a".repeat(64);
 	// Admission must not wait behind an activation claim on the Run row.
@@ -249,7 +377,6 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		.fetch_one(&mut *claim)
 		.await
 		.unwrap();
-	use aidash_application::ports::activation::ActivationRepository as _;
 	let activation = crate::bootstrap::activation_repository(crate::harness::Harness {
 		federation: f.clone(),
 	});

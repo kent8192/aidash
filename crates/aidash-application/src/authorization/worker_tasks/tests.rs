@@ -229,6 +229,7 @@ impl WorkerTaskScope for Scope {
 	async fn record_output(&mut self, source: &RunMetadata, kind: &str, value: Uuid) -> Result<()> {
 		self.touch(match kind {
 			"task" => "output.task",
+			"delegated_task" => "output.delegated_task",
 			"generation" => "output.generation",
 			_ => panic!("unknown output"),
 		})?;
@@ -606,6 +607,10 @@ async fn fresh_delegation_reuses_local_admission_only_after_task_authority(
 		.unwrap();
 	assert!(!result.delivered);
 	assert_eq!(
+		scope.outputs,
+		vec![(id(1), id(3), "delegated_task".into(), id(4))]
+	);
+	assert_eq!(
 		scope.calls,
 		vec![
 			"task_workspace",
@@ -613,7 +618,8 @@ async fn fresh_delegation_reuses_local_admission_only_after_task_authority(
 			"task_resource",
 			"task.delegate",
 			"grant",
-			"delegate"
+			"delegate",
+			"output.delegated_task"
 		]
 	);
 	assert_eq!(scope.decisions[0].0.attributes["created_by"], "producer");

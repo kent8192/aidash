@@ -187,6 +187,53 @@ class OutputTailTest(unittest.TestCase):
                 self.assertEqual(self.logs("tail"), (b"sult: FAILED", True))
                 self.assertEqual(self.logs(), (b"compilin", True))
 
+    def test_a_running_preview_returns_the_end_of_the_stored_output_with_its_offset(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            with patch.multiple(collector, OUTPUT=root / "output.bin", OUTPUT_STATE=root / "output.state",
+                                OUTPUT_TAIL=root / "output.tail", OUTPUT_LIMIT=64, TAIL_LIMIT=64):
+                collector.append_output(b"abcdef")
+                stdout = io.StringIO()
+                with patch.object(collector.sys, "argv", ["collector.py", "logs", "3", "window"]), \
+                        contextlib.redirect_stdout(stdout):
+                    collector.logs(3)
+                captured = json.loads(stdout.getvalue())
+                self.assertEqual(base64.b64decode(captured["stdout"]), b"def")
+                self.assertEqual(captured["offset"], 3)
+
+    def test_a_running_preview_starts_at_a_utf8_boundary(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            with patch.multiple(collector, OUTPUT=root / "output.bin", OUTPUT_STATE=root / "output.state",
+                                OUTPUT_TAIL=root / "output.tail", OUTPUT_LIMIT=64, TAIL_LIMIT=64):
+                collector.append_output("aébc".encode())
+                stdout = io.StringIO()
+                with patch.object(collector.sys, "argv", ["collector.py", "logs", "3", "window"]), \
+                        contextlib.redirect_stdout(stdout):
+                    collector.logs(3)
+                captured = json.loads(stdout.getvalue())
+                self.assertEqual((captured["offset"], base64.b64decode(captured["stdout"]).decode()), (3, "bc"))
+
+    def test_a_running_preview_keeps_standalone_invalid_bytes(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            with patch.multiple(collector, OUTPUT=root / "output.bin", OUTPUT_STATE=root / "output.state",
+                                OUTPUT_TAIL=root / "output.tail", OUTPUT_LIMIT=64, TAIL_LIMIT=64):
+                collector.append_output(b"a\x80b")
+                stdout = io.StringIO()
+                with patch.object(collector.sys, "argv", ["collector.py", "logs", "2", "window"]), \
+                        contextlib.redirect_stdout(stdout):
+                    collector.logs(2)
+                captured = json.loads(stdout.getvalue())
+                self.assertEqual((captured["offset"], base64.b64decode(captured["stdout"])), (1, b"\x80b"))
+
+    def test_python_preview_keeps_a_complete_utf8_tail_and_absolute_offset(self):
+        import importlib
+        with patch.dict("sys.modules", {"jupyter_client": Mock()}):
+            python_cells = importlib.import_module("python_cells")
+        offset, data = python_cells.output_window("aébc".encode(), 3)
+        self.assertEqual((offset, data.decode()), (3, "bc"))
+
     def test_a_short_check_output_is_returned_whole(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)

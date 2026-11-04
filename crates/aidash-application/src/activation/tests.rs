@@ -49,6 +49,125 @@ fn raw(now: DateTime<Utc>) -> RawRun {
 }
 
 #[rstest]
+#[case::input(true, false, RunControl::Active, true)]
+#[case::operation_completed(false, true, RunControl::Active, true)]
+#[case::no_input(false, false, RunControl::Active, false)]
+#[case::paused(true, true, RunControl::Paused, false)]
+#[tokio::test]
+async fn an_operation_wait_wakes_for_input_or_completion_unless_paused(
+	now: DateTime<Utc>,
+	repository: Repository,
+	#[case] input: bool,
+	#[case] operation_done: bool,
+	#[case] control: RunControl,
+	#[case] early: bool,
+) {
+	let mut row = raw(now);
+	row.metadata.phase = RunPhase::Waiting;
+	row.metadata.control = control;
+	row.pending = aidash_domain::run_state::encode(
+		&RunState::Waiting(Box::new(WaitingState::Operation {
+			operation_id: Uuid::from_u128(12),
+			wake_at: now + chrono::Duration::minutes(5),
+			resume: Box::new(aidash_domain::ToolCallState::default()),
+		})),
+		&Default::default(),
+	)
+	.unwrap();
+	repository.0.input.store(input, Ordering::Release);
+	repository
+		.0
+		.operation_done
+		.store(operation_done, Ordering::Release);
+	let mut scope = Scope {
+		state: repository.0.clone(),
+		committed: false,
+	};
+	let due = due(&mut scope, &row, now, repository.node_id())
+		.await
+		.unwrap();
+	let expected = if control == RunControl::Paused {
+		None
+	} else if early {
+		Some(now)
+	} else {
+		Some(now + chrono::Duration::minutes(5))
+	};
+	assert_eq!(due, expected);
+}
+
+#[rstest]
+#[case::input(true, None, Some(0))]
+#[case::task_finished(false, Some(2), Some(2))]
+#[case::no_change(false, None, Some(300))]
+#[tokio::test]
+async fn workspace_wait_selects_input_or_a_coalesced_task_event(
+	now: DateTime<Utc>,
+	repository: Repository,
+	#[case] input: bool,
+	#[case] event_in: Option<i64>,
+	#[case] expected_in: Option<i64>,
+) {
+	let mut row = raw(now);
+	row.metadata.phase = RunPhase::Waiting;
+	row.pending = aidash_domain::run_state::encode(
+		&RunState::Waiting(Box::new(WaitingState::Workspace {
+			wake_at: now + chrono::Duration::minutes(5),
+			cursor: 4,
+			remote_fingerprint: None,
+			resume: aidash_domain::ResumeState::ToolCall(Box::default()),
+		})),
+		&Default::default(),
+	)
+	.unwrap();
+	repository.0.input.store(input, Ordering::Release);
+	*repository.0.workspace_event.lock().unwrap() =
+		event_in.map(|seconds| now + chrono::Duration::seconds(seconds));
+	let mut scope = Scope {
+		state: repository.0.clone(),
+		committed: false,
+	};
+	let due = due(&mut scope, &row, now, repository.node_id())
+		.await
+		.unwrap();
+	assert_eq!(
+		due,
+		expected_in.map(|seconds| now + chrono::Duration::seconds(seconds))
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_workspace_wait_on_a_remote_home_is_polled_without_waiting_for_the_ceiling(
+	now: DateTime<Utc>,
+	repository: Repository,
+) {
+	let mut row = raw(now);
+	row.metadata.phase = RunPhase::Waiting;
+	row.metadata.home_node = "aidash://other/brave-otter-k3m9q2xa".into();
+	row.pending = aidash_domain::run_state::encode(
+		&RunState::Waiting(Box::new(WaitingState::Workspace {
+			wake_at: now + chrono::Duration::hours(1),
+			cursor: 0,
+			remote_fingerprint: Some("00".into()),
+			resume: aidash_domain::ResumeState::Thinking(Default::default()),
+		})),
+		&Default::default(),
+	)
+	.unwrap();
+	let mut scope = Scope {
+		state: repository.0.clone(),
+		committed: false,
+	};
+	assert_eq!(
+		due(&mut scope, &row, now, repository.node_id())
+			.await
+			.unwrap(),
+		Some(now + chrono::Duration::seconds(15))
+	);
+}
+
+#[rstest]
 #[tokio::test]
 async fn home_owned_human_waits_poll_without_querying_local_requests(
 	now: DateTime<Utc>,
@@ -219,6 +338,8 @@ struct State {
 	answered: AtomicBool,
 	/// Whether the Run accepted input after the sequence asked about.
 	input: AtomicBool,
+	operation_done: AtomicBool,
+	workspace_event: Mutex<Option<DateTime<Utc>>>,
 	dependencies: AtomicBool,
 	claimable: AtomicBool,
 	repairable: AtomicBool,
@@ -258,6 +379,8 @@ fn repository(now: DateTime<Utc>) -> Repository {
 		unblocked: AtomicBool::new(true),
 		answered: AtomicBool::new(false),
 		input: AtomicBool::new(false),
+		operation_done: AtomicBool::new(false),
+		workspace_event: Mutex::new(None),
 		dependencies: AtomicBool::new(false),
 		claimable: AtomicBool::new(true),
 		repairable: AtomicBool::new(true),
@@ -314,6 +437,12 @@ impl SchedulingScope for Scope {
 	async fn input_after(&mut self, _: Uuid, seq: i64) -> Result<bool> {
 		self.state.record(format!("input_after:{seq}"));
 		Ok(self.state.input.load(Ordering::Acquire))
+	}
+	async fn operation_finished(&mut self, _: Uuid, _: Uuid) -> Result<bool> {
+		Ok(self.state.operation_done.load(Ordering::Acquire))
+	}
+	async fn workspace_event_after(&mut self, _: Uuid, _: i64) -> Result<Option<DateTime<Utc>>> {
+		Ok(*self.state.workspace_event.lock().unwrap())
 	}
 	async fn approval(&mut self, _: Uuid) -> Result<Option<Approval>> {
 		self.state.record("approval");
