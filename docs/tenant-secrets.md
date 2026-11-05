@@ -356,12 +356,28 @@ Connection records contain scope, host, port, sent and received byte counts,
 duration and outcome, rather than request paths or bodies. Invalid targets are
 recorded when a bounded host and port can be parsed; malformed targets without
 one are rejected without retaining the raw request. A record is created
-before the connection starts and updated when it ends. If the initial record
-cannot be written after retries, the gateway refuses the connection with
-`egress_audit_unavailable`. A process crash or sustained audit-store failure
-can leave the record's byte counts incomplete. Tunnel budget reservations and
+before the connection starts, with the outcome `unsettled`, and updated when it
+ends. `interrupted` means that the connection really was cut. If the initial
+record cannot be written after retries, the gateway refuses the connection with
+`egress_audit_unavailable`. The final record is retried for about 60 seconds
+without holding the connection's concurrency slot, or once more if the process
+is stopping. A process crash or sustained audit-store failure can leave a record
+`unsettled`, with incomplete byte counts. Tunnel budget reservations and
 refunds each have a five-second deadline. An interrupted connection or timed-out
-refund may retain unused reserved budget. The separate path-level External service route remains responsible
+refund may retain unused reserved budget.
+
+Sandboxed code can repeat failures of a Host connection at will, so each kind of
+failure logs at most one line per 10 seconds, with the number since the last
+line. The rest appear at `debug`. Unexpected admission failures and abandoned
+records log an error, and upstream failures log a warning. These lines name the
+kind, cause and connection record's ID, never the token or host: the record has
+the host, and under "allow all hosts" a Pod chooses it freely.
+`aidash_egress_host_connection_failures_total{kind}` counts every upstream
+failure, with `kind` one of `dns`, `connect`, `handshake`, `request`, `upgrade`
+or `transfer`. `transfer` counts only ends with no named code, and one failed
+connection can count under both `transfer` and `request`.
+
+The separate path-level External service route remains responsible
 for attaching Tenant Secrets; scope-based admission for that route is not yet
 wired. Its integration route is `/v2/services/<service>/<path>` with the scope
 credential in `Authorization: Bearer <scope-credential>`. The gateway removes

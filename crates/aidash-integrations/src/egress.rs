@@ -729,7 +729,7 @@ pub async fn serve_with_scopes(
 						async move {
 							let response = if request.method() == hyper::Method::CONNECT || request.uri().scheme().is_some() {
 								let connect = request.method() == hyper::Method::CONNECT;
-								let mut response = match scopes { Some(scopes) => proxy::forward(request, scopes, tunnels, permit, connection_lease).await, None => failure(StatusCode::SERVICE_UNAVAILABLE, "egress_scope_unavailable") };
+								let mut response = match scopes { Some(scopes) => proxy::forward(request, scopes, tunnels, permit, connection_lease).await, None => refuse(StatusCode::SERVICE_UNAVAILABLE, "egress_scope_unavailable") };
 								if !connect || response.status() != StatusCode::OK { response.headers_mut().insert(hyper::header::CONNECTION, hyper::header::HeaderValue::from_static("close")); }
 								response
 							} else { forward(request, authority, client, public, scopes).await };

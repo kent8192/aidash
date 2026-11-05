@@ -13,6 +13,99 @@ use std::{
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 const BATCH: u64 = 1024 * 1024;
+/// A Pod can repeat these failures at will, by reaching a host that always fails
+/// or by opening connections during a stall, so each kind logs at most one line
+/// per interval. The rest go to `debug`, and the counters stay exact.
+const FAILURE_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+/// One last try at the final record once the process is stopping. With a refund
+/// of up to 5 s each way before it, this stays inside the 20 s application drain.
+const STOPPING_ATTEMPT: std::time::Duration = std::time::Duration::from_secs(5);
+/// A live connection, or one whose final record was never written.
+const UNSETTLED: &str = "unsettled";
+const INVALID_TARGET: &str = "invalid_proxy_target";
+
+/// Failures of each kind since that kind's last log line.
+#[derive(Default)]
+struct FailureLog {
+	kinds: std::sync::Mutex<std::collections::HashMap<&'static str, ThinnedLine>>,
+}
+#[derive(Default)]
+struct ThinnedLine {
+	unlogged: u64,
+	logged_at: Option<tokio::time::Instant>,
+}
+impl FailureLog {
+	/// The number of failures a line should report, when one is due.
+	fn due(&self, kind: &'static str) -> Option<u64> {
+		let mut kinds = self.kinds.lock().unwrap();
+		let line = kinds.entry(kind).or_default();
+		line.unlogged += 1;
+		if line
+			.logged_at
+			.is_some_and(|at| at.elapsed() < FAILURE_LOG_INTERVAL)
+		{
+			return None;
+		}
+		line.logged_at = Some(tokio::time::Instant::now());
+		Some(std::mem::take(&mut line.unlogged))
+	}
+
+	/// Our own store or authority failed. A line names no destination.
+	fn internal(&self, kind: &'static str, connection: Option<uuid::Uuid>, cause: &str) {
+		let connection = connection.map(|id| id.to_string());
+		let connection = connection.as_deref();
+		match self.due(kind) {
+			Some(failures) => tracing::error!(
+				kind,
+				connection,
+				failures,
+				cause,
+				"Egress host connection failed"
+			),
+			None => tracing::debug!(kind, connection, cause, "Egress host connection failed"),
+		}
+	}
+}
+
+/// How one connection reports its failures. Under "allow all hosts" a Pod chooses
+/// the host freely, so it stays out of the log; the connection's record has it.
+#[derive(Clone, Default)]
+struct FailureReport {
+	failures: Arc<FailureLog>,
+	connection: uuid::Uuid,
+	host: String,
+}
+impl FailureReport {
+	fn cause(&self, cause: impl std::fmt::Display) -> String {
+		let cause = cause.to_string();
+		if self.host.is_empty() {
+			return cause;
+		}
+		cause.replace(&self.host, "[host]")
+	}
+
+	fn upstream(&self, kind: &'static str, cause: impl std::fmt::Display) {
+		metrics::counter!("aidash_egress_host_connection_failures_total", "kind" => kind)
+			.increment(1);
+		let cause = self.cause(cause);
+		let connection = self.connection.to_string();
+		match self.failures.due(kind) {
+			Some(failures) => tracing::warn!(
+				kind,
+				connection,
+				failures,
+				cause,
+				"Egress host connection failed"
+			),
+			None => tracing::debug!(kind, connection, cause, "Egress host connection failed"),
+		}
+	}
+
+	fn internal(&self, kind: &'static str, cause: impl std::fmt::Display) {
+		self.failures
+			.internal(kind, Some(self.connection), &self.cause(cause));
+	}
+}
 
 #[derive(Default)]
 struct CapacityCounts {
@@ -28,6 +121,7 @@ pub(super) struct TunnelManager {
 	counts: ScopeCounts,
 	tasks: std::sync::Mutex<tokio::task::JoinSet<()>>,
 	stopping: tokio::sync::watch::Receiver<bool>,
+	failures: Arc<FailureLog>,
 }
 struct TunnelLease {
 	permit: Arc<TunnelPermit>,
@@ -64,6 +158,7 @@ impl TunnelManager {
 			counts: Arc::new(std::sync::Mutex::new(CapacityCounts::default())),
 			tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
 			stopping,
+			failures: Arc::default(),
 		}
 	}
 	fn acquire(&self, scope: &ScopeSettings) -> Result<TunnelPermit, &'static str> {
@@ -161,7 +256,7 @@ impl Batch {
 			self.scopes
 				.refund(&self.settings, self.direction, remaining, self.day)
 				.await
-				.map_err(|_| io::Error::other("egress_refund_failed"))?;
+				.map_err(|error| io::Error::other(format!("egress_refund_failed: {error}")))?;
 		}
 		Ok(())
 	}
@@ -241,16 +336,17 @@ where
 		settings,
 		"token".into(),
 		"registry.npmjs.org".into(),
-		TrafficCounts::default(),
+		TunnelReports::default(),
 		receiver,
 	)
 	.await
 }
 
 #[derive(Default)]
-struct TrafficCounts {
+struct TunnelReports {
 	sent: Arc<AtomicU64>,
 	received: Arc<AtomicU64>,
+	failure: FailureReport,
 }
 
 #[allow(clippy::too_many_arguments)] // The tunnel binds both streams, authority and lifecycle state.
@@ -261,7 +357,7 @@ async fn tunnel_controlled<C, U>(
 	settings: ScopeSettings,
 	credential: String,
 	host: String,
-	counts: TrafficCounts,
+	counts: TunnelReports,
 	mut stopping: tokio::sync::watch::Receiver<bool>,
 ) -> (u64, u64, io::Result<()>)
 where
@@ -272,6 +368,7 @@ where
 	let (upstream_read, upstream_write) = tokio::io::split(upstream);
 	let sent = counts.sent;
 	let received = counts.received;
+	let failure = counts.failure;
 	let mut sent_batch = Batch::new(scopes.clone(), settings.clone(), Direction::Sent);
 	let mut received_batch = Batch::new(scopes.clone(), settings.clone(), Direction::Received);
 	let (activity_tx, mut activity_rx) = tokio::sync::watch::channel(());
@@ -326,7 +423,7 @@ where
 			let mut failures = 0;
 			loop {
 				checks.tick().await;
-				match tokio::time::timeout(
+				let cause = match tokio::time::timeout(
 					std::time::Duration::from_secs(5),
 					scopes.check_active(&settings, &credential),
 				)
@@ -340,6 +437,7 @@ where
 						{
 							break io::Error::other("egress_host_revoked");
 						}
+						continue;
 					}
 					Ok(Err(aidash_application::Error::Refused(code))) => {
 						break io::Error::other(code);
@@ -348,12 +446,12 @@ where
 						aidash_application::Error::Forbidden
 						| aidash_application::Error::Unauthorized,
 					)) => break io::Error::other("egress_credential_revoked"),
-					_ => {
-						failures += 1;
-						if failures >= 3 {
-							break io::Error::other("egress_authority_unavailable");
-						}
-					}
+					Ok(Err(error)) => error.to_string().replace(&credential, "[token]"),
+					Err(_) => "the check timed out".to_owned(),
+				};
+				failures += 1;
+				if failures >= 3 {
+					break io::Error::other(format!("egress_authority_unavailable: {cause}"));
 				}
 			}
 		};
@@ -388,8 +486,11 @@ where
 		tokio::time::timeout(std::time::Duration::from_secs(5), received_batch.settle())
 			.await
 			.unwrap_or_else(|_| Err(io::Error::other("egress_refund_timeout")));
-	if sent_settle.is_err() || received_settle.is_err() {
-		tracing::error!("Egress reservation refund failed");
+	for settled in [&sent_settle, &received_settle] {
+		if let Err(error) = settled {
+			super::settle_failure("refund", "abandoned");
+			failure.internal("refund", error);
+		}
 	}
 	(
 		sent.load(Ordering::Relaxed),
@@ -436,28 +537,75 @@ struct Audit {
 	finished: bool,
 	started_record: bool,
 }
-async fn write_record(
-	scopes: Arc<dyn EgressScopes>,
+/// The start record holds up the connection, so it gives up quickly. During a
+/// stall its cause reads as a timeout; the database's own error shows at
+/// admission, which runs first and waits out the pool's 10 s.
+async fn write_start_record(
+	scopes: &dyn EgressScopes,
 	record: aidash_application::egress::ConnectionRecord,
-) -> bool {
+) -> Result<(), String> {
+	let mut cause = String::new();
 	for attempt in 0..3 {
-		if matches!(
-			tokio::time::timeout(
-				std::time::Duration::from_secs(2),
-				scopes.record(record.clone())
-			)
-			.await,
-			Ok(Ok(()))
-		) {
-			return true;
+		match tokio::time::timeout(
+			std::time::Duration::from_secs(2),
+			scopes.record(record.clone()),
+		)
+		.await
+		{
+			Ok(Ok(())) => return Ok(()),
+			Ok(Err(error)) => cause = error.to_string(),
+			Err(_) => cause = "attempt timed out".to_owned(),
 		}
 		if attempt < 2 {
 			tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 		}
 	}
-	tracing::error!("Egress connection audit failed after retries");
-	false
+	Err(cause)
 }
+
+/// Nobody waits on the final record, so it outlasts a stall of about a minute,
+/// unless the process is stopping: then it gets one more attempt and no more.
+async fn settle_record(
+	scopes: Arc<dyn EgressScopes>,
+	record: aidash_application::egress::ConnectionRecord,
+	mut stopping: tokio::sync::watch::Receiver<bool>,
+	report: FailureReport,
+) {
+	let mut settling = super::Settling::new();
+	loop {
+		let limit = if is_stopping(&stopping) {
+			STOPPING_ATTEMPT
+		} else {
+			super::SETTLE_ATTEMPT
+		};
+		let cause = match tokio::time::timeout(limit, scopes.record(record.clone())).await {
+			Ok(Ok(())) => return,
+			Ok(Err(error)) => error.to_string(),
+			Err(_) => "attempt timed out".to_owned(),
+		};
+		let retrying = !is_stopping(&stopping)
+			&& tokio::select! {
+				waited = settling.wait() => waited,
+				_ = stopping.changed() => true,
+			};
+		if !retrying {
+			super::settle_failure("connection_record", "abandoned");
+			report.internal("final_record", cause);
+			return;
+		}
+		super::settle_failure("connection_record", "retried");
+		tracing::debug!(
+			connection = %record.id,
+			cause = %report.cause(cause),
+			"Egress connection record failed; retrying"
+		);
+	}
+}
+
+fn is_stopping(stopping: &tokio::sync::watch::Receiver<bool>) -> bool {
+	*stopping.borrow() || stopping.has_changed().is_err()
+}
+
 impl Audit {
 	fn record(&self) -> aidash_application::egress::ConnectionRecord {
 		aidash_application::egress::ConnectionRecord {
@@ -471,21 +619,38 @@ impl Audit {
 			outcome: self.outcome.to_owned(),
 		}
 	}
+	fn report(&self) -> FailureReport {
+		FailureReport {
+			failures: self.manager.failures.clone(),
+			connection: self.id,
+			host: self.host.clone(),
+		}
+	}
 	async fn start(&mut self) -> bool {
 		if self.started_record {
 			return true;
 		}
 		let mut record = self.record();
-		record.outcome = "interrupted".into();
-		let ok = write_record(self.scopes.clone(), record).await;
-		self.started_record = ok;
-		if !ok {
-			self.finished = true;
+		if self.outcome != INVALID_TARGET {
+			record.outcome = UNSETTLED.into();
 		}
-		ok
+		match write_start_record(&*self.scopes, record).await {
+			Ok(()) => self.started_record = true,
+			Err(cause) => {
+				self.report().internal("start_record", cause);
+				self.finished = true;
+			}
+		}
+		self.started_record
 	}
 	async fn finish(&mut self) {
-		let _ = write_record(self.scopes.clone(), self.record()).await;
+		settle_record(
+			self.scopes.clone(),
+			self.record(),
+			self.manager.stopping.clone(),
+			self.report(),
+		)
+		.await;
 		self.finished = true;
 	}
 }
@@ -494,13 +659,15 @@ impl Drop for Audit {
 		if self.finished {
 			return;
 		}
-		let scopes = self.scopes.clone();
-		let record = self.record();
+		let settling = settle_record(
+			self.scopes.clone(),
+			self.record(),
+			self.manager.stopping.clone(),
+			self.report(),
+		);
 		let mut tasks = self.manager.tasks.lock().unwrap();
 		while tasks.try_join_next().is_some() {}
-		tasks.spawn(async move {
-			write_record(scopes, record).await;
-		});
+		tasks.spawn(settling);
 	}
 }
 
@@ -529,7 +696,7 @@ fn credential(headers: &hyper::HeaderMap) -> Option<String> {
 }
 
 fn auth_required() -> hyper::Response<super::Body> {
-	let mut response = super::failure(
+	let mut response = super::refuse(
 		hyper::StatusCode::PROXY_AUTHENTICATION_REQUIRED,
 		"proxy_auth_required",
 	);
@@ -538,6 +705,22 @@ fn auth_required() -> hyper::Response<super::Body> {
 		hyper::header::HeaderValue::from_static("Basic realm=\"aidash-egress\""),
 	);
 	response
+}
+
+/// The Sandbox sees only the code; an unexpected cause stays in the server's log.
+/// Where its text came from is not under this function's control, so the token
+/// is taken back out.
+fn admission_refusal(
+	error: &aidash_application::Error,
+	token: &str,
+	failures: &FailureLog,
+) -> (hyper::StatusCode, &'static str) {
+	let refused = refusal(error);
+	if refused.0 == hyper::StatusCode::SERVICE_UNAVAILABLE {
+		let cause = error.to_string().replace(token, "[token]");
+		failures.internal("admission", None, &cause);
+	}
+	refused
 }
 
 fn refusal(error: &aidash_application::Error) -> (hyper::StatusCode, &'static str) {
@@ -573,16 +756,16 @@ pub(super) async fn forward(
 	let scope = match scopes.resolve(&token).await {
 		Ok(scope) => scope,
 		Err(error) => {
-			let (status, code) = refusal(&error);
+			let (status, code) = admission_refusal(&error, &token, &manager.failures);
 			if status == StatusCode::PROXY_AUTHENTICATION_REQUIRED {
 				return auth_required();
 			}
-			return super::failure(status, code);
+			return super::refuse(status, code);
 		}
 	};
 	if let Err(error) = scopes.admit_connection(&scope).await {
-		let (status, code) = refusal(&error);
-		return super::failure(status, code);
+		let (status, code) = admission_refusal(&error, &token, &manager.failures);
+		return super::refuse(status, code);
 	}
 	let connect = request.method() == Method::CONNECT;
 	let parsed = if connect {
@@ -594,17 +777,17 @@ pub(super) async fn forward(
 		url::Url::parse(&request.uri().to_string()).ok()
 	};
 	let Some(url) = parsed else {
-		return super::failure(StatusCode::BAD_REQUEST, "invalid_proxy_target");
+		return super::refuse(StatusCode::BAD_REQUEST, "invalid_proxy_target");
 	};
 	let Some(host) = url.host_str() else {
-		return super::failure(StatusCode::BAD_REQUEST, "invalid_proxy_target");
+		return super::refuse(StatusCode::BAD_REQUEST, "invalid_proxy_target");
 	};
 	if host.len() > 253 {
-		return super::failure(StatusCode::BAD_REQUEST, "invalid_proxy_target");
+		return super::refuse(StatusCode::BAD_REQUEST, "invalid_proxy_target");
 	}
 	let host = host.to_owned();
 	let Some(port) = url.port_or_known_default() else {
-		return super::failure(StatusCode::BAD_REQUEST, "invalid_proxy_target");
+		return super::refuse(StatusCode::BAD_REQUEST, "invalid_proxy_target");
 	};
 	let mut audit = Audit {
 		id: uuid::Uuid::new_v4(),
@@ -626,13 +809,13 @@ pub(super) async fn forward(
 		&& ((connect && url.scheme() == "https" && port == 443)
 			|| (!connect && url.scheme() == "http" && port == 80));
 	if !valid_target {
-		audit.outcome = "invalid_proxy_target";
+		audit.outcome = INVALID_TARGET;
 	}
 	if !audit.start().await {
-		return super::failure(StatusCode::SERVICE_UNAVAILABLE, "egress_audit_unavailable");
+		return super::refuse(StatusCode::SERVICE_UNAVAILABLE, "egress_audit_unavailable");
 	}
 	if !valid_target {
-		return super::failure(StatusCode::BAD_REQUEST, "invalid_proxy_target");
+		return super::failure(StatusCode::BAD_REQUEST, INVALID_TARGET);
 	}
 
 	if !scope
@@ -656,20 +839,17 @@ pub(super) async fn forward(
 		Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
 			return super::failure(StatusCode::FORBIDDEN, "egress_destination_forbidden");
 		}
-		Err(_) => {
+		Err(error) => {
+			audit.report().upstream("dns", error);
 			audit.outcome = "dns_error";
 			return super::failure(StatusCode::BAD_GATEWAY, "egress_dns_failed");
 		}
 	};
 	if connect {
-		let upstream = match tokio::time::timeout(
-			super::IDLE,
-			tokio::net::TcpStream::connect(addresses.as_slice()),
-		)
-		.await
-		{
-			Ok(Ok(upstream)) => upstream,
-			_ => {
+		let upstream = match connect_upstream(&addresses).await {
+			Ok(upstream) => upstream,
+			Err(error) => {
+				audit.report().upstream("connect", error);
 				audit.outcome = "connect_error";
 				return super::failure(StatusCode::BAD_GATEWAY, "egress_connect_failed");
 			}
@@ -692,6 +872,26 @@ pub(super) async fn forward(
 	.await
 }
 
+async fn connect_upstream(addresses: &[std::net::SocketAddr]) -> io::Result<tokio::net::TcpStream> {
+	tokio::time::timeout(super::IDLE, tokio::net::TcpStream::connect(addresses))
+		.await
+		.map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "connecting timed out"))?
+}
+
+/// The outcome for a connection's record. An end with no named code leaves its
+/// cause in the log, as does a lost authority, whose code alone does not say why.
+fn tunnel_ended(report: &FailureReport, result: &io::Result<()>) -> &'static str {
+	let outcome = tunnel_outcome(result);
+	if let Err(error) = result {
+		match outcome {
+			"interrupted" => report.upstream("transfer", error),
+			"egress_authority_unavailable" => report.internal("authority", error),
+			_ => {}
+		}
+	}
+	outcome
+}
+
 fn tunnel_outcome(result: &io::Result<()>) -> &'static str {
 	let Err(error) = result else {
 		return "completed";
@@ -706,6 +906,8 @@ fn tunnel_outcome(result: &io::Result<()>) -> &'static str {
 		"egress_credential_revoked",
 		"egress_host_revoked",
 		"egress_authority_unavailable",
+		"egress_refund_failed",
+		"egress_refund_timeout",
 	] {
 		if message.contains(code) {
 			return code;
@@ -732,6 +934,7 @@ async fn connect_tunnel(
 			"egress_audit_unavailable",
 		);
 	}
+	let report = audit.report();
 	let sent = audit.sent.clone();
 	let received = audit.received.clone();
 	let upgrade = hyper::upgrade::on(&mut request);
@@ -739,13 +942,8 @@ async fn connect_tunnel(
 	let mut tasks = manager.tasks.lock().unwrap();
 	while tasks.try_join_next().is_some() {}
 	tasks.spawn(async move {
-		let _permit = permit;
-		match tokio::time::timeout(std::time::Duration::from_secs(5), upgrade)
-			.await
-			.ok()
-			.and_then(Result::ok)
-		{
-			Some(client) => {
+		match tokio::time::timeout(std::time::Duration::from_secs(5), upgrade).await {
+			Ok(Ok(client)) => {
 				let (_, _, result) = tunnel_controlled(
 					hyper_util::rt::TokioIo::new(client),
 					upstream,
@@ -753,17 +951,27 @@ async fn connect_tunnel(
 					scope,
 					credential,
 					audit.host.clone(),
-					TrafficCounts {
+					TunnelReports {
 						sent: sent.clone(),
 						received: received.clone(),
+						failure: report.clone(),
 					},
 					stopping,
 				)
 				.await;
-				audit.outcome = tunnel_outcome(&result);
+				audit.outcome = tunnel_ended(&report, &result);
 			}
-			None => audit.outcome = "upgrade_failed",
+			Ok(Err(error)) => {
+				report.upstream("upgrade", super::causes(&error));
+				audit.outcome = "upgrade_failed";
+			}
+			Err(_) => {
+				report.upstream("upgrade", "the upgrade timed out");
+				audit.outcome = "upgrade_failed";
+			}
 		}
+		// A stall must not hold the Scratch Space's limit while the record retries.
+		drop(permit);
 		audit.finish().await;
 	});
 	hyper::Response::builder()
@@ -792,19 +1000,16 @@ async fn forward_http(
 	if !audit.start().await {
 		return super::failure(StatusCode::SERVICE_UNAVAILABLE, "egress_audit_unavailable");
 	}
-	let upstream = match tokio::time::timeout(
-		super::IDLE,
-		tokio::net::TcpStream::connect(addresses.as_slice()),
-	)
-	.await
-	{
-		Ok(Ok(socket)) => socket,
-		_ => {
+	let upstream = match connect_upstream(&addresses).await {
+		Ok(socket) => socket,
+		Err(error) => {
+			audit.report().upstream("connect", error);
 			audit.outcome = "connect_error";
 			return super::failure(StatusCode::BAD_GATEWAY, "egress_connect_failed");
 		}
 	};
 	audit.outcome = "interrupted";
+	let report = audit.report();
 	let (client, proxy) = tokio::io::duplex(64 * 1024);
 	let sent = audit.sent.clone();
 	let received = audit.received.clone();
@@ -813,8 +1018,8 @@ async fn forward_http(
 	{
 		let mut tasks = manager.tasks.lock().unwrap();
 		while tasks.try_join_next().is_some() {}
+		let report = report.clone();
 		tasks.spawn(async move {
-			let _permit = permit;
 			let (_, _, result) = tunnel_controlled(
 				proxy,
 				upstream,
@@ -822,23 +1027,29 @@ async fn forward_http(
 				scope,
 				credential,
 				audit.host.clone(),
-				TrafficCounts {
+				TunnelReports {
 					sent: sent.clone(),
 					received: received.clone(),
+					failure: report.clone(),
 				},
 				stopping,
 			)
 			.await;
-			let outcome = tunnel_outcome(&result);
+			let outcome = tunnel_ended(&report, &result);
 			audit.outcome = outcome;
 			let _ = result_tx.send(outcome);
+			// A stall must not hold the Scratch Space's limit while the record retries.
+			drop(permit);
 			audit.finish().await;
 		});
 	}
 	let (mut sender, connection) =
 		match hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(client)).await {
 			Ok(pair) => pair,
-			Err(_) => return super::failure(StatusCode::BAD_GATEWAY, "egress_connect_failed"),
+			Err(error) => {
+				report.upstream("handshake", super::causes(&error));
+				return super::failure(StatusCode::BAD_GATEWAY, "egress_connect_failed");
+			}
 		};
 	tokio::spawn(async move {
 		let _ = connection.await;
@@ -892,12 +1103,19 @@ async fn forward_http(
 			Ok("completed") => { transfer_completed = true; pending_response.await },
 			Ok("egress_budget_exhausted") => return super::failure(StatusCode::TOO_MANY_REQUESTS, "egress_budget_exhausted"),
 			Ok("egress_suspended") => return super::failure(StatusCode::FORBIDDEN, "egress_suspended"),
-			_ => return super::failure(StatusCode::BAD_GATEWAY, "egress_upstream_failed"),
+			ended => {
+				let code = ended.unwrap_or("the transfer stopped");
+				report.upstream("request", format!("ended before a response: {code}"));
+				return super::failure(StatusCode::BAD_GATEWAY, "egress_upstream_failed");
+			}
 		},
 	};
 	let response = match response {
 		Ok(response) => response,
-		Err(_) => return super::failure(StatusCode::BAD_GATEWAY, "egress_upstream_failed"),
+		Err(error) => {
+			report.upstream("request", super::causes(&error));
+			return super::failure(StatusCode::BAD_GATEWAY, "egress_upstream_failed");
+		}
 	};
 	let (mut parts, body) = response.into_parts();
 	let close_delimited = !parts.headers.contains_key(header::CONTENT_LENGTH)
@@ -1037,7 +1255,7 @@ mod tests {
 			settings,
 			"token".into(),
 			"registry.npmjs.org".into(),
-			super::TrafficCounts::default(),
+			super::TunnelReports::default(),
 			receiver,
 		));
 		client.write_all(b"abcdef").await.unwrap();
@@ -1136,7 +1354,7 @@ mod tests {
 			settings,
 			"token".into(),
 			"registry.npmjs.org".into(),
-			super::TrafficCounts::default(),
+			super::TunnelReports::default(),
 			receiver,
 		));
 		tokio::task::yield_now().await;
@@ -1173,7 +1391,7 @@ mod tests {
 			settings,
 			"token".into(),
 			"registry.npmjs.org".into(),
-			super::TrafficCounts::default(),
+			super::TunnelReports::default(),
 			receiver,
 		));
 		tokio::task::yield_now().await;
@@ -1279,7 +1497,7 @@ mod tests {
 			settings,
 			"token".into(),
 			"registry.npmjs.org".into(),
-			super::TrafficCounts::default(),
+			super::TunnelReports::default(),
 			receiver,
 		));
 		tokio::task::yield_now().await;
@@ -1310,7 +1528,7 @@ mod tests {
 			settings,
 			"token".into(),
 			"registry.npmjs.org".into(),
-			super::TrafficCounts::default(),
+			super::TunnelReports::default(),
 			receiver,
 		));
 		tokio::task::yield_now().await;
@@ -1345,7 +1563,7 @@ mod tests {
 			settings.clone(),
 			"token".into(),
 			"registry.npmjs.org".into(),
-			super::TrafficCounts::default(),
+			super::TunnelReports::default(),
 			receiver.clone(),
 		));
 		let task = tokio::spawn(super::tunnel_controlled(
@@ -1355,7 +1573,7 @@ mod tests {
 			settings,
 			"token".into(),
 			"registry.npmjs.org".into(),
-			super::TrafficCounts::default(),
+			super::TunnelReports::default(),
 			receiver,
 		));
 		client.write_all(b"a").await.unwrap();
@@ -1403,7 +1621,7 @@ mod tests {
 				settings,
 				"token".into(),
 				"registry.npmjs.org".into(),
-				super::TrafficCounts::default(),
+				super::TunnelReports::default(),
 				receiver,
 			));
 			tokio::task::yield_now().await;
@@ -2049,7 +2267,7 @@ mod tests {
 		remote.read_exact(&mut buffer).await.unwrap();
 		let live = scopes.records();
 		assert_eq!(live.len(), 1);
-		assert_eq!(live[0].outcome, "interrupted");
+		assert_eq!(live[0].outcome, "unsettled");
 		gateway_task.await.unwrap();
 		if abort {
 			manager.tasks.lock().unwrap().abort_all();
@@ -2188,5 +2406,748 @@ mod tests {
 		assert_eq!(records[0].sent_bytes, 5);
 		assert_eq!(records[0].received_bytes, 5);
 		assert_eq!(records[0].outcome, "completed");
+	}
+
+	/// A store that fails the chosen calls, repeating what it was given in the
+	/// error's text as a database error can.
+	struct FaultyScopes {
+		memory: Arc<MemoryScopes>,
+		resolve_fails: bool,
+		refund_fails: bool,
+		record_hangs: bool,
+		record_fails:
+			Box<dyn Fn(&aidash_application::egress::ConnectionRecord) -> bool + Send + Sync>,
+	}
+	impl FaultyScopes {
+		fn new(settings: &ScopeSettings) -> Self {
+			Self {
+				memory: Arc::new(MemoryScopes::new(CREDENTIAL.into(), settings.clone())),
+				resolve_fails: false,
+				refund_fails: false,
+				record_hangs: false,
+				record_fails: Box::new(|_| false),
+			}
+		}
+	}
+	#[async_trait::async_trait]
+	impl EgressScopes for FaultyScopes {
+		async fn resolve(&self, c: &str) -> aidash_application::Result<ScopeSettings> {
+			if self.resolve_fails {
+				return Err(aidash_application::Error::External(format!(
+					"pool timed out resolving {c}"
+				)));
+			}
+			self.memory.resolve(c).await
+		}
+		async fn admit_external(
+			&self,
+			c: &str,
+			s: &str,
+			m: &str,
+			p: &str,
+			d: &str,
+		) -> aidash_application::Result<aidash_application::egress::Admission> {
+			self.memory.admit_external(c, s, m, p, d).await
+		}
+		async fn admit_connection(&self, s: &ScopeSettings) -> aidash_application::Result<()> {
+			self.memory.admit_connection(s).await
+		}
+		async fn check_active(
+			&self,
+			s: &ScopeSettings,
+			c: &str,
+		) -> aidash_application::Result<ScopeSettings> {
+			self.memory.check_active(s, c).await
+		}
+		async fn debit(
+			&self,
+			s: &ScopeSettings,
+			d: aidash_application::egress::Direction,
+			n: u64,
+			day: chrono::NaiveDate,
+		) -> aidash_application::Result<()> {
+			self.memory.debit(s, d, n, day).await
+		}
+		async fn refund(
+			&self,
+			s: &ScopeSettings,
+			d: aidash_application::egress::Direction,
+			n: u64,
+			day: chrono::NaiveDate,
+		) -> aidash_application::Result<()> {
+			if self.refund_fails {
+				return Err(aidash_application::Error::External(
+					"pool timed out refunding".into(),
+				));
+			}
+			self.memory.refund(s, d, n, day).await
+		}
+		async fn record(
+			&self,
+			r: aidash_application::egress::ConnectionRecord,
+		) -> aidash_application::Result<()> {
+			if self.record_hangs {
+				return std::future::pending().await;
+			}
+			if (self.record_fails)(&r) {
+				return Err(aidash_application::Error::External(format!(
+					"pool timed out recording {}",
+					r.host
+				)));
+			}
+			self.memory.record(r).await
+		}
+		async fn lift_suspension(&self, id: &ScopeId) -> aidash_application::Result<()> {
+			self.memory.lift_suspension(id).await
+		}
+	}
+
+	const CREDENTIAL: &str = "canary-credential";
+	const HOST: &str = "canary-host.invalid";
+	const FAILED: &str = "Egress host connection failed";
+
+	fn failures(kind: &str) -> String {
+		format!(r#"aidash_egress_host_connection_failures_total{{kind="{kind}"}}"#)
+	}
+
+	fn assert_private(logs: &str) {
+		for private in [CREDENTIAL, HOST, "private-path"] {
+			assert!(!logs.contains(private), "{private} in {logs}");
+		}
+	}
+
+	fn lines_at<'a>(logs: &'a str, level: &str, kind: &str) -> Vec<&'a str> {
+		logs.lines()
+			.filter(|line| line.contains(level) && line.contains(&format!("kind=\"{kind}\"")))
+			.collect()
+	}
+
+	fn audit_for(
+		manager: &Arc<super::TunnelManager>,
+		scopes: Arc<dyn EgressScopes>,
+		settings: &ScopeSettings,
+	) -> super::Audit {
+		super::Audit {
+			id: uuid::Uuid::new_v4(),
+			manager: manager.clone(),
+			scopes,
+			scope: settings.id.clone(),
+			host: HOST.into(),
+			port: 80,
+			started: std::time::Instant::now(),
+			sent: Arc::new(super::AtomicU64::new(0)),
+			received: Arc::new(super::AtomicU64::new(0)),
+			outcome: "refused",
+			finished: false,
+			started_record: false,
+		}
+	}
+
+	/// Sends one plain HTTP request through `forward_http` and returns the raw
+	/// response once the connection has ended.
+	async fn forward_once(
+		manager: &Arc<super::TunnelManager>,
+		scopes: Arc<dyn EgressScopes>,
+		settings: &ScopeSettings,
+		addresses: Vec<std::net::SocketAddr>,
+	) -> String {
+		use hyper::service::service_fn;
+		use std::convert::Infallible;
+		let gateway = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = gateway.local_addr().unwrap();
+		let manager = manager.clone();
+		let settings = settings.clone();
+		let served = tokio::spawn(async move {
+			let (socket, _) = gateway.accept().await.unwrap();
+			let service = service_fn(move |request| {
+				let manager = manager.clone();
+				let scopes = scopes.clone();
+				let settings = settings.clone();
+				let addresses = addresses.clone();
+				async move {
+					let audit = audit_for(&manager, scopes.clone(), &settings);
+					let permit = Arc::new(manager.acquire(&settings).unwrap());
+					let result = super::forward_http(
+						request,
+						url::Url::parse(&format!("http://{HOST}/private-path")).unwrap(),
+						addresses,
+						scopes,
+						settings,
+						CREDENTIAL.into(),
+						audit,
+						super::TunnelLease { permit, manager },
+					)
+					.await;
+					Ok::<_, Infallible>(result)
+				}
+			});
+			let _ = hyper::server::conn::http1::Builder::new()
+				.serve_connection(hyper_util::rt::TokioIo::new(socket), service)
+				.await;
+		});
+		let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+		client
+			.write_all(
+				format!(
+					"GET http://{HOST}/private-path HTTP/1.1\r\nHost: {HOST}\r\nConnection: close\r\n\r\n"
+				)
+				.as_bytes(),
+			)
+			.await
+			.unwrap();
+		let mut response = Vec::new();
+		let _ = client.read_to_end(&mut response).await;
+		served.await.unwrap();
+		String::from_utf8_lossy(&response).into_owned()
+	}
+
+	async fn closed_address() -> std::net::SocketAddr {
+		// Nothing listens on a port that was just released.
+		let unused = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		unused.local_addr().unwrap()
+	}
+
+	fn manager() -> (tokio::sync::watch::Sender<bool>, Arc<super::TunnelManager>) {
+		let (stop, receiver) = tokio::sync::watch::channel(false);
+		let manager = super::TunnelManager::new(receiver, super::super::ProxyLimits::default());
+		(stop, Arc::new(manager))
+	}
+
+	async fn proxy_response(scopes: Arc<dyn EgressScopes>, request: String) -> String {
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = listener.local_addr().unwrap();
+		let (stop, receiver) = tokio::sync::watch::channel(false);
+		let task = tokio::spawn(super::super::serve_with_scopes(
+			listener,
+			Arc::new(DenyLegacy),
+			Some(scopes),
+			super::super::ProxyLimits::default(),
+			receiver,
+		));
+		let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+		client.write_all(request.as_bytes()).await.unwrap();
+		let mut response = String::new();
+		client.read_to_string(&mut response).await.unwrap();
+		stop.send(true).unwrap();
+		task.await.unwrap().unwrap();
+		response
+	}
+
+	#[tokio::test]
+	async fn a_refused_upstream_connection_leaves_its_cause_without_host_or_credential() {
+		let observed = super::super::tests::Observed::start();
+		let settings = test_settings();
+		let scopes = Arc::new(MemoryScopes::new(CREDENTIAL.into(), settings.clone()));
+		let (_stop, manager) = manager();
+		let closed = closed_address().await;
+		let response = forward_once(&manager, scopes.clone(), &settings, vec![closed]).await;
+		assert!(response.contains("egress_connect_failed"), "{response}");
+		manager.drain().await;
+		assert_eq!(scopes.records()[0].outcome, "connect_error");
+		let logs = observed.logs();
+		assert_eq!(lines_at(&logs, "WARN", "connect").len(), 1, "{logs}");
+		assert!(logs.contains(FAILED), "{logs}");
+		assert!(logs.to_lowercase().contains("refused"), "{logs}");
+		assert!(logs.contains(&scopes.records()[0].id.to_string()), "{logs}");
+		assert_private(&logs);
+		assert_eq!(observed.count(&failures("connect")), 1);
+	}
+
+	#[tokio::test]
+	async fn repeated_upstream_failures_log_one_line_and_count_every_one() {
+		let observed = super::super::tests::Observed::start();
+		let settings = test_settings();
+		let scopes = Arc::new(MemoryScopes::new(CREDENTIAL.into(), settings.clone()));
+		let (_stop, manager) = manager();
+		let closed = closed_address().await;
+		for _ in 0..5 {
+			forward_once(&manager, scopes.clone(), &settings, vec![closed]).await;
+		}
+		manager.drain().await;
+		let logs = observed.logs();
+		assert_eq!(lines_at(&logs, "WARN", "connect").len(), 1, "{logs}");
+		assert_eq!(lines_at(&logs, "DEBUG", "connect").len(), 4, "{logs}");
+		assert_eq!(observed.count(&failures("connect")), 5);
+	}
+
+	#[tokio::test]
+	async fn an_upstream_closing_without_a_response_leaves_the_cause_of_the_request() {
+		let observed = super::super::tests::Observed::start();
+		let settings = test_settings();
+		let scopes = Arc::new(MemoryScopes::new(CREDENTIAL.into(), settings.clone()));
+		let (_stop, manager) = manager();
+		let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = upstream.local_addr().unwrap();
+		let upstream_task = tokio::spawn(async move {
+			let (mut socket, _) = upstream.accept().await.unwrap();
+			let mut request = [0; 4096];
+			let _ = socket.read(&mut request).await.unwrap();
+		});
+		let response = forward_once(&manager, scopes.clone(), &settings, vec![address]).await;
+		assert!(response.contains("egress_upstream_failed"), "{response}");
+		upstream_task.await.unwrap();
+		manager.drain().await;
+		let logs = observed.logs();
+		assert_eq!(lines_at(&logs, "WARN", "request").len(), 1, "{logs}");
+		assert!(logs.contains("closed"), "{logs}");
+		assert_private(&logs);
+		assert_eq!(observed.count(&failures("request")), 1);
+	}
+
+	#[tokio::test]
+	async fn a_failed_upgrade_leaves_its_cause() {
+		use hyper::service::service_fn;
+		use std::convert::Infallible;
+		let observed = super::super::tests::Observed::start();
+		let settings = test_settings();
+		let scopes = Arc::new(MemoryScopes::new(CREDENTIAL.into(), settings.clone()));
+		let (_stop, manager) = manager();
+		let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let upstream_address = upstream.local_addr().unwrap();
+		let gateway = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = gateway.local_addr().unwrap();
+		let (service_manager, service_scopes) = (manager.clone(), scopes.clone());
+		let served = tokio::spawn(async move {
+			let (socket, _) = gateway.accept().await.unwrap();
+			let service = service_fn(move |request| {
+				let manager = service_manager.clone();
+				let scopes = service_scopes.clone();
+				let settings = settings.clone();
+				async move {
+					let scopes: Arc<dyn EgressScopes> = scopes;
+					let mut audit = audit_for(&manager, scopes.clone(), &settings);
+					audit.started_record = true;
+					let permit = Arc::new(manager.acquire(&settings).unwrap());
+					let upstream = tokio::net::TcpStream::connect(upstream_address)
+						.await
+						.unwrap();
+					let result = super::connect_tunnel(
+						request,
+						upstream,
+						scopes,
+						settings,
+						CREDENTIAL.into(),
+						audit,
+						permit,
+						manager,
+					)
+					.await;
+					Ok::<_, Infallible>(result)
+				}
+			});
+			let _ = hyper::server::conn::http1::Builder::new()
+				.serve_connection(hyper_util::rt::TokioIo::new(socket), service)
+				.with_upgrades()
+				.await;
+		});
+		let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+		// A plain request never upgrades, so the wait for it fails when the
+		// connection ends.
+		client
+			.write_all(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+			.await
+			.unwrap();
+		let mut response = Vec::new();
+		let _ = client.read_to_end(&mut response).await;
+		served.await.unwrap();
+		manager.drain().await;
+		assert_eq!(scopes.records()[0].outcome, "upgrade_failed");
+		let logs = observed.logs();
+		assert_eq!(lines_at(&logs, "WARN", "upgrade").len(), 1, "{logs}");
+		assert_private(&logs);
+		assert_eq!(observed.count(&failures("upgrade")), 1);
+	}
+
+	#[tokio::test]
+	async fn a_failed_name_lookup_leaves_its_cause_without_the_host() {
+		let observed = super::super::tests::Observed::start();
+		let mut settings = test_settings();
+		settings.allowed_hosts.hosts = vec![HOST.into()];
+		let scopes = Arc::new(MemoryScopes::new(CREDENTIAL.into(), settings));
+		let response = proxy_response(
+			scopes.clone(),
+			format!(
+				"CONNECT {HOST}:443 HTTP/1.1\r\nHost: {HOST}:443\r\nProxy-Authorization: Bearer {CREDENTIAL}\r\nConnection: close\r\n\r\n"
+			),
+		)
+		.await;
+		assert!(response.contains("egress_dns_failed"), "{response}");
+		assert_eq!(scopes.records()[0].outcome, "dns_error");
+		let logs = observed.logs();
+		assert_eq!(lines_at(&logs, "WARN", "dns").len(), 1, "{logs}");
+		assert_private(&logs);
+		assert_eq!(observed.count(&failures("dns")), 1);
+	}
+
+	#[tokio::test]
+	async fn connections_through_one_listener_share_one_thinned_line() {
+		let observed = super::super::tests::Observed::start();
+		let mut settings = test_settings();
+		settings.allowed_hosts.hosts = vec![HOST.into()];
+		let scopes = Arc::new(MemoryScopes::new(CREDENTIAL.into(), settings));
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = listener.local_addr().unwrap();
+		let (stop, receiver) = tokio::sync::watch::channel(false);
+		let task = tokio::spawn(super::super::serve_with_scopes(
+			listener,
+			Arc::new(DenyLegacy),
+			Some(scopes.clone()),
+			super::super::ProxyLimits::default(),
+			receiver,
+		));
+		for _ in 0..3 {
+			let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+			client
+				.write_all(
+					format!(
+						"CONNECT {HOST}:443 HTTP/1.1\r\nHost: {HOST}:443\r\nProxy-Authorization: Bearer {CREDENTIAL}\r\nConnection: close\r\n\r\n"
+					)
+					.as_bytes(),
+				)
+				.await
+				.unwrap();
+			let mut response = String::new();
+			client.read_to_string(&mut response).await.unwrap();
+			assert!(response.contains("egress_dns_failed"), "{response}");
+		}
+		stop.send(true).unwrap();
+		task.await.unwrap().unwrap();
+		let logs = observed.logs();
+		assert_eq!(lines_at(&logs, "WARN", "dns").len(), 1, "{logs}");
+		assert_eq!(lines_at(&logs, "DEBUG", "dns").len(), 2, "{logs}");
+		assert_eq!(observed.count(&failures("dns")), 3);
+		assert_eq!(scopes.records().len(), 3);
+		assert!(scopes.records().iter().all(|r| r.outcome == "dns_error"));
+	}
+
+	#[tokio::test]
+	async fn an_unexpected_admission_failure_is_logged_and_counted_without_the_credential() {
+		let observed = super::super::tests::Observed::start();
+		let mut scopes = FaultyScopes::new(&test_settings());
+		scopes.resolve_fails = true;
+		let response = proxy_response(
+			Arc::new(scopes),
+			format!(
+				"CONNECT {HOST}:443 HTTP/1.1\r\nHost: {HOST}:443\r\nProxy-Authorization: Bearer {CREDENTIAL}\r\nConnection: close\r\n\r\n"
+			),
+		)
+		.await;
+		assert!(response.contains("egress_unavailable"), "{response}");
+		let logs = observed.logs();
+		assert_eq!(lines_at(&logs, "ERROR", "admission").len(), 1, "{logs}");
+		assert!(logs.contains("pool timed out"), "{logs}");
+		assert_private(&logs);
+		assert_eq!(
+			observed.count(r#"aidash_egress_refused_total{reason="egress_unavailable"}"#),
+			1
+		);
+	}
+
+	#[tokio::test]
+	async fn refusals_before_a_record_exists_are_counted_by_reason() {
+		let observed = super::super::tests::Observed::start();
+		let scopes = Arc::new(MemoryScopes::new(CREDENTIAL.into(), test_settings()));
+		proxy_response(
+			scopes.clone(),
+			format!("CONNECT {HOST}:443 HTTP/1.1\r\nHost: {HOST}:443\r\nConnection: close\r\n\r\n"),
+		)
+		.await;
+		proxy_response(
+			scopes.clone(),
+			format!(
+				"CONNECT {HOST}:443 HTTP/1.1\r\nHost: {HOST}:443\r\nProxy-Authorization: Bearer wrong\r\nConnection: close\r\n\r\n"
+			),
+		)
+		.await;
+		assert_eq!(
+			observed.count(r#"aidash_egress_refused_total{reason="proxy_auth_required"}"#),
+			2
+		);
+		assert!(!observed.logs().contains("ERROR"), "{}", observed.logs());
+		assert!(scopes.records().is_empty());
+	}
+
+	#[tokio::test]
+	async fn a_start_record_that_cannot_be_written_refuses_and_logs_its_cause() {
+		let observed = super::super::tests::Observed::start();
+		let mut settings = test_settings();
+		settings.allowed_hosts.hosts = vec![HOST.into()];
+		let mut scopes = FaultyScopes::new(&settings);
+		scopes.record_fails = Box::new(|_| true);
+		let response = proxy_response(
+			Arc::new(scopes),
+			format!(
+				"CONNECT {HOST}:443 HTTP/1.1\r\nHost: {HOST}:443\r\nProxy-Authorization: Bearer {CREDENTIAL}\r\nConnection: close\r\n\r\n"
+			),
+		)
+		.await;
+		assert!(response.contains("egress_audit_unavailable"), "{response}");
+		let logs = observed.logs();
+		assert_eq!(lines_at(&logs, "ERROR", "start_record").len(), 1, "{logs}");
+		assert!(logs.contains("pool timed out"), "{logs}");
+		assert_private(&logs);
+		assert_eq!(
+			observed.count(r#"aidash_egress_refused_total{reason="egress_audit_unavailable"}"#),
+			1
+		);
+	}
+
+	#[tokio::test]
+	async fn the_start_record_is_unsettled_and_an_invalid_target_says_so_from_the_start() {
+		let settings = test_settings();
+		let scopes = Arc::new(MemoryScopes::new(CREDENTIAL.into(), settings.clone()));
+		let (_stop, manager) = manager();
+		let mut audit = audit_for(&manager, scopes.clone(), &settings);
+		assert!(audit.start().await);
+		assert_eq!(scopes.records()[0].outcome, "unsettled");
+		audit.finished = true;
+
+		let mut invalid = audit_for(&manager, scopes.clone(), &settings);
+		invalid.port = 0;
+		invalid.outcome = "invalid_proxy_target";
+		assert!(invalid.start().await);
+		let records = scopes.records();
+		let written = records.iter().find(|record| record.port == 0).unwrap();
+		assert_eq!(written.outcome, "invalid_proxy_target");
+		invalid.finished = true;
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn the_log_is_thinned_per_kind_and_reports_the_number_since_its_last_line() {
+		let log = super::FailureLog::default();
+		assert_eq!(log.due("connect"), Some(1));
+		assert_eq!(log.due("connect"), None);
+		assert_eq!(log.due("connect"), None);
+		assert_eq!(log.due("dns"), Some(1), "one kind must not hide another");
+		tokio::time::advance(std::time::Duration::from_secs(10)).await;
+		assert_eq!(log.due("connect"), Some(3));
+		assert_eq!(log.due("connect"), None);
+	}
+
+	#[tokio::test]
+	async fn only_an_end_with_no_named_code_counts_as_a_transfer_failure() {
+		let observed = super::super::tests::Observed::start();
+		let report = super::FailureReport {
+			host: HOST.into(),
+			..Default::default()
+		};
+		let failed = |text: &str| Err(std::io::Error::other(text.to_owned()));
+		assert_eq!(super::tunnel_ended(&report, &Ok(())), "completed");
+		assert_eq!(
+			super::tunnel_ended(&report, &failed("egress_idle_timeout")),
+			"egress_idle_timeout"
+		);
+		assert_eq!(observed.count(&failures("transfer")), 0);
+		assert_eq!(
+			super::tunnel_ended(&report, &failed(&format!("reset by {HOST}"))),
+			"interrupted"
+		);
+		assert_eq!(observed.count(&failures("transfer")), 1);
+		assert_eq!(
+			super::tunnel_ended(
+				&report,
+				&failed("egress_authority_unavailable: the check timed out")
+			),
+			"egress_authority_unavailable"
+		);
+		assert_eq!(observed.count(&failures("transfer")), 1);
+		let logs = observed.logs();
+		assert!(logs.contains("reset by [host]"), "{logs}");
+		assert_eq!(lines_at(&logs, "ERROR", "authority").len(), 1, "{logs}");
+		assert!(logs.contains("the check timed out"), "{logs}");
+		assert_private(&logs);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn a_failed_refund_leaves_its_cause_and_is_not_an_interruption() {
+		let observed = super::super::tests::Observed::start();
+		let settings = test_settings();
+		let mut scopes = FaultyScopes::new(&settings);
+		scopes.refund_fails = true;
+		let (mut client, gateway_client) = tokio::io::duplex(64);
+		let (gateway_server, mut server) = tokio::io::duplex(64);
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let task = tokio::spawn(super::tunnel_controlled(
+			gateway_client,
+			gateway_server,
+			Arc::new(scopes),
+			settings,
+			CREDENTIAL.into(),
+			HOST.into(),
+			super::TunnelReports::default(),
+			receiver,
+		));
+		client.write_all(b"hello").await.unwrap();
+		let mut received = [0; 5];
+		server.read_exact(&mut received).await.unwrap();
+		drop(client);
+		drop(server);
+		let (_, _, result) = task.await.unwrap();
+		assert_eq!(super::tunnel_outcome(&result), "egress_refund_failed");
+		let logs = observed.logs();
+		assert_eq!(lines_at(&logs, "ERROR", "refund").len(), 1, "{logs}");
+		assert!(logs.contains("pool timed out refunding"), "{logs}");
+		assert_eq!(
+			observed.count(
+				r#"aidash_egress_settle_failures_total{stage="refund",outcome="abandoned"}"#
+			),
+			1
+		);
+	}
+
+	fn record(settings: &ScopeSettings) -> aidash_application::egress::ConnectionRecord {
+		aidash_application::egress::ConnectionRecord {
+			id: uuid::Uuid::new_v4(),
+			scope: settings.id.clone(),
+			host: HOST.into(),
+			port: 443,
+			sent_bytes: 0,
+			received_bytes: 0,
+			duration_ms: 0,
+			outcome: "completed".into(),
+		}
+	}
+
+	fn report_for(host: &str) -> super::FailureReport {
+		super::FailureReport {
+			host: host.into(),
+			..Default::default()
+		}
+	}
+
+	const RETRIED: &str =
+		r#"aidash_egress_settle_failures_total{stage="connection_record",outcome="retried"}"#;
+	const ABANDONED: &str =
+		r#"aidash_egress_settle_failures_total{stage="connection_record",outcome="abandoned"}"#;
+
+	#[tokio::test(start_paused = true)]
+	async fn the_final_record_outlasts_the_stall_seen_in_709() {
+		let observed = super::super::tests::Observed::start();
+		let settings = test_settings();
+		let mut scopes = FaultyScopes::new(&settings);
+		let began = tokio::time::Instant::now();
+		scopes.record_fails =
+			Box::new(move |_| began.elapsed() < std::time::Duration::from_secs(47));
+		let memory = scopes.memory.clone();
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		super::settle_record(
+			Arc::new(scopes),
+			record(&settings),
+			receiver,
+			report_for(HOST),
+		)
+		.await;
+		assert!(began.elapsed() >= std::time::Duration::from_secs(47));
+		assert_eq!(memory.records().len(), 1);
+		assert!(observed.count(RETRIED) > 0);
+		assert_eq!(observed.count(ABANDONED), 0);
+		assert!(!observed.logs().contains("ERROR"), "{}", observed.logs());
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn the_final_record_gives_up_after_about_a_minute_and_says_why() {
+		let observed = super::super::tests::Observed::start();
+		let settings = test_settings();
+		let mut scopes = FaultyScopes::new(&settings);
+		scopes.record_fails = Box::new(|_| true);
+		let began = tokio::time::Instant::now();
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		super::settle_record(
+			Arc::new(scopes),
+			record(&settings),
+			receiver,
+			report_for(HOST),
+		)
+		.await;
+		assert!(began.elapsed() >= std::time::Duration::from_secs(60));
+		assert!(began.elapsed() < std::time::Duration::from_secs(80));
+		assert_eq!(observed.count(ABANDONED), 1);
+		let logs = observed.logs();
+		assert_eq!(lines_at(&logs, "ERROR", "final_record").len(), 1, "{logs}");
+		assert!(logs.contains("pool timed out recording [host]"), "{logs}");
+		assert_private(&logs);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn a_stop_during_the_wait_leaves_one_more_attempt() {
+		let observed = super::super::tests::Observed::start();
+		let settings = test_settings();
+		let mut scopes = FaultyScopes::new(&settings);
+		let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+		let counted = attempts.clone();
+		scopes.record_fails = Box::new(move |_| {
+			counted.fetch_add(1, Ordering::SeqCst);
+			true
+		});
+		let (stop, receiver) = tokio::sync::watch::channel(false);
+		let began = tokio::time::Instant::now();
+		let task = tokio::spawn(super::settle_record(
+			Arc::new(scopes),
+			record(&settings),
+			receiver,
+			report_for(HOST),
+		));
+		tokio::task::yield_now().await;
+		assert_eq!(attempts.load(Ordering::SeqCst), 1);
+		stop.send(true).unwrap();
+		task.await.unwrap();
+		assert_eq!(attempts.load(Ordering::SeqCst), 2);
+		assert!(began.elapsed() < std::time::Duration::from_secs(1));
+		assert_eq!(observed.count(ABANDONED), 1);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn a_process_already_stopping_bounds_its_one_attempt() {
+		let observed = super::super::tests::Observed::start();
+		let settings = test_settings();
+		let mut scopes = FaultyScopes::new(&settings);
+		scopes.record_hangs = true;
+		let (stop, receiver) = tokio::sync::watch::channel(false);
+		stop.send(true).unwrap();
+		let began = tokio::time::Instant::now();
+		super::settle_record(
+			Arc::new(scopes),
+			record(&settings),
+			receiver,
+			report_for(HOST),
+		)
+		.await;
+		assert_eq!(began.elapsed(), super::STOPPING_ATTEMPT);
+		assert_eq!(observed.count(ABANDONED), 1);
+		assert!(observed.logs().contains("attempt timed out"));
+	}
+
+	#[tokio::test]
+	async fn a_connection_gives_up_its_slot_while_its_final_record_retries() {
+		let settings = test_settings();
+		let mut scopes = FaultyScopes::new(&settings);
+		scopes.record_fails = Box::new(|record| record.outcome != "unsettled");
+		let memory = scopes.memory.clone();
+		let (stop, manager) = manager();
+		let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = upstream.local_addr().unwrap();
+		let upstream_task = tokio::spawn(async move {
+			let (mut socket, _) = upstream.accept().await.unwrap();
+			let mut request = [0; 4096];
+			let _ = socket.read(&mut request).await.unwrap();
+			socket
+				.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+				.await
+				.unwrap();
+		});
+		let response = forward_once(&manager, Arc::new(scopes), &settings, vec![address]).await;
+		assert!(response.ends_with("ok"), "{response}");
+		upstream_task.await.unwrap();
+		tokio::time::timeout(std::time::Duration::from_secs(3), async {
+			while !manager.counts.lock().unwrap().scopes.is_empty() {
+				tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+			}
+		})
+		.await
+		.expect("the slot must be free while the record is still retrying");
+		assert_eq!(memory.records()[0].outcome, "unsettled");
+		stop.send(true).unwrap();
+		manager.drain().await;
+		assert_eq!(memory.records()[0].outcome, "unsettled");
 	}
 }

@@ -1382,14 +1382,14 @@ async fn a_stalled_client_write_times_out() {
 
 /// What the gateway logs and counts on this test's thread. `#[tokio::test]` runs
 /// every task on one thread, so spawned connections are observed too.
-struct Observed {
+pub(super) struct Observed {
 	logs: Arc<Mutex<Vec<u8>>>,
 	metrics: metrics_exporter_prometheus::PrometheusHandle,
 	_log: tracing::subscriber::DefaultGuard,
 	_metrics: metrics::LocalRecorderGuard<'static>,
 }
 impl Observed {
-	fn start() -> Self {
+	pub(super) fn start() -> Self {
 		struct Writer(Arc<Mutex<Vec<u8>>>);
 		impl std::io::Write for Writer {
 			fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -1418,11 +1418,11 @@ impl Observed {
 		}
 	}
 
-	fn logs(&self) -> String {
+	pub(super) fn logs(&self) -> String {
 		String::from_utf8_lossy(&self.logs.lock().unwrap()).into_owned()
 	}
 
-	fn count(&self, series: &str) -> u64 {
+	pub(super) fn count(&self, series: &str) -> u64 {
 		self.metrics
 			.render()
 			.lines()
