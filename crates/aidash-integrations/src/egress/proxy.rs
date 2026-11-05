@@ -23,6 +23,10 @@ const STOPPING_ATTEMPT: std::time::Duration = std::time::Duration::from_secs(5);
 /// A live connection, or one whose final record was never written.
 const UNSETTLED: &str = "unsettled";
 const INVALID_TARGET: &str = "invalid_proxy_target";
+const WRITE_FAILED: &str = "write failed";
+/// The client reset or stopped reading. A tunnel cannot see inside TLS, so this
+/// may be a finished download or an abandoned one, and it is no failure of ours.
+const CLIENT_CLOSED: &str = "egress_client_closed";
 
 /// Failures of each kind since that kind's last log line.
 #[derive(Default)]
@@ -309,8 +313,10 @@ async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 					batch.remaining -= bytes as u64;
 					count.fetch_add(bytes as u64, Ordering::Relaxed);
 				}
+				// Only a failed read keeps its kind, so that a tunnel can tell which
+				// side went away.
 				Err(error) => {
-					return Err(error);
+					return Err(io::Error::other(format!("{WRITE_FAILED}: {error}")));
 				}
 			}
 		}
@@ -388,7 +394,10 @@ where
 				if result.is_err() {
 					cancel_tx.send_replace(true);
 				}
-				result
+				result.map_err(|error| match error.kind() {
+					io::ErrorKind::ConnectionReset => io::Error::other(CLIENT_CLOSED),
+					_ => error,
+				})
 			};
 			let receive = async {
 				let result = pump(
@@ -403,7 +412,13 @@ where
 				if result.is_err() {
 					cancel_tx.send_replace(true);
 				}
-				result
+				result.map_err(|error| {
+					if error.to_string().starts_with(WRITE_FAILED) {
+						io::Error::other(CLIENT_CLOSED)
+					} else {
+						error
+					}
+				})
 			};
 			let (sent, received) = tokio::join!(send, receive);
 			match (sent, received) {
@@ -908,6 +923,7 @@ fn tunnel_outcome(result: &io::Result<()>) -> &'static str {
 		"egress_authority_unavailable",
 		"egress_refund_failed",
 		"egress_refund_timeout",
+		CLIENT_CLOSED,
 	] {
 		if message.contains(code) {
 			return code;
@@ -2937,6 +2953,10 @@ mod tests {
 			super::tunnel_ended(&report, &failed("egress_idle_timeout")),
 			"egress_idle_timeout"
 		);
+		assert_eq!(
+			super::tunnel_ended(&report, &failed(super::CLIENT_CLOSED)),
+			super::CLIENT_CLOSED
+		);
 		assert_eq!(observed.count(&failures("transfer")), 0);
 		assert_eq!(
 			super::tunnel_ended(&report, &failed(&format!("reset by {HOST}"))),
@@ -2956,6 +2976,53 @@ mod tests {
 		assert_eq!(lines_at(&logs, "ERROR", "authority").len(), 1, "{logs}");
 		assert!(logs.contains("the check timed out"), "{logs}");
 		assert_private(&logs);
+	}
+
+	/// Closing with linger 0 sends a reset rather than a normal close.
+	fn reset(socket: tokio::net::TcpStream) {
+		socket2::SockRef::from(&socket)
+			.set_linger(Some(std::time::Duration::ZERO))
+			.unwrap();
+		drop(socket);
+	}
+
+	async fn socket_pair() -> (tokio::net::TcpStream, tokio::net::TcpStream) {
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let near = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+			.await
+			.unwrap();
+		let (far, _) = listener.accept().await.unwrap();
+		(near, far)
+	}
+
+	#[tokio::test]
+	async fn a_reset_tells_which_side_went_away() {
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let settings = test_settings();
+		let scopes = Arc::new(MemoryScopes::new(CREDENTIAL.into(), settings.clone()));
+		for (client_resets, outcome) in [(true, super::CLIENT_CLOSED), (false, "interrupted")] {
+			let (gateway_client, client) = socket_pair().await;
+			let (gateway_upstream, upstream) = socket_pair().await;
+			let task = tokio::spawn(super::tunnel_controlled(
+				gateway_client,
+				gateway_upstream,
+				scopes.clone(),
+				settings.clone(),
+				CREDENTIAL.into(),
+				HOST.into(),
+				super::TunnelReports::default(),
+				receiver.clone(),
+			));
+			let (gone, stays) = if client_resets {
+				(client, upstream)
+			} else {
+				(upstream, client)
+			};
+			reset(gone);
+			let result = task.await.unwrap().2;
+			drop(stays);
+			assert_eq!(super::tunnel_outcome(&result), outcome, "{result:?}");
+		}
 	}
 
 	#[tokio::test(start_paused = true)]

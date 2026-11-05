@@ -360,7 +360,10 @@ duration and outcome, rather than request paths or bodies. Invalid targets are
 recorded when a bounded host and port can be parsed; malformed targets without
 one are rejected without retaining the raw request. A record is created
 before the connection starts, with the outcome `unsettled`, and updated when it
-ends. `interrupted` means that the connection really was cut. If the initial
+ends. `interrupted` means that the connection was cut other than by its client.
+`egress_client_closed` means that the client reset it or stopped reading, which
+may be a finished download or an abandoned one, since a tunnel cannot see inside
+TLS. If the initial
 record cannot be written after retries, the gateway refuses the connection with
 `egress_audit_unavailable`. The final record is retried for about 60 seconds
 without holding the connection's concurrency slot, or once more if the process
