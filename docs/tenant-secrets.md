@@ -296,7 +296,9 @@ rewritten links are used unchanged. Python downloads are disabled with
 `UV_PYTHON_DOWNLOADS=never`.
 
 Only these built-in indexes buffer index responses, up to 8 MiB, to rewrite
-package file addresses onto the gateway. npm files remain on
+package file addresses onto the gateway. An index exceeding this limit is refused
+with HTTP 422 and guidance to use a lockfile or a tarball URL through the
+registry. npm files remain on
 `registry.npmjs.org`; PyPI files may also use `files.pythonhosted.org`.
 Integrity fields and URL hash fragments remain intact, and package files
 stream unchanged under the operation's cumulative budget. `python_install`

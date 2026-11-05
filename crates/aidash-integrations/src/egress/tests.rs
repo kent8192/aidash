@@ -1645,6 +1645,20 @@ fn completion(meter: Arc<dyn Meter>, expected: Option<u64>) -> Completion {
 	}
 }
 
+#[tokio::test]
+async fn failure_response_and_record_share_the_client_status() {
+	let meter = FlakyMeter::failing(0, 0);
+	let mut completion = completion(meter.clone(), None);
+	let response = completion
+		.fail(StatusCode::FORBIDDEN, "operation_expired", "egress_expired")
+		.await;
+	assert_eq!(response.status(), StatusCode::FORBIDDEN);
+	assert_eq!(
+		*meter.audit.finished_records.lock().unwrap(),
+		vec![(403, Some("operation_expired".into()))]
+	);
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_complete_download_settles_after_a_storage_stall() {
 	let observed = Observed::start();
