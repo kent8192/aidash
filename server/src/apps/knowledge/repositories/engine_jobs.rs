@@ -532,6 +532,10 @@ fn settled(outcome: &Result<()>, last: bool) -> (&'static str, Option<&'static s
 				| crate::semantic::remote::Failure::DurableMemoryBudget,
 			),
 		) => ("failed", Some("invalid_or_exhausted_work"), true),
+		// The database, not the engine, stopped this attempt (#728).
+		Err(error) if error.is_transient_database() => {
+			("pending", Some("database_unavailable"), false)
+		}
 		Err(_) => (
 			if last { "failed" } else { "pending" },
 			Some("engine_unavailable"),

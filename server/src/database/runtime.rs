@@ -6,15 +6,16 @@
 //! `memory-recovery` and `demo-data`, run under that owner and so open
 //! [`connect_maintenance`], which accepts the owner but nothing else that
 //! bypasses row-level security.
+use super::limits;
 use crate::{Error, Result};
-use reinhardt::db::backends::{DatabaseConnection, PostgresBackend};
+use reinhardt::db::backends::DatabaseConnection;
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, JoinType, PostgresQueryBuilder, Query, QueryStatementBuilder,
 	SimpleExpr, TableRef,
 };
 use sqlx::Executor as _;
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 /// Open the server's pool, refusing a login that row-level security would not bind.
 ///
@@ -23,7 +24,7 @@ use std::{sync::Arc, time::Duration};
 /// mistake cannot reach the next borrower; derived pools clone these options
 /// and inherit the reset.
 pub async fn connect(url: &str, max_connections: u32) -> Result<DatabaseConnection> {
-	let connection = open(url, max_connections).await?;
+	let connection = open(url, max_connections, limits::statement_limit()?).await?;
 	require_unprivileged(&connection).await?;
 	Ok(connection)
 }
@@ -39,12 +40,19 @@ pub async fn connect(url: &str, max_connections: u32) -> Result<DatabaseConnecti
 /// switched roles, a role that can `SET ROLE` to one of those, and membership
 /// in a role that reaches the server's files or programs.
 pub async fn connect_maintenance(url: &str, max_connections: u32) -> Result<DatabaseConnection> {
-	let connection = open(url, max_connections).await?;
+	// A maintenance command is long by design and has no statement limit.
+	let connection = open(url, max_connections, None).await?;
 	refuse_bypass(&connection, Login::Maintenance).await?;
 	Ok(connection)
 }
 
-async fn open(url: &str, max_connections: u32) -> Result<DatabaseConnection> {
+async fn open(
+	url: &str,
+	max_connections: u32,
+	statement_limit: Option<Duration>,
+) -> Result<DatabaseConnection> {
+	let options =
+		limits::with_statement_limit(limits::with_server_keepalive(url.parse()?), statement_limit);
 	let pool = sqlx::postgres::PgPoolOptions::new()
 		.max_connections(max_connections)
 		.min_connections(1)
@@ -56,16 +64,21 @@ async fn open(url: &str, max_connections: u32) -> Result<DatabaseConnection> {
 				// RESET ALL, unlike DISCARD ALL, keeps SQLx's cached prepared
 				// statements valid. It skips the active role, so a borrower's
 				// SET ROLE is reset explicitly. A failed reset closes the connection.
-				connection.execute("RESET ROLE").await?;
-				connection.execute("RESET ALL").await?;
+				// RESET ALL keeps what the connection set at login. A connection
+				// whose server stopped answering would otherwise keep its pool slot.
+				tokio::time::timeout(limits::RELEASE_LIMIT, async {
+					connection.execute("RESET ROLE").await?;
+					connection.execute("RESET ALL").await?;
+					Ok::<_, sqlx::Error>(())
+				})
+				.await
+				.map_err(|_| sqlx::Error::PoolTimedOut)??;
 				Ok(true)
 			})
 		})
-		.connect(url)
+		.connect_with(options)
 		.await?;
-	Ok(DatabaseConnection::new(Arc::new(PostgresBackend::new(
-		pool,
-	))))
+	Ok(DatabaseConnection::new(limits::backend(pool)))
 }
 
 /// Which logins a check accepts.
