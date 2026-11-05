@@ -2573,6 +2573,7 @@ class HelperUpdateTest(unittest.TestCase):
             controller = ExecutionPodController(Mock(root=Path(directory)), {'helper_image': 'new'}, admitted=True)
             controller.touch_space('s', now=100)
             controller.viewer_heartbeat('s', 'viewer', now=101)
+            controller.recover_commands()
             controller._get = Mock(return_value={'spec': {'containers': [{'name': 'execution', 'image': 'old'}]}})
             controller.stop = Mock()
             controller.foreground_jobs['s'] = 1
@@ -2581,6 +2582,38 @@ class HelperUpdateTest(unittest.TestCase):
             controller.foreground_jobs['s'] = 0
             controller.stop_idle(now=103)
             controller.stop.assert_called_once_with('s')
+
+    def test_failed_update_stop_is_retried(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {'helper_image': 'new'}, admitted=True)
+            controller.touch_space('s')
+            controller.recover_commands()
+            controller._get = Mock(return_value={'spec': {'containers': [{'name': 'execution', 'image': 'old'}]}})
+            controller.stop = Mock(side_effect=[RuntimeError('guard unavailable'), {'stopped': True}])
+            controller.stop_idle()
+            controller.stop_idle()
+            self.assertEqual(controller.stop.call_count, 2)
+
+    def test_active_space_needs_one_pod_lookup_per_restart(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {'helper_image': 'new'}, admitted=True)
+            controller.touch_space('s')
+            controller.recover_commands()
+            controller._get = Mock(return_value={'spec': {'containers': [{'name': 'execution', 'image': 'new'}]}})
+            controller.stop = Mock()
+            controller.stop_idle()
+            controller.stop_idle()
+            controller.stop_idle()
+            controller._get.assert_called_once()
+            controller.stop.assert_not_called()
 
 class PythonSessionTest(unittest.TestCase):
     def test_cells_share_state_within_one_run(self):

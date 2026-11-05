@@ -422,6 +422,7 @@ class ExecutionPodController:
         self.admit_locks = {}
         self.lifecycle_locks = {}
         self.command_stop_locks = [RLock() for _ in range(64)]
+        self.helper_checks = set()
 
     def _space_lock(self, scratch_space_id):
         with self.lock:
@@ -1042,6 +1043,7 @@ print(json.dumps(r))'''
                     state = json.loads(path.read_bytes())
                     if not state.get('purged'):
                         self.touch_space(state['scratch_space_id'])
+                        self.helper_checks.add(state['scratch_space_id'])
                 except Exception as error:
                     import sys
                     print('Execution Pod Space recovery failed: ' + str(error), file=sys.stderr, flush=True)
@@ -1809,8 +1811,15 @@ print(json.dumps(r))'''
                         if not unconfirmed:
                             if self.foreground_jobs.get(scratch_id, 0):
                                 continue
-                    pod = None if unconfirmed else self._get('pod', scratch_resource_name(scratch_id))
-                    if not unconfirmed and not (pod and self._old_helper_image(pod)):
+                    # The helper image only changes across a restart, so one look at
+                    # each Space after it is enough; a failed look is retried.
+                    outdated = False
+                    if not unconfirmed and scratch_id in self.helper_checks:
+                        pod = self._get('pod', scratch_resource_name(scratch_id))
+                        outdated = bool(pod and self._old_helper_image(pod))
+                        if not outdated:
+                            self.helper_checks.discard(scratch_id)
+                    if not unconfirmed and not outdated:
                         with self.lock:
                             if current - space['last_command_at'] < 1800:
                                 continue
@@ -1818,8 +1827,9 @@ print(json.dumps(r))'''
                             self.viewers[scratch_id] = {key: expiry for key, expiry in viewers.items() if expiry > current}
                             if self.viewers[scratch_id]:
                                 continue
-                    if unconfirmed or pod:
+                    if outdated or unconfirmed or self._get('pod', scratch_resource_name(scratch_id)):
                         self.stop(scratch_id)
+                        self.helper_checks.discard(scratch_id)
             except Exception as error:
                 import sys
                 print('Execution Pod idle cleanup failed: ' + str(error), file=sys.stderr, flush=True)
