@@ -268,6 +268,17 @@ impl RuntimeTasks {
 			let authority = Arc::new(crate::apps::execution::repositories::egress::Gateway::new(
 				federation.store.clone(),
 			));
+			let scopes = Arc::new(
+				crate::apps::execution::repositories::scope_egress::DurableScopes::new(
+					federation.store.clone(),
+					Arc::new(
+						crate::apps::execution::repositories::scope_egress::ScratchAuthority::new(
+							federation.store.clone(),
+							federation.config.scratch_policy.clone(),
+						),
+					),
+				),
+			);
 			let stopping = receiver.clone();
 			let limits = aidash_integrations::egress::ProxyLimits {
 				global_concurrent: egress.proxy_global_tunnels,
@@ -275,7 +286,11 @@ impl RuntimeTasks {
 			};
 			tasks.spawn_service(runtime_task(async move {
 				aidash_integrations::egress::serve_with_scopes(
-					listener, authority, None, limits, stopping,
+					listener,
+					authority,
+					Some(scopes),
+					limits,
+					stopping,
 				)
 				.await
 				.map_err(Into::into)

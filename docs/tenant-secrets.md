@@ -346,8 +346,11 @@ hours. The gateway reauthenticates the credential and reloads scope and host
 policy every five seconds, including while idle. Revocation or a narrowed host
 allowlist closes an existing tunnel. Three consecutive transient errors or timed-out
 checks close it as `egress_authority_unavailable`; they are not reported as a
-suspension. The authority must verify opaque credentials in constant time, using
-fixed-length random tokens; credentials are excluded from records and logs.
+suspension. A scope credential is a MAC over the Tenant and Scratch Space under the
+server's key, verified in constant time, and is excluded from records and logs.
+It has one value per Scratch Space and stays valid until the space is deleted. A
+Pod carries it in the user part of its proxy URL. No code starts Execution Pods
+yet, so no Agent uses Host connections until wave 2 of #697.
 
 Connection and event row retention remains a follow-up; operators must account
 for their storage until an automatic retention policy is implemented.
@@ -378,8 +381,8 @@ or `transfer`. `transfer` counts only ends with no named code, and one failed
 connection can count under both `transfer` and `request`.
 
 The separate path-level External service route remains responsible
-for attaching Tenant Secrets; scope-based admission for that route is not yet
-wired. Its integration route is `/v2/services/<service>/<path>` with the scope
+for attaching Tenant Secrets; scope-based admission for that route is refused
+until #738. Its integration route is `/v2/services/<service>/<path>` with the scope
 credential in `Authorization: Bearer <scope-credential>`. The gateway removes
 that header before forwarding and attaches the External service's Tenant Secret
 separately. The legacy `/v1/<operation-token>/<service>/<path>` route continues

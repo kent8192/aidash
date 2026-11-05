@@ -219,6 +219,24 @@ class ImageEnvironmentRegressionTest(unittest.TestCase):
             self.assertNotIn('AIDASH_PROCESS_LIMIT', env)
 
 
+class PodProxyUrlTest(unittest.TestCase):
+    def test_a_credential_travels_in_the_proxy_url(self):
+        from execution_pod import pod_proxy_url
+        self.assertEqual(pod_proxy_url('http://10.0.0.8:8888', 'aidash-scope-v1.a-b_c'),
+                         'http://aidash:aidash-scope-v1.a-b_c@10.0.0.8:8888')
+
+    def test_no_credential_leaves_the_address_alone(self):
+        from execution_pod import pod_proxy_url
+        self.assertEqual(pod_proxy_url('http://10.0.0.8:8888', None), 'http://10.0.0.8:8888')
+
+    def test_a_credential_that_could_change_the_url_is_refused_without_repeating_it(self):
+        from execution_pod import pod_proxy_url
+        for credential in ('', 'a@evil:80', 'a/b', 'a b', 'x' * 513, 7):
+            with self.assertRaises(ValueError) as refused:
+                pod_proxy_url('http://10.0.0.8:8888', credential)
+            self.assertEqual(str(refused.exception), 'invalid egress credential')
+
+
 class StartupStorageRegressionTest(unittest.TestCase):
     def test_stale_staging_is_removed_before_reusing_existing_root(self):
         import tempfile

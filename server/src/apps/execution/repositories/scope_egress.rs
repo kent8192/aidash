@@ -21,6 +21,9 @@ use crate::apps::execution::capabilities::models::egress::{
 use crate::database::native::Transaction;
 use crate::{Error, Result, store::Store};
 
+mod authority;
+pub use authority::ScratchAuthority;
+
 /// Durable counters and anomaly state composed with live Scratch Space authority.
 #[derive(Clone)]
 pub struct DurableScopes {
