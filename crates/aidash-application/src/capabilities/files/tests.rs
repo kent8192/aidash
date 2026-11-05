@@ -4,6 +4,8 @@ use aidash_domain::{policy::Resource, registry::Entry};
 struct Scope {
 	bytes: Vec<u8>,
 	opens: usize,
+	search_seconds: u64,
+	open_delay: std::time::Duration,
 	previous: Value,
 	previous_generation: Option<i64>,
 	superseded: Vec<Uuid>,
@@ -37,7 +39,7 @@ impl FileScopePort for Scope {
 			read_bytes: 16,
 			search_matches: 20,
 			search_bytes: 10_000,
-			search_seconds: 5,
+			search_seconds: self.search_seconds,
 		})
 	}
 	fn policy_revision(&self) -> i64 {
@@ -126,6 +128,7 @@ impl FileScopePort for Scope {
 	}
 	async fn open(&mut self, _file: &FileEntry) -> Result<Box<dyn VerifiedFile>> {
 		self.opens += 1;
+		tokio::time::sleep(self.open_delay).await;
 		Ok(Box::new(MemoryReader {
 			bytes: self.bytes.clone(),
 			offset: 0,
@@ -229,6 +232,8 @@ fn fixture(bytes: &[u8]) -> (Scope, Area, FileEntry) {
 		Scope {
 			bytes: bytes.to_vec(),
 			opens: 0,
+			search_seconds: 5,
+			open_delay: std::time::Duration::ZERO,
 			previous: area.manifest.clone(),
 			previous_generation: None,
 			superseded: vec![],
@@ -394,6 +399,107 @@ async fn search_reconnection_resumes_at_the_first_undelivered_match() {
 	assert_eq!(second["matches"].as_array().unwrap().len(), 1);
 	assert_eq!(second["matches"][0]["location"]["line"], 2);
 	assert_eq!(second["next_cursor"], Value::Null);
+}
+fn three_files(area: &mut Area) {
+	let file = files(area).unwrap().remove(0);
+	area.manifest = json!(["a.md", "b.md", "c.md"].map(|path| FileEntry {
+		file_id: Uuid::new_v4(),
+		path: path.into(),
+		..file.clone()
+	}));
+}
+#[tokio::test]
+async fn an_empty_query_lists_every_path_only_in_path_mode() {
+	let (mut scope, mut area, _) = fixture(b"needle");
+	three_files(&mut area);
+	let input = FileSearch {
+		query: String::new(),
+		mode: SearchMode::Path,
+		scope: FileScope::Working,
+		path: None,
+		cursor: None,
+		limit: None,
+	};
+	let listed = search(&mut scope, &area, input.clone()).await.unwrap();
+	assert_eq!(listed["matches"].as_array().unwrap().len(), 3, "{listed}");
+	assert_eq!(listed["matches"][2]["path"], "c.md");
+	assert_eq!(scope.opens, 0);
+	let refused = search(
+		&mut scope,
+		&area,
+		FileSearch {
+			mode: SearchMode::Literal,
+			..input
+		},
+	)
+	.await
+	.unwrap_err();
+	assert_eq!(refused.to_string(), "INVALID_SEARCH_BUDGET");
+}
+#[tokio::test]
+async fn a_search_out_of_time_returns_what_it_found_and_how_to_continue() {
+	let (mut scope, mut area, _) = fixture(b"needle");
+	three_files(&mut area);
+	scope.search_seconds = 1;
+	scope.open_delay = std::time::Duration::from_millis(500);
+	let input = FileSearch {
+		query: "needle".into(),
+		mode: SearchMode::Literal,
+		scope: FileScope::Working,
+		path: None,
+		cursor: None,
+		limit: None,
+	};
+	let first = search(&mut scope, &area, input.clone()).await.unwrap();
+	assert_eq!(first["truncated"], true, "{first}");
+	let found = first["matches"].as_array().unwrap().len();
+	assert!((1..3).contains(&found), "{first}");
+	let second = search(
+		&mut scope,
+		&area,
+		FileSearch {
+			cursor: first["next_cursor"].as_str().map(str::to_owned),
+			..input
+		},
+	)
+	.await
+	.unwrap();
+	let rest = second["matches"].as_array().unwrap();
+	assert!(!rest.is_empty(), "{second}");
+	assert_eq!(
+		rest.last().unwrap()["path"],
+		if second["truncated"] == true {
+			"b.md"
+		} else {
+			"c.md"
+		}
+	);
+}
+#[tokio::test]
+async fn one_very_long_line_does_not_stop_a_search_of_everything_else() {
+	let (mut scope, area, _) = fixture(&vec![b'x'; 70_000]);
+	let input = FileSearch {
+		query: "needle".into(),
+		mode: SearchMode::Literal,
+		scope: FileScope::Working,
+		path: None,
+		cursor: None,
+		limit: None,
+	};
+	let found = search(&mut scope, &area, input.clone()).await.unwrap();
+	assert_eq!(found["unavailable"][0]["error"], "SEARCH_LINE_LIMIT");
+	assert_eq!(found["truncated"], false);
+	let selected = search(
+		&mut scope,
+		&area,
+		FileSearch {
+			path: Some("notes.txt".into()),
+			..input
+		},
+	)
+	.await
+	.unwrap_err();
+	assert!(selected.to_string().contains("SEARCH_LINE_LIMIT"));
 }
 #[tokio::test]
 async fn publication_tombstones_only_removed_working_objects() {

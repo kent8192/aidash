@@ -80,6 +80,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::management::reference_upload)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(super::views::management::reference_batch)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::management::reference_chunk)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::management::reference_commit)

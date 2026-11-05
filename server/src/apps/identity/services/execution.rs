@@ -834,7 +834,8 @@ impl WorkerAuthority {
 					pending.area_id,
 				)
 				.await?;
-				let files = crate::apps::execution::capabilities::services::service::files(&area)?;
+				let files =
+					crate::apps::execution::capabilities::services::operations::pod_files(&area)?;
 				previews::dispatch_accept(store, &mut access, &pending, files, &input.command).await
 			}
 			.await;

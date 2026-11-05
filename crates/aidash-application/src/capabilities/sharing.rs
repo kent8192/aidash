@@ -142,9 +142,13 @@ pub async fn share(
 	received_authority?;
 	let id = Uuid::new_v4();
 	let mut entries = serde_json::from_value::<Vec<FileEntry>>(recipient.manifest.clone())?;
-	if entries.iter().map(|f| f.size).sum::<u64>() + size + scope.retained_bytes(&recipient).await?
+	if aidash_domain::capabilities::operations::counted_files(&entries)
+		.map(|f| f.size)
+		.sum::<u64>()
+		+ size + scope.retained_bytes(&recipient).await?
 		> scope.limits()?.working_bytes
-		|| entries.len() + chosen.len() > 4096
+		|| aidash_domain::capabilities::operations::counted_files(&entries).count() + chosen.len()
+			> 4096
 	{
 		return Err(Error::Conflict("RECIPIENT_QUOTA".into()));
 	}

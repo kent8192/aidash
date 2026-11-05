@@ -169,7 +169,7 @@ async fn extraction_queue_fixture(
 	#[future] capability_fixture: CoreFixture,
 ) -> (CoreFixture, String) {
 	let mut c = Box::pin(capability_fixture).await;
-	let bytes = b"private original";
+	let bytes = b"%PDF-private original";
 
 	let mut uploads = vec![];
 	for index in 0..9 {
@@ -295,7 +295,7 @@ async fn stale_extraction_credentials_do_not_starve_later_uploads(
 	assert_eq!(status, 200, "{original}");
 	assert_eq!(
 		STANDARD.decode(original["data"].as_str().unwrap()).unwrap(),
-		b"private original"
+		b"%PDF-private original"
 	);
 	c.close().await;
 }

@@ -362,7 +362,8 @@ pub async fn search(
 	input: FileSearch,
 ) -> Result<Value> {
 	let limit = input.limit.unwrap_or(scope.limits()?.search_matches);
-	if input.query.is_empty()
+	// An empty query lists paths; only path mode has a meaning for it.
+	if (input.query.is_empty() && !matches!(input.mode, SearchMode::Path))
 		|| input.query.len() > 1024
 		|| !(1..=scope.limits()?.search_matches).contains(&limit)
 	{
@@ -412,11 +413,15 @@ pub async fn search(
 	}
 	let files = files(area)?;
 	let started = std::time::Instant::now();
+	// Stop early enough to return what was found before the caller's timeout,
+	// with a cursor to continue. Always make some progress first.
+	let budget = std::time::Duration::from_secs(scope.limits()?.search_seconds).mul_f32(0.8);
+	let mut scanned = false;
 	let mut matches = vec![];
 	let mut unavailable: Vec<Value> = vec![];
-	while cursor.file < files.len() {
-		if started.elapsed() > std::time::Duration::from_secs(scope.limits()?.search_seconds) {
-			return Err(Error::Invalid("SEARCH_TIME_LIMIT".into()));
+	'files: while cursor.file < files.len() {
+		if scanned && started.elapsed() > budget {
+			break;
 		}
 		let file = &files[cursor.file];
 		if serde_json::to_value(file.scope)? != serde_json::to_value(input.scope)?
@@ -437,7 +442,22 @@ pub async fn search(
 		};
 		let mut exhausted = true;
 		let mut index = 0;
-		while let Some(line) = bounded_line(&mut *reader).await? {
+		loop {
+			let line = match bounded_line(&mut *reader).await {
+				Ok(Some(line)) => line,
+				Ok(None) => break,
+				// A file with a very long line, such as minified JSON, must not
+				// stop a search of everything else.
+				Err(Error::Invalid(message))
+					if message.starts_with("SEARCH_LINE_LIMIT")
+						&& input.path.as_deref() != Some(&file.path)
+						&& matches.len() + unavailable.len() < limit =>
+				{
+					unavailable.push(json!({"file_id":file.file_id,"error":"SEARCH_LINE_LIMIT"}));
+					break;
+				}
+				Err(error) => return Err(error),
+			};
 			let index = {
 				let current = index;
 				index += 1;
@@ -468,12 +488,11 @@ pub async fn search(
 				unavailable.push(item);
 				break;
 			};
-			if index % 64 == 0
-				&& started.elapsed()
-					> std::time::Duration::from_secs(scope.limits()?.search_seconds)
-			{
-				return Err(Error::Invalid("SEARCH_TIME_LIMIT".into()));
+			if scanned && index % 64 == 0 && started.elapsed() > budget {
+				cursor.line = index;
+				break 'files;
 			}
+			scanned = true;
 			let found = pattern
 				.as_ref()
 				.map_or_else(|| line.contains(&input.query), |p| p.is_match(line));
@@ -589,7 +608,9 @@ pub async fn materialize(
 	}
 	aidash_domain::registry::rules::validate_path(&input.path)?;
 	let mut entries = files(&area)?;
-	if entries.len() >= 4096 || entries.iter().any(|f| f.path == input.path) {
+	if aidash_domain::capabilities::operations::counted_files(&entries).count() >= 4096
+		|| entries.iter().any(|f| f.path == input.path)
+	{
 		return Err(Error::Conflict("FILE_EXISTS_OR_LIMIT".into()));
 	}
 	if let MaterializeSource::File {
@@ -604,7 +625,9 @@ pub async fn materialize(
 		if original.digest != *expected_digest {
 			return Err(Error::Conflict("FILE_CHANGED".into()));
 		}
-		if entries.iter().map(|f| f.size).sum::<u64>()
+		if aidash_domain::capabilities::operations::counted_files(&entries)
+			.map(|f| f.size)
+			.sum::<u64>()
 			+ original.size
 			+ scope.retained_bytes(&area).await?
 			> scope.limits()?.working_bytes
@@ -622,6 +645,14 @@ pub async fn materialize(
 			scope.write_pending(&block).await?;
 		}
 		let (file_id, digest_value) = scope.finish_pending(expected_digest).await?;
+		// A copy of a Reference file lives only while that file may still be used.
+		if original.is_reference_file() {
+			let constraint = json!({"kind":"reference","id":original.provenance["id"]});
+			let constraints = area.constraints.as_array_mut().ok_or(Error::Forbidden)?;
+			if !constraints.contains(&constraint) {
+				constraints.push(constraint);
+			}
+		}
 		let file = FileEntry {
 			file_id,
 			path: input.path,
@@ -673,7 +704,9 @@ pub async fn materialize(
 			)
 		}
 	};
-	let size = entries.iter().map(|f| f.size).sum::<u64>()
+	let size = aidash_domain::capabilities::operations::counted_files(&entries)
+		.map(|f| f.size)
+		.sum::<u64>()
 		+ text.len() as u64
 		+ scope.retained_bytes(&area).await?;
 	if size > scope.limits()?.working_bytes {
@@ -742,11 +775,16 @@ pub async fn copy_thread_attachment(
 	}
 	aidash_domain::registry::rules::validate_path(&path)?;
 	let mut entries = files(&area)?;
-	if entries.len() >= 4096 || entries.iter().any(|entry| entry.path == path) {
+	if aidash_domain::capabilities::operations::counted_files(&entries).count() >= 4096
+		|| entries.iter().any(|entry| entry.path == path)
+	{
 		return Err(Error::Conflict("FILE_EXISTS_OR_LIMIT".into()));
 	}
 	let size = bytes.len() as u64;
-	if entries.iter().map(|f| f.size).sum::<u64>() + size + scope.retained_bytes(&area).await?
+	if aidash_domain::capabilities::operations::counted_files(&entries)
+		.map(|f| f.size)
+		.sum::<u64>()
+		+ size + scope.retained_bytes(&area).await?
 		> scope.limits()?.working_bytes
 	{
 		return Err(Error::Conflict("WORKING_QUOTA".into()));
@@ -814,7 +852,7 @@ pub async fn snapshot_message_files(
 	for path in paths {
 		let file = entries
 			.iter()
-			.find(|file| file.path == *path)
+			.find(|file| file.path == *path && !file.is_reference_file())
 			.ok_or_else(|| Error::NotFound("file unavailable".into()))?
 			.clone();
 		total = total.saturating_add(file.size);

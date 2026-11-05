@@ -220,3 +220,24 @@ fn area_availability_keeps_busy_distinct_from_unavailable(
 		}
 	}
 }
+
+#[test]
+fn reference_files_use_none_of_the_working_area() {
+	let file = |scope, kind: &str| MountedFile {
+		file_id: Uuid::new_v4(),
+		path: "file".into(),
+		digest: "a".repeat(64),
+		size: 1,
+		media_type: "text/plain".into(),
+		scope,
+		provenance: json!({"kind":kind}),
+	};
+	let files = [
+		file(FileScope::References, "reference"),
+		file(FileScope::References, "reference_text"),
+		file(FileScope::Working, "reference"),
+		file(FileScope::Received, "transfer_in"),
+	];
+	assert!(files[0].is_reference_file());
+	assert_eq!(counted_files(&files).count(), 3);
+}

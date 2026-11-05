@@ -1005,6 +1005,15 @@ pub(crate) async fn reference_upload(
 	let result = super::references::start(&f.store, &mut access, input).await;
 	access.finish(result).await
 }
+pub(crate) async fn reference_batch(
+	f: Federation,
+	actor: Actor,
+	input: super::references::Batch,
+) -> Result<super::references::BatchResult> {
+	let mut access = access(&f, actor).await?;
+	let result = super::references::batch(&f.store, &mut access, input).await;
+	access.finish(result).await
+}
 pub(crate) async fn reference_chunk(
 	f: Federation,
 	actor: Actor,
@@ -1092,6 +1101,13 @@ pub(crate) async fn file_download(
 			.find(|entry| entry.file_id == file)
 		{
 			service::available(&area)?;
+			// A Run can read a Reference file; downloading it, or a copy of it,
+			// stays with its uploader (ADR 0113).
+			if entry.provenance["kind"] == "reference" {
+				let id = serde_json::from_value(entry.provenance["id"].clone())
+					.map_err(|_| Error::Forbidden)?;
+				super::references::get(&mut access, id, "reference.read").await?;
+			}
 			entry
 		} else {
 			let meta: Option<(String, i64, String)> = {

@@ -6,7 +6,7 @@ status: accepted
 
 Decided on 2026-11-05 for #719. A Reference file used to be readable only by its uploader, so an Agent version shared across a Tenant still failed with `404 reference unavailable` for anyone else. Run admission also asked every subject for `reference.read`, including the Agent, and the default `members` policy has no such action. Now a Run may read the Reference files of a Source when the Agent version binding that Source is approved in the Catalog and the person may run it. The Agent passes through the same rule. Reading happens only inside that Run. Direct download stays with the uploader.
 
-Registering a Source and having it approved is the moment a person makes its files available to the Agent's users. Reference Documents and their images already work this way: anyone authorized to run an Agent can cause it to use what is attached to it.
+Registering a Source and having it approved is the moment a person makes its files available to the Agent's users, so registration refuses a file the registrant cannot read. Reference Documents and their images already work this way: anyone authorized to run an Agent can cause it to use what is attached to it.
 
 ## Considered Options
 
@@ -16,8 +16,8 @@ Registering a Source and having it approved is the moment a person makes its fil
 
 ## Consequences
 
-- A person who runs the Agent can have the model quote its documents, even without the right to download them. This boundary limits direct access only.
+- A person who runs the Agent can have the model quote its documents, or read them through their Run's file routes, even without the right to download them. This boundary limits direct access only.
 - Files stay usable after the uploader leaves the Tenant. A Tenant Administrator stops them by withdrawing the Source's Catalog Approval.
 - Revoking one file refuses new Runs of every Agent version that binds it, and the error names the file's path. A Run never continues with part of its Reference set missing.
-- Working copies keep their existing disclosure constraints, and rechecking those constraints follows this rule too.
+- An Area given a Reference set cannot export files to another Node. Revoking a file never locks that Area, because it holds nothing of the file until it copies it. A copy lasts only while the file can still be used, and only its uploader can download it.
 - Who may upload is not changed by this decision.

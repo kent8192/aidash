@@ -9357,15 +9357,28 @@
     "query_parameters": [],
     "responses": {
       "200": {
+        "schema": {
+          "$ref": "#/components/schemas/Reference"
+        },
         "definitions": {
           "FileEntry": {
+            "type": "object",
+            "required": [
+              "file_id",
+              "path",
+              "digest",
+              "size",
+              "media_type",
+              "scope",
+              "provenance"
+            ],
             "properties": {
               "digest": {
                 "type": "string"
               },
               "file_id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
               },
               "media_type": {
                 "type": "string"
@@ -9378,27 +9391,33 @@
                 "$ref": "#/components/schemas/FileScope"
               },
               "size": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               }
-            },
-            "required": [
-              "file_id",
-              "path",
-              "digest",
-              "size",
-              "media_type",
-              "scope",
-              "provenance"
-            ],
-            "type": "object"
+            }
           },
           "FileScope": {
-            "enum": ["working", "references", "received"],
-            "type": "string"
+            "type": "string",
+            "enum": ["working", "references", "received"]
           },
           "Reference": {
+            "type": "object",
+            "required": [
+              "reference_id",
+              "revision",
+              "state",
+              "name",
+              "media_type",
+              "size",
+              "digest",
+              "uploaded_bytes",
+              "original",
+              "extraction",
+              "extraction_state",
+              "pages_without_text",
+              "page_count"
+            ],
             "properties": {
               "digest": {
                 "type": "string"
@@ -9432,46 +9451,43 @@
                   }
                 ]
               },
+              "page_count": {
+                "type": ["integer", "null"],
+                "format": "uint32",
+                "minimum": 0
+              },
+              "pages_without_text": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0
+                },
+                "description": "Pages of a PDF, counted from 1, whose text an Agent cannot read."
+              },
               "reference_id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
               },
               "revision": {
-                "format": "int64",
-                "type": "integer"
+                "type": "integer",
+                "format": "int64"
               },
               "size": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               },
               "state": {
                 "type": "string"
               },
               "uploaded_bytes": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               }
-            },
-            "required": [
-              "reference_id",
-              "revision",
-              "state",
-              "name",
-              "media_type",
-              "size",
-              "digest",
-              "uploaded_bytes",
-              "original",
-              "extraction",
-              "extraction_state"
-            ],
-            "type": "object"
+            }
           }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/Reference"
         }
       }
     },
@@ -9486,15 +9502,28 @@
     "query_parameters": [],
     "responses": {
       "200": {
+        "schema": {
+          "$ref": "#/components/schemas/Reference"
+        },
         "definitions": {
           "FileEntry": {
+            "type": "object",
+            "required": [
+              "file_id",
+              "path",
+              "digest",
+              "size",
+              "media_type",
+              "scope",
+              "provenance"
+            ],
             "properties": {
               "digest": {
                 "type": "string"
               },
               "file_id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
               },
               "media_type": {
                 "type": "string"
@@ -9507,27 +9536,33 @@
                 "$ref": "#/components/schemas/FileScope"
               },
               "size": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               }
-            },
-            "required": [
-              "file_id",
-              "path",
-              "digest",
-              "size",
-              "media_type",
-              "scope",
-              "provenance"
-            ],
-            "type": "object"
+            }
           },
           "FileScope": {
-            "enum": ["working", "references", "received"],
-            "type": "string"
+            "type": "string",
+            "enum": ["working", "references", "received"]
           },
           "Reference": {
+            "type": "object",
+            "required": [
+              "reference_id",
+              "revision",
+              "state",
+              "name",
+              "media_type",
+              "size",
+              "digest",
+              "uploaded_bytes",
+              "original",
+              "extraction",
+              "extraction_state",
+              "pages_without_text",
+              "page_count"
+            ],
             "properties": {
               "digest": {
                 "type": "string"
@@ -9561,46 +9596,43 @@
                   }
                 ]
               },
+              "page_count": {
+                "type": ["integer", "null"],
+                "format": "uint32",
+                "minimum": 0
+              },
+              "pages_without_text": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0
+                },
+                "description": "Pages of a PDF, counted from 1, whose text an Agent cannot read."
+              },
               "reference_id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
               },
               "revision": {
-                "format": "int64",
-                "type": "integer"
+                "type": "integer",
+                "format": "int64"
               },
               "size": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               },
               "state": {
                 "type": "string"
               },
               "uploaded_bytes": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               }
-            },
-            "required": [
-              "reference_id",
-              "revision",
-              "state",
-              "name",
-              "media_type",
-              "size",
-              "digest",
-              "uploaded_bytes",
-              "original",
-              "extraction",
-              "extraction_state"
-            ],
-            "type": "object"
+            }
           }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/Reference"
         }
       }
     },
@@ -9615,15 +9647,28 @@
     "query_parameters": [],
     "responses": {
       "200": {
+        "schema": {
+          "$ref": "#/components/schemas/Reference"
+        },
         "definitions": {
           "FileEntry": {
+            "type": "object",
+            "required": [
+              "file_id",
+              "path",
+              "digest",
+              "size",
+              "media_type",
+              "scope",
+              "provenance"
+            ],
             "properties": {
               "digest": {
                 "type": "string"
               },
               "file_id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
               },
               "media_type": {
                 "type": "string"
@@ -9636,27 +9681,33 @@
                 "$ref": "#/components/schemas/FileScope"
               },
               "size": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               }
-            },
-            "required": [
-              "file_id",
-              "path",
-              "digest",
-              "size",
-              "media_type",
-              "scope",
-              "provenance"
-            ],
-            "type": "object"
+            }
           },
           "FileScope": {
-            "enum": ["working", "references", "received"],
-            "type": "string"
+            "type": "string",
+            "enum": ["working", "references", "received"]
           },
           "Reference": {
+            "type": "object",
+            "required": [
+              "reference_id",
+              "revision",
+              "state",
+              "name",
+              "media_type",
+              "size",
+              "digest",
+              "uploaded_bytes",
+              "original",
+              "extraction",
+              "extraction_state",
+              "pages_without_text",
+              "page_count"
+            ],
             "properties": {
               "digest": {
                 "type": "string"
@@ -9690,46 +9741,43 @@
                   }
                 ]
               },
+              "page_count": {
+                "type": ["integer", "null"],
+                "format": "uint32",
+                "minimum": 0
+              },
+              "pages_without_text": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0
+                },
+                "description": "Pages of a PDF, counted from 1, whose text an Agent cannot read."
+              },
               "reference_id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
               },
               "revision": {
-                "format": "int64",
-                "type": "integer"
+                "type": "integer",
+                "format": "int64"
               },
               "size": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               },
               "state": {
                 "type": "string"
               },
               "uploaded_bytes": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               }
-            },
-            "required": [
-              "reference_id",
-              "revision",
-              "state",
-              "name",
-              "media_type",
-              "size",
-              "digest",
-              "uploaded_bytes",
-              "original",
-              "extraction",
-              "extraction_state"
-            ],
-            "type": "object"
+            }
           }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/Reference"
         }
       }
     },
@@ -9744,15 +9792,28 @@
     "query_parameters": [],
     "responses": {
       "200": {
+        "schema": {
+          "$ref": "#/components/schemas/Reference"
+        },
         "definitions": {
           "FileEntry": {
+            "type": "object",
+            "required": [
+              "file_id",
+              "path",
+              "digest",
+              "size",
+              "media_type",
+              "scope",
+              "provenance"
+            ],
             "properties": {
               "digest": {
                 "type": "string"
               },
               "file_id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
               },
               "media_type": {
                 "type": "string"
@@ -9765,27 +9826,33 @@
                 "$ref": "#/components/schemas/FileScope"
               },
               "size": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               }
-            },
-            "required": [
-              "file_id",
-              "path",
-              "digest",
-              "size",
-              "media_type",
-              "scope",
-              "provenance"
-            ],
-            "type": "object"
+            }
           },
           "FileScope": {
-            "enum": ["working", "references", "received"],
-            "type": "string"
+            "type": "string",
+            "enum": ["working", "references", "received"]
           },
           "Reference": {
+            "type": "object",
+            "required": [
+              "reference_id",
+              "revision",
+              "state",
+              "name",
+              "media_type",
+              "size",
+              "digest",
+              "uploaded_bytes",
+              "original",
+              "extraction",
+              "extraction_state",
+              "pages_without_text",
+              "page_count"
+            ],
             "properties": {
               "digest": {
                 "type": "string"
@@ -9819,46 +9886,43 @@
                   }
                 ]
               },
+              "page_count": {
+                "type": ["integer", "null"],
+                "format": "uint32",
+                "minimum": 0
+              },
+              "pages_without_text": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0
+                },
+                "description": "Pages of a PDF, counted from 1, whose text an Agent cannot read."
+              },
               "reference_id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
               },
               "revision": {
-                "format": "int64",
-                "type": "integer"
+                "type": "integer",
+                "format": "int64"
               },
               "size": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               },
               "state": {
                 "type": "string"
               },
               "uploaded_bytes": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               }
-            },
-            "required": [
-              "reference_id",
-              "revision",
-              "state",
-              "name",
-              "media_type",
-              "size",
-              "digest",
-              "uploaded_bytes",
-              "original",
-              "extraction",
-              "extraction_state"
-            ],
-            "type": "object"
+            }
           }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/Reference"
         }
       }
     },
@@ -11199,15 +11263,28 @@
     "query_parameters": ["cursor"],
     "responses": {
       "200": {
+        "schema": {
+          "$ref": "#/components/schemas/ReferencePage"
+        },
         "definitions": {
           "FileEntry": {
+            "type": "object",
+            "required": [
+              "file_id",
+              "path",
+              "digest",
+              "size",
+              "media_type",
+              "scope",
+              "provenance"
+            ],
             "properties": {
               "digest": {
                 "type": "string"
               },
               "file_id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
               },
               "media_type": {
                 "type": "string"
@@ -11220,27 +11297,33 @@
                 "$ref": "#/components/schemas/FileScope"
               },
               "size": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               }
-            },
-            "required": [
-              "file_id",
-              "path",
-              "digest",
-              "size",
-              "media_type",
-              "scope",
-              "provenance"
-            ],
-            "type": "object"
+            }
           },
           "FileScope": {
-            "enum": ["working", "references", "received"],
-            "type": "string"
+            "type": "string",
+            "enum": ["working", "references", "received"]
           },
           "Reference": {
+            "type": "object",
+            "required": [
+              "reference_id",
+              "revision",
+              "state",
+              "name",
+              "media_type",
+              "size",
+              "digest",
+              "uploaded_bytes",
+              "original",
+              "extraction",
+              "extraction_state",
+              "pages_without_text",
+              "page_count"
+            ],
             "properties": {
               "digest": {
                 "type": "string"
@@ -11274,62 +11357,59 @@
                   }
                 ]
               },
+              "page_count": {
+                "type": ["integer", "null"],
+                "format": "uint32",
+                "minimum": 0
+              },
+              "pages_without_text": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0
+                },
+                "description": "Pages of a PDF, counted from 1, whose text an Agent cannot read."
+              },
               "reference_id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
               },
               "revision": {
-                "format": "int64",
-                "type": "integer"
+                "type": "integer",
+                "format": "int64"
               },
               "size": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               },
               "state": {
                 "type": "string"
               },
               "uploaded_bytes": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               }
-            },
-            "required": [
-              "reference_id",
-              "revision",
-              "state",
-              "name",
-              "media_type",
-              "size",
-              "digest",
-              "uploaded_bytes",
-              "original",
-              "extraction",
-              "extraction_state"
-            ],
-            "type": "object"
+            }
           },
           "ReferencePage": {
+            "type": "object",
+            "required": ["items", "next_cursor"],
             "properties": {
               "items": {
+                "type": "array",
                 "items": {
                   "$ref": "#/components/schemas/Reference"
-                },
-                "type": "array"
+                }
               },
               "next_cursor": {
-                "format": "uuid",
-                "type": ["string", "null"]
+                "type": ["string", "null"],
+                "format": "uuid"
               }
-            },
-            "required": ["items", "next_cursor"],
-            "type": "object"
+            }
           }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/ReferencePage"
         }
       }
     },
@@ -58124,6 +58204,224 @@
       }
     },
     "source": "server/src/apps/identity/views/tenant_administration.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "reference_batch",
+    "path": "/api/references/batch",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "schema": {
+          "$ref": "#/components/schemas/ReferenceBatchResult"
+        },
+        "definitions": {
+          "Attachment": {
+            "type": "object",
+            "required": ["reference_id", "digest", "path"],
+            "properties": {
+              "digest": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string",
+                "description": "Where an Agent sees this file, relative to its Reference set."
+              },
+              "reference_id": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "additionalProperties": false
+          },
+          "FileEntry": {
+            "type": "object",
+            "required": [
+              "file_id",
+              "path",
+              "digest",
+              "size",
+              "media_type",
+              "scope",
+              "provenance"
+            ],
+            "properties": {
+              "digest": {
+                "type": "string"
+              },
+              "file_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "media_type": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "provenance": {},
+              "scope": {
+                "$ref": "#/components/schemas/FileScope"
+              },
+              "size": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              }
+            }
+          },
+          "FileScope": {
+            "type": "string",
+            "enum": ["working", "references", "received"]
+          },
+          "Reference": {
+            "type": "object",
+            "required": [
+              "reference_id",
+              "revision",
+              "state",
+              "name",
+              "media_type",
+              "size",
+              "digest",
+              "uploaded_bytes",
+              "original",
+              "extraction",
+              "extraction_state",
+              "pages_without_text",
+              "page_count"
+            ],
+            "properties": {
+              "digest": {
+                "type": "string"
+              },
+              "extraction": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/FileEntry"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "extraction_state": {
+                "type": ["string", "null"]
+              },
+              "media_type": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "original": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/FileEntry"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "page_count": {
+                "type": ["integer", "null"],
+                "format": "uint32",
+                "minimum": 0
+              },
+              "pages_without_text": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0
+                },
+                "description": "Pages of a PDF, counted from 1, whose text an Agent cannot read."
+              },
+              "reference_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "revision": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "size": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "state": {
+                "type": "string"
+              },
+              "uploaded_bytes": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              }
+            }
+          },
+          "ReferenceBatchOutcome": {
+            "type": "object",
+            "required": [
+              "path",
+              "reference",
+              "reused",
+              "duplicate_of",
+              "error"
+            ],
+            "properties": {
+              "duplicate_of": {
+                "type": ["string", "null"],
+                "description": "Another path in this request holds the same content."
+              },
+              "error": {
+                "type": ["string", "null"]
+              },
+              "path": {
+                "type": "string"
+              },
+              "reference": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Reference"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "reused": {
+                "type": "boolean",
+                "description": "An existing Reference with the same content was returned."
+              }
+            }
+          },
+          "ReferenceBatchResult": {
+            "type": "object",
+            "required": ["files", "references"],
+            "properties": {
+              "files": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ReferenceBatchOutcome"
+                }
+              },
+              "references": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Attachment"
+                },
+                "description": "Entries ready to paste into a `reference_attachments` Source."
+              }
+            }
+          }
+        }
+      }
+    },
+    "source": "server/src/apps/execution/capabilities/views/management.rs",
     "uuid_parameters": []
   }
 ]

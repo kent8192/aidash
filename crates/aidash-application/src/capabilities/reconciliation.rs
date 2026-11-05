@@ -8,7 +8,7 @@ use crate::{
 use aidash_domain::{
 	capabilities::operations::{
 		ExportQuota, FileScope, MAX_AREA_FILES, MountedFile, VERIFICATION, WORKING_EXPORT_REFUSED,
-		capability_of, export_quota_refusal, lost_area_state,
+		capability_of, counted_files, export_quota_refusal, lost_area_state,
 		reconciliation::{Area, Limits, Snapshot},
 		request_validation_failure,
 	},
@@ -223,12 +223,12 @@ async fn reconcile(
 			} else {
 				scope.upload_files(&operation).await?
 			};
-			let mut size = entries.iter().map(|file| file.size).sum::<u64>();
+			let mut size = counted_files(&entries).map(|file| file.size).sum::<u64>();
 			let mut seen = std::collections::BTreeSet::new();
 			for file in exported {
 				let path = file["path"].as_str().ok_or(Error::Forbidden)?;
 				aidash_domain::registry::rules::validate_path(path)?;
-				if !seen.insert(path) || entries.len() >= MAX_AREA_FILES {
+				if !seen.insert(path) || counted_files(&entries).count() >= MAX_AREA_FILES {
 					return Err(Error::Invalid("invalid runner paths".into()));
 				}
 				let file_size = file["size"].as_u64().ok_or(Error::Forbidden)?;
@@ -411,11 +411,12 @@ fn quota_refusal(
 	exported: &[Value],
 	working_bytes: u64,
 ) -> Result<Option<Value>> {
-	let mounted = entries.iter().map(|file| file.size).sum::<u64>();
+	let mounted = counted_files(entries).map(|file| file.size).sum::<u64>();
+	let counted = counted_files(entries).count();
 	let mut size = mounted;
 	for (index, file) in exported.iter().enumerate() {
 		let path = file["path"].as_str().ok_or(Error::Forbidden)?;
-		if entries.len() + index >= MAX_AREA_FILES {
+		if counted + index >= MAX_AREA_FILES {
 			return Ok(Some(export_quota_refusal(
 				ExportQuota::Files,
 				path,
