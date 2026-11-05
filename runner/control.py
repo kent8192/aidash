@@ -1836,7 +1836,7 @@ class Handler(BaseHTTPRequestHandler):
             data, status = self.handle_request(), 200
         except ExecutionPodError as error:
             status = (404 if error.code == 'command_not_found' else
-                      503 if error.code in ('admission_unverified', 'startup_failed', 'pod_unavailable',
+                      503 if error.code in ('admission_unverified', 'startup_failed', 'pod_unavailable', 'pod_updating',
                                             'change_log_unavailable') else 409)
             data = {'code': error.code, 'message': error.message}
         except Rejected as error:

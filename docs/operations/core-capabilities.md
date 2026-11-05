@@ -72,6 +72,11 @@ ID. A quota-enforcing storage class with a `Delete` reclaim policy and a
 controller deletion finalizer is required; a `Retain` volume is refused. Purge
 is acknowledged only after the bound PV disappears. Preserve the Runner journal
 across restarts; it records operation and volume identities and prevents replay.
+A Runner restart resumes watching normal commands and Python sessions in the same
+Pod, including their saved output. Saved output counts against the Scratch Space
+disk; if the disk is full, the output is marked incomplete. Docker-mode commands
+become interrupted with an unknown outcome; they can still be stopped. A Runner update waits for
+foreground commands, then replaces Pods and stops their background processes.
 
 A trusted, read-only injected helper copies the image filesystem into the PVC
 on first start, then runs commands as root in that persisted root. `/scratch`
