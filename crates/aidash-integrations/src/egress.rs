@@ -682,7 +682,7 @@ pub async fn serve_with_scopes(
 	authority: Arc<dyn Authority>,
 	scopes: Option<Arc<dyn aidash_application::egress::EgressScopes>>,
 	limits: ProxyLimits,
-	mut stopping: watch::Receiver<bool>,
+	stopping: watch::Receiver<bool>,
 ) -> crate::Result<()> {
 	if limits.tenant_concurrent == 0
 		|| limits.tenant_concurrent >= limits.global_concurrent
@@ -707,6 +707,23 @@ pub async fn serve_with_scopes(
 		.read_timeout(IDLE)
 		.build()
 		.map_err(crate::http_error)?;
+	serve_with_clients(
+		listener, authority, scopes, limits, stopping, client, public,
+	)
+	.await
+}
+
+/// The serving loop, with the upstream clients supplied. Tests give it clients
+/// that reach a local stand-in for the package registries.
+async fn serve_with_clients(
+	listener: TcpListener,
+	authority: Arc<dyn Authority>,
+	scopes: Option<Arc<dyn aidash_application::egress::EgressScopes>>,
+	limits: ProxyLimits,
+	mut stopping: watch::Receiver<bool>,
+	client: reqwest::Client,
+	public: reqwest::Client,
+) -> crate::Result<()> {
 	let slots = Arc::new(tokio::sync::Semaphore::new(CONNECTION_SLOTS));
 	let refusals = Arc::new(tokio::sync::Semaphore::new(REFUSAL_SLOTS));
 	let mut refused = RefusedConnections::default();
@@ -1236,7 +1253,6 @@ async fn forward(
 	if let Some(route) = &admission.route {
 		let Ok(mut value) = hyper::header::HeaderValue::from_str(route.token.expose_secret())
 		else {
-			completion.status = StatusCode::SERVICE_UNAVAILABLE.as_u16();
 			return completion
 				.fail(
 					StatusCode::SERVICE_UNAVAILABLE,
@@ -1478,7 +1494,7 @@ async fn forward(
 					)
 					.await;
 				response.extensions_mut().insert(
-					hyper::ext::ReasonPhrase::try_from(INDEX_LIMIT_MESSAGE)
+					hyper::ext::ReasonPhrase::try_from(INDEX_LIMIT_MESSAGE.as_bytes())
 						.expect("valid reason phrase"),
 				);
 				return response;

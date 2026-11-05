@@ -1794,3 +1794,367 @@ async fn a_refused_final_debit_is_recorded_and_not_retried() {
 		vec![(200, Some("egress_limit_exceeded".into()))]
 	);
 }
+
+// Every refusal the gateway makes after it has opened an audit record must
+// record the status the client received (#729). These drive `forward`, so the
+// response and the record are compared as the client and the store see them.
+
+/// Admits `operation-token` for `service` against `base`, after `shape` has
+/// changed the admission.
+struct ShapedAuthority {
+	origin: String,
+	audit: Arc<Audit>,
+	service: &'static str,
+	base: String,
+	methods: Vec<String>,
+	shape: Box<dyn Fn(&mut Admission) + Send + Sync>,
+}
+#[async_trait]
+impl Authority for ShapedAuthority {
+	async fn admit(
+		&self,
+		token: &str,
+		service: &str,
+		_: &str,
+		_: &str,
+		_: &str,
+	) -> Result<Admission> {
+		if token != "operation-token" || service != self.service {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let mut admission = Admission {
+			gateway_origin: self.origin.clone(),
+			destination: Destination::Permitted,
+			request: Uuid::new_v4(),
+			operation: Some(Uuid::new_v4()),
+			session: None,
+			service: service.into(),
+			definition: ExternalService {
+				base_url: self.base.clone(),
+				methods: self.methods.clone(),
+				secret: None,
+				authentication: Default::default(),
+				limits: None,
+			},
+			expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
+			credential: None,
+			route: None,
+			meter: self.audit.clone(),
+		};
+		(self.shape)(&mut admission);
+		Ok(admission)
+	}
+}
+
+/// Sends `GET path` and returns the raw status line and the body.
+async fn raw_get(origin: &str, path: &str) -> (String, String) {
+	use tokio::io::{AsyncReadExt, AsyncWriteExt};
+	let mut socket = tokio::net::TcpStream::connect(origin.trim_start_matches("http://"))
+		.await
+		.unwrap();
+	socket
+		.write_all(
+			format!("GET {path} HTTP/1.1\r\nHost: gateway\r\nConnection: close\r\n\r\n").as_bytes(),
+		)
+		.await
+		.unwrap();
+	let mut raw = Vec::new();
+	socket.read_to_end(&mut raw).await.unwrap();
+	let text = String::from_utf8_lossy(&raw).into_owned();
+	let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+	(head.lines().next().unwrap().to_owned(), body.to_owned())
+}
+
+#[tokio::test]
+async fn every_refusal_after_the_record_opens_records_the_status_the_client_received() {
+	let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let base = format!("http://{}/", upstream.local_addr().unwrap());
+	let upstream_task = tokio::spawn(async move {
+		axum::serve(
+			upstream,
+			Router::new().route(
+				"/redirect",
+				any(|| async {
+					Response::builder()
+						.status(302)
+						.header("location", "http://other.example/elsewhere")
+						.body(AxumBody::empty())
+						.unwrap()
+				}),
+			),
+		)
+		.await
+		.unwrap();
+	});
+	let asset =
+		URL_SAFE_NO_PAD.encode("https://registry.npmjs.org/typescript/-/typescript-5.0.0.tgz");
+	type Shape = fn(&mut Admission);
+	let closed = "http://127.0.0.1:1/";
+	let cases: Vec<(&str, String, String, Shape, StatusCode, &str, &str)> = vec![
+		(
+			"images",
+			"download/1".into(),
+			base.clone(),
+			|a| a.expires_at = chrono::Utc::now() - chrono::Duration::seconds(1),
+			StatusCode::FORBIDDEN,
+			"operation_expired",
+			"egress_expired",
+		),
+		(
+			"images",
+			"download/1".into(),
+			base.clone(),
+			|a| a.destination = Destination::Forbidden,
+			StatusCode::FORBIDDEN,
+			"destination_forbidden",
+			"egress_forbidden",
+		),
+		(
+			"images",
+			"download/1".into(),
+			base.clone(),
+			|a| {
+				a.definition.authentication = aidash_domain::egress::Authentication::Header {
+					name: "x-api-key".into(),
+				};
+				a.credential = Some("bad\nvalue".into());
+			},
+			StatusCode::FAILED_DEPENDENCY,
+			"secret_unavailable",
+			"secret_unavailable",
+		),
+		(
+			"images",
+			"http://other.example/x".into(),
+			base.clone(),
+			|_| {},
+			StatusCode::BAD_REQUEST,
+			"invalid_path",
+			"invalid_egress_path",
+		),
+		(
+			"core.npm",
+			format!("__asset/{asset}"),
+			base.clone(),
+			|_| {},
+			StatusCode::FORBIDDEN,
+			"invalid_package_service",
+			"egress_forbidden",
+		),
+		(
+			"images",
+			"redirect".into(),
+			base.clone(),
+			|_| {},
+			StatusCode::BAD_GATEWAY,
+			"redirect_refused",
+			"egress_redirect_refused",
+		),
+		(
+			"images",
+			"download/1".into(),
+			closed.into(),
+			|_| {},
+			StatusCode::BAD_GATEWAY,
+			"upstream_unavailable",
+			"EGRESS_UNAVAILABLE",
+		),
+	];
+	for (service, path, base, shape, status, error, message) in cases {
+		let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let origin = format!("http://{}", listener.local_addr().unwrap());
+		let audit = Arc::new(Audit::default());
+		let authority = Arc::new(ShapedAuthority {
+			origin: origin.clone(),
+			audit: audit.clone(),
+			service,
+			base,
+			methods: vec!["GET".into(), "POST".into()],
+			shape: Box::new(shape),
+		});
+		let (stop, receiver) = watch::channel(false);
+		let gateway =
+			tokio::spawn(async move { serve(listener, authority, receiver).await.unwrap() });
+		let (line, body) = raw_get(&origin, &format!("/v1/operation-token/{service}/{path}")).await;
+		assert!(
+			line.starts_with(&format!("HTTP/1.1 {}", status.as_u16())),
+			"{error}: {line}"
+		);
+		assert_eq!(body, format!(r#"{{"error":"{message}"}}"#), "{error}");
+		assert_eq!(
+			*audit.finished_records.lock().unwrap(),
+			vec![(status.as_u16(), Some(error.into()))],
+			"{error}"
+		);
+		shutdown(vec![gateway], stop).await;
+	}
+	upstream_task.abort();
+}
+
+/// A TLS stand-in for `registry.npmjs.org`. The gateway reaches it through a
+/// proxy that tunnels every `CONNECT` to this server, so the request keeps the
+/// real https origin that marks a built-in package index.
+enum Registry {
+	NotJson,
+	TooLarge,
+	Breaks,
+}
+async fn tunnel_to_registry(
+	registry: &'static Registry,
+) -> (reqwest::Client, tokio::task::JoinHandle<()>) {
+	use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair};
+	use tokio::io::{AsyncReadExt, AsyncWriteExt};
+	use tokio_rustls::rustls;
+	let mut params = CertificateParams::default();
+	params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+	let ca_key = KeyPair::generate().unwrap();
+	let ca = params.self_signed(&ca_key).unwrap();
+	let issuer = Issuer::new(params, ca_key);
+	let leaf_key = KeyPair::generate().unwrap();
+	let leaf = CertificateParams::new(vec!["registry.npmjs.org".into()])
+		.unwrap()
+		.signed_by(&leaf_key, &issuer)
+		.unwrap();
+	let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+		rustls::crypto::aws_lc_rs::default_provider(),
+	))
+	.with_safe_default_protocol_versions()
+	.unwrap()
+	.with_no_client_auth()
+	.with_single_cert(
+		vec![leaf.der().clone()],
+		rustls::pki_types::PrivateKeyDer::try_from(leaf_key.serialize_der()).unwrap(),
+	)
+	.unwrap();
+	let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+	let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
+	let task = tokio::spawn(async move {
+		loop {
+			let Ok((mut socket, _)) = proxy.accept().await else {
+				return;
+			};
+			let acceptor = acceptor.clone();
+			tokio::spawn(async move {
+				// Nothing follows the CONNECT head until the 200 is sent.
+				let mut head = Vec::new();
+				let mut byte = [0u8];
+				while !head.ends_with(b"\r\n\r\n") {
+					if socket.read_exact(&mut byte).await.is_err() {
+						return;
+					}
+					head.push(byte[0]);
+				}
+				socket
+					.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+					.await
+					.unwrap();
+				let Ok(tls) = acceptor.accept(socket).await else {
+					return;
+				};
+				let service = hyper::service::service_fn(move |_| async move {
+					let body: Body = match registry {
+						Registry::NotJson => Full::new(Bytes::from_static(b"not json"))
+							.map_err(|never| match never {})
+							.boxed_unsync(),
+						Registry::TooLarge => Full::new(Bytes::from(vec![b' '; INDEX_BYTES + 1]))
+							.map_err(|never| match never {})
+							.boxed_unsync(),
+						// The pause lets the head and the first chunk reach the
+						// gateway before the stream fails.
+						Registry::Breaks => StreamBody::new(async_stream::stream! {
+							yield Ok(Frame::data(Bytes::from_static(b"{\"name\":")));
+							tokio::time::sleep(Duration::from_millis(200)).await;
+							yield Err(io_error("registry_broke"));
+						})
+						.boxed_unsync(),
+					};
+					Ok::<_, std::convert::Infallible>(
+						Response::builder()
+							.header("content-type", "application/json")
+							.body(body)
+							.unwrap(),
+					)
+				});
+				let _ = hyper::server::conn::http1::Builder::new()
+					.serve_connection(hyper_util::rt::TokioIo::new(tls), service)
+					.await;
+			});
+		}
+	});
+	let client = reqwest::Client::builder()
+		.redirect(reqwest::redirect::Policy::none())
+		.proxy(reqwest::Proxy::all(proxy_url).unwrap())
+		.add_root_certificate(reqwest::Certificate::from_der(ca.der()).unwrap())
+		.build()
+		.unwrap();
+	(client, task)
+}
+
+#[tokio::test]
+async fn a_package_index_failure_records_the_status_the_client_received() {
+	for (registry, status, error, message) in [
+		(
+			&Registry::NotJson,
+			StatusCode::BAD_GATEWAY,
+			"invalid_package_index",
+			"invalid_package_index".to_owned(),
+		),
+		(
+			&Registry::Breaks,
+			StatusCode::BAD_GATEWAY,
+			"index_unavailable",
+			"package_index_unavailable".to_owned(),
+		),
+		(
+			&Registry::TooLarge,
+			StatusCode::UNPROCESSABLE_ENTITY,
+			"index_limit_exceeded",
+			INDEX_LIMIT_MESSAGE.to_owned(),
+		),
+	] {
+		let (client, tunnel) = tunnel_to_registry(registry).await;
+		let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let origin = format!("http://{}", listener.local_addr().unwrap());
+		let audit = Arc::new(Audit::default());
+		let authority = Arc::new(ShapedAuthority {
+			origin: origin.clone(),
+			audit: audit.clone(),
+			service: "core.npm",
+			base: "https://registry.npmjs.org/".into(),
+			methods: vec!["GET".into(), "HEAD".into()],
+			shape: Box::new(|_| {}),
+		});
+		let (stop, receiver) = watch::channel(false);
+		let gateway = tokio::spawn(async move {
+			serve_with_clients(
+				listener,
+				authority,
+				None,
+				ProxyLimits::default(),
+				receiver,
+				client.clone(),
+				client,
+			)
+			.await
+			.unwrap()
+		});
+		let (line, body) = raw_get(&origin, "/v1/operation-token/core.npm/typescript").await;
+		assert_eq!(
+			line.split(' ').nth(1),
+			Some(status.as_u16().to_string().as_str()),
+			"{error}: {line}"
+		);
+		assert_eq!(body, format!(r#"{{"error":"{message}"}}"#), "{error}");
+		assert_eq!(
+			*audit.finished_records.lock().unwrap(),
+			vec![(status.as_u16(), Some(error.into()))],
+			"{error}"
+		);
+		// The reason phrase carries the over-limit text on the wire.
+		if status == StatusCode::UNPROCESSABLE_ENTITY {
+			assert_eq!(line, format!("HTTP/1.1 422 {INDEX_LIMIT_MESSAGE}"));
+		}
+		shutdown(vec![gateway, tunnel], stop).await;
+	}
+}
