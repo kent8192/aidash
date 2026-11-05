@@ -1734,6 +1734,8 @@ class Handler(BaseHTTPRequestHandler):
         if not hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + runner.token):
             raise Rejected(401, "runner authentication required")
         path = urlsplit(self.path).path
+        if self.command == 'GET' and path == '/v2/pods':
+            return runner.execution_pods.list_pods()
         if self.command == 'GET' and path == '/v2/health':
             return {'protocol': 'aidash-runner/2', 'verified': runner.execution_pods.admitted,
                     'error': getattr(runner.execution_pods, 'admission_error', None)}

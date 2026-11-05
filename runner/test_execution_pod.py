@@ -349,6 +349,34 @@ class PodManifestTest(unittest.TestCase):
                             for v in pod['spec']['volumes']))
         self.assertFalse(any('hostPath' in v for v in pod['spec']['volumes']))
 
+    def test_proxy_credential_is_referenced_and_image_environment_keeps_it(self):
+        import os
+        import tempfile
+        import json
+        from pathlib import Path
+        from unittest.mock import patch
+        from execution_pod import execution_manifests
+        from sandbox_v2 import image_environment
+        settings = {'scratch_space_id': 'space', 'image': 'image@sha256:' + 'a' * 64, 'cpu': 2,
+                    'memory_bytes': 2 << 30, 'capacity_bytes': 2 << 30, 'docker_enabled': False,
+                    'proxy_credential': 'a-secret-token-0123456789abcdef0123456789', 'proxy_credential_id': '018f0000-0000-7000-8000-000000000001'}
+        config = {'runtime_class': 'gvisor', 'helper_image': 'helper@sha256:' + 'b' * 64,
+                  'namespace': 'sandbox', 'proxy_endpoint': 'http://10.0.0.1:8888',
+                  'proxy_namespace': 'gateway', 'proxy_selector': {'app': 'gateway'}}
+        _, pod = execution_manifests(settings, config)
+        self.assertNotIn('a-secret-token-0123456789abcdef0123456789', json.dumps(pod))
+        env = {item['name']: item for item in pod['spec']['containers'][0]['env']}
+        for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'):
+            self.assertIn('secretKeyRef', env[key]['valueFrom'])
+        self.assertEqual(env['NO_PROXY']['value'], 'localhost,127.0.0.1,::1,10.0.0.1')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'rootfs'
+            root.mkdir()
+            (Path(directory) / 'environment.json').write_text(json.dumps({'HTTPS_PROXY': 'image-value'}))
+            with patch.dict(os.environ, {'HTTPS_PROXY': 'http://scratch:a-secret-token-0123456789abcdef0123456789@10.0.0.1:8888'}, clear=True):
+                self.assertEqual(image_environment(str(root))['HTTPS_PROXY'],
+                                 'http://scratch:a-secret-token-0123456789abcdef0123456789@10.0.0.1:8888')
+
     def test_docker_requires_operator_authority_and_dedicated_tenant(self):
         from execution_pod import execution_manifests
 
@@ -428,6 +456,61 @@ class ExecutionPodControllerTest(unittest.TestCase):
             release.set()
             for queue in queues.values():
                 queue.close()
+
+    def test_credential_reuse_and_journal_do_not_disclose_tokens(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+
+        class Backend:
+            def __init__(self, root):
+                self.root, self.objects = root, {}
+            def kube(self, args, data=None, **kwargs):
+                if args[:2] == ['get', 'pods']:
+                    return SimpleNamespace(stdout=json.dumps({'items': [v for (k, _), v in self.objects.items() if k == 'pod']}).encode())
+                if args[0] == 'get':
+                    obj = self.objects.get((args[1], args[2]))
+                    return SimpleNamespace(stdout=json.dumps(obj).encode() if obj else b'')
+                if args[0] == 'create':
+                    obj = json.loads(data)
+                    kind = {'PersistentVolumeClaim': 'pvc', 'Pod': 'pod', 'Secret': 'secret'}[obj['kind']]
+                    if kind == 'pod':
+                        obj['metadata']['uid'] = 'pod-uid'
+                        obj['status'] = {'phase': 'Running'}
+                    self.objects[(kind, obj['metadata']['name'])] = obj
+                return SimpleNamespace(stdout=b'')
+        with tempfile.TemporaryDirectory() as directory:
+            backend = Backend(Path(directory))
+            config = {'runtime_class': 'gvisor', 'helper_image': 'helper@sha256:' + 'b' * 64,
+                      'namespace': 'sandbox', 'proxy_endpoint': 'http://10.0.0.1:8888',
+                      'proxy_namespace': 'gateway', 'proxy_selector': {'app': 'gateway'}}
+            token = 't' * 40
+            credential_id = '018f0000-0000-7000-8000-000000000001'
+            settings = {'scratch_space_id': 'space', 'image': 'image@sha256:' + 'a' * 64,
+                        'cpu': 2, 'memory_bytes': 2 << 30, 'capacity_bytes': 2 << 30,
+                        'docker_enabled': False, 'proxy_credential': token, 'proxy_credential_id': credential_id}
+            controller = ExecutionPodController(backend, config, admitted=True)
+            controller._admit_pod = Mock()
+            controller._verify_running_pod = Mock(return_value='pod-uid')
+            first = controller.ensure(settings)
+            replacement = dict(settings, proxy_credential='z' * 40,
+                               proxy_credential_id='018f0000-0000-7000-8000-000000000002')
+            second = controller.ensure(replacement)
+            self.assertEqual(first['proxy_credential_id'], credential_id)
+            self.assertEqual(second['proxy_credential_id'], credential_id)
+            self.assertEqual(controller.list_pods(), [{'scratch_space_id': 'space', 'proxy_credential_id': credential_id}])
+            secret = backend.objects[('secret', 'proxy-' + credential_id)]
+            self.assertEqual(secret['metadata']['ownerReferences'][0]['uid'], 'pod-uid')
+            self.assertEqual(secret['stringData']['proxy'], 'http://scratch:' + token + '@10.0.0.1:8888')
+            for path in Path(directory).rglob('*'):
+                if path.is_file():
+                    self.assertNotIn(token.encode(), path.read_bytes())
+                    self.assertNotIn(('z' * 40).encode(), path.read_bytes())
+            self.assertNotIn(token, json.dumps(first))
+            self.assertNotIn(token, json.dumps(second))
 
     def test_ensure_is_idempotent_and_stop_preserves_claim(self):
         import json
