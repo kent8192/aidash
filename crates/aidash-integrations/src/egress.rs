@@ -55,6 +55,10 @@ const REFUSAL_WINDOW: Duration = Duration::from_secs(2);
 /// counter stays exact.
 const REFUSAL_LOG_INTERVAL: Duration = Duration::from_secs(10);
 const CONNECTION_LIMIT: &str = "egress_connection_limit";
+/// How much of a request body may be discarded after the answer, and for how
+/// long. These bytes never leave the gateway, so they are not charged.
+const LINGER_BYTES: u64 = 8 * 1024 * 1024;
+const LINGER_TIME: Duration = Duration::from_secs(5);
 
 fn failure(status: StatusCode, code: &'static str) -> Response<Body> {
 	Response::builder()
@@ -634,6 +638,117 @@ impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for WriteDeadline<S
 	}
 }
 
+/// Marks a connection whose request carries a body the gateway may leave unread.
+/// `CONNECT` is excluded because an upgraded tunnel half-closes through the same
+/// socket and must keep reading what the other side sends.
+#[derive(Clone, Default)]
+struct UnreadBody(Arc<std::sync::atomic::AtomicBool>);
+impl UnreadBody {
+	fn note<B: hyper::body::Body>(&self, request: &Request<B>) {
+		self.0.store(
+			request.method() != hyper::Method::CONNECT && !request.body().is_end_stream(),
+			Ordering::Relaxed,
+		);
+	}
+}
+
+/// Closes a connection as RFC 9112 section 9.6 asks. Closing a socket with unread
+/// data resets it, which can destroy the answer on its way to the client, so the
+/// sending side closes first and what the client still sends is discarded up to
+/// a limit. A client past the limit may see a reset; the record keeps the reason.
+struct LingeringClose<S> {
+	inner: S,
+	unread: UnreadBody,
+	bytes_left: u64,
+	linger: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+	closed: bool,
+}
+impl<S> LingeringClose<S> {
+	fn new(inner: S, unread: UnreadBody) -> Self {
+		Self {
+			inner,
+			unread,
+			bytes_left: LINGER_BYTES,
+			linger: None,
+			closed: false,
+		}
+	}
+}
+impl<S: tokio::io::AsyncRead + Unpin> LingeringClose<S> {
+	/// Discards until the client closes or a limit is reached.
+	fn poll_discard(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+		use std::future::Future;
+		use std::task::Poll;
+		let timer = self
+			.linger
+			.get_or_insert_with(|| Box::pin(tokio::time::sleep(LINGER_TIME)));
+		if timer.as_mut().poll(cx).is_ready() {
+			// With nothing discarded, closing resets nothing and no answer is at risk.
+			if self.bytes_left < LINGER_BYTES {
+				metrics::counter!("aidash_egress_linger_limit_total", "limit" => "time")
+					.increment(1);
+			}
+			return Poll::Ready(());
+		}
+		let mut scratch = [0; 16 * 1024];
+		loop {
+			let mut buffer = tokio::io::ReadBuf::new(&mut scratch);
+			match std::pin::Pin::new(&mut self.inner).poll_read(cx, &mut buffer) {
+				Poll::Pending => return Poll::Pending,
+				Poll::Ready(Err(_)) => return Poll::Ready(()),
+				Poll::Ready(Ok(())) if buffer.filled().is_empty() => return Poll::Ready(()),
+				Poll::Ready(Ok(())) => {
+					self.bytes_left = self.bytes_left.saturating_sub(buffer.filled().len() as u64);
+					if self.bytes_left == 0 {
+						metrics::counter!("aidash_egress_linger_limit_total", "limit" => "bytes")
+							.increment(1);
+						return Poll::Ready(());
+					}
+				}
+			}
+		}
+	}
+}
+impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for LingeringClose<S> {
+	fn poll_read(
+		mut self: std::pin::Pin<&mut Self>,
+		cx: &mut std::task::Context<'_>,
+		buf: &mut tokio::io::ReadBuf<'_>,
+	) -> std::task::Poll<std::io::Result<()>> {
+		std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+	}
+}
+impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite
+	for LingeringClose<S>
+{
+	fn poll_write(
+		mut self: std::pin::Pin<&mut Self>,
+		cx: &mut std::task::Context<'_>,
+		buf: &[u8],
+	) -> std::task::Poll<std::io::Result<usize>> {
+		std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+	}
+	fn poll_flush(
+		mut self: std::pin::Pin<&mut Self>,
+		cx: &mut std::task::Context<'_>,
+	) -> std::task::Poll<std::io::Result<()>> {
+		std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+	}
+	fn poll_shutdown(
+		mut self: std::pin::Pin<&mut Self>,
+		cx: &mut std::task::Context<'_>,
+	) -> std::task::Poll<std::io::Result<()>> {
+		if !self.closed {
+			std::task::ready!(std::pin::Pin::new(&mut self.inner).poll_shutdown(cx))?;
+			self.closed = true;
+		}
+		if self.unread.0.load(Ordering::Relaxed) {
+			std::task::ready!(self.poll_discard(cx));
+		}
+		std::task::Poll::Ready(Ok(()))
+	}
+}
+
 pub async fn serve(
 	listener: TcpListener,
 	authority: Arc<dyn Authority>,
@@ -724,7 +839,10 @@ pub async fn serve_with_scopes(
 				connections.spawn(async move {
 					let permit = Arc::new(std::sync::Mutex::new(Some(permit)));
 					let connection_lease = Arc::new(std::sync::Mutex::new(None));
+					let unread = UnreadBody::default();
+					let noting = unread.clone();
 					let service = service_fn(move |request| {
+						noting.note(&request);
 						let authority=authority.clone(); let client=client.clone(); let public=public.clone(); let scopes=scopes.clone(); let permit=permit.clone(); let tunnels=tunnels.clone(); let connection_lease=connection_lease.clone();
 						async move {
 							let response = if request.method() == hyper::Method::CONNECT || request.uri().scheme().is_some() {
@@ -738,7 +856,7 @@ pub async fn serve_with_scopes(
 					});
 					let _ = hyper::server::conn::http1::Builder::new().timer(TokioTimer::new())
 						.header_read_timeout(IDLE).max_headers(64)
-						.serve_connection(TokioIo::new(WriteDeadline::new(socket, IDLE)), service).with_upgrades().await;
+						.serve_connection(TokioIo::new(LingeringClose::new(WriteDeadline::new(socket, IDLE), unread)), service).with_upgrades().await;
 				});
 			}
 		}
@@ -775,20 +893,25 @@ impl RefusedConnections {
 /// Reads the request head first: closing a socket with unread data resets it,
 /// which can destroy the answer on its way to the client.
 async fn refuse_connection(socket: tokio::net::TcpStream) {
-	let service = service_fn(|_| async {
-		let mut response = failure(StatusCode::SERVICE_UNAVAILABLE, CONNECTION_LIMIT);
-		response.headers_mut().insert(
-			hyper::header::CONNECTION,
-			hyper::header::HeaderValue::from_static("close"),
-		);
-		Ok::<_, Infallible>(response)
+	let unread = UnreadBody::default();
+	let noting = unread.clone();
+	let service = service_fn(move |request| {
+		noting.note(&request);
+		async {
+			let mut response = failure(StatusCode::SERVICE_UNAVAILABLE, CONNECTION_LIMIT);
+			response.headers_mut().insert(
+				hyper::header::CONNECTION,
+				hyper::header::HeaderValue::from_static("close"),
+			);
+			Ok::<_, Infallible>(response)
+		}
 	});
 	let serving = hyper::server::conn::http1::Builder::new()
 		.timer(TokioTimer::new())
 		.keep_alive(false)
 		.header_read_timeout(REFUSAL_WINDOW)
 		.max_headers(64)
-		.serve_connection(TokioIo::new(socket), service);
+		.serve_connection(TokioIo::new(LingeringClose::new(socket, unread)), service);
 	let _ = tokio::time::timeout(REFUSAL_WINDOW, serving).await;
 }
 
