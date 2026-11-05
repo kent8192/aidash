@@ -88,9 +88,12 @@ async fn reconcile(
 	if identity_changed {
 		operation.state = "uncertain".into();
 		operation.result = json!({"error":"runner journal identity changed"});
-		// The new runner journal holds no writer of this operation.
+		// A lost journal cannot prove a shell writer stopped; a Check never exports.
 		scope
-			.set_area(lost_area_state(&operation.kind, false))
+			.set_area(lost_area_state(
+				&operation.kind,
+				operation.kind != VERIFICATION,
+			))
 			.await?;
 		return scope.persist(&operation).await;
 	}
@@ -145,8 +148,12 @@ async fn reconcile(
 		Some("absent") => {
 			operation.state = "uncertain".into();
 			operation.result = json!({"error":"runner lost a previously accepted operation"});
+			// A lost journal cannot prove a shell writer stopped; a Check never exports.
 			scope
-				.set_area(lost_area_state(&operation.kind, false))
+				.set_area(lost_area_state(
+					&operation.kind,
+					operation.kind != VERIFICATION,
+				))
 				.await?;
 		}
 		Some("completed" | "cancelled" | "failed")
@@ -156,7 +163,15 @@ async fn reconcile(
 			if observed["executed"] == false {
 				operation.state = observed["status"].as_str().unwrap().into();
 				operation.result = json!({"termination_confirmed":true,"effects_may_have_occurred":false,"runner_acknowledged":false});
+				if !observed["error"].is_null() {
+					operation.result["error"] = observed["error"].clone();
+				}
 				scope.set_area("active").await?;
+				if operation.kind == "code_interpreter" {
+					scope
+						.complete_python(&operation, &json!({"writer_frozen":false}))
+						.await?;
+				}
 				return scope.persist(&operation).await;
 			}
 
@@ -346,10 +361,17 @@ async fn reconcile(
 			scope
 				.set_area(lost_area_state(&operation.kind, held))
 				.await?;
+			if !held && operation.kind == "code_interpreter" {
+				scope
+					.complete_python(&operation, &json!({"writer_frozen":false}))
+					.await?;
+			}
 		}
 		// `cancelling` is the runner retrying a held writer's stop proof.
 		Some("accepted" | "starting" | "running" | "finishing" | "cancelling") => {
-			if operation.state != "cancelling" {
+			if observed["status"] == "cancelling" {
+				operation.state = "cancelling".into();
+			} else if operation.state != "cancelling" {
 				operation.state =
 					if matches!(observed["status"].as_str(), Some("accepted" | "starting")) {
 						"submitted"
@@ -369,7 +391,23 @@ async fn reconcile(
 			while !text.is_char_boundary(end) {
 				end -= 1;
 			}
+			let error = if observed["status"] == "cancelling"
+				&& observed["termination_confirmed"] != true
+			{
+				json!({"code":"STOP_UNCONFIRMED","message":"The command's stop is unconfirmed. Saved files can be read; new commands receive AREA_BUSY. You may decide what to do next.","retryable":true})
+			} else {
+				observed["error"].clone()
+			};
 			operation.result = json!({"preview":&text[..end],"truncated":observed["truncated"]});
+			if !observed["output_fetched_at"].is_null() {
+				operation.result["output_fetched_at"] = observed["output_fetched_at"].clone();
+			}
+			if observed["termination_confirmed"] == true {
+				operation.result["termination_confirmed"] = json!(true);
+			}
+			if !error.is_null() {
+				operation.result["error"] = error;
+			}
 		}
 		_ => return Err(Error::External("invalid runner operation state".into())),
 	}

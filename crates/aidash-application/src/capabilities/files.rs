@@ -151,16 +151,19 @@ pub async fn invoke(
 		scope.serialize_sharing().await?;
 	}
 	let mut area = scope.for_run(run).await?;
-	if !matches!(
-		name,
-		"shell"
-			| "shell_poll"
-			| "shell_cancel"
-			| "code_interpreter"
-			| "python_install"
-			| "python_poll"
-			| "python_cancel"
-	) {
+	// A running writer has not published its changes; this manifest is the last saved revision.
+	let saved_read = area.state == "running" && matches!(name, "file_read" | "file_search");
+	if !saved_read
+		&& !matches!(
+			name,
+			"shell"
+				| "shell_poll"
+				| "shell_cancel"
+				| "code_interpreter"
+				| "python_install"
+				| "python_poll"
+				| "python_cancel"
+		) {
 		available(&area.state)?;
 	}
 	if matches!(name, "file_read" | "file_search") {
@@ -805,7 +808,9 @@ pub async fn snapshot_message_files(
 		return Err(Error::Forbidden);
 	}
 	let area = scope.for_run(run).await?;
-	available(&area.state)?;
+	if area.state != "running" {
+		available(&area.state)?;
+	}
 	scope.require_current(&area, run).await?;
 	scope.authorize(&area, "file.read").await?;
 	let entries = files(&area)?;

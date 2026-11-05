@@ -7471,6 +7471,11 @@
               "output": {
                 "type": "string"
               },
+              "output_stale_seconds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
               "policy_revision": {
                 "format": "int64",
                 "type": "integer"
@@ -7698,6 +7703,11 @@
               "output": {
                 "type": "string"
               },
+              "output_stale_seconds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
               "policy_revision": {
                 "format": "int64",
                 "type": "integer"
@@ -7870,6 +7880,11 @@
               },
               "output": {
                 "type": "string"
+              },
+              "output_stale_seconds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
               },
               "policy_revision": {
                 "format": "int64",

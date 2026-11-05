@@ -222,6 +222,8 @@ execution:
     image: aidash-runner:0.1.0
   runner:
     enabled: false
+    # Optional uncertain-output retention override in seconds; omitted uses the Runner default.
+    # uncertainRetentionSeconds: 60
     # Build from the trusted ref, never the deployed PR source.
     image: aidash-runner:0.1.0
     existingSecret: ""

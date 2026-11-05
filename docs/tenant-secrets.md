@@ -164,12 +164,13 @@ direction for each request streaming at that moment; once a counter is
 exhausted, the next request is refused before it starts. The stream's error,
 in both the request record and the client response, names the reason:
 
-| Code                    | Status | Meaning                                                           |
-| ----------------------- | ------ | ----------------------------------------------------------------- |
-| `egress_limit_exceeded` | 429    | A byte or request budget is exhausted.                            |
-| `operation_expired`     | 403    | The operation or Live preview ended, expired or no longer exists. |
-| `egress_forbidden`      | 403    | The Run's authority was revoked.                                  |
-| `EGRESS_UNAVAILABLE`    | 503    | The budget store could not record the debit.                      |
+| Code                    | Status | Meaning                                                    |
+| ----------------------- | ------ | ---------------------------------------------------------- |
+| `egress_limit_exceeded` | 429    | A byte or request budget is exhausted.                     |
+| `operation_expired`     | 403    | The operation or Live preview expired or no longer exists. |
+| `operation_inactive`    | 403    | The Run or operation is no longer active.                  |
+| `egress_forbidden`      | 403    | The Run's authority was revoked.                           |
+| `EGRESS_UNAVAILABLE`    | 503    | The budget store could not record the debit.               |
 
 A response whose headers were already sent ends with an incomplete body
 instead of a status. A temporary `EGRESS_UNAVAILABLE` also stops the stream, but

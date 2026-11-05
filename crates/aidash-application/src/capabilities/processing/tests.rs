@@ -23,8 +23,44 @@ struct Trace {
 	quota: bool,
 	marked: Vec<Uuid>,
 	blocked: Vec<Value>,
+	accept_output: bool,
+	adopted: Option<(String, Value)>,
 }
 struct Repository(Mutex<Trace>);
+struct OutputScope<'a>(&'a Repository);
+#[async_trait]
+impl crate::ports::capabilities::processing::OutputTransfer for OutputScope<'_> {
+	async fn request(&mut self, _: &str, _: &str, _: Option<Value>) -> Result<Value> {
+		Err(Error::Forbidden)
+	}
+	async fn begin_output(&mut self, _: u64) -> Result<()> {
+		Err(Error::Forbidden)
+	}
+	async fn write_output(&mut self, _: &[u8]) -> Result<()> {
+		Err(Error::Forbidden)
+	}
+	async fn finish_output(&mut self, _: &str) -> Result<(Uuid, String)> {
+		Err(Error::Forbidden)
+	}
+}
+#[async_trait]
+impl crate::ports::capabilities::processing::ReceiptOutputScope for OutputScope<'_> {
+	fn limits(&self) -> aidash_domain::capabilities::operations::reconciliation::Limits {
+		aidash_domain::capabilities::operations::reconciliation::Limits {
+			admission: true,
+			working_bytes: 1024,
+			output_bytes: 1024,
+			read_bytes: 1024,
+		}
+	}
+	async fn put(&mut self, _: &str, _: &[u8]) -> Result<(Uuid, String)> {
+		Err(Error::Forbidden)
+	}
+	async fn commit(self: Box<Self>, proof: &str, output: Value) -> Result<()> {
+		self.0.0.lock().unwrap().adopted = Some((proof.into(), output));
+		Ok(())
+	}
+}
 #[fixture]
 fn repository() -> Repository {
 	Repository(Mutex::new(Trace {
@@ -47,6 +83,8 @@ fn repository() -> Repository {
 		quota: false,
 		marked: vec![],
 		blocked: vec![],
+		accept_output: false,
+		adopted: None,
 	}))
 }
 #[async_trait]
@@ -76,7 +114,11 @@ impl OperationProcessingRepository for Repository {
 		&self,
 		_: &Receipt,
 	) -> Result<Box<dyn crate::ports::capabilities::processing::ReceiptOutputScope + '_>> {
-		Err(Error::Forbidden)
+		if self.0.lock().unwrap().accept_output {
+			Ok(Box::new(OutputScope(self)))
+		} else {
+			Err(Error::Forbidden)
+		}
 	}
 	async fn active_operations(&self) -> Result<Vec<Uuid>> {
 		let mut trace = self.0.lock().unwrap();
@@ -218,6 +260,57 @@ async fn a_withdrawn_receipt_the_runner_holds_as_uncertain_requires_output_adopt
 		]
 	);
 	assert!(trace.marked.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn discarded_output_is_recorded_before_the_runner_acknowledgement(repository: Repository) {
+	let id = Uuid::from_u128(1);
+	let proof = "a".repeat(64);
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.accept_output = true;
+		trace.operation = json!({"operation_id":id,"digest":"digest-one","status":"uncertain",
+			"termination_confirmed":true,"acknowledged":true,"output_discarded":true,
+			"acknowledged_output_digest":proof});
+	}
+	let receipt = Receipt {
+		id,
+		digest: "digest-one".into(),
+		runner_instance: Some("runner".into()),
+		uncertain: true,
+	};
+	let result = super::super::receipt_output::adopt(&repository, &receipt)
+		.await
+		.unwrap();
+	assert_eq!(result.as_deref(), Some(proof.as_str()));
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(trace.adopted.as_ref().unwrap().1, json!({"discarded":true}));
+}
+
+#[rstest]
+#[tokio::test]
+async fn discarded_output_from_a_replacement_runner_is_not_adopted(repository: Repository) {
+	let id = Uuid::from_u128(1);
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.accept_output = true;
+		trace.health = json!({"instance":"replacement"});
+		trace.operation = json!({"operation_id":id,"digest":"digest-one","status":"uncertain",
+			"termination_confirmed":true,"acknowledged":true,"output_discarded":true,
+			"acknowledged_output_digest":"a".repeat(64)});
+	}
+	let receipt = Receipt {
+		id,
+		digest: "digest-one".into(),
+		runner_instance: Some("runner".into()),
+		uncertain: true,
+	};
+	assert!(matches!(
+		super::super::receipt_output::adopt(&repository, &receipt).await,
+		Err(Error::Forbidden)
+	));
+	assert!(repository.0.lock().unwrap().adopted.is_none());
 }
 #[rstest]
 #[case::health("health")]

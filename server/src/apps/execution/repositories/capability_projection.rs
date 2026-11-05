@@ -46,6 +46,7 @@ impl From<OperationResult> for NativeResult {
 			truncated: v.truncated,
 			effects_may_have_occurred: v.effects_may_have_occurred,
 			error: v.error.map(Into::into),
+			output_stale_seconds: v.output_stale_seconds,
 		}
 	}
 }

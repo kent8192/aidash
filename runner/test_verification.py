@@ -1,6 +1,7 @@
 """A Completion Gate Check ("verify") runs like shell but never exports /work."""
 import base64
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -14,7 +15,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("AIDASH_OUTPUT_BYTES", "1024")
 import collector
-from control import Rejected, Runner, save, termination_time
+from control import Rejected, Runner, SandboxGone, save, termination_time
 
 
 def request(kind):
@@ -27,6 +28,391 @@ class Admitted(Exception):
 
 
 class VerificationTest(unittest.TestCase):
+    def test_starting_absent_pod_is_created_again_before_dispatch(self):
+        for kind in ('shell', 'python'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as root:
+                runner = self.runner(root)
+                operation = str(uuid.uuid4())
+                record = {'operation_id':operation, 'request':request(kind), 'status':'starting',
+                          'executed':False, 'startup_at':time.time(), 'wire_digest':'digest'}
+                runner.get = Mock(return_value=record)
+                runner.update = Mock(side_effect=lambda _, record=record, **changes: record.update(changes) or record.copy())
+                runner.pod = Mock(side_effect=[None, RuntimeError('observation failed')])
+                runner.manifest = Mock(return_value={})
+                runner.kube.return_value = Mock(stderr=b'')
+                with self.assertRaisesRegex(RuntimeError, 'observation failed'):
+                    (runner._reconcile_python_once if kind == 'python' else runner._reconcile_shell_once)(operation)
+                self.assertEqual(runner.kube.call_args.args[0][:2], ['create', '-f'])
+
+    def test_startup_identity_mismatch_fails_without_waiting_or_deleting_replacement(self):
+        for kind in ('shell', 'python'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as root:
+                runner = self.runner(root)
+                operation = str(uuid.uuid4())
+                record = {'operation_id':operation, 'request':request(kind), 'status':'starting',
+                          'executed':False, 'startup_at':time.time(), 'wire_digest':'expected'}
+                runner.get = Mock(side_effect=lambda _, record=record: record.copy())
+                runner.update = Mock(side_effect=lambda _, record=record, **changes: record.update(changes) or record.copy())
+                runner.pod = Mock(return_value={'metadata':{'uid':'replacement', 'annotations':{'aidash/digest':'other'}}})
+                runner.active = {operation}
+                with patch('time.sleep', side_effect=AssertionError('must not retry')):
+                    (runner.reconcile_python if kind == 'python' else runner.reconcile)(operation)
+                self.assertEqual(record['status'], 'failed')
+                self.assertIn('identity', record['error']['message'])
+                runner.close_allocation.assert_not_called()
+
+    def test_python_checks_identity_of_pod_seen_after_create(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            operation = str(uuid.uuid4())
+            record = {'operation_id':operation, 'request':request('python'), 'status':'starting',
+                      'executed':False, 'startup_at':time.time(), 'wire_digest':'expected'}
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            replacement = {'metadata':{'uid':'replacement', 'annotations':{'aidash/digest':'other'}}}
+            runner.pod = Mock(side_effect=[None, replacement, replacement])
+            runner.manifest = Mock(return_value={})
+            runner.active = {operation}
+            runner.reconcile_python(operation)
+            self.assertEqual(record['status'], 'failed')
+            self.assertIn('identity', record['error']['message'])
+            runner.close_allocation.assert_not_called()
+
+    def test_startup_outage_retries_then_fails_with_cleanup_at_persisted_deadline(self):
+        for kind in ('shell', 'python'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as root:
+                runner = self.runner(root)
+                operation = str(uuid.uuid4())
+                record = {'operation_id':operation, 'request':request(kind), 'status':'starting',
+                          'executed':False, 'startup_at':10, 'pod_uid':'uid'}
+                runner.get = Mock(side_effect=lambda _, record=record: record.copy())
+                runner.update = Mock(side_effect=lambda _, record=record, **changes: record.update(changes) or record.copy())
+                runner.active = {operation}
+                once = Mock(side_effect=RuntimeError('API unavailable'))
+                setattr(runner, '_reconcile_python_once' if kind == 'python' else '_reconcile_shell_once', once)
+                now = [128]
+                with patch('time.time', side_effect=lambda now=now: now[0]), \
+                     patch('time.sleep', side_effect=lambda _, now=now: now.__setitem__(0, now[0] + 1)):
+                    (runner.reconcile_python if kind == 'python' else runner.reconcile)(operation)
+                self.assertGreaterEqual(once.call_count, 2)
+                self.assertEqual(record['status'], 'failed')
+                self.assertTrue(record['termination_confirmed'])
+                self.assertFalse(record['executed'])
+                runner.allocation_harvested.assert_called_once()
+                runner.close_allocation.assert_called_once()
+
+    def test_uncertain_export_refusal_discards_immediately(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            runner.active = set()
+            operation = str(uuid.uuid4())
+            record = {'operation_id':operation, 'request':request('shell'), 'status':'uncertain',
+                      'termination_confirmed':True, 'uncertain_at':100, 'stdout':'', 'files':[]}
+            path = runner.path(operation)
+            save(path, record)
+            runner.operation_files = Mock(return_value=[path])
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.guard = Mock(side_effect=lambda _, action, **kwargs: {
+                'status':{'termination_confirmed':True}, 'export':{'refused':{'reason':'symlink','path':'bad','limit':None}},
+                'logs':{'stdout':'', 'truncated':True}}[action])
+            with patch('time.time', return_value=101):
+                runner.sweep_uncertain_output()
+            self.assertTrue(record['output_discarded'])
+            self.assertIn('symlink', record['error']['message'])
+            runner.close_allocation.assert_called_once()
+            self.assertNotIn('logs', [call.args[1] for call in runner.guard.call_args_list])
+
+    def test_failed_start_cleanup_survives_an_outage_before_acknowledgement(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            runner.active = set()
+            operation = str(uuid.uuid4())
+            record = {'operation_id':operation, 'request':request('shell'), 'status':'failed',
+                      'termination_confirmed':True, 'startup_cleanup_pending':True,
+                      'wire_digest':'wire', 'digest':'digest'}
+            path = runner.path(operation)
+            save(path, record)
+            runner.operation_files = Mock(return_value=[path])
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.pod = Mock(side_effect=[RuntimeError('API unavailable'), None])
+            runner.sweep_uncertain_output()
+            self.assertTrue(record['startup_cleanup_pending'])
+            with self.assertRaises(Rejected):
+                runner.acknowledge(operation, 'digest')
+            runner.sweep_uncertain_output()
+            self.assertFalse(record['startup_cleanup_pending'])
+            runner.close_allocation.assert_called_once()
+
+    def test_finishing_preview_is_bounded_without_losing_captured_output(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            output = b'a' * 20000 + b'failure at the end'
+            record = {'status':'finishing', 'request':request('verify'),
+                      'stdout':base64.b64encode(output).decode(), 'truncated':False, 'output_fetched_at':123}
+            public = runner.public(record)
+            preview = base64.b64decode(public['stdout'])
+            self.assertEqual(len(preview), 16384)
+            self.assertTrue(preview.endswith(b'failure at the end'))
+            self.assertTrue(public['truncated'])
+            self.assertEqual(public['output_fetched_at'], 123)
+            self.assertEqual(base64.b64decode(record['stdout']), output)
+
+    def test_confirmed_missing_pod_settles_with_unsaved_changes_error(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            operation = str(uuid.uuid4())
+            record = {'operation_id': operation, 'request': request('shell'), 'status': 'running',
+                      'executed': True, 'pod_uid': 'uid'}
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.pod = Mock(return_value=None)
+            runner.active = {operation}
+            runner.reconcile(operation)
+            self.assertEqual(record['status'], 'uncertain')
+            self.assertTrue(record['termination_confirmed'])
+            self.assertEqual(record['error']['code'], 'SANDBOX_LOST')
+            self.assertIn('not saved', record['error']['message'])
+
+    def test_expired_command_retries_cancel_and_settles_after_exit(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            operation = str(uuid.uuid4())
+            record = {'operation_id': operation, 'request': request('shell'), 'wire_digest': 'digest',
+                      'status': 'running', 'executed': True, 'cancel_requested': False,
+                      'pod_uid': 'uid', 'running_at': 1, 'started_at': 1}
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.active, runner.admission_operation = {operation}, None
+            runner.config['output_bytes'] = 1024
+            metadata = {'uid':'uid', 'annotations': {'aidash/digest':'digest'}}
+            running = {'metadata':metadata, 'status': {'containerStatuses': [
+                {'name':'execution','state':{'running':{}}}, {'name':'collector','state':{'running':{}}}]}}
+            stopped = {'metadata':metadata, 'status': {'containerStatuses': [
+                {'name':'execution','state':{'terminated':{'exitCode':137}}}, {'name':'collector','state':{'running':{}}}]}}
+            runner.pod = Mock(side_effect=[running, running, running, running, running, running, running, stopped])
+            runner.exec_collector = Mock(side_effect=[Mock(stdout=b'{"stdout":"","truncated":false}'),
+                RuntimeError('cancel unavailable'), Mock(stdout=b''),
+                Mock(stdout=b'{"stdout":"","truncated":false}'),
+                Mock(stdout=b'{"stdout":"","truncated":false}'), Mock(stdout=b'{"files":[]}')])
+            with patch('time.time', return_value=100), patch('time.sleep'):
+                runner.reconcile(operation)
+            self.assertEqual(record['status'], 'cancelled')
+            self.assertTrue(record['termination_confirmed'])
+            self.assertEqual(sum(1 for call in runner.exec_collector.call_args_list if call.args[1] == ['cancel']), 2)
+
+    def test_expired_cancel_uses_guard_if_collector_cannot_be_reached(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            operation = str(uuid.uuid4())
+            record = {'operation_id':operation, 'request':request('shell'), 'wire_digest':'digest',
+                      'status':'cancelling', 'executed':True, 'cancel_requested':True,
+                      'pod_uid':'uid', 'running_at':1, 'started_at':1}
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.active = {operation}
+            runner.pod = Mock(return_value={'metadata':{'uid':'uid', 'annotations':{'aidash/digest':'digest'}},
+                'status':{'containerStatuses':[{'name':'execution', 'state':{'running':{}}},
+                                               {'name':'collector', 'state':{'running':{}}}]}})
+            runner.exec_collector = Mock(side_effect=RuntimeError('collector unavailable'))
+            runner.guard = Mock(return_value={'termination_confirmed':True})
+            runner.recover_stopped_shell = Mock(side_effect=lambda current: record.update(status='failed'))
+            with patch('time.time', return_value=100):
+                runner.reconcile(operation)
+            runner.guard.assert_called_once_with(unittest.mock.ANY, 'terminate')
+            runner.recover_stopped_shell.assert_called_once()
+            self.assertTrue(record['termination_confirmed'])
+
+    def test_cancel_during_outage_is_retried_before_deadline(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            operation = str(uuid.uuid4())
+            record = {'operation_id':operation, 'request':request('shell'), 'wire_digest':'digest',
+                      'status':'running', 'executed':True, 'cancel_requested':True,
+                      'pod_uid':'uid', 'running_at':70, 'started_at':70}
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.active, runner.admission_operation = {operation}, None
+            runner.config['output_bytes'] = 1024
+            metadata = {'uid':'uid', 'annotations':{'aidash/digest':'digest'}}
+            running = {'metadata':metadata, 'status':{'containerStatuses':[
+                {'name':'execution','state':{'running':{}}}, {'name':'collector','state':{'running':{}}}]}}
+            stopped = {'metadata':metadata, 'status':{'containerStatuses':[
+                {'name':'execution','state':{'terminated':{'exitCode':137}}}, {'name':'collector','state':{'running':{}}}]}}
+            runner.pod = Mock(side_effect=[running, running, running, running, stopped])
+            runner.exec_collector = Mock(side_effect=[RuntimeError('unreachable'), Mock(stdout=b''),
+                Mock(stdout=b'{"stdout":"","truncated":false}'), Mock(stdout=b'{"stdout":"","truncated":false}'),
+                Mock(stdout=b'{"files":[]}')])
+            with patch('time.time', return_value=100), patch('time.sleep'):
+                runner.reconcile(operation)
+            self.assertEqual(record['status'], 'cancelled')
+            self.assertEqual(sum(1 for call in runner.exec_collector.call_args_list if call.args[1] == ['cancel']), 2)
+
+    def test_past_stop_retention_requests_deletion_before_confirming_absence(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            operation = str(uuid.uuid4())
+            record = {'operation_id':operation, 'request':request('shell'), 'status':'running',
+                      'executed':True, 'cancel_requested':False, 'pod_uid':'uid', 'running_at':1}
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.active = {operation}
+            runner._reconcile_shell_once = Mock(side_effect=[RuntimeError('API unavailable'), SandboxGone()])
+            with patch('time.time', return_value=4000), patch('time.sleep'):
+                runner.reconcile(operation)
+            runner.close_allocation.assert_called_once()
+            self.assertEqual(record['status'], 'uncertain')
+            self.assertTrue(record['termination_confirmed'])
+
+    def test_past_stop_retention_asks_for_deletion_once_a_minute(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            operation = str(uuid.uuid4())
+            record = {'operation_id':operation, 'request':request('shell'), 'status':'running',
+                      'executed':True, 'cancel_requested':False, 'pod_uid':'uid', 'running_at':1}
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.active = {operation}
+            runner._reconcile_shell_once = Mock(side_effect=[RuntimeError('stuck')] * 5 + [SandboxGone()])
+            with patch('time.time', return_value=4000), patch('time.sleep'), contextlib.redirect_stderr(io.StringIO()):
+                runner.reconcile(operation)
+            runner.close_allocation.assert_called_once()
+
+    def test_late_harvest_reads_through_the_collector_of_a_finished_command(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            operation = str(uuid.uuid4())
+            record = {'operation_id':operation, 'request':request('shell'), 'status':'uncertain',
+                      'termination_confirmed':True, 'pod_uid':'uid', 'stdout':'', 'files':[]}
+            data = b'kept'
+            file = {'path':'out.txt', 'object_id':'object', 'size':len(data), 'digest':hashlib.sha256(data).hexdigest()}
+            runner.config['output_bytes'] = 1024
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.pod = Mock(return_value={'metadata':{'uid':'uid'}, 'status':{'containerStatuses':[
+                {'name':'execution', 'state':{'terminated':{'exitCode':0}}}, {'name':'collector', 'state':{'running':{}}}]}})
+            # The guard cannot see a container that already finished.
+            runner.guard = Mock(side_effect=RuntimeError('runsc state failed'))
+            replies = {'logs':json.dumps({'stdout':'b3V0', 'truncated':False}).encode(),
+                       'export':json.dumps({'files':[file]}).encode(), 'read':data}
+            runner.exec_collector = Mock(side_effect=lambda _, action, **kwargs: Mock(stdout=replies[action[0]]))
+            runner.harvest_stopped_output(record)
+            self.assertTrue(record['output_harvested'])
+            self.assertEqual(record['files'], [file])
+            self.assertEqual((Path(root) / (operation + '.files') / 'object').read_bytes(), data)
+            runner.guard.assert_not_called()
+            runner.close_allocation.assert_called_once()
+
+    def test_stopped_unreadable_output_waits_then_reopens_as_uncertain(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            operation = str(uuid.uuid4())
+            now = [100.0]
+            record = {'operation_id': operation, 'request': request('shell'), 'wire_digest': 'digest',
+                      'status': 'running', 'executed': True, 'cancel_requested': False,
+                      'pod_uid': 'uid', 'running_at': 90, 'started_at': 90}
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.active = {operation}
+            runner.pod = Mock(return_value={'metadata': {'uid': 'uid', 'annotations': {'aidash/digest':'digest'}},
+                'status': {'containerStatuses': [{'name':'execution', 'state': {'terminated': {'exitCode':0}}},
+                                                {'name':'collector', 'state': {'running':{}}}]}})
+            runner.exec_collector = Mock(side_effect=RuntimeError('collector unavailable'))
+            runner.config['output_bytes'] = 1024
+            with patch('control.STOP_WATCH_SECONDS', 3), patch('time.time', side_effect=lambda: now[0]), \
+                 patch('time.sleep', side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds)):
+                runner.reconcile(operation)
+            self.assertGreaterEqual(now[0], 103)
+            self.assertEqual(record['status'], 'uncertain')
+            self.assertTrue(record['termination_confirmed'])
+            self.assertEqual(record['error']['code'], 'OUTPUT_LOST')
+            runner.close_allocation.assert_not_called()
+
+    def test_uncertain_retention_discards_only_after_pod_disappears(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            runner.active = set()
+            runner.instance = 'instance'
+            operation = str(uuid.uuid4())
+            record = {'operation_id': operation, 'request': request('shell'), 'status': 'uncertain',
+                      'termination_confirmed': True, 'uncertain_at': 1, 'pod_uid': 'uid',
+                      'stdout': '', 'files': [], 'displays': [], 'digest': 'fixture'}
+            path = runner.path(operation)
+            save(path, record)
+            runner.operation_files = Mock(return_value=[path])
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.pod = Mock(side_effect=[{'metadata': {'uid': 'uid'}}, None])
+            runner.config['uncertain_retention_seconds'] = 10
+            with patch('time.time', return_value=12):
+                runner.sweep_uncertain_output()
+                self.assertFalse(record.get('acknowledged', False))
+                runner.sweep_uncertain_output()
+            self.assertTrue(record['output_discarded'])
+            self.assertTrue(record['acknowledged'])
+            self.assertEqual(record['acknowledged_output_digest'], runner.output_digest(record))
+
+    def test_uncertain_output_can_be_retained_later_and_closes_allocation(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            runner.active = set()
+            operation = str(uuid.uuid4())
+            record = {'operation_id':operation, 'request':request('shell'), 'status':'uncertain',
+                      'termination_confirmed':True, 'uncertain_at':100, 'stdout':'', 'files':[]}
+            path = runner.path(operation)
+            save(path, record)
+            runner.operation_files = Mock(return_value=[path])
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.guard = Mock(side_effect=lambda _, action, **kwargs: {
+                'status':{'termination_confirmed':True}, 'export':{'files':[]},
+                'logs':{'stdout':'cmVjb3ZlcmVk', 'truncated':True}}[action])
+            with patch('time.time', return_value=101):
+                runner.sweep_uncertain_output()
+            self.assertEqual(record['status'], 'uncertain')
+            self.assertTrue(record['output_harvested'])
+            self.assertEqual(record['stdout'], 'cmVjb3ZlcmVk')
+            runner.close_allocation.assert_called_once()
+
+    def test_shell_retries_pod_and_preview_outages_before_completion(self):
+        import itertools
+        import subprocess
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            operation = str(uuid.uuid4())
+            record = {'operation_id': operation, 'request': request('shell'), 'wire_digest': 'digest',
+                      'status': 'running', 'executed': True, 'cancel_requested': False,
+                      'pod_uid': 'uid', 'running_at': time.time(), 'started_at': time.time()}
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.active = {operation}
+            runner.admission_operation = None
+            runner.config['output_bytes'] = 1024
+            running = {'metadata': {'uid': 'uid', 'annotations': {'aidash/digest': 'digest'}},
+                'status': {'containerStatuses': [{'name': 'execution', 'state': {'running': {}}},
+                                                {'name': 'collector', 'state': {'running': {}}}]}}
+            stopped = {'metadata': running['metadata'], 'status': {'containerStatuses': [
+                {'name': 'execution', 'state': {'terminated': {'exitCode': 0}}},
+                {'name': 'collector', 'state': {'running': {}}}]}}
+            timeout = subprocess.TimeoutExpired('kubectl', 45)
+            runner.pod = Mock(side_effect=[timeout, running, running, running, running, running, stopped])
+            content = b'new file contents'
+            digest = hashlib.sha256(content).hexdigest()
+            file = {'path':'output.txt', 'object_id':digest, 'digest':digest, 'size':len(content)}
+            runner.exec_collector = Mock(side_effect=[Mock(stdout=b'{"stdout":"cHJldmlldw==","truncated":false}'),
+                                                     timeout, Mock(stdout=b'{"stdout":"","truncated":false}'),
+                                                     Mock(stdout=json.dumps({'files':[file]}).encode()),
+                                                     Mock(stdout=content)])
+            ticks = itertools.count(step=2)
+            with patch('time.sleep'), patch('time.monotonic', side_effect=lambda: next(ticks)):
+                runner.reconcile(operation)
+            self.assertEqual(record['status'], 'completed')
+            self.assertEqual(record['files'], [file])
+            self.assertEqual((Path(root) / (operation + '.files') / digest).read_bytes(), content)
+            self.assertTrue(record['termination_confirmed'])
+            self.assertIn('output_fetched_at', runner.public(record))
+
     def runner(self, root):
         runner = object.__new__(Runner)
         runner.root = Path(root)
@@ -156,6 +542,62 @@ class VerificationTest(unittest.TestCase):
             self.assertIn('terminate', [call.args[1] for call in runner.guard.call_args_list])
             session = json.loads((Path(root) / ('session-' + record['session_id'] + '.json')).read_text())
             self.assertEqual(session['status'], 'stopped')
+
+    def test_python_cell_status_timeout_recovers_without_replaying_code(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            operation, pod_uid = str(uuid.uuid4()), str(uuid.uuid4())
+            record = {'operation_id':operation, 'area_id':str(uuid.uuid4()), 'session_id':str(uuid.uuid4()),
+                      'pod_operation':'existing', 'pod_uid':pod_uid, 'request':request('python'),
+                      'digest':'fixture', 'cancel_requested':False, 'status':'running', 'hydrated':True,
+                      'executed':False, 'running_at':time.time()}
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.active = {operation}
+            runner.config['idle_seconds'] = 60
+            runner.execution_limits = Mock(return_value={})
+            runner.allocations = Path(root) / 'allocations'
+            runner.allocations.mkdir()
+            save(runner.allocations / (pod_uid + '.json'), {'resource_version':'101', 'receipt':'present'})
+            runner.pod = Mock(return_value={'metadata':{'uid':pod_uid, 'resourceVersion':'101'},
+                'spec':{'nodeName':'node', 'containers':[{'image':'image'}]}, 'status':{'containerStatuses':[
+                    {'name':'execution','containerID':'containerd://cid','state':{'running':{}}},
+                    {'name':'collector','state':{'running':{}}}]}})
+            calls = []
+            def guard(_, action, **kwargs):
+                calls.append(action)
+                if action == 'cell_status' and calls.count(action) == 1:
+                    raise subprocess.TimeoutExpired('kubectl', 45)
+                return {'limits':{}, 'cell':{}, 'cell_status':{'status':'completed', 'exit_code':0, 'stdout':''},
+                        'freeze':{'writer_frozen':True}, 'export':{'files':[]}}[action]
+            runner.guard = Mock(side_effect=guard)
+            with patch('time.sleep'):
+                runner.reconcile_python(operation)
+            self.assertEqual(record['status'], 'completed')
+            self.assertTrue(record['writer_frozen'])
+            self.assertEqual(calls.count('cell_status'), 2)
+            self.assertEqual(calls.count('limits'), 1)
+
+    def test_python_execution_stopped_during_outage_is_harvested(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            operation, pod_uid = str(uuid.uuid4()), str(uuid.uuid4())
+            record = {'operation_id':operation, 'request':request('python'), 'status':'running',
+                      'pod_operation':'existing', 'pod_uid':pod_uid, 'executed':True,
+                      'cancel_requested':False, 'running_at':time.time(), 'stdout':''}
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.active = {operation}
+            runner.pod = Mock(return_value={'metadata':{'uid':pod_uid}, 'status':{'containerStatuses':[
+                {'name':'execution','state':{'terminated':{'exitCode':137}}},
+                {'name':'collector','state':{'running':{}}}]}})
+            runner.guard = Mock(return_value={'files':[]})
+            runner.reconcile_python(operation)
+            self.assertEqual(record['status'], 'failed')
+            self.assertTrue(record['termination_confirmed'])
+            self.assertTrue(record['output_harvested'])
+            self.assertEqual(record['error']['code'], 'SESSION_LOST')
 
     def test_a_stopped_check_records_its_output_without_exporting_files(self):
         calls, recorded = self.stopped("verify")

@@ -614,6 +614,25 @@ async fn confirmed_unexecuted_operations_need_no_output_publication(
 	assert!(trace.published.is_empty());
 	assert!(trace.events.is_empty());
 }
+
+#[rstest]
+#[tokio::test]
+async fn unexecuted_python_failure_releases_its_session(repository: Repository) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.operation.kind = "code_interpreter".into();
+		trace.observed = json!({"status":"failed","termination_confirmed":true,"executed":false,
+			"error":{"code":"STARTUP_TIMEOUT","message":"Startup timed out"}});
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert!(trace.calls.iter().any(|call| call == "python:false"));
+	assert_eq!(
+		trace.saved[0].result["error"]["message"],
+		"Startup timed out"
+	);
+	assert!(trace.published.is_empty());
+}
 #[rstest]
 #[tokio::test]
 async fn a_shell_writer_is_not_confirmed_stopped_by_a_python_freeze_claim(repository: Repository) {
@@ -872,6 +891,64 @@ async fn a_lost_shell_operation_with_a_live_writer_stays_uncertain(repository: R
 	let trace = repository.0.lock().unwrap();
 	assert_eq!(trace.saved[0].state, "uncertain");
 	assert!(trace.calls.contains(&"area:uncertain".into()));
+}
+
+#[rstest]
+#[tokio::test]
+async fn unconfirmed_stop_stays_active_and_keeps_the_area_busy(repository: Repository) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.operation.state = "running".into();
+		trace.observed = json!({"status":"cancelling","stdout":"","termination_confirmed":false,"output_fetched_at":1234});
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(trace.saved[0].state, "cancelling");
+	assert!(trace.saved[0].active());
+	assert_eq!(trace.saved[0].result["output_fetched_at"], 1234);
+	assert_eq!(trace.saved[0].result["error"]["code"], "STOP_UNCONFIRMED");
+	assert!(!trace.calls.iter().any(|call| call.starts_with("area:")));
+	assert!(trace.published.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn stopped_uncertain_shell_reopens_without_publishing_and_preserves_error(
+	repository: Repository,
+) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.operation.state = "running".into();
+		trace.observed = json!({"status":"uncertain","termination_confirmed":true,
+			"error":{"code":"OUTPUT_LOST","message":"File changes were not saved."}});
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(trace.saved[0].state, "uncertain");
+	assert_eq!(
+		trace.saved[0].result["error"]["message"],
+		"File changes were not saved."
+	);
+	assert!(trace.calls.contains(&"area:active".into()));
+	assert!(trace.published.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn stopped_uncertain_python_resets_its_session_without_publishing(repository: Repository) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.operation.kind = "code_interpreter".into();
+		trace.operation.state = "running".into();
+		trace.observed = json!({"status":"uncertain","termination_confirmed":true,
+			"error":{"code":"OUTPUT_LOST","message":"File changes were not saved."}});
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(trace.saved[0].state, "uncertain");
+	assert!(trace.calls.contains(&"area:active".into()));
+	assert!(trace.calls.contains(&"python:false".into()));
+	assert!(trace.published.is_empty());
 }
 /// What the runner reports when its collector refused to export `/work` (#682).
 fn refused_export(reason: &str, path: &str, limit: Value) -> Value {
