@@ -237,6 +237,20 @@ class PodProxyUrlTest(unittest.TestCase):
             self.assertEqual(str(refused.exception), 'invalid egress credential')
 
 
+    def test_a_pods_proxy_settings_carry_the_credential_the_server_sent(self):
+        from execution_pod import execution_manifests
+        settings = {'scratch_space_id': 's', 'image': 'image@sha256:' + 'a' * 64, 'cpu': 2,
+                    'memory_bytes': 2 << 30, 'capacity_bytes': 2 << 30, 'docker_enabled': False,
+                    'egress_credential': 'aidash-scope-v1.a'}
+        config = {'runtime_class': 'gvisor', 'helper_image': 'helper@sha256:' + 'b' * 64, 'namespace': 'sandbox',
+                  'proxy_endpoint': 'http://10.0.0.8:8888', 'proxy_namespace': 'gateway',
+                  'proxy_selector': {'app': 'gateway'}}
+        _, pod = execution_manifests(settings, config)
+        env = {item['name']: item.get('value') for item in pod['spec']['containers'][0]['env']}
+        for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'):
+            self.assertEqual(env[name], 'http://aidash:aidash-scope-v1.a@10.0.0.8:8888')
+
+
 class StartupStorageRegressionTest(unittest.TestCase):
     def test_stale_staging_is_removed_before_reusing_existing_root(self):
         import tempfile

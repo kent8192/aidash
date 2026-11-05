@@ -244,4 +244,21 @@ mod egress_credential_tests {
 		assert_eq!(serde_json::to_string(&credential).unwrap(), r#""canary""#);
 		assert!(!format!("{credential:?}").contains("canary"));
 	}
+
+	#[test]
+	fn the_runner_finds_it_under_the_name_it_reads() {
+		let settings = super::ExecutionPodSettings {
+			scratch_space_id: "s".into(),
+			image: "image".into(),
+			cpu: 1,
+			memory_bytes: 1,
+			capacity_bytes: 1,
+			docker_enabled: false,
+			tenant_id: None,
+			egress_credential: Some(EgressCredential("canary".into())),
+		};
+		let value = serde_json::to_value(&settings).unwrap();
+		assert_eq!(value["egress_credential"], "canary");
+		assert!(!format!("{settings:?}").contains("canary"));
+	}
 }
