@@ -17,7 +17,6 @@ use crate::apps::workspaces::serializers::entities::Task;
 use crate::apps::workspaces::serializers::management::MessageInput;
 use crate::apps::workspaces::serializers::tasks::PageQuery;
 use crate::{Result, config::openapi::Contracts};
-use aidash_domain::RunInspection;
 use aidash_domain::retention::RetentionChange;
 use reinhardt::rest::openapi::OpenApiSchema;
 use serde_json::Value;
@@ -143,12 +142,13 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.query::<_, HistoryPage>(document, views::research::retention_history)?;
 	contracts.path(document, views::research::retention_history, &["String"])?;
-	contracts.response::<_, RunInspection>(
-		document,
-		views::management::run_control,
-		200,
-		"application/json",
-	)?;
+	contracts
+		.response::<_, crate::apps::identity::services::execution::management::RunManagement>(
+			document,
+			views::management::run_control,
+			200,
+			"application/json",
+		)?;
 	contracts.request::<_, ControlInput>(document, views::management::run_control)?;
 	contracts.path(document, views::management::run_control, &["Uuid"])?;
 	contracts.response::<_, SentResponse>(

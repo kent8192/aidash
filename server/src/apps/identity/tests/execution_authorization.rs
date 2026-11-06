@@ -969,18 +969,21 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	assert!(text.contains("permitted message after rejected events"));
 	assert!(!text.contains("unreadable-run-journal"));
 	drop(stream);
-	assert_eq!(
-		request(
-			&app,
-			&token,
-			"POST",
-			&format!("/api/runs/{}/control", run.id),
-			json!({"action":"pause"})
-		)
-		.await
-		.0,
-		403,
-		"control responses must not expose a denied run journal"
+	// A reader denied the Run can still stop it, without seeing its journal.
+	let (status, paused) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/runs/{}/control", run.id),
+		json!({"action":"pause"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{paused}");
+	assert_eq!(paused["control"], "PAUSED");
+	assert!(paused.get("context").is_none(), "{paused}");
+	assert!(
+		!paused.to_string().contains("unreadable-run-journal"),
+		"{paused}"
 	);
 	assert_eq!(
 		f.store
@@ -989,16 +992,8 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 			.unwrap()
 			.control
 			.as_str(),
-		"ACTIVE"
+		"PAUSED"
 	);
-	f.store
-		.control(
-			&TEST_FIXTURE,
-			run.id,
-			aidash_server::domain::RunControlAction::Pause,
-		)
-		.await
-		.unwrap();
 	let (_, second) = request(
 		&app,
 		&token,

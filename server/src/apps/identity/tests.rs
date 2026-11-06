@@ -9,6 +9,7 @@
 //! - `interaction_authorization`
 //! - `policy`
 //! - `resource_authorization`
+//! - `run_control`
 //! - `peer_graph`
 //! - `peer_graph_nodes`
 //! - `peer_graph_review`

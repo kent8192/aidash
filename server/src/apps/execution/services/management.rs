@@ -381,15 +381,25 @@ impl HarnessManagement {
 		actor: Actor,
 		id: Uuid,
 		input: ControlInput,
-	) -> Result<crate::domain::RunInspection> {
+	) -> Result<execution::management::RunManagement> {
+		use execution::management::{self, ManagementAction, RunManagementInput};
 		let f = self.runtime.clone();
 		// A Deployment Administrator controls a Run only through a Safety Stop
-		// (`/management`, ADR 0101): no resume, and no `RunInspection` returned.
+		// (`/management`, ADR 0101): no resume, and no content returned.
 		// The refusal comes before any mutation or serialization.
-		let Actor::Subject(identity) = actor else {
+		let Actor::Subject(identity) = &actor else {
 			return Err(Error::Forbidden);
 		};
-		execution::control(&f, &identity, id, input.action).await
+		// Stopping never depends on what the Run has read, and there is one
+		// check for it; resuming does depend on it.
+		let action = match input.action {
+			crate::domain::RunControlAction::Resume => {
+				return Ok(execution::resume(&f, identity, id).await?.into());
+			}
+			crate::domain::RunControlAction::Pause => ManagementAction::Pause,
+			crate::domain::RunControlAction::Cancel => ManagementAction::Cancel,
+		};
+		management::control(f, actor, id, RunManagementInput { action }).await
 	}
 	pub(crate) async fn run_message(
 		&self,

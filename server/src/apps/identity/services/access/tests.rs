@@ -119,6 +119,7 @@ fn access() -> Access {
 		unavailable_peers: Default::default(),
 		checking_reads: Default::default(),
 		read_verdicts: Default::default(),
+		read_block: None,
 		wire: None,
 		node_id: "aidash://home".into(),
 		dependency_frontier: None,

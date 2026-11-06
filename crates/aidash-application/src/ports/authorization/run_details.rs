@@ -2,6 +2,7 @@
 use crate::Result;
 use aidash_domain::{
 	RawRun, RunInspection, RunMetadata, invocation::InvocationSummary, policy::Resource,
+	run_state::RunReadsBlock,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -23,6 +24,9 @@ pub trait RunDetailsScope: Send {
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	async fn run_visible(&mut self, run: &RunInspection) -> Result<bool>;
+	/// What the failed [`Self::run_visible`] found in the Run's reads, in terms
+	/// this reader may see. `None` when the reader's own policy hides the Run.
+	async fn run_reads_block(&mut self, run: &RunInspection) -> Result<Option<RunReadsBlock>>;
 	/// Preserve the original 100-row created_at/idempotency-key page and bounded JSON preview.
 	async fn egress_requests(
 		&mut self,

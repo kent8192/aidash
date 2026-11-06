@@ -4,6 +4,7 @@ use crate::{
 	Result,
 	domain::{Artifact, Event, Message, Task},
 };
+use aidash_application::authorization::visibility::provenance::ReadBlock;
 use uuid::Uuid;
 
 impl Access {
@@ -191,6 +192,9 @@ impl Access {
 			let pending = self.dependency_frontier.take().unwrap_or_default();
 			if matches!(result, Ok(true)) {
 				result = self.verify_dependencies(pending).await;
+				if matches!(result, Ok(false)) {
+					self.read_block.get_or_insert(ReadBlock::RemoteRead);
+				}
 			}
 		}
 		match result {
@@ -201,12 +205,19 @@ impl Access {
 		result
 	}
 	async fn run_reads_visible_in(&mut self, run: Uuid) -> Result<bool> {
-		aidash_application::authorization::visibility::provenance::run_reads_visible(
+		let block = aidash_application::authorization::visibility::provenance::run_reads_block(
 			&mut crate::bootstrap::run_visibility_scope(self),
 			run,
 		)
-		.await
-		.map_err(Into::into)
+		.await?;
+		// A nested walk records first, so this keeps the read that actually stopped it.
+		match block {
+			Some(block) => {
+				self.read_block.get_or_insert(block);
+				Ok(false)
+			}
+			None => Ok(true),
+		}
 	}
 	pub(crate) async fn grant_reads_visible(&mut self, grant: Uuid) -> Result<bool> {
 		aidash_application::authorization::journals::grant_reads_visible(
