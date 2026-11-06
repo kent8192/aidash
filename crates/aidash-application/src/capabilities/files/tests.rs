@@ -6,6 +6,10 @@ struct Scope {
 	/// What a file holds when it is not the default `bytes`, by path.
 	contents: std::collections::BTreeMap<String, Vec<u8>>,
 	opens: usize,
+	/// Reference records revoked since the Area was given their files.
+	revoked: BTreeSet<Uuid>,
+	/// Calls that asked whether Reference records are still usable.
+	reference_queries: usize,
 	search_seconds: u64,
 	open_delay: std::time::Duration,
 	previous: Value,
@@ -136,6 +140,14 @@ impl FileScopePort for Scope {
 			offset: 0,
 		}))
 	}
+	async fn unusable_references(&mut self, ids: &[Uuid]) -> Result<BTreeSet<Uuid>> {
+		self.reference_queries += 1;
+		Ok(ids
+			.iter()
+			.copied()
+			.filter(|id| self.revoked.contains(id))
+			.collect())
+	}
 	async fn cached(&mut self, key: Uuid, digest: &str) -> Result<Option<Value>> {
 		Ok(self
 			.cache_entry
@@ -235,6 +247,8 @@ fn fixture(bytes: &[u8]) -> (Scope, Area, FileEntry) {
 			bytes: bytes.to_vec(),
 			contents: Default::default(),
 			opens: 0,
+			revoked: BTreeSet::new(),
+			reference_queries: 0,
 			search_seconds: 5,
 			open_delay: std::time::Duration::ZERO,
 			previous: area.manifest.clone(),
@@ -546,6 +560,109 @@ async fn a_full_page_is_returned_with_a_cursor_when_the_next_file_has_a_very_lon
 	}
 	assert_eq!(found, ["a.md", "c.md"]);
 	assert_eq!(unavailable, 1, "the long line is reported once");
+}
+/// A Reference file of the Area's set, taken from Reference record `record`.
+fn reference_file(path: &str, record: Uuid) -> FileEntry {
+	FileEntry {
+		file_id: Uuid::new_v4(),
+		path: format!("references/{path}"),
+		digest: "digest".into(),
+		size: 7,
+		media_type: "text/plain".into(),
+		scope: FileScope::References,
+		provenance: json!({"kind":"reference","id":record}),
+	}
+}
+#[tokio::test]
+async fn a_revoked_reference_file_is_neither_read_searched_nor_copied() {
+	let (mut scope, run, _) = invoke_fixture("file_read", json!({}));
+	scope.active_run = Some(run.id);
+	let (kept, gone) = (Uuid::new_v4(), Uuid::new_v4());
+	let (kept_file, gone_file) = (
+		reference_file("kept.md", kept),
+		reference_file("gone.md", gone),
+	);
+	for file in [&kept_file, &gone_file] {
+		scope
+			.contents
+			.insert(file.path.clone(), b"needle\n".to_vec());
+	}
+	let mut area = scope.area.clone().unwrap();
+	area.manifest = json!([kept_file, gone_file]);
+	scope.area = Some(area.clone());
+	scope.revoked.insert(gone);
+
+	let read_text = |file: &FileEntry| selection(file, Representation::Text, None, None);
+	assert_eq!(
+		read(&mut scope, &area, read_text(&kept_file))
+			.await
+			.unwrap()["content"],
+		"needle\n"
+	);
+	for representation in [Representation::Text, Representation::Metadata] {
+		let refused = read(
+			&mut scope,
+			&area,
+			selection(&gone_file, representation, None, None),
+		)
+		.await
+		.unwrap_err();
+		assert!(
+			matches!(&refused, Error::NotFound(message) if message.contains("gone.md")),
+			"{refused}"
+		);
+	}
+
+	let paths = |found: &Value| {
+		found["matches"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.map(|item| item["path"].as_str().unwrap().to_owned())
+			.collect::<Vec<_>>()
+	};
+	let input = FileSearch {
+		query: "needle".into(),
+		mode: SearchMode::Literal,
+		scope: FileScope::References,
+		path: None,
+		cursor: None,
+		limit: None,
+	};
+	scope.reference_queries = 0;
+	let found = search(&mut scope, &area, input.clone()).await.unwrap();
+	assert_eq!(paths(&found), ["references/kept.md"], "{found}");
+	assert_eq!(scope.reference_queries, 1, "one query for the whole set");
+	let listed = search(
+		&mut scope,
+		&area,
+		FileSearch {
+			query: String::new(),
+			mode: SearchMode::Path,
+			..input
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(paths(&listed), ["references/kept.md"], "{listed}");
+
+	let refused = materialize(
+		&mut scope,
+		&run,
+		Materialize {
+			idempotency_key: Uuid::new_v4(),
+			expected_revision: area.revision,
+			path: "copy.md".into(),
+			source: MaterializeSource::File {
+				file_id: gone_file.file_id,
+				expected_digest: gone_file.digest.clone(),
+			},
+		},
+	)
+	.await
+	.unwrap_err();
+	assert!(matches!(refused, Error::NotFound(_)), "{refused}");
+	assert!(scope.pending.is_empty(), "nothing was copied");
 }
 #[tokio::test]
 async fn publication_tombstones_only_removed_working_objects() {

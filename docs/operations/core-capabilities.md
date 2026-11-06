@@ -350,7 +350,10 @@ Whoever may run an Agent version can have that Run read the Reference files of
 its approved Sources, and the Agent needs no `reference.*` action (ADR 0113).
 Direct download stays with the uploader, through both the reference and the
 working-area routes. Revoking one file refuses new Runs of every version that
-binds it, and the error names its path.
+binds it, and the error names its path. A Run that already holds the set stops
+reading a revoked file too: `file_read` and the copy refuse it, `file_search`
+skips it, and the set's other files stay readable. `file_share` refuses a
+Reference file, so no other Agent can keep a copy past its revocation.
 
 `POST /api/references/batch` adds several documents in one request of up to
 16 MiB and reports a result per file. The same person adding the same content
