@@ -751,12 +751,21 @@ print(json.dumps(r))'''
                         or pod.get('spec', {}).get('nodeName') != node):
                     raise ExecutionPodError('termination_unconfirmed', 'The original Pod cannot be bound to a normal deletion') from None
                 # Persist which Pod the delete is issued for before issuing it: a reply lost after
-                # the delete applied must not leave the Space fenced for good.
+                # the delete applied must not leave the Space fenced for good. The record is only
+                # intent, so a delete the API server refused takes it back again, unless an earlier
+                # attempt for the same Pod left its outcome open.
+                unresolved = issued == uid
                 state['normal_delete_pod_uid'] = uid
                 save(path, state)
                 endpoint = '/api/v1/namespaces/' + self.config['namespace'] + '/pods/' + name
-                self.backend.kube(['delete', '--raw', endpoint, '-f', '-'],
-                                  json.dumps({'preconditions':{'uid':uid}}).encode(), timeout=70)
+                try:
+                    self.backend.kube(['delete', '--raw', endpoint, '-f', '-'],
+                                      json.dumps({'preconditions':{'uid':uid}}).encode(), timeout=70)
+                except Exception as error:
+                    if not unresolved and self._delete_refused(error):
+                        state.pop('normal_delete_pod_uid', None)
+                        save(path, state)
+                    raise
                 try:
                     self.backend.kube(['wait', '--for=delete', 'pod/' + name, '--timeout=60s'], timeout=70)
                 except Exception:
@@ -786,6 +795,24 @@ print(json.dumps(r))'''
         if queue:
             queue.close(wait=False)
         return {'stopped': True}
+
+    # Statuses with which the API server rejects a request without acting on it. Any other failure,
+    # such as a timeout, a dropped connection or a status like ServerTimeout or ServiceUnavailable,
+    # leaves it open whether the request was applied.
+    REFUSED_REASONS = frozenset({'Unauthorized', 'Forbidden', 'Invalid', 'BadRequest', 'Conflict',
+                                 'MethodNotAllowed', 'NotAcceptable', 'RequestEntityTooLarge',
+                                 'UnsupportedMediaType', 'TooManyRequests'})
+
+    @classmethod
+    def _delete_refused(cls, error):
+        """Whether a failed kubectl call shows that the API server answered and refused the request."""
+        import re
+        if not isinstance(error, RuntimeError):
+            return False
+        # Backend.kube turns a nonzero kubectl exit into RuntimeError(stderr); kubectl prints the API
+        # status as `Error from server (<Reason>): <message>`.
+        match = re.search(r'(?m)^Error from server \((\w+)\)', str(error))
+        return bool(match) and match.group(1) in cls.REFUSED_REASONS
 
     def _interrupt_space_commands(self, scratch_space_id):
         import json

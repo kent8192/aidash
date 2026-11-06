@@ -3596,8 +3596,8 @@ class NormalDeleteProofTest(unittest.TestCase):
         from execution_pod import ExecutionPodController, ExecutionPodError
         from control import scratch_resource_name
         world = {'pod': {'metadata': {'uid': 'uid'}, 'spec': {'nodeName': 'node'}}, 'node_uid': 'node-uid',
-                 'pod_lookup_fails': False, 'node_lookup_fails': False, 'delete_reply_lost': False,
-                 'wait_fails': False, 'after_delete': {}}
+                 'pod_lookup_fails': False, 'node_lookup_fails': False, 'delete_raises': None,
+                 'delete_applies': True, 'wait_fails': False, 'after_delete': {}}
         deletes = []
         def get(kind, name):
             if kind == 'node':
@@ -3610,10 +3610,11 @@ class NormalDeleteProofTest(unittest.TestCase):
         def kube(args, *rest, **kwargs):
             if args[0] == 'delete':
                 deletes.append(json.loads(rest[0]))
-                world['pod'] = None
+                if world['delete_applies']:
+                    world['pod'] = None
                 world.update(world['after_delete'])
-                if world['delete_reply_lost']:
-                    raise TimeoutError('delete reply lost')
+                if world['delete_raises'] is not None:
+                    raise world['delete_raises']
             if args[0] == 'wait' and world['wait_fails']:
                 raise TimeoutError('wait timed out')
             return SimpleNamespace(returncode=0, stdout=b'')
@@ -3630,12 +3631,17 @@ class NormalDeleteProofTest(unittest.TestCase):
 
     def test_completed_delete_whose_proof_was_lost_counts_as_stopped(self):
         import json
+        import subprocess
         import tempfile
         from unittest.mock import patch
         from execution_pod import ExecutionPodError, STOP_RETRY_SECONDS
-        # What goes wrong once the delete has been applied.
+        # What goes wrong once the delete has been applied, or whose outcome the API server left open.
         losses = {
-            'reply lost': {'delete_reply_lost': True},
+            'reply lost': {'delete_raises': TimeoutError('delete reply lost')},
+            'kubectl timed out': {'delete_raises': subprocess.TimeoutExpired('kubectl', 70)},
+            'connection dropped': {'delete_raises': RuntimeError('Unable to connect to the server: EOF')},
+            'server timeout': {'delete_raises': RuntimeError(
+                'Error from server (ServerTimeout): the server was unable to return a response in the time allotted')},
             'wait and pod lookup time out': {'wait_fails': True, 'pod_lookup_fails': True},
             'node lookup times out afterwards': {'node_lookup_fails': True},
         }
@@ -3650,7 +3656,7 @@ class NormalDeleteProofTest(unittest.TestCase):
                     with self.assertRaises(Exception):
                         controller.stop('s')
                 self.assertEqual(len(deletes), 1)
-                world.update(delete_reply_lost=False, pod_lookup_fails=False, node_lookup_fails=False, wait_fails=False)
+                world.update(delete_raises=None, pod_lookup_fails=False, node_lookup_fails=False, wait_fails=False)
                 with patch('time.time', return_value=100 + STOP_RETRY_SECONDS + 1):
                     self.assertTrue(controller.stop('s')['stopped'])
                 self.assertEqual(len(deletes), 1)
@@ -3670,11 +3676,11 @@ class NormalDeleteProofTest(unittest.TestCase):
                 with patch('time.time', return_value=100):
                     with self.assertRaises(ExecutionPodError):
                         controller.stop('s')
-                world['after_delete'] = {'delete_reply_lost': True}
+                world.update(delete_raises=TimeoutError('delete reply lost'))
                 with patch('time.time', return_value=100 + STOP_RETRY_SECONDS):
                     with self.assertRaises(Exception):
                         controller.stop('s')
-                world.update(delete_reply_lost=False, node_uid=node_uid)
+                world.update(delete_raises=None, node_uid=node_uid)
                 with patch('time.time', return_value=100 + STOP_RETRY_SECONDS + 1):
                     with self.assertRaises(ExecutionPodError) as error:
                         controller.stop('s')
@@ -3695,6 +3701,59 @@ class NormalDeleteProofTest(unittest.TestCase):
                 with self.assertRaises(ExecutionPodError):
                     controller.stop('s')
             self.assertEqual(deletes, [])
+
+
+    def test_a_refused_delete_leaves_no_proof_for_a_pod_that_disappears_later(self):
+        import tempfile
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodError, STOP_RETRY_SECONDS
+        refusals = (
+            'Error from server (Forbidden): pods "x" is forbidden: User cannot delete resource "pods"',
+            'Error from server (Conflict): Precondition failed: UID in precondition: uid, UID in object meta: other',
+            'Error from server (Invalid): Pod "x" is invalid',
+            'Error from server (Unauthorized): Unauthorized',
+        )
+        for message in refusals:
+            with self.subTest(message), tempfile.TemporaryDirectory() as directory:
+                controller, world, deletes, path = self._fixture(directory)
+                with patch('time.time', return_value=100):
+                    with self.assertRaises(ExecutionPodError):
+                        controller.stop('s')
+                world.update(delete_raises=RuntimeError(message), delete_applies=False)
+                with patch('time.time', return_value=100 + STOP_RETRY_SECONDS):
+                    with self.assertRaises(RuntimeError):
+                        controller.stop('s')
+                self.assertEqual(len(deletes), 1)
+                # The Pod then vanishes some other way while its node is still registered.
+                world.update(delete_raises=None, pod=None)
+                with patch('time.time', return_value=100 + STOP_RETRY_SECONDS + 1):
+                    with self.assertRaises(ExecutionPodError) as error:
+                        controller.stop('s')
+                self.assertEqual(error.exception.code, 'termination_unconfirmed')
+                self.assertEqual(len(deletes), 1)
+
+    def test_a_refused_retry_does_not_erase_an_earlier_delete_of_unknown_outcome(self):
+        import tempfile
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodError, STOP_RETRY_SECONDS
+        with tempfile.TemporaryDirectory() as directory:
+            controller, world, deletes, path = self._fixture(directory)
+            with patch('time.time', return_value=100):
+                with self.assertRaises(ExecutionPodError):
+                    controller.stop('s')
+            # The first delete may have been applied: its Pod is still terminating and its reply was lost.
+            world.update(delete_raises=TimeoutError('delete reply lost'), delete_applies=False)
+            with patch('time.time', return_value=100 + STOP_RETRY_SECONDS):
+                with self.assertRaises(TimeoutError):
+                    controller.stop('s')
+            world.update(delete_raises=RuntimeError('Error from server (Forbidden): forbidden'))
+            with patch('time.time', return_value=100 + STOP_RETRY_SECONDS + 1):
+                with self.assertRaises(RuntimeError):
+                    controller.stop('s')
+            world.update(delete_raises=None, pod=None)
+            with patch('time.time', return_value=100 + STOP_RETRY_SECONDS + 2):
+                self.assertTrue(controller.stop('s')['stopped'])
+            self.assertEqual(len(deletes), 2)
 
 
 class PythonInterpreterStopTest(unittest.TestCase):
