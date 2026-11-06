@@ -3909,3 +3909,24 @@ class DockerForwardedOutputTest(unittest.TestCase):
                 result = controller.command_result(self.op)
                 self.assertEqual((result['status'], result['stdout']), ('completed', 'cGFydA=='))
                 self.assertEqual(result['truncated'], forward_incomplete)
+
+
+class PythonSessionRefusalTest(unittest.TestCase):
+    """A session is refused only while the Pod it ran in still exists (#722 decision 9)."""
+    operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+
+    def test_a_pod_that_no_longer_exists_does_not_block_a_new_session(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        for age in (0, 30 * 86400):
+            with self.subTest(age=age), tempfile.TemporaryDirectory() as directory:
+                controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+                controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id': self.operation}))
+                controller._command_path(self.operation).write_text(json.dumps({'operation_id': self.operation,
+                    'status': 'interrupted', 'pod_uid': 'old', 'terminal_at': 1_000_000 - age}))
+                controller._get = Mock(return_value=None)
+                controller.submit_command = Mock(return_value={'status': 'queued'})
+                self.assertTrue(controller.start_python('s', 'r')['session_replaced'])
