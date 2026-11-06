@@ -205,25 +205,49 @@ struct Batch {
 	direction: Direction,
 	day: chrono::NaiveDate,
 	remaining: u64,
+	failure: FailureReport,
+}
+/// A failed debit, named so that `tunnel_ended` tells our own store from the
+/// upstream. A decision keeps the code it was made with.
+fn debit_failed(error: aidash_application::Error) -> io::Error {
+	use aidash_application::Error;
+	match error {
+		Error::Refused(code) => io::Error::other(code),
+		Error::Forbidden | Error::Unauthorized => io::Error::other("egress_credential_revoked"),
+		error => io::Error::other(format!("egress_authority_unavailable: {error}")),
+	}
 }
 impl Batch {
-	fn new(scopes: Arc<dyn EgressScopes>, settings: ScopeSettings, direction: Direction) -> Self {
+	fn new(
+		scopes: Arc<dyn EgressScopes>,
+		settings: ScopeSettings,
+		direction: Direction,
+		failure: FailureReport,
+	) -> Self {
 		Self {
 			scopes,
 			settings,
 			direction,
 			day: chrono::Utc::now().date_naive(),
 			remaining: 0,
+			failure,
 		}
 	}
 	async fn charge(&mut self, bytes: usize) -> io::Result<()> {
 		let day = chrono::Utc::now().date_naive();
 		if day != self.day {
 			if self.remaining != 0 {
-				self.scopes
+				// Reported like the refund that ends a tunnel, which this one is.
+				if let Err(error) = self
+					.scopes
 					.refund(&self.settings, self.direction, self.remaining, self.day)
 					.await
-					.map_err(|e| io::Error::other(e.to_string()))?;
+				{
+					let error = io::Error::other(format!("egress_refund_failed: {error}"));
+					super::settle_failure("refund", "abandoned");
+					self.failure.internal("refund", &error);
+					return Err(error);
+				}
 			}
 			self.day = day;
 			self.remaining = 0;
@@ -244,10 +268,10 @@ impl Batch {
 					self.scopes
 						.debit(&self.settings, self.direction, need, day)
 						.await
-						.map_err(|e| io::Error::other(e.to_string()))?;
+						.map_err(debit_failed)?;
 					self.remaining += need;
 				}
-				Err(error) => return Err(io::Error::other(error.to_string())),
+				Err(error) => return Err(debit_failed(error)),
 			}
 		}
 		Ok(())
@@ -375,8 +399,18 @@ where
 	let sent = counts.sent;
 	let received = counts.received;
 	let failure = counts.failure;
-	let mut sent_batch = Batch::new(scopes.clone(), settings.clone(), Direction::Sent);
-	let mut received_batch = Batch::new(scopes.clone(), settings.clone(), Direction::Received);
+	let mut sent_batch = Batch::new(
+		scopes.clone(),
+		settings.clone(),
+		Direction::Sent,
+		failure.clone(),
+	);
+	let mut received_batch = Batch::new(
+		scopes.clone(),
+		settings.clone(),
+		Direction::Received,
+		failure.clone(),
+	);
 	let (activity_tx, mut activity_rx) = tokio::sync::watch::channel(());
 	let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
 	let result = {
@@ -2454,6 +2488,7 @@ mod tests {
 	struct FaultyScopes {
 		memory: Arc<MemoryScopes>,
 		resolve_fails: bool,
+		debit_fails: bool,
 		refund_fails: bool,
 		record_hangs: bool,
 		record_fails:
@@ -2464,6 +2499,7 @@ mod tests {
 			Self {
 				memory: Arc::new(MemoryScopes::new(CREDENTIAL.into(), settings.clone())),
 				resolve_fails: false,
+				debit_fails: false,
 				refund_fails: false,
 				record_hangs: false,
 				record_fails: Box::new(|_| false),
@@ -2507,6 +2543,11 @@ mod tests {
 			n: u64,
 			day: chrono::NaiveDate,
 		) -> aidash_application::Result<()> {
+			if self.debit_fails {
+				return Err(aidash_application::Error::External(
+					"pool timed out debiting".into(),
+				));
+			}
 			self.memory.debit(s, d, n, day).await
 		}
 		async fn refund(
@@ -3085,6 +3126,77 @@ mod tests {
 			),
 			1
 		);
+	}
+
+	/// A store that cannot be asked is our own failure, not the upstream's.
+	#[tokio::test(start_paused = true)]
+	async fn a_failed_debit_is_the_authority_s_failure_and_not_an_upstream_transfer() {
+		let observed = super::super::tests::Observed::start();
+		let settings = test_settings();
+		let mut scopes = FaultyScopes::new(&settings);
+		scopes.debit_fails = true;
+		let (mut client, gateway_client) = tokio::io::duplex(64);
+		let (gateway_server, _server) = tokio::io::duplex(64);
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let reports = super::TunnelReports::default();
+		let report = reports.failure.clone();
+		let task = tokio::spawn(super::tunnel_controlled(
+			gateway_client,
+			gateway_server,
+			Arc::new(scopes),
+			settings,
+			CREDENTIAL.into(),
+			HOST.into(),
+			reports,
+			receiver,
+		));
+		client.write_all(b"hello").await.unwrap();
+		let (_, _, result) = task.await.unwrap();
+		assert_eq!(
+			super::tunnel_ended(&report, &result),
+			"egress_authority_unavailable",
+			"{result:?}"
+		);
+		assert_eq!(observed.count(&failures("transfer")), 0);
+		let logs = observed.logs();
+		assert_eq!(lines_at(&logs, "ERROR", "authority").len(), 1, "{logs}");
+		assert!(logs.contains("pool timed out debiting"), "{logs}");
+		assert!(lines_at(&logs, "WARN", "transfer").is_empty(), "{logs}");
+	}
+
+	/// A tunnel that crosses UTC midnight refunds the day before it, and that
+	/// refund is the same store failure as the one that ends a tunnel.
+	#[tokio::test]
+	async fn a_refund_that_fails_when_the_day_rolls_is_named_and_counted() {
+		let observed = super::super::tests::Observed::start();
+		let settings = test_settings();
+		let mut scopes = FaultyScopes::new(&settings);
+		scopes.refund_fails = true;
+		let report = report_for(HOST);
+		let mut batch = super::Batch::new(
+			Arc::new(scopes),
+			settings,
+			aidash_application::egress::Direction::Sent,
+			report.clone(),
+		);
+		batch.day = batch.day.pred_opt().unwrap();
+		batch.remaining = 10;
+		let result = batch.charge(1).await;
+		assert_eq!(
+			super::tunnel_ended(&report, &result),
+			"egress_refund_failed",
+			"{result:?}"
+		);
+		assert_eq!(observed.count(&failures("transfer")), 0);
+		assert_eq!(
+			observed.count(
+				r#"aidash_egress_settle_failures_total{stage="refund",outcome="abandoned"}"#
+			),
+			1
+		);
+		let logs = observed.logs();
+		assert_eq!(lines_at(&logs, "ERROR", "refund").len(), 1, "{logs}");
+		assert!(logs.contains("pool timed out refunding"), "{logs}");
 	}
 
 	fn record(settings: &ScopeSettings) -> aidash_application::egress::ConnectionRecord {
