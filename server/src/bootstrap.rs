@@ -481,93 +481,100 @@ impl RuntimeTasks {
 		let serving = event_streams.is_some();
 		tasks.spawn_service(
 			"retention",
-			runtime_task(async move {
-				// Inference progress expires minutes after its outcome, so attempts
-				// orphaned on unscheduled Runs are closed first; hourly workbench,
-				// Research evidence and Tenant purges keep their cadence on the same loop.
-				let mut ticks = 0_u32;
-				loop {
-					if ticks.is_multiple_of(60) {
-						// Deployment Scope: every Tenant's snapshots, under each
-						// Tenant's own periods.
-						if let Err(error) =
-							crate::apps::execution::repositories::research::retention::sweep(
-								&retention,
-								&research_retention,
-							)
-							.await
-						{
-							tracing::warn!(%error, "research evidence retention sweep failed");
-						}
-						// Provider results under the Research account terms (ADR 0058).
-						if let Err(error) =
-							crate::apps::execution::services::research::sweep_account_terms(
-								&retention,
-								crate::apps::execution::services::research::providers()
-									.account_terms(),
-							)
-							.await
-						{
-							tracing::warn!(%error, "research account terms sweep failed");
-						}
-						// Deleted Tenants past their grace period, and the audit
-						// history that outlived an earlier purge (ADR 0061).
-						if let Err(error) = crate::apps::identity::services::tenant_purge::sweep(
-							&retention,
-							audit_retention_days,
-						)
-						.await
-						{
-							tracing::warn!(%error, "Tenant purge sweep failed");
-						}
-						if let Err(error) = crate::apps::identity::services::node_purge::sweep(
-							&retention,
-							audit_retention_days,
-						)
-						.await
-						{
-							tracing::warn!(%error, "Node purge sweep failed");
-						}
-						if let Err(error) = crate::workbench::purge_expired(&retention.pool).await {
-							tracing::warn!(%error, "agent test retention cleanup failed");
-						}
-						if let Err(error) =
-							crate::workbench::purge_incident_evidence(&retention.pool).await
-						{
-							tracing::warn!(%error, "incident evidence retention cleanup failed");
-						}
-					}
-					for _ in 0..16 {
-						match retention.close_orphaned_inference().await {
-							Ok(closed) if closed > 0 => continue,
-							Ok(_) => break,
-							Err(error) => {
-								tracing::warn!(%error, "orphaned inference attempt closure failed");
-								break;
-							}
-						}
-					}
-					for _ in 0..16 {
-						match retention.prune_inference_progress().await {
-							Ok(pruned) if pruned > 0 => continue,
-							Ok(_) => break,
-							Err(error) => {
-								tracing::warn!(%error, "inference progress retention cleanup failed");
-								break;
-							}
-						}
-					}
-					if serving
-						&& let Err(error) =
-							crate::apps::execution::repositories::live_previews::sweep(&retention)
+			// Inference progress expires minutes after its outcome, so attempts
+			// orphaned on unscheduled Runs are closed first; hourly workbench,
+			// Research evidence and Tenant purges keep their cadence on the same loop.
+			runtime_task(watched_loop::run(
+				"retention",
+				Duration::from_secs(60),
+				move |ticks| {
+					let retention = retention.clone();
+					async move {
+						if ticks.is_multiple_of(60) {
+							// Deployment Scope: every Tenant's snapshots, under each
+							// Tenant's own periods.
+							if let Err(error) =
+								crate::apps::execution::repositories::research::retention::sweep(
+									&retention,
+									&research_retention,
+								)
 								.await
-					{
-						tracing::warn!(%error, "Live preview sweep failed");
+							{
+								tracing::warn!(%error, "research evidence retention sweep failed");
+							}
+							// Provider results under the Research account terms (ADR 0058).
+							if let Err(error) =
+								crate::apps::execution::services::research::sweep_account_terms(
+									&retention,
+									crate::apps::execution::services::research::providers()
+										.account_terms(),
+								)
+								.await
+							{
+								tracing::warn!(%error, "research account terms sweep failed");
+							}
+							// Deleted Tenants past their grace period, and the audit
+							// history that outlived an earlier purge (ADR 0061).
+							if let Err(error) =
+								crate::apps::identity::services::tenant_purge::sweep(
+									&retention,
+									audit_retention_days,
+								)
+								.await
+							{
+								tracing::warn!(%error, "Tenant purge sweep failed");
+							}
+							if let Err(error) = crate::apps::identity::services::node_purge::sweep(
+								&retention,
+								audit_retention_days,
+							)
+							.await
+							{
+								tracing::warn!(%error, "Node purge sweep failed");
+							}
+							if let Err(error) =
+								crate::workbench::purge_expired(&retention.pool).await
+							{
+								tracing::warn!(%error, "agent test retention cleanup failed");
+							}
+							if let Err(error) =
+								crate::workbench::purge_incident_evidence(&retention.pool).await
+							{
+								tracing::warn!(%error, "incident evidence retention cleanup failed");
+							}
+						}
+						for _ in 0..16 {
+							match retention.close_orphaned_inference().await {
+								Ok(closed) if closed > 0 => continue,
+								Ok(_) => break,
+								Err(error) => {
+									tracing::warn!(%error, "orphaned inference attempt closure failed");
+									break;
+								}
+							}
+						}
+						for _ in 0..16 {
+							match retention.prune_inference_progress().await {
+								Ok(pruned) if pruned > 0 => continue,
+								Ok(_) => break,
+								Err(error) => {
+									tracing::warn!(%error, "inference progress retention cleanup failed");
+									break;
+								}
+							}
+						}
+						if serving
+							&& let Err(error) =
+								crate::apps::execution::repositories::live_previews::sweep(
+									&retention,
+								)
+								.await
+						{
+							tracing::warn!(%error, "Live preview sweep failed");
+						}
 					}
-					ticks = ticks.wrapping_add(1);
-					tokio::time::sleep(Duration::from_secs(60)).await;
-				}
-			}),
+				},
+			)),
 		);
 		if worker_count > 0 {
 			let harness = Harness {
@@ -664,6 +671,7 @@ pub fn model_catalog(client: reqwest::Client) -> Arc<dyn aidash_application::por
 
 mod compatibility;
 mod listener;
+mod watched_loop;
 pub use compatibility::{migrate, preview_gateway, require_migrated, serve};
 
 /// Legacy-only Keyless inference: no Cache Salt Keys, so any salted request is
