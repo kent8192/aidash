@@ -857,3 +857,29 @@ async fn waiting_on_the_database_spends_no_retry_allowance(
 	assert_eq!(retry.count, 2);
 	assert_eq!(retry.at, now + chrono::Duration::seconds(1));
 }
+
+/// #728: the Run shows why it waits, not the error of an earlier step.
+#[rstest]
+#[tokio::test]
+async fn waiting_on_the_database_says_so(repository: Repository, now: DateTime<Utc>) {
+	// Arrange
+	{
+		let mut run = repository.run.lock().unwrap();
+		run.as_mut().unwrap().error = Some("an earlier step failed".into());
+	}
+	// Act
+	recover(
+		&repository,
+		repository.token,
+		ExecutionFailure::DatabaseUnavailable,
+		now,
+	)
+	.await
+	.unwrap();
+	// Assert
+	let run = repository.run.lock().unwrap();
+	assert_eq!(
+		run.as_ref().unwrap().error.as_deref(),
+		Some("the database is temporarily unavailable")
+	);
+}
