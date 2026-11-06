@@ -229,6 +229,10 @@ impl HomeScope for SourceSession {
 		self.repository.state.lock().unwrap().revision = Some(revision);
 		Ok(())
 	}
+	async fn mark_activated(&mut self, _: Uuid) -> Result<()> {
+		self.repository.call("mark_activated");
+		Ok(())
+	}
 	async fn resume_semantic(&mut self, _: Uuid, _: Uuid, _: Uuid, _: &str) -> Result<()> {
 		self.repository.call("resume_semantic");
 		Ok(())

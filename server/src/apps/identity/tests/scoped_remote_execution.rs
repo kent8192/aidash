@@ -9753,3 +9753,104 @@ async fn local_terminal_cancel_preserves_request_and_trust(
 	f.store.pool.close().await;
 	cleanup(f, &url, &schema).await;
 }
+
+/// A Run on another Node answers finally while the only open subtask is one
+/// it created and nobody was given (#772). The Home reports it through the
+/// guarded summary, the Run is told once, and the second final answer
+/// abandons it in the completion the Home commits. A remote Run leaves no
+/// origin row: the Home recorded the Task as that execution's output.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_run_on_another_node_abandons_the_unassigned_task_it_created(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	// The Home marks the binding once the receiver's activation response matched.
+	let activated: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+		"SELECT activated_at FROM authorization_remote_execution WHERE grant_id = $1",
+	)
+	.bind(p.grant)
+	.fetch_one(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert!(activated.is_some(), "activation was confirmed");
+	let parent = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
+	let creator = parent
+		.owner
+		.clone()
+		.expect("the claimed parent has an owner");
+	let child =
+		p.a.store
+			.create_task(
+				&TEST_FIXTURE,
+				parent.workspace_id,
+				&aidash_server::domain::NewTask {
+					title: "Remote subtask".into(),
+					description: "Nobody is given this".into(),
+					requirements: json!({}),
+					dependencies: vec![],
+					parent_id: Some(p.task),
+				},
+				&creator,
+				None,
+			)
+			.await
+			.unwrap();
+	sqlx::query("INSERT INTO authorization_remote_outputs (grant_id, workspace_id, resource_kind, resource_id, tenant) VALUES ($1, $2, 'task', $3, 'acme')")
+		.bind(p.grant)
+		.bind(parent.workspace_id)
+		.bind(child.id)
+		.execute(p.a.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	for _ in 0..15 {
+		if p.run().await.phase().as_str() == "COMPLETED" {
+			break;
+		}
+		p.step().await;
+		let run = p.run().await;
+		if run.control == aidash_server::domain::RunControl::Paused {
+			let response = request(
+				&p.aa,
+				&p.token,
+				"POST",
+				&format!("/api/tasks/{}/remote-grants/{}/control", p.task, p.grant),
+				json!({"action":"resume"}),
+			)
+			.await;
+			assert_eq!(response.0, 200, "{}", response.1);
+		}
+	}
+	assert_eq!(
+		p.run().await.phase().as_str(),
+		"COMPLETED",
+		"{:?}",
+		p.run().await.error
+	);
+	assert_eq!(
+		p.a.store
+			.task(&TEST_FIXTURE, child.id)
+			.await
+			.unwrap()
+			.status,
+		aidash_server::domain::TaskStatus::Abandoned
+	);
+	assert_eq!(
+		p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap().status,
+		aidash_server::domain::TaskStatus::Completed
+	);
+	// One notice, one more answer: the model was asked twice, not repeatedly.
+	assert_eq!(p.requests.lock().await.len(), 2);
+	let snapshot =
+		p.a.store
+			.snapshot(&TEST_FIXTURE, parent.workspace_id)
+			.await
+			.unwrap();
+	assert!(snapshot.artifacts.iter().any(|artifact| {
+		artifact
+			.content
+			.as_str()
+			.is_some_and(|text| text.contains("Remote subtask"))
+	}));
+	p.close().await;
+}

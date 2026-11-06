@@ -130,6 +130,20 @@ struct State {
 	dependency_status: Option<TaskStatus>,
 	remote_home: bool,
 	child_summary: Mutex<Option<ChildTaskSummary>>,
+	/// Summaries returned once each, in order, before `child_summary` applies.
+	child_summaries: Mutex<std::collections::VecDeque<ChildTaskSummary>>,
+	/// Every action the authority was asked about, in order.
+	actions: Mutex<Vec<String>>,
+	/// An action the authority refuses.
+	denied_action: Option<&'static str>,
+	/// The text of each message the Run published.
+	published: Mutex<Vec<String>>,
+	/// The Task ids each `home.complete` was asked to abandon.
+	completed_abandoning: Mutex<Vec<Vec<Uuid>>>,
+	/// The Task ids each `home.abandon_unassigned` was given.
+	abandoned: Mutex<Vec<Vec<Uuid>>>,
+	/// Fails the next `home.complete` once, as a commit race would.
+	complete_error: Mutex<Option<Error>>,
 	human: Mutex<Option<HumanRequest>>,
 	human_key: Mutex<Option<String>>,
 	/// In-memory Context Journal keyed by Run, with the same append rule as Postgres.
@@ -1041,6 +1055,9 @@ impl ExecutionHome for Backend {
 	}
 	async fn child_summary(&self, parent: Uuid) -> Result<ChildTaskSummary> {
 		let _ = parent;
+		if let Some(summary) = self.0.child_summaries.lock().unwrap().pop_front() {
+			return Ok(summary);
+		}
 		if let Some(summary) = self.0.child_summary.lock().unwrap().clone() {
 			return Ok(summary);
 		}
@@ -1050,9 +1067,22 @@ impl ExecutionHome for Backend {
 			..Default::default()
 		})
 	}
-	async fn complete(&self, key: &str, artifact: &ArtifactInput) -> Result<Task> {
+	async fn complete(
+		&self,
+		key: &str,
+		artifact: &ArtifactInput,
+		abandon: &[Uuid],
+	) -> Result<Task> {
 		let _ = key;
 		self.record("home.complete");
+		self.0
+			.completed_abandoning
+			.lock()
+			.unwrap()
+			.push(abandon.to_vec());
+		if let Some(error) = self.0.complete_error.lock().unwrap().take() {
+			return Err(error);
+		}
 		self.0
 			.artifacts
 			.lock()
@@ -1060,6 +1090,12 @@ impl ExecutionHome for Backend {
 			.push(artifact.content.clone());
 		self.0.task.lock().unwrap().status = TaskStatus::Completed;
 		Ok(self.task_value())
+	}
+	async fn abandon_unassigned(&self, parent: Uuid, ids: &[Uuid]) -> Result<()> {
+		let _ = parent;
+		self.record("home.abandon_unassigned");
+		self.0.abandoned.lock().unwrap().push(ids.to_vec());
+		Ok(())
 	}
 	async fn report(&self, key: &str, kind: &str, data: Value) -> Result<()> {
 		let _ = (key, kind, data);
@@ -1073,9 +1109,10 @@ impl ExecutionHome for Backend {
 		key: &str,
 		text: &str,
 	) -> Result<()> {
-		let _ = (input_sequence, key, text);
+		let _ = (input_sequence, key);
 		assert_eq!(token, self.0.token);
 		self.record("home.output");
+		self.0.published.lock().unwrap().push(text.to_owned());
 		Ok(())
 	}
 
@@ -1090,8 +1127,12 @@ impl ExecutionHome for Backend {
 #[async_trait]
 impl ExecutionAuthority for Backend {
 	async fn action(&self, action: &str, kind: &str, id: Uuid) -> Result<()> {
-		let _ = (action, kind, id);
+		let _ = (kind, id);
 		self.record("authority.action");
+		self.0.actions.lock().unwrap().push(action.to_owned());
+		if self.0.denied_action == Some(action) {
+			return Err(Error::Forbidden);
+		}
 		Ok(())
 	}
 	async fn inference(&self) -> Result<()> {
@@ -1825,6 +1866,13 @@ fn fixture() -> Fixture {
 		dependency_status: None,
 		remote_home: false,
 		child_summary: Mutex::new(None),
+		child_summaries: Mutex::new(Default::default()),
+		actions: Mutex::new(Vec::new()),
+		denied_action: None,
+		published: Mutex::new(Vec::new()),
+		completed_abandoning: Mutex::new(Vec::new()),
+		abandoned: Mutex::new(Vec::new()),
+		complete_error: Mutex::new(None),
 		human: Mutex::new(None),
 		human_key: Mutex::new(None),
 		journal: Mutex::new(vec![]),
@@ -6243,6 +6291,7 @@ async fn catch_up_steps_carry_no_breakpoints() {
 }
 
 mod research;
+mod unassigned;
 
 mod completion;
 

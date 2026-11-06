@@ -222,7 +222,11 @@ impl RemoteCommandEffects for Scope {
 			Effect::Artifact {
 				artifact,
 				complete_through,
-			} => json!({"kind":"artifact","artifact":artifact,"through":complete_through}),
+				abandon,
+			} => {
+				json!({"kind":"artifact","artifact":artifact,"through":complete_through,"abandon":abandon})
+			}
+			Effect::AbandonUnassigned { ids } => json!({"kind":"abandon_unassigned","ids":ids}),
 			Effect::CreateTask { task } => json!({"kind":"create_task","task":task}),
 			Effect::Delegate { child, agent } => {
 				json!({"kind":"delegate","child":child,"agent":agent})

@@ -2211,6 +2211,8 @@ fn request_id(run: &Run) -> Uuid {
 
 #[path = "postgres/typed_state.rs"]
 mod typed_state;
+#[path = "postgres/unassigned.rs"]
+mod unassigned;
 
 #[rstest::fixture]
 fn successful_tool_retry_resets_the_next_invocation_budget_router() -> Arc<Router> {

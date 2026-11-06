@@ -335,6 +335,10 @@ impl HomeScope for Scope {
 		self.repository.state.lock().unwrap().revision = Some(revision);
 		Ok(())
 	}
+	async fn mark_activated(&mut self, _: Uuid) -> Result<()> {
+		self.repository.call("mark_activated");
+		Ok(())
+	}
 	async fn resume_semantic(&mut self, _: Uuid, _: Uuid, _: Uuid, _: &str) -> Result<()> {
 		self.repository.call("resume_semantic");
 		Ok(())
@@ -505,6 +509,20 @@ async fn changed_initial_task_binding_blocks_receiver_activation() {
 		repository.calls().last().unwrap(),
 		"rollback_with_denial_audit"
 	);
+}
+#[rstest]
+#[tokio::test]
+async fn a_refused_activation_is_never_marked_as_started() {
+	// The binding is committed before the receiver is asked to start; only a
+	// matching activation response may say the Run started (#772).
+	let repository = Repository::default();
+	repository.state.lock().unwrap().binding_changed = true;
+	assert!(
+		activate(&repository, task().id, Uuid::from_u128(4))
+			.await
+			.is_err()
+	);
+	assert!(!repository.calls().contains(&"mark_activated".into()));
 }
 #[rstest]
 #[case("grant_id")]

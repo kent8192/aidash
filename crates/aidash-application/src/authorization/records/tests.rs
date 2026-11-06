@@ -246,8 +246,12 @@ impl ChildSummaryScope for Scope {
 			.map(|row| ChildTaskRecord {
 				revision: 0,
 				id: row.0,
+				title: format!("task {}", row.0),
 				created_by: row.1.clone(),
 				status: row.2,
+				dependencies: Vec::new(),
+				started: false,
+				abandonable: true,
 			})
 			.collect())
 	}
