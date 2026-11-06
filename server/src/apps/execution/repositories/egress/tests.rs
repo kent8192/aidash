@@ -285,8 +285,19 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		first.meter.charge(Direction::Received, 2).await,
 		Err(aidash_application::Error::Conflict(code)) if code == aidash_domain::egress::LIMIT_EXCEEDED
 	));
-	first.meter.finish(201, 20, None).await.unwrap();
-	second.meter.finish(200, 25, None).await.unwrap();
+	// A record holds no times until its outcome is settled.
+	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	let unsettled = RequestRecord::objects()
+		.filter(RequestRecord::field_id().eq(first.request))
+		.all_with_executor(&mut *tx)
+		.await
+		.unwrap()
+		.pop()
+		.unwrap();
+	assert_eq!((unsettled.admission_ms, unsettled.settle_ms), (None, None));
+	tx.commit().await.unwrap();
+	first.meter.finish(201, times(20), None).await.unwrap();
+	second.meter.finish(200, times(25), None).await.unwrap();
 	assert!(matches!(
 		Gateway::new(f.store.clone())
 			.admit(token, "images", "GET", "third", &digest)
@@ -320,6 +331,12 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 			.iter()
 			.all(|r| r.error.is_none() && r.query_digest == digest && r.status >= 200)
 	);
+	// Run details read these records through the domain type.
+	for record in &records {
+		let shown: aidash_domain::egress::RequestRecord =
+			serde_json::from_value(serde_json::to_value(record).unwrap()).unwrap();
+		assert_eq!((shown.admission_ms, shown.settle_ms), (Some(3), Some(4)));
+	}
 	tx.commit().await.unwrap();
 	live_preview_credentials(&f, &identity, &run, area.id).await;
 	auth.set_catalog(
@@ -387,6 +404,14 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 	tx.commit().await.unwrap();
 }
 
+fn times(duration_ms: u64) -> aidash_application::egress::RequestTimes {
+	aidash_application::egress::RequestTimes {
+		duration_ms,
+		admission_ms: 3,
+		settle_ms: 4,
+	}
+}
+
 async fn live_preview_credentials(
 	f: &crate::federation::Federation,
 	identity: &crate::authorization::identity::SubjectIdentity,
@@ -441,7 +466,7 @@ async fn live_preview_credentials(
 		(&pod, "pod", Some("api.example.test")),
 		(&page, "page", None),
 	] {
-		admission.meter.finish(200, 1, None).await.unwrap();
+		admission.meter.finish(200, times(1), None).await.unwrap();
 		let (recorded, secret_host): (String, Option<String>) =
 			sqlx::query_as("SELECT via, secret_host FROM egress_requests WHERE id = $1")
 				.bind(admission.request)
@@ -478,7 +503,7 @@ async fn live_preview_credentials(
 			admitted.route.as_ref().unwrap().token.expose_secret(),
 			"fixture-route-token"
 		);
-		admitted.meter.finish(200, 1, None).await.unwrap();
+		admitted.meter.finish(200, times(1), None).await.unwrap();
 		let row: (Option<Uuid>, Option<String>, Option<String>) = sqlx::query_as(
 			"SELECT secret_id, secret_version, secret_host FROM egress_requests WHERE id = $1",
 		)

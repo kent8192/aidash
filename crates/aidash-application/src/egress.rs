@@ -33,6 +33,22 @@ pub enum Direction {
 	Received,
 }
 
+/// What one request cost at the gateway, in milliseconds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RequestTimes {
+	/// From the end of admission to the end of the response. A response that
+	/// ends its own stream includes its final debit; one that stops at its
+	/// `Content-Length` does not.
+	pub duration_ms: u64,
+	/// The gateway's admission call: the token, the authority's recheck, the
+	/// budget locks and the record's first write.
+	pub admission_ms: u64,
+	/// From the end of the response until its final debit settled, including
+	/// retries. Bytes kept after a failed debit, which a stream that was already
+	/// stopping charges in the background, may settle later.
+	pub settle_ms: u64,
+}
+
 #[async_trait]
 pub trait Meter: Send + Sync {
 	/// Atomically adds body bytes the gateway has streamed, in batches, to the
@@ -45,7 +61,7 @@ pub trait Meter: Send + Sync {
 	/// the bytes were not committed, and the caller charges them again.
 	async fn charge(&self, direction: Direction, bytes: usize) -> Result<()>;
 	/// Completes the metadata-only request record, including failures and partial bodies.
-	async fn finish(&self, status: u16, elapsed_ms: u64, error: Option<&str>) -> Result<()>;
+	async fn finish(&self, status: u16, times: RequestTimes, error: Option<&str>) -> Result<()>;
 }
 
 #[async_trait]

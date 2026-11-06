@@ -195,6 +195,14 @@ A record starts with status 0 and the error `stream_interrupted`. The final debi
 60 seconds when storage is unavailable, so a record that stays at status 0 has
 an unknown outcome: the process stopped first or storage stayed unavailable.
 
+A settled record also shows what the request cost at the gateway, in the Run's
+`egress_requests`. `admission_ms` is the admission call: the token, the
+authority's recheck, the budget locks and the record's first write. `settle_ms`
+runs from the end of the response until its final debit settled, including
+retries. `duration_ms` starts after admission and includes the final debit only
+for a response that ends its own stream. A record that never settled has neither
+time, and a request refused before its record exists has no record.
+
 Failures that leave no record are visible to the operator of the Deployment.
 Unexpected admission failures and abandoned retries log an error, and upstream
 failures log a warning. These lines name the service, method and cause, never

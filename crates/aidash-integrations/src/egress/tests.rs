@@ -17,6 +17,7 @@ struct Audit {
 	charges: AtomicU64,
 	requests: Mutex<Vec<(String, String, String)>>,
 	finished_records: Mutex<Vec<(u16, Option<String>)>>,
+	times: Mutex<Vec<RequestTimes>>,
 	finished: Notify,
 }
 #[async_trait]
@@ -30,7 +31,8 @@ impl Meter for Audit {
 		.fetch_add(bytes as u64, Ordering::Relaxed);
 		Ok(())
 	}
-	async fn finish(&self, status: u16, _: u64, error: Option<&str>) -> Result<()> {
+	async fn finish(&self, status: u16, times: RequestTimes, error: Option<&str>) -> Result<()> {
+		self.times.lock().unwrap().push(times);
 		self.finished_records
 			.lock()
 			.unwrap()
@@ -214,8 +216,8 @@ impl Meter for StalledMeter {
 			Direction::Received => std::future::pending().await,
 		}
 	}
-	async fn finish(&self, status: u16, elapsed: u64, error: Option<&str>) -> Result<()> {
-		self.0.finish(status, elapsed, error).await
+	async fn finish(&self, status: u16, times: RequestTimes, error: Option<&str>) -> Result<()> {
+		self.0.finish(status, times, error).await
 	}
 }
 #[async_trait]
@@ -1016,14 +1018,15 @@ impl Meter for BudgetMeter {
 		}
 		Ok(())
 	}
-	async fn finish(&self, status: u16, elapsed: u64, error: Option<&str>) -> Result<()> {
-		self.audit.finish(status, elapsed, error).await
+	async fn finish(&self, status: u16, times: RequestTimes, error: Option<&str>) -> Result<()> {
+		self.audit.finish(status, times, error).await
 	}
 }
 struct MeterAuthority {
 	inner: FixtureAuthority,
 	limit: u64,
 	expired: bool,
+	admission: Duration,
 }
 #[async_trait]
 impl Authority for MeterAuthority {
@@ -1035,6 +1038,7 @@ impl Authority for MeterAuthority {
 		path: &str,
 		digest: &str,
 	) -> Result<Admission> {
+		tokio::time::sleep(self.admission).await;
 		let mut admission = self
 			.inner
 			.admit(token, service, method, path, digest)
@@ -1056,6 +1060,20 @@ const CHUNK: usize = 64 * 1024;
 async fn metered_gateway(
 	limit: u64,
 	expired: bool,
+) -> (
+	String,
+	Arc<Audit>,
+	Vec<tokio::task::JoinHandle<()>>,
+	watch::Sender<bool>,
+) {
+	gateway_admitting_after(limit, expired, Duration::ZERO).await
+}
+
+/// [`metered_gateway`] whose authority takes `admission` to admit a request.
+async fn gateway_admitting_after(
+	limit: u64,
+	expired: bool,
+	admission: Duration,
 ) -> (
 	String,
 	Arc<Audit>,
@@ -1132,6 +1150,7 @@ async fn metered_gateway(
 		},
 		limit,
 		expired,
+		admission,
 	});
 	let (stop, receiver) = watch::channel(false);
 	let gateway = tokio::spawn(async move { serve(listener, authority, receiver).await.unwrap() });
@@ -1177,6 +1196,32 @@ async fn a_large_download_is_debited_in_batches_and_totals_the_streamed_bytes() 
 	// 10 MiB in 1 MiB batches, not one debit per chunk.
 	assert!(audit.charges.load(Ordering::Relaxed) <= 11);
 	assert_eq!(*audit.finished_records.lock().unwrap(), vec![(200, None)]);
+	shutdown(tasks, stop).await;
+}
+
+/// The authority's recheck happens before `duration_ms` starts, which is how it
+/// stayed hidden while it grew with a Run's reads (#752).
+#[tokio::test]
+async fn a_request_records_how_long_its_admission_took() {
+	let admission = Duration::from_millis(50);
+	let (origin, audit, tasks, stop) = gateway_admitting_after(u64::MAX, false, admission).await;
+	for path in ["download/1", "sized/1"] {
+		let response = reqwest::get(format!("{origin}/v1/operation-token/images/{path}"))
+			.await
+			.unwrap();
+		drain(response).await;
+		tokio::time::timeout(Duration::from_secs(5), audit.finished.notified())
+			.await
+			.unwrap();
+	}
+	let times = audit.times.lock().unwrap().clone();
+	assert_eq!(times.len(), 2);
+	assert!(
+		times
+			.iter()
+			.all(|times| times.admission_ms >= millis(admission)),
+		"{times:?}"
+	);
 	shutdown(tasks, stop).await;
 }
 
@@ -1613,9 +1658,9 @@ impl Meter for FlakyMeter {
 		take_failure(&self.charge_failures)?;
 		self.audit.charge(direction, bytes).await
 	}
-	async fn finish(&self, status: u16, elapsed: u64, error: Option<&str>) -> Result<()> {
+	async fn finish(&self, status: u16, times: RequestTimes, error: Option<&str>) -> Result<()> {
 		take_failure(&self.finish_failures)?;
-		self.audit.finish(status, elapsed, error).await
+		self.audit.finish(status, times, error).await
 	}
 }
 
@@ -1633,7 +1678,52 @@ fn completion(meter: Arc<dyn Meter>, expected: Option<u64>) -> Completion {
 		status: 200,
 		expected,
 		finished: false,
+		admission_ms: 7,
+		settle_ms: 0,
 	}
+}
+
+/// A store that takes `DEBIT` for each debit.
+struct SlowDebit(Audit);
+const DEBIT: Duration = Duration::from_secs(3);
+#[async_trait]
+impl Meter for SlowDebit {
+	async fn charge(&self, direction: Direction, bytes: usize) -> Result<()> {
+		tokio::time::sleep(DEBIT).await;
+		self.0.charge(direction, bytes).await
+	}
+	async fn finish(&self, status: u16, times: RequestTimes, error: Option<&str>) -> Result<()> {
+		self.0.finish(status, times, error).await
+	}
+}
+
+fn assert_final_debit_timed(audit: &Audit) {
+	let times = audit.times.lock().unwrap().clone();
+	assert_eq!(times.len(), 1);
+	assert_eq!(times[0].admission_ms, 7);
+	assert!(
+		(millis(DEBIT)..millis(DEBIT) + 100).contains(&times[0].settle_ms),
+		"{times:?}"
+	);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stream_that_ends_itself_records_how_long_its_final_debit_took() {
+	let meter = Arc::new(SlowDebit(Audit::default()));
+	let mut completion = completion(meter.clone(), None);
+	completion.debits.count(Direction::Received, 100);
+	assert!(completion.finish(None).await.is_none());
+	assert_final_debit_timed(&meter.0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_response_that_stops_at_its_length_records_how_long_its_final_debit_took() {
+	let meter = Arc::new(SlowDebit(Audit::default()));
+	let completion = completion(meter.clone(), Some(100));
+	completion.debits.count(Direction::Received, 100);
+	drop(completion);
+	tokio::time::sleep(SETTLE_BUDGET).await;
+	assert_final_debit_timed(&meter.0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -1654,6 +1744,9 @@ async fn a_complete_download_settles_after_a_storage_stall() {
 		3
 	);
 	assert!(!observed.logs().contains("ERROR"), "{}", observed.logs());
+	// The retries are part of settling: waits of 1, 2 and 4 seconds.
+	let times = meter.audit.times.lock().unwrap().clone();
+	assert!(times[0].settle_ms >= 7_000, "{times:?}");
 }
 
 #[tokio::test(start_paused = true)]
@@ -1756,8 +1849,13 @@ async fn a_refused_final_debit_is_recorded_and_not_retried() {
 				aidash_domain::egress::LIMIT_EXCEEDED.into(),
 			))
 		}
-		async fn finish(&self, status: u16, elapsed: u64, error: Option<&str>) -> Result<()> {
-			self.0.finish(status, elapsed, error).await
+		async fn finish(
+			&self,
+			status: u16,
+			times: RequestTimes,
+			error: Option<&str>,
+		) -> Result<()> {
+			self.0.finish(status, times, error).await
 		}
 	}
 	let meter = Arc::new(Refusing(Audit::default()));

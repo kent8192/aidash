@@ -69,6 +69,13 @@ pub struct RequestRecord {
 	pub received_bytes: i64,
 	#[field]
 	pub duration_ms: i64,
+	/// The gateway's admission call. Null until the outcome is settled.
+	#[field(null = true)]
+	pub admission_ms: Option<i64>,
+	/// From the end of the response until its final debit settled. Null until
+	/// the outcome is settled.
+	#[field(null = true)]
+	pub settle_ms: Option<i64>,
 	/// `operation`, `pod` or `page`: which path admitted the request.
 	#[field(field_type = "text")]
 	pub via: String,
