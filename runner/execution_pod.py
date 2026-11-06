@@ -4,6 +4,7 @@ from threading import Lock, RLock
 
 STOP_RETRY_SECONDS = 15 * 60
 LATE_RESULT_SECONDS = 24 * 60 * 60
+OUTPUT_RETRY_SECONDS = 60
 
 
 def helper_command(*args):
@@ -421,6 +422,7 @@ class ExecutionPodController:
         self.admit_locks = {}
         self.lifecycle_locks = {}
         self.command_stop_locks = [RLock() for _ in range(64)]
+        self.helper_checks = set()
 
     def _space_lock(self, scratch_space_id):
         with self.lock:
@@ -632,6 +634,12 @@ print(json.dumps(r))'''
             self.backend.kube(['delete', 'pod', canary_name, '--ignore-not-found', '--wait=true'])
             self.backend.kube(['delete', 'networkpolicy', canary_name, '--ignore-not-found', '--wait=true'])
 
+    def _old_helper_image(self, pod):
+        containers = pod.get('spec', {}).get('containers', [])
+        execution = next((item for item in containers if item.get('name') == 'execution'), None)
+        image = self.config.get('helper_image')
+        return bool(image and execution and execution.get('image') and execution['image'] != image)
+
     def ensure(self, settings):
         with self._space_lock(settings['scratch_space_id']):
             return self._ensure(settings)
@@ -666,6 +674,8 @@ print(json.dumps(r))'''
             pod['metadata']['annotations']['aidash.run/epoch'] = str(self.reserve_epoch(settings['scratch_space_id']))
             self.backend.kube(['create', '-f', '-'], json.dumps(pod).encode())
             self.touch_space(settings['scratch_space_id'])
+        elif self._old_helper_image(existing_pod):
+            raise ExecutionPodError('pod_updating', 'Execution Pod is updating; retry shortly')
         elif existing_pod.get('metadata', {}).get('annotations', {}).get('aidash.run/spec-digest') != fingerprint:
             raise ExecutionPodError('settings_mismatch', 'Existing Execution Pod has different settings')
         uid = existing_pod.get('metadata', {}).get('uid') if existing_pod else None
@@ -1024,34 +1034,55 @@ print(json.dumps(r))'''
             save(path, state)
 
     def recover_commands(self):
-        """Retire incomplete executions without ever replaying their commands."""
+        """Restore watches without replaying commands or blocking startup on Kubernetes."""
         import json
-        import time
-        from control import save
-
+        spaces = self.backend.root / 'execution-v2-spaces'
+        if spaces.exists():
+            for path in spaces.glob('*.json'):
+                try:
+                    state = json.loads(path.read_bytes())
+                    if not state.get('purged'):
+                        self.touch_space(state['scratch_space_id'])
+                        self.helper_checks.add(state['scratch_space_id'])
+                except Exception as error:
+                    import sys
+                    print('Execution Pod Space recovery failed: ' + str(error), file=sys.stderr, flush=True)
         directory = self.backend.root / 'execution-v2'
         if not directory.exists():
             return
-        records = []
         for path in directory.glob('*.json'):
-            record = json.loads(path.read_bytes())
-            if record['status'] in ('queued', 'running'):
-                records.append((path, record))
-        # A disconnected kubectl exec cannot prove its remote child stopped.
-        # Retire each affected Pod before admitting any new work.
-        for scratch_id, pod_uid in {(record['scratch_space_id'], record.get('pod_uid'))
-                                    for _, record in records if record['status'] == 'running'}:
             try:
-                self._stop_matching_pod(scratch_id, pod_uid)
-            except Exception:
-                self._mark_space_unconfirmed(scratch_id)
-        for path, record in records:
-            if record['status'] == 'running':
-                record.update(status='interrupted', outcome='unknown')
-            else:
-                record.update(status='cancelled', outcome='not_started')
-            record['terminal_at'] = time.time()
-            save(path, record)
+                record = json.loads(path.read_bytes())
+                operation = record['operation_id']
+                if record['status'] == 'queued':
+                    self._update_command(operation, status='cancelled', outcome='not_started')
+                elif record['status'] == 'running':
+                    if record.get('docker_enabled'):
+                        self._update_command(operation, status='interrupted', outcome='unknown')
+                        continue
+                    scratch_id, run_id = record['scratch_space_id'], record['run_id']
+                    foreground = not record.get('background')
+                    with self.lock:
+                        if scratch_id not in self.queues:
+                            self.queues[scratch_id] = CommandQueue()
+                        queue = self.queues[scratch_id]
+                        if foreground:
+                            self.foreground_jobs[scratch_id] = self.foreground_jobs.get(scratch_id, 0) + 1
+                        try:
+                            if record.get('kind') == 'python_session':
+                                future = queue.submit_session(operation, self._resume_command)
+                            else:
+                                future = queue.submit(run_id, operation, self._resume_command,
+                                                      background=record.get('background', False))
+                        except Exception:
+                            if foreground:
+                                self.foreground_jobs[scratch_id] -= 1
+                            raise
+                        self.futures[operation] = future
+                        future.add_done_callback(lambda done, op=operation: self._cancelled_command(op, done))
+            except Exception as error:
+                import sys
+                print('Execution Pod command recovery failed: ' + str(error), file=sys.stderr, flush=True)
 
     def _command_path(self, operation_id):
         import uuid
@@ -1098,16 +1129,21 @@ print(json.dumps(r))'''
             try:
                 pod = self._get('pod', record['pod'])
                 if pod and pod.get('metadata', {}).get('uid') == record['pod_uid']:
-                    observed = self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
-                                                 helper_command('result', operation_id), check=False, timeout=5)
                     adopted = False
-                    if observed.returncode == 0:
-                        outcome = json.loads(observed.stdout)
-                        if (outcome.get('operation_id') == operation_id and outcome.get('run_id') == record['run_id']
-                                and outcome.get('status') in ('completed', 'timed_out', 'stopped')):
-                            self._update_command(operation_id, allow_late=True, outcome='known',
-                                                 **{key: outcome[key] for key in ('status', 'exit_code', 'error_code', 'message') if key in outcome})
-                            adopted = True
+                    if not record.get('docker_enabled'):
+                        observed = self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
+                                                     helper_command('result', operation_id), check=False, timeout=5)
+                        if observed.returncode == 0:
+                            outcome = json.loads(observed.stdout)
+                            if (outcome.get('operation_id') == operation_id and outcome.get('run_id') == record['run_id']
+                                    and outcome.get('status') in ('completed', 'timed_out', 'stopped')):
+                                try:
+                                    output = self._saved_output(record, outcome, tolerate_missing=True)
+                                except Exception:
+                                    output = self._partial_output(record)
+                                    outcome = dict(outcome, output_incomplete=True)
+                                self._finish_command(record, outcome, output, allow_late=True)
+                                adopted = True
                     if not adopted and retry_stop and record.get('stop_pending'):
                         self._stop_untracked_command(record)
             except Exception:
@@ -1116,7 +1152,7 @@ print(json.dumps(r))'''
             record = self._read_command(operation_id)
             result = {key: record[key] for key in ('operation_id', 'scratch_space_id', 'run_id',
                       'status', 'background', 'outcome', 'exit_code', 'stdout', 'stderr', 'truncated',
-                      'error_code', 'message') if key in record}
+                      'error_code', 'message', 'session_replaced', 'output_fetched_at') if key in record}
             if record['status'] == 'running' and operation_id in self.live_output:
                 result.update(self.live_output[operation_id])
             if record.get('kind') == 'python_cell' and record['status'] == 'completed' and record.get('exit_code') == 0:
@@ -1127,11 +1163,11 @@ print(json.dumps(r))'''
                                                'message': 'Python result was unavailable or truncated'}
             return result
 
-    def submit_command(self, request, *, kind='shell', session_operation_id=None, client_digest=None):
+    def submit_command(self, request, *, kind='shell', session_operation_id=None, client_digest=None, session_replaced=False):
         with self._space_lock(request['scratch_space_id']):
-            return self._submit_command(request, kind=kind, session_operation_id=session_operation_id, client_digest=client_digest)
+            return self._submit_command(request, kind=kind, session_operation_id=session_operation_id, client_digest=client_digest, session_replaced=session_replaced)
 
-    def _submit_command(self, request, *, kind='shell', session_operation_id=None, client_digest=None):
+    def _submit_command(self, request, *, kind='shell', session_operation_id=None, client_digest=None, session_replaced=False):
         import hashlib
         import json
         import time
@@ -1177,6 +1213,8 @@ print(json.dumps(r))'''
                 if prior.get('request_digest') != digest:
                     raise ExecutionPodError('command_conflict', 'Operation ID was already used for another command')
                 return self.command_result(operation_id, observe_late=False)
+            if pod and self._old_helper_image(pod):
+                raise ExecutionPodError('pod_updating', 'Execution Pod is updating; retry shortly')
             if not pod or pod.get('status', {}).get('phase') != 'Running':
                 raise ExecutionPodError('pod_unavailable', 'Execution Pod is not running')
             uid = pod.get('metadata', {}).get('uid')
@@ -1196,6 +1234,8 @@ print(json.dumps(r))'''
                       'code': code, 'cwd': cwd, 'timeout_seconds': seconds, 'background': background,
                       'pod': name, 'pod_uid': uid, 'docker_enabled': docker, 'status': 'queued',
                       'request_digest': digest, 'accepted_at': time.time(), 'kind': kind}
+            if session_replaced:
+                record['session_replaced'] = True
             if session_operation_id:
                 record['session_operation_id'] = session_operation_id
             if client_digest:
@@ -1232,21 +1272,39 @@ print(json.dumps(r))'''
                 self.touch_space(scratch_id)
             self.futures.pop(operation_id, None)
 
-    def _await_normal_result(self, record, deadline):
+    def _await_normal_result(self, record, deadline, *, publish_saved=False):
         import json
         import time
         name, operation_id = record['pod'], record['operation_id']
         missing_since = None
+        preview_at = 0
+        preview = None
+        if publish_saved:
+            limit = self.config.get('output_bytes', getattr(self.backend, 'config', {}).get('output_bytes', 8388608))
+            preview = {'output': BoundedOutput(limit), 'offsets': {'stdout': 0, 'stderr': 0}}
+        interval = (5 if record.get('background') else 2) if publish_saved else .5
         while deadline is None or time.monotonic() < deadline:
             if self._read_command(operation_id).get('status') == 'interrupted':
                 return None
             try:
+                if publish_saved and time.monotonic() >= preview_at:
+                    preview_at = time.monotonic() + interval
+                    try:
+                        output = self._preview_saved_output(record, preview)
+                        output['output_fetched_at'] = time.time()
+                        with self.lock:
+                            self.live_output[operation_id] = output
+                    except Exception:
+                        pass
                 observed = self.backend.kube(['exec', name, '-c', 'execution', '--'] +
                                              helper_command('result', operation_id), check=False)
                 if observed.returncode == 0:
                     return json.loads(observed.stdout)
                 pod = self._get('pod', name)
                 if not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']:
+                    if publish_saved:
+                        self._update_command(operation_id, status='interrupted', outcome='unknown',
+                                             **self._partial_output(record))
                     return None
                 if pod.get('status', {}).get('phase') in ('Failed', 'Succeeded'):
                     return None
@@ -1263,7 +1321,7 @@ print(json.dumps(r))'''
                     missing_since = None
             except Exception:
                 missing_since = None
-            time.sleep(.5)
+            time.sleep(interval)
         return None
 
     def _execute_command(self, operation_id):
@@ -1272,20 +1330,20 @@ print(json.dumps(r))'''
             record = self._read_command(operation_id)
             if record['status'] != 'queued':
                 return
-            record = self._update_command(operation_id, status='running')
+            record = self._update_command(operation_id, status='running', running_at=time.time())
         name, uid = record['pod'], record['pod_uid']
         mode = 'docker' if record['docker_enabled'] else 'normal'
         deadline = 'background' if record['background'] else str(record['timeout_seconds'])
         kind = 'session' if record.get('kind') == 'python_session' else 'command'
+        limit = self.config.get('output_bytes', getattr(self.backend, 'config', {}).get('output_bytes', 8388608))
         argv = self.backend.command + ['exec'] + (['-i'] if record['docker_enabled'] else []) + [name, '-c', 'execution', '--'] + helper_command(
-            'supervise', mode, kind, operation_id, record['run_id'], record['cwd'], deadline, uid, record['code'])
+            'supervise', mode, kind, operation_id, record['run_id'], record['cwd'], deadline, uid, record['code'], str(limit))
 
         def publish(output):
             with self.lock:
                 self.live_output[operation_id] = output
 
         try:
-            limit = self.config.get('output_bytes', getattr(self.backend, 'config', {}).get('output_bytes', 8388608))
             transport_timeout = None if record['background'] else record['timeout_seconds'] + 180
             result_deadline = None if transport_timeout is None else time.monotonic() + transport_timeout
             if record['docker_enabled']:
@@ -1302,8 +1360,13 @@ print(json.dumps(r))'''
                 outcome = self._await_normal_result(record, result_deadline)
                 if self._read_command(operation_id)['status'] == 'interrupted':
                     return
-                if transport['exit_code'] != 0:
+                if transport['exit_code'] != 0 or (isinstance(outcome, dict) and outcome.get('forward_incomplete')):
                     transport['output']['truncated'] = True
+                    if isinstance(outcome, dict):
+                        try:
+                            transport['output'] = self._saved_output(record, outcome)
+                        except Exception:
+                            pass
             if (transport['transport_timed_out'] or not isinstance(outcome, dict)
                     or outcome.get('operation_id') != operation_id or outcome.get('run_id') != record['run_id']
                     or outcome.get('status') not in ('completed', 'timed_out', 'stopped')):
@@ -1312,27 +1375,177 @@ print(json.dumps(r))'''
                                      **transport['output'])
                 self._stop_untracked_command(record)
             else:
-                if (record.get('kind') == 'python_cell' and
-                    (outcome['status'] in ('timed_out', 'stopped') or
-                     (outcome['status'] == 'completed' and outcome.get('exit_code') != 0))):
-                    try:
-                        self._stop_python_interpreter(record['session_operation_id'])
-                    except Exception:
-                        self._stop_matching_pod(record['scratch_space_id'], uid)
-                self._update_command(operation_id, status=outcome['status'],
-                                     **{key: outcome[key] for key in ('exit_code', 'error_code', 'message') if key in outcome},
-                                     **transport['output'])
-                try:
-                    self.backend.kube(['exec', name, '-c', 'execution', '--'] +
-                                      helper_command('forget', operation_id), check=False)
-                except Exception:
-                    pass  # The Pod's bounded temporary journal is reclaimed when it stops.
+                self._finish_command(record, outcome, transport['output'])
         except Exception as error:
             if self._read_command(operation_id)['status'] == 'interrupted':
                 return
             self._update_command(operation_id, status='interrupted', outcome='unknown', stop_pending=True,
                                  error_code='command_interrupted', message=str(error) or type(error).__name__)
             self._stop_untracked_command(record)
+        finally:
+            with self.lock:
+                self.live_output.pop(operation_id, None)
+
+    def _partial_output(self, record):
+        import base64
+        with self.lock:
+            live = dict(self.live_output.get(record['operation_id'], {}))
+        output = {'truncated': True}
+        for stream in ('stdout', 'stderr'):
+            choices = [value for value in (record.get(stream), live.get(stream)) if isinstance(value, str)]
+            def length(value):
+                try:
+                    return len(base64.b64decode(value, validate=True))
+                except ValueError:
+                    return -1
+            output[stream] = max(choices, key=length) if choices else ''
+        if 'output_fetched_at' in live:
+            output['output_fetched_at'] = live['output_fetched_at']
+        return output
+
+    def _output_chunk(self, record, stream, offset, timeout):
+        import base64
+        import json
+        result = self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
+            helper_command('output', record['operation_id'], stream, str(offset), '262144'),
+            check=False, timeout=timeout)
+        if result.returncode != 0:
+            raise RuntimeError('saved output unavailable')
+        chunk = json.loads(result.stdout)
+        data = base64.b64decode(chunk['data'], validate=True)
+        if chunk['next_offset'] != offset + len(data) or (not data and not chunk['eof']):
+            raise ValueError('invalid saved output chunk')
+        return data, chunk['eof']
+
+    def _preview_saved_output(self, record, state):
+        output, offsets = state['output'], state['offsets']
+        for stream in ('stdout', 'stderr'):
+            while True:
+                data, eof = self._output_chunk(record, stream, offsets[stream], 5)
+                offsets[stream] += len(data)
+                output.add(stream, data)
+                if offsets[stream] > output.limit:
+                    raise ValueError('saved output exceeds limit')
+                if eof:
+                    break
+        return output.public()
+
+    def _saved_output(self, record, outcome, *, tolerate_missing=False):
+        import base64
+        import time
+        limit = self.config.get('output_bytes', getattr(self.backend, 'config', {}).get('output_bytes', 8388608))
+        output = BoundedOutput(limit)
+        fallback = self._partial_output(record) if tolerate_missing else None
+        deadline = time.monotonic() + OUTPUT_RETRY_SECONDS
+        for stream in ('stdout', 'stderr'):
+            data_so_far = bytearray()
+            failed = False
+            while True:
+                try:
+                    timeout = max(.001, min(15, deadline - time.monotonic()))
+                    data, eof = self._output_chunk(record, stream, len(data_so_far), timeout)
+                    data_so_far.extend(data)
+                    if len(data_so_far) > limit:
+                        raise ValueError('saved output exceeds limit')
+                    if eof:
+                        break
+                except Exception:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        if not tolerate_missing:
+                            raise
+                        failed = True
+                        break
+                    time.sleep(min(.5, remaining))
+            if failed:
+                outcome['output_incomplete'] = True
+                try:
+                    prior = base64.b64decode(fallback[stream], validate=True)
+                except ValueError:
+                    prior = b''
+                if len(prior) > len(data_so_far):
+                    data_so_far = bytearray(prior)
+            output.add(stream, data_so_far)
+        public = output.public()
+        public['truncated'] |= outcome.get('output_incomplete', False) or outcome.get('output_truncated', False)
+        return public
+
+    def _finish_command(self, record, outcome, output, *, allow_late=False):
+        operation_id = record['operation_id']
+        if (record.get('kind') == 'python_cell' and
+            (outcome['status'] in ('timed_out', 'stopped') or
+             (outcome['status'] == 'completed' and outcome.get('exit_code') != 0))):
+            try:
+                self._stop_python_interpreter(record['session_operation_id'])
+            except Exception:
+                if not allow_late:
+                    self._stop_matching_pod(record['scratch_space_id'], record['pod_uid'])
+        fields = {key: outcome[key] for key in ('exit_code', 'error_code', 'message') if key in outcome}
+        if output.get('truncated') and not fields.get('message') and outcome.get('output_incomplete'):
+            fields['message'] = 'Output was lost to a Runner restart or a full disk'
+        if allow_late:
+            fields['outcome'] = 'known'
+        self._update_command(operation_id, allow_late=allow_late, status=outcome['status'], **fields, **output)
+        try:
+            self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
+                              helper_command('forget', operation_id), check=False, timeout=5)
+        except Exception:
+            pass
+
+    def _resume_command(self, operation_id):
+        import json
+        import time
+        record = self._read_command(operation_id)
+        deadline = None
+        if not record.get('background') and record.get('kind') != 'python_session':
+            remaining = record.get('running_at', record.get('accepted_at', time.time())) + record['timeout_seconds'] + 180 - time.time()
+            deadline = time.monotonic() + max(30, remaining)
+        try:
+            while deadline is None or time.monotonic() < deadline:
+                if self._read_command(operation_id)['status'] != 'running':
+                    return
+                try:
+                    pod = self._get('pod', record['pod'])
+                    if (not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']
+                            or pod.get('status', {}).get('phase') in ('Failed', 'Succeeded')):
+                        self._update_command(operation_id, status='interrupted', outcome='unknown')
+                        return
+                    claim = self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
+                                              helper_command('claim', operation_id), check=False, timeout=5)
+                    if claim.returncode != 0:
+                        raise RuntimeError('claim unavailable')
+                    created = json.loads(claim.stdout)['created']
+                    if type(created) is not bool:
+                        raise ValueError('invalid claim response')
+                    if created:
+                        self._update_command(operation_id, status='cancelled', outcome='not_started')
+                        return
+                    break
+                except Exception:
+                    time.sleep(5 if record.get('background') else 2)
+            outcome = self._await_normal_result(record, deadline, publish_saved=True)
+            if self._read_command(operation_id)['status'] != 'running':
+                return
+            if (isinstance(outcome, dict) and outcome.get('operation_id') == operation_id
+                    and outcome.get('run_id') == record['run_id']
+                    and outcome.get('status') in ('completed', 'timed_out', 'stopped')):
+                try:
+                    output = self._saved_output(record, outcome, tolerate_missing=True)
+                except Exception:
+                    output = self._partial_output(record)
+                    outcome = dict(outcome, output_incomplete=True)
+                self._finish_command(record, outcome, output)
+            else:
+                with self.lock:
+                    output = dict(self.live_output.get(operation_id, {'stdout': '', 'stderr': ''}))
+                output['truncated'] = True
+                self._update_command(operation_id, status='interrupted', outcome='unknown', stop_pending=True, **output)
+                self._stop_untracked_command(record)
+        except Exception as error:
+            if self._read_command(operation_id)['status'] == 'running':
+                self._update_command(operation_id, status='interrupted', outcome='unknown', stop_pending=True,
+                                     error_code='command_interrupted', message=str(error) or type(error).__name__)
+                self._stop_untracked_command(record)
         finally:
             with self.lock:
                 self.live_output.pop(operation_id, None)
@@ -1413,11 +1626,18 @@ print(json.dumps(r))'''
             if queue:
                 queue.cancel_waiting(run_id)
             directory = self.backend.root / 'execution-v2'
+            failures = []
             for path in directory.glob('*.json') if directory.exists() else ():
                 record = json.loads(path.read_bytes())
                 if (record.get('scratch_space_id') == scratch_space_id and record.get('run_id') == run_id
-                        and not record.get('background') and record.get('status') in ('queued', 'running')):
-                    self._stop_command(record['operation_id'])
+                        and not record.get('background') and (record.get('status') in ('queued', 'running')
+                            or (record.get('status') == 'interrupted' and record.get('docker_enabled')))):
+                    try:
+                        self._stop_command(record['operation_id'])
+                    except Exception as error:
+                        failures.append(str(error) or type(error).__name__)
+            if failures:
+                raise ExecutionPodError('stop_failed', '; '.join(failures))
         return {'cancelled_waiting': True}
 
     def background_processes(self, scratch_space_id):
@@ -1447,22 +1667,38 @@ print(json.dumps(r))'''
         record = self._read_command(operation_id)
         if not record.get('background'):
             raise ExecutionPodError('not_background', 'Command is not a background process')
-        if record['status'] == 'interrupted':
+        if record['status'] == 'interrupted' and not record.get('docker_enabled'):
             return self.command_result(operation_id)
         return self._stop_command(operation_id)
 
     def _stop_command(self, operation_id):
+        import json
         import time
         record = self._read_command(operation_id)
         with self.lock:
             future = self.futures.get(operation_id)
         if record['status'] == 'queued' and future and future.cancel():
             return self.command_result(operation_id, retry_stop=False)
-        if record['status'] in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted'):
+        if (record['status'] in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted')
+                and not (record['status'] == 'interrupted' and record.get('docker_enabled'))):
             return self.command_result(operation_id, retry_stop=False)
+        interrupted_docker = record['status'] == 'interrupted' and record.get('docker_enabled')
         pod = self._get('pod', record['pod'])
         if not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']:
+            if interrupted_docker:
+                return self.command_result(operation_id, retry_stop=False)
             raise ExecutionPodError('pod_interrupted', 'The original Execution Pod is unavailable')
+        def docker_running():
+            observed = self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
+                                         helper_command('running', operation_id), check=False, timeout=5)
+            if observed.returncode != 0:
+                raise RuntimeError('Could not check Docker command state')
+            running = json.loads(observed.stdout).get('running')
+            if type(running) is not bool:
+                raise ValueError('Invalid Docker command state')
+            return running
+        if interrupted_docker and not docker_running():
+            return self.command_result(operation_id, retry_stop=False)
         # A future can leave the queue before its in-Pod supervisor publishes
         # the stop marker. Wait for that short startup window instead of losing
         # a stop request at the queued-to-running transition.
@@ -1473,8 +1709,16 @@ print(json.dumps(r))'''
                 return {'operation_id': operation_id, 'status': 'stopping'}
             except Exception as error:
                 current = self.command_result(operation_id, retry_stop=False)
-                if current['status'] in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted'):
+                if current['status'] in ('completed', 'timed_out', 'stopped', 'cancelled'):
                     return current
+                if current['status'] == 'interrupted':
+                    if not interrupted_docker:
+                        return current
+                    try:
+                        if not docker_running():
+                            return current
+                    except Exception:
+                        pass
                 if time.monotonic() >= deadline:
                     raise ExecutionPodError('stop_failed', 'Could not stop background process: ' + str(error)) from error
                 time.sleep(.1)
@@ -1516,7 +1760,7 @@ print(json.dumps(r))'''
             state = {'scratch_space_id': scratch_space_id}
             if path.exists():
                 state = json.loads(path.read_bytes())
-                timestamp = max(timestamp, state['last_command_at'])
+                timestamp = max(timestamp, state.get('last_command_at', timestamp))
             state['last_command_at'] = timestamp
             save(path, state)
 
@@ -1565,14 +1809,27 @@ print(json.dumps(r))'''
                         space = json.loads(path.read_bytes())
                         unconfirmed = space.get('termination_unconfirmed', False)
                         if not unconfirmed:
-                            if current - space['last_command_at'] < 1800 or self.foreground_jobs.get(scratch_id, 0):
+                            if self.foreground_jobs.get(scratch_id, 0):
+                                continue
+                    # The helper image only changes across a restart, so one look at
+                    # each Space after it is enough; a failed look is retried.
+                    outdated = False
+                    if not unconfirmed and scratch_id in self.helper_checks:
+                        pod = self._get('pod', scratch_resource_name(scratch_id))
+                        outdated = bool(pod and self._old_helper_image(pod))
+                        if not outdated:
+                            self.helper_checks.discard(scratch_id)
+                    if not unconfirmed and not outdated:
+                        with self.lock:
+                            if current - space['last_command_at'] < 1800:
                                 continue
                             viewers = self.viewers.get(scratch_id, {})
                             self.viewers[scratch_id] = {key: expiry for key, expiry in viewers.items() if expiry > current}
                             if self.viewers[scratch_id]:
                                 continue
-                    if unconfirmed or self._get('pod', scratch_resource_name(scratch_id)):
+                    if outdated or unconfirmed or self._get('pod', scratch_resource_name(scratch_id)):
                         self.stop(scratch_id)
+                        self.helper_checks.discard(scratch_id)
             except Exception as error:
                 import sys
                 print('Execution Pod idle cleanup failed: ' + str(error), file=sys.stderr, flush=True)
@@ -1620,16 +1877,19 @@ print(json.dumps(r))'''
         if path.exists():
             prior = json.loads(path.read_bytes())
             record = self._read_command(prior['operation_id'])
-            if record['status'] == 'interrupted':
+            pod = self._get('pod', scratch_resource_name(scratch_space_id))
+            same_pod = bool(pod and pod.get('metadata', {}).get('uid') == record.get('pod_uid'))
+            if record['status'] == 'interrupted' and same_pod:
                 observed = self.command_result(prior['operation_id'], retry_stop=False)
                 if observed['status'] == 'interrupted':
                     raise ExecutionPodError('session_interrupted',
                                             'The previous Python session outcome is unknown; it cannot be restarted yet')
                 record = self._read_command(prior['operation_id'])
-            pod = self._get('pod', scratch_resource_name(scratch_space_id))
-            if (record['status'] in ('queued', 'running') and pod
-                    and pod.get('metadata', {}).get('uid') == record.get('pod_uid')):
+            if record['status'] in ('queued', 'running') and same_pod:
                 return prior
+            replaced = not same_pod and record['status'] in ('running', 'queued', 'interrupted')
+        else:
+            replaced = False
         operation_id = str(uuid.uuid4())
         socket_path = '/run/aidash/' + operation_id + '.sock'
         code = 'exec ' + shlex.join(python_helper_command('serve', socket_path))
@@ -1638,7 +1898,7 @@ print(json.dumps(r))'''
         session = {'operation_id': operation_id, 'scratch_space_id': scratch_space_id,
                    'run_id': run_id, 'socket_path': socket_path}
         save(path, session)
-        return session
+        return dict(session, session_replaced=True) if replaced else session
 
     def python_cell(self, request):
         import base64
@@ -1677,7 +1937,7 @@ print(json.dumps(r))'''
                                     'run_id': request['run_id'], 'code': command,
                                     'cwd': request.get('cwd', '.'), 'timeout_seconds': seconds},
                                    kind='python_cell', session_operation_id=session['operation_id'],
-                                   client_digest=original_digest)
+                                   client_digest=original_digest, session_replaced=session.get('session_replaced', False))
 
     def stop_python(self, scratch_space_id, run_id):
         import json
