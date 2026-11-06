@@ -366,7 +366,12 @@ export function ScratchSpacesSettings({ focus }: { focus?: string }) {
   });
   const space = list.data?.find((value) => value.id === id);
   const section = useRef<HTMLElement>(null);
-  const focused = !!focus && !!list.data?.some((value) => value.id === focus);
+  // Scroll only once the settings form is rendered, or the page is still too
+  // short to bring the section to the top.
+  const focused =
+    !!focus &&
+    !!limits.data &&
+    !!list.data?.some((value) => value.id === focus);
   useEffect(() => {
     if (focused) section.current?.scrollIntoView({ block: "start" });
   }, [focused]);
