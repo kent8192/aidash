@@ -244,6 +244,7 @@ pub async fn execute(
 			let resource = scope.artifact_creation_resource(task.id, &owner).await?;
 			scope.require(&resource, "artifact.create").await?;
 			let artifact: ArtifactInput = serde_json::from_value(data["artifact"].clone())?;
+			let abandon = abandon_list(data)?;
 			let complete_through = if input.operation == "run_message_complete" {
 				scope.require(&task_resource, "task.complete").await?;
 				let seq: i64 = serde_json::from_value(data["through_seq"].clone())?;
@@ -252,14 +253,19 @@ pub async fn execute(
 				}
 				Some(seq)
 			} else {
+				if !abandon.is_empty() {
+					return Err(Error::Invalid("only a completion can abandon tasks".into()));
+				}
 				None
 			};
+			require_abandonment(scope, &task, input.grant_id, &abandon).await?;
 			let result = scope
 				.apply(
 					context(),
 					Effect::Artifact {
 						artifact: &artifact,
 						complete_through,
+						abandon: &abandon,
 					},
 				)
 				.await?;
@@ -272,6 +278,17 @@ pub async fn execute(
 			)
 			.await?;
 			result.value
+		}
+		"run_abandon_unassigned" => {
+			let ids = abandon_list(data)?;
+			if ids.is_empty() {
+				return Err(Error::Invalid("no tasks to abandon".into()));
+			}
+			require_abandonment(scope, &task, input.grant_id, &ids).await?;
+			scope
+				.apply(context(), Effect::AbandonUnassigned { ids: &ids })
+				.await?
+				.value
 		}
 		"create_task" => {
 			let resource = scope.workspace(task.workspace_id).await?;
@@ -436,3 +453,34 @@ async fn track(
 }
 #[cfg(test)]
 mod tests;
+
+/// The Tasks a completion or an abandonment names; absent means none.
+fn abandon_list(data: &Value) -> Result<Vec<Uuid>> {
+	Ok(match data.get("abandon") {
+		None | Some(Value::Null) => Vec::new(),
+		Some(value) => serde_json::from_value(value.clone())?,
+	})
+}
+
+/// Abandoning needs `task.abandon` on each Task for the caller's chain, and
+/// only a Task that execution created. The Home re-checks the rest inside the
+/// row lock.
+async fn require_abandonment(
+	scope: &mut dyn RemoteCommandEffects,
+	parent: &aidash_domain::Task,
+	grant: Uuid,
+	ids: &[Uuid],
+) -> Result<()> {
+	for id in ids {
+		let child = scope.task(*id).await?;
+		if child.workspace_id != parent.workspace_id
+			|| child.parent_id != Some(parent.id)
+			|| !scope.created_by_grant(grant, child.id).await?
+		{
+			return Err(Error::Forbidden);
+		}
+		let resource = scope.task_resource(&child).await?;
+		scope.require(&resource, "task.abandon").await?;
+	}
+	Ok(())
+}

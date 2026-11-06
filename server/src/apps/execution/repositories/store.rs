@@ -1695,18 +1695,33 @@ impl Store {
 			.fetch_one(&mut **tx)
 			.await?
 		};
+		let unassigned =
+			task.status == crate::domain::TaskStatus::Open && !self.started_in(tx, id).await?;
 		if task.revision != revision
-			|| !matches!(
-				task.status,
-				crate::domain::TaskStatus::Failed
-					| crate::domain::TaskStatus::Blocked
-					| crate::domain::TaskStatus::Cancelled
-			) {
+			|| !(unassigned
+				|| matches!(
+					task.status,
+					crate::domain::TaskStatus::Failed
+						| crate::domain::TaskStatus::Blocked
+						| crate::domain::TaskStatus::Cancelled
+				)) {
 			return Err(Error::Conflict(
-				"only a failed, blocked or cancelled task at the current revision can be abandoned"
+				"only a failed, blocked or cancelled task, or an open task nobody has started, at the current revision can be abandoned"
 					.into(),
 			));
 		}
+		self.abandon_locked_in(tx, &task, reason, actor).await
+	}
+	/// Abandon a Task whose row this transaction has locked and whose state
+	/// the caller has already judged abandonable.
+	async fn abandon_locked_in(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		task: &Task,
+		reason: &str,
+		actor: &str,
+	) -> Result<Task> {
+		let id = task.id;
 		let active_children: bool = {
 			let query_bind_1 = id;
 			crate::database::native::query_scalar(&reinhardt::query::Query::select().expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM tasks WHERE parent_id = ? AND NOT status IN ('COMPLETED', 'ABANDONED')))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder)).scalar_one(&mut **tx).await?
@@ -1748,6 +1763,136 @@ impl Store {
 		.await?;
 		Ok(updated)
 	}
+	/// Whether anybody has the Task: a Run under way, another Node that took
+	/// it, or a generated specialist on its way. Read under the Task's row
+	/// lock, so a concurrent handover has either committed or waits.
+	async fn started_in(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		id: Uuid,
+	) -> Result<bool> {
+		let started: bool = crate::database::native::query_scalar(
+			&Query::select()
+				.expr(crate::apps::workspaces::models::child_flags::started())
+				.from(Alias::new("tasks"))
+				.and_where(Expr::col("id").eq(Expr::value(id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut **tx)
+		.await?;
+		Ok(started)
+	}
+	/// Abandon the listed children of `parent` that are still Unassigned
+	/// Tasks created by a Run of it. One that has since been handed over, or
+	/// is no longer open, is left alone: that is not an error here, because
+	/// completing the parent then fails on the unresolved child and rolls the
+	/// whole transaction back.
+	pub(crate) async fn abandon_unassigned_in(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		parent: Uuid,
+		ids: &[Uuid],
+		actor: &str,
+	) -> Result<()> {
+		// A fixed order keeps two transactions from locking in opposite ones.
+		let mut ids = ids.to_vec();
+		ids.sort();
+		ids.dedup();
+		for id in ids {
+			let locked: Option<Task> = {
+				let query_bind_1 = id;
+				aidash_server::database::query_as(
+					&reinhardt::query::Query::select()
+						.expr(reinhardt::query::SimpleExpr::from(
+							reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
+						))
+						.from(reinhardt::query::Alias::new("tasks"))
+						.and_where(SimpleExpr::CustomWithExpr(
+							"(id = ?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						))
+						.lock(reinhardt::query::LockType::Update)
+						.to_string(reinhardt::query::PostgresQueryBuilder),
+				)
+				.fetch_optional(&mut **tx)
+				.await?
+			};
+			let Some(child) = locked else { continue };
+			if child.parent_id != Some(parent) || child.status != crate::domain::TaskStatus::Open {
+				continue;
+			}
+			let eligible: bool = crate::database::native::query_scalar(
+				&Query::select()
+					.expr(
+						crate::apps::workspaces::models::child_flags::started()
+							.not()
+							.and(crate::apps::workspaces::models::child_flags::abandonable(
+								parent,
+							)),
+					)
+					.from(Alias::new("tasks"))
+					.and_where(Expr::col("id").eq(Expr::value(id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_one(&mut **tx)
+			.await?;
+			if !eligible {
+				continue;
+			}
+			self.abandon_locked_in(tx, &child, aidash_domain::unassigned::ABANDON_REASON, actor)
+				.await?;
+		}
+		Ok(())
+	}
+	/// Abandon Unassigned children of a running parent without completing it.
+	pub(crate) async fn abandon_unassigned(
+		&self,
+		scope: &TenancyScope,
+		parent: Uuid,
+		owner: &str,
+		ids: &[Uuid],
+	) -> Result<()> {
+		let mut tx = self.pool.begin(scope).await?;
+		self.abandon_unassigned_for_in(&mut tx, parent, owner, ids)
+			.await?;
+		tx.commit().await?;
+		Ok(())
+	}
+	pub(crate) async fn abandon_unassigned_for_in(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		parent: Uuid,
+		owner: &str,
+		ids: &[Uuid],
+	) -> Result<()> {
+		let task: Task = {
+			let query_bind_1 = parent;
+			aidash_server::database::query_as(
+				&reinhardt::query::Query::select()
+					.expr(reinhardt::query::SimpleExpr::from(
+						reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
+					))
+					.from(reinhardt::query::Alias::new("tasks"))
+					.and_where(SimpleExpr::CustomWithExpr(
+						"(id = ?)".to_owned(),
+						vec![Expr::value(query_bind_1.to_owned()).into()],
+					))
+					.lock(reinhardt::query::LockType::Update)
+					.to_string(reinhardt::query::PostgresQueryBuilder),
+			)
+			.fetch_one(&mut **tx)
+			.await?
+		};
+		if task.owner.as_deref() != Some(owner) {
+			return Err(Error::Unauthorized);
+		}
+		if task.status != crate::domain::TaskStatus::Running {
+			return Err(Error::Conflict(
+				"only a running task can abandon its unassigned children".into(),
+			));
+		}
+		self.abandon_unassigned_in(tx, parent, owner, ids).await
+	}
 	pub async fn complete(
 		&self,
 		scope: &TenancyScope,
@@ -1764,6 +1909,7 @@ impl Store {
 			artifact,
 			Publication::default(),
 			None,
+			&[],
 		)
 		.await
 	}
@@ -1777,6 +1923,7 @@ impl Store {
 		artifact: &ArtifactInput,
 		publication: Publication,
 		remote_run_fence: Option<(Uuid, i64)>,
+		abandon: &[Uuid],
 	) -> Result<Task> {
 		let mut tx = self.pool.begin(scope).await?;
 		let result = self
@@ -1788,6 +1935,7 @@ impl Store {
 				artifact,
 				publication,
 				remote_run_fence,
+				abandon,
 			)
 			.await?;
 		tx.commit().await?;
@@ -1804,6 +1952,7 @@ impl Store {
 		artifact: &ArtifactInput,
 		publication: Publication,
 		remote_run_fence: Option<(Uuid, i64)>,
+		abandon: &[Uuid],
 	) -> Result<Task> {
 		nonempty(key, "idempotency key")?;
 		artifact.validate()?;
@@ -1870,6 +2019,10 @@ impl Store {
 		if t.status != crate::domain::TaskStatus::Running {
 			return Err(Error::Conflict("only a running task can complete".into()));
 		}
+		// After the key replay above, so a replayed completion abandons nothing.
+		// A child handed over since the Run looked is kept and then blocks the
+		// completion below, which rolls these abandonments back with it.
+		self.abandon_unassigned_in(tx, id, abandon, owner).await?;
 		let unresolved: bool = {
 			let query_bind_1 = id;
 			crate::database::native::query_scalar(&reinhardt::query::Query::select().expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM tasks WHERE parent_id = ? AND NOT status IN ('COMPLETED', 'ABANDONED')))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder)).scalar_one(&mut **tx).await?

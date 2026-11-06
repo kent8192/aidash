@@ -365,6 +365,12 @@ pub async fn activate<R: HomeRepository>(
 	{
 		return Err(Error::Forbidden);
 	}
+	// Only a matching response says the Run started. An error or an uncertain
+	// outcome above leaves the binding unmarked: if the Run did start, its
+	// claim moves the Task out of OPEN (#772).
+	let (mut scope, _) = repository.description(&grant.node_id, id).await?;
+	let result = scope.mark_activated(id).await;
+	finish(scope, result).await?;
 	Ok(activation)
 }
 pub async fn activation_binding<R: HomeRepository>(

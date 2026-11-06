@@ -65,6 +65,8 @@ pub trait HomeScope: Send + Sized {
 		keys: &[String],
 	) -> Result<Task>;
 	async fn binding_revision(&mut self, grant: Uuid, revision: i64) -> Result<()>;
+	/// Record that the receiving Node confirmed it started this execution.
+	async fn mark_activated(&mut self, grant: Uuid) -> Result<()>;
 	async fn resume_semantic(
 		&mut self,
 		grant: Uuid,

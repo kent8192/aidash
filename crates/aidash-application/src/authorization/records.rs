@@ -3,7 +3,10 @@ use crate::{
 	Error, Result,
 	ports::authorization::records::{ChildSummaryScope, WorkspaceRecordScope},
 };
-use aidash_domain::{ChildTaskSummary, WorkspaceSnapshot};
+use aidash_domain::{
+	ChildTaskSummary, TaskStatus, WorkspaceSnapshot,
+	unassigned::{PendingChild, classify},
+};
 use serde_json::{Value, json};
 use uuid::Uuid;
 pub async fn record(
@@ -131,6 +134,9 @@ pub async fn children(
 	let resource = scope.workspace(workspace_id).await?;
 	scope.require(&resource, "workspace.read").await?;
 	let mut summary = ChildTaskSummary::default();
+	// Which pending child is unassigned depends on its siblings, which may sit
+	// on a later page: classify once, after the last page.
+	let mut pending = Vec::new();
 	let mut after = None;
 	loop {
 		let rows = scope.children(workspace_id, parent_id, after).await?;
@@ -146,9 +152,20 @@ pub async fn children(
 			}
 			visible_ids.push(row.id);
 			summary.include_task(row.id, row.status, row.revision);
+			if !matches!(row.status, TaskStatus::Completed | TaskStatus::Abandoned) {
+				pending.push(PendingChild {
+					id: row.id,
+					title: row.title,
+					status: row.status,
+					dependencies: row.dependencies,
+					abandonable: row.abandonable,
+					started: row.started,
+				});
+			}
 		}
 		scope.track_tasks(workspace_id, &visible_ids).await?;
 		if exhausted {
+			summary.unassigned = classify(&pending);
 			return Ok(summary);
 		}
 	}

@@ -1,11 +1,12 @@
 //! Workspace-owned reads and bounded public task discovery.
-use super::{Artifact, Message, Task, Workspace};
+use super::{Artifact, Message, Task, Workspace, child_flags};
 use crate::apps::workspaces::serializers::{
 	entities::{Artifact as ArtifactContract, Message as MessageContract, Task as TaskContract},
 	services::ChildTaskSummary,
 	tasks::TaskPage,
 };
 use crate::{Error, Result};
+use aidash_domain::unassigned::{PendingChild, classify};
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::{Model, OrmExecutor, QueryRow};
 use reinhardt::query::{
@@ -116,18 +117,36 @@ impl Task {
 		struct Child {
 			revision: i64,
 			id: Uuid,
+			title: String,
 			status: crate::domain::TaskStatus,
+			#[serde(default)]
+			dependencies: Vec<Uuid>,
+			started: bool,
+			abandonable: bool,
 		}
 		let mut summary = ChildTaskSummary::default();
+		// Which pending child is unassigned depends on its siblings, which may
+		// sit on a later page: classify once, after the last page.
+		let mut pending = Vec::new();
 		let mut after = None;
 		loop {
 			let mut query = Query::select();
 			query
 				.columns([
 					Alias::new("id"),
+					Alias::new("title"),
 					Alias::new("status"),
 					Alias::new("revision"),
+					Alias::new("dependencies"),
 				])
+				.expr_as(
+					open_or_claimed().and(child_flags::started()),
+					Alias::new("started"),
+				)
+				.expr_as(
+					open_or_claimed().and(child_flags::abandonable(parent)),
+					Alias::new("abandonable"),
+				)
 				.from(Alias::new(Self::table_name()))
 				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
 				.and_where(Expr::col("parent_id").eq(Expr::value(parent)))
@@ -143,12 +162,32 @@ impl Task {
 				let child: Child = serde_json::from_value(QueryRow::from_backend_row(row).data)?;
 				after = Some(child.id);
 				summary.include_task(child.id, child.status, child.revision);
+				if !matches!(
+					child.status,
+					crate::domain::TaskStatus::Completed | crate::domain::TaskStatus::Abandoned
+				) {
+					pending.push(PendingChild {
+						id: child.id,
+						title: child.title,
+						status: child.status,
+						dependencies: child.dependencies,
+						abandonable: child.abandonable,
+						started: child.started,
+					});
+				}
 			}
 			if end {
+				summary.unassigned = classify(&pending);
 				return Ok(summary);
 			}
 		}
 	}
+}
+
+/// Only an open or claimed child can be unassigned, so only those rows pay
+/// for the started and abandonable subqueries.
+pub(crate) fn open_or_claimed() -> reinhardt::query::SimpleExpr {
+	Expr::col((Alias::new("tasks"), Alias::new("status"))).is_in(["OPEN", "CLAIMED"])
 }
 
 impl Artifact {

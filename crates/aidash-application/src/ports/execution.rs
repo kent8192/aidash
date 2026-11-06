@@ -444,7 +444,13 @@ pub trait ExecutionHome: Send + Sync {
 		fits: &ObservationFit<'_>,
 	) -> Result<Option<(usize, Value)>>;
 	async fn child_summary(&self, parent: Uuid) -> Result<ChildTaskSummary>;
-	async fn complete(&self, key: &str, artifact: &ArtifactInput) -> Result<Task>;
+	/// Complete the Task, abandoning `abandon` in the same transaction: the
+	/// Unassigned children the Run created that nobody has been given.
+	async fn complete(&self, key: &str, artifact: &ArtifactInput, abandon: &[Uuid])
+	-> Result<Task>;
+	/// Abandon those of `ids` that are still Unassigned Tasks of `parent`
+	/// created by a Run of it, without completing the parent.
+	async fn abandon_unassigned(&self, parent: Uuid, ids: &[Uuid]) -> Result<()>;
 	async fn report(&self, key: &str, kind: &str, data: Value) -> Result<()>;
 	async fn response_message(
 		&self,
