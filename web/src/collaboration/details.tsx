@@ -69,6 +69,7 @@ import {
 } from "../approval-settings-model";
 import { collaborationCopy } from "./copy";
 import { workspaceCopy } from "./workspace-copy";
+import { abandonable } from "./workspace-model";
 import { InferenceProgress } from "./inference-progress";
 import { resumableRun } from "./workspace-model";
 import { researchFailure } from "../research";
@@ -352,7 +353,7 @@ export function OperationsDialog({
                   {data.access.kind === "subject" && (
                     <RemoteExecutions task={task.id} />
                   )}
-                  {["FAILED", "BLOCKED", "CANCELLED"].includes(task.status) && (
+                  {abandonable(task, taskRuns) && (
                     <form
                       className="grid min-w-0 gap-3 border-t border-border pt-4"
                       onSubmit={(event) => {
