@@ -1751,7 +1751,26 @@ print(json.dumps(r))'''
             if type(running) is not bool:
                 raise ValueError('Invalid Docker command state')
             return running
-        if interrupted_docker and not docker_running():
+        supervisor_started = False
+        def docker_finished():
+            # An interrupted Docker command whose supervisor has not published its marker yet is not
+            # finished. Claiming the operation first fences that supervisor out, so it can never start
+            # a command that was meant to stop. If the claim shows it already started, it has either
+            # finished or is running and still needs the stop.
+            nonlocal supervisor_started
+            if not supervisor_started:
+                observed = self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
+                                             helper_command('claim', operation_id), check=False, timeout=5)
+                if observed.returncode != 0:
+                    raise RuntimeError('Could not fence Docker command start')
+                created = json.loads(observed.stdout).get('created')
+                if type(created) is not bool:
+                    raise ValueError('Invalid Docker command claim')
+                if created:
+                    return True
+                supervisor_started = True
+            return not docker_running()
+        if interrupted_docker and docker_finished():
             return self.command_result(operation_id, retry_stop=False)
         # A future can leave the queue before its in-Pod supervisor publishes
         # the stop marker. Wait for that short startup window instead of losing
@@ -1769,7 +1788,7 @@ print(json.dumps(r))'''
                     if not interrupted_docker:
                         return current
                     try:
-                        if not docker_running():
+                        if docker_finished():
                             return current
                     except Exception:
                         pass
