@@ -37,15 +37,18 @@ pub enum Direction {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RequestTimes {
 	/// From the end of admission to the end of the response. A response that
-	/// ends its own stream includes its final debit; one that stops at its
-	/// `Content-Length` does not.
+	/// ends its own stream includes its final debit, unless that debit failed
+	/// and was left to the background; one that stops at its `Content-Length`
+	/// does not.
 	pub duration_ms: u64,
 	/// The gateway's admission call: the token, the authority's recheck, the
 	/// budget locks and the record's first write.
 	pub admission_ms: u64,
-	/// From the end of the response until its final debit settled, including
-	/// retries. Bytes kept after a failed debit, which a stream that was already
-	/// stopping charges in the background, may settle later.
+	/// From the end of the response until its final debit settled, including a
+	/// first attempt that failed and the retries after it, or until the debit
+	/// was given up (`egress_debit_abandoned`). Bytes kept when a debit failed in
+	/// the middle of a stream, which stops the stream and is charged in the
+	/// background, may settle later and are not counted.
 	pub settle_ms: u64,
 }
 

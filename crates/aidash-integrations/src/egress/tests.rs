@@ -591,6 +591,7 @@ async fn invalid_broker_capability_is_rejected_before_contacting_the_broker() {
 
 #[tokio::test]
 async fn every_broker_error_code_is_reported_without_the_broker_body() {
+	let observed = Observed::start();
 	let broker_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let broker_url = format!("http://{}", broker_listener.local_addr().unwrap());
 	let broker_state = Arc::new(Broker::default());
@@ -650,6 +651,20 @@ async fn every_broker_error_code_is_reported_without_the_broker_body() {
 		] {
 			assert!(finished.contains(&(status.as_u16(), Some(code.to_owned()))));
 		}
+	}
+	// Failures to reach the service, or of the broker, warn with their code; a
+	// decision about the Tenant's request does not.
+	let logs = observed.logs();
+	assert_eq!(logs.matches("Egress upstream failed").count(), 3, "{logs}");
+	for code in [
+		"upstream_unreachable",
+		"broker_rejected",
+		"broker_unavailable",
+	] {
+		assert!(logs.contains(code), "{code} in {logs}");
+	}
+	for private in ["canary", "secret_unavailable", "rate_limited"] {
+		assert!(!logs.contains(private), "{private} in {logs}");
 	}
 	stop.send(true).unwrap();
 	gateway.await.unwrap().unwrap();
@@ -1054,9 +1069,7 @@ impl Authority for MeterAuthority {
 
 const CHUNK: usize = 64 * 1024;
 
-/// An upstream whose `/download/{n}` streams `n` 64 KiB chunks, `/sized/{n}`
-/// streams them with a `Content-Length`, `/broken` streams 40 chunks and then
-/// fails, and `/upload` drains the request body before it answers.
+/// A gateway in front of [`fixture_upstream`] with a [`BudgetMeter`].
 async fn metered_gateway(
 	limit: u64,
 	expired: bool,
@@ -1069,17 +1082,10 @@ async fn metered_gateway(
 	gateway_admitting_after(limit, expired, Duration::ZERO).await
 }
 
-/// [`metered_gateway`] whose authority takes `admission` to admit a request.
-async fn gateway_admitting_after(
-	limit: u64,
-	expired: bool,
-	admission: Duration,
-) -> (
-	String,
-	Arc<Audit>,
-	Vec<tokio::task::JoinHandle<()>>,
-	watch::Sender<bool>,
-) {
+/// An upstream whose `/download/{n}` streams `n` 64 KiB chunks, `/sized/{n}`
+/// streams them with a `Content-Length`, `/broken` streams 40 chunks and then
+/// fails, and `/upload` drains the request body before it answers.
+async fn fixture_upstream() -> (String, tokio::task::JoinHandle<()>) {
 	let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let upstream_url = format!("http://{}/", upstream.local_addr().unwrap());
 	let upstream_task = tokio::spawn(async move {
@@ -1139,6 +1145,21 @@ async fn gateway_admitting_after(
 		.await
 		.unwrap();
 	});
+	(upstream_url, upstream_task)
+}
+
+/// [`metered_gateway`] whose authority takes `admission` to admit a request.
+async fn gateway_admitting_after(
+	limit: u64,
+	expired: bool,
+	admission: Duration,
+) -> (
+	String,
+	Arc<Audit>,
+	Vec<tokio::task::JoinHandle<()>>,
+	watch::Sender<bool>,
+) {
+	let (upstream_url, upstream_task) = fixture_upstream().await;
 	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 	let origin = format!("http://{}", listener.local_addr().unwrap());
 	let audit = Arc::new(Audit::default());
@@ -1155,6 +1176,53 @@ async fn gateway_admitting_after(
 	let (stop, receiver) = watch::channel(false);
 	let gateway = tokio::spawn(async move { serve(listener, authority, receiver).await.unwrap() });
 	(origin, audit, vec![upstream_task, gateway], stop)
+}
+
+/// Admits like [`FixtureAuthority`], with one meter shared by every request.
+struct FixedMeter {
+	inner: FixtureAuthority,
+	meter: Arc<dyn Meter>,
+}
+#[async_trait]
+impl Authority for FixedMeter {
+	async fn admit(
+		&self,
+		token: &str,
+		service: &str,
+		method: &str,
+		path: &str,
+		digest: &str,
+	) -> Result<Admission> {
+		let mut admission = self
+			.inner
+			.admit(token, service, method, path, digest)
+			.await?;
+		admission.meter = self.meter.clone();
+		Ok(admission)
+	}
+}
+/// A gateway in front of [`fixture_upstream`] whose requests `meter` meters.
+async fn gateway_metered_by(
+	meter: Arc<dyn Meter>,
+) -> (
+	String,
+	Vec<tokio::task::JoinHandle<()>>,
+	watch::Sender<bool>,
+) {
+	let (upstream_url, upstream_task) = fixture_upstream().await;
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let origin = format!("http://{}", listener.local_addr().unwrap());
+	let authority = Arc::new(FixedMeter {
+		inner: FixtureAuthority {
+			upstream: upstream_url,
+			origin: origin.clone(),
+			audit: Arc::new(Audit::default()),
+		},
+		meter,
+	});
+	let (stop, receiver) = watch::channel(false);
+	let gateway = tokio::spawn(async move { serve(listener, authority, receiver).await.unwrap() });
+	(origin, vec![upstream_task, gateway], stop)
 }
 
 async fn shutdown(tasks: Vec<tokio::task::JoinHandle<()>>, stop: watch::Sender<bool>) {
@@ -2098,4 +2166,287 @@ async fn a_refused_final_debit_is_recorded_and_not_retried() {
 		*meter.0.finished_records.lock().unwrap(),
 		vec![(200, Some("egress_limit_exceeded".into()))]
 	);
+}
+
+/// Keeps its record from being written for `STALL`, then writes it.
+struct StalledRecord(Audit);
+const STALL: Duration = Duration::from_secs(3);
+#[async_trait]
+impl Meter for StalledRecord {
+	async fn charge(&self, direction: Direction, bytes: usize) -> Result<()> {
+		self.0.charge(direction, bytes).await
+	}
+	async fn finish(&self, status: u16, times: RequestTimes, error: Option<&str>) -> Result<()> {
+		tokio::time::sleep(STALL).await;
+		self.0.finish(status, times, error).await
+	}
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stalled_record_does_not_hold_the_response_for_longer_than_a_moment() {
+	let meter = Arc::new(StalledRecord(Audit::default()));
+	let mut completion = completion(meter.clone(), None);
+	let began = tokio::time::Instant::now();
+	completion.close(None).await;
+	assert!(began.elapsed() <= RECORD_WAIT + Duration::from_millis(100));
+	assert!(meter.0.finished_records.lock().unwrap().is_empty());
+	tokio::time::sleep(STALL).await;
+	assert_eq!(*meter.0.finished_records.lock().unwrap(), vec![(200, None)]);
+}
+
+/// Hyper drops a response body when its client disconnects, wherever the body
+/// is waiting.
+#[tokio::test(start_paused = true)]
+async fn a_record_stalled_in_the_store_still_arrives_after_the_client_disconnects() {
+	let meter = Arc::new(StalledRecord(Audit::default()));
+	let mut completion = completion(meter.clone(), None);
+	let disconnected = tokio::time::timeout(RECORD_WAIT / 2, completion.close(None)).await;
+	assert!(disconnected.is_err(), "the client left mid-write");
+	drop(completion);
+	tokio::time::sleep(STALL * 2).await;
+	assert_eq!(
+		*meter.0.finished_records.lock().unwrap(),
+		vec![(200, None)],
+		"the write is not tied to the response"
+	);
+}
+
+/// The client leaves once it has the body, while the gateway is still writing the
+/// record that ends the response. Hyper drops the response stream, wherever it
+/// is waiting, when its connection closes.
+#[tokio::test]
+async fn a_client_that_leaves_while_its_record_is_written_does_not_lose_the_record() {
+	let meter = Arc::new(StalledRecord(Audit::default()));
+	let (origin, tasks, stop) = gateway_metered_by(meter.clone()).await;
+	let response = reqwest::get(format!("{origin}/v1/operation-token/images/download/1"))
+		.await
+		.unwrap();
+	let mut body = response.bytes_stream();
+	let mut total = 0;
+	while total < CHUNK {
+		total += body.next().await.unwrap().unwrap().len();
+	}
+	// The end of the body waits for the record, which the store is stalling.
+	tokio::time::sleep(Duration::from_millis(200)).await;
+	drop(body);
+	tokio::time::timeout(2 * STALL, meter.0.finished.notified())
+		.await
+		.expect("the record is written although its response is gone");
+	assert_eq!(*meter.0.finished_records.lock().unwrap(), vec![(200, None)]);
+	shutdown(tasks, stop).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_final_debit_that_fails_for_good_is_recorded_as_abandoned() {
+	let observed = Observed::start();
+	let meter = FlakyMeter::failing(u64::MAX, 0);
+	let completion = completion(meter.clone(), Some(100));
+	completion.debits.count(Direction::Received, 100);
+	drop(completion);
+	tokio::time::sleep(SETTLE_BUDGET * 2).await;
+	assert_eq!(
+		*meter.audit.finished_records.lock().unwrap(),
+		vec![(200, Some(DEBIT_ABANDONED.into()))],
+		"a complete download whose last charge was lost is not a plain success"
+	);
+	assert_eq!(
+		observed.count(r#"aidash_egress_settle_failures_total{stage="debit",outcome="abandoned"}"#),
+		1
+	);
+	// What the time counts is the trying.
+	let times = meter.audit.times.lock().unwrap().clone();
+	assert!(times[0].settle_ms >= millis(SETTLE_BUDGET), "{times:?}");
+}
+
+/// Refuses uploads and cannot be asked about downloads.
+struct RefusedUpload(Audit);
+#[async_trait]
+impl Meter for RefusedUpload {
+	async fn charge(&self, direction: Direction, _: usize) -> Result<()> {
+		match direction {
+			Direction::Sent => Err(aidash_application::Error::Conflict(
+				aidash_domain::egress::LIMIT_EXCEEDED.into(),
+			)),
+			Direction::Received => {
+				Err(aidash_application::Error::External("pool timed out".into()))
+			}
+		}
+	}
+	async fn finish(&self, status: u16, times: RequestTimes, error: Option<&str>) -> Result<()> {
+		self.0.finish(status, times, error).await
+	}
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refusal_wins_over_a_debit_that_was_given_up() {
+	let meter = Arc::new(RefusedUpload(Audit::default()));
+	let completion = completion(meter.clone(), Some(100));
+	completion.debits.count(Direction::Sent, 10);
+	completion.debits.count(Direction::Received, 100);
+	drop(completion);
+	tokio::time::sleep(SETTLE_BUDGET * 2).await;
+	assert_eq!(
+		*meter.0.finished_records.lock().unwrap(),
+		vec![(200, Some("egress_limit_exceeded".into()))]
+	);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_incomplete_download_stays_interrupted_whatever_its_debit_did() {
+	let meter = FlakyMeter::failing(u64::MAX, 0);
+	let completion = completion(meter.clone(), Some(100));
+	completion.debits.count(Direction::Received, 99);
+	drop(completion);
+	tokio::time::sleep(SETTLE_BUDGET * 2).await;
+	assert_eq!(
+		*meter.audit.finished_records.lock().unwrap(),
+		vec![(200, Some("stream_interrupted".into()))]
+	);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_final_debit_that_fails_for_a_moment_does_not_cut_a_finished_response() {
+	let observed = Observed::start();
+	let meter = FlakyMeter::failing(2, 0);
+	let mut completion = completion(meter.clone(), None);
+	completion.debits.count(Direction::Received, 100);
+	assert!(
+		completion.finish(None).await.is_none(),
+		"the body is complete; only a decision stops it"
+	);
+	drop(completion);
+	tokio::time::sleep(Duration::from_secs(5)).await;
+	assert_eq!(meter.audit.received.load(Ordering::Relaxed), 100);
+	assert_eq!(
+		*meter.audit.finished_records.lock().unwrap(),
+		vec![(200, None)]
+	);
+	// The failed attempt and the wait before the retry are part of settling.
+	let times = meter.audit.times.lock().unwrap().clone();
+	assert!(times[0].settle_ms >= 1_000, "{times:?}");
+	assert_eq!(
+		observed.count(r#"aidash_egress_settle_failures_total{stage="debit",outcome="retried"}"#),
+		2
+	);
+}
+
+#[tokio::test]
+async fn a_download_survives_a_final_debit_that_the_store_drops() {
+	// Fewer bytes than a batch, so the only debit is the last one.
+	let meter = FlakyMeter::failing(1, 0);
+	let (origin, tasks, stop) = gateway_metered_by(meter.clone()).await;
+	let response = reqwest::get(format!("{origin}/v1/operation-token/images/download/4"))
+		.await
+		.unwrap();
+	assert_eq!(response.status(), StatusCode::OK);
+	let (total, clean) = drain(response).await;
+	assert_eq!(total, 4 * CHUNK);
+	assert!(clean, "the client gets the whole body and a clean end");
+	tokio::time::timeout(Duration::from_secs(10), meter.audit.finished.notified())
+		.await
+		.unwrap();
+	assert_eq!(meter.audit.received.load(Ordering::Relaxed), total as u64);
+	assert_eq!(
+		*meter.audit.finished_records.lock().unwrap(),
+		vec![(200, None)]
+	);
+	shutdown(tasks, stop).await;
+}
+
+#[test]
+fn only_what_could_hold_a_credential_is_taken_out_of_an_error() {
+	let cause = || "pool timed out admitting a path for a token".to_owned();
+	for short in ["", "a", "pa", "pat"] {
+		assert_eq!(without(cause(), short, "[x]"), cause(), "{short:?}");
+	}
+	assert_eq!(
+		without(cause(), "path", "[x]"),
+		"pool timed out admitting a [x] for a token"
+	);
+}
+
+#[tokio::test]
+async fn a_short_path_does_not_garble_the_logged_cause() {
+	let observed = Observed::start();
+	let (origin, gateway, stop) = gateway_with(Arc::new(UnavailableAuthority)).await;
+	// An empty path, and one a sandbox picked to match as many letters as it can.
+	for path in ["images", "images/a"] {
+		let response = reqwest::get(format!("{origin}/v1/operation-token/{path}"))
+			.await
+			.unwrap();
+		assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+	}
+	let logs = observed.logs();
+	assert_eq!(
+		logs.matches("pool timed out while admitting [token] for")
+			.count(),
+		2,
+		"{logs}"
+	);
+	assert!(logs.contains("admitting [token] for a"), "{logs}");
+	assert!(!logs.contains("operation-token"), "{logs}");
+	shutdown(vec![gateway], stop).await;
+}
+
+/// A client that needs longer than the window for answering to send its upload.
+#[tokio::test]
+async fn a_slow_upload_still_reads_the_refusal_for_full_slots() {
+	use tokio::io::{AsyncReadExt, AsyncWriteExt};
+	let observed = Observed::start();
+	let (origin, _audit, tasks, stop) = metered_gateway(u64::MAX, false).await;
+	let address = origin.trim_start_matches("http://").to_owned();
+	let mut held = Vec::new();
+	for _ in 0..CONNECTION_SLOTS {
+		held.push(tokio::net::TcpStream::connect(&address).await.unwrap());
+	}
+	let mut socket = tokio::net::TcpStream::connect(&address).await.unwrap();
+	socket
+		.write_all(
+			b"POST /v1/operation-token/images/upload HTTP/1.1\r\nhost: gateway\r\ncontent-length: 1048576\r\n\r\n",
+		)
+		.await
+		.unwrap();
+	let started = Instant::now();
+	for _ in 0..6 {
+		tokio::time::sleep(REFUSAL_WINDOW / 4).await;
+		socket.write_all(&[1; CHUNK]).await.unwrap();
+	}
+	assert!(started.elapsed() > REFUSAL_WINDOW);
+	let mut answer = Vec::new();
+	tokio::time::timeout(Duration::from_secs(15), socket.read_to_end(&mut answer))
+		.await
+		.unwrap()
+		.unwrap();
+	let answer = String::from_utf8_lossy(&answer);
+	assert!(answer.starts_with("HTTP/1.1 503"), "{answer}");
+	assert!(answer.contains(CONNECTION_LIMIT), "{answer}");
+	// The gateway closes its side with the answer and then discards what is
+	// left. The client is still open when that runs out of time, and that is counted.
+	tokio::time::sleep((LINGER_TIME + Duration::from_secs(1)).saturating_sub(started.elapsed()))
+		.await;
+	assert_eq!(
+		observed.count(r#"aidash_egress_linger_limit_total{limit="time"}"#),
+		1
+	);
+	// The refusal slot is back.
+	let mut next = tokio::net::TcpStream::connect(&address).await.unwrap();
+	next.write_all(b"GET /v1/operation-token/images/download/1 HTTP/1.1\r\nhost: gateway\r\n\r\n")
+		.await
+		.unwrap();
+	let mut answer = Vec::new();
+	tokio::time::timeout(Duration::from_secs(5), next.read_to_end(&mut answer))
+		.await
+		.unwrap()
+		.unwrap();
+	assert!(String::from_utf8_lossy(&answer).contains(CONNECTION_LIMIT));
+	assert_eq!(
+		observed.count(r#"aidash_egress_connections_refused_total{outcome="answered"}"#),
+		2
+	);
+	assert_eq!(
+		observed.count(r#"aidash_egress_connections_refused_total{outcome="dropped"}"#),
+		0
+	);
+	drop(held);
+	shutdown(tasks, stop).await;
 }
