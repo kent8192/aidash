@@ -7284,6 +7284,16 @@ async fn a_task_delegate_after_subnode_task_reaches_the_model_as_a_rejected_call
 		)
 		.await;
 	let child_task = task["task_id"].as_str().unwrap().to_owned();
+	// Fence the leader's Run so the worker selects the creator.
+	let leader = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.task_id.to_string() == child_task)
+		.expect("leader Run admitted");
+	rig.set_run_control(leader.id, "PAUSED").await;
 	// Act: the creator delegates a task it cannot write to.
 	assert!(
 		rig.script(
@@ -7302,10 +7312,17 @@ async fn a_task_delegate_after_subnode_task_reaches_the_model_as_a_rejected_call
 		"{:?}",
 		run.error
 	);
-	let delegated = rig
+	let Some(delegated) = rig
 		.result_of(rig.creator_run, "delegate-subnode-task")
 		.await
-		.expect("a Rejected Call records a result");
+	else {
+		panic!(
+			"a Rejected Call records a result; phase={:?} state={} error={:?}",
+			run.phase(),
+			json!(run.state),
+			run.error
+		);
+	};
 	assert!(delegated["error"].is_string(), "{delegated}");
 	cleanup(f, &url, &schema).await;
 }

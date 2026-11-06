@@ -618,6 +618,10 @@ impl ExecutionStore for Bench {
 					uncertain_reason: None,
 				});
 				assert_eq!(invocation.name, call.name);
+				if invocation.status == "REFUSED" {
+					invocation.status = "STARTED";
+					invocation.result = None;
+				}
 				InvocationOutcome {
 					status: invocation.status.into(),
 					result: invocation.result.clone(),

@@ -307,7 +307,8 @@ impl<'a> Executor<'a> {
 						Some(denial.map_or(result, |message| json!({"error":message})));
 					continue;
 				}
-				"STARTED" => {}
+				// A refused call is reopened by the store; it never ran, so it runs now.
+				"STARTED" | "REFUSED" => {}
 				_ => {
 					return Err(Error::Conflict(
 						"batched invocation is not replay-safe".into(),

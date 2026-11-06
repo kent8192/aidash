@@ -7,6 +7,13 @@ use aidash_domain::{FailureTarget, RetryState, Run, RunControl, RunPhase, RunSta
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+fn plain_tool_name(name: &str) -> bool {
+	(1..=64).contains(&name.len())
+		&& name
+			.bytes()
+			.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+}
+
 /// The stage an unnamed authority refusal is reported under: the tool being called, else the
 /// Run's phase.
 fn stage(run: &Run) -> String {
@@ -16,6 +23,9 @@ fn stage(run: &Run) -> String {
 			.tool()
 			.ok()
 			.and_then(|state| state.response.tool_calls.get(state.cursor))
+			// The name comes from the model's response and reaches the Run's `error`, so only a
+			// plain tool name is shown.
+			.filter(|call| plain_tool_name(&call.name))
 			.map_or_else(|| "tool call".into(), |call| call.name.clone()),
 		RunPhase::Ready => "worker start".into(),
 		RunPhase::Thinking => "inference".into(),
