@@ -1366,6 +1366,10 @@ print(json.dumps(r))'''
                 return
             if record['docker_enabled']:
                 outcome = transport.get('framed_result')
+                # The framed result is authenticated by the nonce; the saved files are not trusted here,
+                # so lost forwarding can only be reported, not recovered.
+                if isinstance(outcome, dict) and outcome.get('forward_incomplete'):
+                    transport['output']['truncated'] = True
             else:
                 outcome = self._await_normal_result(record, result_deadline)
                 if self._read_command(operation_id)['status'] == 'interrupted':
