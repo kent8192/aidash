@@ -3392,9 +3392,6 @@ connection: None,
 	}
 }
 
-/// Answer a model's question on the system's behalf because its person's
-/// Answer Deadline passed. A person who answered first wins, and so does a
-/// system answer given before a crash.
 /// Name the stage of a refusal that nothing named: a plain `Forbidden` or `Unauthorized` becomes
 /// the Run's pause for `stage`, with the check its note recorded.
 fn at_stage(stage: &'static str) -> impl FnOnce(Error) -> Error {
@@ -3413,6 +3410,9 @@ fn at_stage(stage: &'static str) -> impl FnOnce(Error) -> Error {
 	}
 }
 
+/// Answer a model's question on the system's behalf because its person's
+/// Answer Deadline passed. A person who answered first wins, and so does a
+/// system answer given before a crash.
 async fn answer_at_deadline(home: &dyn ExecutionHome, request: Uuid) -> Result<HumanRequest> {
 	match home
 		.close_human_request(request, answer_deadline_response())
