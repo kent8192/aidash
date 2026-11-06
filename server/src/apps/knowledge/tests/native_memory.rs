@@ -2910,7 +2910,10 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 		);
 		if delivery == "shared_read_revoked" {
 			assert_eq!(stored.control, aidash_domain::RunControl::Paused);
-			assert_eq!(stored.error.as_deref(), Some("execution authority denied"));
+			assert_eq!(
+				stored.error.as_deref(),
+				Some("model call: memory.read was denied")
+			);
 		}
 		if matches!(delivery, "commit_failure" | "accepted_save_failure") {
 			let error = f.store.run(&TEST_FIXTURE, run.id).await.unwrap().error;
@@ -3234,7 +3237,10 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 	}
 	let resumed = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(resumed.control.as_str(), "PAUSED", "{:?}", resumed.error);
-	assert_eq!(resumed.error.as_deref(), Some("execution authority denied"));
+	assert_eq!(
+		resumed.error.as_deref(),
+		Some("memory_mutate: an authority check refused this step")
+	);
 	assert_eq!(captured.lock().unwrap().len(), 2);
 	drop(provider);
 }

@@ -161,6 +161,7 @@
   "ACTIVE": "稼働中",
   "STARTED": "実行開始",
   "UNCERTAIN": "照合が必要",
+  "REFUSED": "拒否済み",
   "QUESTION": "質問",
   "APPROVAL_REQUIRED": "承認要求",
   "CONFIRMATION": "確認",

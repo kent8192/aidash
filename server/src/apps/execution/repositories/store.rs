@@ -4268,6 +4268,24 @@ impl Store {
 			)
 			.execute(&mut *tx)
 			.await?;
+		} else if !created && invocation.status == "REFUSED" {
+			// A refusal that paused the Run is decided again on resume. It proved nothing ran, so
+			// it starts over and is never reconciled (#754).
+			crate::database::native::query(
+				&Query::update()
+					.table(Alias::new("invocations"))
+					.value(Alias::new("status"), "STARTED")
+					.value_expr(Alias::new("result"), Expr::cust("NULL"))
+					.value(Alias::new("delivery_pending"), false)
+					.value(Alias::new("uncertain_reason"), Option::<String>::None)
+					.and_where(Expr::col(Alias::new("idempotency_key")).eq(Expr::value(key)))
+					.and_where(Expr::col(Alias::new("status")).eq(Expr::value("REFUSED")))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *tx)
+			.await?;
+			invocation.status = "STARTED".into();
+			invocation.result = None;
 		} else if !created && invocation.status != "COMPLETED" && !invocation.replay_safe {
 			{
 				let query_bind_1 = key;
@@ -4347,6 +4365,27 @@ impl Store {
 		}
 		tx.commit().await?;
 		Ok(count)
+	}
+	/// Record that an authority check refused a replay-safe call and paused the Run. Only a
+	/// `STARTED` row changes, and resuming starts it again.
+	pub async fn invocation_refused(
+		&self,
+		scope: &TenancyScope,
+		run: &Run,
+		worker: Uuid,
+		key: &str,
+		refusal: &aidash_domain::tool::AuthorityRefusal,
+	) -> Result<()> {
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		if !RunRecord::hold_worker(tx.as_mut(), run.id, worker).await? {
+			return Err(Error::Conflict(
+				"worker lease lost while recording tool refusal".into(),
+			));
+		}
+		let result = json!({"error":{"kind":"authority_refused","message":refusal.to_string()}});
+		InvocationRecord::refuse(tx.as_mut(), run.id, key, &result).await?;
+		tx.commit().await?;
+		Ok(())
 	}
 	pub async fn invocation_answer_lost(
 		&self,

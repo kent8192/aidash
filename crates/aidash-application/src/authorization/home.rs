@@ -196,8 +196,9 @@ pub async fn control<R: HomeRepository>(
 fn semantic_failure(error: &Error) -> Failure {
 	match error {
 		Error::RemoteSemantic(reason) => *reason,
-		Error::Forbidden | Error::Unauthorized => Failure::Authority,
-		Error::Invalid(_) | Error::NotFound(_) => Failure::Configuration,
+		// The error comes from the peer's status reply, whose 404 used to read as `Forbidden`.
+		Error::Forbidden | Error::Unauthorized | Error::NotFound(_) => Failure::Authority,
+		Error::Invalid(_) => Failure::Configuration,
 		_ => Failure::Unavailable,
 	}
 }
@@ -314,10 +315,30 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 	.await;
 	results.into_iter().collect()
 }
+/// A check that fails after the target Node has acted. The `task_delegate` tool tells the model
+/// the delegation may have partly happened, where pausing would resume into a second admission;
+/// the management endpoint keeps `Forbidden`.
+fn after_effect(by_tool: bool, what: &str) -> Error {
+	if by_tool {
+		Error::Refused(format!(
+			"{what}, so the delegation may have partly happened. Do not repeat this call; check the task first"
+		))
+	} else {
+		Error::Forbidden
+	}
+}
 pub async fn activate<R: HomeRepository>(
 	repository: &R,
 	task: Uuid,
 	id: Uuid,
+) -> Result<Activation> {
+	activate_as(repository, task, id, false).await
+}
+async fn activate_as<R: HomeRepository>(
+	repository: &R,
+	task: Uuid,
+	id: Uuid,
+	by_tool: bool,
 ) -> Result<Activation> {
 	let grant = requester(repository, task, id, true).await?;
 	// Admission performs fresh source and receiver checks after the first scope is completed.
@@ -333,7 +354,10 @@ pub async fn activate<R: HomeRepository>(
 		|| admission.source_node != repository.node_address(grant.workspace_id).await?
 		|| admission.task_id != task
 	{
-		return Err(Error::Forbidden);
+		return Err(after_effect(
+			by_tool,
+			"the target Node admitted the task, but its admission did not match this request",
+		));
 	}
 	let (mut scope, description) = repository.description(&grant.node_id, id).await?;
 	let result = async {
@@ -363,7 +387,10 @@ pub async fn activate<R: HomeRepository>(
 		|| activation.admission_id != admission.id
 		|| activation.grant_id != id
 	{
-		return Err(Error::Forbidden);
+		return Err(after_effect(
+			by_tool,
+			"the target Node activated the task, but its activation did not match this request",
+		));
 	}
 	Ok(activation)
 }
@@ -421,7 +448,7 @@ pub async fn delegate<R: HomeRepository>(
 			)
 			.await?;
 	}
-	activate(repository, task, id).await?;
+	activate_as(repository, task, id, true).await?;
 	Ok(Delegation {
 		task_id: task,
 		node_id: node.into(),

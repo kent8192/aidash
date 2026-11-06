@@ -1905,9 +1905,16 @@ async fn refused_tool_call_is_a_model_correctable_result(fixture: Fixture) {
 		&fixture.run,
 		Uuid::nil(),
 		"refused-call",
-		Err(Error::Refused(
-			"member needs a tool outside the allowance".into(),
-		)),
+		DeliveredTool {
+			name: "task_delegate",
+			replay_safe: true,
+		},
+		(
+			Err(Error::Refused(
+				"member needs a tool outside the allowance".into(),
+			)),
+			None,
+		),
 	)
 	.await
 	.unwrap();
@@ -3200,7 +3207,7 @@ async fn a_summary_dependency_revoked_during_pruning_pauses_before_inference(
 	let requests = fixture.backend.0.requests.lock().unwrap().len();
 	assert!(matches!(
 		advance_sources(&mut fixture).await,
-		Err(Error::Forbidden)
+		Err(Error::AuthorityRefused(ref refusal)) if refusal.tool == "compaction"
 	));
 	assert_eq!(events(&fixture).last().unwrap(), "context.summary_revoked");
 	assert!(fixture.run.context.execution_summary.is_none());
@@ -3343,7 +3350,7 @@ async fn a_source_revoked_while_the_summarizer_runs_is_never_adopted(mut fixture
 
 	assert!(matches!(
 		advance_sources(&mut fixture).await,
-		Err(Error::Forbidden)
+		Err(Error::AuthorityRefused(ref refusal)) if refusal.tool == "compaction"
 	));
 
 	assert!(fixture.run.context.execution_summary.is_none());
@@ -3379,7 +3386,7 @@ async fn a_source_revoked_before_the_summarizer_call_is_never_disclosed(mut fixt
 
 	assert!(matches!(
 		advance_sources(&mut fixture).await,
-		Err(Error::Forbidden)
+		Err(Error::AuthorityRefused(ref refusal)) if refusal.tool == "compaction"
 	));
 
 	let calls = calls(&fixture);
@@ -3409,7 +3416,7 @@ async fn a_source_revoked_while_the_reservation_holds_releases_it(mut fixture: F
 
 	assert!(matches!(
 		advance_sources(&mut fixture).await,
-		Err(Error::Forbidden)
+		Err(Error::AuthorityRefused(ref refusal)) if refusal.tool == "compaction"
 	));
 
 	let calls = calls(&fixture);
@@ -3438,7 +3445,7 @@ async fn a_trusted_local_summary_rechecks_its_sources_after_the_call(mut fixture
 
 	assert!(matches!(
 		advance_sources(&mut fixture).await,
-		Err(Error::Forbidden)
+		Err(Error::AuthorityRefused(ref refusal)) if refusal.tool == "compaction"
 	));
 
 	let calls = calls(&fixture);
@@ -3488,7 +3495,7 @@ async fn a_carried_source_revoked_while_the_summarizer_runs_is_never_readopted(
 
 	assert!(matches!(
 		advance_sources(&mut fixture).await,
-		Err(Error::Forbidden)
+		Err(Error::AuthorityRefused(ref refusal)) if refusal.tool == "compaction"
 	));
 
 	let step = &calls(&fixture)[earlier..];

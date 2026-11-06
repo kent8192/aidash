@@ -15,16 +15,48 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::{Duration, Utc};
 use serde_json::{Value, json};
 use uuid::Uuid;
-pub async fn get(scope: &mut dyn ReferenceScope, id: Uuid, action: &str) -> Result<Record> {
+/// Why a Reference cannot be used.
+enum Unavailable {
+	/// It is not this principal's, or it was revoked or has expired.
+	Hidden,
+	/// Policy denied `action` on it.
+	Denied,
+}
+async fn lookup(
+	scope: &mut dyn ReferenceScope,
+	id: Uuid,
+	action: &str,
+) -> Result<std::result::Result<Record, Unavailable>> {
 	let record = scope.load(id).await?;
 	if record.owner != scope.principal() || matches!(record.state.as_str(), "revoked" | "expired") {
-		return Err(Error::NotFound("reference unavailable".into()));
+		return Ok(Err(Unavailable::Hidden));
 	}
-	scope
-		.require(id, &record.owner, action)
-		.await
-		.map_err(|_| Error::NotFound("reference unavailable".into()))?;
-	Ok(record)
+	if scope.require(id, &record.owner, action).await.is_err() {
+		return Ok(Err(Unavailable::Denied));
+	}
+	Ok(Ok(record))
+}
+/// The Reference API answers 404 for every Reference it will not serve, so a caller cannot tell
+/// a denial from a missing one.
+pub async fn get(scope: &mut dyn ReferenceScope, id: Uuid, action: &str) -> Result<Record> {
+	lookup(scope, id, action)
+		.await?
+		.map_err(|_| Error::NotFound("reference unavailable".into()))
+}
+/// [`get`] for admitting an Agent's attachments. A denial stays `Forbidden`, so a refusal of the
+/// authority that cannot read the Reference reaches the refusal note instead of reading as a
+/// missing one.
+pub async fn get_for_admission(
+	scope: &mut dyn ReferenceScope,
+	id: Uuid,
+	action: &str,
+) -> Result<Record> {
+	lookup(scope, id, action)
+		.await?
+		.map_err(|unavailable| match unavailable {
+			Unavailable::Hidden => Error::NotFound("reference unavailable".into()),
+			Unavailable::Denied => Error::Forbidden,
+		})
 }
 pub async fn inspect(scope: &mut dyn ReferenceScope, id: Uuid) -> Result<Reference> {
 	Ok(lifecycle::view(&get(scope, id, "reference.read").await?)?)
@@ -169,7 +201,7 @@ pub async fn pin(scope: &mut dyn ReferenceScope, config: &AgentConfig) -> Result
 		if !seen.insert(attachment.reference_id) {
 			return Err(Error::Invalid("DUPLICATE_REFERENCE".into()));
 		}
-		let record = get(scope, attachment.reference_id, "reference.read").await?;
+		let record = get_for_admission(scope, attachment.reference_id, "reference.read").await?;
 		if record.state != "ready" {
 			return Err(Error::Conflict("REFERENCE_NOT_READY".into()));
 		}
