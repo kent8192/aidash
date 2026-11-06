@@ -305,6 +305,7 @@ async fn adding_documents_twice_creates_no_duplicates_and_reports_each_file(
 		json!({"path":"empty.md","data":""}),
 		file("a/one.md", "again\n"),
 		file(&format!("long/{}.md", "長".repeat(90)), "long name\n"),
+		file("a/one.md.extracted.txt", "reserved for an extraction\n"),
 	];
 
 	let (status, first) = add(&c, &c.token, files.clone()).await;
@@ -324,6 +325,7 @@ async fn adding_documents_twice_creates_no_duplicates_and_reports_each_file(
 	assert_eq!(outcome[4]["error"], "REFERENCE_UPLOAD_LIMIT");
 	assert_eq!(outcome[5]["error"], "DUPLICATE_PATH");
 	assert_eq!(outcome[6]["error"], "REFERENCE_UPLOAD_LIMIT");
+	assert_eq!(outcome[7]["error"], "INVALID_PATH");
 	c.close().await;
 }
 

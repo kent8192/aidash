@@ -230,7 +230,11 @@ fn prepare_batch_file(
 	data: &str,
 	maximum: u64,
 ) -> std::result::Result<Vec<u8>, &'static str> {
-	aidash_domain::registry::rules::validate_path(path).map_err(|_| "INVALID_PATH")?;
+	// The Source refuses a path its extraction could collide with, so refuse it here
+	// rather than report a file as added that no Source can bind.
+	if !aidash_domain::capabilities::references::valid_path(path) {
+		return Err("INVALID_PATH");
+	}
 	let bytes = STANDARD.decode(data).map_err(|_| "INVALID_DATA")?;
 	if bytes.is_empty() || bytes.len() as u64 > maximum || file_name(path).len() > 255 {
 		return Err("REFERENCE_UPLOAD_LIMIT");
@@ -525,3 +529,5 @@ pub async fn sweep(repository: &dyn ReferenceRepository, cursor: &mut Cursor) ->
 	Ok(())
 }
 use sha2::Digest as _;
+#[cfg(test)]
+mod tests;
