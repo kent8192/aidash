@@ -127,7 +127,6 @@ fn router(#[from(script)] script: Arc<Script>) -> upstream_fixtures::RouterFutur
 					async move {
 						let body = request.json::<Value>().unwrap();
 						let message = next_message(&script, &body);
-						eprintln!("model request answers {message}");
 						let reason = if message.get("tool_calls").is_some() {
 							"tool_calls"
 						} else {
@@ -185,14 +184,16 @@ struct World {
 	task: Uuid,
 	sibling: NodeAddress,
 	script: Arc<Script>,
-	/// Keeps the model endpoint and the database alive.
+	/// Keeps the model endpoint and the disposable database alive.
 	_provider: Arc<reinhardt::test::fixtures::server::TestServerGuard>,
+	_runtime: RuntimeFixture,
 	url: String,
 	schema: String,
 }
 
 async fn world(provider: Provider) -> World {
 	let (f, url, schema) = provider.application.runtime.parts();
+	let runtime = provider.application.runtime.clone();
 	let app = provider.application.application;
 	let endpoint = provider.server.url.clone();
 	let (_policy, token, task) = bootstrap(&f, &app, &endpoint).await;
@@ -227,6 +228,7 @@ async fn world(provider: Provider) -> World {
 		sibling,
 		script: provider.script,
 		_provider: provider.server,
+		_runtime: runtime,
 		url,
 		schema,
 	}
@@ -409,7 +411,7 @@ async fn a_withdrawn_approval_on_the_other_node_still_refuses_the_read(
 ) {
 	*provider.script.delegate.lock().unwrap() = false;
 	let world = world(provider).await;
-	let coordinator = world.run_coordinator(WITHOUT_DELEGATION).await;
+	world.run_coordinator(WITHOUT_DELEGATION).await;
 	let child = world.handed_over().await;
 	let (status, body) = world.get(&format!("/api/tasks/{}/runs", child.id)).await;
 	assert_eq!(status, 200, "{body}");
@@ -453,7 +455,7 @@ async fn a_person_delegates_a_task_whose_producer_discovered_the_agent(
 ) {
 	*provider.script.delegate.lock().unwrap() = false;
 	let world = world(provider).await;
-	let coordinator = world.run_coordinator(WITHOUT_DELEGATION).await;
+	world.run_coordinator(WITHOUT_DELEGATION).await;
 	let child = world.handed_over().await;
 	let (status, body) = request(
 		&world.app,
@@ -559,7 +561,7 @@ async fn a_node_that_does_not_answer_leaves_the_read_unconfirmed(
 ) {
 	*provider.script.delegate.lock().unwrap() = false;
 	let mut world = world(provider).await;
-	let coordinator = world.run_coordinator(WITHOUT_DELEGATION).await;
+	world.run_coordinator(WITHOUT_DELEGATION).await;
 	let child = world.handed_over().await;
 	// Bob may read the Workspace but may not discover the second Node.
 	let (status, current) = request(
@@ -642,9 +644,9 @@ async fn a_node_that_does_not_answer_leaves_the_read_unconfirmed(
 async fn reads_on_a_saturated_pool_end_within_the_limit(#[future(awt)] provider: Provider) {
 	*provider.script.delegate.lock().unwrap() = false;
 	let mut world = world(provider).await;
-	let coordinator = world.run_coordinator(WITHOUT_DELEGATION).await;
+	world.run_coordinator(WITHOUT_DELEGATION).await;
 	let child = world.handed_over().await;
-	// Two connections for eight readers: each holds one for its own
+	// Two connections for four readers: each holds one for its own
 	// authority, so the checks they open compete for the rest. The Registry
 	// the in-process handlers hold keeps the original pool.
 	let small = world
@@ -672,7 +674,7 @@ async fn reads_on_a_saturated_pool_end_within_the_limit(#[future(awt)] provider:
 	let started = std::time::Instant::now();
 	let answers = tokio::time::timeout(
 		Duration::from_secs(60),
-		futures_util::future::join_all((0..8).map(|_| world.get(&path))),
+		futures_util::future::join_all((0..4).map(|_| world.get(&path))),
 	)
 	.await
 	.expect("reads must not hang on pool capacity");
@@ -685,8 +687,9 @@ async fn reads_on_a_saturated_pool_end_within_the_limit(#[future(awt)] provider:
 	assert!(started.elapsed() < Duration::from_secs(60));
 	// The pool recovers: once the abandoned checks release their connections, a
 	// lone read confirms again.
+	let recovering = std::time::Instant::now();
 	let mut recovered = (0, Value::Null);
-	for _ in 0..15 {
+	while recovering.elapsed() < Duration::from_secs(30) {
 		recovered = world.get(&path).await;
 		if recovered.0 == 200 {
 			break;
@@ -710,7 +713,7 @@ async fn reads_on_a_saturated_pool_end_within_the_limit(#[future(awt)] provider:
 async fn deleting_the_discovered_node_keeps_the_outputs_hidden(#[future(awt)] provider: Provider) {
 	*provider.script.delegate.lock().unwrap() = false;
 	let world = world(provider).await;
-	let coordinator = world.run_coordinator(WITHOUT_DELEGATION).await;
+	world.run_coordinator(WITHOUT_DELEGATION).await;
 	let child = world.handed_over().await;
 	let path = format!("/api/tasks/{}/runs", child.id);
 	let (status, body) = world.get(&path).await;

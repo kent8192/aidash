@@ -16,6 +16,10 @@ Two exclusive callers need a Read dependency check and cannot ask: stopping, del
 
 The check runs in process while the caller's transaction is open, as the patched paths already did. It stops at 10 seconds, so a full connection pool ends in "cannot confirm" and not in a hang. Within one authority, a Node that did not answer is not asked again.
 
+Delegating to a Node of the same Tenant, once the read worked, met two more refusals that no test had reached, and both are fixed here. A Run admitted without a credential could not find its Scratch Space, because the lookup went through the admission's credential and a Node of the same Tenant acting for one of its subjects holds none. The person who started the work is the root of the subject chain the admission recorded. And the Home asked the receiver to verify a usage reservation as the receiver itself, because in one database the receiver's Run row is also visible to the Home. A row that names the peer is the other end of the exchange, not the sender.
+
+A third stop is left as it is. A Run admitted by a Remote Grant is judged at the strictest Data Protection Level, because the receipt does not publish the source Tenant's current policy. Inside one Deployment that policy is in the same database, so the assumption is stricter than it needs to be. With only Keyless model endpoints the receiver's Run stops with `Data Protection Level ZeroDataRetention: Tenant Keyless endpoints cannot meet this level`, a named reason. Reading the policy directly for a Node of the same Deployment is a separate decision.
+
 ## Considered Options
 
 - **Fix only the delegation paths.** A person still could not read the outputs of such a Run. Rejected.
