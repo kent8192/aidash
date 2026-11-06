@@ -272,6 +272,8 @@ pub async fn resolve(
 		"cluster" => &["coordinator"],
 		"memory" if entry.config.get("schema_version").is_none() => &["engine", "policy"],
 		"source" if entry.config.get("schema_version").is_none() => &["memory"],
+		// The adapter decides which files a Source binds, so an installer cannot swap it.
+		"memory" | "source" => &["source"],
 		"reranker" => &["provider", "model"],
 		_ => &[],
 	};
@@ -380,6 +382,11 @@ pub async fn resolve(
 	let graph = local_graph(scope, roots, node).await?;
 	// Structural validation never resolves node-local secret references.
 	validation.validate_in(&entry, false)?;
+	// Installing registers the Source in this Tenant, which is the moment its files
+	// are made available to the Agents that bind it (ADR 0113).
+	if entry.kind == "source" {
+		require_reference_files(scope, &entry).await?;
+	}
 	if aidash_domain::tenant_secrets::definition_personal_only(&entry)
 		&& let Some(name) = aidash_domain::tenant_secrets::definition_secret(&entry)
 	{
@@ -531,20 +538,22 @@ impl crate::ports::bindings::BindingCatalog for Bindings<'_> {
 		if entry.kind == "skill" {
 			return Ok(());
 		}
-		let Some(source) = aidash_domain::registry::bindings::sources::validate_definition(entry)?
-		else {
-			return Ok(());
-		};
-		if let aidash_domain::registry::bindings::sources::NativeSource::ReferenceAttachments {
-			references,
-		} = source.source
-		{
-			for reference in references {
-				self.scope
-					.require_reference_read(reference.reference_id)
-					.await?;
-			}
-		}
-		Ok(())
+		require_reference_files(self.scope, entry).await
 	}
+}
+/// Whoever registers a Source must be able to read every Reference file it binds.
+async fn require_reference_files(scope: &mut dyn DefinitionScope, entry: &Entry) -> Result<()> {
+	let Some(source) = aidash_domain::registry::bindings::sources::validate_definition(entry)?
+	else {
+		return Ok(());
+	};
+	if let aidash_domain::registry::bindings::sources::NativeSource::ReferenceAttachments {
+		references,
+	} = source.source
+	{
+		for reference in references {
+			scope.require_reference_read(reference.reference_id).await?;
+		}
+	}
+	Ok(())
 }
