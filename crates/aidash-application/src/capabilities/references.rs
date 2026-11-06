@@ -23,7 +23,19 @@ use chrono::{Duration, Utc};
 use serde_json::{Value, json};
 use uuid::Uuid;
 pub async fn get(scope: &mut dyn ReferenceScope, id: Uuid, action: &str) -> Result<Record> {
-	let record = scope.load(id).await?;
+	// Only a write needs the row exclusively. A read stays shared so a person
+	// opening a file never waits for a step that holds a copy of it, and a step
+	// never waits on its own outer transaction.
+	let record = if action == "reference.read" {
+		scope
+			.load_many(&[id])
+			.await?
+			.into_iter()
+			.next()
+			.ok_or_else(|| Error::NotFound("resource unavailable".into()))?
+	} else {
+		scope.load(id).await?
+	};
 	if record.owner != scope.principal() || matches!(record.state.as_str(), "revoked" | "expired") {
 		return Err(Error::NotFound("reference unavailable".into()));
 	}
