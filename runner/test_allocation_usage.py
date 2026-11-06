@@ -43,6 +43,7 @@ class AllocationUsageTest(unittest.TestCase):
 
     def restart(self):
         runner = object.__new__(Runner)
+        runner.proven = True
         runner.root = self.root
         runner.lock = threading.RLock()
         runner.config = {'namespace':'test-runner'}

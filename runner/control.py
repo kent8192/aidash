@@ -136,6 +136,10 @@ class ActivityAggregate:
 
 
 class Runner(AllocationJournal):
+    # Set once the startup isolation proof passes. Without it the Runner takes
+    # no new work and restarts nothing it recovered; stops and status still work.
+    proven = False
+
     def __init__(self, config):
         self.config = config
         retention = config.get('uncertain_retention_seconds', DEFAULT_UNCERTAIN_RETENTION_SECONDS)
@@ -200,22 +204,31 @@ class Runner(AllocationJournal):
         # and starts no recovery, but it must not stop the Runner watching the
         # commands it already tracks. Execution Pod commands outlive a restart,
         # and a crash loop here would leave nobody to deliver their stops (#722).
-        proven = False
+        proof_failure = None
         try:
             self.verify_isolation()
             if self.config.get("node_guard"):
                 self.verify_freeze()
-            proven = True
+            self.proven = True
         except Exception as failure:
-            print(f"Deployment Administrator: isolation proof failed, so new work is refused: {failure}",
+            # A proof that stopped half way proves nothing: the health report
+            # must not say verified because only the first step passed.
+            self.verified = self.python_verified = False
+            self.probe = None
+            proof_failure = str(failure) or type(failure).__name__
+            print(f"Deployment Administrator: isolation proof failed, so new work is refused: {proof_failure}",
                   file=sys.stderr, flush=True)
         try:
             self.retire_admission_probes()
         except Exception as failure:
             print(f"Admission probe retirement failed: {failure}", file=sys.stderr, flush=True)
-        self.recover(resume=proven)
+        self.recover(resume=self.proven)
         self.execution_pods.recover_commands()
-        self.activate_execution_pods()
+        if self.proven:
+            self.activate_execution_pods()
+        else:
+            # Execution Pods stay unadmitted: commands already running are watched, none are accepted.
+            self.execution_pods.admission_error = 'Runner isolation proof failed: ' + proof_failure
         threading.Thread(target=self.allocation_loop, daemon=True).start()
         threading.Thread(target=self.uncertain_output_loop, daemon=True).start()
 
@@ -493,6 +506,8 @@ class Runner(AllocationJournal):
         return hashlib.sha256(json.dumps(snapshot, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
 
     def accept(self, request, admission_probe=False):
+        if not self.proven and not admission_probe:
+            raise Rejected(503, "runner isolation is not proven; new work is refused")
         kind = request.get("kind")
         optional = {"session_id", "egress", "usage_tenant"} | ({"port"} if kind == "serve" else set())
         if set(request) - optional != {"operation_id", "area_id", "epoch", "digest", "kind", "code", "seconds", "files"}:
@@ -650,6 +665,8 @@ class Runner(AllocationJournal):
             return {"received": offset + len(data)}
 
     def commit_inputs(self, operation):
+        if not self.proven:
+            raise Rejected(503, "runner isolation is not proven; new work is refused")
         with self.lock:
             record = self.get(operation)
             if record["status"] != "awaiting_files":

@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import control
-from control import ActivityAggregate, Runner
+from control import ActivityAggregate, Handler, Rejected, Runner, save
 
 
 class GuardTransportTest(unittest.TestCase):
@@ -169,43 +169,105 @@ class NamespaceTest(unittest.TestCase):
 class StartupTest(unittest.TestCase):
     """A failed isolation proof refuses new work; it must not stop the Runner watching its commands (#722, decision 14)."""
 
-    def construct(self, proof):
+    def construct(self, isolation, freeze=lambda runner: None):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         config = {'journal': directory.name, 'token_env': 'AIDASH_TEST_RUNNER_TOKEN', 'namespace': 'runner',
                   'image': 'sandbox@sha256:' + 'a' * 64, 'kubectl': 'kubectl', 'runtime_class': 'runsc',
+                  'maximum_seconds': 600,
                   'node_guard': {'namespace': 'trusted', 'selector': 'app=guard', 'command': ['guard']}}
         steps = []
-        controller = 'control.ExecutionPodController.recover_commands'
+
+        def prove(runner):
+            isolation(runner)
+            runner.verified, runner.probe = True, {'protocol': 'aidash-admission-probe/2'}
+
+        def freeze_writer(runner):
+            steps.append('freeze')
+            freeze(runner)
+            runner.python_verified = True
+
         with (patch.dict('os.environ', {'AIDASH_TEST_RUNNER_TOKEN': 't' * 32}),
               patch.object(Runner, 'kube_json', return_value={'handler': 'runsc'}),
               patch.object(Runner, 'ensure_network_policy'), patch.object(Runner, 'ensure_v2_network_policy'),
-              patch.object(Runner, 'verify_isolation', side_effect=lambda: proof()),
-              patch.object(Runner, 'verify_freeze', side_effect=lambda: steps.append('freeze')),
+              patch.object(Runner, 'verify_isolation', autospec=True, side_effect=prove),
+              patch.object(Runner, 'verify_freeze', autospec=True, side_effect=freeze_writer),
               patch.object(Runner, 'retire_admission_probes', side_effect=lambda: steps.append('retire')),
               patch.object(Runner, 'recover', side_effect=lambda resume=True: steps.append(('recover', resume))),
-              patch(controller, side_effect=lambda: steps.append('watch')),
+              patch('control.ExecutionPodController.recover_commands', side_effect=lambda: steps.append('watch')),
               patch.object(Runner, 'activate_execution_pods', side_effect=lambda: steps.append('admit')),
               patch('control.threading.Thread'), contextlib.redirect_stderr(io.StringIO()) as log):
             runner = Runner(config)
         return runner, steps, log.getvalue()
 
-    def test_a_failed_isolation_proof_still_watches_commands_and_resumes_no_new_work(self):
-        def fail():
-            raise RuntimeError('sandbox image admission probe is not aidash-admission-probe/2; rebuild it')
+    @staticmethod
+    def health(runner):
+        handler = object.__new__(Handler)
+        handler.server, handler.command, handler.path = Mock(runner=runner), 'GET', '/v1/health'
+        handler.headers = {'Authorization': 'Bearer ' + runner.token}
+        report = handler.handle_request()
+        return {key: report[key] for key in ('verified', 'python_verified', 'probe')}
 
-        runner, steps, log = self.construct(fail)
-        self.assertEqual(steps, ['retire', ('recover', False), 'watch', 'admit'])
+    @staticmethod
+    def refuse(message):
+        def fail(runner):
+            raise RuntimeError(message)
+        return fail
+
+    def test_a_failed_isolation_proof_still_watches_commands_and_admits_no_new_work(self):
+        runner, steps, log = self.construct(self.refuse('sandbox image admission probe is not aidash-admission-probe/2'))
+        self.assertEqual(steps, ['retire', ('recover', False), 'watch'])
         # The health endpoint is how the server learns to refuse new work.
+        self.assertFalse(runner.proven)
         self.assertFalse(runner.verified)
         self.assertFalse(runner.python_verified)
         self.assertIsNone(runner.probe)
+        # Execution Pods stay unadmitted, so none accepts a new command while recovered ones are watched.
+        self.assertFalse(runner.execution_pods.admitted)
+        self.assertIn('aidash-admission-probe/2', runner.execution_pods.admission_error)
         self.assertIn('Deployment Administrator', log)
-        self.assertIn('aidash-admission-probe/2', log)
 
-    def test_a_proven_boundary_resumes_recovered_work(self):
-        runner, steps, _ = self.construct(lambda: None)
+    def test_a_proof_that_stops_half_way_does_not_report_the_runner_verified(self):
+        runner, steps, _ = self.construct(lambda runner: None, freeze=self.refuse('gVisor freeze did not stop the writer'))
+        self.assertEqual(steps, ['freeze', 'retire', ('recover', False), 'watch'])
+        self.assertFalse(runner.proven)
+        self.assertFalse(runner.verified)
+        self.assertFalse(runner.python_verified)
+        self.assertIsNone(runner.probe)
+        # The health report is what the server reads before it sends work.
+        self.assertEqual(self.health(runner), {'verified': False, 'python_verified': False, 'probe': None})
+
+    def test_a_proven_boundary_resumes_recovered_work_and_admits_execution_pods(self):
+        runner, steps, _ = self.construct(lambda runner: None)
         self.assertEqual(steps, ['freeze', 'retire', ('recover', True), 'watch', 'admit'])
+        self.assertTrue(runner.proven)
+        self.assertEqual(self.health(runner), {'verified': True, 'python_verified': True,
+                                               'probe': {'protocol': 'aidash-admission-probe/2'}})
+
+    def test_an_unproven_runner_takes_no_new_work_but_still_delivers_stops(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        runner = object.__new__(Runner)
+        runner.root = Path(directory.name)
+        runner.lock = threading.RLock()
+        runner.aggregate = ActivityAggregate()
+        runner.active = set()
+        runner.start = Mock()
+        self.assertFalse(runner.proven)
+        for refused in (lambda: runner.accept({}), lambda: runner.commit_inputs('operation')):
+            with self.assertRaises(Rejected) as error:
+                refused()
+            self.assertEqual(error.exception.args[0], 503)
+        # Only the Runner's own admission probe runs without the proof.
+        with self.assertRaises(Rejected) as error:
+            runner.accept({}, admission_probe=True)
+        self.assertEqual(error.exception.args[0], 400)
+        # A stop, a status read and an acknowledgement stay available.
+        operation = '5a7b1cb4-4c5e-4c44-9c05-0d3b4f6d3a10'
+        save(runner.path(operation), {'operation_id': operation, 'status': 'running', 'request': {'kind': 'shell'},
+                                      'cancel_requested': False, 'termination_confirmed': False, 'digest': 'd'})
+        self.assertTrue(runner.cancel(operation)['cancel_requested'])
+        self.assertEqual(runner.get(operation)['status'], 'running')
 
     def test_recovery_without_a_proof_seeds_activity_but_dispatches_nothing(self):
         directory = tempfile.TemporaryDirectory()

@@ -557,6 +557,7 @@ class VerificationTest(unittest.TestCase):
 
     def runner(self, root):
         runner = object.__new__(Runner)
+        runner.proven = True
         runner.root = Path(root)
         runner.lock = threading.RLock()
         runner.config = {"maximum_seconds": 600, "working_bytes": 1 << 20, "limits": {}}

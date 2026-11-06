@@ -11,6 +11,7 @@ from egress import environment
 class EgressIsolationTest(unittest.TestCase):
     def runner(self):
         runner = object.__new__(Runner)
+        runner.proven = True
         runner.config = {
             'namespace': 'test-sandbox', 'working_bytes': 1 << 20,
             'maximum_seconds': 600,
