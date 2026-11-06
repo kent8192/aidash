@@ -7351,12 +7351,46 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 		.run_inputs(&TEST_FIXTURE, creator_run)
 		.await
 		.unwrap();
-	assert!(
-		inputs
-			.iter()
-			.any(|input| input.content == "Investigation complete"),
-		"member message: {inputs:?}"
-	);
+	let input = inputs
+		.iter()
+		.find(|input| input.content == "Investigation complete")
+		.unwrap_or_else(|| panic!("member message: {inputs:?}"));
+	let member = child.executor_subject(f.config.deployment.as_str());
+	assert_eq!(input.sender, member);
+	// The creating Run's Workspace names the Agent and keeps the member's Run.
+	let home = f
+		.store
+		.run(&TEST_FIXTURE, creator_run)
+		.await
+		.unwrap()
+		.workspace_id;
+	let (status, history) = request(
+		app,
+		token,
+		"GET",
+		&format!("/api/workspaces/{home}/message-history"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "history: {history}");
+	let message = history["messages"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["message"]["content"] == "Investigation complete")
+		.unwrap_or_else(|| panic!("member message in history: {history}"));
+	assert_eq!(message["message"]["sender"], json!(member));
+	assert_eq!(message["message"]["run_id"], json!(child.id));
+	// A citation in that text opens from the member's Run in the Subnode's Workspace.
+	let (status, body) = request(
+		app,
+		token,
+		"GET",
+		&format!("/api/runs/{}", child.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "member Run: {body}");
 	sqlx::query("UPDATE runs SET control = 'ACTIVE' WHERE id = $1")
 		.bind(creator_run)
 		.execute(f.store.pool.fixture_driver())
