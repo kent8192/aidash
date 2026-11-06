@@ -42,6 +42,7 @@ from policy import (
     build_needed,
     current_release,
     eligible_base,
+    failed_stop_due,
     idle_due,
     preview_command,
     transition,
@@ -1255,6 +1256,28 @@ def reconcile_locked(config, store, terraform, managed):
             if entry.get(
                 "failed_deployment_generation"
             ) == generation and not entry.get("start_pending"):
+                if (
+                    identity != "production" and previous and previous["running"]
+                    and not previous["published"] and failed_stop_due(entry, time.time())
+                ):
+                    # Nobody can reach a gated failed release, and its Runner is at
+                    # zero or crash-looping, so no observation can ever prove it idle.
+                    # Stop it as an explicit force would. Sealing could restart its
+                    # writers, and a stop interrupted here resumes on the force path.
+                    current_entry(store, identity, generation)
+                    sealed = False
+                    update_entry(store, identity, generation, desired="stopped", force=True)
+                    stop_environment(store, terraform, managed, identity, generation)
+                    update_entry(
+                        store,
+                        identity,
+                        generation,
+                        applied=managed[identity],
+                        published=False,
+                        status="stopped",
+                        gcip_quiesced=False,
+                    )
+                    continue
                 restore_presealed_running_host(terraform, store, identity, presealed, managed)
                 continue
             changed = deployment_changed(entry, previous, output)

@@ -224,6 +224,10 @@ def attach_release(state, identity, generation, release, trusted):
     return result, True
 
 
+# The nonproduction stop threshold, for an idle and for a failed Environment alike.
+STOP_AFTER_SECONDS = 3600
+
+
 def idle_due(observation, now, keepalive_at=0):
     if observation.get("protocol") != "aidash-infra-activity/1":
         raise Refused("Unknown activity protocol")
@@ -231,5 +235,11 @@ def idle_due(observation, now, keepalive_at=0):
         raise Refused("Activity observation is stale")
     return (
         not observation["busy"]
-        and now - max(observation["last_active"], keepalive_at) >= 3600
+        and now - max(observation["last_active"], keepalive_at) >= STOP_AFTER_SECONDS
     )
+
+
+def failed_stop_due(entry, now):
+    """Whether the hour for inspecting a failed deployment has passed."""
+    latest = max(entry.get(key, 0) for key in ("outcome_at", "keepalive_at", "requested_at"))
+    return now - latest >= STOP_AFTER_SECONDS

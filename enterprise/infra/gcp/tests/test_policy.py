@@ -13,6 +13,7 @@ from policy import (
     Refused,
     attach_release,
     build_needed,
+    failed_stop_due,
     idle_due,
     preview_command,
     transition,
@@ -193,6 +194,14 @@ class LifecycleTests(unittest.TestCase):
             idle_due(value, 10121)
         with self.assertRaises(Refused):
             idle_due(dict(value, protocol="unknown"), 10000)
+
+    def test_failed_stop_waits_an_hour_from_the_latest_failure_or_request(self):
+        self.assertFalse(failed_stop_due({"outcome_at": 1000}, 4599))
+        self.assertTrue(failed_stop_due({"outcome_at": 1000}, 4600))
+        self.assertFalse(failed_stop_due({"outcome_at": 1000, "keepalive_at": 2000}, 4600))
+        self.assertFalse(failed_stop_due({"outcome_at": 1000, "requested_at": 2000}, 4600))
+        # A run that died before recording its outcome still counts from the request.
+        self.assertTrue(failed_stop_due({"requested_at": 1000}, 4600))
 
 
 if __name__ == "__main__":
