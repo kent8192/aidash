@@ -101,6 +101,13 @@ def termination_time(terminated, started_at, observed):
     return min(observed, finished + 1)
 
 
+def cell_timed_out(record):
+    """Whether a Python cell ran into its limit. The node watchdog stops it there
+    without saying why, so a stop at or past the limit counts as one."""
+    stopped_at, running_at = record.get('stop_confirmed_at'), record.get('running_at')
+    return stopped_at is not None and running_at is not None and stopped_at >= running_at + record['request']['seconds']
+
+
 def settled(record):
     """No writer can still be running: terminal, with termination proven or frozen."""
     return record['status'] in TERMINAL and bool(record.get('termination_confirmed') or record.get('writer_frozen'))
@@ -974,6 +981,7 @@ class Runner(AllocationJournal):
                             saved = self.update(operation, status=record.get('pending_status', 'failed'), termination_confirmed=True,
                                                 output_harvested=True, finished_at=now, files=exported['files'],
                                                 stdout=captured['stdout'], truncated=True, exit_code=record.get('exit_code', 137),
+                                                deadline_expired=cell_timed_out(record),
                                                 error=record.get('pending_error') or {'code':'SESSION_LOST', 'message':'Interpreter stopped; its saved files were recovered.'})
                             self.allocation_harvested(saved)
                             self.close_allocation(saved)
@@ -1137,11 +1145,12 @@ class Runner(AllocationJournal):
             frozen = self.guard(record, "freeze", idle_seconds=self.config["idle_seconds"])
             if not frozen["writer_frozen"]:
                 raise RuntimeError("Python memory no longer live")
-        self.update(operation, status="finishing", writer_frozen=memory_live, termination_confirmed=not memory_live,
-                    stop_confirmed_at=None if memory_live else (self.get(operation).get('stop_confirmed_at') or time.time()),
-                    pending_status=result['status'], pending_error=result.get('error'), exit_code=result['exit_code'],
-                    output_fetched_at=time.time() if memory_live and 'stdout' in result else self.get(operation).get('output_fetched_at'),
-                    stdout=result.get('stdout', ''), displays=result.get('displays', []), truncated=result.get('truncated', False))
+        finishing = self.update(operation, status="finishing", writer_frozen=memory_live, termination_confirmed=not memory_live,
+                                stop_confirmed_at=None if memory_live else (self.get(operation).get('stop_confirmed_at') or time.time()),
+                                pending_status=result['status'], pending_error=result.get('error'), exit_code=result['exit_code'],
+                                output_fetched_at=time.time() if memory_live and 'stdout' in result else self.get(operation).get('output_fetched_at'),
+                                stdout=result.get('stdout', ''), displays=result.get('displays', []), truncated=result.get('truncated', False))
+        deadline_expired = cell_timed_out(finishing)
         exported = self.guard(record, "export", working_bytes=self.writable_bytes(record))
         if 'refused' in exported:
             if memory_live:
@@ -1152,7 +1161,7 @@ class Runner(AllocationJournal):
             save(self.root / ('session-' + record['session_id'] + '.json'), session)
             self.refuse_export(operation, exported['refused'], pod_operation, writer_frozen=False,
                                stdout=result.get('stdout', ''), truncated=result.get('truncated', False),
-                               exit_code=result['exit_code'])
+                               exit_code=result['exit_code'], deadline_expired=deadline_expired)
             return
         directory = self.root / (operation + ".files")
         directory.mkdir(exist_ok=True, mode=0o700)
@@ -1181,7 +1190,8 @@ class Runner(AllocationJournal):
         save(self.root / ("session-" + record["session_id"] + ".json"), session)
         self.update(operation, status=result["status"], writer_frozen=memory_live, termination_confirmed=not memory_live,
                     output_harvested=True, finished_at=time.time(), stdout=result.get("stdout", ""), truncated=result.get("truncated", False),
-                    displays=result.get("displays", []), files=exported["files"], error=result.get("error"), exit_code=result["exit_code"])
+                    displays=result.get("displays", []), files=exported["files"], error=result.get("error"), exit_code=result["exit_code"],
+                    deadline_expired=deadline_expired)
         self.allocation_harvested(self.get(operation), idle=memory_live)
         if not memory_live:
             self.close_allocation(record)
@@ -1387,7 +1397,8 @@ class Runner(AllocationJournal):
             if not refuse:
                 raise StoppedExportRefused(exported['refused'])
             captured = ({'stdout':record.get('stdout', '')} if record['request']['kind'] == 'python' else self.guard(record, 'logs'))
-            self.refuse_export(operation, exported['refused'], operation, stdout=captured['stdout'], truncated=True, output_harvested=True)
+            self.refuse_export(operation, exported['refused'], operation, stdout=captured['stdout'], truncated=True, output_harvested=True,
+                               deadline_expired=record['request']['kind'] == 'python' and cell_timed_out(record))
             return
         captured = ({'stdout':record.get('stdout', '')} if record['request']['kind'] == 'python' else self.guard(record, 'logs'))
         directory = self.root / (operation + '.files')
@@ -1674,12 +1685,16 @@ class Runner(AllocationJournal):
                 self.update(operation, stdout=captured['stdout'], truncated=captured['truncated'], output_fetched_at=time.time())
                 diagnostic = None
                 if terminal["exitCode"] != 0 and not captured["stdout"]:
-                    diagnostic = self.kube(["logs", self.pod_name(operation), "-c", "execution", "--limit-bytes=16384"]).stdout.decode(errors="replace")
+                    log = self.kube(["logs", self.pod_name(operation), "-c", "execution", "--limit-bytes=16384"]).stdout.decode(errors="replace")
+                    # An empty log says nothing: the exit code stands alone.
+                    if log.strip():
+                        diagnostic = {"code": "COMMAND_FAILED", "message": log}
                 exported = ({"files": []} if record["request"]["kind"] == "verify" else
                             json.loads(self.exec_collector(operation, ["export", str(self.writable_bytes(record))], timeout=120).stdout))
                 if 'refused' in exported:
                     self.refuse_export(operation, exported['refused'], operation,
-                                       stdout=captured['stdout'], truncated=captured['truncated'])
+                                       stdout=captured['stdout'], truncated=captured['truncated'],
+                                       deadline_expired=captured.get("deadline_expired"))
                     break
                 self.read_collector_files(operation, exported)
                 self.update(operation, status="cancelled" if current["cancel_requested"] else

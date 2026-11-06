@@ -51,6 +51,7 @@ impl crate::ports::capabilities::processing::ReceiptOutputScope for OutputScope<
 			working_bytes: 1024,
 			output_bytes: 1024,
 			read_bytes: 1024,
+			maximum_seconds: 600,
 		}
 	}
 	async fn put(&mut self, _: &str, _: &[u8]) -> Result<(Uuid, String)> {
