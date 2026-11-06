@@ -1,4 +1,5 @@
 use super::*;
+use crate::ports::federation::dependencies::Check;
 use aidash_domain::{
 	RecoveryState, Run, RunControl, RunState, StateVersion, ThinkingState, context::Context,
 	federation::route::Route, policy::Resource, registry::Entry,
@@ -7,7 +8,7 @@ use async_trait::async_trait;
 use rstest::{fixture, rstest};
 use serde_json::Value;
 use std::{
-	collections::{BTreeMap, VecDeque},
+	collections::{BTreeMap, BTreeSet, VecDeque},
 	sync::Mutex,
 	time::Instant,
 };
@@ -48,6 +49,7 @@ struct Scope {
 	admission: Option<Run>,
 	bound: Option<Uuid>,
 	entry: Entry,
+	marked: BTreeSet<String>,
 }
 #[async_trait]
 impl DependencyScope for Scope {
@@ -134,20 +136,30 @@ impl DependencyScope for Scope {
 		self.calls.push(format!("peer:{node}"));
 		Ok(self.peer.clone())
 	}
+	fn unavailable(&self, node: &str) -> bool {
+		self.marked.contains(node)
+	}
+	fn mark_unavailable(&mut self, node: &str) {
+		self.marked.insert(node.into());
+	}
 }
 struct Transport {
 	calls: Mutex<Vec<(String, Value, Duration)>>,
-	replies: Mutex<VecDeque<Option<Checked>>>,
+	replies: Mutex<VecDeque<Check>>,
 }
 #[async_trait]
 impl DependencyTransport for Transport {
-	async fn check(&self, peer: &Route, input: &Input, remaining: Duration) -> Option<Checked> {
+	async fn check(&self, peer: &Route, input: &Input, remaining: Duration) -> Check {
 		self.calls.lock().unwrap().push((
 			peer.target.deployment.to_string(),
 			serde_json::to_value(input).unwrap(),
 			remaining,
 		));
-		self.replies.lock().unwrap().pop_front().unwrap_or(None)
+		self.replies
+			.lock()
+			.unwrap()
+			.pop_front()
+			.unwrap_or(Check::Unavailable)
 	}
 }
 fn grant(node: &str, id: u128) -> Reference {
@@ -162,7 +174,7 @@ fn grant(node: &str, id: u128) -> Reference {
 fn scope() -> Scope {
 	Scope { calls:vec![],started:Instant::now(),elapsed:Duration::ZERO,latency:Duration::ZERO,frontier:vec![],edges:BTreeMap::new(),decision:true,fault:None,admission:None,bound:None,
         entry:serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{},"config":{"model":{"id":"model","version":"1.0.0"}}})).unwrap(),
-        peer:Some(crate::test_support::foreign_route("aidash://foreign")),
+        peer:Some(crate::test_support::foreign_route("aidash://foreign")),marked:BTreeSet::new(),
     }
 }
 #[fixture]
@@ -185,10 +197,14 @@ async fn cycles_are_checked_once_but_each_nodes_authority_is_checked(
 	scope
 		.edges
 		.insert(Uuid::from_u128(1), vec![foreign.clone(), local.clone()]);
-	transport.replies.lock().unwrap().push_back(Some(Checked {
-		visible: true,
-		pending: vec![local.clone(), foreign.clone()],
-	}));
+	transport
+		.replies
+		.lock()
+		.unwrap()
+		.push_back(Check::Confirmed(Checked {
+			visible: true,
+			pending: vec![local.clone(), foreign.clone()],
+		}));
 	// Act
 	assert!(
 		verify_all(&mut scope, &transport, vec![local])
@@ -285,10 +301,14 @@ async fn rejected_or_oversized_peer_frontiers_prevent_followup_calls(
 	#[case] visible: bool,
 	#[case] count: usize,
 ) {
-	transport.replies.lock().unwrap().push_back(Some(Checked {
-		visible,
-		pending: vec![grant("aidash://local", 1); count],
-	}));
+	transport
+		.replies
+		.lock()
+		.unwrap()
+		.push_back(Check::Confirmed(Checked {
+			visible,
+			pending: vec![grant("aidash://local", 1); count],
+		}));
 	assert!(
 		!verify_all(&mut scope, &transport, vec![grant("aidash://foreign", 1)])
 			.await
@@ -308,6 +328,100 @@ async fn unavailable_peer_transport_denies_visibility(mut scope: Scope, transpor
 	);
 	assert_eq!(scope.calls.len(), 2);
 	assert_eq!(transport.calls.lock().unwrap().len(), 1);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_node_that_did_not_answer_is_marked_and_not_asked_again(
+	mut scope: Scope,
+	transport: Transport,
+) {
+	// Arrange: the first reference gets no answer.
+	transport
+		.replies
+		.lock()
+		.unwrap()
+		.push_back(Check::Unavailable);
+	// Act
+	let first = verify_all(&mut scope, &transport, vec![grant("aidash://foreign", 1)])
+		.await
+		.unwrap();
+	let calls_after_first = scope.calls.len();
+	let second = verify_all(&mut scope, &transport, vec![grant("aidash://foreign", 2)])
+		.await
+		.unwrap();
+	// Assert: both are unconfirmed, the Node is marked, and the second walk
+	// neither decided nor asked.
+	assert!(!first && !second);
+	assert!(scope.marked.contains("aidash://foreign"));
+	assert_eq!(transport.calls.lock().unwrap().len(), 1);
+	assert_eq!(scope.calls.len(), calls_after_first);
+}
+
+#[rstest]
+#[case::refused(Check::Refused)]
+#[case::not_asked(Check::NotAsked)]
+#[tokio::test]
+async fn a_refusal_or_a_node_nobody_asked_is_not_marked(
+	mut scope: Scope,
+	transport: Transport,
+	#[case] reply: Check,
+) {
+	transport.replies.lock().unwrap().push_back(reply);
+	assert!(
+		!verify_all(&mut scope, &transport, vec![grant("aidash://foreign", 1)])
+			.await
+			.unwrap()
+	);
+	assert!(scope.marked.is_empty());
+	// A refusal is asked about again: nothing remembers it.
+	transport.replies.lock().unwrap().push_back(Check::Refused);
+	assert!(
+		!verify_all(&mut scope, &transport, vec![grant("aidash://foreign", 2)])
+			.await
+			.unwrap()
+	);
+	assert_eq!(transport.calls.lock().unwrap().len(), 2);
+}
+
+#[rstest]
+#[tokio::test]
+async fn the_deadline_names_the_node_whose_reference_was_left_unchecked(
+	mut scope: Scope,
+	transport: Transport,
+) {
+	// Arrange: the local grant uses the whole budget and discloses a reference
+	// on another Node, then a local one.
+	scope.latency = Duration::from_secs(20);
+	scope.edges.insert(
+		Uuid::from_u128(1),
+		vec![grant("aidash://local", 3), grant("aidash://foreign", 2)],
+	);
+	// Act
+	assert!(
+		!verify_all(&mut scope, &transport, vec![grant("aidash://local", 1)])
+			.await
+			.unwrap()
+	);
+	// Assert: the reference popped first is the foreign one.
+	assert!(scope.marked.contains("aidash://foreign"));
+	assert!(transport.calls.lock().unwrap().is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn the_deadline_on_this_node_marks_nothing(mut scope: Scope, transport: Transport) {
+	scope.latency = Duration::from_secs(20);
+	scope.edges.insert(
+		Uuid::from_u128(1),
+		vec![grant("aidash://foreign", 2), grant("aidash://local", 3)],
+	);
+	assert!(
+		!verify_all(&mut scope, &transport, vec![grant("aidash://local", 1)])
+			.await
+			.unwrap()
+	);
+	assert!(scope.marked.is_empty());
 }
 
 #[rstest]

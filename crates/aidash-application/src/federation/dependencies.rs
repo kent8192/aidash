@@ -1,7 +1,7 @@
 //! Shared dependency authorization and bounded traversal for HTTP and workers.
 use crate::{
 	Error, Result,
-	ports::federation::dependencies::{DependencyScope, DependencyTransport},
+	ports::federation::dependencies::{Check, DependencyScope, DependencyTransport},
 };
 use aidash_domain::{
 	federation::dependencies::{Checked, Input, LIMIT, Reference},
@@ -95,6 +95,10 @@ pub async fn verify_peer(
 	Ok(local_frontier(scope, reference).await?.disclosed())
 }
 
+/// Walk the references. `Ok(false)` covers a refusal and a Node that did not
+/// answer alike, so list consumers keep hiding the row; only the second marks
+/// the Node unavailable, so the reader says so and nothing is remembered as a
+/// denial (#751). A Node marked once is not asked again within this authority.
 pub async fn verify_all(
 	scope: &mut dyn DependencyScope,
 	transport: &dyn DependencyTransport,
@@ -105,6 +109,11 @@ pub async fn verify_all(
 	while let Some(reference) = pending.pop() {
 		let remaining = deadline.saturating_duration_since(scope.now());
 		if remaining.is_zero() {
+			// The reference not yet checked is on a Node that may well have
+			// answered; name it unless it is this Node.
+			if reference.node() != scope.node() {
+				scope.mark_unavailable(reference.node());
+			}
 			return Ok(false);
 		}
 		let key = digest(&serde_json::to_value(&reference)?);
@@ -118,6 +127,9 @@ pub async fn verify_all(
 			local_frontier(scope, &reference).await?
 		} else {
 			let node = reference.node();
+			if scope.unavailable(node) {
+				return Ok(false);
+			}
 			let resource = scope.resource("node", node, json!({"remote_node":node}));
 			if !scope.decide(&resource, "federation.discover").await? {
 				return Ok(false);
@@ -126,10 +138,14 @@ pub async fn verify_all(
 				return Ok(false);
 			};
 			let input = Input { reference };
-			let Some(checked) = transport.check(&route, &input, remaining).await else {
-				return Ok(false);
-			};
-			checked
+			match transport.check(&route, &input, remaining).await {
+				Check::Confirmed(checked) => checked,
+				Check::Refused | Check::NotAsked => return Ok(false),
+				Check::Unavailable => {
+					scope.mark_unavailable(input.reference.node());
+					return Ok(false);
+				}
+			}
 		};
 		if !checked.visible || checked.pending.len() > LIMIT {
 			return Ok(false);

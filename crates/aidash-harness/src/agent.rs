@@ -52,6 +52,20 @@ impl<'a> Executor<'a> {
 		key: &str,
 		result: Result<Value>,
 	) -> Result<Value> {
+		// A Node that did not answer before the call took effect is retried
+		// like a request known not to have been delivered (#751).
+		let result = match result {
+			Err(
+				error @ Error::NodeUnreachable {
+					after_effect: false,
+					..
+				},
+			) => Err(Error::ToolNotDelivered {
+				message: error.to_string(),
+				retry_after: None,
+			}),
+			other => other,
+		};
 		match result {
 			Ok(value) => Ok(value),
 			Err(

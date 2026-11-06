@@ -41,6 +41,14 @@ pub enum ExecutionFailure {
 	/// number of times, then pauses as `decider_unavailable` (ADR 0066).
 	DeciderOutage,
 	Authority(AuthorityFailure),
+	/// Another Node did not answer a check the Run depends on (#751). With
+	/// `retry` the step is retried a bounded number of times, then pauses as
+	/// `node_unreachable`. Without it, a tool's effect has already happened,
+	/// so the Run pauses at once.
+	NodeUnreachable {
+		node: String,
+		retry: bool,
+	},
 	MediaRoute(String),
 	Deferred,
 	ToolRetry {
@@ -82,6 +90,9 @@ impl ExecutionFailure {
 			Self::Deferred => "execution state is temporarily unavailable".into(),
 			Self::ToolRetry { message, .. } => message.clone(),
 			Self::DeciderOutage => "every Decider Route is unavailable".into(),
+			Self::NodeUnreachable { node, .. } => {
+				format!("Node {node} could not be reached to confirm this. Try again.")
+			}
 		}
 	}
 }

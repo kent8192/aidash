@@ -1919,6 +1919,102 @@ async fn refused_tool_call_is_a_model_correctable_result(fixture: Fixture) {
 
 #[rstest]
 #[tokio::test]
+async fn a_node_that_did_not_answer_before_the_effect_is_retried_then_returned_to_the_model(
+	fixture: Fixture,
+) {
+	let node = "aidash://other/sibling";
+	let unreachable = || Error::NodeUnreachable {
+		node: node.into(),
+		after_effect: false,
+	};
+	// Arrange / Act: five retries, each journaled like a request not delivered.
+	for count in 1..=aidash_domain::semantic::OUTAGE_RETRIES {
+		let retry = Executor::tool_delivery_result(
+			&fixture.backend,
+			&fixture.run,
+			fixture.backend.0.token,
+			"call",
+			Err(unreachable()),
+		)
+		.await
+		.unwrap_err();
+		// Assert
+		let Error::ToolRetry {
+			message,
+			count: seen,
+			..
+		} = retry
+		else {
+			panic!("a retry is scheduled, not {retry:?}")
+		};
+		assert_eq!(seen, count);
+		assert!(message.contains(node), "{message}");
+	}
+	// The sixth failure goes back to the model, naming the Node.
+	let result = Executor::tool_delivery_result(
+		&fixture.backend,
+		&fixture.run,
+		fixture.backend.0.token,
+		"call",
+		Err(unreachable()),
+	)
+	.await
+	.unwrap();
+	assert_eq!(result["error"]["kind"], "not_delivered");
+	assert!(
+		result["error"]["message"].as_str().unwrap().contains(node),
+		"{result}"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_node_that_did_not_answer_after_the_effect_passes_through_without_a_retry(
+	fixture: Fixture,
+) {
+	let error = Executor::tool_delivery_result(
+		&fixture.backend,
+		&fixture.run,
+		fixture.backend.0.token,
+		"call",
+		Err(Error::NodeUnreachable {
+			node: "aidash://other/sibling".into(),
+			after_effect: true,
+		}),
+	)
+	.await
+	.unwrap_err();
+	assert!(matches!(
+		error,
+		Error::NodeUnreachable {
+			after_effect: true,
+			..
+		}
+	));
+	// Nothing was journaled as not delivered, and the answer is not marked lost:
+	// the invocation stays STARTED for recovery to reconcile.
+	assert!(
+		fixture
+			.backend
+			.0
+			.invocation_delivery_counts
+			.lock()
+			.unwrap()
+			.is_empty()
+	);
+	assert!(
+		fixture
+			.backend
+			.0
+			.invocation_reasons
+			.lock()
+			.unwrap()
+			.is_empty()
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn remote_human_poll_preserves_waiting_until_home_answers(mut fixture: Fixture) {
 	let id = Uuid::new_v4();
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();

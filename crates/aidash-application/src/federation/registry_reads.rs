@@ -84,7 +84,7 @@ async fn check(
 		for batch in references.chunks(128) {
 			match transport.verify(&route, batch).await {
 				Verification::Verified => {}
-				Verification::Rejected => return Ok(false),
+				Verification::Rejected | Verification::NotAsked => return Ok(false),
 				Verification::Unavailable => {
 					scope.mark_unavailable(&node);
 					return Ok(false);

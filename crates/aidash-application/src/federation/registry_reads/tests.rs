@@ -358,6 +358,7 @@ async fn a_missing_route_denies_before_rpc(mut scope: Scope, #[case] missing: bo
 #[rstest]
 #[case::denied(Verification::Rejected, false)]
 #[case::transport(Verification::Unavailable, true)]
+#[case::not_asked(Verification::NotAsked, false)]
 #[tokio::test]
 async fn transport_unavailability_is_distinct_from_a_negative_proof(
 	mut scope: Scope,

@@ -174,7 +174,12 @@ pub(crate) struct Access {
 	pub marketplace_audit: Option<serde_json::Value>,
 	pub core_gc_complete: bool,
 	pub(super) remote_read_cache: std::collections::BTreeMap<(Uuid, String), bool>,
+	/// Nodes that did not answer a check within this authority (#751). They
+	/// are not asked again, and no negative verdict is kept while any is set.
 	pub(super) unavailable_peers: std::collections::BTreeSet<String>,
+	/// Whether a `require` of this authority has denied. Such a denial is a
+	/// real refusal, so it is never reported as a Node that could not answer.
+	pub(super) denied: bool,
 	pub(super) checking_reads: aidash_application::authorization::visits::ReadVisits,
 	pub(crate) read_verdicts: aidash_application::authorization::visits::ReadVerdicts,
 	/// How this authority's reads reach other Nodes. A transaction lent to a
@@ -328,11 +333,26 @@ impl Access {
 		Self::begin_on(
 			&store.pool,
 			store.deployment.as_str(),
-			Some(crate::apps::federation::remote::services::wire::Wire::of_store(store)),
+			Some(Self::wire_for(store, exclusive)),
 			identity,
 			exclusive,
 		)
 		.await
+	}
+
+	/// How an authority that holds `store` reaches other Nodes. One that holds
+	/// the policy row exclusively reaches none: the peer's own shared lock on
+	/// that row would wait for the lock its caller holds (#751).
+	fn wire_for(
+		store: &Store,
+		exclusive: bool,
+	) -> crate::apps::federation::remote::services::wire::Wire {
+		use crate::apps::federation::remote::services::wire::Wire;
+		if exclusive {
+			Wire::without_peers(store)
+		} else {
+			Wire::of_store(store)
+		}
 	}
 
 	/// The authority of a subject of the Tenant's own policy that holds no
@@ -359,7 +379,7 @@ impl Access {
 			tx,
 			&store.pool,
 			store.deployment.as_str(),
-			Some(crate::apps::federation::remote::services::wire::Wire::of_store(store)),
+			Some(Self::wire_for(store, exclusive)),
 			&identity,
 			snapshot,
 		))
@@ -400,6 +420,7 @@ impl Access {
 			core_gc_complete: false,
 			remote_read_cache: Default::default(),
 			unavailable_peers: Default::default(),
+			denied: false,
 			checking_reads: Default::default(),
 			read_verdicts: Default::default(),
 			dependency_frontier: None,
@@ -523,6 +544,7 @@ impl Access {
 			core_gc_complete: false,
 			remote_read_cache: Default::default(),
 			unavailable_peers: Default::default(),
+			denied: false,
 			checking_reads: Default::default(),
 			read_verdicts: Default::default(),
 			dependency_frontier: None,
@@ -602,6 +624,7 @@ impl Access {
 		self.tx.admissions.clear();
 		self.remote_read_cache.clear();
 		self.unavailable_peers.clear();
+		self.denied = false;
 		self.checking_reads.clear();
 		self.read_verdicts.clear();
 		self.dependency_frontier = None;
@@ -893,7 +916,21 @@ impl Access {
 		if self.decide(resource, action).await? {
 			Ok(())
 		} else {
+			self.denied = true;
 			Err(Error::Forbidden)
+		}
+	}
+
+	/// What an error of this authority says to its caller. A `Forbidden` that
+	/// follows a Node that did not answer, with no `require` of this authority
+	/// having denied, is that Node's silence and not a refusal (#751).
+	pub(crate) fn named(&self, error: Error) -> Error {
+		match (&error, self.unavailable_peers.first()) {
+			(Error::Forbidden, Some(node)) if !self.denied => Error::NodeUnreachable {
+				node: node.clone(),
+				after_effect: false,
+			},
+			_ => error,
 		}
 	}
 
@@ -960,7 +997,9 @@ impl Access {
 				audit.commit().await?;
 			}
 		}
-		result
+		// The audit rule above looked at the original error; the caller sees
+		// which Node could not answer.
+		result.map_err(|error| self.named(error))
 	}
 }
 
@@ -986,6 +1025,7 @@ impl NativeAccess {
 		if self.decide(resource, action).await? {
 			Ok(())
 		} else {
+			self.access.denied = true;
 			Err(Error::Forbidden)
 		}
 	}
@@ -1077,6 +1117,11 @@ impl Access {
 			.copied()
 	}
 	pub(crate) fn remember_remote_read(&mut self, run: Uuid, visible: bool) {
+		// A refusal reached while a Node did not answer may be that Node's
+		// silence, so it is asked again and not remembered (#751).
+		if !visible && !self.unavailable_peers.is_empty() {
+			return;
+		}
 		self.remote_read_cache
 			.insert((run, self.authority_context()), visible);
 	}

@@ -17,8 +17,20 @@ use uuid::Uuid;
 async fn memory_run_check(access: &mut Access, run: &crate::domain::RunMetadata) -> Result<()> {
 	match access.run_invalidity(run).await? {
 		None => Ok(()),
-		Some(crate::semantic::remote::Failure::Authority) => Err(Error::Forbidden),
+		Some(crate::semantic::remote::Failure::Authority) => Err(access.named(Error::Forbidden)),
 		Some(reason) => Err(Error::RemoteSemantic(reason)),
+	}
+}
+
+/// A Node that did not answer a recheck run after a tool took effect (#751):
+/// running the tool again could repeat the effect, so the Run is not retried.
+fn after_effect(error: Error) -> Error {
+	match error {
+		Error::NodeUnreachable { node, .. } => Error::NodeUnreachable {
+			node,
+			after_effect: true,
+		},
+		error => error,
 	}
 }
 
@@ -86,13 +98,14 @@ pub(in crate::apps::identity) async fn refresh_access_for_run(
 	store: &Store,
 	run: &Run,
 ) -> Result<()> {
-	aidash_application::authorization::execution::refresh_worker(
+	let result = aidash_application::authorization::execution::refresh_worker(
 		&mut crate::bootstrap::execution_grant_scope(access),
 		store.deployment.as_str(),
 		&run.metadata(),
 	)
 	.await
-	.map_err(Into::into)
+	.map_err(Into::into);
+	result.map_err(|error| access.named(error))
 }
 
 pub(crate) async fn inherit_task_origin(access: &mut Access, task: Uuid) -> Result<bool> {
@@ -1186,8 +1199,12 @@ impl WorkerAuthority {
 		let result =
 			crate::semantic::native_memory::run_mutate(store, &mut lease, run, key, changes).await;
 		let result = lease.finish(result).await;
-		refresh_access_for_run(&mut outer, store, run).await?;
-		memory_run_check(&mut outer, &run.metadata()).await?;
+		refresh_access_for_run(&mut outer, store, run)
+			.await
+			.map_err(after_effect)?;
+		memory_run_check(&mut outer, &run.metadata())
+			.await
+			.map_err(after_effect)?;
 		result
 	}
 	pub async fn memory_recall(
@@ -1211,8 +1228,12 @@ impl WorkerAuthority {
 			crate::semantic::native_memory::run_recall(store, &mut lease, run, key, query, reflect)
 				.await;
 		let result = lease.finish(result).await;
-		refresh_access_for_run(&mut outer, store, run).await?;
-		memory_run_check(&mut outer, &run.metadata()).await?;
+		refresh_access_for_run(&mut outer, store, run)
+			.await
+			.map_err(after_effect)?;
+		memory_run_check(&mut outer, &run.metadata())
+			.await
+			.map_err(after_effect)?;
 		result
 	}
 
@@ -1745,7 +1766,9 @@ impl WorkerAuthority {
 				aidash_application::authorization::home::delegate(&repository, task, node, agent)
 					.await
 					.map_err(Into::into);
-			refresh_access_for_run(&mut lease, &f.store, run).await?;
+			refresh_access_for_run(&mut lease, &f.store, run)
+				.await
+				.map_err(after_effect)?;
 			return result;
 		}
 		// Prepare the child's closure on the outer transaction: an inner shared
@@ -1796,13 +1819,14 @@ pub(in crate::apps::identity) async fn authorize_guard(
 	access: &mut Access,
 	read_context: bool,
 ) -> Result<AgentConfig> {
-	aidash_application::authorization::execution::guard::authorize(
+	let result = aidash_application::authorization::execution::guard::authorize(
 		&mut crate::bootstrap::run_guard_scope(f, access),
 		run,
 		read_context,
 	)
 	.await
-	.map_err(Into::into)
+	.map_err(Into::into);
+	result.map_err(|error| access.named(error))
 }
 
 struct SnapshotAuthority {

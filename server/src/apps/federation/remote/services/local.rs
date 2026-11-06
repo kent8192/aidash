@@ -6,8 +6,12 @@
 //!
 //! The sender, its Node and the subject it acts for are what the server
 //! already authenticated: the `Route` was resolved from the caller's own Tenant
-//! and policy. The caller's transaction is never open while this runs, because
-//! peer I/O only starts after the application has made its durable writes.
+//! and policy. The caller's transaction can be open while this runs: a Read
+//! dependency check asks the other Nodes of this Deployment inside the reader's
+//! authority (#751). Such a check stops after 10 seconds, so a saturated
+//! connection pool ends in "cannot confirm" and not in a hang. An authority that
+//! holds the Tenant's policy row exclusively asks nobody, because the peer's own
+//! shared lock would wait on it.
 use crate::{
 	Error, Result,
 	apps::federation::transactions::{

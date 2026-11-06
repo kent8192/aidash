@@ -117,6 +117,7 @@ fn access() -> Access {
 		core_gc_complete: false,
 		remote_read_cache: Default::default(),
 		unavailable_peers: Default::default(),
+		denied: false,
 		checking_reads: Default::default(),
 		read_verdicts: Default::default(),
 		wire: None,
@@ -187,6 +188,59 @@ async fn publisher_checks_use_local_worker_facts_and_restore_the_reader_environm
 			.evaluate(&access.evaluation("alice", &resource, "memory.read"))
 			.allowed
 	);
+}
+
+/// A refusal that follows a Node that did not answer is that Node's silence;
+/// a refusal of this authority's own `require` stays a refusal (#751).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_forbidden_after_a_silent_node_names_the_node_unless_this_authority_denied(
+	mut access: Access,
+) {
+	// Nobody is silent: the refusal passes through.
+	assert!(matches!(access.named(Error::Forbidden), Error::Forbidden));
+	access.mark_peer_unavailable("aidash://other/sibling");
+	access.mark_peer_unavailable("aidash://other/zebra");
+	// The first Node in a fixed order is named, and nothing else changes.
+	assert!(matches!(
+		access.named(Error::Forbidden),
+		Error::NodeUnreachable { node, after_effect: false } if node == "aidash://other/sibling"
+	));
+	assert!(matches!(
+		access.named(Error::Conflict("x".into())),
+		Error::Conflict(_)
+	));
+	assert!(matches!(
+		access.named(Error::Unauthorized),
+		Error::Unauthorized
+	));
+	// A `require` of this authority that denies is a real refusal.
+	let workspace = access.resource("workspace", "w", json!({}));
+	assert!(matches!(
+		access.require(&workspace, "workspace.read").await,
+		Err(Error::Forbidden)
+	));
+	assert!(matches!(access.named(Error::Forbidden), Error::Forbidden));
+}
+
+/// No negative read verdict is kept while a Node has not answered, and a
+/// positive one is (#751).
+#[rstest::rstest]
+#[tokio::test]
+async fn no_negative_read_verdict_is_remembered_while_a_node_is_silent(mut access: Access) {
+	let run = Uuid::new_v4();
+	let other = Uuid::new_v4();
+	access.remember_remote_read(run, false);
+	assert_eq!(access.cached_remote_read(run), Some(false));
+	access.mark_peer_unavailable("aidash://other/sibling");
+	access.remember_remote_read(other, false);
+	assert_eq!(
+		access.cached_remote_read(other),
+		None,
+		"a refusal reached while a Node was silent is asked again"
+	);
+	access.remember_remote_read(other, true);
+	assert_eq!(access.cached_remote_read(other), Some(true));
 }
 
 /// A scoped response can audit hundreds of checks. Database round trips, rather

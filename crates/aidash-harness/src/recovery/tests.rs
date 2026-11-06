@@ -630,6 +630,76 @@ async fn a_decider_outage_retries_as_new_decisions_then_pauses(
 }
 #[rstest]
 #[tokio::test]
+async fn a_node_that_did_not_answer_is_retried_then_pauses_naming_it(
+	repository: Repository,
+	now: DateTime<Utc>,
+) {
+	let failure = || ExecutionFailure::NodeUnreachable {
+		node: "aidash://other/sibling".into(),
+		retry: true,
+	};
+	for retries in 1..=5_u32 {
+		let retry = recover(&repository, repository.token, failure(), now)
+			.await
+			.unwrap();
+		assert!(!retry);
+		let run = repository.run.lock().unwrap();
+		let run = run.as_ref().unwrap();
+		assert_eq!(run.recovery.node_retry, retries);
+		assert_eq!(
+			run.recovery.retry.as_ref().unwrap().at,
+			now + chrono::Duration::seconds(2_i64.pow(retries))
+		);
+	}
+	recover(&repository, repository.token, failure(), now)
+		.await
+		.unwrap();
+	let writes = repository.writes.lock().unwrap();
+	assert_eq!(writes.len(), 6);
+	assert!(
+		writes[..5]
+			.iter()
+			.all(|write| *write == Write::Save("run.node_retrying".into()))
+	);
+	let Write::Pause(reason, event) = &writes[5] else {
+		panic!("the sixth failure pauses: {:?}", writes[5])
+	};
+	assert!(reason.contains("aidash://other/sibling"), "{reason}");
+	assert_eq!(event, "run.node_unreachable");
+	assert!(!failure().retryable());
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_node_that_did_not_answer_after_a_tools_effect_pauses_at_once(
+	repository: Repository,
+	now: DateTime<Utc>,
+) {
+	recover(
+		&repository,
+		repository.token,
+		ExecutionFailure::NodeUnreachable {
+			node: "aidash://other/sibling".into(),
+			retry: false,
+		},
+		now,
+	)
+	.await
+	.unwrap();
+	let writes = repository.writes.lock().unwrap();
+	assert_eq!(writes.len(), 1);
+	assert!(
+		matches!(&writes[0], Write::Pause(reason, event)
+			if event == "run.node_unreachable" && reason.contains("aidash://other/sibling")),
+		"{:?}",
+		writes[0]
+	);
+	let run = repository.run.lock().unwrap();
+	assert_eq!(run.as_ref().unwrap().recovery.node_retry, 0);
+}
+
+#[rstest]
+#[tokio::test]
 async fn transport_failures_still_retry(repository: Repository, now: DateTime<Utc>) {
 	let retry = recover(
 		&repository,

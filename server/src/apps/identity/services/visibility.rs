@@ -20,12 +20,13 @@ impl NativeAccess {
 		.map_err(Into::into)
 	}
 	pub(crate) async fn run_for_interaction(&mut self, id: Uuid) -> Result<domain::Run> {
-		aidash_application::authorization::workspaces::run_for_interaction(
+		let result = aidash_application::authorization::workspaces::run_for_interaction(
 			&mut crate::bootstrap::native_run_visibility_scope(self),
 			id,
 		)
 		.await
-		.map_err(Into::into)
+		.map_err(Into::into);
+		result.map_err(|error| self.access.named(error))
 	}
 
 	pub(crate) async fn human_resource(
@@ -150,7 +151,11 @@ impl NativeAccess {
 			return Ok(true);
 		};
 		let result = self.run_reads_visible_in(run).await;
+		// A `false` reached while a Node did not answer is not a verdict (#751).
+		let unconfirmed = matches!(result, Ok(false)) && !self.access.unavailable_peers.is_empty();
 		match result {
+			Ok(_) if unconfirmed && outermost => self.access.read_verdicts.abandon(),
+			Ok(_) if unconfirmed => {}
 			Ok(verdict) => self
 				.access
 				.read_verdicts

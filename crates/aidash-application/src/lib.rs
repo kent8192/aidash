@@ -82,6 +82,12 @@ pub enum Error {
 		message: String,
 		retry_after: Option<std::time::Duration>,
 	},
+	/// Another Node of this Tenant did not answer a check the call depends
+	/// on, so the call is neither allowed nor refused (#751). `after_effect`
+	/// is set when the check ran after the call took effect, where running it
+	/// again could repeat the effect.
+	#[error("Node {node} could not be reached to confirm this. Try again.")]
+	NodeUnreachable { node: String, after_effect: bool },
 	/// An MCP HTTP endpoint answered with a failure before protocol decoding.
 	#[error("tool service returned HTTP {status}")]
 	ToolServiceStatus {

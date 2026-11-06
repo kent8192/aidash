@@ -12,6 +12,8 @@ A Node that answers and refuses stays a refusal. So does a target with no route.
 - An Agent's call that has had its effect pauses at once, because running it again could repeat the effect.
 - A Read Recheck at a worker boundary retries up to 5 times, then pauses. A Run never goes on unconfirmed, so a revocation still stops it. This is not an Authority Pause, because no change of authority lifts it.
 
+Two exclusive callers need a Read dependency check and cannot ask: stopping, deleting, approving or denying a generation request, and activating a queued one. Both keep a plain `403`, and nobody is blamed, because no Node was asked. The Home side of a foreign generation (`lease` with the lock held exclusively) first makes the check under a shared lease and then reads the Task row alone under the lock. The gap is milliseconds, and the next Read Recheck stops a Run whose reads were revoked.
+
 The check runs in process while the caller's transaction is open, as the patched paths already did. It stops at 10 seconds, so a full connection pool ends in "cannot confirm" and not in a hang. Within one authority, a Node that did not answer is not asked again.
 
 ## Considered Options

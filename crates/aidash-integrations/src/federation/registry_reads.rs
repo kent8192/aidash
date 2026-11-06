@@ -1,6 +1,9 @@
 //! Scoped verification keeps a ten-second deadline and 1 KiB body bound.
-use super::HttpTransport;
-use aidash_application::ports::federation::registry_reads::{RegistryTransport, Verification};
+use super::{HttpTransport, unavailable};
+use aidash_application::{
+	Error,
+	ports::federation::registry_reads::{RegistryTransport, Verification},
+};
 use aidash_domain::federation::{registry_reads::Reference, route::Route};
 use async_trait::async_trait;
 use serde_json::json;
@@ -20,15 +23,33 @@ impl RegistryTransport for HttpTransport {
 		.await;
 		let response = match response {
 			Ok(Ok(response)) if response.status().is_success() => response,
-			_ => return Verification::Unavailable,
+			// Nothing was sent: this Deployment refuses to federate.
+			Ok(Err(Error::FederationDisabled)) => return Verification::Rejected,
+			Ok(Ok(response)) => {
+				let status = response.status();
+				return if matches!(status.as_u16(), 401 | 403 | 404) {
+					Verification::Rejected
+				} else {
+					unavailable(route, &format!("HTTP {status}"));
+					Verification::Unavailable
+				};
+			}
+			Ok(Err(error)) => {
+				unavailable(route, &error);
+				return Verification::Unavailable;
+			}
+			Err(_) => {
+				unavailable(route, &"the request timed out");
+				return Verification::Unavailable;
+			}
 		};
-		if crate::response::json::<bool>(response, 1024)
-			.await
-			.unwrap_or(false)
-		{
-			Verification::Verified
-		} else {
-			Verification::Rejected
+		match crate::response::json::<bool>(response, 1024).await {
+			Ok(true) => Verification::Verified,
+			Ok(false) => Verification::Rejected,
+			Err(error) => {
+				unavailable(route, &error);
+				Verification::Unavailable
+			}
 		}
 	}
 }

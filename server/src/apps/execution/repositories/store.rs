@@ -119,6 +119,10 @@ pub struct Store {
 	/// Decides whether new work may begin. The build installs it; Community's
 	/// admits everything.
 	pub admission: std::sync::Arc<dyn aidash_application::usage::Admission>,
+	/// What a running server binds so that a caller holding only this Store
+	/// reaches the other Nodes of its Deployment (#751). Empty in a process
+	/// that never built a `Federation`. Shared by every clone of this Store.
+	pub(crate) in_process: std::sync::Arc<std::sync::OnceLock<crate::federation::InProcess>>,
 }
 
 /// Worker slots are capped at four. Each holds an outer authority transaction
@@ -526,6 +530,7 @@ impl Store {
 			provider_key_material_reader: None,
 			capability_issuer: None,
 			capabilities: crate::capabilities::Runtime::from_env()?,
+			in_process: Default::default(),
 		}
 		.with_memory_recovery(memory_recovery))
 	}
@@ -672,6 +677,7 @@ impl Store {
 			provider_key_material_reader: self.provider_key_material_reader.clone(),
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
+			in_process: self.in_process.clone(),
 		})
 	}
 
@@ -731,6 +737,7 @@ impl Store {
 			provider_key_material_reader: self.provider_key_material_reader.clone(),
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
+			in_process: self.in_process.clone(),
 		})
 	}
 	pub async fn event(

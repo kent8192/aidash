@@ -23,6 +23,10 @@ async fn receive(
 	match mode.as_str() {
 		"negative" => "false".into_response(),
 		"status" => StatusCode::FORBIDDEN.into_response(),
+		"unauthorized" => StatusCode::UNAUTHORIZED.into_response(),
+		"missing" => StatusCode::NOT_FOUND.into_response(),
+		"server-error" => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+		"unavailable" => StatusCode::SERVICE_UNAVAILABLE.into_response(),
 		"malformed" => "invalid JSON".into_response(),
 		"wrong-type" => Json(json!({"visible":true})).into_response(),
 		"exact" => format!("true{}", " ".repeat(1020)).into_response(),
@@ -99,15 +103,19 @@ async fn registry_rpc_signs_each_call_as_the_mapped_reader() {
 	assert_ne!(calls[0].0["authorization"], calls[1].0["authorization"]);
 }
 #[rstest]
-#[case::status("status", Verification::Unavailable)]
+#[case::forbidden("status", Verification::Rejected)]
+#[case::unauthorized("unauthorized", Verification::Rejected)]
+#[case::missing("missing", Verification::Rejected)]
+#[case::server_error("server-error", Verification::Unavailable)]
+#[case::unavailable("unavailable", Verification::Unavailable)]
 #[case::negative("negative", Verification::Rejected)]
-#[case::malformed("malformed", Verification::Rejected)]
-#[case::wrong_type("wrong-type", Verification::Rejected)]
+#[case::malformed("malformed", Verification::Unavailable)]
+#[case::wrong_type("wrong-type", Verification::Unavailable)]
 #[case::limit("exact", Verification::Verified)]
-#[case::overflow("oversize", Verification::Rejected)]
-#[case::chunked_overflow("chunks", Verification::Rejected)]
+#[case::overflow("oversize", Verification::Unavailable)]
+#[case::chunked_overflow("chunks", Verification::Unavailable)]
 #[tokio::test]
-async fn response_contract_and_body_limit_retain_the_existing_denial_category(
+async fn an_answer_is_a_refusal_and_a_failure_to_answer_is_unavailable(
 	#[case] mode: &str,
 	#[case] expected: Verification,
 ) {
@@ -117,20 +125,20 @@ async fn response_contract_and_body_limit_retain_the_existing_denial_category(
 }
 #[rstest]
 #[tokio::test]
-async fn a_disabled_deployment_sends_nothing() {
+async fn a_disabled_deployment_sends_nothing_and_refuses() {
 	let (_server, mut transport, peer, references, _key, calls) = fixture("ok").await;
 	transport.egress.enabled = false;
 	assert_eq!(
 		transport.verify(&peer, &references).await,
-		Verification::Unavailable
+		Verification::Rejected
 	);
 	assert!(calls.lock().unwrap().is_empty());
 }
 #[rstest]
 #[case::headers("late-headers", Verification::Unavailable)]
-#[case::body("late-body", Verification::Rejected)]
+#[case::body("late-body", Verification::Unavailable)]
 #[tokio::test]
-async fn ten_second_deadline_covers_headers_and_body_without_changing_denial_semantics(
+async fn ten_second_deadline_covers_headers_and_body_and_leaves_the_read_unconfirmed(
 	#[case] mode: &str,
 	#[case] expected: Verification,
 ) {

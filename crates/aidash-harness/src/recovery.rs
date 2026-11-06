@@ -90,6 +90,30 @@ pub async fn recover(
 			current.recovery.context_reason = Some(reason);
 			store.pause_context(&current, token, reason).await?;
 		}
+	} else if let ExecutionFailure::NodeUnreachable { retry, .. } = failure {
+		// Another Node did not answer. As with a Decider outage, retry after 2,
+		// 4, 8, 16 and 32 s while nothing took effect, then pause until a person
+		// resumes, which checks again (#751). A Run never goes on unconfirmed.
+		let retries = current.recovery.node_retry + 1;
+		if retry && retries <= OUTAGE_RETRIES {
+			current.recovery.node_retry = retries;
+			current.recovery.retry = Some(RetryState {
+				count: retries,
+				at: now + chrono::Duration::seconds(2_i64.pow(retries)),
+			});
+			current.error = Some(failure.message());
+			store.save(&current, token, "run.node_retrying").await?;
+		} else {
+			store
+				.pause(
+					&current,
+					token,
+					&failure.message(),
+					"run.node_unreachable",
+					None,
+				)
+				.await?;
+		}
 	} else if let ExecutionFailure::Context(reason) = failure {
 		// Final for this step and never a transport retry. Local and remote-hosted
 		// Runs share this path: the store records the typed reason, pauses, and
