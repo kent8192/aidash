@@ -599,6 +599,128 @@ class VerificationTest(unittest.TestCase):
             self.assertTrue(record['output_harvested'])
             self.assertEqual(record['error']['code'], 'SESSION_LOST')
 
+    def finished_shell(self, root, log, *, exported=None, expired=False):
+        """A shell command that exited with no output, seen by the running controller."""
+        runner = self.runner(root)
+        runner.config['output_bytes'] = 1024
+        operation = str(uuid.uuid4())
+        record = {'operation_id': operation, 'request': request('shell'), 'wire_digest': 'digest',
+                  'status': 'running', 'executed': True, 'cancel_requested': False,
+                  'pod_uid': 'uid', 'running_at': 1, 'started_at': 1}
+        runner.get = Mock(side_effect=lambda _: record.copy())
+        runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+        runner.pod = Mock(return_value={'metadata': {'uid': 'uid', 'annotations': {'aidash/digest': 'digest'}},
+            'status': {'containerStatuses': [
+                {'name': 'execution', 'state': {'terminated': {'exitCode': 143}}},
+                {'name': 'collector', 'state': {'running': {}}}]}})
+        runner.kube = Mock(return_value=Mock(stdout=log))
+        captured = {'stdout': '', 'truncated': False, 'deadline_expired': expired}
+        runner.exec_collector = Mock(side_effect=[Mock(stdout=json.dumps(captured).encode()),
+                                                  Mock(stdout=json.dumps(exported or {'files': []}).encode())])
+        runner._reconcile_shell_once(operation)
+        return record
+
+    def test_an_empty_execution_log_is_no_error(self):
+        for log in (b'', b' \n'):
+            with tempfile.TemporaryDirectory() as root:
+                record = self.finished_shell(root, log, expired=True)
+                self.assertEqual(record['status'], 'failed')
+                self.assertIsNone(record['error'])
+                self.assertTrue(record['deadline_expired'])
+
+    def test_an_execution_log_is_reported_under_its_own_code(self):
+        with tempfile.TemporaryDirectory() as root:
+            record = self.finished_shell(root, b'exec format error')
+            self.assertEqual(record['error'], {'code': 'COMMAND_FAILED', 'message': 'exec format error'})
+            self.assertFalse(record['deadline_expired'])
+
+    def test_a_refused_save_keeps_the_word_on_the_deadline(self):
+        refusal = {'reason': 'symlink', 'path': 'a', 'limit': None}
+        with tempfile.TemporaryDirectory() as root:
+            record = self.finished_shell(root, b'', exported={'refused': refusal}, expired=True)
+            self.assertEqual(record['error']['code'], 'WORKING_EXPORT_REFUSED')
+            self.assertTrue(record['deadline_expired'])
+
+    def stopped_cell(self, root, *, running_at, stopped_while_running=True, cancel_requested=False):
+        """A Python cell whose sandbox stopped under the running controller."""
+        runner = self.runner(root)
+        operation, pod_uid = str(uuid.uuid4()), str(uuid.uuid4())
+        record = {'operation_id': operation, 'area_id': str(uuid.uuid4()), 'session_id': str(uuid.uuid4()),
+                  'pod_operation': 'existing', 'pod_uid': pod_uid, 'request': request('python'),
+                  'digest': 'fixture', 'cancel_requested': cancel_requested, 'status': 'running', 'hydrated': True,
+                  'executed': False, 'running_at': running_at, 'stdout': ''}
+        runner.get = Mock(side_effect=lambda _: record.copy())
+        runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+        runner.active = {operation}
+        runner.config['idle_seconds'] = 60
+        runner.execution_limits = Mock(return_value={})
+        runner.allocations = Path(root) / 'allocations'
+        runner.allocations.mkdir()
+        save(runner.allocations / (pod_uid + '.json'), {'resource_version': '101', 'receipt': 'present'})
+        runner.pod = Mock(return_value={'metadata': {'uid': pod_uid, 'resourceVersion': '101'},
+            'spec': {'nodeName': 'node', 'containers': [{'image': 'image'}]}, 'status': {'containerStatuses': [
+                {'name': 'execution', 'containerID': 'containerd://cid', 'state': {'running': {}}},
+                {'name': 'collector', 'state': {'running': {}}}]}})
+        answers = {'limits': {}, 'cell': {}, 'export': {'files': []}, 'terminate': {'termination_confirmed': True},
+                   'cell_status': {'status': 'stopped', 'termination_confirmed': True}}
+        runner.guard = Mock(side_effect=lambda _, action, **kwargs: answers[action])
+        runner.reconcile_python(operation)
+        return record
+
+    def test_a_python_cell_stopped_past_its_limit_timed_out(self):
+        with tempfile.TemporaryDirectory() as root:
+            record = self.stopped_cell(root, running_at=time.time() - 120)
+            self.assertTrue(record['deadline_expired'])
+            self.assertEqual(record['status'], 'failed')
+
+    def test_a_python_cell_stopped_before_its_limit_lost_its_session(self):
+        with tempfile.TemporaryDirectory() as root:
+            record = self.stopped_cell(root, running_at=time.time())
+            self.assertFalse(record['deadline_expired'])
+            self.assertEqual(record['error']['code'], 'SESSION_LOST')
+
+    def test_a_python_cell_cancelled_past_its_limit_timed_out(self):
+        with tempfile.TemporaryDirectory() as root:
+            record = self.stopped_cell(root, running_at=time.time() - 120, cancel_requested=True)
+            self.assertTrue(record['deadline_expired'])
+
+    def test_a_python_cell_cancelled_before_its_limit_stays_cancelled(self):
+        with tempfile.TemporaryDirectory() as root:
+            record = self.stopped_cell(root, running_at=time.time(), cancel_requested=True)
+            self.assertFalse(record['deadline_expired'])
+            self.assertEqual(record['status'], 'cancelled')
+            self.assertEqual(record['error']['code'], 'CANCELLED')
+
+    def test_python_execution_stopped_past_its_limit_during_outage_timed_out(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            operation, pod_uid = str(uuid.uuid4()), str(uuid.uuid4())
+            record = {'operation_id': operation, 'request': request('python'), 'status': 'running',
+                      'pod_operation': 'existing', 'pod_uid': pod_uid, 'executed': True,
+                      'cancel_requested': False, 'running_at': time.time() - 120, 'stdout': ''}
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.active = {operation}
+            runner.pod = Mock(return_value={'metadata': {'uid': pod_uid}, 'status': {'containerStatuses': [
+                {'name': 'execution', 'state': {'terminated': {'exitCode': 137}}},
+                {'name': 'collector', 'state': {'running': {}}}]}})
+            runner.guard = Mock(return_value={'files': []})
+            runner.reconcile_python(operation)
+            self.assertEqual(record['status'], 'failed')
+            self.assertTrue(record['deadline_expired'])
+
+    def test_a_python_cell_past_its_limit_whose_save_was_refused_says_so(self):
+        refusal = {'reason': 'symlink', 'path': 'a', 'limit': None}
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            record = {'operation_id': str(uuid.uuid4()), 'request': request('python'), 'stdout': '',
+                      'running_at': time.time() - 120, 'stop_confirmed_at': time.time()}
+            runner.guard = Mock(return_value={'refused': refusal})
+            self.assertIsNone(runner.collect_stopped_output(record))
+            recorded = runner.update.call_args.kwargs
+            self.assertEqual(recorded['error']['code'], 'WORKING_EXPORT_REFUSED')
+            self.assertTrue(recorded['deadline_expired'])
+
     def test_a_stopped_check_records_its_output_without_exporting_files(self):
         calls, recorded = self.stopped("verify")
         self.assertNotIn("export", calls)

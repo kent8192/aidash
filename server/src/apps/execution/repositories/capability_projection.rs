@@ -47,6 +47,7 @@ impl From<OperationResult> for NativeResult {
 			effects_may_have_occurred: v.effects_may_have_occurred,
 			error: v.error.map(Into::into),
 			output_stale_seconds: v.output_stale_seconds,
+			deadline_expired: v.deadline_expired,
 		}
 	}
 }

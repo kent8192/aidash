@@ -28,6 +28,26 @@ fn output_envelope_schema_accepts_the_serialized_wire_contract() {
 		.unwrap_or_else(|e| panic!("{e}: {schema}"));
 	assert!(serde_json::from_value::<Envelope>(wire).is_ok());
 }
+/// An Agent's tool result passes through `Envelope`, which keeps only what its
+/// variant declares, so a field set on the operation can vanish on the way.
+#[rstest::rstest]
+fn a_timed_out_command_keeps_its_deadline_flag_on_the_way_to_the_model() {
+	use crate::capabilities::contracts::*;
+	let wire = serde_json::json!({
+		"operation_id": "operation", "status": "failed", "policy_revision": 1,
+		"area_id": uuid::Uuid::nil(), "generation": 1, "revision": 2,
+		"kind": "shell", "epoch": 1, "termination_confirmed": true, "writer_frozen": false,
+		"session_id": null, "displays": [], "exit_code": 143, "output": "", "next_offset": null,
+		"truncated": false, "effects_may_have_occurred": true, "error": null,
+		"deadline_expired": true,
+	});
+	let envelope: Envelope = serde_json::from_value(wire).unwrap();
+	assert!(matches!(envelope.result, CapabilityResult::Runtime(_)));
+	assert_eq!(
+		serde_json::to_value(&envelope).unwrap()["deadline_expired"],
+		true
+	);
+}
 #[rstest::rstest]
 fn executable_contracts_are_derived_and_disabled_by_default() {
 	let mut tools = BTreeMap::new();

@@ -3,6 +3,7 @@ use aidash_domain::{
 	RunControl, RunMetadata, RunPhase,
 	capabilities::{
 		CoreCapabilities,
+		errors::COMMAND_TIMED_OUT,
 		operations::reconciliation::{Area, Limits},
 	},
 };
@@ -89,6 +90,7 @@ fn repository() -> Repository {
 			working_bytes: 1024,
 			output_bytes: 1024,
 			read_bytes: 8,
+			maximum_seconds: 600,
 		},
 		capabilities: CoreCapabilities {
 			shell: true,
@@ -782,6 +784,163 @@ async fn a_finished_completion_check_keeps_its_output_tail_and_never_publishes(
 	assert!(trace.published.is_empty());
 	assert_eq!(trace.events.len(), 1);
 	assert!(trace.commit);
+}
+/// What the runner reports when a command's Time Limit passed while it ran.
+fn past_its_limit(status: &str, exit_code: i64) -> Value {
+	json!({"status":status,"termination_confirmed":true,"executed":true,"files":[],
+		"stdout":STANDARD.encode("stdout"),"displays":[],"exit_code":exit_code,"error":null,
+		"deadline_expired":true})
+}
+/// The limit decides, whatever exit code the command then gave and whoever
+/// stopped it. Its files are published, so the error can say they were saved.
+#[rstest]
+#[case::killed("failed", 143)]
+#[case::exited_zero_after_the_limit("completed", 0)]
+#[case::stopped_by_the_runner("cancelled", 137)]
+#[tokio::test]
+async fn a_command_past_its_limit_saves_its_files_and_reports_the_time_out(
+	repository: Repository,
+	#[case] status: &str,
+	#[case] exit_code: i64,
+) {
+	repository.0.lock().unwrap().observed = past_its_limit(status, exit_code);
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	let saved = &trace.saved[0];
+	assert_eq!(saved.state, "failed");
+	assert_eq!(saved.revision, 8);
+	assert_eq!(saved.result["exit_code"], exit_code);
+	assert_eq!(saved.result["deadline_expired"], true);
+	assert_eq!(saved.result["error"]["code"], COMMAND_TIMED_OUT);
+	assert_eq!(saved.result["error"]["retryable"], false);
+	assert_eq!(
+		saved.result["error"]["details"],
+		json!({"limit_seconds":1,"revision":8})
+	);
+	let message = saved.result["error"]["message"].as_str().unwrap();
+	assert!(message.contains("revision 8"), "{message}");
+	assert!(message.contains("at most 600"), "{message}");
+	assert!(trace.calls.contains(&"publish".into()));
+	assert!(trace.commit);
+}
+#[rstest]
+#[tokio::test]
+async fn a_python_cell_past_its_limit_reports_the_time_out_and_its_reset_session(
+	repository: Repository,
+) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.operation.kind = "code_interpreter".into();
+		trace.operation.input["session_id"] = json!(Uuid::from_u128(20));
+		trace.observed = past_its_limit("failed", 137);
+		trace.observed["error"] = json!({"code":"SESSION_LOST","message":"Interpreter stopped"});
+		trace.observed["writer_frozen"] = json!(false);
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	let saved = &trace.saved[0];
+	assert_eq!(saved.state, "failed");
+	assert_eq!(saved.result["error"]["code"], COMMAND_TIMED_OUT);
+	let message = saved.result["error"]["message"].as_str().unwrap();
+	assert!(message.contains("session was reset"), "{message}");
+	assert!(trace.calls.contains(&"python:false".into()));
+}
+/// A command that ended before its limit keeps the runner's own word, and its
+/// result does not grow a field that says nothing happened.
+#[rstest]
+#[case::cancelled("cancelled", 137, json!({"code":"CANCELLED","message":"Stopped"}), Some(false))]
+#[case::failed("failed", 1, Value::Null, Some(false))]
+#[case::the_runner_could_not_tell("failed", 1, Value::Null, None)]
+#[tokio::test]
+async fn a_command_that_ended_before_its_limit_keeps_its_outcome(
+	repository: Repository,
+	#[case] status: &str,
+	#[case] exit_code: i64,
+	#[case] error: Value,
+	#[case] deadline_expired: Option<bool>,
+) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.observed = past_its_limit(status, exit_code);
+		trace.observed["error"] = error.clone();
+		match deadline_expired {
+			Some(expired) => trace.observed["deadline_expired"] = json!(expired),
+			None => {
+				trace
+					.observed
+					.as_object_mut()
+					.unwrap()
+					.remove("deadline_expired");
+			}
+		}
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	let saved = &trace.saved[0];
+	assert_eq!(saved.state, status);
+	assert_eq!(saved.result["error"], error);
+	assert!(saved.result.get("deadline_expired").is_none());
+}
+/// Nothing was saved, so the refusal stays the error and the limit is added to it.
+#[rstest]
+#[tokio::test]
+async fn a_command_past_its_limit_whose_save_the_runner_refused_says_both(repository: Repository) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.observed = refused_export("symlink", "a", Value::Null);
+		trace.observed["deadline_expired"] = json!(true);
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	let saved = &trace.saved[0];
+	assert_eq!(saved.state, "failed");
+	assert_eq!(saved.revision, 7);
+	assert_eq!(saved.result["deadline_expired"], true);
+	assert_eq!(saved.result["error"]["code"], "WORKING_EXPORT_REFUSED");
+	let message = saved.result["error"]["message"].as_str().unwrap();
+	assert!(
+		message.starts_with("symlinks are not supported"),
+		"{message}"
+	);
+	assert!(
+		message.ends_with("under /tmp. The command had also reached its 1 s time limit."),
+		"{message}"
+	);
+	assert!(!trace.calls.contains(&"publish".into()));
+}
+#[rstest]
+#[tokio::test]
+async fn a_command_past_its_limit_over_the_quota_says_both(repository: Repository) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.observed = past_its_limit("failed", 143);
+		trace.observed["files"] = json!([working_file("big", 2048)]);
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	let saved = &trace.saved[0];
+	assert_eq!(saved.state, "failed");
+	assert_eq!(saved.revision, 7);
+	assert_eq!(saved.result["deadline_expired"], true);
+	assert_eq!(saved.result["error"]["code"], "WORKING_EXPORT_REFUSED");
+	let message = saved.result["error"]["message"].as_str().unwrap();
+	assert!(message.contains("1 s time limit"), "{message}");
+}
+/// A Check saves nothing and has its own timed-out outcome, so it never gets
+/// the time-out error, which would say that files were saved.
+#[rstest]
+#[tokio::test]
+async fn a_completion_check_past_its_limit_gets_no_time_out_error(repository: Repository) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.operation.kind = VERIFICATION.into();
+		trace.observed = past_its_limit("failed", 143);
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	let saved = &trace.saved[0];
+	assert_eq!(saved.result["deadline_expired"], true);
+	assert!(saved.result["error"].is_null());
 }
 /// A Check never exports `/work`, so losing its journal leaves the Area's files
 /// as they were: the Check's result is unknown, but the Area stays usable for

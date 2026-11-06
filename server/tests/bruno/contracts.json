@@ -7425,6 +7425,10 @@
                 "format": "uuid",
                 "type": "string"
               },
+              "deadline_expired": {
+                "description": "True when the command was still running at its time limit. Absent otherwise.",
+                "type": ["boolean", "null"]
+              },
               "displays": {
                 "items": {
                   "$ref": "#/components/schemas/FileEntry"
@@ -7657,6 +7661,10 @@
                 "format": "uuid",
                 "type": "string"
               },
+              "deadline_expired": {
+                "description": "True when the command was still running at its time limit. Absent otherwise.",
+                "type": ["boolean", "null"]
+              },
               "displays": {
                 "items": {
                   "$ref": "#/components/schemas/FileEntry"
@@ -7834,6 +7842,10 @@
               "area_id": {
                 "format": "uuid",
                 "type": "string"
+              },
+              "deadline_expired": {
+                "description": "True when the command was still running at its time limit. Absent otherwise.",
+                "type": ["boolean", "null"]
               },
               "displays": {
                 "items": {

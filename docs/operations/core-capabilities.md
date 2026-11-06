@@ -26,6 +26,12 @@ physical interpreter freeze/termination before admitting work. The node adapter
 also verifies cgroup CPU/memory/process ceilings and disables swap for the
 sandbox cgroup. A Kubernetes pod-deletion response alone is not termination
 proof. Missing support makes execution unavailable; there is no host fallback.
+A command or Python cell still running at its time limit is stopped, whatever
+exit code it then gives. The limit counts from when it starts, so preparing its
+sandbox does not use it up. Its result says `COMMAND_TIMED_OUT`, with the limit
+and the revision its file changes were saved as. If the save is refused, the
+result keeps `WORKING_EXPORT_REFUSED` and sets `deadline_expired`.
+
 When Kubernetes is unreachable, the Runner keeps tracking an accepted command
 and retries output, status and cancellation requests. The saved Area remains
 readable and busy; a new command receives `AREA_BUSY`. Polling reports the age
