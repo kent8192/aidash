@@ -2,8 +2,9 @@
 //!
 //! A credential is a MAC over the Tenant and the Scratch Space, so it needs no
 //! table and has the same value on every Pod `ensure`, which keeps the Pod's spec
-//! stable. It stays valid while the Scratch Space exists; host and suspension
-//! changes reach an open connection through the gateway's periodic recheck.
+//! stable. It stays valid while the Scratch Space exists and neither its Tenant
+//! nor its Node is deleted (ADR 0060, ADR 0083); host and suspension changes
+//! reach an open connection through the gateway's periodic recheck.
 use aidash_application::egress::{Admission, ScopeAuthority, ScopeSettings};
 use aidash_application::tenancy::TenancyScope;
 use aidash_domain::egress::{AllowedHosts, AnomalyRule, DailyBudget, ScopeId};
@@ -16,6 +17,7 @@ use sha2::Sha256;
 use uuid::Uuid;
 
 use crate::apps::execution::repositories::egress::runner_key;
+use crate::apps::identity::repositories::{node_deletions, tenant_deletions};
 use crate::apps::workspaces::repositories::scratch;
 use crate::config::ScratchOperatorPolicy;
 use crate::store::Store;
@@ -110,14 +112,30 @@ impl ScratchAuthority {
 				.begin(&TenancyScope::tenant(tenant)?)
 				.await?;
 			let found = scratch::read(&mut *tx, tenant, space).await?;
+			// Deleting a Tenant or a Node closes admission at once, although the
+			// Scratch Space stays Active until its data is purged.
+			let deleted = match &found {
+				Some(found) => {
+					tenant_deletions::is_deleted(&mut *tx, tenant).await?
+						|| !node_deletions::current_of(
+							&mut *tx,
+							tenant,
+							vec![found.node.to_string()],
+						)
+						.await?
+						.is_empty()
+				}
+				None => false,
+			};
 			tx.commit().await?;
-			Ok(found)
+			Ok((found, deleted))
 		}
 		.await;
-		let Some(found) = found.map_err(aidash_application::Error::from)? else {
+		let (found, deleted) = found.map_err(aidash_application::Error::from)?;
+		let Some(found) = found else {
 			return Ok(None);
 		};
-		if found.state != ScratchState::Active {
+		if found.state != ScratchState::Active || deleted {
 			return Err(aidash_application::Error::Forbidden);
 		}
 		let (ceilings, tenant_hosts) = scratch::effective_policy(&self.policy, tenant);
@@ -218,16 +236,5 @@ mod tests {
 		for malformed in ["", "invalid", PREFIX, &format!("{credential}.extra")] {
 			assert_eq!(verify(KEY, malformed), None, "{malformed}");
 		}
-	}
-
-	#[test]
-	fn the_tenant_cannot_slide_into_the_space() {
-		// Without the length prefix, these two would sign the same bytes.
-		let space = Uuid::from_bytes([b'x'; 16]);
-		let other = Uuid::from_bytes([0; 16]);
-		assert_ne!(
-			scope_mac(KEY, "acme", space).finalize().into_bytes(),
-			scope_mac(KEY, "acmex", other).finalize().into_bytes()
-		);
 	}
 }

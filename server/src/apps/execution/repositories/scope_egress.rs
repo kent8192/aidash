@@ -329,13 +329,13 @@ impl EgressScopes for DurableScopes {
 		}
 		.await;
 		result.map_err(application_error)?;
-		admission.meter = Arc::new(ScopedMeter {
-			durable: self.clone(),
+		admission.meter = Arc::new(ScopedMeter::new(
+			self.clone(),
 			settings,
-			service: service.to_owned(),
+			service,
 			limits,
-			inner: admission.meter,
-		});
+			admission.meter,
+		));
 		Ok(admission)
 	}
 	async fn admit_connection(&self, settings: &ScopeSettings) -> aidash_application::Result<()> {
@@ -510,31 +510,138 @@ impl EgressScopes for DurableScopes {
 		result.map_err(application_error)
 	}
 }
+/// A decision about the request, as opposed to a store that could not be asked.
+/// The gateway charges the whole amount again after anything else (see
+/// [`Meter::charge`]), so only a decision may leave bytes committed.
+fn decides(error: &aidash_application::Error) -> bool {
+	use aidash_application::Error;
+	match error {
+		Error::Forbidden | Error::Unauthorized | Error::AuthorityRefused(_) => true,
+		Error::Refused(code) => code == "egress_budget_exhausted" || code == "egress_suspended",
+		Error::Conflict(code) => {
+			code == aidash_domain::egress::LIMIT_EXCEEDED
+				|| code == aidash_domain::egress::OPERATION_EXPIRED
+		}
+		_ => false,
+	}
+}
+
+/// What one side of a debit has taken ahead of a charge both sides have
+/// acknowledged.
+#[derive(Default)]
+struct Taken {
+	/// Bytes this side committed on an earlier attempt of the charge.
+	bytes: u64,
+	/// The decision it answered them with, which a later attempt still owes the
+	/// caller.
+	stop: Option<aidash_application::Error>,
+}
+
+/// Both sides of one direction's debit.
+#[derive(Default)]
+struct Ahead {
+	scope: Taken,
+	audit: Taken,
+}
+
+/// Charges the daily scope budget, then the request's own meter. The gateway
+/// charges the whole amount again after any error that is not a decision, so
+/// each side remembers what it has already committed and takes only the rest.
 struct ScopedMeter {
 	durable: DurableScopes,
 	settings: ScopeSettings,
 	service: String,
 	limits: Option<aidash_domain::egress::Limits>,
 	inner: Arc<dyn Meter>,
+	sent: tokio::sync::Mutex<Ahead>,
+	received: tokio::sync::Mutex<Ahead>,
+}
+impl ScopedMeter {
+	fn new(
+		durable: DurableScopes,
+		settings: ScopeSettings,
+		service: &str,
+		limits: Option<aidash_domain::egress::Limits>,
+		inner: Arc<dyn Meter>,
+	) -> Self {
+		Self {
+			durable,
+			settings,
+			service: service.to_owned(),
+			limits,
+			inner,
+			sent: Default::default(),
+			received: Default::default(),
+		}
+	}
 }
 #[async_trait]
 impl Meter for ScopedMeter {
 	async fn charge(&self, direction: Direction, bytes: usize) -> aidash_application::Result<()> {
-		let day = Utc::now().date_naive();
-		let result = self
-			.durable
-			.charge(
-				&self.settings,
-				direction,
-				bytes as u64,
-				day,
-				self.limits.map(|l| (self.service.as_str(), l)),
-				true,
-			)
-			.await
-			.map_err(application_error);
-		let audit = self.inner.charge(direction, bytes).await;
-		result.and(audit)
+		let bytes = bytes as u64;
+		// Held to the end, so that charges in one direction never read each
+		// other's partial progress. A caller that gives up drops it.
+		let mut ahead = match direction {
+			Direction::Sent => &self.sent,
+			Direction::Received => &self.received,
+		}
+		.lock()
+		.await;
+		// What a side still owes. An empty charge still asks both sides: it is
+		// how a stream rechecks.
+		let still_owed = |taken: &Taken| {
+			if bytes == 0 || taken.bytes < bytes {
+				Some(bytes - taken.bytes.min(bytes))
+			} else {
+				None
+			}
+		};
+		let mut unavailable = None;
+		// Each side's progress is recorded as soon as it answers, before the
+		// other is asked, so that a caller whose timeout cancels this call
+		// between the two still charges each side once.
+		if let Some(owed) = still_owed(&ahead.scope) {
+			let result = self
+				.durable
+				.charge(
+					&self.settings,
+					direction,
+					owed,
+					Utc::now().date_naive(),
+					self.limits.map(|l| (self.service.as_str(), l)),
+					true,
+				)
+				.await
+				.map_err(application_error);
+			match result {
+				Ok(()) => ahead.scope.bytes += owed,
+				Err(error) if decides(&error) => {
+					ahead.scope.bytes += owed;
+					ahead.scope.stop = Some(error);
+				}
+				Err(error) => unavailable = Some(error),
+			}
+		}
+		if let Some(owed) = still_owed(&ahead.audit) {
+			match self.inner.charge(direction, owed as usize).await {
+				Ok(()) => ahead.audit.bytes += owed,
+				Err(error) if decides(&error) => {
+					ahead.audit.bytes += owed;
+					ahead.audit.stop = Some(error);
+				}
+				Err(error) => unavailable = unavailable.or(Some(error)),
+			}
+		}
+		if let Some(error) = unavailable {
+			return Err(error);
+		}
+		// Both sides have answered, so the caller's charge is acknowledged.
+		ahead.scope.bytes = ahead.scope.bytes.saturating_sub(bytes);
+		ahead.audit.bytes = ahead.audit.bytes.saturating_sub(bytes);
+		match ahead.scope.stop.take().or(ahead.audit.stop.take()) {
+			Some(stop) => Err(stop),
+			None => Ok(()),
+		}
 	}
 	async fn finish(
 		&self,

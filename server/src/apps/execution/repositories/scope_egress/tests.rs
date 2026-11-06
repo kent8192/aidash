@@ -19,13 +19,29 @@ impl Meter for AuditMeter {
 		Ok(())
 	}
 }
-struct FailedAuditMeter;
+/// Cannot be reached on its first charge, then commits what it is given and
+/// counts it.
+#[derive(Default)]
+struct FlakyAuditMeter {
+	calls: std::sync::atomic::AtomicU64,
+	committed: std::sync::atomic::AtomicU64,
+}
+impl FlakyAuditMeter {
+	fn committed(&self) -> u64 {
+		self.committed.load(std::sync::atomic::Ordering::Relaxed)
+	}
+}
 #[async_trait]
-impl Meter for FailedAuditMeter {
-	async fn charge(&self, _: Direction, _: usize) -> aidash_application::Result<()> {
-		Err(aidash_application::Error::External(
-			"audit unavailable".into(),
-		))
+impl Meter for FlakyAuditMeter {
+	async fn charge(&self, _: Direction, bytes: usize) -> aidash_application::Result<()> {
+		use std::sync::atomic::Ordering::Relaxed;
+		if self.calls.fetch_add(1, Relaxed) == 0 {
+			return Err(aidash_application::Error::External(
+				"audit unavailable".into(),
+			));
+		}
+		self.committed.fetch_add(bytes as u64, Relaxed);
+		Ok(())
 	}
 	async fn finish(
 		&self,
@@ -34,6 +50,42 @@ impl Meter for FailedAuditMeter {
 		_: Option<&str>,
 	) -> aidash_application::Result<()> {
 		Ok(())
+	}
+}
+/// A scope authority that cannot be asked about the scope on its first call.
+struct FlakyAuthority {
+	inner: Authority,
+	calls: std::sync::atomic::AtomicU64,
+}
+#[async_trait]
+impl ScopeAuthority for FlakyAuthority {
+	async fn authenticate(&self, credential: &str) -> aidash_application::Result<ScopeSettings> {
+		self.inner.authenticate(credential).await
+	}
+	async fn current(&self, id: &ScopeId) -> aidash_application::Result<ScopeSettings> {
+		if self
+			.calls
+			.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+			== 0
+		{
+			return Err(aidash_application::Error::External(
+				"authority unavailable".into(),
+			));
+		}
+		self.inner.current(id).await
+	}
+	async fn admit_external(
+		&self,
+		credential: &str,
+		scope: &ScopeId,
+		service: &str,
+		method: &str,
+		path: &str,
+		digest: &str,
+	) -> aidash_application::Result<Admission> {
+		self.inner
+			.admit_external(credential, scope, service, method, path, digest)
+			.await
 	}
 }
 #[async_trait]
@@ -214,22 +266,60 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 		recorded, 6,
 		"already forwarded bytes remain charged after an over-limit debit"
 	);
-	let failed_audit = ScopedMeter {
-		durable: durable.clone(),
-		settings: scope.clone(),
-		service: "maps".into(),
-		limits: None,
-		inner: Arc::new(FailedAuditMeter),
+	let total = async || -> i64 {
+		sqlx::query_scalar(
+			"SELECT received_bytes FROM egress_scope_daily WHERE scope_id = $1 AND service = ''",
+		)
+		.bind(scope.id.scratch_space)
+		.fetch_one(federation.store.pool.fixture_driver())
+		.await
+		.unwrap()
 	};
+	let audit = Arc::new(FlakyAuditMeter::default());
+	let failed_audit =
+		ScopedMeter::new(durable.clone(), scope.clone(), "maps", None, audit.clone());
 	assert!(failed_audit.charge(Direction::Received, 1).await.is_err());
-	let total: i64 = sqlx::query_scalar(
-		"SELECT received_bytes FROM egress_scope_daily WHERE scope_id = $1 AND service = ''",
-	)
-	.bind(scope.id.scratch_space)
-	.fetch_one(federation.store.pool.fixture_driver())
-	.await
-	.unwrap();
-	assert_eq!(total, 7, "audit failure must not refund forwarded bytes");
+	assert_eq!(
+		total().await,
+		7,
+		"audit failure must not refund forwarded bytes"
+	);
+	// The gateway charges the same bytes again after a failure that is not a
+	// decision. The scope has them already; only the audit is still owed.
+	failed_audit.charge(Direction::Received, 1).await.unwrap();
+	assert_eq!(
+		total().await,
+		7,
+		"the retry does not charge the scope twice"
+	);
+	assert_eq!(audit.committed(), 1, "the audit counts the bytes once");
+	// The reverse: the scope could not be asked after the audit had the bytes.
+	let audit = Arc::new(FlakyAuditMeter::default());
+	audit.calls.store(1, std::sync::atomic::Ordering::Relaxed);
+	let unreachable = ScopedMeter::new(
+		DurableScopes::new(
+			federation.store.clone(),
+			Arc::new(FlakyAuthority {
+				inner: Authority(scope.clone()),
+				calls: Default::default(),
+			}),
+		),
+		scope.clone(),
+		"maps",
+		None,
+		audit.clone(),
+	);
+	assert!(unreachable.charge(Direction::Received, 1).await.is_err());
+	assert_eq!((total().await, audit.committed()), (7, 1));
+	unreachable.charge(Direction::Received, 1).await.unwrap();
+	assert_eq!(
+		(total().await, audit.committed()),
+		(8, 1),
+		"the retry charges the scope and not the audit again"
+	);
+	// What both sides acknowledged is not carried over to the next charge.
+	unreachable.charge(Direction::Received, 1).await.unwrap();
+	assert_eq!((total().await, audit.committed()), (9, 2));
 	for _ in 0..2 {
 		assert!(
 			durable
@@ -412,6 +502,90 @@ async fn a_scope_credential_opens_its_live_scratch_space_until_the_space_is_dele
 		durable.resolve(&credential).await,
 		Err(aidash_application::Error::Unauthorized)
 	));
+}
+
+/// A deletion is recorded for the Tenant or the Node and leaves the Scratch
+/// Space Active until its data is purged, so the credential has to look.
+#[rstest::rstest]
+#[tokio::test]
+#[timeout(std::time::Duration::from_secs(180))]
+async fn deleting_the_tenant_or_the_node_closes_the_scope_credential_until_it_is_restored(
+	#[future] database: DatabaseFixture,
+) {
+	let database = database.await;
+	let context = reinhardt::InjectionContext::builder(reinhardt::SingletonScope::new()).build();
+	let settings = settings::settings_for(&database.url);
+	let federation = crate::bootstrap::initialize(&context, &settings, database.connection.clone())
+		.await
+		.unwrap();
+	tenant_roots::tenant_root(&federation, "acme").await;
+	let space = insert_space(&federation, "acme", Default::default()).await;
+	let authority = Arc::new(ScratchAuthority::with_key(
+		federation.store.clone(),
+		federation.config.scratch_policy.clone(),
+		KEY,
+	));
+	let credential = authority.credential("acme", space).unwrap();
+	let durable = DurableScopes::new(federation.store.clone(), authority);
+	let open = durable.resolve(&credential).await.unwrap();
+	let node = tenant_roots::fixture_node_name("acme").to_string();
+	let pool = federation.store.pool.fixture_driver();
+	let closed = async || {
+		// Admission, the periodic recheck and the live read behind a debit.
+		assert!(matches!(
+			durable.resolve(&credential).await,
+			Err(aidash_application::Error::Forbidden)
+		));
+		assert!(matches!(
+			durable.check_active(&open, &credential).await,
+			Err(aidash_application::Error::Forbidden)
+		));
+		assert!(matches!(
+			durable.admit_connection(&open).await,
+			Err(aidash_application::Error::Forbidden)
+		));
+	};
+
+	sqlx::query(
+		"INSERT INTO tenant_deletions \
+		 (id, tenant, deleted_at, deleted_by_kind, purge_after, purge_failures) \
+		 VALUES ($1, 'acme', now(), 'deployment_administrator', now() + interval '30 days', 0)",
+	)
+	.bind(Uuid::new_v4())
+	.execute(pool)
+	.await
+	.unwrap();
+	closed().await;
+	sqlx::query(
+		"UPDATE tenant_deletions SET restored_at = now(), \
+		 restored_by_kind = 'deployment_administrator' WHERE tenant = 'acme'",
+	)
+	.execute(pool)
+	.await
+	.unwrap();
+	durable.resolve(&credential).await.unwrap();
+	durable.check_active(&open, &credential).await.unwrap();
+
+	sqlx::query(
+		"INSERT INTO node_deletions \
+		 (id, tenant, node, deleted_at, deleted_by_kind, purge_after, purge_failures) \
+		 VALUES ($1, 'acme', $2, now(), 'deployment_administrator', now() + interval '30 days', 0)",
+	)
+	.bind(Uuid::new_v4())
+	.bind(&node)
+	.execute(pool)
+	.await
+	.unwrap();
+	closed().await;
+	sqlx::query(
+		"UPDATE node_deletions SET restored_at = now(), \
+		 restored_by_kind = 'deployment_administrator' WHERE tenant = 'acme' AND node = $1",
+	)
+	.bind(&node)
+	.execute(pool)
+	.await
+	.unwrap();
+	durable.resolve(&credential).await.unwrap();
 }
 
 /// Reads until the gateway closes the connection.
