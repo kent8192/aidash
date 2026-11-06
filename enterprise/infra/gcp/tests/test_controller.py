@@ -1647,8 +1647,8 @@ class ReconcileTests(ReconcileFixture, unittest.TestCase):
         self.assertIn(("helm", "test", "app"), self.calls)
         self.assertFalse(any(retiring for _, retiring in self.cloud.plans))
 
-    def fail_deployment(self, identity="test"):
-        self.request(identity)
+    def fail_deployment(self, identity="test", **extra):
+        self.request(identity, **extra)
         with patch.object(controller.kube, "migrate", side_effect=RuntimeError("fixture migration failure")), \
                 self.assertRaises(RuntimeError):
             self.reconcile()
@@ -1736,6 +1736,55 @@ class ReconcileTests(ReconcileFixture, unittest.TestCase):
             self.reconcile()
         self.assertEqual(self.store.state["environments"]["test"]["status"], "ready")
         self.assertTrue(self.cloud.managed["test"]["running"])
+
+    def test_update_does_not_weaken_an_interrupted_failed_deployment_stop(self):
+        self.config["develop_branch"] = "develop/0.1.0"
+        self.fail_deployment("develop", source_ref="develop/0.1.0")
+        # The failed release's Runner never reports idle.
+        self.busy = True
+        with patch.object(controller.time, "time", return_value=10000 + 3600), \
+                patch.object(self.cloud, "apply", side_effect=RuntimeError("fixture apply failure")), \
+                self.assertRaises(RuntimeError):
+            self.reconcile()
+        entry = self.store.state["environments"]["develop"]
+        self.assertEqual((entry["desired"], entry["force"]), ("stopped", True))
+        # Release CI succeeds on a newer head before the stop is retried. An
+        # update records the source but never wakes the Environment.
+        entry = self.request("develop", action="update", sha="b" * 40, source_ref="develop/0.1.0")
+        self.assertEqual((entry["desired"], entry["force"]), ("stopped", True))
+        self.calls.clear()
+        with patch.object(controller.time, "time", return_value=10000 + 3600):
+            self.reconcile()
+        entry = self.store.state["environments"]["develop"]
+        self.assertEqual((entry["desired"], entry["status"]), ("stopped", "stopped"))
+        self.assertFalse(self.cloud.managed["develop"]["running"])
+        self.assertNotIn(("admission", "develop", "open"), self.calls)
+        self.assertEqual(self.kube.replicas("aidash-develop", "deployment", "app-aidash-server"), 0)
+        self.assertEqual(self.kube.replicas("aidash-develop", "deployment", "app-aidash-worker"), 0)
+
+    def test_failed_deployment_stop_counts_from_the_deployment_failure(self):
+        self.request()
+        # The generation first fails before it deploys anything.
+        with patch.object(controller, "ci_success", side_effect=Refused("CI is not green")), \
+                self.assertRaises(RuntimeError):
+            self.reconcile()
+        entry = self.store.state["environments"]["test"]
+        self.assertEqual((entry["status"], entry["outcome_at"]), ("failed", 10000))
+        self.assertNotIn("failed_deployment_generation", entry)
+        # Two hours later its deployment fails, keeping the earlier outcome receipt.
+        with patch.object(controller.time, "time", return_value=10000 + 7200), \
+                patch.object(controller.kube, "migrate", side_effect=RuntimeError("fixture migration failure")), \
+                self.assertRaises(RuntimeError):
+            self.reconcile()
+        entry = self.store.state["environments"]["test"]
+        self.assertEqual(entry["failed_deployment_generation"], entry["generation"])
+        with patch.object(controller.time, "time", return_value=10000 + 7200 + 3599):
+            self.reconcile()
+        self.assertTrue(self.cloud.managed["test"]["running"])
+        with patch.object(controller.time, "time", return_value=10000 + 7200 + 3600):
+            self.reconcile()
+        self.assertFalse(self.cloud.managed["test"]["running"])
+        self.assertEqual(self.store.state["environments"]["test"]["status"], "stopped")
 
     def test_stop_waits_for_work_and_destroy_only_retires_its_owned_environment(self):
         self.request()
@@ -2021,6 +2070,23 @@ class PreUpdateBackupTests(ReconcileFixture, unittest.TestCase):
             {"aidash.run/backup": "exclude"},
         )
         self.assertNotIn("pre_update_backup", self.entry())
+
+    def test_failed_production_deployment_is_never_stopped_for_being_unpublished(self):
+        self.production_request()
+        with patch.object(controller.kube, "migrate", side_effect=RuntimeError("fixture migration failure")), \
+                self.assertRaises(RuntimeError):
+            self.reconcile()
+        entry = self.entry()
+        self.assertEqual((entry["status"], entry["failed_deployment_generation"]), ("failed", entry["generation"]))
+        self.assertFalse(self.cloud.managed["production"]["published"])
+        self.calls.clear()
+        # Long past the hour a nonproduction Environment gets to be inspected.
+        with patch.object(controller.time, "time", return_value=10000 + 24 * 3600):
+            self.reconcile()
+        self.assertTrue(self.cloud.managed["production"]["running"])
+        self.assertEqual(self.entry()["status"], "failed")
+        self.assertEqual(self.entry()["desired"], "running")
+        self.assertFalse(self.stopped("production"))
 
     def test_update_backs_up_after_the_seal_and_before_any_terraform_apply(self):
         self.running_production()

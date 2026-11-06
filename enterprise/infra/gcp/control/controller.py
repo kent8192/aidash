@@ -985,6 +985,7 @@ def take_pre_update_backup_before_shared(config, store, terraform, managed, seal
             status="failed",
             diagnostic=type(error).__name__,
             failed_deployment_generation=generation,
+            failed_deployment_at=int(time.time()),
             # No start remains authorized; retry_failed must create a new
             # generation, which also takes a new backup id.
             start_pending=False,
@@ -1070,6 +1071,7 @@ def reconcile_locked(config, store, terraform, managed):
                         status="failed",
                         diagnostic=type(error).__name__,
                         failed_deployment_generation=entry["generation"],
+                        failed_deployment_at=int(time.time()),
                         start_pending=False,
                     )
                     print(f"Deferred/failed: production: {type(error).__name__}")
@@ -1521,6 +1523,7 @@ def reconcile_locked(config, store, terraform, managed):
                         identity,
                         snapshot["generation"],
                         failed_deployment_generation=snapshot["generation"],
+                        failed_deployment_at=int(time.time()),
                     )
                     if identity in managed:
                         managed[identity].update(published=False, address=None)
@@ -1547,6 +1550,7 @@ def reconcile_locked(config, store, terraform, managed):
                                     snapshot["generation"],
                                     writers_started=True,
                                     failed_deployment_generation=snapshot["generation"],
+                                    failed_deployment_at=int(time.time()),
                                     start_pending=False,
                                 )
                             kube.unseal(terraform.cluster(), identity)

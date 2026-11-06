@@ -127,6 +127,7 @@ def transition(state, request, incarnation, now, hostname_token="", production=F
             raise Refused("Invalid controller-generated hostname token")
         entry["hostname_token"] = hostname_token
     entry.pop("outcome_at", None)
+    entry.pop("failed_deployment_at", None)
     entry.pop("outcome_run_id", None)
     entry.pop("outcome_trusted_sha", None)
     entry.pop("outcome_published", None)
@@ -135,10 +136,18 @@ def transition(state, request, incarnation, now, hostname_token="", production=F
     entry.pop("staging_publication_run_id", None)
     entry.pop("staging_verified_at", None)
     entry.pop("staging_publication_pending", None)
+    # An update never wakes a stopped Environment, so it must not weaken a stop
+    # still waiting to run. Dropping `force` would send an interrupted forced
+    # stop through the seal, which restarts the writers it was keeping down.
+    stop_pending = (
+        action == "update"
+        and previous["desired"] == "stopped"
+        and previous.get("status") != "stopped"
+    )
     entry.update(
         sequence=sequence,
         generation=(previous or {}).get("generation", 0) + 1,
-        force=bool(request.get("force")),
+        force=bool(request.get("force")) or (stop_pending and bool(previous.get("force"))),
         requested_at=now,
         last_action=action,
     )
@@ -240,6 +249,10 @@ def idle_due(observation, now, keepalive_at=0):
 
 
 def failed_stop_due(entry, now):
-    """Whether the hour for inspecting a failed deployment has passed."""
-    latest = max(entry.get(key, 0) for key in ("outcome_at", "keepalive_at", "requested_at"))
+    """Whether the hour for inspecting a failed deployment has passed.
+
+    It counts from the deployment failure itself: `outcome_at` can predate it,
+    because a generation that already failed before deploying keeps its receipt.
+    """
+    latest = max(entry.get(key, 0) for key in ("failed_deployment_at", "keepalive_at", "requested_at"))
     return now - latest >= STOP_AFTER_SECONDS
