@@ -1450,6 +1450,11 @@ print(json.dumps(r))'''
         limit = self.config.get('output_bytes', getattr(self.backend, 'config', {}).get('output_bytes', 8388608))
         output = BoundedOutput(limit)
         fallback = self._partial_output(record) if tolerate_missing else None
+        # The supervisor already reported a file it could not fully save: one read is worth trying,
+        # but waiting for it to improve is not.
+        unusable = bool(outcome.get('output_incomplete'))
+        # The budget bounds how long a failing read is retried. Every chunk that was read restarts it,
+        # because a large output takes many reads and must not run out of time while they succeed.
         deadline = time.monotonic() + OUTPUT_RETRY_SECONDS
         for stream in ('stdout', 'stderr'):
             data_so_far = bytearray()
@@ -1461,11 +1466,12 @@ print(json.dumps(r))'''
                     data_so_far.extend(data)
                     if len(data_so_far) > limit:
                         raise ValueError('saved output exceeds limit')
+                    deadline = time.monotonic() + OUTPUT_RETRY_SECONDS
                     if eof:
                         break
                 except Exception:
                     remaining = deadline - time.monotonic()
-                    if remaining <= 0:
+                    if remaining <= 0 or unusable:
                         if not tolerate_missing:
                             raise
                         failed = True
