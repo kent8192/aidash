@@ -373,6 +373,48 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 	.await
 	.unwrap();
 	first.meter.charge(Direction::Sent, 0).await.unwrap();
+	// Failing to find out whether the operation may go on is not a decision about
+	// it: nothing is committed, so charging the same bytes again counts them once.
+	let before = sent_so_far(&f, operation, first.request).await;
+	assert_eq!(before, (14, 10));
+	sqlx::query(
+		"UPDATE core_operations SET subjects = jsonb_build_object('unreadable', subjects) WHERE id = $1",
+	)
+	.bind(operation)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let failure = first.meter.charge(Direction::Sent, 5).await.unwrap_err();
+	assert!(
+		!matches!(
+			failure,
+			aidash_application::Error::Conflict(_)
+				| aidash_application::Error::Forbidden
+				| aidash_application::Error::Unauthorized
+		),
+		"{failure}"
+	);
+	assert_eq!(
+		sent_so_far(&f, operation, first.request).await,
+		before,
+		"a failure that decides nothing commits nothing"
+	);
+	sqlx::query("UPDATE core_operations SET subjects = subjects -> 'unreadable' WHERE id = $1")
+		.bind(operation)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	// The gateway's retry. The budget is spent, so this is a decision, and one
+	// that commits the bytes it reports on.
+	assert!(matches!(
+		first.meter.charge(Direction::Sent, 5).await,
+		Err(aidash_application::Error::Conflict(code)) if code == aidash_domain::egress::LIMIT_EXCEEDED
+	));
+	assert_eq!(
+		sent_so_far(&f, operation, first.request).await,
+		(before.0 + 5, before.1 + 5),
+		"the bytes are counted once, in the budget and in the record"
+	);
 	f.store
 		.control(&scope, run.id, aidash_domain::RunControlAction::Cancel)
 		.await
@@ -392,7 +434,7 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		.unwrap()
 		.pop()
 		.unwrap();
-	assert_eq!(total.sent_bytes, 17);
+	assert_eq!(total.sent_bytes, 22);
 	let record = RequestRecord::objects()
 		.filter(RequestRecord::field_id().eq(first.request))
 		.all_with_executor(&mut *tx)
@@ -400,8 +442,36 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		.unwrap()
 		.pop()
 		.unwrap();
-	assert_eq!(record.sent_bytes, 6 + 4 + 3);
+	assert_eq!(record.sent_bytes, 6 + 4 + 5 + 3);
 	tx.commit().await.unwrap();
+}
+
+/// The operation's total sent bytes, and those of one of its requests.
+async fn sent_so_far(
+	f: &crate::federation::Federation,
+	operation: Uuid,
+	request: Uuid,
+) -> (i64, i64) {
+	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	let total = Budget::objects()
+		.filter(Budget::field_operation_id().eq(operation))
+		.filter(Budget::field_service().eq(""))
+		.all_with_executor(&mut *tx)
+		.await
+		.unwrap()
+		.pop()
+		.unwrap()
+		.sent_bytes;
+	let record = RequestRecord::objects()
+		.filter(RequestRecord::field_id().eq(request))
+		.all_with_executor(&mut *tx)
+		.await
+		.unwrap()
+		.pop()
+		.unwrap()
+		.sent_bytes;
+	tx.commit().await.unwrap();
+	(total, record)
 }
 
 fn times(duration_ms: u64) -> aidash_application::egress::RequestTimes {

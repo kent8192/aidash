@@ -1,5 +1,7 @@
 //! The gateway charges again after anything but a decision, so only a decision
-//! may commit the bytes it reports on.
+//! may commit the bytes it reports on. This is the rule on its own; the
+//! database test `native_gateway_serializes_cumulative_limits_and_refuses_revoked_bindings`
+//! shows a real debit keeping it, both for a decision and for a failure.
 use super::*;
 
 #[test]
