@@ -5,6 +5,22 @@ pub async fn entry(scope: &mut dyn RetainedCatalogScope, reference: &EntityRef) 
 	if scope.inherited() && !scope.approved(reference) {
 		return Err(Error::Forbidden);
 	}
+	let entry = current(scope, reference).await?;
+	scope.remember(reference);
+	Ok(entry)
+}
+/// [`entry`] for a definition met by a Read Recheck, as in
+/// [`recheck_entry`](super::recheck_entry).
+pub async fn recheck_entry(
+	scope: &mut dyn RetainedCatalogScope,
+	reference: &EntityRef,
+) -> Result<()> {
+	if !scope.inherited() || scope.approved(reference) {
+		return entry(scope, reference).await.map(|_| ());
+	}
+	current(scope, reference).await.map(|_| ())
+}
+async fn current(scope: &mut dyn RetainedCatalogScope, reference: &EntityRef) -> Result<Entry> {
 	let lock = !scope.inherited();
 	if scope.enabled(reference, lock).await? != Some(true) {
 		return Err(Error::Forbidden);
@@ -22,7 +38,6 @@ pub async fn entry(scope: &mut dyn RetainedCatalogScope, reference: &EntityRef) 
 	{
 		return Err(Error::Forbidden);
 	}
-	scope.remember(reference);
 	Ok(entry)
 }
 #[cfg(test)]

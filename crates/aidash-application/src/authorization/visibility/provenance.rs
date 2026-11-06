@@ -28,17 +28,33 @@ pub async fn run_reads_visible(scope: &mut dyn ReadProvenanceScope, run: Uuid) -
 		if !visited.insert(run) {
 			continue;
 		}
-		if !registry_reads_visible(scope, run).await?
-			|| !scope.remote_reads(run).await?
-			|| !scope.semantic_reads(run).await?
-			|| !scope.received_semantic(run).await?
-		{
+		let opened = scope.open_run_reads(run).await?;
+		let visible = one_run_reads_visible(scope, run, &mut pending).await;
+		if opened {
+			scope.close_run_reads();
+		}
+		if !visible? {
 			return Ok(false);
 		}
-		for (workspace, kind, id) in scope.sources(run).await? {
-			if !source_visible(scope, workspace, &kind, id, &mut pending).await? {
-				return Ok(false);
-			}
+	}
+	Ok(true)
+}
+
+async fn one_run_reads_visible(
+	scope: &mut dyn ReadProvenanceScope,
+	run: Uuid,
+	pending: &mut Vec<Uuid>,
+) -> Result<bool> {
+	if !registry_reads_visible(scope, run).await?
+		|| !scope.remote_reads(run).await?
+		|| !scope.semantic_reads(run).await?
+		|| !scope.received_semantic(run).await?
+	{
+		return Ok(false);
+	}
+	for (workspace, kind, id) in scope.sources(run).await? {
+		if !source_visible(scope, workspace, &kind, id, pending).await? {
+			return Ok(false);
 		}
 	}
 	Ok(true)
@@ -64,22 +80,36 @@ pub async fn run_reads_invalidity_with_pending(
 		if !visited.insert(run) {
 			continue;
 		}
-		if !registry_reads_visible(scope, run).await? {
-			return Ok(Some(Failure::Authority));
+		let opened = scope.open_run_reads(run).await?;
+		let invalidity = one_run_reads_invalidity(scope, run, &mut pending).await;
+		if opened {
+			scope.close_run_reads();
 		}
-		// Peer visibility carries no reason; preserve its existing verdict.
-		if !scope.remote_reads(run).await? || !scope.received_semantic(run).await? {
-			return Ok(Some(Failure::Invalidated));
-		}
-		if let Some(reason) = scope.semantic_invalidity(run, &mut pending).await? {
+		if let Some(reason) = invalidity? {
 			return Ok(Some(reason));
 		}
-		for (workspace, kind, id) in scope.sources(run).await? {
-			if let Some(reason) =
-				source_invalidity(scope, workspace, &kind, id, &mut pending, true).await?
-			{
-				return Ok(Some(reason));
-			}
+	}
+	Ok(None)
+}
+
+async fn one_run_reads_invalidity(
+	scope: &mut dyn ReadProvenanceScope,
+	run: Uuid,
+	pending: &mut Vec<Uuid>,
+) -> Result<Option<Failure>> {
+	if !registry_reads_visible(scope, run).await? {
+		return Ok(Some(Failure::Authority));
+	}
+	// Peer visibility carries no reason; preserve its existing verdict.
+	if !scope.remote_reads(run).await? || !scope.received_semantic(run).await? {
+		return Ok(Some(Failure::Invalidated));
+	}
+	if let Some(reason) = scope.semantic_invalidity(run, pending).await? {
+		return Ok(Some(reason));
+	}
+	for (workspace, kind, id) in scope.sources(run).await? {
+		if let Some(reason) = source_invalidity(scope, workspace, &kind, id, pending, true).await? {
+			return Ok(Some(reason));
 		}
 	}
 	Ok(None)

@@ -22,3 +22,17 @@ An agent the Tenant's policy permits may create a **Subnode** inside its own Nod
 ## Consequences
 
 - ADR 0028's "Agents cannot create Nodes (Subnodes)" now reads "Agents cannot create Nodes". The Subnode it deferred is the one defined here.
+
+## Amendment (2026-11-06)
+
+A creator could not hand work on after giving its Subnode a Task, and members could not use the Task it gave them (#750, #755). What the creator gives a Subnode is recorded as one of its reads, and a Read Recheck under an inherited authority stopped at any Workspace but its Run's own.
+
+- **A Read Recheck crosses the boundary; a read does not.** While it checks a Run's reads, a Read Recheck reaches the Subnode Workspaces that Run created or works in, whoever is checking. That covers a Run the creator delegated to, the creator's parent, and Subnodes that have ended. Policy still decides each record, and only the creating Run reads that Workspace directly.
+- **Only members skip the creator's reads.** A Run working in a Subnode's Workspace does not check what the creating Run had read, because it cannot read those records and the creator chose what to hand over. Anyone else who opens that Task is still checked, so a person who may not read the creator's records stays refused on it.
+- **A Read Recheck judges a definition by current policy.** An inherited authority still uses only the definitions its Run already used. A Read Recheck hands nothing over, so it no longer needs that: it decides as an authority that is not inherited does, and what the Run may use does not grow. Without this a creator could not read its members' outputs, and a parent could not depend on a Task its child created, so the rule applies to every inherited authority. It takes no lock, so an approval withdrawn at that moment can pass as if the read came just before it.
+
+Not chosen:
+
+- **Add the creator's Subnode Workspaces to its own authority.** A Run it delegated to would still stop at the same boundary.
+- **Skip the creator's reads for every reader.** People could then see what they may not read at its source.
+- **End the Read Recheck at the Subnode's boundary.** Members may bind Sources the creator did not, and the check on those would be lost.
