@@ -47,6 +47,11 @@ pub async fn create(
 	let allowed = decision.allowed;
 	scope.record(&[(evaluation, decision)]).await?;
 	if !allowed {
+		// This check evaluates the policy itself rather than through `Access::require`.
+		crate::authorization::refusal_note::set(crate::authorization::refusal_note::Note::new(
+			aidash_domain::tool::RefusalCheck::Policy,
+			Some(aidash_domain::identity::tenant_administration::SUBNODE_CREATE),
+		));
 		return Err(Error::Forbidden);
 	}
 	subnodes::check_can_create(scope.workspace_is_subnode(run.workspace_id).await?)

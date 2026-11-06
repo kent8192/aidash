@@ -2147,7 +2147,7 @@ async fn run_with_pending_call(
 			)
 			.value_expr(
 				reinhardt::query::Alias::new("error"),
-				reinhardt::query::Expr::cust("'execution authority denied'"),
+				reinhardt::query::Expr::cust("'task_delegate: task.delegate was denied'"),
 			);
 	}
 	sqlx::query(&update.to_string(reinhardt::query::PostgresQueryBuilder))
@@ -2358,6 +2358,80 @@ async fn a_policy_denied_delegation_pauses_the_run_naming_the_tool_and_the_check
 			"action": "task.delegate",
 		})
 	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_denial_of_the_agent_delegated_to_pauses_the_run_naming_that_subject(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	// Arrange: policy lets the Run delegate but denies task.execute to whoever executes.
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-execution","effect":"deny","subjects":{"any":true},"actions":["task.execute"],"resources":{"kinds":["task"]}}));
+	assert_eq!(
+		request(
+			&app,
+			&f.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let run = run_with_pending_call(
+		&f,
+		&app,
+		&token,
+		task,
+		&harness,
+		aidash_server::provider::ToolCall {
+			id: "delegated-denied".into(),
+			name: "task_delegate".into(),
+			arguments: json!({"task_id":task,"node_id":f.config.deployment,"agent":{"id":"research","version":"1.0.0"}}),
+		},
+		false,
+	)
+	.await;
+	// Act
+	harness.worker_once().await.unwrap();
+	// Assert: the delegating Run pauses, and its error names whose authority refused.
+	let paused = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	assert_eq!(
+		paused.control.as_str(),
+		"PAUSED",
+		"error={:?}",
+		paused.error
+	);
+	let error = paused.error.unwrap_or_default();
+	assert!(
+		error.starts_with("task_delegate: task.execute was denied for "),
+		"{error}"
+	);
+	// The call is replay-safe, so its invocation ends REFUSED and resume decides it again.
+	let status: String = sqlx::query_scalar(
+		&reinhardt::query::Query::select()
+			.column(reinhardt::query::Alias::new("status"))
+			.from(reinhardt::query::Alias::new("invocations"))
+			.and_where(reinhardt::query::Expr::cust(format!(
+				"run_id = '{}' AND tool = 'task_delegate'",
+				run.id
+			)))
+			.to_string(reinhardt::query::PostgresQueryBuilder),
+	)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(status, "REFUSED");
 	cleanup(f, &url, &schema).await;
 }
 

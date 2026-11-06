@@ -1,5 +1,5 @@
 use super::*;
-use aidash_application::recovery::AuthorityFailure;
+use aidash_application::{authorization::refusal_note, recovery::AuthorityFailure};
 use aidash_domain::{
 	RecoveryState, Run, StateVersion, ThinkingState,
 	context::{Context, recovery::Failure as ContextFailure},
@@ -345,7 +345,10 @@ async fn provider_contract_and_transient_failures_have_distinct_recovery(
 	}
 }
 #[rstest]
-#[case(AuthorityFailure::Denied(None), "execution authority denied")]
+#[case(
+	AuthorityFailure::Denied(None),
+	"inference: an authority check refused this step"
+)]
 #[case(AuthorityFailure::IdentityUnavailable, "identity status unavailable")]
 #[tokio::test]
 async fn lost_authority_pauses_instead_of_replaying_work(
@@ -354,6 +357,7 @@ async fn lost_authority_pauses_instead_of_replaying_work(
 	#[case] failure: AuthorityFailure,
 	#[case] reason: &str,
 ) {
+	let failure_kind = matches!(failure, AuthorityFailure::Denied(None));
 	let retry = recover(
 		&repository,
 		repository.token,
@@ -363,14 +367,57 @@ async fn lost_authority_pauses_instead_of_replaying_work(
 	.await
 	.unwrap();
 	assert!(!retry);
+	let writes = repository.writes.lock().unwrap();
+	match (&failure_kind, writes.as_slice()) {
+		(true, [Write::Refused(actual, event, refusal)]) => {
+			assert_eq!(actual, reason);
+			assert_eq!(event, "run.authorization_blocked");
+			assert_eq!(refusal.check, RefusalCheck::Unnamed);
+		}
+		(false, [Write::Pause(actual, event)]) => {
+			assert_eq!(actual, reason);
+			assert_eq!(event, "run.authorization_blocked");
+		}
+		other => panic!("unexpected writes {other:?}"),
+	}
+}
+#[rstest]
+#[tokio::test]
+async fn an_unnamed_refusal_takes_its_check_from_the_note_of_the_step(
+	repository: Repository,
+	now: DateTime<Utc>,
+) {
+	let retry = refusal_note::within(async {
+		refusal_note::set(refusal_note::Note::new(
+			RefusalCheck::Catalog,
+			Some("catalog.use"),
+		));
+		recover(
+			&repository,
+			repository.token,
+			ExecutionFailure::Authority(AuthorityFailure::Denied(None)),
+			now,
+		)
+		.await
+	})
+	.await
+	.unwrap();
+	assert!(!retry);
 	assert_eq!(
 		*repository.writes.lock().unwrap(),
-		[Write::Pause(
-			reason.into(),
-			"run.authorization_blocked".into()
+		[Write::Refused(
+			"inference: Catalog Approval refused catalog.use".into(),
+			"run.authorization_blocked".into(),
+			AuthorityRefusal {
+				tool: "inference".into(),
+				check: RefusalCheck::Catalog,
+				action: Some("catalog.use".into()),
+				subject: None,
+			}
 		)]
 	);
 }
+
 #[rstest]
 #[tokio::test]
 async fn a_refused_tool_pauses_naming_the_tool_and_the_check(
@@ -381,6 +428,7 @@ async fn a_refused_tool_pauses_naming_the_tool_and_the_check(
 		tool: "task_delegate".into(),
 		check: RefusalCheck::Policy,
 		action: Some("task.delegate".into()),
+		subject: None,
 	};
 	let retry = recover(
 		&repository,

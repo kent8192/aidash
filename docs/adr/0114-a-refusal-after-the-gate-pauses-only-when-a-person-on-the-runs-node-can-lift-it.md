@@ -31,3 +31,12 @@ Checks record why they refused in a note scoped to the tool call, and the harnes
 - A plain `NotFound` never reads the note, so a Run does not pause on a genuine "file unavailable" after an ignored denial.
 - A leftover `Forbidden` does not know where it came from, so its log line names only the Run, the tool and the call.
 - A person cannot yet decline a paused call and let the Run go on. That is #763.
+
+## Implementation
+
+- The note is a task-local cell in `aidash-application` (`authorization/refusal_note.rs`). The harness scopes one around every tool effect (`invoke`, and each `dispatch` of a Tool Batch) and reads it when the effect ends, and scopes another around a whole worker step, from the step gate through recovery, so `recover` can name a refusal raised outside a tool call (inference, compaction, worker entry, `human_read`) after the stage the Run was in. Outside a scope the note is a no-op, so HTTP paths are unchanged.
+- `Access::require` sets a `Policy` note on denial and clears a `Policy` note on allow, so the last check wins. `decide` never does, because `task_visible` uses it. `subnodes::create` evaluates policy itself and sets the note there. Catalog admission sets a `Catalog` note at each of its refusals. A Tenant Deletion sets its note where `TenantDeleted` becomes `Forbidden`, which covers every source of that error at once.
+- The Agent being delegated to is the subject an execution admission appends to the chain. `Access` remembers it, and a denial names it only when the policy denies that subject.
+- `reference.read` for the delegated Agent's attachments uses `get_for_admission`, which keeps `Forbidden`; the Reference API and the management endpoint that configures attachments still use `get`, which answers 404.
+- A peer's 404 is `NotFound`. An authority refresh (`authorization::tools::refresh`) maps it back to `Forbidden`, so a Remote Grant Run still pauses.
+- `invocations.status` gains `REFUSED` in two migrations: `0120` for the database CHECK and `0121` for the ORM state, because a migration is either database-only or state-only.

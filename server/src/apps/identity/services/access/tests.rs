@@ -127,6 +127,7 @@ fn access() -> Access {
 		identity,
 		snapshot,
 		subjects: vec!["alice".into()],
+		delegated_subject: None,
 		durable_audit: false,
 		audit: false,
 		context: json!({}),

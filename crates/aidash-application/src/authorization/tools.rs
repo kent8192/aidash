@@ -30,7 +30,15 @@ pub async fn refresh(repository: &dyn AgentToolRepository) -> Result<()> {
 	if scope.transaction_active() {
 		scope.suspend().await?;
 	}
-	if !scope.replace_remote_authority().await? {
+	// A 404 while refreshing keeps today's named pause: the Run's authority cannot be proved.
+	let replaced = scope
+		.replace_remote_authority()
+		.await
+		.map_err(|error| match error {
+			Error::NotFound(_) => Error::Forbidden,
+			error => error,
+		})?;
+	if !replaced {
 		return Err(Error::Forbidden);
 	}
 	Ok(())
@@ -83,6 +91,7 @@ fn refused(call: &ToolCall, check: RefusalCheck, action: Option<&str>) -> Error 
 		tool: call.name.clone(),
 		check,
 		action: action.map(str::to_owned),
+		subject: None,
 	}))
 }
 

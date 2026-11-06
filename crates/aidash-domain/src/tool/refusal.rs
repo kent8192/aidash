@@ -25,17 +25,28 @@ pub enum RefusalCheck {
 	PluginTool,
 	/// The agent may not delegate to the Node the execution names.
 	AgentExecution,
+	/// A Tenant Deletion is in progress or has completed for the Run's Tenant.
+	TenantDeletion,
+	/// The Run's own authority was gone when the effect had already happened.
+	RunAuthority,
+	/// An authority check refused a step and left no note saying which one.
+	Unnamed,
 }
 
-/// A tool call refused by the Run's authority. It names the tool and the check,
+/// A step refused by the Run's authority. It names the tool (or stage) and the check,
 /// never the resource it addressed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuthorityRefusal {
+	/// The tool, or the stage (such as `worker start`) when no tool was running.
 	pub tool: String,
 	pub check: RefusalCheck,
 	/// The policy or Catalog action that was refused, when the check has one.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub action: Option<String>,
+	/// Whose authority refused, set only when it is not the Run's own subject chain: the
+	/// Agent a task is delegated to.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub subject: Option<String>,
 }
 
 impl fmt::Display for AuthorityRefusal {
@@ -44,6 +55,10 @@ impl fmt::Display for AuthorityRefusal {
 		let tool = &self.tool;
 		let action = self.action.as_deref();
 		match (self.check, action) {
+			(RefusalCheck::Policy, Some(action)) if self.subject.is_some() => {
+				let subject = self.subject.as_deref().unwrap_or_default();
+				write!(f, "{tool}: {action} was denied for {subject}")
+			}
 			(RefusalCheck::Policy, Some(action)) => write!(f, "{tool}: {action} was denied"),
 			(RefusalCheck::Policy, None) => write!(f, "{tool}: policy denied the call"),
 			(RefusalCheck::AgentFlag, _) => {
@@ -80,6 +95,18 @@ impl fmt::Display for AuthorityRefusal {
 			(RefusalCheck::AgentExecution, _) => {
 				write!(f, "{tool}: the agent may not delegate to this Node")
 			}
+			(RefusalCheck::TenantDeletion, _) => {
+				write!(f, "{tool}: the Tenant is being deleted")
+			}
+			(RefusalCheck::RunAuthority, _) => {
+				write!(
+					f,
+					"{tool}: the Run's authority was gone after the call had run"
+				)
+			}
+			(RefusalCheck::Unnamed, _) => {
+				write!(f, "{tool}: an authority check refused this step")
+			}
 		}
 	}
 }
@@ -109,8 +136,46 @@ mod tests {
 			tool: "task_delegate".into(),
 			check,
 			action: action.map(str::to_owned),
+			subject: None,
 		};
 		assert_eq!(refusal.to_string(), expected);
+	}
+
+	#[rstest]
+	#[case(
+		RefusalCheck::TenantDeletion,
+		"task_delegate: the Tenant is being deleted"
+	)]
+	#[case(
+		RefusalCheck::RunAuthority,
+		"task_delegate: the Run's authority was gone after the call had run"
+	)]
+	#[case(
+		RefusalCheck::Unnamed,
+		"task_delegate: an authority check refused this step"
+	)]
+	fn fixed_checks_have_their_own_sentence(#[case] check: RefusalCheck, #[case] expected: &str) {
+		let refusal = AuthorityRefusal {
+			tool: "task_delegate".into(),
+			check,
+			action: None,
+			subject: None,
+		};
+		assert_eq!(refusal.to_string(), expected);
+	}
+
+	#[rstest]
+	fn delegated_subject_is_named() {
+		let refusal = AuthorityRefusal {
+			tool: "task_delegate".into(),
+			check: RefusalCheck::Policy,
+			action: Some("reference.read".into()),
+			subject: Some("agent:architect".into()),
+		};
+		assert_eq!(
+			refusal.to_string(),
+			"task_delegate: reference.read was denied for agent:architect"
+		);
 	}
 
 	#[rstest]

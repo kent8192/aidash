@@ -1,9 +1,22 @@
 //! Durable worker recovery. Retrying an outbox never repeats a failed tool.
-use aidash_application::{Result, ports::ExecutionRecoveryStore, recovery::ExecutionFailure};
+use aidash_application::{
+	Result, authorization::refusal_note, ports::ExecutionRecoveryStore, recovery::ExecutionFailure,
+};
 use aidash_domain::semantic::{Failure as SemanticFailure, OUTAGE_RETRIES, PENDING_REPLAY_SECONDS};
-use aidash_domain::{FailureTarget, RetryState, RunControl, RunState, WaitingState};
+use aidash_domain::{FailureTarget, RetryState, RunControl, RunPhase, RunState, WaitingState};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
+
+/// The stage an unnamed authority refusal is reported under, from the Run's phase.
+fn stage(phase: RunPhase) -> &'static str {
+	match phase {
+		RunPhase::Ready => "worker start",
+		RunPhase::Thinking => "inference",
+		RunPhase::ToolCall => "tool call",
+		RunPhase::Waiting => "resume",
+		RunPhase::Completed | RunPhase::Failed | RunPhase::Cancelled => "run",
+	}
+}
 
 /// Returns whether a generic worker-retry metric should be incremented.
 /// Every write is fenced by the original worker token in the repository.
@@ -97,6 +110,9 @@ pub async fn recover(
 		current.recovery.context_reason = Some(reason);
 		store.pause_context(&current, token, reason).await?;
 	} else if let ExecutionFailure::Authority(authority) = failure {
+		// The tool call that raised a named refusal has already named it; any other step is
+		// named after the stage the Run was in and the note its checks left.
+		let authority = authority.named(stage(current.phase()), refusal_note::take());
 		store
 			.pause(
 				&current,

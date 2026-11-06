@@ -16,9 +16,17 @@ fn reply(status: u16) -> Reply {
 #[rstest]
 #[case(401)]
 #[case(403)]
-#[case(404)]
 fn permanent_denials_never_reflect_peer_body(#[case] status: u16) {
 	assert!(matches!(classify(reply(status)), Err(Error::Forbidden)));
+}
+#[rstest]
+fn a_receiver_that_did_not_find_it_is_no_denial() {
+	let mut response = reply(404);
+	response.body = Err(Error::External("private receiver text".into()));
+	assert!(matches!(
+		classify(response),
+		Err(Error::NotFound(message)) if message == "the target Node did not find it"
+	));
 }
 #[rstest]
 fn receiver_can_share_a_closed_execution_refusal_without_reflecting_its_body() {

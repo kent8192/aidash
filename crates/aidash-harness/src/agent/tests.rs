@@ -1905,9 +1905,16 @@ async fn refused_tool_call_is_a_model_correctable_result(fixture: Fixture) {
 		&fixture.run,
 		Uuid::nil(),
 		"refused-call",
-		Err(Error::Refused(
-			"member needs a tool outside the allowance".into(),
-		)),
+		DeliveredTool {
+			name: "task_delegate",
+			replay_safe: true,
+		},
+		(
+			Err(Error::Refused(
+				"member needs a tool outside the allowance".into(),
+			)),
+			None,
+		),
 	)
 	.await
 	.unwrap();

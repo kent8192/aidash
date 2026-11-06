@@ -43,6 +43,15 @@ impl ExecutionGrantSession for Admission<'_> {
 		&self.access.subjects
 	}
 	fn set_subjects(&mut self, subjects: Vec<String>) {
+		// An execution admission appends the Agent a task is delegated to. Its refusals are that
+		// Agent's, not the Run's own.
+		let appended = subjects.len() == self.access.subjects.len() + 1
+			&& subjects.starts_with(&self.access.subjects);
+		self.access.delegated_subject = if appended {
+			subjects.last().cloned()
+		} else {
+			None
+		};
 		self.access.subjects = subjects;
 	}
 	fn select_worker(&mut self, run: Uuid, durable: Option<bool>) {

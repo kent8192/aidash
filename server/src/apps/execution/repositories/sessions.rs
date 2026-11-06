@@ -145,7 +145,7 @@ impl SessionScope for Scope<'_> {
 			.map_err(Into::into)
 	}
 	async fn reference(&mut self, id: Uuid) -> Result<()> {
-		references::get(self.access, id, "reference.read")
+		references::get_for_admission(self.access, id, "reference.read")
 			.await
 			.map(|_| ())
 			.map_err(Into::into)

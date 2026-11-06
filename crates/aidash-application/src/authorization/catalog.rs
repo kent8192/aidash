@@ -29,12 +29,22 @@ pub async fn closure_entry(
 	admit(scope, reference, action, None, users).await
 }
 
+/// `Forbidden`, with a note that Catalog Approval refused `action`.
+fn catalog_refusal(action: &str) -> Error {
+	super::refusal_note::set(super::refusal_note::Note::new(
+		aidash_domain::tool::RefusalCheck::Catalog,
+		Some(action),
+	));
+	Error::Forbidden
+}
+
 /// The refusal of a Tenant policy denial met while admitting a Catalog entry for `tool`'s call.
 pub fn policy_refusal(tool: &str, action: &str) -> Error {
 	Error::AuthorityRefused(Box::new(aidash_domain::tool::AuthorityRefusal {
 		tool: tool.to_owned(),
 		check: aidash_domain::tool::RefusalCheck::Policy,
 		action: Some(action.to_owned()),
+		subject: None,
 	}))
 }
 
@@ -60,7 +70,7 @@ async fn admit(
 		&& !scope.approved(reference)
 		&& !crate::registry::system::builtin_reference(reference)
 	{
-		return Err(Error::Forbidden);
+		return Err(catalog_refusal(action));
 	}
 	// A cache hit already holds the distribution lock taken by its first
 	// admission in this transaction; a new admission takes it before reading
@@ -81,7 +91,7 @@ async fn admit(
 		if !scope.permits_restriction(reference, direct_user).await? {
 			// A restriction narrows the Tenant policy; refuse exactly as an
 			// unapproved version does, without disclosing the restriction.
-			return Err(Error::Forbidden);
+			return Err(catalog_refusal(action));
 		}
 	}
 	// The distribution, catalog and policy locks taken by the first admission keep it
@@ -90,12 +100,15 @@ async fn admit(
 		scope.remember(reference);
 		return Ok(entry);
 	}
-	let document = scope.document(reference).await?.ok_or(Error::Forbidden)?;
+	let document = scope
+		.document(reference)
+		.await?
+		.ok_or_else(|| catalog_refusal(action))?;
 	let entry: Entry = serde_json::from_value(document)?;
 	if let Some(projection) = &entry.installation
 		&& (projection.contract != 1 || projection.tenant != scope.tenant())
 	{
-		return Err(Error::Forbidden);
+		return Err(catalog_refusal(action));
 	}
 	let resource = scope.resource(&entry);
 	scope

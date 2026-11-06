@@ -39,6 +39,8 @@ struct Lab {
 	dropped: AtomicUsize,
 	/// The next N admissions fail as if the worker stopped after batch admission.
 	admit_failures: AtomicUsize,
+	/// The next N admissions are refused with a sentence for the model.
+	admit_refusals: AtomicUsize,
 	cancel: watch::Sender<bool>,
 }
 impl Lab {
@@ -53,6 +55,7 @@ impl Lab {
 			max_in_flight: AtomicUsize::new(0),
 			dropped: AtomicUsize::new(0),
 			admit_failures: AtomicUsize::new(0),
+			admit_refusals: AtomicUsize::new(0),
 			cancel: watch::channel(false).0,
 		})
 	}
@@ -186,6 +189,14 @@ impl ExecutionTool for Probe {
 			.is_ok()
 		{
 			return Err(Error::External("worker stopped after admission".into()));
+		}
+		if self
+			.lab
+			.admit_refusals
+			.fetch_update(SeqCst, SeqCst, |left| left.checked_sub(1))
+			.is_ok()
+		{
+			return Err(Error::Refused("admission refused the call".into()));
 		}
 		Ok(input)
 	}
@@ -494,6 +505,10 @@ impl ExecutionStore for Bench {
 		let mut journal = self.0.journal.lock().unwrap();
 		if let Some(existing) = journal.get_mut(key) {
 			assert_eq!(existing.name, name);
+			if existing.status == "REFUSED" {
+				existing.status = "STARTED";
+				existing.result = None;
+			}
 			let retrying = std::mem::take(&mut existing.delivery_pending);
 			let status = if existing.status == "STARTED" && !existing.replay_safe && !retrying {
 				"UNCERTAIN"
@@ -543,6 +558,23 @@ impl ExecutionStore for Bench {
 			entry.result = Some(failure.clone());
 		}
 		Ok(entry.delivery_failures)
+	}
+	async fn invocation_refused(
+		&self,
+		_run: &Run,
+		token: Uuid,
+		key: &str,
+		refusal: &aidash_domain::tool::AuthorityRefusal,
+	) -> Result<()> {
+		assert_eq!(token, self.0.token);
+		let mut journal = self.0.journal.lock().unwrap();
+		let entry = journal.get_mut(key).unwrap();
+		if entry.status == "STARTED" {
+			entry.status = "REFUSED";
+			entry.result =
+				Some(json!({"error":{"kind":"authority_refused","message":refusal.to_string()}}));
+		}
+		Ok(())
 	}
 	async fn invocation_answer_lost(&self, _run: &Run, token: Uuid, key: &str) -> Result<()> {
 		assert_eq!(token, self.0.token);
@@ -1598,4 +1630,234 @@ impl Bench {
 	async fn semantic_context(&self, _frame: ContextSourceFrame<'_>) -> SemanticContextRead {
 		unexpected("ExecutionEnvironment.semantic_context")
 	}
+}
+
+/// A check that refused the call and left a note, as `Access::require` does.
+fn refused_by_policy(action: &str) -> Error {
+	refusal_note::set(refusal_note::Note::new(
+		aidash_domain::tool::RefusalCheck::Policy,
+		Some(action),
+	));
+	Error::Forbidden
+}
+
+#[tokio::test]
+async fn an_unclassified_refusal_reaches_the_model_and_the_run_goes_on() {
+	// Arrange
+	let lab = Lab::new(|_, _| async { Err(Error::Forbidden) }.boxed());
+	let (bench, mut run) = bench(&lab, &["file_read"], 1, None);
+	// Act
+	advance(&bench, &mut run).await.unwrap();
+	// Assert
+	let results = adopted(&run);
+	let message = results[0].1["error"].as_str().unwrap();
+	assert!(
+		message.contains("An internal check refused this call"),
+		"{message}"
+	);
+	assert!(message.contains("Do not repeat this call"), "{message}");
+	assert!(!message.contains("partly happened"), "{message}");
+	assert_eq!(bench.status(&key(&run, 0)).0, "COMPLETED");
+}
+
+#[tokio::test]
+async fn an_unclassified_refusal_of_an_unsafe_tool_says_it_may_have_partly_happened() {
+	let lab = Lab::new(|_, _| async { Err(Error::Unauthorized) }.boxed());
+	let (bench, mut run) = bench(&lab, &["unsafe_test"], 1, None);
+	advance(&bench, &mut run).await.unwrap();
+	let message = adopted(&run)[0].1["error"].as_str().unwrap().to_owned();
+	assert!(message.contains("may have partly happened"), "{message}");
+	assert_eq!(bench.status(&key(&run, 0)).0, "COMPLETED");
+}
+
+#[tokio::test]
+async fn not_found_is_a_call_error_even_after_a_swallowed_denial() {
+	// Arrange: a denial was ignored, then the tool ended with a plain NotFound.
+	let lab = Lab::new(|_, _| {
+		async {
+			refusal_note::set(refusal_note::Note::new(
+				aidash_domain::tool::RefusalCheck::Policy,
+				Some("reference.read"),
+			));
+			Err(Error::NotFound("file unavailable".into()))
+		}
+		.boxed()
+	});
+	let (bench, mut run) = bench(&lab, &["file_read"], 1, None);
+	// Act
+	advance(&bench, &mut run).await.unwrap();
+	// Assert
+	let message = adopted(&run)[0].1["error"].as_str().unwrap().to_owned();
+	assert!(message.starts_with("file unavailable. "), "{message}");
+	assert_eq!(bench.status(&key(&run, 0)).0, "COMPLETED");
+}
+
+#[tokio::test]
+async fn a_conflict_still_fails_the_run() {
+	let lab = Lab::new(|_, _| {
+		async {
+			Err(Error::Conflict(
+				"admitted Binding definition changed".into(),
+			))
+		}
+		.boxed()
+	});
+	let (bench, mut run) = bench(&lab, &["file_read"], 1, None);
+	let result = advance(&bench, &mut run).await;
+	assert!(matches!(result, Err(Error::Conflict(_))));
+	assert_eq!(bench.status(&key(&run, 0)).0, "STARTED");
+}
+
+#[tokio::test]
+async fn a_noted_refusal_pauses_naming_the_check_and_refuses_the_invocation() {
+	let lab = Lab::new(|_, _| async { Err(refused_by_policy("task.delegate")) }.boxed());
+	let (bench, mut run) = bench(&lab, &["file_read"], 1, None);
+	let result = advance(&bench, &mut run).await;
+	let Err(Error::AuthorityRefused(refusal)) = result else {
+		panic!("expected a named pause, got {result:?}");
+	};
+	assert_eq!(refusal.tool, "file_read");
+	assert_eq!(refusal.check, aidash_domain::tool::RefusalCheck::Policy);
+	assert_eq!(refusal.action.as_deref(), Some("task.delegate"));
+	assert_eq!(bench.status(&key(&run, 0)).0, "REFUSED");
+}
+
+#[tokio::test]
+async fn resuming_a_refused_invocation_runs_the_call_again() {
+	let lab = Lab::new(|_, call| {
+		async move {
+			if call.attempt == 1 {
+				Err(refused_by_policy("task.delegate"))
+			} else {
+				Ok(read(&call.path))
+			}
+		}
+		.boxed()
+	});
+	let (bench, mut run) = bench(&lab, &["file_read"], 1, None);
+	assert!(advance(&bench, &mut run).await.is_err());
+	assert_eq!(bench.status(&key(&run, 0)).0, "REFUSED");
+	advance(&bench, &mut run).await.unwrap();
+	assert_eq!(adopted(&run), expected(&[(0, read("p0"))]));
+	assert_eq!(bench.status(&key(&run, 0)).0, "COMPLETED");
+}
+
+#[tokio::test]
+async fn a_noted_refusal_of_an_unsafe_tool_stays_started() {
+	let lab = Lab::new(|_, _| async { Err(refused_by_policy("preview.start")) }.boxed());
+	let (bench, mut run) = bench(&lab, &["unsafe_test"], 1, None);
+	let result = advance(&bench, &mut run).await;
+	assert!(matches!(result, Err(Error::AuthorityRefused(_))));
+	assert_eq!(bench.status(&key(&run, 0)).0, "STARTED");
+}
+
+#[tokio::test]
+async fn a_run_authority_refusal_after_the_effect_leaves_the_invocation_started() {
+	let lab = Lab::new(|_, _| {
+		async {
+			Err(Error::AuthorityRefused(Box::new(
+				aidash_domain::tool::AuthorityRefusal {
+					tool: "file_read".into(),
+					check: aidash_domain::tool::RefusalCheck::RunAuthority,
+					action: None,
+					subject: None,
+				},
+			)))
+		}
+		.boxed()
+	});
+	let (bench, mut run) = bench(&lab, &["file_read"], 1, None);
+	let result = advance(&bench, &mut run).await;
+	assert!(matches!(result, Err(Error::AuthorityRefused(_))));
+	assert_eq!(bench.status(&key(&run, 0)).0, "STARTED");
+}
+
+#[tokio::test]
+async fn a_refused_error_from_a_batched_call_is_a_call_error() {
+	let lab = Lab::new(|_, call| {
+		async move {
+			if call.path == "p1" {
+				Err(Error::Refused(
+					"task t was not found or is not visible to this Run".into(),
+				))
+			} else {
+				Ok(read(&call.path))
+			}
+		}
+		.boxed()
+	});
+	let (bench, mut run) = bench(
+		&lab,
+		&["file_read", "file_read"],
+		2,
+		Some(ToolSlots::new(2)),
+	);
+	advance(&bench, &mut run).await.unwrap();
+	assert_eq!(
+		adopted(&run),
+		expected(&[
+			(0, read("p0")),
+			(
+				1,
+				json!({"error":"task t was not found or is not visible to this Run"})
+			)
+		])
+	);
+}
+
+#[tokio::test]
+async fn batched_calls_do_not_see_each_others_notes() {
+	// Arrange: call 0 leaves a note and ends with NotFound; call 1 ends with a bare Forbidden.
+	let lab = Lab::new(|_, call| {
+		async move {
+			if call.path == "p0" {
+				refusal_note::set(refusal_note::Note::new(
+					aidash_domain::tool::RefusalCheck::Policy,
+					Some("reference.read"),
+				));
+				tokio::task::yield_now().await;
+				Err(Error::NotFound("gone".into()))
+			} else {
+				tokio::task::yield_now().await;
+				Err(Error::Forbidden)
+			}
+		}
+		.boxed()
+	});
+	let (bench, mut run) = bench(
+		&lab,
+		&["file_read", "file_read"],
+		2,
+		Some(ToolSlots::new(2)),
+	);
+	// Act
+	advance(&bench, &mut run).await.unwrap();
+	// Assert: call 1 saw no note, so it is an unclassified Rejected Call, not a pause.
+	let results = adopted(&run);
+	assert!(
+		results[1].1["error"]
+			.as_str()
+			.unwrap()
+			.contains("An internal check refused this call")
+	);
+}
+
+#[tokio::test]
+async fn a_refused_admission_is_a_call_error_and_the_batch_goes_on() {
+	let lab = Lab::new(|_, call| async move { Ok(read(&call.path)) }.boxed());
+	lab.admit_refusals.store(1, SeqCst);
+	let (bench, mut run) = bench(
+		&lab,
+		&["file_read", "file_read"],
+		2,
+		Some(ToolSlots::new(2)),
+	);
+	advance(&bench, &mut run).await.unwrap();
+	assert_eq!(
+		adopted(&run),
+		expected(&[
+			(0, json!({"error":"admission refused the call"})),
+			(1, read("p1"))
+		])
+	);
 }

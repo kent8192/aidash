@@ -14,6 +14,22 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+/// The Run's own authority was gone when its tool call had already had its effect. The harness
+/// fills in the tool and leaves the invocation `STARTED`.
+fn authority_gone_after_effect(error: Error) -> Error {
+	match error {
+		Error::Forbidden | Error::Unauthorized => {
+			Error::AuthorityRefused(Box::new(aidash_domain::tool::AuthorityRefusal {
+				tool: String::new(),
+				check: aidash_domain::tool::RefusalCheck::RunAuthority,
+				action: None,
+				subject: None,
+			}))
+		}
+		error => error,
+	}
+}
+
 async fn memory_run_check(access: &mut Access, run: &crate::domain::RunMetadata) -> Result<()> {
 	match access.run_invalidity(run).await? {
 		None => Ok(()),
@@ -1186,8 +1202,14 @@ impl WorkerAuthority {
 		let result =
 			crate::semantic::native_memory::run_mutate(store, &mut lease, run, key, changes).await;
 		let result = lease.finish(result).await;
-		refresh_access_for_run(&mut outer, store, run).await?;
-		memory_run_check(&mut outer, &run.metadata()).await?;
+		// The write has committed, so a Run whose authority is gone pauses; telling the model
+		// the call was refused would be false.
+		refresh_access_for_run(&mut outer, store, run)
+			.await
+			.map_err(authority_gone_after_effect)?;
+		memory_run_check(&mut outer, &run.metadata())
+			.await
+			.map_err(authority_gone_after_effect)?;
 		result
 	}
 	pub async fn memory_recall(
@@ -1745,7 +1767,11 @@ impl WorkerAuthority {
 				aidash_application::authorization::home::delegate(&repository, task, node, agent)
 					.await
 					.map_err(Into::into);
-			refresh_access_for_run(&mut lease, &f.store, run).await?;
+			// The delegation has reached the other Node, so a Run whose authority is gone
+			// pauses; the model is not told the call was refused.
+			refresh_access_for_run(&mut lease, &f.store, run)
+				.await
+				.map_err(authority_gone_after_effect)?;
 			return result;
 		}
 		// Prepare the child's closure on the outer transaction: an inner shared

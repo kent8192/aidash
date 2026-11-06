@@ -357,12 +357,12 @@ async fn worker_effects_cannot_target_tasks_outside_the_source_workspace(
 	let denied = if delegation {
 		matches!(
 			delegate(&mut scope, &run, id(4), &run.home_node, &agent()).await,
-			Err(Error::Forbidden)
+			Err(Error::Refused(message)) if message.contains("not found or is not visible")
 		)
 	} else {
 		matches!(
 			assign(&mut scope, &run, id(4), "policy", "reason").await,
-			Err(Error::Forbidden)
+			Err(Error::Refused(message)) if message.contains("not found or is not visible")
 		)
 	};
 	assert!(denied);
@@ -468,14 +468,17 @@ async fn retries_cannot_rebind_an_existing_child_task_origin(
 		"chain" => scope.origin.authority.subject_chain.push("other".into()),
 		_ => panic!("unknown fence"),
 	};
-	let Error::Conflict(message) = create_task(&mut scope, &run, "key", &input())
+	let Error::Refused(message) = create_task(&mut scope, &run, "key", &input())
 		.await
 		.err()
 		.unwrap()
 	else {
 		panic!("expected origin conflict")
 	};
-	assert_eq!(message, "task already has a different origin");
+	assert_eq!(
+		message,
+		"the task already exists with a different origin; use a new idempotency key"
+	);
 	assert_eq!(scope.calls.last(), Some(&"origin"));
 	assert_eq!(scope.origin_writes, vec![(id(4), id(1))]);
 }
@@ -584,14 +587,17 @@ async fn an_existing_grant_cannot_hide_changed_delegation_authority(
 		grant.credential_id = id(99);
 	}
 	scope.grant = Some(grant);
-	let Error::Conflict(message) = delegate(&mut scope, &run, id(4), &run.home_node, &agent())
+	let Error::Refused(message) = delegate(&mut scope, &run, id(4), &run.home_node, &agent())
 		.await
 		.err()
 		.unwrap()
 	else {
 		panic!("expected authority conflict")
 	};
-	assert_eq!(message, "task already has a different authority");
+	assert_eq!(
+		message,
+		"the task was already delegated under a different authority"
+	);
 	assert_eq!(scope.calls.last(), Some(&"grant"));
 	assert!(!scope.calls.contains(&"delegate"));
 }

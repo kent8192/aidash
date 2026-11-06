@@ -1,6 +1,7 @@
 //! Durable agent execution use case. All effects cross application ports.
 use aidash_application::{
 	Error, Result,
+	authorization::refusal_note::{self, Note as RefusalNote},
 	capabilities::approvals::{
 		AUTO_MODE_INSTRUCTION, DONT_ASK_HUMAN_REQUEST, INVOKE, ToolCallApproval, ToolCallRequest,
 		ToolCallTarget, answer_deadline_response, answer_for_model,
@@ -21,11 +22,23 @@ use aidash_domain::{
 	registry::bindings::{AgentBindings, BindingSnapshot},
 	research::citations,
 	semantic::{Failure, InputRead},
-	tool::{Continuation, ResultFitting, ToolIdentity, ToolUseMode},
+	tool::{
+		AuthorityRefusal, Continuation, RefusalCheck, ResultFitting, ToolIdentity, ToolUseMode,
+	},
 	*,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
+
+/// Appended to every call error that the model must not answer by calling again.
+const DO_NOT_REPEAT: &str = "Do not repeat this call.";
+
+/// The tool whose effect just ended.
+#[derive(Clone, Copy)]
+struct DeliveredTool<'a> {
+	name: &'a str,
+	replay_safe: bool,
+}
 
 /// The calls of one response that a Tool Batch may cover, starting at the cursor.
 struct BatchStep<'a> {
@@ -45,20 +58,73 @@ pub struct Executor<'a> {
 	environment: &'a dyn ExecutionEnvironment,
 }
 impl<'a> Executor<'a> {
+	/// Turn the end of a tool's effect into what the Run does next. `outcome` carries the
+	/// refusal note the call left, read in the scope of the call itself.
 	async fn tool_delivery_result(
 		store: &dyn ExecutionStore,
 		run: &Run,
 		token: Uuid,
 		key: &str,
-		result: Result<Value>,
+		tool: DeliveredTool<'_>,
+		outcome: (Result<Value>, Option<RefusalNote>),
 	) -> Result<Value> {
+		let (result, note) = outcome;
 		match result {
 			Ok(value) => Ok(value),
 			Err(
 				Error::Invalid(message)
 				| Error::Refused(message)
 				| Error::Domain(aidash_domain::Error::Invalid(message)),
-			) => Ok(json!({"error":message})),
+			) => {
+				tracing::info!(run_id = %run.id, tool = tool.name, %message, "tool call refused");
+				Ok(json!({"error":message}))
+			}
+			// A refusal that names its check pauses the Run, and so does a plain one whose
+			// check left a note.
+			Err(Error::Forbidden | Error::Unauthorized) if note.is_some() => {
+				let note = note.expect("checked above");
+				Self::tool_refused(
+					store,
+					run,
+					token,
+					key,
+					tool,
+					AuthorityRefusal {
+						tool: tool.name.to_owned(),
+						check: note.check,
+						action: note.action,
+						subject: note.subject,
+					},
+				)
+				.await
+			}
+			Err(Error::AuthorityRefused(refusal)) => {
+				Self::tool_refused(store, run, token, key, tool, *refusal).await
+			}
+			// Nothing classified this refusal. No authority is lost by telling the model: every
+			// model request checks the Run's authority again.
+			Err(Error::Forbidden | Error::Unauthorized) => {
+				tracing::warn!(
+					run_id = %run.id,
+					tool = tool.name,
+					key,
+					"unclassified refusal after the gate returned to the model"
+				);
+				let partly = if tool.replay_safe {
+					""
+				} else {
+					" The call may have partly happened."
+				};
+				Ok(json!({"error":format!(
+					"An internal check refused this call. Changing authority will not help, so \
+					 another way is needed.{partly} {DO_NOT_REPEAT}"
+				)}))
+			}
+			// A swallowed denial could leave a note behind; never read it here.
+			Err(Error::NotFound(message)) => Ok(json!({"error":format!(
+				"{}. {DO_NOT_REPEAT}",
+				message.trim_end_matches('.')
+			)})),
 			Err(Error::ToolNotDelivered {
 				message,
 				retry_after,
@@ -83,6 +149,34 @@ impl<'a> Executor<'a> {
 			}
 			Err(error) => Err(error),
 		}
+	}
+	/// Pause the Run on `refusal`. A replay-safe call that proved nothing ran ends `REFUSED` so
+	/// resuming runs it again. An `Unsafe` call stays `STARTED`, since running it again could
+	/// repeat the effect, and so does a call whose effect had already happened.
+	async fn tool_refused(
+		store: &dyn ExecutionStore,
+		run: &Run,
+		token: Uuid,
+		key: &str,
+		tool: DeliveredTool<'_>,
+		mut refusal: AuthorityRefusal,
+	) -> Result<Value> {
+		if refusal.tool.is_empty() {
+			refusal.tool = tool.name.to_owned();
+		}
+		// A refusal without a policy decision leaves no row in `authorization_decisions`; this
+		// line is what explains it afterwards.
+		tracing::info!(
+			run_id = %run.id,
+			tool = %refusal.tool,
+			check = ?refusal.check,
+			action = ?refusal.action,
+			"tool call refused by an authority check; pausing the Run"
+		);
+		if tool.replay_safe && refusal.check != RefusalCheck::RunAuthority {
+			store.invocation_refused(run, token, key, &refusal).await?;
+		}
+		Err(Error::AuthorityRefused(Box::new(refusal)))
 	}
 	pub fn new(environment: &'a dyn ExecutionEnvironment) -> Self {
 		Self { environment }
@@ -233,6 +327,7 @@ impl<'a> Executor<'a> {
 					Ok(input) => Ok(input),
 					Err(
 						Error::Invalid(message)
+						| Error::Refused(message)
 						| Error::Domain(aidash_domain::Error::Invalid(message)),
 					) => Err(message),
 					Err(error) => return Err(error),
@@ -261,7 +356,11 @@ impl<'a> Executor<'a> {
 							admitted,
 							token,
 							key,
-							tool.dispatch(admitted, input, key).await,
+							DeliveredTool {
+								name: &calls[cursor + offset].name,
+								replay_safe: true,
+							},
+							refusal_note::scoped(tool.dispatch(admitted, input, key)).await,
 						)
 						.await?
 					}
@@ -2970,7 +3069,8 @@ connection: None,
 				} else if let Some(output) = prepared_result {
 					output
 				} else {
-					match tool.invoke(run, call.arguments.clone(), &key).await {
+					let (invoked, note) = refusal_note::scoped(tool.invoke(run, call.arguments.clone(), &key)).await;
+					match invoked {
                         Ok(output) => {
                             if contract.behavior.tenant_tool_call() {
                                 self.checkpoint_connection_success(run, token, &call.name).await?;
@@ -2978,7 +3078,7 @@ connection: None,
                             output
                         },
                         Err(Error::Connection(cause)) => self.checkpoint_connection_refusal(run,token,connections::RefusedCall {call,tool:tool.as_ref(),guard,key:&key},cause).await?,
-                        other => Self::tool_delivery_result(store, run, token, &key, other).await?,
+                        other => Self::tool_delivery_result(store, run, token, &key, DeliveredTool { name: &call.name, replay_safe: contract.replay_safe() }, (other, note)).await?,
 					}
 				};
                 // Revalidate Research before deriving any media selection. A completed
