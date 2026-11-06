@@ -3760,11 +3760,11 @@ class NormalDeleteProofTest(unittest.TestCase):
 
 
 class PythonInterpreterStopTest(unittest.TestCase):
-    """Stopping a cell's interpreter must not delete the Pod because a slow watcher has not settled it."""
+    """A cell's interpreter stop ends on the Pod's own result, never on a slow watcher or a guess."""
     cell = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
     session = 'e6ded09d-f783-4ce8-98e9-dbfca68884f2'
 
-    def _run(self, *, session_result, stop_fails=False):
+    def _run(self, *, session_result, stop_fails=False, result_after=0, during=None, after=None):
         import json
         import tempfile
         from pathlib import Path
@@ -3773,25 +3773,36 @@ class PythonInterpreterStopTest(unittest.TestCase):
         from execution_pod import ExecutionPodController
         clock = [0.0]
         calls = []
+        reads = [0]
+        outcome = SimpleNamespace(clock=clock, calls=calls)
         def kube(args, *rest, **kwargs):
             calls.append(args)
             if 'stop' in args and stop_fails:
                 raise RuntimeError('exec failed')
+            if 'output' in args:
+                return SimpleNamespace(returncode=1, stdout=b'')
             if 'result' in args:
-                if session_result is None:
+                reads[0] += 1
+                if session_result is None or clock[0] < result_after:
+                    if during:
+                        during(outcome.controller, reads[0])
                     return SimpleNamespace(returncode=1, stdout=b'')
                 return SimpleNamespace(returncode=0, stdout=json.dumps(dict(
                     session_result, operation_id=self.session, run_id='r')).encode())
             return SimpleNamespace(returncode=0, stdout=b'')
         with tempfile.TemporaryDirectory() as directory:
             controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=True)
+            outcome.controller = controller
             controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
             controller._stop_matching_pod = Mock()
+            controller.submit_command = Mock(return_value={'status': 'queued'})
             cell = {'operation_id': self.cell, 'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod',
                     'pod_uid': 'uid', 'docker_enabled': False, 'background': False, 'status': 'running',
                     'kind': 'python_cell', 'session_operation_id': self.session}
             controller._command_path(self.cell).write_text(json.dumps(cell))
-            # The session stays `running` in the journal: after a Runner restart its watcher polls only every 5 s.
+            controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id': self.session}))
+            # The session stays `running` in the journal: after a Runner restart its watcher polls only every 5 s
+            # and then reads saved output, which fails here.
             controller._command_path(self.session).write_text(json.dumps({'operation_id': self.session,
                 'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid', 'docker_enabled': False,
                 'background': True, 'status': 'running', 'kind': 'python_session'}))
@@ -3800,26 +3811,63 @@ class PythonInterpreterStopTest(unittest.TestCase):
             with patch('time.monotonic', side_effect=lambda: clock[0]), patch('time.sleep', side_effect=tick):
                 controller._finish_command(cell, {'status': 'timed_out'},
                                            {'stdout': '', 'stderr': '', 'truncated': False})
-            return controller, calls, controller._read_command(self.cell)['status']
+                if after:
+                    after(controller)
+            outcome.cell_status = controller._read_command(self.cell)['status']
+            return outcome
 
     def test_stopped_interpreter_is_read_from_its_result_not_from_the_watcher(self):
-        controller, calls, cell_status = self._run(session_result={'status': 'stopped'})
-        controller._stop_matching_pod.assert_not_called()
-        self.assertEqual(cell_status, 'timed_out')
-        self.assertTrue(any('stop' in args for args in calls))
+        run = self._run(session_result={'status': 'stopped'})
+        run.controller._stop_matching_pod.assert_not_called()
+        self.assertEqual(run.cell_status, 'timed_out')
+        self.assertTrue(any('stop' in args for args in run.calls))
 
-    def test_accepted_stop_never_deletes_the_pod_when_nothing_can_be_read_yet(self):
-        controller, _, cell_status = self._run(session_result=None)
-        controller._stop_matching_pod.assert_not_called()
-        self.assertEqual(cell_status, 'timed_out')
+    def test_supervisor_still_draining_after_the_old_ten_second_wait_keeps_the_pod(self):
+        run = self._run(session_result={'status': 'stopped'}, result_after=35)
+        run.controller._stop_matching_pod.assert_not_called()
+        self.assertEqual(run.cell_status, 'timed_out')
+        self.assertGreaterEqual(run.clock[0], 35)
 
-    def test_supervisor_reporting_unconfirmed_termination_still_deletes_the_pod(self):
-        controller, _, _ = self._run(session_result={'status': 'termination_unconfirmed'})
-        controller._stop_matching_pod.assert_called_once_with('s', 'uid')
+    def test_accepted_stop_without_a_terminal_result_deletes_the_pod_at_the_limit(self):
+        from execution_pod import PYTHON_STOP_SECONDS
+        run = self._run(session_result=None)
+        run.controller._stop_matching_pod.assert_called_once_with('s', 'uid')
+        self.assertGreaterEqual(run.clock[0], PYTHON_STOP_SECONDS)
 
-    def test_stop_request_that_cannot_be_delivered_still_deletes_the_pod(self):
-        controller, _, _ = self._run(session_result=None, stop_fails=True)
-        controller._stop_matching_pod.assert_called_once_with('s', 'uid')
+    def test_the_limit_covers_what_the_supervisor_does_after_a_stop(self):
+        import sandbox_v2
+        from execution_pod import PYTHON_STOP_SECONDS
+        # run_supervised: up to 5 s to kill and reap, FORWARD_GRACE_SECONDS for the readers, up to 30 s
+        # more to drain them, and 0.5 s per reader to give up.
+        self.assertGreater(PYTHON_STOP_SECONDS, 5 + sandbox_v2.FORWARD_GRACE_SECONDS + 30 + 2 * .5)
+
+    def test_supervisor_reporting_unconfirmed_termination_deletes_the_pod(self):
+        run = self._run(session_result={'status': 'termination_unconfirmed'})
+        run.controller._stop_matching_pod.assert_called_once_with('s', 'uid')
+
+    def test_stop_request_that_cannot_be_delivered_deletes_the_pod(self):
+        run = self._run(session_result=None, stop_fails=True)
+        run.controller._stop_matching_pod.assert_called_once_with('s', 'uid')
+
+    def test_session_being_stopped_is_not_handed_to_a_new_cell(self):
+        from execution_pod import ExecutionPodError
+        attempts = []
+        def during(controller, read):
+            if read == 1:
+                try:
+                    attempts.append(controller.start_python('s', 'r'))
+                except ExecutionPodError as error:
+                    attempts.append(error.code)
+        def after(controller):
+            # The stop is confirmed by the Pod while the session watcher still has the journal at `running`.
+            self.assertEqual(controller._read_command(self.session)['status'], 'running')
+            attempts.append(controller.start_python('s', 'r'))
+        run = self._run(session_result={'status': 'stopped'}, result_after=3, during=during, after=after)
+        run.controller._stop_matching_pod.assert_not_called()
+        self.assertEqual(attempts[0], 'session_interrupted')
+        self.assertEqual(run.controller.submit_command.call_count, 1)
+        self.assertNotEqual(attempts[1]['operation_id'], self.session)
+        self.assertFalse(attempts[1].get('session_replaced', False))
 
 
 class SavedOutputBudgetTest(unittest.TestCase):

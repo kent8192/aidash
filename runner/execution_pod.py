@@ -5,6 +5,13 @@ from threading import Lock, RLock
 STOP_RETRY_SECONDS = 15 * 60
 LATE_RESULT_SECONDS = 24 * 60 * 60
 OUTPUT_RETRY_SECONDS = 60
+# How long a Python interpreter may take to show a terminal result once its stop was accepted. After the
+# stop signal the in-Pod supervisor (sandbox_v2.run_supervised) kills and reaps the interpreter's processes
+# within 5 s, joins its output readers for FORWARD_GRACE_SECONDS (5 s), drains a reader that is still held
+# open for up to 30 s more, and gives up on each of the two readers after 0.5 s: 5 + 5 + 30 + 1 = 41 s.
+# A session records no system changes (record_changes is off for kind `session`), so no tree scan adds to
+# that. The other 19 s are for the 5 s kubectl exec of each result read and for scheduling.
+PYTHON_STOP_SECONDS = 60
 
 
 def helper_command(*args):
@@ -1650,29 +1657,27 @@ print(json.dumps(r))'''
 
     def _stop_python_interpreter(self, operation_id):
         import time
+        # From here until the Pod shows a terminal result the interpreter is on its way out, and
+        # `_start_python` must not hand the session to a new cell.
+        self._update_command(operation_id, interpreter_stopping=True)
         result = self.stop_background(operation_id)
-        # `stopping` means the Pod accepted the stop request. A session watcher that was resumed after a
-        # Runner restart settles the journal only every few seconds, so the Pod's own result is read
-        # directly. An accepted stop is never turned into a Pod deletion by that watcher being slow.
-        accepted = result.get('status') == 'stopping'
-        deadline = time.monotonic() + 10
+        # The Pod's own result is the evidence: a session watcher resumed after a Runner restart polls only
+        # every few seconds and then reads saved output, and must not decide whether the stop worked. An
+        # accepted stop request proves nothing by itself, so without a terminal result the limit ends in
+        # stop_failed and the Pod is deleted.
+        deadline = time.monotonic() + PYTHON_STOP_SECONDS
         while True:
             status = result.get('status')
             if status in ('completed', 'timed_out', 'stopped', 'cancelled'):
                 return
             if status == 'interrupted':
                 raise ExecutionPodError('stop_failed', 'Python interpreter termination could not be confirmed')
-            if accepted:
-                outcome = self._interpreter_outcome(operation_id)
-                if outcome in ('completed', 'timed_out', 'stopped'):
-                    return
-                if outcome == 'termination_unconfirmed':
-                    raise ExecutionPodError('stop_failed', 'Python interpreter termination could not be confirmed')
-            if time.monotonic() >= deadline:
-                if accepted:
-                    return
+            outcome = self._interpreter_outcome(operation_id)
+            if outcome in ('completed', 'timed_out', 'stopped'):
+                return
+            if outcome == 'termination_unconfirmed' or time.monotonic() >= deadline:
                 raise ExecutionPodError('stop_failed', 'Python interpreter termination could not be confirmed')
-            time.sleep(.1)
+            time.sleep(.25)
             result = self.command_result(operation_id)
 
     def _interpreter_outcome(self, operation_id):
@@ -1990,7 +1995,14 @@ print(json.dumps(r))'''
                                             'The previous Python session outcome is unknown; it cannot be restarted yet')
                 record = self._read_command(prior['operation_id'])
             if record['status'] in ('queued', 'running') and same_pod:
-                return prior
+                if not record.get('interpreter_stopping'):
+                    return prior
+                # A cell is waiting for this session's interpreter to stop. Only the Pod's own result shows
+                # that it is gone, because the journal can lag behind it; until then two interpreters must
+                # not run in one Run, and the dying one must not receive a cell.
+                if self._interpreter_outcome(prior['operation_id']) not in ('completed', 'timed_out', 'stopped'):
+                    raise ExecutionPodError('session_interrupted',
+                                            'The previous Python session is being stopped; it cannot be restarted yet')
             replaced = not same_pod and record['status'] in ('running', 'queued', 'interrupted')
         else:
             replaced = False
