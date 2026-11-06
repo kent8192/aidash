@@ -403,11 +403,16 @@ impl Store {
 	/// The Node that acts for the operation `remote_tenancy` found: the Node a
 	/// remote Run executes at, the Node a remote grant was issued from, or the
 	/// Node of a local Run.
+	/// The Node a cross-Node operation of this admission and grant is sent from.
+	/// In one Deployment the Home's grant and the receiver's Run live in the same
+	/// database, so a row naming `peer` itself is the other end of the exchange
+	/// and not the sender (#751).
 	pub(crate) async fn remote_node(
 		&self,
 		scope: &TenancyScope,
 		admission: Uuid,
 		grant: Uuid,
+		peer: Option<&aidash_domain::nodes::NodeName>,
 	) -> Result<aidash_domain::nodes::NodeName> {
 		let name: Option<String> = self
 			.pool
@@ -426,7 +431,10 @@ impl Store {
 					)
 					.scalar_optional(&mut **tx)
 					.await?;
-					if node.is_some() {
+					if node
+						.as_deref()
+						.is_some_and(|node| peer.is_none_or(|peer| peer.as_str() != node))
+					{
 						return Ok(node);
 					}
 				}
