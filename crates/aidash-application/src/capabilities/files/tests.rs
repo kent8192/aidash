@@ -3,6 +3,8 @@ use crate::ports::capabilities::files::Limits;
 use aidash_domain::{policy::Resource, registry::Entry};
 struct Scope {
 	bytes: Vec<u8>,
+	/// What a file holds when it is not the default `bytes`, by path.
+	contents: std::collections::BTreeMap<String, Vec<u8>>,
 	opens: usize,
 	search_seconds: u64,
 	open_delay: std::time::Duration,
@@ -126,11 +128,11 @@ impl FileScopePort for Scope {
 	async fn output(&mut self, _area: &Area, _id: Uuid) -> Result<Option<(String, i64, String)>> {
 		panic!("unexpected output effect")
 	}
-	async fn open(&mut self, _file: &FileEntry) -> Result<Box<dyn VerifiedFile>> {
+	async fn open(&mut self, file: &FileEntry) -> Result<Box<dyn VerifiedFile>> {
 		self.opens += 1;
 		tokio::time::sleep(self.open_delay).await;
 		Ok(Box::new(MemoryReader {
-			bytes: self.bytes.clone(),
+			bytes: self.contents.get(&file.path).unwrap_or(&self.bytes).clone(),
 			offset: 0,
 		}))
 	}
@@ -231,6 +233,7 @@ fn fixture(bytes: &[u8]) -> (Scope, Area, FileEntry) {
 	(
 		Scope {
 			bytes: bytes.to_vec(),
+			contents: Default::default(),
 			opens: 0,
 			search_seconds: 5,
 			open_delay: std::time::Duration::ZERO,
@@ -500,6 +503,49 @@ async fn one_very_long_line_does_not_stop_a_search_of_everything_else() {
 	.await
 	.unwrap_err();
 	assert!(selected.to_string().contains("SEARCH_LINE_LIMIT"));
+}
+#[tokio::test]
+async fn a_full_page_is_returned_with_a_cursor_when_the_next_file_has_a_very_long_line() {
+	let (mut scope, mut area, _) = fixture(b"needle\n");
+	three_files(&mut area);
+	scope.contents.insert("b.md".into(), vec![b'x'; 70_000]);
+	let input = FileSearch {
+		query: "needle".into(),
+		mode: SearchMode::Literal,
+		scope: FileScope::Working,
+		path: None,
+		cursor: None,
+		limit: Some(1),
+	};
+	let first = search(&mut scope, &area, input.clone()).await.unwrap();
+	assert_eq!(first["matches"][0]["path"], "a.md", "{first}");
+	assert_eq!(first["truncated"], true, "{first}");
+	let mut found = vec!["a.md".to_owned()];
+	let mut unavailable = 0;
+	let mut cursor = first["next_cursor"].as_str().map(str::to_owned);
+	while cursor.is_some() {
+		let page = search(
+			&mut scope,
+			&area,
+			FileSearch {
+				cursor: cursor.take(),
+				..input.clone()
+			},
+		)
+		.await
+		.unwrap();
+		found.extend(
+			page["matches"]
+				.as_array()
+				.unwrap()
+				.iter()
+				.map(|item| item["path"].as_str().unwrap().to_owned()),
+		);
+		unavailable += page["unavailable"].as_array().unwrap().len();
+		cursor = page["next_cursor"].as_str().map(str::to_owned);
+	}
+	assert_eq!(found, ["a.md", "c.md"]);
+	assert_eq!(unavailable, 1, "the long line is reported once");
 }
 #[tokio::test]
 async fn publication_tombstones_only_removed_working_objects() {

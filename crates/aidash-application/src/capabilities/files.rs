@@ -450,9 +450,15 @@ pub async fn search(
 				// stop a search of everything else.
 				Err(Error::Invalid(message))
 					if message.starts_with("SEARCH_LINE_LIMIT")
-						&& input.path.as_deref() != Some(&file.path)
-						&& matches.len() + unavailable.len() < limit =>
+						&& input.path.as_deref() != Some(&file.path) =>
 				{
+					// A full page must not lose what it found: stop here with a cursor, and
+					// the next page, which starts empty, reports this file and moves on.
+					if matches.len() + unavailable.len() >= limit {
+						cursor.line = index;
+						exhausted = false;
+						break;
+					}
 					unavailable.push(json!({"file_id":file.file_id,"error":"SEARCH_LINE_LIMIT"}));
 					break;
 				}
