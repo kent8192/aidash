@@ -10,8 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 def text_page(text):
     """One page whose content stream draws this text with a standard font."""
-    from pypdf.generic import (ArrayObject, DecodedStreamObject, DictionaryObject, FloatObject,
-                               NameObject)
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
     stream = DecodedStreamObject()
     stream.set_data(f"BT /F1 12 Tf 10 100 Td ({text}) Tj ET".encode())
     font = DictionaryObject({NameObject("/Type"): NameObject("/Font"),
