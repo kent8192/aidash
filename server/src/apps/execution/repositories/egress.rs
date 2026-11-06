@@ -270,7 +270,7 @@ fn token(
 	Ok(format!("{}{preview}.{signature}", kind.prefix()))
 }
 
-fn runner_key(store: &Store) -> Result<secrecy::SecretString> {
+pub(super) fn runner_key(store: &Store) -> Result<secrecy::SecretString> {
 	let runner = store
 		.capabilities
 		.0

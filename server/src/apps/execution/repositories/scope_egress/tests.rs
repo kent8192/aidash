@@ -281,3 +281,222 @@ fn storage_counter_ceiling_cannot_turn_a_budget_into_unlimited_traffic() {
 		.finish();
 	assert!(budget_available(&row, u64::MAX, u64::MAX).is_err());
 }
+
+const KEY: &str = "scope-test-key";
+
+async fn insert_space(
+	federation: &crate::federation::Federation,
+	tenant: &str,
+	settings: aidash_domain::scratch::ScratchSettings,
+) -> Uuid {
+	let now = Utc::now();
+	let space = aidash_domain::scratch::ScratchSpace {
+		id: Uuid::new_v4(),
+		node: tenant_roots::fixture_node_name(tenant),
+		name: "scope".to_owned(),
+		creator: "owner".to_owned(),
+		state: aidash_domain::scratch::ScratchState::Active,
+		revision: 0,
+		wipe_generation: 0,
+		settings,
+		members: Default::default(),
+		created_at: now,
+		last_used_at: now,
+	};
+	let mut tx = federation
+		.store
+		.pool
+		.begin(&TenancyScope::tenant(tenant).unwrap())
+		.await
+		.unwrap();
+	crate::apps::workspaces::repositories::scratch::insert(&mut *tx, tenant, &space)
+		.await
+		.unwrap();
+	tx.commit().await.unwrap();
+	space.id
+}
+
+async fn delete_space(federation: &crate::federation::Federation, tenant: &str, space: Uuid) {
+	let mut tx = federation
+		.store
+		.pool
+		.begin(&TenancyScope::tenant(tenant).unwrap())
+		.await
+		.unwrap();
+	crate::apps::workspaces::repositories::scratch::delete(&mut *tx, tenant, space)
+		.await
+		.unwrap();
+	tx.commit().await.unwrap();
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[timeout(std::time::Duration::from_secs(180))]
+async fn a_scope_credential_opens_its_live_scratch_space_until_the_space_is_deleted(
+	#[future] database: DatabaseFixture,
+) {
+	let database = database.await;
+	let context = reinhardt::InjectionContext::builder(reinhardt::SingletonScope::new()).build();
+	let settings = settings::settings_for(&database.url);
+	let federation = crate::bootstrap::initialize(&context, &settings, database.connection.clone())
+		.await
+		.unwrap();
+	tenant_roots::tenant_root(&federation, "acme").await;
+	let mut chosen = aidash_domain::scratch::ScratchSettings {
+		daily_sent_bytes: 11,
+		daily_received_bytes: 22,
+		..Default::default()
+	};
+	chosen.allowed_hosts = aidash_domain::scratch::HostAllowlist::Hosts(
+		["registry.npmjs.org", "not-allowed-by-the-tenant.example"]
+			.map(str::to_owned)
+			.into(),
+	);
+	let space = insert_space(&federation, "acme", chosen).await;
+	let policy = federation.config.scratch_policy.clone();
+	let authority = Arc::new(ScratchAuthority::with_key(
+		federation.store.clone(),
+		policy,
+		KEY,
+	));
+	let credential = authority.credential("acme", space).unwrap();
+	let durable = DurableScopes::new(federation.store.clone(), authority.clone());
+
+	let resolved = durable.resolve(&credential).await.unwrap();
+	assert_eq!(resolved.id.tenant, "acme");
+	assert_eq!(resolved.id.scratch_space, space);
+	assert_eq!(
+		resolved.id.node,
+		tenant_roots::fixture_node_name("acme").to_string()
+	);
+	assert_eq!(resolved.budget.sent_bytes, 11);
+	assert_eq!(resolved.budget.received_bytes, 22);
+	assert_eq!(
+		resolved.allowed_hosts.hosts,
+		vec!["registry.npmjs.org".to_owned()],
+		"the Tenant's limit narrows the space's own hosts"
+	);
+	durable.admit_connection(&resolved).await.unwrap();
+	durable.check_active(&resolved, &credential).await.unwrap();
+
+	let foreign = ScratchAuthority::with_key(
+		federation.store.clone(),
+		federation.config.scratch_policy.clone(),
+		"another-key",
+	)
+	.credential("acme", space)
+	.unwrap();
+	assert!(matches!(
+		durable.resolve(&foreign).await,
+		Err(aidash_application::Error::Unauthorized)
+	));
+	assert!(matches!(
+		durable
+			.admit_external(&credential, "maps", "GET", "/", "digest")
+			.await,
+		Err(aidash_application::Error::Forbidden)
+	));
+
+	delete_space(&federation, "acme", space).await;
+	assert!(matches!(
+		durable.resolve(&credential).await,
+		Err(aidash_application::Error::Unauthorized)
+	));
+}
+
+/// Reads until the gateway closes the connection.
+async fn proxy_request(address: std::net::SocketAddr, request: String) -> String {
+	use tokio::io::{AsyncReadExt, AsyncWriteExt};
+	let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+	client.write_all(request.as_bytes()).await.unwrap();
+	let mut response = String::new();
+	client.read_to_string(&mut response).await.unwrap();
+	response
+}
+
+fn connect_request(target: &str, credential: &str) -> String {
+	format!(
+		"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\nProxy-Authorization: Bearer {credential}\r\nConnection: close\r\n\r\n"
+	)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[timeout(std::time::Duration::from_secs(180))]
+async fn a_real_listener_records_host_connections_in_the_database(
+	#[future] database: DatabaseFixture,
+) {
+	let database = database.await;
+	let context = reinhardt::InjectionContext::builder(reinhardt::SingletonScope::new()).build();
+	let settings = settings::settings_for(&database.url);
+	let federation = crate::bootstrap::initialize(&context, &settings, database.connection.clone())
+		.await
+		.unwrap();
+	tenant_roots::tenant_root(&federation, "acme").await;
+	let space = insert_space(&federation, "acme", Default::default()).await;
+	let authority = Arc::new(ScratchAuthority::with_key(
+		federation.store.clone(),
+		federation.config.scratch_policy.clone(),
+		KEY,
+	));
+	let credential = authority.credential("acme", space).unwrap();
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let address = listener.local_addr().unwrap();
+	let (stop, receiver) = tokio::sync::watch::channel(false);
+	let gateway = tokio::spawn(aidash_integrations::egress::serve_with_scopes(
+		listener,
+		Arc::new(crate::apps::execution::repositories::egress::Gateway::new(
+			federation.store.clone(),
+		)),
+		Some(Arc::new(DurableScopes::new(
+			federation.store.clone(),
+			authority,
+		))),
+		Default::default(),
+		receiver,
+	));
+
+	let refused = proxy_request(address, connect_request("registry.npmjs.org:443", "wrong")).await;
+	assert!(refused.contains("proxy_auth_required"), "{refused}");
+	let forbidden = proxy_request(
+		address,
+		connect_request("not-allowed.example:443", &credential),
+	)
+	.await;
+	assert!(forbidden.contains("egress_host_forbidden"), "{forbidden}");
+	// Port 0 is held to the record's check constraint from its first write.
+	for port in [22, 0] {
+		let invalid = proxy_request(
+			address,
+			connect_request(&format!("registry.npmjs.org:{port}"), &credential),
+		)
+		.await;
+		assert!(invalid.contains("invalid_proxy_target"), "{invalid}");
+	}
+	stop.send(true).unwrap();
+	gateway.await.unwrap().unwrap();
+
+	let records: Vec<(String, i32, String)> = sqlx::query_as(
+		"SELECT host, port, outcome FROM egress_scope_connections WHERE scope_id = $1 ORDER BY created_at",
+	)
+	.bind(space)
+	.fetch_all(federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		records,
+		vec![
+			("not-allowed.example".to_owned(), 443, "refused".to_owned()),
+			(
+				"registry.npmjs.org".to_owned(),
+				22,
+				"invalid_proxy_target".to_owned()
+			),
+			(
+				"registry.npmjs.org".to_owned(),
+				0,
+				"invalid_proxy_target".to_owned()
+			),
+		]
+	);
+}
