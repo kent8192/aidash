@@ -806,7 +806,7 @@ print(json.dumps(r))'''
     # Statuses with which the API server rejects a request without acting on it. Any other failure,
     # such as a timeout, a dropped connection or a status like ServerTimeout or ServiceUnavailable,
     # leaves it open whether the request was applied.
-    REFUSED_REASONS = frozenset({'Unauthorized', 'Forbidden', 'Invalid', 'BadRequest', 'Conflict',
+    REFUSED_REASONS = frozenset({'Unauthorized', 'Forbidden', 'NotFound', 'Invalid', 'BadRequest', 'Conflict',
                                  'MethodNotAllowed', 'NotAcceptable', 'RequestEntityTooLarge',
                                  'UnsupportedMediaType', 'TooManyRequests'})
 

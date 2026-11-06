@@ -3715,6 +3715,7 @@ class NormalDeleteProofTest(unittest.TestCase):
             'Error from server (Conflict): Precondition failed: UID in precondition: uid, UID in object meta: other',
             'Error from server (Invalid): Pod "x" is invalid',
             'Error from server (Unauthorized): Unauthorized',
+            'Error from server (NotFound): pods "x" not found',
         )
         for message in refusals:
             with self.subTest(message), tempfile.TemporaryDirectory() as directory:
