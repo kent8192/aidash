@@ -35,6 +35,9 @@ TERMINAL = {"completed", "cancelled", "failed", "uncertain"}
 PROBE_PROTOCOL = "aidash-admission-probe/2"
 ALLOCATION_OBSERVATION_ATTEMPTS = 5
 STOP_WATCH_SECONDS = 1800
+# Bounds the wait for a Pod to be ready and the retries of a start that keeps
+# failing. It does not bound the input upload or the dispatch: a command that
+# is ready to start is not refused for having uploaded many files (#709).
 START_LIMIT_SECONDS = 120
 DEFAULT_UNCERTAIN_RETENTION_SECONDS = 86400
 
@@ -1099,8 +1102,6 @@ class Runner(AllocationJournal):
             elif prepared["digest"] != record["request"]["digest"]:
                 raise StartupIdentityMismatch("Python input identity changed")
             record = self.update(operation, hydrated=True)
-        if not record.get('executed') and time.time() >= record['startup_at'] + START_LIMIT_SECONDS:
-            raise RuntimeError('Python startup timed out before dispatch')
         record = self.update(operation, executed=True, status=record.get('status') if record.get('status') == 'cancelling' else 'running',
                              running_at=record.get('running_at') or time.time())
         if not record.get('cancel_requested'):
@@ -1629,8 +1630,6 @@ class Runner(AllocationJournal):
                                     break
                 elif prepared["digest"] != record["request"]["digest"]:
                     raise StartupIdentityMismatch("running input identity changed")
-                if time.time() >= record['startup_at'] + START_LIMIT_SECONDS:
-                    raise RuntimeError('sandbox startup timed out before dispatch')
                 self.update(operation, executed=True, dispatch_at=record.get('dispatch_at') or time.time())
                 # The collector stamps the start when it sets the deadline
                 # and publishes the command, after verifying the inputs,

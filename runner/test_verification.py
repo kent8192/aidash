@@ -101,6 +101,96 @@ class VerificationTest(unittest.TestCase):
                 runner.allocation_harvested.assert_called_once()
                 runner.close_allocation.assert_called_once()
 
+    def starting(self, root, kind, *, executed, uploads=0, started=None):
+        """A command whose Pod is running, seen at `started` seconds after its start limit began."""
+        runner = self.runner(root)
+        runner.config.update(processes=128, output_bytes=1024)
+        operation, uid = str(uuid.uuid4()), str(uuid.uuid4())
+        files = [{'file_id': str(uuid.uuid4()), 'path': f'input-{index}', 'scope': 'working', 'size': 3,
+                  'digest': hashlib.sha256(b'abc').hexdigest()} for index in range(uploads)]
+        (Path(root) / (operation + '.inputs')).mkdir()
+        for file in files:
+            (Path(root) / (operation + '.inputs') / file['file_id']).write_bytes(b'abc')
+        clock = [1000.0]
+        record = {'operation_id': operation, 'request': dict(request(kind), files=files), 'digest': 'fixture',
+                  'wire_digest': 'digest', 'status': 'starting', 'executed': executed, 'cancel_requested': False,
+                  'startup_at': clock[0] - (started if started is not None else 5), 'pod_uid': uid}
+        if executed:
+            record.update(dispatch_at=record['startup_at'] + 1)
+        runner.get = Mock(side_effect=lambda _: record.copy())
+        runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+        runner.active = {operation}
+        runner.execution_limits = Mock(return_value={})
+        runner.guard = Mock(return_value={})
+        runner.allocations = Path(root) / 'allocations'
+        runner.allocations.mkdir()
+        save(runner.allocations / (uid + '.json'), {'resource_version': '101', 'receipt': 'present'})
+        runner.pod = Mock(return_value={'metadata': {'uid': uid, 'resourceVersion': '101', 'annotations': {'aidash/digest': 'digest'}},
+            'spec': {'nodeName': 'node', 'containers': [{'image': 'image'}]}, 'status': {'containerStatuses': [
+                {'name': 'execution', 'containerID': 'containerd://cid', 'state': {'running': {}}},
+                {'name': 'collector', 'state': {'running': {}}}]}})
+        return runner, operation, record, clock
+
+    def test_a_long_input_upload_is_not_charged_to_the_start_limit(self):
+        # The start limit bounds the wait for the Pod; uploading inputs is not part of it (#709, decision 9).
+        class Dispatched(Exception):
+            pass
+
+        for kind in ('shell', 'python'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as root:
+                runner, operation, record, clock = self.starting(root, kind, executed=False, uploads=4)
+                seen = []
+
+                def collector(_, action, data=None, **kwargs):
+                    seen.append(action[0])
+                    if action[0] == 'prepared':
+                        return Mock(stdout=b'{"digest":null}')
+                    if action[0] == 'write':
+                        clock[0] += 40
+                        return Mock(stdout=b'')
+                    # A shell command starts at its hydrate; a Python cell is sent to the node guard after it.
+                    if kind == 'shell':
+                        raise Dispatched
+                    return Mock(stdout=b'{}')
+
+                def guard(_, action, **kwargs):
+                    if action == 'cell':
+                        raise Dispatched
+                    return {}
+
+                runner.exec_collector = Mock(side_effect=collector)
+                runner.guard = Mock(side_effect=guard)
+                with patch('time.time', side_effect=lambda: clock[0]), patch('time.sleep'), self.assertRaises(Dispatched):
+                    (runner._reconcile_python_once if kind == 'python' else runner._reconcile_shell_once)(operation)
+                self.assertEqual(seen, ['prepared'] + ['write'] * 4 + ['hydrate'])
+                self.assertGreater(clock[0] - record['startup_at'], 120)
+                self.assertTrue(record['executed'])
+
+    def test_a_dispatched_command_gets_its_hydrate_and_its_cancel_after_the_start_limit(self):
+        # Hydrate started the command but its reply was lost: the retry must send it again, and must reach the
+        # cancel handling, however long ago the start limit began.
+        class Delivered(Exception):
+            pass
+
+        with tempfile.TemporaryDirectory() as root:
+            runner, operation, record, clock = self.starting(root, 'shell', executed=True, started=500)
+            record['cancel_requested'] = True
+            seen = []
+
+            def collector(_, action, data=None, **kwargs):
+                seen.append(action[0])
+                if action[0] == 'prepared':
+                    return Mock(stdout=json.dumps({'digest': record['request']['digest'], 'started_at': 990}).encode())
+                if action[0] == 'hydrate':
+                    return Mock(stdout=b'{"started_at":990}')
+                raise Delivered
+
+            runner.exec_collector = Mock(side_effect=collector)
+            with patch('time.time', side_effect=lambda: clock[0]), patch('time.sleep'), self.assertRaises(Delivered):
+                runner._reconcile_shell_once(operation)
+            self.assertEqual(seen, ['prepared', 'hydrate', 'cancel'])
+            self.assertEqual(record['status'], 'running')
+
     def test_uncertain_export_refusal_discards_immediately(self):
         with tempfile.TemporaryDirectory() as root:
             runner = self.runner(root)
