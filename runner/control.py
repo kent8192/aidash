@@ -49,10 +49,6 @@ class SandboxGone(Rejected):
         super().__init__(409, 'original sandbox is absent or replaced')
 
 
-class PythonReplyUncertain(Exception):
-    """The interpreter itself reported an uncertain cell result."""
-
-
 class StartupIdentityMismatch(Exception):
     """A different sandbox or input was observed before dispatch."""
 
@@ -943,9 +939,6 @@ class Runner(AllocationJournal):
                         return
                     self._reconcile_python_once(operation)
                     return
-                except PythonReplyUncertain as error:
-                    self.update(operation, status='uncertain', error=str(error)[-2000:])
-                    return
                 except SandboxGone:
                     if not self.get(operation).get('executed'):
                         self.fail_start(operation, 'Python sandbox identity changed before dispatch')
@@ -955,15 +948,12 @@ class Runner(AllocationJournal):
                                     uncertain_at=time.time(), error={'code':'SANDBOX_LOST',
                                     'message':"Sandbox is gone; the command's file changes were not saved."})
                     return
-                except StartupIdentityMismatch as error:
-                    if self.get(operation).get('executed'):
-                        self.update(operation, status='uncertain', error=str(error)[-2000:])
-                    else:
-                        self.fail_start(operation, str(error))
-                    return
                 except Exception as error:
                     record = self.get(operation)
                     if not record.get('executed'):
+                        if isinstance(error, StartupIdentityMismatch):
+                            self.fail_start(operation, str(error))
+                            return
                         if time.time() >= record['startup_at'] + START_LIMIT_SECONDS:
                             self.fail_start(operation, 'Python startup timed out: ' + str(error))
                             return
@@ -996,7 +986,7 @@ class Runner(AllocationJournal):
                         record = self.update(operation, running_at=started)
                     deadline = started + record['request']['seconds'] + 30
                     if not record.get('termination_confirmed') and now >= deadline:
-                        record = self.update(operation, status='cancelling', cancel_requested=True)
+                        record = self.update(operation, status='cancelling', limit_stop_requested=True)
                         if now >= started + record['request']['seconds'] + STOP_WATCH_SECONDS and now - last_warning >= 60:
                             try:
                                 self.allocation_harvested(record)
@@ -1108,6 +1098,7 @@ class Runner(AllocationJournal):
             self.guard(record, "cell", operation_id=operation, code=record["request"]["code"],
                        digest=record["digest"], seconds=record["request"]["seconds"], egress=record["request"].get("egress"))
         memory_live = True
+        reply_lost = False
         while True:
             current = self.get(operation)
             if current["cancel_requested"]:
@@ -1126,8 +1117,11 @@ class Runner(AllocationJournal):
             if result["status"] in ("completed", "failed"):
                 break
             if result["status"] == "uncertain":
-                raise PythonReplyUncertain("Python reply uncertain; code will not be replayed")
-            if 'stdout' in result:
+                # The interpreter's reply was lost, so the cell may have finished. Its code is never replayed.
+                # Watch it like any running cell: the stop below ends it at its limit, and only then does its
+                # outcome stay uncertain. Until then the Working Area stays busy, not unavailable (#709).
+                reply_lost = True
+            elif 'stdout' in result:
                 self.update(operation, stdout=result['stdout'], truncated=result.get('truncated', False), output_fetched_at=time.time())
             pod = self.pod(pod_operation)
             if not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']:
@@ -1139,8 +1133,20 @@ class Runner(AllocationJournal):
                 result = dict(status="failed", exit_code=137, stdout=result.get("stdout", ""),
                               truncated=True, error={"code":"SESSION_LOST", "message":"Interpreter stopped during the cell; code was not replayed."})
                 break
-            if time.time() > record['running_at'] + record['request']['seconds'] + 30:
-                self.update(operation, status='cancelling', cancel_requested=True)
+            if current.get('limit_stop_requested') or time.time() > record['running_at'] + record['request']['seconds'] + 30:
+                # The cell is seen unfinished past its limit: the Runner's watchdog stops it. Nobody cancelled, so
+                # it never reads as cancelled; a cell that finished during an outage was settled above instead.
+                self.update(operation, status='cancelling', limit_stop_requested=True)
+                if self.guard(record, "terminate").get('termination_confirmed') is not True:
+                    raise RuntimeError('Python termination not confirmed')
+                memory_live = False
+                if reply_lost:
+                    result = dict(status="uncertain", exit_code=None, stdout=current.get("stdout", ""), truncated=True,
+                                  error={"code":"EXECUTION_UNVERIFIED", "message":"The Python reply was lost, so the cell's outcome is unknown. It was stopped, its code was not replayed, and the session was reset."})
+                else:
+                    result = dict(status="failed", exit_code=137, stdout=current.get("stdout", ""), truncated=True,
+                                  error={"code":"SESSION_LOST", "message":"Interpreter stopped during the cell; code was not replayed."})
+                break
             time.sleep(.2)
         if memory_live:
             frozen = self.guard(record, "freeze", idle_seconds=self.config["idle_seconds"])
@@ -1561,7 +1567,7 @@ class Runner(AllocationJournal):
                     started = record.get('running_at') or record.get('started_at') or record.get('dispatch_at') or now
                     deadline = started + record['request']['seconds'] + 30
                     if not record.get('termination_confirmed') and now >= deadline:
-                        record = self.update(operation, status='cancelling', cancel_requested=True)
+                        record = self.update(operation, status='cancelling', limit_stop_requested=True)
                         if now >= started + record['request']['seconds'] + STOP_WATCH_SECONDS and now - last_warning >= 60:
                             # A normal completed Pod deletion means kubelet stopped every container.
                             try:
@@ -1644,7 +1650,9 @@ class Runner(AllocationJournal):
                             started_at=hydrated_reply.get("started_at") or now)
                 hydrated = True
             current = self.get(operation)
-            if current["cancel_requested"] and "terminated" not in execution:
+            # A watchdog stop is delivered like a cancel, but it only settles the command as cancelled when
+            # someone cancelled: a command that finished meanwhile settles from how it ended.
+            if (current["cancel_requested"] or current.get("limit_stop_requested")) and "terminated" not in execution:
                 try:
                     if "running" not in collector:
                         raise RuntimeError('collector unavailable for cancellation')

@@ -288,9 +288,61 @@ class VerificationTest(unittest.TestCase):
                 Mock(stdout=b'{"stdout":"","truncated":false}'), Mock(stdout=b'{"files":[]}')])
             with patch('time.time', return_value=100), patch('time.sleep'):
                 runner.reconcile(operation)
-            self.assertEqual(record['status'], 'cancelled')
+            # Nobody cancelled: the watchdog's stop settles from the exit code, and the collector's flag
+            # decides whether the command timed out.
+            self.assertEqual(record['status'], 'failed')
+            self.assertEqual(record['exit_code'], 137)
             self.assertTrue(record['termination_confirmed'])
             self.assertEqual(sum(1 for call in runner.exec_collector.call_args_list if call.args[1] == ['cancel']), 2)
+
+    def outage_shell(self, root, *, exit_code, expired):
+        """A shell command that finished while Kubernetes was out of reach past its limit + 30 s."""
+        runner = self.runner(root)
+        operation = str(uuid.uuid4())
+        record = {'operation_id': operation, 'request': request('shell'), 'wire_digest': 'digest',
+                  'status': 'running', 'executed': True, 'cancel_requested': False, 'pod_uid': 'uid',
+                  'running_at': 1, 'started_at': 1}
+        runner.get = Mock(side_effect=lambda _: record.copy())
+        runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+        runner.active, runner.admission_operation = {operation}, None
+        runner.config['output_bytes'] = 1024
+        runner.pod = Mock(return_value={'metadata': {'uid': 'uid', 'annotations': {'aidash/digest': 'digest'}},
+            'status': {'containerStatuses': [{'name': 'execution', 'state': {'terminated': {'exitCode': exit_code}}},
+                                             {'name': 'collector', 'state': {'running': {}}}]}})
+        captured = {'stdout': '', 'truncated': False, 'deadline_expired': expired}
+        runner.exec_collector = Mock(side_effect=[Mock(stdout=json.dumps(captured).encode()),
+                                                  Mock(stdout=b'{"files":[]}')])
+        runner.kube = Mock(return_value=Mock(stdout=b''))
+        # The first pass fails: the API server is down until well past the limit.
+        settle, failed = runner._reconcile_shell_once, []
+
+        def once(name):
+            if not failed:
+                failed.append(name)
+                raise RuntimeError('API unavailable')
+            settle(name)
+
+        runner._reconcile_shell_once = once
+        with patch('time.time', return_value=100), patch('time.sleep'), contextlib.redirect_stderr(io.StringIO()):
+            runner.reconcile(operation)
+        return record
+
+    def test_a_command_that_finished_during_an_outage_past_its_limit_is_not_cancelled(self):
+        # The watchdog asks for a stop, but nobody cancelled: the command settles from how it ended.
+        with tempfile.TemporaryDirectory() as root:
+            record = self.outage_shell(root, exit_code=0, expired=False)
+            self.assertEqual(record['status'], 'completed')
+            self.assertFalse(record['cancel_requested'])
+            self.assertFalse(record['deadline_expired'])
+        with tempfile.TemporaryDirectory() as root:
+            record = self.outage_shell(root, exit_code=2, expired=False)
+            self.assertEqual(record['status'], 'failed')
+
+    def test_a_command_still_running_at_its_limit_stays_timed_out_when_the_watchdog_stops_it(self):
+        with tempfile.TemporaryDirectory() as root:
+            record = self.outage_shell(root, exit_code=0, expired=True)
+            self.assertEqual(record['status'], 'completed')
+            self.assertTrue(record['deadline_expired'])
 
     def test_expired_cancel_uses_guard_if_collector_cannot_be_reached(self):
         with tempfile.TemporaryDirectory() as root:
@@ -801,6 +853,124 @@ class VerificationTest(unittest.TestCase):
         runner.guard = Mock(side_effect=lambda _, action, **kwargs: answers[action])
         runner.reconcile_python(operation)
         return record
+
+    def watched_cell(self, root, answers, *, running_at, clock=None, **changes):
+        """A dispatched Python cell under the running controller; `answers` are the node guard's replies."""
+        runner = self.runner(root)
+        operation, pod_uid = str(uuid.uuid4()), str(uuid.uuid4())
+        record = {'operation_id': operation, 'area_id': str(uuid.uuid4()), 'session_id': str(uuid.uuid4()),
+                  'pod_operation': 'existing', 'pod_uid': pod_uid, 'request': request('python'),
+                  'digest': 'fixture', 'cancel_requested': False, 'status': 'running', 'hydrated': True,
+                  'executed': True, 'running_at': running_at, 'stdout': ''}
+        record.update(changes)
+        runner.get = Mock(side_effect=lambda _: record.copy())
+        statuses = []
+
+        def update(_, **fields):
+            statuses.append(fields.get('status'))
+            return record.update(fields) or record.copy()
+
+        runner.update = Mock(side_effect=update)
+        runner.active = {operation}
+        runner.config['idle_seconds'] = 60
+        runner.execution_limits = Mock(return_value={})
+        runner.allocations = Path(root) / 'allocations'
+        runner.allocations.mkdir()
+        save(runner.allocations / (pod_uid + '.json'), {'resource_version': '101', 'receipt': 'present'})
+        runner.pod = Mock(return_value={'metadata': {'uid': pod_uid, 'resourceVersion': '101'},
+            'spec': {'nodeName': 'node', 'containers': [{'image': 'image'}]}, 'status': {'containerStatuses': [
+                {'name': 'execution', 'containerID': 'containerd://cid', 'state': {'running': {}}},
+                {'name': 'collector', 'state': {'running': {}}}]}})
+        replies = dict({'cell': {}, 'export': {'files': []}, 'freeze': {'writer_frozen': True},
+                        'terminate': {'termination_confirmed': True}}, **answers)
+        runner.guard = Mock(side_effect=lambda _, action, **kwargs: replies[action])
+        return runner, operation, record, statuses
+
+    def after_outage(self, runner, operation):
+        """Run the cell's controller through an outage that outlasts the cell's limit + 30 s."""
+        settle, failed = runner._reconcile_python_once, []
+
+        def once(name):
+            if not failed:
+                failed.append(name)
+                raise RuntimeError('API unavailable')
+            settle(name)
+
+        runner._reconcile_python_once = once
+        with patch('time.time', return_value=100), patch('time.sleep'), contextlib.redirect_stderr(io.StringIO()):
+            runner.reconcile_python(operation)
+
+    def test_a_python_cell_that_finished_during_an_outage_past_its_limit_keeps_its_result(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner, operation, record, _ = self.watched_cell(
+                root, {'cell_status': {'status': 'completed', 'exit_code': 0, 'stdout': 'done'}}, running_at=1)
+            self.after_outage(runner, operation)
+            self.assertTrue(record['limit_stop_requested'])
+            self.assertFalse(record['cancel_requested'])
+            self.assertEqual(record['status'], 'completed')
+            self.assertTrue(record['writer_frozen'])
+            self.assertNotIn('terminate', [call.args[1] for call in runner.guard.call_args_list])
+
+    def test_a_python_cell_still_running_past_its_limit_is_stopped_and_timed_out(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner, operation, record, _ = self.watched_cell(root, {'cell_status': {'status': 'running'}}, running_at=1)
+            self.after_outage(runner, operation)
+            self.assertFalse(record['cancel_requested'])
+            self.assertEqual(record['status'], 'failed')
+            self.assertTrue(record['termination_confirmed'])
+            self.assertFalse(record['writer_frozen'])
+            self.assertTrue(record['deadline_expired'])
+
+    def test_a_python_cell_cancelled_by_someone_stays_cancelled_past_its_limit(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner, operation, record, _ = self.watched_cell(
+                root, {'cell_status': {'status': 'running'}}, running_at=1, cancel_requested=True, status='cancelling')
+            with patch('time.time', return_value=100), patch('time.sleep'):
+                runner.reconcile_python(operation)
+            self.assertEqual(record['status'], 'cancelled')
+
+    def test_a_python_reply_that_is_lost_keeps_the_cell_busy_until_its_stop_and_then_ends_its_pod(self):
+        with tempfile.TemporaryDirectory() as root:
+            clock = [1000.0]
+            runner, operation, record, statuses = self.watched_cell(
+                root, {'cell_status': {'status': 'uncertain'}}, running_at=clock[0])
+            with patch('time.time', side_effect=lambda: clock[0]), \
+                 patch('time.sleep', side_effect=lambda seconds: clock.__setitem__(0, clock[0] + 10)):
+                runner.reconcile_python(operation)
+            # Busy and unconfirmed while the cell is watched (the Working Area stays busy, not unavailable),
+            # and uncertain only once the interpreter is known to have stopped.
+            seen = [status for status in statuses if status]
+            self.assertEqual(seen[-1], 'uncertain')
+            self.assertEqual(seen.count('uncertain'), 1)
+            self.assertLess(seen.index('cancelling'), seen.index('finishing'))
+            self.assertEqual(record['status'], 'uncertain')
+            self.assertTrue(record['termination_confirmed'])
+            self.assertFalse(record['writer_frozen'])
+            self.assertTrue(record['output_harvested'])
+            self.assertGreaterEqual(clock[0], 1000 + 60 + 30)
+            runner.close_allocation.assert_called_once()
+
+    def test_a_python_reply_that_is_lost_waits_for_a_stop_that_is_not_confirmed(self):
+        with tempfile.TemporaryDirectory() as root:
+            clock = [1000.0]
+            runner, operation, record, _ = self.watched_cell(
+                root, {'cell_status': {'status': 'uncertain'}, 'terminate': {'termination_confirmed': False}},
+                running_at=clock[0])
+            asleep = []
+
+            def sleep(seconds):
+                asleep.append(seconds)
+                clock[0] += 200
+                if len(asleep) > 20:
+                    raise SystemExit('still waiting')
+
+            with patch('time.time', side_effect=lambda: clock[0]), patch('time.sleep', side_effect=sleep), \
+                 contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                runner.reconcile_python(operation)
+            self.assertEqual(record['status'], 'cancelling')
+            self.assertFalse(record.get('termination_confirmed'))
+            # Past the limit + 30 minutes the Pod gets a normal delete, as for any command whose stop stays unconfirmed.
+            runner.close_allocation.assert_called()
 
     def test_a_python_cell_stopped_past_its_limit_timed_out(self):
         with tempfile.TemporaryDirectory() as root:
