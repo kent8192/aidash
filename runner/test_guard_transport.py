@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import base64
 from pathlib import Path
@@ -7,6 +9,7 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
+import control
 from control import ActivityAggregate, Runner
 
 
@@ -161,6 +164,77 @@ class NamespaceTest(unittest.TestCase):
         for namespace in ('', '-a', 'a-', 'A', 'a_b', 'x' * 64):
             with self.subTest(namespace=namespace), self.assertRaisesRegex(ValueError, 'namespace'):
                 self.construct(namespace)
+
+
+class StartupTest(unittest.TestCase):
+    """A failed isolation proof refuses new work; it must not stop the Runner watching its commands (#722, decision 14)."""
+
+    def construct(self, proof):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        config = {'journal': directory.name, 'token_env': 'AIDASH_TEST_RUNNER_TOKEN', 'namespace': 'runner',
+                  'image': 'sandbox@sha256:' + 'a' * 64, 'kubectl': 'kubectl', 'runtime_class': 'runsc',
+                  'node_guard': {'namespace': 'trusted', 'selector': 'app=guard', 'command': ['guard']}}
+        steps = []
+        controller = 'control.ExecutionPodController.recover_commands'
+        with (patch.dict('os.environ', {'AIDASH_TEST_RUNNER_TOKEN': 't' * 32}),
+              patch.object(Runner, 'kube_json', return_value={'handler': 'runsc'}),
+              patch.object(Runner, 'ensure_network_policy'), patch.object(Runner, 'ensure_v2_network_policy'),
+              patch.object(Runner, 'verify_isolation', side_effect=lambda: proof()),
+              patch.object(Runner, 'verify_freeze', side_effect=lambda: steps.append('freeze')),
+              patch.object(Runner, 'retire_admission_probes', side_effect=lambda: steps.append('retire')),
+              patch.object(Runner, 'recover', side_effect=lambda resume=True: steps.append(('recover', resume))),
+              patch(controller, side_effect=lambda: steps.append('watch')),
+              patch.object(Runner, 'activate_execution_pods', side_effect=lambda: steps.append('admit')),
+              patch('control.threading.Thread'), contextlib.redirect_stderr(io.StringIO()) as log):
+            runner = Runner(config)
+        return runner, steps, log.getvalue()
+
+    def test_a_failed_isolation_proof_still_watches_commands_and_resumes_no_new_work(self):
+        def fail():
+            raise RuntimeError('sandbox image admission probe is not aidash-admission-probe/2; rebuild it')
+
+        runner, steps, log = self.construct(fail)
+        self.assertEqual(steps, ['retire', ('recover', False), 'watch', 'admit'])
+        # The health endpoint is how the server learns to refuse new work.
+        self.assertFalse(runner.verified)
+        self.assertFalse(runner.python_verified)
+        self.assertIsNone(runner.probe)
+        self.assertIn('Deployment Administrator', log)
+        self.assertIn('aidash-admission-probe/2', log)
+
+    def test_a_proven_boundary_resumes_recovered_work(self):
+        runner, steps, _ = self.construct(lambda: None)
+        self.assertEqual(steps, ['freeze', 'retire', ('recover', True), 'watch', 'admit'])
+
+    def test_recovery_without_a_proof_seeds_activity_but_dispatches_nothing(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        runner = object.__new__(Runner)
+        runner.root = Path(directory.name)
+        runner.lock = threading.RLock()
+        runner.aggregate = ActivityAggregate()
+        runner.start = Mock()
+        (runner.root / 'running.json').write_text(json.dumps({'operation_id': 'running', 'status': 'running'}))
+        runner.recover(resume=False)
+        runner.start.assert_not_called()
+        # An idle stop must not take the Runner down with that work in flight.
+        self.assertTrue(runner.activity()['busy'])
+        runner.recover()
+        runner.start.assert_called_once_with('running')
+
+    def test_a_failure_after_commands_resume_cannot_leave_a_process_that_serves_nothing(self):
+        # The resume workers are not daemon threads, so an exception that ends startup would hang the exit.
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        profile = Path(directory.name) / 'profile.json'
+        profile.write_text(json.dumps({'runner': {'listen_host': '127.0.0.1', 'listen_port': 1}}))
+        with (patch.dict('os.environ', {'AIDASH_CAPABILITY_PROFILE': str(profile)}), patch('control.Runner'),
+              patch('control.ThreadingHTTPServer', side_effect=OSError('address already in use')),
+              patch('control.os._exit') as leave, contextlib.redirect_stderr(io.StringIO()) as log):
+            control.main()
+        leave.assert_called_once_with(1)
+        self.assertIn('address already in use', log.getvalue())
 
 
 if __name__ == '__main__':

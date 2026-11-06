@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from urllib.parse import urlsplit, parse_qs
 import uuid
 
@@ -192,13 +193,27 @@ class Runner(AllocationJournal):
         self.ensure_v2_network_policy()
         self.verified = False
         self.python_verified = False
+        self.probe = None
         # Existing journals contain untrusted work too. Re-prove the current
         # isolation boundary before any recovery thread can execute that work.
-        self.verify_isolation()
-        if self.config.get("node_guard"):
-            self.verify_freeze()
-        self.retire_admission_probes()
-        self.recover()
+        # A failed proof refuses new work (the health report says unverified)
+        # and starts no recovery, but it must not stop the Runner watching the
+        # commands it already tracks. Execution Pod commands outlive a restart,
+        # and a crash loop here would leave nobody to deliver their stops (#722).
+        proven = False
+        try:
+            self.verify_isolation()
+            if self.config.get("node_guard"):
+                self.verify_freeze()
+            proven = True
+        except Exception as failure:
+            print(f"Deployment Administrator: isolation proof failed, so new work is refused: {failure}",
+                  file=sys.stderr, flush=True)
+        try:
+            self.retire_admission_probes()
+        except Exception as failure:
+            print(f"Admission probe retirement failed: {failure}", file=sys.stderr, flush=True)
+        self.recover(resume=proven)
         self.execution_pods.recover_commands()
         self.activate_execution_pods()
         threading.Thread(target=self.allocation_loop, daemon=True).start()
@@ -209,17 +224,19 @@ class Runner(AllocationJournal):
             if not path.name.startswith(("area-", "session-")):
                 yield path
 
-    def recover(self):
+    def recover(self, resume=True):
         """Seed the activity aggregate and resume interrupted work in one journal
         scan at startup, never per request. Each record is tracked before its work
-        restarts, so no later update of it can be overwritten by this read."""
+        restarts, so no later update of it can be overwritten by this read. Without
+        an isolation proof nothing restarts, yet the aggregate is still seeded: an
+        idle stop must not take the Runner down with that work in flight."""
         for path in self.operation_files():
             record = json.loads(path.read_bytes())
             with self.lock:
                 self.aggregate.track(path.stem, record)
             if record.get('output_harvested') and record['status'] in TERMINAL:
                 self.allocation_harvested(record, idle=record['status'] != 'uncertain' and record.get('writer_frozen') is True)
-            if record["status"] not in TERMINAL and record["status"] != "awaiting_files":
+            if resume and record["status"] not in TERMINAL and record["status"] != "awaiting_files":
                 self.start(record["operation_id"])
 
     def uncertain_output_loop(self):
@@ -1885,11 +1902,23 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def main():
+    try:
+        profile = json.loads(Path(os.environ["AIDASH_CAPABILITY_PROFILE"]).read_bytes())
+        config = dict(profile, **profile["runner"])
+        runner = Runner(config)
+        runner.execution_pods.start_idle_monitor()
+        server = ThreadingHTTPServer((config["listen_host"], config["listen_port"]), Handler)
+        server.runner = runner
+        server.serve_forever()
+    except BaseException:
+        # Recovered commands are watched on non-daemon threads. An exception
+        # that ends startup after they began would otherwise leave this process
+        # alive and serving nothing, so leave explicitly and let it restart.
+        traceback.print_exc()
+        sys.stderr.flush()
+        os._exit(1)
+
+
 if __name__ == "__main__":
-    profile = json.loads(Path(os.environ["AIDASH_CAPABILITY_PROFILE"]).read_bytes())
-    config = dict(profile, **profile["runner"])
-    runner = Runner(config)
-    runner.execution_pods.start_idle_monitor()
-    server = ThreadingHTTPServer((config["listen_host"], config["listen_port"]), Handler)
-    server.runner = runner
-    server.serve_forever()
+    main()
