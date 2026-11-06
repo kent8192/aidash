@@ -175,6 +175,11 @@ A response whose headers were already sent ends with an incomplete body
 instead of a status. A temporary `EGRESS_UNAVAILABLE` also stops the stream, but
 keeps its unbilled bytes and retries them in the background.
 
+A refusal is answered at once, and the gateway then discards what the client
+still sends, up to 8 MiB or 5 seconds, so that the client can read the answer.
+Discarded bytes are not charged. A client that sends more before it reads may
+see a reset instead of the refusal; the request record still names the reason.
+
 A response with a `Content-Length` settles after its last byte is handed on. A
 final debit that reaches a limit is recorded but can no longer stop that
 response; the next request is refused.
@@ -206,6 +211,7 @@ the table above. The metrics listener (`AIDASH_METRICS_LISTEN`) exposes:
 | `aidash_egress_refused_total`             | `reason`           | Requests refused before a record exists.             |
 | `aidash_egress_connections_refused_total` | `outcome`          | Connections `answered` or `dropped` when full.       |
 | `aidash_egress_settle_failures_total`     | `stage`, `outcome` | Failed debits and records: `retried` or `abandoned`. |
+| `aidash_egress_linger_limit_total`        | `limit`            | Uploads cut off after a refusal: `bytes` or `time`.  |
 
 ### Clone a GitHub repository
 

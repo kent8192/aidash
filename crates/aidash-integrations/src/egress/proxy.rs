@@ -1728,6 +1728,31 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn a_refused_proxied_upload_reaches_a_client_that_sends_everything_first() {
+		let scopes = Arc::new(MemoryScopes::new("token".into(), test_settings()));
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = listener.local_addr().unwrap();
+		let (stop, receiver) = tokio::sync::watch::channel(false);
+		let server = tokio::spawn(super::super::serve_with_scopes(
+			listener,
+			Arc::new(DenyLegacy),
+			Some(scopes),
+			super::super::ProxyLimits::default(),
+			receiver,
+		));
+		let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+		let length = 64 * 64 * 1024;
+		client.write_all(format!("POST http://denied.example/upload HTTP/1.1\r\nHost: denied.example\r\nProxy-Authorization: Bearer token\r\nContent-Length: {length}\r\n\r\n").as_bytes()).await.unwrap();
+		client.write_all(&vec![1; length]).await.unwrap();
+		let mut response = String::new();
+		client.read_to_string(&mut response).await.unwrap();
+		assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+		assert!(response.contains("egress_host_forbidden"), "{response}");
+		stop.send(true).unwrap();
+		server.await.unwrap().unwrap();
+	}
+
+	#[tokio::test]
 	async fn absolute_http_forwards_without_proxy_credentials_and_records_wire_bytes() {
 		use hyper::{Request, Response, service::service_fn};
 		use std::convert::Infallible;

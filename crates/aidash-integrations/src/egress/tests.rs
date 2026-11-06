@@ -1295,11 +1295,9 @@ async fn scoped_refusals_are_reported_on_upload() {
 		(1, StatusCode::FORBIDDEN, "egress_suspended"),
 	] {
 		let (origin, audit, tasks, stop) = metered_gateway(limit, false).await;
-		// A single chunk reaches the final debit without leaving a large unread
-		// request body that can reset the client socket before it sees the refusal.
-		let upload = futures_util::stream::iter(std::iter::once(Ok::<_, std::io::Error>(
-			Bytes::from(vec![1; CHUNK]),
-		)));
+		let upload = futures_util::stream::iter(
+			(0..32).map(|_| Ok::<_, std::io::Error>(Bytes::from(vec![1; CHUNK]))),
+		);
 		let response = reqwest::Client::new()
 			.post(format!("{origin}/v1/operation-token/images/upload"))
 			.body(reqwest::Body::wrap_stream(upload))
@@ -1378,6 +1376,238 @@ async fn a_stalled_client_write_times_out() {
 	tokio::time::advance(Duration::from_secs(3)).await;
 	let error = task.await.unwrap().unwrap_err();
 	assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+}
+
+/// Sends a whole request before reading anything, as a client without a
+/// concurrent reader does, so a reset cannot be mistaken for a slow answer.
+async fn upload_then_read(origin: &str, path: &str, chunks: usize) -> std::io::Result<String> {
+	use tokio::io::{AsyncReadExt, AsyncWriteExt};
+	let mut socket = tokio::net::TcpStream::connect(origin.trim_start_matches("http://")).await?;
+	let length = chunks * CHUNK;
+	socket
+		.write_all(
+			format!("POST {path} HTTP/1.1\r\nhost: gateway\r\ncontent-length: {length}\r\n\r\n")
+				.as_bytes(),
+		)
+		.await?;
+	for _ in 0..chunks {
+		socket.write_all(&[1; CHUNK]).await?;
+	}
+	let mut answer = Vec::new();
+	socket.read_to_end(&mut answer).await?;
+	Ok(String::from_utf8_lossy(&answer).into_owned())
+}
+
+#[tokio::test]
+async fn a_refusal_during_an_upload_reaches_a_client_that_sends_everything_first() {
+	let (origin, audit, tasks, stop) = metered_gateway(BATCH_BYTES, false).await;
+	let answer = tokio::time::timeout(
+		Duration::from_secs(15),
+		upload_then_read(&origin, "/v1/operation-token/images/upload", 64),
+	)
+	.await
+	.unwrap()
+	.unwrap();
+	assert!(answer.starts_with("HTTP/1.1 429"), "{answer}");
+	assert!(answer.contains("egress_limit_exceeded"), "{answer}");
+	let sent = audit.sent.load(Ordering::Relaxed);
+	assert!(
+		sent <= 2 * BATCH_BYTES,
+		"discarded bytes are not charged: {sent}"
+	);
+	shutdown(tasks, stop).await;
+}
+
+#[tokio::test]
+async fn a_refusal_at_admission_reaches_a_client_that_sends_everything_first() {
+	let (origin, _audit, tasks, stop) = metered_gateway(u64::MAX, false).await;
+	let answer = tokio::time::timeout(
+		Duration::from_secs(15),
+		upload_then_read(&origin, "/v1/wrong-token/images/upload", 64),
+	)
+	.await
+	.unwrap()
+	.unwrap();
+	assert!(answer.starts_with("HTTP/1.1 403"), "{answer}");
+	assert!(answer.contains("egress_forbidden"), "{answer}");
+	shutdown(tasks, stop).await;
+}
+
+#[tokio::test]
+async fn a_refusal_for_full_slots_reaches_a_client_that_sends_everything_first() {
+	let (origin, _audit, tasks, stop) = metered_gateway(u64::MAX, false).await;
+	let address = origin.trim_start_matches("http://").to_owned();
+	let mut held = Vec::new();
+	for _ in 0..CONNECTION_SLOTS {
+		held.push(tokio::net::TcpStream::connect(&address).await.unwrap());
+	}
+	let answer = tokio::time::timeout(
+		Duration::from_secs(15),
+		upload_then_read(&origin, "/v1/operation-token/images/upload", 64),
+	)
+	.await
+	.unwrap()
+	.unwrap();
+	assert!(answer.starts_with("HTTP/1.1 503"), "{answer}");
+	assert!(answer.contains(CONNECTION_LIMIT), "{answer}");
+	drop(held);
+	shutdown(tasks, stop).await;
+}
+
+#[test]
+fn only_a_request_with_a_body_lingers() {
+	let unread = UnreadBody::default();
+	let request = |method, body: &'static [u8]| {
+		Request::builder()
+			.method(method)
+			.body(Full::new(Bytes::from_static(body)))
+			.unwrap()
+	};
+	unread.note(&request(hyper::Method::POST, b"body"));
+	assert!(unread.0.load(Ordering::Relaxed));
+	unread.note(&request(hyper::Method::GET, b""));
+	assert!(!unread.0.load(Ordering::Relaxed));
+	unread.note(&request(hyper::Method::CONNECT, b"body"));
+	assert!(!unread.0.load(Ordering::Relaxed));
+}
+
+/// A tunnel closes its side toward the client when the upstream stops sending,
+/// through the same socket wrapper, and what the client still sends must arrive.
+#[tokio::test]
+async fn an_upgraded_connection_keeps_reading_after_closing_its_sending_side() {
+	use tokio::io::{AsyncReadExt, AsyncWriteExt};
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let address = listener.local_addr().unwrap();
+	let (tunnel, tunneled) = tokio::sync::oneshot::channel();
+	let gateway = tokio::spawn(async move {
+		let (socket, _) = listener.accept().await.unwrap();
+		let unread = UnreadBody::default();
+		let noting = unread.clone();
+		let tunnel = Arc::new(Mutex::new(Some(tunnel)));
+		let service = service_fn(move |mut request: Request<hyper::body::Incoming>| {
+			noting.note(&request);
+			let upgrade = hyper::upgrade::on(&mut request);
+			let tunnel = tunnel.lock().unwrap().take().unwrap();
+			tokio::spawn(async move {
+				let mut client = TokioIo::new(upgrade.await.unwrap());
+				client.shutdown().await.unwrap();
+				let mut input = [0; 5];
+				client.read_exact(&mut input).await.unwrap();
+				tunnel.send(input).unwrap();
+			});
+			async { Ok::<_, Infallible>(Response::new(Full::new(Bytes::new()))) }
+		});
+		hyper::server::conn::http1::Builder::new()
+			.serve_connection(TokioIo::new(LingeringClose::new(socket, unread)), service)
+			.with_upgrades()
+			.await
+			.unwrap();
+	});
+	let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+	client
+		.write_all(b"CONNECT example.com:443 HTTP/1.1\r\nhost: example.com:443\r\n\r\n")
+		.await
+		.unwrap();
+	let mut answer = Vec::new();
+	client.read_to_end(&mut answer).await.unwrap();
+	assert!(answer.starts_with(b"HTTP/1.1 200"));
+	client.write_all(b"hello").await.unwrap();
+	let input = tokio::time::timeout(Duration::from_secs(10), tunneled)
+		.await
+		.unwrap()
+		.unwrap();
+	assert_eq!(&input, b"hello");
+	gateway.abort();
+}
+
+#[tokio::test]
+async fn an_upload_past_the_discard_limit_is_cut_off_and_counted() {
+	let observed = Observed::start();
+	let (origin, _audit, tasks, stop) = metered_gateway(u64::MAX, false).await;
+	let chunks = 4 * LINGER_BYTES as usize / CHUNK;
+	let cut_off = tokio::time::timeout(
+		Duration::from_secs(15),
+		upload_then_read(&origin, "/v1/wrong-token/images/upload", chunks),
+	)
+	.await
+	.unwrap();
+	assert!(cut_off.is_err(), "{cut_off:?}");
+	assert_eq!(
+		observed.count(r#"aidash_egress_linger_limit_total{limit="bytes"}"#),
+		1
+	);
+	shutdown(tasks, stop).await;
+}
+
+/// A refused client that keeps its connection open holds a slot until the time
+/// limit and no longer.
+#[tokio::test]
+async fn lingering_connections_give_their_slots_back_at_the_time_limit() {
+	use tokio::io::{AsyncReadExt, AsyncWriteExt};
+	let (origin, _audit, tasks, stop) = metered_gateway(u64::MAX, false).await;
+	let address = origin.trim_start_matches("http://").to_owned();
+	let started = Instant::now();
+	let mut held = Vec::new();
+	for _ in 0..CONNECTION_SLOTS {
+		let mut socket = tokio::net::TcpStream::connect(&address).await.unwrap();
+		socket
+			.write_all(
+				b"POST /v1/wrong-token/images/upload HTTP/1.1\r\nhost: gateway\r\ncontent-length: 1048576\r\n\r\n",
+			)
+			.await
+			.unwrap();
+		let mut status = [0; 12];
+		socket.read_exact(&mut status).await.unwrap();
+		assert_eq!(&status, b"HTTP/1.1 403");
+		held.push(socket);
+	}
+	tokio::time::timeout(Duration::from_secs(15), async {
+		loop {
+			let response = reqwest::get(format!("{origin}/v1/wrong-token/images/download/1"))
+				.await
+				.unwrap();
+			if response.status() == StatusCode::FORBIDDEN {
+				return;
+			}
+			assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+			tokio::time::sleep(Duration::from_millis(100)).await;
+		}
+	})
+	.await
+	.unwrap();
+	assert!(started.elapsed() >= LINGER_TIME);
+	drop(held);
+	shutdown(tasks, stop).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_client_still_sending_at_the_time_limit_is_counted() {
+	use tokio::io::AsyncWriteExt;
+	let observed = Observed::start();
+	let (socket, mut client) = tokio::io::duplex(1024);
+	let closing = tokio::spawn(async move {
+		let unread = UnreadBody(Arc::new(true.into()));
+		LingeringClose::new(socket, unread).shutdown().await
+	});
+	client.write_all(b"unread").await.unwrap();
+	tokio::time::sleep(LINGER_TIME + Duration::from_secs(1)).await;
+	closing.await.unwrap().unwrap();
+	assert_eq!(
+		observed.count(r#"aidash_egress_linger_limit_total{limit="time"}"#),
+		1
+	);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_request_without_a_body_closes_at_once() {
+	use tokio::io::AsyncWriteExt;
+	let (socket, _client) = tokio::io::duplex(1024);
+	let started = tokio::time::Instant::now();
+	LingeringClose::new(socket, UnreadBody::default())
+		.shutdown()
+		.await
+		.unwrap();
+	assert_eq!(started.elapsed(), Duration::ZERO);
 }
 
 /// What the gateway logs and counts on this test's thread. `#[tokio::test]` runs
