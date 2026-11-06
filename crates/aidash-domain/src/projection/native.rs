@@ -424,6 +424,7 @@ fn single<'a>(
 		ContextEvent::RunMessageReadRequired { .. }
 		| ContextEvent::RunMessageSummaryRequired { .. }
 		| ContextEvent::CitationCorrectionRequired { .. }
+		| ContextEvent::UnassignedTasksTold { .. }
 		| ContextEvent::CompletionRepairRequired { .. } => markers.push(&entry.event),
 		// Only reached for an Assistant event without a turn, which cannot happen.
 		ContextEvent::Assistant { .. } => {}

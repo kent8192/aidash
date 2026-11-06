@@ -207,6 +207,9 @@ pub struct ChildTaskSummary {
 	pub has_pending: bool,
 	pub has_failed: bool,
 	pub open_tasks: u64,
+	/// The open children nobody is working on or can start (#772).
+	#[serde(default)]
+	pub unassigned: Vec<crate::unassigned::UnassignedTask>,
 	#[serde(with = "fingerprint_hex")]
 	#[schemars(with = "String")]
 	pub terminal_fingerprint: [u8; 16],
