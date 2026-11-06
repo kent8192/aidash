@@ -742,17 +742,26 @@ print(json.dumps(r))'''
                 raise ExecutionPodError('termination_unconfirmed',
                     'The node is absent; a Deployment Administrator must verify the writer stopped') from None
             uid = (pod or {}).get('metadata', {}).get('uid')
-            if (not uid or guard.get('pod_uid') != uid
-                    or pod.get('spec', {}).get('nodeName') != node):
-                raise ExecutionPodError('termination_unconfirmed', 'The original Pod cannot be bound to a normal deletion') from None
-            endpoint = '/api/v1/namespaces/' + self.config['namespace'] + '/pods/' + name
-            self.backend.kube(['delete', '--raw', endpoint, '-f', '-'],
-                              json.dumps({'preconditions':{'uid':uid}}).encode(), timeout=70)
-            try:
-                self.backend.kube(['wait', '--for=delete', 'pod/' + name, '--timeout=60s'], timeout=70)
-            except Exception:
-                if self._get('pod', name) is not None:
-                    raise
+            # The delete may have been applied by an earlier attempt whose wait, lookup or reply was lost.
+            # Its Pod is then gone, and only this record can bind that deletion to the guarded Pod.
+            issued = state.get('normal_delete_pod_uid')
+            already_deleted = bool(issued) and pod is None and issued == guard.get('pod_uid')
+            if not already_deleted:
+                if (not uid or guard.get('pod_uid') != uid
+                        or pod.get('spec', {}).get('nodeName') != node):
+                    raise ExecutionPodError('termination_unconfirmed', 'The original Pod cannot be bound to a normal deletion') from None
+                # Persist which Pod the delete is issued for before issuing it: a reply lost after
+                # the delete applied must not leave the Space fenced for good.
+                state['normal_delete_pod_uid'] = uid
+                save(path, state)
+                endpoint = '/api/v1/namespaces/' + self.config['namespace'] + '/pods/' + name
+                self.backend.kube(['delete', '--raw', endpoint, '-f', '-'],
+                                  json.dumps({'preconditions':{'uid':uid}}).encode(), timeout=70)
+                try:
+                    self.backend.kube(['wait', '--for=delete', 'pod/' + name, '--timeout=60s'], timeout=70)
+                except Exception:
+                    if self._get('pod', name) is not None:
+                        raise
             # A completed normal delete proves kubelet stopped the Pod only while its node remains registered.
             registered = self._get('node', node)
             if (registered or {}).get('metadata', {}).get('uid') != node_uid or self._get('pod', name):
@@ -762,6 +771,7 @@ print(json.dumps(r))'''
                 state.setdefault('terminated_pods', []).append(guard['pod_uid'])
             state['termination_unconfirmed'] = False
             state.pop('stop_requested_at', None)
+            state.pop('normal_delete_pod_uid', None)
             save(path, state)
         else:
             try:
