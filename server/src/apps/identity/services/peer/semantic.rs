@@ -93,11 +93,6 @@ pub(crate) async fn context(
 	)
 	.await
 	.map_err(|error| {
-		// A peer's 404 used to read as `Forbidden`, which is an authority failure.
-		let error = match error {
-			Error::NotFound(_) => Error::Forbidden,
-			error => error,
-		};
 		Error::RemoteSemantic(crate::authorization::remote::semantic::failure(&error))
 	})?;
 	receipt.validate_native()?;

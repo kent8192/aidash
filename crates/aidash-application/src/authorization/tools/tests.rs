@@ -343,8 +343,6 @@ struct Repository {
 	active: bool,
 	replace: bool,
 	fault: Option<&'static str>,
-	/// The stage at which the peer answers 404.
-	not_found: Option<&'static str>,
 	stall: Option<String>,
 	subjects: Vec<String>,
 	context: Value,
@@ -365,7 +363,6 @@ fn repository() -> Repository {
 		active: true,
 		replace: true,
 		fault: None,
-		not_found: None,
 		stall: None,
 		subjects: vec!["root".into(), "delegated".into()],
 		context: json!({"current":"authority"}),
@@ -389,9 +386,6 @@ impl Repository {
 		self.journal.lock().unwrap().decisions.clone()
 	}
 	fn check(&self, stage: &'static str) -> Result<()> {
-		if self.not_found == Some(stage) {
-			return Err(Error::NotFound("the target Node did not find it".into()));
-		}
 		if self.fault == Some(stage) {
 			Err(Error::Port(Box::new(std::io::Error::other(format!(
 				"{stage} fault"
@@ -655,27 +649,6 @@ async fn missing_remote_lease_denies_before_tool_authorization(
 		vec!["lease", "active", "suspend", "replace", "release"]
 	);
 	assert!(repository.decisions().is_empty());
-}
-#[rstest]
-#[tokio::test]
-async fn a_peer_that_did_not_find_the_run_during_a_refresh_still_pauses_it(
-	mut repository: Repository,
-	run: RunMetadata,
-	agent: AgentConfig,
-) {
-	repository.remote = true;
-	repository.not_found = Some("replace");
-	assert!(matches!(
-		authorize(
-			&repository,
-			&run,
-			&agent,
-			&call("workspace_read", json!({}))
-		)
-		.await,
-		Err(Error::AuthorityRefused(ref refusal)) if refusal.check == RefusalCheck::RemoteAuthority
-	));
-	assert!(matches!(refresh(&repository).await, Err(Error::Forbidden)));
 }
 #[rstest]
 #[case::suspend("suspend",vec!["lease","active","suspend","release"])]

@@ -84,7 +84,7 @@ pub async fn create_task(
 	};
 	if actual != expected {
 		return Err(Error::Refused(
-			"the task already exists with a different origin; use a new idempotency key".into(),
+			"a task from an earlier attempt of this call has a different origin, so it cannot be reused; calling task_create again creates a new task".into(),
 		));
 	}
 	Ok(task)

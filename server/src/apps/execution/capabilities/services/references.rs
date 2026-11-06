@@ -10,18 +10,6 @@ pub(crate) async fn get(access: &mut Access, id: Uuid, action: &str) -> Result<R
 		.map(|record| crate::apps::execution::repositories::capability_records::native(&record))
 		.map_err(Into::into)
 }
-/// [`get`] for admitting an Agent's references: a denial stays `Forbidden`.
-pub(crate) async fn get_for_admission(
-	access: &mut Access,
-	id: Uuid,
-	action: &str,
-) -> Result<Record> {
-	let mut scope = crate::bootstrap::reference_scope(None, access, None);
-	aidash_application::capabilities::references::get_for_admission(&mut scope, id, action)
-		.await
-		.map(|record| crate::apps::execution::repositories::capability_records::native(&record))
-		.map_err(Into::into)
-}
 pub(crate) async fn inspect(access: &mut Access, id: Uuid) -> Result<Reference> {
 	let mut scope = crate::bootstrap::reference_scope(None, access, None);
 	aidash_application::capabilities::references::inspect(&mut scope, id)

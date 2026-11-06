@@ -477,7 +477,7 @@ async fn retries_cannot_rebind_an_existing_child_task_origin(
 	};
 	assert_eq!(
 		message,
-		"the task already exists with a different origin; use a new idempotency key"
+		"a task from an earlier attempt of this call has a different origin, so it cannot be reused; calling task_create again creates a new task"
 	);
 	assert_eq!(scope.calls.last(), Some(&"origin"));
 	assert_eq!(scope.origin_writes, vec![(id(4), id(1))]);

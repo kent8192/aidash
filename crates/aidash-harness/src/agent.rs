@@ -32,6 +32,8 @@ use uuid::Uuid;
 
 /// Appended to every call error that the model must not answer by calling again.
 const DO_NOT_REPEAT: &str = "Do not repeat this call.";
+/// Added when the tool is `Unsafe`: its effect may have committed in several steps.
+const PARTLY_HAPPENED: &str = " The call may have partly happened.";
 
 /// The tool whose effect just ended.
 #[derive(Clone, Copy)]
@@ -106,7 +108,7 @@ impl<'a> Executor<'a> {
 					let partly = if tool.replay_safe {
 						""
 					} else {
-						" The call may have partly happened."
+						PARTLY_HAPPENED
 					};
 					Ok(json!({"error":format!(
 						"An internal check refused this call. Changing authority will not help, so \
@@ -116,8 +118,9 @@ impl<'a> Executor<'a> {
 			},
 			// A swallowed denial could leave a note behind; never read it here.
 			Err(Error::NotFound(message)) => Ok(json!({"error":format!(
-				"{}. {DO_NOT_REPEAT}",
-				message.trim_end_matches('.')
+				"{}.{} {DO_NOT_REPEAT}",
+				message.trim_end_matches('.'),
+				if tool.replay_safe { "" } else { PARTLY_HAPPENED }
 			)})),
 			Err(Error::ToolNotDelivered {
 				message,
@@ -1946,7 +1949,7 @@ impl<'a> Executor<'a> {
                 // Every Run prunes only through its own compaction Decider; one
                 // without a Decider may let the Summary Stage reduce it alone.
                 let decider = if fitting.fits(&context) { None } else { self.environment.compaction_decider(run, token).await? };
-                let compaction = compact_decided_execution(&mut context, run, token, self.environment.node_id(), decider.as_ref(), &fitting).await.map_err(|error| remote_budget(guard, error))?;
+                let compaction = compact_decided_execution(&mut context, run, token, self.environment.node_id(), decider.as_ref(), &fitting).await.map_err(at_stage("compaction")).map_err(|error| remote_budget(guard, error))?;
                 let plan = match compaction {
                     aidash_application::context::Compaction::Fits => None,
                     // The decision saved the pruned context and released the
@@ -1976,7 +1979,7 @@ impl<'a> Executor<'a> {
                                 tracing::warn!(run = %run.id, %error, "staged compaction decision was not recorded as rejected");
                             }
                         }
-                        return summarized.map_err(|error| remote_budget(guard, error));
+                        return summarized.map_err(at_stage("compaction")).map_err(|error| remote_budget(guard, error));
                     }
                 }
 
@@ -3392,6 +3395,24 @@ connection: None,
 /// Answer a model's question on the system's behalf because its person's
 /// Answer Deadline passed. A person who answered first wins, and so does a
 /// system answer given before a crash.
+/// Name the stage of a refusal that nothing named: a plain `Forbidden` or `Unauthorized` becomes
+/// the Run's pause for `stage`, with the check its note recorded.
+fn at_stage(stage: &'static str) -> impl FnOnce(Error) -> Error {
+	move |error| match error {
+		Error::Forbidden | Error::Unauthorized => {
+			let note = refusal_note::take()
+				.unwrap_or_else(|| RefusalNote::new(RefusalCheck::Unnamed, None));
+			Error::AuthorityRefused(Box::new(AuthorityRefusal {
+				tool: stage.to_owned(),
+				check: note.check,
+				action: note.action,
+				subject: note.subject,
+			}))
+		}
+		error => error,
+	}
+}
+
 async fn answer_at_deadline(home: &dyn ExecutionHome, request: Uuid) -> Result<HumanRequest> {
 	match home
 		.close_human_request(request, answer_deadline_response())

@@ -30,15 +30,7 @@ pub async fn refresh(repository: &dyn AgentToolRepository) -> Result<()> {
 	if scope.transaction_active() {
 		scope.suspend().await?;
 	}
-	// A 404 while refreshing keeps today's named pause: the Run's authority cannot be proved.
-	let replaced = scope
-		.replace_remote_authority()
-		.await
-		.map_err(|error| match error {
-			Error::NotFound(_) => Error::Forbidden,
-			error => error,
-		})?;
-	if !replaced {
+	if !scope.replace_remote_authority().await? {
 		return Err(Error::Forbidden);
 	}
 	Ok(())

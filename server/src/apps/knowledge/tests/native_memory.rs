@@ -2912,7 +2912,7 @@ async fn home_run_reads_survive_reindex_but_the_writer_is_invalidated_by_its_own
 			assert_eq!(stored.control, aidash_domain::RunControl::Paused);
 			assert_eq!(
 				stored.error.as_deref(),
-				Some("inference: memory.read was denied")
+				Some("model call: memory.read was denied")
 			);
 		}
 		if matches!(delivery, "commit_failure" | "accepted_save_failure") {

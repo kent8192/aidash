@@ -30,6 +30,25 @@ fn authority_gone_after_effect(error: Error) -> Error {
 	}
 }
 
+/// Give the Run's own lease back after a tool suspended it, on every path: an early refusal of
+/// the tool's own authority can now reach the model as a Rejected Call, and the Run then goes on
+/// with this lease. If the lease cannot be restored, the Run's authority is gone and it pauses,
+/// whatever `result` says.
+async fn restore_outer<T>(
+	outer: &mut Access,
+	store: &Store,
+	run: &Run,
+	result: Result<T>,
+) -> Result<T> {
+	refresh_access_for_run(outer, store, run)
+		.await
+		.map_err(authority_gone_after_effect)?;
+	memory_run_check(outer, &run.metadata())
+		.await
+		.map_err(authority_gone_after_effect)?;
+	result
+}
+
 async fn memory_run_check(access: &mut Access, run: &crate::domain::RunMetadata) -> Result<()> {
 	match access.run_invalidity(run).await? {
 		None => Ok(()),
@@ -1194,23 +1213,19 @@ impl WorkerAuthority {
 		if outer.tx.is_active() {
 			outer.suspend().await?;
 		}
-		let mut access = access_for_run(store, &run.metadata(), true)
-			.await?
-			.ok_or(Error::Forbidden)?;
-		memory_run_check(&mut access, &run.metadata()).await?;
-		let mut lease = crate::semantic::service::Lease::Scoped(Box::new(access));
-		let result =
-			crate::semantic::native_memory::run_mutate(store, &mut lease, run, key, changes).await;
-		let result = lease.finish(result).await;
-		// The write has committed, so a Run whose authority is gone pauses; telling the model
-		// the call was refused would be false.
-		refresh_access_for_run(&mut outer, store, run)
-			.await
-			.map_err(authority_gone_after_effect)?;
-		memory_run_check(&mut outer, &run.metadata())
-			.await
-			.map_err(authority_gone_after_effect)?;
-		result
+		let result = async {
+			let mut access = access_for_run(store, &run.metadata(), true)
+				.await?
+				.ok_or(Error::Forbidden)?;
+			memory_run_check(&mut access, &run.metadata()).await?;
+			let mut lease = crate::semantic::service::Lease::Scoped(Box::new(access));
+			let result =
+				crate::semantic::native_memory::run_mutate(store, &mut lease, run, key, changes)
+					.await;
+			lease.finish(result).await
+		}
+		.await;
+		restore_outer(&mut outer, store, run, result).await
 	}
 	pub async fn memory_recall(
 		&self,
@@ -1224,18 +1239,20 @@ impl WorkerAuthority {
 		if outer.tx.is_active() {
 			outer.suspend().await?;
 		}
-		let mut access = access_for_run(store, &run.metadata(), true)
-			.await?
-			.ok_or(Error::Forbidden)?;
-		memory_run_check(&mut access, &run.metadata()).await?;
-		let mut lease = crate::semantic::service::Lease::Scoped(Box::new(access));
-		let result =
-			crate::semantic::native_memory::run_recall(store, &mut lease, run, key, query, reflect)
-				.await;
-		let result = lease.finish(result).await;
-		refresh_access_for_run(&mut outer, store, run).await?;
-		memory_run_check(&mut outer, &run.metadata()).await?;
-		result
+		let result = async {
+			let mut access = access_for_run(store, &run.metadata(), true)
+				.await?
+				.ok_or(Error::Forbidden)?;
+			memory_run_check(&mut access, &run.metadata()).await?;
+			let mut lease = crate::semantic::service::Lease::Scoped(Box::new(access));
+			let result = crate::semantic::native_memory::run_recall(
+				store, &mut lease, run, key, query, reflect,
+			)
+			.await;
+			lease.finish(result).await
+		}
+		.await;
+		restore_outer(&mut outer, store, run, result).await
 	}
 
 	pub async fn assign(

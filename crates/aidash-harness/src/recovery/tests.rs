@@ -347,7 +347,7 @@ async fn provider_contract_and_transient_failures_have_distinct_recovery(
 #[rstest]
 #[case(
 	AuthorityFailure::Denied(None),
-	"inference: an authority check refused this step"
+	"model call: an authority check refused this step"
 )]
 #[case(AuthorityFailure::IdentityUnavailable, "identity status unavailable")]
 #[tokio::test]
@@ -406,10 +406,10 @@ async fn an_unnamed_refusal_takes_its_check_from_the_note_of_the_step(
 	assert_eq!(
 		*repository.writes.lock().unwrap(),
 		[Write::Refused(
-			"inference: Catalog Approval refused catalog.use".into(),
+			"model call: Catalog Approval refused catalog.use".into(),
 			"run.authorization_blocked".into(),
 			AuthorityRefusal {
-				tool: "inference".into(),
+				tool: "model call".into(),
 				check: RefusalCheck::Catalog,
 				action: Some("catalog.use".into()),
 				subject: None,

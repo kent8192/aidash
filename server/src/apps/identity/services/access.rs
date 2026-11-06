@@ -800,15 +800,11 @@ impl Access {
 	pub async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
 		self.decide_with_cause(resource, action)
 			.await
-			.map(|(allowed, _)| allowed)
+			.map(|verdict| verdict == Verdict::Allowed)
 	}
 	/// [`Self::decide`], and whether a refusal comes from the Subnode read-only rule rather than
 	/// from the Tenant's policy. The rule is structural: no change of policy lifts it.
-	async fn decide_with_cause(
-		&mut self,
-		resource: &Resource,
-		action: &str,
-	) -> Result<(bool, bool)> {
+	async fn decide_with_cause(&mut self, resource: &Resource, action: &str) -> Result<Verdict> {
 		for subject in &self.subjects {
 			// Unknown subjects reach evaluation so their denial is audited.
 			if self.snapshot.bundle.subjects.contains_key(subject) {
@@ -833,7 +829,7 @@ impl Access {
 					workspace,
 				)
 			}) {
-				return Ok((false, true));
+				return Ok(Verdict::SubnodeReadOnly);
 			}
 		}
 		if self.read_run.is_none() && subnode_workspace_write(action) {
@@ -853,7 +849,13 @@ impl Access {
 			action,
 		)
 		.await
-		.map(|allowed| (allowed, false))
+		.map(|allowed| {
+			if allowed {
+				Verdict::Allowed
+			} else {
+				Verdict::Denied
+			}
+		})
 		.map_err(Into::into)
 	}
 	pub(crate) fn evaluation(
@@ -911,14 +913,14 @@ impl Access {
 
 	pub async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
 		match self.decide_with_cause(resource, action).await? {
-			(true, _) => {
+			Verdict::Allowed => {
 				// The last check wins: an allow supersedes an earlier policy refusal.
 				refusal_note::clear_policy();
 				Ok(())
 			}
 			// A structural refusal is no policy denial: it reaches the model as a Rejected Call.
-			(false, true) => Err(Error::Forbidden),
-			(false, false) => {
+			Verdict::SubnodeReadOnly => Err(Error::Forbidden),
+			Verdict::Denied => {
 				self.note_denial(resource, action);
 				Err(Error::Forbidden)
 			}
@@ -1009,6 +1011,16 @@ impl Access {
 		}
 		result
 	}
+}
+
+/// The outcome of one authorization check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Verdict {
+	Allowed,
+	/// The Tenant's policy denied it.
+	Denied,
+	/// The Subnode read-only rule refused it, which no policy lifts.
+	SubnodeReadOnly,
 }
 
 pub(crate) struct NativeAccess {

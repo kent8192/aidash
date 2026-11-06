@@ -1697,6 +1697,18 @@ async fn not_found_is_a_call_error_even_after_a_swallowed_denial() {
 }
 
 #[tokio::test]
+async fn not_found_from_an_unsafe_tool_says_it_may_have_partly_happened() {
+	let lab = Lab::new(|_, _| async { Err(Error::NotFound("preview unavailable".into())) }.boxed());
+	let (bench, mut run) = bench(&lab, &["unsafe_test"], 1, None);
+	advance(&bench, &mut run).await.unwrap();
+	let message = adopted(&run)[0].1["error"].as_str().unwrap().to_owned();
+	assert_eq!(
+		message,
+		"preview unavailable. The call may have partly happened. Do not repeat this call."
+	);
+}
+
+#[tokio::test]
 async fn a_conflict_still_fails_the_run() {
 	let lab = Lab::new(|_, _| {
 		async {
@@ -1905,4 +1917,34 @@ async fn a_noted_refusal_in_a_batch_pauses_after_its_siblings_are_journaled_and_
 		adopted(&resumed),
 		expected(&[(0, read("p0")), (1, read("p1"))])
 	);
+}
+
+#[tokio::test]
+async fn a_refusal_in_compaction_is_named_after_its_stage_and_the_check_it_noted() {
+	let (error, _) = refusal_note::scoped(async {
+		refusal_note::set(refusal_note::Note::new(
+			aidash_domain::tool::RefusalCheck::Catalog,
+			Some("decision.invoke"),
+		));
+		at_stage("compaction")(Error::Forbidden)
+	})
+	.await;
+	let Error::AuthorityRefused(refusal) = error else {
+		panic!("expected a named pause, got {error:?}");
+	};
+	assert_eq!(
+		refusal.to_string(),
+		"compaction: Catalog Approval refused decision.invoke"
+	);
+	// Without a note the check is Unnamed, and every other error passes through.
+	let (error, _) =
+		refusal_note::scoped(async { at_stage("compaction")(Error::Unauthorized) }).await;
+	assert!(matches!(
+		error,
+		Error::AuthorityRefused(ref refusal) if refusal.to_string() == "compaction: an authority check refused this step"
+	));
+	assert!(matches!(
+		at_stage("compaction")(Error::Conflict("x".into())),
+		Error::Conflict(_)
+	));
 }

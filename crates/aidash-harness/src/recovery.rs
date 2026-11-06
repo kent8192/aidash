@@ -28,7 +28,7 @@ fn stage(run: &Run) -> String {
 			.filter(|call| plain_tool_name(&call.name))
 			.map_or_else(|| "tool call".into(), |call| call.name.clone()),
 		RunPhase::Ready => "worker start".into(),
-		RunPhase::Thinking => "inference".into(),
+		RunPhase::Thinking => "model call".into(),
 		RunPhase::Waiting => "resume".into(),
 		RunPhase::Completed | RunPhase::Failed | RunPhase::Cancelled => "run".into(),
 	}

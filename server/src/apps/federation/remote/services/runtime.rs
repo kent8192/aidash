@@ -549,7 +549,7 @@ impl Home {
 				error
 			}
 		})?;
-		crate::authorization::peer::authority_request(
+		crate::authorization::peer::authority_request_keeping_not_found(
 			&self.federation,
 			&sender,
 			&self.run.home_node,

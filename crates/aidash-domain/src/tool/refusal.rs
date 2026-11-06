@@ -101,7 +101,7 @@ impl fmt::Display for AuthorityRefusal {
 			(RefusalCheck::RunAuthority, _) => {
 				write!(
 					f,
-					"{tool}: the Run's authority was gone after the call had run"
+					"{tool}: the Run's authority was gone when the call ended"
 				)
 			}
 			(RefusalCheck::Unnamed, _) => {
@@ -148,7 +148,7 @@ mod tests {
 	)]
 	#[case(
 		RefusalCheck::RunAuthority,
-		"task_delegate: the Run's authority was gone after the call had run"
+		"task_delegate: the Run's authority was gone when the call ended"
 	)]
 	#[case(
 		RefusalCheck::Unnamed,
