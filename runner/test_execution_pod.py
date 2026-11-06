@@ -1601,12 +1601,13 @@ class LeadReviewRegressionTest(unittest.TestCase):
             backend.kube.assert_not_called()
 
     def test_interrupted_docker_stop_ignores_gone_pod_or_finished_process(self):
+        import itertools
         import json
         import tempfile
         import time
         from pathlib import Path
         from types import SimpleNamespace
-        from unittest.mock import Mock
+        from unittest.mock import Mock, patch
         from execution_pod import ExecutionPodController
         for pod in (None, {'metadata': {'uid': 'new'}}, {'metadata': {'uid': 'uid'}}):
             with self.subTest(pod=pod), tempfile.TemporaryDirectory() as directory:
@@ -1617,7 +1618,9 @@ class LeadReviewRegressionTest(unittest.TestCase):
                 controller._command_path(self.op).write_text(json.dumps({'operation_id': self.op,
                     'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid', 'background': True, 'docker_enabled': True,
                     'status': 'interrupted', 'terminal_at': time.time()}))
-                self.assertEqual(controller.stop_background(self.op)['status'], 'interrupted')
+                with patch('time.sleep'):
+                    with patch('time.monotonic', side_effect=itertools.count(step=.5).__next__):
+                        self.assertEqual(controller.stop_background(self.op)['status'], 'interrupted')
                 self.assertFalse(any('stop' in call.args[0] for call in kube.call_args_list))
 
     def test_interrupted_docker_retries_stop_and_cancel_continues_after_error(self):
@@ -3880,6 +3883,15 @@ class SavedOutputBudgetTest(unittest.TestCase):
 class DockerLateStartFenceTest(unittest.TestCase):
     op = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
 
+    def _clock(self):
+        from unittest.mock import patch
+        from contextlib import ExitStack
+        self.now = [0.0]
+        stack = ExitStack()
+        stack.enter_context(patch('time.monotonic', side_effect=lambda: self.now[0]))
+        stack.enter_context(patch('time.sleep', side_effect=lambda seconds: self.now.__setitem__(0, self.now[0] + seconds)))
+        return stack
+
     def _fixture(self, directory, *, running, started):
         import json
         from pathlib import Path
@@ -3891,12 +3903,15 @@ class DockerLateStartFenceTest(unittest.TestCase):
         if started:
             claim_operation(self.op, claims)
         calls = []
+        polls = []
         def kube(args, *rest, **kwargs):
             calls.append(args)
             if 'claim' in args:
                 return SimpleNamespace(returncode=0, stdout=json.dumps({'created': claim_operation(self.op, claims)}).encode())
             if 'running' in args:
-                return SimpleNamespace(returncode=0, stdout=json.dumps({'running': running}).encode())
+                polls.append(1)
+                state = running(len(polls)) if callable(running) else running
+                return SimpleNamespace(returncode=0, stdout=json.dumps({'running': state}).encode())
             return SimpleNamespace(returncode=0, stdout=b'')
         controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=False)
         controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
@@ -3915,12 +3930,26 @@ class DockerLateStartFenceTest(unittest.TestCase):
             self.assertFalse(any('stop' in args for args in calls))
             self.assertFalse(claim_operation(self.op, claims), 'a late supervisor could still start the command')
 
-    def test_a_started_supervisor_that_is_gone_has_finished(self):
+    def test_a_started_supervisor_that_stays_absent_for_the_whole_window_has_finished(self):
         import tempfile
         with tempfile.TemporaryDirectory() as directory:
             controller, calls, _ = self._fixture(directory, running=False, started=True)
-            self.assertEqual(controller._stop_command(self.op)['status'], 'interrupted')
+            with self._clock():
+                self.assertEqual(controller._stop_command(self.op)['status'], 'interrupted')
+            self.assertGreaterEqual(self.now[0], 10)
             self.assertFalse(any('stop' in args for args in calls))
+            # Result files of a Docker command are never evidence that it finished.
+            self.assertFalse(any('result' in args for args in calls))
+
+    def test_a_started_supervisor_that_publishes_its_marker_late_is_still_stopped(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            controller, calls, _ = self._fixture(directory, running=lambda poll: poll >= 4, started=True)
+            with self._clock():
+                result = controller._stop_command(self.op)
+            self.assertEqual(result['status'], 'stopping')
+            self.assertLess(self.now[0], 10)
+            self.assertTrue(any('stop' in args for args in calls))
 
     def test_a_running_supervisor_is_still_stopped(self):
         import tempfile
