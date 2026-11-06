@@ -1624,15 +1624,49 @@ print(json.dumps(r))'''
     def _stop_python_interpreter(self, operation_id):
         import time
         result = self.stop_background(operation_id)
+        # `stopping` means the Pod accepted the stop request. A session watcher that was resumed after a
+        # Runner restart settles the journal only every few seconds, so the Pod's own result is read
+        # directly. An accepted stop is never turned into a Pod deletion by that watcher being slow.
+        accepted = result.get('status') == 'stopping'
         deadline = time.monotonic() + 10
         while True:
             status = result.get('status')
             if status in ('completed', 'timed_out', 'stopped', 'cancelled'):
                 return
-            if status == 'interrupted' or time.monotonic() >= deadline:
+            if status == 'interrupted':
+                raise ExecutionPodError('stop_failed', 'Python interpreter termination could not be confirmed')
+            if accepted:
+                outcome = self._interpreter_outcome(operation_id)
+                if outcome in ('completed', 'timed_out', 'stopped'):
+                    return
+                if outcome == 'termination_unconfirmed':
+                    raise ExecutionPodError('stop_failed', 'Python interpreter termination could not be confirmed')
+            if time.monotonic() >= deadline:
+                if accepted:
+                    return
                 raise ExecutionPodError('stop_failed', 'Python interpreter termination could not be confirmed')
             time.sleep(.1)
             result = self.command_result(operation_id)
+
+    def _interpreter_outcome(self, operation_id):
+        """Read the status the Pod recorded for a Python session, or None while it is unavailable."""
+        import json
+        record = self._read_command(operation_id)
+        if record.get('docker_enabled'):
+            # Docker mode never trusts a result file; its journal comes from the authenticated frame.
+            return None
+        try:
+            observed = self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
+                                         helper_command('result', operation_id), check=False, timeout=5)
+            if observed.returncode != 0:
+                return None
+            outcome = json.loads(observed.stdout)
+        except Exception:
+            return None
+        if (isinstance(outcome, dict) and outcome.get('operation_id') == operation_id
+                and outcome.get('run_id') == record.get('run_id')):
+            return outcome.get('status')
+        return None
 
     def cancel_run(self, scratch_space_id, run_id):
         import json

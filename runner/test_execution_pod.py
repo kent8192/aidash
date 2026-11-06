@@ -4028,3 +4028,265 @@ class DockerForwardedOutputTest(unittest.TestCase):
                 result = controller.command_result(self.op)
                 self.assertEqual((result['status'], result['stdout']), ('completed', 'cGFydA=='))
                 self.assertEqual(result['truncated'], forward_incomplete)
+
+
+class NormalDeleteProofTest(unittest.TestCase):
+    """A normal delete that completed must stay provable after its reply is lost (#713 decision 5)."""
+
+    def _fixture(self, directory):
+        import json
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController, ExecutionPodError
+        from control import scratch_resource_name
+        world = {'pod': {'metadata': {'uid': 'uid'}, 'spec': {'nodeName': 'node'}}, 'node_uid': 'node-uid',
+                 'pod_lookup_fails': False, 'node_lookup_fails': False, 'delete_reply_lost': False,
+                 'wait_fails': False, 'after_delete': {}}
+        deletes = []
+        def get(kind, name):
+            if kind == 'node':
+                if world['node_lookup_fails']:
+                    raise TimeoutError('node lookup timed out')
+                return {'metadata': {'name': name, 'uid': world['node_uid']}} if world['node_uid'] else None
+            if world['pod_lookup_fails']:
+                raise TimeoutError('pod lookup timed out')
+            return world['pod']
+        def kube(args, *rest, **kwargs):
+            if args[0] == 'delete':
+                deletes.append(json.loads(rest[0]))
+                world['pod'] = None
+                world.update(world['after_delete'])
+                if world['delete_reply_lost']:
+                    raise TimeoutError('delete reply lost')
+            if args[0] == 'wait' and world['wait_fails']:
+                raise TimeoutError('wait timed out')
+            return SimpleNamespace(returncode=0, stdout=b'')
+        controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube),
+                                            {'namespace': 'fixture'}, admitted=True)
+        controller.touch_space('s', now=1)
+        path = Path(directory) / 'execution-v2-spaces' / (scratch_resource_name('s') + '.json')
+        state = json.loads(path.read_text())
+        state['guard'] = {'pod_uid': 'uid', 'cluster_node': 'node', 'node_uid': 'node-uid', 'terminated': False}
+        path.write_text(json.dumps(state))
+        controller._terminate_recorded_pod = Mock(side_effect=ExecutionPodError('termination_unconfirmed', 'guard unavailable'))
+        controller._get = get
+        return controller, world, deletes, path
+
+    def test_completed_delete_whose_proof_was_lost_counts_as_stopped(self):
+        import json
+        import tempfile
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodError, STOP_RETRY_SECONDS
+        # What goes wrong once the delete has been applied.
+        losses = {
+            'reply lost': {'delete_reply_lost': True},
+            'wait and pod lookup time out': {'wait_fails': True, 'pod_lookup_fails': True},
+            'node lookup times out afterwards': {'node_lookup_fails': True},
+        }
+        for label, loss in losses.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as directory:
+                controller, world, deletes, path = self._fixture(directory)
+                with patch('time.time', return_value=100):
+                    with self.assertRaises(ExecutionPodError):
+                        controller.stop('s')
+                world['after_delete'] = loss
+                with patch('time.time', return_value=100 + STOP_RETRY_SECONDS):
+                    with self.assertRaises(Exception):
+                        controller.stop('s')
+                self.assertEqual(len(deletes), 1)
+                world.update(delete_reply_lost=False, pod_lookup_fails=False, node_lookup_fails=False, wait_fails=False)
+                with patch('time.time', return_value=100 + STOP_RETRY_SECONDS + 1):
+                    self.assertTrue(controller.stop('s')['stopped'])
+                self.assertEqual(len(deletes), 1)
+                state = json.loads(path.read_text())
+                self.assertFalse(state['termination_unconfirmed'])
+                self.assertNotIn('stop_requested_at', state)
+                self.assertEqual(state['terminated_pods'], ['uid'])
+                self.assertTrue(state['guard']['terminated'])
+
+    def test_lost_proof_is_not_accepted_once_the_node_left_the_cluster(self):
+        import tempfile
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodError, STOP_RETRY_SECONDS
+        for node_uid in (None, 'replacement-node'):
+            with self.subTest(node_uid=node_uid), tempfile.TemporaryDirectory() as directory:
+                controller, world, deletes, path = self._fixture(directory)
+                with patch('time.time', return_value=100):
+                    with self.assertRaises(ExecutionPodError):
+                        controller.stop('s')
+                world['after_delete'] = {'delete_reply_lost': True}
+                with patch('time.time', return_value=100 + STOP_RETRY_SECONDS):
+                    with self.assertRaises(Exception):
+                        controller.stop('s')
+                world.update(delete_reply_lost=False, node_uid=node_uid)
+                with patch('time.time', return_value=100 + STOP_RETRY_SECONDS + 1):
+                    with self.assertRaises(ExecutionPodError) as error:
+                        controller.stop('s')
+                self.assertEqual(error.exception.code, 'termination_unconfirmed')
+                self.assertEqual(len(deletes), 1)
+
+    def test_a_missing_pod_is_no_proof_when_no_delete_was_issued_for_it(self):
+        import tempfile
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodError, STOP_RETRY_SECONDS
+        with tempfile.TemporaryDirectory() as directory:
+            controller, world, deletes, path = self._fixture(directory)
+            with patch('time.time', return_value=100):
+                with self.assertRaises(ExecutionPodError):
+                    controller.stop('s')
+            world['pod'] = None
+            with patch('time.time', return_value=100 + STOP_RETRY_SECONDS):
+                with self.assertRaises(ExecutionPodError):
+                    controller.stop('s')
+            self.assertEqual(deletes, [])
+
+
+class PythonInterpreterStopTest(unittest.TestCase):
+    """Stopping a cell's interpreter must not delete the Pod because a slow watcher has not settled it."""
+    cell = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+    session = 'e6ded09d-f783-4ce8-98e9-dbfca68884f2'
+
+    def _run(self, *, session_result, stop_fails=False):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        clock = [0.0]
+        calls = []
+        def kube(args, *rest, **kwargs):
+            calls.append(args)
+            if 'stop' in args and stop_fails:
+                raise RuntimeError('exec failed')
+            if 'result' in args:
+                if session_result is None:
+                    return SimpleNamespace(returncode=1, stdout=b'')
+                return SimpleNamespace(returncode=0, stdout=json.dumps(dict(
+                    session_result, operation_id=self.session, run_id='r')).encode())
+            return SimpleNamespace(returncode=0, stdout=b'')
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=True)
+            controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
+            controller._stop_matching_pod = Mock()
+            cell = {'operation_id': self.cell, 'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod',
+                    'pod_uid': 'uid', 'docker_enabled': False, 'background': False, 'status': 'running',
+                    'kind': 'python_cell', 'session_operation_id': self.session}
+            controller._command_path(self.cell).write_text(json.dumps(cell))
+            # The session stays `running` in the journal: after a Runner restart its watcher polls only every 5 s.
+            controller._command_path(self.session).write_text(json.dumps({'operation_id': self.session,
+                'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid', 'docker_enabled': False,
+                'background': True, 'status': 'running', 'kind': 'python_session'}))
+            def tick(seconds):
+                clock[0] += seconds
+            with patch('time.monotonic', side_effect=lambda: clock[0]), patch('time.sleep', side_effect=tick):
+                controller._finish_command(cell, {'status': 'timed_out'},
+                                           {'stdout': '', 'stderr': '', 'truncated': False})
+            return controller, calls, controller._read_command(self.cell)['status']
+
+    def test_stopped_interpreter_is_read_from_its_result_not_from_the_watcher(self):
+        controller, calls, cell_status = self._run(session_result={'status': 'stopped'})
+        controller._stop_matching_pod.assert_not_called()
+        self.assertEqual(cell_status, 'timed_out')
+        self.assertTrue(any('stop' in args for args in calls))
+
+    def test_accepted_stop_never_deletes_the_pod_when_nothing_can_be_read_yet(self):
+        controller, _, cell_status = self._run(session_result=None)
+        controller._stop_matching_pod.assert_not_called()
+        self.assertEqual(cell_status, 'timed_out')
+
+    def test_supervisor_reporting_unconfirmed_termination_still_deletes_the_pod(self):
+        controller, _, _ = self._run(session_result={'status': 'termination_unconfirmed'})
+        controller._stop_matching_pod.assert_called_once_with('s', 'uid')
+
+    def test_stop_request_that_cannot_be_delivered_still_deletes_the_pod(self):
+        controller, _, _ = self._run(session_result=None, stop_fails=True)
+        controller._stop_matching_pod.assert_called_once_with('s', 'uid')
+
+
+class SavedOutputBudgetTest(unittest.TestCase):
+    op = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+
+    def test_the_retry_budget_restarts_after_every_chunk_that_was_read(self):
+        import base64
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodController, OUTPUT_RETRY_SECONDS
+        clock = [0.0]
+        chunk, chunks = 10, 40
+        def kube(args, *rest, **kwargs):
+            # Every exec takes 2 s and fails when it is given less time than that.
+            clock[0] += 2
+            if kwargs['timeout'] < 2:
+                raise TimeoutError('exec timed out')
+            offset = int(args[-2])
+            data = b'x' * chunk
+            return SimpleNamespace(returncode=0, stdout=json.dumps({'data': base64.b64encode(data).decode(),
+                'next_offset': offset + chunk, 'eof': offset + chunk >= chunk * chunks}).encode())
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=False)
+            outcome = {}
+            with patch('time.monotonic', side_effect=lambda: clock[0]), patch('time.sleep'):
+                result = controller._saved_output({'operation_id': self.op, 'pod': 'pod'}, outcome, tolerate_missing=True)
+            # 80 reads at 2 s take far longer than the whole retry budget.
+            self.assertGreater(clock[0], OUTPUT_RETRY_SECONDS)
+            self.assertNotIn('output_incomplete', outcome)
+            self.assertFalse(result['truncated'])
+            self.assertEqual(len(base64.b64decode(result['stdout'])), chunk * chunks)
+            self.assertEqual(len(base64.b64decode(result['stderr'])), chunk * chunks)
+
+    def test_unusable_saved_output_is_read_once_without_retrying(self):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodController
+        clock, attempts = [0.0], []
+        def kube(args, *rest, **kwargs):
+            attempts.append(args[-3])
+            raise TimeoutError('offline')
+        def advance(seconds):
+            clock[0] += seconds
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=False)
+            outcome = {'output_incomplete': True}
+            with patch('time.monotonic', side_effect=lambda: clock[0]), patch('time.sleep', side_effect=advance):
+                result = controller._saved_output({'operation_id': self.op, 'pod': 'pod', 'stdout': 'cGFydA=='},
+                                                  outcome, tolerate_missing=True)
+            self.assertEqual(attempts, ['stdout', 'stderr'])
+            self.assertEqual(clock[0], 0)
+            self.assertEqual(result['stdout'], 'cGFydA==')
+            self.assertTrue(result['truncated'])
+
+
+class DockerForwardedOutputTest(unittest.TestCase):
+    op = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+
+    def test_incomplete_forwarding_marks_docker_output_truncated_without_reading_saved_files(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        for forward_incomplete in (True, False):
+            with self.subTest(forward_incomplete=forward_incomplete), tempfile.TemporaryDirectory() as directory:
+                backend = SimpleNamespace(root=Path(directory), command=['kubectl'], environment={},
+                                          kube=Mock(side_effect=AssertionError('Docker saved files are untrusted')))
+                controller = ExecutionPodController(backend, {}, admitted=True)
+                controller._command_path(self.op).write_text(json.dumps({'operation_id': self.op,
+                    'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid', 'docker_enabled': True,
+                    'background': False, 'timeout_seconds': 5, 'cwd': '.', 'code': 'true', 'status': 'queued'}))
+                transport = {'exit_code': 0, 'transport_timed_out': False,
+                             'framed_result': {'operation_id': self.op, 'run_id': 'r', 'status': 'completed',
+                                               'exit_code': 0, 'forward_incomplete': forward_incomplete},
+                             'output': {'stdout': 'cGFydA==', 'stderr': '', 'truncated': False}}
+                with patch('execution_pod.drain_process', return_value=transport):
+                    controller._execute_command(self.op)
+                result = controller.command_result(self.op)
+                self.assertEqual((result['status'], result['stdout']), ('completed', 'cGFydA=='))
+                self.assertEqual(result['truncated'], forward_incomplete)
