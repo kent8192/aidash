@@ -431,6 +431,114 @@ async fn person_who_cannot_read_the_creators_records_stays_refused_on_the_subnod
 	cleanup(f, &url, &schema).await;
 }
 
+/// An approval for what the creator read is withdrawn after it gave the Subnode a
+/// Task. Members never checked that read, so they keep working, while the creator
+/// and people lose sight of the Task. Returns the Subnode and a member's Run.
+async fn withdraw_what_the_creator_read(rig: &SubnodeRig) -> (Value, Uuid) {
+	let creator = rig.creator_run;
+	rig.read_own_task(creator).await;
+	rig.call(creator, "agent_discover", json!({}), "creator-discovers")
+		.await;
+	let (subnode, workspace, root, leader) = rig.subnode_with_task().await;
+	let mut policy = rig.policy.clone();
+	policy["subjects"]["carol"] = json!({"kind":"user"});
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"alice-approves",
+		"effect":"allow",
+		"subjects":{"ids":["alice"]},
+		"actions":["catalog.approve"],
+		"resources":{"kinds":["*"]},
+	}));
+	set_policy(&rig.f, &rig.app, &policy).await;
+	let credential = common::issued_credential(&rig.f.store, "acme", "carol").await;
+	let carol = credential["token"].as_str().unwrap();
+	let runs = format!("/api/tasks/{root}/runs");
+	let (status, body) = request(&rig.app, carol, "GET", &runs, Value::Null).await;
+	assert_eq!(status, 200, "carol before the withdrawal: {body}");
+	let (status, body) = request(
+		&rig.app,
+		&rig.token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":rig.node.node.as_str(),"entry":{"id":"delegate-target","version":"1.0.0"},"expected_revision":1,"enabled":false}),
+	)
+	.await;
+	assert_eq!(status, 200, "withdraw: {body}");
+	let (status, body) = request(&rig.app, carol, "GET", &runs, Value::Null).await;
+	assert_eq!(status, 403, "carol after the withdrawal: {body}");
+	rig.set_run_control(leader, "PAUSED").await;
+	rig.set_run_control(creator, "ACTIVE").await;
+	rig.script(
+		creator,
+		"workspace_read",
+		json!({"workspace_id":workspace,"kind":"task","id":root}),
+		"creator-after-withdrawal",
+	)
+	.await;
+	assert!(
+		rig.result_of(creator, "creator-after-withdrawal")
+			.await
+			.is_none(),
+		"the creator lost sight of the Task"
+	);
+	rig.read_own_task(leader).await;
+	let task = rig.create_task(leader, "after-withdrawal", &[]).await;
+	let member = rig.delegate(leader, task, "subnode-second").await;
+	rig.read_own_task(member).await;
+	(subnode, member)
+}
+
+/// A person stops those members by dissolving the Subnode.
+#[rstest::rstest]
+#[tokio::test]
+async fn dissolving_the_subnode_stops_members_that_outlived_the_creators_read(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::from_conversation(&f, &fixture.application).await;
+	let (subnode, member) = withdraw_what_the_creator_read(&rig).await;
+	let (status, body) = request(
+		&rig.app,
+		&rig.token,
+		"POST",
+		&format!("/api/subnodes/{}/dissolve", subnode.as_str().unwrap()),
+		json!({}),
+	)
+	.await;
+	assert_eq!(status, 200, "dissolve: {body}");
+	let stopped = f.store.run(&TEST_FIXTURE, member).await.unwrap();
+	assert_eq!(stopped.control, aidash_domain::RunControl::Cancelled);
+	cleanup(f, &url, &schema).await;
+}
+
+/// A person stops those members by cancelling the creating Run. `/control` still
+/// refuses this until #753, so this uses `/management`.
+#[rstest::rstest]
+#[tokio::test]
+async fn cancelling_the_creator_stops_members_that_outlived_its_read(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::from_conversation(&f, &fixture.application).await;
+	let (_, member) = withdraw_what_the_creator_read(&rig).await;
+	let (status, body) = request(
+		&rig.app,
+		&rig.token,
+		"POST",
+		&format!("/api/runs/{}/management", rig.creator_run),
+		json!({"action":"cancel"}),
+	)
+	.await;
+	assert_eq!(status, 200, "cancel: {body}");
+	let stopped = f.store.run(&TEST_FIXTURE, member).await.unwrap();
+	assert_eq!(stopped.control, aidash_domain::RunControl::Cancelled);
+	cleanup(f, &url, &schema).await;
+}
+
 /// What a creator is there for: it reads a member's output, and then hands more
 /// work on.
 async fn creator_reads_a_members_output_and_then_delegates(
