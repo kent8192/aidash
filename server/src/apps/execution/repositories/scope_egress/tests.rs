@@ -10,7 +10,12 @@ impl Meter for AuditMeter {
 	async fn charge(&self, _: Direction, _: usize) -> aidash_application::Result<()> {
 		Ok(())
 	}
-	async fn finish(&self, _: u16, _: u64, _: Option<&str>) -> aidash_application::Result<()> {
+	async fn finish(
+		&self,
+		_: u16,
+		_: RequestTimes,
+		_: Option<&str>,
+	) -> aidash_application::Result<()> {
 		Ok(())
 	}
 }
@@ -22,7 +27,12 @@ impl Meter for FailedAuditMeter {
 			"audit unavailable".into(),
 		))
 	}
-	async fn finish(&self, _: u16, _: u64, _: Option<&str>) -> aidash_application::Result<()> {
+	async fn finish(
+		&self,
+		_: u16,
+		_: RequestTimes,
+		_: Option<&str>,
+	) -> aidash_application::Result<()> {
 		Ok(())
 	}
 }

@@ -2,7 +2,8 @@
 use std::sync::Arc;
 
 use aidash_application::egress::{
-	Admission, ConnectionRecord, Direction, EgressScopes, Meter, ScopeAuthority, ScopeSettings,
+	Admission, ConnectionRecord, Direction, EgressScopes, Meter, RequestTimes, ScopeAuthority,
+	ScopeSettings,
 };
 use aidash_application::tenancy::TenancyScope;
 use aidash_domain::egress::ScopeId;
@@ -538,10 +539,10 @@ impl Meter for ScopedMeter {
 	async fn finish(
 		&self,
 		status: u16,
-		elapsed_ms: u64,
+		times: RequestTimes,
 		error: Option<&str>,
 	) -> aidash_application::Result<()> {
-		self.inner.finish(status, elapsed_ms, error).await
+		self.inner.finish(status, times, error).await
 	}
 }
 

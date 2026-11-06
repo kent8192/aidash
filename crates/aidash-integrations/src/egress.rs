@@ -1,6 +1,6 @@
 //! Internal HTTP streaming adapter. The dashboard framework buffers incoming
 //! bodies, so this listener uses Hyper directly; it has no public API routes.
-use aidash_application::egress::{Admission, Authority, Direction, Meter};
+use aidash_application::egress::{Admission, Authority, Direction, Meter, RequestTimes};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use bytes::Bytes;
 use futures_util::{StreamExt, TryStreamExt};
@@ -59,6 +59,10 @@ const CONNECTION_LIMIT: &str = "egress_connection_limit";
 /// long. These bytes never leave the gateway, so they are not charged.
 const LINGER_BYTES: u64 = 8 * 1024 * 1024;
 const LINGER_TIME: Duration = Duration::from_secs(5);
+
+fn millis(elapsed: Duration) -> u64 {
+	elapsed.as_millis().min(u64::MAX as u128) as u64
+}
 
 fn failure(status: StatusCode, code: &'static str) -> Response<Body> {
 	Response::builder()
@@ -181,18 +185,17 @@ async fn record_settling(
 	meter: &dyn Meter,
 	label: &Label,
 	status: u16,
-	elapsed: u64,
+	times: RequestTimes,
 	error: Option<&str>,
 	settling: &mut Settling,
 ) {
 	loop {
-		let cause = match tokio::time::timeout(SETTLE_ATTEMPT, meter.finish(status, elapsed, error))
-			.await
-		{
-			Ok(Ok(())) => return,
-			Ok(Err(error)) => error.to_string(),
-			Err(_) => "attempt timed out".to_owned(),
-		};
+		let cause =
+			match tokio::time::timeout(SETTLE_ATTEMPT, meter.finish(status, times, error)).await {
+				Ok(Ok(())) => return,
+				Ok(Err(error)) => error.to_string(),
+				Err(_) => "attempt timed out".to_owned(),
+			};
 		if !settling.wait().await {
 			settle_failure("record", "abandoned");
 			tracing::error!(
@@ -449,18 +452,23 @@ struct Completion {
 	/// The `Content-Length` the client was promised, if any.
 	expected: Option<u64>,
 	finished: bool,
+	admission_ms: u64,
+	/// How long [`Completion::settle`] took, once it has run.
+	settle_ms: u64,
 }
 impl Completion {
 	/// Debits what both directions still hold. A stream that ended cleanly
 	/// must do so within the operation deadline; a failed one gets a short
 	/// grace so the bytes it did stream still count.
-	async fn settle(&self, error: Option<&str>) -> Option<Refusal> {
+	async fn settle(&mut self, error: Option<&str>) -> Option<Refusal> {
+		let settling = tokio::time::Instant::now();
 		let deadline = match error {
 			None => self.deadline,
 			Some(_) => self.deadline.max(tokio::time::Instant::now() + FLUSH_GRACE),
 		};
 		let sent = self.debits.flush(Direction::Sent, deadline).await;
 		let received = self.debits.flush(Direction::Received, deadline).await;
+		self.settle_ms = millis(settling.elapsed());
 		sent.err().or(received.err())
 	}
 
@@ -469,9 +477,13 @@ impl Completion {
 			return;
 		}
 		self.finished = true;
-		let elapsed = self.started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+		let times = RequestTimes {
+			duration_ms: millis(self.started.elapsed()),
+			admission_ms: self.admission_ms,
+			settle_ms: self.settle_ms,
+		};
 		let meter = self.debits.meter.clone();
-		if let Err(cause) = meter.finish(self.status, elapsed, error).await {
+		if let Err(cause) = meter.finish(self.status, times, error).await {
 			settle_failure("record", "retried");
 			tracing::debug!(%cause, "Egress record failed; retrying in the background");
 			// The client does not wait for a stalled store.
@@ -484,7 +496,7 @@ impl Completion {
 					&*meter,
 					&label,
 					status,
-					elapsed,
+					times,
 					error.as_deref(),
 					&mut settling,
 				)
@@ -511,7 +523,9 @@ impl Drop for Completion {
 		if !self.finished {
 			let debits = self.debits.clone();
 			let status = self.status;
-			let elapsed = self.started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+			let duration_ms = millis(self.started.elapsed());
+			let admission_ms = self.admission_ms;
+			let ended = tokio::time::Instant::now();
 			// Hyper stops polling a body once it has written `Content-Length`
 			// bytes, so a complete response with a known length ends here rather
 			// than at the end of its stream. Complete means handed to Hyper: the
@@ -541,11 +555,16 @@ impl Drop for Completion {
 				} else {
 					Some("stream_interrupted")
 				};
+				let times = RequestTimes {
+					duration_ms,
+					admission_ms,
+					settle_ms: millis(ended.elapsed()),
+				};
 				record_settling(
 					&*debits.meter,
 					&debits.label,
 					status,
-					elapsed,
+					times,
 					error,
 					&mut settling,
 				)
@@ -1148,6 +1167,7 @@ async fn forward(
 		"{:x}",
 		Sha256::digest(query.as_deref().unwrap_or("").as_bytes())
 	);
+	let admitting = tokio::time::Instant::now();
 	let admitted = if scoped {
 		match scopes {
 			Some(scopes) => {
@@ -1174,6 +1194,7 @@ async fn forward(
 			)
 			.await
 	};
+	let admission_ms = millis(admitting.elapsed());
 	let admission = match admitted {
 		Ok(value) => value,
 		Err(aidash_application::Error::Forbidden | aidash_application::Error::Unauthorized) => {
@@ -1235,6 +1256,8 @@ async fn forward(
 		status: 502,
 		expected: None,
 		finished: false,
+		admission_ms,
+		settle_ms: 0,
 	};
 	if remaining.is_zero() {
 		completion.finish(Some("operation_expired")).await;
