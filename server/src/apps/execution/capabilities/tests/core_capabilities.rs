@@ -1883,3 +1883,6 @@ mod web_research_tests;
 
 #[path = "core_capabilities/reference_set.rs"]
 mod reference_set_tests;
+
+#[path = "core_capabilities/reference_locks.rs"]
+mod reference_lock_tests;
