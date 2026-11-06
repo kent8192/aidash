@@ -393,9 +393,28 @@ async fn unavailable_peer_still_requires_saved_metadata_policy(mut scope: Scope)
 			"dependencies",
 			"registry.read",
 			"agent.execute",
+			"federation.discover",
 			"remember:false"
 		]
 	);
+	assert!(transport.calls.lock().unwrap().is_empty());
+}
+#[rstest]
+#[tokio::test]
+async fn a_mark_does_not_stand_in_for_this_readers_discover_right(mut scope: Scope) {
+	scope.unavailable.insert("aidash://leaf".into());
+	scope.denied = Some("federation.discover");
+	let transport = Transport::default();
+	assert!(
+		!reads_visible(&mut scope, &transport, Uuid::from_u128(1))
+			.await
+			.unwrap()
+	);
+	assert_eq!(
+		scope.calls.last().map(String::as_str),
+		Some("remember:false")
+	);
+	assert!(scope.calls.iter().any(|call| call == "federation.discover"));
 	assert!(transport.calls.lock().unwrap().is_empty());
 }
 #[rstest]

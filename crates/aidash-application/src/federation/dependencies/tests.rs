@@ -265,7 +265,54 @@ async fn deadline_expiration_prevents_the_next_authority_call(
 			.await
 			.unwrap()
 	);
-	assert_eq!(scope.calls, vec![format!("grant:{}", Uuid::from_u128(1))]);
+	assert_eq!(
+		scope.calls,
+		vec![
+			format!("grant:{}", Uuid::from_u128(1)),
+			"decide:federation.discover:aidash://foreign".into()
+		]
+	);
+	assert!(transport.calls.lock().unwrap().is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn the_deadline_names_no_node_to_a_reader_who_may_not_discover_it(
+	mut scope: Scope,
+	transport: Transport,
+) {
+	scope.latency = Duration::from_secs(20);
+	scope.decision = false;
+	scope
+		.edges
+		.insert(Uuid::from_u128(1), vec![grant("aidash://foreign", 2)]);
+	assert!(
+		!verify_all(&mut scope, &transport, vec![grant("aidash://local", 1)])
+			.await
+			.unwrap()
+	);
+	assert!(scope.marked.is_empty());
+	assert!(transport.calls.lock().unwrap().is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_mark_does_not_stand_in_for_this_readers_discover_right(
+	mut scope: Scope,
+	transport: Transport,
+) {
+	// The mark may come from another identity of the same authority.
+	scope.marked.insert("aidash://foreign".into());
+	scope.decision = false;
+	assert!(
+		!verify_all(&mut scope, &transport, vec![grant("aidash://foreign", 1)])
+			.await
+			.unwrap()
+	);
+	assert_eq!(
+		scope.calls,
+		vec!["decide:federation.discover:aidash://foreign"]
+	);
 	assert!(transport.calls.lock().unwrap().is_empty());
 }
 
@@ -351,11 +398,14 @@ async fn a_node_that_did_not_answer_is_marked_and_not_asked_again(
 		.await
 		.unwrap();
 	// Assert: both are unconfirmed, the Node is marked, and the second walk
-	// neither decided nor asked.
+	// only checked this reader's right to discover it, then did not ask.
 	assert!(!first && !second);
 	assert!(scope.marked.contains("aidash://foreign"));
 	assert_eq!(transport.calls.lock().unwrap().len(), 1);
-	assert_eq!(scope.calls.len(), calls_after_first);
+	assert_eq!(
+		scope.calls[calls_after_first..],
+		["decide:federation.discover:aidash://foreign"]
+	);
 }
 
 #[rstest]

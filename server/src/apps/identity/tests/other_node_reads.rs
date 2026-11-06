@@ -731,3 +731,86 @@ async fn deleting_the_discovered_node_keeps_the_outputs_hidden(#[future(awt)] pr
 	assert_ne!(body["code"], "node_unreachable", "{body}");
 	world.close().await;
 }
+
+/// Opening a Run's live inference stream is a person's read of one thing. A
+/// Node that does not answer makes it `503 node_unreachable`, which the Web
+/// retries (`permanentlyDenied` stops only on 403 and 404); a real refusal and
+/// a reader who may not discover the Node stay `403` (#751).
+#[rstest::rstest]
+#[tokio::test]
+async fn opening_a_run_stream_while_a_node_is_silent_is_retryable_and_a_refusal_is_not(
+	#[future(awt)] provider: Provider,
+) {
+	*provider.script.delegate.lock().unwrap() = false;
+	let mut world = world(provider).await;
+	let coordinator = world.run_coordinator(WITHOUT_DELEGATION).await;
+	// Bob may not discover the second Node; Carol may not read Workspaces.
+	let (status, current) = request(
+		&world.app,
+		&world.f.config.api_token,
+		"GET",
+		"/api/authorization/acme",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{current}");
+	let mut bundle = current["bundle"].clone();
+	bundle["subjects"]["bob"] = json!({"kind":"user"});
+	bundle["subjects"]["carol"] = json!({"kind":"user"});
+	bundle["policies"].as_array_mut().unwrap().extend([
+		json!({"id":"bob-cannot-discover","effect":"deny","subjects":{"ids":["bob"]},
+			"actions":["federation.discover"],"resources":{"kinds":["node"]}}),
+		json!({"id":"carol-reads-nothing","effect":"deny","subjects":{"ids":["carol"]},
+			"actions":["workspace.read"],"resources":{"kinds":["*"]}}),
+	]);
+	let (status, body) = request(
+		&world.app,
+		&world.f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":current["revision"],"bundle":bundle}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let bob = subject_credential(&world.f.store, "acme", "bob").await;
+	let carol = subject_credential(&world.f.store, "acme", "carol").await;
+	let path = format!("/api/runs/{}/inference/stream", coordinator.id);
+	let original = limit_pool(&mut world, 1).await;
+	// The Node is silent: the person is told which one, and may retry.
+	let (status, body) = world.get(&path).await;
+	assert_eq!(status, 503, "{body}");
+	assert_eq!(body["code"], "node_unreachable", "{body}");
+	assert_eq!(body["node"], json!(world.sibling.to_string()), "{body}");
+	// A reader who may not discover that Node is refused, naming nothing.
+	let (status, body) = request(&world.app, &bob, "GET", &path, Value::Null).await;
+	assert_eq!(status, 403, "{body}");
+	assert_ne!(body["code"], "node_unreachable", "{body}");
+	// A refusal that has nothing to do with the Node is still final.
+	let (status, body) = request(&world.app, &carol, "GET", &path, Value::Null).await;
+	assert_eq!(status, 403, "{body}");
+	assert_ne!(body["code"], "node_unreachable", "{body}");
+	world.f.store.pool = original;
+	world.app = common::application_with_settings(
+		world.f.clone(),
+		aidash_server::http::Settings {
+			auth_burst: 10000,
+			..Default::default()
+		},
+	)
+	.await;
+	// The Node answers again: nothing was remembered, and the stream opens.
+	let response = world
+		.app
+		.clone()
+		.native_oneshot(
+			http::Request::get(path.clone())
+				.header("authorization", format!("Bearer {}", world.token))
+				.body(bytes::Bytes::new())
+				.unwrap(),
+		)
+		.await
+		.unwrap();
+	assert_eq!(response.status, 200);
+	drop(response);
+	world.close().await;
+}

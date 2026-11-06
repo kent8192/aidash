@@ -71,11 +71,13 @@ async fn check(
 		return Ok(pending.len() <= LIMIT);
 	}
 	for (node, references) in nodes {
-		if scope.unavailable(&node) {
-			return Ok(false);
-		}
 		let resource = scope.resource("node", &node, json!({"remote_node":node}));
 		if !scope.decide(&resource, "federation.discover").await? {
+			return Ok(false);
+		}
+		// After the decision: a mark may come from another identity of the
+		// same authority, and this reader's own right comes first.
+		if scope.unavailable(&node) {
 			return Ok(false);
 		}
 		let Some(route) = scope.route(&node).await? else {

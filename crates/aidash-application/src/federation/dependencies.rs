@@ -110,9 +110,14 @@ pub async fn verify_all(
 		let remaining = deadline.saturating_duration_since(scope.now());
 		if remaining.is_zero() {
 			// The reference not yet checked is on a Node that may well have
-			// answered; name it unless it is this Node.
+			// answered. It is named only to a reader allowed to discover that
+			// Node; any other reader gets the plain refusal (#751).
 			if reference.node() != scope.node() {
-				scope.mark_unavailable(reference.node());
+				let node = reference.node();
+				let resource = scope.resource("node", node, json!({"remote_node":node}));
+				if scope.decide(&resource, "federation.discover").await? {
+					scope.mark_unavailable(node);
+				}
 			}
 			return Ok(false);
 		}
@@ -127,11 +132,13 @@ pub async fn verify_all(
 			local_frontier(scope, &reference).await?
 		} else {
 			let node = reference.node();
-			if scope.unavailable(node) {
-				return Ok(false);
-			}
 			let resource = scope.resource("node", node, json!({"remote_node":node}));
 			if !scope.decide(&resource, "federation.discover").await? {
+				return Ok(false);
+			}
+			// After the decision: a mark may come from another identity of the
+			// same authority, and this reader's own right comes first.
+			if scope.unavailable(node) {
 				return Ok(false);
 			}
 			let Some(route) = scope.route(node).await? else {
