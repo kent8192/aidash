@@ -3561,10 +3561,6 @@ fn record_provider_turn(run: &mut Run, version: ProjectionVersion) -> Result<()>
 	record_model_turn(run, version, "", &calls)
 }
 
-/// Open the Model Turn of a response, with the text it may keep and its
-/// calls, once per response epoch however often this boundary is re-entered.
-/// Provider-owned activity also opens a turn in Legacy and Ordered Runs;
-/// ordinary responses retain their previous projection behavior.
 /// The answer a Run holds back while its children are pending.
 struct Answer<'a> {
 	text: &'a str,
@@ -3587,6 +3583,10 @@ fn told_tasks(run: &Run) -> std::collections::BTreeSet<Uuid> {
 		.collect()
 }
 
+/// Open the Model Turn of a response, with the text it may keep and its
+/// calls, once per response epoch however often this boundary is re-entered.
+/// Provider-owned activity also opens a turn in Legacy and Ordered Runs;
+/// ordinary responses retain their previous projection behavior.
 fn record_model_turn(
 	run: &mut Run,
 	version: ProjectionVersion,

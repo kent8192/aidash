@@ -62,6 +62,17 @@ async fn bind_remote(f: &Federation, task: &Task, activated: bool, stale_revisio
 		.unwrap();
 }
 
+/// Put a Task in CLAIMED without the dependency check `claim` applies. Claiming
+/// refuses a Task whose dependencies are unfinished, so this state is only
+/// reached by hand; the summary must still read it as handed over.
+async fn force_claimed(f: &Federation, task: &Task) {
+	sqlx::query("UPDATE tasks SET status = 'CLAIMED', owner = 'node/agent@1', revision = revision + 1 WHERE id = $1")
+		.bind(task.id)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+}
+
 fn artifact() -> ArtifactInput {
 	ArtifactInput {
 		kind: "text".into(),
@@ -126,11 +137,7 @@ async fn the_summary_names_each_unassigned_child_from_real_rows(
 	waiting.parent_id = Some(parent.id);
 	waiting.dependencies = vec![a.id];
 	let d = run_child_with(&f, workspace, &parent, waiting).await;
-	let claimed = store
-		.claim(&ACME, d.id, d.revision, "node/agent@1", &agent)
-		.await
-		.unwrap();
-	assert_eq!(claimed.status, TaskStatus::Claimed);
+	force_claimed(&f, &d).await;
 	// E: activated on another Node. F: activation refused. G: a Run that ended.
 	let e = run_child(&f, workspace, &parent, "E").await;
 	bind_remote(&f, &e, true, false).await;
@@ -302,16 +309,7 @@ async fn abandoning_without_completing_leaves_a_handed_over_dependent_alone(
 	dependent.parent_id = Some(parent.id);
 	dependent.dependencies = vec![root.id];
 	let dependent = run_child_with(&f, workspace, &parent, dependent).await;
-	store
-		.claim(
-			&ACME,
-			dependent.id,
-			dependent.revision,
-			"node/agent@1",
-			&agent,
-		)
-		.await
-		.unwrap();
+	force_claimed(&f, &dependent).await;
 
 	store
 		.abandon_unassigned(&ACME, parent.id, &owner_of(&parent), &[root.id])
@@ -506,5 +504,43 @@ async fn a_task_a_person_made_raises_a_request_and_can_then_be_abandoned(
 		store.task(&ACME, parent.id).await.unwrap().status,
 		TaskStatus::Completed
 	);
+	cleanup(store, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn claiming_refuses_a_task_whose_dependency_is_unfinished(
+	#[from(store)] _store_fixture: StoreFuture,
+	#[from(federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
+) {
+	// Why a handed-over child waiting on an Unassigned sibling is not reached
+	// through delegation: the claim inside admission needs finished dependencies.
+	let (store, url, schema) = _store_fixture.clone().await.parts();
+	let f = _federation.await.federation;
+	let agent = seed(&f.registry).await;
+	let (workspace, parent) = workspace_with_parent(&f, &agent).await;
+	let root = run_child(&f, workspace, &parent, "Root").await;
+	let mut input = new_task();
+	input.parent_id = Some(parent.id);
+	input.dependencies = vec![root.id];
+	let dependent = run_child_with(&f, workspace, &parent, input).await;
+	let refused = store
+		.claim(
+			&ACME,
+			dependent.id,
+			dependent.revision,
+			"node/agent@1",
+			&agent,
+		)
+		.await;
+	assert!(matches!(refused, Err(aidash_server::Error::Conflict(_))));
+	// Left OPEN with no Run, it is an Unassigned Task itself.
+	let summary = store
+		.child_task_summary(&ACME, workspace, parent.id)
+		.await
+		.unwrap();
+	assert_eq!(flags(&summary, dependent.id), Some((true, false)));
 	cleanup(store, &url, &schema).await;
 }
