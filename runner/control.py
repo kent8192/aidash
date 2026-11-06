@@ -950,7 +950,7 @@ class Runner(AllocationJournal):
                     if not self.get(operation).get('executed'):
                         self.fail_start(operation, 'Python sandbox identity changed before dispatch')
                     else:
-                        self.update(operation, status='uncertain', termination_confirmed=True,
+                        self.update(operation, status='uncertain', termination_confirmed=True, writer_frozen=False,
                                     output_harvested=True, output_discarded=True, files=[], finished_at=time.time(),
                                     uncertain_at=time.time(), error={'code':'SANDBOX_LOST',
                                     'message':"Sandbox is gone; the command's file changes were not saved."})
@@ -982,7 +982,7 @@ class Runner(AllocationJournal):
                                 return
                             exported, captured = collected
                             saved = self.update(operation, status=record.get('pending_status', 'failed'), termination_confirmed=True,
-                                                output_harvested=True, finished_at=now, files=exported['files'],
+                                                writer_frozen=False, output_harvested=True, finished_at=now, files=exported['files'],
                                                 stdout=captured['stdout'], truncated=True, exit_code=record.get('exit_code', 137),
                                                 deadline_expired=cell_timed_out(record),
                                                 error=record.get('pending_error') or {'code':'SESSION_LOST', 'message':'Interpreter stopped; its saved files were recovered.'})
@@ -1029,7 +1029,7 @@ class Runner(AllocationJournal):
         if record.get('executed') and record.get('cancel_requested'):
             if self.guard(record, 'terminate').get('termination_confirmed') is not True:
                 raise RuntimeError('Python termination not confirmed')
-            self.update(operation, status='finishing', termination_confirmed=True,
+            self.update(operation, status='finishing', termination_confirmed=True, writer_frozen=False,
                         stop_confirmed_at=record.get('stop_confirmed_at') or time.time(),
                         pending_status='cancelled', pending_error={'code':'CANCELLED', 'message':'Python stopped; session reset.'}, exit_code=137)
             raise RuntimeError('Python stopped; collecting its output')
@@ -1046,7 +1046,7 @@ class Runner(AllocationJournal):
                 statuses = {s["name"]: s for s in pod.get("status", {}).get("containerStatuses", [])}
                 execution = statuses.get('execution', {}).get('state', {})
                 if record.get('executed') and 'terminated' in execution:
-                    self.update(operation, status='finishing', termination_confirmed=True,
+                    self.update(operation, status='finishing', termination_confirmed=True, writer_frozen=False,
                                 stop_confirmed_at=record.get('stop_confirmed_at') or time.time(),
                                 pending_status='failed', pending_error={'code':'SESSION_LOST', 'message':'Interpreter stopped during the cell; code was not replayed.'}, exit_code=137)
                     raise RuntimeError('Python stopped; collecting its output')

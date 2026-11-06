@@ -689,6 +689,51 @@ class VerificationTest(unittest.TestCase):
             self.assertTrue(record['output_harvested'])
             self.assertEqual(record['error']['code'], 'SESSION_LOST')
 
+    def frozen_cell(self, root, **changes):
+        """A Python cell that froze its interpreter, then lost the way to its output."""
+        runner = self.runner(root)
+        operation, pod_uid = str(uuid.uuid4()), str(uuid.uuid4())
+        record = {'operation_id': operation, 'request': request('python'), 'status': 'finishing',
+                  'pod_operation': 'existing', 'pod_uid': pod_uid, 'executed': True, 'cancel_requested': False,
+                  'writer_frozen': True, 'termination_confirmed': False, 'running_at': time.time(), 'stdout': ''}
+        record.update(changes)
+        runner.get = Mock(side_effect=lambda _: record.copy())
+        runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+        runner.active = {operation}
+        runner.guard = Mock(return_value={'termination_confirmed': True, 'files': []})
+        runner.pod = Mock(return_value={'metadata': {'uid': pod_uid}, 'status': {'containerStatuses': [
+            {'name': 'execution', 'state': {'terminated': {'exitCode': 137}}},
+            {'name': 'collector', 'state': {'running': {}}}]}})
+        return runner, operation, record
+
+    def test_a_confirmed_stop_ends_the_frozen_session_at_every_recovery_step(self):
+        # `python.rs::completed` keeps a reusable session for as long as `writer_frozen` is set, and its Pod is
+        # deleted once the stop is confirmed. Each step that confirms the stop must clear the flag.
+        with self.subTest(step='stop seen'), tempfile.TemporaryDirectory() as root:
+            runner, operation, record = self.frozen_cell(root)
+            with self.assertRaisesRegex(RuntimeError, 'collecting its output'):
+                runner._reconcile_python_once(operation)
+            self.assertTrue(record['termination_confirmed'])
+            self.assertFalse(record['writer_frozen'])
+        with self.subTest(step='stop delivered'), tempfile.TemporaryDirectory() as root:
+            runner, operation, record = self.frozen_cell(root, cancel_requested=True)
+            with self.assertRaisesRegex(RuntimeError, 'collecting its output'):
+                runner._reconcile_python_once(operation)
+            self.assertTrue(record['termination_confirmed'])
+            self.assertFalse(record['writer_frozen'])
+        with self.subTest(step='output harvested'), tempfile.TemporaryDirectory() as root:
+            runner, operation, record = self.frozen_cell(root, stop_confirmed_at=time.time(), termination_confirmed=True)
+            runner._reconcile_python_once = Mock(side_effect=RuntimeError('API unavailable'))
+            runner.reconcile_python(operation)
+            self.assertTrue(record['output_harvested'])
+            self.assertFalse(record['writer_frozen'])
+        with self.subTest(step='pod gone'), tempfile.TemporaryDirectory() as root:
+            runner, operation, record = self.frozen_cell(root)
+            runner.pod = Mock(return_value=None)
+            runner.reconcile_python(operation)
+            self.assertEqual(record['status'], 'uncertain')
+            self.assertFalse(record['writer_frozen'])
+
     def finished_shell(self, root, log, *, exported=None, expired=False):
         """A shell command that exited with no output, seen by the running controller."""
         runner = self.runner(root)
