@@ -91,6 +91,41 @@ async fn ended_operations_only_offer_a_cursor_when_stored_output_remains() {
 }
 
 #[tokio::test]
+async fn the_deadline_of_a_running_command_counts_from_its_start() {
+	let input = json!({"seconds":600});
+	let data = json!({"preview":"","started_at":1000.5});
+	let mut reader = Reader {
+		bytes: vec![],
+		limit: 16,
+		reads: 0,
+	};
+	let page = result(&mut reader, &view("running", &input, &data), 0)
+		.await
+		.unwrap();
+	assert_eq!(
+		page.operation_deadline,
+		chrono::DateTime::from_timestamp_millis(1_600_500)
+	);
+}
+
+#[rstest::rstest]
+#[case::not_started("submitted", json!({"preview":""}))]
+#[case::ended("failed", json!({"preview":"","exit_code":143}))]
+#[tokio::test]
+async fn a_command_that_is_not_running_has_no_deadline(#[case] state: &str, #[case] data: Value) {
+	let input = json!({"seconds":600});
+	let mut reader = Reader {
+		bytes: vec![],
+		limit: 16,
+		reads: 0,
+	};
+	let page = result(&mut reader, &view(state, &input, &data), 0)
+		.await
+		.unwrap();
+	assert_eq!(page.operation_deadline, None);
+}
+
+#[tokio::test]
 async fn every_active_operation_retains_its_cursor_at_the_current_end() {
 	let input = json!({});
 	let data = json!({"preview":"a"});

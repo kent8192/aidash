@@ -449,6 +449,22 @@ async fn active_runner_states_keep_the_original_progress_mapping(
 	assert_eq!(trace.events.len(), 1);
 	assert!(trace.commit);
 }
+/// The command's deadline counts from these, and only the runner knows them.
+#[rstest]
+#[case::shell(json!({"status":"running","stdout":"","started_at":1000.5,"running_at":1002.0}), Some(1000.5))]
+#[case::python(json!({"status":"running","stdout":"","running_at":1002.0}), Some(1002.0))]
+#[case::not_started(json!({"status":"accepted","stdout":""}), None)]
+#[tokio::test]
+async fn an_active_operation_keeps_when_its_command_started(
+	repository: Repository,
+	#[case] observed: Value,
+	#[case] started_at: Option<f64>,
+) {
+	repository.0.lock().unwrap().observed = observed;
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(trace.saved[0].result["started_at"].as_f64(), started_at);
+}
 #[rstest]
 #[tokio::test]
 async fn running_preview_preserves_the_runner_bytes_and_absolute_offset(repository: Repository) {

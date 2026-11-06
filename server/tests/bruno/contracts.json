@@ -7465,6 +7465,7 @@
                 "type": ["integer", "null"]
               },
               "operation_deadline": {
+                "description": "When a running command will be stopped. Absent before it starts and after it ends.",
                 "format": "date-time",
                 "type": ["string", "null"]
               },
@@ -7698,6 +7699,7 @@
                 "type": ["integer", "null"]
               },
               "operation_deadline": {
+                "description": "When a running command will be stopped. Absent before it starts and after it ends.",
                 "format": "date-time",
                 "type": ["string", "null"]
               },
@@ -7877,6 +7879,7 @@
                 "type": ["integer", "null"]
               },
               "operation_deadline": {
+                "description": "When a running command will be stopped. Absent before it starts and after it ends.",
                 "format": "date-time",
                 "type": ["string", "null"]
               },

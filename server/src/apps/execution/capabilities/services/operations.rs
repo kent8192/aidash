@@ -85,32 +85,14 @@ pub(crate) async fn result(
 	operation: &Operation,
 	offset: usize,
 ) -> Result<OperationResult> {
-	use crate::apps::execution::capabilities::models::CoreOperations;
-	use reinhardt::db::orm::Model;
-	let mut result: OperationResult = aidash_application::capabilities::projection::result(
+	aidash_application::capabilities::projection::result(
 		&mut crate::bootstrap::file_scope(Some(store), access, None),
 		&operation.view(),
 		offset,
 	)
 	.await
 	.map(Into::into)
-	.map_err(crate::Error::from)?;
-	let row = CoreOperations::objects()
-		.filter(CoreOperations::field_id().eq(operation.id))
-		.all_with_executor(&mut **access.tx)
-		.await
-		.map_err(reinhardt::core::exception::Error::from)?
-		.pop()
-		.ok_or(crate::Error::Forbidden)?;
-	if let Some(seconds) = row.input.0["seconds"]
-		.as_u64()
-		.and_then(|s| i64::try_from(s).ok())
-	{
-		result.operation_deadline = row
-			.created_at
-			.checked_add_signed(chrono::Duration::seconds(seconds));
-	}
-	Ok(result)
+	.map_err(Into::into)
 }
 
 pub(crate) async fn verified_health(store: &Store, python: bool) -> Result<Value> {

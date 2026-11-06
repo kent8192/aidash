@@ -96,7 +96,7 @@ pub async fn result(
 		output,
 		output_unchanged,
 		next_offset,
-		operation_deadline: None,
+		operation_deadline: operation.command_deadline(),
 		truncated: operation.result["truncated"] == true,
 		effects_may_have_occurred: operation.state != "prepared"
 			&& operation.result["effects_may_have_occurred"] != false,

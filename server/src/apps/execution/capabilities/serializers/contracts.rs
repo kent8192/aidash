@@ -184,6 +184,7 @@ pub struct RuntimeResult {
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub output_unchanged: bool,
 	pub next_offset: Option<usize>,
+	/// When a running command will be stopped. Absent before it starts and after it ends.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub operation_deadline: Option<chrono::DateTime<chrono::Utc>>,
 	pub truncated: bool,
@@ -459,6 +460,7 @@ pub struct OperationResult {
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub output_unchanged: bool,
 	pub next_offset: Option<usize>,
+	/// When a running command will be stopped. Absent before it starts and after it ends.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub operation_deadline: Option<chrono::DateTime<chrono::Utc>>,
 	pub truncated: bool,

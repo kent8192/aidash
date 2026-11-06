@@ -3093,26 +3093,22 @@ connection: None,
                 let Some(output) = self.connection_result(run, token, connections::RefusedCall {call, tool:tool.as_ref(), guard, key:&key}, output).await? else { return Ok(()) };
 				// What a Tenant's HTTP or MCP tool returns is external data and never
 				// raises an approval, which would repeat the external call.
-				let mut framework = if contract.behavior.tenant_tool_call() || resumed_operation {
+				let framework = if contract.behavior.tenant_tool_call() || resumed_operation {
 					FrameworkResult::Ordinary
 				} else {
 					FrameworkResult::decode(&contract, &output, &call.arguments)?
 				};
+				// The operation's end wakes the Run, so the wait is not cut at the
+				// command's deadline: saving its files comes after the stop, and a
+				// poll between the two would otherwise return at once every time.
 				if let FrameworkResult::Operation { id, seconds } = framework {
-					let deadline: chrono::DateTime<chrono::Utc> = serde_json::from_value(output["operation_deadline"].clone())
-						.map_err(|_| Error::Invalid("operation result is missing its deadline".into()))?;
-					let now = chrono::Utc::now();
-					let wake_at = (now + chrono::Duration::seconds(seconds)).min(deadline);
-					if wake_at > now {
-						run.state = RunState::Waiting(Box::new(WaitingState::Operation {
-							operation_id: id,
-							wake_at,
-							resume: Box::new(run.state.tool()?.clone()),
-						}));
-						store.save_run(run, token, "run.waiting_for_operation").await?;
-						return Ok(());
-					}
-					framework = FrameworkResult::Ordinary;
+					run.state = RunState::Waiting(Box::new(WaitingState::Operation {
+						operation_id: id,
+						wake_at: chrono::Utc::now() + chrono::Duration::seconds(seconds),
+						resume: Box::new(run.state.tool()?.clone()),
+					}));
+					store.save_run(run, token, "run.waiting_for_operation").await?;
+					return Ok(());
 				}
 				if let FrameworkResult::Wait(seconds) = framework && !resumed_operation {
 					let seconds = if call.arguments.get("seconds").is_none() {

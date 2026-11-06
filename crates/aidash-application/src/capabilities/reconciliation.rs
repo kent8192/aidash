@@ -375,6 +375,14 @@ async fn reconcile(
 				.ok_or_else(|| Error::Invalid("invalid runner output offset".into()))?;
 			let preview = &bytes[start..];
 			operation.result = json!({"preview":String::from_utf8_lossy(preview),"preview_bytes":STANDARD.encode(preview),"preview_offset":offset,"truncated":observed["truncated"]});
+			// The Time Limit counts from the command's start, which only the
+			// runner knows. A Python cell's start is when it was dispatched.
+			if let Some(started) = observed["started_at"]
+				.as_f64()
+				.or_else(|| observed["running_at"].as_f64())
+			{
+				operation.result["started_at"] = json!(started);
+			}
 		}
 		_ => return Err(Error::External("invalid runner operation state".into())),
 	}

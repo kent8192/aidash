@@ -4710,10 +4710,8 @@ async fn a_running_shell_suspends_without_delivering_an_intermediate_tool_result
 		"shell",
 	);
 	let operation = Uuid::new_v4();
-	let deadline = chrono::Utc::now() + chrono::Duration::minutes(2);
-	*shell.outputs.lock().unwrap() =
-		[json!({"status":"running", "operation_id":operation, "operation_deadline": deadline})]
-			.into();
+	let earliest = chrono::Utc::now() + chrono::Duration::seconds(300);
+	*shell.outputs.lock().unwrap() = [json!({"status":"running", "operation_id":operation})].into();
 	Arc::get_mut(&mut fixture.backend.0)
 		.unwrap()
 		.custom
@@ -4727,7 +4725,7 @@ async fn a_running_shell_suspends_without_delivering_an_intermediate_tool_result
 		matches!(&fixture.run.state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Operation { operation_id, .. } if *operation_id == operation))
 	);
 	assert!(
-		matches!(&fixture.run.state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Operation { wake_at, .. } if *wake_at <= deadline))
+		matches!(&fixture.run.state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Operation { wake_at, .. } if *wake_at >= earliest))
 	);
 	assert!(
 		!fixture
@@ -4737,6 +4735,46 @@ async fn a_running_shell_suspends_without_delivering_an_intermediate_tool_result
 			.any(|event| matches!(event, ContextEvent::Tool { .. }))
 	);
 	assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
+}
+
+/// A command past its deadline is still saving its files, and one that has not
+/// started has no deadline yet. Both wait, so polling them never spins the model.
+#[rstest]
+#[case::past_its_deadline("running", Some(-60))]
+#[case::not_started("submitted", None)]
+#[tokio::test]
+async fn an_active_shell_waits_whatever_its_deadline_says(
+	mut fixture: Fixture,
+	#[case] status: &str,
+	#[case] deadline_in_seconds: Option<i64>,
+) {
+	let shell = Scripted::new(
+		ToolSpec {
+			name: "shell".into(),
+			description: "Shell".into(),
+			parameters: json!({"type":"object"}),
+		},
+		"shell",
+	);
+	let operation = Uuid::new_v4();
+	let mut output = json!({"status":status, "operation_id":operation});
+	if let Some(seconds) = deadline_in_seconds {
+		output["operation_deadline"] =
+			json!(chrono::Utc::now() + chrono::Duration::seconds(seconds));
+	}
+	*shell.outputs.lock().unwrap() = [output].into();
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.custom
+		.insert("shell".into(), shell);
+	respond(
+		&mut fixture.run,
+		vec![call("call-1", "shell", json!({"command":"sleep 1"}))],
+	);
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(
+		matches!(&fixture.run.state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Operation { operation_id, .. } if *operation_id == operation))
+	);
 }
 
 #[rstest]
@@ -4753,7 +4791,7 @@ async fn a_woken_shell_returns_its_completed_result_without_an_intervening_model
 		},
 		"shell",
 	);
-	*shell.outputs.lock().unwrap() = [json!({"status":"running", "operation_id":operation, "operation_deadline": chrono::Utc::now() + chrono::Duration::minutes(2)})].into();
+	*shell.outputs.lock().unwrap() = [json!({"status":"running", "operation_id":operation})].into();
 	let poll = Scripted::new(
 		ToolSpec {
 			name: "shell_poll".into(),
@@ -4792,7 +4830,7 @@ async fn a_woken_shell_can_finish_when_poll_is_not_model_visible(mut fixture: Fi
 		},
 		"shell",
 	);
-	*shell.outputs.lock().unwrap() = [json!({"status":"running", "operation_id":operation, "operation_deadline": chrono::Utc::now() + chrono::Duration::minutes(2)})].into();
+	*shell.outputs.lock().unwrap() = [json!({"status":"running", "operation_id":operation})].into();
 	Arc::get_mut(&mut fixture.backend.0)
 		.unwrap()
 		.custom
