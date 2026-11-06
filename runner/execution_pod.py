@@ -1800,13 +1800,17 @@ print(json.dumps(r))'''
             # without publishing `.running` yet, so the command counts as finished only when that marker
             # stays absent for the same window the stop below waits for it. A Docker command's result
             # files are never evidence here.
-            window = time.monotonic() + 10
+            # A cancel holds the Space's lock, so only the first stop waits out the window. A later one
+            # still looks once: a supervisor that published late must still get its stop.
+            window = time.monotonic() + (0 if record.get('fence_window_elapsed') else 10)
             while not docker_running():
                 if time.monotonic() >= window:
                     return True
                 time.sleep(.1)
             return False
         if interrupted_docker and docker_finished():
+            self._update_command(operation_id, status='interrupted', terminal_at=record.get('terminal_at', time.time()),
+                                 fence_window_elapsed=True)
             return self.command_result(operation_id, retry_stop=False)
         # A future can leave the queue before its in-Pod supervisor publishes
         # the stop marker. Wait for that short startup window instead of losing

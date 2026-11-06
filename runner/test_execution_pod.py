@@ -1623,6 +1623,40 @@ class LeadReviewRegressionTest(unittest.TestCase):
                         self.assertEqual(controller.stop_background(self.op)['status'], 'interrupted')
                 self.assertFalse(any('stop' in call.args[0] for call in kube.call_args_list))
 
+    def test_interrupted_docker_waits_out_the_window_once_and_still_looks_afterwards(self):
+        import itertools
+        import json
+        import tempfile
+        import time
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            running = [False]
+            def answer(args, **kwargs):
+                if 'claim' in args:
+                    return SimpleNamespace(returncode=0, stdout=b'{"created":false}')
+                return SimpleNamespace(returncode=0, stdout=json.dumps({'running': running[0]}).encode())
+            kube = Mock(side_effect=answer)
+            controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=False)
+            controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
+            controller._command_path(self.op).write_text(json.dumps({'operation_id': self.op,
+                'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid', 'background': True, 'docker_enabled': True,
+                'status': 'interrupted', 'terminal_at': time.time()}))
+            with patch('time.sleep') as sleep:
+                with patch('time.monotonic', side_effect=itertools.count(step=.5).__next__):
+                    controller.stop_background(self.op)
+                    self.assertTrue(sleep.called)
+                    sleep.reset_mock()
+                    self.assertEqual(controller.stop_background(self.op)['status'], 'interrupted')
+                    self.assertFalse(sleep.called)
+                    self.assertFalse(any('stop' in call.args[0] for call in kube.call_args_list))
+                    # A supervisor that published after the window still gets its stop.
+                    running[0] = True
+                    self.assertEqual(controller.stop_background(self.op)['status'], 'stopping')
+            self.assertTrue(any('stop' in call.args[0] for call in kube.call_args_list))
+
     def test_interrupted_docker_retries_stop_and_cancel_continues_after_error(self):
         import json
         import tempfile
