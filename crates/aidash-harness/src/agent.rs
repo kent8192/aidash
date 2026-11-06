@@ -79,47 +79,41 @@ impl<'a> Executor<'a> {
 				tracing::info!(run_id = %run.id, tool = tool.name, %message, "tool call refused");
 				Ok(json!({"error":message}))
 			}
-			// A refusal that names its check pauses the Run, and so does a plain one whose
-			// check left a note.
-			Err(Error::Forbidden | Error::Unauthorized) if note.is_some() => {
-				let note = note.expect("checked above");
-				Self::tool_refused(
-					store,
-					run,
-					token,
-					key,
-					tool,
-					AuthorityRefusal {
+			// A refusal that names its check pauses the Run, and so does a plain one whose check
+			// left a note.
+			Err(Error::AuthorityRefused(refusal)) => {
+				Self::tool_refused(store, run, token, key, tool, *refusal).await
+			}
+			Err(Error::Forbidden | Error::Unauthorized) => match note {
+				Some(note) => {
+					let refusal = AuthorityRefusal {
 						tool: tool.name.to_owned(),
 						check: note.check,
 						action: note.action,
 						subject: note.subject,
-					},
-				)
-				.await
-			}
-			Err(Error::AuthorityRefused(refusal)) => {
-				Self::tool_refused(store, run, token, key, tool, *refusal).await
-			}
-			// Nothing classified this refusal. No authority is lost by telling the model: every
-			// model request checks the Run's authority again.
-			Err(Error::Forbidden | Error::Unauthorized) => {
-				tracing::warn!(
-					run_id = %run.id,
-					tool = tool.name,
-					key,
-					"unclassified refusal after the gate returned to the model"
-				);
-				let partly = if tool.replay_safe {
-					""
-				} else {
-					" The call may have partly happened."
-				};
-				Ok(json!({"error":format!(
-					"An internal check refused this call. Changing authority will not help, so \
-					 another way is needed.{partly} {DO_NOT_REPEAT}"
-				)}))
-			}
+					};
+					Self::tool_refused(store, run, token, key, tool, refusal).await
+				}
+				// Nothing classified this refusal. No authority is lost by telling the model:
+				// every model request checks the Run's authority again.
+				None => {
+					tracing::warn!(
+						run_id = %run.id,
+						tool = tool.name,
+						key,
+						"unclassified refusal after the gate returned to the model"
+					);
+					let partly = if tool.replay_safe {
+						""
+					} else {
+						" The call may have partly happened."
+					};
+					Ok(json!({"error":format!(
+						"An internal check refused this call. Changing authority will not help, so \
+						 another way is needed.{partly} {DO_NOT_REPEAT}"
+					)}))
+				}
+			},
 			// A swallowed denial could leave a note behind; never read it here.
 			Err(Error::NotFound(message)) => Ok(json!({"error":format!(
 				"{}. {DO_NOT_REPEAT}",

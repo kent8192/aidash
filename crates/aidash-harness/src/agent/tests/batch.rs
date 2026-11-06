@@ -1861,3 +1861,44 @@ async fn a_refused_admission_is_a_call_error_and_the_batch_goes_on() {
 		])
 	);
 }
+
+#[tokio::test]
+async fn a_noted_refusal_in_a_batch_pauses_after_its_siblings_are_journaled_and_resumes() {
+	// Arrange: call 1 is refused by policy the first time only.
+	let lab = Lab::new(|_, call| {
+		async move {
+			if call.path == "p1" && call.attempt == 1 {
+				Err(refused_by_policy("reference.read"))
+			} else {
+				Ok(read(&call.path))
+			}
+		}
+		.boxed()
+	});
+	let (bench, mut run) = bench(
+		&lab,
+		&["file_read", "file_read"],
+		2,
+		Some(ToolSlots::new(2)),
+	);
+	// Act
+	let result = advance(&bench, &mut run).await;
+	// Assert: the named pause reaches the caller, nothing is adopted, and only the refused
+	// call is REFUSED.
+	let Err(Error::AuthorityRefused(refusal)) = result else {
+		panic!("expected a named pause, got {result:?}");
+	};
+	assert_eq!(refusal.action.as_deref(), Some("reference.read"));
+	assert_eq!(bench.status(&key(&run, 0)), ("COMPLETED", Some(read("p0"))));
+	assert_eq!(bench.status(&key(&run, 1)).0, "REFUSED");
+	assert!(bench.saved().is_empty());
+	// Act: resuming opens the refused call again.
+	let mut resumed = bench.admitted_run();
+	advance(&bench, &mut resumed).await.unwrap();
+	// Assert
+	assert_eq!(lab.attempts(&key(&run, 1)), 2);
+	assert_eq!(
+		adopted(&resumed),
+		expected(&[(0, read("p0")), (1, read("p1"))])
+	);
+}

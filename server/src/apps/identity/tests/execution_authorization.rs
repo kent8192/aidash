@@ -2363,28 +2363,15 @@ async fn a_policy_denied_delegation_pauses_the_run_naming_the_tool_and_the_check
 
 #[rstest::rstest]
 #[tokio::test]
-async fn a_denial_of_the_agent_delegated_to_pauses_the_run_naming_that_subject(
+async fn a_tenant_deletion_during_a_tool_call_still_pauses_the_run(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
 ) {
-	// Arrange: policy lets the Run delegate but denies task.execute to whoever executes.
+	// Arrange: the Tenant is deleted after the model asked for a call.
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
-	let (mut policy, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-execution","effect":"deny","subjects":{"any":true},"actions":["task.execute"],"resources":{"kinds":["task"]}}));
-	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"POST",
-			"/api/authorization/acme",
-			json!({"expected_revision":1,"bundle":policy})
-		)
-		.await
-		.0,
-		200
-	);
+	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let harness = Harness {
 		federation: f.clone(),
 	};
@@ -2395,16 +2382,23 @@ async fn a_denial_of_the_agent_delegated_to_pauses_the_run_naming_that_subject(
 		task,
 		&harness,
 		aidash_server::provider::ToolCall {
-			id: "delegated-denied".into(),
+			id: "deleted".into(),
 			name: "task_delegate".into(),
 			arguments: json!({"task_id":task,"node_id":f.config.deployment,"agent":{"id":"research","version":"1.0.0"}}),
 		},
 		false,
 	)
 	.await;
+	sqlx::query(
+		"INSERT INTO tenant_deletions (id, tenant, deleted_at, deleted_by_kind, purge_after, purge_failures) \
+		 VALUES (gen_random_uuid(), 'acme', now(), 'deployment_administrator', now() + interval '30 days', 0)",
+	)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
 	// Act
 	harness.worker_once().await.unwrap();
-	// Assert: the delegating Run pauses, and its error names whose authority refused.
+	// Assert: a pause, never a Rejected Call for the model.
 	let paused = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(
 		paused.control.as_str(),
@@ -2412,26 +2406,15 @@ async fn a_denial_of_the_agent_delegated_to_pauses_the_run_naming_that_subject(
 		"error={:?}",
 		paused.error
 	);
-	let error = paused.error.unwrap_or_default();
 	assert!(
-		error.starts_with("task_delegate: task.execute was denied for "),
-		"{error}"
+		paused
+			.error
+			.as_deref()
+			.is_some_and(|error| error.ends_with(": the Tenant is being deleted")),
+		"{:?}",
+		paused.error
 	);
-	// The call is replay-safe, so its invocation ends REFUSED and resume decides it again.
-	let status: String = sqlx::query_scalar(
-		&reinhardt::query::Query::select()
-			.column(reinhardt::query::Alias::new("status"))
-			.from(reinhardt::query::Alias::new("invocations"))
-			.and_where(reinhardt::query::Expr::cust(format!(
-				"run_id = '{}' AND tool = 'task_delegate'",
-				run.id
-			)))
-			.to_string(reinhardt::query::PostgresQueryBuilder),
-	)
-	.fetch_one(f.store.pool.fixture_driver())
-	.await
-	.unwrap();
-	assert_eq!(status, "REFUSED");
+	assert_eq!(json!(paused.state)["data"]["cursor"], 0);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -7283,6 +7266,52 @@ impl SubnodeRig {
 /// Exercise the real worker, storage, admission and human cancellation boundaries.
 #[rstest::rstest]
 #[tokio::test]
+async fn a_task_delegate_after_subnode_task_reaches_the_model_as_a_rejected_call(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	// Arrange: the creating Run made a Subnode and a task in its Workspace (#755 is unfixed).
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::new(&f, &fixture.application, &["subnode-leader"], true).await;
+	let created = rig.inject("subnode_create", json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0"],"allowance":{"tools":SUBNODE_TOOLS,"secrets":[]},"title":"Investigation"}), "create-subnode").await;
+	let subnode = created["subnode_id"].as_str().unwrap().to_owned();
+	let task = rig
+		.inject(
+			"subnode_task",
+			json!({"subnode_id":subnode,"title":"Investigate","request":"Find evidence"}),
+			"subnode-task",
+		)
+		.await;
+	let child_task = task["task_id"].as_str().unwrap().to_owned();
+	// Act: the creator delegates a task it cannot write to.
+	assert!(
+		rig.script(
+			rig.creator_run,
+			"task_delegate",
+			json!({"task_id":child_task,"node_id":f.config.deployment,"agent":{"id":"research","version":"1.0.0"}}),
+			"delegate-subnode-task",
+		)
+		.await
+	);
+	// Assert: the model hears it, and the Run goes on instead of pausing.
+	let run = f.store.run(&TEST_FIXTURE, rig.creator_run).await.unwrap();
+	assert_eq!(
+		run.control,
+		aidash_domain::RunControl::Active,
+		"{:?}",
+		run.error
+	);
+	let delegated = rig
+		.result_of(rig.creator_run, "delegate-subnode-task")
+		.await
+		.expect("a Rejected Call records a result");
+	assert!(delegated["error"].is_string(), "{delegated}");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority_chain(
 	#[future(awt)]
 	#[from(common::native_application)]
@@ -7562,7 +7591,10 @@ async fn subnode_creation_is_refused_without_an_explicit_grant(
 	);
 	let run = f.store.run(&TEST_FIXTURE, rig.creator_run).await.unwrap();
 	assert_eq!(run.control, aidash_domain::RunControl::Paused);
-	assert_eq!(run.error.as_deref(), Some("execution authority denied"));
+	assert_eq!(
+		run.error.as_deref(),
+		Some("subnode_create: subnode.create was denied")
+	);
 	assert_eq!(subnode_rows(&f).await, 0, "no Subnode may be created");
 	cleanup(f, &url, &schema).await;
 }
@@ -7696,7 +7728,10 @@ async fn subnode_member_cannot_read_the_creating_runs_workspace(
 		);
 		let run = f.store.run(&TEST_FIXTURE, member).await.unwrap();
 		assert_eq!(run.control, aidash_domain::RunControl::Paused, "{call_id}");
-		assert_eq!(run.error.as_deref(), Some("execution authority denied"));
+		assert_eq!(
+			run.error.as_deref(),
+			Some("workspace_read: an authority check refused this step")
+		);
 		rig.set_run_control(member, "ACTIVE").await;
 	};
 	denied(

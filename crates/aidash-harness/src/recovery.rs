@@ -3,18 +3,24 @@ use aidash_application::{
 	Result, authorization::refusal_note, ports::ExecutionRecoveryStore, recovery::ExecutionFailure,
 };
 use aidash_domain::semantic::{Failure as SemanticFailure, OUTAGE_RETRIES, PENDING_REPLAY_SECONDS};
-use aidash_domain::{FailureTarget, RetryState, RunControl, RunPhase, RunState, WaitingState};
+use aidash_domain::{FailureTarget, RetryState, Run, RunControl, RunPhase, RunState, WaitingState};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-/// The stage an unnamed authority refusal is reported under, from the Run's phase.
-fn stage(phase: RunPhase) -> &'static str {
-	match phase {
-		RunPhase::Ready => "worker start",
-		RunPhase::Thinking => "inference",
-		RunPhase::ToolCall => "tool call",
-		RunPhase::Waiting => "resume",
-		RunPhase::Completed | RunPhase::Failed | RunPhase::Cancelled => "run",
+/// The stage an unnamed authority refusal is reported under: the tool being called, else the
+/// Run's phase.
+fn stage(run: &Run) -> String {
+	match run.phase() {
+		RunPhase::ToolCall => run
+			.state
+			.tool()
+			.ok()
+			.and_then(|state| state.response.tool_calls.get(state.cursor))
+			.map_or_else(|| "tool call".into(), |call| call.name.clone()),
+		RunPhase::Ready => "worker start".into(),
+		RunPhase::Thinking => "inference".into(),
+		RunPhase::Waiting => "resume".into(),
+		RunPhase::Completed | RunPhase::Failed | RunPhase::Cancelled => "run".into(),
 	}
 }
 
@@ -112,7 +118,7 @@ pub async fn recover(
 	} else if let ExecutionFailure::Authority(authority) = failure {
 		// The tool call that raised a named refusal has already named it; any other step is
 		// named after the stage the Run was in and the note its checks left.
-		let authority = authority.named(stage(current.phase()), refusal_note::take());
+		let authority = authority.named(&stage(&current), refusal_note::take());
 		store
 			.pause(
 				&current,

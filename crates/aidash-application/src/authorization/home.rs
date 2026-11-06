@@ -196,8 +196,9 @@ pub async fn control<R: HomeRepository>(
 fn semantic_failure(error: &Error) -> Failure {
 	match error {
 		Error::RemoteSemantic(reason) => *reason,
-		Error::Forbidden | Error::Unauthorized => Failure::Authority,
-		Error::Invalid(_) | Error::NotFound(_) => Failure::Configuration,
+		// The error comes from the peer's status reply, whose 404 used to read as `Forbidden`.
+		Error::Forbidden | Error::Unauthorized | Error::NotFound(_) => Failure::Authority,
+		Error::Invalid(_) => Failure::Configuration,
 		_ => Failure::Unavailable,
 	}
 }
