@@ -7476,6 +7476,7 @@
                 "type": "string"
               },
               "output_stale_seconds": {
+                "description": "Seconds since the output shown was last fetched from the running command. It keeps growing when the view is stalled, which does not mean the command is. Absent when no output was fetched.",
                 "format": "uint64",
                 "minimum": 0,
                 "type": ["integer", "null"]
@@ -7712,6 +7713,7 @@
                 "type": "string"
               },
               "output_stale_seconds": {
+                "description": "Seconds since the output shown was last fetched from the running command. It keeps growing when the view is stalled, which does not mean the command is. Absent when no output was fetched.",
                 "format": "uint64",
                 "minimum": 0,
                 "type": ["integer", "null"]
@@ -7894,6 +7896,7 @@
                 "type": "string"
               },
               "output_stale_seconds": {
+                "description": "Seconds since the output shown was last fetched from the running command. It keeps growing when the view is stalled, which does not mean the command is. Absent when no output was fetched.",
                 "format": "uint64",
                 "minimum": 0,
                 "type": ["integer", "null"]
