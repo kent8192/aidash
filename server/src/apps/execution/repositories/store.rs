@@ -3762,6 +3762,7 @@ impl Store {
 		key: &str,
 	) -> Result<HumanRequest> {
 		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		super::subnodes::require_writable(tx.as_mut(), run.workspace_id).await?;
 		let request = self
 			.human_request_in(tx.as_mut(), run, kind, prompt, key)
 			.await?;
