@@ -188,6 +188,12 @@ pub(crate) struct Access {
 	/// The address of `node`, which Federation references name Nodes by.
 	pub(crate) node_address: Option<String>,
 	pub(crate) dependency_frontier: Option<Vec<super::peer::dependencies::Reference>>,
+	/// The Subnode Workspaces a Read Recheck in progress has opened, one entry per
+	/// Run it is checking, and what each Run opens.
+	pub(crate) recheck_workspaces: Vec<Vec<Uuid>>,
+	pub(crate) subnode_workspaces: std::collections::BTreeMap<Uuid, Vec<Uuid>>,
+	/// Which Run created the Subnode that owns a Workspace, if any.
+	pub(crate) subnode_creators: std::collections::BTreeMap<Uuid, Option<Uuid>>,
 	pub tx: AccessTransaction,
 	pub identity: SubjectIdentity,
 	pub snapshot: Snapshot,
@@ -403,6 +409,9 @@ impl Access {
 			checking_reads: Default::default(),
 			read_verdicts: Default::default(),
 			dependency_frontier: None,
+			recheck_workspaces: Default::default(),
+			subnode_workspaces: Default::default(),
+			subnode_creators: Default::default(),
 			wire,
 			node_id: node.to_owned(),
 			node: None,
@@ -526,6 +535,9 @@ impl Access {
 			checking_reads: Default::default(),
 			read_verdicts: Default::default(),
 			dependency_frontier: None,
+			recheck_workspaces: Default::default(),
+			subnode_workspaces: Default::default(),
+			subnode_creators: Default::default(),
 			wire: lease.wire.clone(),
 			node_id: lease.node_id.clone(),
 			node: lease.node.clone(),

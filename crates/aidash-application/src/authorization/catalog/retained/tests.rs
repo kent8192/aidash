@@ -188,3 +188,25 @@ async fn adapter_errors_keep_their_identity_and_never_remember(
 	assert_eq!(scope.calls.last().unwrap(), fail);
 	assert!(scope.approved.is_empty());
 }
+#[rstest]
+#[tokio::test]
+async fn read_recheck_judges_an_unused_definition_without_a_lock_or_widening_the_authority(
+	mut scope: Scope,
+) {
+	scope.inherited = true;
+	recheck_entry(&mut scope, &expected_reference())
+		.await
+		.unwrap();
+	assert!(scope.calls.contains(&"lock:false".to_owned()));
+	assert!(!scope.calls.contains(&"remember".to_owned()));
+	assert!(scope.approved.is_empty());
+	assert!(matches!(
+		entry(&mut scope, &expected_reference()).await,
+		Err(Error::Forbidden)
+	));
+	scope.allowed = false;
+	assert!(matches!(
+		recheck_entry(&mut scope, &expected_reference()).await,
+		Err(Error::Forbidden)
+	));
+}
