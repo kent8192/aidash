@@ -29,6 +29,18 @@ pub async fn connect(url: &str, max_connections: u32) -> Result<DatabaseConnecti
 	Ok(connection)
 }
 
+/// Open the pool of a host command that runs once and ends, such as
+/// `issue-subject-credential` and Secret Store recovery.
+///
+/// The login check is the server's: a login that row-level security would not
+/// bind is refused. The statement limit is not applied, because a command is not
+/// a request or a worker and may legitimately run a long statement (ADR 0113).
+pub async fn connect_command(url: &str, max_connections: u32) -> Result<DatabaseConnection> {
+	let connection = open(url, max_connections, None).await?;
+	require_unprivileged(&connection).await?;
+	Ok(connection)
+}
+
 /// Open a pool for a maintenance command that the migration Job runs under the
 /// migration owner (`aidash_owner`), such as `memory-recovery` and `demo-data`.
 /// The owner is accepted

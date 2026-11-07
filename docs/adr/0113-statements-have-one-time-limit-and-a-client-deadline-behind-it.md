@@ -13,7 +13,7 @@ These run with neither limit, because their length comes from the design:
 - The `atomic_gate` writer. It waits behind every read lease, and a lease can last as long as a model call, up to an hour.
 - Deletes with no row limit: Tenant purge rows and audit history, `core_blob_references`, Node purge rows and `memory_history`. #744 splits them into batches and removes this exemption.
 
-`aidash migrate`, maintenance commands and the Observer have no limit either. A stall in any of these is seen only through `aidash_background_service_pass_age_seconds`, and only if it runs inside a background loop.
+`aidash migrate`, maintenance commands, host commands (`issue-subject-credential`, Secret Store recovery) and the Observer have no limit either. A stall in any of these is seen only through `aidash_background_service_pass_age_seconds`, and only if it runs inside a background loop.
 
 ## Considered Options
 
