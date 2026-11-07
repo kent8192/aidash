@@ -113,6 +113,22 @@ impl Tally {
 		tally
 	}
 
+	/// [`Self::settle`] for an item that may sit in no Workspace, such as a
+	/// Tenant-level event. Such an item depends on no Node, so it is never
+	/// recorded (#770).
+	pub fn settle_in(
+		&mut self,
+		silence: Option<String>,
+		kind: Kind,
+		workspace: Option<Uuid>,
+		visible: bool,
+	) -> bool {
+		match workspace {
+			Some(workspace) => self.settle(silence, kind, workspace, visible),
+			None => visible,
+		}
+	}
+
 	pub fn is_empty(&self) -> bool {
 		self.counts.is_empty()
 	}

@@ -125,8 +125,7 @@ pub async fn read_events(
 			scope.begin_row();
 			let visible = scope.event_visible(&event, &mut runs).await?;
 			let silence = scope.take_row_silence();
-			let workspace = event.workspace_id.unwrap_or_default();
-			if unconfirmed.settle(silence, Kind::Event, workspace, visible) {
+			if unconfirmed.settle_in(silence, Kind::Event, event.workspace_id, visible) {
 				result.push(event);
 			}
 			if result.len() == limit {

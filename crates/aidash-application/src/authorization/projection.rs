@@ -80,9 +80,7 @@ pub async fn latest_visible_events_counted(
 			scope.begin_row();
 			let visible = scope.event_visible(&event, &mut runs).await?;
 			let silence = scope.take_row_silence();
-			// An event without a Workspace is Tenant metadata and sits in none.
-			let workspace = event.workspace_id.unwrap_or_default();
-			if unconfirmed.settle(silence, Kind::Event, workspace, visible) {
+			if unconfirmed.settle_in(silence, Kind::Event, event.workspace_id, visible) {
 				result.push(event);
 			}
 			if result.len() == 100 {
@@ -182,10 +180,14 @@ pub async fn snapshot_untracked(
 	}
 	snapshot.artifacts = artifacts;
 	// Each message was judged by `latest_visible_messages` and is judged again
-	// here for the same reader, so a second count would double it.
+	// here. Messages dropped by the first pass are not in the list, so a message
+	// dropped now, because a Node stopped answering in between, is counted once.
 	let mut messages = vec![];
 	for message in snapshot.messages {
-		if scope.message_visible(&message).await? {
+		scope.begin_row();
+		let visible = scope.message_visible(&message).await?;
+		let silence = scope.take_row_silence();
+		if unconfirmed.settle(silence, Kind::Message, message.workspace_id, visible) {
 			messages.push(message);
 		}
 	}

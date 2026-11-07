@@ -62,8 +62,7 @@ pub async fn poll_events(
 		// This is the second filter of a read: an event the first one passed can
 		// meet a Node that has since stopped answering (#770).
 		let silence = scope.take_row_silence();
-		let workspace = event.workspace_id.unwrap_or_default();
-		if unconfirmed.settle(silence, Kind::Event, workspace, allowed) {
+		if unconfirmed.settle_in(silence, Kind::Event, event.workspace_id, allowed) {
 			output.push(recipient_event(event));
 		}
 	}
