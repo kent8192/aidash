@@ -683,7 +683,9 @@ export function Configuration({
           {section === "node" && (
             <>
               <NodeView data={data} disconnect={disconnect} />
-              {data.access.kind === "subject" && <ScratchSpacesSettings />}
+              {data.access.kind === "subject" && (
+                <ScratchSpacesSettings focus={focus} />
+              )}
             </>
           )}
           {section === "nodes" && <NodesPage data={data} />}
