@@ -287,7 +287,7 @@ impl HomeScope for Scope {
 		let result: NativeResult<Option<GrantRow>> = async {
 			let tenant = self.access.identity.tenant.clone();
 			let access = &mut *self.access;
-			Ok(crate::database::native::query_as(
+			crate::database::native::query_as(
 				&Query::select()
 					.column(Asterisk)
 					.from(Alias::new("authorization_remote_grants"))
@@ -302,7 +302,7 @@ impl HomeScope for Scope {
 					.to_string(PostgresQueryBuilder),
 			)
 			.fetch_optional(&mut **access.tx)
-			.await?)
+			.await
 		}
 		.await;
 		result.map(|r| r.map(Into::into)).map_err(Into::into)

@@ -1,8 +1,7 @@
 //! A person declines the tool call an Authority Pause stopped (#763): which pauses record the
 //! call, and what declining writes.
-#[path = "run_fixtures.rs"]
-mod run_fixtures;
 use super::Store;
+use super::targeted_leases::run_fixtures::{self, run};
 use crate::Error;
 use crate::apps::execution::models::{
 	Run as Record,
@@ -16,7 +15,6 @@ use aidash_domain::tool::{AuthorityRefusal, RefusalCheck, RefusalKind, RefusedCa
 use chrono::{Duration, Utc};
 use reinhardt::db::orm::Model;
 use rstest::rstest;
-use run_fixtures::run;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
