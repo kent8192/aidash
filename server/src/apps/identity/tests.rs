@@ -11,6 +11,7 @@
 //! - `resource_authorization`
 //! - `run_control`
 //! - `approval_governs_use`
+//! - `decision_counts`
 //! - `peer_graph`
 //! - `peer_graph_nodes`
 //! - `peer_graph_review`

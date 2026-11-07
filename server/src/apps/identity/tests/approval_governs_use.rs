@@ -7,7 +7,7 @@
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::registry::EntityRef;
-use aidash_server::{federation::Federation, harness::Harness};
+use aidash_server::{authorization::identity::Actor, federation::Federation, harness::Harness};
 use serde_json::{Value, json};
 use uuid::Uuid;
 #[path = "../../execution/tests/support/legacy.rs"]
@@ -467,5 +467,427 @@ async fn a_worker_pauses_a_run_whose_binding_names_a_withdrawn_version_and_resum
 	assert_eq!(status, 200, "{body}");
 	let _ = harness.worker_once().await;
 	assert_eq!(blocked().await, 1, "resume must not bounce");
+	common::cleanup(f, &url, &schema).await;
+}
+
+impl World {
+	/// The Run's subject chain, as its execution grant saved it.
+	async fn chain(&self, run: Uuid) -> Vec<String> {
+		sqlx::query_scalar("SELECT subject_chain FROM authorization_execution WHERE run_id = $1")
+			.bind(run)
+			.fetch_one(self.f.store.pool.fixture_driver())
+			.await
+			.unwrap()
+	}
+
+	fn agent_subject(
+		&self,
+		node: &aidash_domain::nodes::NodeAddress,
+		id: &str,
+		version: &str,
+	) -> String {
+		aidash_server::domain::qualified_agent(node, id, version)
+	}
+
+	/// `run_for_action` under an `Access` built as the operation sweep builds it: the identity of
+	/// the credential, then the subjects the operation saved.
+	async fn action(&self, run: Uuid) -> Result<(), aidash_server::Error> {
+		let authorization = aidash_server::authorization::Authorization {
+			pool: self.f.store.pool.clone(),
+		};
+		let Actor::Subject(identity) = authorization.authenticate(&self.alice).await.unwrap()
+		else {
+			panic!("a Subject Credential authenticates a subject")
+		};
+		aidash_server::authorization::services::execution::operation_may_act(
+			&self.f.store,
+			&identity,
+			self.chain(run).await,
+			run,
+		)
+		.await
+	}
+
+	/// Restricts `id@version` on the default Node to the named subjects.
+	async fn restrict(&self, id: &str, version: &str, subjects: Vec<String>) {
+		let node = common::default_node(&self.f.store, "acme").await;
+		let current = aidash_server::authorization::Authorization {
+			pool: self.f.store.pool.clone(),
+		}
+		.catalog("acme", &node.node)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|binding| binding.entry_id == id && binding.entry_version == version)
+		.unwrap();
+		let (status, body) = common::request(
+			&self.app,
+			&self.alice,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node":node.node,"entry":{"id":id,"version":version},"enabled":true,
+				"expected_revision":current.revision,"restriction":{"subjects":subjects,"groups":[]}}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+	}
+}
+
+fn is_forbidden(result: Result<(), aidash_server::Error>) -> bool {
+	matches!(result, Err(aidash_server::Error::Forbidden))
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_running_operations_access_keeps_a_healthy_run_and_stops_one_that_cannot_use_its_binding(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let w = world(fixture).await;
+	let node = common::default_node(&w.f.store, "acme").await;
+	let runs = [w.planner, w.reviewer, w.upgrader];
+
+	// Healthy, with a dependency restricted to the Agents that use it (ADR 0095).
+	for run in runs {
+		w.action(run).await.unwrap();
+	}
+	let agents = vec![
+		w.agent_subject(&node, OLD, "1.0.0"),
+		w.agent_subject(&node, OLD, "2.0.0"),
+		w.agent_subject(&node, "listed-agent", "1.0.0"),
+	];
+	w.restrict("fixture-model", "1.0.0", agents).await;
+	for run in runs {
+		w.action(run).await.unwrap();
+	}
+
+	// A withdrawn definition of the Binding stops every Run whose Binding names it.
+	w.approve("fixture-model", "1.0.0", false).await;
+	for run in runs {
+		assert!(is_forbidden(w.action(run).await), "{run}");
+	}
+	w.approve("fixture-model", "1.0.0", true).await;
+
+	// A withdrawn Agent stops only its own Runs, not the Run that read one of them.
+	w.approve(OLD, "1.0.0", false).await;
+	assert!(is_forbidden(w.action(w.planner).await));
+	w.action(w.reviewer).await.unwrap();
+	w.action(w.upgrader).await.unwrap();
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn resume_checks_the_run_as_its_own_subject_chain(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let w = world(fixture).await;
+	let alice = w.alice.clone();
+	let node = common::default_node(&w.f.store, "acme").await;
+	let planner_agent = w.agent_subject(&node, OLD, "1.0.0");
+	let reviewer_agent = w.agent_subject(&node, "listed-agent", "1.0.0");
+
+	// A dependency restricted to the Agents that use it resumes for the person who owns the Run.
+	w.restrict(
+		"fixture-model",
+		"1.0.0",
+		vec![
+			planner_agent.clone(),
+			w.agent_subject(&node, OLD, "2.0.0"),
+			reviewer_agent.clone(),
+		],
+	)
+	.await;
+	// `reviewer` is a child Run: root, the parent Agent, the child Agent. Its version is
+	// restricted to the parent.
+	sqlx::query("UPDATE authorization_execution SET subject_chain = $2 WHERE run_id = $1")
+		.bind(w.reviewer)
+		.bind(vec![
+			"alice".to_owned(),
+			planner_agent.clone(),
+			reviewer_agent.clone(),
+		])
+		.execute(w.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	w.restrict("listed-agent", "1.0.0", vec![planner_agent])
+		.await;
+	for run in [w.planner, w.reviewer] {
+		let (status, paused) = w.control(&alice, run, "pause").await;
+		assert_eq!(status, 200, "{paused}");
+		let (status, body) = w.control(&alice, run, "resume").await;
+		assert_eq!(status, 200, "{run}: {body}");
+		w.action(run).await.unwrap();
+	}
+
+	// Withdrawing either still answers `409`.
+	for (run, id) in [(w.planner, "fixture-model"), (w.reviewer, "listed-agent")] {
+		let (status, paused) = w.control(&alice, run, "pause").await;
+		assert_eq!(status, 200, "{paused}");
+		w.approve(id, "1.0.0", false).await;
+		let (status, body) = w.control(&alice, run, "resume").await;
+		assert_eq!(status, 409, "{id}: {body}");
+		assert_eq!(
+			body["run_reads"]["kind"], "definition_not_approved",
+			"{body}"
+		);
+		w.approve(id, "1.0.0", true).await;
+	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_read_adds_to_the_retained_set_only_under_the_runs_own_authority(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let w = world(fixture).await;
+	let authorization = aidash_server::authorization::Authorization {
+		pool: w.f.store.pool.clone(),
+	};
+	let Actor::Subject(identity) = authorization.authenticate(&w.alice).await.unwrap() else {
+		panic!("a Subject Credential authenticates a subject")
+	};
+	let retained = async |inherited: bool| {
+		aidash_server::authorization::services::execution::retained_after_read(
+			&w.f.store,
+			&identity,
+			w.chain(w.reviewer).await,
+			w.reviewer,
+			inherited,
+		)
+		.await
+		.unwrap()
+	};
+	let known = |set: &std::collections::BTreeSet<(String, String)>, id: &str, version: &str| {
+		set.contains(&(id.to_owned(), version.to_owned()))
+	};
+
+	// Reading `reviewer` walks `planner` too: what that Run's Binding holds is remembered, as the
+	// walk's approvals used to remember it, so a later admission under the lease still finds it.
+	let own = retained(false).await;
+	assert!(known(&own, OLD, "1.0.0"), "the other Run's Agent: {own:?}");
+	assert!(known(&own, "fixture-model", "1.0.0"), "its model: {own:?}");
+	assert!(!known(&own, OLD, "2.0.0"), "a Run that was not walked");
+
+	// A read under an inherited lease must not enlarge it.
+	let inherited = retained(true).await;
+	assert!(inherited.is_empty(), "{inherited:?}");
+
+	// Membership admits nothing: with the Agent withdrawn the admission still refuses.
+	w.approve(OLD, "1.0.0", false).await;
+	assert!(is_forbidden(w.action(w.planner).await));
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn the_use_recheck_follows_the_node_the_run_executes_on(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, _) = common::bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let default = common::default_node(&f.store, "acme").await.node;
+	let second = f
+		.config
+		.deployment
+		.node(common::second_node_in(f.store.pool.fixture_driver(), "acme").await);
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let agent = f.registry.get(&tenant, "research", "1.0.0").await.unwrap();
+	common::approve_agent_on(&f, "acme", &agent, &second).await;
+	let (status, workspace) = common::request(
+		&app,
+		&token,
+		"POST",
+		"/api/workspaces",
+		json!({"node":second.node,"title":"Second Node","goal":"Run elsewhere"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{workspace}");
+	let (status, task) = common::request(
+		&app,
+		&token,
+		"POST",
+		&format!(
+			"/api/workspaces/{}/tasks",
+			workspace["id"].as_str().unwrap()
+		),
+		json!({"title":"Work","description":"On the second Node"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{task}");
+	let (status, body) = common::request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{}/claim", task["id"].as_str().unwrap()),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0).id;
+	let set = async |node: &aidash_domain::nodes::NodeName, enabled: bool, revision: i64| {
+		common::request(
+			&app,
+			&token,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node":node,"entry":{"id":"research","version":"1.0.0"},"enabled":enabled,"expected_revision":revision}),
+		)
+		.await
+		.0
+	};
+	let resume = async || {
+		let (status, paused) = common::request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/runs/{run}/control"),
+			json!({"action":"pause"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{paused}");
+		common::request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/runs/{run}/control"),
+			json!({"action":"resume"}),
+		)
+		.await
+	};
+	let action = async || {
+		let authorization = aidash_server::authorization::Authorization {
+			pool: f.store.pool.clone(),
+		};
+		let Actor::Subject(identity) = authorization.authenticate(&token).await.unwrap() else {
+			panic!("a Subject Credential authenticates a subject")
+		};
+		let chain: Vec<String> = sqlx::query_scalar(
+			"SELECT subject_chain FROM authorization_execution WHERE run_id = $1",
+		)
+		.bind(run)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		aidash_server::authorization::services::execution::operation_may_act(
+			&f.store, &identity, chain, run,
+		)
+		.await
+	};
+
+	// Withdrawn on the default Node, which is not the Run's: nothing is blocked.
+	assert_eq!(set(&default, false, 1).await, 200);
+	assert!(action().await.is_ok());
+	let (status, body) = resume().await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(set(&default, true, 2).await, 200);
+
+	// Withdrawn on the Run's own Node: blocked, for the sweep and for resume.
+	assert_eq!(set(&second.node, false, 1).await, 200);
+	assert!(is_forbidden(action().await));
+	let (status, body) = resume().await;
+	assert_eq!(status, 409, "{body}");
+	assert_eq!(
+		body["run_reads"],
+		json!({"kind":"definition_not_approved","definition":{"id":"research","version":"1.0.0"}})
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_run_that_read_from_a_run_of_the_withdrawn_version_is_not_paused_at_its_boundary(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, first) = common::bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let research = f.registry.get(&tenant, "research", "1.0.0").await.unwrap();
+	// A second Agent with its own Binding, so withdrawing `research` leaves it untouched.
+	let other = f
+		.registry
+		.register(
+			&tenant,
+			serde_json::from_value(json!({"id":"other","version":"1.0.0","kind":"agent","name":{"en":"other"},"description":{"en":"Reads"},"schema":{},
+				"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Read","bindings":[],"remove_default":["file_search","file_read"]}}))
+			.unwrap(),
+		)
+		.await
+		.unwrap();
+	let first = f.store.task(&TEST_FIXTURE, first).await.unwrap();
+	let workspace = first.workspace_id;
+	let (status, second) = common::request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/tasks"),
+		json!({"title":"Reader","description":"Reads the first Run"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{second}");
+	let second = f
+		.store
+		.task(
+			&TEST_FIXTURE,
+			second["id"].as_str().unwrap().parse().unwrap(),
+		)
+		.await
+		.unwrap();
+	let planner = common::admitted_run(&f, "acme", &first, &research).await;
+	let reader = common::admitted_run(&f, "acme", &second, &other).await;
+	sqlx::query(
+		"INSERT INTO authorization_run_reads (run_id, tenant, workspace_id, resource_kind, resource_id) \
+		 VALUES ($1, 'acme', $2, 'run', $3)",
+	)
+	.bind(reader.id)
+	.bind(workspace)
+	.bind(planner.id)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let (status, body) = common::request(
+		&app,
+		&token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.0"},"enabled":false,"expected_revision":1}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	for _ in 0..8 {
+		let _ = harness.worker_once().await;
+	}
+	let events = f.store.events(&TEST_FIXTURE, 0, None, 1000).await.unwrap();
+	let blocked = |run: Uuid| {
+		events
+			.iter()
+			.filter(|event| {
+				event.kind == "run.authorization_blocked" && event.data["run_id"] == json!(run)
+			})
+			.count()
+	};
+	assert_eq!(
+		blocked(planner.id),
+		1,
+		"the Run using the version is paused"
+	);
+	assert_eq!(
+		blocked(reader.id),
+		0,
+		"the Run that only read from it is not"
+	);
 	common::cleanup(f, &url, &schema).await;
 }
