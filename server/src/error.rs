@@ -238,8 +238,8 @@ impl Error {
 			}
 		};
 		let envelope = match &self {
-			Self::NodeUnreachable { node, .. } => {
-				json!({"error": message, "code": "node_unreachable", "node": node})
+			Self::NodeUnreachable { node, after_effect } => {
+				json!({"error": message, "code": "node_unreachable", "node": node, "after_effect": after_effect})
 			}
 			_ => json!({"error": message}),
 		};

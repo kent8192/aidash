@@ -85,6 +85,17 @@ fn classify(reply: Reply) -> Result<Vec<u8>> {
 	{
 		return Err(Error::RemoteSemantic(reason));
 	}
+	// Another Node could not be reached from the peer: the call is retried or
+	// paused like a local one, never reported as an unavailable authority (#770).
+	if reply.status == 503
+		&& !reply.transaction_pending
+		&& let Some(found) = reply.unreachable
+	{
+		return Err(Error::NodeUnreachable {
+			node: found.node,
+			after_effect: found.after_effect,
+		});
+	}
 	match reply.status {
 		200..=299 => reply
 			.body

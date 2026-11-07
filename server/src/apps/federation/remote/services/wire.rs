@@ -124,6 +124,11 @@ impl Transport for Wire {
 			semantic_reason: outcome.semantic_reason,
 			execution_refusal: outcome.execution_refusal,
 			transaction_pending: outcome.transaction_pending,
+			unreachable: (outcome.status == 503)
+				.then(|| {
+					aidash_application::ports::federation::authority::Unreachable::of(&outcome.body)
+				})
+				.flatten(),
 			body: if (200..300).contains(&outcome.status) {
 				serde_json::to_vec(&outcome.body).map_err(Into::into)
 			} else {
