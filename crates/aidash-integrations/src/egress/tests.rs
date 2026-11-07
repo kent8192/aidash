@@ -2450,3 +2450,66 @@ async fn a_slow_upload_still_reads_the_refusal_for_full_slots() {
 	drop(held);
 	shutdown(tasks, stop).await;
 }
+
+/// Every refusal slot is held by a client that has its answer and keeps its
+/// connection open: the next one is dropped, and all of them are back once the
+/// discard has run out of time (#726).
+#[tokio::test]
+async fn refusal_slots_are_held_for_the_discard_and_then_given_back() {
+	use tokio::io::{AsyncReadExt, AsyncWriteExt};
+	let observed = Observed::start();
+	let (origin, _audit, tasks, stop) = metered_gateway(u64::MAX, false).await;
+	let address = origin.trim_start_matches("http://").to_owned();
+	let mut held = Vec::new();
+	for _ in 0..CONNECTION_SLOTS {
+		held.push(tokio::net::TcpStream::connect(&address).await.unwrap());
+	}
+	let started = Instant::now();
+	for _ in 0..REFUSAL_SLOTS {
+		let mut socket = tokio::net::TcpStream::connect(&address).await.unwrap();
+		socket
+			.write_all(
+				b"POST /v1/operation-token/images/upload HTTP/1.1\r\nhost: gateway\r\ncontent-length: 1048576\r\n\r\n",
+			)
+			.await
+			.unwrap();
+		socket.write_all(&[1; 1024]).await.unwrap();
+		let mut status = [0; 12];
+		socket.read_exact(&mut status).await.unwrap();
+		assert_eq!(&status, b"HTTP/1.1 503");
+		// Bytes that arrive after the answer are the ones the gateway discards.
+		socket.write_all(&[1; 1024]).await.unwrap();
+		held.push(socket);
+	}
+	// Every refusal is lingering, so there is no slot to answer one more.
+	let mut dropped = tokio::net::TcpStream::connect(&address).await.unwrap();
+	let mut nothing = Vec::new();
+	tokio::time::timeout(Duration::from_secs(1), dropped.read_to_end(&mut nothing))
+		.await
+		.expect("the connection is closed unanswered")
+		.unwrap();
+	assert!(nothing.is_empty());
+	assert_eq!(
+		observed.count(r#"aidash_egress_connections_refused_total{outcome="dropped"}"#),
+		1
+	);
+	// The discard ends at its time limit whether or not the clients leave.
+	tokio::time::sleep((LINGER_TIME + Duration::from_secs(1)).saturating_sub(started.elapsed()))
+		.await;
+	assert_eq!(
+		observed.count(r#"aidash_egress_linger_limit_total{limit="time"}"#),
+		REFUSAL_SLOTS as u64
+	);
+	let mut next = tokio::net::TcpStream::connect(&address).await.unwrap();
+	next.write_all(b"GET /v1/operation-token/images/download/1 HTTP/1.1\r\nhost: gateway\r\n\r\n")
+		.await
+		.unwrap();
+	let mut answer = Vec::new();
+	tokio::time::timeout(Duration::from_secs(5), next.read_to_end(&mut answer))
+		.await
+		.unwrap()
+		.unwrap();
+	assert!(String::from_utf8_lossy(&answer).contains(CONNECTION_LIMIT));
+	drop(held);
+	shutdown(tasks, stop).await;
+}
