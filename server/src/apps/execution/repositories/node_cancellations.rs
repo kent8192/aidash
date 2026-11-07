@@ -578,7 +578,7 @@ async fn settle_saved_run(
 		content: serde_json::json!(run.state.tool()?.response.text),
 	};
 	let task = home
-		.complete(&format!("{}:complete", run.id), &artifact)
+		.complete(&format!("{}:complete", run.id), &artifact, &[])
 		.await?;
 	if task.status != TaskStatus::Completed {
 		return Err(Error::Conflict("saved completion is not settled".into()));

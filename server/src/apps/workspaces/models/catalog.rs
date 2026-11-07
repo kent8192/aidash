@@ -140,11 +140,11 @@ impl Task {
 					Alias::new("dependencies"),
 				])
 				.expr_as(
-					open_or_claimed().and(child_flags::started()),
+					child_flags::open_or_claimed().and(child_flags::started()),
 					Alias::new("started"),
 				)
 				.expr_as(
-					open_or_claimed().and(child_flags::abandonable(parent)),
+					child_flags::open_or_claimed().and(child_flags::abandonable(parent)),
 					Alias::new("abandonable"),
 				)
 				.from(Alias::new(Self::table_name()))
@@ -182,12 +182,6 @@ impl Task {
 			}
 		}
 	}
-}
-
-/// Only an open or claimed child can be unassigned, so only those rows pay
-/// for the started and abandonable subqueries.
-pub(crate) fn open_or_claimed() -> reinhardt::query::SimpleExpr {
-	Expr::col((Alias::new("tasks"), Alias::new("status"))).is_in(["OPEN", "CLAIMED"])
 }
 
 impl Artifact {

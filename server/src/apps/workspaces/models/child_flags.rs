@@ -100,3 +100,9 @@ pub(crate) fn unstarted_open() -> SimpleExpr {
 		.eq("OPEN")
 		.and(started().not())
 }
+
+/// Only an open or claimed child can be unassigned, so only those rows pay
+/// for the started and abandonable subqueries.
+pub(crate) fn open_or_claimed() -> SimpleExpr {
+	Expr::col((Alias::new("tasks"), Alias::new("status"))).is_in(["OPEN", "CLAIMED"])
+}

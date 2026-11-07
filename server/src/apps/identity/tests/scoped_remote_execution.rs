@@ -8253,7 +8253,7 @@ async fn node_deletion_blocks_cached_home_but_preserves_exact_finalization(
 	let mut different = artifact.clone();
 	different.content = json!("a new answer");
 	assert!(
-		home.complete(&format!("{}:complete", run.id), &different)
+		home.complete(&format!("{}:complete", run.id), &different, &[])
 			.await
 			.is_err()
 	);

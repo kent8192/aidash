@@ -1845,7 +1845,7 @@ impl Store {
 		Ok(())
 	}
 	/// Abandon Unassigned children of a running parent without completing it.
-	pub(crate) async fn abandon_unassigned(
+	pub async fn abandon_unassigned(
 		&self,
 		scope: &TenancyScope,
 		parent: Uuid,
@@ -1891,7 +1891,30 @@ impl Store {
 				"only a running task can abandon its unassigned children".into(),
 			));
 		}
-		self.abandon_unassigned_in(tx, parent, owner, ids).await
+		self.abandon_unassigned_in(tx, parent, ids, owner).await
+	}
+	/// Complete a Task and abandon the listed Unassigned children in the same
+	/// transaction (#772).
+	pub async fn complete_abandoning(
+		&self,
+		scope: &TenancyScope,
+		id: Uuid,
+		owner: &str,
+		key: &str,
+		artifact: &ArtifactInput,
+		abandon: &[Uuid],
+	) -> Result<Task> {
+		self.complete_from_run(
+			scope,
+			id,
+			owner,
+			key,
+			artifact,
+			Publication::default(),
+			None,
+			abandon,
+		)
+		.await
 	}
 	pub async fn complete(
 		&self,

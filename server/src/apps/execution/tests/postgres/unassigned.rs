@@ -87,14 +87,12 @@ fn owner_of(task: &Task) -> String {
 
 async fn complete(f: &Federation, parent: &Task, abandon: &[Uuid]) -> aidash_server::Result<Task> {
 	f.store
-		.complete_from_run(
+		.complete_abandoning(
 			&ACME,
 			parent.id,
 			&owner_of(parent),
 			"parent:complete",
 			&artifact(),
-			aidash_server::store::Publication::default(),
-			None,
 			abandon,
 		)
 		.await
