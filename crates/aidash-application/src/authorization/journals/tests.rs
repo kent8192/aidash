@@ -79,6 +79,8 @@ struct Scope {
 	grant: Option<Uuid>,
 	calls: Vec<&'static str>,
 	legacy: Vec<Uuid>,
+	/// The Runs the Workspace holds, as `runs_in_workspace` reports them.
+	workspace_runs: Vec<Uuid>,
 	lookups: Vec<LegacyLookup>,
 	records: Vec<RecordedSources>,
 	registry: Vec<(Uuid, Vec<String>, Vec<String>)>,
@@ -102,6 +104,7 @@ fn scope() -> Scope {
 			Uuid::from_u128(14),
 			Uuid::from_u128(15),
 		],
+		workspace_runs: vec![],
 		lookups: vec![],
 		records: vec![],
 		registry: vec![],
@@ -143,6 +146,15 @@ impl ReadJournalScope for Scope {
 			content.map(str::to_owned),
 		));
 		Ok(self.legacy.clone())
+	}
+	async fn runs_in_workspace(&mut self, workspace: Uuid, runs: &[Uuid]) -> Result<Vec<Uuid>> {
+		assert_eq!(workspace, Uuid::from_u128(1));
+		self.touch("runs")?;
+		Ok(runs
+			.iter()
+			.copied()
+			.filter(|run| self.workspace_runs.contains(run))
+			.collect())
 	}
 	async fn record_sources(
 		&mut self,
@@ -338,6 +350,103 @@ async fn malformed_event_references_keep_workspace_events_without_inventing_sour
 		scope.records[0]
 			.2
 			.contains(&("workspace_events".into(), Uuid::from_u128(1)))
+	);
+}
+#[rstest]
+#[case::local(false)]
+#[case::remote(true)]
+#[tokio::test]
+async fn a_message_run_of_this_workspace_stays_a_recorded_source(
+	mut scope: Scope,
+	#[case] remote: bool,
+) {
+	if remote {
+		scope.run = None;
+		scope.grant = Some(Uuid::from_u128(8));
+	}
+	scope.workspace_runs = vec![Uuid::from_u128(13)];
+	let mut snapshot = snapshot();
+	snapshot.events = vec![event(
+		"message.created",
+		json!({"id":Uuid::from_u128(5),"run_id":Uuid::from_u128(13)}),
+	)];
+	track_snapshot(&mut scope, &snapshot).await.unwrap();
+	assert_eq!(scope.calls, vec!["runs", "sources_commit"]);
+	assert!(
+		scope.records[0]
+			.2
+			.contains(&("run".into(), Uuid::from_u128(13)))
+	);
+}
+#[rstest]
+#[case::local(false)]
+#[case::remote(true)]
+#[tokio::test]
+async fn a_message_run_of_another_workspace_is_not_a_recorded_source(
+	mut scope: Scope,
+	#[case] remote: bool,
+) {
+	if remote {
+		scope.run = None;
+		scope.grant = Some(Uuid::from_u128(8));
+	}
+	// Provenance resolves a source Run in the reading Workspace only, so a Run
+	// elsewhere would read as vanished. The message itself stays a source.
+	let mut snapshot = snapshot();
+	snapshot.events = vec![event(
+		"message.created",
+		json!({"id":Uuid::from_u128(5),"run_id":Uuid::from_u128(13)}),
+	)];
+	track_snapshot(&mut scope, &snapshot).await.unwrap();
+	assert!(!scope.records[0].2.iter().any(|(kind, _)| kind == "run"));
+	assert!(
+		scope.records[0]
+			.2
+			.contains(&("message".into(), Uuid::from_u128(5)))
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn message_runs_are_looked_up_once_for_the_whole_page(mut scope: Scope) {
+	scope.workspace_runs = vec![Uuid::from_u128(13)];
+	let mut snapshot = snapshot();
+	snapshot.events = vec![
+		event(
+			"message.created",
+			json!({"id":Uuid::from_u128(5),"run_id":Uuid::from_u128(13)}),
+		),
+		event(
+			"message.created",
+			json!({"id":Uuid::from_u128(4),"run_id":Uuid::from_u128(13)}),
+		),
+		event(
+			"message.created",
+			json!({"id":Uuid::from_u128(3),"run_id":Uuid::from_u128(14)}),
+		),
+	];
+	track_snapshot(&mut scope, &snapshot).await.unwrap();
+	assert_eq!(scope.calls, vec!["runs", "sources_commit"]);
+	let runs: Vec<_> = scope.records[0]
+		.2
+		.iter()
+		.filter(|(kind, _)| kind == "run")
+		.collect();
+	assert_eq!(runs, vec![&("run".to_owned(), Uuid::from_u128(13))]);
+}
+#[rstest]
+#[tokio::test]
+async fn other_events_keep_their_run_without_a_workspace_lookup(mut scope: Scope) {
+	let mut snapshot = snapshot();
+	snapshot.events = vec![event(
+		"artifact.published",
+		json!({"id":Uuid::from_u128(6),"run_id":Uuid::from_u128(13)}),
+	)];
+	track_snapshot(&mut scope, &snapshot).await.unwrap();
+	assert_eq!(scope.calls, vec!["sources_commit"]);
+	assert!(
+		scope.records[0]
+			.2
+			.contains(&("run".into(), Uuid::from_u128(13)))
 	);
 }
 #[rstest]

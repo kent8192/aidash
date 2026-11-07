@@ -2577,6 +2577,27 @@ impl Store {
 		)
 		.await
 	}
+	/// A Subnode member's message to the Run that created the Subnode.
+	pub(crate) async fn accept_member_message_in(
+		&self,
+		tx: &mut dyn TransactionExecutor,
+		creator: Uuid,
+		member: &RunMetadata,
+		content: &str,
+		key: &str,
+		max_input_tokens: usize,
+	) -> Result<()> {
+		let deployment = self.deployment.as_str();
+		InputRecord::admit_from_run(
+			tx,
+			deployment,
+			creator,
+			member.id,
+			(&member.executor_subject(deployment), content, key),
+			max_input_tokens,
+		)
+		.await
+	}
 	/// The pages people asked `run_id` to read, oldest first (ADR 0052).
 	pub async fn url_intents(
 		&self,

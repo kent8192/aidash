@@ -163,6 +163,40 @@ async fn every_current_local_visibility_gate_can_block_a_saved_request(
 		);
 	}
 }
+/// The row-only check under the exclusive lock decides everything locally
+/// again, because the policy may have changed after the shared lease, and
+/// leaves only the walk to other Nodes (`task_visible`) to the earlier check.
+#[rstest]
+#[case::task("task.read", 1)]
+#[case::workspace("workspace.read", 2)]
+#[case::generation("generation.read", 3)]
+#[tokio::test]
+async fn the_row_check_decides_locally_again_and_never_walks_other_nodes(
+	job: Request,
+	mut scope: Scope,
+	#[case] denied: &'static str,
+	#[case] decisions: usize,
+) {
+	scope.denied.insert(denied);
+	assert!(!visible_row(&mut scope, &job).await.unwrap());
+	assert_eq!(scope.decisions.len(), decisions);
+	assert!(
+		!scope
+			.calls
+			.iter()
+			.any(|call| call.starts_with("task_visible:")),
+		"{:?}",
+		scope.calls
+	);
+	assert_eq!(scope.decisions[0].kind, "task");
+	assert_eq!(scope.decisions[0].attributes["created_by"], "alice");
+	scope.denied.clear();
+	scope.decisions.clear();
+	assert!(visible_row(&mut scope, &job).await.unwrap());
+	assert_eq!(scope.decisions.len(), 3);
+	scope.missing_task = true;
+	assert!(!visible_row(&mut scope, &job).await.unwrap());
+}
 #[rstest]
 #[case::task("task.read", 1)]
 #[case::generation("generation.read", 2)]

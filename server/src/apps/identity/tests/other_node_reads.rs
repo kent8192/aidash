@@ -32,6 +32,8 @@ struct Script {
 	sibling: Mutex<Option<String>>,
 	/// Whether the coordinator hands the Task it created to the second Node.
 	delegate: Mutex<bool>,
+	/// What the Task the coordinator creates requires.
+	requirements: Mutex<Value>,
 	/// How many requests the coordinator has made.
 	stage: std::sync::atomic::AtomicUsize,
 	/// How many Tasks the coordinator creates before it finishes or delegates.
@@ -43,6 +45,7 @@ fn script() -> Arc<Script> {
 	Arc::new(Script {
 		sibling: Mutex::new(None),
 		delegate: Mutex::new(true),
+		requirements: Mutex::new(json!({})),
 		stage: Default::default(),
 		tasks: std::sync::atomic::AtomicUsize::new(1),
 	})
@@ -106,7 +109,11 @@ fn next_message(script: &Script, request: &Value) -> Value {
 			tool_call(
 				&format!("create-{stage}"),
 				"task_create",
-				json!({"title":"Hand over","description":HANDED_OVER,"requirements":{}}),
+				json!({
+					"title":"Hand over",
+					"description":HANDED_OVER,
+					"requirements":script.requirements.lock().unwrap().clone(),
+				}),
 			)
 		}
 		stage if stage == 2 && *script.delegate.lock().unwrap() => {
@@ -558,6 +565,15 @@ async fn an_agent_delegates_to_the_node_it_discovered_the_agent_on(
 /// asks cannot get a connection within a second and does not answer. The
 /// original pool is returned so that peers can answer again.
 async fn limit_pool(world: &mut World, connections: u32) -> aidash_server::database::native::Pool {
+	limit_pool_waiting(world, connections, Duration::from_secs(1)).await
+}
+
+/// [`limit_pool`] where a connection is waited for up to `acquire`.
+async fn limit_pool_waiting(
+	world: &mut World,
+	connections: u32,
+	acquire: Duration,
+) -> aidash_server::database::native::Pool {
 	let small = world
 		.f
 		.store
@@ -566,7 +582,7 @@ async fn limit_pool(world: &mut World, connections: u32) -> aidash_server::datab
 		.clone()
 		.max_connections(connections)
 		.min_connections(0)
-		.acquire_timeout(Duration::from_secs(1))
+		.acquire_timeout(acquire)
 		.connect_with(world.f.store.pool.connect_options().as_ref().clone())
 		.await
 		.unwrap();
@@ -668,8 +684,10 @@ async fn a_node_that_does_not_answer_leaves_the_read_unconfirmed(
 	world.close().await;
 }
 
-/// With a pool too small for the nested checks, every read still ends within
-/// the limit, none hangs, and the pool serves the next read (#751, item 12).
+/// With a pool too small for the nested checks, every read still ends, none
+/// hangs, and the pool serves the next read (#751, item 12). The pool gives up
+/// after 3 s here, before the 10 s limit on a check can matter; that limit is
+/// fixed by `a_check_ends_at_the_ten_second_limit_not_at_the_pools`.
 #[rstest::rstest]
 #[tokio::test]
 async fn reads_on_a_saturated_pool_end_within_the_limit(#[future(awt)] provider: Provider) {
@@ -1114,4 +1132,277 @@ async fn a_task_the_other_node_refuses_is_not_counted(#[future(awt)] provider: P
 	assert_eq!(status, 200, "{tasks}");
 	assert_eq!(tasks["unconfirmed"], json!([]), "{tasks}");
 	world.close().await;
+}
+
+/// Serves the application from `pool` again, once the Node answers.
+async fn restore_pool(world: &mut World, pool: aidash_server::database::native::Pool) {
+	world.f.store.pool = pool;
+	world.app = common::application_with_settings(
+		world.f.clone(),
+		aidash_server::http::Settings {
+			auth_burst: 10000,
+			..Default::default()
+		},
+	)
+	.await;
+}
+
+/// A generation request for the Task the coordinator created, approved and
+/// queued: its requester's view of that Task depends on a Run that read on
+/// the second Node.
+async fn queued_generation(world: &World) -> Uuid {
+	let child = world.handed_over().await;
+	let (_, mut template) = request(
+		&world.app,
+		&world.token,
+		"GET",
+		"/api/registry/research/1.0.0",
+		Value::Null,
+	)
+	.await;
+	template["id"] = json!("research-template");
+	template["capabilities"] = json!(["special.research"]);
+	let spec = json!({"enabled":true,"template":template,"permissions":{"roles":[],"groups":[],"attributes":{"team":"research"}},"approval_required":true,"limits":{"max_agents":4,"max_concurrent":2,"max_depth":2,"token_budget":800000,"tokens_per_agent":200000,"lifetime_seconds":3600}});
+	let (status, body) = request(
+		&world.app,
+		&world.token,
+		"POST",
+		"/api/generation/acme/policies/research",
+		json!({"expected_revision":0,"spec":spec}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, assigned) = request(
+		&world.app,
+		&world.token,
+		"POST",
+		&format!("/api/generation/acme/tasks/{}/assign", child.id),
+		json!({"policy_id":"research","reason":"specialist for a Task another Node's Agent was found for"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{assigned}");
+	let id: Uuid = assigned["generation"]["id"]
+		.as_str()
+		.unwrap()
+		.parse()
+		.unwrap();
+	let (status, approved) = request(
+		&world.app,
+		&world.token,
+		"POST",
+		&format!("/api/generation/acme/requests/{id}/control"),
+		json!({"action":"approve","reason":"reviewed definition"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{approved}");
+	assert_eq!(approved["status"], "QUEUED");
+	id
+}
+
+async fn generation_status(world: &World, id: Uuid) -> String {
+	sqlx::query_scalar("SELECT status FROM generation_requests WHERE id = $1")
+		.bind(id)
+		.fetch_one(world.f.store.pool.fixture_driver())
+		.await
+		.unwrap()
+}
+
+/// A queued generation request is activated under the exclusive lock, where no
+/// Node can be asked. With every Node healthy it activates; while a Node does
+/// not answer it stays queued and the tick goes on; a person stopping it is
+/// told which Node, and a refusal stays final (#751).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_queued_generation_request_waits_for_a_silent_node_and_a_stop_names_it(
+	#[future(awt)] provider: Provider,
+) {
+	*provider.script.delegate.lock().unwrap() = false;
+	*provider.script.requirements.lock().unwrap() = json!({"capability":"special.research"});
+	let mut world = world(provider).await;
+	world.run_coordinator(WITHOUT_DELEGATION).await;
+	let job = queued_generation(&world).await;
+	let control = format!("/api/generation/acme/requests/{job}/control");
+	// Carol may not read Workspaces: a refusal once every Node answers.
+	let (status, current) = request(
+		&world.app,
+		&world.f.config.api_token,
+		"GET",
+		"/api/authorization/acme",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{current}");
+	let mut bundle = current["bundle"].clone();
+	bundle["subjects"]["carol"] = json!({"kind":"user"});
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"carol-reads-nothing","effect":"deny","subjects":{"ids":["carol"]},
+		"actions":["workspace.read"],"resources":{"kinds":["*"]}
+	}));
+	let (status, body) = request(
+		&world.app,
+		&world.f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":current["revision"],"bundle":bundle}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let carol = subject_credential(&world.f.store, "acme", "carol").await;
+
+	let original = limit_pool(&mut world, 1).await;
+	// Activation: the Node is silent, so nothing is decided and nothing fails.
+	aidash_server::generation::provision::reconcile(&world.f)
+		.await
+		.expect("a silent Node does not abandon the tick");
+	assert_eq!(generation_status(&world, job).await, "QUEUED");
+	// Stopping: a person is told which Node, and may retry.
+	let stop = json!({"action":"stop","reason":"changed my mind"});
+	let (status, body) = request(&world.app, &world.token, "POST", &control, stop.clone()).await;
+	assert_eq!(status, 503, "{body}");
+	assert_eq!(body["code"], "node_unreachable", "{body}");
+	assert_eq!(body["node"], json!(world.sibling.to_string()), "{body}");
+
+	restore_pool(&mut world, original).await;
+	// With every Node answering, a refusal is final, and names nothing. (While a
+	// Node is silent the Task's Read dependencies come first, so that answer is
+	// "cannot confirm" for everyone who may discover it.)
+	let (status, body) = request(&world.app, &carol, "POST", &control, stop.clone()).await;
+	assert_eq!(status, 403, "{body}");
+	assert_ne!(body["code"], "node_unreachable", "{body}");
+	assert_eq!(generation_status(&world, job).await, "QUEUED");
+	// Every Node answers: the request activates, and then it can be stopped.
+	aidash_server::generation::provision::reconcile(&world.f)
+		.await
+		.unwrap();
+	assert_eq!(generation_status(&world, job).await, "ACTIVE");
+	let (status, body) = request(&world.app, &world.token, "POST", &control, stop).await;
+	assert_eq!(status, 200, "{body}");
+	world.close().await;
+}
+
+/// A refusal at activation still writes `FAILED`: a requester who may no
+/// longer read the Task is the admission denial it always was.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_real_refusal_at_activation_still_fails_the_request(#[future(awt)] provider: Provider) {
+	*provider.script.delegate.lock().unwrap() = false;
+	*provider.script.requirements.lock().unwrap() = json!({"capability":"special.research"});
+	let world = world(provider).await;
+	world.run_coordinator(WITHOUT_DELEGATION).await;
+	let job = queued_generation(&world).await;
+	let (status, current) = request(
+		&world.app,
+		&world.f.config.api_token,
+		"GET",
+		"/api/authorization/acme",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{current}");
+	let mut bundle = current["bundle"].clone();
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"alice-reads-no-workspace","effect":"deny","subjects":{"ids":["alice"]},
+		"actions":["workspace.read"],"resources":{"kinds":["*"]}
+	}));
+	let (status, body) = request(
+		&world.app,
+		&world.f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":current["revision"],"bundle":bundle}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	aidash_server::generation::provision::reconcile(&world.f)
+		.await
+		.unwrap();
+	assert_eq!(generation_status(&world, job).await, "FAILED");
+	world.close().await;
+}
+
+/// A check that cannot get a connection ends at its own 10 s limit. The pool
+/// would wait 60 s, so a read answered in under 25 s was ended by the limit,
+/// and it says which Node did not answer (#751, items 10 and 12).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_check_ends_at_the_ten_second_limit_not_at_the_pools(#[future(awt)] provider: Provider) {
+	*provider.script.delegate.lock().unwrap() = false;
+	let mut world = world(provider).await;
+	world.run_coordinator(WITHOUT_DELEGATION).await;
+	let child = world.handed_over().await;
+	let path = format!("/api/tasks/{}/runs", child.id);
+	let original = limit_pool_waiting(&mut world, 1, Duration::from_secs(60)).await;
+	let started = std::time::Instant::now();
+	let (status, body) = world.get(&path).await;
+	let elapsed = started.elapsed();
+	assert_eq!(status, 503, "{body}");
+	assert_eq!(body["code"], "node_unreachable", "{body}");
+	assert!(
+		elapsed >= Duration::from_secs(9) && elapsed < Duration::from_secs(25),
+		"the check ends at its 10 s limit, not at the pool's 60 s: {elapsed:?}"
+	);
+	restore_pool(&mut world, original).await;
+	let (status, body) = world.get(&path).await;
+	assert_eq!(status, 200, "{body}");
+	world.close().await;
+}
+
+/// A Run that was delegated and whose Node is then deleted: what a Tenant
+/// Administrator gets is pinned, as for discovery (#751, item 18). No route
+/// reaches a Node that is not live, so the Task's Runs are refused and no Node
+/// is blamed.
+#[rstest::rstest]
+#[tokio::test]
+async fn deleting_the_delegated_node_keeps_the_outputs_hidden(#[future(awt)] provider: Provider) {
+	let world = world(provider).await;
+	world.run_coordinator(WITH_DELEGATION).await;
+	let receiver = world.receiver().await;
+	stops_at_data_protection(&receiver);
+	let child = world.handed_over().await;
+	let path = format!("/api/tasks/{}/runs", child.id);
+	let (status, body) = world.get(&path).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = administer_node(
+		&world.f,
+		"acme",
+		&format!("/api/tenants/acme/nodes/{}/deletion", world.sibling.node),
+		json!({"confirmation":world.sibling.node}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = world.get(&path).await;
+	assert_eq!(status, 403, "{body}");
+	assert_ne!(body["code"], "node_unreachable", "{body}");
+	world.close().await;
+}
+
+/// Resuming a paused Run checks what it read again. A Node that does not
+/// answer makes it `503 node_unreachable`, the Run stays paused, and once the
+/// Node answers the Run resumes (#751, item 9).
+#[rstest::rstest]
+#[tokio::test]
+async fn resuming_while_a_node_is_silent_answers_503_and_leaves_the_run_paused(
+	#[future(awt)] provider: Provider,
+) {
+	*provider.script.delegate.lock().unwrap() = false;
+	let mut world = world(provider).await;
+	let run = world.run_coordinator(WITHOUT_DELEGATION).await;
+	let control = format!("/api/runs/{}/control", run.id);
+	let (status, body) = world_post(&world, &control, json!({"action":"pause"})).await;
+	assert_eq!(status, 200, "{body}");
+	let original = limit_pool(&mut world, 1).await;
+	let (status, body) = world_post(&world, &control, json!({"action":"resume"})).await;
+	assert_eq!(status, 503, "{body}");
+	assert_eq!(body["code"], "node_unreachable", "{body}");
+	assert_eq!(body["node"], json!(world.sibling.to_string()), "{body}");
+	restore_pool(&mut world, original).await;
+	assert_eq!(world.coordinator().await.control.as_str(), "PAUSED");
+	let (status, body) = world_post(&world, &control, json!({"action":"resume"})).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(world.coordinator().await.control.as_str(), "ACTIVE");
+	world.close().await;
+}
+
+async fn world_post(world: &World, path: &str, body: Value) -> (u16, Value) {
+	request(&world.app, &world.token, "POST", path, body).await
 }

@@ -41,6 +41,8 @@ struct Scope {
 	started: Instant,
 	elapsed: Duration,
 	latency: Duration,
+	/// Time that asking a peer takes, charged when its route is resolved.
+	latency_on_peer: Duration,
 	frontier: Vec<Reference>,
 	edges: BTreeMap<Uuid, Vec<Reference>>,
 	decision: bool,
@@ -138,6 +140,7 @@ impl DependencyScope for Scope {
 	}
 	async fn route(&mut self, node: &str) -> Result<Option<Route>> {
 		self.calls.push(format!("peer:{node}"));
+		self.elapsed += self.latency_on_peer;
 		Ok(self.peer.clone())
 	}
 	fn unavailable(&self, node: &str) -> bool {
@@ -183,7 +186,7 @@ fn grant(node: &str, id: u128) -> Reference {
 }
 #[fixture]
 fn scope() -> Scope {
-	Scope { calls:vec![],started:Instant::now(),elapsed:Duration::ZERO,latency:Duration::ZERO,frontier:vec![],edges:BTreeMap::new(),decision:true,fault:None,admission:None,bound:None,
+	Scope { calls:vec![],started:Instant::now(),elapsed:Duration::ZERO,latency:Duration::ZERO,latency_on_peer:Duration::ZERO,frontier:vec![],edges:BTreeMap::new(),decision:true,fault:None,admission:None,bound:None,
         entry:serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{},"config":{"model":{"id":"model","version":"1.0.0"}}})).unwrap(),
         peer:Some(crate::test_support::foreign_route("aidash://foreign")),marked:BTreeSet::new(),skipped:vec![],answered:vec![],
     }
@@ -280,7 +283,8 @@ async fn deadline_expiration_prevents_the_next_authority_call(
 		scope.calls,
 		vec![
 			format!("grant:{}", Uuid::from_u128(1)),
-			"decide:federation.discover:aidash://foreign".into()
+			"decide:federation.discover:aidash://foreign".into(),
+			"peer:aidash://foreign".into()
 		]
 	);
 	assert!(transport.calls.lock().unwrap().is_empty());
@@ -516,12 +520,56 @@ async fn the_deadline_names_the_node_whose_reference_was_left_unchecked(
 
 #[rstest]
 #[tokio::test]
-async fn the_deadline_on_this_node_marks_nothing(mut scope: Scope, transport: Transport) {
+async fn the_deadline_on_this_node_marks_the_last_node_asked(
+	mut scope: Scope,
+	transport: Transport,
+) {
+	// The slow answer from the foreign Node used the time; the next reference
+	// is on this Node, so the Node that was slow is the one to name.
+	transport
+		.replies
+		.lock()
+		.unwrap()
+		.push_back(Check::Confirmed(Checked {
+			visible: true,
+			pending: vec![grant("aidash://local", 3)],
+		}));
+	scope.latency_on_peer = Duration::from_secs(20);
+	assert!(
+		!verify_all(&mut scope, &transport, vec![grant("aidash://foreign", 1)])
+			.await
+			.unwrap()
+	);
+	assert!(scope.marked.contains("aidash://foreign"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn the_deadline_on_this_node_with_no_node_asked_marks_nothing(
+	mut scope: Scope,
+	transport: Transport,
+) {
 	scope.latency = Duration::from_secs(20);
 	scope.edges.insert(
 		Uuid::from_u128(1),
-		vec![grant("aidash://foreign", 2), grant("aidash://local", 3)],
+		vec![grant("aidash://local", 3), grant("aidash://local", 4)],
 	);
+	assert!(
+		!verify_all(&mut scope, &transport, vec![grant("aidash://local", 1)])
+			.await
+			.unwrap()
+	);
+	assert!(scope.marked.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn the_deadline_names_no_node_that_has_no_route(mut scope: Scope, transport: Transport) {
+	scope.latency = Duration::from_secs(20);
+	scope.peer = None;
+	scope
+		.edges
+		.insert(Uuid::from_u128(1), vec![grant("aidash://foreign", 2)]);
 	assert!(
 		!verify_all(&mut scope, &transport, vec![grant("aidash://local", 1)])
 			.await
@@ -675,4 +723,32 @@ async fn admission_must_exist_and_match_its_bound_grant_before_visibility(
 		present && bound
 	);
 	assert_eq!(scope.calls.len(), calls);
+}
+
+#[rstest]
+#[case::bad_request(400, true)]
+#[case::unauthorized(401, true)]
+#[case::forbidden(403, true)]
+#[case::missing(404, true)]
+#[case::conflict(409, true)]
+#[case::gone(410, true)]
+#[case::unprocessable(422, true)]
+#[case::request_timeout(408, false)]
+#[case::too_early(425, false)]
+#[case::too_many_requests(429, false)]
+#[case::server_error(500, false)]
+#[case::unavailable(503, false)]
+#[case::gateway_timeout(504, false)]
+#[case::redirect(302, false)]
+#[case::no_content(204, false)]
+fn a_peer_that_answered_refuses_and_one_that_could_not_is_unavailable(
+	#[case] status: u16,
+	#[case] refused: bool,
+) {
+	assert_eq!(crate::ports::federation::refuses(status), refused);
+	assert_eq!(
+		matches!(Check::of_status(status), Check::Refused),
+		refused,
+		"{status}"
+	);
 }

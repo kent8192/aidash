@@ -23,6 +23,36 @@ pub async fn visible(scope: &mut dyn GenerationVisibility, job: &Request) -> Res
 	}
 	local_visible(scope, job).await
 }
+/// [`visible`] for a caller that holds the policy row exclusively, where other
+/// Nodes cannot be asked: the Task's Read dependencies were checked under a
+/// shared lease first, and here the Task row alone is read (#751). Everything
+/// that is decided locally is decided again, because the policy may have
+/// changed between the shared lease and the lock; only the walk to other Nodes
+/// (`output_visible`) is left to the earlier check.
+pub async fn visible_row(scope: &mut dyn GenerationVisibility, job: &Request) -> Result<bool> {
+	if !job.is_local() {
+		return visible(scope, job).await;
+	}
+	if !scope.inherited_lease() {
+		scope.context(json!({}));
+	}
+	let workspace = scope.workspace(job.workspace_id).await?;
+	let Some(task) = scope.task(job.task_id, job.workspace_id).await? else {
+		return Ok(false);
+	};
+	let mut attributes = workspace.attributes.clone();
+	attributes["created_by"] = json!(task.created_by);
+	attributes["task_id"] = json!(task.id);
+	let task_resource = scope.resource("task", &task.id.to_string(), attributes);
+	if !scope.decide(&task_resource, "task.read").await? {
+		return Ok(false);
+	}
+	scope.context(workspace.attributes.clone());
+	Ok(scope.decide(&workspace, "workspace.read").await?
+		&& scope
+			.decide(&resource(scope, job), "generation.read")
+			.await?)
+}
 /// A persisted local Task remains authoritative in the native scoped reader.
 pub async fn local_visible(scope: &mut dyn GenerationVisibility, job: &Request) -> Result<bool> {
 	if !scope.inherited_lease() {

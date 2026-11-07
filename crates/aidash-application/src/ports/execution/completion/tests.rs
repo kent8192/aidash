@@ -30,7 +30,7 @@ fn finished_checks_pass_only_on_a_confirmed_zero_exit(
 /// the projection wraps in a structured code. It is the command's own failure
 /// to repair, and the log is its diagnostics.
 #[rstest]
-#[case::conflict(json!({"code":"CONFLICT","message":"error: no such file","retryable":false}))]
+#[case::silent_failure(json!({"code":"COMMAND_FAILED","message":"error: no such file","retryable":false}))]
 #[case::log_word(json!({"code":"FAILED","message":"FAILED: 2 tests","retryable":false}))]
 fn a_silent_failure_is_finished_with_its_log(#[case] error: serde_json::Value) {
 	let result = json!({"status":"failed","termination_confirmed":true,"exit_code":1,

@@ -15,6 +15,13 @@ pub async fn activate(
 	requested: &Request,
 	validation: &DefinitionValidation,
 ) -> Result<()> {
+	// The Task's Read dependencies may need other Nodes, which cannot be asked
+	// under the exclusive lock; a shared lease checks them first. A real refusal
+	// is the admission denial it always was; a Node that did not answer leaves
+	// the job queued (#751).
+	if !repository.visible_shared(requested).await? {
+		return Err(Error::Conflict("generated agent admission denied".into()));
+	}
 	let mut scope = repository.begin_activation(requested).await?;
 	let result = activate_in(scope.as_mut(), requested, validation).await;
 	// A rejected admission must roll back its proposed policy revision. A denial
@@ -40,7 +47,7 @@ pub async fn activate_in(
 		return Err(Error::Conflict("generation request expired".into()));
 	}
 	scope.replace_subjects(job.subject_chain.clone());
-	if !scope.visible(&job).await? {
+	if !scope.visible_row(&job).await? {
 		return Err(Error::Forbidden);
 	}
 	scope.require_request(&job).await?;
@@ -168,7 +175,11 @@ pub async fn reconcile(
 			terminal(repository, &job, "EXPIRED", "generation lifetime elapsed").await?;
 		} else if job.status == "QUEUED" {
 			if let Err(error) = activate(repository, &job, validation).await {
-				if admission_rejected(&error) {
+				if let Error::NodeUnreachable { node, .. } = &error {
+					// Nothing was refused: the job stays queued for the next tick,
+					// and the others in this one still run.
+					tracing::warn!(job = %job.id, %node, "a Node did not answer; the generation request stays queued");
+				} else if admission_rejected(&error) {
 					terminal(repository, &job, "FAILED", &error.to_string()).await?;
 				} else {
 					return Err(error);

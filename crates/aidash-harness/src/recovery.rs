@@ -155,11 +155,20 @@ pub async fn recover(
 		current.error = Some(message.clone());
 		store.save(&current, token, "run.retrying").await?;
 		return Ok(true);
-	} else if matches!(failure, ExecutionFailure::Deferred) {
+	} else if matches!(
+		failure,
+		ExecutionFailure::Deferred | ExecutionFailure::DatabaseUnavailable
+	) {
+		let database = matches!(failure, ExecutionFailure::DatabaseUnavailable);
 		current.recovery.retry = Some(RetryState {
-			count: attempts,
+			// A database outage spends none of the attempts that bound a real failure.
+			count: if database { attempts - 1 } else { attempts },
 			at: now + chrono::Duration::seconds(1),
 		});
+		if database {
+			// Say what the Run waits for instead of showing the error of an earlier step.
+			current.error = Some(failure.message());
+		}
 		store.save(&current, token, "run.retrying").await?;
 		return Ok(true);
 	} else if current.state.failure_delivery() {

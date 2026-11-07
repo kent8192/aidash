@@ -12,7 +12,15 @@ A Node that answers and refuses stays a refusal. So does a target with no route.
 - An Agent's call that has had its effect pauses at once, because running it again could repeat the effect.
 - A Read Recheck at a worker boundary retries up to 5 times, then pauses. A Run never goes on unconfirmed, so a revocation still stops it. This is not an Authority Pause, because no change of authority lifts it.
 
-Two exclusive callers need a Read dependency check and cannot ask: stopping, deleting, approving or denying a generation request, and activating a queued one. Both keep a plain `403`, and nobody is blamed, because no Node was asked. The Home side of a foreign generation (`lease` with the lock held exclusively) first makes the check under a shared lease and then reads the Task row alone under the lock. The gap is milliseconds, and the next Read Recheck stops a Run whose reads were revoked.
+Two exclusive callers need a Read dependency check and cannot ask while they hold the lock: stopping, deleting, approving or denying a generation request, and activating a queued one. The Home side of a foreign generation does the same. Each first makes the check under a shared lease, then reads the Task row alone under the lock, deciding again everything the policy says about it locally. The gap is milliseconds, and the next Read Recheck stops a Run whose reads were revoked. Activation leaves a job `QUEUED` when a Node does not answer, logs the Node, and goes on to the next job; only a real refusal writes `FAILED`. A control answers `503` and `node_unreachable` for a silent Node, and `403` for a refusal.
+
+A peer that answered is never "unreachable". One rule serves every transport: `5xx`, `408`, `425` and `429` mean it did not answer, any other `4xx` is a refusal, and anything else did not answer either. A transaction still pending answers `503`, so it stays "cannot confirm".
+
+The 20 second limit on a walk counts as "cannot confirm", and names a Node only where one was asked or can be: a reference to another Node marks it when the reader may discover it and a route to it exists; a reference to this Node marks the last other Node the walk asked, and with none asked the answer is a plain `403`. A Node found silent under a publisher check is given back to the reader it ran for, who gets `503` if allowed to discover it. Marks made under the publisher's own identity are discarded with the rest of its state.
+
+On the memory path a Node's silence is `NodeUnreachable` whether the graph then reads as invalid or as unauthorized. One limit remains: an `Authority` result after a Node was marked keeps its mapping to silence, so a real refusal may read as silence there. The Run still stops, and Resume finds the truth.
+
+After a Run paused with `run.node_unreachable`, Resume starts with a fresh set of retries. It is not a compaction decision, so the decision cycle stays where it was.
 
 The check runs in process while the caller's transaction is open, as the patched paths already did. It stops at 10 seconds, so a full connection pool ends in "cannot confirm" and not in a hang. Within one authority, a Node that did not answer is not asked again.
 
@@ -30,7 +38,6 @@ A third stop is left as it is. A Run admitted by a Remote Grant is judged at the
 
 ## Consequences
 
-- With #768's fair queue, a check on a Node of the same Tenant would wait behind a queued writer that waits for the outer reader. Those handlers must skip that queue.
 - A list can be shorter than it should be with no sign of it until #770. ADR 0118 makes a list, search and Agent tool result count such items for each Node; the event stream stays silent.
 - Until #758 lands, a read whose local and peer checks together pass 30 seconds answers `504`.
 - A Run that discovered an Agent on a Node later deleted stays hidden, because there is no route to that Node. Whether a listing counts as a read at all is #769.

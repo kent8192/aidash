@@ -106,19 +106,35 @@ pub async fn verify_all(
 ) -> Result<bool> {
 	let mut visited = BTreeSet::new();
 	let deadline = scope.now() + Duration::from_secs(20);
+	// The last other Node this walk asked, which a slow answer may have used up
+	// the time for.
+	let mut last_asked: Option<String> = None;
 	while let Some(reference) = pending.pop() {
 		let remaining = deadline.saturating_duration_since(scope.now());
 		if remaining.is_zero() {
-			// The reference not yet checked is on a Node that may well have
-			// answered. It is named only to a reader allowed to discover that
-			// Node; any other reader gets the plain refusal (#751).
-			if reference.node() != scope.node() {
+			// The time ran out before this reference was checked. Name a Node
+			// that may well have answered, and only to a reader allowed to
+			// discover it; a reference to a Node with no route is a refusal.
+			let node = if reference.node() != scope.node() {
 				let node = reference.node();
 				let resource = scope.resource("node", node, json!({"remote_node":node}));
-				if scope.decide(&resource, "federation.discover").await? {
-					// Not asked, so not remembered as silent for other reads.
-					scope.skipped(node);
+				if scope.decide(&resource, "federation.discover").await?
+					&& scope.route(node).await?.is_some()
+				{
+					Some(node.to_owned())
+				} else {
+					None
 				}
+			} else {
+				if last_asked.is_none() {
+					tracing::warn!("the dependency walk ran out of time with no other Node asked");
+				}
+				last_asked.clone()
+			};
+			if let Some(node) = node {
+				// Out of time is not proof the Node is silent, so the row is
+				// unconfirmed but other reads are not told to skip it (#770).
+				scope.skipped(&node);
 			}
 			return Ok(false);
 		}
@@ -146,6 +162,7 @@ pub async fn verify_all(
 			let Some(route) = scope.route(node).await? else {
 				return Ok(false);
 			};
+			last_asked = Some(node.to_owned());
 			let input = Input { reference };
 			match transport.check(&route, &input, remaining).await {
 				Check::Confirmed(checked) => {

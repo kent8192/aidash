@@ -950,6 +950,65 @@ impl Access {
 		}
 	}
 
+	/// [`Self::finish`] for a yes/no answer to one person's request. A `false`
+	/// reached while a Node did not answer is that Node's silence, so it is
+	/// `NodeUnreachable` and not a refusal (#751).
+	pub(crate) async fn finish_deciding(self, result: Result<bool>) -> Result<bool> {
+		let silent = match (&result, self.named(Error::Forbidden)) {
+			(Ok(false), Error::NodeUnreachable { node, .. }) => Some(node),
+			_ => None,
+		};
+		let decided = self.finish(result).await?;
+		match silent {
+			Some(node) => Err(Error::NodeUnreachable {
+				node,
+				after_effect: false,
+			}),
+			None => Ok(decided),
+		}
+	}
+
+	/// The Nodes this authority found silent, taken so that a publisher view
+	/// can hand them back to the reader it ran for (#751).
+	pub(crate) fn take_peer_marks(&mut self) -> std::collections::BTreeSet<String> {
+		std::mem::take(&mut self.unavailable_peers)
+	}
+
+	/// Mark Nodes that another identity of this authority found silent, but
+	/// only those this reader may discover: to any other reader a silent Node
+	/// is the plain refusal it always was. With discover decided, the row being
+	/// checked is unconfirmed under the adopted Node, so a list counts it (#770);
+	/// the publisher's check already wrote the process's memory of it.
+	pub(crate) async fn adopt_silent_peers(
+		&mut self,
+		nodes: impl IntoIterator<Item = String>,
+	) -> Result<()> {
+		for node in nodes {
+			let resource = self.resource("node", &node, json!({"remote_node":node}));
+			if self.decide(&resource, "federation.discover").await? {
+				self.skip_peer(&node);
+			}
+		}
+		Ok(())
+	}
+
+	/// The error for a Run whose graph a memory step found invalid. `Authority`
+	/// and `Invalidated` both come from a read that was not confirmed, so while
+	/// a Node has not answered they name that Node (#751). Otherwise the
+	/// mapping is the old one. Limit: after a mark, an `Authority` that is a
+	/// real refusal reads as silence; the Run still stops and Resume finds out.
+	pub(crate) fn memory_failure(&self, reason: aidash_domain::semantic::Failure) -> Error {
+		use aidash_domain::semantic::Failure;
+		match reason {
+			Failure::Authority => self.named(Error::Forbidden),
+			Failure::Invalidated => match self.named(Error::Forbidden) {
+				silent @ Error::NodeUnreachable { .. } => silent,
+				_ => Error::RemoteSemantic(Failure::Invalidated),
+			},
+			reason => Error::RemoteSemantic(reason),
+		}
+	}
+
 	/// What an error of this authority says to its caller. A `Forbidden` that
 	/// follows a Node that did not answer, with no `require` of this authority
 	/// having denied, is that Node's silence and not a refusal (#751).

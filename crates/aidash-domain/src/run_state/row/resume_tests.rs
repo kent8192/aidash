@@ -194,3 +194,28 @@ fn inspection_omits_source_text_while_storage_preserves_the_retry_cache(mut raw:
 		assert!(!schema.to_string().contains(field));
 	}
 }
+#[rstest]
+fn resuming_after_a_node_did_not_answer_gives_a_fresh_set_of_retries(mut raw: RawRun) {
+	let recovery = raw.pending["recovery"].as_object_mut().unwrap();
+	recovery.remove("semantic_reason");
+	recovery.insert("node_retry".into(), json!(5));
+	recovery.insert(
+		"retry".into(),
+		json!({"count":5,"at":"2030-01-01T00:00:00Z"}),
+	);
+	let result = raw.resumed_pending().unwrap().unwrap();
+	assert_eq!(result["data"], raw.pending["data"]);
+	// The count and the schedule go; the decision cycle does not move.
+	assert_eq!(
+		result["recovery"],
+		json!({"retry":null,"lease_recoveries":1})
+	);
+}
+#[rstest]
+fn a_pause_that_asked_no_retry_of_a_node_is_left_alone(mut raw: RawRun) {
+	raw.pending["recovery"]
+		.as_object_mut()
+		.unwrap()
+		.remove("semantic_reason");
+	assert_eq!(raw.resumed_pending().unwrap(), None);
+}

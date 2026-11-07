@@ -472,18 +472,7 @@ impl Workspaces {
 		)
 		.await
 		.map_err(Into::into);
-		let silent = match (&result, access.named(crate::Error::Forbidden)) {
-			(Ok(false), crate::Error::NodeUnreachable { node, .. }) => Some(node),
-			_ => None,
-		};
-		let emitted = access.finish(result).await?;
-		match silent {
-			Some(node) => Err(crate::Error::NodeUnreachable {
-				node,
-				after_effect: false,
-			}),
-			None => Ok(emitted),
-		}
+		access.finish_deciding(result).await
 	}
 
 	/// [`Self::can_emit`] for the event stream, which leaves a Node alone for a

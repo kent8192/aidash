@@ -73,9 +73,10 @@ pub enum Check {
 impl Check {
 	/// What a status other than `200` means.
 	pub fn of_status(status: u16) -> Self {
-		match status {
-			401 | 403 | 404 => Self::Refused,
-			_ => Self::Unavailable,
+		if super::refuses(status) {
+			Self::Refused
+		} else {
+			Self::Unavailable
 		}
 	}
 }

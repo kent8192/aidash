@@ -334,9 +334,51 @@ async fn a_publisher_view_neither_sees_nor_leaves_the_readers_row_silence(mut ac
 	);
 }
 
+/// A memory step names a Node that did not answer for `Invalidated` as well as
+/// for `Authority`, so decisions 7 and 8 can fire; other reasons keep their
+/// meaning (#751).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_memory_step_names_a_silent_node_for_authority_and_invalidated(mut access: Access) {
+	use aidash_domain::semantic::Failure;
+	// Nobody is silent: the old mapping.
+	assert!(matches!(
+		access.memory_failure(Failure::Authority),
+		Error::Forbidden
+	));
+	assert!(matches!(
+		access.memory_failure(Failure::Invalidated),
+		Error::RemoteSemantic(Failure::Invalidated)
+	));
+	access.mark_peer_unavailable("aidash://other/sibling");
+	for reason in [Failure::Authority, Failure::Invalidated] {
+		assert!(matches!(
+			access.memory_failure(reason),
+			Error::NodeUnreachable { node, after_effect: false } if node == "aidash://other/sibling"
+		));
+	}
+	// Another reason is not made into silence.
+	assert!(matches!(
+		access.memory_failure(Failure::Allowance),
+		Error::RemoteSemantic(Failure::Allowance)
+	));
+	// A denial of this authority stays a refusal.
+	access.denied = true;
+	assert!(matches!(
+		access.memory_failure(Failure::Authority),
+		Error::Forbidden
+	));
+	assert!(matches!(
+		access.memory_failure(Failure::Invalidated),
+		Error::RemoteSemantic(Failure::Invalidated)
+	));
+}
+
 /// A publisher check runs under another identity on the reader's `Access`. Its
 /// silent Nodes and denials are its own: they are discarded when it leaves, and
-/// the reader's survive it (#751).
+/// the reader's survive it (#751). Only a reader who may discover a Node is
+/// told it was silent, by `adopt_silent_peers`; to any other reader the Node
+/// stays unnamed.
 #[rstest::rstest]
 #[tokio::test]
 async fn silent_nodes_and_denials_do_not_cross_a_publisher_view(mut access: Access) {
@@ -380,6 +422,51 @@ async fn silent_nodes_and_denials_do_not_cross_a_publisher_view(mut access: Acce
 			.unwrap();
 	}
 	assert!(matches!(access.named(Error::Forbidden), Error::Forbidden));
+}
+
+/// What the publisher found silent reaches the reader only when the reader may
+/// discover that Node (#751).
+#[rstest::rstest]
+#[case::may_discover(true)]
+#[case::may_not_discover(false)]
+#[tokio::test]
+async fn a_publishers_silent_node_is_the_readers_only_if_the_reader_may_discover_it(
+	mut access: Access,
+	#[case] allowed: bool,
+) {
+	if allowed {
+		access.snapshot.bundle = serde_json::from_value(json!({
+			"tenant":"acme", "subjects":{"alice":{"kind":"user"}},
+			"policies":[{"id":"discover","effect":"allow","subjects":{"ids":["alice"]},
+				"actions":["federation.discover"],"resources":{"kinds":["node"]}}]
+		}))
+		.unwrap();
+	}
+	let identity = access.identity.clone();
+	let silent = {
+		let mut publisher = access
+			.publisher_view(identity, vec!["alice".into()])
+			.await
+			.unwrap();
+		publisher.mark_peer_unavailable("aidash://other/publisher");
+		publisher.take_peer_marks()
+	};
+	assert!(!access.peer_unavailable("aidash://other/publisher"));
+	access.adopt_silent_peers(silent).await.unwrap();
+	assert_eq!(access.peer_unavailable("aidash://other/publisher"), allowed);
+	// A list counts the row under the adopted Node, only if it may discover it (#770).
+	assert_eq!(
+		access.row_silence().as_deref(),
+		allowed.then_some("aidash://other/publisher")
+	);
+	// Allowed: a refusal that follows is the Node's silence. Otherwise it stays.
+	assert_eq!(
+		matches!(
+			access.named(Error::Forbidden),
+			Error::NodeUnreachable { .. }
+		),
+		allowed
+	);
 }
 
 /// A scoped response can audit hundreds of checks. Database round trips, rather

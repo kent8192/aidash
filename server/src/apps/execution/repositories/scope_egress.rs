@@ -521,6 +521,7 @@ fn decides(error: &aidash_application::Error) -> bool {
 		Error::Conflict(code) => {
 			code == aidash_domain::egress::LIMIT_EXCEEDED
 				|| code == aidash_domain::egress::OPERATION_EXPIRED
+				|| code == aidash_domain::egress::OPERATION_INACTIVE
 		}
 		_ => false,
 	}
