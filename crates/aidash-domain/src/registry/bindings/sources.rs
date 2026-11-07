@@ -116,12 +116,15 @@ impl NativeContext {
 			}
 			NativeSource::ReferenceAttachments { references } => {
 				let mut seen = BTreeSet::new();
+				let mut paths = BTreeSet::new();
 				if references.is_empty()
-					|| references.len() > 8
-					|| references
-						.iter()
-						.any(|r| !seen.insert(r.reference_id) || !digest(&r.digest))
-				{
+					|| references.len() > crate::capabilities::references::MAX_REFERENCE_FILES
+					|| references.iter().any(|r| {
+						!seen.insert(r.reference_id)
+							|| !paths.insert(r.path.as_str())
+							|| !crate::capabilities::references::valid_path(&r.path)
+							|| !digest(&r.digest)
+					}) {
 					return Err(Error::Invalid(
 						"invalid reference context attachments".into(),
 					));
@@ -237,6 +240,7 @@ impl NativeContext {
 /// is admitted rather than failing at its first mount.
 pub(super) fn validate_mounts(contexts: impl IntoIterator<Item = NativeContext>) -> Result<()> {
 	let mut references = BTreeSet::new();
+	let mut reference_paths = BTreeSet::new();
 	let mut skills = BTreeSet::new();
 	let mut roots = BTreeSet::new();
 	for context in contexts {
@@ -245,7 +249,10 @@ pub(super) fn validate_mounts(contexts: impl IntoIterator<Item = NativeContext>)
 				references: attachments,
 			} => {
 				for attachment in attachments {
-					if !references.insert(attachment.reference_id) || references.len() > 8 {
+					if !references.insert(attachment.reference_id)
+						|| !reference_paths.insert(attachment.path)
+						|| references.len() > crate::capabilities::references::MAX_REFERENCE_FILES
+					{
 						return Err(Error::Invalid(
 							"ambiguous or excessive aggregate reference Sources".into(),
 						));
@@ -471,6 +478,70 @@ mod tests {
 			serde_json::to_value(&degrade).unwrap(),
 			json!({"schema_version":1,"source":{"adapter":"workspace_retrieval","on_unavailable":"degrade"}})
 		);
+	}
+	fn reference_source(paths: &[String]) -> NativeContext {
+		NativeContext {
+			schema_version: 1,
+			context_source: None,
+			source: NativeSource::ReferenceAttachments {
+				references: paths
+					.iter()
+					.enumerate()
+					.map(|(index, path)| ReferenceAttachment {
+						reference_id: uuid::Uuid::from_u128(index as u128 + 1),
+						digest: "a".repeat(64),
+						path: path.clone(),
+					})
+					.collect(),
+			},
+		}
+	}
+	#[test]
+	fn a_reference_source_holds_a_whole_project_under_distinct_paths() {
+		let paths = |count: usize| {
+			(0..count)
+				.map(|index| format!("docs/たべちゃお {index}.md"))
+				.collect::<Vec<_>>()
+		};
+		reference_source(&paths(256)).validate("source").unwrap();
+		assert!(reference_source(&paths(257)).validate("source").is_err());
+		for invalid in [
+			"../escape.md",
+			"/absolute.md",
+			"a//b.md",
+			"back\\slash.md",
+			"report.pdf.extracted.txt",
+		] {
+			assert!(
+				reference_source(&[invalid.to_owned()])
+					.validate("source")
+					.is_err(),
+				"{invalid}"
+			);
+		}
+		assert!(
+			reference_source(&["same.md".to_owned(), "same.md".to_owned()])
+				.validate("source")
+				.is_err()
+		);
+	}
+	#[test]
+	fn two_sources_of_one_agent_cannot_share_a_path() {
+		let first = reference_source(&["README.md".to_owned()]);
+		let NativeContext {
+			source: NativeSource::ReferenceAttachments { mut references },
+			..
+		} = reference_source(&["README.md".to_owned()])
+		else {
+			unreachable!()
+		};
+		references[0].reference_id = uuid::Uuid::from_u128(99);
+		let second = NativeContext {
+			schema_version: 1,
+			context_source: None,
+			source: NativeSource::ReferenceAttachments { references },
+		};
+		assert!(validate_mounts([first, second]).is_err());
 	}
 	#[test]
 	fn private_sources_pin_digest_and_validate_roots_without_implying_authority() {

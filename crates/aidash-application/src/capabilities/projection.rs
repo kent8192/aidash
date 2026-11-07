@@ -63,6 +63,11 @@ pub async fn result(
 		error: aidash_domain::capabilities::errors::CapabilityError::stored(
 			&operation.result["error"],
 		),
+		output_stale_seconds: operation.result["output_fetched_at"]
+			.as_f64()
+			.map(|fetched| {
+				(chrono::Utc::now().timestamp_millis() as f64 / 1000.0 - fetched).max(0.0) as u64
+			}),
 		runtime_millis: operation.result["runtime_millis"].as_u64(),
 		deadline_expired: operation.result["deadline_expired"].as_bool(),
 	})

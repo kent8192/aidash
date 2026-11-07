@@ -787,7 +787,7 @@ impl Gateway {
 			.await?;
 		let result = async {
 			let area = sessions::load(&mut access, area_id).await?;
-			let current = service::files(&area)?;
+			let current = super::super::capabilities::services::operations::pod_files(&area)?;
 			let current_root = current
 				.iter()
 				.find(|entry| entry.file_id == file_id)

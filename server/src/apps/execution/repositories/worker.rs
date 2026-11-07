@@ -50,9 +50,10 @@ impl WorkerLeases for Leases {
 			.map_err(Into::into)
 	}
 	fn transient(&self, error: &Error) -> bool {
-		matches!(error, Error::TransactionPending)
-			|| matches!(error, Error::Port(error)
-			if error.downcast_ref::<NativeError>().is_some_and(NativeError::is_transient_database))
+		matches!(
+			error,
+			Error::TransactionPending | Error::TemporaryDatabase(_)
+		)
 	}
 	async fn control(&self, run: Uuid) -> Result<RunControl> {
 		self.store
@@ -358,6 +359,9 @@ pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 			status: None,
 			message: error.to_string(),
 		},
+		// The database, not the Run, could not continue. The Run waits and resumes
+		// from its last persisted phase, however long the outage lasts (#728).
+		_ if error.is_transient_database() => ExecutionFailure::DatabaseUnavailable,
 		_ => ExecutionFailure::Other(error.to_string()),
 	}
 }

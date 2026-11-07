@@ -8,6 +8,9 @@ mod tenant_roots;
 #[path = "database_readiness.rs"]
 mod readiness;
 
+#[path = "database_statement_limit.rs"]
+mod statement_limit;
+
 #[path = "../../knowledge/tests/database_limits.rs"]
 mod semantic_limits;
 

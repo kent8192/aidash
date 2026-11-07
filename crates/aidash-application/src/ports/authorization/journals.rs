@@ -16,6 +16,8 @@ pub trait ReadJournalScope: Send {
 		sender: Option<&str>,
 		content: Option<&str>,
 	) -> Result<Vec<Uuid>>;
+	/// The Runs among `runs` that belong to `workspace`.
+	async fn runs_in_workspace(&mut self, workspace: Uuid, runs: &[Uuid]) -> Result<Vec<Uuid>>;
 	/// This commit remains independent of the live authority lease.
 	async fn record_sources(
 		&mut self,
