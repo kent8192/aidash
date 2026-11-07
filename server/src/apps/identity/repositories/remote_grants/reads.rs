@@ -46,6 +46,9 @@ struct Viewer {
 	cached_runs: BTreeMap<(Uuid, Uuid), bool>,
 	cached_humans: BTreeMap<Uuid, bool>,
 	read_verdicts: aidash_application::authorization::visits::ReadVerdicts,
+	/// The reader's row, which a Node met under the producer's identity must
+	/// not name (#770).
+	row_silence: Option<String>,
 }
 struct Producer<'a> {
 	access: &'a mut Access,
@@ -61,6 +64,7 @@ impl Drop for Producer<'_> {
 			self.access.cached_runs = viewer.cached_runs;
 			self.access.cached_humans = viewer.cached_humans;
 			self.access.read_verdicts = viewer.read_verdicts;
+			self.access.row_silence = viewer.row_silence;
 		}
 	}
 }
@@ -161,6 +165,7 @@ impl SourceReadScope for Scope<'_> {
 			cached_runs: std::mem::take(&mut self.access.cached_runs),
 			cached_humans: std::mem::take(&mut self.access.cached_humans),
 			read_verdicts: std::mem::take(&mut self.access.read_verdicts),
+			row_silence: self.access.row_silence.take(),
 		};
 		Ok(Box::new(Producer {
 			access: &mut *self.access,

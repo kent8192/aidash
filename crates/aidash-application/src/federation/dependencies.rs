@@ -116,7 +116,8 @@ pub async fn verify_all(
 				let node = reference.node();
 				let resource = scope.resource("node", node, json!({"remote_node":node}));
 				if scope.decide(&resource, "federation.discover").await? {
-					scope.mark_unavailable(node);
+					// Not asked, so not remembered as silent for other reads.
+					scope.skipped(node);
 				}
 			}
 			return Ok(false);
@@ -139,6 +140,7 @@ pub async fn verify_all(
 			// After the decision: a mark may come from another identity of the
 			// same authority, and this reader's own right comes first.
 			if scope.unavailable(node) {
+				scope.skipped(node);
 				return Ok(false);
 			}
 			let Some(route) = scope.route(node).await? else {
@@ -146,8 +148,15 @@ pub async fn verify_all(
 			};
 			let input = Input { reference };
 			match transport.check(&route, &input, remaining).await {
-				Check::Confirmed(checked) => checked,
-				Check::Refused | Check::NotAsked => return Ok(false),
+				Check::Confirmed(checked) => {
+					scope.answered(input.reference.node());
+					checked
+				}
+				Check::Refused => {
+					scope.answered(input.reference.node());
+					return Ok(false);
+				}
+				Check::NotAsked => return Ok(false),
 				Check::Unavailable => {
 					scope.mark_unavailable(input.reference.node());
 					return Ok(false);

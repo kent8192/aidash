@@ -50,6 +50,10 @@ struct Scope {
 	bound: Option<Uuid>,
 	entry: Entry,
 	marked: BTreeSet<String>,
+	/// Nodes a check stopped at without asking, one entry per stop (#770).
+	skipped: Vec<String>,
+	/// Nodes that answered, one entry per answer.
+	answered: Vec<String>,
 }
 #[async_trait]
 impl DependencyScope for Scope {
@@ -142,6 +146,13 @@ impl DependencyScope for Scope {
 	fn mark_unavailable(&mut self, node: &str) {
 		self.marked.insert(node.into());
 	}
+	fn skipped(&mut self, node: &str) {
+		self.marked.insert(node.into());
+		self.skipped.push(node.into());
+	}
+	fn answered(&mut self, node: &str) {
+		self.answered.push(node.into());
+	}
 }
 struct Transport {
 	calls: Mutex<Vec<(String, Value, Duration)>>,
@@ -174,7 +185,7 @@ fn grant(node: &str, id: u128) -> Reference {
 fn scope() -> Scope {
 	Scope { calls:vec![],started:Instant::now(),elapsed:Duration::ZERO,latency:Duration::ZERO,frontier:vec![],edges:BTreeMap::new(),decision:true,fault:None,admission:None,bound:None,
         entry:serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{},"config":{"model":{"id":"model","version":"1.0.0"}}})).unwrap(),
-        peer:Some(crate::test_support::foreign_route("aidash://foreign")),marked:BTreeSet::new(),
+        peer:Some(crate::test_support::foreign_route("aidash://foreign")),marked:BTreeSet::new(),skipped:vec![],answered:vec![],
     }
 }
 #[fixture]
@@ -406,6 +417,51 @@ async fn a_node_that_did_not_answer_is_marked_and_not_asked_again(
 		scope.calls[calls_after_first..],
 		["decide:federation.discover:aidash://foreign"]
 	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn every_row_stopped_by_a_silent_node_is_reported_and_a_refusal_is_not(
+	mut scope: Scope,
+	transport: Transport,
+) {
+	// Arrange: the first reference gets no answer, three more rows follow, then a
+	// refusal from another reference on the same Node would be asked again only
+	// if the Node had not been marked.
+	transport
+		.replies
+		.lock()
+		.unwrap()
+		.push_back(Check::Unavailable);
+	// Act
+	for id in 1..=4 {
+		assert!(
+			!verify_all(&mut scope, &transport, vec![grant("aidash://foreign", id)])
+				.await
+				.unwrap()
+		);
+	}
+	// Assert: the walk that met the silence marked the Node, and each of the
+	// three later rows stopped at it without asking.
+	assert!(scope.marked.contains("aidash://foreign"));
+	assert_eq!(scope.skipped, ["aidash://foreign"; 3]);
+	assert_eq!(transport.calls.lock().unwrap().len(), 1);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_node_that_answers_is_reported_as_answering_even_when_it_refuses(
+	mut scope: Scope,
+	transport: Transport,
+) {
+	transport.replies.lock().unwrap().push_back(Check::Refused);
+	assert!(
+		!verify_all(&mut scope, &transport, vec![grant("aidash://foreign", 1)])
+			.await
+			.unwrap()
+	);
+	assert_eq!(scope.answered, ["aidash://foreign"]);
+	assert!(scope.skipped.is_empty());
 }
 
 #[rstest]

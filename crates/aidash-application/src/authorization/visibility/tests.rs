@@ -430,6 +430,7 @@ fn event(kind: &str, data: Value) -> Event {
 		created_at: chrono::Utc::now(),
 	}
 }
+impl crate::ports::authorization::visibility::RowOutcome for Events {}
 #[async_trait]
 impl EventVisibilityScope for Events {
 	async fn marketplace_visible(&mut self, _: &Event) -> Result<bool> {

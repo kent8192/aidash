@@ -239,7 +239,11 @@ pub async fn event_visible_in(
 		Some(run) => scope.run_visible(&run).await?,
 		None => false,
 	};
-	runs.remember(id, event.workspace_id, visible);
+	// A refusal reached while a Node did not answer may be that Node's silence,
+	// so it is checked again for the next event and counted with it (#770).
+	if visible || scope.row_silence().is_none() {
+		runs.remember(id, event.workspace_id, visible);
+	}
 	Ok(visible)
 }
 

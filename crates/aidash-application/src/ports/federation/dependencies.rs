@@ -47,6 +47,12 @@ pub trait DependencyScope: Send {
 	/// Remember that `node` did not answer, and that nothing is confirmed
 	/// negatively while any Node is in that state.
 	fn mark_unavailable(&mut self, node: &str);
+	/// The check in progress stops at a Node already known to be silent, without
+	/// asking it again, so the row it belongs to is unconfirmed (#770).
+	fn skipped(&mut self, _node: &str) {}
+	/// `node` answered, with a verdict or a refusal, so it is no longer remembered
+	/// as silent.
+	fn answered(&mut self, _node: &str) {}
 }
 
 /// What asking another Node about a reference came to (#751).

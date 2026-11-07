@@ -27,6 +27,9 @@ struct Scope {
 	authority: u8,
 	frontier: Option<Vec<Dependency>>,
 	unavailable: BTreeSet<String>,
+	/// Nodes a check stopped at without asking, one entry per stop (#770).
+	skipped: Vec<String>,
+	answered: Vec<String>,
 	missing_peer: bool,
 	denied: Option<&'static str>,
 	fail: Option<&'static str>,
@@ -43,6 +46,8 @@ fn scope() -> Scope {
 		authority: 0,
 		frontier: None,
 		unavailable: BTreeSet::new(),
+		skipped: vec![],
+		answered: vec![],
 		missing_peer: false,
 		denied: None,
 		fail: None,
@@ -98,6 +103,12 @@ impl RegistryReadScope for Scope {
 	fn mark_unavailable(&mut self, node: &str) {
 		self.calls.push(format!("unavailable:{node}"));
 		self.unavailable.insert(node.into());
+	}
+	fn skipped(&mut self, node: &str) {
+		self.skipped.push(node.into());
+	}
+	fn answered(&mut self, node: &str) {
+		self.answered.push(node.into());
 	}
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
 		Self::resource_for(kind, id, attributes)
@@ -376,6 +387,37 @@ async fn transport_unavailability_is_distinct_from_a_negative_proof(
 	);
 	assert_eq!(scope.unavailable.contains("aidash://leaf"), unavailable);
 	assert_eq!(transport.calls.lock().unwrap().len(), 1);
+}
+#[rstest]
+#[case::refused(Verification::Rejected, 1)]
+#[case::confirmed(Verification::Verified, 1)]
+#[case::silent(Verification::Unavailable, 0)]
+#[tokio::test]
+async fn only_a_node_that_answered_is_reported_as_answering(
+	mut scope: Scope,
+	#[case] reply: Verification,
+	#[case] answers: usize,
+) {
+	let transport = Transport {
+		replies: vec![reply],
+		..Default::default()
+	};
+	let _ = reads_visible(&mut scope, &transport, Uuid::from_u128(1)).await;
+	assert_eq!(scope.answered.len(), answers);
+	assert!(scope.skipped.is_empty());
+}
+#[rstest]
+#[tokio::test]
+async fn a_node_already_known_silent_is_reported_as_the_one_the_check_stopped_at(mut scope: Scope) {
+	scope.unavailable.insert("aidash://leaf".into());
+	let transport = Transport::default();
+	assert!(
+		!reads_visible(&mut scope, &transport, Uuid::from_u128(1))
+			.await
+			.unwrap()
+	);
+	assert_eq!(scope.skipped, ["aidash://leaf"]);
+	assert!(transport.calls.lock().unwrap().is_empty());
 }
 #[rstest]
 #[tokio::test]

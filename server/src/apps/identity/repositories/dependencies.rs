@@ -114,4 +114,10 @@ impl DependencyScope for NativeDependencies<'_> {
 	fn mark_unavailable(&mut self, node: &str) {
 		self.0.mark_peer_unavailable(node);
 	}
+	fn skipped(&mut self, node: &str) {
+		self.0.skip_peer(node);
+	}
+	fn answered(&mut self, node: &str) {
+		self.0.peer_answered(node);
+	}
 }

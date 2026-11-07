@@ -27,6 +27,23 @@ impl RunVerdicts {
 	}
 }
 
+/// What a list loop learns about one row beyond visible or not: whether its
+/// check gave up on a Node that did not answer (#770). A loop starts the row,
+/// runs the check and takes the Node when the row is not visible, so a refusal
+/// is never counted. A scope that reaches no other Node keeps the defaults.
+pub trait RowOutcome {
+	/// A row's check begins: forget the Node an earlier row gave up on.
+	fn begin_row(&mut self) {}
+	/// The Node this row's check gave up on so far.
+	fn row_silence(&self) -> Option<String> {
+		None
+	}
+	/// The Node this row's check gave up on, after the check.
+	fn take_row_silence(&mut self) -> Option<String> {
+		None
+	}
+}
+
 #[async_trait]
 pub trait LocalRunVisibilityScope: Send {
 	fn cached(&self, run: &RunMetadata) -> Option<bool>;
@@ -55,7 +72,7 @@ pub trait RunVisibilityScope: LocalRunVisibilityScope {
 }
 
 #[async_trait]
-pub trait EventVisibilityScope: Send {
+pub trait EventVisibilityScope: Send + RowOutcome {
 	async fn marketplace_visible(&mut self, event: &Event) -> Result<bool>;
 	async fn resource_visible(&mut self, event: &Event) -> Result<Option<bool>>;
 	async fn generation(&mut self, id: Uuid, workspace: Option<Uuid>) -> Result<Option<Request>>;

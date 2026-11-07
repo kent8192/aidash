@@ -92,5 +92,6 @@ async fn interruption_store(
 		provider_key_material_reader: None,
 		capability_issuer: None,
 		in_process: Default::default(),
+		silent_nodes: Default::default(),
 	}
 }
