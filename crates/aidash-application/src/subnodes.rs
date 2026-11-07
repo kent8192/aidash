@@ -212,6 +212,22 @@ pub async fn message(
 	scope.message_creator(&subnode, run, key, content).await
 }
 
+/// Lock a creator's active Subnodes, then their active Runs: the order an end
+/// takes them. A write holds the shared Subnode lock and then takes the event
+/// lock, and a member's next step holds its Run row and then takes the event
+/// lock, so an end that appended an event before it had these locks would
+/// deadlock with either. A caller that has appended an event itself calls this
+/// before the first one.
+pub async fn lock_end(
+	scope: &mut dyn crate::ports::subnodes::EndScope,
+	creator: uuid::Uuid,
+) -> Result<()> {
+	for (_, workspace) in scope.active_subnodes(creator).await? {
+		scope.active_runs(workspace).await?;
+	}
+	Ok(())
+}
+
 /// Propagate a creator control while retaining its Run lock. A pause keeps the
 /// Subnode active; a cancel or terminal transition ends it and cancels members.
 pub async fn control_for_creator(
@@ -231,6 +247,8 @@ pub async fn control_for_creator(
 			"a nonterminal Subnode control must pause".into(),
 		));
 	}
+	// Mark nothing ended, which appends an event, before every lock is held.
+	lock_end(scope, creator).await?;
 	for (id, workspace) in scope.active_subnodes(creator).await? {
 		if let Some(reason) = reason {
 			scope.mark_ended(id, workspace, reason).await?;

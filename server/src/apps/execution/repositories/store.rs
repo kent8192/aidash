@@ -3207,6 +3207,10 @@ impl Store {
 		.fetch_optional(&mut **tx)
 		.await? }
 		.ok_or_else(|| Error::Conflict("worker lease lost".into()))?;
+		if saved.phase().is_terminal() {
+			// Closing an open attempt appends an event, so lock first; see `lock_end`.
+			super::subnodes::lock_for_end(tx, saved.id).await?;
+		}
 		if kind == "model.completed" {
 			super::source_delivery::accept(self, tx, &saved, worker).await?;
 		}
@@ -3331,6 +3335,8 @@ impl Store {
 		if valid.is_none() {
 			return Err(Error::Conflict("worker lease lost".into()));
 		}
+		// Before the first event below; see `lock_end`.
+		super::subnodes::lock_for_end(&mut tx, run.id).await?;
 		let saved: crate::domain::run_state::RawRun = crate::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
@@ -3595,19 +3601,8 @@ impl Store {
 			|| (action == RunControlAction::Pause
 				&& source == ControlSource::DeploymentAdministrator)
 		{
-			// The cascade below locks the Subnodes, then their Runs, then appends
-			// events. Lock them in that order before the first event, or the end
-			// deadlocks with a Run's write in progress: a write takes the shared
-			// Subnode lock and then the event lock, and a Run's next step takes
-			// its row and then the event lock. The end is the one that fails.
-			use aidash_application::ports::subnodes::EndScope as _;
-			let mut cascade = super::subnodes::Cascade {
-				store: self,
-				tx: &mut *tx,
-			};
-			for (_, workspace) in cascade.active_subnodes(id).await.map_err(Error::from)? {
-				cascade.active_runs(workspace).await.map_err(Error::from)?;
-			}
+			// Before `run.control` appends its event; see `lock_end`.
+			super::subnodes::lock_for_end(tx, id).await?;
 		}
 		let run = self.control_one_in_as(tx, id, action, source).await?;
 		if action == RunControlAction::Cancel {
