@@ -5,8 +5,9 @@
 //! it follows. `upgrader` runs `fixture-agent@2.0.0`. Withdrawing `fixture-agent@1.0.0` stops
 //! only what uses it.
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::registry::EntityRef;
-use aidash_server::federation::Federation;
+use aidash_server::{federation::Federation, harness::Harness};
 use serde_json::{Value, json};
 use uuid::Uuid;
 #[path = "../../execution/tests/support/legacy.rs"]
@@ -368,4 +369,103 @@ async fn narrowing_a_restriction_does_not_hide_outputs_but_still_refuses_a_start
 	)
 	.await;
 	assert_eq!(status, 403, "{body}");
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_worker_pauses_a_run_whose_binding_names_a_withdrawn_version_and_resume_does_not_bounce(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task) = common::bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let approval = |enabled: bool, revision: i64| json!({"node":node,"entry":{"id":"model","version":"1.0.0"},"enabled":enabled,"expected_revision":revision});
+	let set = async |body: Value| {
+		common::request(
+			&app,
+			&token,
+			"POST",
+			"/api/authorization/acme/catalog",
+			body,
+		)
+		.await
+		.0
+	};
+	assert_eq!(
+		common::request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/tasks/{task}/claim"),
+			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
+		)
+		.await
+		.0,
+		200
+	);
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+
+	// The model is in the Run's Binding: withdrawing it stops the Run at its next boundary.
+	assert_eq!(set(approval(false, 1)).await, 200);
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	assert!(harness.worker_once().await.unwrap());
+	let paused = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	assert_eq!(paused.control.as_str(), "PAUSED", "{:?}", paused.error);
+	let blocked = || async {
+		f.store
+			.events(&TEST_FIXTURE, 0, None, 1000)
+			.await
+			.unwrap()
+			.iter()
+			.filter(|event| {
+				event.kind == "run.authorization_blocked" && event.data["run_id"] == json!(run.id)
+			})
+			.count()
+	};
+	assert_eq!(blocked().await, 1);
+
+	// Resume says why and leaves the Run paused, so nothing wakes only to pause again.
+	let (status, body) = common::request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/runs/{}/control", run.id),
+		json!({"action":"resume"}),
+	)
+	.await;
+	assert_eq!(status, 409, "{body}");
+	assert_eq!(
+		body["run_reads"],
+		json!({"kind":"definition_not_approved","definition":{"id":"model","version":"1.0.0"}})
+	);
+	assert!(!harness.worker_once().await.unwrap());
+	assert_eq!(
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.control
+			.as_str(),
+		"PAUSED"
+	);
+
+	// Approved again, it resumes and the next boundary does not block it a second time.
+	assert_eq!(set(approval(true, 2)).await, 200);
+	let (status, body) = common::request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/runs/{}/control", run.id),
+		json!({"action":"resume"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let _ = harness.worker_once().await;
+	assert_eq!(blocked().await, 1, "resume must not bounce");
+	common::cleanup(f, &url, &schema).await;
 }
