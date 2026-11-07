@@ -38,6 +38,10 @@ fn answer(run: &mut Run, text: &str) {
 	}));
 }
 
+fn use_native_projection(fixture: &mut Fixture) {
+	Arc::get_mut(&mut fixture.backend.0).unwrap().projection = ProjectionVersion::Native;
+}
+
 fn calls(fixture: &Fixture, name: &str) -> usize {
 	fixture
 		.backend
@@ -114,7 +118,7 @@ async fn the_next_request_carries_the_notice_on_the_legacy_projection(fixture: F
 #[rstest]
 #[tokio::test]
 async fn the_next_request_carries_the_notice_on_the_native_projection(mut fixture: Fixture) {
-	native(&mut fixture);
+	use_native_projection(&mut fixture);
 	the_next_request_carries_the_notice(fixture).await;
 }
 
@@ -145,7 +149,7 @@ async fn the_next_final_answer_abandons_what_the_run_created_and_says_so(mut fix
 #[rstest]
 #[tokio::test]
 async fn the_model_turn_keeps_the_models_own_words(mut fixture: Fixture) {
-	native(&mut fixture);
+	use_native_projection(&mut fixture);
 	set_children(&fixture, children(1, false, vec![task(1, true, false)]));
 	answer(&mut fixture.run, "All done.");
 	advance_sources(&mut fixture).await.unwrap();
@@ -400,7 +404,9 @@ async fn abandoning_needs_task_abandon_for_each_task_and_a_refusal_changes_nothi
 	answer(&mut fixture.run, "All done.");
 	advance_sources(&mut fixture).await.unwrap();
 	fixture.run = last_write(&fixture).1;
-	Arc::get_mut(&mut fixture.backend.0).unwrap().denied_action = Some("task.abandon");
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = true;
+	state.denied_action = Some("task.abandon");
 	answer(&mut fixture.run, "All done, twice.");
 	let refused = advance_sources(&mut fixture).await;
 	assert!(matches!(refused, Err(Error::Forbidden)));
@@ -430,7 +436,9 @@ async fn a_handed_over_dependent_also_needs_task_abandon_before_the_home_is_call
 	answer(&mut fixture.run, "All done.");
 	advance_sources(&mut fixture).await.unwrap();
 	fixture.run = last_write(&fixture).1;
-	Arc::get_mut(&mut fixture.backend.0).unwrap().denied_action = Some("task.abandon");
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = true;
+	state.denied_action = Some("task.abandon");
 	answer(&mut fixture.run, "All done, twice.");
 	assert!(advance_sources(&mut fixture).await.is_err());
 	assert!(fixture.backend.0.abandoned.lock().unwrap().is_empty());
