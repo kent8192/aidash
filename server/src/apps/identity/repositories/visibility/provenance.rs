@@ -37,7 +37,7 @@ impl ReadProvenanceScope for Reads<'_> {
 	/// A recorded definition read is checked by `registry.read` alone: a Catalog Approval
 	/// decides use, not who reads what a Run produced (#769).
 	async fn catalog_read(&mut self, _: Uuid, reference: &EntityRef) -> Result<()> {
-		crate::apps::identity::services::catalog::readable(self.access, reference)
+		crate::apps::identity::services::catalog::read_recorded(self.access, reference)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)
@@ -465,7 +465,7 @@ impl ReadProvenanceScope for NativeReads<'_> {
 		.map_err(Into::into)
 	}
 	async fn catalog_read(&mut self, _: Uuid, reference: &EntityRef) -> Result<()> {
-		crate::apps::identity::services::catalog::readable(self.access, reference)
+		crate::apps::identity::services::catalog::read_recorded(self.access, reference)
 			.await
 			.map(|_| ())
 			.map_err(Into::into)
