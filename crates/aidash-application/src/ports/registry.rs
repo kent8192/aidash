@@ -27,7 +27,7 @@ pub trait CoreToolCatalog: Send + Sync {
 pub trait DefinitionLookup: Send {
 	async fn definition(&mut self, id: &str, version: &str) -> Result<Entry>;
 	/// A Source can bind only what the person registering it may read, because
-	/// whoever may run its Agent can then read it too (ADR 0113).
+	/// whoever may run its Agent can then read it too (ADR 0114).
 	async fn require_reference_read(&mut self, _: uuid::Uuid) -> Result<()> {
 		Err(crate::Error::Forbidden)
 	}

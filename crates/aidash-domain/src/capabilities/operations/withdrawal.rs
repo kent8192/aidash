@@ -44,14 +44,18 @@ impl Snapshot {
 		Change {
 			state: self.state.clone(),
 			result,
-			area_state: None,
+			area_state: (stopped
+				&& self.state == "uncertain"
+				&& self.area_state == "uncertain"
+				&& self.area_epoch == self.epoch
+				&& self.area_generation == self.generation)
+				.then_some("active"),
 		}
 	}
 	pub fn change(&self, stopped: bool) -> Change {
 		let never_dispatched = self.never_dispatched();
-		// A Check never exports `/work`, so once its writer is confirmed
-		// stopped the Area it fenced on an earlier pass is usable again.
-		let fenced_check = self.kind == super::VERIFICATION && self.area_state == "uncertain";
+		// A confirmed stop reopens the last saved Area even if the output was lost.
+		let fenced_area = self.area_state == "uncertain";
 		let mut result = self.result.clone();
 		result["termination_confirmed"] = json!(stopped);
 		result["effects_may_have_occurred"] = json!(!never_dispatched);
@@ -68,7 +72,7 @@ impl Snapshot {
 			result,
 			area_state: (self.area_epoch == self.epoch
 				&& self.area_generation == self.generation
-				&& (self.area_state == "running" || fenced_check && stopped))
+				&& (self.area_state == "running" || fenced_area && stopped))
 				.then_some(if never_dispatched {
 					"active"
 				} else {

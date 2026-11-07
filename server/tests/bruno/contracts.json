@@ -7425,6 +7425,10 @@
                 "format": "uuid",
                 "type": "string"
               },
+              "deadline_expired": {
+                "description": "True when the command was still running at its time limit. Absent otherwise.",
+                "type": ["boolean", "null"]
+              },
               "displays": {
                 "items": {
                   "$ref": "#/components/schemas/FileEntry"
@@ -7470,6 +7474,12 @@
               },
               "output": {
                 "type": "string"
+              },
+              "output_stale_seconds": {
+                "description": "Seconds since the output shown was last fetched from the running command. It keeps growing when the view is stalled, which does not mean the command is. Absent when no output was fetched.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
               },
               "policy_revision": {
                 "format": "int64",
@@ -7652,6 +7662,10 @@
                 "format": "uuid",
                 "type": "string"
               },
+              "deadline_expired": {
+                "description": "True when the command was still running at its time limit. Absent otherwise.",
+                "type": ["boolean", "null"]
+              },
               "displays": {
                 "items": {
                   "$ref": "#/components/schemas/FileEntry"
@@ -7697,6 +7711,12 @@
               },
               "output": {
                 "type": "string"
+              },
+              "output_stale_seconds": {
+                "description": "Seconds since the output shown was last fetched from the running command. It keeps growing when the view is stalled, which does not mean the command is. Absent when no output was fetched.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
               },
               "policy_revision": {
                 "format": "int64",
@@ -7825,6 +7845,10 @@
                 "format": "uuid",
                 "type": "string"
               },
+              "deadline_expired": {
+                "description": "True when the command was still running at its time limit. Absent otherwise.",
+                "type": ["boolean", "null"]
+              },
               "displays": {
                 "items": {
                   "$ref": "#/components/schemas/FileEntry"
@@ -7870,6 +7894,12 @@
               },
               "output": {
                 "type": "string"
+              },
+              "output_stale_seconds": {
+                "description": "Seconds since the output shown was last fetched from the running command. It keeps growing when the view is stalled, which does not mean the command is. Absent when no output was fetched.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
               },
               "policy_revision": {
                 "format": "int64",
@@ -36599,6 +36629,11 @@
           },
           "RequestRecord": {
             "properties": {
+              "admission_ms": {
+                "description": "The gateway's admission call, in milliseconds. Absent until the outcome\nis settled.",
+                "format": "int64",
+                "type": ["integer", "null"]
+              },
               "created_at": {
                 "format": "date-time",
                 "type": "string"
@@ -36653,6 +36688,11 @@
               },
               "service": {
                 "type": "string"
+              },
+              "settle_ms": {
+                "description": "From the end of the response until its final debit settled, in\nmilliseconds. Absent until the outcome is settled.",
+                "format": "int64",
+                "type": ["integer", "null"]
               },
               "status": {
                 "format": "int32",

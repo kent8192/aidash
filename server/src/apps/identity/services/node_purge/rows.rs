@@ -244,7 +244,8 @@ pub(super) async fn erase(tx: &mut dyn TransactionExecutor, owners: &Owners<'_>)
 			.and_where(Expr::col("tenant").eq(Expr::value(owners.tenant)))
 			.and_where(selectors::ctids(table, ids))
 			.build(PostgresQueryBuilder);
-		tx.execute(&sql, convert_values(values)).await?;
+		// Unbounded until #744 splits it into batches.
+		crate::database::limits::execute_unlimited(&mut *tx, &sql, convert_values(values)).await?;
 	}
 	Ok(())
 }

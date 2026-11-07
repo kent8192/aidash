@@ -21,7 +21,7 @@ pub trait SessionScope: Send {
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	async fn message(&mut self, workspace: Uuid, id: Uuid) -> Result<()>;
 	async fn agent(&mut self, reference: &EntityRef) -> Result<()>;
-	/// Whether Reference files an Area was given can still be used (ADR 0113).
+	/// Whether Reference files an Area was given can still be used (ADR 0114).
 	async fn references(&mut self, ids: &[Uuid]) -> Result<()>;
 	async fn bind_task(&mut self, task: Uuid, thread: Uuid) -> Result<()>;
 	async fn load(&mut self, id: Uuid) -> Result<Option<Area>>;

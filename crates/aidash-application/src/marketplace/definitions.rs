@@ -383,7 +383,7 @@ pub async fn resolve(
 	// Structural validation never resolves node-local secret references.
 	validation.validate_in(&entry, false)?;
 	// Installing registers the Source in this Tenant, which is the moment its files
-	// are made available to the Agents that bind it (ADR 0113).
+	// are made available to the Agents that bind it (ADR 0114).
 	if entry.kind == "source" {
 		require_reference_files(scope, &entry).await?;
 	}

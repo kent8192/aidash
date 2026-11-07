@@ -142,7 +142,7 @@ pub(crate) async fn get_many(access: &mut Access, ids: &[Uuid], kind: &str) -> R
 	.await
 }
 /// Of these Reference records, the ids that can no longer be used: revoked,
-/// expired or gone (ADR 0113). One `get_many` however many ids, so it adds its
+/// expired or gone (ADR 0114). One `get_many` however many ids, so it adds its
 /// shared lock and nothing more.
 pub(crate) async fn unusable_references(
 	access: &mut Access,

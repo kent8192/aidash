@@ -84,7 +84,7 @@ pub trait FileScopePort: Send {
 	async fn output(&mut self, area: &Area, id: Uuid) -> Result<Option<(String, i64, String)>>;
 	async fn open(&mut self, file: &MountedFile) -> Result<Box<dyn VerifiedFile>>;
 	/// Of these Reference records, the ids that can no longer be used because the
-	/// file was revoked, expired or removed (ADR 0113). One query however many ids.
+	/// file was revoked, expired or removed (ADR 0114). One query however many ids.
 	async fn unusable_references(&mut self, ids: &[Uuid]) -> Result<BTreeSet<Uuid>>;
 	async fn cached(&mut self, key: Uuid, digest: &str) -> Result<Option<Value>>;
 	async fn cache(&mut self, key: Uuid, digest: &str, result: &Value) -> Result<()>;

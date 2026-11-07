@@ -1,5 +1,6 @@
 import { ReferenceName, RecordView } from "../record-view";
 import { skippedServers } from "../agent-plugins";
+import { WorkspaceScratchSpace } from "../scratch-spaces";
 import { useState, useCallback, useRef, useSyncExternalStore } from "react";
 import { Alert } from "../components/patterns";
 import { useNavigate } from "@tanstack/react-router";
@@ -607,10 +608,10 @@ export function Channel({
           <p className="line-clamp-1 text-xs text-muted-foreground md:text-[13px]">
             {workspace.goal}
           </p>
-          <p className="text-xs text-muted-foreground">
-            {t("scratchSpace")}:{" "}
-            <span className="font-mono">{workspace.scratch_space_id}</span>
-          </p>
+          <WorkspaceScratchSpace
+            id={workspace.scratch_space_id}
+            channel={workspace.id}
+          />
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <button
