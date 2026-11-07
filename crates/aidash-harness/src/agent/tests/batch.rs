@@ -424,6 +424,12 @@ async fn advance(bench: &Bench, run: &mut Run) -> Result<()> {
 
 #[async_trait]
 impl ExecutionStore for Bench {
+	async fn unfinished_owned_tasks(&self, _: &Run) -> Result<u64> {
+		Ok(0)
+	}
+	async fn workspace_events(&self, _: &Run, _: i64) -> Result<Vec<WorkspaceEvent>> {
+		Ok(vec![])
+	}
 	async fn save_run(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
 		assert_eq!(token, self.0.token);
 		self.0

@@ -7464,12 +7464,20 @@
                 "minimum": 0,
                 "type": ["integer", "null"]
               },
+              "operation_deadline": {
+                "description": "When a running command will be stopped. Absent before it starts and after it ends.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
               "operation_id": {
                 "format": "uuid",
                 "type": "string"
               },
               "output": {
                 "type": "string"
+              },
+              "output_unchanged": {
+                "type": "boolean"
               },
               "policy_revision": {
                 "format": "int64",
@@ -7510,7 +7518,6 @@
               "session_id",
               "displays",
               "exit_code",
-              "output",
               "next_offset",
               "truncated",
               "effects_may_have_occurred",
@@ -7691,12 +7698,20 @@
                 "minimum": 0,
                 "type": ["integer", "null"]
               },
+              "operation_deadline": {
+                "description": "When a running command will be stopped. Absent before it starts and after it ends.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
               "operation_id": {
                 "format": "uuid",
                 "type": "string"
               },
               "output": {
                 "type": "string"
+              },
+              "output_unchanged": {
+                "type": "boolean"
               },
               "policy_revision": {
                 "format": "int64",
@@ -7737,7 +7752,6 @@
               "session_id",
               "displays",
               "exit_code",
-              "output",
               "next_offset",
               "truncated",
               "effects_may_have_occurred",
@@ -7864,12 +7878,20 @@
                 "minimum": 0,
                 "type": ["integer", "null"]
               },
+              "operation_deadline": {
+                "description": "When a running command will be stopped. Absent before it starts and after it ends.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
               "operation_id": {
                 "format": "uuid",
                 "type": "string"
               },
               "output": {
                 "type": "string"
+              },
+              "output_unchanged": {
+                "type": "boolean"
               },
               "policy_revision": {
                 "format": "int64",
@@ -7910,7 +7932,6 @@
               "session_id",
               "displays",
               "exit_code",
-              "output",
               "next_offset",
               "truncated",
               "effects_may_have_occurred",
@@ -32388,6 +32409,10 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "remote_task_fingerprint": {
+                "description": "Fingerprint of remote terminal child Tasks observed before inference.",
+                "type": ["string", "null"]
+              },
               "retry": {
                 "anyOf": [
                   {
@@ -32407,6 +32432,11 @@
                     "type": "null"
                   }
                 ]
+              },
+              "workspace_event_cursor": {
+                "description": "Last workspace event delivered to this Run.",
+                "format": "int64",
+                "type": ["integer", "null"]
               }
             },
             "required": ["retry"],
@@ -33583,6 +33613,9 @@
                   }
                 ]
               },
+              "wait_result": {
+                "description": "A woken wait's result, awaiting delivery at this cursor."
+              },
               "workspace_observation_plan": {
                 "anyOf": [
                   {
@@ -33702,6 +33735,52 @@
             "oneOf": [
               {
                 "additionalProperties": false,
+                "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
+                "properties": {
+                  "cursor": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "reason": {
+                    "enum": ["workspace"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ResumeState"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": ["reason", "wake_at", "cursor", "resume"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "An accepted command is rechecked when it settles or its ceiling arrives.",
+                "properties": {
+                  "operation_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "enum": ["operation"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ToolCallState"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": ["reason", "operation_id", "wake_at", "resume"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
                 "properties": {
                   "reason": {
                     "enum": ["dependencies"],
@@ -33709,24 +33788,6 @@
                   },
                   "resume": {
                     "$ref": "#/components/schemas/ReadyState"
-                  },
-                  "wake_at": {
-                    "format": "date-time",
-                    "type": "string"
-                  }
-                },
-                "required": ["reason", "wake_at", "resume"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "reason": {
-                    "enum": ["children"],
-                    "type": "string"
-                  },
-                  "resume": {
-                    "$ref": "#/components/schemas/ThinkingState"
                   },
                   "wake_at": {
                     "format": "date-time",
@@ -36446,6 +36507,10 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "remote_task_fingerprint": {
+                "description": "Fingerprint of remote terminal child Tasks observed before inference.",
+                "type": ["string", "null"]
+              },
               "retry": {
                 "anyOf": [
                   {
@@ -36465,6 +36530,11 @@
                     "type": "null"
                   }
                 ]
+              },
+              "workspace_event_cursor": {
+                "description": "Last workspace event delivered to this Run.",
+                "format": "int64",
+                "type": ["integer", "null"]
               }
             },
             "required": ["retry"],
@@ -37634,6 +37704,9 @@
                   }
                 ]
               },
+              "wait_result": {
+                "description": "A woken wait's result, awaiting delivery at this cursor."
+              },
               "workspace_observation_plan": {
                 "anyOf": [
                   {
@@ -37753,6 +37826,52 @@
             "oneOf": [
               {
                 "additionalProperties": false,
+                "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
+                "properties": {
+                  "cursor": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "reason": {
+                    "enum": ["workspace"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ResumeState"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": ["reason", "wake_at", "cursor", "resume"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "An accepted command is rechecked when it settles or its ceiling arrives.",
+                "properties": {
+                  "operation_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "enum": ["operation"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ToolCallState"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": ["reason", "operation_id", "wake_at", "resume"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
                 "properties": {
                   "reason": {
                     "enum": ["dependencies"],
@@ -37760,24 +37879,6 @@
                   },
                   "resume": {
                     "$ref": "#/components/schemas/ReadyState"
-                  },
-                  "wake_at": {
-                    "format": "date-time",
-                    "type": "string"
-                  }
-                },
-                "required": ["reason", "wake_at", "resume"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "reason": {
-                    "enum": ["children"],
-                    "type": "string"
-                  },
-                  "resume": {
-                    "$ref": "#/components/schemas/ThinkingState"
                   },
                   "wake_at": {
                     "format": "date-time",
@@ -40100,6 +40201,10 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "remote_task_fingerprint": {
+                "description": "Fingerprint of remote terminal child Tasks observed before inference.",
+                "type": ["string", "null"]
+              },
               "retry": {
                 "anyOf": [
                   {
@@ -40119,6 +40224,11 @@
                     "type": "null"
                   }
                 ]
+              },
+              "workspace_event_cursor": {
+                "description": "Last workspace event delivered to this Run.",
+                "format": "int64",
+                "type": ["integer", "null"]
               }
             },
             "required": ["retry"],
@@ -41143,6 +41253,9 @@
                   }
                 ]
               },
+              "wait_result": {
+                "description": "A woken wait's result, awaiting delivery at this cursor."
+              },
               "workspace_observation_plan": {
                 "anyOf": [
                   {
@@ -41262,6 +41375,52 @@
             "oneOf": [
               {
                 "additionalProperties": false,
+                "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
+                "properties": {
+                  "cursor": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "reason": {
+                    "enum": ["workspace"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ResumeState"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": ["reason", "wake_at", "cursor", "resume"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "An accepted command is rechecked when it settles or its ceiling arrives.",
+                "properties": {
+                  "operation_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "enum": ["operation"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ToolCallState"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": ["reason", "operation_id", "wake_at", "resume"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
                 "properties": {
                   "reason": {
                     "enum": ["dependencies"],
@@ -41269,24 +41428,6 @@
                   },
                   "resume": {
                     "$ref": "#/components/schemas/ReadyState"
-                  },
-                  "wake_at": {
-                    "format": "date-time",
-                    "type": "string"
-                  }
-                },
-                "required": ["reason", "wake_at", "resume"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "reason": {
-                    "enum": ["children"],
-                    "type": "string"
-                  },
-                  "resume": {
-                    "$ref": "#/components/schemas/ThinkingState"
                   },
                   "wake_at": {
                     "format": "date-time",
@@ -55591,6 +55732,10 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "remote_task_fingerprint": {
+                "description": "Fingerprint of remote terminal child Tasks observed before inference.",
+                "type": ["string", "null"]
+              },
               "retry": {
                 "anyOf": [
                   {
@@ -55610,6 +55755,11 @@
                     "type": "null"
                   }
                 ]
+              },
+              "workspace_event_cursor": {
+                "description": "Last workspace event delivered to this Run.",
+                "format": "int64",
+                "type": ["integer", "null"]
               }
             },
             "required": ["retry"],
@@ -56650,6 +56800,9 @@
                   }
                 ]
               },
+              "wait_result": {
+                "description": "A woken wait's result, awaiting delivery at this cursor."
+              },
               "workspace_observation_plan": {
                 "anyOf": [
                   {
@@ -56769,6 +56922,52 @@
             "oneOf": [
               {
                 "additionalProperties": false,
+                "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
+                "properties": {
+                  "cursor": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "reason": {
+                    "enum": ["workspace"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ResumeState"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": ["reason", "wake_at", "cursor", "resume"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "An accepted command is rechecked when it settles or its ceiling arrives.",
+                "properties": {
+                  "operation_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "enum": ["operation"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ToolCallState"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": ["reason", "operation_id", "wake_at", "resume"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
                 "properties": {
                   "reason": {
                     "enum": ["dependencies"],
@@ -56776,24 +56975,6 @@
                   },
                   "resume": {
                     "$ref": "#/components/schemas/ReadyState"
-                  },
-                  "wake_at": {
-                    "format": "date-time",
-                    "type": "string"
-                  }
-                },
-                "required": ["reason", "wake_at", "resume"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "reason": {
-                    "enum": ["children"],
-                    "type": "string"
-                  },
-                  "resume": {
-                    "$ref": "#/components/schemas/ThinkingState"
                   },
                   "wake_at": {
                     "format": "date-time",

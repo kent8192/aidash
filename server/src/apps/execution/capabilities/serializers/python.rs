@@ -10,6 +10,8 @@ pub struct Python {
 	pub expected_revision: i64,
 	pub expected_session_id: Option<Uuid>,
 	pub timeout_seconds: Option<u64>,
+	/// How long the Run waits for completion; zero returns immediately.
+	pub wait_seconds: Option<u64>,
 }
 
 use uuid::Uuid;

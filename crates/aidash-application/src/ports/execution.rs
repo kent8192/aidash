@@ -16,6 +16,13 @@ use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 
+#[derive(Debug, Clone)]
+pub struct WorkspaceEvent {
+	pub generation: i64,
+	pub task_id: Uuid,
+	pub status: String,
+}
+
 /// Validated projection of the registered agent configuration used by execution.
 pub struct ExecutionAgent {
 	pub model: EntityRef,
@@ -101,6 +108,10 @@ pub enum InferenceInterruption {
 
 #[async_trait]
 pub trait ExecutionStore: Send + Sync {
+	/// Workspace task changes after the Run's durable cursor, in generation order.
+	async fn workspace_events(&self, run: &Run, after: i64) -> Result<Vec<WorkspaceEvent>>;
+	/// Number of locally created or delegated Tasks that remain unfinished.
+	async fn unfinished_owned_tasks(&self, run: &Run) -> Result<u64>;
 	/// Saving `model.completed` also closes the Run's pending Inference Attempt as
 	/// accepted, in the same transaction. When the stale-input check rejects the
 	/// save, the pending attempt is closed as discarded instead.
@@ -695,6 +706,12 @@ pub trait ExecutionEnvironment: Send + Sync {
 		_token: Uuid,
 	) -> Result<Option<super::decision::DecisionPorts<'_>>> {
 		Ok(None)
+	}
+	/// Recheck an accepted operation even when its poll tool is not model-visible.
+	async fn poll_operation(&self, _run: &Run, _operation: &str, _input: Value) -> Result<Value> {
+		Err(crate::Error::Invalid(
+			"operation polling is unavailable".into(),
+		))
 	}
 	fn binding_resolver(&self) -> &dyn super::bindings::BindingResolver;
 	/// Lists the remote servers of the Run's Agent Plugins and decides which tools the Run pins.

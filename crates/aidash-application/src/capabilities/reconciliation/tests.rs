@@ -438,18 +438,57 @@ async fn active_runner_states_keep_the_original_progress_mapping(
 	#[case] observed: &str,
 	#[case] expected: &str,
 ) {
-	repository.0.lock().unwrap().observed =
-		json!({"status":observed,"stdout":STANDARD.encode("こんにちは"),"truncated":true});
+	repository.0.lock().unwrap().observed = json!({"status":observed,"stdout":STANDARD.encode("こんにちは"),"stdout_offset":10,"truncated":true});
 	run(&repository).await.unwrap();
 	let trace = repository.0.lock().unwrap();
 	assert_eq!(trace.saved[0].state, expected);
 	assert_eq!(
 		trace.saved[0].result,
-		json!({"preview":"こん","truncated":true})
+		json!({"preview":"ちは","preview_bytes":STANDARD.encode("ちは"),"preview_offset":19,"truncated":true})
 	);
 	assert_eq!(trace.events.len(), 1);
 	assert!(trace.commit);
 }
+/// The command's deadline counts from these, and only the runner knows them.
+#[rstest]
+#[case::shell(json!({"status":"running","stdout":"","started_at":1000.5,"running_at":1002.0}), Some(1000.5))]
+#[case::python(json!({"status":"running","stdout":"","running_at":1002.0}), Some(1002.0))]
+#[case::not_started(json!({"status":"accepted","stdout":""}), None)]
+#[tokio::test]
+async fn an_active_operation_keeps_when_its_command_started(
+	repository: Repository,
+	#[case] observed: Value,
+	#[case] started_at: Option<f64>,
+) {
+	repository.0.lock().unwrap().observed = observed;
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(trace.saved[0].result["started_at"].as_f64(), started_at);
+}
+#[rstest]
+#[tokio::test]
+async fn running_preview_preserves_the_runner_bytes_and_absolute_offset(repository: Repository) {
+	repository.0.lock().unwrap().observed = json!({"status":"running", "stdout":STANDARD.encode([0xff, b'x']), "stdout_offset":4, "truncated":false});
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(
+		trace.saved[0].result,
+		json!({"preview":"�x", "preview_bytes":STANDARD.encode([0xff, b'x']), "preview_offset":4, "truncated":false})
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn running_preview_keeps_a_standalone_invalid_initial_byte(repository: Repository) {
+	repository.0.lock().unwrap().observed = json!({"status":"running", "stdout":STANDARD.encode([0x80, b'x']), "stdout_offset":0, "truncated":false});
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(
+		trace.saved[0].result,
+		json!({"preview":"�x", "preview_bytes":STANDARD.encode([0x80, b'x']), "preview_offset":0, "truncated":false})
+	);
+}
+
 #[rstest]
 #[tokio::test]
 async fn a_pending_dispatch_uploads_the_existing_inputs_before_start_and_records_the_observed_result(

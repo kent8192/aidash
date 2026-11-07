@@ -515,6 +515,9 @@ struct ScopedMeter {
 }
 #[async_trait]
 impl Meter for ScopedMeter {
+	async fn check_active(&self) -> aidash_application::Result<()> {
+		self.inner.check_active().await
+	}
 	async fn charge(&self, direction: Direction, bytes: usize) -> aidash_application::Result<()> {
 		let day = Utc::now().date_naive();
 		let result = self

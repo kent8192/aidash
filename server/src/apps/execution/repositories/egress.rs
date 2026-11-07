@@ -306,6 +306,20 @@ async fn budget(access: &mut Access, operation: Uuid, service: &str) -> Result<O
 		.map_err(reinhardt::core::exception::Error::from)?
 		.pop())
 }
+async fn lock_budget(
+	access: &mut Access,
+	operation: Uuid,
+	service: &str,
+) -> Result<Option<Budget>> {
+	Ok(Budget::objects()
+		.filter(Budget::field_operation_id().eq(operation))
+		.filter(Budget::field_service().eq(service))
+		.select_for_update()
+		.all_with_executor(&mut **access.tx)
+		.await
+		.map_err(reinhardt::core::exception::Error::from)?
+		.pop())
+}
 fn debit(row: &mut Budget, debit: aidash_domain::egress::Debit) -> Result<()> {
 	let usage = aidash_domain::egress::Usage {
 		sent_bytes: u64::try_from(row.sent_bytes).map_err(|_| Error::Forbidden)?,
@@ -412,8 +426,8 @@ async fn live(
 	operation: Uuid,
 ) -> Result<(Access, aidash_domain::Run)> {
 	let mut access = Access::begin(store, identity).await?;
-	// Read the operation without locking first, to retain the Run-before-operation
-	// lock order used by normal operation reconciliation.
+	// Read the Operation without locking; recheck its committed state below
+	// after resolving the Run and current authority.
 	let op = super::super::capabilities::models::CoreOperations::objects()
 		.filter(super::super::capabilities::models::CoreOperations::field_id().eq(operation))
 		.all_with_executor(&mut **access.tx)
@@ -435,11 +449,10 @@ async fn live(
 		"agent.execute",
 	)
 	.await?;
-	// Serialize the cancellation check before the operation lock, in the same
-	// order as Run control. A gateway token never keeps a stopped Run alive.
+	// Read current control without holding a Run lock across admission or metering.
+	// In-flight streams recheck authority independently of body activity.
 	let current = crate::apps::execution::models::Run::objects()
 		.filter(crate::apps::execution::models::Run::field_id().eq(run.id))
-		.select_for_update()
 		.all_with_executor(&mut **access.tx)
 		.await
 		.map_err(reinhardt::core::exception::Error::from)?
@@ -449,7 +462,7 @@ async fn live(
 	if current.phase().is_terminal() || current.control != aidash_domain::RunControl::Active {
 		return Err(expired());
 	}
-	let operation = super::operations::get(&mut access, operation).await?;
+	let operation = super::operations::get_unlocked(&mut access, operation).await?;
 	if !matches!(operation.state.as_str(), "submitted" | "running")
 		|| operation.result["termination_confirmed"] == true
 	{
@@ -481,7 +494,6 @@ async fn live_session(
 	.await?;
 	let current = crate::apps::execution::models::Run::objects()
 		.filter(crate::apps::execution::models::Run::field_id().eq(run.id))
-		.select_for_update()
 		.all_with_executor(&mut **access.tx)
 		.await
 		.map_err(reinhardt::core::exception::Error::from)?
@@ -489,7 +501,7 @@ async fn live_session(
 		.ok_or(Error::Forbidden)?;
 	let current: aidash_domain::Run = current.try_into()?;
 	if current.control != aidash_domain::RunControl::Active {
-		return Err(Error::Forbidden);
+		return Err(expired());
 	}
 	Ok((access, current))
 }
@@ -840,9 +852,6 @@ impl Authority for Gateway {
 					operation,
 				)
 				.await?;
-			let mut total = budget(&mut access, operation, "")
-				.await?
-				.ok_or(Error::Forbidden)?;
 			// The Runner's timestamps come from its trusted collector. Startup
 			// consumes no command time, and an ended command cannot reuse its token.
 			use aidash_application::ports::capabilities::runner::RunnerTransport as _;
@@ -860,39 +869,7 @@ impl Authority for Gateway {
 				.ok_or(Error::Forbidden)?
 				.checked_add_signed(chrono::Duration::seconds(seconds))
 				.ok_or(Error::Forbidden)?
-				.min(total.expires_at);
-			let deadline = total.deadline_at.unwrap_or(deadline).min(deadline);
-			if deadline <= Utc::now() {
-				return Err(Error::Forbidden);
-			}
-			total.deadline_at = Some(deadline);
-			let mut per_service = match budget(&mut access, operation, service).await? {
-				Some(row) => row,
-				None => {
-					let row = make_budget(&identity.tenant, operation, service, deadline, limits);
-					Budget::objects()
-						.insert_with_executor(&mut **access.tx, &row)
-						.await
-						.map_err(reinhardt::core::exception::Error::from)?;
-					row
-				}
-			};
-			for row in [&mut total, &mut per_service] {
-				// Body debits may end one batch over a byte limit; an exhausted
-				// counter refuses the next request so the overshoot never grows.
-				if row.requests >= row.max_requests
-					|| row.sent_bytes >= row.max_sent_bytes
-					|| row.received_bytes >= row.max_received_bytes
-					|| row.expires_at <= Utc::now()
-				{
-					return Err(exhausted());
-				}
-				debit(row, aidash_domain::egress::Debit::Request)?;
-				Budget::objects()
-					.save_with_executor(&mut **access.tx, row)
-					.await
-					.map_err(reinhardt::core::exception::Error::from)?;
-			}
+				.min(lease.expires_at);
 			let id = Uuid::now_v7();
 			// The record names where a value went, never what it was. A service
 			// without a Tenant Secret leaves all three columns null.
@@ -922,6 +899,42 @@ impl Authority for Gateway {
 				.insert_with_executor(&mut **access.tx, &record)
 				.await
 				.map_err(reinhardt::core::exception::Error::from)?;
+			let mut total = lock_budget(&mut access, operation, "")
+				.await?
+				.ok_or(Error::Forbidden)?;
+			let deadline = deadline.min(total.expires_at);
+			let deadline = total.deadline_at.unwrap_or(deadline).min(deadline);
+			if deadline <= Utc::now() {
+				return Err(Error::Forbidden);
+			}
+			total.deadline_at = Some(deadline);
+			let mut per_service = match lock_budget(&mut access, operation, service).await? {
+				Some(row) => row,
+				None => {
+					let row = make_budget(&identity.tenant, operation, service, deadline, limits);
+					Budget::objects()
+						.insert_with_executor(&mut **access.tx, &row)
+						.await
+						.map_err(reinhardt::core::exception::Error::from)?;
+					row
+				}
+			};
+			for row in [&mut total, &mut per_service] {
+				// Body debits may end one batch over a byte limit; an exhausted
+				// counter refuses the next request so the overshoot never grows.
+				if row.requests >= row.max_requests
+					|| row.sent_bytes >= row.max_sent_bytes
+					|| row.received_bytes >= row.max_received_bytes
+					|| row.expires_at <= Utc::now()
+				{
+					return Err(exhausted());
+				}
+				debit(row, aidash_domain::egress::Debit::Request)?;
+				Budget::objects()
+					.save_with_executor(&mut **access.tx, row)
+					.await
+					.map_err(reinhardt::core::exception::Error::from)?;
+			}
 			access.finish(Ok(())).await?;
 			Ok(Admission {
 				gateway_origin: settings.endpoint.clone(),
@@ -1047,6 +1060,7 @@ async fn record_operation_bytes(
 		exhausted: false,
 		expired: false,
 	};
+	add_to_record(tx, request, direction, bytes).await?;
 	for service in ["", service] {
 		let mut row = Budget::objects()
 			.filter(Budget::field_operation_id().eq(operation))
@@ -1087,15 +1101,54 @@ async fn record_operation_bytes(
 			.await
 			.map_err(reinhardt::core::exception::Error::from)?;
 	}
-	add_to_record(tx, request, direction, bytes).await?;
 	Ok(recorded)
 }
 
 #[async_trait]
 impl Meter for RequestMeter {
+	async fn check_active(&self) -> aidash_application::Result<()> {
+		let result: Result<()> = async {
+			if let Some(session_id) = self.session {
+				let mut tx = self
+					.store
+					.pool
+					.begin(&TenancyScope::tenant(&self.identity.tenant)?)
+					.await?;
+				let session = EgressSession::objects()
+					.filter(EgressSession::field_id().eq(session_id))
+					.all_with_executor(&mut *tx)
+					.await
+					.map_err(reinhardt::core::exception::Error::from)?
+					.pop()
+					.ok_or_else(expired)?;
+				let preview = CoreLivePreviews::objects()
+					.filter(CoreLivePreviews::field_id().eq(session_id))
+					.all_with_executor(&mut *tx)
+					.await
+					.map_err(reinhardt::core::exception::Error::from)?
+					.pop()
+					.ok_or_else(expired)?;
+				tx.commit().await?;
+				if session.expires_at <= Utc::now()
+					|| !matches!(State::parse(&preview.state)?, State::Running | State::Stale)
+				{
+					return Err(expired());
+				}
+				let (access, _) = live_session(&self.store, &self.identity, session.run_id).await?;
+				access.finish(Ok(())).await?;
+			} else {
+				let (access, _) = live(&self.store, &self.identity, self.operation).await?;
+				access.finish(Ok(())).await?;
+			}
+			Ok(())
+		}
+		.await;
+		result.map_err(Into::into)
+	}
 	async fn charge(&self, direction: Direction, bytes: usize) -> aidash_application::Result<()> {
 		if let Some(session) = self.session {
-			return charge_session(
+			let active = self.check_active().await;
+			let recorded = charge_session(
 				&self.store,
 				&self.identity,
 				self.request,
@@ -1105,11 +1158,12 @@ impl Meter for RequestMeter {
 			)
 			.await
 			.map_err(Into::into);
+			return active.and(recorded);
 		}
 		let result: Result<()> = async {
 			let bytes = i64::try_from(bytes).map_err(|_| Error::Forbidden)?;
 			let recorded = match live(&self.store, &self.identity, self.operation).await {
-				// The Run lock taken by `live` serializes debits on the operation.
+				// Budget rows serialize debits in total-then-service order.
 				Ok((mut access, _)) => {
 					let recorded = record_operation_bytes(
 						&mut access.tx,

@@ -236,8 +236,23 @@ struct Completion {
 	deadline: tokio::time::Instant,
 	status: u16,
 	finished: bool,
+	monitor: tokio::task::JoinHandle<()>,
+	interrupted_error: &'static str,
+}
+async fn stopped(receiver: &mut watch::Receiver<Option<Refusal>>) -> Refusal {
+	loop {
+		if let Some(refusal) = *receiver.borrow_and_update() {
+			return refusal;
+		}
+		if receiver.changed().await.is_err() {
+			return Refusal::UNAVAILABLE;
+		}
+	}
 }
 impl Completion {
+	fn interrupted(&mut self, code: &'static str) {
+		self.interrupted_error = code;
+	}
 	/// Debits what both directions still hold. A stream that ended cleanly
 	/// must do so within the operation deadline; a failed one gets a short
 	/// grace so the bytes it did stream still count.
@@ -286,9 +301,11 @@ impl Completion {
 }
 impl Drop for Completion {
 	fn drop(&mut self) {
+		self.monitor.abort();
 		if !self.finished {
 			let debits = self.debits.clone();
 			let status = self.status;
+			let interrupted_error = self.interrupted_error;
 			let elapsed = self.started.elapsed().as_millis().min(u64::MAX as u128) as u64;
 			tokio::spawn(async move {
 				let deadline = tokio::time::Instant::now() + FLUSH_GRACE;
@@ -296,7 +313,7 @@ impl Drop for Completion {
 				let _ = debits.flush(Direction::Received, deadline).await;
 				let _ = debits
 					.meter
-					.finish(status, elapsed, Some("stream_interrupted"))
+					.finish(status, elapsed, Some(interrupted_error))
 					.await;
 			});
 		}
@@ -777,12 +794,39 @@ async fn forward(
 		.to_std()
 		.unwrap_or_default();
 	let deadline = tokio::time::Instant::now() + remaining;
+	let (active_tx, mut active_rx) = watch::channel(None);
+	let meter = admission.meter.clone();
+	let monitor = tokio::spawn(async move {
+		let mut interval = tokio::time::interval(Duration::from_secs(4));
+		interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+		interval.tick().await;
+		let mut failures = 0;
+		loop {
+			interval.tick().await;
+			match tokio::time::timeout(Duration::from_secs(1), meter.check_active()).await {
+				Ok(Ok(())) => failures = 0,
+				Ok(Err(error)) if Refusal::of(&error) != Refusal::UNAVAILABLE => {
+					let _ = active_tx.send(Some(Refusal::of(&error)));
+					break;
+				}
+				_ => {
+					failures += 1;
+					if failures >= 3 {
+						let _ = active_tx.send(Some(Refusal::UNAVAILABLE));
+						break;
+					}
+				}
+			}
+		}
+	});
 	let mut completion = Completion {
 		debits: Arc::new(Debits::new(admission.meter.clone())),
 		started: Instant::now(),
 		deadline,
 		status: 502,
 		finished: false,
+		monitor,
+		interrupted_error: "stream_interrupted",
 	};
 	if remaining.is_zero() {
 		completion.finish(Some("operation_expired")).await;
@@ -909,12 +953,17 @@ async fn forward(
 		}
 	};
 	let body = body.map_err(|error: BoxError| error);
-	let response = match tokio::time::timeout_at(
+	let response = match tokio::select! {
+		refusal = stopped(&mut active_rx) => {
+			completion.status = refusal.status.as_u16();
+			completion.interrupted(refusal.code);
+			return refusal.response();
+		}
+		response = tokio::time::timeout_at(
 		deadline,
 		upstream.body(reqwest::Body::wrap_stream(body)).send(),
-	)
-	.await
-	{
+		) => response,
+	} {
 		Ok(Ok(response)) => response,
 		_ => {
 			// A refused upload debit fails the request; report the refusal
@@ -1034,9 +1083,13 @@ async fn forward(
 	{
 		let mut buffer = Vec::new();
 		loop {
-			let next =
-				tokio::time::timeout_at(deadline, tokio::time::timeout(IDLE, downstream.next()))
-					.await;
+			let next = tokio::select! {
+				refusal = stopped(&mut active_rx) => {
+					completion.interrupted(refusal.code);
+					return refusal.response();
+				}
+				next = tokio::time::timeout_at(deadline, tokio::time::timeout(IDLE, downstream.next())) => next,
+			};
 			let bytes = match next {
 				Ok(Ok(Some(Ok(bytes)))) => bytes,
 				Ok(Ok(None)) => break,
@@ -1107,9 +1160,18 @@ async fn forward(
 		return result;
 	}
 	let debits = completion.debits.clone();
+	let mut bridge_active = active_rx.clone();
 	let output = async_stream::try_stream! {
 		loop {
-			let next = match tokio::time::timeout_at(deadline,tokio::time::timeout(IDLE,downstream.next())).await {
+			let checked = tokio::select! {
+				refusal = stopped(&mut active_rx) => Err(refusal),
+				next = tokio::time::timeout_at(deadline,tokio::time::timeout(IDLE,downstream.next())) => Ok(next),
+			};
+			let next = match checked {
+				Ok(next) => next,
+				Err(refusal) => { completion.interrupted(refusal.code); Err(io_error(refusal.code))?; unreachable!() }
+			};
+			let next = match next {
 				Ok(Ok(next)) => next,
 				_ => { completion.finish(Some("egress_timeout")).await; Err(io_error("egress_timeout"))?; unreachable!() }
 			};
@@ -1130,12 +1192,42 @@ async fn forward(
 			};
 			debits.count(Direction::Received, bytes.len());
 			yield Frame::data(bytes);
-			if let Err(refusal) = debits.flush_due(Direction::Received, deadline).await {
-				completion.finish(Some(refusal.code)).await; Err(io_error(refusal.code))?;
+			let debit = tokio::select! {
+				refusal = stopped(&mut active_rx) => Err((refusal, true)),
+				result = debits.flush_due(Direction::Received, deadline) => result.map_err(|refusal| (refusal, false)),
+			};
+			if let Err((refusal, interrupted)) = debit {
+				if interrupted { completion.interrupted(refusal.code); } else { completion.finish(Some(refusal.code)).await; }
+				Err(io_error(refusal.code))?;
 			}
 		}
 	};
-	let output = output.map_err(|error: BoxError| error);
+	// Drive the upstream independently of downstream backpressure. Otherwise a
+	// client that stops reading also prevents the stop check from dropping the
+	// upstream response. The single-frame channel bounds buffered output.
+	let (sender, receiver) = tokio::sync::mpsc::channel(1);
+	tokio::spawn(async move {
+		let interrupted = {
+			let mut output = Box::pin(output);
+			loop {
+				let frame = tokio::select! {
+					refusal = stopped(&mut bridge_active) => break Some(refusal),
+					frame = output.next() => frame,
+				};
+				let Some(frame) = frame else { break None };
+				tokio::select! {
+					refusal = stopped(&mut bridge_active) => break Some(refusal),
+					result = sender.send(frame) => if result.is_err() { break None },
+				}
+			}
+		};
+		if let Some(refusal) = interrupted {
+			let _ = sender.send(Err(io_error(refusal.code))).await;
+		}
+	});
+	let output = futures_util::stream::unfold(receiver, |mut receiver| async move {
+		receiver.recv().await.map(|frame| (frame, receiver))
+	});
 	let mut result = Response::new(StreamBody::new(output).boxed_unsync());
 	*result.status_mut() = status;
 	*result.headers_mut() = headers;

@@ -179,8 +179,14 @@ pub struct RuntimeResult {
 	pub session_id: Option<Uuid>,
 	pub displays: Vec<FileEntry>,
 	pub exit_code: Option<i64>,
+	#[serde(default, skip_serializing_if = "String::is_empty")]
 	pub output: String,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub output_unchanged: bool,
 	pub next_offset: Option<usize>,
+	/// When a running command will be stopped. Absent before it starts and after it ends.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub operation_deadline: Option<chrono::DateTime<chrono::Utc>>,
 	pub truncated: bool,
 	pub effects_may_have_occurred: bool,
 	pub error: Option<super::errors::CapabilityError>,
@@ -392,6 +398,8 @@ pub struct Shell {
 	#[validate(length(min = 1, max = 64000))]
 	pub command: String,
 	pub timeout_seconds: Option<u64>,
+	/// How long the Run waits for completion; zero returns immediately.
+	pub wait_seconds: Option<u64>,
 	#[validate(range(min = 0))]
 	/// The working area revision: take it from the previous result's `revision`; a new area starts at 1.
 	pub expected_revision: i64,
@@ -428,6 +436,8 @@ pub struct Patch {
 pub struct OperationInput {
 	pub operation_id: Uuid,
 	pub offset: Option<usize>,
+	/// How long the Run waits for completion; zero returns immediately.
+	pub wait_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
@@ -445,8 +455,14 @@ pub struct OperationResult {
 	pub session_id: Option<Uuid>,
 	pub displays: Vec<FileEntry>,
 	pub exit_code: Option<i64>,
+	#[serde(default, skip_serializing_if = "String::is_empty")]
 	pub output: String,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub output_unchanged: bool,
 	pub next_offset: Option<usize>,
+	/// When a running command will be stopped. Absent before it starts and after it ends.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub operation_deadline: Option<chrono::DateTime<chrono::Utc>>,
 	pub truncated: bool,
 	pub effects_may_have_occurred: bool,
 	pub error: Option<super::errors::CapabilityError>,

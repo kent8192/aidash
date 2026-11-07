@@ -364,12 +364,25 @@ async fn reconcile(
 			if bytes.len() > 16384 {
 				return Err(Error::Invalid("runner preview limit".into()));
 			}
-			let text = String::from_utf8_lossy(&bytes);
-			let mut end = text.len().min(limits.read_bytes);
-			while !text.is_char_boundary(end) {
-				end -= 1;
+			let mut start = bytes.len().saturating_sub(limits.read_bytes);
+			while !super::projection::boundary(&bytes, start) {
+				start += 1;
 			}
-			operation.result = json!({"preview":&text[..end],"truncated":observed["truncated"]});
+			let offset = observed["stdout_offset"]
+				.as_u64()
+				.unwrap_or(0)
+				.checked_add(start as u64)
+				.ok_or_else(|| Error::Invalid("invalid runner output offset".into()))?;
+			let preview = &bytes[start..];
+			operation.result = json!({"preview":String::from_utf8_lossy(preview),"preview_bytes":STANDARD.encode(preview),"preview_offset":offset,"truncated":observed["truncated"]});
+			// The Time Limit counts from the command's start, which only the
+			// runner knows. A Python cell's start is when it was dispatched.
+			if let Some(started) = observed["started_at"]
+				.as_f64()
+				.or_else(|| observed["running_at"].as_f64())
+			{
+				operation.result["started_at"] = json!(started);
+			}
 		}
 		_ => return Err(Error::External("invalid runner operation state".into())),
 	}

@@ -114,6 +114,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0116_blob_reservations_state"),
 	("execution", "0117_blob_receipt_references"),
 	("execution", "0118_blob_uploads"),
+	("execution", "0119_event_waits"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -128,6 +129,7 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0116_blob_reservations_state"),
 	("execution", "0117_blob_receipt_references"),
 	("execution", "0118_blob_uploads"),
+	("execution", "0119_event_waits"),
 ];
 
 async fn history_size() -> usize {
@@ -437,12 +439,12 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0119_policy_probe")
+		.get_migration("execution", "0120_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
-		vec![("execution".to_owned(), "0118_blob_uploads".to_owned())]
+		vec![("execution".to_owned(), "0119_event_waits".to_owned())]
 	);
 	assert!(generated.operations.is_empty());
 }
@@ -489,6 +491,7 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0116_blob_reservations_state"),
 			("execution", "0117_blob_receipt_references"),
 			("execution", "0118_blob_uploads"),
+			("execution", "0119_event_waits"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;

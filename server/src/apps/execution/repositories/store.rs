@@ -2873,11 +2873,16 @@ impl Store {
 		if !valid {
 			return Err(Error::Forbidden);
 		}
+		let read_kind = if kind == "delegated_task" {
+			"task"
+		} else {
+			kind
+		};
 		crate::apps::identity::models::AuthorizationRunRead::record_sources(
 			&mut **tx,
 			run,
 			workspace,
-			&[(kind.to_owned(), id)],
+			&[(read_kind.to_owned(), id)],
 		)
 		.await?;
 		crate::database::native::query(
