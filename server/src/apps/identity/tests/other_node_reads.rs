@@ -534,6 +534,15 @@ async fn an_agent_delegates_to_the_node_it_discovered_the_agent_on(
 /// asks cannot get a connection within a second and does not answer. The
 /// original pool is returned so that peers can answer again.
 async fn limit_pool(world: &mut World, connections: u32) -> aidash_server::database::native::Pool {
+	limit_pool_waiting(world, connections, Duration::from_secs(1)).await
+}
+
+/// [`limit_pool`] where a connection is waited for up to `acquire`.
+async fn limit_pool_waiting(
+	world: &mut World,
+	connections: u32,
+	acquire: Duration,
+) -> aidash_server::database::native::Pool {
 	let small = world
 		.f
 		.store
@@ -542,7 +551,7 @@ async fn limit_pool(world: &mut World, connections: u32) -> aidash_server::datab
 		.clone()
 		.max_connections(connections)
 		.min_connections(0)
-		.acquire_timeout(Duration::from_secs(1))
+		.acquire_timeout(acquire)
 		.connect_with(world.f.store.pool.connect_options().as_ref().clone())
 		.await
 		.unwrap();
@@ -644,8 +653,10 @@ async fn a_node_that_does_not_answer_leaves_the_read_unconfirmed(
 	world.close().await;
 }
 
-/// With a pool too small for the nested checks, every read still ends within
-/// the limit, none hangs, and the pool serves the next read (#751, item 12).
+/// With a pool too small for the nested checks, every read still ends, none
+/// hangs, and the pool serves the next read (#751, item 12). The pool gives up
+/// after 3 s here, before the 10 s limit on a check can matter; that limit is
+/// fixed by `a_check_ends_at_the_ten_second_limit_not_at_the_pools`.
 #[rstest::rstest]
 #[tokio::test]
 async fn reads_on_a_saturated_pool_end_within_the_limit(#[future(awt)] provider: Provider) {
@@ -1006,4 +1017,91 @@ async fn a_real_refusal_at_activation_still_fails_the_request(#[future(awt)] pro
 		.unwrap();
 	assert_eq!(generation_status(&world, job).await, "FAILED");
 	world.close().await;
+}
+
+/// A check that cannot get a connection ends at its own 10 s limit. The pool
+/// would wait 60 s, so a read answered in under 25 s was ended by the limit,
+/// and it says which Node did not answer (#751, items 10 and 12).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_check_ends_at_the_ten_second_limit_not_at_the_pools(#[future(awt)] provider: Provider) {
+	*provider.script.delegate.lock().unwrap() = false;
+	let mut world = world(provider).await;
+	world.run_coordinator(WITHOUT_DELEGATION).await;
+	let child = world.handed_over().await;
+	let path = format!("/api/tasks/{}/runs", child.id);
+	let original = limit_pool_waiting(&mut world, 1, Duration::from_secs(60)).await;
+	let started = std::time::Instant::now();
+	let (status, body) = world.get(&path).await;
+	let elapsed = started.elapsed();
+	assert_eq!(status, 503, "{body}");
+	assert_eq!(body["code"], "node_unreachable", "{body}");
+	assert!(
+		elapsed >= Duration::from_secs(9) && elapsed < Duration::from_secs(25),
+		"the check ends at its 10 s limit, not at the pool's 60 s: {elapsed:?}"
+	);
+	restore_pool(&mut world, original).await;
+	let (status, body) = world.get(&path).await;
+	assert_eq!(status, 200, "{body}");
+	world.close().await;
+}
+
+/// A Run that was delegated and whose Node is then deleted: what a Tenant
+/// Administrator gets is pinned, as for discovery (#751, item 18). No route
+/// reaches a Node that is not live, so the Task's Runs are refused and no Node
+/// is blamed.
+#[rstest::rstest]
+#[tokio::test]
+async fn deleting_the_delegated_node_keeps_the_outputs_hidden(#[future(awt)] provider: Provider) {
+	let world = world(provider).await;
+	world.run_coordinator(WITH_DELEGATION).await;
+	let receiver = world.receiver().await;
+	stops_at_data_protection(&receiver);
+	let child = world.handed_over().await;
+	let path = format!("/api/tasks/{}/runs", child.id);
+	let (status, body) = world.get(&path).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = administer_node(
+		&world.f,
+		"acme",
+		&format!("/api/tenants/acme/nodes/{}/deletion", world.sibling.node),
+		json!({"confirmation":world.sibling.node}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = world.get(&path).await;
+	assert_eq!(status, 403, "{body}");
+	assert_ne!(body["code"], "node_unreachable", "{body}");
+	world.close().await;
+}
+
+/// Resuming a paused Run checks what it read again. A Node that does not
+/// answer makes it `503 node_unreachable`, the Run stays paused, and once the
+/// Node answers the Run resumes (#751, item 9).
+#[rstest::rstest]
+#[tokio::test]
+async fn resuming_while_a_node_is_silent_answers_503_and_leaves_the_run_paused(
+	#[future(awt)] provider: Provider,
+) {
+	*provider.script.delegate.lock().unwrap() = false;
+	let mut world = world(provider).await;
+	let run = world.run_coordinator(WITHOUT_DELEGATION).await;
+	let control = format!("/api/runs/{}/control", run.id);
+	let (status, body) = world_post(&world, &control, json!({"action":"pause"})).await;
+	assert_eq!(status, 200, "{body}");
+	let original = limit_pool(&mut world, 1).await;
+	let (status, body) = world_post(&world, &control, json!({"action":"resume"})).await;
+	assert_eq!(status, 503, "{body}");
+	assert_eq!(body["code"], "node_unreachable", "{body}");
+	assert_eq!(body["node"], json!(world.sibling.to_string()), "{body}");
+	restore_pool(&mut world, original).await;
+	assert_eq!(world.coordinator().await.control.as_str(), "PAUSED");
+	let (status, body) = world_post(&world, &control, json!({"action":"resume"})).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(world.coordinator().await.control.as_str(), "ACTIVE");
+	world.close().await;
+}
+
+async fn world_post(world: &World, path: &str, body: Value) -> (u16, Value) {
+	request(&world.app, &world.token, "POST", path, body).await
 }
