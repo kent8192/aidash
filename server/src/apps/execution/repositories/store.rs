@@ -2935,6 +2935,7 @@ impl Store {
 			return Ok(false);
 		}
 		current.state.tool_mut()?.finalizing = true;
+		current.state.tool_mut()?.abandoning = run.state.tool()?.abandoning.clone();
 		let changed = {
 			let query_bind_1 = run.id;
 			let query_bind_2 = worker;

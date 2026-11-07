@@ -2321,6 +2321,7 @@ connection: None,
 					request_window: budget.window,
 					request_tokens,
 					finalizing: false,
+					abandoning: Vec::new(),
 					media_inferred_seq_before_response,
 					observed_input_seq_before_response,
 					inferred_selected_media: if run_message_catchup || media.defer_selected {
@@ -2726,6 +2727,9 @@ connection: None,
 								}
 							}
 						}
+						// The completion's outcome is saved with it: a cancel after this
+						// point settles exactly these abandonments.
+						run.state.tool_mut()?.abandoning = abandoning.clone();
 						if !store.begin_final_completion(run, token).await? {
 							run.context.completion.basis = None;
 							run.state = RunState::Thinking(ThinkingState::default());

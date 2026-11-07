@@ -572,13 +572,20 @@ async fn settle_saved_run(
 	let mut run = raw.decode()?;
 	let home = crate::federation::Home::new(f.clone(), run.clone());
 	let task = home.task().await?;
+	// The saved continuation chose its outcome, including which Unassigned
+	// Tasks it abandons and the sentence that says so.
+	let saved = run.state.tool()?;
+	let abandon: Vec<Uuid> = saved.abandoning.iter().map(|task| task.id).collect();
 	let artifact = aidash_domain::ArtifactInput {
 		kind: "text".into(),
 		name: aidash_application::execution::result_artifact_name(&task.title),
-		content: serde_json::json!(run.state.tool()?.response.text),
+		content: serde_json::json!(aidash_domain::unassigned::answer_with_abandoned(
+			&saved.response.text,
+			&saved.abandoning
+		)),
 	};
 	let task = home
-		.complete(&format!("{}:complete", run.id), &artifact, &[])
+		.complete(&format!("{}:complete", run.id), &artifact, &abandon)
 		.await?;
 	if task.status != TaskStatus::Completed {
 		return Err(Error::Conflict("saved completion is not settled".into()));

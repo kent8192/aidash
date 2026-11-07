@@ -119,6 +119,9 @@ nothing keep the legacy bytes and stay claimable by every worker.
 `event_wait` covers operation and workspace waits, a woken result awaiting
 delivery, and the retained workspace event cursor and remote Task snapshot.
 
+`unassigned_abandonment` covers a saved completion that names the Unassigned Tasks
+it abandons (#772). A cancel settles that completion with exactly those Tasks.
+
 - Run leasing (`candidates`, hence notification claims, recovery scans and startup
   recovery) excludes uncancelled Runs whose `requires` is a list of names not covered by
   the worker's capabilities, using the envelope only; the state is not decoded. Such a Run
