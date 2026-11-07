@@ -3591,6 +3591,24 @@ impl Store {
 		action: RunControlAction,
 		source: ControlSource,
 	) -> Result<RunInspection> {
+		if action == RunControlAction::Cancel
+			|| (action == RunControlAction::Pause
+				&& source == ControlSource::DeploymentAdministrator)
+		{
+			// The cascade below locks the Subnodes, then their Runs, then appends
+			// events. Lock them in that order before the first event, or the end
+			// deadlocks with a Run's write in progress: a write takes the shared
+			// Subnode lock and then the event lock, and a Run's next step takes
+			// its row and then the event lock. The end is the one that fails.
+			use aidash_application::ports::subnodes::EndScope as _;
+			let mut cascade = super::subnodes::Cascade {
+				store: self,
+				tx: &mut *tx,
+			};
+			for (_, workspace) in cascade.active_subnodes(id).await.map_err(Error::from)? {
+				cascade.active_runs(workspace).await.map_err(Error::from)?;
+			}
+		}
 		let run = self.control_one_in_as(tx, id, action, source).await?;
 		if action == RunControlAction::Cancel {
 			let reason = if source == ControlSource::DeploymentAdministrator {
