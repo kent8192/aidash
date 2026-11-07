@@ -425,6 +425,7 @@ impl WorkerAuthority {
 				max_tokens,
 			)?;
 		}
+		aidash_domain::unconfirmed::for_tool(&mut result);
 		Ok(result)
 	}
 	pub(crate) async fn workspace_image(
@@ -1214,7 +1215,10 @@ impl WorkerAuthority {
 		key: &str,
 		query: aidash_domain::memory::RecallQuery,
 		reflect: bool,
-	) -> Result<crate::semantic::native_memory::Outcome> {
+	) -> Result<(
+		crate::semantic::native_memory::Outcome,
+		Vec<aidash_domain::unconfirmed::Unconfirmed>,
+	)> {
 		let mut outer = self.access.write().await;
 		if outer.tx.is_active() {
 			outer.suspend().await?;
@@ -1227,6 +1231,8 @@ impl WorkerAuthority {
 		let result =
 			crate::semantic::native_memory::run_recall(store, &mut lease, run, key, query, reflect)
 				.await;
+		// What the recall left out because a Node did not answer (#770).
+		let left_out = lease.take_unconfirmed().into_entries();
 		let result = lease.finish(result).await;
 		refresh_access_for_run(&mut outer, store, run)
 			.await
@@ -1234,7 +1240,7 @@ impl WorkerAuthority {
 		memory_run_check(&mut outer, &run.metadata())
 			.await
 			.map_err(after_effect)?;
-		result
+		result.map(|outcome| (outcome, left_out))
 	}
 
 	pub async fn assign(

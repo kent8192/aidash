@@ -69,7 +69,41 @@ fn snapshot(rows: usize) -> WorkspaceSnapshot {
 				run_id: None,
 			})
 			.collect(),
+		unconfirmed: vec![],
 	}
+}
+
+#[rstest::rstest]
+fn an_ordinary_observation_has_no_unconfirmed_field() {
+	let value = project(&snapshot(2), 0, 2);
+	assert!(value.get("unconfirmed").is_none());
+	assert!(value.get("unconfirmed_note").is_none());
+}
+
+#[rstest::rstest]
+fn an_observation_that_left_items_out_says_so_and_counts_it_when_fitting() {
+	use crate::unconfirmed::{Kind, Unconfirmed};
+	let mut snapshot = snapshot(1);
+	let plain = project(&snapshot, 0, 1).to_string().len();
+	snapshot.unconfirmed = vec![Unconfirmed {
+		node: "aidash://local/brave-otter-k3m9q2xa".into(),
+		kind: Kind::Task,
+		workspace_id: Uuid::new_v4(),
+		count: 3,
+	}];
+	let value = project(&snapshot, 0, 1);
+	assert_eq!(value["unconfirmed"][0]["count"], 3);
+	assert_eq!(value["unconfirmed"][0]["kind"], "task");
+	assert_eq!(value["unconfirmed_note"], UNCONFIRMED_NOTE);
+	// The fitting code measures the result, so the field takes room from the page.
+	assert!(value.to_string().len() > plain);
+	assert!(
+		fit_projection(&snapshot, 0, 1, |_, output| Ok::<bool, crate::Error>(
+			output.to_string().len() <= plain
+		))
+		.unwrap()
+		.is_none()
+	);
 }
 
 #[rstest::rstest]
