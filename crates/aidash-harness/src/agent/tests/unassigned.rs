@@ -164,7 +164,7 @@ async fn the_model_turn_keeps_the_models_own_words(mut fixture: Fixture) {
 			ContextEvent::Assistant { text, .. } => Some(text.clone()),
 			_ => None,
 		})
-		.last()
+		.next_back()
 		.unwrap();
 	assert_eq!(turn, "All done, twice.");
 }
@@ -497,7 +497,7 @@ async fn wake_result(fixture: &mut Fixture, summary: ChildTaskSummary) -> Value 
 	fixture.run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
 		wake_at: chrono::Utc::now() - chrono::Duration::seconds(1),
 		cursor: 0,
-		resume: ResumeState::ToolCall(Box::new(ToolCallState::default())),
+		resume: ResumeState::ToolCall(Box::default()),
 	}));
 	advance_sources(fixture).await.unwrap();
 	let RunState::ToolCall(state) = &fixture.run.state else {
