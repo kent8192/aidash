@@ -17,8 +17,7 @@ use uuid::Uuid;
 async fn memory_run_check(access: &mut Access, run: &crate::domain::RunMetadata) -> Result<()> {
 	match access.run_invalidity(run).await? {
 		None => Ok(()),
-		Some(crate::semantic::remote::Failure::Authority) => Err(access.named(Error::Forbidden)),
-		Some(reason) => Err(Error::RemoteSemantic(reason)),
+		Some(reason) => Err(access.memory_failure(reason)),
 	}
 }
 

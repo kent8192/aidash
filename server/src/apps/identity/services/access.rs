@@ -929,6 +929,23 @@ impl Access {
 		}
 	}
 
+	/// The error for a Run whose graph a memory step found invalid. `Authority`
+	/// and `Invalidated` both come from a read that was not confirmed, so while
+	/// a Node has not answered they name that Node (#751). Otherwise the
+	/// mapping is the old one. Limit: after a mark, an `Authority` that is a
+	/// real refusal reads as silence; the Run still stops and Resume finds out.
+	pub(crate) fn memory_failure(&self, reason: aidash_domain::semantic::Failure) -> Error {
+		use aidash_domain::semantic::Failure;
+		match reason {
+			Failure::Authority => self.named(Error::Forbidden),
+			Failure::Invalidated => match self.named(Error::Forbidden) {
+				silent @ Error::NodeUnreachable { .. } => silent,
+				_ => Error::RemoteSemantic(Failure::Invalidated),
+			},
+			reason => Error::RemoteSemantic(reason),
+		}
+	}
+
 	/// What an error of this authority says to its caller. A `Forbidden` that
 	/// follows a Node that did not answer, with no `require` of this authority
 	/// having denied, is that Node's silence and not a refusal (#751).
