@@ -258,7 +258,7 @@ pub async fn execute(
 				}
 				None
 			};
-			require_abandonment(scope, &task, input.grant_id, &abandon).await?;
+			require_abandonment(scope, &task, &abandon).await?;
 			let result = scope
 				.apply(
 					context(),
@@ -284,7 +284,7 @@ pub async fn execute(
 			if ids.is_empty() {
 				return Err(Error::Invalid("no tasks to abandon".into()));
 			}
-			require_abandonment(scope, &task, input.grant_id, &ids).await?;
+			require_abandonment(scope, &task, &ids).await?;
 			scope
 				.apply(context(), Effect::AbandonUnassigned { ids: &ids })
 				.await?
@@ -462,21 +462,18 @@ fn abandon_list(data: &Value) -> Result<Vec<Uuid>> {
 	})
 }
 
-/// Abandoning needs `task.abandon` on each Task for the caller's chain, and
-/// only a Task that execution created. The Home re-checks the rest inside the
-/// row lock.
+/// Abandoning needs `task.abandon` on each Task for the caller's chain, and a
+/// child of the Run's own Task in its Workspace. Who created it is not asked
+/// here: an earlier Run of the same parent, under another grant, may have, and
+/// the Home re-checks that and everything else inside the row lock.
 async fn require_abandonment(
 	scope: &mut dyn RemoteCommandEffects,
 	parent: &aidash_domain::Task,
-	grant: Uuid,
 	ids: &[Uuid],
 ) -> Result<()> {
 	for id in ids {
 		let child = scope.task(*id).await?;
-		if child.workspace_id != parent.workspace_id
-			|| child.parent_id != Some(parent.id)
-			|| !scope.created_by_grant(grant, child.id).await?
-		{
+		if child.workspace_id != parent.workspace_id || child.parent_id != Some(parent.id) {
 			return Err(Error::Forbidden);
 		}
 		let resource = scope.task_resource(&child).await?;
