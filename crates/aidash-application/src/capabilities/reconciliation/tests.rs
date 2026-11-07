@@ -1206,6 +1206,37 @@ async fn an_export_over_the_file_ceiling_is_refused_before_any_download(reposito
 	assert!(!trace.calls.contains(&"publish".into()));
 	assert!(trace.calls.contains(&"area:active".into()));
 }
+#[test]
+fn reference_files_leave_the_whole_quota_to_an_export() {
+	let mounted = |scope, kind: &str| MountedFile {
+		file_id: Uuid::from_u128(77),
+		path: "references/manual.pdf".into(),
+		digest: "a".repeat(64),
+		size: 5000,
+		media_type: "application/pdf".into(),
+		scope,
+		provenance: json!({"kind":kind}),
+	};
+	let exported = [working_file("small", 24)];
+	assert!(
+		quota_refusal(
+			&[mounted(FileScope::References, "reference")],
+			&exported,
+			1024
+		)
+		.unwrap()
+		.is_none()
+	);
+	assert!(
+		quota_refusal(
+			&[mounted(FileScope::Received, "transfer_in")],
+			&exported,
+			1024
+		)
+		.unwrap()
+		.is_some()
+	);
+}
 #[rstest]
 #[tokio::test]
 async fn an_export_over_the_byte_quota_is_refused_before_any_download(repository: Repository) {

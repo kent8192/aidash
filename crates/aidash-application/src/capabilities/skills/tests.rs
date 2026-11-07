@@ -234,6 +234,9 @@ mod exposure {
 		async fn open(&mut self, _: &FileEntry) -> Result<Box<dyn VerifiedFile>> {
 			panic!("unexpected open effect")
 		}
+		async fn unusable_references(&mut self, _: &[Uuid]) -> Result<BTreeSet<Uuid>> {
+			panic!("unexpected unusable_references effect")
+		}
 		async fn cached(&mut self, _: Uuid, _: &str) -> Result<Option<Value>> {
 			panic!("unexpected cached effect")
 		}

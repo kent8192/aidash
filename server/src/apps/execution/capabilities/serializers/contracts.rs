@@ -21,7 +21,8 @@ pub enum SearchMode {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
 pub struct FileSearch {
-	#[validate(length(min = 1, max = 1024))]
+	/// May be empty in `path` mode, which then lists every path in the scope.
+	#[validate(length(max = 1024))]
 	pub query: String,
 	pub mode: SearchMode,
 	pub scope: FileScope,

@@ -83,7 +83,7 @@ pub async fn prepare(
 		.any(|c| {
 			matches!(
 				c["kind"].as_str(),
-				Some("reference" | "reference_text" | "received_scope")
+				Some("reference" | "reference_bound" | "reference_text" | "received_scope")
 			)
 		}) {
 		return Err(Error::Forbidden);

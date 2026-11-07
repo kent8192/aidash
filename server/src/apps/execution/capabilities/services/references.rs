@@ -1,6 +1,8 @@
 //! Native reference DTO conversion delegates every workflow to application scopes.
 use super::{contracts::Area, records::Record};
-pub use crate::apps::execution::capabilities::serializers::references::{Chunk, Reference, Upload};
+pub use crate::apps::execution::capabilities::serializers::references::{
+	Batch, BatchResult, Chunk, Reference, Upload,
+};
 use crate::{Result, authorization::access::Access, registry::AgentConfig, store::Store};
 use uuid::Uuid;
 pub(crate) async fn get(access: &mut Access, id: Uuid, action: &str) -> Result<Record> {
@@ -39,6 +41,27 @@ pub(crate) async fn chunk(
 pub(crate) async fn commit(store: &Store, access: &mut Access, id: Uuid) -> Result<Reference> {
 	let mut scope = crate::bootstrap::reference_scope(Some(store), access, None);
 	aidash_application::capabilities::references::commit(&mut scope, id)
+		.await
+		.map(Into::into)
+		.map_err(Into::into)
+}
+pub(crate) async fn batch(
+	store: &Store,
+	access: &mut Access,
+	input: crate::apps::execution::capabilities::serializers::references::Batch,
+) -> Result<BatchResult> {
+	let mut scope = crate::bootstrap::reference_scope(Some(store), access, None);
+	let files = input
+		.files
+		.into_iter()
+		.map(
+			|file| aidash_domain::capabilities::references::lifecycle::BatchFile {
+				path: file.path,
+				data: file.data,
+			},
+		)
+		.collect();
+	aidash_application::capabilities::references::add_batch(&mut scope, files)
 		.await
 		.map(Into::into)
 		.map_err(Into::into)

@@ -132,7 +132,12 @@ pub fn is_html(media_type: &str, path: &str) -> bool {
 /// manifest the entry belongs to.
 pub fn retained_files(entry: &MountedFile, manifest: &[MountedFile]) -> Vec<RetainedFile> {
 	if is_html(&entry.media_type, &entry.path) {
-		manifest.iter().map(RetainedFile::from).collect()
+		// A preview never receives Reference files, so a hold need not keep them.
+		manifest
+			.iter()
+			.filter(|file| !file.is_reference_file())
+			.map(RetainedFile::from)
+			.collect()
 	} else {
 		vec![RetainedFile::from(entry)]
 	}

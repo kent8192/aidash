@@ -282,7 +282,7 @@ impl OperationReconciliationScope for Scope<'_> {
 	}
 	async fn upload_files(&mut self, operation: &Snapshot) -> Result<Vec<MountedFile>> {
 		let result: NativeResult<Vec<FileEntry>> = async {
-			Ok(service::files(self.area())?
+			Ok(operations::pod_files(self.area())?
 				.into_iter()
 				.chain(skills::mounted(&mut self.access, self.run.as_ref().unwrap().id).await?)
 				.chain(packages::inputs(&native(operation))?)

@@ -17,9 +17,35 @@ use aidash_domain::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use uuid::Uuid;
 fn files(area: &Area) -> Result<Vec<FileEntry>> {
 	Ok(serde_json::from_value(area.manifest.clone())?)
+}
+/// The Reference record a Reference file of the Area was taken from. A malformed
+/// id names no record, so such a file is never usable.
+fn reference_of(file: &FileEntry) -> Option<Uuid> {
+	file.is_reference_file().then(|| {
+		file.provenance["id"]
+			.as_str()
+			.and_then(|id| id.parse().ok())
+			.unwrap_or_else(Uuid::nil)
+	})
+}
+/// An Area holds a Reference file only while its record can be used: the manifest
+/// keeps the entry after a revocation, so the file tools check the record (ADR 0114).
+async fn require_usable(scope: &mut dyn FileScopePort, file: &FileEntry) -> Result<()> {
+	let Some(id) = reference_of(file) else {
+		return Ok(());
+	};
+	if scope.unusable_references(&[id]).await?.is_empty() {
+		Ok(())
+	} else {
+		Err(Error::NotFound(format!(
+			"reference unavailable: {}",
+			file.path
+		)))
+	}
 }
 pub async fn settings(scope: &mut dyn FileScopePort, run: &RunMetadata) -> Result<AgentConfig> {
 	let entry = scope
@@ -299,6 +325,7 @@ pub async fn read(scope: &mut dyn FileScopePort, area: &Area, input: FileRead) -
 		.into_iter()
 		.find(|f| f.file_id == input.file_id)
 		.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
+	require_usable(scope, &file).await?;
 	if input
 		.expected_digest
 		.as_ref()
@@ -365,7 +392,8 @@ pub async fn search(
 	input: FileSearch,
 ) -> Result<Value> {
 	let limit = input.limit.unwrap_or(scope.limits()?.search_matches);
-	if input.query.is_empty()
+	// An empty query lists paths; only path mode has a meaning for it.
+	if (input.query.is_empty() && !matches!(input.mode, SearchMode::Path))
 		|| input.query.len() > 1024
 		|| !(1..=scope.limits()?.search_matches).contains(&limit)
 	{
@@ -414,18 +442,35 @@ pub async fn search(
 		return Err(Error::Conflict("STALE_CURSOR".into()));
 	}
 	let files = files(area)?;
+	// A Reference file revoked after the Area was given it drops out of the search
+	// and the rest stay searchable. One query covers the whole Reference set.
+	let revoked = if input.scope == FileScope::References {
+		let ids = files.iter().filter_map(reference_of).collect::<Vec<_>>();
+		if ids.is_empty() {
+			BTreeSet::new()
+		} else {
+			scope.unusable_references(&ids).await?
+		}
+	} else {
+		BTreeSet::new()
+	};
 	let started = std::time::Instant::now();
+	// Stop early enough to return what was found before the caller's timeout,
+	// with a cursor to continue. Always make some progress first.
+	let budget = std::time::Duration::from_secs(scope.limits()?.search_seconds).mul_f32(0.8);
+	let mut scanned = false;
 	let mut matches = vec![];
 	let mut unavailable: Vec<Value> = vec![];
-	while cursor.file < files.len() {
-		if started.elapsed() > std::time::Duration::from_secs(scope.limits()?.search_seconds) {
-			return Err(Error::Invalid("SEARCH_TIME_LIMIT".into()));
+	'files: while cursor.file < files.len() {
+		if scanned && started.elapsed() > budget {
+			break;
 		}
 		let file = &files[cursor.file];
 		if serde_json::to_value(file.scope)? != serde_json::to_value(input.scope)?
 			|| input.path.as_ref().is_some_and(|path| {
 				file.path != *path && !file.path.starts_with(&format!("{path}/"))
-			}) {
+			}) || reference_of(file).is_some_and(|id| revoked.contains(&id))
+		{
 			cursor.file += 1;
 			cursor.line = 0;
 			continue;
@@ -440,7 +485,28 @@ pub async fn search(
 		};
 		let mut exhausted = true;
 		let mut index = 0;
-		while let Some(line) = bounded_line(&mut *reader).await? {
+		loop {
+			let line = match bounded_line(&mut *reader).await {
+				Ok(Some(line)) => line,
+				Ok(None) => break,
+				// A file with a very long line, such as minified JSON, must not
+				// stop a search of everything else.
+				Err(Error::Invalid(message))
+					if message.starts_with("SEARCH_LINE_LIMIT")
+						&& input.path.as_deref() != Some(&file.path) =>
+				{
+					// A full page must not lose what it found: stop here with a cursor, and
+					// the next page, which starts empty, reports this file and moves on.
+					if matches.len() + unavailable.len() >= limit {
+						cursor.line = index;
+						exhausted = false;
+						break;
+					}
+					unavailable.push(json!({"file_id":file.file_id,"error":"SEARCH_LINE_LIMIT"}));
+					break;
+				}
+				Err(error) => return Err(error),
+			};
 			let index = {
 				let current = index;
 				index += 1;
@@ -471,12 +537,11 @@ pub async fn search(
 				unavailable.push(item);
 				break;
 			};
-			if index % 64 == 0
-				&& started.elapsed()
-					> std::time::Duration::from_secs(scope.limits()?.search_seconds)
-			{
-				return Err(Error::Invalid("SEARCH_TIME_LIMIT".into()));
+			if scanned && index % 64 == 0 && started.elapsed() > budget {
+				cursor.line = index;
+				break 'files;
 			}
+			scanned = true;
 			let found = pattern
 				.as_ref()
 				.map_or_else(|| line.contains(&input.query), |p| p.is_match(line));
@@ -592,7 +657,9 @@ pub async fn materialize(
 	}
 	aidash_domain::registry::rules::validate_path(&input.path)?;
 	let mut entries = files(&area)?;
-	if entries.len() >= 4096 || entries.iter().any(|f| f.path == input.path) {
+	if aidash_domain::capabilities::operations::counted_files(&entries).count() >= 4096
+		|| entries.iter().any(|f| f.path == input.path)
+	{
 		return Err(Error::Conflict("FILE_EXISTS_OR_LIMIT".into()));
 	}
 	if let MaterializeSource::File {
@@ -604,10 +671,13 @@ pub async fn materialize(
 			Some(file) => file,
 			None => output_file(scope, &area, *file_id).await?,
 		};
+		require_usable(scope, &original).await?;
 		if original.digest != *expected_digest {
 			return Err(Error::Conflict("FILE_CHANGED".into()));
 		}
-		if entries.iter().map(|f| f.size).sum::<u64>()
+		if aidash_domain::capabilities::operations::counted_files(&entries)
+			.map(|f| f.size)
+			.sum::<u64>()
 			+ original.size
 			+ scope.retained_bytes(&area).await?
 			> scope.limits()?.working_bytes
@@ -625,6 +695,14 @@ pub async fn materialize(
 			scope.write_pending(&block).await?;
 		}
 		let (file_id, digest_value) = scope.finish_pending(expected_digest).await?;
+		// A copy of a Reference file lives only while that file may still be used.
+		if original.is_reference_file() {
+			let constraint = json!({"kind":"reference","id":original.provenance["id"]});
+			let constraints = area.constraints.as_array_mut().ok_or(Error::Forbidden)?;
+			if !constraints.contains(&constraint) {
+				constraints.push(constraint);
+			}
+		}
 		let file = FileEntry {
 			file_id,
 			path: input.path,
@@ -676,7 +754,9 @@ pub async fn materialize(
 			)
 		}
 	};
-	let size = entries.iter().map(|f| f.size).sum::<u64>()
+	let size = aidash_domain::capabilities::operations::counted_files(&entries)
+		.map(|f| f.size)
+		.sum::<u64>()
 		+ text.len() as u64
 		+ scope.retained_bytes(&area).await?;
 	if size > scope.limits()?.working_bytes {
@@ -745,11 +825,16 @@ pub async fn copy_thread_attachment(
 	}
 	aidash_domain::registry::rules::validate_path(&path)?;
 	let mut entries = files(&area)?;
-	if entries.len() >= 4096 || entries.iter().any(|entry| entry.path == path) {
+	if aidash_domain::capabilities::operations::counted_files(&entries).count() >= 4096
+		|| entries.iter().any(|entry| entry.path == path)
+	{
 		return Err(Error::Conflict("FILE_EXISTS_OR_LIMIT".into()));
 	}
 	let size = bytes.len() as u64;
-	if entries.iter().map(|f| f.size).sum::<u64>() + size + scope.retained_bytes(&area).await?
+	if aidash_domain::capabilities::operations::counted_files(&entries)
+		.map(|f| f.size)
+		.sum::<u64>()
+		+ size + scope.retained_bytes(&area).await?
 		> scope.limits()?.working_bytes
 	{
 		return Err(Error::Conflict("WORKING_QUOTA".into()));
@@ -819,7 +904,7 @@ pub async fn snapshot_message_files(
 	for path in paths {
 		let file = entries
 			.iter()
-			.find(|file| file.path == *path)
+			.find(|file| file.path == *path && !file.is_reference_file())
 			.ok_or_else(|| Error::NotFound("file unavailable".into()))?
 			.clone();
 		total = total.saturating_add(file.size);
