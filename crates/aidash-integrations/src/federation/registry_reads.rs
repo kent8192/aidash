@@ -27,7 +27,7 @@ impl RegistryTransport for HttpTransport {
 			Ok(Err(Error::FederationDisabled)) => return Verification::Rejected,
 			Ok(Ok(response)) => {
 				let status = response.status();
-				return if matches!(status.as_u16(), 401 | 403 | 404) {
+				return if aidash_application::ports::federation::refuses(status.as_u16()) {
 					Verification::Rejected
 				} else {
 					unavailable(route, &format!("HTTP {status}"));

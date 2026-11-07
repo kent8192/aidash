@@ -151,7 +151,9 @@ impl RegistryTransport for Wire {
 				Value::Bool(false) => Verification::Rejected,
 				_ => unavailable(route, &"an unreadable answer"),
 			},
-			Ok(Ok(outcome)) if matches!(outcome.status, 401 | 403 | 404) => Verification::Rejected,
+			Ok(Ok(outcome)) if aidash_application::ports::federation::refuses(outcome.status) => {
+				Verification::Rejected
+			}
 			Ok(Ok(outcome)) => unavailable(route, &format!("HTTP {}", outcome.status)),
 			Ok(Err(error)) => unavailable(route, &error),
 			Err(_) => unavailable(route, &"the request timed out"),

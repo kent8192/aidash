@@ -620,3 +620,31 @@ async fn admission_must_exist_and_match_its_bound_grant_before_visibility(
 	);
 	assert_eq!(scope.calls.len(), calls);
 }
+
+#[rstest]
+#[case::bad_request(400, true)]
+#[case::unauthorized(401, true)]
+#[case::forbidden(403, true)]
+#[case::missing(404, true)]
+#[case::conflict(409, true)]
+#[case::gone(410, true)]
+#[case::unprocessable(422, true)]
+#[case::request_timeout(408, false)]
+#[case::too_early(425, false)]
+#[case::too_many_requests(429, false)]
+#[case::server_error(500, false)]
+#[case::unavailable(503, false)]
+#[case::gateway_timeout(504, false)]
+#[case::redirect(302, false)]
+#[case::no_content(204, false)]
+fn a_peer_that_answered_refuses_and_one_that_could_not_is_unavailable(
+	#[case] status: u16,
+	#[case] refused: bool,
+) {
+	assert_eq!(crate::ports::federation::refuses(status), refused);
+	assert_eq!(
+		matches!(Check::of_status(status), Check::Refused),
+		refused,
+		"{status}"
+	);
+}
