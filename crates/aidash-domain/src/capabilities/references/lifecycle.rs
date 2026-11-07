@@ -32,6 +32,93 @@ pub struct Reference {
 	pub original: Option<MountedFile>,
 	pub extraction: Option<MountedFile>,
 	pub extraction_state: Option<String>,
+	/// Pages of a PDF, counted from 1, whose text an Agent cannot read.
+	pub pages_without_text: Vec<u32>,
+	pub page_count: Option<u32>,
+}
+/// One document of a bulk add. The server works out its type and digest.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BatchFile {
+	pub path: String,
+	pub data: String,
+}
+/// What happened to one document of a bulk add.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BatchOutcome {
+	pub path: String,
+	pub reference: Option<Reference>,
+	/// An existing Reference with the same content was returned.
+	pub reused: bool,
+	/// Another path in this request holds the same content.
+	pub duplicate_of: Option<String>,
+	pub error: Option<String>,
+}
+impl BatchOutcome {
+	pub fn added(path: String, reference: Reference, reused: bool) -> Self {
+		Self {
+			path,
+			reference: Some(reference),
+			reused,
+			duplicate_of: None,
+			error: None,
+		}
+	}
+	pub fn refused(path: String, error: &str) -> Self {
+		Self {
+			path,
+			reference: None,
+			reused: false,
+			duplicate_of: None,
+			error: Some(error.to_owned()),
+		}
+	}
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct BatchResult {
+	pub files: Vec<BatchOutcome>,
+	/// Entries ready to paste into a `reference_attachments` Source.
+	pub references: Vec<crate::capabilities::ReferenceAttachment>,
+}
+/// How a committed original becomes readable, decided by its content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Readability {
+	/// Agents read the original itself, with no Pod and no second copy.
+	Text,
+	/// Only the sandboxed parser may open it.
+	Parser,
+	Unsupported,
+}
+/// An Excel file is a ZIP archive. Plain text may well begin with "PK".
+const ZIP_MAGIC: &[u8] = b"PK\x03\x04";
+pub fn readability(bytes: &[u8]) -> Readability {
+	if bytes.starts_with(b"%PDF-") || bytes.starts_with(ZIP_MAGIC) {
+		Readability::Parser
+	} else if !bytes.contains(&0) && std::str::from_utf8(bytes).is_ok() {
+		Readability::Text
+	} else {
+		Readability::Unsupported
+	}
+}
+/// The type recorded for a file that arrived without a declared one.
+pub fn sniffed_media_type(bytes: &[u8]) -> &'static str {
+	if bytes.starts_with(b"%PDF-") {
+		"application/pdf"
+	} else if bytes.starts_with(ZIP_MAGIC) {
+		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	} else {
+		"text/plain"
+	}
+}
+/// The text of one Reference file an Agent can read: its extraction, or the
+/// original when the original is itself the text.
+pub fn text_bytes(data: &Value) -> u64 {
+	let size = |file: &Value| file["size"].as_u64().unwrap_or(0);
+	if data["plain_text"] == true {
+		size(&data["original"])
+	} else {
+		size(&data["extraction"])
+	}
 }
 pub fn validate_upload(input: &Upload, maximum: u64) -> Result<()> {
 	if input.size == 0
@@ -78,6 +165,9 @@ pub fn view(record: &Record) -> serde_json::Result<Reference> {
 		original: serde_json::from_value(record.data["original"].clone())?,
 		extraction: serde_json::from_value(record.data["extraction"].clone())?,
 		extraction_state: record.data["extraction_state"].as_str().map(str::to_owned),
+		pages_without_text: serde_json::from_value(record.data["pages_without_text"].clone())
+			.unwrap_or_default(),
+		page_count: record.data["page_count"].as_u64().map(|pages| pages as u32),
 	})
 }
 pub fn finish_extraction(record: &mut Record, state: &str, digest: &str) {
@@ -91,10 +181,13 @@ pub fn next_receipt_cursor(receipts: &[(Uuid, Value)]) -> Uuid {
 	receipts.last().map_or_else(Uuid::nil, |(id, _)| *id)
 }
 
+/// Room in the parser's output for everything except the escaped text: its
+/// state and the list of pages without text.
+pub const OUTPUT_OVERHEAD: u64 = 2048;
 pub fn text_budget(record: &Record, maximum: usize, output: u64) -> u64 {
 	record.data["text_budget"]
 		.as_u64()
-		.unwrap_or_else(|| (maximum as u64).min(output.saturating_sub(256) / 6))
+		.unwrap_or_else(|| (maximum as u64).min(output.saturating_sub(OUTPUT_OVERHEAD) / 6))
 }
 pub fn extraction_state_supported(state: &str) -> bool {
 	matches!(

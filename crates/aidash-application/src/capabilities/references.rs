@@ -5,9 +5,16 @@ use crate::{
 };
 use aidash_domain::{
 	capabilities::{
+		ReferenceAttachment,
 		operations::{FileScope, MountedFile as FileEntry},
 		records::Record,
-		references::lifecycle::{self, Chunk, Reference, Upload, finish_extraction},
+		references::{
+			EXTRACTION_SUFFIX, REFERENCE_SET_ROOT,
+			lifecycle::{
+				self, BatchFile, BatchOutcome, BatchResult, Chunk, Readability, Reference, Upload,
+				finish_extraction,
+			},
+		},
 	},
 	registry::AgentConfig,
 };
@@ -132,12 +139,146 @@ pub async fn commit(scope: &mut dyn ReferenceScope, id: Uuid) -> Result<Referenc
 		scope: FileScope::References,
 		provenance: json!({"kind":"reference","id":id}),
 	};
-	record.data["original"] = json!(original);
-	record.data["operation_id"] = json!(Uuid::new_v4());
-	record.state = "extracting".into();
-	record.expires_at = None;
+	let bytes = scope.read(&original).await?;
+	settle(&mut record, &original, &bytes);
 	scope.update(&mut record).await?;
 	Ok(lifecycle::view(&record)?)
+}
+/// Text is ready at once. Only a file the parser must open waits for a Pod.
+fn settle(record: &mut Record, original: &FileEntry, bytes: &[u8]) {
+	record.data["original"] = json!(original);
+	record.expires_at = None;
+	match lifecycle::readability(bytes) {
+		Readability::Parser => {
+			record.data["operation_id"] = json!(Uuid::new_v4());
+			record.state = "extracting".into();
+		}
+		Readability::Text => {
+			record.data["plain_text"] = json!(true);
+			record.data["extraction_state"] = json!("ready");
+			record.state = "ready".into();
+		}
+		Readability::Unsupported => {
+			record.data["extraction_state"] = json!("unsupported");
+			record.state = "ready".into();
+		}
+	}
+}
+/// Add many documents in one request. A file that cannot be added is reported
+/// by itself, so the others still land.
+pub async fn add_batch(
+	scope: &mut dyn ReferenceScope,
+	files: Vec<BatchFile>,
+) -> Result<BatchResult> {
+	let limits = scope.limits()?;
+	if !limits.admission {
+		return Err(Error::Conflict("CAPABILITIES_DISABLED".into()));
+	}
+	if files.is_empty() || files.len() > limits.reference_files {
+		return Err(Error::Invalid("REFERENCE_BATCH_LIMIT".into()));
+	}
+	scope.require_upload().await?;
+	let mut result = BatchResult::default();
+	let mut paths = std::collections::BTreeSet::new();
+	let mut added = std::collections::BTreeMap::<String, String>::new();
+	for file in files {
+		let path = file.path;
+		if !paths.insert(path.clone()) {
+			result
+				.files
+				.push(BatchOutcome::refused(path, "DUPLICATE_PATH"));
+			continue;
+		}
+		let bytes = match prepare_batch_file(&path, &file.data, limits.reference_bytes) {
+			Ok(bytes) => bytes,
+			Err(code) => {
+				result.files.push(BatchOutcome::refused(path, code));
+				continue;
+			}
+		};
+		let digest = format!("{:x}", sha2::Sha256::digest(&bytes));
+		// One entry per content: a Source binds a Reference once.
+		if let Some(first) = added.get(&digest) {
+			let mut outcome = BatchOutcome::refused(path, "SAME_CONTENT");
+			outcome.duplicate_of = Some(first.clone());
+			result.files.push(outcome);
+			continue;
+		}
+		let (record, reused) = match scope.find_existing(&digest).await? {
+			Some(record) => (record, true),
+			None => (
+				store_batch_file(scope, &path, &bytes, &digest).await?,
+				false,
+			),
+		};
+		added.insert(digest.clone(), path.clone());
+		let view = lifecycle::view(&record)?;
+		result.references.push(ReferenceAttachment {
+			reference_id: view.reference_id,
+			digest,
+			path: path.clone(),
+		});
+		result.files.push(BatchOutcome::added(path, view, reused));
+	}
+	Ok(result)
+}
+fn file_name(path: &str) -> &str {
+	path.rsplit('/').next().unwrap_or(path)
+}
+fn prepare_batch_file(
+	path: &str,
+	data: &str,
+	maximum: u64,
+) -> std::result::Result<Vec<u8>, &'static str> {
+	// The Source refuses a path its extraction could collide with, so refuse it here
+	// rather than report a file as added that no Source can bind.
+	if !aidash_domain::capabilities::references::valid_path(path) {
+		return Err("INVALID_PATH");
+	}
+	let bytes = STANDARD.decode(data).map_err(|_| "INVALID_DATA")?;
+	if bytes.is_empty() || bytes.len() as u64 > maximum || file_name(path).len() > 255 {
+		return Err("REFERENCE_UPLOAD_LIMIT");
+	}
+	Ok(bytes)
+}
+async fn store_batch_file(
+	scope: &mut dyn ReferenceScope,
+	path: &str,
+	bytes: &[u8],
+	digest: &str,
+) -> Result<Record> {
+	let input = Upload {
+		idempotency_key: Uuid::new_v4(),
+		name: file_name(path).to_owned(),
+		media_type: lifecycle::sniffed_media_type(bytes).to_owned(),
+		size: bytes.len() as u64,
+		digest: digest.to_owned(),
+	};
+	lifecycle::validate_upload(&input, scope.limits()?.reference_bytes)?;
+	let id = Uuid::new_v4();
+	let mut record = scope
+		.insert(
+			id,
+			"uploading",
+			json!({"input":input,"identity":scope.identity(),"chunks":[],"uploaded_bytes":input.size}),
+			None,
+		)
+		.await?;
+	scope.begin_original(input.size).await?;
+	scope.write_original(bytes).await?;
+	let (file_id, digest) = scope.finish_original(&input.digest).await?;
+	let original = FileEntry {
+		file_id,
+		path: input.name,
+		digest,
+		size: input.size,
+		media_type: input.media_type,
+		scope: FileScope::References,
+		provenance: json!({"kind":"reference","id":id}),
+	};
+	settle(&mut record, &original, bytes);
+	scope.update(&mut record).await?;
+	Ok(record)
 }
 pub async fn revoke(scope: &mut dyn ReferenceScope, id: Uuid, revision: i64) -> Result<()> {
 	let mut record = get(scope, id, "reference.delete").await?;
@@ -148,6 +289,10 @@ pub async fn revoke(scope: &mut dyn ReferenceScope, id: Uuid, revision: i64) -> 
 	record.expires_at = Some(Utc::now());
 	scope.update(&mut record).await
 }
+/// A Run reads the Reference files its Agent version binds. Run admission has
+/// already established that this person may run that version, whose Sources are
+/// approved, so neither the uploader nor a `reference.read` grant is asked for
+/// here (ADR 0114). Only a revoked or removed file stops it.
 pub async fn pin(scope: &mut dyn ReferenceScope, config: &AgentConfig) -> Result<()> {
 	let limits = scope.limits()?;
 	let mut mounts = scope.mounts()?;
@@ -159,28 +304,43 @@ pub async fn pin(scope: &mut dyn ReferenceScope, config: &AgentConfig) -> Result
 	let mut files = serde_json::from_value::<Vec<FileEntry>>(mounts.manifest.clone())?;
 	let mut text = 0;
 	let old = mounts.manifest.clone();
-	// A new Agent version replaces its read-only mounts. Existing working copies
+	// A new Agent version replaces its Reference set. Existing working copies
 	// keep their conservative disclosure constraints; detaching is not declassification.
-	files.retain(|file| {
-		!matches!(file.scope, FileScope::References) || file.provenance["kind"] != "reference"
-	});
-	let mut seen = std::collections::BTreeSet::new();
+	files.retain(|file| !file.is_reference_file());
+	let ids = config
+		.reference_attachments
+		.iter()
+		.map(|attachment| attachment.reference_id)
+		.collect::<Vec<_>>();
+	if ids.iter().collect::<std::collections::BTreeSet<_>>().len() != ids.len() {
+		return Err(Error::Invalid("DUPLICATE_REFERENCE".into()));
+	}
+	let records = scope
+		.load_many(&ids)
+		.await?
+		.into_iter()
+		.map(|record| (record.id, record))
+		.collect::<std::collections::BTreeMap<_, _>>();
 	for attachment in &config.reference_attachments {
-		if !seen.insert(attachment.reference_id) {
-			return Err(Error::Invalid("DUPLICATE_REFERENCE".into()));
-		}
-		let record = get(scope, attachment.reference_id, "reference.read").await?;
+		let record = records
+			.get(&attachment.reference_id)
+			.filter(|record| !matches!(record.state.as_str(), "revoked" | "expired"))
+			.ok_or_else(|| {
+				Error::NotFound(format!("reference unavailable: {}", attachment.path))
+			})?;
 		if record.state != "ready" {
 			return Err(Error::Conflict("REFERENCE_NOT_READY".into()));
 		}
-		let original: FileEntry = serde_json::from_value(record.data["original"].clone())?;
+		let mut original: FileEntry = serde_json::from_value(record.data["original"].clone())?;
 		if original.size > limits.reference_bytes {
 			return Err(Error::Invalid("REFERENCE_SET_LIMIT".into()));
 		}
 		if original.digest != attachment.digest {
 			return Err(Error::Conflict("REFERENCE_CHANGED".into()));
 		}
-		let constraint = json!({"kind":"reference","id":record.id});
+		// Blocks export from this Area. Unlike a copy's `reference` constraint it
+		// never locks the Area: a revoked file only stops the Runs that still bind it.
+		let constraint = json!({"kind":"reference_bound","id":record.id});
 		if !mounts
 			.constraints
 			.as_array()
@@ -190,23 +350,29 @@ pub async fn pin(scope: &mut dyn ReferenceScope, config: &AgentConfig) -> Result
 			mounts.constraints.as_array_mut().unwrap().push(constraint);
 			scope.set_constraints(mounts.constraints.clone())?;
 		}
-		let extracted: Option<FileEntry> =
-			serde_json::from_value(record.data["extraction"].clone())?;
-		text += extracted.as_ref().map_or(0, |f| f.size);
-		for mut file in std::iter::once(original).chain(extracted) {
-			if !files.iter().any(|f| f.file_id == file.file_id) {
-				file.path = format!("{}/{}", record.id, file.path);
-				files.push(file);
-			}
+		text += lifecycle::text_bytes(&record.data);
+		let path = format!("{REFERENCE_SET_ROOT}/{}", attachment.path);
+		if let Some(mut extracted) =
+			serde_json::from_value::<Option<FileEntry>>(record.data["extraction"].clone())?
+		{
+			extracted.path = format!("{path}{EXTRACTION_SUFFIX}");
+			files.push(extracted);
 		}
+		original.path = path;
+		files.push(original);
 	}
-	if text > limits.reference_text_bytes as u64
-		|| files.iter().map(|f| f.size).sum::<u64>() > limits.working_bytes
-	{
+	if text > limits.reference_text_bytes as u64 {
 		return Err(Error::Invalid("REFERENCE_SET_LIMIT".into()));
 	}
-	if json!(files) != old {
-		scope.release_python("reference_mounts_changed").await?;
+	if aidash_domain::capabilities::operations::has_input_path_collision(&files) {
+		return Err(Error::Invalid("REFERENCE_PATH_COLLISION".into()));
+	}
+	// Reconciliation reorders the manifest, which alone is not a new revision.
+	let ordered = |mut files: Vec<FileEntry>| {
+		files.sort_by_key(|file| file.file_id);
+		json!(files)
+	};
+	if ordered(files.clone()) != ordered(serde_json::from_value(old)?) {
 		scope.set_manifest(json!(files))?;
 		scope.publish().await?;
 	}
@@ -232,7 +398,7 @@ pub async fn drive(repository: &dyn ReferenceRepository, id: Uuid) -> Result<()>
         }
         // JSON can expand each text byte to six escaped bytes. Pin the budget
         // with the dispatch intent so a lost reply never changes its request.
-        let text_budget=lifecycle::text_budget(&record,limits.reference_text_bytes,limits.output_bytes);
+        let text_budget=lifecycle::text_budget(&record,limits.reference_file_text_bytes,limits.output_bytes);
         if limits.admission && text_budget<4 && record.data["instance"].is_null() {
             record.state="ready".into();record.expires_at=None;
             record.data["extraction_state"]=json!("output_limit");
@@ -288,7 +454,7 @@ pub async fn drive(repository: &dyn ReferenceRepository, id: Uuid) -> Result<()>
                     return scope.update(&mut record).await;
                 }
                 let bytes=STANDARD.decode(observed["stdout"].as_str().ok_or(Error::Forbidden)?).map_err(|_|Error::Invalid("EXTRACTION_RESULT".into()))?;
-                let maximum=(limits.reference_text_bytes*6+256).min(limits.output_bytes as usize);
+                let maximum=(limits.reference_file_text_bytes*6+lifecycle::OUTPUT_OVERHEAD as usize).min(limits.output_bytes as usize);
                 if bytes.len()>maximum {
                     finish_extraction(&mut record,"output_limit",&digest);
                     return scope.update(&mut record).await;
@@ -304,14 +470,17 @@ pub async fn drive(repository: &dyn ReferenceRepository, id: Uuid) -> Result<()>
                     finish_extraction(&mut record,"extraction_failed",&digest);
                     return scope.update(&mut record).await;
                 };
-                if text.len()>limits.reference_text_bytes || !lifecycle::extraction_state_supported(state) {
+                if text.len()>limits.reference_file_text_bytes || !lifecycle::extraction_state_supported(state) {
                     finish_extraction(&mut record,"output_limit",&digest);
                     return scope.update(&mut record).await;
                 }
                 if !text.is_empty() {
                     let (file_id,digest)=scope.put("reference_extraction",text.as_bytes()).await?;
-                    record.data["extraction"]=json!(FileEntry{file_id,path:"extracted.txt".into(),size:text.len() as u64,digest,media_type:"text/plain; charset=utf-8".into(),scope:FileScope::References,provenance:json!({"kind":"reference","id":id,"locations":"page, sheet/cell, or line labels in the extracted text"})});
+                    record.data["extraction"]=json!(FileEntry{file_id,path:"extracted.txt".into(),size:text.len() as u64,digest,media_type:"text/plain; charset=utf-8".into(),scope:FileScope::References,provenance:json!({"kind":"reference","id":id,"locations":"page or sheet/cell labels in the extracted text"})});
                 }
+                let pages:Vec<u32>=serde_json::from_value(extracted["pages_without_text"].clone()).unwrap_or_default();
+                record.data["pages_without_text"]=json!(pages);
+                record.data["page_count"]=extracted["page_count"].clone();
                 finish_extraction(&mut record,state,&digest);
             }
             Some("failed"|"cancelled") if observed["termination_confirmed"]==true=>{
@@ -344,7 +513,19 @@ pub async fn sweep(repository: &dyn ReferenceRepository, cursor: &mut Cursor) ->
 	let receipts = repository.receipts(cursor.receipt).await?;
 	cursor.receipt = lifecycle::next_receipt_cursor(&receipts);
 	for (id, data) in receipts {
-		let operation: Uuid = serde_json::from_value(data["operation_id"].clone())?;
+		// One unreadable row must not hold back the rest of the batch.
+		let operation: Uuid = match serde_json::from_value(data["operation_id"].clone()) {
+			Ok(operation) => operation,
+			Err(error) => {
+				metrics::counter!(
+					"aidash_background_service_failures_total",
+					"service" => "capabilities.references"
+				)
+				.increment(1);
+				tracing::warn!(%id,%error,"skipping a reference receipt that cannot be read");
+				continue;
+			}
+		};
 		if repository
 			.request(
 				"POST",
@@ -360,3 +541,6 @@ pub async fn sweep(repository: &dyn ReferenceRepository, cursor: &mut Cursor) ->
 	Ok(())
 }
 use sha2::Digest as _;
+
+#[cfg(test)]
+mod tests;

@@ -169,7 +169,7 @@ async fn extraction_queue_fixture(
 	#[future] capability_fixture: CoreFixture,
 ) -> (CoreFixture, String) {
 	let mut c = Box::pin(capability_fixture).await;
-	let bytes = b"private original";
+	let bytes = b"%PDF-private original";
 
 	let mut uploads = vec![];
 	for index in 0..9 {
@@ -295,7 +295,7 @@ async fn stale_extraction_credentials_do_not_starve_later_uploads(
 	assert_eq!(status, 200, "{original}");
 	assert_eq!(
 		STANDARD.decode(original["data"].as_str().unwrap()).unwrap(),
-		b"private original"
+		b"%PDF-private original"
 	);
 	c.close().await;
 }
@@ -766,6 +766,20 @@ async fn cleanup_runner(
 	Arc<std::sync::Mutex<Vec<Value>>>,
 	Arc<std::sync::Mutex<String>>,
 ) {
+	cleanup_runner_with_discard(c, operation, uncertain, false).await
+}
+
+async fn cleanup_runner_with_discard(
+	c: &mut CoreFixture,
+	operation: Uuid,
+	uncertain: bool,
+	discarded: bool,
+) -> (
+	reinhardt::test::fixtures::server::TestServerGuard,
+	Arc<std::sync::atomic::AtomicBool>,
+	Arc<std::sync::Mutex<Vec<Value>>>,
+	Arc<std::sync::Mutex<String>>,
+) {
 	use sha2::Digest as _;
 	use std::sync::{
 		Mutex,
@@ -796,8 +810,18 @@ async fn cleanup_runner(
 			let mut output = json!({"operation_id":operation,"digest":"immutable-intent","status":"uncertain",
 				"termination_confirmed":stopped.load(Ordering::SeqCst),"output_harvested":true,"acknowledged":false,
 				"stdout":"cmVjb3ZlcmVkIHBhcnRpYWw=","files":[{"object_id":file_digest,"digest":file_digest,"size":3,"path":"saved.txt"}],"truncated":true});
+			if discarded {
+				output["stdout"] = json!("");
+				output["files"] = json!([]);
+				output["displays"] = json!([]);
+			}
 			let proof = aidash_domain::capabilities::operations::processing::output_digest(&health_instance.lock().unwrap(), &output).unwrap();
 			output["output_digest"] = json!(proof);
+			if discarded {
+				output["acknowledged"] = json!(true);
+				output["output_discarded"] = json!(true);
+				output["acknowledged_output_digest"] = json!(proof);
+			}
 			let response = if path == "/v1/health" {
 				json!({"instance":*health_instance.lock().unwrap()})
 			} else if path.ends_with("/cancel") || path.ends_with("/stop") {
@@ -1387,6 +1411,53 @@ async fn node_deletion_captures_running_python_until_its_original_writer_is_stop
 		worker.stop.send(true).unwrap();
 		worker.await.unwrap().unwrap();
 	}
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn discarded_uncertain_output_is_recorded_and_acknowledged(
+	#[future] command_cleanup_fixture: (CoreFixture, Uuid, Uuid),
+	worker_control: WorkerControl,
+) {
+	use std::sync::atomic::Ordering;
+	let (mut c, _, id) = Box::pin(command_cleanup_fixture).await;
+	let (_runner, confirmed, _, _) = cleanup_runner_with_discard(&mut c, id, true, true).await;
+	confirmed.store(true, Ordering::SeqCst);
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("core_operations"))
+			.value(Alias::new("state"), "uncertain")
+			.value(Alias::new("runner_instance"), "cleanup-runner")
+			.value(Alias::new("result"), json!({"error":{"code":"OUTPUT_LOST","message":"File changes were not saved."},"termination_confirmed":true}))
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(c.f.store.pool.fixture_driver()).await.unwrap();
+	let worker = CapabilityWorker {
+		stop: worker_control.stop,
+		handle: tokio::spawn(aidash_server::capabilities::operations::run(
+			c.f.store.clone(),
+			worker_control.receiver,
+		)),
+	};
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(12);
+	loop {
+		let (state, result) = cleanup_operation(&c, id).await;
+		assert_eq!(state, "uncertain");
+		if result["runner_acknowledged"] == true {
+			assert_eq!(result["stopped_output"]["discarded"], true);
+			assert_eq!(result["error"]["code"], "OUTPUT_LOST");
+			break;
+		}
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"discard acknowledgement was not recorded: {result}"
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+	}
+	worker.stop.send(true).unwrap();
+	worker.await.unwrap().unwrap();
 	c.close().await;
 }
 

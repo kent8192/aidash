@@ -66,6 +66,7 @@ fn limits() -> Limits {
 		working_bytes: 1024,
 		output_bytes: 1024,
 		read_bytes: 8,
+		maximum_seconds: 600,
 	}
 }
 #[rstest]

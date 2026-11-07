@@ -227,10 +227,12 @@ pub async fn delete_tenant_rows(
 		.from_table(Alias::new(table))
 		.and_where(Expr::col("tenant").eq(Expr::value(tenant)))
 		.build(PostgresQueryBuilder);
-	Ok(tx
-		.execute(&sql, convert_values(values))
-		.await?
-		.rows_affected)
+	// Unbounded until #744 splits it into batches.
+	Ok(
+		super::limits::execute_unlimited(tx, &sql, convert_values(values))
+			.await?
+			.rows_affected,
+	)
 }
 
 /// Clears the `unlinks` columns of the rows `tenant` owns, so the tables they

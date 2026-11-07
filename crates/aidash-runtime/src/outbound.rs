@@ -1,4 +1,5 @@
 //! The outbound worker bounds concurrency and drains the accepted batch before stopping.
+use crate::background::Passes;
 use aidash_application::{
 	Result,
 	capabilities::outbound,
@@ -12,18 +13,22 @@ pub async fn run(
 	transport: &dyn OutboundTransport,
 	mut stopping: watch::Receiver<bool>,
 ) -> Result<()> {
-	loop {
-		if *stopping.borrow() {
-			return Ok(());
-		}
-		let ids = repository.active_operations().await?;
-		stream::iter(ids)
-			.for_each_concurrent(8, |id| async move {
-				outbound::reconcile(repository, transport, id).await;
+	let mut passes = Passes::new("capabilities.network", Duration::from_millis(300));
+	while !*stopping.borrow() {
+		passes
+			.run(async {
+				let ids = repository.active_operations().await?;
+				stream::iter(ids)
+					.for_each_concurrent(8, |id| async move {
+						outbound::reconcile(repository, transport, id).await;
+					})
+					.await;
+				Ok(())
 			})
 			.await;
-		tokio::select! {_=stopping.changed()=>{},_=tokio::time::sleep(Duration::from_millis(300))=>{}}
+		passes.pause(&mut stopping).await;
 	}
+	Ok(())
 }
 #[cfg(test)]
 mod tests;

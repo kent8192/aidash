@@ -8,11 +8,15 @@ import sys
 from pathlib import Path
 import zipfile
 
-LIMIT, PAGE_LIMIT, FILE_LIMIT = map(int, sys.argv[1:]) if len(sys.argv) == 4 else (65536, 200, 10 * 1048576)
-assert 4 <= LIMIT <= 65536 and 1 <= PAGE_LIMIT <= 200 and 1 <= FILE_LIMIT <= 10 * 1048576
+LIMIT, PAGE_LIMIT, FILE_LIMIT = map(int, sys.argv[1:]) if len(sys.argv) == 4 else (1048576, 200, 10 * 1048576)
+assert 4 <= LIMIT <= 1048576 and 1 <= PAGE_LIMIT <= 200 and 1 <= FILE_LIMIT <= 10 * 1048576
+# ADR 0053: a page with fewer non-whitespace characters than this carries no text.
+MINIMUM_PAGE_TEXT = 16
 output = []
 used = 0
 truncated = False
+pages_without_text = []
+page_count = None
 
 
 def emit(location, text):
@@ -30,6 +34,7 @@ def emit(location, text):
 
 
 def extract(path):
+    global page_count
     if path.stat().st_size > FILE_LIMIT:
         return 'file_limit'
     with path.open('rb') as file:
@@ -41,10 +46,18 @@ def extract(path):
             return 'encrypted'
         if len(reader.pages) > PAGE_LIMIT:
             return 'page_limit'
+        page_count = len(reader.pages)
         for index, page in enumerate(reader.pages):
-            text = page.extract_text(extraction_mode='plain')
-            if text and not emit(f'Page {index + 1}', text):
+            text = page.extract_text(extraction_mode='plain') or ''
+            if len(''.join(text.split())) < MINIMUM_PAGE_TEXT:
+                pages_without_text.append(index + 1)
+                if not emit(f'Page {index + 1}: no text', text):
+                    break
+            elif not emit(f'Page {index + 1}', text):
                 break
+        if truncated:
+            return 'text_limit'
+        return 'non_extractable' if len(pages_without_text) == page_count else 'ready'
     elif magic.startswith(b'PK'):
         with zipfile.ZipFile(path) as archive:
             entries = archive.infolist()
@@ -67,21 +80,16 @@ def extract(path):
         finally:
             workbook.close()
     else:
-        try:
-            data = path.read_bytes().decode('utf-8')
-        except UnicodeDecodeError:
-            return 'unsupported'
-        if '\x00' in data:
-            return 'unsupported'
-        for number, line in enumerate(data.splitlines(), 1):
-            if not emit(f'Line {number}', line):
-                break
+        # Plain text never reaches this parser: Agents read the original.
+        return 'unsupported'
     return 'text_limit' if truncated else 'ready' if output else 'non_extractable'
 
 
-try:
-    state = extract(Path('/references/original'))
-except Exception:
-    state = 'malformed'
-    output = []
-print(json.dumps({'state': state, 'text': ''.join(output), 'truncated': truncated}, ensure_ascii=False))
+if __name__ == '__main__':
+    try:
+        state = extract(Path('/references/original'))
+    except Exception:
+        state = 'malformed'
+        output = []
+    print(json.dumps({'state': state, 'text': ''.join(output), 'truncated': truncated,
+                      'page_count': page_count, 'pages_without_text': pages_without_text}, ensure_ascii=False))
