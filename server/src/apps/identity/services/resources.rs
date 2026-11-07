@@ -1,5 +1,6 @@
 //! Resource attributes come from stored rows and their authoritative workspace.
 use super::{access::Access, policy::Resource};
+use crate::apps::identity::models::DecisionOwner;
 use crate::{
 	Result,
 	domain::{Artifact, Event, Message, Task},
@@ -182,6 +183,7 @@ impl Access {
 		let Some(_visit) = self.checking_reads.enter(key.clone()) else {
 			return Ok(true);
 		};
+		let walk = self.begin_read_walk(DecisionOwner::Run(run), outermost);
 		let coordinator = self.dependency_frontier.is_none();
 		if coordinator {
 			self.dependency_frontier = Some(vec![]);
@@ -198,7 +200,7 @@ impl Access {
 			Err(_) if outermost => self.read_verdicts.abandon(),
 			Err(_) => {}
 		}
-		result
+		self.end_read_walk(walk, result).await
 	}
 	async fn run_reads_visible_in(&mut self, run: Uuid) -> Result<bool> {
 		aidash_application::authorization::visibility::provenance::run_reads_visible(

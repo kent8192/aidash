@@ -42,6 +42,13 @@ impl ResourceVisibilityScope for Reads<'_> {
 		self.access.cached_humans.insert(id, allowed);
 	}
 	async fn artifact_task(&mut self, artifact: &Artifact) -> Result<Option<Task>> {
+		if let Some(task) = self
+			.access
+			.read_lookups
+			.task(artifact.task_id, artifact.workspace_id)
+		{
+			return Ok(task);
+		}
 		let result: NativeResult<Option<Task>> = async {
 			let this = &mut *self.access;
 			let task: Option<Task> = {
@@ -149,6 +156,13 @@ impl ResourceVisibilityScope for NativeReads<'_> {
 		self.access.remember_human(id, allowed);
 	}
 	async fn artifact_task(&mut self, artifact: &Artifact) -> Result<Option<Task>> {
+		if let Some(task) = self
+			.access
+			.read_lookups
+			.task(artifact.task_id, artifact.workspace_id)
+		{
+			return Ok(task);
+		}
 		crate::apps::workspaces::models::Task::read_in(
 			self.access.tx.as_mut(),
 			artifact.task_id,

@@ -25,7 +25,7 @@ pub async fn run_reads_visible(scope: &mut dyn ReadProvenanceScope, run: Uuid) -
 	let mut pending = vec![run];
 	let mut visited = BTreeSet::new();
 	while let Some(run) = pending.pop() {
-		if !visited.insert(run) {
+		if !visited.insert(run) || !scope.first_visit(run) {
 			continue;
 		}
 		if !registry_reads_visible(scope, run).await?
@@ -35,7 +35,9 @@ pub async fn run_reads_visible(scope: &mut dyn ReadProvenanceScope, run: Uuid) -
 		{
 			return Ok(false);
 		}
-		for (workspace, kind, id) in scope.sources(run).await? {
+		let sources = scope.sources(run).await?;
+		scope.prepare_sources(&sources).await?;
+		for (workspace, kind, id) in sources {
 			if !source_visible(scope, workspace, &kind, id, &mut pending).await? {
 				return Ok(false);
 			}
@@ -74,7 +76,9 @@ pub async fn run_reads_invalidity_with_pending(
 		if let Some(reason) = scope.semantic_invalidity(run, &mut pending).await? {
 			return Ok(Some(reason));
 		}
-		for (workspace, kind, id) in scope.sources(run).await? {
+		let sources = scope.sources(run).await?;
+		scope.prepare_sources(&sources).await?;
+		for (workspace, kind, id) in sources {
 			if let Some(reason) =
 				source_invalidity(scope, workspace, &kind, id, &mut pending, true).await?
 			{

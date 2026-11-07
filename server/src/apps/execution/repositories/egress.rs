@@ -15,7 +15,7 @@ use aidash_application::tenant_secrets::{
 };
 use aidash_capability::tenant_secret::{Attach, Destination, SecretSubject};
 use aidash_domain::egress::Limits;
-use aidash_domain::preview::live::State;
+use aidash_domain::preview::live::{State, StopReason};
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
@@ -420,12 +420,53 @@ fn column(value: u64) -> i64 {
 	value.min(i64::MAX as u64) as i64
 }
 
+/// The Continuation Check of one request: the Run may still run, whatever it has
+/// read. The 30 second Read Recheck covers what it read and withdraws the command
+/// or stops the Live preview when that fails (ADR 0116).
+async fn continuation(access: &mut Access, run_id: Uuid) -> Result<aidash_domain::Run> {
+	let run = access.run_for_continuation(run_id).await?;
+	let task = crate::apps::workspaces::models::Task::read_in(
+		&mut **access.tx,
+		run.task_id,
+		run.workspace_id,
+	)
+	.await?
+	.ok_or(Error::Forbidden)?;
+	let resource = access.task_resource(&task).await?;
+	access.require(&resource, "task.execute").await?;
+	crate::authorization::catalog::entry(
+		access,
+		&aidash_domain::registry::EntityRef {
+			id: run.agent_id.clone(),
+			version: run.agent_version.clone(),
+		},
+		"agent.execute",
+	)
+	.await?;
+	Ok(run)
+}
+
+/// End a refused check through `finish`, so a policy denial stays on the record.
+async fn refused<T>(access: Access, error: Error) -> Result<T> {
+	match access.finish(Err::<(), _>(error)).await {
+		Err(error) => Err(error),
+		Ok(()) => Err(Error::Forbidden),
+	}
+}
+
 async fn live(
 	store: &Store,
 	identity: &SubjectIdentity,
 	operation: Uuid,
 ) -> Result<(Access, aidash_domain::Run)> {
 	let mut access = Access::begin(store, identity).await?;
+	match live_operation(&mut access, operation).await {
+		Ok(run) => Ok((access, run)),
+		Err(error) => refused(access, error).await,
+	}
+}
+
+async fn live_operation(access: &mut Access, operation: Uuid) -> Result<aidash_domain::Run> {
 	// Read the Operation without locking; recheck its committed state below
 	// after resolving the Run and current authority.
 	let op = super::super::capabilities::models::CoreOperations::objects()
@@ -435,40 +476,27 @@ async fn live(
 		.map_err(reinhardt::core::exception::Error::from)?
 		.pop()
 		.ok_or_else(expired)?;
+	// The Read Recheck withdrew it, so this request has lost its authority rather
+	// than outlived its operation.
+	if op.result.0["error"]
+		== aidash_domain::capabilities::operations::withdrawal::AUTHORITY_WITHDRAWN
+	{
+		return Err(Error::Forbidden);
+	}
 	access.subjects = serde_json::from_value(op.subjects.0)?;
-	let run = access.run_for_interaction(op.run_id).await?;
-	let task = access.task_read(run.task_id).await?;
-	let resource = access.task_resource(&task).await?;
-	access.require(&resource, "task.execute").await?;
-	crate::authorization::catalog::entry(
-		&mut access,
-		&aidash_domain::registry::EntityRef {
-			id: run.agent_id.clone(),
-			version: run.agent_version.clone(),
-		},
-		"agent.execute",
-	)
-	.await?;
-	// Read current control without holding a Run lock across admission or metering.
+	// Read control without holding a Run lock across admission or metering.
 	// In-flight streams recheck authority independently of body activity.
-	let current = crate::apps::execution::models::Run::objects()
-		.filter(crate::apps::execution::models::Run::field_id().eq(run.id))
-		.all_with_executor(&mut **access.tx)
-		.await
-		.map_err(reinhardt::core::exception::Error::from)?
-		.pop()
-		.ok_or(Error::Forbidden)?;
-	let current: aidash_domain::Run = current.try_into()?;
+	let current = continuation(access, op.run_id).await?;
 	if current.phase().is_terminal() || current.control != aidash_domain::RunControl::Active {
 		return Err(expired());
 	}
-	let operation = super::operations::get_unlocked(&mut access, operation).await?;
+	let operation = super::operations::get_unlocked(access, operation).await?;
 	if !matches!(operation.state.as_str(), "submitted" | "running")
 		|| operation.result["termination_confirmed"] == true
 	{
 		return Err(expired());
 	}
-	Ok((access, current))
+	Ok(current)
 }
 
 /// A session token's authority: the Run may have finished, but its Live
@@ -479,31 +507,18 @@ async fn live_session(
 	run_id: Uuid,
 ) -> Result<(Access, aidash_domain::Run)> {
 	let mut access = Access::begin(store, identity).await?;
-	let run = access.run_for_interaction(run_id).await?;
-	let task = access.task_read(run.task_id).await?;
-	let resource = access.task_resource(&task).await?;
-	access.require(&resource, "task.execute").await?;
-	crate::authorization::catalog::entry(
-		&mut access,
-		&aidash_domain::registry::EntityRef {
-			id: run.agent_id.clone(),
-			version: run.agent_version.clone(),
-		},
-		"agent.execute",
-	)
-	.await?;
-	let current = crate::apps::execution::models::Run::objects()
-		.filter(crate::apps::execution::models::Run::field_id().eq(run.id))
-		.all_with_executor(&mut **access.tx)
-		.await
-		.map_err(reinhardt::core::exception::Error::from)?
-		.pop()
-		.ok_or(Error::Forbidden)?;
-	let current: aidash_domain::Run = current.try_into()?;
-	if current.control != aidash_domain::RunControl::Active {
-		return Err(expired());
+	let result = async {
+		let current = continuation(&mut access, run_id).await?;
+		if current.control != aidash_domain::RunControl::Active {
+			return Err(expired());
+		}
+		Ok(current)
 	}
-	Ok((access, current))
+	.await;
+	match result {
+		Ok(run) => Ok((access, run)),
+		Err(error) => refused(access, error).await,
+	}
 }
 
 struct RequestMeter {
@@ -576,11 +591,7 @@ async fn admit_session(
 		tenant: session.tenant.clone(),
 		subject: session.principal.clone(),
 	};
-	let run = {
-		let (access, run) = live_session(store, &identity, preview.run_id).await?;
-		access.finish(Ok(())).await?;
-		run
-	};
+	let (mut access, run) = live_session(store, &identity, preview.run_id).await?;
 	let snapshot = run
 		.context
 		.binding_snapshot
@@ -599,7 +610,6 @@ async fn admit_session(
 	if binding.identity.registry_deployment != store.deployment.as_str() {
 		return Err(Error::Forbidden);
 	}
-	let mut access = live_session(store, &identity, preview.run_id).await?.0;
 	let current = crate::authorization::catalog::entry(
 		&mut access,
 		&binding.identity.local(),
@@ -1132,7 +1142,12 @@ impl Meter for RequestMeter {
 				if session.expires_at <= Utc::now()
 					|| !matches!(State::parse(&preview.state)?, State::Running | State::Stale)
 				{
-					return Err(expired());
+					let revoked = StopReason::RunAuthorityRevoked.as_str();
+					return Err(if preview.stop_reason.as_deref() == Some(revoked) {
+						Error::Forbidden
+					} else {
+						expired()
+					});
 				}
 				let (access, _) = live_session(&self.store, &self.identity, session.run_id).await?;
 				access.finish(Ok(())).await?;

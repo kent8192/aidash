@@ -236,6 +236,9 @@ impl WorkspaceRecordScope for Reads<'_> {
 		}))
 	}
 	async fn message_record(&mut self, workspace_id: Uuid, id: Uuid) -> Result<Option<Message>> {
+		if let Some(message) = self.access.read_lookups.message(id, workspace_id) {
+			return Ok(message);
+		}
 		let result: NativeResult<Option<Message>> = async {
 			Ok({
 				let query_bind_1 = id;

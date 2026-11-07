@@ -1,5 +1,12 @@
 # Aidash native migration history
 
+`identity/0068_decision_coalescing` adds `run_id`, `remote_grant_id` and
+`coalesced` to `authorization_decisions`. Existing rows name neither and stay as
+they are. `identity/0069_decision_coalescing_indexes` is database-only and adds
+the partial unique indexes that keep one coalesced allow per Run or Remote Grant,
+subject, action, resource and policy revision (ADR 0116). Both use typed
+operations.
+
 `execution/0119_event_waits` requests Run activation in the transaction that
 finishes an operation or changes an owned Task to a terminal or blocked state.
 PostgreSQL trigger functions require SQL assets because

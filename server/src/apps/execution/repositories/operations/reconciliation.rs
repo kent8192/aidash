@@ -161,7 +161,9 @@ impl OperationReconciliationScope for Scope<'_> {
 		}
 	}
 	async fn load(&mut self, id: Uuid, run: Uuid) -> Result<Loaded> {
-		let run = self.access.run_for_interaction(run).await?;
+		// The Read Recheck runs on its own 30 second loop (`read_recheck`), so this
+		// pass does not walk what the Run has read.
+		let run = self.access.run_for_continuation(run).await?;
 		crate::apps::execution::repositories::subnodes::require_writable(
 			self.access.tx.native_mut(),
 			run.workspace_id,

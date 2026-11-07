@@ -83,7 +83,12 @@ pub async fn reconcile(
 ) {
 	if let Err(error) = Box::pin(drive(repository, transport, id)).await {
 		tracing::warn!(%id,%error,"outbound operation stopped");
-		let _ = repository.fail(id, "AUTHORITY_WITHDRAWN").await;
+		let _ = repository
+			.fail(
+				id,
+				aidash_domain::capabilities::operations::withdrawal::AUTHORITY_WITHDRAWN,
+			)
+			.await;
 	}
 }
 #[cfg(test)]
