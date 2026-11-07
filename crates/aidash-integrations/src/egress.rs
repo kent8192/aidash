@@ -938,6 +938,7 @@ pub async fn serve_with_scopes(
 	let mut refused = RefusedConnections::default();
 	let mut connections = tokio::task::JoinSet::new();
 	let tunnels = Arc::new(proxy::TunnelManager::new(stopping.clone(), limits));
+	let mut failures = crate::accept::AcceptFailures::new("egress gateway");
 	loop {
 		if *stopping.borrow() || stopping.has_changed().is_err() {
 			connections.abort_all();
@@ -949,14 +950,7 @@ pub async fn serve_with_scopes(
 			_ = stopping.changed() => {},
 			Some(_) = connections.join_next(), if !connections.is_empty() => {},
 			accepted = listener.accept() => {
-				let (socket, _) = match accepted {
-					Ok(accepted) => accepted,
-					Err(error) => {
-						tracing::warn!(%error, "Egress accept failed; retrying");
-						tokio::select! { _ = tokio::time::sleep(Duration::from_secs(1)) => {}, _ = stopping.changed() => {} }
-						continue;
-					}
-				};
+				let Some((socket, _)) = failures.settle(accepted, &mut stopping).await else { continue; };
 				let Ok(permit) = slots.clone().try_acquire_owned() else {
 					let answering = refusals.clone().try_acquire_owned();
 					refused.note(answering.is_ok());
