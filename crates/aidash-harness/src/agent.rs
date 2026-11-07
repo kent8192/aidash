@@ -443,7 +443,9 @@ impl<'a> Executor<'a> {
 			// A handed-over child depends on these, so the parent cannot
 			// complete: abandon them now. That child then fails at its next
 			// dependency check, which wakes the parent.
-			if let Some(guard) = guard {
+			// A Run on another Node cannot name a Task but its own, so the Home
+			// checks `task.abandon` for its chain when it receives the command.
+			if let Some(guard) = guard.filter(|_| home.local()) {
 				for task in tasks {
 					guard.action("task.abandon", "task", task.id).await?;
 				}
@@ -2716,8 +2718,12 @@ connection: None,
 								.action("artifact.create", "artifact", run.task_id)
 								.await?;
 							guard.action("task.complete", "task", run.task_id).await?;
-							for task in &abandoning {
-								guard.action("task.abandon", "task", task.id).await?;
+							// A Run on another Node cannot name a Task but its own;
+							// its Home checks `task.abandon` for the chain instead.
+							if home.local() {
+								for task in &abandoning {
+									guard.action("task.abandon", "task", task.id).await?;
+								}
 							}
 						}
 						if !store.begin_final_completion(run, token).await? {

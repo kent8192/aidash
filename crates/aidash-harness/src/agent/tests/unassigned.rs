@@ -532,3 +532,32 @@ async fn the_wake_result_names_at_most_32_unassigned_tasks(mut fixture: Fixture)
 	let result = wake_result(&mut fixture, children(40, false, many)).await;
 	assert_eq!(result["unassigned_tasks"].as_array().unwrap().len(), 32);
 }
+
+#[rstest]
+#[tokio::test]
+async fn a_run_on_another_node_leaves_the_task_abandon_check_to_its_home(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = true;
+	state.remote_home = true;
+	state.denied_action = Some("task.abandon");
+	set_children(&fixture, children(1, false, vec![task(1, true, false)]));
+	answer(&mut fixture.run, "All done.");
+	advance_sources(&mut fixture).await.unwrap();
+	fixture.run = last_write(&fixture).1;
+	answer(&mut fixture.run, "All done, twice.");
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(
+		!fixture
+			.backend
+			.0
+			.actions
+			.lock()
+			.unwrap()
+			.iter()
+			.any(|action| action == "task.abandon")
+	);
+	assert_eq!(
+		*fixture.backend.0.completed_abandoning.lock().unwrap(),
+		[vec![Uuid::from_u128(1)]]
+	);
+}

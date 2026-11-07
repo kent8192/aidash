@@ -9775,10 +9775,9 @@ async fn a_run_on_another_node_abandons_the_unassigned_task_it_created(
 	.unwrap();
 	assert!(activated.is_some(), "activation was confirmed");
 	let parent = p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap();
-	let creator = parent
-		.owner
-		.clone()
-		.expect("the claimed parent has an owner");
+	// The remote Run has not claimed the parent yet, so it has no owner; the
+	// root subject of the execution stands in for its creator.
+	let creator = "alice".to_owned();
 	let child =
 		p.a.store
 			.create_task(
@@ -9839,8 +9838,10 @@ async fn a_run_on_another_node_abandons_the_unassigned_task_it_created(
 		p.a.store.task(&TEST_FIXTURE, p.task).await.unwrap().status,
 		aidash_server::domain::TaskStatus::Completed
 	);
-	// One notice, one more answer: the model was asked twice, not repeatedly.
-	assert_eq!(p.requests.lock().await.len(), 2);
+	// The fixture model first sends a progress message (1), answers finally and
+	// is told (2), then answers finally again (3): the notice costs exactly one
+	// extra model call, not one per held answer.
+	assert_eq!(p.requests.lock().await.len(), 3);
 	let snapshot =
 		p.a.store
 			.snapshot(&TEST_FIXTURE, parent.workspace_id)
