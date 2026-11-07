@@ -19,6 +19,7 @@ struct Scope {
 	verified: Vec<Value>,
 	/// `(kind, cancel, input)` of every operation control request.
 	polled: Vec<(String, bool, Value)>,
+	control_result: Option<Value>,
 	active_run: Option<Uuid>,
 	pending: Vec<u8>,
 	cache_entry: Option<(Uuid, String, Value)>,
@@ -116,7 +117,10 @@ impl FileScopePort for Scope {
 			}
 			Action::Control { kind, cancel } => {
 				self.polled.push((kind.to_owned(), cancel, input));
-				Ok(json!({"status": "running"}))
+				Ok(self
+					.control_result
+					.clone()
+					.unwrap_or(json!({"status": "running"})))
 			}
 			_ => panic!("unexpected execute effect"),
 		}
@@ -242,6 +246,7 @@ fn fixture(bytes: &[u8]) -> (Scope, Area, FileEntry) {
 			changed: None,
 			verified: vec![],
 			polled: vec![],
+			control_result: None,
 			active_run: None,
 			pending: vec![],
 			cache_entry: None,
@@ -550,6 +555,21 @@ async fn message_files_are_snapshots_of_authorized_current_working_area_paths() 
 }
 
 #[tokio::test]
+async fn message_attachments_can_snapshot_saved_files_while_the_area_is_running() {
+	let (mut scope, run, file) = invoke_fixture("file_read", json!({}));
+	scope.area.as_mut().unwrap().state = "running".into();
+	let files = snapshot_message_files(&mut scope, &run, std::slice::from_ref(&file.path))
+		.await
+		.unwrap();
+	assert_eq!(files[0].1, b"abcdefgh");
+	scope.area.as_mut().unwrap().state = "uncertain".into();
+	assert!(
+		matches!(snapshot_message_files(&mut scope, &run, &[file.path]).await,
+		Err(Error::Domain(aidash_domain::Error::Conflict(code))) if code == "AREA_UNAVAILABLE")
+	);
+}
+
+#[tokio::test]
 async fn committed_message_replay_never_reopens_a_changed_or_deleted_file() {
 	let (mut scope, run, file) = invoke_fixture("file_read", json!({}));
 	let key = Uuid::new_v4();
@@ -673,6 +693,30 @@ async fn direct_file_read_applies_the_admitted_limit_when_input_omits_it() {
 	assert_eq!(scope.opens, 1);
 }
 
+#[rstest::rstest]
+#[case::read("file_read")]
+#[case::search("file_search")]
+#[tokio::test]
+async fn a_running_area_exposes_only_its_saved_files(#[case] operation: &str) {
+	let (mut scope, run, file) = invoke_fixture(operation, json!({}));
+	scope.area.as_mut().unwrap().state = "running".into();
+	let input = if operation == "file_read" {
+		json!({"file_id":file.file_id,"representation":"text","expected_digest":file.digest})
+	} else {
+		json!({"query":"abc","mode":"literal","scope":"working"})
+	};
+	let result = invoke(&mut scope, &run, operation, input.clone(), "request")
+		.await
+		.unwrap();
+	assert_eq!(result.status, "completed");
+	assert_eq!(scope.opens, 1);
+	scope.area.as_mut().unwrap().state = "uncertain".into();
+	assert!(
+		matches!(invoke(&mut scope, &run, operation, input, "request").await,
+		Err(Error::Domain(aidash_domain::Error::Conflict(code))) if code == "AREA_UNAVAILABLE")
+	);
+}
+
 #[tokio::test]
 async fn subnode_file_selection_requires_both_ids_and_an_authorizing_adapter() {
 	let (mut scope, run, file) = invoke_fixture("file_read", json!({}));
@@ -786,6 +830,28 @@ async fn a_completion_check_is_polled_as_a_verification_operation() {
 		)]
 	);
 	assert!(scope.verified.is_empty());
+}
+
+#[tokio::test]
+async fn polling_preserves_the_runner_error_message_in_the_tool_result() {
+	let (mut scope, run, _) = invoke_fixture("shell_poll", json!({}));
+	scope.area.as_mut().unwrap().state = "running".into();
+	scope.control_result = Some(json!({"status":"uncertain","error":{
+		"code":"OUTPUT_LOST","message":"File changes were not saved."}}));
+	let response = invoke(
+		&mut scope,
+		&run,
+		"shell_poll",
+		json!({"operation_id":Uuid::new_v4()}),
+		"poll",
+	)
+	.await
+	.unwrap();
+	assert_eq!(response.status, "uncertain");
+	assert_eq!(
+		response.result["error"]["message"],
+		"File changes were not saved."
+	);
 }
 
 #[tokio::test]
