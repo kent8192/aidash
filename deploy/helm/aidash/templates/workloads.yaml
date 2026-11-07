@@ -168,6 +168,7 @@ spec:
             {{- if $.Values.memoryRecovery.existingClaim }}
             - { name: AIDASH_MEMORY_RECOVERY_DIR, value: {{ $.Values.memoryRecovery.directory | quote }} }
             {{- end }}
+            - { name: AIDASH_DATABASE_STATEMENT_TIMEOUT_SECONDS, value: {{ $.Values.database.statementTimeoutSeconds | int64 | toString | quote }} }
             - { name: AIDASH_ACTIVATION_BOOTSTRAP, value: "false" }
             - { name: AIDASH_ACTIVATION_NAMESPACE, value: {{ $.Values.activation.namespace | quote }} }
             - { name: AIDASH_ACTIVATION_MAX_AGE_SECONDS, value: {{ $.Values.activation.maxAgeSeconds | int64 | toString | quote }} }

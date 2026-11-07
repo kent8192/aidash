@@ -34,18 +34,25 @@ pub struct AtomicGate {
 
 impl AtomicGate {
 	pub(crate) async fn lock_exclusive(tx: &mut dyn TransactionExecutor) -> Result<Option<Uuid>> {
-		let row = Self::objects()
-			.filter(Self::field_singleton().eq(true))
-			.select_for_update()
-			.all_with_executor(tx)
-			.await
-			.map_err(|error| {
-				if error.code() == Some("55P03") {
-					Error::TransactionPending
-				} else {
-					Error::from(FrameworkError::from(error))
-				}
-			})?
+		// This waits behind every read lease, and a lease can last as long as a
+		// model call: a statement limit would stop writers from ever getting in.
+		let previous = crate::database::limits::lift(&mut *tx).await?;
+		let mut rows = crate::database::limits::unlimited(
+			Self::objects()
+				.filter(Self::field_singleton().eq(true))
+				.select_for_update()
+				.all_with_executor(&mut *tx),
+		)
+		.await
+		.map_err(|error| {
+			if error.code() == Some("55P03") {
+				Error::TransactionPending
+			} else {
+				Error::from(FrameworkError::from(error))
+			}
+		})?;
+		crate::database::limits::restore(tx, previous).await?;
+		let row = rows
 			.pop()
 			.ok_or_else(|| Error::NotFound("atomic visibility gate".into()))?;
 		Ok(row.transaction_id)

@@ -412,6 +412,17 @@
         }
       }
     },
+    "database": {
+      "type": "object",
+      "required": ["statementTimeoutSeconds"],
+      "properties": {
+        "statementTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400
+        }
+      }
+    },
     "activation": {
       "type": "object",
       "required": ["namespace", "maxAgeSeconds", "maxBytes", "replicas"],

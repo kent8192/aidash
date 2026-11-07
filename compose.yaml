@@ -135,6 +135,7 @@ services:
       - provider-credentials:/var/lib/aidash/provider-credentials
   backend:
     profiles: [dev]
+    restart: unless-stopped
     build:
       context: .
       target: dev-backend
