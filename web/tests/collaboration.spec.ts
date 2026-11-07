@@ -3008,6 +3008,21 @@ for (const failDecline of [false, true]) {
       await expect(
         dialog.getByRole("button", { name: "Decline and continue" }),
       ).toBeVisible();
+      // A retry declines again and never sends the message twice.
+      await dialog
+        .getByRole("button", { name: "Decline and continue", exact: true })
+        .click();
+      await expect
+        .poll(
+          () =>
+            submissions.filter(
+              (item) => item.path === "/api/runs/run-0/declined-calls",
+            ).length,
+        )
+        .toBe(2);
+      expect(
+        submissions.filter((item) => item.path === "/api/runs/run-0/message"),
+      ).toHaveLength(1);
     } else {
       await expect(
         dialog.getByRole("button", { name: "Decline this call" }),

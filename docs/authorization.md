@@ -391,18 +391,18 @@ Before a worker delegates locally, its outer authority transaction checks and lo
 
 The grant stores tenant, workspace, root subject, credential ID and the complete runtime agent chain; it contains no bearer secret. Every execution decision must allow both the originating subject and every agent in that chain, including each subject's policy-defined delegation ancestors. A child cannot escape a parent's denial. The chain is bounded to 32 subjects, including the root.
 
-| Boundary                   | Required action and resource                                                                                                                       |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Every worker step          | `workspace.read` on the workspace, `task.execute` on the task, `agent.execute` on the agent, `run.read` on the run and `memory.read` on its memory |
-| Load configured components | `registry.read` on the approved model/tool/skill/cluster entries                                                                                   |
-| Model inference            | `model.infer` on the model, `skill.use` on each skill and `memory.read`                                                                            |
-| Invoke a tool              | `tool.invoke` on the configured tool ID or `builtin:<tool name>`                                                                                   |
-| Read a Skill asset         | `skill_asset_read`: `skill.use` on a configured Registry Skill, or the Agent's Skills Core capability for a direct Skill                           |
-| Builtin mutations          | `task.create`, `task.delegate`, `artifact.create`, `message.create`, `memory.write` or `human.request` for the corresponding resource              |
-| Complete a task            | `artifact.create` and `task.complete`                                                                                                              |
-| Pause or cancel a run      | `workspace.read` and `run.control`                                                                                                                 |
-| Resume a run               | `workspace.read`, `run.read`, `memory.read` and `run.control`, as the Run's root subject, with everything the Run read still readable              |
-| Decline a paused call      | `workspace.read`, and either `run.control` as the Run's root subject or `run.decline_call`, with everything the Run read still readable            |
+| Boundary                   | Required action and resource                                                                                                                                       |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Every worker step          | `workspace.read` on the workspace, `task.execute` on the task, `agent.execute` on the agent, `run.read` on the run and `memory.read` on its memory                 |
+| Load configured components | `registry.read` on the approved model/tool/skill/cluster entries                                                                                                   |
+| Model inference            | `model.infer` on the model, `skill.use` on each skill and `memory.read`                                                                                            |
+| Invoke a tool              | `tool.invoke` on the configured tool ID or `builtin:<tool name>`                                                                                                   |
+| Read a Skill asset         | `skill_asset_read`: `skill.use` on a configured Registry Skill, or the Agent's Skills Core capability for a direct Skill                                           |
+| Builtin mutations          | `task.create`, `task.delegate`, `artifact.create`, `message.create`, `memory.write` or `human.request` for the corresponding resource                              |
+| Complete a task            | `artifact.create` and `task.complete`                                                                                                                              |
+| Pause or cancel a run      | `workspace.read` and `run.control`                                                                                                                                 |
+| Resume a run               | `workspace.read`, `run.read`, `memory.read` and `run.control`, as the Run's root subject, with everything the Run read still readable                              |
+| Decline a paused call      | `workspace.read`, `run.read`, `memory.read`, and either `run.control` as the Run's root subject or `run.decline_call`, with everything the Run read still readable |
 
 The policy action `tool.call_unapproved` on resource kind `tool` lets a tool call proceed without a Tool call approval. Its resource ID is the tool's registry ID, and its attributes are `version` and `operation`.
 

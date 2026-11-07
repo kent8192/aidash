@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
 import { Hint, formClass } from "../components/patterns";
@@ -31,6 +31,7 @@ export function DeclineCall({
   const [open, setOpen] = useState(false);
   const [sentence, setSentence] = useState("");
   const [sent, setSent] = useState(false);
+  const sentRef = useRef(false);
   const [key] = useState(() => crypto.randomUUID());
   const [busy, setBusy] = useState(false);
   if (!open)
@@ -45,13 +46,22 @@ export function DeclineCall({
   async function confirm() {
     setBusy(true);
     try {
-      if (nextDeclineStep({ sentence, sent }) === "message") {
-        if (!(await submit(() => send(sentence.trim(), key)))) return;
-        setSent(true);
-      }
-      if (await submit(() => decline(call.call))) {
+      // One submission: a successful one closes the Run's dialog, so the message and the decline
+      // must not be two. The ref records a sent message at once, so a retry never sends it again.
+      const ok = await submit(async () => {
+        if (
+          nextDeclineStep({ sentence, sent: sentRef.current }) === "message"
+        ) {
+          await send(sentence.trim(), key);
+          sentRef.current = true;
+          setSent(true);
+        }
+        return decline(call.call);
+      });
+      if (ok) {
         setOpen(false);
         setSentence("");
+        sentRef.current = false;
         setSent(false);
       }
     } finally {
