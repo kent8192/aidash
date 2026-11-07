@@ -276,6 +276,7 @@ async fn oldest_holder(tx: &mut dyn TransactionExecutor) -> Option<f64> {
 
 /// Whether no Authority Change of `tenant` is waiting or holding its locks.
 /// A failed test lets the work through, to meet the failure itself.
+#[allow(clippy::disallowed_methods)] // Reads no Tenant row; a scope would slow every recheck.
 pub async fn is_clear(pool: &Pool, tenant: &str) -> bool {
 	let (sql, values) = Query::select()
 		.expr_as(
