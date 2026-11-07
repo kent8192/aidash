@@ -505,6 +505,43 @@ async fn history_counts_the_messages_a_silent_node_left_out_and_not_the_refused_
 }
 #[rstest]
 #[tokio::test]
+async fn an_unconfirmed_message_is_counted_on_one_page_only() {
+	// Arrange: scanning newest first, 9 reads, 8 is silent, 7 reads, 6 is silent,
+	// 5 reads. The first page of two ends at 7; 6 and 5 belong to the next page.
+	let rows = |ids: &[u128]| {
+		ids.iter()
+			.map(|id| HistoryRow {
+				message: message(*id),
+				reply_thread_id: None,
+				root_thread_id: None,
+			})
+			.collect::<Vec<_>>()
+	};
+	let silent = HashSet::from([Uuid::from_u128(8), Uuid::from_u128(6)]);
+	let mut scope = Fixture {
+		history: VecDeque::from([rows(&[9, 8, 7, 6, 5]), rows(&[6, 5, 4])]),
+		silent,
+		..Default::default()
+	};
+	let request = |before| HistoryRequest {
+		thread_id: None,
+		before,
+		limit: 2,
+	};
+	// Act
+	let first = history(&mut scope, workspace(), request(None))
+		.await
+		.unwrap();
+	let second = history(&mut scope, workspace(), request(first.next_before))
+		.await
+		.unwrap();
+	// Assert: 8 on the first page, 6 on the second, never 6 twice.
+	assert_eq!(first.next_before, Some(Uuid::from_u128(7)));
+	assert_eq!(first.unconfirmed.iter().map(|e| e.count).sum::<u64>(), 1);
+	assert_eq!(second.unconfirmed.iter().map(|e| e.count).sum::<u64>(), 1);
+}
+#[rstest]
+#[tokio::test]
 async fn foreign_thread_cursor_is_rejected_before_scanning_history() {
 	let mut scope = Fixture {
 		reply: Some(Uuid::from_u128(9)),

@@ -290,6 +290,10 @@ pub async fn history(
 	};
 	let mut result = Vec::new();
 	let mut unconfirmed = Tally::new();
+	// What had been counted when the page's last message was found. The next
+	// page resumes after that message, so rows scanned beyond it are counted
+	// there, not here (#770).
+	let mut at_cut = Tally::new();
 	let mut scanned = 0;
 	let more = loop {
 		let rows = scope
@@ -310,6 +314,9 @@ pub async fn history(
 					attachments: Vec::new(),
 					citations: Vec::new(),
 				});
+				if result.len() == usize::from(input.limit) {
+					at_cut = unconfirmed.clone();
+				}
 				if result.len() > usize::from(input.limit) {
 					break;
 				}
@@ -331,6 +338,7 @@ pub async fn history(
 	};
 	if more {
 		result.pop();
+		unconfirmed = at_cut;
 	}
 	let next_before = if more {
 		result.last().map(|item| item.message.id)
