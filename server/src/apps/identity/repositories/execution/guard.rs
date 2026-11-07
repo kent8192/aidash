@@ -69,15 +69,16 @@ impl UseRecheckScope for UseGuard<'_> {
 	}
 }
 
-/// The Binding snapshot a Run executing here was admitted with, if it has one.
+/// The Binding snapshot a Run executing here was admitted with, if it has one. A damaged
+/// context has none: its Run's next boundary is failure delivery, which reads no context, and
+/// a resume must not fail on it.
 async fn stored_snapshot(
 	access: &mut Access,
 	run: &RunMetadata,
 ) -> Result<Option<aidash_domain::registry::bindings::BindingSnapshot>> {
-	let row = crate::apps::execution::models::Run::read_in(&mut **access.tx, run.id, None).await?;
-	Ok(row
-		.and_then(|row| row.context.binding_snapshot)
-		.map(|snapshot| *snapshot))
+	crate::apps::execution::models::Run::binding_snapshot_in(&mut **access.tx, run.id)
+		.await
+		.map_err(Into::into)
 }
 
 /// The first definition a Run with a Binding snapshot may no longer use, or none (the Use
