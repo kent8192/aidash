@@ -3093,37 +3093,41 @@ async fn remote_grant_reports_the_receivers_missing_catalog_approval(
 #[rstest::rstest]
 #[tokio::test]
 async fn a_withdrawal_on_the_executing_node_stops_a_foreign_runs_actions(
-	#[future(awt)]
-	#[with(false, false, true)]
-	scoped_pair: Pair,
+	#[future(awt)] scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
 	let authorization = aidash_server::authorization::Authorization {
 		pool: p.b.store.pool.clone(),
 	};
-	let action = async || {
+	let blocked = async |local_only: bool| {
 		let aidash_server::authorization::identity::Actor::Subject(identity) =
 			authorization.authenticate(&p.receiver_token).await.unwrap()
 		else {
 			panic!("a Subject Credential authenticates a subject")
 		};
+		let run = p.run().await;
 		let chain: Vec<String> = sqlx::query_scalar(
-			"SELECT subject_chain FROM authorization_remote_admissions WHERE id = $1",
+			"SELECT subject_chain FROM authorization_remote_admissions WHERE task_id = $1",
 		)
-		.bind(p.admission)
+		.bind(run.task_id)
 		.fetch_one(p.b.store.pool.fixture_driver())
 		.await
 		.unwrap();
-		aidash_server::authorization::services::execution::operation_may_act(
+		aidash_server::authorization::services::execution::use_recheck_blocks(
 			&p.b.store,
 			&identity,
 			chain,
-			p.admission,
+			&run.metadata(),
+			local_only,
 		)
 		.await
+		.unwrap()
 	};
-	let healthy = action().await;
-	assert!(healthy.is_ok(), "a healthy foreign Run acts: {healthy:?}");
+	assert_eq!(
+		blocked(false).await,
+		None,
+		"a healthy foreign Run is usable"
+	);
 	let reference = EntityRef {
 		id: "research".into(),
 		version: "1.0.0".into(),
@@ -3139,10 +3143,9 @@ async fn a_withdrawal_on_the_executing_node_stops_a_foreign_runs_actions(
 		)
 		.await
 		.unwrap();
-	assert!(matches!(
-		action().await,
-		Err(aidash_server::Error::Forbidden)
-	));
+	// An operation acting for it is stopped; a person's resume does not control such a Run.
+	assert_eq!(blocked(false).await, Some(reference));
+	assert_eq!(blocked(true).await, None);
 	p.close().await;
 }
 

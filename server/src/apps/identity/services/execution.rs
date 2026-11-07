@@ -139,6 +139,29 @@ pub async fn operation_may_act(
 	access.finish(result).await
 }
 
+/// The Use Recheck alone, for tests: the first definition of `run`'s Binding (or its Agent) that
+/// these subjects may no longer use. `local_only` is the resume's rule, which leaves out a Run of
+/// another Home executing here.
+#[doc(hidden)]
+pub async fn use_recheck_blocks(
+	store: &Store,
+	identity: &SubjectIdentity,
+	subjects: Vec<String>,
+	run: &crate::domain::RunMetadata,
+	local_only: bool,
+) -> Result<Option<EntityRef>> {
+	let mut access = Access::begin(store, identity).await?;
+	access.subjects = subjects;
+	let result = crate::apps::identity::repositories::execution::guard::use_block(
+		&mut access,
+		run,
+		local_only,
+	)
+	.await
+	.map_err(Into::into);
+	access.finish(result).await
+}
+
 /// The definitions a read of `run` leaves in the set a retained lease may admit from, for tests:
 /// read under the Run's own authority, or under a lease inherited from it.
 #[doc(hidden)]
