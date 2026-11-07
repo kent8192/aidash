@@ -3690,7 +3690,7 @@ class NormalDeleteProofTest(unittest.TestCase):
                         controller.stop('s')
                 world['after_delete'] = loss
                 with patch('time.time', return_value=100 + STOP_RETRY_SECONDS):
-                    with self.assertRaises(Exception):
+                    with self.assertRaises((ExecutionPodError, RuntimeError, OSError, subprocess.TimeoutExpired)):
                         controller.stop('s')
                 self.assertEqual(len(deletes), 1)
                 world.update(delete_raises=None, pod_lookup_fails=False, node_lookup_fails=False, wait_fails=False)
@@ -3715,7 +3715,7 @@ class NormalDeleteProofTest(unittest.TestCase):
                         controller.stop('s')
                 world.update(delete_raises=TimeoutError('delete reply lost'))
                 with patch('time.time', return_value=100 + STOP_RETRY_SECONDS):
-                    with self.assertRaises(Exception):
+                    with self.assertRaises((ExecutionPodError, RuntimeError, OSError)):
                         controller.stop('s')
                 world.update(delete_raises=None, node_uid=node_uid)
                 with patch('time.time', return_value=100 + STOP_RETRY_SECONDS + 1):
@@ -4044,12 +4044,11 @@ class DockerLateStartFenceTest(unittest.TestCase):
     def test_an_unreadable_claim_is_not_taken_for_a_finished_command(self):
         import tempfile
         from types import SimpleNamespace
-        from execution_pod import ExecutionPodError
         with tempfile.TemporaryDirectory() as directory:
             controller, calls, _ = self._fixture(directory, running=False, started=False)
             controller.backend.kube = lambda args, *rest, **kwargs: SimpleNamespace(
                 returncode=1 if 'claim' in args else 0, stdout=b'{"running":false}')
-            with self.assertRaises(Exception):
+            with self.assertRaisesRegex(RuntimeError, 'Could not fence'):
                 controller._stop_command(self.op)
 
 

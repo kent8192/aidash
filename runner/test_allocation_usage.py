@@ -123,56 +123,59 @@ class AllocationUsageTest(unittest.TestCase):
         # A create that fails once while GET keeps working leaves no Pod. The retry creates one, and the
         # operation must still be able to observe it. Only the real `pod()` can show that: tests that
         # replace it never reach the allocation journal.
+        for kind in ('python', 'shell'):
+            with self.subTest(kind=kind):
+                self._retried_pod_is_observed(kind)
+
+    def _retried_pod_is_observed(self, kind):
         class Dispatched(Exception):
             pass
 
-        for kind in ('python', 'shell'):
-            with self.subTest(kind=kind):
-                operation = str(uuid.uuid4())
-                record = dict(self.record, operation_id=operation, status='accepted', executed=False,
-                              cancel_requested=False, startup_at=time.time(),
-                              request={'usage_tenant': 'acme', 'kind': kind, 'seconds': 60, 'files': []})
-                record.pop('pod_uid')
-                save(self.runner.path(operation), record)
+        operation = str(uuid.uuid4())
+        record = dict(self.record, operation_id=operation, status='accepted', executed=False,
+                      cancel_requested=False, startup_at=time.time(),
+                      request={'usage_tenant': 'acme', 'kind': kind, 'seconds': 60, 'files': []})
+        record.pop('pod_uid')
+        save(self.runner.path(operation), record)
 
-                def pod_of(uid, state):
-                    pod = copy.deepcopy(self.pod)
-                    pod['metadata'].update(uid=uid, name='operation-' + operation)
-                    pod['spec'].update(nodeName='node')
-                    pod['spec']['containers'][0]['image'] = 'image'
-                    pod['status']['containerStatuses'][0]['containerID'] = 'containerd://abc'
-                    for status in pod['status']['containerStatuses']:
-                        status['state'] = state
-                    return pod
+        def pod_of(uid, state):
+            pod = copy.deepcopy(self.pod)
+            pod['metadata'].update(uid=uid, name='operation-' + operation)
+            pod['spec'].update(nodeName='node')
+            pod['spec']['containers'][0]['image'] = 'image'
+            pod['status']['containerStatuses'][0]['containerID'] = 'containerd://abc'
+            for status in pod['status']['containerStatuses']:
+                status['state'] = state
+            return pod
 
-                # The shell path only drops its binding when a Pod it saw has vanished, so the first Pod is
-                # one that is not yet running; the Python path drops it when a create left no Pod at all.
-                first = pod_of(str(uuid.uuid4()), {'waiting': {}}) if kind == 'shell' else None
-                retried = pod_of(str(uuid.uuid4()), {'running': {}})
-                visible = {'pod': first}
+        # The shell path only drops its binding when a Pod it saw has vanished, so the first Pod is
+        # one that is not yet running; the Python path drops it when a create left no Pod at all.
+        first = pod_of(str(uuid.uuid4()), {'waiting': {}}) if kind == 'shell' else None
+        retried = pod_of(str(uuid.uuid4()), {'running': {}})
+        visible = {'pod': first}
 
-                creates = []
+        creates = []
 
-                def kube(arguments, data=None, **_):
-                    if arguments[0] == 'create':
-                        creates.append(arguments)
-                        if kind == 'python' and len(creates) == 1:
-                            return Mock(returncode=1, stderr=b'etcd request timed out')
-                        visible['pod'] = retried
-                        return Mock(returncode=0, stderr=b'')
-                    return Mock(stdout=json.dumps(visible['pod']).encode() if visible['pod'] else b'')
+        def kube(arguments, data=None, **_):
+            if arguments[0] == 'create':
+                creates.append(arguments)
+                if kind == 'python' and len(creates) == 1:
+                    return Mock(returncode=1, stderr=b'etcd request timed out')
+                visible['pod'] = retried
+                return Mock(returncode=0, stderr=b'')
+            return Mock(stdout=json.dumps(visible['pod']).encode() if visible['pod'] else b'')
 
-                self.runner.kube = kube
-                self.runner.manifest = Mock(return_value={})
-                self.runner.execution_limits = Mock(return_value={})
-                self.runner.guard = Mock(side_effect=Dispatched)
-                once = self.runner._reconcile_python_once if kind == 'python' else self.runner._reconcile_shell_once
-                with patch('time.sleep', side_effect=lambda _: visible.update(pod=None)):
-                    with self.assertRaisesRegex(RuntimeError, 'absent before dispatch'):
-                        once(operation)
-                    with self.assertRaises(Dispatched):
-                        once(operation)
-                self.assertEqual(self.runner.get(operation)['pod_uid'], retried['metadata']['uid'])
+        self.runner.kube = kube
+        self.runner.manifest = Mock(return_value={})
+        self.runner.execution_limits = Mock(return_value={})
+        self.runner.guard = Mock(side_effect=Dispatched)
+        once = self.runner._reconcile_python_once if kind == 'python' else self.runner._reconcile_shell_once
+        with patch('time.sleep', side_effect=lambda _: visible.update(pod=None)):
+            with self.assertRaisesRegex(RuntimeError, 'absent before dispatch'):
+                once(operation)
+            with self.assertRaises(Dispatched):
+                once(operation)
+        self.assertEqual(self.runner.get(operation)['pod_uid'], retried['metadata']['uid'])
 
     def test_delayed_operation_poll_does_not_quarantine_terminal_receipt(self):
         self.runner.observe_allocation(self.record, self.pod)

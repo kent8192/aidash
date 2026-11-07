@@ -133,38 +133,41 @@ class VerificationTest(unittest.TestCase):
 
     def test_a_long_input_upload_is_not_charged_to_the_start_limit(self):
         # The start limit bounds the wait for the Pod; uploading inputs is not part of it (#709, decision 9).
+        for kind in ('shell', 'python'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as root:
+                self._long_upload_is_not_charged(kind, root)
+
+    def _long_upload_is_not_charged(self, kind, root):
         class Dispatched(Exception):
             pass
 
-        for kind in ('shell', 'python'):
-            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as root:
-                runner, operation, record, clock = self.starting(root, kind, executed=False, uploads=4)
-                seen = []
+        runner, operation, record, clock = self.starting(root, kind, executed=False, uploads=4)
+        seen = []
 
-                def collector(_, action, data=None, **kwargs):
-                    seen.append(action[0])
-                    if action[0] == 'prepared':
-                        return Mock(stdout=b'{"digest":null}')
-                    if action[0] == 'write':
-                        clock[0] += 40
-                        return Mock(stdout=b'')
-                    # A shell command starts at its hydrate; a Python cell is sent to the node guard after it.
-                    if kind == 'shell':
-                        raise Dispatched
-                    return Mock(stdout=b'{}')
+        def collector(_, action, data=None, **kwargs):
+            seen.append(action[0])
+            if action[0] == 'prepared':
+                return Mock(stdout=b'{"digest":null}')
+            if action[0] == 'write':
+                clock[0] += 40
+                return Mock(stdout=b'')
+            # A shell command starts at its hydrate; a Python cell is sent to the node guard after it.
+            if kind == 'shell':
+                raise Dispatched
+            return Mock(stdout=b'{}')
 
-                def guard(_, action, **kwargs):
-                    if action == 'cell':
-                        raise Dispatched
-                    return {}
+        def guard(_, action, **kwargs):
+            if action == 'cell':
+                raise Dispatched
+            return {}
 
-                runner.exec_collector = Mock(side_effect=collector)
-                runner.guard = Mock(side_effect=guard)
-                with patch('time.time', side_effect=lambda: clock[0]), patch('time.sleep'), self.assertRaises(Dispatched):
-                    (runner._reconcile_python_once if kind == 'python' else runner._reconcile_shell_once)(operation)
-                self.assertEqual(seen, ['prepared'] + ['write'] * 4 + ['hydrate'])
-                self.assertGreater(clock[0] - record['startup_at'], 120)
-                self.assertTrue(record['executed'])
+        runner.exec_collector = Mock(side_effect=collector)
+        runner.guard = Mock(side_effect=guard)
+        with patch('time.time', side_effect=lambda: clock[0]), patch('time.sleep'), self.assertRaises(Dispatched):
+            (runner._reconcile_python_once if kind == 'python' else runner._reconcile_shell_once)(operation)
+        self.assertEqual(seen, ['prepared'] + ['write'] * 4 + ['hydrate'])
+        self.assertGreater(clock[0] - record['startup_at'], 120)
+        self.assertTrue(record['executed'])
 
     def test_a_dispatched_command_gets_its_hydrate_and_its_cancel_after_the_start_limit(self):
         # Hydrate started the command but its reply was lost: the retry must send it again, and must reach the
