@@ -184,6 +184,12 @@ pub struct RuntimeResult {
 	pub truncated: bool,
 	pub effects_may_have_occurred: bool,
 	pub error: Option<super::errors::CapabilityError>,
+	/// Seconds since the output shown was last fetched from the running command. It keeps growing when the view is stalled, which does not mean the command is. Absent when no output was fetched.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub output_stale_seconds: Option<u64>,
+	/// True when the command was still running at its time limit. Absent otherwise.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub deadline_expired: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
@@ -391,6 +397,7 @@ pub struct Shell {
 	pub idempotency_key: Uuid,
 	#[validate(length(min = 1, max = 64000))]
 	pub command: String,
+	/// Seconds the command may run once it starts. It is then stopped, and its changes under /work are saved.
 	pub timeout_seconds: Option<u64>,
 	#[validate(range(min = 0))]
 	/// The working area revision: take it from the previous result's `revision`; a new area starts at 1.
@@ -450,6 +457,12 @@ pub struct OperationResult {
 	pub truncated: bool,
 	pub effects_may_have_occurred: bool,
 	pub error: Option<super::errors::CapabilityError>,
+	/// Seconds since the output shown was last fetched from the running command. It keeps growing when the view is stalled, which does not mean the command is. Absent when no output was fetched.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub output_stale_seconds: Option<u64>,
+	/// True when the command was still running at its time limit. Absent otherwise.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub deadline_expired: Option<bool>,
 }
 
 use uuid::Uuid;

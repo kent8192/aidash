@@ -344,7 +344,19 @@ pub async fn sweep(repository: &dyn ReferenceRepository, cursor: &mut Cursor) ->
 	let receipts = repository.receipts(cursor.receipt).await?;
 	cursor.receipt = lifecycle::next_receipt_cursor(&receipts);
 	for (id, data) in receipts {
-		let operation: Uuid = serde_json::from_value(data["operation_id"].clone())?;
+		// One unreadable row must not hold back the rest of the batch.
+		let operation: Uuid = match serde_json::from_value(data["operation_id"].clone()) {
+			Ok(operation) => operation,
+			Err(error) => {
+				metrics::counter!(
+					"aidash_background_service_failures_total",
+					"service" => "capabilities.references"
+				)
+				.increment(1);
+				tracing::warn!(%id,%error,"skipping a reference receipt that cannot be read");
+				continue;
+			}
+		};
 		if repository
 			.request(
 				"POST",
@@ -360,3 +372,6 @@ pub async fn sweep(repository: &dyn ReferenceRepository, cursor: &mut Cursor) ->
 	Ok(())
 }
 use sha2::Digest as _;
+
+#[cfg(test)]
+mod tests;
