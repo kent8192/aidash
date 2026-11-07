@@ -2,9 +2,9 @@
 use super::super::views;
 use crate::apps::execution::serializers::human_requests::HumanRequest;
 use crate::apps::execution::serializers::management::ClaimInput;
-use crate::apps::execution::serializers::management::ControlInput;
 use crate::apps::execution::serializers::management::EventQuery;
 use crate::apps::execution::serializers::management::InferenceStreamQuery;
+use crate::apps::execution::serializers::management::{ControlInput, DeclineCallInput};
 use crate::apps::execution::serializers::research::{
 	CitedEvidence, HistoryPage, RetentionInput, RevocationInput, RevocationRecord,
 	TenantRetentionView,
@@ -151,6 +151,15 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		)?;
 	contracts.request::<_, ControlInput>(document, views::management::run_control)?;
 	contracts.path(document, views::management::run_control, &["Uuid"])?;
+	contracts
+		.response::<_, crate::apps::identity::services::execution::management::RunManagement>(
+			document,
+			views::management::run_decline_call,
+			200,
+			"application/json",
+		)?;
+	contracts.request::<_, DeclineCallInput>(document, views::management::run_decline_call)?;
+	contracts.path(document, views::management::run_decline_call, &["Uuid"])?;
 	contracts.response::<_, SentResponse>(
 		document,
 		views::management::run_message,

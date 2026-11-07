@@ -137,6 +137,48 @@ impl RunDetailsScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn may_decline(&mut self, run: &RunInspection) -> Result<bool> {
+		let result: NativeResult<bool> = async {
+			let access = self.access.get();
+			let grant: Option<super::Grant> = {
+				let query_bind_1 = run.id;
+				crate::database::native::query_as(
+					&Query::select()
+						.column(Asterisk)
+						.from(Alias::new("authorization_execution"))
+						.and_where(
+							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("run_id"))).eq(
+								SimpleExpr::CustomWithExpr(
+									"(?)".to_owned(),
+									vec![Expr::value(query_bind_1.to_owned()).into()],
+								),
+							),
+						)
+						.to_string(PostgresQueryBuilder),
+				)
+				.fetch_optional(&mut **access.tx)
+				.await?
+			};
+			let Some(grant) = grant else {
+				return Ok(false);
+			};
+			let own = grant.tenant == access.identity.tenant
+				&& grant.root_subject == access.identity.subject;
+			let resource = access.resource("run", run.id, serde_json::json!({}));
+			access
+				.decide(
+					&resource,
+					if own {
+						"run.control"
+					} else {
+						"run.decline_call"
+					},
+				)
+				.await
+		}
+		.await;
+		result.map_err(Into::into)
+	}
 	async fn egress_requests(
 		&mut self,
 		id: Uuid,

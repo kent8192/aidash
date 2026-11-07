@@ -43,6 +43,8 @@ pub fn url_patterns() -> UnifiedRouter {
 				.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 				.endpoint(management::run_control)
 				.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+				.endpoint(management::run_decline_call)
+				.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 				.endpoint(management::run_message)
 				.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 				.endpoint(management::human_answer)

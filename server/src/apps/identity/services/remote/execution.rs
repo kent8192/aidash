@@ -44,6 +44,23 @@ pub(crate) async fn control(
 	.map_err(Into::into)
 }
 
+pub(crate) async fn decline_call(
+	f: Federation,
+	actor: Actor,
+	(task, id): (Uuid, Uuid),
+	input: RemoteExecutionDeclineInput,
+) -> Result<RemoteExecutionActivation> {
+	aidash_application::authorization::home::decline_call(
+		&crate::bootstrap::home_execution_repository(&f, actor),
+		task,
+		id,
+		&input.call,
+	)
+	.await
+	.map(Into::into)
+	.map_err(Into::into)
+}
+
 pub(crate) async fn list(
 	f: Federation,
 	actor: Actor,
@@ -126,7 +143,8 @@ use reinhardt::injectable;
 
 pub use crate::apps::identity::serializers::remote_execution::{
 	RemoteExecutionActivation, RemoteExecutionControl, RemoteExecutionControlInput,
-	RemoteExecutionMessageInput, RemoteExecutionMessageReceipt, RemoteExecutionStatus,
+	RemoteExecutionDeclineInput, RemoteExecutionMessageInput, RemoteExecutionMessageReceipt,
+	RemoteExecutionStatus,
 };
 
 pub(crate) async fn follow_up(

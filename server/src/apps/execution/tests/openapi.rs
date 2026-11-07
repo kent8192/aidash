@@ -427,3 +427,22 @@ fn reference_and_transfer_chunks_have_distinct_schemas(document: Value) {
 		"#/components/schemas/Request_ReferenceChunk"
 	);
 }
+
+#[rstest]
+fn openapi_describes_declining_a_paused_call(document: Value) {
+	let decline = &document["paths"]["/api/runs/{id}/declined-calls"]["post"];
+	// It answers what `/control` answers.
+	assert_eq!(
+		decline["responses"]["200"]["content"]["application/json"]["schema"],
+		json!({"$ref":"#/components/schemas/RunManagement"})
+	);
+	let schemas = &document["components"]["schemas"];
+	assert_eq!(schemas["DeclineCallInput"]["required"], json!(["call"]));
+	assert_eq!(schemas["DeclineCallInput"]["additionalProperties"], false);
+	// The call is offered beside the Run, and only to someone who may decline it.
+	assert!(schemas["RunDetails"]["properties"]["declinable_call"].is_object());
+	assert!(
+		document["paths"]["/api/tasks/{task}/remote-grants/{id}/declined-calls"]["post"]
+			.is_object()
+	);
+}

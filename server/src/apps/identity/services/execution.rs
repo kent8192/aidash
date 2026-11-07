@@ -24,6 +24,7 @@ fn authority_gone_after_effect(error: Error) -> Error {
 				check: aidash_domain::tool::RefusalCheck::RunAuthority,
 				action: None,
 				subject: None,
+				call: None,
 			}))
 		}
 		error => error,
@@ -2703,6 +2704,21 @@ pub async fn resume(f: &Federation, identity: &SubjectIdentity, id: Uuid) -> Res
 	.map_err(Into::into)
 }
 
+pub async fn decline_call(
+	f: &Federation,
+	identity: &SubjectIdentity,
+	id: Uuid,
+	call: &str,
+) -> Result<RunInspection> {
+	aidash_application::authorization::runs::decline_call(
+		&crate::bootstrap::run_control_repository(f, identity),
+		id,
+		call,
+	)
+	.await
+	.map_err(Into::into)
+}
+
 pub async fn details(f: &Federation, identity: &SubjectIdentity, id: Uuid) -> Result<RunDetails> {
 	details_page(f, identity, id, 0).await
 }
@@ -2722,6 +2738,7 @@ pub async fn details_page(
 		provider_tool_activity: details.provider_tool_activity,
 		egress_requests: details.egress_requests,
 		run: details.run,
+		declinable_call: details.declinable_call,
 		invocations: details.invocations.into_iter().map(Into::into).collect(),
 		memory: details.memory,
 		media_input_routes: details.media_input_routes,

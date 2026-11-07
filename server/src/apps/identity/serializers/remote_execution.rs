@@ -15,6 +15,9 @@ pub struct RemoteExecutionActivation {
 	/// Typed context-recovery pause reason of the remote Run.
 	#[serde(default)]
 	pub context_reason: Option<aidash_domain::context::recovery::Failure>,
+	/// The tool call the remote Run is paused on, present only when the caller may decline it.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub declinable_call: Option<aidash_domain::run_state::DeclinableCall>,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -32,6 +35,14 @@ pub use aidash_domain::federation::execution::admission::RemoteExecutionControl;
 #[serde(deny_unknown_fields)]
 pub struct RemoteExecutionControlInput {
 	pub action: RemoteExecutionControl,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, reinhardt::Validate)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteExecutionDeclineInput {
+	/// The key of the call the remote Run is paused on; at most 256 characters.
+	#[validate(length(min = 1, max = 256))]
+	pub call: String,
 }
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
@@ -68,6 +79,7 @@ impl From<aidash_domain::federation::execution::admission::Activation>
 			error: row.error,
 			semantic_reason: row.semantic_reason,
 			context_reason: row.context_reason,
+			declinable_call: row.declinable_call,
 		}
 	}
 }

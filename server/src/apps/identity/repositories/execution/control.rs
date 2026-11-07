@@ -48,6 +48,9 @@ impl RunControlRepository for Controls<'_> {
 }
 #[async_trait]
 impl RunControlScope for Scope<'_> {
+	fn node_id(&self) -> &str {
+		self.federation.config.deployment.as_str()
+	}
 	fn identity(&self) -> ExecutionPrincipal {
 		ExecutionPrincipal {
 			tenant: self.access.identity.tenant.clone(),
@@ -173,6 +176,15 @@ impl RunControlScope for Scope<'_> {
 			.store
 			.control_in(&mut self.access.tx, id, RunControlAction::Resume)
 			.await
+			.map_err(Into::into)
+	}
+	async fn decline_call(&mut self, id: Uuid, call: &str) -> Result<RunInspection> {
+		let by = self.access.identity.subject.clone();
+		self.federation
+			.store
+			.decline_call_in(&mut self.access.tx, id, call, &by)
+			.await
+			.map(|declined| declined.run)
 			.map_err(Into::into)
 	}
 	async fn finish(self: Box<Self>, result: Result<RunInspection>) -> Result<RunInspection> {

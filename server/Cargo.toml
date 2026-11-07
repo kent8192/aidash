@@ -192,6 +192,10 @@ name = "run_control"
 path = "src/apps/identity/tests/run_control.rs"
 
 [[test]]
+name = "declined_calls"
+path = "src/apps/identity/tests/declined_calls.rs"
+
+[[test]]
 name = "demo_data"
 path = "src/apps/identity/tests/demo_data.rs"
 

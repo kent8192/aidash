@@ -64,7 +64,7 @@ fn repository() -> Repository {
 		id: id(1),
 		task_id: id(2),
 		workspace_id: id(3),
-		home_node: "aidash://home".into(),
+		home_node: "aidash://home/brave-otter-k3m9q2xa".into(),
 		agent_id: "producer".into(),
 		agent_version: "1".into(),
 		phase: RunPhase::Ready,
@@ -454,4 +454,129 @@ async fn resuming_an_inspectable_corrupt_run_does_not_turn_its_context_into_exec
 		Some("invalid execution context")
 	);
 	assert_eq!(repository.0.lock().unwrap().calls, expected());
+}
+
+fn call() -> &'static str {
+	"run:7:0"
+}
+fn expected_decline() -> Vec<&'static str> {
+	vec![
+		"begin",
+		"run",
+		"workspace",
+		"workspace.read",
+		"visible",
+		"grant_lock",
+		"run.control",
+		"credential",
+		"decline",
+		"commit",
+		"notify",
+	]
+}
+#[rstest]
+#[tokio::test]
+async fn the_runs_person_declines_under_run_control_and_takes_the_credential(
+	repository: Repository,
+) {
+	let run = decline_call(&repository, id(1), call()).await.unwrap();
+	assert_eq!(run.control, RunControl::Active);
+	let state = repository.0.lock().unwrap();
+	assert_eq!(state.calls, expected_decline());
+	assert_eq!(state.credential, Some(id(9)));
+	assert_eq!(state.declined.as_deref(), Some(call()));
+}
+#[rstest]
+#[tokio::test]
+async fn a_holder_of_run_decline_call_declines_and_leaves_the_credential(repository: Repository) {
+	repository
+		.0
+		.lock()
+		.unwrap()
+		.grant
+		.as_mut()
+		.unwrap()
+		.root_subject = "other".into();
+	decline_call(&repository, id(1), call()).await.unwrap();
+	let state = repository.0.lock().unwrap();
+	assert!(state.calls.contains(&"run.decline_call".into()));
+	assert!(!state.calls.contains(&"run.control".into()));
+	assert!(!state.calls.contains(&"credential".into()));
+	assert_eq!(state.credential, None);
+	assert_eq!(state.declined.as_deref(), Some(call()));
+}
+#[rstest]
+#[case::another_person_with_only_run_control("other", "run.decline_call")]
+#[case::the_runs_person_without_run_control("deployment_administrator", "run.control")]
+#[tokio::test]
+async fn nobody_declines_without_the_authority_for_their_relation(
+	repository: Repository,
+	#[case] root: &str,
+	#[case] denied: &'static str,
+) {
+	{
+		let mut state = repository.0.lock().unwrap();
+		state.grant.as_mut().unwrap().root_subject = root.into();
+		state.deny = Some(denied);
+	}
+	assert!(matches!(
+		decline_call(&repository, id(1), call()).await,
+		Err(Error::Forbidden)
+	));
+	let state = repository.0.lock().unwrap();
+	assert!(state.declined.is_none());
+	assert!(!state.committed);
+}
+#[rstest]
+#[tokio::test]
+async fn a_run_another_node_executes_is_never_declined_here(repository: Repository) {
+	{
+		let mut state = repository.0.lock().unwrap();
+		state.raw.as_mut().unwrap().metadata.home_node =
+			"aidash://elsewhere/brave-otter-k3m9q2xa".into();
+	}
+	assert!(matches!(
+		decline_call(&repository, id(1), call()).await,
+		Err(Error::Forbidden)
+	));
+	let state = repository.0.lock().unwrap();
+	assert!(state.declined.is_none());
+	// Whatever the caller holds, the check ends before asking who they are.
+	assert!(!state.calls.contains(&"grant_lock".into()));
+}
+#[rstest]
+#[tokio::test]
+async fn declining_says_what_blocks_it_only_to_someone_who_may_decline(repository: Repository) {
+	{
+		let mut state = repository.0.lock().unwrap();
+		state.visible = false;
+		state.block = Some(withdrawn());
+	}
+	let result = decline_call(&repository, id(1), call()).await;
+	assert!(matches!(result, Err(Error::ResumeBlocked(block)) if block == withdrawn()));
+	{
+		let state = repository.0.lock().unwrap();
+		assert!(state.declined.is_none());
+		assert_eq!(state.credential, None);
+	}
+	// A holder of neither right never learns it.
+	repository.0.lock().unwrap().deny = Some("run.control");
+	assert!(matches!(
+		decline_call(&repository, id(1), call()).await,
+		Err(Error::Forbidden)
+	));
+}
+#[rstest]
+#[case::empty("")]
+#[case::too_long(&"x".repeat(257))]
+#[tokio::test]
+async fn the_call_key_is_bounded(repository: Repository, #[case] key: &str) {
+	assert!(matches!(
+		decline_call(&repository, id(1), key).await,
+		Err(Error::Invalid(_))
+	));
+	assert_eq!(
+		repository.0.lock().unwrap().calls,
+		vec!["begin", "rollback"]
+	);
 }

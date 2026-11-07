@@ -283,6 +283,49 @@ impl HomeScope for Scope {
 		.await;
 		result.map(|r| r.map(Into::into)).map_err(Into::into)
 	}
+	async fn task_grant(&mut self, task: Uuid, id: Uuid) -> Result<Option<Grant>> {
+		let result: NativeResult<Option<GrantRow>> = async {
+			let tenant = self.access.identity.tenant.clone();
+			let access = &mut *self.access;
+			Ok(crate::database::native::query_as(
+				&Query::select()
+					.column(Asterisk)
+					.from(Alias::new("authorization_remote_grants"))
+					.and_where(SimpleExpr::CustomWithExpr(
+						"(id=? AND task_id=? AND tenant=?)".to_owned(),
+						vec![
+							Expr::value(id).into(),
+							Expr::value(task).into(),
+							Expr::value(tenant).into(),
+						],
+					))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_optional(&mut **access.tx)
+			.await?)
+		}
+		.await;
+		result.map(|r| r.map(Into::into)).map_err(Into::into)
+	}
+	async fn may(&mut self, resource: &Resource, action: &str) -> Result<bool> {
+		self.access
+			.decide(resource, action)
+			.await
+			.map_err(Into::into)
+	}
+	async fn call_declined(&mut self, workspace: Uuid, event: Value) -> Result<()> {
+		let result: NativeResult<()> = async {
+			crate::apps::execution::models::event_records::append(
+				&mut **self.access.tx,
+				Some(workspace),
+				"remote.call_declined",
+				event,
+			)
+			.await
+		}
+		.await;
+		result.map_err(Into::into)
+	}
 	async fn grants(&mut self, task: Uuid) -> Result<Vec<Grant>> {
 		let result: NativeResult<Vec<GrantRow>> = async {
 			let identity = self.access.identity.clone();

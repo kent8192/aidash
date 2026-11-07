@@ -401,6 +401,22 @@ impl HarnessManagement {
 		};
 		management::control(f, actor, id, RunManagementInput { action }).await
 	}
+	/// Declining answers as `/control` does. A Deployment Administrator never declines.
+	pub(crate) async fn run_decline_call(
+		&self,
+		actor: Actor,
+		id: Uuid,
+		input: crate::apps::execution::serializers::management::DeclineCallInput,
+	) -> Result<execution::management::RunManagement> {
+		let Actor::Subject(identity) = &actor else {
+			return Err(Error::Forbidden);
+		};
+		Ok(
+			execution::decline_call(&self.runtime, identity, id, &input.call)
+				.await?
+				.into(),
+		)
+	}
 	pub(crate) async fn run_message(
 		&self,
 		actor: Actor,

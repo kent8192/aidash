@@ -37,6 +37,7 @@ pub(super) fn subnode_workspace_write(action: &str) -> bool {
 			| "message.update"
 			| "run.message"
 			| "run.control"
+			| "run.decline_call"
 			| "file.write"
 			| "file.delete"
 			| "file.restore"
