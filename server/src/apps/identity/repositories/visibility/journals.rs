@@ -77,18 +77,15 @@ impl ReadJournalScope for Reads<'_> {
 		result.map_err(Into::into)
 	}
 	async fn runs_in_workspace(&mut self, workspace: Uuid, runs: &[Uuid]) -> Result<Vec<Uuid>> {
-		let result: NativeResult<Vec<Uuid>> = async {
-			Ok(crate::database::native::query_scalar(
-				&Query::select()
-					.column(Alias::new("id"))
-					.from(Alias::new("runs"))
-					.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
-					.and_where(Expr::col("id").is_in(runs.iter().copied().map(Expr::value)))
-					.to_string(PostgresQueryBuilder),
-			)
-			.scalar_all(&mut **self.access.tx)
-			.await?)
-		}
+		let result: NativeResult<Vec<Uuid>> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("id"))
+				.from(Alias::new("runs"))
+				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("id").is_in(runs.iter().copied().map(Expr::value)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_all(&mut **self.access.tx)
 		.await;
 		result.map_err(Into::into)
 	}
