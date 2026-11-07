@@ -836,7 +836,7 @@ impl WorkerAuthority {
 			let mut access = Access::under_lease(&outer).await?;
 			let result = async {
 				// Only a start is fenced: stopping, replacing and settling stay open
-				// so that no Pod outlives the Subnode.
+				// so that a Pod can still be stopped.
 				crate::apps::execution::repositories::subnodes::require_writable(
 					access.tx.native_mut(),
 					run.workspace_id,
