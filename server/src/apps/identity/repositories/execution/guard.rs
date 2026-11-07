@@ -81,23 +81,27 @@ async fn stored_snapshot(
 		.map_err(Into::into)
 }
 
-/// The first definition a Run with a Binding snapshot may no longer use, or none (the Use
-/// Recheck). A Run without a snapshot is not blocked. A Run of another Home executing here is
-/// checked too, as the read walk checked it before; `local_only` leaves it out for a person's
-/// resume, which controls only the Runs of this Home.
+/// The first definition a Run may no longer use, or none (the Use Recheck). A Run without a
+/// readable Binding snapshot, such as one left to deliver its failure, is checked for its own
+/// Agent only, as its next boundary checks it. A Run of another Home executing here is checked
+/// too, as the read walk checked it before; `local_only` leaves it out for a person's resume,
+/// which controls only the Runs of this Home.
 pub(crate) async fn use_block(
 	access: &mut Access,
 	run: &RunMetadata,
 	local_only: bool,
 ) -> Result<Option<EntityRef>> {
+	use aidash_application::authorization::execution::guard::{UseRecheck, recheck};
 	if local_only && !run.is_local(&access.node_id) {
 		return Ok(None);
 	}
-	if stored_snapshot(access, run).await?.is_none() {
-		return Ok(None);
-	}
-	aidash_application::authorization::execution::guard::use_recheck(&mut UseGuard { access }, run)
-		.await
+	let binding = stored_snapshot(access, run).await?.is_some();
+	Ok(
+		match recheck(&mut UseGuard { access }, run, binding).await? {
+			UseRecheck::Usable { .. } => None,
+			UseRecheck::Blocked(reference) => Some(reference),
+		},
+	)
 }
 
 #[async_trait]

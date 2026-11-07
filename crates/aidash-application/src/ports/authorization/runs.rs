@@ -22,8 +22,8 @@ pub trait RunControlScope: Send {
 	/// this reader may see. `None` when the reader's own policy hides the Run.
 	async fn run_reads_block(&mut self, run: &RunInspection) -> Result<Option<RunReadsBlock>>;
 	/// The first definition the Run uses that it may no longer use (the Use Recheck), as
-	/// this caller may see it. `None` for a Run of another Home or without a Binding
-	/// snapshot.
+	/// this caller may see it. `None` for a Run of another Home. A Run whose Binding
+	/// snapshot cannot be read is checked for its own Agent only, as its next boundary is.
 	async fn use_block(&mut self, run: &RunInspection) -> Result<Option<RunReadsBlock>>;
 	/// The resume grant remains locked FOR UPDATE until the surrounding transaction finishes.
 	async fn lock_execution_grant(&mut self, id: Uuid) -> Result<Option<ExecutionGrant>>;

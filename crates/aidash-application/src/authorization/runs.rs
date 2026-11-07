@@ -79,7 +79,10 @@ pub async fn resume_in(scope: &mut dyn RunControlScope, id: Uuid) -> Result<RunI
 	require_own_grant(scope, id).await?;
 	// A Run whose Binding names a definition that may no longer be used would be
 	// refused at its next worker boundary: say so now instead of waking it (#769).
-	if let Some(block) = scope.use_block(&run).await? {
+	// A Run that has ended, or whose cancellation is requested, is not woken whatever
+	// it uses, and the resume itself answers that.
+	let open = !run.phase.is_terminal() && run.control != aidash_domain::RunControl::Cancelled;
+	if open && let Some(block) = scope.use_block(&run).await? {
 		return Err(Error::ResumeBlocked(block));
 	}
 	let credential = scope.identity().credential_id;

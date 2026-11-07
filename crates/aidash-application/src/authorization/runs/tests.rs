@@ -288,6 +288,30 @@ async fn resume_says_what_blocks_it_and_changes_nothing(repository: Repository) 
 	assert_eq!(state.calls.last().map(String::as_str), Some("rollback"));
 }
 #[rstest]
+#[case::completed(RunPhase::Completed, RunControl::Active)]
+#[case::failed(RunPhase::Failed, RunControl::Active)]
+#[case::cancelled(RunPhase::Cancelled, RunControl::Active)]
+#[case::cancelling(RunPhase::Thinking, RunControl::Cancelled)]
+#[tokio::test]
+async fn resume_of_an_ended_run_is_answered_by_the_resume_not_the_use_recheck(
+	repository: Repository,
+	#[case] phase: RunPhase,
+	#[case] control: RunControl,
+) {
+	{
+		let mut state = repository.0.lock().unwrap();
+		state.use_block = Some(unapproved());
+		let raw = state.raw.as_mut().unwrap();
+		raw.metadata.phase = phase;
+		raw.metadata.control = control;
+	}
+	let result = resume(&repository, id(1)).await;
+	assert!(!matches!(result, Err(Error::ResumeBlocked(_))));
+	let state = repository.0.lock().unwrap();
+	assert!(!state.calls.contains(&"use".into()));
+	assert!(state.calls.contains(&"control".into()));
+}
+#[rstest]
 #[case::no_control("run.control")]
 #[case::no_grant("grant")]
 #[case::not_the_root("subject")]
