@@ -929,6 +929,28 @@ impl Access {
 		}
 	}
 
+	/// The Nodes this authority found silent, taken so that a publisher view
+	/// can hand them back to the reader it ran for (#751).
+	pub(crate) fn take_peer_marks(&mut self) -> std::collections::BTreeSet<String> {
+		std::mem::take(&mut self.unavailable_peers)
+	}
+
+	/// Mark Nodes that another identity of this authority found silent, but
+	/// only those this reader may discover: to any other reader a silent Node
+	/// is the plain refusal it always was.
+	pub(crate) async fn adopt_silent_peers(
+		&mut self,
+		nodes: impl IntoIterator<Item = String>,
+	) -> Result<()> {
+		for node in nodes {
+			let resource = self.resource("node", &node, json!({"remote_node":node}));
+			if self.decide(&resource, "federation.discover").await? {
+				self.mark_peer_unavailable(&node);
+			}
+		}
+		Ok(())
+	}
+
 	/// The error for a Run whose graph a memory step found invalid. `Authority`
 	/// and `Invalidated` both come from a read that was not confirmed, so while
 	/// a Node has not answered they name that Node (#751). Otherwise the
