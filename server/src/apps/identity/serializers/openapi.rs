@@ -1064,10 +1064,11 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		200,
 		"application/json",
 	)?;
-	contracts.request::<_, crate::apps::identity::serializers::peer_admission::DeclineCallInput>(
-		document,
-		views::peer_execution::decline_call,
-	)?;
+	contracts
+		.request::<_, crate::apps::identity::serializers::peer_admission::PeerDeclineCallInput>(
+			document,
+			views::peer_execution::decline_call,
+		)?;
 	contracts.path(document, views::peer_execution::decline_call, &["Uuid"])?;
 	contracts.response::<_, crate::apps::identity::serializers::remote_execution::RemoteExecutionMessageReceipt>(document,views::peer_execution::message,200,"application/json")?;
 	contracts.request::<_, crate::apps::identity::serializers::peer_admission::MessageInput>(

@@ -55,7 +55,7 @@ pub async fn decline_call(
 	#[inject] service: Depends<PeerExecutionManagement>,
 	#[inject] peer: InboundCall,
 	Path(id): Path<Uuid>,
-	Json(input): Json<DeclineCallInput>,
+	Json(input): Json<PeerDeclineCallInput>,
 ) -> ViewResult<Response> {
 	if let Err(error) = crate::http::validate(&input) {
 		return Ok(error.http_response());

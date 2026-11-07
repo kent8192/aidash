@@ -30,7 +30,7 @@ pub(crate) struct RemoteExecutionControlInput {
 
 #[derive(Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct DeclineCallInput {
+pub(crate) struct PeerDeclineCallInput {
 	pub(crate) grant_id: Uuid,
 	#[validate(length(min = 1, max = 256))]
 	pub(crate) call: String,

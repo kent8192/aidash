@@ -1,6 +1,6 @@
 //! HTTP conversion and DI composition call the shared receiver use cases.
 pub(crate) use crate::apps::identity::serializers::peer_admission::{
-	Admission, DeclineCallInput, Input, MessageInput, RemoteExecutionControlInput,
+	Admission, Input, MessageInput, PeerDeclineCallInput, RemoteExecutionControlInput,
 };
 use crate::{
 	Result,
@@ -104,7 +104,7 @@ pub(crate) async fn decline_call(
 	f: Federation,
 	admitted: Admitted,
 	id: Uuid,
-	input: DeclineCallInput,
+	input: PeerDeclineCallInput,
 ) -> Result<aidash_domain::federation::execution::admission::Declined> {
 	app::decline_call(
 		&crate::bootstrap::peer_admission_repository(&f),
