@@ -1004,15 +1004,17 @@ async fn a_withdrawn_undelivered_operation_has_no_effects_and_is_acknowledged(
 	.await
 	.unwrap();
 	assert_eq!(area_state, "active");
-	let requests = requests.lock().unwrap();
+	let refusal = requests
+		.lock()
+		.unwrap()
+		.iter()
+		.find(|request| request["path"] == format!("/v1/operations/{id}/cancel"))
+		.unwrap()["body"]
+		.clone();
 	assert_eq!(
-		requests
-			.iter()
-			.find(|request| request["path"] == format!("/v1/operations/{id}/cancel"))
-			.unwrap()["body"],
+		refusal,
 		json!({"digest":"immutable-intent","instance":"cleanup-runner"})
 	);
-	drop(requests);
 	c.close().await;
 }
 
