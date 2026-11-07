@@ -11489,6 +11489,7 @@
                 "type": "array"
               },
               "unconfirmed": {
+                "description": "Tasks this page scanned and could not confirm because a Node did not answer.",
                 "items": {
                   "$ref": "#/components/schemas/Unconfirmed"
                 },
@@ -11512,7 +11513,7 @@
             "type": "string"
           },
           "Unconfirmed": {
-            "description": "How many rows one response scanned and could not confirm because `node` did not answer. It is not a total, and it is not \"you should see these\": some of the rows can still be refused once the Node answers.",
+            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
             "properties": {
               "count": {
                 "format": "uint64",
@@ -11535,7 +11536,7 @@
             "type": "object"
           },
           "UnconfirmedKind": {
-            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`) can narrow the entry to the list it sits above.",
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
             "enum": [
               "task",
               "run",
@@ -11844,7 +11845,7 @@
             "type": "string"
           },
           "Unconfirmed": {
-            "description": "How many rows one response scanned and could not confirm because `node` did not answer. It is not a total, and it is not \"you should see these\": some of the rows can still be refused once the Node answers.",
+            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
             "properties": {
               "count": {
                 "format": "uint64",
@@ -11867,7 +11868,7 @@
             "type": "object"
           },
           "UnconfirmedKind": {
-            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`) can narrow the entry to the list it sits above.",
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
             "enum": [
               "task",
               "run",
@@ -11949,6 +11950,8 @@
                 "type": "array"
               },
               "unconfirmed": {
+                "default": [],
+                "description": "Rows this read scanned and could not confirm because a Node did not\nanswer (#770). Peers on an older build omit it.",
                 "items": {
                   "$ref": "#/components/schemas/Unconfirmed"
                 },
@@ -11963,7 +11966,8 @@
               "tasks",
               "artifacts",
               "events",
-              "messages"
+              "messages",
+              "unconfirmed"
             ],
             "type": "object"
           }
@@ -12825,6 +12829,7 @@
                 "type": ["string", "null"]
               },
               "unconfirmed": {
+                "description": "Messages of this page's candidates that could not be confirmed because a\nNode did not answer, for each Node.",
                 "items": {
                   "$ref": "#/components/schemas/Unconfirmed"
                 },
@@ -12874,7 +12879,7 @@
             "type": "object"
           },
           "Unconfirmed": {
-            "description": "How many rows one response scanned and could not confirm because `node` did not answer. It is not a total, and it is not \"you should see these\": some of the rows can still be refused once the Node answers.",
+            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
             "properties": {
               "count": {
                 "format": "uint64",
@@ -12897,7 +12902,7 @@
             "type": "object"
           },
           "UnconfirmedKind": {
-            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`) can narrow the entry to the list it sits above.",
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
             "enum": [
               "task",
               "run",
@@ -25115,6 +25120,7 @@
                 "type": "array"
               },
               "unconfirmed": {
+                "description": "Entries this read scanned and could not confirm because a Node did not\nanswer, for each Node. `[]` when none.",
                 "items": {
                   "$ref": "#/components/schemas/Unconfirmed"
                 },
@@ -25125,7 +25131,7 @@
             "type": "object"
           },
           "Unconfirmed": {
-            "description": "How many rows one response scanned and could not confirm because `node` did not answer. It is not a total, and it is not \"you should see these\": some of the rows can still be refused once the Node answers.",
+            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
             "properties": {
               "count": {
                 "format": "uint64",
@@ -25148,7 +25154,7 @@
             "type": "object"
           },
           "UnconfirmedKind": {
-            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`) can narrow the entry to the list it sits above.",
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
             "enum": [
               "task",
               "run",
@@ -25415,6 +25421,8 @@
                 "type": "boolean"
               },
               "unconfirmed": {
+                "default": [],
+                "description": "Entries this search left out because a Node did not answer (#770).",
                 "items": {
                   "$ref": "#/components/schemas/Unconfirmed"
                 },
@@ -25432,12 +25440,13 @@
               "model_version",
               "matches",
               "estimated_tokens",
-              "truncated"
+              "truncated",
+              "unconfirmed"
             ],
             "type": "object"
           },
           "Unconfirmed": {
-            "description": "How many rows one response scanned and could not confirm because `node` did not answer. It is not a total, and it is not \"you should see these\": some of the rows can still be refused once the Node answers.",
+            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
             "properties": {
               "count": {
                 "format": "uint64",
@@ -25460,7 +25469,7 @@
             "type": "object"
           },
           "UnconfirmedKind": {
-            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`) can narrow the entry to the list it sits above.",
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
             "enum": [
               "task",
               "run",
@@ -32614,7 +32623,7 @@
                 "type": "integer"
               },
               "node_retry": {
-                "description": "Retries of the current step after another Node did not answer a check\n(#751). A retry asks again, so it is reset once the step saves anything else.",
+                "description": "Retries of the current step after another Node did not answer a check\n(#751). A retry asks again, so it is reset once the step saves anything\nelse.",
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
@@ -33278,6 +33287,7 @@
                 "type": "array"
               },
               "unconfirmed": {
+                "description": "Rows this read scanned and could not confirm because a Node did not\nanswer, for each Node, kind and Workspace. `[]` when none.",
                 "items": {
                   "$ref": "#/components/schemas/Unconfirmed"
                 },
@@ -33873,7 +33883,7 @@
             "type": "object"
           },
           "Unconfirmed": {
-            "description": "How many rows one response scanned and could not confirm because `node` did not answer. It is not a total, and it is not \"you should see these\": some of the rows can still be refused once the Node answers.",
+            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
             "properties": {
               "count": {
                 "format": "uint64",
@@ -33896,7 +33906,7 @@
             "type": "object"
           },
           "UnconfirmedKind": {
-            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`) can narrow the entry to the list it sits above.",
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
             "enum": [
               "task",
               "run",
@@ -41888,7 +41898,7 @@
             "type": "object"
           },
           "EventPage": {
-            "description": "One read of the events, with the rows it could not confirm because a Node did not answer (#770). The cursor to continue from is in a header.",
+            "description": "One read of the events, with the rows it could not confirm because a Node\ndid not answer (#770). The cursor to continue from is in a header.",
             "properties": {
               "events": {
                 "items": {
@@ -41911,7 +41921,7 @@
             "type": "string"
           },
           "Unconfirmed": {
-            "description": "How many rows one response scanned and could not confirm because `node` did not answer. It is not a total, and it is not \"you should see these\": some of the rows can still be refused once the Node answers.",
+            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
             "properties": {
               "count": {
                 "format": "uint64",
@@ -41934,7 +41944,7 @@
             "type": "object"
           },
           "UnconfirmedKind": {
-            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`) can narrow the entry to the list it sits above.",
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
             "enum": [
               "task",
               "run",
@@ -43722,15 +43732,16 @@
           "MemoryUnitList": {
             "description": "The units a reader may see, and the units a Node's silence left out (#770).",
             "properties": {
-              "units": {
+              "unconfirmed": {
+                "description": "Units this read scanned and could not confirm because a Node did not\nanswer, for each Node. `[]` when none.",
                 "items": {
-                  "$ref": "#/components/schemas/Unit"
+                  "$ref": "#/components/schemas/Unconfirmed"
                 },
                 "type": "array"
               },
-              "unconfirmed": {
+              "units": {
                 "items": {
-                  "$ref": "#/components/schemas/Unconfirmed"
+                  "$ref": "#/components/schemas/Unit"
                 },
                 "type": "array"
               }
@@ -43767,7 +43778,7 @@
             "type": "object"
           },
           "Unconfirmed": {
-            "description": "How many rows one response scanned and could not confirm because `node` did not answer. It is not a total, and it is not \"you should see these\": some of the rows can still be refused once the Node answers.",
+            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
             "properties": {
               "count": {
                 "format": "uint64",
@@ -43790,7 +43801,7 @@
             "type": "object"
           },
           "UnconfirmedKind": {
-            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`) can narrow the entry to the list it sits above.",
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
             "enum": [
               "task",
               "run",
@@ -55995,7 +56006,7 @@
                 "type": "integer"
               },
               "node_retry": {
-                "description": "Retries of the current step after another Node did not answer a check\n(#751). A retry asks again, so it is reset once the step saves anything else.",
+                "description": "Retries of the current step after another Node did not answer a check\n(#751). A retry asks again, so it is reset once the step saves anything\nelse.",
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
@@ -56434,6 +56445,7 @@
                 "type": ["string", "null"]
               },
               "unconfirmed": {
+                "description": "Runs of this page's candidates that could not be confirmed because a\nNode did not answer, for each Node.",
                 "items": {
                   "$ref": "#/components/schemas/Unconfirmed"
                 },
@@ -57117,7 +57129,7 @@
             "type": "object"
           },
           "Unconfirmed": {
-            "description": "How many rows one response scanned and could not confirm because `node` did not answer. It is not a total, and it is not \"you should see these\": some of the rows can still be refused once the Node answers.",
+            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
             "properties": {
               "count": {
                 "format": "uint64",
@@ -57140,7 +57152,7 @@
             "type": "object"
           },
           "UnconfirmedKind": {
-            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`) can narrow the entry to the list it sits above.",
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
             "enum": [
               "task",
               "run",
@@ -57426,6 +57438,7 @@
                 "type": ["string", "null"]
               },
               "unconfirmed": {
+                "description": "Requests of this page's candidates that could not be confirmed because a\nNode did not answer, for each Node.",
                 "items": {
                   "$ref": "#/components/schemas/Unconfirmed"
                 },
@@ -57482,7 +57495,7 @@
             "type": "object"
           },
           "Unconfirmed": {
-            "description": "How many rows one response scanned and could not confirm because `node` did not answer. It is not a total, and it is not \"you should see these\": some of the rows can still be refused once the Node answers.",
+            "description": "How many rows one response scanned and could not confirm because `node` did\nnot answer. It is not a total, and it is not \"you should see these\": some\nof the rows can still be refused once the Node answers.",
             "properties": {
               "count": {
                 "format": "uint64",
@@ -57505,7 +57518,7 @@
             "type": "object"
           },
           "UnconfirmedKind": {
-            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`) can narrow the entry to the list it sits above.",
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`)\ncan narrow the entry to the list it sits above.",
             "enum": [
               "task",
               "run",
