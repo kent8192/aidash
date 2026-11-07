@@ -4,9 +4,7 @@
 use crate::{Error, Result};
 use aidash_application::tenancy::TenancyScope;
 use async_trait::async_trait;
-use reinhardt::db::backends::{
-	DatabaseConnection, PostgresBackend, QueryValue, TransactionExecutor,
-};
+use reinhardt::db::backends::{DatabaseConnection, QueryValue, TransactionExecutor};
 use reinhardt::db::orm::AtomicTransaction;
 use reinhardt::db::orm::connection::{DatabaseConnectionLease, QueryRow};
 use serde::de::{DeserializeOwned, IntoDeserializer};
@@ -27,7 +25,7 @@ pub struct Pool {
 impl From<sqlx::PgPool> for Pool {
 	fn from(driver: sqlx::PgPool) -> Self {
 		Self {
-			connection: DatabaseConnection::new(Arc::new(PostgresBackend::new(driver.clone()))),
+			connection: DatabaseConnection::new(super::limits::backend(driver.clone())),
 			driver,
 			memory_recovery: None,
 			memory_recovery_bypass: false,

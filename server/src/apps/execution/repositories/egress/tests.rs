@@ -297,8 +297,19 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		first.meter.charge(Direction::Received, 2).await,
 		Err(aidash_application::Error::Conflict(code)) if code == aidash_domain::egress::LIMIT_EXCEEDED
 	));
-	first.meter.finish(201, 20, None).await.unwrap();
-	second.meter.finish(200, 25, None).await.unwrap();
+	// A record holds no times until its outcome is settled.
+	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	let unsettled = RequestRecord::objects()
+		.filter(RequestRecord::field_id().eq(first.request))
+		.all_with_executor(&mut *tx)
+		.await
+		.unwrap()
+		.pop()
+		.unwrap();
+	assert_eq!((unsettled.admission_ms, unsettled.settle_ms), (None, None));
+	tx.commit().await.unwrap();
+	first.meter.finish(201, times(20), None).await.unwrap();
+	second.meter.finish(200, times(25), None).await.unwrap();
 	assert!(matches!(
 		Gateway::new(f.store.clone())
 			.admit(token, "images", "GET", "third", &digest)
@@ -332,6 +343,12 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 			.iter()
 			.all(|r| r.error.is_none() && r.query_digest == digest && r.status >= 200)
 	);
+	// Run details read these records through the domain type.
+	for record in &records {
+		let shown: aidash_domain::egress::RequestRecord =
+			serde_json::from_value(serde_json::to_value(record).unwrap()).unwrap();
+		assert_eq!((shown.admission_ms, shown.settle_ms), (Some(3), Some(4)));
+	}
 	tx.commit().await.unwrap();
 	live_preview_credentials(&f, &identity, &run, area.id).await;
 	auth.set_catalog(
@@ -368,6 +385,48 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 	.await
 	.unwrap();
 	first.meter.charge(Direction::Sent, 0).await.unwrap();
+	// Failing to find out whether the operation may go on is not a decision about
+	// it: nothing is committed, so charging the same bytes again counts them once.
+	let before = sent_so_far(&f, operation, first.request).await;
+	assert_eq!(before, (14, 10));
+	sqlx::query(
+		"UPDATE core_operations SET subjects = jsonb_build_object('unreadable', subjects) WHERE id = $1",
+	)
+	.bind(operation)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let failure = first.meter.charge(Direction::Sent, 5).await.unwrap_err();
+	assert!(
+		!matches!(
+			failure,
+			aidash_application::Error::Conflict(_)
+				| aidash_application::Error::Forbidden
+				| aidash_application::Error::Unauthorized
+		),
+		"{failure}"
+	);
+	assert_eq!(
+		sent_so_far(&f, operation, first.request).await,
+		before,
+		"a failure that decides nothing commits nothing"
+	);
+	sqlx::query("UPDATE core_operations SET subjects = subjects -> 'unreadable' WHERE id = $1")
+		.bind(operation)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	// The gateway's retry. The budget is spent, so this is a decision, and one
+	// that commits the bytes it reports on.
+	assert!(matches!(
+		first.meter.charge(Direction::Sent, 5).await,
+		Err(aidash_application::Error::Conflict(code)) if code == aidash_domain::egress::LIMIT_EXCEEDED
+	));
+	assert_eq!(
+		sent_so_far(&f, operation, first.request).await,
+		(before.0 + 5, before.1 + 5),
+		"the bytes are counted once, in the budget and in the record"
+	);
 	f.store
 		.control(&scope, run.id, aidash_domain::RunControlAction::Cancel)
 		.await
@@ -387,7 +446,7 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		.unwrap()
 		.pop()
 		.unwrap();
-	assert_eq!(total.sent_bytes, 17);
+	assert_eq!(total.sent_bytes, 22);
 	let record = RequestRecord::objects()
 		.filter(RequestRecord::field_id().eq(first.request))
 		.all_with_executor(&mut *tx)
@@ -395,8 +454,44 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		.unwrap()
 		.pop()
 		.unwrap();
-	assert_eq!(record.sent_bytes, 6 + 4 + 3);
+	assert_eq!(record.sent_bytes, 6 + 4 + 5 + 3);
 	tx.commit().await.unwrap();
+}
+
+/// The operation's total sent bytes, and those of one of its requests.
+async fn sent_so_far(
+	f: &crate::federation::Federation,
+	operation: Uuid,
+	request: Uuid,
+) -> (i64, i64) {
+	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	let total = Budget::objects()
+		.filter(Budget::field_operation_id().eq(operation))
+		.filter(Budget::field_service().eq(""))
+		.all_with_executor(&mut *tx)
+		.await
+		.unwrap()
+		.pop()
+		.unwrap()
+		.sent_bytes;
+	let record = RequestRecord::objects()
+		.filter(RequestRecord::field_id().eq(request))
+		.all_with_executor(&mut *tx)
+		.await
+		.unwrap()
+		.pop()
+		.unwrap()
+		.sent_bytes;
+	tx.commit().await.unwrap();
+	(total, record)
+}
+
+fn times(duration_ms: u64) -> aidash_application::egress::RequestTimes {
+	aidash_application::egress::RequestTimes {
+		duration_ms,
+		admission_ms: 3,
+		settle_ms: 4,
+	}
 }
 
 async fn live_preview_credentials(
@@ -453,7 +548,7 @@ async fn live_preview_credentials(
 		(&pod, "pod", Some("api.example.test")),
 		(&page, "page", None),
 	] {
-		admission.meter.finish(200, 1, None).await.unwrap();
+		admission.meter.finish(200, times(1), None).await.unwrap();
 		let (recorded, secret_host): (String, Option<String>) =
 			sqlx::query_as("SELECT via, secret_host FROM egress_requests WHERE id = $1")
 				.bind(admission.request)
@@ -490,7 +585,7 @@ async fn live_preview_credentials(
 			admitted.route.as_ref().unwrap().token.expose_secret(),
 			"fixture-route-token"
 		);
-		admitted.meter.finish(200, 1, None).await.unwrap();
+		admitted.meter.finish(200, times(1), None).await.unwrap();
 		let row: (Option<Uuid>, Option<String>, Option<String>) = sqlx::query_as(
 			"SELECT secret_id, secret_version, secret_host FROM egress_requests WHERE id = $1",
 		)

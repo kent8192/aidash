@@ -40,7 +40,7 @@ pub fn scope_value(scope: &TenancyScope) -> &'static str {
 	}
 }
 
-fn set_config(name: &str, value: String) -> SimpleExpr {
+pub(super) fn set_config(name: &str, value: String) -> SimpleExpr {
 	SimpleExpr::FunctionCall(
 		"set_config".into_iden(),
 		vec![

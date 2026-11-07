@@ -267,6 +267,18 @@ def read_change_log(path):
         return [json.loads(line) for line in file]
 
 
+def pod_proxy_url(endpoint, credential):
+    """The proxy address a Pod uses, carrying its credential to the Egress gateway."""
+    import re
+    from urllib.parse import urlsplit, urlunsplit
+    if credential is None:
+        return endpoint
+    if not isinstance(credential, str) or not re.fullmatch(r'[A-Za-z0-9._-]{1,512}', credential):
+        raise ValueError('invalid egress credential')
+    parts = urlsplit(endpoint)
+    return urlunsplit(parts._replace(netloc=f'aidash:{credential}@{parts.netloc}'))
+
+
 def execution_manifests(settings, config):
     """Build the durable claim and sandbox Pod for one Scratch Space."""
     import hashlib
@@ -375,7 +387,7 @@ def execution_manifests(settings, config):
            labels={'aidash-sandbox': 'true', 'aidash-v2': 'true'}), 'spec': podspec}
     if config.get('proxy_endpoint'):
         v2_network_policy(config)  # validate before passing the proxy to user processes
-        proxy = config['proxy_endpoint']
+        proxy = pod_proxy_url(config['proxy_endpoint'], settings.get('egress_credential'))
         podspec['containers'][0]['env'] += [
             {'name': key, 'value': proxy} for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy')]
     return claim, pod
