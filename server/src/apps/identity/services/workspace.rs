@@ -95,6 +95,53 @@ impl Access {
 		.map_err(Into::into)
 	}
 
+	/// What the failed [`Self::run_visible`] found in the Run's reads, in terms
+	/// this reader may see. `None` when the reader's own policy hides the Run, or
+	/// when the Run is another Home's.
+	pub(crate) async fn run_reads_block(
+		&mut self,
+		run: impl Into<crate::domain::RunMetadata>,
+	) -> crate::Result<Option<aidash_domain::run_state::RunReadsBlock>> {
+		use aidash_application::authorization::visibility::provenance::ReadBlock;
+		use aidash_domain::run_state::RunReadsBlock;
+		let run = run.into();
+		let Some(block) = self.read_block.take() else {
+			return Ok(None);
+		};
+		if !run.is_local(&self.node_id) {
+			return Ok(None);
+		}
+		let workspace = self.workspace(run.workspace_id).await?;
+		let resource = self.resource("run", run.id, workspace.attributes);
+		if !self.decide(&resource, "run.read").await? {
+			return Ok(None);
+		}
+		Ok(Some(match block {
+			ReadBlock::Definition(reference) => {
+				let entry = match crate::apps::registry::models::Definition::read_in(
+					&mut **self.tx,
+					&reference.id,
+					&reference.version,
+				)
+				.await
+				{
+					Ok(entry) => Some(entry),
+					Err(crate::Error::NotFound(_)) => None,
+					Err(error) => return Err(error),
+				};
+				aidash_application::authorization::catalog::read_block(
+					&mut crate::bootstrap::catalog_scope(self),
+					&reference,
+					entry.as_ref(),
+				)
+				.await?
+			}
+			ReadBlock::RemoteRead => RunReadsBlock::RemoteRead,
+			ReadBlock::SemanticRead => RunReadsBlock::SemanticRead,
+			ReadBlock::Source(source) => RunReadsBlock::Source { source },
+		}))
+	}
+
 	/// Preserve the reason when memory execution rechecks its complete Run graph.
 	pub(crate) async fn run_invalidity(
 		&mut self,

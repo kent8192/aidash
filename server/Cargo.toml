@@ -188,6 +188,10 @@ name = "safety_stop"
 path = "src/apps/identity/tests/safety_stop.rs"
 
 [[test]]
+name = "run_control"
+path = "src/apps/identity/tests/run_control.rs"
+
+[[test]]
 name = "demo_data"
 path = "src/apps/identity/tests/demo_data.rs"
 

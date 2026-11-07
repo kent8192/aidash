@@ -585,6 +585,9 @@ export function CatalogApprovalSection({
                 <span>
                   {t("catalogWithdrawRuns")}: {impact.running_runs}
                 </span>
+                <span>
+                  {t("catalogWithdrawReadingRuns")}: {impact.reading_runs}
+                </span>
               </>
             )}
             <div className="flex flex-wrap gap-2">

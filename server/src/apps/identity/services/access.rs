@@ -179,6 +179,9 @@ pub(crate) struct Access {
 	pub(super) unavailable_peers: std::collections::BTreeSet<String>,
 	pub(super) checking_reads: aidash_application::authorization::visits::ReadVisits,
 	pub(crate) read_verdicts: aidash_application::authorization::visits::ReadVerdicts,
+	/// The first read that stopped a walk in this authority boundary.
+	pub(crate) read_block:
+		Option<aidash_application::authorization::visibility::provenance::ReadBlock>,
 	/// How this authority's reads reach other Nodes. A transaction lent to a
 	/// disclosure check holds none, so its remote proofs are unavailable.
 	pub(crate) wire: Option<crate::apps::federation::remote::services::wire::Wire>,
@@ -232,6 +235,7 @@ pub(crate) struct PublicationContext {
 	remote_read_cache: std::collections::BTreeMap<(Uuid, String), bool>,
 	checking_reads: aidash_application::authorization::visits::ReadVisits,
 	read_verdicts: aidash_application::authorization::visits::ReadVerdicts,
+	read_block: Option<aidash_application::authorization::visibility::provenance::ReadBlock>,
 	dependency_frontier: Option<Vec<super::peer::dependencies::Reference>>,
 }
 
@@ -407,6 +411,7 @@ impl Access {
 			unavailable_peers: Default::default(),
 			checking_reads: Default::default(),
 			read_verdicts: Default::default(),
+			read_block: None,
 			dependency_frontier: None,
 			wire,
 			node_id: node.to_owned(),
@@ -484,6 +489,7 @@ impl Access {
 			remote_read_cache: std::mem::take(&mut self.remote_read_cache),
 			checking_reads: std::mem::take(&mut self.checking_reads),
 			read_verdicts: std::mem::take(&mut self.read_verdicts),
+			read_block: self.read_block.take(),
 			dependency_frontier: self.dependency_frontier.take(),
 		};
 		self.worker();
@@ -514,6 +520,7 @@ impl Access {
 		self.remote_read_cache = old.remote_read_cache;
 		self.checking_reads = old.checking_reads;
 		self.read_verdicts = old.read_verdicts;
+		self.read_block = old.read_block;
 		self.dependency_frontier = old.dependency_frontier;
 	}
 
@@ -531,6 +538,7 @@ impl Access {
 			unavailable_peers: Default::default(),
 			checking_reads: Default::default(),
 			read_verdicts: Default::default(),
+			read_block: None,
 			dependency_frontier: None,
 			wire: lease.wire.clone(),
 			node_id: lease.node_id.clone(),
@@ -611,6 +619,7 @@ impl Access {
 		self.unavailable_peers.clear();
 		self.checking_reads.clear();
 		self.read_verdicts.clear();
+		self.read_block = None;
 		self.dependency_frontier = None;
 		self.subjects = vec![self.identity.subject.clone()];
 		self.delegated_subject = None;
@@ -991,7 +1000,9 @@ impl Access {
 					result,
 					Err(Error::Forbidden
 						| Error::AuthorityRefused(_)
-						| Error::RemoteExecutionRefused(_))
+						| Error::RemoteExecutionRefused(_)
+						| Error::ResumeBlocked(_)
+						| Error::RunHidden(_))
 				) {
 				// Denials survive rollback with the evaluated policy revision.
 				let mut audit: Box<dyn TransactionExecutor> = self

@@ -400,7 +400,8 @@ The grant stores tenant, workspace, root subject, credential ID and the complete
 | Read a Skill asset         | `skill_asset_read`: `skill.use` on a configured Registry Skill, or the Agent's Skills Core capability for a direct Skill                           |
 | Builtin mutations          | `task.create`, `task.delegate`, `artifact.create`, `message.create`, `memory.write` or `human.request` for the corresponding resource              |
 | Complete a task            | `artifact.create` and `task.complete`                                                                                                              |
-| Control or resume a run    | `workspace.read`, `run.read`, `memory.read` and `run.control`                                                                                      |
+| Pause or cancel a run      | `workspace.read` and `run.control`                                                                                                                 |
+| Resume a run               | `workspace.read`, `run.read`, `memory.read` and `run.control`, as the Run's root subject, with everything the Run read still readable              |
 
 The policy action `tool.call_unapproved` on resource kind `tool` lets a tool call proceed without a Tool call approval. Its resource ID is the tool's registry ID, and its attributes are `version` and `operation`.
 
@@ -415,6 +416,26 @@ Each worker boundary reloads and locks the current policy, credential, grant, wo
 The `serve` process reserves a separate database pool for workers so API requests waiting to revoke authority cannot exhaust the connections needed to finish an effect. Embedded runners should construct their worker Federation with `Federation::for_workers()` before starting workers. Pool settings and connection initialization hooks are preserved. Deploy this version to all workers before admitting scoped runs; older workers do not enforce execution grants.
 
 Scoped remote delegation uses durable source grants, receiver admissions and scoped Worker/Home boundaries, described below. It is the only remote delegation: the unscoped peer offer, workspace-command and control endpoints are removed (ADR 0043).
+
+### Run Control
+
+A person pauses, resumes or cancels a Run with `POST /api/runs/{id}/control`, and can also pause or cancel it with `POST /api/runs/{id}/management`. Both answer the content-free `RunManagement`: `id`, `phase`, `control`, `control_source` and recovery reasons.
+
+- **Pausing and cancelling** need the Run, `workspace.read` and `run.control`. They do not depend on what the Run has read, so a Run hidden because an approval it relied on was withdrawn can still be stopped. Someone with `run.control` but not `run.read` can stop a Run and see its state, but not its content. Cancelling a Run already cancelled answers `200` and changes nothing.
+- **Resuming** also needs the person to be the Run's root subject and to be able to read everything the Run has read. When only what the Run read stands in the way, it answers `409` with `run_reads` and changes nothing.
+- **Reading.** `GET /api/runs/{id}` answers `403` with the same `run_reads` when a person's policy allows the Run but what it read hides it. Any other refusal, and any Run of another Home, stays a plain `403`.
+
+`run_reads.kind` is the first cause found, since the check stops there. The check covers the Run and the Runs its Task and reads came from, so a definition it names may have been read by one of those:
+
+| Kind                      | Meaning                                                                                                                   |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `definition_not_approved` | A definition the Run read has no approval on this Node. `definition` names it only for a holder of `registry.read` on it. |
+| `definition_not_readable` | The definition is approved, but this person may not read it.                                                              |
+| `remote_read`             | Something the Run read from another Node could not be confirmed.                                                          |
+| `semantic_read`           | A semantic index the Run read is no longer available to this person.                                                      |
+| `source`                  | A record the Run read is no longer visible to this person. `source` gives its kind.                                       |
+
+A stopped Run stays unreadable and cannot be resumed until the definition is approved again. `GET /api/authorization/{tenant}/catalog/impact` reports, before a withdrawal, the Agents that depend on the version (`agents`), their in-flight Runs (`running_runs`) and the in-flight Runs that have read it (`reading_runs`).
 
 ### Safety Stop
 

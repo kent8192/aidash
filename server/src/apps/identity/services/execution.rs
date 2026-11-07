@@ -2694,16 +2694,10 @@ impl SummaryApproval<'_> {
 	}
 }
 
-pub async fn control(
-	f: &Federation,
-	identity: &SubjectIdentity,
-	id: Uuid,
-	action: RunControlAction,
-) -> Result<RunInspection> {
-	aidash_application::authorization::runs::control(
+pub async fn resume(f: &Federation, identity: &SubjectIdentity, id: Uuid) -> Result<RunInspection> {
+	aidash_application::authorization::runs::resume(
 		&crate::bootstrap::run_control_repository(f, identity),
 		id,
-		action,
 	)
 	.await
 	.map_err(Into::into)

@@ -127,6 +127,16 @@ impl RunDetailsScope for Scope<'_> {
 	async fn run_visible(&mut self, run: &RunInspection) -> Result<bool> {
 		self.access.get().run_visible(run).await.map_err(Into::into)
 	}
+	async fn run_reads_block(
+		&mut self,
+		run: &RunInspection,
+	) -> Result<Option<aidash_domain::run_state::RunReadsBlock>> {
+		self.access
+			.get()
+			.run_reads_block(run)
+			.await
+			.map_err(Into::into)
+	}
 	async fn egress_requests(
 		&mut self,
 		id: Uuid,

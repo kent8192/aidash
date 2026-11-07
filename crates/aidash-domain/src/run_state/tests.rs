@@ -524,3 +524,31 @@ fn legacy_lease_flags_are_read_and_saved_as_counters() {
 		assert!(saved["recovery"].get("lease_recovered").is_none());
 	}
 }
+
+#[test]
+fn a_reads_block_names_a_definition_only_when_it_carries_one() {
+	let named = RunReadsBlock::DefinitionNotApproved {
+		definition: Some(crate::registry::EntityRef {
+			id: "qa".into(),
+			version: "2.1.0".into(),
+		}),
+	};
+	assert_eq!(
+		serde_json::to_value(&named).unwrap(),
+		json!({"kind":"definition_not_approved","definition":{"id":"qa","version":"2.1.0"}})
+	);
+	assert!(named.to_string().contains("qa@2.1.0"));
+	let unnamed = RunReadsBlock::DefinitionNotApproved { definition: None };
+	assert_eq!(
+		serde_json::to_value(&unnamed).unwrap(),
+		json!({"kind":"definition_not_approved"})
+	);
+	assert!(!unnamed.to_string().contains("qa"));
+	assert_eq!(
+		serde_json::to_value(RunReadsBlock::Source {
+			source: "artifact".into()
+		})
+		.unwrap(),
+		json!({"kind":"source","source":"artifact"})
+	);
+}

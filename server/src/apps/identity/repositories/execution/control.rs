@@ -15,6 +15,7 @@ use aidash_domain::{
 	RawRun, RunControlAction, RunInspection,
 	identity::execution::{ExecutionGrant, ExecutionPrincipal},
 	policy::Resource,
+	run_state::RunReadsBlock,
 };
 use async_trait::async_trait;
 use reinhardt::query::{
@@ -97,6 +98,9 @@ impl RunControlScope for Scope<'_> {
 	async fn run_visible(&mut self, run: &RunInspection) -> Result<bool> {
 		self.access.run_visible(run).await.map_err(Into::into)
 	}
+	async fn run_reads_block(&mut self, run: &RunInspection) -> Result<Option<RunReadsBlock>> {
+		self.access.run_reads_block(run).await.map_err(Into::into)
+	}
 	async fn lock_execution_grant(&mut self, id: Uuid) -> Result<Option<ExecutionGrant>> {
 		let result: NativeResult<Option<Grant>> = async {
 			Ok({
@@ -164,10 +168,10 @@ impl RunControlScope for Scope<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn control_run(&mut self, id: Uuid, action: RunControlAction) -> Result<RunInspection> {
+	async fn resume_run(&mut self, id: Uuid) -> Result<RunInspection> {
 		self.federation
 			.store
-			.control_in(&mut self.access.tx, id, action)
+			.control_in(&mut self.access.tx, id, RunControlAction::Resume)
 			.await
 			.map_err(Into::into)
 	}

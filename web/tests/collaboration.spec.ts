@@ -311,6 +311,67 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     expect(errors).toEqual([]);
   });
 
+  test(`a Run hidden by a withdrawn approval says why in ${locale}`, async ({
+    page,
+  }) => {
+    const ja = locale === "ja-JP";
+    const { errors } = await setup(page, { subject: true, locale });
+    await page.route("**/api/runs/run-0**", (route) => {
+      if (new URL(route.request().url()).pathname.endsWith("/management"))
+        return route.fulfill({
+          json: {
+            id: "run-0",
+            phase: "THINKING",
+            control: "PAUSED",
+            control_source: "deployment_administrator",
+          },
+        });
+      return route.fulfill({
+        status: 403,
+        json: {
+          error: "forbidden",
+          run_reads: {
+            kind: "definition_not_approved",
+            definition: { id: "qa", version: "2.1.0" },
+          },
+        },
+      });
+    });
+    await page.goto("/collaboration?channel=workspace-one");
+    await page
+      .getByRole("button", {
+        name: ja ? "実行履歴" : "Execution history",
+        exact: true,
+      })
+      .click();
+    await page
+      .getByRole("dialog")
+      .getByRole("button")
+      .filter({ hasText: "Researcher" })
+      .click();
+    await expect(page.getByRole("dialog")).toContainText(
+      ja
+        ? "この Run が読んだ qa@2.1.0 の承認は、このノードで取り下げられています。"
+        : "qa@2.1.0, which this Run read, is no longer approved on this Node.",
+    );
+    const panel = page.getByRole("region", {
+      name: ja ? "実行の管理" : "Execution management",
+    });
+    await expect(panel).toContainText("Deployment Administrator");
+    await expect(panel).not.toContainText(
+      ja
+        ? "元の Home Node で権限と参照元を確認して再開"
+        : "Resume from the original Home node",
+    );
+    await expect(
+      panel.getByRole("button", {
+        name: ja ? "実行を中止" : "Cancel execution",
+        exact: true,
+      }),
+    ).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
   for (const failure of ["transport", "create", "activate"]) {
     test(`remote generation preserves approval and activation bindings after ${failure} in ${locale}`, async ({
       page,

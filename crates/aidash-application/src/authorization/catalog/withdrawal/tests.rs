@@ -19,6 +19,7 @@ struct Fixture {
 	may_approve: bool,
 	runs: u64,
 	run_queries: Vec<Vec<EntityRef>>,
+	reading: u64,
 	node: NodeAddress,
 }
 
@@ -52,6 +53,7 @@ impl Fixture {
 			may_approve: true,
 			runs: 3,
 			run_queries: vec![],
+			reading: 0,
 			node: NODE.parse().unwrap(),
 		}
 	}
@@ -78,6 +80,9 @@ impl WithdrawalImpactScope for Fixture {
 	async fn non_terminal_runs(&mut self, agents: &[EntityRef]) -> Result<u64> {
 		self.run_queries.push(agents.to_vec());
 		Ok(self.runs)
+	}
+	async fn non_terminal_runs_reading(&mut self, _: &EntityRef) -> Result<u64> {
+		Ok(self.reading)
 	}
 }
 
@@ -173,6 +178,20 @@ async fn an_unreferenced_version_has_no_impact_and_reads_no_runs() {
 	// Assert
 	assert_eq!(impact, WithdrawalImpact::default());
 	assert!(fixture.run_queries.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn runs_that_only_read_the_version_count_even_when_no_agent_depends_on_it() {
+	// Arrange
+	let mut fixture = Fixture::new(vec![agent("none", &["compaction"])]);
+	fixture.reading = 2;
+	// Act
+	let impact = impact(&mut fixture, &decider()).await.unwrap();
+	// Assert
+	assert!(impact.agents.is_empty());
+	assert_eq!(impact.running_runs, 0);
+	assert_eq!(impact.reading_runs, 2);
 }
 
 #[rstest]

@@ -12,10 +12,20 @@ import { apiFetch } from "../transport";
 import { Alert, Facts, Hint, formClass } from "../components/patterns";
 import { Field, useI18n } from "../ui";
 import type { RunManagement } from "../generated/models";
+import { collaborationCopy } from "./copy";
 
-export function RemoteRunManagement({ id }: { id: string }) {
+export function RemoteRunManagement({
+  id,
+  resumeElsewhere = true,
+}: {
+  id: string;
+  /** Whether a paused Run is resumed from another Home. A Run hidden by what it
+   *  read says what stands in the way instead. */
+  resumeElsewhere?: boolean;
+}) {
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
+  const copy = collaborationCopy[locale];
   const client = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -52,6 +62,14 @@ export function RemoteRunManagement({ id }: { id: string }) {
       <h3 className="text-[13px] font-semibold text-foreground">
         {ja ? "実行の管理" : "Execution management"}
       </h3>
+      {state.control !== "ACTIVE" &&
+        state.control_source === "deployment_administrator" && (
+          <Hint role="status">
+            {state.control === "CANCELLED"
+              ? copy.cancelledByAdministrator
+              : copy.pausedByAdministrator}
+          </Hint>
+        )}
       {state.semantic_reason && (
         <Hint role="status">{reasons[state.semantic_reason][ja ? 1 : 0]}</Hint>
       )}
@@ -78,7 +96,8 @@ export function RemoteRunManagement({ id }: { id: string }) {
           </Button>
         </div>
       )}
-      {state.control === "PAUSED" &&
+      {resumeElsewhere &&
+        state.control === "PAUSED" &&
         !terminal &&
         (!state.semantic_recovery ||
           state.semantic_recovery.actions.includes(

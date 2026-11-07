@@ -62,10 +62,47 @@ export function csrfToken(): string | null {
 export class ApiError extends Error {
   status: number;
   readonly responseReceived: boolean;
-  constructor(message: string, status: number, responseReceived = false) {
+  /** The message says which of a Run's reads keeps it from this reader. */
+  readonly runReads: boolean;
+  constructor(
+    message: string,
+    status: number,
+    responseReceived = false,
+    runReads = false,
+  ) {
     super(message);
     this.status = status;
     this.responseReceived = responseReceived;
+    this.runReads = runReads;
+  }
+}
+/** What a refused read or resume of a Run says about the Run's reads. */
+type RunReadsBlock =
+  | {
+      kind: "definition_not_approved";
+      definition?: { id: string; version: string };
+    }
+  | { kind: "definition_not_readable" }
+  | { kind: "remote_read" }
+  | { kind: "semantic_read" }
+  | { kind: "source"; source: string };
+function runReadsMessage(block: RunReadsBlock, messages: typeof en): string {
+  switch (block.kind) {
+    case "definition_not_approved":
+      return block.definition
+        ? messages.runReadsDefinitionNamed.replace(
+            "{definition}",
+            `${block.definition.id}@${block.definition.version}`,
+          )
+        : messages.runReadsDefinition;
+    case "definition_not_readable":
+      return messages.runReadsNotReadable;
+    case "remote_read":
+      return messages.runReadsRemote;
+    case "semantic_read":
+      return messages.runReadsSemantic;
+    case "source":
+      return messages.runReadsSource.replace("{source}", block.source);
   }
 }
 function current(generation: number): void {
@@ -228,6 +265,13 @@ export async function authenticatedFetch(
       );
       throw new ApiError(messages.credentialInvalid, response.status, true);
     }
+    if (data.run_reads)
+      throw new ApiError(
+        runReadsMessage(data.run_reads, messages),
+        response.status,
+        true,
+        true,
+      );
     if (response.status === 403)
       throw new ApiError(messages.accessDenied, response.status, true);
     // The chosen Tenant was deleted; the session no longer offers it.

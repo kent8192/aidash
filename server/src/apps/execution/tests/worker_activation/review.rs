@@ -872,9 +872,11 @@ async fn failure_delivery_resumes_after_authority_is_restored_without_replaying_
 	)
 	.await;
 	assert_eq!(status, 200, "{resumed}");
-	assert_eq!(resumed["state"]["data"]["reason"], "failure_delivery");
-	assert!(resumed["context"].is_null());
-	assert!(resumed["state_error"].is_string());
+	let inspected =
+		serde_json::to_value(f.store.inspect_run(&TEST_FIXTURE, run).await.unwrap()).unwrap();
+	assert_eq!(inspected["state"]["data"]["reason"], "failure_delivery");
+	assert!(inspected["context"].is_null());
+	assert!(inspected["state_error"].is_string());
 	harness.worker_once().await.unwrap();
 	assert_eq!(
 		f.store.inspect_run(&TEST_FIXTURE, run).await.unwrap().phase,
