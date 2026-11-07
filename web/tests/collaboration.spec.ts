@@ -2958,3 +2958,83 @@ for (const locale of ["en-US", "ja-JP"] as const) {
     await expect.poll(() => deleted).toBe(1);
   });
 }
+
+for (const failDecline of [false, true]) {
+  test(`a paused call is declined from the Run details ${failDecline ? "and a refusal keeps the message and the pause" : "with the sentence sent first"}`, async ({
+    page,
+  }) => {
+    const { submissions, errors } = await setup(page, {
+      subject: true,
+      declinableCall: true,
+      failDecline,
+    });
+    await page.goto("/collaboration?channel=workspace-one");
+    await page
+      .getByRole("button", { name: "Execution history", exact: true })
+      .click();
+    await page
+      .getByRole("dialog")
+      .getByRole("button")
+      .filter({ hasText: "Researcher" })
+      .click();
+    const dialog = page.getByRole("dialog");
+    await dialog
+      .getByRole("button", { name: "Decline this call", exact: true })
+      .click();
+    await expect(dialog.getByText("task_delegate")).toBeVisible();
+    await dialog
+      .getByLabel("Tell the Agent why (optional)")
+      .fill("Use the shared notes instead.");
+    await dialog
+      .getByRole("button", { name: "Decline and continue", exact: true })
+      .click();
+    await expect
+      .poll(() =>
+        submissions
+          .filter(
+            (item) =>
+              item.path === "/api/runs/run-0/message" ||
+              item.path === "/api/runs/run-0/declined-calls",
+          )
+          .map((item) => item.path),
+      )
+      .toEqual(["/api/runs/run-0/message", "/api/runs/run-0/declined-calls"]);
+    expect(
+      submissions.find((item) => item.path === "/api/runs/run-0/declined-calls")
+        ?.body,
+    ).toEqual({ call: "run-0:3:0" });
+    if (failDecline) {
+      // The message stays sent, the Run stays paused and the form is still open to retry.
+      await expect(
+        dialog.getByRole("button", { name: "Decline and continue" }),
+      ).toBeVisible();
+    } else {
+      await expect(
+        dialog.getByRole("button", { name: "Decline this call" }),
+      ).toHaveCount(0);
+    }
+    expect(errors.filter((error) => !error.includes("409"))).toEqual([]);
+  });
+}
+
+test("the decline button is absent when the server offers no call", async ({
+  page,
+}) => {
+  const { errors } = await setup(page, {
+    subject: true,
+    semanticPause: "invalidated",
+  });
+  await page.goto("/collaboration?channel=workspace-one");
+  await page
+    .getByRole("button", { name: "Execution history", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button")
+    .filter({ hasText: "Researcher" })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Decline this call" }),
+  ).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
