@@ -103,7 +103,19 @@ impl RunControlScope for Scope<'_> {
 	}
 	async fn use_block(&mut self, run: &RunInspection) -> Result<Option<RunReadsBlock>> {
 		let metadata = RunMetadata::from(run);
-		let Some(reference) = super::guard::use_block(&mut self.access, &metadata).await? else {
+		// The Run uses its definitions as its own subject chain, not as the person who resumes
+		// it: a dependency restricted to the Agent that uses it, or an Agent version restricted to
+		// its delegating parent, would otherwise refuse the person (ADR 0095). The grant is
+		// already locked by the resume's ownership check.
+		let grant = self
+			.lock_execution_grant(run.id)
+			.await?
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let person = std::mem::replace(&mut self.access.subjects, grant.subject_chain);
+		let blocked = super::guard::use_block(&mut self.access, &metadata, true).await;
+		// Who may be told its name is decided as the person, so restore their subjects first.
+		self.access.subjects = person;
+		let Some(reference) = blocked? else {
 			return Ok(None);
 		};
 		let entry = match crate::apps::registry::models::Definition::read_in(

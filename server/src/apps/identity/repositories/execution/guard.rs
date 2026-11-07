@@ -23,26 +23,6 @@ pub(crate) struct RunGuard<'a> {
 	pub(crate) federation: &'a Federation,
 	pub(crate) access: &'a mut Access,
 }
-impl RunGuard<'_> {
-	/// The definitions the Run recorded as read (`agent_discover`, memory) join the set its
-	/// retained lease may admit a delegated Run from. The read walk used to put them there as a
-	/// side effect of approving each one; it no longer looks at approvals (#769), but a lease
-	/// that inherits this set still refuses an entry outside it, so a Run that lists an Agent
-	/// and then delegates to it keeps working. Admission itself still reads the current approval.
-	async fn remember_recorded_reads(&mut self, run: &RunMetadata) -> Result<()> {
-		let recorded = crate::apps::identity::models::AuthorizationRunRegistryRead::for_run(
-			self.access.tx.as_mut(),
-			run.id,
-		)
-		.await?;
-		for reference in recorded {
-			self.access
-				.approved_catalog
-				.insert((reference.id, reference.version));
-		}
-		Ok(())
-	}
-}
 /// The Use Recheck over one `Access`, for a caller that holds no `Federation`: a resume, or a
 /// Run's action that asks whether the Run may still use what it was admitted with.
 pub(crate) struct UseGuard<'a> {
@@ -89,23 +69,29 @@ impl UseRecheckScope for UseGuard<'_> {
 	}
 }
 
-/// The Binding snapshot a local Run was admitted with, if it has one.
+/// The Binding snapshot a Run executing here was admitted with, if it has one.
 async fn stored_snapshot(
 	access: &mut Access,
 	run: &RunMetadata,
 ) -> Result<Option<aidash_domain::registry::bindings::BindingSnapshot>> {
-	if !run.is_local(&access.node_id) {
-		return Ok(None);
-	}
 	let row = crate::apps::execution::models::Run::read_in(&mut **access.tx, run.id, None).await?;
 	Ok(row
 		.and_then(|row| row.context.binding_snapshot)
 		.map(|snapshot| *snapshot))
 }
 
-/// The first definition a local Run with a Binding snapshot may no longer use, or none
-/// (the Use Recheck). A foreign Run, or one without a snapshot, is not blocked here.
-pub(crate) async fn use_block(access: &mut Access, run: &RunMetadata) -> Result<Option<EntityRef>> {
+/// The first definition a Run with a Binding snapshot may no longer use, or none (the Use
+/// Recheck). A Run without a snapshot is not blocked. A Run of another Home executing here is
+/// checked too, as the read walk checked it before; `local_only` leaves it out for a person's
+/// resume, which controls only the Runs of this Home.
+pub(crate) async fn use_block(
+	access: &mut Access,
+	run: &RunMetadata,
+	local_only: bool,
+) -> Result<Option<EntityRef>> {
+	if local_only && !run.is_local(&access.node_id) {
+		return Ok(None);
+	}
 	if stored_snapshot(access, run).await?.is_none() {
 		return Ok(None);
 	}
@@ -124,11 +110,7 @@ impl RunGuardScope for RunGuard<'_> {
 			run.id,
 		)
 		.await?;
-		let visible = self.access.run_visible(run).await?;
-		if visible {
-			self.remember_recorded_reads(run).await?;
-		}
-		Ok(visible)
+		self.access.run_visible(run).await.map_err(Into::into)
 	}
 	async fn cluster_targets(&mut self, workspace: Uuid) -> Result<Vec<String>> {
 		let result: NativeResult<Vec<String>> = async {

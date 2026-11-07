@@ -123,6 +123,45 @@ async fn admit(
 	.map_err(Into::into)
 }
 
+/// Whether an operation that acts for `run` may go on, as the operation sweep decides it: an
+/// authority for the saved identity, with the subjects the operation saved (the Run's chain).
+/// Tests drive the sweep's check through this seam; production uses `run_for_action` directly.
+#[doc(hidden)]
+pub async fn operation_may_act(
+	store: &Store,
+	identity: &SubjectIdentity,
+	subjects: Vec<String>,
+	run: Uuid,
+) -> Result<()> {
+	let mut access = Access::begin(store, identity).await?;
+	access.subjects = subjects;
+	let result = access.run_for_action(run).await.map(|_| ());
+	access.finish(result).await
+}
+
+/// The definitions a read of `run` leaves in the set a retained lease may admit from, for tests:
+/// read under the Run's own authority, or under a lease inherited from it.
+#[doc(hidden)]
+pub async fn retained_after_read(
+	store: &Store,
+	identity: &SubjectIdentity,
+	subjects: Vec<String>,
+	run: Uuid,
+	inherited: bool,
+) -> Result<std::collections::BTreeSet<(String, String)>> {
+	let mut outer = Access::begin(store, identity).await?;
+	outer.subjects = subjects;
+	let mut access = if inherited {
+		Access::under_lease(&outer).await?
+	} else {
+		outer
+	};
+	let _ = access.run_for_action(run).await;
+	let retained = access.approved_catalog.clone();
+	access.finish(Ok(())).await?;
+	Ok(retained)
+}
+
 pub async fn claim(
 	f: &Federation,
 	identity: &SubjectIdentity,
