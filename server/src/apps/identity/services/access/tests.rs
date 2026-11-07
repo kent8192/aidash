@@ -243,6 +243,54 @@ async fn no_negative_read_verdict_is_remembered_while_a_node_is_silent(mut acces
 	assert_eq!(access.cached_remote_read(other), Some(true));
 }
 
+/// A publisher check runs under another identity on the reader's `Access`. Its
+/// silent Nodes and denials are its own: they are discarded when it leaves, and
+/// the reader's survive it (#751).
+#[rstest::rstest]
+#[tokio::test]
+async fn silent_nodes_and_denials_do_not_cross_a_publisher_view(mut access: Access) {
+	let identity = access.identity.clone();
+	// The publisher's mark and denial do not reach the reader.
+	{
+		let mut publisher = access
+			.publisher_view(identity.clone(), vec!["alice".into()])
+			.await
+			.unwrap();
+		assert!(!publisher.peer_unavailable("aidash://other/reader"));
+		publisher.mark_peer_unavailable("aidash://other/publisher");
+		publisher.denied = true;
+	}
+	assert!(!access.peer_unavailable("aidash://other/publisher"));
+	assert!(matches!(access.named(Error::Forbidden), Error::Forbidden));
+	// The reader's mark survives entering and leaving, and is not visible inside.
+	access.mark_peer_unavailable("aidash://other/reader");
+	{
+		let publisher = access
+			.publisher_view(identity.clone(), vec!["alice".into()])
+			.await
+			.unwrap();
+		assert!(!publisher.peer_unavailable("aidash://other/reader"));
+		assert!(matches!(
+			publisher.named(Error::Forbidden),
+			Error::Forbidden
+		));
+	}
+	assert!(access.peer_unavailable("aidash://other/reader"));
+	assert!(matches!(
+		access.named(Error::Forbidden),
+		Error::NodeUnreachable { node, after_effect: false } if node == "aidash://other/reader"
+	));
+	// A denial the reader suffered survives too, and stays a refusal.
+	access.denied = true;
+	{
+		let _publisher = access
+			.publisher_view(identity, vec!["alice".into()])
+			.await
+			.unwrap();
+	}
+	assert!(matches!(access.named(Error::Forbidden), Error::Forbidden));
+}
+
 /// A scoped response can audit hundreds of checks. Database round trips, rather
 /// than the number of decisions, must bound the cost of finishing that response.
 #[rstest::rstest]

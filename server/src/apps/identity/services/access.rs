@@ -230,6 +230,10 @@ pub(crate) struct PublicationContext {
 	cached_runs: std::collections::BTreeMap<(Uuid, Uuid), bool>,
 	cached_humans: std::collections::BTreeMap<Uuid, bool>,
 	remote_read_cache: std::collections::BTreeMap<(Uuid, String), bool>,
+	/// The reader's silent Nodes and its own denial (#751): a mark made under
+	/// the publisher's identity must never name a Node to the reader.
+	unavailable_peers: std::collections::BTreeSet<String>,
+	denied: bool,
 	checking_reads: aidash_application::authorization::visits::ReadVisits,
 	read_verdicts: aidash_application::authorization::visits::ReadVerdicts,
 	dependency_frontier: Option<Vec<super::peer::dependencies::Reference>>,
@@ -497,6 +501,8 @@ impl Access {
 			cached_runs: std::mem::take(&mut self.cached_runs),
 			cached_humans: std::mem::take(&mut self.cached_humans),
 			remote_read_cache: std::mem::take(&mut self.remote_read_cache),
+			unavailable_peers: std::mem::take(&mut self.unavailable_peers),
+			denied: std::mem::take(&mut self.denied),
 			checking_reads: std::mem::take(&mut self.checking_reads),
 			read_verdicts: std::mem::take(&mut self.read_verdicts),
 			dependency_frontier: self.dependency_frontier.take(),
@@ -527,6 +533,8 @@ impl Access {
 		self.cached_runs = old.cached_runs;
 		self.cached_humans = old.cached_humans;
 		self.remote_read_cache = old.remote_read_cache;
+		self.unavailable_peers = old.unavailable_peers;
+		self.denied = old.denied;
 		self.checking_reads = old.checking_reads;
 		self.read_verdicts = old.read_verdicts;
 		self.dependency_frontier = old.dependency_frontier;
