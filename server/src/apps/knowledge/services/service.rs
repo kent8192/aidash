@@ -53,7 +53,13 @@ pub async fn put(store: &Store, actor: &Actor, workspace: Uuid, input: PutEntry)
 	lease.finish(result).await
 }
 
-pub async fn entries(
+pub async fn entries(store: &Store, actor: &Actor, workspace: Uuid) -> Result<Vec<Entry>> {
+	entries_counted(store, actor, workspace)
+		.await
+		.map(|list| list.entries)
+}
+/// The entries a reader may see, and those a silent Node left out (#770).
+pub async fn entries_counted(
 	store: &Store,
 	actor: &Actor,
 	workspace: Uuid,

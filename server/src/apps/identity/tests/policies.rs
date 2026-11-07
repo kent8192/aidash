@@ -296,7 +296,7 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 	}
 	assert_eq!(
 		scoped_request(&app, other, "GET", "/api/events", Value::Null).await,
-		(200, json!([]))
+		(200, json!({"events": [], "unconfirmed": []}))
 	);
 	assert_eq!(
 		scoped_request(
@@ -567,7 +567,7 @@ async fn subject_receives_thread_opened_event_for_a_visible_root_message(
 	)
 	.await;
 	assert_eq!(status, 200, "{events}");
-	assert!(events.as_array().unwrap().iter().any(|event| {
+	assert!(events["events"].as_array().unwrap().iter().any(|event| {
 		event["kind"] == "message.thread_opened"
 			&& event["data"]["id"].as_str() == Some(root_id.as_str())
 	}));

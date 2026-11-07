@@ -40,7 +40,7 @@ impl SemanticEntries {
 		workspace: Uuid,
 	) -> Result<crate::apps::knowledge::serializers::contracts::EntryList> {
 		let f = self.runtime.clone();
-		service::entries(&f.store, &actor, workspace).await
+		service::entries_counted(&f.store, &actor, workspace).await
 	}
 	pub async fn delete(
 		&self,

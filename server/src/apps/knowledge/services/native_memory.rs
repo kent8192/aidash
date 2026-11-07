@@ -829,7 +829,14 @@ pub struct UnitList {
 	pub unconfirmed: Vec<aidash_domain::unconfirmed::Unconfirmed>,
 }
 
-pub async fn list(store: &Store, actor: &Actor, input: ReadBank) -> Result<UnitList> {
+pub async fn list(store: &Store, actor: &Actor, input: ReadBank) -> Result<Vec<Unit>> {
+	list_counted(store, actor, input)
+		.await
+		.map(|list| list.units)
+}
+
+/// The units a reader may see, and those a silent Node left out (#770).
+pub async fn list_counted(store: &Store, actor: &Actor, input: ReadBank) -> Result<UnitList> {
 	let mut lease = Lease::begin(store, actor, input.bank.workspace).await?;
 	lease.lists();
 	let result = async {
@@ -1109,7 +1116,7 @@ impl NativeMemory {
 		if input.bank.workspace != workspace {
 			return Err(Error::Forbidden);
 		}
-		list(&self.runtime.store, &actor, input).await
+		list_counted(&self.runtime.store, &actor, input).await
 	}
 	pub async fn participant(
 		&self,
