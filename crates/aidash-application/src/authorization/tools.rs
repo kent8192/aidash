@@ -84,6 +84,7 @@ fn refused(call: &ToolCall, check: RefusalCheck, action: Option<&str>) -> Error 
 		check,
 		action: action.map(str::to_owned),
 		subject: None,
+		call: None,
 	}))
 }
 

@@ -12,6 +12,8 @@ pub struct RunDetails {
 	pub provider_tool_activity: Vec<aidash_domain::tool::provider_tools::Activity>,
 	pub egress_requests: Vec<aidash_domain::egress::RequestRecord>,
 	pub run: RunInspection,
+	/// The call the Run is paused on, only for a caller who may decline it.
+	pub declinable_call: Option<aidash_domain::run_state::DeclinableCall>,
 	pub invocations: Vec<InvocationSummary>,
 	pub memory: Option<aidash_domain::memory::Binding>,
 	pub media_input_routes: Vec<Vec<String>>,
@@ -27,6 +29,11 @@ pub trait RunDetailsScope: Send {
 	/// What the failed [`Self::run_visible`] found in the Run's reads, in terms
 	/// this reader may see. `None` when the reader's own policy hides the Run.
 	async fn run_reads_block(&mut self, run: &RunInspection) -> Result<Option<RunReadsBlock>>;
+	/// Whether the caller may decline the call the paused Run stopped on: the Run's person under
+	/// `run.control`, anyone else under `run.decline_call`. Decided without writing a denial.
+	async fn may_decline(&mut self, _run: &RunInspection) -> Result<bool> {
+		Ok(false)
+	}
 	/// Preserve the original 100-row created_at/idempotency-key page and bounded JSON preview.
 	async fn egress_requests(
 		&mut self,

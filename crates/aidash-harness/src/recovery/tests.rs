@@ -413,6 +413,7 @@ async fn an_unnamed_refusal_takes_its_check_from_the_note_of_the_step(
 				check: RefusalCheck::Catalog,
 				action: Some("catalog.use".into()),
 				subject: None,
+				call: None,
 			}
 		)]
 	);
@@ -429,6 +430,7 @@ async fn a_refused_tool_pauses_naming_the_tool_and_the_check(
 		check: RefusalCheck::Policy,
 		action: Some("task.delegate".into()),
 		subject: None,
+		call: None,
 	};
 	let retry = recover(
 		&repository,

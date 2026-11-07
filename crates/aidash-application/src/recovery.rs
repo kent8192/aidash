@@ -38,6 +38,7 @@ impl AuthorityFailure {
 					check: note.check,
 					action: note.action,
 					subject: note.subject,
+					call: None,
 				}))
 			}
 			other => other,

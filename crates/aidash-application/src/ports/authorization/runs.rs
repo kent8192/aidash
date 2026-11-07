@@ -11,6 +11,8 @@ use serde_json::Value;
 use uuid::Uuid;
 #[async_trait]
 pub trait RunControlScope: Send {
+	/// The Node this scope runs on, which decides whether a Run is local.
+	fn node_id(&self) -> &str;
 	fn identity(&self) -> ExecutionPrincipal;
 	fn set_context(&mut self, context: Value);
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
@@ -25,6 +27,9 @@ pub trait RunControlScope: Send {
 	async fn lock_execution_grant(&mut self, id: Uuid) -> Result<Option<ExecutionGrant>>;
 	async fn update_credential(&mut self, id: Uuid, credential: Uuid) -> Result<()>;
 	async fn resume_run(&mut self, id: Uuid) -> Result<RunInspection>;
+	/// Answer the call `id` is paused on as declined and let the Run go on, in this transaction.
+	/// `Conflict` when the Run is no longer paused on that call.
+	async fn decline_call(&mut self, id: Uuid, call: &str) -> Result<RunInspection>;
 	async fn finish(self: Box<Self>, result: Result<RunInspection>) -> Result<RunInspection>;
 }
 #[async_trait]

@@ -36,6 +36,10 @@ struct State {
 	revision: Option<i64>,
 	output_hidden: bool,
 	human_requests: Vec<aidash_domain::HumanRequest>,
+	/// Who the grant acts for, when not the caller.
+	grant_root: Option<&'static str>,
+	/// The Home events written for a declined call.
+	declined: Vec<Value>,
 }
 #[derive(Clone, Default)]
 struct Repository {
@@ -270,6 +274,24 @@ impl HomeScope for Scope {
 		} else {
 			Ok(())
 		}
+	}
+	async fn task_grant(&mut self, _: Uuid, _: Uuid) -> Result<Option<Grant>> {
+		self.repository.call("grant.by_task");
+		let state = self.repository.state.lock().unwrap();
+		let mut found = grant(state.semantic);
+		if let Some(root) = state.grant_root {
+			found.root_subject = root.into();
+		}
+		Ok(Some(found))
+	}
+	async fn may(&mut self, _: &Resource, action: &str) -> Result<bool> {
+		self.repository.call(&format!("may:{action}"));
+		Ok(self.repository.state.lock().unwrap().denied != Some(action))
+	}
+	async fn call_declined(&mut self, _: Uuid, event: Value) -> Result<()> {
+		self.repository.call("call_declined");
+		self.repository.state.lock().unwrap().declined.push(event);
+		Ok(())
 	}
 	async fn requester_grant(&mut self, _: Uuid, _: Uuid) -> Result<Option<Grant>> {
 		Ok(Some(grant(self.repository.state.lock().unwrap().semantic)))
@@ -739,3 +761,102 @@ async fn deployment_administrator_cannot_create_subject_remote_work() {
 }
 
 mod source_grants;
+
+fn declined_reply() -> Value {
+	json!({"activation":activation(),"tool":"task_delegate","kind":"policy"})
+}
+#[rstest]
+#[tokio::test]
+async fn the_requester_declines_under_what_resuming_needs_and_the_home_names_them() {
+	let repository = Repository::default();
+	repository.state.lock().unwrap().semantic = true;
+	repository.state.lock().unwrap().replies = vec![declined_reply()];
+	decline_call(&repository, task().id, Uuid::from_u128(4), "run:7:0")
+		.await
+		.unwrap();
+	let calls = repository.calls();
+	// The same checks as resuming: the requester's `task.delegate`, then `run.control`.
+	assert!(calls.contains(&"task.delegate".into()));
+	assert!(calls.contains(&"run.control".into()));
+	assert!(!calls.contains(&"run.decline_call".into()));
+	let reset = calls.iter().position(|c| c == "resume_semantic").unwrap();
+	let rpc = calls
+		.iter()
+		.position(|c| c.ends_with("/declined-calls"))
+		.unwrap();
+	assert!(reset < rpc);
+	assert_eq!(
+		calls
+			.iter()
+			.filter(|c| c.as_str() == "call_declined")
+			.count(),
+		1
+	);
+	let state = repository.state.lock().unwrap();
+	let event = &state.declined[0];
+	assert_eq!(event["by"], "requester");
+	assert_eq!(event["tool"], "task_delegate");
+	assert_eq!(event["kind"], "policy");
+	assert_eq!(event["call"], "run:7:0");
+	assert!(event.get("action").is_none());
+}
+#[rstest]
+#[tokio::test]
+async fn someone_else_declines_under_run_decline_call_alone() {
+	let repository = Repository::default();
+	{
+		let mut state = repository.state.lock().unwrap();
+		state.grant_root = Some("other");
+		state.replies = vec![declined_reply()];
+	}
+	decline_call(&repository, task().id, Uuid::from_u128(4), "run:7:0")
+		.await
+		.unwrap();
+	let calls = repository.calls();
+	assert!(calls.contains(&"run.decline_call".into()));
+	// Neither the requester's task authority nor `run.control` stands in for it.
+	assert!(!calls.contains(&"task.delegate".into()));
+	assert!(!calls.contains(&"run.control".into()));
+	assert!(calls.contains(&"task.read".into()));
+}
+#[rstest]
+#[case::requester_without_run_control(None, "run.control")]
+#[case::requester_without_task_authority(None, "task.delegate")]
+#[case::holder_without_the_action(Some("other"), "run.decline_call")]
+#[tokio::test]
+async fn nobody_declines_without_the_right_for_their_relation(
+	#[case] root: Option<&'static str>,
+	#[case] denied: &'static str,
+) {
+	let repository = Repository::default();
+	{
+		let mut state = repository.state.lock().unwrap();
+		state.grant_root = root;
+		state.denied = Some(denied);
+	}
+	let result = decline_call(&repository, task().id, Uuid::from_u128(4), "run:7:0").await;
+	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+	assert!(!repository.calls().iter().any(|c| c.starts_with("rpc:")));
+}
+#[rstest]
+#[tokio::test]
+async fn a_list_shows_the_paused_call_only_to_someone_who_may_decline_it() {
+	let mut paused = activation();
+	paused["control"] = json!(RemoteExecutionControlState::Paused);
+	paused["declinable_call"] = json!({"call":"run:7:0","tool":"task_delegate","kind":"policy"});
+	for (denied, shown) in [(None, true), (Some("run.control"), false)] {
+		let repository = Repository::default();
+		{
+			let mut state = repository.state.lock().unwrap();
+			state.grants = 1;
+			state.replies = vec![paused.clone()];
+			state.denied = denied;
+		}
+		let statuses = list(&repository, task().id).await.unwrap();
+		let call = statuses[0]
+			.execution
+			.as_ref()
+			.and_then(|e| e.declinable_call.as_ref());
+		assert_eq!(call.is_some(), shown, "{denied:?}");
+	}
+}

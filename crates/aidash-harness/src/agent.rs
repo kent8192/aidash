@@ -23,15 +23,14 @@ use aidash_domain::{
 	research::citations,
 	semantic::{Failure, InputRead},
 	tool::{
-		AuthorityRefusal, Continuation, RefusalCheck, ResultFitting, ToolIdentity, ToolUseMode,
+		AuthorityRefusal, Continuation, DO_NOT_REPEAT, RefusalCheck, RefusedCall, ResultFitting,
+		ToolIdentity, ToolUseMode,
 	},
 	*,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-/// Appended to every call error that the model must not answer by calling again.
-const DO_NOT_REPEAT: &str = "Do not repeat this call.";
 /// Added when the tool is `Unsafe`: its effect may have committed in several steps.
 const PARTLY_HAPPENED: &str = " The call may have partly happened.";
 
@@ -39,6 +38,8 @@ const PARTLY_HAPPENED: &str = " The call may have partly happened.";
 #[derive(Clone, Copy)]
 struct DeliveredTool<'a> {
 	name: &'a str,
+	/// The call's position in its model response, which a person declining it names.
+	index: usize,
 	replay_safe: bool,
 }
 
@@ -93,6 +94,7 @@ impl<'a> Executor<'a> {
 						check: note.check,
 						action: note.action,
 						subject: note.subject,
+						call: None,
 					};
 					Self::tool_refused(store, run, token, key, tool, refusal).await
 				}
@@ -173,6 +175,12 @@ impl<'a> Executor<'a> {
 		if tool.replay_safe && refusal.check != RefusalCheck::RunAuthority {
 			store.invocation_refused(run, token, key, &refusal).await?;
 		}
+		// The store offers the call to a person only if the row it left says nothing ran.
+		refusal.call = Some(RefusedCall {
+			key: key.to_owned(),
+			index: tool.index,
+			replay_safe: tool.replay_safe,
+		});
 		Err(Error::AuthorityRefused(Box::new(refusal)))
 	}
 	pub fn new(environment: &'a dyn ExecutionEnvironment) -> Self {
@@ -244,30 +252,53 @@ impl<'a> Executor<'a> {
 		// Current authority precedes the journal, as on the sequential path. A
 		// resumed batch is already journaled: a revoked call records its denial.
 		let mut denied = vec![None; end - cursor];
-		if let Some(guard) = guard {
-			for index in cursor..end {
-				let call = &calls[index];
-				match guard.tool(call, &tool(call)?.contract()).await {
-					Ok(()) => {}
-					Err(
-						Error::Invalid(message)
-						| Error::Domain(aidash_domain::Error::Invalid(message)),
-					) => {
-						if !resumed {
-							end = index;
-							break;
-						}
-						denied[index - cursor] = Some(message);
-					}
-					Err(error) => return Err(error),
+		let response_epoch = run.state.tool()?.response_epoch;
+		for index in cursor..end {
+			// A person's decision is read before the gate, which would refuse the call again.
+			let key = format!("{}:{response_epoch}:{index}", run.id);
+			if let Some(declined) = run
+				.recovery
+				.declined_calls
+				.iter()
+				.find(|declined| declined.key == key)
+			{
+				if !resumed {
+					// The sequential path answers it when the cursor gets there.
+					end = index;
+					break;
 				}
+				denied[index - cursor] = Some(declined.kind.declined_sentence());
+				continue;
+			}
+			let Some(guard) = guard else { continue };
+			let call = &calls[index];
+			let contract = tool(call)?.contract();
+			match guard.tool(call, &contract).await {
+				Ok(()) => {}
+				Err(
+					Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message)),
+				) => {
+					if !resumed {
+						end = index;
+						break;
+					}
+					denied[index - cursor] = Some(message);
+				}
+				Err(Error::AuthorityRefused(mut refusal)) => {
+					refusal.call = Some(RefusedCall {
+						key,
+						index,
+						replay_safe: contract.replay_safe(),
+					});
+					return Err(Error::AuthorityRefused(refusal));
+				}
+				Err(error) => return Err(error),
 			}
 		}
 		if end - cursor < 2 {
 			return Ok(false);
 		}
 		denied.truncate(end - cursor);
-		let response_epoch = run.state.tool()?.response_epoch;
 		let keys: Vec<String> = (cursor..end)
 			.map(|index| format!("{}:{response_epoch}:{index}", run.id))
 			.collect();
@@ -356,6 +387,7 @@ impl<'a> Executor<'a> {
 							key,
 							DeliveredTool {
 								name: &calls[cursor + offset].name,
+								index: cursor + offset,
 								replay_safe: true,
 							},
 							refusal_note::scoped(tool.dispatch(admitted, input, key)).await,
@@ -456,6 +488,10 @@ impl<'a> Executor<'a> {
 			.await?;
 		}
 		run.context = context;
+		// The batch answered every declined call it covered.
+		run.recovery
+			.declined_calls
+			.retain(|declined| !keys.contains(&declined.key));
 		let progress = run.state.tool_mut()?;
 		progress.workspace_read_plan = None;
 		progress.skill_read_plan = None;
@@ -2309,6 +2345,8 @@ impl<'a> Executor<'a> {
 						input_seq
 					};
 				}
+				// Keys of an older response can never match the new one's.
+				run.recovery.declined_calls.clear();
 				run.state = RunState::ToolCall(Box::new(ToolCallState {
 connection: None,
 					response: result,
@@ -2826,6 +2864,24 @@ connection: None,
 				let mut context = run.context.clone();
 				capture_declared_coverage(&mut context, &tools, false);
 				let mut call = result.tool_calls[cursor].clone();
+				// The invocation key of this call. A call resumed after an approval raised inside it
+				// runs under its own key, so the recorded `approval_required` result never replays.
+				let call_key = format!("{}:{}:{}", run.id, run.state.tool()?.response_epoch, cursor);
+				let key = match run.state.tool()?.approval {
+					Some(approval) => format!("{call_key}:approval:{approval}"),
+					None => call_key.clone(),
+				};
+				let key = match run.state.tool()?.connection.as_ref().map_or(0, |state|state.attempt) {
+					0 => key,
+					attempt => format!("{key}:connection:{attempt}"),
+				};
+				// A person's decision comes before every check, because the gate refuses the call
+				// again and would never reach a stored result. Removing it and advancing the cursor
+				// commit together in `tool_error`, so the sentence is delivered exactly once.
+				if let Some(declined) = run.recovery.declined_calls.iter().position(|declined| declined.key == key) {
+					let declined = run.recovery.declined_calls.remove(declined);
+					return self.tool_error(run, token, &call, cursor, declined.kind.declined_sentence()).await;
+				}
 				let Some(tool) = tools.get(&call.name) else {
 					return self.tool_error(run, token, &call, cursor, format!("unavailable tool {}", call.name)).await;
 				};
@@ -2851,6 +2907,11 @@ connection: None,
 					match guard.tool(&call, &contract).await {
 						Ok(()) => {},
 						Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => return self.tool_error(run, token, &call, cursor, message).await,
+						// The gate runs before the call is journaled, so the pause names the call.
+						Err(Error::AuthorityRefused(mut refusal)) => {
+							refusal.call = Some(RefusedCall { key, index: cursor, replay_safe: contract.replay_safe() });
+							return Err(Error::AuthorityRefused(refusal));
+						}
 						Err(error) => return Err(error),
 					}
 				}
@@ -2903,18 +2964,6 @@ connection: None,
 					}
 				}
 				let call = &call;
-				let response_epoch = run.state.tool()?.response_epoch;
-				let call_key = format!("{}:{}:{}", run.id, response_epoch, cursor);
-				// A call resumed after an approval raised inside it runs under its
-				// own key, so the recorded `approval_required` result never replays.
-				let key = match run.state.tool()?.approval {
-					Some(approval) => format!("{call_key}:approval:{approval}"),
-					None => call_key.clone(),
-				};
-                let key = match run.state.tool()?.connection.as_ref().map_or(0, |state|state.attempt) {
-                    0 => key,
-                    attempt => format!("{key}:connection:{attempt}"),
-                };
 				// Approval follows the admitted provider contract for every Agent. A
 				// Read-only operation needs none, yet only the Tenant's own authority
 				// can tell whether its policy forbids the call outright.
@@ -3076,7 +3125,7 @@ connection: None,
                             output
                         },
                         Err(Error::Connection(cause)) => self.checkpoint_connection_refusal(run,token,connections::RefusedCall {call,tool:tool.as_ref(),guard,key:&key},cause).await?,
-                        other => Self::tool_delivery_result(store, run, token, &key, DeliveredTool { name: &call.name, replay_safe: contract.replay_safe() }, (other, note)).await?,
+                        other => Self::tool_delivery_result(store, run, token, &key, DeliveredTool { name: &call.name, index: cursor, replay_safe: contract.replay_safe() }, (other, note)).await?,
 					}
 				};
                 // Revalidate Research before deriving any media selection. A completed
@@ -3404,6 +3453,7 @@ fn at_stage(stage: &'static str) -> impl FnOnce(Error) -> Error {
 				check: note.check,
 				action: note.action,
 				subject: note.subject,
+				call: None,
 			}))
 		}
 		error => error,

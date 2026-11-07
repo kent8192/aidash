@@ -45,6 +45,7 @@ pub fn policy_refusal(tool: &str, action: &str) -> Error {
 		check: aidash_domain::tool::RefusalCheck::Policy,
 		action: Some(action.to_owned()),
 		subject: None,
+		call: None,
 	}))
 }
 

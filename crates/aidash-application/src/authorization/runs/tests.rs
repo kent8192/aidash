@@ -29,6 +29,7 @@ struct State {
 	context: Option<Value>,
 	credential: Option<Uuid>,
 	committed: bool,
+	declined: Option<String>,
 }
 struct Repository(Arc<Mutex<State>>);
 struct Scope {
@@ -108,6 +109,7 @@ fn repository() -> Repository {
 		context: None,
 		credential: None,
 		committed: false,
+		declined: None,
 	})))
 }
 #[async_trait]
@@ -130,6 +132,9 @@ impl RunControlRepository for Repository {
 }
 #[async_trait]
 impl RunControlScope for Scope {
+	fn node_id(&self) -> &str {
+		"aidash://home"
+	}
 	fn identity(&self) -> ExecutionPrincipal {
 		self.state.lock().unwrap().principal.clone()
 	}
@@ -208,6 +213,18 @@ impl RunControlScope for Scope {
 		if pending {
 			std::future::pending::<()>().await;
 		}
+		run.metadata.control = RunControl::Active;
+		run.metadata.revision += 1;
+		Ok(run)
+	}
+	async fn decline_call(&mut self, key: Uuid, call: &str) -> Result<RunInspection> {
+		assert_eq!(key, id(1));
+		let mut run = {
+			let mut state = self.state.lock().unwrap();
+			state.record("decline")?;
+			state.declined = Some(call.to_owned());
+			state.raw.clone().unwrap().inspect()
+		};
 		run.metadata.control = RunControl::Active;
 		run.metadata.revision += 1;
 		Ok(run)

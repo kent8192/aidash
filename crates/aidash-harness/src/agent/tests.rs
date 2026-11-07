@@ -1907,6 +1907,7 @@ async fn refused_tool_call_is_a_model_correctable_result(fixture: Fixture) {
 		"refused-call",
 		DeliveredTool {
 			name: "task_delegate",
+			index: 0,
 			replay_safe: true,
 		},
 		(
