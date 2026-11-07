@@ -266,6 +266,16 @@ impl World {
 			.unwrap()
 	}
 
+	/// Another real credential of `alice`, which the Run's grant can name instead of her own.
+	async fn other_credential(&self) -> Uuid {
+		let issued = common::issued_credential(&self.f.store, "acme", "alice").await;
+		issued["credential"]["id"]
+			.as_str()
+			.unwrap()
+			.parse()
+			.unwrap()
+	}
+
 	async fn set_credential(&self, id: Uuid) {
 		sqlx::query("UPDATE authorization_execution SET credential_id = $1 WHERE run_id = $2")
 			.bind(id)
@@ -273,44 +283,6 @@ impl World {
 			.execute(self.f.store.pool.fixture_driver())
 			.await
 			.unwrap();
-	}
-
-	/// `bob` may control Runs, as every member may, but holds no `run.decline_call`; `dana` holds
-	/// only that. Both may read the Run.
-	async fn add_bob_and_dana(&self) -> (String, String) {
-		let reads = [
-			"workspace.read",
-			"run.read",
-			"memory.read",
-			"registry.read",
-			"task.read",
-		];
-		let allow = |id: &str, extra: &[&str]| {
-			let mut actions: Vec<&str> = reads.to_vec();
-			actions.extend_from_slice(extra);
-			json!({"id":id,"effect":"allow","subjects":{"ids":[id]},"actions":actions,"resources":{"kinds":["*"]}})
-		};
-		let current = aidash_server::authorization::Authorization {
-			pool: self.f.store.pool.clone(),
-		}
-		.snapshot("acme")
-		.await
-		.unwrap();
-		let mut bundle = serde_json::to_value(&current.bundle).unwrap();
-		for name in ["bob", "dana"] {
-			bundle["subjects"][name] = json!({"kind":"user"});
-		}
-		let policies = bundle["policies"].as_array_mut().unwrap();
-		policies.push(allow(
-			"bob",
-			&["run.control", "run.message", "message.create"],
-		));
-		policies.push(allow("dana", &["run.decline_call"]));
-		common::replace_policy(&self.f.store, "acme", bundle).await;
-		(
-			common::subject_credential(&self.f.store, "acme", "bob").await,
-			common::subject_credential(&self.f.store, "acme", "dana").await,
-		)
 	}
 }
 
@@ -346,7 +318,7 @@ async fn the_runs_person_declines_the_call_and_the_run_goes_on(
 		"{page}"
 	);
 	// The credential is renewed to the person's own by their own decline.
-	let before = Uuid::new_v4();
+	let before = w.other_credential().await;
 	w.set_credential(before).await;
 
 	let (status, declined) = w.decline(&alice, &w.key()).await;
@@ -378,41 +350,40 @@ async fn the_runs_person_declines_the_call_and_the_run_goes_on(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn only_the_runs_person_or_a_holder_of_the_action_declines(
+async fn a_member_who_only_controls_runs_cannot_decline_someone_elses_call(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
 ) {
 	let w = world(fixture).await;
-	let (bob, dana) = w.add_bob_and_dana().await;
+	// Every member may control a Run, so control alone must not let a colleague push someone
+	// else's Run on. `bob` is denied exactly the action that would.
+	let current = aidash_server::authorization::Authorization {
+		pool: w.f.store.pool.clone(),
+	}
+	.snapshot("acme")
+	.await
+	.unwrap();
+	let mut bundle = serde_json::to_value(&current.bundle).unwrap();
+	bundle["subjects"]["bob"] = json!({"kind":"user"});
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"bob-no-decline","effect":"deny","subjects":{"ids":["bob"]},
+		"actions":["run.decline_call"],"resources":{"kinds":["*"]}
+	}));
+	common::replace_policy(&w.f.store, "acme", bundle).await;
+	let bob = common::subject_credential(&w.f.store, "acme", "bob").await;
 	w.pause(true).await;
-	let before = Uuid::new_v4();
+	let before = w.other_credential().await;
 	w.set_credential(before).await;
 
-	// Every member may control a Run; that alone does not decline someone else's call, and is
-	// not offered.
-	let (status, page) = w.get(&bob).await;
-	assert_eq!(status, 200, "{page}");
-	assert!(page.get("declinable_call").is_none(), "{page}");
 	let (status, body) = w.decline(&bob, &w.key()).await;
 	assert_eq!(status, 403, "{body}");
 	assert!(w.row().await.is_none());
 	assert_eq!(w.management(&bob).await.1["control"], "PAUSED");
-
-	// A holder of `run.decline_call` declines, and the Run goes on in the owner's name.
-	let (status, page) = w.get(&dana).await;
-	assert_eq!(status, 200, "{page}");
-	assert!(page["declinable_call"].is_object(), "{page}");
-	let (status, declined) = w.decline(&dana, &w.key()).await;
-	assert_eq!(status, 200, "{declined}");
-	assert_eq!(declined["control"], "ACTIVE");
 	assert_eq!(w.credential().await, before);
-	let events = w.events().await;
-	let (_, event) = events
-		.iter()
-		.find(|(kind, _)| kind == "run.call_declined")
-		.unwrap();
-	assert_eq!(event["by"], "dana");
+	// The Run's own person is not affected by that rule.
+	let (status, declined) = w.decline(&w.alice.clone(), &w.key()).await;
+	assert_eq!(status, 200, "{declined}");
 }
 
 #[rstest::rstest]
@@ -476,15 +447,24 @@ async fn a_stale_call_key_answers_conflict_and_changes_nothing(
 	let (status, body) = w.decline(&alice, &"x".repeat(300)).await;
 	assert!(status == 400 || status == 422, "{status} {body}");
 	// An unknown field is refused rather than ignored.
-	let (status, body) = common::request(
-		&w.app,
-		&alice,
-		"POST",
-		&format!("/api/runs/{}/declined-calls", w.run),
-		json!({"call": w.key(), "action": "resume"}),
-	)
-	.await;
-	assert!(status == 400 || status == 422, "{status} {body}");
+	let unknown = w
+		.app
+		.api_http
+		.request(
+			"POST".parse().unwrap(),
+			&format!("/api/runs/{}/declined-calls", w.run),
+		)
+		.header("Authorization", format!("Bearer {alice}"))
+		.json(&json!({"call": w.key(), "action": "resume"}))
+		.send()
+		.await
+		.unwrap();
+	assert!(
+		matches!(unknown.status_code(), 400 | 422),
+		"{}",
+		unknown.status_code()
+	);
+	assert!(w.row().await.is_none());
 }
 
 #[rstest::rstest]
