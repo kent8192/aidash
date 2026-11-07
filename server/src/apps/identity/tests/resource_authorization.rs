@@ -1562,6 +1562,23 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 	}
 	.unwrap();
 	assert_eq!(tracked, 1);
+	// People's discovery still returns the whole definition.
+	let (status, found) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/discover",
+		json!({"capability":"journal.discovery"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{found}");
+	let found = found["agents"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|agent| agent["entity"]["id"] == "discovered-only")
+		.unwrap_or_else(|| panic!("discovered-only is offered: {found}"));
+	assert!(found["entity"].get("config").is_some(), "{found}");
 	let remote: i64 = sqlx::query_scalar(
 		&reinhardt::query::Query::select()
 			.expr(Expr::cust("COUNT(*)"))
@@ -1596,6 +1613,15 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 		.await
 		.unwrap();
 		assert!(same_tenant);
+		// The recorded metadata is the whole definition even though the model saw only a card.
+		let recorded: Value = sqlx::query_scalar(
+			"SELECT metadata FROM authorization_run_remote_reads WHERE run_id = $1",
+		)
+		.bind(run.id)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert!(recorded.get("config").is_some(), "{recorded}");
 	}
 	// Act: rebuild the HTTP application over persisted reads before changing policy.
 	drop(app);
@@ -1898,10 +1924,30 @@ fn discovered_registry_entries_remain_live_journal_dependencies_provider_router(
 
 
 	let server=reinhardt::test::stub::StubRouter::new()
-.route("/v1/chat/completions", http::Method::POST, reply(move |_request: reinhardt::Request| {let calls=calls.clone(); async move {
+.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {let calls=calls.clone(); let body = request.json::<Value>().unwrap(); async move {
         let message=if calls.fetch_add(1,Ordering::SeqCst)==0 {
             json!({"role":"assistant","content":null,"tool_calls":[{"id":"discover","type":"function","function":{"name":"agent_discover","arguments":"{\"capability\":\"journal.discovery\"}"}}]})
-        } else { json!({"role":"assistant","content":"Completed discovery"}) };
+        } else {
+            // The tool result hands the model a card per Agent, not the whole definition (#769).
+            let result = body["messages"].as_array().unwrap().iter().rev()
+                .find(|message| message["role"] == "tool").expect("the discovery result")["content"]
+                .as_str().unwrap().to_owned();
+            let result: Value = serde_json::from_str(&result).unwrap();
+            let agents = result["agents"].as_array().unwrap();
+            assert!(!agents.is_empty(), "{result}");
+            for agent in agents {
+                let mut fields: Vec<_> = agent["entity"].as_object().unwrap().keys().cloned().collect();
+                fields.sort();
+                assert_eq!(
+                    fields,
+                    ["capabilities","description","id","kind","languages","model","name","skills","tags","version"],
+                    "{agent}"
+                );
+            }
+            assert!(result.to_string().contains("discovered-private-metadata"));
+            assert!(result["errors"].is_array(), "{result}");
+            json!({"role":"assistant","content":"Completed discovery"})
+        };
         let reason=if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"};
         reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":reason,"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
     }})).into_server_router();

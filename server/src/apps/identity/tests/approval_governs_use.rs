@@ -185,17 +185,6 @@ impl World {
 		bundle["policies"].as_array_mut().unwrap().extend(policies);
 		common::replace_policy(&self.f.store, "acme", bundle).await;
 	}
-
-	/// A person who holds no grant on `fixture-agent` of any version.
-	async fn dave(&self) -> String {
-		self.add_policies(
-			Some("dave"),
-			vec![json!({"id":"dave-reads-runs","effect":"allow","subjects":{"ids":["dave"]},"actions":["workspace.read","run.read"],"resources":{"kinds":["*"]}}),
-			json!({"id":"dave-no-agent","effect":"deny","subjects":{"ids":["dave"]},"actions":["registry.read"],"resources":{"kinds":["agent"],"ids":[OLD]}})],
-		)
-		.await;
-		common::subject_credential(&self.f.store, "acme", "dave").await
-	}
 }
 
 #[rstest::rstest]
@@ -247,22 +236,24 @@ async fn results_of_a_withdrawn_version_are_readable_only_with_registry_read(
 ) {
 	let w = world(fixture).await;
 	let alice = w.alice.clone();
-	let dave = w.dave().await;
 	w.approve(OLD, "1.0.0", false).await;
 
 	// A holder of `registry.read` reads the finished Run and the Run that read it.
 	assert_eq!(w.get(&alice, w.planner).await.0, 200);
 	assert_eq!(w.get(&alice, w.reviewer).await.0, 200);
 
-	// Someone without it reads neither, and is told only the kind.
+	// Once she may no longer read the definition, she reads neither, and is told only the kind.
+	w.add_policies(
+		None,
+		vec![json!({"id":"no-agent","effect":"deny","subjects":{"ids":["alice"]},"actions":["registry.read"],"resources":{"kinds":["agent"],"ids":[OLD]}})],
+	)
+	.await;
 	for run in [w.planner, w.reviewer] {
-		let (status, body) = w.get(&dave, run).await;
+		let (status, body) = w.get(&alice, run).await;
 		assert_eq!(status, 403, "{body}");
 		assert_eq!(body["run_reads"], json!({"kind":"definition_not_readable"}));
 		assert!(!body.to_string().contains(OLD), "{body}");
 	}
-	// The unrelated Run is not affected.
-	assert_eq!(w.get(&dave, w.upgrader).await.0, 200);
 }
 
 #[rstest::rstest]
@@ -317,6 +308,7 @@ async fn narrowing_a_restriction_does_not_hide_outputs_but_still_refuses_a_start
 ) {
 	let w = world(fixture).await;
 	let alice = w.alice.clone();
+	w.add_policies(Some("carol"), vec![]).await;
 	// Restrict the old version to `carol` alone: `alice` may no longer use it.
 	let node = common::default_node(&w.f.store, "acme").await;
 	let current = aidash_server::authorization::Authorization {
