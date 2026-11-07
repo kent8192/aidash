@@ -102,7 +102,7 @@ pub async fn initialize_as(
 		&settings.research_providers,
 		&crate::config::settings::profile(),
 	)?;
-	let cache_salt = settings.cache_salt.keys()?;
+	let cache_salt = settings.cache_salt.node_keys(&settings.core.secret_key)?;
 	// Only availability and the current key version; never key material.
 	match &cache_salt {
 		Some(keys) => tracing::info!(

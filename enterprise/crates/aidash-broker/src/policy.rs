@@ -181,6 +181,7 @@ pub(crate) fn embedding_input(input: Option<&Value>) -> Result<(), Failure> {
 /// exactly `{"type":"ephemeral"}` on a `messages[*].content[*]` text part is allowed,
 /// at most four times; every other `cache_control` key is rejected.
 pub(crate) fn chat_input(value: &Value, cache_breakpoints: bool) -> Result<(), Failure> {
+	routing_fields(value)?;
 	// Each admitted breakpoint is counted below; any `cache_control` key left over
 	// sits somewhere else (tools, message level, non-text part, nested) and is rejected.
 	// JSON parsing bounds nesting; inspect keys, not ordinary message text.
@@ -265,6 +266,7 @@ pub(crate) fn responses_input(
 	if value.get("messages").is_some() {
 		return Err(Failure::ClaimViolation);
 	}
+	routing_fields(value)?;
 	let mut breakpoints = 0;
 	let mut parts = Vec::new();
 	match value.get("input") {
@@ -347,6 +349,34 @@ fn response_message(
 		}
 		_ => Err(Failure::ClaimViolation),
 	}
+}
+
+/// `session_id` reaches OpenRouter's observability destinations, so it must be
+/// the adapter's opaque form, never an identifier a caller chose. The only
+/// `prompt_cache_options` a token admits is the one that stops implicit writes;
+/// a longer lifetime would raise the signed call's cost (ADR 0115).
+fn routing_fields(value: &Value) -> Result<(), Failure> {
+	if let Some(session) = value.get("session_id") {
+		let opaque = session
+			.as_str()
+			.and_then(|session| session.strip_prefix(aidash_domain::projection::SESSION_ID_PREFIX))
+			.is_some_and(|hex| {
+				hex.len() == 32
+					&& hex
+						.bytes()
+						.all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+			});
+		if !opaque {
+			return Err(Failure::ClaimViolation);
+		}
+	}
+	if value
+		.get("prompt_cache_options")
+		.is_some_and(|options| options != &json!({"mode": "explicit"}))
+	{
+		return Err(Failure::ClaimViolation);
+	}
+	Ok(())
 }
 
 /// A decision body may carry only the decision itself and its routing. `trace`,
