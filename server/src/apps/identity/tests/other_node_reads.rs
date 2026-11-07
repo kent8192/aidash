@@ -986,7 +986,7 @@ async fn a_queued_generation_request_waits_for_a_silent_node_and_a_stop_names_it
 async fn a_real_refusal_at_activation_still_fails_the_request(#[future(awt)] provider: Provider) {
 	*provider.script.delegate.lock().unwrap() = false;
 	*provider.script.requirements.lock().unwrap() = json!({"capability":"special.research"});
-	let mut world = world(provider).await;
+	let world = world(provider).await;
 	world.run_coordinator(WITHOUT_DELEGATION).await;
 	let job = queued_generation(&world).await;
 	let (status, current) = request(
