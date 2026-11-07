@@ -22,6 +22,10 @@ struct State {
 	after_replay: Option<DateTime<Utc>>,
 	replay: bool,
 	visible: bool,
+	/// The Task's Read dependencies, checked under the shared lease.
+	shared_visible: bool,
+	/// A Node that did not answer the shared check.
+	silent: Option<String>,
 	allowed: bool,
 	catalog: bool,
 	retirement: Option<i64>,
@@ -73,6 +77,8 @@ impl Repository {
 				after_replay: None,
 				replay: false,
 				visible: true,
+				shared_visible: true,
+				silent: None,
 				allowed: true,
 				catalog: true,
 				retirement: Some(37),
@@ -153,6 +159,17 @@ impl GenerationControls for Repository {
 	fn principal(&self) -> &Principal {
 		&self.principal
 	}
+	async fn visible_shared(&self, _tenant: &str, _id: Uuid) -> Result<bool> {
+		let mut state = self.state.lock().unwrap();
+		state.calls.push("visible_shared".into());
+		match &state.silent {
+			Some(node) => Err(Error::NodeUnreachable {
+				node: node.clone(),
+				after_effect: false,
+			}),
+			None => Ok(state.shared_visible),
+		}
+	}
 	async fn begin(&self, scope: &TenancyScope) -> Result<Box<dyn GenerationControlScope>> {
 		assert!(scope.tenant_name().is_some());
 		let mut state = self.state.lock().unwrap();
@@ -175,8 +192,8 @@ impl GenerationControls for Repository {
 }
 #[async_trait]
 impl GenerationControlScope for Scope {
-	async fn visible(&mut self, _job: &Request) -> Result<bool> {
-		self.point("visible").await?;
+	async fn visible_row(&mut self, _job: &Request) -> Result<bool> {
+		self.point("visible_row").await?;
 		Ok(self.state.lock().unwrap().visible)
 	}
 	async fn decide(&mut self, _job: &Request, action: &str) -> Result<bool> {
@@ -706,4 +723,38 @@ async fn control_reason_validation_precedes_replay_lookup_and_protected_effects(
 	assert!(!state.calls.contains(&"replay".into()));
 	assert!(state.effects.is_empty());
 	assert_eq!(state.notifications, 0);
+}
+
+#[rstest]
+#[tokio::test]
+async fn the_read_dependencies_are_checked_under_a_shared_lease_before_the_exclusive_scope() {
+	let repo = Repository::new(true);
+	control(&repo, "tenant", Uuid::from_u128(1), &stop())
+		.await
+		.unwrap();
+	let calls = repo.calls();
+	let at = |name: &str| calls.iter().position(|call| call == name).unwrap();
+	assert!(at("visible_shared") < at("begin") && at("begin") < at("visible_row"));
+}
+#[rstest]
+#[tokio::test]
+async fn a_refusal_under_the_shared_lease_is_forbidden_and_never_takes_the_exclusive_lock() {
+	let repo = Repository::new(true);
+	repo.state.lock().unwrap().shared_visible = false;
+	assert!(matches!(
+		control(&repo, "tenant", Uuid::from_u128(1), &stop()).await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(repo.calls(), ["visible_shared"]);
+}
+#[rstest]
+#[tokio::test]
+async fn a_node_that_did_not_answer_is_named_and_never_takes_the_exclusive_lock() {
+	let repo = Repository::new(true);
+	repo.state.lock().unwrap().silent = Some("aidash://other/sibling".into());
+	assert!(matches!(
+		control(&repo, "tenant", Uuid::from_u128(1), &stop()).await,
+		Err(Error::NodeUnreachable { node, after_effect: false }) if node == "aidash://other/sibling"
+	));
+	assert_eq!(repo.calls(), ["visible_shared"]);
 }

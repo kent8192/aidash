@@ -32,6 +32,8 @@ struct Script {
 	sibling: Mutex<Option<String>>,
 	/// Whether the coordinator hands the Task it created to the second Node.
 	delegate: Mutex<bool>,
+	/// What the Task the coordinator creates requires.
+	requirements: Mutex<Value>,
 	/// How many requests the coordinator has made.
 	stage: std::sync::atomic::AtomicUsize,
 }
@@ -41,6 +43,7 @@ fn script() -> Arc<Script> {
 	Arc::new(Script {
 		sibling: Mutex::new(None),
 		delegate: Mutex::new(true),
+		requirements: Mutex::new(json!({})),
 		stage: Default::default(),
 	})
 }
@@ -96,7 +99,11 @@ fn next_message(script: &Script, request: &Value) -> Value {
 		1 => tool_call(
 			"create",
 			"task_create",
-			json!({"title":"Hand over","description":HANDED_OVER,"requirements":{}}),
+			json!({
+				"title":"Hand over",
+				"description":HANDED_OVER,
+				"requirements":script.requirements.lock().unwrap().clone(),
+			}),
 		),
 		2 if *script.delegate.lock().unwrap() => {
 			let task = uuid_after(&transcript, HANDED_OVER, 300)
@@ -812,5 +819,191 @@ async fn opening_a_run_stream_while_a_node_is_silent_is_retryable_and_a_refusal_
 		.unwrap();
 	assert_eq!(response.status, 200);
 	drop(response);
+	world.close().await;
+}
+
+/// Serves the application from `pool` again, once the Node answers.
+async fn restore_pool(world: &mut World, pool: aidash_server::database::native::Pool) {
+	world.f.store.pool = pool;
+	world.app = common::application_with_settings(
+		world.f.clone(),
+		aidash_server::http::Settings {
+			auth_burst: 10000,
+			..Default::default()
+		},
+	)
+	.await;
+}
+
+/// A generation request for the Task the coordinator created, approved and
+/// queued: its requester's view of that Task depends on a Run that read on
+/// the second Node.
+async fn queued_generation(world: &World) -> Uuid {
+	let child = world.handed_over().await;
+	let (_, mut template) = request(
+		&world.app,
+		&world.token,
+		"GET",
+		"/api/registry/research/1.0.0",
+		Value::Null,
+	)
+	.await;
+	template["id"] = json!("research-template");
+	template["capabilities"] = json!(["special.research"]);
+	let spec = json!({"enabled":true,"template":template,"permissions":{"roles":[],"groups":[],"attributes":{"team":"research"}},"approval_required":true,"limits":{"max_agents":4,"max_concurrent":2,"max_depth":2,"token_budget":800000,"tokens_per_agent":200000,"lifetime_seconds":3600}});
+	let (status, body) = request(
+		&world.app,
+		&world.token,
+		"POST",
+		"/api/generation/acme/policies/research",
+		json!({"expected_revision":0,"spec":spec}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, assigned) = request(
+		&world.app,
+		&world.token,
+		"POST",
+		&format!("/api/generation/acme/tasks/{}/assign", child.id),
+		json!({"policy_id":"research","reason":"specialist for a Task another Node's Agent was found for"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{assigned}");
+	let id: Uuid = assigned["generation"]["id"]
+		.as_str()
+		.unwrap()
+		.parse()
+		.unwrap();
+	let (status, approved) = request(
+		&world.app,
+		&world.token,
+		"POST",
+		&format!("/api/generation/acme/requests/{id}/control"),
+		json!({"action":"approve","reason":"reviewed definition"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{approved}");
+	assert_eq!(approved["status"], "QUEUED");
+	id
+}
+
+async fn generation_status(world: &World, id: Uuid) -> String {
+	sqlx::query_scalar("SELECT status FROM generation_requests WHERE id = $1")
+		.bind(id)
+		.fetch_one(world.f.store.pool.fixture_driver())
+		.await
+		.unwrap()
+}
+
+/// A queued generation request is activated under the exclusive lock, where no
+/// Node can be asked. With every Node healthy it activates; while a Node does
+/// not answer it stays queued and the tick goes on; a person stopping it is
+/// told which Node, and a refusal stays final (#751).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_queued_generation_request_waits_for_a_silent_node_and_a_stop_names_it(
+	#[future(awt)] provider: Provider,
+) {
+	*provider.script.delegate.lock().unwrap() = false;
+	*provider.script.requirements.lock().unwrap() = json!({"capability":"special.research"});
+	let mut world = world(provider).await;
+	world.run_coordinator(WITHOUT_DELEGATION).await;
+	let job = queued_generation(&world).await;
+	let control = format!("/api/generation/acme/requests/{job}/control");
+	// Carol may not read Workspaces: a refusal once every Node answers.
+	let (status, current) = request(
+		&world.app,
+		&world.f.config.api_token,
+		"GET",
+		"/api/authorization/acme",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{current}");
+	let mut bundle = current["bundle"].clone();
+	bundle["subjects"]["carol"] = json!({"kind":"user"});
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"carol-reads-nothing","effect":"deny","subjects":{"ids":["carol"]},
+		"actions":["workspace.read"],"resources":{"kinds":["*"]}
+	}));
+	let (status, body) = request(
+		&world.app,
+		&world.f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":current["revision"],"bundle":bundle}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let carol = subject_credential(&world.f.store, "acme", "carol").await;
+
+	let original = limit_pool(&mut world, 1).await;
+	// Activation: the Node is silent, so nothing is decided and nothing fails.
+	aidash_server::generation::provision::reconcile(&world.f)
+		.await
+		.expect("a silent Node does not abandon the tick");
+	assert_eq!(generation_status(&world, job).await, "QUEUED");
+	// Stopping: a person is told which Node, and may retry.
+	let stop = json!({"action":"stop","reason":"changed my mind"});
+	let (status, body) = request(&world.app, &world.token, "POST", &control, stop.clone()).await;
+	assert_eq!(status, 503, "{body}");
+	assert_eq!(body["code"], "node_unreachable", "{body}");
+	assert_eq!(body["node"], json!(world.sibling.to_string()), "{body}");
+
+	restore_pool(&mut world, original).await;
+	// With every Node answering, a refusal is final, and names nothing. (While a
+	// Node is silent the Task's Read dependencies come first, so that answer is
+	// "cannot confirm" for everyone who may discover it.)
+	let (status, body) = request(&world.app, &carol, "POST", &control, stop.clone()).await;
+	assert_eq!(status, 403, "{body}");
+	assert_ne!(body["code"], "node_unreachable", "{body}");
+	assert_eq!(generation_status(&world, job).await, "QUEUED");
+	// Every Node answers: the request activates, and then it can be stopped.
+	aidash_server::generation::provision::reconcile(&world.f)
+		.await
+		.unwrap();
+	assert_eq!(generation_status(&world, job).await, "ACTIVE");
+	let (status, body) = request(&world.app, &world.token, "POST", &control, stop).await;
+	assert_eq!(status, 200, "{body}");
+	world.close().await;
+}
+
+/// A refusal at activation still writes `FAILED`: a requester who may no
+/// longer read the Task is the admission denial it always was.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_real_refusal_at_activation_still_fails_the_request(#[future(awt)] provider: Provider) {
+	*provider.script.delegate.lock().unwrap() = false;
+	*provider.script.requirements.lock().unwrap() = json!({"capability":"special.research"});
+	let mut world = world(provider).await;
+	world.run_coordinator(WITHOUT_DELEGATION).await;
+	let job = queued_generation(&world).await;
+	let (status, current) = request(
+		&world.app,
+		&world.f.config.api_token,
+		"GET",
+		"/api/authorization/acme",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{current}");
+	let mut bundle = current["bundle"].clone();
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"alice-reads-no-workspace","effect":"deny","subjects":{"ids":["alice"]},
+		"actions":["workspace.read"],"resources":{"kinds":["*"]}
+	}));
+	let (status, body) = request(
+		&world.app,
+		&world.f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":current["revision"],"bundle":bundle}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	aidash_server::generation::provision::reconcile(&world.f)
+		.await
+		.unwrap();
+	assert_eq!(generation_status(&world, job).await, "FAILED");
 	world.close().await;
 }

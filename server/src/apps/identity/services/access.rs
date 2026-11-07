@@ -929,6 +929,24 @@ impl Access {
 		}
 	}
 
+	/// [`Self::finish`] for a yes/no answer to one person's request. A `false`
+	/// reached while a Node did not answer is that Node's silence, so it is
+	/// `NodeUnreachable` and not a refusal (#751).
+	pub(crate) async fn finish_deciding(self, result: Result<bool>) -> Result<bool> {
+		let silent = match (&result, self.named(Error::Forbidden)) {
+			(Ok(false), Error::NodeUnreachable { node, .. }) => Some(node),
+			_ => None,
+		};
+		let decided = self.finish(result).await?;
+		match silent {
+			Some(node) => Err(Error::NodeUnreachable {
+				node,
+				after_effect: false,
+			}),
+			None => Ok(decided),
+		}
+	}
+
 	/// The Nodes this authority found silent, taken so that a publisher view
 	/// can hand them back to the reader it ran for (#751).
 	pub(crate) fn take_peer_marks(&mut self) -> std::collections::BTreeSet<String> {
