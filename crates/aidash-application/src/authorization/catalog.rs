@@ -49,6 +49,29 @@ pub async fn tool_entry(
 	admit(scope, reference, action, Some(tool), &[]).await
 }
 
+/// How a definition a Run read stops this reader. `entry` is its raw definition,
+/// approved or not; the version is named only to a holder of `registry.read` on it.
+pub async fn read_block(
+	scope: &mut dyn CatalogScope,
+	reference: &EntityRef,
+	entry: Option<&Entry>,
+) -> Result<aidash_domain::run_state::RunReadsBlock> {
+	use aidash_domain::run_state::RunReadsBlock;
+	if scope.document(reference).await?.is_some() {
+		return Ok(RunReadsBlock::DefinitionNotReadable);
+	}
+	let readable = match entry {
+		Some(entry) => {
+			let resource = scope.resource(entry);
+			scope.decide(&resource, "registry.read").await?
+		}
+		None => false,
+	};
+	Ok(RunReadsBlock::DefinitionNotApproved {
+		definition: readable.then(|| reference.clone()),
+	})
+}
+
 async fn admit(
 	scope: &mut dyn CatalogScope,
 	reference: &EntityRef,

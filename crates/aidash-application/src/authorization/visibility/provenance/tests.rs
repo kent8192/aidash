@@ -610,6 +610,44 @@ async fn hidden_dependency_journals_stop_before_loading_any_source_records(
 	assert!(!scope.calls.contains(&"sources".into()));
 }
 #[rstest]
+#[case("catalog", ReadBlock::Definition(EntityRef { id: "entry".into(), version: "1".into() }))]
+#[case("remote", ReadBlock::RemoteRead)]
+#[case("semantic", ReadBlock::SemanticRead)]
+#[case("received", ReadBlock::SemanticRead)]
+#[case("base", ReadBlock::Source("run".into()))]
+#[tokio::test]
+async fn a_walk_reports_the_read_that_stopped_it(
+	mut scope: Scope,
+	#[case] gate: &'static str,
+	#[case] block: ReadBlock,
+) {
+	let root = Uuid::from_u128(1);
+	scope.denied = Some(gate);
+	scope.entries = vec![EntityRef {
+		id: "entry".into(),
+		version: "1".into(),
+	}];
+	scope.graph.insert(
+		root,
+		vec![(Uuid::from_u128(3), "run".into(), Uuid::from_u128(2))],
+	);
+	assert_eq!(
+		run_reads_block(&mut scope, root).await.unwrap(),
+		Some(block)
+	);
+	assert!(!run_reads_visible(&mut scope, root).await.unwrap());
+}
+#[rstest]
+#[tokio::test]
+async fn a_walk_that_passes_reports_no_block(mut scope: Scope) {
+	assert_eq!(
+		run_reads_block(&mut scope, Uuid::from_u128(1))
+			.await
+			.unwrap(),
+		None
+	);
+}
+#[rstest]
 #[tokio::test]
 async fn denied_nested_run_stops_before_reading_its_journal_or_later_sources(mut scope: Scope) {
 	let root = Uuid::from_u128(1);

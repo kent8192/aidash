@@ -2,7 +2,9 @@
 //! Withdrawal itself is never blocked (#540): this only tells the approver
 //! which Agents can no longer start and how many Runs are still in flight.
 //! Those Runs pause at their next use of the withdrawn version (a Decider at
-//! its next compaction); they are not stopped here.
+//! its next compaction); they are not stopped here. A Run that only read the
+//! version, for example by discovering it, is hidden and cannot be resumed
+//! until the version is approved again, so those are counted too.
 use super::approvals::dependencies;
 use crate::{Error, Result, ports::catalog_withdrawal::WithdrawalImpactScope};
 use aidash_domain::registry::{
@@ -19,6 +21,8 @@ pub struct WithdrawalImpact {
 	pub agents: Vec<EntityRef>,
 	/// Non-terminal Runs of those Agent versions on the Node.
 	pub running_runs: u64,
+	/// Non-terminal Runs on the Node that have read the withdrawn version.
+	pub reading_runs: u64,
 }
 
 /// Compute the impact. Only a subject who may withdraw the version may read it.
@@ -62,9 +66,11 @@ pub async fn impact(
 	} else {
 		scope.non_terminal_runs(&agents).await?
 	};
+	let reading_runs = scope.non_terminal_runs_reading(reference).await?;
 	Ok(WithdrawalImpact {
 		agents,
 		running_runs,
+		reading_runs,
 	})
 }
 

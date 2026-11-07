@@ -86,7 +86,9 @@ async function dashboard(
       });
     // Withdrawal first shows what it stops (#540).
     if (path.endsWith("/catalog/impact"))
-      return route.fulfill({ json: { agents: [], running_runs: 0 } });
+      return route.fulfill({
+        json: { agents: [], running_runs: 0, reading_runs: 0 },
+      });
     if (
       path.startsWith("/api/authorization/") &&
       route.request().method() === "POST"
@@ -359,6 +361,38 @@ test("without subject.group.update an agent approval keeps the default group", a
     expected_revision: 0,
     node: defaultNode.name,
   });
+});
+
+test("withdrawing shows the in-flight Runs that read the version", async ({
+  page,
+}) => {
+  await dashboard(
+    page,
+    tenantSubject,
+    () => [
+      registryVersion(entry("search", "tool"), {
+        approval: { enabled: true, revision: 3 },
+      }),
+    ],
+    () => ({ status: 200, json: {} }),
+  );
+  await routeTenantActions(page, ["catalog.approve"]);
+  await page.route("**/catalog/impact**", (route) =>
+    route.fulfill({
+      json: { agents: [], running_runs: 0, reading_runs: 2 },
+    }),
+  );
+  await page.goto("/settings?view=registry");
+  await row(page, "search").click();
+  await approval(page)
+    .getByRole("button", { name: "Withdraw approval", exact: true })
+    .click();
+  await expect(approval(page)).toContainText(
+    "In-flight Runs that read this version, which become hidden and cannot be resumed: 2",
+  );
+  await expect(approval(page)).not.toContainText(
+    "No approved agent on this Node uses it.",
+  );
 });
 
 test("withdrawing fences on the approval revision and reports a conflict", async ({

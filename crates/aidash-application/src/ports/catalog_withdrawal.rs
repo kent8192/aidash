@@ -20,4 +20,6 @@ pub trait WithdrawalImpactScope: Send {
 	async fn approved_agents(&mut self) -> Result<Vec<Entry>>;
 	/// How many non-terminal Runs of these exact agent versions the Node executes.
 	async fn non_terminal_runs(&mut self, agents: &[EntityRef]) -> Result<u64>;
+	/// How many non-terminal Runs the Node executes have read this exact version.
+	async fn non_terminal_runs_reading(&mut self, reference: &EntityRef) -> Result<u64>;
 }

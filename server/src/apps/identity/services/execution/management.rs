@@ -17,6 +17,8 @@ pub struct RunManagement {
 	pub id: Uuid,
 	pub phase: RunPhase,
 	pub control: RunControl,
+	/// The kind of actor that last changed `control`.
+	pub control_source: aidash_domain::entities::ControlSource,
 	pub semantic_reason: Option<crate::semantic::remote::Failure>,
 	/// The exact semantic cause and its authorized next actions while the Run
 	/// can still be recovered; absent for a cancelled or finished Run.
@@ -35,6 +37,7 @@ impl From<RunInspection> for RunManagement {
 			id: run.id,
 			phase: run.phase,
 			control: run.control,
+			control_source: run.control_source,
 			semantic_reason: run.recovery.as_ref().and_then(|r| r.semantic_reason),
 			// A paused Run is excluded from retry scheduling, so its retry only
 			// counts as scheduled while the Run is active.
