@@ -39,7 +39,7 @@ pub struct ChildTaskRecord {
 	pub status: TaskStatus,
 }
 #[async_trait]
-pub trait ChildSummaryScope: Send {
+pub trait ChildSummaryScope: Send + super::visibility::RowOutcome {
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	async fn children(

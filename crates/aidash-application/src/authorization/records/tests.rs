@@ -220,6 +220,7 @@ impl WorkspaceRecordScope for Scope {
 		Ok(())
 	}
 }
+impl crate::ports::authorization::visibility::RowOutcome for Scope {}
 #[async_trait]
 impl ChildSummaryScope for Scope {
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
