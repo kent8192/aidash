@@ -39,7 +39,7 @@ times out incomplete body reception. The permit remains held through handler
 completion or cancellation. The native transport hook is supplied by
 [reinhardt-web#6737](https://github.com/kent8192/reinhardt-web/pull/6737).
 
-Global overload and SSE capacity exhaustion return **503** with `Retry-After: 1`.
+Global overload, SSE capacity exhaustion and temporary database errors return **503** with `Retry-After: 1`.
 Rate limiting returns **429** with `Retry-After`. An HTTP response-start timeout
 returns **504**. Body-size rejection returns **413**. Request IDs, private-route
 headers and HTTP metrics also cover these errors, including overload rejected by
@@ -152,6 +152,8 @@ Aidash additionally emits:
 - `aidash_worker_active_steps`: leased steps currently handled by this process.
 - `aidash_worker_steps_total{outcome="success|error"}`: completed step attempts, not terminal tasks.
 - `aidash_worker_retries_total`: persisted worker retry transitions.
+- `aidash_background_service_failures_total{service}`: failed passes of the capability, transaction recovery and generation loops, plus rows the `capabilities.references` loop skipped because it could not read them. The loop keeps running, so alert on a steady rise. Other background services log their failures and do not count here.
+- `aidash_background_service_pass_age_seconds{service}`: how long the current pass of those loops, and of the `retention` service, has been running, once it passes 30 s, and 0 otherwise. A `retention` pass is one tick of its per-minute loop, which also runs the hourly Tenant and Node purges, so a stalled purge shows here. A value that keeps climbing past 300 means a stuck pass; the log repeats it every 5 minutes and nothing cancels it (ADR 0113).
 - `aidash_worker_crash_loop_failures_total`: Runs handed to failure delivery after three consecutive Lease Recoveries of one step.
 - `aidash_model_response_headers_seconds`: successful HTTP transport time until model response headers, not first-token latency.
 - `aidash_model_tokens_total{direction="input|output|input_cached_read|input_cached_write"}`: provider-reported usage from successfully parsed model responses, streamed or not. Cached reads and writes are breakdowns of `input`, not additional tokens.

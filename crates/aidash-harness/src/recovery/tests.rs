@@ -827,3 +827,59 @@ async fn a_connection_shaped_tool_body_is_not_a_failure_deferral_candidate(
 			.failure_delivery()
 	);
 }
+
+/// #728: a Run waiting on the database spends none of its attempts.
+#[rstest]
+#[tokio::test]
+async fn waiting_on_the_database_spends_no_retry_allowance(
+	repository: Repository,
+	now: DateTime<Utc>,
+) {
+	// Arrange
+	{
+		let mut run = repository.run.lock().unwrap();
+		run.as_mut().unwrap().recovery.retry = Some(RetryState { count: 2, at: now });
+	}
+	// Act
+	for _ in 0..8 {
+		recover(
+			&repository,
+			repository.token,
+			ExecutionFailure::DatabaseUnavailable,
+			now,
+		)
+		.await
+		.unwrap();
+	}
+	// Assert
+	let run = repository.run.lock().unwrap();
+	let retry = run.as_ref().unwrap().recovery.retry.as_ref().unwrap();
+	assert_eq!(retry.count, 2);
+	assert_eq!(retry.at, now + chrono::Duration::seconds(1));
+}
+
+/// #728: the Run shows why it waits, not the error of an earlier step.
+#[rstest]
+#[tokio::test]
+async fn waiting_on_the_database_says_so(repository: Repository, now: DateTime<Utc>) {
+	// Arrange
+	{
+		let mut run = repository.run.lock().unwrap();
+		run.as_mut().unwrap().error = Some("an earlier step failed".into());
+	}
+	// Act
+	recover(
+		&repository,
+		repository.token,
+		ExecutionFailure::DatabaseUnavailable,
+		now,
+	)
+	.await
+	.unwrap();
+	// Assert
+	let run = repository.run.lock().unwrap();
+	assert_eq!(
+		run.as_ref().unwrap().error.as_deref(),
+		Some("the database is temporarily unavailable")
+	);
+}

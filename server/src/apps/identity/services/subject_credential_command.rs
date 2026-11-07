@@ -39,7 +39,7 @@ async fn run(tenant: &str, subject: &str, lifetime: i64, label: &str) -> Result<
 	let settings = crate::config::startup::load_settings()?;
 	crate::bootstrap::require_migrated(&settings).await?;
 	let config = Config::from_settings(&settings)?;
-	let database = crate::database::runtime::connect(&config.database_url, 4).await?;
+	let database = crate::database::runtime::connect_command(&config.database_url, 4).await?;
 	let pool = Pool::from(database.into_postgres().ok_or(Error::Forbidden)?);
 	let issued = issue(&pool, tenant, subject, lifetime, label).await;
 	pool.close().await;
