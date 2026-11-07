@@ -216,6 +216,7 @@ struct ClassifiedOutputs<'a> {
 	pending: &'a mut Vec<Uuid>,
 }
 
+impl crate::ports::authorization::visibility::RowOutcome for ClassifiedOutputs<'_> {}
 #[async_trait]
 impl ResourceVisibilityScope for ClassifiedOutputs<'_> {
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {

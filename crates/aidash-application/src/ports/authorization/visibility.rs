@@ -42,10 +42,27 @@ pub trait RowOutcome {
 	fn take_row_silence(&mut self) -> Option<String> {
 		None
 	}
+	/// Put back (or clear) the Node the row's check gave up on, once the rest of
+	/// a chain has been judged.
+	fn set_row_silence(&mut self, _node: Option<String>) {}
+}
+
+/// A check that can meet a silent Node was followed by others in a chain, and
+/// stopped the chain. `held` is the Node it stopped at, taken from the scope
+/// before the rest of the chain ran, and `rest` whether the rest passed. The
+/// row counts as unconfirmed only if nothing else refuses it: when the rest
+/// passed, or stopped at a silent Node itself, the first Node is put back;
+/// when the rest was refused, the row is a refusal and nothing is kept (#770).
+pub fn conclude_chain(scope: &mut (impl RowOutcome + ?Sized), held: Option<String>, rest: bool) {
+	if let Some(node) = held
+		&& (rest || scope.row_silence().is_some())
+	{
+		scope.set_row_silence(Some(node));
+	}
 }
 
 #[async_trait]
-pub trait LocalRunVisibilityScope: Send {
+pub trait LocalRunVisibilityScope: Send + RowOutcome {
 	fn cached(&self, run: &RunMetadata) -> Option<bool>;
 	fn remember(&mut self, run: &RunMetadata, allowed: bool);
 	fn resource(&self, kind: &str, id: &str, attributes: serde_json::Value) -> Resource;

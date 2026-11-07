@@ -141,6 +141,11 @@ impl Lease<'_> {
 			_ => None,
 		}
 	}
+	pub(crate) fn set_row_silence(&mut self, node: Option<String>) {
+		if let Some(access) = self.access() {
+			access.set_row_silence(node);
+		}
+	}
 	pub(crate) fn take_row_silence(&mut self) -> Option<String> {
 		self.access().and_then(|access| access.take_row_silence())
 	}

@@ -104,6 +104,7 @@ impl Scope {
 		Ok(())
 	}
 }
+impl crate::ports::authorization::visibility::RowOutcome for Scope {}
 #[async_trait]
 impl ResourceVisibilityScope for Scope {
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {

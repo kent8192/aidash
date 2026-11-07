@@ -1228,6 +1228,10 @@ impl Access {
 	pub(crate) fn take_row_silence(&mut self) -> Option<String> {
 		self.row_silence.take()
 	}
+	/// Put back, or clear, the Node the row gave up on.
+	pub(crate) fn set_row_silence(&mut self, node: Option<String>) {
+		self.row_silence = node;
+	}
 }
 
 impl Access {

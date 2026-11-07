@@ -339,6 +339,23 @@ impl aidash_application::ports::authorization::visibility::RowOutcome for Reads<
 	fn take_row_silence(&mut self) -> Option<String> {
 		self.access.take_row_silence()
 	}
+	fn set_row_silence(&mut self, node: Option<String>) {
+		self.access.set_row_silence(node);
+	}
+}
+impl aidash_application::ports::authorization::visibility::RowOutcome for NativeReads<'_> {
+	fn begin_row(&mut self) {
+		self.access.begin_row();
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.access.row_silence()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.access.take_row_silence()
+	}
+	fn set_row_silence(&mut self, node: Option<String>) {
+		self.access.set_row_silence(node);
+	}
 }
 #[async_trait]
 impl EventVisibilityScope for Reads<'_> {
