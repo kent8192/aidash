@@ -1907,6 +1907,25 @@ fn worker_continues_with_visible_subset_and_never_sends_denied_records_provider(
 	.boxed()
 }
 
+/// The `agent_discover` result inside a model request: the object with `agents` and `errors`,
+/// wherever the harness nests it (it travels in the context snapshot's `history`).
+fn discovery_result(value: &Value) -> Option<Value> {
+	match value {
+		Value::String(text) => serde_json::from_str::<Value>(text)
+			.ok()
+			.and_then(|parsed| discovery_result(&parsed)),
+		Value::Array(items) => items.iter().find_map(discovery_result),
+		Value::Object(fields) => {
+			if fields.contains_key("agents") && fields.contains_key("errors") {
+				Some(value.clone())
+			} else {
+				fields.values().find_map(discovery_result)
+			}
+		}
+		_ => None,
+	}
+}
+
 #[rstest::fixture]
 fn discovered_registry_entries_remain_live_journal_dependencies_provider_calls() -> Arc<AtomicUsize>
 {
@@ -1929,10 +1948,7 @@ fn discovered_registry_entries_remain_live_journal_dependencies_provider_router(
             json!({"role":"assistant","content":null,"tool_calls":[{"id":"discover","type":"function","function":{"name":"agent_discover","arguments":"{\"capability\":\"journal.discovery\"}"}}]})
         } else {
             // The tool result hands the model a card per Agent, not the whole definition (#769).
-            let result = body["messages"].as_array().unwrap().iter().rev()
-                .find(|message| message["role"] == "tool").expect("the discovery result")["content"]
-                .as_str().unwrap().to_owned();
-            let result: Value = serde_json::from_str(&result).unwrap();
+            let result = discovery_result(&body).expect("the discovery result");
             let agents = result["agents"].as_array().unwrap();
             assert!(!agents.is_empty(), "{result}");
             for agent in agents {
