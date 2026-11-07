@@ -20,6 +20,7 @@ import type { State } from "./types";
 import { useQuery } from "@tanstack/react-query";
 import { workspaceGet } from "./generated/aidash";
 import { ArtifactList } from "./collaboration/channel";
+import { readUnconfirmed, unconfirmedFor } from "./unconfirmed";
 import { ChannelFiles } from "./collaboration/attachments";
 const WorkingFileSettings = lazy(() =>
   import("./capabilities/management").then((m) => ({
@@ -301,7 +302,14 @@ function RequestFiles({ workspace }: { workspace: string }) {
             : "Could not load results."}
         </Alert>
       ) : (
-        <ArtifactList artifacts={query.data?.artifacts ?? []} />
+        <ArtifactList
+          artifacts={query.data?.artifacts ?? []}
+          unconfirmed={unconfirmedFor(
+            readUnconfirmed(query.data),
+            ["artifact"],
+            [workspace],
+          )}
+        />
       )}
       <ChannelFiles workspace={workspace} />
     </div>

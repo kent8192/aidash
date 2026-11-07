@@ -45,7 +45,8 @@ import { LivePreviewPanel } from "./live-preview";
 import { TransferHistory } from "./transfers";
 import { ResearchPanel, UrlIntentPicker, useResearch } from "./research";
 import { snapshotReadsPages, urlIntents } from "../research";
-import type { RunDetails } from "../generated/models";
+import type { RunDetails, SemanticEntry } from "../generated/models";
+import { listBody } from "../unconfirmed";
 import { semanticEntries } from "../generated/aidash";
 type Session = {
   active_run_id: string | null;
@@ -197,7 +198,13 @@ function FileOperations({
   const [busy, setBusy] = useState(false);
   const imageIndex = useQuery({
     queryKey: ["semantic", area.workspace_id, "entries"],
-    queryFn: () => semanticEntries(area.workspace_id),
+    // Shares its cache entry with the Workspace's semantic index view, so it
+    // reads the same shape.
+    queryFn: async () =>
+      listBody<SemanticEntry>(
+        await semanticEntries(area.workspace_id),
+        "entries",
+      ),
     enabled: area.manifest.some(
       (file) =>
         file.scope === "working" && file.media_type.startsWith("image/"),
@@ -462,8 +469,8 @@ function FileOperations({
                     <Hint>
                       {f.scope} · {f.size} bytes
                     </Hint>
-                    {imageIndex.data
-                      ?.filter((entry) => {
+                    {imageIndex.data?.items
+                      .filter((entry) => {
                         const source = entry.source as {
                           kind?: string;
                           area_id?: string;

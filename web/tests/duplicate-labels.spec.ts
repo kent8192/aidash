@@ -113,7 +113,7 @@ test("semantic sources can page older messages and select remote agents", async 
   );
   await page.route(
     "**/api/workspaces/workspace-one/semantic/entries",
-    (route) => route.fulfill({ json: [] }),
+    (route) => route.fulfill({ json: { entries: [], unconfirmed: [] } }),
   );
   await page.route(
     "**/api/workspaces/workspace-one/semantic/history",
@@ -148,6 +148,7 @@ test("semantic sources can page older messages and select remote agents", async 
             },
           ],
           next_before: older ? null : "cursor",
+          unconfirmed: [],
         },
       });
     },

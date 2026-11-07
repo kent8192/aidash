@@ -12,9 +12,15 @@ export type {
   Invocation,
   Discovery,
   Event as MeshEvent,
-  StateResponse as TenantState,
 } from "./generated/models";
 import type { StateResponse } from "./generated/models";
+import type { Unconfirmed } from "./unconfirmed";
+
+/** The Tenant's State. `unconfirmed` is optional because a peer or server that
+ *  predates the field leaves it out. */
+export type TenantState = Omit<StateResponse, "unconfirmed"> & {
+  unconfirmed?: Unconfirmed[];
+};
 
 /** The Node a dashboard session works in: its address, which names the Node in
  *  every Run's Home and every Agent's subject, and the endpoint of the
@@ -25,4 +31,4 @@ export interface WorkingNode {
 }
 
 /** What the dashboard reads: the Tenant's State with the Node it works in. */
-export type State = StateResponse & { node: WorkingNode };
+export type State = TenantState & { node: WorkingNode };

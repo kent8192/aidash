@@ -44,6 +44,8 @@ import { ApiError } from "../transport";
 import type { State, Discovery } from "../types";
 import { useI18n, useAgentLabel } from "../ui";
 import { cn } from "../lib/utils";
+import { readUnconfirmed, unconfirmedFor } from "../unconfirmed";
+import { UnconfirmedNotice } from "../unconfirmed-notice";
 import { collaborationCopy } from "./copy";
 import { workspaceCopy } from "./workspace-copy";
 import { senderLabel } from "./model";
@@ -350,6 +352,14 @@ function ConversationFeed({
   const allMessages = query.isError
     ? []
     : mergeMessagePages(query.data?.pages ?? []);
+  // Every loaded page is a read of its own; what each left out adds up.
+  const missing = query.isError
+    ? []
+    : unconfirmedFor(
+        (query.data?.pages ?? []).flatMap(readUnconfirmed),
+        ["message"],
+        [workspace],
+      );
   const messages =
     threadList && !thread
       ? allMessages.filter((message) => message.thread_id !== null)
@@ -614,6 +624,7 @@ function ConversationFeed({
               }
             }}
           >
+            <UnconfirmedNotice className="mb-2" lines={missing} />
             {query.hasNextPage && (
               <Button
                 variant="ghost"
@@ -629,19 +640,23 @@ function ConversationFeed({
             {query.isPending && (
               <Loading className="py-6 text-center">{copy.processing}</Loading>
             )}
-            {!query.isPending && messages.length === 0 && (
-              <div className="mx-auto mt-8 grid max-w-64 justify-items-center gap-2 text-center">
-                <span className="grid size-8 place-items-center rounded-md bg-raised text-faint">
-                  <MessageSquare aria-hidden className="size-4" />
-                </span>
-                <p className="text-[13px] font-medium text-foreground">
-                  {threadList ? words.noThreads : copy.noMessages}
-                </p>
-                {!threadList && (
-                  <p className="text-xs text-muted-foreground">{words.scope}</p>
-                )}
-              </div>
-            )}
+            {!query.isPending &&
+              messages.length === 0 &&
+              missing.length === 0 && (
+                <div className="mx-auto mt-8 grid max-w-64 justify-items-center gap-2 text-center">
+                  <span className="grid size-8 place-items-center rounded-md bg-raised text-faint">
+                    <MessageSquare aria-hidden className="size-4" />
+                  </span>
+                  <p className="text-[13px] font-medium text-foreground">
+                    {threadList ? words.noThreads : copy.noMessages}
+                  </p>
+                  {!threadList && (
+                    <p className="text-xs text-muted-foreground">
+                      {words.scope}
+                    </p>
+                  )}
+                </div>
+              )}
             {feed.map((item, index) => {
               const previous = feed[index - 1];
               const divider =

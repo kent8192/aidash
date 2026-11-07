@@ -75,6 +75,10 @@ const state = () => ({
     { id: "a1", workspace_id: "w1" },
     { id: "a2", workspace_id: "w2" },
   ],
+  unconfirmed: [
+    { node: "aidash://home/other", kind: "task", workspace_id: "w1", count: 1 },
+    { node: "aidash://home/other", kind: "task", workspace_id: "w2", count: 3 },
+  ],
 });
 
 test("a Node's view holds only what its Workspaces own, and names the Node", () => {
@@ -104,6 +108,18 @@ test("a Node's view holds only what its Workspaces own, and names the Node", () 
     "a Tenant-level event has no Node and belongs to every view",
   );
   assert.deepEqual(view.registry, [{ id: "agent" }]);
+  assert.deepEqual(
+    view.unconfirmed.map((entry) => entry.count),
+    [3],
+    "items left out of another Node's Workspaces are not this view's",
+  );
+});
+
+test("a State from a server that predates `unconfirmed` has none", () => {
+  const old = state();
+  delete old.unconfirmed;
+  assert.deepEqual(nodeView(old, nodes[1]).unconfirmed, []);
+  assert.deepEqual(nodeView(old, undefined).unconfirmed, []);
 });
 
 test("a Deployment Administrator has no Node, so State stays whole and names the Deployment", () => {
