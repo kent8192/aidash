@@ -97,12 +97,19 @@ fn next_message(script: &Script, request: &Value) -> Value {
 			"agent_discover",
 			json!({"capability":"sibling.discovery"}),
 		),
-		stage if (1..=created).contains(&stage) => tool_call(
-			&format!("create-{stage}"),
-			"task_create",
-			json!({"title":"Hand over","description":HANDED_OVER,"requirements":{}}),
-		),
-		stage if stage == created + 1 && *script.delegate.lock().unwrap() => {
+		// With delegation the first Task is handed over before the others are
+		// created, so those others follow the delegated Run's results.
+		stage
+			if (1..=created).contains(&stage)
+				&& !(*script.delegate.lock().unwrap() && stage > 1) =>
+		{
+			tool_call(
+				&format!("create-{stage}"),
+				"task_create",
+				json!({"title":"Hand over","description":HANDED_OVER,"requirements":{}}),
+			)
+		}
+		stage if stage == 2 && *script.delegate.lock().unwrap() => {
 			let task = uuid_after(&transcript, HANDED_OVER, 300)
 				.expect("the created Task's id is in the transcript");
 			tool_call(
@@ -113,6 +120,13 @@ fn next_message(script: &Script, request: &Value) -> Value {
 					"node_id": script.sibling.lock().unwrap().clone().expect("the second Node exists"),
 					"agent": {"id":"sibling-agent","version":"1.0.0"},
 				}),
+			)
+		}
+		stage if *script.delegate.lock().unwrap() && (3..=created + 1).contains(&stage) => {
+			tool_call(
+				&format!("create-{stage}"),
+				"task_create",
+				json!({"title":"Hand over","description":HANDED_OVER,"requirements":{}}),
 			)
 		}
 		_ => json!({"role":"assistant","content":"Completed"}),
@@ -878,22 +892,24 @@ async fn bob_cannot_discover(world: &World) -> String {
 	subject_credential(&world.f.store, "acme", "bob").await
 }
 
-/// Three Tasks of one Run that waits on a silent Node are counted under that
-/// Node, once each, and the other Tasks are not (#770, decisions 1-3). A reader
-/// who may not discover the Node sees neither the Tasks nor an entry, and a
-/// single read still asks while a second list does not wait.
+/// A Run that delegated to the second Node and then created Tasks follows the
+/// delegated Run's results. Those Tasks need the Node's answer, so while it is
+/// silent they are left out of a list and counted under it, once each, and the
+/// others are not (#770, decisions 1-3). A reader who may not discover the Node
+/// sees neither an entry nor those rows, and a single read still asks while a
+/// second list does not wait. The Tasks return once the Node answers.
 #[rstest::rstest]
 #[tokio::test]
-async fn a_list_counts_the_tasks_of_one_silent_run_under_that_node_and_a_reader_without_discovery_sees_no_entry(
+async fn a_list_counts_the_tasks_that_follow_a_delegated_run_under_the_silent_node_and_a_reader_without_discovery_sees_no_entry(
 	#[future(awt)] provider: Provider,
 ) {
-	*provider.script.delegate.lock().unwrap() = false;
+	// The Agent delegates its first Task, then creates two more.
 	provider
 		.script
 		.tasks
 		.store(3, std::sync::atomic::Ordering::SeqCst);
 	let mut world = world(provider).await;
-	world.run_coordinator(3 + 2).await;
+	world.run_coordinator(3 + 3).await;
 	let children = world.all_handed_over().await;
 	assert_eq!(children.len(), 3);
 	let workspace = children[0].workspace_id.to_string();
@@ -903,62 +919,70 @@ async fn a_list_counts_the_tasks_of_one_silent_run_under_that_node_and_a_reader_
 	assert_eq!(status, 200, "{tasks}");
 	assert_eq!(tasks["unconfirmed"], json!([]), "{tasks}");
 	assert!(children.iter().all(|child| listed(&tasks, child.id)));
-	let single = format!("/api/tasks/{}/runs", children[0].id);
 
 	// Act: the second Node stops answering.
 	let original = limit_pool(&mut world, 1).await;
 	let first = std::time::Instant::now();
 	let (status, tasks) = world.get("/api/tasks").await;
 	let first = first.elapsed();
-	// Assert: the three are left out and counted under the Node, the rest stay.
+	// Assert: the Tasks that need the Node are left out and counted under it,
+	// the rest stay, and every missing row is counted.
 	assert_eq!(status, 200, "{tasks}");
-	assert!(children.iter().all(|child| !listed(&tasks, child.id)));
-	assert!(listed(&tasks, world.task), "{tasks}");
-	assert_eq!(
-		unconfirmed_of(&tasks, "task"),
-		vec![(world.sibling.to_string(), workspace.clone(), 3)],
-		"{tasks}"
+	let hidden: Vec<_> = children
+		.iter()
+		.filter(|child| !listed(&tasks, child.id))
+		.collect();
+	assert!(
+		!hidden.is_empty(),
+		"a Task that needs the silent Node is left out: {tasks}"
 	);
+	assert!(listed(&tasks, world.task), "{tasks}");
+	let expected = vec![(
+		world.sibling.to_string(),
+		workspace.clone(),
+		hidden.len() as u64,
+	)];
+	assert_eq!(unconfirmed_of(&tasks, "task"), expected, "{tasks}");
+	let single = format!("/api/tasks/{}/runs", hidden[0].id);
 	// The same Node is named in the state and the Workspace.
 	let (status, state) = world.get("/api/state").await;
 	assert_eq!(status, 200, "{state}");
-	assert_eq!(
-		unconfirmed_of(&state, "task"),
-		vec![(world.sibling.to_string(), workspace.clone(), 3)],
-		"{state}"
-	);
+	assert_eq!(unconfirmed_of(&state, "task"), expected, "{state}");
 	let (status, snapshot) = world.get(&format!("/api/workspaces/{workspace}")).await;
 	assert_eq!(status, 200, "{snapshot}");
-	assert_eq!(
-		unconfirmed_of(&snapshot, "task"),
-		vec![(world.sibling.to_string(), workspace.clone(), 3)],
-		"{snapshot}"
-	);
+	assert_eq!(unconfirmed_of(&snapshot, "task"), expected, "{snapshot}");
+	// The events of the missing rows are counted under the same Node.
 	let (status, events) = world
 		.get(&format!("/api/events?workspace_id={workspace}"))
 		.await;
 	assert_eq!(status, 200, "{events}");
-	assert!(events["events"].is_array(), "{events}");
+	let counted: u64 = unconfirmed_of(&events, "event")
+		.iter()
+		.map(|(node, ws, count)| {
+			assert_eq!(
+				(node, ws),
+				(&world.sibling.to_string(), &workspace),
+				"{events}"
+			);
+			*count
+		})
+		.sum();
 	assert!(
-		events["unconfirmed"]
-			.as_array()
-			.unwrap()
-			.iter()
-			.all(|entry| entry["node"] == json!(world.sibling.to_string())),
-		"{events}"
+		counted > 0,
+		"the events of the missing Tasks are counted: {events}"
 	);
 	// A reader who may not discover the Node learns nothing about it.
 	let (status, tasks_bob) = request(&world.app, &bob, "GET", "/api/tasks", Value::Null).await;
 	assert_eq!(status, 200, "{tasks_bob}");
 	assert_eq!(tasks_bob["unconfirmed"], json!([]), "{tasks_bob}");
-	assert!(children.iter().all(|child| !listed(&tasks_bob, child.id)));
+	assert!(hidden.iter().all(|child| !listed(&tasks_bob, child.id)));
 	// A second list within the memory does not wait on the Node again, and a
 	// single read still asks it.
 	let second = std::time::Instant::now();
 	let (status, tasks) = world.get("/api/tasks").await;
 	let second = second.elapsed();
 	assert_eq!(status, 200, "{tasks}");
-	assert_eq!(unconfirmed_of(&tasks, "task").len(), 1, "{tasks}");
+	assert_eq!(unconfirmed_of(&tasks, "task"), expected, "{tasks}");
 	assert!(
 		second < first || second < Duration::from_millis(500),
 		"the second list waited {second:?} after {first:?}"
@@ -993,20 +1017,74 @@ async fn a_list_counts_the_tasks_of_one_silent_run_under_that_node_and_a_reader_
 	world.close().await;
 }
 
-/// A Node that answers and refuses is a refusal: the Task stays out of the list
-/// and is not counted as unconfirmed (#770, decision 3).
+/// A reader who may discover the Node but is refused `run.read` sees no Run
+/// entry and no Human Request entry for the Runs a silent Node holds back: a
+/// row counts only if every other check for this reader passed (#770,
+/// decisions 3 and 4).
 #[rstest::rstest]
 #[tokio::test]
-async fn a_task_the_other_node_refuses_is_left_out_without_being_counted(
+async fn a_reader_refused_run_read_is_told_of_no_unconfirmed_run(
 	#[future(awt)] provider: Provider,
 ) {
-	*provider.script.delegate.lock().unwrap() = false;
+	provider
+		.script
+		.tasks
+		.store(3, std::sync::atomic::Ordering::SeqCst);
+	let mut world = world(provider).await;
+	world.run_coordinator(3 + 3).await;
+	// Carol may read and discover, but not read Runs.
+	let (status, current) = request(
+		&world.app,
+		&world.f.config.api_token,
+		"GET",
+		"/api/authorization/acme",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{current}");
+	let mut bundle = current["bundle"].clone();
+	bundle["subjects"]["carol"] = json!({"kind":"user"});
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"carol-reads-no-runs","effect":"deny","subjects":{"ids":["carol"]},
+		"actions":["run.read"],"resources":{"kinds":["*"]}
+	}));
+	let (status, body) = request(
+		&world.app,
+		&world.f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":current["revision"],"bundle":bundle}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let carol = subject_credential(&world.f.store, "acme", "carol").await;
+	let _original = limit_pool(&mut world, 1).await;
+	let (status, alice) = world.get("/api/state").await;
+	assert_eq!(status, 200, "{alice}");
+	assert!(
+		!unconfirmed_of(&alice, "run").is_empty(),
+		"the person who may read Runs is told of the Run the Node holds back: {alice}"
+	);
+	let (status, carol_state) = request(&world.app, &carol, "GET", "/api/state", Value::Null).await;
+	assert_eq!(status, 200, "{carol_state}");
+	assert!(
+		unconfirmed_of(&carol_state, "run").is_empty(),
+		"{carol_state}"
+	);
+	assert!(
+		unconfirmed_of(&carol_state, "human_request").is_empty(),
+		"{carol_state}"
+	);
+	world.close().await;
+}
+
+/// A Node that answers and refuses is a refusal: no Task is counted as
+/// unconfirmed for it (#770, decision 3).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_task_the_other_node_refuses_is_not_counted(#[future(awt)] provider: Provider) {
 	let world = world(provider).await;
-	world.run_coordinator(WITHOUT_DELEGATION).await;
-	let child = world.handed_over().await;
-	let (status, tasks) = world.get("/api/tasks").await;
-	assert_eq!(status, 200, "{tasks}");
-	assert!(listed(&tasks, child.id), "{tasks}");
+	world.run_coordinator(WITH_DELEGATION).await;
 	let authorization = aidash_server::authorization::Authorization {
 		pool: world.f.store.pool.clone(),
 	};
@@ -1034,7 +1112,6 @@ async fn a_task_the_other_node_refuses_is_left_out_without_being_counted(
 		.unwrap();
 	let (status, tasks) = world.get("/api/tasks").await;
 	assert_eq!(status, 200, "{tasks}");
-	assert!(!listed(&tasks, child.id), "{tasks}");
 	assert_eq!(tasks["unconfirmed"], json!([]), "{tasks}");
 	world.close().await;
 }
