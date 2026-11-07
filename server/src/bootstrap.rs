@@ -944,6 +944,7 @@ pub(crate) fn channel_scope<'a>(
 		lease,
 		federation: None,
 		run_id: None,
+		agent: None,
 	}
 }
 
