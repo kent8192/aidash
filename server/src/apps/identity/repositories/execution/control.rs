@@ -103,7 +103,7 @@ impl RunControlScope for Scope<'_> {
 	}
 	async fn use_block(&mut self, run: &RunInspection) -> Result<Option<RunReadsBlock>> {
 		let metadata = RunMetadata::from(run);
-		let Some(reference) = super::guard::use_block(self.access, &metadata).await? else {
+		let Some(reference) = super::guard::use_block(&mut self.access, &metadata).await? else {
 			return Ok(None);
 		};
 		let entry = match crate::apps::registry::models::Definition::read_in(
@@ -118,7 +118,7 @@ impl RunControlScope for Scope<'_> {
 			Err(error) => return Err(error.into()),
 		};
 		aidash_application::authorization::catalog::use_block(
-			&mut crate::bootstrap::catalog_scope(self.access),
+			&mut crate::bootstrap::catalog_scope(&mut self.access),
 			&reference,
 			entry.as_ref(),
 		)

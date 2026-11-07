@@ -1046,16 +1046,6 @@ impl NativeAccess {
 	pub(crate) fn tenant_transaction(&mut self) -> (&mut dyn TransactionExecutor, &str) {
 		(self.access.tx.as_mut(), &self.access.identity.tenant)
 	}
-	pub(crate) fn catalog_approved(&self, reference: &crate::registry::EntityRef) -> bool {
-		self.access
-			.approved_catalog
-			.contains(&(reference.id.clone(), reference.version.clone()))
-	}
-	pub(crate) fn remember_catalog(&mut self, reference: &crate::registry::EntityRef) {
-		self.access
-			.approved_catalog
-			.insert((reference.id.clone(), reference.version.clone()));
-	}
 }
 
 impl NativeAccess {

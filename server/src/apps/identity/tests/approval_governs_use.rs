@@ -72,7 +72,7 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 		registered.push(
 			f.registry
 				.register(
-					tenant.clone(),
+					tenant,
 					serde_json::from_value(json!({"id":id,"version":version,"kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"schema":{},"config":config})).unwrap(),
 				)
 				.await

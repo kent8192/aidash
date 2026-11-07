@@ -8,7 +8,7 @@ use aidash_application::{
 	},
 };
 use aidash_domain::{
-	RunControl, RunMetadata,
+	RunMetadata,
 	federation::execution::Description,
 	policy::Resource,
 	registry::{EntityRef, Entry},

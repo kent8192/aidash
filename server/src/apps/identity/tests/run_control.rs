@@ -20,10 +20,6 @@ struct World {
 	_runtime: common::RuntimeFixture,
 }
 
-fn listed() -> EntityRef {
-	entity(LISTED)
-}
-
 fn entity(id: &str) -> EntityRef {
 	EntityRef {
 		id: id.into(),

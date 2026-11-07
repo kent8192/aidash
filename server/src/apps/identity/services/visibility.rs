@@ -1,7 +1,6 @@
 //! Read authorization over native records, retaining the complete dependency graph.
 use super::NativeAccess;
 use crate::authorization::policy::Resource;
-use crate::registry::{EntityRef, Entry};
 use crate::{Result, domain};
 use uuid::Uuid;
 
