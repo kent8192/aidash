@@ -53,14 +53,24 @@ pub async fn put(store: &Store, actor: &Actor, workspace: Uuid, input: PutEntry)
 	lease.finish(result).await
 }
 
-pub async fn entries(store: &Store, actor: &Actor, workspace: Uuid) -> Result<Vec<Entry>> {
+pub async fn entries(
+	store: &Store,
+	actor: &Actor,
+	workspace: Uuid,
+) -> Result<crate::apps::knowledge::serializers::contracts::EntryList> {
 	let mut lease = Lease::begin(store, actor, workspace).await?;
+	lease.lists();
 	let result = aidash_application::semantic::mutations::entries(
 		&mut crate::bootstrap::semantic_entries_scope(&mut lease),
 		workspace,
 	)
 	.await
-	.map(|rows| rows.into_iter().map(Into::into).collect())
+	.map(
+		|(rows, unconfirmed)| crate::apps::knowledge::serializers::contracts::EntryList {
+			entries: rows.into_iter().map(Into::into).collect(),
+			unconfirmed,
+		},
+	)
 	.map_err(Into::into);
 	lease.finish(result).await
 }
@@ -94,6 +104,7 @@ pub async fn search(
 ) -> Result<SearchResult> {
 	let mut lease = Lease::begin(store, actor, workspace).await?;
 	lease.durable();
+	lease.lists();
 	let result = search_in(store, &mut lease, workspace, input, None, None).await;
 	lease.finish(result).await
 }

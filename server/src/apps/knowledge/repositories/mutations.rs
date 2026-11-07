@@ -322,6 +322,17 @@ impl SemanticConfigurationSession for Configuration {
 			.map_err(Into::into)
 	}
 }
+impl aidash_application::ports::authorization::visibility::RowOutcome for Entries<'_, '_> {
+	fn begin_row(&mut self) {
+		self.lease.begin_row();
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.lease.row_silence()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.lease.take_row_silence()
+	}
+}
 #[async_trait]
 impl SemanticEntriesSession for Entries<'_, '_> {
 	async fn workspace(&mut self, workspace: Uuid, action: &str) -> Result<()> {

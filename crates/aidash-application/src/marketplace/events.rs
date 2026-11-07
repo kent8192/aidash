@@ -2,8 +2,11 @@
 use super::{distribution, installations};
 use crate::{Error, Result, ports::marketplace::EventScope};
 use aidash_domain::{
-	Event, marketplace::definitions::reference, marketplace::events::recipient_event,
+	Event,
+	marketplace::definitions::reference,
+	marketplace::events::recipient_event,
 	registry::Entry,
+	unconfirmed::{Kind, Tally},
 };
 pub async fn visible(scope: &mut dyn EventScope, event: &Event, node: &str) -> Result<bool> {
 	if event.kind == "marketplace.audit" {
@@ -34,9 +37,11 @@ pub async fn poll_events(
 	scope: &mut dyn EventScope,
 	events: Vec<Event>,
 	node: &str,
-) -> Result<Vec<Event>> {
+) -> Result<(Vec<Event>, Tally)> {
 	let mut output = vec![];
+	let mut unconfirmed = Tally::new();
 	for event in events {
+		scope.begin_row();
 		let allowed = if event.kind.starts_with("marketplace.") {
 			visible(scope, &event, node).await?
 		} else if event.workspace_id.is_none()
@@ -54,11 +59,15 @@ pub async fn poll_events(
 		} else {
 			false
 		};
-		if allowed {
+		// This is the second filter of a read: an event the first one passed can
+		// meet a Node that has since stopped answering (#770).
+		let silence = scope.take_row_silence();
+		let workspace = event.workspace_id.unwrap_or_default();
+		if unconfirmed.settle(silence, Kind::Event, workspace, allowed) {
 			output.push(recipient_event(event));
 		}
 	}
-	Ok(output)
+	Ok((output, unconfirmed))
 }
 /// State already includes authorized workspace events; Marketplace events still
 /// require current distribution authority and recipient projection.

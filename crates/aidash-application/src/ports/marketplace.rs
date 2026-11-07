@@ -233,7 +233,7 @@ pub trait DeploymentAdministratorScope: StagingScope {
 
 /// Polling and frame handoff share current authority; the handoff caller owns its lease.
 #[async_trait]
-pub trait EventScope: InstallationRead {
+pub trait EventScope: InstallationRead + super::authorization::visibility::RowOutcome {
 	async fn workspace_allowed(&mut self, workspace: Uuid, action: &str) -> Result<bool>;
 	async fn workspace_event_visible(&mut self, event: &aidash_domain::Event) -> Result<bool>;
 }

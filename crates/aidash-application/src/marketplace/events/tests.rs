@@ -91,7 +91,7 @@ async fn polling_applies_workspace_and_event_authority_in_order(
 	scope.denied = Some(denied.into());
 	let mut source = event("workspace.changed", json!({}));
 	source.workspace_id = Some(Uuid::nil());
-	let result = poll_events(&mut scope, vec![source], "node").await.unwrap();
+	let (result, _) = poll_events(&mut scope, vec![source], "node").await.unwrap();
 	assert_eq!(result.len(), 0);
 	assert_eq!(scope.calls, expected_calls);
 }
@@ -101,7 +101,7 @@ async fn polling_keeps_event_order_and_hides_deployment_administrator_audit() {
 	let mut scope = published();
 	let mut workspace = event("workspace.changed", json!({}));
 	workspace.workspace_id = Some(Uuid::nil());
-	let result = poll_events(
+	let (result, _) = poll_events(
 		&mut scope,
 		vec![
 			event("marketplace.audit", json!({})),
@@ -172,4 +172,32 @@ async fn state_keeps_previously_authorized_workspace_events_while_hiding_marketp
 		vec!["workspace.changed"]
 	);
 	assert_eq!(scope.calls, Vec::<String>::new());
+}
+
+#[rstest]
+#[tokio::test]
+async fn the_second_filter_counts_the_events_a_node_stopped_confirming_since_the_first() {
+	// Arrange: the Node that passed these events first no longer answers.
+	let mut scope = published();
+	scope.denied = Some("workspace_event_silent".into());
+	let events = (1..=3)
+		.map(|_| {
+			let mut event = event("workspace.changed", json!({}));
+			event.workspace_id = Some(Uuid::nil());
+			event
+		})
+		.collect();
+	// Act
+	let (visible, unconfirmed) = poll_events(&mut scope, events, "node").await.unwrap();
+	// Assert
+	assert!(visible.is_empty());
+	assert_eq!(
+		unconfirmed.into_entries(),
+		vec![aidash_domain::unconfirmed::Unconfirmed {
+			node: "aidash://other/silent".into(),
+			kind: aidash_domain::unconfirmed::Kind::Event,
+			workspace_id: Uuid::nil(),
+			count: 3,
+		}]
+	);
 }

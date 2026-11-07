@@ -102,6 +102,9 @@ pub struct ChannelMessagePage {
 	/// Each page is chronological; next_before retrieves an older page.
 	pub messages: Vec<ChannelMessage>,
 	pub next_before: Option<Uuid>,
+	/// Messages of this page's candidates that could not be confirmed because a
+	/// Node did not answer, for each Node.
+	pub unconfirmed: Vec<crate::unconfirmed::Unconfirmed>,
 }
 
 /// One attachment may use the whole 8 MiB that a Run accepts as media input.

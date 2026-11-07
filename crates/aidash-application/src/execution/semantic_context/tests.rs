@@ -130,6 +130,7 @@ fn repository() -> Repository {
 			matches,
 			estimated_tokens: 19,
 			truncated: false,
+			unconfirmed: vec![],
 		}),
 		remote_result: Some(json!({"home":"context"})),
 		calls: vec![],

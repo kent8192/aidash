@@ -30,6 +30,13 @@ pub(crate) struct ClaimInput {
 pub(crate) struct ControlInput {
 	pub(crate) action: crate::domain::RunControlAction,
 }
+/// One read of the events, with the rows it could not confirm because a Node
+/// did not answer (#770). The cursor to continue from is in a header.
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct EventPage {
+	pub(crate) events: Vec<crate::apps::workspaces::serializers::entities::Event>,
+	pub(crate) unconfirmed: Vec<aidash_domain::unconfirmed::Unconfirmed>,
+}
 #[derive(Default, Deserialize, JsonSchema)]
 pub(crate) struct EventQuery {
 	#[serde(default)]

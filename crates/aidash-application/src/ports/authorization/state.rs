@@ -1,5 +1,7 @@
 //! Authorized state pages share one live policy snapshot and transaction.
+use super::visibility::RowOutcome;
 use crate::Result;
+use aidash_domain::unconfirmed::Tally;
 use aidash_domain::{
 	Artifact, Conversation, Event, HumanRequest, RunMetadata, Workspace, policy::Resource,
 	registry::Entry, run_state::RawRun, workspaces::TaskPage,
@@ -7,7 +9,7 @@ use aidash_domain::{
 use async_trait::async_trait;
 use uuid::Uuid;
 #[async_trait]
-pub trait WorkspaceListingScope: Send {
+pub trait WorkspaceListingScope: Send + RowOutcome {
 	async fn visible(&mut self, action: &str) -> Result<Vec<Uuid>>;
 	async fn task_page(&mut self, workspaces: &[Uuid], offset: u64) -> Result<TaskPage>;
 }
@@ -20,7 +22,7 @@ pub trait WorkspaceStateScope: WorkspaceListingScope {
 		&mut self,
 		workspaces: &[Uuid],
 		include_marketplace: bool,
-	) -> Result<Vec<Event>>;
+	) -> Result<(Vec<Event>, Tally)>;
 	async fn artifact_rows(&mut self, workspaces: &[Uuid], offset: u64) -> Result<Vec<Artifact>>;
 	/// Return unvalidated storage state; current visibility precedes per-row inspection.
 	async fn raw_runs(&mut self, workspaces: &[Uuid], offset: i64) -> Result<Vec<RawRun>>;

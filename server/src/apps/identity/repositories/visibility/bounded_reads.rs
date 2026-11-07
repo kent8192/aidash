@@ -22,6 +22,28 @@ pub(crate) struct Reads<'a> {
 }
 
 impl Reads<'_> {
+	/// One Run's disclosure, with the authority as it is: a row of a list leaves
+	/// a silent Node alone for a while, a named Run does not.
+	async fn run_row(&mut self, id: Uuid) -> Result<RunInspection> {
+		let run = crate::apps::identity::repositories::execution::details::visible_within(
+			self.federation,
+			self.access,
+			id,
+		)
+		.await?;
+		if !run.is_local(self.federation.config.deployment.as_str())
+			&& !self
+				.access
+				.allowed(run.workspace_id, "workspace.read")
+				.await
+				.map_err(Error::from)?
+		{
+			return Err(Error::Forbidden);
+		}
+		self.selected_run = Some(run.clone());
+		Ok(run)
+	}
+
 	async fn cursor(
 		&mut self,
 		table: &str,
@@ -51,10 +73,27 @@ impl Reads<'_> {
 	}
 }
 
+impl aidash_application::ports::authorization::visibility::RowOutcome for Reads<'_> {
+	fn begin_row(&mut self) {
+		self.access.begin_row();
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.access.row_silence()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.access.take_row_silence()
+	}
+}
+
 #[async_trait]
 impl Scope for Reads<'_> {
 	async fn require_task(&mut self, id: Uuid) -> Result<()> {
-		let task = self.access.task_read(id).await.map_err(Error::from)?;
+		// The parent Task is a read of one thing, even inside a list: it always
+		// asks the Node, and a Node that does not answer stays `503` (#770).
+		let lists = std::mem::replace(&mut self.access.lists, false);
+		let task = self.access.task_read(id).await;
+		self.access.lists = lists;
+		let task = task.map_err(Error::from)?;
 		self.access
 			.require_workspace(task.workspace_id, "workspace.read")
 			.await
@@ -63,26 +102,14 @@ impl Scope for Reads<'_> {
 		Ok(())
 	}
 	async fn require_run(&mut self, id: Uuid) -> Result<RunInspection> {
-		let run = crate::apps::identity::repositories::execution::details::visible_within(
-			self.federation,
-			self.access,
-			id,
-		)
-		.await?;
-		if !run.is_local(self.federation.config.deployment.as_str())
-			&& !self
-				.access
-				.allowed(run.workspace_id, "workspace.read")
-				.await
-				.map_err(Error::from)?
-		{
-			return Err(Error::Forbidden);
-		}
-		self.selected_run = Some(run.clone());
-		Ok(run)
+		// The Run a request names is a read of one thing too (#770).
+		let lists = std::mem::replace(&mut self.access.lists, false);
+		let run = self.run_row(id).await;
+		self.access.lists = lists;
+		run
 	}
 	async fn visible_run(&mut self, id: Uuid) -> Result<Option<RunInspection>> {
-		match self.require_run(id).await {
+		match self.run_row(id).await {
 			Ok(run) => Ok(Some(run)),
 			Err(Error::Forbidden) => Ok(None),
 			Err(error) => Err(error),

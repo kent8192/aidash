@@ -5,7 +5,10 @@ use crate::{
 };
 use aidash_domain::{
 	Artifact, Conversation, Event, HumanRequest, RunInspection, RunState, Task, WaitingState,
-	Workspace, registry::Entry, workspaces::TaskPage,
+	Workspace,
+	registry::Entry,
+	unconfirmed::{Kind, Tally, Unconfirmed},
+	workspaces::TaskPage,
 };
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -19,6 +22,8 @@ pub struct WorkspaceState {
 	pub human_requests: Vec<HumanRequest>,
 	pub conversations: Vec<Conversation>,
 	pub events: Vec<Event>,
+	/// Rows this read scanned and could not confirm because a Node did not answer (#770).
+	pub unconfirmed: Vec<Unconfirmed>,
 }
 pub async fn task_page(scope: &mut dyn WorkspaceListingScope, offset: u64) -> Result<TaskPage> {
 	let workspaces = scope.visible("workspace.read").await?;
@@ -32,23 +37,33 @@ pub async fn state(scope: &mut dyn WorkspaceStateScope) -> Result<WorkspaceState
 			event_workspaces.push(*id);
 		}
 	}
+	let mut unconfirmed = Tally::new();
+	let registry = scope.registry().await?;
+	let workspaces = scope.workspace_rows(&visible).await?;
+	let tasks = scope.task_page(&visible, 0).await?;
+	unconfirmed.merge(Tally::from_entries(tasks.unconfirmed));
+	let (events, left_out) = scope.latest_visible_events(&event_workspaces, true).await?;
+	unconfirmed.merge(left_out);
 	let mut state = WorkspaceState {
-		registry: scope.registry().await?,
-
-		workspaces: scope.workspace_rows(&visible).await?,
-		tasks: scope.task_page(&visible, 0).await?.tasks,
+		registry,
+		workspaces,
+		tasks: tasks.tasks,
 		artifacts: vec![],
 		runs: vec![],
 		human_requests: vec![],
 		conversations: vec![],
-		events: scope.latest_visible_events(&event_workspaces, true).await?,
+		events,
+		unconfirmed: vec![],
 	};
 	let mut offset = 0_u64;
 	loop {
 		let batch: Vec<Artifact> = scope.artifact_rows(&visible, offset).await?;
 		let exhausted = batch.len() < 500;
 		for artifact in batch {
-			if scope.artifact_visible(&artifact).await? {
+			scope.begin_row();
+			let allowed = scope.artifact_visible(&artifact).await?;
+			let silence = scope.take_row_silence();
+			if unconfirmed.settle(silence, Kind::Artifact, artifact.workspace_id, allowed) {
 				state.artifacts.push(artifact);
 			}
 			if state.artifacts.len() == 500 {
@@ -60,12 +75,21 @@ pub async fn state(scope: &mut dyn WorkspaceStateScope) -> Result<WorkspaceState
 		}
 		offset += 500;
 	}
+	// Runs left out for a silent Node, with the Node and Workspace, so their
+	// Human Requests are counted too (#770).
+	let mut silent_runs: HashMap<Uuid, (String, Uuid)> = HashMap::new();
 	let mut offset = 0_i64;
 	loop {
 		let batch: Vec<aidash_domain::run_state::RawRun> = scope.raw_runs(&visible, offset).await?;
 		let exhausted = batch.len() < 500;
 		for run in batch {
-			if scope.run_visible(&run.metadata).await? {
+			scope.begin_row();
+			let allowed = scope.run_visible(&run.metadata).await?;
+			let silence = scope.take_row_silence();
+			if let Some(node) = silence.as_ref().filter(|_| !allowed) {
+				silent_runs.insert(run.metadata.id, (node.clone(), run.metadata.workspace_id));
+			}
+			if unconfirmed.settle(silence, Kind::Run, run.metadata.workspace_id, allowed) {
 				state.runs.push(run.inspect());
 			}
 			if state.runs.len() == 500 {
@@ -96,6 +120,30 @@ pub async fn state(scope: &mut dyn WorkspaceStateScope) -> Result<WorkspaceState
 		}
 		offset += 500;
 	}
+	// A Human Request is read only for the Runs that survived, so a request of
+	// a Run left out is counted here, after the reader's own `human.read`.
+	if !silent_runs.is_empty() {
+		let silent_ids: Vec<Uuid> = silent_runs.keys().copied().collect();
+		let mut offset = 0_i64;
+		let mut scanned = 0;
+		loop {
+			let batch: Vec<HumanRequest> = scope.human_rows(&silent_ids, offset).await?;
+			let exhausted = batch.len() < 500;
+			scanned += batch.len();
+			for request in batch {
+				let resource = scope.human_resource(&request).await?;
+				if scope.decide(&resource, "human.read").await?
+					&& let Some((node, _)) = silent_runs.get(&request.run_id)
+				{
+					unconfirmed.record(node, Kind::HumanRequest, request.workspace_id);
+				}
+			}
+			if exhausted || scanned >= 2000 {
+				break;
+			}
+			offset += 500;
+		}
+	}
 	let continues_by = answer_deadlines(&state.runs);
 	for request in &mut state.human_requests {
 		request.answer_by = continues_by
@@ -122,6 +170,7 @@ pub async fn state(scope: &mut dyn WorkspaceStateScope) -> Result<WorkspaceState
 		offset += 500;
 	}
 
+	state.unconfirmed = unconfirmed.into_entries();
 	Ok(state)
 }
 /// When each question that Runs wait on continues without an answer, by request.

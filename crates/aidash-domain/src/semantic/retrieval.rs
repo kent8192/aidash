@@ -58,8 +58,15 @@ impl Search {
 }
 
 pub fn result_tokens(result: &SearchResult) -> serde_json::Result<usize> {
-	// Preserve room for growth of the counter's own JSON representation.
-	Ok(crate::context::estimated_tokens(&serde_json::to_string(result)?) + 16)
+	// Preserve room for growth of the counter's own JSON representation. An
+	// empty `unconfirmed` is not counted, so an ordinary result keeps its estimate (#770).
+	let mut value = serde_json::to_value(result)?;
+	if result.unconfirmed.is_empty()
+		&& let Some(object) = value.as_object_mut()
+	{
+		object.remove("unconfirmed");
+	}
+	Ok(crate::context::estimated_tokens(&value.to_string()) + 16)
 }
 pub fn provenance(source: &Value) -> Value {
 	if source["kind"] == "memory" {

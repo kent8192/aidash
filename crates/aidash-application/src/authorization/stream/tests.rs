@@ -247,6 +247,8 @@ struct Session {
 	denied_workspace: Option<Uuid>,
 	verdicts_seen: Vec<usize>,
 	fail: Option<&'static str>,
+	/// The Node an event marked `silent` stops at (#770).
+	silence: Option<String>,
 }
 #[fixture]
 fn session() -> Session {
@@ -260,6 +262,7 @@ fn session() -> Session {
 		denied_workspace: Some(Uuid::from_u128(2)),
 		verdicts_seen: vec![],
 		fail: None,
+		silence: None,
 	}
 }
 impl Session {
@@ -281,6 +284,17 @@ fn event(sequence: i64, visible: bool) -> Event {
 		kind: "task.created".into(),
 		data: json!({"visible":visible}),
 		created_at: now(),
+	}
+}
+impl crate::ports::authorization::visibility::RowOutcome for Session {
+	fn begin_row(&mut self) {
+		self.silence = None;
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.silence.clone()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.silence.take()
 	}
 }
 #[async_trait]
@@ -346,6 +360,10 @@ impl StreamSession for Session {
 		self.touch("event_visible")?;
 		self.verdicts_seen.push(runs.remembered());
 		runs.remember(event.id, None, true);
+		if event.data["silent"] == true {
+			self.silence = Some("aidash://other/silent".into());
+			return Ok(false);
+		}
 		Ok(event.data["visible"] == true)
 	}
 }
@@ -394,7 +412,7 @@ async fn replay_continues_past_hidden_pages_and_returns_the_last_scanned_event(
 	mut session: Session,
 ) {
 	session.events = (1..=1100).map(|seq| event(seq, seq >= 1050)).collect();
-	let (rows, cursor) = read_events(&mut session, -9, Some(Uuid::from_u128(1)), 2)
+	let (rows, cursor, _) = read_events(&mut session, -9, Some(Uuid::from_u128(1)), 2)
 		.await
 		.unwrap();
 	assert_eq!(
@@ -434,7 +452,7 @@ async fn replay_scan_budget_includes_hidden_rows_and_keeps_an_advancing_resume_c
 	mut session: Session,
 ) {
 	session.events = (1..=5000).map(|seq| event(seq, false)).collect();
-	let (rows, cursor) = read_events(&mut session, 0, None, 1000).await.unwrap();
+	let (rows, cursor, _) = read_events(&mut session, 0, None, 1000).await.unwrap();
 	assert!(rows.is_empty());
 	assert_eq!(cursor, 4096);
 	assert_eq!(session.queries.len(), 9);
@@ -458,7 +476,7 @@ async fn replay_keeps_the_existing_limit_bounds_and_sequence_order(
 	#[case] count: usize,
 ) {
 	session.events = (1..=1100).map(|seq| event(seq, true)).collect();
-	let (rows, cursor) = read_events(&mut session, 0, Some(Uuid::from_u128(1)), limit)
+	let (rows, cursor, _) = read_events(&mut session, 0, Some(Uuid::from_u128(1)), limit)
 		.await
 		.unwrap();
 	assert_eq!(rows.len(), count);
@@ -526,4 +544,35 @@ async fn replay_adapter_failures_keep_their_opaque_identity(
 	};
 	assert!(error.is::<std::io::Error>());
 	assert_eq!(session.calls.last().unwrap(), fail);
+}
+
+#[rstest]
+#[tokio::test]
+async fn replay_counts_the_events_a_silent_node_left_out_and_not_the_hidden_ones(
+	mut session: Session,
+) {
+	// Arrange: events 1..=3 stop at a silent Node, 4..=8 are hidden, 9..=10 are visible.
+	session.events = (1..=10)
+		.map(|seq| {
+			let mut row = event(seq, seq >= 9);
+			row.data["silent"] = json!(seq <= 3);
+			row
+		})
+		.collect();
+	// Act
+	let (rows, cursor, unconfirmed) = read_events(&mut session, 0, Some(Uuid::from_u128(1)), 100)
+		.await
+		.unwrap();
+	// Assert
+	assert_eq!(rows.len(), 2);
+	assert_eq!(cursor, 10);
+	assert_eq!(
+		unconfirmed.into_entries(),
+		vec![aidash_domain::unconfirmed::Unconfirmed {
+			node: "aidash://other/silent".into(),
+			kind: aidash_domain::unconfirmed::Kind::Event,
+			workspace_id: Uuid::from_u128(1),
+			count: 3,
+		}]
+	);
 }

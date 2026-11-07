@@ -1,5 +1,5 @@
 //! Workspace pages and snapshots borrow one live authorization and database lease.
-use super::visibility::RunVerdicts;
+use super::visibility::{RowOutcome, RunVerdicts};
 use crate::Result;
 use aidash_domain::{
 	Artifact, Event, Message, Task, Workspace, WorkspaceSnapshot, policy::Resource,
@@ -7,7 +7,7 @@ use aidash_domain::{
 use async_trait::async_trait;
 use uuid::Uuid;
 #[async_trait]
-pub trait WorkspaceProjection: Send {
+pub trait WorkspaceProjection: Send + RowOutcome {
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource>;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool>;

@@ -39,4 +39,6 @@ pub mod channels;
 pub struct TaskPage {
 	pub tasks: Vec<Task>,
 	pub next_offset: Option<u64>,
+	/// Tasks this page scanned and could not confirm because a Node did not answer.
+	pub unconfirmed: Vec<crate::unconfirmed::Unconfirmed>,
 }

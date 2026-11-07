@@ -1,6 +1,10 @@
 //! Channel use cases preserve admission, visibility, replay, and write ordering.
 use crate::{Error, Result, ports::channels::ChannelScope};
-use aidash_domain::{nonempty, workspaces::channels::*};
+use aidash_domain::{
+	nonempty,
+	unconfirmed::{Kind, Tally},
+	workspaces::channels::*,
+};
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -285,6 +289,7 @@ pub async fn history(
 		None => None,
 	};
 	let mut result = Vec::new();
+	let mut unconfirmed = Tally::new();
 	let mut scanned = 0;
 	let more = loop {
 		let rows = scope
@@ -294,7 +299,10 @@ pub async fn history(
 		for row in rows {
 			scanned += 1;
 			cursor = Some((row.message.created_at, row.message.id));
-			if scope.visible(&row.message).await? {
+			scope.begin_row();
+			let visible = scope.visible(&row.message).await?;
+			let silence = scope.take_row_silence();
+			if unconfirmed.settle(silence, Kind::Message, workspace, visible) {
 				result.push(ChannelMessage {
 					message: row.message,
 					thread_id: row.reply_thread_id.or(row.root_thread_id),
@@ -342,6 +350,7 @@ pub async fn history(
 	Ok(ChannelMessagePage {
 		messages: result,
 		next_before,
+		unconfirmed: unconfirmed.into_entries(),
 	})
 }
 

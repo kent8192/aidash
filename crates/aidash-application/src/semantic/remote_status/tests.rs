@@ -75,7 +75,8 @@ fn receipt() -> Value {
 			model_version: "1".into(),
 			matches: vec![],
 			estimated_tokens: 0,
-			truncated: false
+			truncated: false,
+			unconfirmed: vec![],
 		},
 		estimated_tokens: 0
 	})

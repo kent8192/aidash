@@ -43,8 +43,8 @@ impl WorkspaceStateScope for Reads<'_> {
 		&mut self,
 		workspaces: &[Uuid],
 		include_marketplace: bool,
-	) -> Result<Vec<Event>> {
-		aidash_application::authorization::projection::latest_visible_events(
+	) -> Result<(Vec<Event>, aidash_domain::unconfirmed::Tally)> {
+		aidash_application::authorization::projection::latest_visible_events_counted(
 			self,
 			workspaces,
 			include_marketplace,

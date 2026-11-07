@@ -42,6 +42,7 @@ fn receipt(matches: usize) -> Receipt {
 				.collect(),
 			estimated_tokens: 0,
 			truncated: false,
+			unconfirmed: vec![],
 		},
 		estimated_tokens: 0,
 	}
