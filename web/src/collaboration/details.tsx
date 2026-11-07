@@ -69,9 +69,8 @@ import {
 } from "../approval-settings-model";
 import { collaborationCopy } from "./copy";
 import { workspaceCopy } from "./workspace-copy";
-import { abandonable } from "./workspace-model";
 import { InferenceProgress } from "./inference-progress";
-import { resumableRun } from "./workspace-model";
+import { abandonable, resumableRun } from "./workspace-model";
 import { researchFailure } from "../research";
 import { isLocalRun } from "../node-selection";
 import {
