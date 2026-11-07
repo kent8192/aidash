@@ -11487,9 +11487,15 @@
                   "$ref": "#/components/schemas/Task"
                 },
                 "type": "array"
+              },
+              "unconfirmed": {
+                "items": {
+                  "$ref": "#/components/schemas/Unconfirmed"
+                },
+                "type": "array"
               }
             },
-            "required": ["tasks", "next_offset"],
+            "required": ["tasks", "next_offset", "unconfirmed"],
             "type": "object"
           },
           "TaskStatus": {
@@ -11502,6 +11508,43 @@
               "BLOCKED",
               "CANCELLED",
               "ABANDONED"
+            ],
+            "type": "string"
+          },
+          "Unconfirmed": {
+            "description": "How many rows one response scanned and could not confirm because `node` did not answer. It is not a total, and it is not \"you should see these\": some of the rows can still be refused once the Node answers.",
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/UnconfirmedKind"
+              },
+              "node": {
+                "description": "The address of the Node that did not answer.",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["node", "kind", "workspace_id", "count"],
+            "type": "object"
+          },
+          "UnconfirmedKind": {
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`) can narrow the entry to the list it sits above.",
+            "enum": [
+              "task",
+              "run",
+              "artifact",
+              "event",
+              "message",
+              "human_request",
+              "semantic_entry",
+              "memory_unit"
             ],
             "type": "string"
           }
@@ -11800,6 +11843,43 @@
             ],
             "type": "string"
           },
+          "Unconfirmed": {
+            "description": "How many rows one response scanned and could not confirm because `node` did not answer. It is not a total, and it is not \"you should see these\": some of the rows can still be refused once the Node answers.",
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/UnconfirmedKind"
+              },
+              "node": {
+                "description": "The address of the Node that did not answer.",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["node", "kind", "workspace_id", "count"],
+            "type": "object"
+          },
+          "UnconfirmedKind": {
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`) can narrow the entry to the list it sits above.",
+            "enum": [
+              "task",
+              "run",
+              "artifact",
+              "event",
+              "message",
+              "human_request",
+              "semantic_entry",
+              "memory_unit"
+            ],
+            "type": "string"
+          },
           "Workspace": {
             "properties": {
               "created_at": {
@@ -11865,6 +11945,12 @@
               "tasks": {
                 "items": {
                   "$ref": "#/components/schemas/Task"
+                },
+                "type": "array"
+              },
+              "unconfirmed": {
+                "items": {
+                  "$ref": "#/components/schemas/Unconfirmed"
                 },
                 "type": "array"
               },
@@ -12737,9 +12823,15 @@
               "next_before": {
                 "format": "uuid",
                 "type": ["string", "null"]
+              },
+              "unconfirmed": {
+                "items": {
+                  "$ref": "#/components/schemas/Unconfirmed"
+                },
+                "type": "array"
               }
             },
-            "required": ["messages", "next_before"],
+            "required": ["messages", "next_before", "unconfirmed"],
             "type": "object"
           },
           "Message": {
@@ -12780,6 +12872,43 @@
               "created_at"
             ],
             "type": "object"
+          },
+          "Unconfirmed": {
+            "description": "How many rows one response scanned and could not confirm because `node` did not answer. It is not a total, and it is not \"you should see these\": some of the rows can still be refused once the Node answers.",
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/UnconfirmedKind"
+              },
+              "node": {
+                "description": "The address of the Node that did not answer.",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["node", "kind", "workspace_id", "count"],
+            "type": "object"
+          },
+          "UnconfirmedKind": {
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`) can narrow the entry to the list it sits above.",
+            "enum": [
+              "task",
+              "run",
+              "artifact",
+              "event",
+              "message",
+              "human_request",
+              "semantic_entry",
+              "memory_unit"
+            ],
+            "type": "string"
           }
         },
         "schema": {
@@ -24975,13 +25104,66 @@
               "updated_at"
             ],
             "type": "object"
+          },
+          "SemanticEntryList": {
+            "description": "The entries a reader may see, with the entries a Node's silence left out (#770).",
+            "properties": {
+              "entries": {
+                "items": {
+                  "$ref": "#/components/schemas/SemanticEntry"
+                },
+                "type": "array"
+              },
+              "unconfirmed": {
+                "items": {
+                  "$ref": "#/components/schemas/Unconfirmed"
+                },
+                "type": "array"
+              }
+            },
+            "required": ["entries", "unconfirmed"],
+            "type": "object"
+          },
+          "Unconfirmed": {
+            "description": "How many rows one response scanned and could not confirm because `node` did not answer. It is not a total, and it is not \"you should see these\": some of the rows can still be refused once the Node answers.",
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/UnconfirmedKind"
+              },
+              "node": {
+                "description": "The address of the Node that did not answer.",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["node", "kind", "workspace_id", "count"],
+            "type": "object"
+          },
+          "UnconfirmedKind": {
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`) can narrow the entry to the list it sits above.",
+            "enum": [
+              "task",
+              "run",
+              "artifact",
+              "event",
+              "message",
+              "human_request",
+              "semantic_entry",
+              "memory_unit"
+            ],
+            "type": "string"
           }
         },
         "schema": {
-          "items": {
-            "$ref": "#/components/schemas/SemanticEntry"
-          },
-          "type": "array"
+          "$ref": "#/components/schemas/SemanticEntryList"
         }
       }
     },
@@ -25232,6 +25414,12 @@
               "truncated": {
                 "type": "boolean"
               },
+              "unconfirmed": {
+                "items": {
+                  "$ref": "#/components/schemas/Unconfirmed"
+                },
+                "type": "array"
+              },
               "workspace_id": {
                 "format": "uuid",
                 "type": "string"
@@ -25247,6 +25435,43 @@
               "truncated"
             ],
             "type": "object"
+          },
+          "Unconfirmed": {
+            "description": "How many rows one response scanned and could not confirm because `node` did not answer. It is not a total, and it is not \"you should see these\": some of the rows can still be refused once the Node answers.",
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/UnconfirmedKind"
+              },
+              "node": {
+                "description": "The address of the Node that did not answer.",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["node", "kind", "workspace_id", "count"],
+            "type": "object"
+          },
+          "UnconfirmedKind": {
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`) can narrow the entry to the list it sits above.",
+            "enum": [
+              "task",
+              "run",
+              "artifact",
+              "event",
+              "message",
+              "human_request",
+              "semantic_entry",
+              "memory_unit"
+            ],
+            "type": "string"
           }
         },
         "schema": {
@@ -33052,6 +33277,12 @@
                 },
                 "type": "array"
               },
+              "unconfirmed": {
+                "items": {
+                  "$ref": "#/components/schemas/Unconfirmed"
+                },
+                "type": "array"
+              },
               "workspaces": {
                 "items": {
                   "$ref": "#/components/schemas/Workspace"
@@ -33070,7 +33301,8 @@
               "human_requests",
               "conversations",
               "events",
-              "artifacts"
+              "artifacts",
+              "unconfirmed"
             ],
             "type": "object"
           },
@@ -33639,6 +33871,43 @@
               "approval"
             ],
             "type": "object"
+          },
+          "Unconfirmed": {
+            "description": "How many rows one response scanned and could not confirm because `node` did not answer. It is not a total, and it is not \"you should see these\": some of the rows can still be refused once the Node answers.",
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/UnconfirmedKind"
+              },
+              "node": {
+                "description": "The address of the Node that did not answer.",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["node", "kind", "workspace_id", "count"],
+            "type": "object"
+          },
+          "UnconfirmedKind": {
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`) can narrow the entry to the list it sits above.",
+            "enum": [
+              "task",
+              "run",
+              "artifact",
+              "event",
+              "message",
+              "human_request",
+              "semantic_entry",
+              "memory_unit"
+            ],
+            "type": "string"
           },
           "VerificationEvidence": {
             "additionalProperties": false,
@@ -41618,16 +41887,69 @@
             ],
             "type": "object"
           },
+          "EventPage": {
+            "description": "One read of the events, with the rows it could not confirm because a Node did not answer (#770). The cursor to continue from is in a header.",
+            "properties": {
+              "events": {
+                "items": {
+                  "$ref": "#/components/schemas/Event"
+                },
+                "type": "array"
+              },
+              "unconfirmed": {
+                "items": {
+                  "$ref": "#/components/schemas/Unconfirmed"
+                },
+                "type": "array"
+              }
+            },
+            "required": ["events", "unconfirmed"],
+            "type": "object"
+          },
           "NodeName": {
             "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused.",
+            "type": "string"
+          },
+          "Unconfirmed": {
+            "description": "How many rows one response scanned and could not confirm because `node` did not answer. It is not a total, and it is not \"you should see these\": some of the rows can still be refused once the Node answers.",
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/UnconfirmedKind"
+              },
+              "node": {
+                "description": "The address of the Node that did not answer.",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["node", "kind", "workspace_id", "count"],
+            "type": "object"
+          },
+          "UnconfirmedKind": {
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`) can narrow the entry to the list it sits above.",
+            "enum": [
+              "task",
+              "run",
+              "artifact",
+              "event",
+              "message",
+              "human_request",
+              "semantic_entry",
+              "memory_unit"
+            ],
             "type": "string"
           }
         },
         "schema": {
-          "items": {
-            "$ref": "#/components/schemas/Event"
-          },
-          "type": "array"
+          "$ref": "#/components/schemas/EventPage"
         }
       }
     },
@@ -43397,6 +43719,25 @@
             "enum": ["entity", "semantic", "temporal", "causes", "caused_by"],
             "type": "string"
           },
+          "MemoryUnitList": {
+            "description": "The units a reader may see, and the units a Node's silence left out (#770).",
+            "properties": {
+              "units": {
+                "items": {
+                  "$ref": "#/components/schemas/Unit"
+                },
+                "type": "array"
+              },
+              "unconfirmed": {
+                "items": {
+                  "$ref": "#/components/schemas/Unconfirmed"
+                },
+                "type": "array"
+              }
+            },
+            "required": ["units", "unconfirmed"],
+            "type": "object"
+          },
           "MentalModel": {
             "additionalProperties": false,
             "properties": {
@@ -43424,6 +43765,43 @@
             },
             "required": ["start", "end"],
             "type": "object"
+          },
+          "Unconfirmed": {
+            "description": "How many rows one response scanned and could not confirm because `node` did not answer. It is not a total, and it is not \"you should see these\": some of the rows can still be refused once the Node answers.",
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/UnconfirmedKind"
+              },
+              "node": {
+                "description": "The address of the Node that did not answer.",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["node", "kind", "workspace_id", "count"],
+            "type": "object"
+          },
+          "UnconfirmedKind": {
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`) can narrow the entry to the list it sits above.",
+            "enum": [
+              "task",
+              "run",
+              "artifact",
+              "event",
+              "message",
+              "human_request",
+              "semantic_entry",
+              "memory_unit"
+            ],
+            "type": "string"
           },
           "Unit": {
             "additionalProperties": false,
@@ -43476,10 +43854,7 @@
           }
         },
         "schema": {
-          "items": {
-            "$ref": "#/components/schemas/Unit"
-          },
-          "type": "array"
+          "$ref": "#/components/schemas/MemoryUnitList"
         }
       }
     },
@@ -56057,9 +56432,15 @@
               "next_cursor": {
                 "description": "Opaque continuation cursor.",
                 "type": ["string", "null"]
+              },
+              "unconfirmed": {
+                "items": {
+                  "$ref": "#/components/schemas/Unconfirmed"
+                },
+                "type": "array"
               }
             },
-            "required": ["items", "next_cursor"],
+            "required": ["items", "next_cursor", "unconfirmed"],
             "type": "object"
           },
           "RunPhase": {
@@ -56735,6 +57116,43 @@
             ],
             "type": "object"
           },
+          "Unconfirmed": {
+            "description": "How many rows one response scanned and could not confirm because `node` did not answer. It is not a total, and it is not \"you should see these\": some of the rows can still be refused once the Node answers.",
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/UnconfirmedKind"
+              },
+              "node": {
+                "description": "The address of the Node that did not answer.",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["node", "kind", "workspace_id", "count"],
+            "type": "object"
+          },
+          "UnconfirmedKind": {
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`) can narrow the entry to the list it sits above.",
+            "enum": [
+              "task",
+              "run",
+              "artifact",
+              "event",
+              "message",
+              "human_request",
+              "semantic_entry",
+              "memory_unit"
+            ],
+            "type": "string"
+          },
           "VerificationEvidence": {
             "additionalProperties": false,
             "description": "The record of one Check's actual invocation against exact content.",
@@ -57006,9 +57424,15 @@
               "next_cursor": {
                 "description": "Opaque continuation cursor.",
                 "type": ["string", "null"]
+              },
+              "unconfirmed": {
+                "items": {
+                  "$ref": "#/components/schemas/Unconfirmed"
+                },
+                "type": "array"
               }
             },
-            "required": ["items", "next_cursor"],
+            "required": ["items", "next_cursor", "unconfirmed"],
             "type": "object"
           },
           "HumanRequest": {
@@ -57056,6 +57480,43 @@
               "created_at"
             ],
             "type": "object"
+          },
+          "Unconfirmed": {
+            "description": "How many rows one response scanned and could not confirm because `node` did not answer. It is not a total, and it is not \"you should see these\": some of the rows can still be refused once the Node answers.",
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/UnconfirmedKind"
+              },
+              "node": {
+                "description": "The address of the Node that did not answer.",
+                "type": "string"
+              },
+              "workspace_id": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": ["node", "kind", "workspace_id", "count"],
+            "type": "object"
+          },
+          "UnconfirmedKind": {
+            "description": "What kind of item was left out, so a view that mixes kinds (`/api/state`) can narrow the entry to the list it sits above.",
+            "enum": [
+              "task",
+              "run",
+              "artifact",
+              "event",
+              "message",
+              "human_request",
+              "semantic_entry",
+              "memory_unit"
+            ],
+            "type": "string"
           }
         },
         "schema": {

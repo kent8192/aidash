@@ -197,7 +197,7 @@ def main():
         effects = api_request(fixture_url, "/status")
         assert len(effects["effects"]) == 3
         assert effects["requests"][reconciled_key] == 1, "An uncertain Unsafe HTTP invocation must not be replayed automatically"
-        assert any(e["kind"] == "run.recovered" and e["data"].get("run_id") == recovered["id"] for e in api_request(base_a, "/api/events", token=token))
+        assert any(e["kind"] == "run.recovered" and e["data"].get("run_id") == recovered["id"] for e in api_request(base_a, "/api/events", token=token)["events"])
         assert not approval_errors, approval_errors
         approval_stop.set()
         approval_thread.join(timeout=5)

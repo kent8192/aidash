@@ -40,10 +40,10 @@ class Home:
                 self.admitted.append((body["provider"]["id"], [unit["id"] for unit in units]))
             return 200, units
         if path.endswith("/memory/units/query"):
-            return 200, []
+            return 200, {"units": [], "unconfirmed": []}
         if path.endswith("/semantic/entries"):
             ready = [unit for units in (*self.extracted.values(), *self.groups.values()) for unit in units]
-            return 200, [{"id": unit["id"], "state": "READY"} for unit in ready]
+            return 200, {"entries": [{"id": unit["id"], "state": "READY"} for unit in ready], "unconfirmed": []}
         action = body["action"]
         bank = body["bank"]["participant"]
         if action["action"] == "retain":

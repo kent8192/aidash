@@ -994,7 +994,7 @@ def main():
         snapshot = wait_for(complete, timeout=600, label="all four tasks and artifacts")
         recovered = wait_for(lambda: completed_run(base_a, before["id"], tokens[base_a]), label="same durable research run")
         assert recovered["id"] == before["id"]
-        assert any(e["kind"] == "run.recovered" and e["data"].get("run_id") == recovered["id"] for e in api_request(base_a, "/api/events", token=tokens[base_a]))
+        assert any(e["kind"] == "run.recovered" and e["data"].get("run_id") == recovered["id"] for e in api_request(base_a, "/api/events", token=tokens[base_a])["events"])
         assert len(snapshot["artifacts"]) == 4
         assert len(fixture.effects) == 3
         assert fixture.requests[reconciled_key] == 1, "An uncertain Unsafe HTTP invocation must not be replayed automatically"
@@ -1011,7 +1011,7 @@ def main():
         wait_for(lambda: int(psql(db_a, queries["inbox"])) > 0, label="JetStream durable consumption")
         assert len({e["id"] for e in stream_events}) == len(stream_events)
         last_sequence = stream_events[-1]["sequence"]
-        replay = api_request(base_a, f"/api/events?after={last_sequence - 1}", token=tokens[base_a])
+        replay = api_request(base_a, f"/api/events?after={last_sequence - 1}", token=tokens[base_a])["events"]
         assert replay[0]["sequence"] == last_sequence
         plugin_runs = []
         for base, agent_id, tool_config in [

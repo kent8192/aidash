@@ -21,7 +21,8 @@ tests {
   });
   test("JSON response contract", function () {
     expect(res.getHeader("content-type")).to.include("application/json");
-    expect(res.getBody()).to.have.all.keys("tasks", "next_offset");
+    expect(res.getBody()).to.have.all.keys("tasks", "next_offset", "unconfirmed");
+    expect(res.getBody().unconfirmed).to.eql([]);
     expect(res.getBody().tasks.map(task => task.id)).to.include(bru.getVar("task_id"));
     expect(res.getBody().next_offset).to.equal(null);
   });
