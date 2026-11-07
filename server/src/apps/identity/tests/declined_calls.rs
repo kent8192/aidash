@@ -349,44 +349,6 @@ async fn the_runs_person_declines_the_call_and_the_run_goes_on(
 }
 
 #[rstest::rstest]
-#[tokio::test]
-async fn a_member_who_only_controls_runs_cannot_decline_someone_elses_call(
-	#[future(awt)]
-	#[from(common::native_application)]
-	fixture: common::ApplicationFixture,
-) {
-	let w = world(fixture).await;
-	// Every member may control a Run, so control alone must not let a colleague push someone
-	// else's Run on. `bob` is denied exactly the action that would.
-	let current = aidash_server::authorization::Authorization {
-		pool: w.f.store.pool.clone(),
-	}
-	.snapshot("acme")
-	.await
-	.unwrap();
-	let mut bundle = serde_json::to_value(&current.bundle).unwrap();
-	bundle["subjects"]["bob"] = json!({"kind":"user"});
-	bundle["policies"].as_array_mut().unwrap().push(json!({
-		"id":"bob-no-decline","effect":"deny","subjects":{"ids":["bob"]},
-		"actions":["run.decline_call"],"resources":{"kinds":["*"]}
-	}));
-	common::replace_policy(&w.f.store, "acme", bundle).await;
-	let bob = common::subject_credential(&w.f.store, "acme", "bob").await;
-	w.pause(true).await;
-	let before = w.other_credential().await;
-	w.set_credential(before).await;
-
-	let (status, body) = w.decline(&bob, &w.key()).await;
-	assert_eq!(status, 403, "{body}");
-	assert!(w.row().await.is_none());
-	assert_eq!(w.management(&bob).await.1["control"], "PAUSED");
-	assert_eq!(w.credential().await, before);
-	// The Run's own person is not affected by that rule.
-	let (status, declined) = w.decline(&w.alice.clone(), &w.key()).await;
-	assert_eq!(status, 200, "{declined}");
-}
-
-#[rstest::rstest]
 #[case::started("STARTED")]
 #[case::completed("COMPLETED")]
 #[tokio::test]
@@ -514,4 +476,149 @@ async fn a_sentence_sent_first_is_an_ordinary_run_message_to_a_paused_run(
 		.await
 		.unwrap();
 	assert_eq!(messages, 1);
+}
+
+impl World {
+	async fn edit_policy(&self, edit: impl FnOnce(&mut Value)) {
+		let current = aidash_server::authorization::Authorization {
+			pool: self.f.store.pool.clone(),
+		}
+		.snapshot("acme")
+		.await
+		.unwrap();
+		let mut bundle = serde_json::to_value(&current.bundle).unwrap();
+		edit(&mut bundle);
+		common::replace_policy(&self.f.store, "acme", bundle).await;
+	}
+
+	/// Another administrator of the Tenant, who is not the Run's person.
+	async fn add_administrator(&self, name: &str) -> String {
+		self.edit_policy(|bundle| {
+			bundle["groups"]["administrators"] = json!({"roles": [], "assignable": true});
+			bundle["subjects"][name] = json!({"kind":"user","groups":["administrators"]});
+		})
+		.await;
+		common::subject_credential(&self.f.store, "acme", name).await
+	}
+
+	/// A member who may control Runs, as every member may, and is denied `run.decline_call`.
+	async fn add_member_denied_decline(&self, name: &str) -> String {
+		self.edit_policy(|bundle| {
+			bundle["groups"]["members"] = json!({"roles": [], "assignable": true});
+			bundle["subjects"][name] = json!({"kind":"user","groups":["members"]});
+			bundle["policies"].as_array_mut().unwrap().push(json!({
+				"id":"no-decline","effect":"deny","subjects":{"ids":[name]},
+				"actions":["run.decline_call"],"resources":{"kinds":["*"]}
+			}));
+		})
+		.await;
+		common::subject_credential(&self.f.store, "acme", name).await
+	}
+
+	async fn lift_the_denial(&self) {
+		self.edit_policy(|bundle| {
+			bundle["policies"]
+				.as_array_mut()
+				.unwrap()
+				.retain(|policy| policy["id"] != "no-decline");
+		})
+		.await;
+	}
+
+	/// The Run was admitted without a Working Area. A Run with one is readable only by the
+	/// area's owner, which is the Run's person, so nobody else can see it.
+	async fn drop_working_area(&self) {
+		sqlx::query("DELETE FROM core_runs WHERE run_id = $1")
+			.bind(self.run)
+			.execute(self.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn another_administrator_declines_and_the_runs_credential_is_left_alone(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let w = world(fixture).await;
+	let erin = w.add_administrator("erin").await;
+	w.drop_working_area().await;
+	w.pause(true).await;
+	let before = w.other_credential().await;
+	w.set_credential(before).await;
+
+	let (status, page) = w.get(&erin).await;
+	assert_eq!(status, 200, "{page}");
+	assert_eq!(page["declinable_call"]["tool"], "task_delegate");
+	let (status, declined) = w.decline(&erin, &w.key()).await;
+	assert_eq!(status, 200, "{declined}");
+	assert_eq!(declined["control"], "ACTIVE");
+	// The Run goes on in its person's name, with the credential it had.
+	assert_eq!(w.credential().await, before);
+	let (row, result) = w.row().await.expect("a declined call has a row");
+	assert_eq!(row, "COMPLETED");
+	assert_eq!(result, Some(json!({"error": sentence()})));
+	let events = w.events().await;
+	let (_, event) = events
+		.iter()
+		.find(|(kind, _)| kind == "run.call_declined")
+		.unwrap();
+	assert_eq!(event["by"], "erin");
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_member_who_may_see_the_run_but_not_decline_is_refused_for_that_action_alone(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let w = world(fixture).await;
+	let bob = w.add_member_denied_decline("bob").await;
+	w.drop_working_area().await;
+	w.pause(true).await;
+	let before = w.other_credential().await;
+	w.set_credential(before).await;
+
+	// Bob can read the Run, is not offered the call, and cannot decline it.
+	let (status, page) = w.get(&bob).await;
+	assert_eq!(status, 200, "{page}");
+	assert!(page.get("declinable_call").is_none(), "{page}");
+	let (status, body) = w.decline(&bob, &w.key()).await;
+	assert_eq!(status, 403, "{body}");
+	assert!(w.row().await.is_none());
+	assert_eq!(w.management(&bob).await.1["control"], "PAUSED");
+	assert_eq!(w.credential().await, before);
+
+	// Lifting only that denial lets the same request through: it was `run.decline_call`.
+	w.lift_the_denial().await;
+	let (status, page) = w.get(&bob).await;
+	assert_eq!(status, 200, "{page}");
+	assert!(page["declinable_call"].is_object(), "{page}");
+	let (status, declined) = w.decline(&bob, &w.key()).await;
+	assert_eq!(status, 200, "{declined}");
+	assert_eq!(w.credential().await, before);
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn nobody_else_sees_or_declines_a_run_that_has_a_working_area(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let w = world(fixture).await;
+	let erin = w.add_administrator("erin").await;
+	w.pause(true).await;
+	// A Working Area is owned by the Run's person, and `file.read` on it decides who may read
+	// the Run (`run_area_readable`). An administrator holding `run.decline_call` is no owner.
+	let (status, page) = w.get(&erin).await;
+	assert_eq!(status, 403, "{page}");
+	let (status, body) = w.decline(&erin, &w.key()).await;
+	assert_eq!(status, 403, "{body}");
+	assert!(w.row().await.is_none());
+	assert_eq!(w.management(&erin).await.1["control"], "PAUSED");
 }

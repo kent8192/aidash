@@ -335,3 +335,30 @@ async fn a_receiver_records_that_the_home_declined_without_naming_anyone(
 	assert_eq!(event["by"], "home");
 	assert_eq!(event["kind"], "other_node");
 }
+
+#[rstest]
+#[tokio::test]
+async fn declining_keeps_what_resuming_changed_in_the_pending_state(
+	#[future] database: DatabaseFixture,
+	run: Record,
+) {
+	let w = world(database.await, run).await;
+	w.pause(&w.refusal(RefusalCheck::Policy, true)).await;
+	// A pause that also carries a context reason: resuming clears it and opens a new decision.
+	sqlx::query(
+		"UPDATE runs SET pending = jsonb_set(pending, '{recovery,context_reason}', \
+		 '\"output_truncated\"'::jsonb, true) WHERE id = $1",
+	)
+	.bind(w.id)
+	.execute(w.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	w.decline(&w.key, "alice").await.unwrap();
+	let recovery = w.recovery().await;
+	assert!(recovery.get("context_reason").is_none(), "{recovery}");
+	assert_eq!(recovery["decision_cycle"], 1, "{recovery}");
+	assert_eq!(
+		recovery["declined_calls"],
+		json!([{"key": w.key, "kind": "policy"}])
+	);
+}

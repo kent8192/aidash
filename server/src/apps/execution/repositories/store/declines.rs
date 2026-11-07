@@ -5,7 +5,7 @@ use crate::apps::execution::models::event_records;
 use crate::{Error, Result};
 use aidash_domain::{
 	RawRun, RunControl, RunControlAction, RunInspection,
-	run_state::{DeclinedCall, PausedCall, RunState, decode, encode},
+	run_state::{DeclinedCall, PausedCall, RunState, decode},
 };
 use reinhardt::query::{
 	Alias, Expr, ExprTrait as _, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
@@ -48,7 +48,7 @@ impl Store {
 		if raw.metadata.control != RunControl::Paused || raw.metadata.phase.is_terminal() {
 			return Err(not_paused_on_call());
 		}
-		let (state, mut recovery) = decode(raw.metadata.phase, raw.pending.clone())?;
+		let (state, recovery) = decode(raw.metadata.phase, raw.pending.clone())?;
 		let paused = recovery
 			.paused_call
 			.clone()
@@ -161,19 +161,24 @@ impl Store {
 		// Resume through the ordinary control path, which forgets `paused_call`; then keep the
 		// decision until the worker has answered the call.
 		let inspection = self.control_in(tx, id, RunControlAction::Resume).await?;
-		recovery.paused_call = None;
-		recovery
-			.declined_calls
-			.retain(|declined| declined.key != key);
-		recovery.declined_calls.push(DeclinedCall {
+		// Only the decisions are written: whatever resuming changed in `pending` stays.
+		let mut declined_calls = recovery.declined_calls;
+		declined_calls.retain(|declined| declined.key != key);
+		declined_calls.push(DeclinedCall {
 			key: key.to_owned(),
 			kind: paused.kind,
 		});
-		let pending = encode(&state, &recovery)?;
 		crate::database::native::query(
 			&Query::update()
 				.table(Alias::new("runs"))
-				.value_expr(Alias::new("pending"), Expr::value(pending))
+				.value_expr(
+					Alias::new("pending"),
+					SimpleExpr::CustomWithExpr(
+						"jsonb_set(pending, '{recovery,declined_calls}', ?::jsonb, true)"
+							.to_owned(),
+						vec![Expr::value(serde_json::to_value(&declined_calls)?).into()],
+					),
+				)
 				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)))
 				.to_string(PostgresQueryBuilder),
 		)
