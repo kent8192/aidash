@@ -37,7 +37,11 @@ pub fn url_patterns() -> UnifiedRouter {
 			.endpoint(management::message_create)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(management::task_abandon)
-			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.with_route_middleware(
+				AccessBoundary::authenticated()
+					.with_visibility()
+					.stops_work(),
+			)
 			.endpoint(management::conversation_create)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(channels::channel_thread_create)

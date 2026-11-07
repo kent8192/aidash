@@ -320,6 +320,25 @@ impl Access {
 		Self::begin_with_lock(store, identity, true).await
 	}
 
+	/// The authority of an Authority Change that needs one of `actions`. A
+	/// subject no policy could allow any of them takes the ordinary lock: its
+	/// check then refuses it, and the Tenant's work never waits for it (ADR 0116).
+	pub async fn begin_change(
+		store: &Store,
+		identity: &SubjectIdentity,
+		actions: &[&str],
+	) -> Result<Self> {
+		let snapshot = Authorization {
+			pool: store.pool.clone(),
+		}
+		.snapshot(&identity.tenant)
+		.await?;
+		let exclusive = actions
+			.iter()
+			.any(|action| snapshot.bundle.may_allow(&identity.subject, action));
+		Self::begin_with_lock(store, identity, exclusive).await
+	}
+
 	async fn begin_with_lock(
 		store: &Store,
 		identity: &SubjectIdentity,

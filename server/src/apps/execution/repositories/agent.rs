@@ -640,13 +640,20 @@ impl InferenceReservation for Reservation {
 pub(crate) struct Visibility<'a> {
 	pub visibility: &'a mut crate::transactions::gate::ReadLease,
 	pub store: &'a Store,
+	pub tenant: Option<&'a str>,
 }
 #[async_trait]
 impl ExecutionVisibility for Visibility<'_> {
 	async fn suspend(&mut self) -> Result<()> {
 		self.visibility.suspend().await.map_err(Into::into)
 	}
+	/// The harness takes this lease back before the authority it gave up for a
+	/// model or plugin wait. So a Run waits behind an Authority Change here, while
+	/// it holds neither (ADR 0116).
 	async fn resume(&mut self) -> Result<()> {
+		if let Some(tenant) = self.tenant {
+			crate::database::authority_change::enter(&self.store.pool, tenant).await;
+		}
 		self.visibility.resume(self.store).await.map_err(Into::into)
 	}
 }

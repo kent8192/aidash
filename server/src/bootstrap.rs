@@ -206,12 +206,12 @@ pub async fn initialize_as(
 	>::new(crate::sse::Service::new(
 		crate::sse::Settings::from_env()?,
 	)));
+	let http_settings = crate::http::Settings::from_env()?;
+	crate::database::authority_change::validate(http_settings.timeout)?;
 	context.set_singleton(reinhardt::di::KeyedFactoryOutput::<
 		reinhardt::di::SelfKey<crate::http::Protection>,
 		crate::http::Protection,
-	>::new(crate::http::Protection::new(
-		crate::http::Settings::from_env()?,
-	)));
+	>::new(crate::http::Protection::new(http_settings)));
 	Ok(federation)
 }
 
@@ -2528,6 +2528,7 @@ pub(crate) fn worker_step(
 		recovery: recovery_store(&federation.store),
 		_active: crate::http::ActiveExecution::begin(),
 		visibility,
+		tenant: None,
 	})
 }
 

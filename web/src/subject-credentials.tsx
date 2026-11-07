@@ -11,6 +11,7 @@ import {
 import type { Credential, IssuedCredential } from "./generated/models";
 import { Badge, Empty, Field, Modal, Panel, useI18n } from "./ui";
 import { Alert, Hint, Loading, Notice, RowList } from "./components/patterns";
+import { useBusyRetry } from "./policy-busy";
 
 /** The Subject Credentials a member issued for itself through its Mapping
  *  (#358, ADR 0063). They act as the member and end with that Mapping. */
@@ -32,6 +33,7 @@ export function OwnCredentials({
   const [revoking, setRevoking] = useState<Credential | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const busyRetry = useBusyRetry();
   const [offset, setOffset] = useState(0);
   const credentials = useQuery({
     queryKey: ["authorization", tenant, "credentials", "mine", offset],
@@ -55,10 +57,12 @@ export function OwnCredentials({
     if (busy) return;
     setBusy(true);
     setError("");
+    busyRetry.clear();
     try {
       await action();
       await client.invalidateQueries({ queryKey: ["authorization", tenant] });
     } catch (reason) {
+      busyRetry.note(reason, () => void act(action));
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setBusy(false);
@@ -90,7 +94,9 @@ export function OwnCredentials({
       }
     >
       <Hint>{t("ownCredentialsHelp")}</Hint>
-      {error && !issuing && !revoking && <Alert>{error}</Alert>}
+      {error && !issuing && !revoking && (
+        <Alert {...busyRetry.alert}>{error}</Alert>
+      )}
       {(credentials.isPending || active.isPending) && <Loading />}
       {credentials.isError && <Alert>{credentials.error.message}</Alert>}
       {active.isError && <Alert>{active.error.message}</Alert>}

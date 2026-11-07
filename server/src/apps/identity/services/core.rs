@@ -98,11 +98,20 @@ impl Authorization {
 				.lock(LockType::Share)
 				.to_string(PostgresQueryBuilder)
 		};
-		let row: Option<(i64, Value)> = crate::database::native::query_as(&query)
+		let waiting = if exclusive {
+			Some(crate::database::authority_change::raise(&mut **tx, tenant).await?)
+		} else {
+			None
+		};
+		let row = crate::database::native::query_as::<(i64, Value)>(&query)
 			.columns(&["revision", "document"])
 			.bind(tenant)
 			.fetch_optional(&mut **tx)
-			.await?;
+			.await;
+		let row = match waiting {
+			Some(waiting) => waiting.settle(&mut **tx, row).await?,
+			None => row?,
+		};
 		let (revision, document) =
 			row.ok_or_else(|| Error::NotFound("authorization policy".into()))?;
 		// Checked once the policy is held, as `AuthorizationBundle::lock_snapshot` does.

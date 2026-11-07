@@ -254,10 +254,31 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 			.await,
 		Err(aidash_application::Error::Forbidden)
 	));
-	let first = Gateway::new(f.store.clone())
-		.admit(token, "images", "POST", "upload", &digest)
+	// A command's request waits behind an Authority Change, and the change does
+	// not wait for it, since the step that started the command has gone on (ADR 0116).
+	let mut change = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	crate::database::authority_change::raise(&mut *change, "acme")
 		.await
 		.unwrap();
+	let admitting = {
+		let (gateway, token, digest) = (
+			Gateway::new(f.store.clone()),
+			token.to_owned(),
+			digest.clone(),
+		);
+		tokio::spawn(async move {
+			gateway
+				.admit(&token, "images", "POST", "upload", &digest)
+				.await
+		})
+	};
+	tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+	assert!(
+		!admitting.is_finished(),
+		"the request passed a waiting change"
+	);
+	change.commit().await.unwrap();
+	let first = admitting.await.unwrap().unwrap();
 	first.meter.charge(Direction::Sent, 6).await.unwrap();
 	// A fresh gateway instance sees the same durable operation budget.
 	let second = Gateway::new(f.store.clone())
