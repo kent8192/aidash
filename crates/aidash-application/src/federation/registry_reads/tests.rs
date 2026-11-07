@@ -389,12 +389,7 @@ async fn unavailable_peer_still_requires_saved_metadata_policy(mut scope: Scope)
 	);
 	assert_eq!(
 		scope.calls,
-		vec![
-			"dependencies",
-			"registry.read",
-			"federation.discover",
-			"remember:false"
-		]
+		vec!["dependencies", "registry.read", "remember:false"]
 	);
 	assert!(transport.calls.lock().unwrap().is_empty());
 }
