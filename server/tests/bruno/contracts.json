@@ -30866,6 +30866,27 @@
               },
               {
                 "additionalProperties": false,
+                "description": "A final answer was held because the only open subtasks are ones nobody\nwill run. Each Task is named here once; a later final answer abandons\nthose this Run created (#772).",
+                "properties": {
+                  "instruction": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["unassigned_tasks_told"],
+                    "type": "string"
+                  },
+                  "tasks": {
+                    "items": {
+                      "$ref": "#/components/schemas/ToldTask"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": ["kind", "tasks", "instruction"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
                 "description": "The Completion Gate refused a final answer because a Check did not pass\non the current files. Each one spends the Repair Allowance of the input\nat `through_seq`.",
                 "properties": {
                   "checks": {
@@ -33451,6 +33472,21 @@
               }
             ]
           },
+          "ToldTask": {
+            "additionalProperties": false,
+            "description": "A subtask the model was told has nobody to run it.",
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "title"],
+            "type": "object"
+          },
           "ToolCall": {
             "additionalProperties": false,
             "properties": {
@@ -33468,6 +33504,13 @@
           "ToolCallState": {
             "additionalProperties": false,
             "properties": {
+              "abandoning": {
+                "description": "The Unassigned Tasks this completion abandons. Saved with `finalizing`\nbecause the outcome is chosen by then: a cancel settles exactly it (#772).",
+                "items": {
+                  "$ref": "#/components/schemas/UnassignedTask"
+                },
+                "type": "array"
+              },
               "approval": {
                 "description": "The capability approval the call at `cursor` waited for. The call runs\nagain under it; `advance` clears it with the cursor.",
                 "format": "uuid",
@@ -33665,6 +33708,30 @@
               "home_approval",
               "approval"
             ],
+            "type": "object"
+          },
+          "UnassignedTask": {
+            "description": "An open child Task that nobody is working on or can start.",
+            "properties": {
+              "abandonable": {
+                "default": false,
+                "description": "A Run of the parent Task created it and nothing open sits beneath it.",
+                "type": "boolean"
+              },
+              "handed_over": {
+                "default": false,
+                "description": "Someone has it, but it waits on another Unassigned Task.",
+                "type": "boolean"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "title", "abandonable", "handed_over"],
             "type": "object"
           },
           "VerificationEvidence": {
@@ -35133,6 +35200,27 @@
                   }
                 },
                 "required": ["kind", "invalid", "instruction", "through_seq"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A final answer was held because the only open subtasks are ones nobody\nwill run. Each Task is named here once; a later final answer abandons\nthose this Run created (#772).",
+                "properties": {
+                  "instruction": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["unassigned_tasks_told"],
+                    "type": "string"
+                  },
+                  "tasks": {
+                    "items": {
+                      "$ref": "#/components/schemas/ToldTask"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": ["kind", "tasks", "instruction"],
                 "type": "object"
               },
               {
@@ -37542,6 +37630,21 @@
               }
             ]
           },
+          "ToldTask": {
+            "additionalProperties": false,
+            "description": "A subtask the model was told has nobody to run it.",
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "title"],
+            "type": "object"
+          },
           "ToolCall": {
             "additionalProperties": false,
             "properties": {
@@ -37559,6 +37662,13 @@
           "ToolCallState": {
             "additionalProperties": false,
             "properties": {
+              "abandoning": {
+                "description": "The Unassigned Tasks this completion abandons. Saved with `finalizing`\nbecause the outcome is chosen by then: a cancel settles exactly it (#772).",
+                "items": {
+                  "$ref": "#/components/schemas/UnassignedTask"
+                },
+                "type": "array"
+              },
               "approval": {
                 "description": "The capability approval the call at `cursor` waited for. The call runs\nagain under it; `advance` clears it with the cursor.",
                 "format": "uuid",
@@ -37756,6 +37866,30 @@
               "home_approval",
               "approval"
             ],
+            "type": "object"
+          },
+          "UnassignedTask": {
+            "description": "An open child Task that nobody is working on or can start.",
+            "properties": {
+              "abandonable": {
+                "default": false,
+                "description": "A Run of the parent Task created it and nothing open sits beneath it.",
+                "type": "boolean"
+              },
+              "handed_over": {
+                "default": false,
+                "description": "Someone has it, but it waits on another Unassigned Task.",
+                "type": "boolean"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "title", "abandonable", "handed_over"],
             "type": "object"
           },
           "VerificationEvidence": {
@@ -38888,6 +39022,27 @@
                   }
                 },
                 "required": ["kind", "invalid", "instruction", "through_seq"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A final answer was held because the only open subtasks are ones nobody\nwill run. Each Task is named here once; a later final answer abandons\nthose this Run created (#772).",
+                "properties": {
+                  "instruction": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["unassigned_tasks_told"],
+                    "type": "string"
+                  },
+                  "tasks": {
+                    "items": {
+                      "$ref": "#/components/schemas/ToldTask"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": ["kind", "tasks", "instruction"],
                 "type": "object"
               },
               {
@@ -41091,6 +41246,21 @@
               }
             ]
           },
+          "ToldTask": {
+            "additionalProperties": false,
+            "description": "A subtask the model was told has nobody to run it.",
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "title"],
+            "type": "object"
+          },
           "ToolCall": {
             "additionalProperties": false,
             "properties": {
@@ -41108,6 +41278,13 @@
           "ToolCallState": {
             "additionalProperties": false,
             "properties": {
+              "abandoning": {
+                "description": "The Unassigned Tasks this completion abandons. Saved with `finalizing`\nbecause the outcome is chosen by then: a cancel settles exactly it (#772).",
+                "items": {
+                  "$ref": "#/components/schemas/UnassignedTask"
+                },
+                "type": "array"
+              },
               "approval": {
                 "description": "The capability approval the call at `cursor` waited for. The call runs\nagain under it; `advance` clears it with the cursor.",
                 "format": "uuid",
@@ -41305,6 +41482,30 @@
               "home_approval",
               "approval"
             ],
+            "type": "object"
+          },
+          "UnassignedTask": {
+            "description": "An open child Task that nobody is working on or can start.",
+            "properties": {
+              "abandonable": {
+                "default": false,
+                "description": "A Run of the parent Task created it and nothing open sits beneath it.",
+                "type": "boolean"
+              },
+              "handed_over": {
+                "default": false,
+                "description": "Someone has it, but it waits on another Unassigned Task.",
+                "type": "boolean"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "title", "abandonable", "handed_over"],
             "type": "object"
           },
           "VerificationEvidence": {
@@ -54423,6 +54624,27 @@
               },
               {
                 "additionalProperties": false,
+                "description": "A final answer was held because the only open subtasks are ones nobody\nwill run. Each Task is named here once; a later final answer abandons\nthose this Run created (#772).",
+                "properties": {
+                  "instruction": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "enum": ["unassigned_tasks_told"],
+                    "type": "string"
+                  },
+                  "tasks": {
+                    "items": {
+                      "$ref": "#/components/schemas/ToldTask"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": ["kind", "tasks", "instruction"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
                 "description": "The Completion Gate refused a final answer because a Check did not pass\non the current files. Each one spends the Repair Allowance of the input\nat `through_seq`.",
                 "properties": {
                   "checks": {
@@ -56638,6 +56860,21 @@
               }
             ]
           },
+          "ToldTask": {
+            "additionalProperties": false,
+            "description": "A subtask the model was told has nobody to run it.",
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "title"],
+            "type": "object"
+          },
           "ToolCall": {
             "additionalProperties": false,
             "properties": {
@@ -56655,6 +56892,13 @@
           "ToolCallState": {
             "additionalProperties": false,
             "properties": {
+              "abandoning": {
+                "description": "The Unassigned Tasks this completion abandons. Saved with `finalizing`\nbecause the outcome is chosen by then: a cancel settles exactly it (#772).",
+                "items": {
+                  "$ref": "#/components/schemas/UnassignedTask"
+                },
+                "type": "array"
+              },
               "approval": {
                 "description": "The capability approval the call at `cursor` waited for. The call runs\nagain under it; `advance` clears it with the cursor.",
                 "format": "uuid",
@@ -56852,6 +57096,30 @@
               "home_approval",
               "approval"
             ],
+            "type": "object"
+          },
+          "UnassignedTask": {
+            "description": "An open child Task that nobody is working on or can start.",
+            "properties": {
+              "abandonable": {
+                "default": false,
+                "description": "A Run of the parent Task created it and nothing open sits beneath it.",
+                "type": "boolean"
+              },
+              "handed_over": {
+                "default": false,
+                "description": "Someone has it, but it waits on another Unassigned Task.",
+                "type": "boolean"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "title", "abandonable", "handed_over"],
             "type": "object"
           },
           "VerificationEvidence": {
