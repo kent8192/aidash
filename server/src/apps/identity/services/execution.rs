@@ -1214,7 +1214,9 @@ impl WorkerAuthority {
 	}
 
 	/// Consume a one-time Web disclosure approval of `run` after its attempt
-	/// is reserved.
+	/// is reserved. Once the Subnode has ended nothing is consumed: the answer
+	/// is `false`, which settles the reserved attempt without sending anything,
+	/// as a lost race does. A refusal here would leave that attempt in flight.
 	pub async fn consume_web_disclosure(
 		&self,
 		store: &Store,
@@ -1224,11 +1226,15 @@ impl WorkerAuthority {
 		let outer = self.access.write().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let result = async {
-			crate::apps::execution::repositories::subnodes::require_writable(
+			match crate::apps::execution::repositories::subnodes::require_writable(
 				access.tx.native_mut(),
 				run.workspace_id,
 			)
-			.await?;
+			.await
+			{
+				Err(Error::Forbidden) => return Ok(false),
+				other => other?,
+			}
 			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
 			aidash_application::capabilities::approvals::consume_disclosure(
 				&mut scope,
