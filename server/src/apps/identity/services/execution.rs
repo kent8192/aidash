@@ -493,6 +493,14 @@ impl WorkerAuthority {
 		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let prepare: Result<_> = async {
+			// First, before the replay check below, so that this transaction holds
+			// the Subnode lock through the upload and the post. A retry after the
+			// Subnode ended is refused even when the first attempt was recorded.
+			crate::apps::execution::repositories::subnodes::require_writable(
+				access.tx.native_mut(),
+				run.workspace_id,
+			)
+			.await?;
 			let workspace = access.workspace(run.workspace_id).await?;
 			access.require(&workspace, "message.create").await?;
 			// Older successful posts predate the receipt below. The invocation
@@ -616,6 +624,11 @@ impl WorkerAuthority {
 		let access = Access::under_lease(&outer).await?;
 		let mut lease = crate::collaboration::access::Lease::from_access(access);
 		let result: Result<Value> = async {
+			crate::apps::execution::repositories::subnodes::require_writable(
+				lease.access_mut().tx.native_mut(),
+				run.workspace_id,
+			)
+			.await?;
 			let record = lease
 				.access_mut()
 				.workspace_record(run.workspace_id, "attachment", attachment_id)
@@ -821,14 +834,34 @@ impl WorkerAuthority {
 		let pending = {
 			let outer = self.access.read().await;
 			let mut access = Access::under_lease(&outer).await?;
-			let result =
-				previews::prepare(store, &mut access, run, domain.clone(), input.clone()).await;
+			let result = async {
+				// Only a start is fenced: stopping, replacing and settling stay open
+				// so that a Pod can still be stopped.
+				crate::apps::execution::repositories::subnodes::require_writable(
+					access.tx.native_mut(),
+					run.workspace_id,
+				)
+				.await?;
+				previews::prepare(store, &mut access, run, domain.clone(), input.clone()).await
+			}
+			.await;
 			access.finish(result).await?
 		};
-		{
+		let mut refused = false;
+		let accepted = {
 			let outer = self.access.read().await;
 			let mut access = Access::under_lease(&outer).await?;
 			let result = async {
+				if let Err(error) =
+					crate::apps::execution::repositories::subnodes::require_writable(
+						access.tx.native_mut(),
+						run.workspace_id,
+					)
+					.await
+				{
+					refused = true;
+					return Err(error);
+				}
 				let area = crate::apps::execution::capabilities::services::sessions::load(
 					&mut access,
 					pending.area_id,
@@ -838,8 +871,26 @@ impl WorkerAuthority {
 				previews::dispatch_accept(store, &mut access, &pending, files, &input.command).await
 			}
 			.await;
+			access.finish(result).await
+		};
+		if refused {
+			// The Subnode ended after the row was recorded, which marked it stopped.
+			// Nothing reached the Runner, so no Pod proof will ever settle it: end it
+			// as a start that never served, which releases its hold.
+			let outer = self.access.read().await;
+			let mut access = Access::under_lease(&outer).await?;
+			let result = previews::finish_start(
+				store,
+				&mut access,
+				run,
+				domain.clone(),
+				pending.clone(),
+				previews::Dispatch::failed(String::new()),
+			)
+			.await;
 			access.finish(result).await?;
 		}
+		accepted?;
 		let dispatched = previews::wait_ready(store, &pending)
 			.await
 			.unwrap_or_else(|error| previews::Dispatch::failed(error.to_string()));
@@ -893,6 +944,14 @@ impl WorkerAuthority {
 	) -> Result<aidash_application::ports::research::DisclosureState> {
 		let outer = self.access.write().await;
 		let mut access = Access::under_lease(&outer).await?;
+		if let Err(error) = crate::apps::execution::repositories::subnodes::require_writable(
+			access.tx.native_mut(),
+			run.workspace_id,
+		)
+		.await
+		{
+			return access.finish(Err(error)).await;
+		}
 		// Under the Run's research lock, so a revocation that commits after
 		// the caller's own check still closes, or prevents, this approval.
 		let result = match crate::apps::execution::repositories::research::revoked_under_lock(
@@ -947,6 +1006,11 @@ impl WorkerAuthority {
 		let outer = self.access.write().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let result = async {
+			crate::apps::execution::repositories::subnodes::require_writable(
+				access.tx.native_mut(),
+				run.workspace_id,
+			)
+			.await?;
 			// A core Run's approval belongs to its Working Area, so its Thread
 			// lists it; other Runs have none.
 			let area =
@@ -979,6 +1043,11 @@ impl WorkerAuthority {
 		let outer = self.access.write().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let result = async {
+			crate::apps::execution::repositories::subnodes::require_writable(
+				access.tx.native_mut(),
+				run.workspace_id,
+			)
+			.await?;
 			// A core Run's approval belongs to its Working Area, so its Thread
 			// lists it; other Runs have none.
 			let area =
@@ -1145,7 +1214,9 @@ impl WorkerAuthority {
 	}
 
 	/// Consume a one-time Web disclosure approval of `run` after its attempt
-	/// is reserved.
+	/// is reserved. Once the Subnode has ended nothing is consumed: the answer
+	/// is `false`, which settles the reserved attempt without sending anything,
+	/// as a lost race does. A refusal here would leave that attempt in flight.
 	pub async fn consume_web_disclosure(
 		&self,
 		store: &Store,
@@ -1154,7 +1225,16 @@ impl WorkerAuthority {
 	) -> Result<bool> {
 		let outer = self.access.write().await;
 		let mut access = Access::under_lease(&outer).await?;
-		let result = {
+		let result = async {
+			match crate::apps::execution::repositories::subnodes::require_writable(
+				access.tx.native_mut(),
+				run.workspace_id,
+			)
+			.await
+			{
+				Err(Error::Forbidden) => return Ok(false),
+				other => other?,
+			}
 			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
 			aidash_application::capabilities::approvals::consume_disclosure(
 				&mut scope,
@@ -1163,7 +1243,8 @@ impl WorkerAuthority {
 			)
 			.await
 			.map_err(Error::from)
-		};
+		}
+		.await;
 		access.finish(result).await
 	}
 

@@ -22,3 +22,11 @@ An agent the Tenant's policy permits may create a **Subnode** inside its own Nod
 ## Consequences
 
 - ADR 0028's "Agents cannot create Nodes (Subnodes)" now reads "Agents cannot create Nodes". The Subnode it deferred is the one defined here.
+
+## Amendment (2026-11-07, #759)
+
+Once a Subnode ends, an Agent working in its Workspace can no longer write there or ask a person anything. It cannot post a message with files, copy a Thread Attachment into its Working Area, change Memory, ask a question, open an approval, consume an approved Web disclosure or start a Live preview. A call that already passed the tool's entrance is refused when it writes: the write takes a shared lock on the Subnode, so the end waits for a write in progress and a refused call leaves nothing behind. The Run is cancelled at the same moment, so a refusal gives no reason.
+
+What stays open: recording how an approval was settled, a Run's final completion and the Completion Gate check, and reading Memory. Each only closes out or reads what exists, and stopping any of them could keep a Run from ending. Stopping, replacing and settling a Live preview stay open for the same reason, and so that a Pod can still be stopped.
+
+A person can still correct or delete the Memory an Agent left in the Workspace, unlike messages and files. That write does not race with the end, and a person must be able to remove what is left there.

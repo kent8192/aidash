@@ -3207,6 +3207,10 @@ impl Store {
 		.fetch_optional(&mut **tx)
 		.await? }
 		.ok_or_else(|| Error::Conflict("worker lease lost".into()))?;
+		if saved.phase().is_terminal() {
+			// Closing an open attempt appends an event, so lock first; see `lock_end`.
+			super::subnodes::lock_for_end(tx, saved.id).await?;
+		}
 		if kind == "model.completed" {
 			super::source_delivery::accept(self, tx, &saved, worker).await?;
 		}
@@ -3331,6 +3335,8 @@ impl Store {
 		if valid.is_none() {
 			return Err(Error::Conflict("worker lease lost".into()));
 		}
+		// Before the first event below; see `lock_end`.
+		super::subnodes::lock_for_end(&mut tx, run.id).await?;
 		let saved: crate::domain::run_state::RawRun = crate::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
@@ -3591,6 +3597,13 @@ impl Store {
 		action: RunControlAction,
 		source: ControlSource,
 	) -> Result<RunInspection> {
+		if action == RunControlAction::Cancel
+			|| (action == RunControlAction::Pause
+				&& source == ControlSource::DeploymentAdministrator)
+		{
+			// Before `run.control` appends its event; see `lock_end`.
+			super::subnodes::lock_for_end(tx, id).await?;
+		}
 		let run = self.control_one_in_as(tx, id, action, source).await?;
 		if action == RunControlAction::Cancel {
 			let reason = if source == ControlSource::DeploymentAdministrator {
@@ -3744,6 +3757,7 @@ impl Store {
 		key: &str,
 	) -> Result<HumanRequest> {
 		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		super::subnodes::require_writable(tx.as_mut(), run.workspace_id).await?;
 		let request = self
 			.human_request_in(tx.as_mut(), run, kind, prompt, key)
 			.await?;
