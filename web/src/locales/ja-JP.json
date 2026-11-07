@@ -1018,6 +1018,8 @@
   "scratchClearConfirm": "このスクラッチスペースの内容を消去しますか？ この操作は取り消せません。",
   "scratchDeleteConfirm": "このスクラッチスペースを削除しますか？ 内容は削除され、利用中の会話は実行できなくなります。この操作は取り消せません。",
   "scratchExpired": "期限切れ。次の実行時に内容が消去されます",
+  "scratchUnavailable": "使えないスクラッチスペース",
+  "scratchReadError": "スクラッチスペースを読み込めませんでした",
   "scratchChoose": "スクラッチスペースを選択",
   "scratchSent": "1 日の送信量（GiB）",
   "scratchReceived": "1 日の受信量（GiB）",

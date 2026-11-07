@@ -1018,6 +1018,8 @@
   "scratchClearConfirm": "Clear the contents of this Scratch Space? This cannot be undone.",
   "scratchDeleteConfirm": "Delete this Scratch Space? Its contents will be removed, and conversations using it will no longer be able to run. This cannot be undone.",
   "scratchExpired": "Expired; contents will be cleared on the next Run",
+  "scratchUnavailable": "Unavailable Scratch Space",
+  "scratchReadError": "Could not load the Scratch Space",
   "scratchChoose": "Choose a Scratch Space",
   "scratchSent": "Daily sent (GiB)",
   "scratchReceived": "Daily received (GiB)",
