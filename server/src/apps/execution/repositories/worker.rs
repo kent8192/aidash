@@ -120,7 +120,8 @@ impl WorkerStep for Step {
 	}
 	async fn admit(&mut self) -> Result<()> {
 		// A new step is new work: it waits behind an Authority Change, giving up
-		// its visibility lease while it does (ADR 0116).
+		// its visibility lease while it does (ADR 0116). A Run whose Tenant cannot
+		// be read goes on to `Guard::begin`, which meets the same failure itself.
 		if let Ok(tenant) = self.federation.store.run_tenant(self.run.id).await {
 			crate::database::authority_change::enter_releasing(
 				&self.federation.store,
