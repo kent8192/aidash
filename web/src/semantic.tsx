@@ -26,7 +26,7 @@ import {
   channelMessageHistory,
 } from "./generated/aidash";
 import { discoveryQuery, useNodes } from "./nodes";
-import { listBody, readUnconfirmed, unconfirmedFor } from "./unconfirmed";
+import { readUnconfirmed, unconfirmedFor } from "./unconfirmed";
 import { UnconfirmedNotice } from "./unconfirmed-notice";
 import type {
   SemanticEntry,
@@ -223,9 +223,10 @@ function SemanticWorkspace({
   });
   const entries = useQuery({
     queryKey: ["semantic", workspace, "entries"],
-    // A bare array before the server answers `{entries, unconfirmed}`.
-    queryFn: async () =>
-      listBody<SemanticEntry>(await semanticEntries(workspace), "entries"),
+    queryFn: async () => {
+      const list = await semanticEntries(workspace);
+      return { items: list.entries, unconfirmed: list.unconfirmed };
+    },
     enabled: !!index.data && !index.isError,
     refetchInterval: 2000,
   });

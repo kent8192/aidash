@@ -39,24 +39,6 @@ export function readUnconfirmed(body: unknown): Unconfirmed[] {
 }
 
 /**
- * Items and `unconfirmed` of a list response. `/api/events`,
- * `semantic/entries` and `memory/units/query` used to answer a bare array and
- * now answer an object, so both shapes are read: an array has no
- * `unconfirmed`.
- */
-export function listBody<T>(
-  body: unknown,
-  key: string,
-): { items: T[]; unconfirmed: Unconfirmed[] } {
-  if (Array.isArray(body)) return { items: body as T[], unconfirmed: [] };
-  const items = (body as Record<string, unknown> | null | undefined)?.[key];
-  return {
-    items: Array.isArray(items) ? (items as T[]) : [],
-    unconfirmed: readUnconfirmed(body),
-  };
-}
-
-/**
  * What a list says: for each silent Node, how many rows of `kinds` in the
  * Workspaces in view were left out. Counts of one Node add up, and the Nodes
  * are ordered by address so the lines do not move between refreshes.

@@ -28,7 +28,7 @@ import {
   unitAnchor,
 } from "./memory-view";
 import { MemoryImpactView } from "./memory-impact";
-import { listBody, unconfirmedFor } from "./unconfirmed";
+import { type Unconfirmed, unconfirmedFor } from "./unconfirmed";
 import { UnconfirmedNotice } from "./unconfirmed-notice";
 
 type Bank = {
@@ -222,9 +222,13 @@ export function MemoryWorkspace({
   const blocked = busy || retry !== null;
   const units = useQuery({
     queryKey: ["memory", workspace, "units", read],
-    // A bare array before the server answers `{units, unconfirmed}`.
-    queryFn: async () =>
-      listBody<Unit>(await post<unknown>(`${base}/units/query`, read), "units"),
+    queryFn: async () => {
+      const list = await post<{ units: Unit[]; unconfirmed: Unconfirmed[] }>(
+        `${base}/units/query`,
+        read,
+      );
+      return { items: list.units, unconfirmed: list.unconfirmed };
+    },
     enabled: !!read,
     retry: false,
     refetchInterval: 5000,

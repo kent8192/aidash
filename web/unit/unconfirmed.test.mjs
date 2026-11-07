@@ -2,7 +2,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
-  listBody,
   readUnconfirmed,
   unconfirmedFor,
   unconfirmedNodeName,
@@ -77,26 +76,6 @@ test("a missing or malformed field reads as empty", () => {
   assert.deepEqual(readUnconfirmed({ unconfirmed: "x" }), []);
   const found = [entry("a", "task", "w1", 1)];
   assert.deepEqual(readUnconfirmed({ unconfirmed: found }), found);
-});
-
-test("a list answers a bare array or an object, and both are read", () => {
-  const found = [entry("a", "semantic_entry", "w1", 1)];
-  assert.deepEqual(listBody([{ id: 1 }], "entries"), {
-    items: [{ id: 1 }],
-    unconfirmed: [],
-  });
-  assert.deepEqual(
-    listBody({ entries: [{ id: 1 }], unconfirmed: found }, "entries"),
-    { items: [{ id: 1 }], unconfirmed: found },
-  );
-  assert.deepEqual(listBody({ entries: [{ id: 1 }] }, "entries"), {
-    items: [{ id: 1 }],
-    unconfirmed: [],
-  });
-  assert.deepEqual(listBody({ unconfirmed: found }, "entries"), {
-    items: [],
-    unconfirmed: found,
-  });
 });
 
 test("a Node shows by its label, or by its address when the label is unknown", () => {
