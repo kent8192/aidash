@@ -34,6 +34,8 @@ struct Script {
 	delegate: Mutex<bool>,
 	/// How many requests the coordinator has made.
 	stage: std::sync::atomic::AtomicUsize,
+	/// How many Tasks the coordinator creates before it finishes or delegates.
+	tasks: std::sync::atomic::AtomicUsize,
 }
 
 #[rstest::fixture]
@@ -42,6 +44,7 @@ fn script() -> Arc<Script> {
 		sibling: Mutex::new(None),
 		delegate: Mutex::new(true),
 		stage: Default::default(),
+		tasks: std::sync::atomic::AtomicUsize::new(1),
 	})
 }
 
@@ -84,6 +87,7 @@ fn next_message(script: &Script, request: &Value) -> Value {
 		// The receiver on the second Node.
 		return json!({"role":"assistant","content":"Done"});
 	}
+	let created = script.tasks.load(std::sync::atomic::Ordering::SeqCst);
 	match script
 		.stage
 		.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -93,12 +97,12 @@ fn next_message(script: &Script, request: &Value) -> Value {
 			"agent_discover",
 			json!({"capability":"sibling.discovery"}),
 		),
-		1 => tool_call(
-			"create",
+		stage if (1..=created).contains(&stage) => tool_call(
+			&format!("create-{stage}"),
 			"task_create",
 			json!({"title":"Hand over","description":HANDED_OVER,"requirements":{}}),
 		),
-		2 if *script.delegate.lock().unwrap() => {
+		stage if stage == created + 1 && *script.delegate.lock().unwrap() => {
 			let task = uuid_after(&transcript, HANDED_OVER, 300)
 				.expect("the created Task's id is in the transcript");
 			tool_call(
@@ -285,6 +289,19 @@ impl World {
 			.into_iter()
 			.find(|run| run.agent_id == "research")
 			.expect("the coordinator's Run exists")
+	}
+
+	/// Every Task the coordinator created.
+	async fn all_handed_over(&self) -> Vec<Task> {
+		let workspace = self.f.store.task(&TEST_FIXTURE, self.task).await.unwrap();
+		self.f
+			.store
+			.tasks(&TEST_FIXTURE, Some(workspace.workspace_id))
+			.await
+			.unwrap()
+			.into_iter()
+			.filter(|task| task.title == "Hand over")
+			.collect()
 	}
 
 	/// The Task the coordinator created.
@@ -812,5 +829,212 @@ async fn opening_a_run_stream_while_a_node_is_silent_is_retryable_and_a_refusal_
 		.unwrap();
 	assert_eq!(response.status, 200);
 	drop(response);
+	world.close().await;
+}
+
+/// Entries of `unconfirmed` for one kind, as `(node, workspace, count)`.
+fn unconfirmed_of(body: &Value, kind: &str) -> Vec<(String, String, u64)> {
+	body["unconfirmed"]
+		.as_array()
+		.unwrap_or_else(|| panic!("`unconfirmed` is always present: {body}"))
+		.iter()
+		.filter(|entry| entry["kind"] == kind)
+		.map(|entry| {
+			(
+				entry["node"].as_str().unwrap().to_owned(),
+				entry["workspace_id"].as_str().unwrap().to_owned(),
+				entry["count"].as_u64().unwrap(),
+			)
+		})
+		.collect()
+}
+
+/// Bob may read the Workspace but may not discover Nodes (#770, decision 4).
+async fn bob_cannot_discover(world: &World) -> String {
+	let (status, current) = request(
+		&world.app,
+		&world.f.config.api_token,
+		"GET",
+		"/api/authorization/acme",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{current}");
+	let mut bundle = current["bundle"].clone();
+	bundle["subjects"]["bob"] = json!({"kind":"user"});
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"bob-cannot-discover","effect":"deny","subjects":{"ids":["bob"]},
+		"actions":["federation.discover"],"resources":{"kinds":["node"]}
+	}));
+	let (status, body) = request(
+		&world.app,
+		&world.f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":current["revision"],"bundle":bundle}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	subject_credential(&world.f.store, "acme", "bob").await
+}
+
+/// Three Tasks of one Run that waits on a silent Node are counted under that
+/// Node, once each, and the other Tasks are not (#770, decisions 1-3). A reader
+/// who may not discover the Node sees neither the Tasks nor an entry, and a
+/// single read still asks while a second list does not wait.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_list_counts_the_tasks_of_one_silent_run_under_that_node_and_a_reader_without_discovery_sees_no_entry(
+	#[future(awt)] provider: Provider,
+) {
+	*provider.script.delegate.lock().unwrap() = false;
+	provider
+		.script
+		.tasks
+		.store(3, std::sync::atomic::Ordering::SeqCst);
+	let mut world = world(provider).await;
+	world.run_coordinator(3 + 2).await;
+	let children = world.all_handed_over().await;
+	assert_eq!(children.len(), 3);
+	let workspace = children[0].workspace_id.to_string();
+	let bob = bob_cannot_discover(&world).await;
+	// Arrange: every Node answers, so nothing is left out.
+	let (status, tasks) = world.get("/api/tasks").await;
+	assert_eq!(status, 200, "{tasks}");
+	assert_eq!(tasks["unconfirmed"], json!([]), "{tasks}");
+	assert!(children.iter().all(|child| listed(&tasks, child.id)));
+	let single = format!("/api/tasks/{}/runs", children[0].id);
+
+	// Act: the second Node stops answering.
+	let original = limit_pool(&mut world, 1).await;
+	let first = std::time::Instant::now();
+	let (status, tasks) = world.get("/api/tasks").await;
+	let first = first.elapsed();
+	// Assert: the three are left out and counted under the Node, the rest stay.
+	assert_eq!(status, 200, "{tasks}");
+	assert!(children.iter().all(|child| !listed(&tasks, child.id)));
+	assert!(listed(&tasks, world.task), "{tasks}");
+	assert_eq!(
+		unconfirmed_of(&tasks, "task"),
+		vec![(world.sibling.to_string(), workspace.clone(), 3)],
+		"{tasks}"
+	);
+	// The same Node is named in the state and the Workspace.
+	let (status, state) = world.get("/api/state").await;
+	assert_eq!(status, 200, "{state}");
+	assert_eq!(
+		unconfirmed_of(&state, "task"),
+		vec![(world.sibling.to_string(), workspace.clone(), 3)],
+		"{state}"
+	);
+	let (status, snapshot) = world.get(&format!("/api/workspaces/{workspace}")).await;
+	assert_eq!(status, 200, "{snapshot}");
+	assert_eq!(
+		unconfirmed_of(&snapshot, "task"),
+		vec![(world.sibling.to_string(), workspace.clone(), 3)],
+		"{snapshot}"
+	);
+	let (status, events) = world
+		.get(&format!("/api/events?workspace_id={workspace}"))
+		.await;
+	assert_eq!(status, 200, "{events}");
+	assert!(events["events"].is_array(), "{events}");
+	assert!(
+		events["unconfirmed"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|entry| entry["node"] == json!(world.sibling.to_string())),
+		"{events}"
+	);
+	// A reader who may not discover the Node learns nothing about it.
+	let (status, tasks_bob) = request(&world.app, &bob, "GET", "/api/tasks", Value::Null).await;
+	assert_eq!(status, 200, "{tasks_bob}");
+	assert_eq!(tasks_bob["unconfirmed"], json!([]), "{tasks_bob}");
+	assert!(children.iter().all(|child| !listed(&tasks_bob, child.id)));
+	// A second list within the memory does not wait on the Node again, and a
+	// single read still asks it.
+	let second = std::time::Instant::now();
+	let (status, tasks) = world.get("/api/tasks").await;
+	let second = second.elapsed();
+	assert_eq!(status, 200, "{tasks}");
+	assert_eq!(unconfirmed_of(&tasks, "task").len(), 1, "{tasks}");
+	assert!(
+		second < first || second < Duration::from_millis(500),
+		"the second list waited {second:?} after {first:?}"
+	);
+	let asking = std::time::Instant::now();
+	let (status, body) = world.get(&single).await;
+	assert_eq!(status, 503, "{body}");
+	assert_eq!(body["code"], "node_unreachable", "{body}");
+	assert!(
+		asking.elapsed() >= Duration::from_millis(900),
+		"a single read asks the Node: {:?}",
+		asking.elapsed()
+	);
+
+	// The Node answers again. A single read asks and clears what the lists
+	// remembered, so the Tasks return and the count goes.
+	world.f.store.pool = original;
+	world.app = common::application_with_settings(
+		world.f.clone(),
+		aidash_server::http::Settings {
+			auth_burst: 10000,
+			..Default::default()
+		},
+	)
+	.await;
+	let (status, body) = world.get(&single).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, tasks) = world.get("/api/tasks").await;
+	assert_eq!(status, 200, "{tasks}");
+	assert_eq!(tasks["unconfirmed"], json!([]), "{tasks}");
+	assert!(children.iter().all(|child| listed(&tasks, child.id)));
+	world.close().await;
+}
+
+/// A Node that answers and refuses is a refusal: the Task stays out of the list
+/// and is not counted as unconfirmed (#770, decision 3).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_task_the_other_node_refuses_is_left_out_without_being_counted(
+	#[future(awt)] provider: Provider,
+) {
+	*provider.script.delegate.lock().unwrap() = false;
+	let world = world(provider).await;
+	world.run_coordinator(WITHOUT_DELEGATION).await;
+	let child = world.handed_over().await;
+	let (status, tasks) = world.get("/api/tasks").await;
+	assert_eq!(status, 200, "{tasks}");
+	assert!(listed(&tasks, child.id), "{tasks}");
+	let authorization = aidash_server::authorization::Authorization {
+		pool: world.f.store.pool.clone(),
+	};
+	let reference = aidash_domain::registry::EntityRef {
+		id: "sibling-agent".into(),
+		version: "1.0.0".into(),
+	};
+	let binding = authorization
+		.catalog("acme", &world.sibling.node)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|binding| binding.entry_id == reference.id)
+		.expect("the approval exists");
+	authorization
+		.set_catalog(
+			"acme",
+			&world.sibling.node,
+			&reference,
+			binding.revision,
+			false,
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	let (status, tasks) = world.get("/api/tasks").await;
+	assert_eq!(status, 200, "{tasks}");
+	assert!(!listed(&tasks, child.id), "{tasks}");
+	assert_eq!(tasks["unconfirmed"], json!([]), "{tasks}");
 	world.close().await;
 }
