@@ -36531,6 +36531,11 @@
           },
           "RequestRecord": {
             "properties": {
+              "admission_ms": {
+                "description": "The gateway's admission call, in milliseconds. Absent until the outcome\nis settled.",
+                "format": "int64",
+                "type": ["integer", "null"]
+              },
               "created_at": {
                 "format": "date-time",
                 "type": "string"
@@ -36585,6 +36590,11 @@
               },
               "service": {
                 "type": "string"
+              },
+              "settle_ms": {
+                "description": "From the end of the response until its final debit settled, in\nmilliseconds. Absent until the outcome is settled.",
+                "format": "int64",
+                "type": ["integer", "null"]
               },
               "status": {
                 "format": "int32",

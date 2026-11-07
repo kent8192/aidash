@@ -341,6 +341,14 @@ pub struct RequestRecord {
 	pub sent_bytes: i64,
 	pub received_bytes: i64,
 	pub duration_ms: i64,
+	/// The gateway's admission call, in milliseconds. Absent until the outcome
+	/// is settled.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub admission_ms: Option<i64>,
+	/// From the end of the response until its final debit settled, in
+	/// milliseconds. Absent until the outcome is settled.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub settle_ms: Option<i64>,
 	/// `operation`, `pod` or `page`: which path admitted the request.
 	#[serde(default = "operation_via")]
 	pub via: String,
