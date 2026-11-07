@@ -227,6 +227,19 @@ impl OperationState {
 	}
 }
 
+/// What a cancel asks the Runner to refuse, if the operation may not have
+/// reached it. `dispatch_pending` records the intent to send, not whether the
+/// send arrived: the Runner may hold the operation already, or receive it later
+/// from a send its caller gave up on. Only the Runner can settle that, and only
+/// the one this intent was recorded against, so it compares itself to `instance`
+/// and refuses any later send under the lock that accepts one.
+pub fn undelivered_refusal(result: &Value, digest: &str, instance: Option<&str>) -> Option<Value> {
+	if result["dispatch_pending"] != true {
+		return None;
+	}
+	instance.map(|instance| json!({"digest":digest,"instance":instance}))
+}
+
 pub mod withdrawal;
 
 pub mod runner;

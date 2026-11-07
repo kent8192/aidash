@@ -10,7 +10,7 @@ use aidash_domain::{
 		ExportQuota, FileScope, MAX_AREA_FILES, MountedFile, VERIFICATION, WORKING_EXPORT_REFUSED,
 		capability_of, export_quota_refusal, lost_area_state,
 		reconciliation::{Area, Limits, Snapshot},
-		request_validation_failure,
+		request_validation_failure, undelivered_refusal,
 	},
 	completion::{MAX_DIAGNOSTIC_BYTES, bounded_tail},
 };
@@ -105,8 +105,13 @@ async fn reconcile(
 	}
 	let observed = if cancelling {
 		operation.state = "cancelling".into();
+		let refusal = undelivered_refusal(
+			&operation.result,
+			&operation.digest,
+			operation.runner_instance.as_deref(),
+		);
 		scope
-			.request("POST", &format!("/v1/operations/{id}/cancel"), None)
+			.request("POST", &format!("/v1/operations/{id}/cancel"), refusal)
 			.await?
 	} else if operation.result["dispatch_pending"] == true {
 		let files = scope.dispatch_files(&operation).await?;
@@ -157,6 +162,9 @@ async fn reconcile(
 				operation.state = observed["status"].as_str().unwrap().into();
 				operation.result = json!({"termination_confirmed":true,"effects_may_have_occurred":false,"runner_acknowledged":false});
 				scope.set_area("active").await?;
+				if operation.kind == "code_interpreter" {
+					scope.complete_python(&operation, &observed).await?;
+				}
 				return scope.persist(&operation).await;
 			}
 
