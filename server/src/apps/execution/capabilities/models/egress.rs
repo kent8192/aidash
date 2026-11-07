@@ -59,6 +59,8 @@ pub struct RequestRecord {
 	pub path: String,
 	#[field(field_type = "text")]
 	pub query_digest: String,
+	/// 0 until the outcome is settled. A row that stays 0 was never settled, so
+	/// its outcome is unknown: the process stopped or storage stayed unavailable.
 	#[field]
 	pub status: i32,
 	#[field]
@@ -67,6 +69,13 @@ pub struct RequestRecord {
 	pub received_bytes: i64,
 	#[field]
 	pub duration_ms: i64,
+	/// The gateway's admission call. Null until the outcome is settled.
+	#[field(null = true)]
+	pub admission_ms: Option<i64>,
+	/// From the end of the response until its final debit settled. Null until
+	/// the outcome is settled.
+	#[field(null = true)]
+	pub settle_ms: Option<i64>,
 	/// `operation`, `pod` or `page`: which path admitted the request.
 	#[field(field_type = "text")]
 	pub via: String,
