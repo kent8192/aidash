@@ -1913,6 +1913,7 @@ impl<'a> Executor<'a> {
 					&& !run_message_catchup
 					&& !media.defer_human
 					&& !media.defer_selected;
+				request.routing_run = Some(run.id);
 				request.disable_provider_transforms = !policy.is_legacy();
 				request
 					.ensure_fits(window)
