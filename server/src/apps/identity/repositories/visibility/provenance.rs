@@ -149,7 +149,16 @@ impl ReadProvenanceScope for Reads<'_> {
 			.map_err(Into::into)
 	}
 	async fn source_artifact(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Artifact>> {
+		if let Some(artifact) = self.access.read_lookups.artifact(id, workspace) {
+			return Ok(artifact);
+		}
 		self.artifact(id, Some(workspace)).await
+	}
+	async fn prepare_sources(&mut self, sources: &[RecordedRead]) -> Result<()> {
+		self.access
+			.prepare_read_sources(sources)
+			.await
+			.map_err(Into::into)
 	}
 	async fn run_base_visible(&mut self, run: &RunMetadata) -> Result<bool> {
 		self.access.run_base_visible(run).await.map_err(Into::into)
@@ -302,6 +311,9 @@ impl ReadProvenanceScope for Reads<'_> {
 		result.map_err(Into::into)
 	}
 	async fn source_task(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Task>> {
+		if let Some(task) = self.access.read_lookups.task(id, workspace) {
+			return Ok(task);
+		}
 		let result: NativeResult<Option<Task>> = async {
 			let this = &mut *self.access;
 			let source: Option<Task> = {
@@ -341,6 +353,9 @@ impl ReadProvenanceScope for Reads<'_> {
 		result.map_err(Into::into)
 	}
 	async fn source_message(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Message>> {
+		if let Some(message) = self.access.read_lookups.message(id, workspace) {
+			return Ok(message);
+		}
 		let result: NativeResult<Option<Message>> = async {
 			let this = &mut *self.access;
 			let source: Option<Message> = {
@@ -384,6 +399,12 @@ impl ReadProvenanceScope for Reads<'_> {
 		id: Uuid,
 		workspace: Uuid,
 	) -> Result<Option<Message>> {
+		if let Some(message) = self.access.read_lookups.attachment(id, workspace) {
+			return match message {
+				Some(id) => self.source_message(id, workspace).await,
+				None => Ok(None),
+			};
+		}
 		let message_id: Option<Uuid> = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("message_id"))
@@ -446,6 +467,9 @@ impl ReadProvenanceScope for Reads<'_> {
 		id: Uuid,
 		workspace: Uuid,
 	) -> Result<Option<Conversation>> {
+		if let Some(conversation) = self.access.read_lookups.conversation(id, workspace) {
+			return Ok(conversation);
+		}
 		let result: NativeResult<Option<Conversation>> = async {
 			let this = &mut *self.access;
 			let source: Option<crate::domain::Conversation> = {
@@ -576,12 +600,24 @@ impl ReadProvenanceScope for NativeReads<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn prepare_sources(&mut self, sources: &[RecordedRead]) -> Result<()> {
+		self.access
+			.prepare_read_sources(sources)
+			.await
+			.map_err(Into::into)
+	}
 	async fn source_task(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Task>> {
+		if let Some(task) = self.access.read_lookups.task(id, workspace) {
+			return Ok(task);
+		}
 		crate::apps::workspaces::models::Task::read_in(self.access.tx.as_mut(), id, workspace)
 			.await
 			.map_err(Into::into)
 	}
 	async fn source_artifact(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Artifact>> {
+		if let Some(artifact) = self.access.read_lookups.artifact(id, workspace) {
+			return Ok(artifact);
+		}
 		crate::apps::workspaces::models::Artifact::read_in(
 			self.access.tx.as_mut(),
 			id,
@@ -592,6 +628,9 @@ impl ReadProvenanceScope for NativeReads<'_> {
 		.map_err(Into::into)
 	}
 	async fn source_message(&mut self, id: Uuid, workspace: Uuid) -> Result<Option<Message>> {
+		if let Some(message) = self.access.read_lookups.message(id, workspace) {
+			return Ok(message);
+		}
 		crate::apps::workspaces::models::Message::read_in(
 			self.access.tx.as_mut(),
 			id,
@@ -606,6 +645,12 @@ impl ReadProvenanceScope for NativeReads<'_> {
 		id: Uuid,
 		workspace: Uuid,
 	) -> Result<Option<Message>> {
+		if let Some(message) = self.access.read_lookups.attachment(id, workspace) {
+			return match message {
+				Some(id) => self.source_message(id, workspace).await,
+				None => Ok(None),
+			};
+		}
 		let message_id: Option<Uuid> = crate::database::native::query_scalar(
 			&Query::select()
 				.column(Alias::new("message_id"))
@@ -633,6 +678,9 @@ impl ReadProvenanceScope for NativeReads<'_> {
 		id: Uuid,
 		workspace: Uuid,
 	) -> Result<Option<Conversation>> {
+		if let Some(conversation) = self.access.read_lookups.conversation(id, workspace) {
+			return Ok(conversation);
+		}
 		crate::apps::workspaces::models::Conversation::read_in(
 			self.access.tx.as_mut(),
 			id,

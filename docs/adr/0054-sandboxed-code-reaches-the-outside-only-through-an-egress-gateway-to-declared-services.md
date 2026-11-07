@@ -34,3 +34,7 @@ Decided on 2026-10-16 for #296. Execution Pods keep deny-all networking for ingr
 ## Amendment (2026-11-04, #715)
 
 - Egress avoids the Run lock and checks for a stop during in-flight requests within five seconds (ADR 0112).
+
+## Amendment (2026-11-07, #758)
+
+Each Egress request runs the Continuation Check, and no longer walks what the Run has read. The 30 second Read Recheck does that and withdraws the command when it fails (ADR 0116).

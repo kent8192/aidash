@@ -1088,6 +1088,11 @@ function HistoryPanel({
         kind === "revisions" ? "authRevisionHistory" : "authDecisionHistory",
       )}
     >
+      {kind === "decisions" && (
+        <p className="text-xs text-muted-foreground">
+          {t("authDecisionHistoryCoalesced")}
+        </p>
+      )}
       {query.isError && <Alert>{query.error.message}</Alert>}
       {query.isPending && <Loading />}
       {records?.length === 0 && (

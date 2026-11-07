@@ -1,6 +1,8 @@
 //! The real gateway authority and meters share PostgreSQL budgets across calls.
 #[path = "../../tests/support/settings.rs"]
 pub(crate) mod settings;
+#[path = "../../tests/support/statements.rs"]
+pub(crate) mod statements;
 #[path = "../../tests/support/tenant_roots.rs"]
 pub(crate) mod tenant_roots;
 use crate::apps::execution::test_database::{DatabaseFixture, database};
@@ -630,6 +632,57 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 	.await
 	.unwrap();
 	first.meter.charge(Direction::Sent, 0).await.unwrap();
+	// Egress asks only whether the Run may still run, whatever it has read
+	// (ADR 0116). The 30 second Read Recheck covers the reads.
+	let (active, statements) = statements::recorded(first.meter.check_active()).await;
+	active.unwrap();
+	assert!(!statements.is_empty(), "the counter sees statements");
+	assert!(
+		statements
+			.iter()
+			.all(|statement| !statement.contains("authorization_run_reads")),
+		"{statements:#?}"
+	);
+	// Withdrawing the Agent's own Catalog Approval leaves the policy revision as
+	// it was, and the next check refuses the request all the same.
+	let reference = aidash_domain::registry::EntityRef {
+		id: agent.id.clone(),
+		version: agent.version.clone(),
+	};
+	let approved = auth
+		.catalog("acme", &run.node)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|binding| binding.entry_id == agent.id && binding.entry_version == agent.version)
+		.unwrap()
+		.revision;
+	let revision = auth.snapshot("acme").await.unwrap().revision;
+	auth.set_catalog(
+		"acme",
+		&run.node,
+		&reference,
+		approved,
+		false,
+		"deployment_administrator",
+	)
+	.await
+	.unwrap();
+	assert_eq!(auth.snapshot("acme").await.unwrap().revision, revision);
+	assert!(matches!(
+		first.meter.check_active().await,
+		Err(aidash_application::Error::Forbidden)
+	));
+	auth.set_catalog(
+		"acme",
+		&run.node,
+		&reference,
+		approved + 1,
+		true,
+		"deployment_administrator",
+	)
+	.await
+	.unwrap();
 	first.meter.check_active().await.unwrap();
 	f.store
 		.control(&scope, run.id, aidash_domain::RunControlAction::Cancel)
@@ -668,6 +721,23 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		.unwrap();
 	assert_eq!(record.sent_bytes, 6 + 4 + 3);
 	tx.commit().await.unwrap();
+	// A command the Read Recheck withdrew lost its authority rather than ending,
+	// and its requests say so, even after the Run has stopped too.
+	sqlx::query(
+		"UPDATE core_operations SET result = result || '{\"error\":\"AUTHORITY_WITHDRAWN\"}' WHERE id=$1",
+	)
+	.bind(operation)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert!(matches!(
+		first.meter.check_active().await,
+		Err(aidash_application::Error::Forbidden)
+	));
+	assert!(matches!(
+		first.meter.charge(Direction::Sent, 1).await,
+		Err(aidash_application::Error::Forbidden)
+	));
 }
 
 async fn live_preview_credentials(

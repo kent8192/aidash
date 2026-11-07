@@ -25,6 +25,12 @@ pub trait ReadProvenanceScope: ResourceVisibilityScope {
 		Ok(true)
 	}
 	async fn sources(&mut self, run: Uuid) -> Result<Vec<RecordedRead>>;
+	/// Load what these reads will ask for in advance, so a walk's statement count
+	/// does not grow with the reads. A reader that only reads rows one at a time
+	/// has nothing to do here, and the checks are the same either way.
+	async fn prepare_sources(&mut self, _sources: &[RecordedRead]) -> Result<()> {
+		Ok(())
+	}
 	/// Check remote output grants and return local producers for classified traversal.
 	/// `None` means the output's remote provenance is not visible.
 	async fn output_producers(
