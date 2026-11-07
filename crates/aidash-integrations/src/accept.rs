@@ -7,6 +7,9 @@ use tokio::{sync::watch, time::Instant};
 
 const RETRY_AFTER: Duration = Duration::from_secs(1);
 const FAILURE_LOG_EVERY: Duration = Duration::from_secs(60);
+/// One accepted connection does not end a shortage: a descriptor may just have
+/// come free. Only this long without a failure does.
+const RECOVERED_AFTER: Duration = Duration::from_secs(60);
 
 /// The state one gateway keeps between accepts: whether they are failing, and for how long.
 pub(crate) struct AcceptFailures {
@@ -16,6 +19,7 @@ pub(crate) struct AcceptFailures {
 
 struct Failing {
 	since: Instant,
+	last: Instant,
 	count: u64,
 	logged: Instant,
 }
@@ -35,11 +39,9 @@ impl AcceptFailures {
 		accepted: io::Result<T>,
 		stopping: &mut watch::Receiver<bool>,
 	) -> Option<T> {
+		self.end_failure_if_recovered();
 		match accepted {
-			Ok(accepted) => {
-				self.record_success();
-				Some(accepted)
-			}
+			Ok(accepted) => Some(accepted),
 			Err(error) => {
 				self.record_failure(&error);
 				tokio::select! {
@@ -51,12 +53,17 @@ impl AcceptFailures {
 		}
 	}
 
-	fn record_success(&mut self) {
-		if let Some(failing) = self.failing.take() {
+	/// This runs on the next accept, so a quiet gateway reports recovery late, but
+	/// the seconds it reports still end at the last failure.
+	fn end_failure_if_recovered(&mut self) {
+		if let Some(failing) = self
+			.failing
+			.take_if(|failing| failing.last.elapsed() >= RECOVERED_AFTER)
+		{
 			tracing::info!(
 				service = self.service,
 				failures = failing.count,
-				seconds = failing.since.elapsed().as_secs(),
+				seconds = failing.last.duration_since(failing.since).as_secs(),
 				"accepting connections recovered"
 			);
 		}
@@ -68,9 +75,11 @@ impl AcceptFailures {
 		let now = Instant::now();
 		let failing = self.failing.get_or_insert(Failing {
 			since: now,
+			last: now,
 			count: 0,
 			logged: now,
 		});
+		failing.last = now;
 		failing.count += 1;
 		if failing.count == 1 {
 			tracing::warn!(service = self.service, %error, "accepting a connection failed; retrying");

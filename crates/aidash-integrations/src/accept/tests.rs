@@ -62,15 +62,51 @@ async fn a_lasting_failure_logs_once_a_minute() {
 
 #[rstest]
 #[tokio::test(start_paused = true)]
-async fn an_accepted_connection_ends_the_failure_and_is_handed_back() {
+async fn one_accepted_connection_does_not_end_a_failure() {
+	// Arrange: a descriptor comes free in the middle of a shortage.
+	let (_stop, mut stopping) = watch::channel(false);
+	let mut failures = AcceptFailures::new("test.flapping");
+	let started = Instant::now();
+	failures.settle(out_of_descriptors(), &mut stopping).await;
+	// Act
+	let accepted = failures.settle(Ok(7), &mut stopping).await;
+	failures.settle(out_of_descriptors(), &mut stopping).await;
+	// Assert: the connection is handed back and the shortage carries on.
+	assert_eq!(accepted, Some(7));
+	let failing = failures.failing.as_ref().unwrap();
+	assert_eq!(failing.since, started);
+	assert_eq!(failing.count, 2);
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn a_minute_without_a_failure_ends_it() {
 	// Arrange
 	let (_stop, mut stopping) = watch::channel(false);
 	let mut failures = AcceptFailures::new("test.recovery");
 	failures.settle(out_of_descriptors(), &mut stopping).await;
+	// Act and assert: still failing just short of the minute.
+	tokio::time::advance(RECOVERED_AFTER - RETRY_AFTER - RETRY_AFTER).await;
+	failures.settle(Ok(7), &mut stopping).await;
 	assert!(failures.failing.is_some());
-	// Act
-	let accepted = failures.settle(Ok(7), &mut stopping).await;
-	// Assert
-	assert_eq!(accepted, Some(7));
+	tokio::time::advance(RETRY_AFTER + RETRY_AFTER).await;
+	failures.settle(Ok(7), &mut stopping).await;
 	assert!(failures.failing.is_none());
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn a_failure_after_a_quiet_minute_starts_a_new_one() {
+	// Arrange
+	let (_stop, mut stopping) = watch::channel(false);
+	let mut failures = AcceptFailures::new("test.new");
+	failures.settle(out_of_descriptors(), &mut stopping).await;
+	tokio::time::advance(RECOVERED_AFTER).await;
+	let started = Instant::now();
+	// Act
+	failures.settle(out_of_descriptors(), &mut stopping).await;
+	// Assert
+	let failing = failures.failing.as_ref().unwrap();
+	assert_eq!(failing.since, started);
+	assert_eq!(failing.count, 1);
 }
