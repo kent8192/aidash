@@ -25,12 +25,12 @@ rechecked.
   use the version, and a restriction that names certain Agents makes the outputs of every Run
   using the dependency unreadable to every person, because only the Run's own worker may stand in
   for those Agents. Rejected.
-- **Treat a listing as not a read.** A Run that merely listed a version would no longer depend on
-  it, but a Run that read another Run's output, or delegated to the version, would still be
-  hidden. It fixes one row of the trial's table and not the rest. Rejected.
-- **Use `registry.read` only for listings.** The check of a finished Run's outputs would still
-  need the approval, so the example's auth-dev and restaurant-dev results would stay hidden.
-  Rejected.
+- **Treat a listing as not a read.** A reader without `registry.read` on a definition could then
+  read outputs drawn from it, and the rows of a listing would have to be told apart from memory
+  reads. A Run that delegated to the version would also stay stopped. Rejected.
+- **Use `registry.read` only for listings.** It fixes auth-dev and restaurant-dev, whose Runs only
+  read a Run of the version. It leaves the architect stopped, which delegated to the version and
+  read its result, and the old version's own results stay hidden. Rejected.
 - **Also hide finished Runs but not running ones.** Two rules for one question, and a person
   cannot tell which applies to a Run they open. Rejected.
 
@@ -54,3 +54,5 @@ rechecked.
   outputs.
 - ADR 0095 is not contradicted: its restriction still names the direct user for use. Its
   consequences say nothing of readers, so it needs no amendment.
+- Egress's per-request check of the Agent's own approval is unchanged. A withdrawn dependency
+  therefore stops a running command at the next recheck of the command, not at its next request.
