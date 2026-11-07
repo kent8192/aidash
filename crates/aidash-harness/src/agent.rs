@@ -3476,7 +3476,8 @@ connection: None,
 						if remote_changed { changes.push(json!({"kind":"terminal_tasks_changed"})); }
 						if let Some(summary) = &remote { run.recovery.remote_task_fingerprint = Some(summary.fingerprint()); }
 						let reason = if input { "input" } else if !events.is_empty() || remote_changed { "workspace_event" } else { "ceiling" };
-						let open_tasks = if let Some(summary) = &remote { summary.open_tasks } else { store.unfinished_owned_tasks(run).await? };
+						// Open work somebody is on: the local count leaves out Unassigned Tasks, so the remote one does too.
+						let open_tasks = if let Some(summary) = &remote { summary.open_tasks.saturating_sub(summary.unassigned.len() as u64) } else { store.unfinished_owned_tasks(run).await? };
 						let unassigned_tasks = if matches!(resume, ResumeState::ToolCall(_)) {
 							if children.is_none() { children = Some(home.child_summary(run.task_id).await?); }
 							children.as_ref().map(|summary| summary.unassigned.iter().take(unassigned::LIST_LIMIT).map(|task| json!({"id":task.id,"title":task.title})).collect::<Vec<_>>()).unwrap_or_default()

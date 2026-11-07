@@ -511,7 +511,9 @@ async fn wake_result(fixture: &mut Fixture, summary: ChildTaskSummary) -> Value 
 async fn the_wake_result_lists_unassigned_tasks_when_there_are_any(mut fixture: Fixture) {
 	let result = wake_result(&mut fixture, children(2, false, vec![task(1, true, false)])).await;
 	assert_eq!(result["reason"], "ceiling");
-	assert_eq!(result["open_tasks"], 2, "the open count is not reduced");
+	// One Task is running and one is Unassigned: only the first is open work,
+	// as the local count has it.
+	assert_eq!(result["open_tasks"], 1);
 	assert_eq!(
 		result["unassigned_tasks"],
 		json!([{"id": Uuid::from_u128(1), "title": "Task 1"}])
