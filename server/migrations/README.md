@@ -749,6 +749,12 @@ records the Tenant Secret, the pinned version its token names and the
 destination host, never the value or a header value. The typed operations update
 the ORM snapshot, so no state-only checkpoint is needed.
 
+`execution/0119_egress_request_times` (after `execution/0118_blob_uploads`) adds
+the nullable `admission_ms` and `settle_ms` of `egress_requests` with typed column
+operations (#752). A record holds them once its outcome settles, so a record that
+never settled and a record older than this migration leave them null. The typed
+operations update the ORM snapshot, so no state-only checkpoint is needed.
+
 ## Home ledger recovery eligibility (#434)
 
 `knowledge/0036_memory_recovery_eligibility` (after

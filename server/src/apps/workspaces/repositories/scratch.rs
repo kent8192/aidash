@@ -33,6 +33,15 @@ pub(crate) async fn load(
 	load_with_lock(tx, tenant, id, true).await
 }
 
+/// Reads without a lock, for a check that decides nothing about the row's future.
+pub(crate) async fn read(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	id: Uuid,
+) -> Result<Option<ScratchSpace>> {
+	load_with_lock(tx, tenant, id, false).await
+}
+
 async fn load_with_lock(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
@@ -438,7 +447,7 @@ pub(crate) trait ScratchServices: Send {
 	) -> aidash_application::Result<(Uuid, String)>;
 }
 
-fn effective_policy(
+pub(crate) fn effective_policy(
 	policy: &crate::config::ScratchOperatorPolicy,
 	tenant: &str,
 ) -> (ScratchCeilings, HostAllowlist) {
