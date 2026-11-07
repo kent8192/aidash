@@ -6,6 +6,8 @@ use http::Method;
 use upstream_fixtures::{async_upstream, reply};
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
+#[path = "../../execution/tests/support/late_subnode.rs"]
+mod late_subnode;
 #[path = "../../execution/tests/support/tenant_openrouter.rs"]
 mod tenant_openrouter;
 use aidash_server::{domain::qualified_agent, harness::Harness};
@@ -7950,17 +7952,44 @@ fn start_worker(rig: &SubnodeRig) -> tokio::task::JoinHandle<bool> {
 	tokio::spawn(async move { harness.worker_once().await.unwrap() })
 }
 
-fn start_end(rig: &SubnodeRig) -> tokio::task::JoinHandle<(u16, Value)> {
+/// How a test ends the Subnode.
+#[derive(Clone, Copy, Debug)]
+enum Ending {
+	/// Cancelling the creating Run.
+	Cancel,
+	/// The creator's person dissolving the Subnode.
+	Dissolve,
+}
+
+fn start_end(
+	rig: &SubnodeRig,
+	ending: Ending,
+	subnode: Uuid,
+) -> tokio::task::JoinHandle<(u16, Value)> {
 	let (app, token, creator) = (rig.app.clone(), rig.token.clone(), rig.creator_run);
 	tokio::spawn(async move {
-		request(
-			&app,
-			&token,
-			"POST",
-			&format!("/api/runs/{creator}/control"),
-			json!({"action":"cancel"}),
-		)
-		.await
+		match ending {
+			Ending::Cancel => {
+				request(
+					&app,
+					&token,
+					"POST",
+					&format!("/api/runs/{creator}/control"),
+					json!({"action":"cancel"}),
+				)
+				.await
+			}
+			Ending::Dissolve => {
+				request(
+					&app,
+					&token,
+					"POST",
+					&format!("/api/subnodes/{subnode}/dissolve"),
+					Value::Null,
+				)
+				.await
+			}
+		}
 	})
 }
 
@@ -8005,7 +8034,11 @@ fn assert_cancelled(run: &aidash_server::domain::Run) {
 
 /// The send holds the shared Subnode lock while it waits, so the end waits for
 /// it (decision 2); the write commits first, then the end.
-async fn the_end_waits_for_a_call_in_progress(fixture: common::ApplicationFixture, call: LateCall) {
+async fn the_end_waits_for_a_call_in_progress(
+	fixture: common::ApplicationFixture,
+	call: LateCall,
+	ending: Ending,
+) {
 	let (f, url, schema) = fixture.runtime.parts();
 	let rig =
 		SubnodeRig::with_working_areas(&f, &fixture.application, &["subnode-leader"], true).await;
@@ -8024,7 +8057,7 @@ async fn the_end_waits_for_a_call_in_progress(fixture: common::ApplicationFixtur
 		|(direct, _)| direct >= 1,
 	)
 	.await;
-	let end = start_end(&rig);
+	let end = start_end(&rig, ending, files.late.subnode);
 	// Wait until the end queues behind the call, or finishes without waiting.
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
 	while !end.is_finished() && waiting_on(&rig, holder).await.1 < 1 {
@@ -8132,16 +8165,19 @@ async fn a_call_after_the_end_is_refused(fixture: common::ApplicationFixture, ca
 }
 
 #[rstest::rstest]
-#[case::attachment_copy(LateCall::Copy)]
-#[case::message_with_files(LateCall::Message)]
+#[case::attachment_copy_then_cancel(LateCall::Copy, Ending::Cancel)]
+#[case::message_with_files_then_cancel(LateCall::Message, Ending::Cancel)]
+#[case::attachment_copy_then_dissolve(LateCall::Copy, Ending::Dissolve)]
+#[case::message_with_files_then_dissolve(LateCall::Message, Ending::Dissolve)]
 #[tokio::test]
 async fn subnode_end_waits_for_a_call_in_progress(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
 	#[case] call: LateCall,
+	#[case] ending: Ending,
 ) {
-	the_end_waits_for_a_call_in_progress(fixture, call).await;
+	the_end_waits_for_a_call_in_progress(fixture, call, ending).await;
 }
 
 #[rstest::rstest]
@@ -8193,5 +8229,37 @@ async fn human_request_after_the_subnode_ended_is_refused(
 		"a request after the end must be refused: {outcome:?}, rows {requests}"
 	);
 	assert_eq!(requests, 0, "no request may be recorded");
+	cleanup(f, &url, &schema).await;
+}
+
+/// A member Run's Tool call approval is not opened once its Subnode ended: the
+/// approval is refused, no card exists, the tool never runs and the Run ends as
+/// cancelled. The call passed the entrance while the Subnode was active.
+#[rstest::rstest]
+#[tokio::test]
+async fn tool_call_approval_after_the_subnode_ended_is_refused(
+	#[future(awt)] tool_call_approvals: ToolCallApprovals,
+) {
+	let t = tool_call_approvals;
+	let (f, url, schema) = t.application.runtime.parts();
+	let (token, run) = claimed_run(&t, &f, |_| {}).await;
+	let app = &t.application.application;
+	let tool = format!("{}/tools/http@1.0.0", f.config.deployment);
+	let subnode = late_subnode::seed_subnode(&f, run.id, &[tool]).await;
+	let end = late_subnode::EndFirst::begin(&f, subnode, run.id).await;
+	late_subnode::stage(&f, run.id, "plugin_0", json!({"call":1}), "late-call").await;
+	let worker = late_subnode::start_worker(&f);
+	let waiting = end.until_a_call_waits(&f, &worker).await;
+	end.commit().await;
+	worker.await.unwrap();
+	let cards = approval_cards(app, &token, "").await;
+	assert!(
+		cards.is_empty(),
+		"a call after the end must open no approval: {cards:?}"
+	);
+	assert_eq!(t.effects.load(Ordering::SeqCst), 0);
+	late_subnode::assert_waited_at_the_subnode_check(waiting);
+	late_subnode::assert_cancelled(&late_subnode::run_to_its_end(&f, run.id).await);
+	drop(t.server);
 	cleanup(f, &url, &schema).await;
 }
