@@ -1349,7 +1349,31 @@ class Runner(AllocationJournal):
             with self.lock:
                 self.active.discard(operation)
 
-    def cancel(self, operation):
+    def refuse_undelivered(self, operation, refusal):
+        """Record that an operation the caller has not seen delivered will never run.
+
+        The caller cannot tell an unsent operation from a send it gave up on: `accept`
+        may still be waiting for this lock, or listing Pods under it, long after the
+        caller's timeout. This takes the same lock, so either `accept` recorded the
+        operation first and this is an ordinary cancel, or this record stands and
+        `accept` refuses the send. Another instance has another journal, whose silence
+        proves nothing about the operation, so its cancel stays absent."""
+        if (set(refusal) != {"digest", "instance"} or not isinstance(refusal["instance"], str)
+                or not isinstance(refusal["digest"], str) or not refusal["digest"]):
+            raise Rejected(400, "invalid cancel refusal")
+        with self.lock:
+            if refusal["instance"] != self.instance or self.path(operation).exists():
+                return
+            record = {"operation_id": operation, "digest": refusal["digest"], "wire_digest": None,
+                      "status": "cancelled", "request": {}, "created_at": time.time(), "cancel_requested": True,
+                      "termination_confirmed": True, "stdout": "", "truncated": False,
+                      "files": [], "error": None, "executed": False}
+            save(self.path(operation), record)
+            self.aggregate.track(operation, record)
+
+    def cancel(self, operation, refusal=None):
+        if refusal is not None:
+            self.refuse_undelivered(operation, refusal)
         record = self.get(operation)
         if record["status"] == "awaiting_files":
             record = self.update(operation, status="cancelled", cancel_requested=True, termination_confirmed=True)
@@ -1451,7 +1475,10 @@ class Handler(BaseHTTPRequestHandler):
             if self.command == "GET" and len(parts) == 4:
                 return runner.public(runner.get(operation))
             if self.command == "POST" and parts[4:] == ["cancel"]:
-                return runner.cancel(operation)
+                size = int(self.headers.get("Content-Length", "0"))
+                if size > 256:
+                    raise Rejected(413, "cancel request limit")
+                return runner.cancel(operation, json.loads(self.rfile.read(size)) if size else None)
             if self.command == "POST" and parts[4:] == ["start"]:
                 return runner.commit_inputs(operation)
             if self.command == "POST" and parts[4:] == ["ack"]:
