@@ -1625,6 +1625,16 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 		.create_task(&ACME, workspace.id, &input, "human", None)
 		.await
 		.unwrap();
+	// A child somebody is running holds the parent. (An open child nobody has
+	// started is an Unassigned Task: the model is told about it instead.)
+	sqlx::query(
+		"UPDATE tasks SET status = 'RUNNING', owner = 'human', revision = revision + 1 WHERE id = $1",
+	)
+	.bind(child.id)
+	.execute(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let child = store.task(&ACME, child.id).await.unwrap();
 	final_response(&store, parent.id).await;
 	harness.worker_once().await.unwrap();
 	let waiting = store.run(&ACME, run.id).await.unwrap();
