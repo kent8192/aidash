@@ -1341,7 +1341,7 @@ async fn forward(
 		Err(aidash_application::Error::Conflict(code))
 			if code == aidash_domain::egress::OPERATION_INACTIVE =>
 		{
-			return Refusal::INACTIVE.response();
+			return refuse(Refusal::INACTIVE.status, Refusal::INACTIVE.code);
 		}
 		Err(aidash_application::Error::Conflict(_)) => {
 			return refuse(Refusal::LIMIT.status, Refusal::LIMIT.code);

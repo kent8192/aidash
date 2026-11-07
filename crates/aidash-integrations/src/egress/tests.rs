@@ -1850,6 +1850,31 @@ async fn an_expected_refusal_is_counted_by_reason_and_not_logged_as_an_error() {
 	shutdown(tasks, stop).await;
 }
 
+struct InactiveAuthority;
+#[async_trait]
+impl Authority for InactiveAuthority {
+	async fn admit(&self, _: &str, _: &str, _: &str, _: &str, _: &str) -> Result<Admission> {
+		Err(aidash_application::Error::Conflict(
+			aidash_domain::egress::OPERATION_INACTIVE.into(),
+		))
+	}
+}
+
+#[tokio::test]
+async fn an_inactive_operation_is_refused_and_counted_by_its_own_reason() {
+	let observed = Observed::start();
+	let (origin, gateway, stop) = gateway_with(Arc::new(InactiveAuthority)).await;
+	let response = reqwest::get(format!("{origin}/v1/operation-token/images/private-path"))
+		.await
+		.unwrap();
+	assert_eq!(response.status(), StatusCode::FORBIDDEN);
+	assert_eq!(
+		observed.count(r#"aidash_egress_refused_total{reason="operation_inactive"}"#),
+		1
+	);
+	shutdown(vec![gateway], stop).await;
+}
+
 #[tokio::test]
 async fn an_unreachable_upstream_is_logged_with_its_cause_and_without_the_url() {
 	let observed = Observed::start();

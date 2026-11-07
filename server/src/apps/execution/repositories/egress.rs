@@ -1018,6 +1018,7 @@ fn stops_stream(error: &Error) -> bool {
 		| Error::TenantDeleted => true,
 		Error::Conflict(code) => {
 			code == aidash_domain::egress::OPERATION_EXPIRED
+				|| code == aidash_domain::egress::OPERATION_INACTIVE
 				|| code == aidash_domain::egress::LIMIT_EXCEEDED
 		}
 		_ => false,
