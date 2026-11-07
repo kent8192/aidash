@@ -389,6 +389,14 @@ impl HarnessManagement {
 		let Actor::Subject(identity) = actor else {
 			return Err(Error::Forbidden);
 		};
+		// This route stops work without waiting behind an Authority Change, but
+		// resuming starts work again (ADR 0116).
+		if !matches!(
+			input.action,
+			aidash_domain::RunControlAction::Pause | aidash_domain::RunControlAction::Cancel
+		) {
+			crate::database::authority_change::enter(&f.store.pool, &identity.tenant).await;
+		}
 		execution::control(&f, &identity, id, input.action).await
 	}
 	pub(crate) async fn run_message(

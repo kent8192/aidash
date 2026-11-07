@@ -1717,6 +1717,8 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 	)]["enabled"] = json!(false);
 	let mut replacements = tokio::task::JoinSet::new();
 	// Native ORM mutations acquire SELECT FOR UPDATE locks before writing.
+	// One change waits on the policy row and the rest on its Tenant's flag
+	// (ADR 0116), so a session waiting on an advisory lock counts too.
 	// Fill every API connection with a waiting revocation. The worker must
 	// still persist its result and release the lease using its separate pool.
 	for _ in 0..11 {
@@ -1743,7 +1745,7 @@ async fn worker_effect_boundary_serializes_revocation_and_persists_audit_before_
 	});
 	tokio::time::timeout(Duration::from_secs(5),async {
         loop {
-            let waiting:i64={ let query_bind_1 = &schema; sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("COUNT(*)")).from(reinhardt::query::Alias::new("pg_stat_activity")).and_where(SimpleExpr::CustomWithExpr("(application_name = ? AND wait_event_type = 'Lock' AND (query LIKE '%authorization_bundles%' OR query LIKE '%authorization_credentials%'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(worker_federation.store.pool.fixture_driver()).await }.unwrap();
+            let waiting:i64={ let query_bind_1 = &schema; sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("COUNT(*)")).from(reinhardt::query::Alias::new("pg_stat_activity")).and_where(SimpleExpr::CustomWithExpr("(application_name = ? AND wait_event_type = 'Lock' AND (wait_event = 'advisory' OR query LIKE '%authorization_bundles%' OR query LIKE '%authorization_credentials%'))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(worker_federation.store.pool.fixture_driver()).await }.unwrap();
             if waiting==12 {break;}
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

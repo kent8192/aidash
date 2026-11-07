@@ -107,6 +107,16 @@ pub struct SubjectSelector {
 	pub kinds: BTreeSet<SubjectKind>,
 }
 
+impl SubjectSelector {
+	fn matches(&self, id: &str, subject: &Subject, roles: &BTreeSet<String>) -> bool {
+		self.any
+			|| self.ids.contains(id)
+			|| self.kinds.contains(&subject.kind)
+			|| !self.groups.is_disjoint(&subject.groups)
+			|| !self.roles.is_disjoint(roles)
+	}
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceSelector {
@@ -365,6 +375,34 @@ impl PolicyBundle {
 		Ok(result)
 	}
 
+	/// Whether some policy could allow `action` for `subject` and everyone who
+	/// delegated to it, whatever the resource and conditions. `false` means
+	/// [`Self::evaluate`] denies every evaluation of that action.
+	pub fn may_allow(&self, subject: &str, action: &str) -> bool {
+		if self.validate().is_err() {
+			return false;
+		}
+		let mut next = Some(subject);
+		while let Some(id) = next {
+			let Some(entry) = self.subjects.get(id) else {
+				return false;
+			};
+			let Ok(roles) = self.effective_roles(entry) else {
+				return false;
+			};
+			if !entry.enabled
+				|| !self.policies.iter().any(|policy| {
+					policy.effect == Effect::Allow
+						&& policy.subjects.matches(id, entry, &roles)
+						&& matches_action(&policy.actions, action, &policy.effect)
+				}) {
+				return false;
+			}
+			next = entry.delegated_by.as_deref();
+		}
+		true
+	}
+
 	pub fn evaluate(&self, input: &Evaluation) -> Decision {
 		if self.validate().is_err() {
 			return Decision::denied("invalid_policy");
@@ -415,13 +453,7 @@ impl PolicyBundle {
 		decision.effective_roles = roles.clone();
 		let mut deny = false;
 		for policy in &self.policies {
-			let selectors = &policy.subjects;
-			let subject_matches = selectors.any
-				|| selectors.ids.contains(id)
-				|| selectors.kinds.contains(&subject.kind)
-				|| !selectors.groups.is_disjoint(&subject.groups)
-				|| !selectors.roles.is_disjoint(&roles);
-			if !subject_matches
+			if !policy.subjects.matches(id, subject, &roles)
 				|| !matches_action(&policy.actions, &input.action, &policy.effect)
 				|| !matches_name(&policy.resources.kinds, &input.resource.kind)
 				|| (!policy.resources.ids.is_empty()

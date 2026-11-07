@@ -33,6 +33,15 @@ pub(crate) async fn control(
 	(task, id): (Uuid, Uuid),
 	input: RemoteExecutionControlInput,
 ) -> Result<RemoteExecutionActivation> {
+	// This route stops work without waiting behind an Authority Change, but
+	// resuming starts work again (ADR 0116).
+	if !matches!(
+		input.action,
+		RemoteExecutionControl::Pause | RemoteExecutionControl::Cancel
+	) && let Actor::Subject(identity) = &actor
+	{
+		crate::database::authority_change::enter(&f.store.pool, &identity.tenant).await;
+	}
 	aidash_application::authorization::home::control(
 		&crate::bootstrap::home_execution_repository(&f, actor),
 		task,

@@ -151,6 +151,10 @@ pub enum Error {
 	},
 	#[error("atomic transaction visibility pending; retry after recovery")]
 	TransactionPending,
+	/// Running work did not finish within the limit of an Authority Change,
+	/// which was not applied. Recurring work leaves it for its next pass.
+	#[error("POLICY_BUSY")]
+	PolicyBusy { retry_after: u64 },
 	/// The Tenant Secret broker could not serve the call. A person cannot repair
 	/// this: the message names no broker reason, only the Deployment Administrator-side fault
 	/// and the correlation the broker logged.

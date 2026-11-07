@@ -783,6 +783,11 @@ impl Authority for Gateway {
 				tenant: op.tenant,
 				subject: op.principal,
 			};
+			// A command's request is new work, and the step that started the command
+			// does not wait for it, so it can wait behind an Authority Change. A Live
+			// preview's session cannot: its start holds the step's lease until the
+			// preview answers (ADR 0116).
+			crate::database::authority_change::enter(&self.store.pool, &identity.tenant).await;
 			let (mut access, run) = live(&self.store, &identity, operation).await?;
 			let snapshot = run
 				.context

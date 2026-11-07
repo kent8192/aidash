@@ -100,8 +100,9 @@ impl TenantAdministrator {
 			bundle,
 			&self.revision_actor(),
 		)?;
+		let exclusive = self.may_change(db, rules::POLICY_UPDATE).await?;
 		db.atomic(&self.scope()?, async |tx| {
-			let mut snapshot = self.locked_for(tx, rules::POLICY_UPDATE, true).await?;
+			let mut snapshot = self.locked_for(tx, rules::POLICY_UPDATE, exclusive).await?;
 			if snapshot.revision != expected_revision {
 				return Err(Error::Conflict("authorization revision changed".into()));
 			}
