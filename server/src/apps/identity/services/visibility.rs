@@ -124,15 +124,6 @@ impl NativeAccess {
 		.map_err(Into::into)
 	}
 
-	pub(crate) async fn catalog_entry(&mut self, reference: &EntityRef) -> Result<Entry> {
-		aidash_application::authorization::catalog::retained::entry(
-			&mut crate::bootstrap::native_run_visibility_scope(self),
-			reference,
-		)
-		.await
-		.map_err(Into::into)
-	}
-
 	pub(crate) async fn run_reads_visible(&mut self, run: Uuid) -> Result<bool> {
 		let key = (
 			self.access.node_id.clone(),

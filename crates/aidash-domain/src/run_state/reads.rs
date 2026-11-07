@@ -1,21 +1,25 @@
-//! What keeps a Run from a reader, without disclosing what it read.
+//! What keeps a Run from a reader or from going on, without disclosing what it read or uses.
 use crate::registry::EntityRef;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// The first of a Run's recorded reads that stops a reader whose own policy
-/// allows the Run.
+/// What stops a reader whose own policy allows the Run, or a resume of it: the first
+/// of its recorded reads this reader may not see, or the first definition it uses
+/// that may no longer be used (#769).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RunReadsBlock {
-	/// A definition the Run read has no approval on this Node. It is named only
+	/// A definition the Run uses has no approval on this Node. It is named only
 	/// to a holder of `registry.read` on it.
 	DefinitionNotApproved {
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		definition: Option<EntityRef>,
 	},
-	/// A definition the Run read is approved, but this reader may not read it.
+	/// A definition the Run read is not readable to this reader (`registry.read`).
 	DefinitionNotReadable,
+	/// A definition the Run uses is approved, but the caller's policy or the approval's
+	/// restriction does not let the Run use it.
+	DefinitionNotUsable,
 	/// Something the Run read from another Node could not be confirmed.
 	RemoteRead,
 	/// A semantic index the Run read is no longer available to this reader.
@@ -31,11 +35,14 @@ impl fmt::Display for RunReadsBlock {
 				definition: Some(definition),
 			} => write!(
 				f,
-				"{}@{}, which this Run read, is no longer approved on this Node",
+				"{}@{}, which this Run uses, is no longer approved on this Node",
 				definition.id, definition.version
 			),
 			Self::DefinitionNotApproved { definition: None } => {
-				f.write_str("a definition this Run read is no longer approved on this Node")
+				f.write_str("a definition this Run uses is no longer approved on this Node")
+			}
+			Self::DefinitionNotUsable => {
+				f.write_str("your permissions do not allow a definition this Run uses")
 			}
 			Self::DefinitionNotReadable => {
 				f.write_str("your permissions do not allow a definition this Run read")

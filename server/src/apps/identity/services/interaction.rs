@@ -43,6 +43,20 @@ impl Access {
 		.map_err(Into::into)
 	}
 
+	/// [`Self::run_for_interaction`] for work done on the Run's behalf: its tools, running
+	/// commands and operations. It also refuses once the Run may no longer use its Agent or
+	/// anything its Binding names (the Use Recheck), which a read of the Run does not.
+	pub(crate) async fn run_for_action(&mut self, id: Uuid) -> Result<Run> {
+		let run = self.run_for_interaction(id).await?;
+		if crate::apps::identity::repositories::execution::guard::use_block(self, &run.metadata())
+			.await?
+			.is_some()
+		{
+			return Err(crate::Error::Forbidden);
+		}
+		Ok(run)
+	}
+
 	pub(crate) async fn conversation_resource(
 		&mut self,
 		conversation: &Conversation,

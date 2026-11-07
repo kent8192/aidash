@@ -1579,6 +1579,24 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 		if sibling_metadata { 1 } else { 0 },
 		"only a sibling Node's metadata uses remote registry dependencies"
 	);
+	if sibling_metadata {
+		// The sibling is a Node of the same Tenant: its read is decided by policy alone.
+		let same_tenant: bool = sqlx::query_scalar(
+			&reinhardt::query::Query::select()
+				.expr(Expr::col(reinhardt::query::Alias::new("same_tenant")))
+				.from(reinhardt::query::Alias::new(
+					"authorization_run_remote_reads",
+				))
+				.and_where(
+					Expr::col(reinhardt::query::Alias::new("run_id")).eq(Expr::value(run.id)),
+				)
+				.to_string(reinhardt::query::PostgresQueryBuilder),
+		)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		assert!(same_tenant);
+	}
 	// Act: rebuild the HTTP application over persisted reads before changing policy.
 	drop(app);
 	let app = common::application(f.clone()).await;
@@ -1594,9 +1612,11 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 		.0,
 		200
 	);
+	// A Catalog Approval decides use, not who reads what the Run produced (#769): the Run only
+	// listed the version, so withdrawing it hides nothing.
 	assert_eq!(
 		request(&app, &token, "GET", &path, Value::Null).await.0,
-		403
+		200
 	);
 	assert_eq!(
 		request(
@@ -1615,7 +1635,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 		200
 	);
 	if sibling_metadata {
-		for (revision, enabled, expected_status) in [(1, false, 403), (2, true, 200)] {
+		for (revision, enabled, expected_status) in [(1, false, 200), (2, true, 200)] {
 			assert_eq!(
 				request(
 					&app,
@@ -1633,6 +1653,27 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 				expected_status
 			);
 		}
+	}
+	if sibling_metadata {
+		// The sibling is a Node of the same Tenant, so deleting it hides nothing: policy decides
+		// the read, with no route to it to prove (#769).
+		for (path, body) in [
+			(
+				format!("/api/tenants/acme/nodes/{node}/default"),
+				Value::Null,
+			),
+			(
+				format!("/api/tenants/acme/nodes/{default_node}/deletion"),
+				json!({"confirmation":default_node}),
+			),
+		] {
+			let (status, body) = common::administer_node(&f, "acme", &path, body).await;
+			assert_eq!(status, 200, "{body}");
+		}
+		assert_eq!(
+			request(&app, &token, "GET", &path, Value::Null).await.0,
+			200
+		);
 	}
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"hide-discovered-registry","effect":"deny","subjects":{"ids":["alice"]},"actions":["registry.read"],"resources":{"kinds":["agent"],"ids":["discovered-only"]}}));
 	common::replace_policy(&f.store, "acme", bundle.clone()).await;

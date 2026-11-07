@@ -133,6 +133,32 @@ pub(crate) async fn metadata(access: &mut Access, reference: &EntityRef) -> Resu
 	Ok(entry)
 }
 
+/// A definition a Run read, as its reader may see it: `registry.read` decides, and a Catalog
+/// Approval or its restriction does not (#769). Unlike [`entry`], this takes no distribution
+/// lock and records nothing in the approved set, so it neither admits a use nor widens an
+/// inherited lease. A missing definition is `Forbidden`, as for [`entry`].
+pub(crate) async fn readable(access: &mut Access, reference: &EntityRef) -> Result<Entry> {
+	let entry = crate::apps::registry::models::Definition::read_in(
+		&mut **access.tx,
+		&reference.id,
+		&reference.version,
+	)
+	.await
+	.map_err(|error| match error {
+		crate::Error::NotFound(_) => crate::Error::Forbidden,
+		other => other,
+	})?;
+	if let Some(projection) = &entry.installation
+		&& (projection.contract != 1 || projection.tenant != access.identity.tenant)
+	{
+		return Err(crate::Error::Forbidden);
+	}
+	access
+		.require(&resource(access, &entry), "registry.read")
+		.await?;
+	Ok(entry)
+}
+
 pub(crate) fn resource(access: &Access, entry: &Entry) -> super::policy::Resource {
 	if entry.kind == "tool"
 		&& let Ok(descriptor) = serde_json::from_value::<

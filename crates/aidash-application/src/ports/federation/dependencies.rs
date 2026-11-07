@@ -38,7 +38,8 @@ pub trait DependencyScope: Send {
 		grant: Uuid,
 		admission: Uuid,
 	) -> Result<bool>;
-	async fn catalog_entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry>;
+	/// The definition under `registry.read` alone, without a Catalog Approval.
+	async fn readable_entry(&mut self, reference: &EntityRef) -> Result<Entry>;
 	/// Retain the enabled peer's shared lock until the initiating read finishes.
 	async fn route(&mut self, node: &str) -> Result<Option<Route>>;
 }

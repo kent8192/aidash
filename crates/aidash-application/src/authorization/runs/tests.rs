@@ -22,6 +22,7 @@ struct State {
 	principal: ExecutionPrincipal,
 	visible: bool,
 	block: Option<RunReadsBlock>,
+	use_block: Option<RunReadsBlock>,
 	fail: Option<&'static str>,
 	deny: Option<&'static str>,
 	pending_control: bool,
@@ -101,6 +102,7 @@ fn repository() -> Repository {
 		},
 		visible: true,
 		block: None,
+		use_block: None,
 		fail: None,
 		deny: None,
 		pending_control: false,
@@ -185,6 +187,12 @@ impl RunControlScope for Scope {
 		state.record("block")?;
 		Ok(state.block.clone())
 	}
+	async fn use_block(&mut self, run: &RunInspection) -> Result<Option<RunReadsBlock>> {
+		assert_eq!(run.id, id(1));
+		let mut state = self.state.lock().unwrap();
+		state.record("use")?;
+		Ok(state.use_block.clone())
+	}
 	async fn lock_execution_grant(&mut self, key: Uuid) -> Result<Option<ExecutionGrant>> {
 		assert_eq!(key, id(1));
 		let mut state = self.state.lock().unwrap();
@@ -237,6 +245,7 @@ fn expected() -> Vec<&'static str> {
 		"visible",
 		"run.control",
 		"grant_lock",
+		"use",
 		"credential",
 		"control",
 		"commit",
@@ -377,6 +386,7 @@ async fn revocation_prevents_control_before_the_resume_grant_lock(
 #[case::visibility("visible")]
 #[case::control_authority("run.control")]
 #[case::grant_lock("grant_lock")]
+#[case::use_recheck("use")]
 #[case::credential_update("credential")]
 #[case::atomic_control("control")]
 #[case::commit("commit")]
@@ -437,4 +447,73 @@ async fn resuming_an_inspectable_corrupt_run_does_not_turn_its_context_into_exec
 		Some("invalid execution context")
 	);
 	assert_eq!(repository.0.lock().unwrap().calls, expected());
+}
+
+fn unapproved() -> RunReadsBlock {
+	RunReadsBlock::DefinitionNotApproved {
+		definition: Some(EntityRef {
+			id: "qa".into(),
+			version: "2.1.0".into(),
+		}),
+	}
+}
+#[rstest]
+#[case::named(unapproved())]
+#[case::unnamed(RunReadsBlock::DefinitionNotApproved { definition: None })]
+#[case::policy(RunReadsBlock::DefinitionNotUsable)]
+#[tokio::test]
+async fn resume_of_a_run_that_cannot_use_its_binding_says_so_and_wakes_nothing(
+	repository: Repository,
+	#[case] block: RunReadsBlock,
+) {
+	repository.0.lock().unwrap().use_block = Some(block.clone());
+	let result = resume(&repository, id(1)).await;
+	assert!(matches!(result, Err(Error::ResumeBlocked(found)) if found == block));
+	let state = repository.0.lock().unwrap();
+	assert!(!state.committed);
+	assert_eq!(state.credential, None);
+	assert!(!state.calls.contains(&"credential".into()));
+	assert!(!state.calls.contains(&"control".into()));
+	assert!(!state.calls.contains(&"notify".into()));
+	assert_eq!(state.calls.last().map(String::as_str), Some("rollback"));
+}
+#[rstest]
+#[case::no_control("run.control")]
+#[case::no_grant("grant")]
+#[case::not_the_root("subject")]
+#[tokio::test]
+async fn the_use_recheck_runs_only_for_someone_who_may_resume(
+	repository: Repository,
+	#[case] boundary: &'static str,
+) {
+	{
+		let mut state = repository.0.lock().unwrap();
+		state.use_block = Some(unapproved());
+		match boundary {
+			"run.control" => state.deny = Some("run.control"),
+			"grant" => state.grant = None,
+			"subject" => state.grant.as_mut().unwrap().root_subject = "other".into(),
+			_ => panic!("unexpected boundary"),
+		}
+	}
+	assert!(matches!(
+		resume(&repository, id(1)).await,
+		Err(Error::Forbidden)
+	));
+	assert!(!repository.0.lock().unwrap().calls.contains(&"use".into()));
+}
+#[rstest]
+#[tokio::test]
+async fn a_read_block_is_reported_before_the_use_recheck_runs(repository: Repository) {
+	{
+		let mut state = repository.0.lock().unwrap();
+		state.visible = false;
+		state.block = Some(RunReadsBlock::DefinitionNotReadable);
+		state.use_block = Some(unapproved());
+	}
+	assert!(matches!(
+		resume(&repository, id(1)).await,
+		Err(Error::ResumeBlocked(RunReadsBlock::DefinitionNotReadable))
+	));
+	assert!(!repository.0.lock().unwrap().calls.contains(&"use".into()));
 }

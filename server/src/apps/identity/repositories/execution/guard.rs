@@ -4,7 +4,10 @@ use crate::{
 	apps::identity::services::{access::Access, catalog},
 	federation::Federation,
 };
-use aidash_application::{Result, ports::authorization::guard::RunGuardScope};
+use aidash_application::{
+	Result,
+	ports::authorization::guard::{RunGuardScope, UseRecheckScope},
+};
 use aidash_domain::{
 	RunMetadata, Task,
 	policy::{PolicyBundle, Resource},
@@ -20,11 +23,98 @@ pub(crate) struct RunGuard<'a> {
 	pub(crate) federation: &'a Federation,
 	pub(crate) access: &'a mut Access,
 }
+impl RunGuard<'_> {
+	/// The definitions the Run recorded as read (`agent_discover`, memory) join the set its
+	/// retained lease may admit a delegated Run from. The read walk used to put them there as a
+	/// side effect of approving each one; it no longer looks at approvals (#769), but a lease
+	/// that inherits this set still refuses an entry outside it, so a Run that lists an Agent
+	/// and then delegates to it keeps working. Admission itself still reads the current approval.
+	async fn remember_recorded_reads(&mut self, run: &RunMetadata) -> Result<()> {
+		let recorded = crate::apps::identity::models::AuthorizationRunRegistryRead::for_run(
+			self.access.tx.as_mut(),
+			run.id,
+		)
+		.await?;
+		for reference in recorded {
+			self.access
+				.approved_catalog
+				.insert((reference.id, reference.version));
+		}
+		Ok(())
+	}
+}
+/// The Use Recheck over one `Access`, for a caller that holds no `Federation`: a resume, or a
+/// Run's action that asks whether the Run may still use what it was admitted with.
+pub(crate) struct UseGuard<'a> {
+	pub(crate) access: &'a mut Access,
+}
+#[async_trait]
+impl UseRecheckScope for UseGuard<'_> {
+	fn node_id(&self) -> &str {
+		&self.access.node_id
+	}
+	async fn catalog(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
+		catalog::entry(self.access, reference, action)
+			.await
+			.map_err(Into::into)
+	}
+	async fn reference_embedding_available(&mut self, reference: &EntityRef) -> Result<bool> {
+		crate::apps::registry::services::knowledge::embedding_available(self.access, reference)
+			.await
+			.map(|entry| entry.is_some())
+			.map_err(Into::into)
+	}
+	async fn closure_catalog(
+		&mut self,
+		reference: &EntityRef,
+		action: &str,
+		users: &[EntityRef],
+	) -> Result<Entry> {
+		catalog::closure_entry(self.access, reference, action, users)
+			.await
+			.map_err(Into::into)
+	}
+	async fn metadata(&mut self, reference: &EntityRef) -> Result<Entry> {
+		catalog::metadata(self.access, reference)
+			.await
+			.map_err(Into::into)
+	}
+	async fn binding_snapshot(
+		&mut self,
+		run: &RunMetadata,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		stored_snapshot(self.access, run).await?.ok_or_else(|| {
+			aidash_application::Error::Invalid("Run has no admitted Binding snapshot".into())
+		})
+	}
+}
+
+/// The Binding snapshot a local Run was admitted with, if it has one.
+async fn stored_snapshot(
+	access: &mut Access,
+	run: &RunMetadata,
+) -> Result<Option<aidash_domain::registry::bindings::BindingSnapshot>> {
+	if !run.is_local(&access.node_id) {
+		return Ok(None);
+	}
+	let row = crate::apps::execution::models::Run::read_in(&mut **access.tx, run.id, None).await?;
+	Ok(row
+		.and_then(|row| row.context.binding_snapshot)
+		.map(|snapshot| *snapshot))
+}
+
+/// The first definition a local Run with a Binding snapshot may no longer use, or none
+/// (the Use Recheck). A foreign Run, or one without a snapshot, is not blocked here.
+pub(crate) async fn use_block(access: &mut Access, run: &RunMetadata) -> Result<Option<EntityRef>> {
+	if stored_snapshot(access, run).await?.is_none() {
+		return Ok(None);
+	}
+	aidash_application::authorization::execution::guard::use_recheck(&mut UseGuard { access }, run)
+		.await
+}
+
 #[async_trait]
 impl RunGuardScope for RunGuard<'_> {
-	fn node_id(&self) -> &str {
-		self.federation.config.deployment.as_str()
-	}
 	fn bundle(&self) -> &PolicyBundle {
 		&self.access.snapshot.bundle
 	}
@@ -34,7 +124,11 @@ impl RunGuardScope for RunGuard<'_> {
 			run.id,
 		)
 		.await?;
-		self.access.run_visible(run).await.map_err(Into::into)
+		let visible = self.access.run_visible(run).await?;
+		if visible {
+			self.remember_recorded_reads(run).await?;
+		}
+		Ok(visible)
 	}
 	async fn cluster_targets(&mut self, workspace: Uuid) -> Result<Vec<String>> {
 		let result: NativeResult<Vec<String>> = async {
@@ -66,32 +160,6 @@ impl RunGuardScope for RunGuard<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn catalog(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
-		catalog::entry(self.access, reference, action)
-			.await
-			.map_err(Into::into)
-	}
-	async fn reference_embedding_available(&mut self, reference: &EntityRef) -> Result<bool> {
-		crate::apps::registry::services::knowledge::embedding_available(self.access, reference)
-			.await
-			.map(|entry| entry.is_some())
-			.map_err(Into::into)
-	}
-	async fn closure_catalog(
-		&mut self,
-		reference: &EntityRef,
-		action: &str,
-		users: &[EntityRef],
-	) -> Result<Entry> {
-		catalog::closure_entry(self.access, reference, action, users)
-			.await
-			.map_err(Into::into)
-	}
-	async fn metadata(&mut self, reference: &EntityRef) -> Result<Entry> {
-		catalog::metadata(self.access, reference)
-			.await
-			.map_err(Into::into)
-	}
 	async fn task_read(&mut self, task: Uuid) -> Result<Task> {
 		self.access.task_read(task).await.map_err(Into::into)
 	}
@@ -119,6 +187,43 @@ impl RunGuardScope for RunGuard<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn context_authority(&mut self, run: &RunMetadata) -> Result<()> {
+		crate::capabilities::sessions::context_authority(self.access, run)
+			.await
+			.map_err(Into::into)
+	}
+}
+#[async_trait]
+impl UseRecheckScope for RunGuard<'_> {
+	fn node_id(&self) -> &str {
+		self.federation.config.deployment.as_str()
+	}
+	async fn catalog(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
+		catalog::entry(self.access, reference, action)
+			.await
+			.map_err(Into::into)
+	}
+	async fn reference_embedding_available(&mut self, reference: &EntityRef) -> Result<bool> {
+		crate::apps::registry::services::knowledge::embedding_available(self.access, reference)
+			.await
+			.map(|entry| entry.is_some())
+			.map_err(Into::into)
+	}
+	async fn closure_catalog(
+		&mut self,
+		reference: &EntityRef,
+		action: &str,
+		users: &[EntityRef],
+	) -> Result<Entry> {
+		catalog::closure_entry(self.access, reference, action, users)
+			.await
+			.map_err(Into::into)
+	}
+	async fn metadata(&mut self, reference: &EntityRef) -> Result<Entry> {
+		catalog::metadata(self.access, reference)
+			.await
+			.map_err(Into::into)
+	}
 	async fn binding_snapshot(
 		&mut self,
 		run: &RunMetadata,
@@ -132,11 +237,5 @@ impl RunGuardScope for RunGuard<'_> {
 			.ok_or_else(|| {
 				aidash_application::Error::Invalid("Run has no admitted Binding snapshot".into())
 			})
-	}
-
-	async fn context_authority(&mut self, run: &RunMetadata) -> Result<()> {
-		crate::capabilities::sessions::context_authority(self.access, run)
-			.await
-			.map_err(Into::into)
 	}
 }

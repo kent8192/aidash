@@ -117,25 +117,7 @@ impl Access {
 			return Ok(None);
 		}
 		Ok(Some(match block {
-			ReadBlock::Definition(reference) => {
-				let entry = match crate::apps::registry::models::Definition::read_in(
-					&mut **self.tx,
-					&reference.id,
-					&reference.version,
-				)
-				.await
-				{
-					Ok(entry) => Some(entry),
-					Err(crate::Error::NotFound(_)) => None,
-					Err(error) => return Err(error),
-				};
-				aidash_application::authorization::catalog::read_block(
-					&mut crate::bootstrap::catalog_scope(self),
-					&reference,
-					entry.as_ref(),
-				)
-				.await?
-			}
+			ReadBlock::Definition(_) => RunReadsBlock::DefinitionNotReadable,
 			ReadBlock::RemoteRead => RunReadsBlock::RemoteRead,
 			ReadBlock::SemanticRead => RunReadsBlock::SemanticRead,
 			ReadBlock::Source(source) => RunReadsBlock::Source { source },

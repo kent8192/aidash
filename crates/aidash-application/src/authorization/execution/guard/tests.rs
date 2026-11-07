@@ -1,5 +1,6 @@
 //! Current authority is rechecked over the complete admitted closure.
 use super::*;
+use crate::ports::authorization::guard::{RunGuardScope, UseRecheckScope};
 use aidash_domain::{
 	RunControl, RunPhase, Task, TaskStatus,
 	policy::{PolicyBundle, Resource},
@@ -113,20 +114,9 @@ impl Scope {
 	}
 }
 #[async_trait]
-impl RunGuardScope for Scope {
+impl UseRecheckScope for Scope {
 	fn node_id(&self) -> &str {
 		"aidash://local"
-	}
-	fn bundle(&self) -> &PolicyBundle {
-		&self.bundle
-	}
-	async fn run_visible(&mut self, _: &RunMetadata) -> Result<bool> {
-		self.record("visible")?;
-		Ok(self.visible)
-	}
-	async fn cluster_targets(&mut self, _: Uuid) -> Result<Vec<String>> {
-		self.record("clusters")?;
-		Ok(self.clusters.clone())
 	}
 	async fn catalog(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
 		self.record(format!("catalog:{}:{action}", reference.id))?;
@@ -153,6 +143,24 @@ impl RunGuardScope for Scope {
 	async fn metadata(&mut self, reference: &EntityRef) -> Result<Entry> {
 		self.record(format!("metadata:{}:registry.read", reference.id))?;
 		Ok(self.current(reference))
+	}
+	async fn binding_snapshot(&mut self, _: &RunMetadata) -> Result<BindingSnapshot> {
+		self.record("snapshot")?;
+		Ok(self.snapshot.clone())
+	}
+}
+#[async_trait]
+impl RunGuardScope for Scope {
+	fn bundle(&self) -> &PolicyBundle {
+		&self.bundle
+	}
+	async fn run_visible(&mut self, _: &RunMetadata) -> Result<bool> {
+		self.record("visible")?;
+		Ok(self.visible)
+	}
+	async fn cluster_targets(&mut self, _: Uuid) -> Result<Vec<String>> {
+		self.record("clusters")?;
+		Ok(self.clusters.clone())
 	}
 	async fn task_read(&mut self, id: Uuid) -> Result<Task> {
 		self.record("task_read")?;
@@ -191,10 +199,6 @@ impl RunGuardScope for Scope {
 	}
 	async fn context_authority(&mut self, _: &RunMetadata) -> Result<()> {
 		self.record("context")
-	}
-	async fn binding_snapshot(&mut self, _: &RunMetadata) -> Result<BindingSnapshot> {
-		self.record("snapshot")?;
-		Ok(self.snapshot.clone())
 	}
 }
 #[rstest]
@@ -385,7 +389,9 @@ async fn malformed_conversation_target_and_missing_agent_subject_are_rejected(
 		authorize(&mut scope, &run, true).await,
 		Err(Error::Forbidden)
 	));
-	assert!(!scope.calls.contains(&"snapshot".into()));
+	// The Use Recheck reads the Binding first; nothing past the subject check runs.
+	assert!(!scope.calls.contains(&"pinned".into()));
+	assert!(!scope.calls.contains(&"context".into()));
 }
 
 #[rstest]
@@ -564,4 +570,76 @@ async fn a_delegated_agents_model_is_checked_against_that_agent(
 			scope.calls
 		);
 	}
+}
+
+#[rstest]
+#[case("producer", "catalog:producer:agent.execute")]
+#[case("fixture-model", "catalog:fixture-model:registry.read")]
+#[case("memory", "catalog:memory:registry.read")]
+#[case("tool", "catalog:tool:registry.read")]
+#[tokio::test]
+async fn use_recheck_names_the_first_definition_the_run_may_not_use(
+	mut scope: Scope,
+	run: RunMetadata,
+	#[case] withdrawn: &str,
+	#[case] call: &str,
+) {
+	scope.deny = Some(call.into());
+	let blocked = use_recheck(&mut scope, &run).await.unwrap().unwrap();
+	assert_eq!(blocked.id, withdrawn);
+	// Only what the Run uses is looked at, not who may see it or its Task.
+	for other in [
+		"visible",
+		"clusters",
+		"task_read",
+		"task.execute",
+		"live",
+		"pinned",
+	] {
+		assert!(!scope.calls.contains(&other.into()), "{other}");
+	}
+}
+#[rstest]
+#[tokio::test]
+async fn use_recheck_of_a_usable_run_finds_nothing(mut scope: Scope, run: RunMetadata) {
+	assert_eq!(use_recheck(&mut scope, &run).await.unwrap(), None);
+	for definition in &scope.snapshot.definitions {
+		let path = if definition.identity.id == "private.compaction" {
+			"metadata"
+		} else {
+			"catalog"
+		};
+		assert!(
+			scope
+				.calls
+				.contains(&format!("{path}:{}:registry.read", definition.identity.id))
+		);
+	}
+}
+#[rstest]
+#[tokio::test]
+async fn use_recheck_keeps_digest_changes_and_adapter_faults_as_errors(
+	mut scope: Scope,
+	run: RunMetadata,
+) {
+	scope.changed = Some("memory".into());
+	assert!(matches!(
+		use_recheck(&mut scope, &run).await,
+		Err(Error::Conflict(_))
+	));
+	scope.changed = None;
+	scope.fail = Some("snapshot".into());
+	assert!(matches!(
+		use_recheck(&mut scope, &run).await,
+		Err(Error::Port(_))
+	));
+}
+#[rstest]
+#[tokio::test]
+async fn a_withdrawn_definition_refuses_authorize_as_forbidden(mut scope: Scope, run: RunMetadata) {
+	scope.deny = Some("catalog:memory:registry.read".into());
+	assert!(matches!(
+		authorize(&mut scope, &run, true).await,
+		Err(Error::Forbidden)
+	));
 }

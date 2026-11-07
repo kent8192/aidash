@@ -422,7 +422,7 @@ async fn live(
 		.pop()
 		.ok_or_else(expired)?;
 	access.subjects = serde_json::from_value(op.subjects.0)?;
-	let run = access.run_for_interaction(op.run_id).await?;
+	let run = access.run_for_action(op.run_id).await?;
 	let task = access.task_read(run.task_id).await?;
 	let resource = access.task_resource(&task).await?;
 	access.require(&resource, "task.execute").await?;

@@ -10,6 +10,7 @@
 //! - `policy`
 //! - `resource_authorization`
 //! - `run_control`
+//! - `approval_governs_use`
 //! - `peer_graph`
 //! - `peer_graph_nodes`
 //! - `peer_graph_review`

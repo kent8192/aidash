@@ -77,6 +77,11 @@ pub async fn resume_in(scope: &mut dyn RunControlScope, id: Uuid) -> Result<RunI
 	}
 	require_control(scope, id).await?;
 	require_own_grant(scope, id).await?;
+	// A Run whose Binding names a definition that may no longer be used would be
+	// refused at its next worker boundary: say so now instead of waking it (#769).
+	if let Some(block) = scope.use_block(&run).await? {
+		return Err(Error::ResumeBlocked(block));
+	}
 	let credential = scope.identity().credential_id;
 	scope.update_credential(id, credential).await?;
 	scope.resume_run(id).await

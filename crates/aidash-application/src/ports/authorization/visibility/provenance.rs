@@ -10,6 +10,8 @@ pub type RecordedRead = (Uuid, String, Uuid);
 #[async_trait]
 pub trait ReadProvenanceScope: ResourceVisibilityScope {
 	async fn registry_entries(&mut self, run: Uuid) -> Result<Vec<EntityRef>>;
+	/// Whether the reader may read the definition `run` read: `registry.read` alone. A Catalog
+	/// Approval decides use, never who may read what a Run produced (#769).
 	async fn catalog_read(&mut self, run: Uuid, reference: &EntityRef) -> Result<()>;
 	async fn remote_reads(&mut self, run: Uuid) -> Result<bool>;
 	async fn semantic_reads(&mut self, run: Uuid) -> Result<bool>;

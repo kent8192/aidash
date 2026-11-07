@@ -537,13 +537,23 @@ fn a_reads_block_names_a_definition_only_when_it_carries_one() {
 		serde_json::to_value(&named).unwrap(),
 		json!({"kind":"definition_not_approved","definition":{"id":"qa","version":"2.1.0"}})
 	);
-	assert!(named.to_string().contains("qa@2.1.0"));
+	assert_eq!(
+		named.to_string(),
+		"qa@2.1.0, which this Run uses, is no longer approved on this Node"
+	);
 	let unnamed = RunReadsBlock::DefinitionNotApproved { definition: None };
 	assert_eq!(
 		serde_json::to_value(&unnamed).unwrap(),
 		json!({"kind":"definition_not_approved"})
 	);
-	assert!(!unnamed.to_string().contains("qa"));
+	assert_eq!(
+		unnamed.to_string(),
+		"a definition this Run uses is no longer approved on this Node"
+	);
+	assert_eq!(
+		serde_json::to_value(RunReadsBlock::DefinitionNotUsable).unwrap(),
+		json!({"kind":"definition_not_usable"})
+	);
 	assert_eq!(
 		serde_json::to_value(RunReadsBlock::Source {
 			source: "artifact".into()

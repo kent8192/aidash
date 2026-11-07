@@ -12,7 +12,7 @@ use aidash_application::{
 	ports::authorization::runs::{RunControlRepository, RunControlScope},
 };
 use aidash_domain::{
-	RawRun, RunControlAction, RunInspection,
+	RawRun, RunControlAction, RunInspection, RunMetadata,
 	identity::execution::{ExecutionGrant, ExecutionPrincipal},
 	policy::Resource,
 	run_state::RunReadsBlock,
@@ -100,6 +100,30 @@ impl RunControlScope for Scope<'_> {
 	}
 	async fn run_reads_block(&mut self, run: &RunInspection) -> Result<Option<RunReadsBlock>> {
 		self.access.run_reads_block(run).await.map_err(Into::into)
+	}
+	async fn use_block(&mut self, run: &RunInspection) -> Result<Option<RunReadsBlock>> {
+		let metadata = RunMetadata::from(run);
+		let Some(reference) = super::guard::use_block(self.access, &metadata).await? else {
+			return Ok(None);
+		};
+		let entry = match crate::apps::registry::models::Definition::read_in(
+			&mut **self.access.tx,
+			&reference.id,
+			&reference.version,
+		)
+		.await
+		{
+			Ok(entry) => Some(entry),
+			Err(crate::Error::NotFound(_)) => None,
+			Err(error) => return Err(error.into()),
+		};
+		aidash_application::authorization::catalog::use_block(
+			&mut crate::bootstrap::catalog_scope(self.access),
+			&reference,
+			entry.as_ref(),
+		)
+		.await
+		.map(Some)
 	}
 	async fn lock_execution_grant(&mut self, id: Uuid) -> Result<Option<ExecutionGrant>> {
 		let result: NativeResult<Option<Grant>> = async {

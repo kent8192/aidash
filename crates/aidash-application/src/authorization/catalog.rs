@@ -49,16 +49,17 @@ pub async fn tool_entry(
 	admit(scope, reference, action, Some(tool), &[]).await
 }
 
-/// How a definition a Run read stops this reader. `entry` is its raw definition,
-/// approved or not; the version is named only to a holder of `registry.read` on it.
-pub async fn read_block(
+/// Why a Run may not go on using `reference`, one of its Binding's definitions. `entry` is
+/// its raw definition, approved or not; the version is named only to a holder of
+/// `registry.read` on it. A definition that is still approved is not named at all.
+pub async fn use_block(
 	scope: &mut dyn CatalogScope,
 	reference: &EntityRef,
 	entry: Option<&Entry>,
 ) -> Result<aidash_domain::run_state::RunReadsBlock> {
 	use aidash_domain::run_state::RunReadsBlock;
 	if scope.document(reference).await?.is_some() {
-		return Ok(RunReadsBlock::DefinitionNotReadable);
+		return Ok(RunReadsBlock::DefinitionNotUsable);
 	}
 	let readable = match entry {
 		Some(entry) => {
@@ -345,7 +346,6 @@ pub async fn set_catalog_with_restriction(
 mod mutation_tests;
 
 pub mod approvals;
-pub mod retained;
 pub mod review;
 pub mod withdrawal;
 

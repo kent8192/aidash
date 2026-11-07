@@ -188,7 +188,8 @@ impl Wire {
 }
 
 /// The transport of an authority that may hold none: a transaction lent to a
-/// disclosure check reaches no other Node, so its remote proofs are unavailable.
+/// disclosure check reaches no other Node, so its remote proofs are unavailable. Agents found on a
+/// Node of the reader's own Tenant need no proof: policy decides them (#769).
 pub(crate) struct Reach(pub Option<Wire>);
 
 #[async_trait]
