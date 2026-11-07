@@ -14,6 +14,9 @@ import { Alert, Facts, Hint, formClass } from "../components/patterns";
 import { Badge, Field, useI18n } from "../ui";
 import { useFilePreview } from "../capabilities/file-preview-pane";
 import { inspectRemotePreview } from "../capabilities/remote-preview";
+import { DeclineCall } from "./decline-call";
+import { offeredDecline } from "./decline-call-model";
+import type { Submit } from "../forms";
 
 /**
  * Whether the remote Run's typed semantic recovery authorizes `action`. Without
@@ -66,6 +69,18 @@ export function RemoteExecutions({ task }: { task: string }) {
       setBusy(null);
     }
   }
+  // Declining sends its sentence as a remote message first; failures show in this panel.
+  const submit: Submit = async (request) => {
+    setError("");
+    try {
+      await request();
+      await client.invalidateQueries();
+      return true;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+      return false;
+    }
+  };
   if (status.isPending || (!status.isError && status.data?.length === 0))
     return null;
   return (
@@ -241,6 +256,42 @@ export function RemoteExecutions({ task }: { task: string }) {
                             {ja ? "実行を中止" : "Cancel execution"}
                           </Button>
                         )}
+                        {live &&
+                          offeredDecline(execution, execution.control) && (
+                            <DeclineCall
+                              call={
+                                offeredDecline(execution, execution.control)!
+                              }
+                              submit={submit}
+                              send={(content) =>
+                                apiFetch(
+                                  `/api/tasks/${task}/remote-grants/${grant.id}/messages`,
+                                  {
+                                    method: "POST",
+                                    headers: {
+                                      "content-type": "application/json",
+                                    },
+                                    body: JSON.stringify({
+                                      id: crypto.randomUUID(),
+                                      content,
+                                    }),
+                                  },
+                                )
+                              }
+                              decline={(call) =>
+                                apiFetch(
+                                  `/api/tasks/${task}/remote-grants/${grant.id}/declined-calls`,
+                                  {
+                                    method: "POST",
+                                    headers: {
+                                      "content-type": "application/json",
+                                    },
+                                    body: JSON.stringify({ call }),
+                                  },
+                                )
+                              }
+                            />
+                          )}
                       </>
                     )}
                   </div>
