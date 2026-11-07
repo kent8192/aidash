@@ -135,10 +135,6 @@ pub async fn authorize(
 	if !scope.run_visible(run).await? {
 		return Err(Error::Forbidden);
 	}
-	let (entry, agent) = match recheck(scope, run, read_context).await? {
-		UseRecheck::Usable { entry, agent } => (entry, agent),
-		UseRecheck::Blocked(_) => return Err(Error::Forbidden),
-	};
 	// A conversation keeps its approved cluster even when its coordinator omits that cluster.
 	for cluster in scope.cluster_targets(run.workspace_id).await? {
 		let (id, version) = cluster.rsplit_once('@').ok_or(Error::Forbidden)?;
@@ -160,6 +156,10 @@ pub async fn authorize(
 		version: run.agent_version.clone(),
 	};
 	scope.require_live(run.task_id, &reference).await?;
+	let (entry, agent) = match recheck(scope, run, read_context).await? {
+		UseRecheck::Usable { entry, agent } => (entry, agent),
+		UseRecheck::Blocked(_) => return Err(Error::Forbidden),
+	};
 	super::require_agent(scope.bundle(), &run.executor_subject(scope.node_id()))?;
 	scope.check_pinned(&entry).await?;
 	if !read_context {
