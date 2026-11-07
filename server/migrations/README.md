@@ -777,6 +777,8 @@ the single Knowledge head, and no schema or model state is overwritten.
 
 `registry/0062_provider_warning_tools` extends the closed Provider tool validation functions with the warning-tier tools (advisor, subagent, model search, tool search, shell) without replacing the previous contracts; its reverse refuses to run while any such definition or pinned Run exists. `identity/0054_provider_warning_acknowledgment` adds the nullable exact disclosure text to `authorization_catalog_history`, filled only when a warning tool is approved. `execution/0098_provider_container` adds the nullable `runs.provider_container` pin (OpenRouter container id and network policy). OpenRouter has no container delete API, so the pin is kept after the Run ends.
 
+`registry/0063_reference_set_limit` raises the most Reference files one Source can bind from 8 to 256 in the PostgreSQL context validator. The function body uses SQL assets because Reinhardt has no typed operation for replacing PostgreSQL functions. Reversal refuses while a Source or a Run snapshot holds more than 8.
+
 ## Run control provenance and Safety Stops (#485, ADR 0101)
 
 `execution/0075_run_control_provenance` (after `execution/0074_federated_preview_authority`)

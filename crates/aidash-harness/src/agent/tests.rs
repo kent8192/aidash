@@ -197,6 +197,7 @@ struct State {
 	semantic_degrade: Mutex<Vec<bool>>,
 	inputs: Mutex<Vec<aidash_domain::run_input::RunInput>>,
 	instructions: String,
+	reference_files: usize,
 	/// The semantic read returns as much content as its budget allows.
 	fill_semantic_budget: bool,
 	/// Run messages carry media whose intake continues past this request.
@@ -1529,6 +1530,7 @@ impl ExecutionEnvironment for Backend {
 	}
 	fn agent(&self, _entry: &Entry) -> Result<ExecutionAgent> {
 		Ok(ExecutionAgent {
+			reference_files: self.0.reference_files,
 			model: EntityRef {
 				id: "model".into(),
 				version: "1.0.0".into(),
@@ -1852,6 +1854,7 @@ fn fixture() -> Fixture {
 		semantic_degrade: Mutex::new(vec![]),
 		inputs: Mutex::new(vec![]),
 		instructions: "Do the task".into(),
+		reference_files: 0,
 		fill_semantic_budget: false,
 		human_media_pending: false,
 		prompt_cache: Default::default(),
@@ -6308,4 +6311,32 @@ async fn recovered_step_emits_count_and_resets_it_only_when_the_step_ends(mut fi
 			assert_eq!(stored, Value::Null, "{kind}");
 		}
 	}
+}
+
+#[tokio::test]
+async fn a_model_learns_only_how_many_reference_files_exist() {
+	let mut fixture = fixture_with(|state| state.reference_files = 89);
+	thinking_with_history(&mut fixture, 0);
+	let _ = advance_sources(&mut fixture).await;
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let request = &requests[0];
+	assert!(
+		request
+			.instructions
+			.contains("You have 89 Reference files."),
+		"{}",
+		request.instructions
+	);
+	let sent = serde_json::to_string(request).unwrap();
+	assert!(!sent.contains("references/"), "{sent}");
+	assert!(!sent.contains("extracted.txt"), "{sent}");
+}
+
+#[tokio::test]
+async fn an_agent_without_reference_files_hears_nothing_about_them() {
+	let mut fixture = fixture();
+	thinking_with_history(&mut fixture, 0);
+	let _ = advance_sources(&mut fixture).await;
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	assert!(!requests[0].instructions.contains("Reference files"));
 }

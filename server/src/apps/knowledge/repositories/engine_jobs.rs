@@ -470,6 +470,9 @@ async fn process(store: &Store, id: Uuid) -> Result<bool> {
 	.execute(&mut *claim_tx)
 	.await?;
 	claim_tx.commit().await?;
+	// Past this point another worker may claim the job again.
+	let claim_expires =
+		tokio::time::Instant::now() + std::time::Duration::from_secs(timeout.unsigned_abs());
 	let outcome = execute(
 		store,
 		&bank,
@@ -481,30 +484,63 @@ async fn process(store: &Store, id: Uuid) -> Result<bool> {
 	)
 	.await;
 	let (state, error, consumed) = settled(&outcome, attempts + 1 >= limit);
-	let mut tx = store.pool.begin(&MAINTENANCE).await?;
-	native::query(
-		&Query::update()
-			.table(Alias::new("memory_engine_jobs"))
-			.value(Alias::new("state"), state)
-			.value(Alias::new("last_error"), error)
-			.value(
-				Alias::new("attempts"),
-				(attempts + usize::from(consumed)) as i32,
-			)
-			.value(
-				Alias::new("next_attempt"),
-				Utc::now() + Duration::seconds(30),
-			)
-			.value(Alias::new("updated_at"), Utc::now())
-			.and_where(Expr::col("id").eq(Expr::value(id)))
-			.and_where(Expr::col("claim").eq(Expr::value(claim)))
-			.and_where(Expr::col("state").eq("running"))
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(&mut *tx)
+	// Only this write restores an attempt the outcome did not use, and a crash leaves
+	// the attempt counted. Waiting out a database outage here keeps the claim's
+	// attempt from being spent on it (#728).
+	settle_while_claimed(claim_expires, || async move {
+		let mut tx = store.pool.begin(&MAINTENANCE).await?;
+		native::query(
+			&Query::update()
+				.table(Alias::new("memory_engine_jobs"))
+				.value(Alias::new("state"), state)
+				.value(Alias::new("last_error"), error)
+				.value(
+					Alias::new("attempts"),
+					(attempts + usize::from(consumed)) as i32,
+				)
+				.value(
+					Alias::new("next_attempt"),
+					Utc::now() + Duration::seconds(30),
+				)
+				.value(Alias::new("updated_at"), Utc::now())
+				.and_where(Expr::col("id").eq(Expr::value(id)))
+				.and_where(Expr::col("claim").eq(Expr::value(claim)))
+				.and_where(Expr::col("state").eq("running"))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await?;
+		tx.commit().await
+	})
 	.await?;
-	tx.commit().await?;
 	Ok(outcome.is_ok())
+}
+
+/// Run a settlement write again for as long as the database is temporarily
+/// unavailable and the job's claim has not expired. The write is fenced by the
+/// claim and the `running` state, so repeating one that already committed
+/// changes nothing. Any other error, or the last one at expiry, is returned.
+async fn settle_while_claimed<Write, Fut>(
+	claim_expires: tokio::time::Instant,
+	mut write: Write,
+) -> Result<()>
+where
+	Write: FnMut() -> Fut,
+	Fut: std::future::Future<Output = Result<()>>,
+{
+	let mut wait = std::time::Duration::from_millis(250);
+	loop {
+		let error = match write().await {
+			Ok(()) => return Ok(()),
+			Err(error) => error,
+		};
+		if !error.is_transient_database() || tokio::time::Instant::now() >= claim_expires {
+			return Err(error);
+		}
+		tracing::warn!(%error, "engine job settlement waits for the database");
+		tokio::time::sleep(wait).await;
+		wait = (wait * 2).min(std::time::Duration::from_secs(5));
+	}
 }
 
 /// The job state and error an execution outcome leaves, and whether it used up
@@ -532,6 +568,10 @@ fn settled(outcome: &Result<()>, last: bool) -> (&'static str, Option<&'static s
 				| crate::semantic::remote::Failure::DurableMemoryBudget,
 			),
 		) => ("failed", Some("invalid_or_exhausted_work"), true),
+		// The database, not the engine, stopped this attempt (#728).
+		Err(error) if error.is_transient_database() => {
+			("pending", Some("database_unavailable"), false)
+		}
 		Err(_) => (
 			if last { "failed" } else { "pending" },
 			Some("engine_unavailable"),

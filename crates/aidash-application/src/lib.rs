@@ -175,6 +175,11 @@ pub enum Error {
 	/// Opaque adapter errors retain their identity for retry and recovery.
 	#[error(transparent)]
 	Port(Box<dyn std::error::Error + Send + Sync>),
+	/// The database could not serve this call for now and the work is unchanged.
+	/// It waits and tries again: it never fails a Run or counts towards a limit
+	/// on failures. The adapter decides what qualifies and keeps its own error.
+	#[error(transparent)]
+	TemporaryDatabase(Box<dyn std::error::Error + Send + Sync>),
 }
 
 impl Error {
