@@ -1016,16 +1016,21 @@ impl Access {
 			return false;
 		}
 		self.walk_root = Some(owner);
-		self.read_lookups.forget_rows();
+		let authority = self.authority_context();
+		self.read_lookups.start_walk(authority);
 		true
 	}
 
 	/// End a walk. Rows it loaded must not outlive it, because this authority may
 	/// go on to write. A worker's new rows commit here, once, before any effect.
-	pub(crate) async fn end_read_walk<T>(&mut self, started: bool, result: Result<T>) -> Result<T> {
+	pub(crate) async fn end_read_walk(
+		&mut self,
+		started: bool,
+		result: Result<bool>,
+	) -> Result<bool> {
 		if started {
 			self.walk_root = None;
-			self.read_lookups.forget_rows();
+			self.read_lookups.end_walk(matches!(result, Ok(true)));
 			if self.durable_audit && result.is_ok() {
 				self.commit_durable(vec![]).await?;
 			}

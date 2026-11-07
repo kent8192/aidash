@@ -25,6 +25,12 @@ pub trait ReadProvenanceScope: ResourceVisibilityScope {
 		Ok(true)
 	}
 	async fn sources(&mut self, run: Uuid) -> Result<Vec<RecordedRead>>;
+	/// Whether this is the first time the walk in progress reaches `run`. A walk
+	/// passes only if every Run it reaches passes, so one look at each is enough:
+	/// a Run reached again either passed or will fail the walk anyway.
+	fn first_visit(&mut self, _run: Uuid) -> bool {
+		true
+	}
 	/// Load what these reads will ask for in advance, so a walk's statement count
 	/// does not grow with the reads. A reader that only reads rows one at a time
 	/// has nothing to do here, and the checks are the same either way.

@@ -25,7 +25,7 @@ pub async fn run_reads_visible(scope: &mut dyn ReadProvenanceScope, run: Uuid) -
 	let mut pending = vec![run];
 	let mut visited = BTreeSet::new();
 	while let Some(run) = pending.pop() {
-		if !visited.insert(run) {
+		if !visited.insert(run) || !scope.first_visit(run) {
 			continue;
 		}
 		if !registry_reads_visible(scope, run).await?

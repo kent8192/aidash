@@ -692,3 +692,130 @@ async fn a_recheck_that_only_repeats_adds_no_rows_for_a_running_command(
 	// Assert
 	assert_eq!(fixture.rows("true").await, written);
 }
+
+#[rstest]
+#[tokio::test]
+async fn a_run_reached_two_ways_in_one_walk_is_checked_once(#[future] database: DatabaseFixture) {
+	// Arrange: the Run read `shared` directly and through `between`.
+	let fixture = fixture(database.await, 1).await;
+	let pending = aidash_domain::run_state::encode(
+		&aidash_domain::run_state::RunState::Completed(aidash_domain::run_state::TerminalState {}),
+		&aidash_domain::run_state::RecoveryState::default(),
+	)
+	.unwrap();
+	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
+	let [shared, between] = [Uuid::new_v4(), Uuid::new_v4()];
+	for run in [shared, between] {
+		let task = Uuid::new_v4();
+		sqlx::query("INSERT INTO tasks (id,tenant,workspace_id,title,description,status,revision,created_by) VALUES ($1,'acme',$2,'Fixture','Fixture','COMPLETED',1,'reader')").bind(task).bind(fixture.workspace).execute(fixture.driver()).await.unwrap();
+		sqlx::query("INSERT INTO runs (id,tenant,task_id,workspace_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,$5,'fixture','1.0.0','COMPLETED',$6,1)").bind(run).bind(task).bind(fixture.workspace).bind(&node).bind(DEPLOYMENT).bind(pending.clone()).execute(fixture.driver()).await.unwrap();
+	}
+	let mut tx = fixture
+		.store
+		.pool
+		.begin(&TenancyScope::tenant("acme").unwrap())
+		.await
+		.unwrap();
+	// Every Run executes under a grant (ADR 0043).
+	for run in [shared, between] {
+		let task: Uuid = sqlx::query_scalar("SELECT task_id FROM runs WHERE id=$1")
+			.bind(run)
+			.fetch_one(fixture.driver())
+			.await
+			.unwrap();
+		crate::apps::identity::repositories::admission::persist_grant_in(
+			&mut *tx,
+			&ExecutionGrant {
+				run_id: run,
+				task_id: task,
+				workspace_id: fixture.workspace,
+				tenant: "acme".into(),
+				credential_id: fixture.identity.credential_id,
+				root_subject: "reader".into(),
+				subject_chain: vec!["reader".into(), "helper".into()],
+			},
+		)
+		.await
+		.unwrap();
+	}
+	for (reader, read) in [
+		(fixture.run, shared),
+		(fixture.run, between),
+		(between, shared),
+	] {
+		crate::apps::identity::models::AuthorizationRunRead::record_sources(
+			&mut *tx,
+			reader,
+			fixture.workspace,
+			&[("run".to_owned(), read)],
+		)
+		.await
+		.unwrap();
+	}
+	tx.commit().await.unwrap();
+	let mut access = fixture.access().await;
+
+	// Act
+	let (result, statements) = recorded(access.recheck_run_reads(fixture.run)).await;
+
+	// Assert
+	result.unwrap();
+	let human_checks = statements
+		.iter()
+		.filter(|statement| {
+			statement.contains("human_requests") && statement.contains(&shared.to_string())
+		})
+		.count();
+	assert_eq!(human_checks, 1, "{statements:#?}");
+	let walks = statements
+		.iter()
+		.filter(|statement| {
+			statement.contains("authorization_run_reads") && statement.contains(&shared.to_string())
+		})
+		.count();
+	assert_eq!(walks, 1, "{statements:#?}");
+	access.finish(Ok(())).await.unwrap();
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_failed_walk_is_not_remembered_as_a_pass(#[future] database: DatabaseFixture) {
+	// Arrange: a list asks about the same Run twice, under a policy that denies
+	// the Message it read. The second question must not pass on the first's visit.
+	let fixture = fixture(database.await, 1).await;
+	fixture
+		.set_policy(1, Some(("reader", "message.read")))
+		.await;
+	let mut access = fixture.access().await;
+
+	// Act
+	let first = access.run_reads_visible(fixture.run).await.unwrap();
+	access.read_verdicts.clear();
+	let second = access.run_reads_visible(fixture.run).await.unwrap();
+
+	// Assert
+	assert!(!first);
+	assert!(!second);
+	access.finish(Ok(())).await.unwrap();
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_passed_walk_is_not_reused_under_another_authority(#[future] database: DatabaseFixture) {
+	// Arrange: only `helper` has lost the read.
+	let fixture = fixture(database.await, 1).await;
+	fixture
+		.set_policy(1, Some(("helper", "message.read")))
+		.await;
+	let mut access = fixture.access().await;
+
+	// Act: the same Access, first for `reader` alone and then for the whole chain.
+	let alone = access.run_reads_visible(fixture.run).await.unwrap();
+	access.subjects = vec!["reader".into(), "helper".into()];
+	let chain = access.run_reads_visible(fixture.run).await.unwrap();
+
+	// Assert
+	assert!(alone);
+	assert!(!chain, "the chain's authority is asked afresh");
+	access.finish(Ok(())).await.unwrap();
+}

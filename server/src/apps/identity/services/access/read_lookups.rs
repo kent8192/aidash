@@ -1,15 +1,18 @@
-//! What one walk over recorded reads has loaded, so it asks each table once per
-//! Run and not once per read (ADR 0116). Nothing here outlives the walk except
-//! `allowed`, which lasts until the authority is refreshed.
+//! What a walk over recorded reads has loaded, so it asks each table once per Run
+//! and not once per read (ADR 0116). Loaded rows end with the walk. What passed
+//! lasts while later walks ask under the same authority, until a walk fails or the
+//! authority is refreshed, as `read_verdicts` does.
 use super::Access;
 use crate::apps::workspaces::models::{Artifact, Conversation, Message, Task};
 use crate::{Result, domain};
 use aidash_application::ports::authorization::visibility::provenance::RecordedRead;
+use aidash_domain::{nodes::NodeName, registry::EntityRef};
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait as _, Order, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
 };
 use serde::Deserialize;
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
@@ -48,16 +51,136 @@ pub(crate) struct ReadLookups {
 	attachments: Loaded<Recorded, Uuid>,
 	producers: Loaded<Output, Vec<Uuid>>,
 	grants: Loaded<Output, Vec<Uuid>>,
+	walking: bool,
+	passes: Passes,
 	/// Evaluations already allowed under this authority (`Access::repeat_key`).
 	pub(super) allowed: BTreeSet<String>,
 }
 
+/// A walk reaches the same Run and definition many ways, so it asks about each
+/// once. A walk passes only if everything it reached passes, and a failed walk
+/// forgets all of this, so a list that hides one item cannot pass it by accident.
+#[derive(Default)]
+struct Passes {
+	authority: Option<String>,
+	visited: BTreeSet<(Uuid, bool)>,
+	dependencies: BTreeSet<(Uuid, bool)>,
+	catalog_reads: BTreeSet<(Option<NodeName>, String, String, bool)>,
+	restrictions: BTreeMap<(String, String, String), Option<Value>>,
+	areas: BTreeMap<Uuid, (bool, Value)>,
+}
+
 impl ReadLookups {
-	pub(super) fn forget_rows(&mut self) {
+	fn forget_rows(&mut self) {
 		*self = Self {
+			passes: std::mem::take(&mut self.passes),
 			allowed: std::mem::take(&mut self.allowed),
 			..Self::default()
 		};
+	}
+	pub(super) fn start_walk(&mut self, authority: String) {
+		self.forget_rows();
+		if self.passes.authority.as_deref() != Some(authority.as_str()) {
+			self.passes = Passes {
+				authority: Some(authority),
+				..Passes::default()
+			};
+		}
+		self.walking = true;
+	}
+	pub(super) fn end_walk(&mut self, passed: bool) {
+		self.forget_rows();
+		if !passed {
+			self.passes = Passes::default();
+		}
+	}
+	pub(crate) fn walking(&self) -> bool {
+		self.walking
+	}
+	/// `native` keeps the two readers apart, as `read_verdicts` does: only one of
+	/// them verifies remote dependencies.
+	pub(crate) fn first_visit(&mut self, run: Uuid, native: bool) -> bool {
+		!self.walking || self.passes.visited.insert((run, native))
+	}
+	pub(crate) fn dependency_passed(&self, run: Uuid, native: bool) -> bool {
+		self.walking && self.passes.dependencies.contains(&(run, native))
+	}
+	pub(crate) fn remember_dependency(&mut self, run: Uuid, native: bool) {
+		if self.walking {
+			self.passes.dependencies.insert((run, native));
+		}
+	}
+	pub(crate) fn catalog_read_passed(
+		&self,
+		node: &Option<NodeName>,
+		reference: &EntityRef,
+		native: bool,
+	) -> bool {
+		self.walking
+			&& self.passes.catalog_reads.contains(&(
+				node.clone(),
+				reference.id.clone(),
+				reference.version.clone(),
+				native,
+			))
+	}
+	pub(crate) fn remember_catalog_read(
+		&mut self,
+		node: &Option<NodeName>,
+		reference: &EntityRef,
+		native: bool,
+	) {
+		if self.walking {
+			self.passes.catalog_reads.insert((
+				node.clone(),
+				reference.id.clone(),
+				reference.version.clone(),
+				native,
+			));
+		}
+	}
+	pub(crate) fn restriction(&self, node: &str, reference: &EntityRef) -> Option<Option<Value>> {
+		if !self.walking {
+			return None;
+		}
+		self.passes
+			.restrictions
+			.get(&(
+				node.to_owned(),
+				reference.id.clone(),
+				reference.version.clone(),
+			))
+			.cloned()
+	}
+	pub(crate) fn remember_restriction(
+		&mut self,
+		node: &str,
+		reference: &EntityRef,
+		restriction: &Option<Value>,
+	) {
+		if self.walking {
+			self.passes.restrictions.insert(
+				(
+					node.to_owned(),
+					reference.id.clone(),
+					reference.version.clone(),
+				),
+				restriction.clone(),
+			);
+		}
+	}
+	/// Whether a Run's Working Area was readable in this walk, and the context that
+	/// checking it left behind.
+	pub(crate) fn area(&self, run: Uuid) -> Option<(bool, Value)> {
+		if !self.walking {
+			return None;
+		}
+		self.passes.areas.get(&run).cloned()
+	}
+	pub(crate) fn remember_area(&mut self, run: Uuid, readable: bool, context: &Value) {
+		if self.walking {
+			self.passes.areas.insert(run, (readable, context.clone()));
+		}
 	}
 	pub(crate) fn task(&self, id: Uuid, workspace: Uuid) -> Option<Option<domain::Task>> {
 		self.tasks.get(&(id, workspace))
