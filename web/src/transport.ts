@@ -76,13 +76,14 @@ export class ApiError extends Error {
     this.runReads = runReads;
   }
 }
-/** What a refused read or resume of a Run says about the Run's reads. */
+/** What a refused read or resume of a Run says: what it read, or what it uses. */
 type RunReadsBlock =
   | {
       kind: "definition_not_approved";
       definition?: { id: string; version: string };
     }
   | { kind: "definition_not_readable" }
+  | { kind: "definition_not_usable" }
   | { kind: "remote_read" }
   | { kind: "semantic_read" }
   | { kind: "source"; source: string };
@@ -97,6 +98,8 @@ function runReadsMessage(block: RunReadsBlock, messages: typeof en): string {
         : messages.runReadsDefinition;
     case "definition_not_readable":
       return messages.runReadsNotReadable;
+    case "definition_not_usable":
+      return messages.runReadsNotUsable;
     case "remote_read":
       return messages.runReadsRemote;
     case "semantic_read":

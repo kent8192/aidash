@@ -46898,12 +46898,6 @@
                 },
                 "type": "array"
               },
-              "reading_runs": {
-                "description": "Non-terminal Runs on the Node that have read the withdrawn version.",
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
               "running_runs": {
                 "description": "Non-terminal Runs of those Agent versions on the Node.",
                 "format": "uint64",
@@ -46911,7 +46905,7 @@
                 "type": "integer"
               }
             },
-            "required": ["agents", "running_runs", "reading_runs"],
+            "required": ["agents", "running_runs"],
             "type": "object"
           }
         },

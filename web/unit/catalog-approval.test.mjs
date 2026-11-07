@@ -314,14 +314,13 @@ test("an approval carries a named restriction and omits an absent one", () => {
 });
 
 test("a withdrawal with no dependent Agent and no Run stops nothing", () => {
-  const nothing = { agents: [], running_runs: 0, reading_runs: 0 };
+  const nothing = { agents: [], running_runs: 0 };
   assert.equal(withdrawalHasNoImpact(nothing), true);
   assert.equal(
     withdrawalHasNoImpact({ ...nothing, agents: [ref("a")] }),
     false,
   );
   assert.equal(withdrawalHasNoImpact({ ...nothing, running_runs: 2 }), false);
-  assert.equal(withdrawalHasNoImpact({ ...nothing, reading_runs: 2 }), false);
 });
 
 test("a withdrawal lists the Agents it stops in a stable order", () => {
@@ -329,7 +328,6 @@ test("a withdrawal lists the Agents it stops in a stable order", () => {
     withdrawalAgentLabels({
       agents: [ref("b", "2.0.0"), ref("a")],
       running_runs: 1,
-      reading_runs: 0,
     }),
     ["a@1.0.0", "b@2.0.0"],
   );

@@ -331,8 +331,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
         json: {
           error: "forbidden",
           run_reads: {
-            kind: "definition_not_approved",
-            definition: { id: "qa", version: "2.1.0" },
+            kind: "definition_not_readable",
           },
         },
       });
@@ -351,8 +350,8 @@ for (const locale of ["en-US", "ja-JP"] as const) {
       .click();
     await expect(page.getByRole("dialog")).toContainText(
       ja
-        ? "この Run が読んだ qa@2.1.0 の承認は、このノードで取り下げられています。"
-        : "qa@2.1.0, which this Run read, is no longer approved on this Node.",
+        ? "この Run が読んだ定義を読む権限がありません。"
+        : "Your permissions do not allow a definition this Run read.",
     );
     const panel = page.getByRole("region", {
       name: ja ? "実行の管理" : "Execution management",

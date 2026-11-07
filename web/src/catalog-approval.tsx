@@ -585,11 +585,9 @@ export function CatalogApprovalSection({
                 <span>
                   {t("catalogWithdrawRuns")}: {impact.running_runs}
                 </span>
-                <span>
-                  {t("catalogWithdrawReadingRuns")}: {impact.reading_runs}
-                </span>
               </>
             )}
+            <span>{t("catalogWithdrawScope")}</span>
             <div className="flex flex-wrap gap-2">
               <Button
                 size="sm"
