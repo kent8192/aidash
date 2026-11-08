@@ -177,6 +177,8 @@ impl Runtime {
 		let mut broker_rx = self.broker.subscribe();
 		let mut last_scan = Instant::now() - self.settings.recovery.max(self.settings.fallback);
 		let mut startup = true;
+		let mut contention_since = None;
+		let mut contention_warned = false;
 		while !*stopping.borrow() {
 			let broker = broker_rx.borrow_and_update().clone();
 			let cadence = if broker.as_ref().is_some_and(|b| !b.disconnected())
@@ -240,6 +242,7 @@ impl Runtime {
 						Err(activation::unavailable())
 					}
 				});
+			let mut attempted = false;
 			let result = match delivery {
 				Ok(Some(message)) if !*stopping.borrow() && !broker.disconnected() => {
 					// A test barrier can arrive while a pull is already in flight.
@@ -258,6 +261,7 @@ impl Runtime {
 					if *stopping.borrow() || broker.disconnected() {
 						continue;
 					}
+					attempted = true;
 					self.receive(repository.as_ref(), message.as_ref()).await
 				}
 				Ok(_) => {
@@ -266,12 +270,32 @@ impl Runtime {
 				}
 				Err(error) => Err(error),
 			};
-			if let Err(error) = result {
-				if matches!(error, aidash_application::Error::External(_)) {
-					self.failed.store(true, Ordering::Release);
+			match result {
+				Err(aidash_application::Error::RunLockContended) => {
+					metrics::counter!("aidash_activation_run_lock_contention_total").increment(1);
+					let since = contention_since.get_or_insert_with(Instant::now);
+					if !contention_warned && since.elapsed() >= Duration::from_secs(30) {
+						tracing::warn!(
+							"activation Run row lock contention has lasted at least 30 seconds"
+						);
+						contention_warned = true;
+					}
+					tokio::time::sleep(Duration::from_millis(100)).await;
 				}
-				tracing::warn!(%error,"activation delivery deferred");
-				tokio::time::sleep(Duration::from_millis(100)).await;
+				Err(error) => {
+					contention_since = None;
+					contention_warned = false;
+					if matches!(error, aidash_application::Error::External(_)) {
+						self.failed.store(true, Ordering::Release);
+					}
+					tracing::warn!(%error,"activation delivery deferred");
+					tokio::time::sleep(Duration::from_millis(100)).await;
+				}
+				Ok(()) if attempted => {
+					contention_since = None;
+					contention_warned = false;
+				}
+				Ok(()) => {}
 			}
 		}
 		Ok(())

@@ -15,7 +15,11 @@ pub type RegistryJournalRow = (String, String, String, String, Value, bool);
 pub enum Verification {
 	Verified,
 	Rejected,
+	/// The peer did not answer: a timeout, `5xx`, a transport error, an
+	/// unreadable answer or a pending transaction.
 	Unavailable,
+	/// Nobody was asked: a same-Deployment route with no in-process runtime.
+	NotAsked,
 }
 #[async_trait]
 pub trait RegistryTransport: Send + Sync {

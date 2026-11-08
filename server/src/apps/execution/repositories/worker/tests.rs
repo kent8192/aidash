@@ -33,3 +33,11 @@ fn pinned_failures_fail_and_media_failures_pause_with_their_reasons() {
 		assert!(body["error"].as_str().is_some_and(names_reasons), "{body}");
 	}
 }
+
+#[test]
+fn a_refused_authority_change_never_fails_a_run() {
+	assert!(matches!(
+		classify_failure(&NativeError::PolicyBusy { retry_after: 30 }),
+		ExecutionFailure::Deferred
+	));
+}

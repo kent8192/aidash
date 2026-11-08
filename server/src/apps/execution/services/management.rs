@@ -391,9 +391,11 @@ impl HarnessManagement {
 			return Err(Error::Forbidden);
 		};
 		// Stopping never depends on what the Run has read, and there is one
-		// check for it; resuming does depend on it.
+		// check for it; resuming does depend on it. This route stops work without
+		// waiting behind an Authority Change, but resuming starts work again (ADR 0121).
 		let action = match input.action {
 			crate::domain::RunControlAction::Resume => {
+				crate::database::authority_change::enter(&f.store.pool, &identity.tenant).await;
 				return Ok(execution::resume(&f, identity, id).await?.into());
 			}
 			crate::domain::RunControlAction::Pause => ManagementAction::Pause,

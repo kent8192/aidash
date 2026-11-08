@@ -7,8 +7,11 @@ import {
   apiFetch,
   mappingContext,
   SESSION_CHANGED,
+  ApiError,
+  policyBusyWait,
   sessionFetch,
 } from "./transport";
+import { useBusyRetry } from "./policy-busy";
 import { useI18n } from "./ui";
 import { NodeLifecycleSettings } from "./node-lifecycle-settings";
 import type { State } from "./types";
@@ -99,7 +102,22 @@ const messages = {
     en: "This Tenant is already deleted.",
     ja: "このテナントは既に削除されています。",
   },
+  POLICY_BUSY: {
+    en: "The change was not applied, because work already running did not finish in time. You can retry in a moment.",
+    ja: "実行中の処理が時間内に終わらなかったため、変更は適用されませんでした。少し待ってからもう一度お試しください。",
+  },
 } as const;
+
+/** What a refused request throws, carrying the wait of a Policy Busy refusal. */
+async function refusal(response: Response, english: boolean) {
+  return new ApiError(
+    await failure(response.clone(), english),
+    response.status,
+    true,
+    false,
+    await policyBusyWait(response),
+  );
+}
 
 /** The server's error, in the reader's language where Aidash knows it. */
 async function failure(response: Response, english: boolean): Promise<string> {
@@ -136,32 +154,35 @@ export function DeleteTenantForm({
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const busyRetry = useBusyRetry();
+  const submit = () => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    busyRetry.clear();
+    void sessionFetch(`/api/tenants/${encodeURIComponent(tenant)}/deletion`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirmation: typed }),
+    })
+      .then(async (response) => {
+        if (!response.ok) throw await refusal(response, english);
+        setTyped("");
+        onDeleted?.((await response.json()) as TenantDeletion);
+        changed();
+      })
+      .catch((reason) => {
+        busyRetry.note(reason, submit);
+        setError(reason instanceof Error ? reason.message : String(reason));
+      })
+      .finally(() => setBusy(false));
+  };
   return (
     <form
       className="grid gap-2 rounded-md border border-destructive/40 p-3"
       onSubmit={(event) => {
         event.preventDefault();
-        if (busy) return;
-        setBusy(true);
-        setError("");
-        void sessionFetch(
-          `/api/tenants/${encodeURIComponent(tenant)}/deletion`,
-          {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ confirmation: typed }),
-          },
-        )
-          .then(async (response) => {
-            if (!response.ok) throw new Error(await failure(response, english));
-            setTyped("");
-            onDeleted?.((await response.json()) as TenantDeletion);
-            changed();
-          })
-          .catch((reason) =>
-            setError(reason instanceof Error ? reason.message : String(reason)),
-          )
-          .finally(() => setBusy(false));
+        submit();
       }}
     >
       <h3 className="text-[11px] font-medium text-destructive">
@@ -180,7 +201,7 @@ export function DeleteTenantForm({
           onChange={(event) => setTyped(event.target.value)}
         />
       </label>
-      {error && <Alert>{error}</Alert>}
+      {error && <Alert {...busyRetry.alert}>{error}</Alert>}
       <Button
         type="submit"
         variant="destructive"
@@ -228,19 +249,22 @@ export function LeaveTenantButton({ tenant }: { tenant: string }) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const busyRetry = useBusyRetry();
   const leave = () => {
     setBusy(true);
     setError("");
+    busyRetry.clear();
     void sessionFetch(`/api/tenants/${encodeURIComponent(tenant)}/leave`, {
       method: "POST",
     })
       .then(async (response) => {
-        if (!response.ok) throw new Error(await failure(response, english));
+        if (!response.ok) throw await refusal(response, english);
         changed();
       })
-      .catch((reason) =>
-        setError(reason instanceof Error ? reason.message : String(reason)),
-      )
+      .catch((reason) => {
+        busyRetry.note(reason, leave);
+        setError(reason instanceof Error ? reason.message : String(reason));
+      })
       .finally(() => {
         setBusy(false);
         setConfirming(false);
@@ -256,7 +280,7 @@ export function LeaveTenantButton({ tenant }: { tenant: string }) {
           ? "You lose access at once. You can come back only through a new Invitation."
           : "すぐにアクセスできなくなります。戻るには新しい招待が必要です。"}
       </Hint>
-      {error && <Alert>{error}</Alert>}
+      {error && <Alert {...busyRetry.alert}>{error}</Alert>}
       {confirming ? (
         <div className="flex flex-wrap gap-2">
           <Button

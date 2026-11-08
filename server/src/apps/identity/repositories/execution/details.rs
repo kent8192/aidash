@@ -51,8 +51,7 @@ impl Held<'_> {
 #[async_trait]
 impl RunDetailsRepository for Details<'_> {
 	async fn begin(&self) -> Result<Box<dyn RunDetailsScope + '_>> {
-		let mut access = Access::begin(&self.federation.store, self.identity).await?;
-		access.wire = Some(crate::bootstrap::peer_transport(self.federation));
+		let access = Access::begin(&self.federation.store, self.identity).await?;
 		Ok(Box::new(Scope {
 			federation: self.federation,
 			access: Held::Own(Box::new(access)),
@@ -69,16 +68,12 @@ pub(crate) async fn visible_within(
 	run: Uuid,
 ) -> Result<RunInspection> {
 	let context = access.context.clone();
-	let wire = access
-		.wire
-		.replace(crate::bootstrap::peer_transport(federation));
 	let mut scope = Scope {
 		federation,
 		access: Held::Borrowed(&mut *access),
 	};
 	let result = aidash_application::authorization::run_details::visible_in(&mut scope, run).await;
 	scope.access.get().context = context;
-	scope.access.get().wire = wire;
 	result
 }
 #[async_trait]

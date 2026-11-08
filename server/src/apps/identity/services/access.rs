@@ -4,9 +4,11 @@ use super::{
 	identity::SubjectIdentity,
 	policy::{Decision, Effect, Evaluation, PolicyBundle, Resource},
 };
-use crate::apps::identity::models::AuthorizationDecision;
+use crate::apps::identity::models::{AuthorizationDecision, DecisionOwner, DecisionRow};
 use crate::database::native::Pool;
 use crate::{Error, Result, store::Store};
+use aidash_application::authorization::refusal_note;
+use aidash_domain::tool::RefusalCheck;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
@@ -64,6 +66,44 @@ pub(crate) struct CatalogAdmission {
 	action: String,
 }
 
+/// What makes two audit rows of one Access the same row.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct RecordedKey {
+	owner: Option<DecisionOwner>,
+	coalesced: bool,
+	subject: String,
+	action: String,
+	kind: String,
+	id: String,
+	revision: i64,
+	allowed: bool,
+}
+
+impl RecordedKey {
+	fn new(
+		owner: Option<DecisionOwner>,
+		coalesced: bool,
+		input: &Evaluation,
+		decision: &Decision,
+	) -> Self {
+		Self {
+			owner,
+			coalesced,
+			subject: input.subject.clone(),
+			action: input.action.clone(),
+			kind: input.resource.kind.clone(),
+			id: input.resource.id.clone(),
+			revision: decision.revision,
+			allowed: decision.allowed,
+		}
+	}
+}
+
+/// A repeated read hands over nothing a recorded row does not already say.
+fn read_action(action: &str) -> bool {
+	action.ends_with(".read") || action == "workspace.events"
+}
+
 #[derive(Default)]
 pub(crate) struct AccessTransaction {
 	transaction: Option<crate::database::native::Transaction>,
@@ -76,6 +116,11 @@ pub(crate) struct AccessTransaction {
 	// valid only while this transaction retains its policy lease.
 	live_nodes: std::collections::BTreeSet<(String, String)>,
 	live_nodes_epoch: u64,
+	// One walk reaches the same Workspace once per read. Its owner is held by the
+	// share lock when `lock` was asked for, and neither fact changes for a live row.
+	workspace_owners: std::collections::BTreeMap<(Uuid, bool), String>,
+	workspace_nodes: std::collections::BTreeMap<Uuid, String>,
+	workspaces_epoch: u64,
 }
 
 impl AccessTransaction {
@@ -86,6 +131,9 @@ impl AccessTransaction {
 			admissions_epoch: 0,
 			live_nodes: Default::default(),
 			live_nodes_epoch: 0,
+			workspace_owners: Default::default(),
+			workspace_nodes: Default::default(),
+			workspaces_epoch: 0,
 		}
 	}
 
@@ -103,12 +151,41 @@ impl AccessTransaction {
 		debug_assert!(self.transaction.is_none());
 		self.admissions.clear();
 		self.live_nodes.clear();
+		self.forget_workspaces();
 		self.transaction = Some(transaction);
+	}
+
+	fn forget_workspaces(&mut self) {
+		self.workspace_owners.clear();
+		self.workspace_nodes.clear();
+	}
+
+	/// A savepoint rollback may have released the locks these facts rest on.
+	fn current_workspaces(&mut self) {
+		let epoch = self
+			.transaction
+			.as_ref()
+			.map_or(0, |transaction| transaction.lock_epoch());
+		if epoch != self.workspaces_epoch {
+			self.forget_workspaces();
+			self.workspaces_epoch = epoch;
+		}
+	}
+
+	pub(crate) fn workspace_owner(&mut self, id: Uuid, lock: bool) -> Option<String> {
+		self.current_workspaces();
+		self.workspace_owners.get(&(id, lock)).cloned()
+	}
+
+	pub(crate) fn remember_workspace_owner(&mut self, id: Uuid, lock: bool, owner: &str) {
+		self.current_workspaces();
+		self.workspace_owners.insert((id, lock), owner.to_owned());
 	}
 
 	fn take(&mut self) -> Option<crate::database::native::Transaction> {
 		self.admissions.clear();
 		self.live_nodes.clear();
+		self.forget_workspaces();
 		self.transaction.take()
 	}
 
@@ -174,7 +251,12 @@ pub(crate) struct Access {
 	pub marketplace_audit: Option<serde_json::Value>,
 	pub core_gc_complete: bool,
 	pub(super) remote_read_cache: std::collections::BTreeMap<(Uuid, String), bool>,
+	/// Nodes that did not answer a check within this authority (#751). They
+	/// are not asked again, and no negative verdict is kept while any is set.
 	pub(super) unavailable_peers: std::collections::BTreeSet<String>,
+	/// Whether a `require` of this authority has denied. Such a denial is a
+	/// real refusal, so it is never reported as a Node that could not answer.
+	pub(super) denied: bool,
 	pub(super) checking_reads: aidash_application::authorization::visits::ReadVisits,
 	pub(crate) read_verdicts: aidash_application::authorization::visits::ReadVerdicts,
 	/// The first read that stopped a walk in this authority boundary.
@@ -191,10 +273,19 @@ pub(crate) struct Access {
 	/// The address of `node`, which Federation references name Nodes by.
 	pub(crate) node_address: Option<String>,
 	pub(crate) dependency_frontier: Option<Vec<super::peer::dependencies::Reference>>,
+	/// The Subnode Workspaces a Read Recheck in progress has opened, one entry per
+	/// Run it is checking, and what each Run opens.
+	pub(crate) recheck_workspaces: Vec<Vec<Uuid>>,
+	pub(crate) subnode_workspaces: std::collections::BTreeMap<Uuid, Vec<Uuid>>,
+	/// Which Run created the Subnode that owns a Workspace, if any.
+	pub(crate) subnode_creators: std::collections::BTreeMap<Uuid, Option<Uuid>>,
 	pub tx: AccessTransaction,
 	pub identity: SubjectIdentity,
 	pub snapshot: Snapshot,
 	pub subjects: Vec<String>,
+	/// The subject an execution admission appended to the chain, which is the Agent a task is
+	/// delegated to. Its refusals are named in the refusal note; the Run's own chain never is.
+	pub(crate) delegated_subject: Option<String>,
 	pub durable_audit: bool,
 	pub audit: bool,
 	pub context: Value,
@@ -202,7 +293,15 @@ pub(crate) struct Access {
 	pub approved_catalog: std::collections::BTreeSet<(String, String)>,
 	pub cached_runs: std::collections::BTreeMap<(Uuid, Uuid), bool>,
 	pub cached_humans: std::collections::BTreeMap<Uuid, bool>,
-	pending_decisions: Vec<(Evaluation, Decision)>,
+	pending_decisions: Vec<DecisionRow>,
+	/// Rows this Access has queued or written, so a repeat adds none.
+	recorded_decisions: std::collections::BTreeSet<RecordedKey>,
+	/// The Run a Continuation Check or the loop's Read Recheck is made for. Every
+	/// allow under it is a repeat of the same question (ADR 0116).
+	pub(crate) recheck_owner: Option<DecisionOwner>,
+	/// The Run or Remote Grant whose reads are being walked for this reader.
+	pub(super) walk_root: Option<DecisionOwner>,
+	pub(crate) read_lookups: read_lookups::ReadLookups,
 	pub(crate) last_policy_explicit_deny: bool,
 	pub(crate) decision_serial: u64,
 	pub(super) pool: Pool,
@@ -228,10 +327,17 @@ pub(crate) struct PublicationContext {
 	cached_runs: std::collections::BTreeMap<(Uuid, Uuid), bool>,
 	cached_humans: std::collections::BTreeMap<Uuid, bool>,
 	remote_read_cache: std::collections::BTreeMap<(Uuid, String), bool>,
+	/// The reader's silent Nodes and its own denial (#751): a mark made under
+	/// the publisher's identity must never name a Node to the reader.
+	unavailable_peers: std::collections::BTreeSet<String>,
+	denied: bool,
 	checking_reads: aidash_application::authorization::visits::ReadVisits,
 	read_verdicts: aidash_application::authorization::visits::ReadVerdicts,
 	read_block: Option<aidash_application::authorization::visibility::provenance::ReadBlock>,
 	dependency_frontier: Option<Vec<super::peer::dependencies::Reference>>,
+	recheck_owner: Option<DecisionOwner>,
+	walk_root: Option<DecisionOwner>,
+	read_lookups: read_lookups::ReadLookups,
 }
 
 /// Drop restores identity even when a caller cancels a publication check.
@@ -324,6 +430,25 @@ impl Access {
 		Self::begin_with_lock(store, identity, true).await
 	}
 
+	/// The authority of an Authority Change that needs one of `actions`. A
+	/// subject no policy could allow any of them takes the ordinary lock: its
+	/// check then refuses it, and the Tenant's work never waits for it (ADR 0121).
+	pub async fn begin_change(
+		store: &Store,
+		identity: &SubjectIdentity,
+		actions: &[&str],
+	) -> Result<Self> {
+		let snapshot = Authorization {
+			pool: store.pool.clone(),
+		}
+		.snapshot(&identity.tenant)
+		.await?;
+		let exclusive = actions
+			.iter()
+			.any(|action| snapshot.bundle.may_allow(&identity.subject, action));
+		Self::begin_with_lock(store, identity, exclusive).await
+	}
+
 	async fn begin_with_lock(
 		store: &Store,
 		identity: &SubjectIdentity,
@@ -332,11 +457,26 @@ impl Access {
 		Self::begin_on(
 			&store.pool,
 			store.deployment.as_str(),
-			Some(crate::apps::federation::remote::services::wire::Wire::of_store(store)),
+			Some(Self::wire_for(store, exclusive)),
 			identity,
 			exclusive,
 		)
 		.await
+	}
+
+	/// How an authority that holds `store` reaches other Nodes. One that holds
+	/// the policy row exclusively reaches none: the peer's own shared lock on
+	/// that row would wait for the lock its caller holds (#751).
+	fn wire_for(
+		store: &Store,
+		exclusive: bool,
+	) -> crate::apps::federation::remote::services::wire::Wire {
+		use crate::apps::federation::remote::services::wire::Wire;
+		if exclusive {
+			Wire::without_peers(store)
+		} else {
+			Wire::of_store(store)
+		}
 	}
 
 	/// The authority of a subject of the Tenant's own policy that holds no
@@ -363,7 +503,7 @@ impl Access {
 			tx,
 			&store.pool,
 			store.deployment.as_str(),
-			Some(crate::apps::federation::remote::services::wire::Wire::of_store(store)),
+			Some(Self::wire_for(store, exclusive)),
 			&identity,
 			snapshot,
 		))
@@ -404,10 +544,14 @@ impl Access {
 			core_gc_complete: false,
 			remote_read_cache: Default::default(),
 			unavailable_peers: Default::default(),
+			denied: false,
 			checking_reads: Default::default(),
 			read_verdicts: Default::default(),
 			read_block: None,
 			dependency_frontier: None,
+			recheck_workspaces: Default::default(),
+			subnode_workspaces: Default::default(),
+			subnode_creators: Default::default(),
 			wire,
 			node_id: node.to_owned(),
 			node: None,
@@ -416,6 +560,7 @@ impl Access {
 			identity: identity.clone(),
 			snapshot,
 			subjects: vec![identity.subject.clone()],
+			delegated_subject: None,
 			durable_audit: false,
 			audit: true,
 			context: json!({}),
@@ -424,6 +569,10 @@ impl Access {
 			cached_runs: Default::default(),
 			cached_humans: Default::default(),
 			pending_decisions: vec![],
+			recorded_decisions: Default::default(),
+			recheck_owner: None,
+			walk_root: None,
+			read_lookups: Default::default(),
 			last_policy_explicit_deny: false,
 			decision_serial: 0,
 			pool: pool.clone(),
@@ -435,9 +584,9 @@ impl Access {
 		}
 	}
 	pub(crate) async fn flush_audit(&mut self) -> Result<()> {
-		Authorization::record_many(&mut self.tx, &self.identity.tenant, &self.pending_decisions)
-			.await?;
-		self.pending_decisions.clear();
+		let rows = std::mem::take(&mut self.pending_decisions);
+		Authorization::record_rows(&mut self.tx, &self.identity.tenant, rows).await?;
+		self.written_decisions();
 		Ok(())
 	}
 	pub(crate) fn return_transaction(&mut self) -> crate::database::native::Transaction {
@@ -481,10 +630,15 @@ impl Access {
 			cached_runs: std::mem::take(&mut self.cached_runs),
 			cached_humans: std::mem::take(&mut self.cached_humans),
 			remote_read_cache: std::mem::take(&mut self.remote_read_cache),
+			unavailable_peers: std::mem::take(&mut self.unavailable_peers),
+			denied: std::mem::take(&mut self.denied),
 			checking_reads: std::mem::take(&mut self.checking_reads),
 			read_verdicts: std::mem::take(&mut self.read_verdicts),
 			read_block: self.read_block.take(),
 			dependency_frontier: self.dependency_frontier.take(),
+			recheck_owner: self.recheck_owner.take(),
+			walk_root: self.walk_root.take(),
+			read_lookups: std::mem::take(&mut self.read_lookups),
 		};
 		self.worker();
 		Ok(old)
@@ -512,10 +666,15 @@ impl Access {
 		self.cached_runs = old.cached_runs;
 		self.cached_humans = old.cached_humans;
 		self.remote_read_cache = old.remote_read_cache;
+		self.unavailable_peers = old.unavailable_peers;
+		self.denied = old.denied;
 		self.checking_reads = old.checking_reads;
 		self.read_verdicts = old.read_verdicts;
 		self.read_block = old.read_block;
 		self.dependency_frontier = old.dependency_frontier;
+		self.recheck_owner = old.recheck_owner;
+		self.walk_root = old.walk_root;
+		self.read_lookups = old.read_lookups;
 	}
 
 	// The caller retains the outer Access until this mutation commits. Reusing
@@ -530,10 +689,14 @@ impl Access {
 			core_gc_complete: false,
 			remote_read_cache: Default::default(),
 			unavailable_peers: Default::default(),
+			denied: false,
 			checking_reads: Default::default(),
 			read_verdicts: Default::default(),
 			read_block: None,
 			dependency_frontier: None,
+			recheck_workspaces: Default::default(),
+			subnode_workspaces: Default::default(),
+			subnode_creators: Default::default(),
 			wire: lease.wire.clone(),
 			node_id: lease.node_id.clone(),
 			node: lease.node.clone(),
@@ -542,6 +705,7 @@ impl Access {
 			identity: lease.identity.clone(),
 			snapshot: lease.snapshot.clone(),
 			subjects: lease.subjects.clone(),
+			delegated_subject: None,
 			durable_audit: false,
 			audit: true,
 			context: lease.context.clone(),
@@ -550,6 +714,10 @@ impl Access {
 			cached_runs: Default::default(),
 			cached_humans: Default::default(),
 			pending_decisions: vec![],
+			recorded_decisions: Default::default(),
+			recheck_owner: None,
+			walk_root: None,
+			read_lookups: Default::default(),
 			last_policy_explicit_deny: false,
 			decision_serial: 0,
 			pool: pool.clone(),
@@ -576,19 +744,22 @@ impl Access {
 	/// Commit the completed authorization checks and release their row locks
 	/// while the worker waits on an external provider.
 	pub async fn suspend(&mut self) -> Result<()> {
-		Authorization::record_many(&mut self.tx, &self.identity.tenant, &self.pending_decisions)
-			.await?;
+		let rows = std::mem::take(&mut self.pending_decisions);
+		Authorization::record_rows(&mut self.tx, &self.identity.tenant, rows).await?;
 		let previous = self
 			.tx
 			.take()
 			.ok_or_else(|| Error::Conflict("authorization transaction is suspended".into()))?;
 		previous.commit().await?;
-		self.pending_decisions.clear();
+		self.written_decisions();
 		Ok(())
 	}
 
 	/// Start a fresh execution authorization boundary after an external wait.
 	pub async fn refresh_execution(&mut self, run_id: Uuid) -> Result<()> {
+		if self.durable_audit {
+			self.commit_durable(vec![]).await?;
+		}
 		if !self.tx.is_active() {
 			self.tx
 				.install(self.pool.begin(&self.identity.tenancy()?).await?);
@@ -610,11 +781,16 @@ impl Access {
 		self.tx.admissions.clear();
 		self.remote_read_cache.clear();
 		self.unavailable_peers.clear();
+		self.denied = false;
 		self.checking_reads.clear();
 		self.read_verdicts.clear();
 		self.read_block = None;
+		self.read_lookups = Default::default();
+		self.walk_root = None;
+		self.recheck_owner = None;
 		self.dependency_frontier = None;
 		self.subjects = vec![self.identity.subject.clone()];
+		self.delegated_subject = None;
 		self.durable_audit = true;
 		self.audit = true;
 		self.context = json!({});
@@ -623,6 +799,7 @@ impl Access {
 		self.cached_runs.clear();
 		self.cached_humans.clear();
 		self.pending_decisions.clear();
+		self.written_decisions();
 		self.last_policy_explicit_deny = false;
 		self.read_run = Some(run_id);
 		self.read_grant = None;
@@ -637,6 +814,7 @@ impl Access {
 			tracing::debug!(%error, "failed execution-refresh transaction rollback");
 		}
 		self.pending_decisions.clear();
+		self.recorded_decisions.clear();
 	}
 
 	pub fn resource(&self, kind: &str, id: impl ToString, attributes: Value) -> Resource {
@@ -716,15 +894,23 @@ impl Access {
 		&mut self,
 		workspace: Uuid,
 	) -> Result<aidash_domain::nodes::NodeName> {
-		let name: String = crate::database::native::query_scalar(
-			&Query::select()
-				.column(Alias::new("node"))
-				.from(Alias::new("workspaces"))
-				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(workspace)))
-				.to_string(PostgresQueryBuilder),
-		)
-		.scalar_one(&mut **self.tx)
-		.await?;
+		self.tx.current_workspaces();
+		let name: String = match self.tx.workspace_nodes.get(&workspace) {
+			Some(name) => name.clone(),
+			None => {
+				let name: String = crate::database::native::query_scalar(
+					&Query::select()
+						.column(Alias::new("node"))
+						.from(Alias::new("workspaces"))
+						.and_where(Expr::col(Alias::new("id")).eq(Expr::value(workspace)))
+						.to_string(PostgresQueryBuilder),
+				)
+				.scalar_one(&mut **self.tx)
+				.await?;
+				self.tx.workspace_nodes.insert(workspace, name.clone());
+				name
+			}
+		};
 		self.tx
 			.require_live_node(&self.identity.tenant, &name)
 			.await?;
@@ -771,8 +957,9 @@ impl Access {
 
 	/// A dissolved Subnode Workspace is retained for reading and citations.
 	/// User mutations hold a shared Subnode lock until their transaction commits;
-	/// dissolution takes the exclusive lock. Worker mutations already hold it
-	/// through their narrower Subnode effect boundary.
+	/// dissolution takes the exclusive lock. A Run's writes are not checked here
+	/// (see `decide`): each path that writes for a Run must call
+	/// `subnodes::require_writable` first in its own transaction.
 	pub(crate) async fn ensure_subnode_writable(&mut self, workspace: Uuid) -> Result<()> {
 		use reinhardt::db::orm::{QueryRow, execution::convert_values};
 		use reinhardt::query::LockType;
@@ -799,6 +986,28 @@ impl Access {
 	}
 
 	pub async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
+		self.decide_with_cause(resource, action)
+			.await
+			.map(|verdict| verdict == Verdict::Allowed)
+	}
+	/// [`Self::decide`], and whether a refusal comes from the Subnode read-only rule rather than
+	/// from the Tenant's policy. The rule is structural: no change of policy lifts it.
+	async fn decide_with_cause(&mut self, resource: &Resource, action: &str) -> Result<Verdict> {
+		// Within one authority, a repeated allow needs no second evaluation. A
+		// denial is evaluated and recorded every time.
+		let repeat = self
+			.audit_class(action)
+			.1
+			.then(|| self.repeat_key(resource, action));
+		if let Some(key) = &repeat
+			&& self.read_lookups.allowed.contains(key)
+		{
+			self.decision_serial = self
+				.decision_serial
+				.saturating_add(self.subjects.len() as u64);
+			self.last_policy_explicit_deny = false;
+			return Ok(Verdict::Allowed);
+		}
 		for subject in &self.subjects {
 			// Unknown subjects reach evaluation so their denial is audited.
 			if self.snapshot.bundle.subjects.contains_key(subject) {
@@ -823,7 +1032,7 @@ impl Access {
 					workspace,
 				)
 			}) {
-				return Ok(false);
+				return Ok(Verdict::SubnodeReadOnly);
 			}
 		}
 		if self.read_run.is_none() && subnode_workspace_write(action) {
@@ -837,14 +1046,117 @@ impl Access {
 				self.ensure_subnode_writable(workspace).await?;
 			}
 		}
-		aidash_application::authorization::lease::decide(
+		let allowed = aidash_application::authorization::lease::decide(
 			&mut crate::bootstrap::run_visibility_scope(self),
 			resource,
 			action,
 		)
-		.await
-		.map_err(Into::into)
+		.await?;
+		if allowed && let Some(key) = repeat {
+			self.read_lookups.allowed.insert(key);
+		}
+		Ok(if allowed {
+			Verdict::Allowed
+		} else {
+			Verdict::Denied
+		})
 	}
+
+	/// Everything an evaluation depends on besides the policy revision's bundle.
+	fn repeat_key(&self, resource: &Resource, action: &str) -> String {
+		json!({
+			"revision": self.snapshot.revision,
+			"subjects": self.subjects,
+			"environment": self.environment,
+			"action": action,
+			"resource": resource,
+		})
+		.to_string()
+	}
+
+	/// Who a check is made for and whether a repeated allow adds no row. Checks
+	/// that start something stay on the record every time (ADR 0116).
+	fn audit_class(&self, action: &str) -> (Option<DecisionOwner>, bool) {
+		if let Some(owner) = self.recheck_owner {
+			return (Some(owner), true);
+		}
+		let walking = !self.checking_reads.is_idle();
+		let worker = match (self.read_run, self.read_grant) {
+			(Some(run), _) => Some(DecisionOwner::Run(run)),
+			(None, Some(grant)) => Some(DecisionOwner::RemoteGrant(grant)),
+			(None, None) => None,
+		};
+		if let Some(owner) = worker {
+			return (Some(owner), walking || read_action(action));
+		}
+		match self.walk_root {
+			Some(root) if walking => (Some(root), true),
+			_ => (None, false),
+		}
+	}
+
+	/// Non-coalesced rows may be written again after a write, as an SSE frame does.
+	fn written_decisions(&mut self) {
+		self.recorded_decisions.retain(|key| key.coalesced);
+	}
+
+	/// Mark the start of a walk over a reader's dependencies. Returns whether
+	/// this call owns the walk and so must end it.
+	pub(crate) fn begin_read_walk(&mut self, owner: DecisionOwner, outermost: bool) -> bool {
+		if !outermost && self.walk_root.is_some() {
+			return false;
+		}
+		self.walk_root = Some(owner);
+		let authority = self.authority_context();
+		self.read_lookups.start_walk(authority);
+		true
+	}
+
+	/// End a walk. Rows it loaded must not outlive it, because this authority may
+	/// go on to write. A worker's new rows commit here, once, before any effect.
+	pub(crate) async fn end_read_walk(
+		&mut self,
+		started: bool,
+		result: Result<bool>,
+	) -> Result<bool> {
+		if started {
+			self.walk_root = None;
+			self.read_lookups.end_walk(matches!(result, Ok(true)));
+			if self.durable_audit && result.is_ok() {
+				self.commit_durable(vec![]).await?;
+			}
+		}
+		result
+	}
+
+	/// Commit queued rows and `immediate` on the audit's own connection. Rows
+	/// already recorded are found in the transaction this authority already
+	/// holds, so a repeat opens no connection and takes no audit lock.
+	async fn commit_durable(&mut self, immediate: Vec<DecisionRow>) -> Result<()> {
+		let mut rows = std::mem::take(&mut self.pending_decisions);
+		rows.extend(immediate);
+		if rows.is_empty() {
+			return Ok(());
+		}
+		let rows = if self.tx.is_active() {
+			AuthorizationDecision::unrecorded(&mut **self.tx, &self.identity.tenant, rows).await?
+		} else {
+			rows
+		};
+		if rows.is_empty() {
+			return Ok(());
+		}
+		let mut audit: Box<dyn TransactionExecutor> = self
+			.pool
+			.begin(&self.identity.tenancy()?)
+			.await?
+			.into_executor()
+			.await?;
+		AuthorizationDecision::append_rows(audit.as_mut(), &self.identity.tenant, &rows).await?;
+		audit.commit().await?;
+		Ok(())
+	}
+
 	pub(crate) fn evaluation(
 		&self,
 		subject: &str,
@@ -879,31 +1191,140 @@ impl Access {
 		if !self.audit {
 			return Ok(());
 		}
+		let mut immediate = vec![];
+		for (input, decision) in records {
+			let (owner, may_coalesce) = self.audit_class(&input.action);
+			let coalesced = may_coalesce && decision.allowed;
+			// A durable worker check stands on its own. Otherwise one request
+			// writes one row per subject, action, resource and outcome.
+			if (coalesced || !self.durable_audit)
+				&& !self
+					.recorded_decisions
+					.insert(RecordedKey::new(owner, coalesced, input, decision))
+			{
+				continue;
+			}
+			let row = DecisionRow {
+				input: input.clone(),
+				decision: decision.clone(),
+				owner,
+				coalesced,
+			};
+			if self.durable_audit && !coalesced {
+				immediate.push(row);
+			} else {
+				self.pending_decisions.push(row);
+			}
+		}
 		// A worker step spans the existing invocation-start/effect/result
 		// commits. Keep authority locked for that entire boundary, and commit
 		// its decision audit before effects so a killed worker cannot lose it.
-		if self.durable_audit {
-			let mut audit: Box<dyn TransactionExecutor> = self
-				.pool
-				.begin(&self.identity.tenancy()?)
-				.await?
-				.into_executor()
-				.await?;
-			AuthorizationDecision::append_many(audit.as_mut(), &self.identity.tenant, records)
-				.await?;
-			audit.commit().await?;
-		} else {
-			self.pending_decisions.extend_from_slice(records);
+		if !immediate.is_empty() {
+			self.commit_durable(immediate).await?;
 		}
 		Ok(())
 	}
 
 	pub async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
-		if self.decide(resource, action).await? {
-			Ok(())
-		} else {
-			Err(Error::Forbidden)
+		match self.decide_with_cause(resource, action).await? {
+			Verdict::Allowed => {
+				// The last check wins: an allow supersedes an earlier policy refusal.
+				refusal_note::clear_policy();
+				Ok(())
+			}
+			// A structural refusal is no policy denial: it reaches the model as a Rejected Call.
+			Verdict::SubnodeReadOnly => {
+				self.denied = true;
+				Err(Error::Forbidden)
+			}
+			Verdict::Denied => {
+				self.denied = true;
+				self.note_denial(resource, action);
+				Err(Error::Forbidden)
+			}
 		}
+	}
+
+	/// [`Self::finish`] for a yes/no answer to one person's request. A `false`
+	/// reached while a Node did not answer is that Node's silence, so it is
+	/// `NodeUnreachable` and not a refusal (#751).
+	pub(crate) async fn finish_deciding(self, result: Result<bool>) -> Result<bool> {
+		let silent = match (&result, self.named(Error::Forbidden)) {
+			(Ok(false), Error::NodeUnreachable { node, .. }) => Some(node),
+			_ => None,
+		};
+		let decided = self.finish(result).await?;
+		match silent {
+			Some(node) => Err(Error::NodeUnreachable {
+				node,
+				after_effect: false,
+			}),
+			None => Ok(decided),
+		}
+	}
+
+	/// The Nodes this authority found silent, taken so that a publisher view
+	/// can hand them back to the reader it ran for (#751).
+	pub(crate) fn take_peer_marks(&mut self) -> std::collections::BTreeSet<String> {
+		std::mem::take(&mut self.unavailable_peers)
+	}
+
+	/// Mark Nodes that another identity of this authority found silent, but
+	/// only those this reader may discover: to any other reader a silent Node
+	/// is the plain refusal it always was.
+	pub(crate) async fn adopt_silent_peers(
+		&mut self,
+		nodes: impl IntoIterator<Item = String>,
+	) -> Result<()> {
+		for node in nodes {
+			let resource = self.resource("node", &node, json!({"remote_node":node}));
+			if self.decide(&resource, "federation.discover").await? {
+				self.mark_peer_unavailable(&node);
+			}
+		}
+		Ok(())
+	}
+
+	/// The error for a Run whose graph a memory step found invalid. `Authority`
+	/// and `Invalidated` both come from a read that was not confirmed, so while
+	/// a Node has not answered they name that Node (#751). Otherwise the
+	/// mapping is the old one. Limit: after a mark, an `Authority` that is a
+	/// real refusal reads as silence; the Run still stops and Resume finds out.
+	pub(crate) fn memory_failure(&self, reason: aidash_domain::semantic::Failure) -> Error {
+		use aidash_domain::semantic::Failure;
+		match reason {
+			Failure::Authority => self.named(Error::Forbidden),
+			Failure::Invalidated => match self.named(Error::Forbidden) {
+				silent @ Error::NodeUnreachable { .. } => silent,
+				_ => Error::RemoteSemantic(Failure::Invalidated),
+			},
+			reason => Error::RemoteSemantic(reason),
+		}
+	}
+
+	/// What an error of this authority says to its caller. A `Forbidden` that
+	/// follows a Node that did not answer, with no `require` of this authority
+	/// having denied, is that Node's silence and not a refusal (#751).
+	pub(crate) fn named(&self, error: Error) -> Error {
+		match (&error, self.unavailable_peers.first()) {
+			(Error::Forbidden, Some(node)) if !self.denied => Error::NodeUnreachable {
+				node: node.clone(),
+				after_effect: false,
+			},
+			_ => error,
+		}
+	}
+
+	/// Leave the call's refusal note for a denial. `decide` does not, because a task that is
+	/// not visible reads as a Rejected Call, not an Authority Pause.
+	fn note_denial(&self, resource: &Resource, action: &str) {
+		let subject = self.delegated_subject.as_ref().filter(|delegated| {
+			let input = self.evaluation(delegated, resource, action);
+			!self.snapshot.bundle.evaluate(&input).allowed
+		});
+		refusal_note::set(
+			refusal_note::Note::new(RefusalCheck::Policy, Some(action)).subject(subject.cloned()),
+		);
 	}
 
 	pub async fn finish<T>(mut self, result: Result<T>) -> Result<T> {
@@ -929,32 +1350,36 @@ impl Access {
 	}
 
 	async fn complete<T>(
-		self,
+		mut self,
 		tx: Option<Box<dyn TransactionExecutor>>,
 		result: Result<T>,
 	) -> Result<T> {
 		if result.is_ok() {
 			let mut tx =
 				tx.ok_or_else(|| Error::Conflict("authorization transaction is suspended".into()))?;
-			AuthorizationDecision::append_many(
-				tx.as_mut(),
-				&self.identity.tenant,
-				&self.pending_decisions,
-			)
-			.await?;
+			let rows = std::mem::take(&mut self.pending_decisions);
+			AuthorizationDecision::append_unrecorded(tx.as_mut(), &self.identity.tenant, rows)
+				.await?;
 			tx.commit().await?;
 		} else {
 			if let Some(tx) = tx {
 				tx.rollback().await?;
 			}
-			if matches!(
-				result,
-				Err(Error::Forbidden
-					| Error::AuthorityRefused(_)
-					| Error::RemoteExecutionRefused(_)
-					| Error::ResumeBlocked(_)
-					| Error::RunHidden(_))
-			) {
+			// A denied decision survives whatever error the caller ends with, so a refusal that
+			// reached the caller as another error can still be explained afterwards.
+			let denied = self
+				.pending_decisions
+				.iter()
+				.any(|(_, decision)| !decision.allowed);
+			if denied
+				|| matches!(
+					result,
+					Err(Error::Forbidden
+						| Error::AuthorityRefused(_)
+						| Error::RemoteExecutionRefused(_)
+						| Error::ResumeBlocked(_)
+						| Error::RunHidden(_))
+				) {
 				// Denials survive rollback with the evaluated policy revision.
 				let mut audit: Box<dyn TransactionExecutor> = self
 					.pool
@@ -962,17 +1387,30 @@ impl Access {
 					.await?
 					.into_executor()
 					.await?;
-				AuthorizationDecision::append_many(
+				let rows = std::mem::take(&mut self.pending_decisions);
+				AuthorizationDecision::append_unrecorded(
 					audit.as_mut(),
 					&self.identity.tenant,
-					&self.pending_decisions,
+					rows,
 				)
 				.await?;
 				audit.commit().await?;
 			}
 		}
-		result
+		// The audit rule above looked at the original error; the caller sees
+		// which Node could not answer.
+		result.map_err(|error| self.named(error))
 	}
+}
+
+/// The outcome of one authorization check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Verdict {
+	Allowed,
+	/// The Tenant's policy denied it.
+	Denied,
+	/// The Subnode read-only rule refused it, which no policy lifts.
+	SubnodeReadOnly,
 }
 
 pub(crate) struct NativeAccess {
@@ -994,11 +1432,7 @@ impl std::ops::DerefMut for NativeAccess {
 
 impl NativeAccess {
 	pub(crate) async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
-		if self.decide(resource, action).await? {
-			Ok(())
-		} else {
-			Err(Error::Forbidden)
-		}
+		self.access.require(resource, action).await
 	}
 
 	pub fn set_context(&mut self, context: Value) {
@@ -1030,6 +1464,11 @@ impl NativeAccess {
 }
 
 impl Access {
+	/// No check of any kind is in progress.
+	pub(crate) fn reads_idle(&self) -> bool {
+		self.checking_reads.is_idle()
+	}
+
 	pub(crate) fn output_visit(
 		&self,
 		grant: Uuid,
@@ -1078,6 +1517,11 @@ impl Access {
 			.copied()
 	}
 	pub(crate) fn remember_remote_read(&mut self, run: Uuid, visible: bool) {
+		// A refusal reached while a Node did not answer may be that Node's
+		// silence, so it is asked again and not remembered (#751).
+		if !visible && !self.unavailable_peers.is_empty() {
+			return;
+		}
 		self.remote_read_cache
 			.insert((run, self.authority_context()), visible);
 	}
@@ -1128,6 +1572,13 @@ impl Access {
 	}
 }
 
+#[path = "access/read_lookups.rs"]
+pub(crate) mod read_lookups;
+
 #[cfg(test)]
 #[path = "access/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "access/read_recheck_tests.rs"]
+mod read_recheck_tests;

@@ -30,10 +30,15 @@ pub async fn control(
 	if caller != tenant {
 		return Err(Error::Forbidden);
 	}
+	// The Task's Read dependencies may need other Nodes, which cannot be asked
+	// under the exclusive lock; a shared lease checks them first (#751).
+	if !repository.visible_shared(tenant, id).await? {
+		return Err(Error::Forbidden);
+	}
 	let mut scope = repository.begin(&TenancyScope::tenant(tenant)?).await?;
 	let result = async {
 		let job = scope.load(tenant, id).await?;
-		if !scope.visible(&job).await? {
+		if !scope.visible_row(&job).await? {
 			return Err(Error::Forbidden);
 		}
 		if !scope.decide(&job, input.action.authorization()).await? {

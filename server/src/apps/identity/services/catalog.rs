@@ -61,6 +61,16 @@ pub(crate) async fn entry(
 	.map_err(Into::into)
 }
 
+/// [`entry`] for a definition met by a Read Recheck.
+pub(crate) async fn recheck_entry(access: &mut Access, reference: &EntityRef) -> Result<()> {
+	aidash_application::authorization::catalog::recheck_entry(
+		&mut crate::bootstrap::catalog_scope(access),
+		reference,
+	)
+	.await
+	.map_err(Into::into)
+}
+
 /// [`entry`] for a definition of an executing agent's Binding closure that
 /// only the closure agents `users` use directly.
 pub(crate) async fn closure_entry(

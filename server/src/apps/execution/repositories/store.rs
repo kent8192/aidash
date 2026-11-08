@@ -119,6 +119,10 @@ pub struct Store {
 	/// Decides whether new work may begin. The build installs it; Community's
 	/// admits everything.
 	pub admission: std::sync::Arc<dyn aidash_application::usage::Admission>,
+	/// What a running server binds so that a caller holding only this Store
+	/// reaches the other Nodes of its Deployment (#751). Empty in a process
+	/// that never built a `Federation`. Shared by every clone of this Store.
+	pub(crate) in_process: std::sync::Arc<std::sync::OnceLock<crate::federation::InProcess>>,
 }
 
 /// Worker slots are capped at four. Each holds an outer authority transaction
@@ -399,11 +403,16 @@ impl Store {
 	/// The Node that acts for the operation `remote_tenancy` found: the Node a
 	/// remote Run executes at, the Node a remote grant was issued from, or the
 	/// Node of a local Run.
+	/// The Node a cross-Node operation of this admission and grant is sent from.
+	/// In one Deployment the Home's grant and the receiver's Run live in the same
+	/// database, so a row naming `peer` itself is the other end of the exchange
+	/// and not the sender (#751).
 	pub(crate) async fn remote_node(
 		&self,
 		scope: &TenancyScope,
 		admission: Uuid,
 		grant: Uuid,
+		peer: Option<&aidash_domain::nodes::NodeName>,
 	) -> Result<aidash_domain::nodes::NodeName> {
 		let name: Option<String> = self
 			.pool
@@ -422,7 +431,10 @@ impl Store {
 					)
 					.scalar_optional(&mut **tx)
 					.await?;
-					if node.is_some() {
+					if node
+						.as_deref()
+						.is_some_and(|node| peer.is_none_or(|peer| peer.as_str() != node))
+					{
 						return Ok(node);
 					}
 				}
@@ -526,6 +538,7 @@ impl Store {
 			provider_key_material_reader: None,
 			capability_issuer: None,
 			capabilities: crate::capabilities::Runtime::from_env()?,
+			in_process: Default::default(),
 		}
 		.with_memory_recovery(memory_recovery))
 	}
@@ -672,6 +685,7 @@ impl Store {
 			provider_key_material_reader: self.provider_key_material_reader.clone(),
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
+			in_process: self.in_process.clone(),
 		})
 	}
 
@@ -731,6 +745,7 @@ impl Store {
 			provider_key_material_reader: self.provider_key_material_reader.clone(),
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
+			in_process: self.in_process.clone(),
 		})
 	}
 	pub async fn event(
@@ -2554,6 +2569,27 @@ impl Store {
 		)
 		.await
 	}
+	/// A Subnode member's message to the Run that created the Subnode.
+	pub(crate) async fn accept_member_message_in(
+		&self,
+		tx: &mut dyn TransactionExecutor,
+		creator: Uuid,
+		member: &RunMetadata,
+		content: &str,
+		key: &str,
+		max_input_tokens: usize,
+	) -> Result<()> {
+		let deployment = self.deployment.as_str();
+		InputRecord::admit_from_run(
+			tx,
+			deployment,
+			creator,
+			member.id,
+			(&member.executor_subject(deployment), content, key),
+			max_input_tokens,
+		)
+		.await
+	}
 	/// The pages people asked `run_id` to read, oldest first (ADR 0052).
 	pub async fn url_intents(
 		&self,
@@ -2873,11 +2909,16 @@ impl Store {
 		if !valid {
 			return Err(Error::Forbidden);
 		}
+		let read_kind = if kind == "delegated_task" {
+			"task"
+		} else {
+			kind
+		};
 		crate::apps::identity::models::AuthorizationRunRead::record_sources(
 			&mut **tx,
 			run,
 			workspace,
-			&[(kind.to_owned(), id)],
+			&[(read_kind.to_owned(), id)],
 		)
 		.await?;
 		crate::database::native::query(
@@ -3207,6 +3248,10 @@ impl Store {
 		.fetch_optional(&mut **tx)
 		.await? }
 		.ok_or_else(|| Error::Conflict("worker lease lost".into()))?;
+		if saved.phase().is_terminal() {
+			// Closing an open attempt appends an event, so lock first; see `lock_end`.
+			super::subnodes::lock_for_end(tx, saved.id).await?;
+		}
 		if kind == "model.completed" {
 			super::source_delivery::accept(self, tx, &saved, worker).await?;
 		}
@@ -3331,6 +3376,8 @@ impl Store {
 		if valid.is_none() {
 			return Err(Error::Conflict("worker lease lost".into()));
 		}
+		// Before the first event below; see `lock_end`.
+		super::subnodes::lock_for_end(&mut tx, run.id).await?;
 		let saved: crate::domain::run_state::RawRun = crate::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
@@ -3591,6 +3638,13 @@ impl Store {
 		action: RunControlAction,
 		source: ControlSource,
 	) -> Result<RunInspection> {
+		if action == RunControlAction::Cancel
+			|| (action == RunControlAction::Pause
+				&& source == ControlSource::DeploymentAdministrator)
+		{
+			// Before `run.control` appends its event; see `lock_end`.
+			super::subnodes::lock_for_end(tx, id).await?;
+		}
 		let run = self.control_one_in_as(tx, id, action, source).await?;
 		if action == RunControlAction::Cancel {
 			let reason = if source == ControlSource::DeploymentAdministrator {
@@ -3744,6 +3798,7 @@ impl Store {
 		key: &str,
 	) -> Result<HumanRequest> {
 		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		super::subnodes::require_writable(tx.as_mut(), run.workspace_id).await?;
 		let request = self
 			.human_request_in(tx.as_mut(), run, kind, prompt, key)
 			.await?;
@@ -4268,6 +4323,24 @@ impl Store {
 			)
 			.execute(&mut *tx)
 			.await?;
+		} else if !created && invocation.status == "REFUSED" {
+			// A refusal that paused the Run is decided again on resume. It proved nothing ran, so
+			// it starts over and is never reconciled (#754).
+			crate::database::native::query(
+				&Query::update()
+					.table(Alias::new("invocations"))
+					.value(Alias::new("status"), "STARTED")
+					.value_expr(Alias::new("result"), Expr::cust("NULL"))
+					.value(Alias::new("delivery_pending"), false)
+					.value(Alias::new("uncertain_reason"), Option::<String>::None)
+					.and_where(Expr::col(Alias::new("idempotency_key")).eq(Expr::value(key)))
+					.and_where(Expr::col(Alias::new("status")).eq(Expr::value("REFUSED")))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *tx)
+			.await?;
+			invocation.status = "STARTED".into();
+			invocation.result = None;
 		} else if !created && invocation.status != "COMPLETED" && !invocation.replay_safe {
 			{
 				let query_bind_1 = key;
@@ -4347,6 +4420,27 @@ impl Store {
 		}
 		tx.commit().await?;
 		Ok(count)
+	}
+	/// Record that an authority check refused a replay-safe call and paused the Run. Only a
+	/// `STARTED` row changes, and resuming starts it again.
+	pub async fn invocation_refused(
+		&self,
+		scope: &TenancyScope,
+		run: &Run,
+		worker: Uuid,
+		key: &str,
+		refusal: &aidash_domain::tool::AuthorityRefusal,
+	) -> Result<()> {
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		if !RunRecord::hold_worker(tx.as_mut(), run.id, worker).await? {
+			return Err(Error::Conflict(
+				"worker lease lost while recording tool refusal".into(),
+			));
+		}
+		let result = json!({"error":{"kind":"authority_refused","message":refusal.to_string()}});
+		InvocationRecord::refuse(tx.as_mut(), run.id, key, &result).await?;
+		tx.commit().await?;
+		Ok(())
 	}
 	pub async fn invocation_answer_lost(
 		&self,

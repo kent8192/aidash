@@ -1,7 +1,7 @@
 //! Shared dependency authorization and bounded traversal for HTTP and workers.
 use crate::{
 	Error, Result,
-	ports::federation::dependencies::{DependencyScope, DependencyTransport},
+	ports::federation::dependencies::{Check, DependencyScope, DependencyTransport},
 };
 use aidash_domain::{
 	federation::dependencies::{Checked, Input, LIMIT, Reference},
@@ -92,6 +92,10 @@ pub async fn verify_peer(
 	Ok(local_frontier(scope, reference).await?.disclosed())
 }
 
+/// Walk the references. `Ok(false)` covers a refusal and a Node that did not
+/// answer alike, so list consumers keep hiding the row; only the second marks
+/// the Node unavailable, so the reader says so and nothing is remembered as a
+/// denial (#751). A Node marked once is not asked again within this authority.
 pub async fn verify_all(
 	scope: &mut dyn DependencyScope,
 	transport: &dyn DependencyTransport,
@@ -99,9 +103,34 @@ pub async fn verify_all(
 ) -> Result<bool> {
 	let mut visited = BTreeSet::new();
 	let deadline = scope.now() + Duration::from_secs(20);
+	// The last other Node this walk asked, which a slow answer may have used up
+	// the time for.
+	let mut last_asked: Option<String> = None;
 	while let Some(reference) = pending.pop() {
 		let remaining = deadline.saturating_duration_since(scope.now());
 		if remaining.is_zero() {
+			// The time ran out before this reference was checked. Name a Node
+			// that may well have answered, and only to a reader allowed to
+			// discover it; a reference to a Node with no route is a refusal.
+			let node = if reference.node() != scope.node() {
+				let node = reference.node();
+				let resource = scope.resource("node", node, json!({"remote_node":node}));
+				if scope.decide(&resource, "federation.discover").await?
+					&& scope.route(node).await?.is_some()
+				{
+					Some(node.to_owned())
+				} else {
+					None
+				}
+			} else {
+				if last_asked.is_none() {
+					tracing::warn!("the dependency walk ran out of time with no other Node asked");
+				}
+				last_asked.clone()
+			};
+			if let Some(node) = node {
+				scope.mark_unavailable(&node);
+			}
 			return Ok(false);
 		}
 		let key = digest(&serde_json::to_value(&reference)?);
@@ -119,14 +148,24 @@ pub async fn verify_all(
 			if !scope.decide(&resource, "federation.discover").await? {
 				return Ok(false);
 			}
+			// After the decision: a mark may come from another identity of the
+			// same authority, and this reader's own right comes first.
+			if scope.unavailable(node) {
+				return Ok(false);
+			}
 			let Some(route) = scope.route(node).await? else {
 				return Ok(false);
 			};
+			last_asked = Some(node.to_owned());
 			let input = Input { reference };
-			let Some(checked) = transport.check(&route, &input, remaining).await else {
-				return Ok(false);
-			};
-			checked
+			match transport.check(&route, &input, remaining).await {
+				Check::Confirmed(checked) => checked,
+				Check::Refused | Check::NotAsked => return Ok(false),
+				Check::Unavailable => {
+					scope.mark_unavailable(input.reference.node());
+					return Ok(false);
+				}
+			}
 		};
 		if !checked.visible || checked.pending.len() > LIMIT {
 			return Ok(false);

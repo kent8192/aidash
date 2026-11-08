@@ -11,15 +11,31 @@ use chrono::{Duration, Utc};
 use std::time::Duration as StdDuration;
 use uuid::Uuid;
 async fn withdrawn(repository: &dyn OutboundRepository, record: &Record) -> Result<()> {
+	let mut waiting = false;
 	loop {
-		let mut scope = repository.begin(record).await?;
 		let checked = async {
-			let current = scope.load(record.id).await?;
-			scope.authorize(&current).await?;
-			Ok(None)
+			let mut scope = repository.begin(record).await?;
+			let checked = async {
+				let current = scope.load(record.id).await?;
+				scope.authorize(&current).await?;
+				Ok(None)
+			}
+			.await;
+			scope.finish(checked).await
 		}
 		.await;
-		scope.finish(checked).await?;
+		match checked {
+			Ok(_) => waiting = false,
+			// A database that cannot answer has not withdrawn anything: the fetch goes on,
+			// and the publication below checks authority again once the database is back.
+			Err(error @ Error::TemporaryDatabase(_)) => {
+				if !waiting {
+					tracing::warn!(id=%record.id,%error,"outbound authority check waits for the database");
+				}
+				waiting = true;
+			}
+			Err(error) => return Err(error),
+		}
 		tokio::time::sleep(StdDuration::from_millis(200)).await;
 	}
 }
@@ -82,8 +98,19 @@ pub async fn reconcile(
 	id: Uuid,
 ) {
 	if let Err(error) = Box::pin(drive(repository, transport, id)).await {
+		// The database, not the operation, stopped this pass. An unattempted record stays
+		// approved for the next pass, and an attempted one stays for uncertainty recovery.
+		if matches!(error, Error::TemporaryDatabase(_)) {
+			tracing::warn!(%id,%error,"outbound operation waits for the database");
+			return;
+		}
 		tracing::warn!(%id,%error,"outbound operation stopped");
-		let _ = repository.fail(id, "AUTHORITY_WITHDRAWN").await;
+		let _ = repository
+			.fail(
+				id,
+				aidash_domain::capabilities::operations::withdrawal::AUTHORITY_WITHDRAWN,
+			)
+			.await;
 	}
 }
 #[cfg(test)]

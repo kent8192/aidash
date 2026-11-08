@@ -117,17 +117,22 @@ fn access() -> Access {
 		core_gc_complete: false,
 		remote_read_cache: Default::default(),
 		unavailable_peers: Default::default(),
+		denied: false,
 		checking_reads: Default::default(),
 		read_verdicts: Default::default(),
 		read_block: None,
 		wire: None,
 		node_id: "aidash://home".into(),
 		dependency_frontier: None,
+		recheck_workspaces: Default::default(),
+		subnode_workspaces: Default::default(),
+		subnode_creators: Default::default(),
 		// Same-credential publisher checks perform no database I/O.
 		tx: AccessTransaction::default(),
 		identity,
 		snapshot,
 		subjects: vec!["alice".into()],
+		delegated_subject: None,
 		durable_audit: false,
 		audit: false,
 		context: json!({}),
@@ -136,6 +141,10 @@ fn access() -> Access {
 		cached_runs: Default::default(),
 		cached_humans: Default::default(),
 		pending_decisions: vec![],
+		recorded_decisions: Default::default(),
+		recheck_owner: None,
+		walk_root: None,
+		read_lookups: Default::default(),
 		last_policy_explicit_deny: false,
 		decision_serial: 0,
 		pool: sqlx::postgres::PgPoolOptions::new()
@@ -187,6 +196,239 @@ async fn publisher_checks_use_local_worker_facts_and_restore_the_reader_environm
 			.bundle
 			.evaluate(&access.evaluation("alice", &resource, "memory.read"))
 			.allowed
+	);
+}
+
+/// A refusal that follows a Node that did not answer is that Node's silence;
+/// a refusal of this authority's own `require` stays a refusal (#751).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_forbidden_after_a_silent_node_names_the_node_unless_this_authority_denied(
+	mut access: Access,
+) {
+	// Nobody is silent: the refusal passes through.
+	assert!(matches!(access.named(Error::Forbidden), Error::Forbidden));
+	access.mark_peer_unavailable("aidash://other/sibling");
+	access.mark_peer_unavailable("aidash://other/zebra");
+	// The first Node in a fixed order is named, and nothing else changes.
+	assert!(matches!(
+		access.named(Error::Forbidden),
+		Error::NodeUnreachable { node, after_effect: false } if node == "aidash://other/sibling"
+	));
+	assert!(matches!(
+		access.named(Error::Conflict("x".into())),
+		Error::Conflict(_)
+	));
+	assert!(matches!(
+		access.named(Error::Unauthorized),
+		Error::Unauthorized
+	));
+	// A `require` of this authority that denies is a real refusal.
+	let workspace = access.resource("workspace", "w", json!({}));
+	assert!(matches!(
+		access.require(&workspace, "workspace.read").await,
+		Err(Error::Forbidden)
+	));
+	assert!(matches!(access.named(Error::Forbidden), Error::Forbidden));
+}
+
+/// No negative read verdict is kept while a Node has not answered, and a
+/// positive one is (#751).
+#[rstest::rstest]
+#[tokio::test]
+async fn no_negative_read_verdict_is_remembered_while_a_node_is_silent(mut access: Access) {
+	let run = Uuid::new_v4();
+	let other = Uuid::new_v4();
+	access.remember_remote_read(run, false);
+	assert_eq!(access.cached_remote_read(run), Some(false));
+	access.mark_peer_unavailable("aidash://other/sibling");
+	access.remember_remote_read(other, false);
+	assert_eq!(
+		access.cached_remote_read(other),
+		None,
+		"a refusal reached while a Node was silent is asked again"
+	);
+	access.remember_remote_read(other, true);
+	assert_eq!(access.cached_remote_read(other), Some(true));
+}
+
+/// A memory step names a Node that did not answer for `Invalidated` as well as
+/// for `Authority`, so decisions 7 and 8 can fire; other reasons keep their
+/// meaning (#751).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_memory_step_names_a_silent_node_for_authority_and_invalidated(mut access: Access) {
+	use aidash_domain::semantic::Failure;
+	// Nobody is silent: the old mapping.
+	assert!(matches!(
+		access.memory_failure(Failure::Authority),
+		Error::Forbidden
+	));
+	assert!(matches!(
+		access.memory_failure(Failure::Invalidated),
+		Error::RemoteSemantic(Failure::Invalidated)
+	));
+	access.mark_peer_unavailable("aidash://other/sibling");
+	for reason in [Failure::Authority, Failure::Invalidated] {
+		assert!(matches!(
+			access.memory_failure(reason),
+			Error::NodeUnreachable { node, after_effect: false } if node == "aidash://other/sibling"
+		));
+	}
+	// Another reason is not made into silence.
+	assert!(matches!(
+		access.memory_failure(Failure::Allowance),
+		Error::RemoteSemantic(Failure::Allowance)
+	));
+	// A denial of this authority stays a refusal.
+	access.denied = true;
+	assert!(matches!(
+		access.memory_failure(Failure::Authority),
+		Error::Forbidden
+	));
+	assert!(matches!(
+		access.memory_failure(Failure::Invalidated),
+		Error::RemoteSemantic(Failure::Invalidated)
+	));
+}
+
+/// A publisher check runs under another identity on the reader's `Access`. Its
+/// silent Nodes and denials are its own: they are discarded when it leaves, and
+/// the reader's survive it (#751). Only a reader who may discover a Node is
+/// told it was silent, by `adopt_silent_peers`; to any other reader the Node
+/// stays unnamed.
+#[rstest::rstest]
+#[tokio::test]
+async fn silent_nodes_and_denials_do_not_cross_a_publisher_view(mut access: Access) {
+	let identity = access.identity.clone();
+	// The publisher's mark and denial do not reach the reader.
+	{
+		let mut publisher = access
+			.publisher_view(identity.clone(), vec!["alice".into()])
+			.await
+			.unwrap();
+		assert!(!publisher.peer_unavailable("aidash://other/reader"));
+		publisher.mark_peer_unavailable("aidash://other/publisher");
+		publisher.denied = true;
+	}
+	assert!(!access.peer_unavailable("aidash://other/publisher"));
+	assert!(matches!(access.named(Error::Forbidden), Error::Forbidden));
+	// The reader's mark survives entering and leaving, and is not visible inside.
+	access.mark_peer_unavailable("aidash://other/reader");
+	{
+		let publisher = access
+			.publisher_view(identity.clone(), vec!["alice".into()])
+			.await
+			.unwrap();
+		assert!(!publisher.peer_unavailable("aidash://other/reader"));
+		assert!(matches!(
+			publisher.named(Error::Forbidden),
+			Error::Forbidden
+		));
+	}
+	assert!(access.peer_unavailable("aidash://other/reader"));
+	assert!(matches!(
+		access.named(Error::Forbidden),
+		Error::NodeUnreachable { node, after_effect: false } if node == "aidash://other/reader"
+	));
+	// A denial the reader suffered survives too, and stays a refusal.
+	access.denied = true;
+	{
+		let _publisher = access
+			.publisher_view(identity, vec!["alice".into()])
+			.await
+			.unwrap();
+	}
+	assert!(matches!(access.named(Error::Forbidden), Error::Forbidden));
+}
+
+/// What the publisher found silent reaches the reader only when the reader may
+/// discover that Node (#751).
+#[rstest::rstest]
+#[case::may_discover(true)]
+#[case::may_not_discover(false)]
+#[tokio::test]
+async fn a_publishers_silent_node_is_the_readers_only_if_the_reader_may_discover_it(
+	mut access: Access,
+	#[case] allowed: bool,
+) {
+	if allowed {
+		access.snapshot.bundle = serde_json::from_value(json!({
+			"tenant":"acme", "subjects":{"alice":{"kind":"user"}},
+			"policies":[{"id":"discover","effect":"allow","subjects":{"ids":["alice"]},
+				"actions":["federation.discover"],"resources":{"kinds":["node"]}}]
+		}))
+		.unwrap();
+	}
+	let identity = access.identity.clone();
+	let silent = {
+		let mut publisher = access
+			.publisher_view(identity, vec!["alice".into()])
+			.await
+			.unwrap();
+		publisher.mark_peer_unavailable("aidash://other/publisher");
+		publisher.take_peer_marks()
+	};
+	assert!(!access.peer_unavailable("aidash://other/publisher"));
+	access.adopt_silent_peers(silent).await.unwrap();
+	assert_eq!(access.peer_unavailable("aidash://other/publisher"), allowed);
+	// Allowed: a refusal that follows is the Node's silence. Otherwise it stays.
+	assert_eq!(
+		matches!(
+			access.named(Error::Forbidden),
+			Error::NodeUnreachable { .. }
+		),
+		allowed
+	);
+}
+
+#[rstest::rstest]
+#[case::delegated_agent_is_denied(Some("agent-x"), Some("agent-x"))]
+#[case::no_delegated_agent(None, None)]
+#[tokio::test]
+async fn a_denial_leaves_a_note_that_names_only_the_agent_delegated_to(
+	mut access: Access,
+	#[case] delegated: Option<&str>,
+	#[case] named: Option<&str>,
+) {
+	// Arrange: the chain ends in an Agent the policy does not know, so it is denied.
+	access.subjects = vec!["alice".into(), "agent-x".into()];
+	access.delegated_subject = delegated.map(str::to_owned);
+	let resource = access.resource("memory", "bank", json!({}));
+	// Act
+	let (result, note) = refusal_note::scoped(access.require(&resource, "memory.read")).await;
+	// Assert
+	assert!(matches!(result, Err(Error::Forbidden)));
+	assert_eq!(
+		note,
+		Some(
+			refusal_note::Note::new(RefusalCheck::Policy, Some("memory.read"))
+				.subject(named.map(str::to_owned))
+		)
+	);
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn an_allowed_check_supersedes_an_earlier_policy_refusal_but_not_another_kind(
+	mut access: Access,
+) {
+	let resource = access.resource("memory", "bank", json!({}));
+	let denied = access.resource("secret", "vault", json!({}));
+	let (_, note) = refusal_note::scoped(async {
+		assert!(access.require(&denied, "secret.use").await.is_err());
+		access.require(&resource, "memory.read").await.unwrap();
+	})
+	.await;
+	assert_eq!(note, None, "the last check wins");
+	let (_, note) = refusal_note::scoped(async {
+		refusal_note::set(refusal_note::Note::new(RefusalCheck::TenantDeletion, None));
+		access.require(&resource, "memory.read").await.unwrap();
+	})
+	.await;
+	assert_eq!(
+		note,
+		Some(refusal_note::Note::new(RefusalCheck::TenantDeletion, None))
 	);
 }
 
@@ -253,7 +495,7 @@ async fn finishing_a_compound_check_bounds_audit_round_trips(
 	};
 	for id in 0..decisions {
 		let resource = access.resource("workspace", id, json!({}));
-		access.pending_decisions.push((
+		access.pending_decisions.push(DecisionRow::direct(
 			access.evaluation("alice", &resource, "workspace.read"),
 			decision.clone(),
 		));

@@ -329,12 +329,20 @@ impl DashboardRegistrationRequest {
 		policy: Option<aidash_application::ports::authorization::dashboard::AccountPolicy>,
 	) -> Result<ApprovedMapping> {
 		let scope = TenancyScope::Tenant(TenantName::new(input.tenant.clone())?);
+		let exclusive = match actor.tenant_administrator() {
+			Some(administrator) => {
+				administrator
+					.may_change(db, tenant_administration::REGISTRATION_APPROVE)
+					.await?
+			}
+			None => true,
+		};
 		db.atomic(&scope, async |tx| {
 			let administrator = actor.tenant_administrator();
 			// Authority, including its exclusive policy lock, precedes every
 			// identity lock, as at execution boundaries.
 			let mut snapshot = match administrator {
-				Some(administrator) => Some(administrator.lock(tx, true).await?),
+				Some(administrator) => Some(administrator.lock(tx, exclusive).await?),
 				None => None,
 			};
 			let preliminary = Self::objects()
@@ -657,10 +665,11 @@ impl DashboardRegistrationRequest {
 /// while excluding a policy replacement. (QuerySet currently exposes FOR UPDATE
 /// only.)
 pub(super) async fn lock_policy(
-	tx: &mut AtomicTransaction,
+	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
 	lock: LockType,
 ) -> Result<Snapshot> {
+	let exclusive = matches!(lock, LockType::Update);
 	let (sql, values) = Query::select()
 		.column(Alias::new("revision"))
 		.expr_as(
@@ -673,9 +682,20 @@ pub(super) async fn lock_policy(
 		)
 		.lock(lock)
 		.build(PostgresQueryBuilder);
-	let row = TransactionExecutor::fetch_optional(tx, &sql, convert_values(values))
-		.await?
-		.ok_or_else(|| Error::NotFound("authorization policy".into()))?;
+	let waiting = if exclusive {
+		Some(crate::database::authority_change::raise(tx, tenant).await?)
+	} else {
+		None
+	};
+	let row = tx
+		.fetch_optional(&sql, convert_values(values))
+		.await
+		.map_err(Error::from);
+	let row = match waiting {
+		Some(waiting) => waiting.settle(tx, row).await?,
+		None => row?,
+	}
+	.ok_or_else(|| Error::NotFound("authorization policy".into()))?;
 	Ok(Snapshot {
 		revision: row.get("revision").map_err(FrameworkError::from)?,
 		bundle: serde_json::from_str(
@@ -1149,13 +1169,21 @@ impl DashboardMapping {
 				.ok_or_else(|| Error::Conflict("mapping revision changed".into()))?,
 		};
 		let scope = TenancyScope::tenant(&tenant)?;
+		let exclusive = match actor.tenant_administrator() {
+			Some(administrator) => {
+				administrator
+					.may_change(db, tenant_administration::MAPPING_DISABLE)
+					.await?
+			}
+			None => true,
+		};
 		db.atomic(&scope, async |tx| {
 			if let Some(administrator) = actor.tenant_administrator() {
 				// Each administrator holds a shared lock on its own credential, so
 				// two administrators disabling each other's Mappings would deadlock
 				// on the target credential below. The exclusive policy lock
 				// serializes them before any credential lock is taken.
-				let snapshot = administrator.lock(tx, true).await?;
+				let snapshot = administrator.lock(tx, exclusive).await?;
 				let target = Self::find(tx, id)
 					.await?
 					.filter(|mapping| mapping.tenant == administrator.tenant())

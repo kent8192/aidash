@@ -1,4 +1,4 @@
-//! A Catalog Approval decides use, not who can read what Runs produced (#769, ADR 0116).
+//! A Catalog Approval decides use, not who can read what Runs produced (#769, ADR 0122).
 //!
 //! Three Runs share a Workspace. `planner` runs `fixture-agent@1.0.0` and `reviewer` runs
 //! `listed-agent@1.0.0`; `reviewer` read the `planner` Run, as a Run reads the output of the Run

@@ -397,6 +397,16 @@ impl TenantAdministrator {
 			.await
 	}
 
+	/// Whether some policy could allow this subject `action`, read before an
+	/// Authority Change raises its flag. One that cannot takes the ordinary lock:
+	/// its check then refuses it, and the Tenant's work never waits for it (ADR 0121).
+	pub(crate) async fn may_change(&self, db: &Pool, action: &str) -> Result<bool> {
+		let snapshot = crate::authorization::Authorization { pool: db.clone() }
+			.snapshot(self.tenant())
+			.await?;
+		Ok(snapshot.bundle.may_allow(&self.identity.subject, action))
+	}
+
 	/// [`Self::lock`] for restoring this administrator's deleted Tenant.
 	pub(crate) async fn lock_deleted(&self, tx: &mut dyn TransactionExecutor) -> Result<Snapshot> {
 		self.identity.lock_deleted(tx, Some(&self.policy)).await
@@ -794,8 +804,9 @@ impl TenantAdministrator {
 		input: MembershipUpdate,
 	) -> Result<Membership> {
 		aidash_domain::policy::identifier(&subject)?;
+		let exclusive = self.may_change(db, rules::SUBJECT_GROUP_UPDATE).await?;
 		db.atomic(&self.scope()?, async |tx| {
-			let mut snapshot = self.lock(tx, true).await?;
+			let mut snapshot = self.lock(tx, exclusive).await?;
 			if snapshot.revision != input.expected_policy_revision {
 				return Err(Error::Conflict("authorization revision changed".into()));
 			}

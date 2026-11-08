@@ -37,6 +37,7 @@ enum Requirement {
 pub struct AccessBoundary {
 	requirement: Requirement,
 	visibility: bool,
+	stops_work: bool,
 }
 
 impl AccessBoundary {
@@ -44,6 +45,7 @@ impl AccessBoundary {
 		Self {
 			requirement: Requirement::Public,
 			visibility: false,
+			stops_work: false,
 		}
 	}
 	/// A Tenant route: only a Tenant Subject (browser Mapping or Subject
@@ -54,6 +56,7 @@ impl AccessBoundary {
 		Self {
 			requirement: Requirement::Authenticated,
 			visibility: false,
+			stops_work: false,
 		}
 	}
 	/// A route that is part of administering the Deployment: both Tenant
@@ -64,22 +67,32 @@ impl AccessBoundary {
 		Self {
 			requirement: Requirement::Administered,
 			visibility: false,
+			stops_work: false,
 		}
 	}
 	pub fn deployment_administrator() -> Self {
 		Self {
 			requirement: Requirement::DeploymentAdministrator,
 			visibility: false,
+			stops_work: false,
 		}
 	}
 	pub fn peer() -> Self {
 		Self {
 			requirement: Requirement::Peer,
 			visibility: false,
+			stops_work: false,
 		}
 	}
 	pub fn with_visibility(mut self) -> Self {
 		self.visibility = true;
+		self
+	}
+	/// A route that stops work, so that a person can always stop it while an
+	/// Authority Change waits (ADR 0121). A handler that can also start work
+	/// waits itself before it does.
+	pub fn stops_work(mut self) -> Self {
+		self.stops_work = true;
 		self
 	}
 
@@ -171,6 +184,15 @@ impl Middleware for AccessBoundary {
 			if !protection.authenticated(&request, actor.as_ref()) {
 				return Ok(Response::new(reinhardt::StatusCode::TOO_MANY_REQUESTS)
 					.with_header("Retry-After", "1"));
+			}
+			// New work waits behind an Authority Change here, before it holds a
+			// visibility lease or anything else. A peer's request does not wait: it
+			// may be a call back from work this Node is running (ADR 0121).
+			if !self.stops_work
+				&& let Some(Actor::Subject(identity)) = actor.as_ref()
+			{
+				crate::database::authority_change::enter(&runtime.store.pool, &identity.tenant)
+					.await;
 			}
 			let browser = request.extensions.get::<dashboard_auth::BrowserOrigin>();
 			let self_identity_write = browser.as_ref().is_some_and(|origin| {

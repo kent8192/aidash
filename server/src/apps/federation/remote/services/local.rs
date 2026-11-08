@@ -6,8 +6,13 @@
 //!
 //! The sender, its Node and the subject it acts for are what the server
 //! already authenticated: the `Route` was resolved from the caller's own Tenant
-//! and policy. The caller's transaction is never open while this runs, because
-//! peer I/O only starts after the application has made its durable writes.
+//! and policy. The caller's transaction can be open while this runs: a Read
+//! dependency check asks the other Nodes of this Deployment inside the reader's
+//! authority (#751). Such a check stops after 10 seconds, so a saturated
+//! connection pool ends in "cannot confirm" and not in a hang. An authority that
+//! holds the Tenant's policy row exclusively asks nobody, because the peer's own
+//! shared lock would wait on it. So nothing here may wait for work that this
+//! request's own caller is holding up.
 use crate::{
 	Error, Result,
 	apps::federation::transactions::{
@@ -32,6 +37,7 @@ pub(crate) struct Outcome {
 	pub semantic_reason: Option<Failure>,
 	pub execution_refusal: Option<aidash_domain::federation::execution::Refusal>,
 	pub transaction_pending: bool,
+	pub policy_busy: Option<u64>,
 	pub run_message_pending: bool,
 }
 
@@ -44,6 +50,7 @@ impl Outcome {
 				semantic_reason: None,
 				execution_refusal: None,
 				transaction_pending: false,
+				policy_busy: None,
 				run_message_pending: false,
 			},
 			Err(error) => Error::from(error).into(),
@@ -74,6 +81,8 @@ fn response(response: Response) -> Outcome {
 			.and_then(|reason| serde_json::from_value(json!(reason)).ok()),
 		transaction_pending: header(&response.headers, "x-aidash-transaction-pending")
 			.is_some_and(|value| value == "1"),
+		policy_busy: header(&response.headers, "x-aidash-policy-busy")
+			.and_then(|value| value.parse().ok()),
 		run_message_pending: response
 			.headers
 			.contains_key("x-aidash-run-message-pending"),

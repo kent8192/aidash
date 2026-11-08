@@ -33,18 +33,42 @@ pub enum Direction {
 	Received,
 }
 
+/// What one request cost at the gateway, in milliseconds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RequestTimes {
+	/// From the end of admission to the end of the response. A response that
+	/// ends its own stream includes its final debit, unless that debit failed
+	/// and was left to the background; one that stops at its `Content-Length`
+	/// does not.
+	pub duration_ms: u64,
+	/// The gateway's admission call: the token, the authority's recheck, the
+	/// budget locks and the record's first write.
+	pub admission_ms: u64,
+	/// From the end of the response until its final debit settled, including a
+	/// first attempt that failed and the retries after it, or until the debit
+	/// was given up (`egress_debit_abandoned`). Bytes kept when a debit failed in
+	/// the middle of a stream, which stops the stream and is charged in the
+	/// background, may settle later and are not counted.
+	pub settle_ms: u64,
+}
+
 #[async_trait]
 pub trait Meter: Send + Sync {
+	/// Recheck authority even when no body bytes are flowing.
+	async fn check_active(&self) -> Result<()> {
+		Ok(())
+	}
 	/// Atomically adds body bytes the gateway has streamed, in batches, to the
 	/// request record and to the operation's and this service's budgets. The
 	/// bytes are always committed, even past a limit. Afterwards the call
 	/// reports why the stream must stop: `Conflict(LIMIT_EXCEEDED)` when a
 	/// budget is exhausted, `Conflict(OPERATION_EXPIRED)` when the operation or
 	/// session ended or expired, and `Forbidden` when its authority was revoked
-	/// (see [`aidash_domain::egress::LIMIT_EXCEEDED`]).
+	/// (see [`aidash_domain::egress::LIMIT_EXCEEDED`]). Any other error means
+	/// the bytes were not committed, and the caller charges them again.
 	async fn charge(&self, direction: Direction, bytes: usize) -> Result<()>;
 	/// Completes the metadata-only request record, including failures and partial bodies.
-	async fn finish(&self, status: u16, elapsed_ms: u64, error: Option<&str>) -> Result<()>;
+	async fn finish(&self, status: u16, times: RequestTimes, error: Option<&str>) -> Result<()>;
 }
 
 #[async_trait]

@@ -7,6 +7,7 @@
 //! - `demo_data`
 //! - `execution_authorization`
 //! - `interaction_authorization`
+//! - `other_node_reads`
 //! - `policy`
 //! - `resource_authorization`
 //! - `run_control`

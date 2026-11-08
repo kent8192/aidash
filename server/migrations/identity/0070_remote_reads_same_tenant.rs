@@ -1,10 +1,11 @@
 // reinhardt-migration-source: 1
-// ORM state for the same-Tenant flag of a remote read. The physical column is added in 0068.
+// A remote read records whether its Node belongs to the reader's Tenant (#769). Rows written
+// before this are treated as another Tenant's, which keeps asking the Node (the stricter check).
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0069_remote_reads_same_tenant_state", "identity")
-		.add_dependency("identity", "0068_remote_reads_same_tenant")
-		.state_only(true)
+	Migration::new("0070_remote_reads_same_tenant", "identity")
+		.add_dependency("identity", "0069_decision_coalescing_indexes")
+		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::AddColumn {
 			table: "authorization_run_remote_reads".into(),

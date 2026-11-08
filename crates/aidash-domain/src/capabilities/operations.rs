@@ -123,6 +123,17 @@ pub fn request_validation_failure(
 pub const WORKING_EXPORT_REFUSED: &str = "WORKING_EXPORT_REFUSED";
 /// Most entries one Working Area manifest holds, mounted inputs included.
 pub const MAX_AREA_FILES: usize = 4096;
+impl MountedFile {
+	/// A Reference file stays in the manifest for the file tools, but no Pod
+	/// receives it and it uses none of the Working Area's capacity.
+	pub fn is_reference_file(&self) -> bool {
+		matches!(self.scope, FileScope::References) && self.provenance["kind"] == "reference"
+	}
+}
+/// The files that count against a Working Area's file and byte limits.
+pub fn counted_files(files: &[MountedFile]) -> impl Iterator<Item = &MountedFile> {
+	files.iter().filter(|file| !file.is_reference_file())
+}
 /// A Working Area quota an export can exceed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportQuota {
@@ -156,17 +167,10 @@ pub const VERIFICATION: &str = "verification";
 pub fn capability_of(kind: &str) -> &str {
 	if kind == VERIFICATION { "shell" } else { kind }
 }
-/// The Area state once an operation's outcome is lost. A Check never exports
-/// `/work`, so losing it leaves the Area's files as they were and usable,
-/// unless the runner still holds its writer without confirming it stopped
-/// (`writer_held`): the runner then admits no other operation in the Area, so
-/// the Area stays fenced until that writer is reconciled.
-pub fn lost_area_state(kind: &str, writer_held: bool) -> &'static str {
-	if kind == VERIFICATION && !writer_held {
-		"active"
-	} else {
-		"uncertain"
-	}
+/// A lost outcome leaves the last saved Area intact. It remains fenced while
+/// the original writer may still run, and reopens once its stop is proven.
+pub fn lost_area_state(_kind: &str, writer_held: bool) -> &'static str {
+	if !writer_held { "active" } else { "uncertain" }
 }
 pub fn available(state: &str) -> Result<()> {
 	if state != "active" {
@@ -225,6 +229,19 @@ impl OperationState {
 			never_dispatched,
 		})
 	}
+}
+
+/// What a cancel asks the Runner to refuse, if the operation may not have
+/// reached it. `dispatch_pending` records the intent to send, not whether the
+/// send arrived: the Runner may hold the operation already, or receive it later
+/// from a send its caller gave up on. Only the Runner can settle that, and only
+/// the one this intent was recorded against, so it compares itself to `instance`
+/// and refuses any later send under the lock that accepts one.
+pub fn undelivered_refusal(result: &Value, digest: &str, instance: Option<&str>) -> Option<Value> {
+	if result["dispatch_pending"] != true {
+		return None;
+	}
+	instance.map(|instance| json!({"digest":digest,"instance":instance}))
 }
 
 pub mod withdrawal;

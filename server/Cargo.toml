@@ -184,6 +184,10 @@ name = "dashboard_oidc"
 path = "src/apps/identity/tests/dashboard_oidc.rs"
 
 [[test]]
+name = "authority_changes"
+path = "src/apps/identity/tests/authority_changes.rs"
+
+[[test]]
 name = "safety_stop"
 path = "src/apps/identity/tests/safety_stop.rs"
 
@@ -374,6 +378,10 @@ path = "src/apps/execution/tests/http_protection.rs"
 [[test]]
 name = "multimodal_run"
 path = "src/apps/execution/tests/multimodal_run.rs"
+
+[[test]]
+name = "other_node_reads"
+path = "src/apps/identity/tests/other_node_reads.rs"
 
 [[test]]
 name = "peer_graph"

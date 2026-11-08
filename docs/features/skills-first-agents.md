@@ -59,6 +59,10 @@ Sources: <https://github.com/anthropics/skills>, <https://github.com/openai/skil
 
 ## Personal reference documents
 
+These are an Agent's private knowledge, sent with every request. A project's
+documents belong in a Reference set instead, which a Run reads on demand and
+which holds 256 files: see [Reference sets](../operations/core-capabilities.md#reference-sets).
+
 The agent form accepts PDF, Excel `.xlsx`, `.txt`/`.md`/`.csv`, and PNG, JPEG, GIF or WebP images. It extracts
 text in the browser, displays a preview, and allows removal before registration.
 PDF text retains page numbers; Excel values retain sheet names and cell addresses.

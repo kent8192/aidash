@@ -33,12 +33,43 @@ pub async fn closure_entry(
 	admit(scope, reference, action, None, users).await
 }
 
+/// `Forbidden`, with a note that Catalog Approval refused `action`.
+fn catalog_refusal(action: &str) -> Error {
+	super::refusal_note::set(super::refusal_note::Note::new(
+		aidash_domain::tool::RefusalCheck::Catalog,
+		Some(action),
+	));
+	Error::Forbidden
+}
+
+/// [`entry`] for a definition met by a Read Recheck. The Recheck hands nothing
+/// over, so current policy decides, as it does for an authority that is not
+/// inherited: an inherited one need not have used the definition itself. What
+/// its Run may use does not grow, and it takes no lock that could queue behind
+/// its own lease.
+pub async fn recheck_entry(scope: &mut dyn CatalogScope, reference: &EntityRef) -> Result<()> {
+	if !scope.inherited_lease()
+		|| scope.approved(reference)
+		|| crate::registry::system::builtin_reference(reference)
+	{
+		return entry(scope, reference, "registry.read").await.map(|_| ());
+	}
+	let direct_user = scope.direct_user(reference);
+	if !scope.permits_restriction(reference, &direct_user).await? {
+		return Err(catalog_refusal("registry.read"));
+	}
+	current_definition(scope, reference, "registry.read", None)
+		.await
+		.map(|_| ())
+}
+
 /// The refusal of a Tenant policy denial met while admitting a Catalog entry for `tool`'s call.
 pub fn policy_refusal(tool: &str, action: &str) -> Error {
 	Error::AuthorityRefused(Box::new(aidash_domain::tool::AuthorityRefusal {
 		tool: tool.to_owned(),
 		check: aidash_domain::tool::RefusalCheck::Policy,
 		action: Some(action.to_owned()),
+		subject: None,
 	}))
 }
 
@@ -88,7 +119,7 @@ async fn admit(
 		&& !scope.approved(reference)
 		&& !crate::registry::system::builtin_reference(reference)
 	{
-		return Err(Error::Forbidden);
+		return Err(catalog_refusal(action));
 	}
 	// A cache hit already holds the distribution lock taken by its first
 	// admission in this transaction; a new admission takes it before reading
@@ -109,7 +140,7 @@ async fn admit(
 		if !scope.permits_restriction(reference, direct_user).await? {
 			// A restriction narrows the Tenant policy; refuse exactly as an
 			// unapproved version does, without disclosing the restriction.
-			return Err(Error::Forbidden);
+			return Err(catalog_refusal(action));
 		}
 	}
 	// The distribution, catalog and policy locks taken by the first admission keep it
@@ -118,12 +149,28 @@ async fn admit(
 		scope.remember(reference);
 		return Ok(entry);
 	}
-	let document = scope.document(reference).await?.ok_or(Error::Forbidden)?;
+	let entry = current_definition(scope, reference, action, tool).await?;
+	scope.remember(reference);
+	scope.admit(reference, action, &entry);
+	Ok(entry)
+}
+
+/// The approved definition, when current policy allows `action` on it.
+async fn current_definition(
+	scope: &mut dyn CatalogScope,
+	reference: &EntityRef,
+	action: &str,
+	tool: Option<&str>,
+) -> Result<Entry> {
+	let document = scope
+		.document(reference)
+		.await?
+		.ok_or_else(|| catalog_refusal(action))?;
 	let entry: Entry = serde_json::from_value(document)?;
 	if let Some(projection) = &entry.installation
 		&& (projection.contract != 1 || projection.tenant != scope.tenant())
 	{
-		return Err(Error::Forbidden);
+		return Err(catalog_refusal(action));
 	}
 	let resource = scope.resource(&entry);
 	// A read check already decided `registry.read` for this reference under this authority in
@@ -141,8 +188,6 @@ async fn admit(
 				error => error,
 			})?;
 	}
-	scope.remember(reference);
-	scope.admit(reference, action, &entry);
 	Ok(entry)
 }
 pub async fn list(scope: &mut dyn CatalogScope, search: &Search) -> Result<Vec<Entry>> {

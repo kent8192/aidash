@@ -359,6 +359,7 @@ async fn a_missing_route_denies_before_rpc(mut scope: Scope, #[case] missing: bo
 #[rstest]
 #[case::denied(Verification::Rejected, false)]
 #[case::transport(Verification::Unavailable, true)]
+#[case::not_asked(Verification::NotAsked, false)]
 #[tokio::test]
 async fn transport_unavailability_is_distinct_from_a_negative_proof(
 	mut scope: Scope,
@@ -389,8 +390,31 @@ async fn unavailable_peer_still_requires_saved_metadata_policy(mut scope: Scope)
 	);
 	assert_eq!(
 		scope.calls,
-		vec!["dependencies", "registry.read", "remember:false"]
+		vec![
+			"dependencies",
+			"registry.read",
+			"federation.discover",
+			"remember:false"
+		]
 	);
+	assert!(transport.calls.lock().unwrap().is_empty());
+}
+#[rstest]
+#[tokio::test]
+async fn a_mark_does_not_stand_in_for_this_readers_discover_right(mut scope: Scope) {
+	scope.unavailable.insert("aidash://leaf".into());
+	scope.denied = Some("federation.discover");
+	let transport = Transport::default();
+	assert!(
+		!reads_visible(&mut scope, &transport, Uuid::from_u128(1))
+			.await
+			.unwrap()
+	);
+	assert_eq!(
+		scope.calls.last().map(String::as_str),
+		Some("remember:false")
+	);
+	assert!(scope.calls.iter().any(|call| call == "federation.discover"));
 	assert!(transport.calls.lock().unwrap().is_empty());
 }
 #[rstest]

@@ -471,7 +471,7 @@ impl ResponsesProvider {
 		} else {
 			parse_response(&crate::response::bytes(response, MAX_RESPONSE_BYTES).await?)
 		};
-		record_token_metrics(&result);
+		record_token_metrics(&result, self.config.metric_family());
 		result
 	}
 }
@@ -514,7 +514,7 @@ fn parse_response(body: &[u8]) -> Result<ModelResponse> {
 
 /// Token metrics match the Chat Completions path: a billed response counts,
 /// a failure with no reported usage does not.
-fn record_token_metrics(result: &Result<ModelResponse>) {
+fn record_token_metrics(result: &Result<ModelResponse>, family: &'static str) {
 	if let Some(usage) = super::billed_usage(result) {
 		for (direction, tokens) in [
 			("input", usage.reported.input_tokens),
@@ -523,8 +523,12 @@ fn record_token_metrics(result: &Result<ModelResponse>) {
 			("input_cached_write", usage.reported.cache_write_tokens),
 		] {
 			if let Some(tokens) = tokens {
-				metrics::counter!("aidash_model_tokens_total", "direction" => direction)
-					.increment(tokens);
+				metrics::counter!(
+					"aidash_model_tokens_total",
+					"direction" => direction,
+					"family" => family
+				)
+				.increment(tokens);
 			}
 		}
 	}
