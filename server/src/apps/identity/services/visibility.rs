@@ -1,7 +1,8 @@
 //! Read authorization over native records, retaining the complete dependency graph.
 use super::NativeAccess;
+use crate::apps::identity::models::DecisionOwner;
 use crate::authorization::policy::Resource;
-use crate::registry::{EntityRef, Entry};
+use crate::registry::EntityRef;
 use crate::{Result, domain};
 use uuid::Uuid;
 
@@ -124,8 +125,8 @@ impl NativeAccess {
 		.map_err(Into::into)
 	}
 
-	pub(crate) async fn catalog_entry(&mut self, reference: &EntityRef) -> Result<Entry> {
-		aidash_application::authorization::catalog::retained::entry(
+	pub(crate) async fn catalog_recheck_entry(&mut self, reference: &EntityRef) -> Result<()> {
+		aidash_application::authorization::catalog::retained::recheck_entry(
 			&mut crate::bootstrap::native_run_visibility_scope(self),
 			reference,
 		)
@@ -149,6 +150,9 @@ impl NativeAccess {
 		let Some(_visit) = self.access.checking_reads.enter(key) else {
 			return Ok(true);
 		};
+		let walk = self
+			.access
+			.begin_read_walk(DecisionOwner::Run(run), outermost);
 		let result = self.run_reads_visible_in(run).await;
 		match result {
 			Ok(verdict) => self
@@ -158,7 +162,7 @@ impl NativeAccess {
 			Err(_) if outermost => self.access.read_verdicts.abandon(),
 			Err(_) => {}
 		}
-		result
+		self.access.end_read_walk(walk, result).await
 	}
 
 	async fn run_reads_visible_in(&mut self, run: Uuid) -> Result<bool> {

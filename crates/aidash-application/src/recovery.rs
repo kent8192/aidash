@@ -64,6 +64,9 @@ pub enum ExecutionFailure {
 	Authority(AuthorityFailure),
 	MediaRoute(String),
 	Deferred,
+	/// The database could not serve the step. The Run waits and resumes for as
+	/// long as that lasts, spending none of its attempts (#728).
+	DatabaseUnavailable,
 	ToolRetry {
 		count: u32,
 		retry_after: Option<std::time::Duration>,
@@ -101,6 +104,7 @@ impl ExecutionFailure {
 				message.clone()
 			}
 			Self::Deferred => "execution state is temporarily unavailable".into(),
+			Self::DatabaseUnavailable => "the database is temporarily unavailable".into(),
 			Self::ToolRetry { message, .. } => message.clone(),
 			Self::DeciderOutage => "every Decider Route is unavailable".into(),
 		}

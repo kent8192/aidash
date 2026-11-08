@@ -1,13 +1,17 @@
 //! Process supervision and bounded drain, independent of HTTP and persistence.
 use aidash_application::{Error, Result, lifecycle::StopToken};
-use std::{future::Future, time::Duration};
-use tokio::{sync::watch, task::JoinSet};
+use std::{collections::HashMap, future::Future, time::Duration};
+use tokio::{
+	sync::watch,
+	task::{self, JoinSet},
+};
 
 /// Owns all spawned tasks; cancellation or early return cannot detach them.
 pub struct Supervisor {
 	stop: watch::Sender<bool>,
 	workers: JoinSet<Result<()>>,
 	services: JoinSet<Result<()>>,
+	names: HashMap<task::Id, &'static str>,
 	drain_timeout: Duration,
 }
 
@@ -18,6 +22,7 @@ impl Supervisor {
 			stop,
 			workers: JoinSet::new(),
 			services: JoinSet::new(),
+			names: HashMap::new(),
 			drain_timeout,
 		}
 	}
@@ -30,12 +35,22 @@ impl Supervisor {
 		StopToken::new(self.stop.subscribe())
 	}
 
-	pub fn spawn_worker(&mut self, work: impl Future<Output = Result<()>> + Send + 'static) {
-		self.workers.spawn(work);
+	pub fn spawn_worker(
+		&mut self,
+		name: &'static str,
+		work: impl Future<Output = Result<()>> + Send + 'static,
+	) {
+		let task = self.workers.spawn(work);
+		self.names.insert(task.id(), name);
 	}
 
-	pub fn spawn_service(&mut self, work: impl Future<Output = Result<()>> + Send + 'static) {
-		self.services.spawn(work);
+	pub fn spawn_service(
+		&mut self,
+		name: &'static str,
+		work: impl Future<Output = Result<()>> + Send + 'static,
+	) {
+		let task = self.services.spawn(work);
+		self.names.insert(task.id(), name);
 	}
 
 	/// Recovery services remain alive while in-flight worker effects drain.
@@ -68,11 +83,11 @@ impl Supervisor {
 			// Prefer the ready shutdown branch before treating that exit as failure.
 			biased;
 			_ = shutdown => None,
-			result = self.workers.join_next(), if !self.workers.is_empty() => {
-				Some(Error::External(format!("worker stopped: {result:?}")))
+			result = self.workers.join_next_with_id(), if !self.workers.is_empty() => {
+				Some(stopped("worker", &self.names, result))
 			},
-			result = self.services.join_next(), if !self.services.is_empty() => {
-				Some(Error::External(format!("background service stopped: {result:?}")))
+			result = self.services.join_next_with_id(), if !self.services.is_empty() => {
+				Some(stopped("background service", &self.names, result))
 			},
 		};
 		close_admission();
@@ -84,6 +99,25 @@ impl Supervisor {
 	}
 }
 
+/// Name what ended, because it ends the whole process.
+fn stopped(
+	kind: &str,
+	names: &HashMap<task::Id, &'static str>,
+	result: Option<std::result::Result<(task::Id, Result<()>), task::JoinError>>,
+) -> Error {
+	let (id, outcome) = match result {
+		Some(Ok((id, Ok(())))) => (Some(id), "returned before shutdown".to_owned()),
+		Some(Ok((id, Err(error)))) => (Some(id), error.to_string()),
+		Some(Err(error)) => (Some(error.id()), error.to_string()),
+		None => (None, "already gone".to_owned()),
+	};
+	let name = id
+		.and_then(|id| names.get(&id).copied())
+		.unwrap_or("unknown");
+	tracing::error!(kind, name, %outcome, "stopping the process");
+	Error::External(format!("{kind} {name} stopped: {outcome}"))
+}
+
 impl Drop for Supervisor {
 	fn drop(&mut self) {
 		self.stop.send_replace(true);
@@ -91,6 +125,8 @@ impl Drop for Supervisor {
 		self.services.abort_all();
 	}
 }
+
+pub mod background;
 
 pub mod generation;
 

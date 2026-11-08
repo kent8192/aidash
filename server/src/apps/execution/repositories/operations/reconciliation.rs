@@ -158,10 +158,13 @@ impl OperationReconciliationScope for Scope<'_> {
 			working_bytes: profile.working_bytes,
 			output_bytes: profile.output_bytes,
 			read_bytes: profile.limits.read_bytes,
+			maximum_seconds: profile.maximum_seconds,
 		}
 	}
 	async fn load(&mut self, id: Uuid, run: Uuid) -> Result<Loaded> {
-		let run = self.access.run_for_interaction(run).await?;
+		// The Read Recheck runs on its own 30 second loop (`read_recheck`), so this
+		// pass does not walk what the Run has read.
+		let run = self.access.run_for_continuation(run).await?;
 		crate::apps::execution::repositories::subnodes::require_writable(
 			self.access.tx.native_mut(),
 			run.workspace_id,
@@ -281,7 +284,7 @@ impl OperationReconciliationScope for Scope<'_> {
 	}
 	async fn upload_files(&mut self, operation: &Snapshot) -> Result<Vec<MountedFile>> {
 		let result: NativeResult<Vec<FileEntry>> = async {
-			Ok(service::files(self.area())?
+			Ok(operations::pod_files(self.area())?
 				.into_iter()
 				.chain(skills::mounted(&mut self.access, self.run.as_ref().unwrap().id).await?)
 				.chain(packages::inputs(&native(operation))?)

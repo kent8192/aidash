@@ -38,6 +38,27 @@ fn catalog_refusal(action: &str) -> Error {
 	Error::Forbidden
 }
 
+/// [`entry`] for a definition met by a Read Recheck. The Recheck hands nothing
+/// over, so current policy decides, as it does for an authority that is not
+/// inherited: an inherited one need not have used the definition itself. What
+/// its Run may use does not grow, and it takes no lock that could queue behind
+/// its own lease.
+pub async fn recheck_entry(scope: &mut dyn CatalogScope, reference: &EntityRef) -> Result<()> {
+	if !scope.inherited_lease()
+		|| scope.approved(reference)
+		|| crate::registry::system::builtin_reference(reference)
+	{
+		return entry(scope, reference, "registry.read").await.map(|_| ());
+	}
+	let direct_user = scope.direct_user(reference);
+	if !scope.permits_restriction(reference, &direct_user).await? {
+		return Err(catalog_refusal("registry.read"));
+	}
+	current_definition(scope, reference, "registry.read", None)
+		.await
+		.map(|_| ())
+}
+
 /// The refusal of a Tenant policy denial met while admitting a Catalog entry for `tool`'s call.
 pub fn policy_refusal(tool: &str, action: &str) -> Error {
 	Error::AuthorityRefused(Box::new(aidash_domain::tool::AuthorityRefusal {
@@ -100,6 +121,19 @@ async fn admit(
 		scope.remember(reference);
 		return Ok(entry);
 	}
+	let entry = current_definition(scope, reference, action, tool).await?;
+	scope.remember(reference);
+	scope.admit(reference, action, &entry);
+	Ok(entry)
+}
+
+/// The approved definition, when current policy allows `action` on it.
+async fn current_definition(
+	scope: &mut dyn CatalogScope,
+	reference: &EntityRef,
+	action: &str,
+	tool: Option<&str>,
+) -> Result<Entry> {
 	let document = scope
 		.document(reference)
 		.await?
@@ -118,8 +152,6 @@ async fn admit(
 			Error::Forbidden => tool.map_or(Error::Forbidden, |tool| policy_refusal(tool, action)),
 			error => error,
 		})?;
-	scope.remember(reference);
-	scope.admit(reference, action, &entry);
 	Ok(entry)
 }
 pub async fn list(scope: &mut dyn CatalogScope, search: &Search) -> Result<Vec<Entry>> {

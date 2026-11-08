@@ -223,7 +223,7 @@ async fn the_process_supervisor_applies_its_shared_drain_deadline_to_sandbox_job
 		})
 		.unwrap();
 	let mut supervisor = crate::Supervisor::new(Duration::from_secs(20));
-	supervisor.spawn_worker(sessions.clone().run(supervisor.stop_receiver()));
+	supervisor.spawn_worker("sandbox", sessions.clone().run(supervisor.stop_receiver()));
 	let error = supervisor.shutdown().await.unwrap_err();
 	assert_eq!(error.to_string(), "worker drain deadline reached");
 	tokio::task::yield_now().await;

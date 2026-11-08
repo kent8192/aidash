@@ -1,5 +1,6 @@
 //! Keep cancellation possible after credential or source authority is revoked.
 use crate::{Result, ports::capabilities::withdrawal::OperationWithdrawalRepository};
+use aidash_domain::capabilities::operations::withdrawal::WriterStop;
 use uuid::Uuid;
 pub async fn withdraw(
 	repository: &dyn OperationWithdrawalRepository,
@@ -11,12 +12,15 @@ pub async fn withdraw(
 	if !snapshot.active() {
 		return Ok(());
 	}
-	let stopped = if snapshot.never_dispatched() {
-		true
+	let stop = if snapshot.never_dispatched() {
+		WriterStop::Confirmed
 	} else {
-		repository.cancel(snapshot.operation_id).await?["termination_confirmed"] == true
+		let reply = repository
+			.cancel(snapshot.operation_id, snapshot.undelivered_refusal())
+			.await?;
+		WriterStop::from_reply(&reply)
 	};
-	scope.commit(snapshot.change(stopped)).await
+	scope.commit(snapshot.change(stop)).await
 }
 /// A durable Node deletion owns this exact operation. Unlike authority withdrawal,
 /// it must also stop terminal/uncertain writers without rewriting their outcome.
@@ -39,22 +43,27 @@ pub async fn stop_captured_writer(
 			"prepared writer has an unexpected runner instance".into(),
 		));
 	}
-	let stopped = if (!snapshot.active() && snapshot.result["termination_confirmed"] == true)
+	let stop = if (!snapshot.active() && snapshot.result["termination_confirmed"] == true)
 		|| (snapshot.never_dispatched() && snapshot.runner_instance.is_none())
 	{
-		true
+		WriterStop::Confirmed
 	} else {
 		let instance = snapshot.runner_instance.as_deref().ok_or_else(|| {
 			crate::Error::Conflict("captured writer has no original runner instance".into())
 		})?;
 		repository
-			.cancel_bound(snapshot.operation_id, &snapshot.digest, instance)
+			.cancel_bound(
+				snapshot.operation_id,
+				&snapshot.digest,
+				instance,
+				snapshot.undelivered_refusal(),
+			)
 			.await?
 	};
 	let change = if snapshot.active() {
-		snapshot.change(stopped)
+		snapshot.change(stop)
 	} else {
-		snapshot.confirm_terminal_stop(stopped)
+		snapshot.confirm_terminal_stop(stop != WriterStop::Unconfirmed)
 	};
 	scope.commit(change).await
 }

@@ -43,10 +43,16 @@ impl WorkspaceResourceScope for Reads<'_> {
 	fn context(&self) -> &Value {
 		&self.access.context
 	}
+	fn recheck_reaches(&self, id: Uuid) -> bool {
+		self.access.recheck_reaches(id)
+	}
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
 		self.access.resource(kind, id, attributes)
 	}
 	async fn owner(&mut self, id: Uuid, lock: bool) -> Result<Option<String>> {
+		if let Some(owner) = self.access.tx.workspace_owner(id, lock) {
+			return Ok(Some(owner));
+		}
 		let result: NativeResult<Option<String>> =
 			async {
 				let query =
@@ -101,6 +107,9 @@ impl WorkspaceResourceScope for Reads<'_> {
 					.bind(&self.access.identity.tenant)
 					.scalar_optional(&mut **self.access.tx)
 					.await?;
+				if let Some(owner) = &owner {
+					self.access.tx.remember_workspace_owner(id, lock, owner);
+				}
 				Ok(owner)
 			}
 			.await;
@@ -244,14 +253,24 @@ impl WorkspaceResourceScope for NativeReads<'_> {
 	fn context(&self) -> &Value {
 		self.access.workspace_context()
 	}
+	fn recheck_reaches(&self, id: Uuid) -> bool {
+		self.access.recheck_reaches(id)
+	}
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
 		self.access.resource(kind, id, attributes)
 	}
 	async fn owner(&mut self, id: Uuid, lock: bool) -> Result<Option<String>> {
+		if let Some(owner) = self.access.tx.workspace_owner(id, lock) {
+			return Ok(Some(owner));
+		}
 		let (tx, tenant) = self.access.tenant_transaction();
-		crate::apps::identity::models::AuthorizationWorkspace::owner_in(tx, id, tenant, lock)
-			.await
-			.map_err(Into::into)
+		let owner =
+			crate::apps::identity::models::AuthorizationWorkspace::owner_in(tx, id, tenant, lock)
+				.await?;
+		if let Some(owner) = &owner {
+			self.access.tx.remember_workspace_owner(id, lock, owner);
+		}
+		Ok(owner)
 	}
 }
 #[async_trait]

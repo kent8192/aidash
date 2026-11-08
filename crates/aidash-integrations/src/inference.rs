@@ -567,6 +567,10 @@ impl ModelProvider for OpenRouterProvider {
 						.line(scope)
 				})
 				.transpose()?;
+			let session = match (&request.cache_scope, request.routing_run, &self.cache_salt) {
+				(Some(scope), Some(run), Some(keys)) => Some(keys.session_id(scope, run)?),
+				_ => None,
+			};
 			for modality in request.content_parts.iter().filter_map(|part| match part {
 				ContentPart::Image { .. } => Some("image"),
 				ContentPart::Audio { .. } => Some("audio"),
@@ -612,6 +616,7 @@ impl ModelProvider for OpenRouterProvider {
 				&request,
 				media_routes,
 				salt.as_deref(),
+				session.as_deref(),
 				context.data_protection.requirement(),
 			);
 			validate_provider_tools(&body, &request)?;
@@ -677,8 +682,12 @@ impl ModelProvider for OpenRouterProvider {
 					("input_cached_write", usage.reported.cache_write_tokens),
 				] {
 					if let Some(tokens) = tokens {
-						metrics::counter!("aidash_model_tokens_total", "direction" => direction)
-							.increment(tokens);
+						metrics::counter!(
+							"aidash_model_tokens_total",
+							"direction" => direction,
+							"family" => self.config.metric_family()
+						)
+						.increment(tokens);
 					}
 				}
 			}
@@ -708,6 +717,7 @@ fn request_body(
 	request: &ModelRequest,
 	media_routes: Vec<String>,
 	salt: Option<&str>,
+	session: Option<&str>,
 	requirement: aidash_domain::data_protection::Requirement,
 ) -> Value {
 	let mut body = request.input_body();
@@ -730,7 +740,46 @@ fn request_body(
 	if let Some(effort) = config.reasoning_effort {
 		body["reasoning"] = json!({"effort": effort});
 	}
+	if let Some(session) = session {
+		body["session_id"] = json!(session);
+	}
+	if config.explicit_cache_only() {
+		body["prompt_cache_options"] = json!({"mode": "explicit"});
+		if request.cache_breakpoints
+			&& let Some(messages) = body["messages"].as_array_mut()
+		{
+			mark_previous_step(messages);
+		}
+	}
 	body
+}
+
+/// Explicit mode looks up only the breakpoints in the request itself, so the
+/// entry the previous step wrote is read only if its position is marked again:
+/// the last message with content before the last Model Turn, which is where
+/// Native put the history breakpoint on that step (ADR 0115).
+fn mark_previous_step(messages: &mut [Value]) {
+	let Some(assistant) = messages
+		.iter()
+		.rposition(|message| message["role"] == "assistant")
+	else {
+		return;
+	};
+	// `system` at index 0 already has its own marker.
+	let Some(previous) = messages[1..assistant]
+		.iter_mut()
+		.rev()
+		.find(|message| !message["content"].is_null())
+	else {
+		return;
+	};
+	let content = &mut previous["content"];
+	if content.is_string() {
+		*content = json!([{"type": "text", "text": content.take()}]);
+	}
+	if let Some(part) = content.as_array_mut().and_then(|parts| parts.last_mut()) {
+		part["cache_control"] = aidash_domain::provider::cache_control();
+	}
 }
 
 /// Classifies a non-2xx chat reply. The upstream body is never exposed.

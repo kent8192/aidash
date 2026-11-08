@@ -210,6 +210,13 @@ impl Error {
 				StatusCode::SERVICE_UNAVAILABLE,
 				"atomic transaction visibility pending; retry after recovery".into(),
 			),
+			_ if self.is_transient_database() => {
+				tracing::warn!(error = %self, "request failed on a temporary database error");
+				(
+					StatusCode::SERVICE_UNAVAILABLE,
+					"database temporarily unavailable; retry".into(),
+				)
+			}
 			Self::Framework(error) if error.database_error().is_some() => {
 				tracing::error!(error = %error, "request failed");
 				(
@@ -310,7 +317,11 @@ impl Error {
 			code.starts_with("08")
 				|| matches!(
 					code,
-					"40001" | "40P01" | "53300" | "55P03" | "57P01" | "57P02" | "57P03" | "A3301"
+					"40001"
+						| "40P01" | "53300"
+						| "55P03" | "57014"
+						| "57P01" | "57P02"
+						| "57P03" | "A3301"
 				)
 		}
 		match self {
@@ -420,13 +431,16 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::Plan(failure) => Self::Plan(failure),
 			ApplicationError::InferenceStalled => Self::InferenceStalled,
 			ApplicationError::TransactionPending => Self::TransactionPending,
+			ApplicationError::RunLockContended => Self::External("Run row lock contended".into()),
 			// The broker fault keeps its generic Deployment Administrator message and correlation.
 			error @ (ApplicationError::BrokerUnavailable { .. }
 			| ApplicationError::BrokerRejected { .. }) => Self::External(error.to_string()),
-			ApplicationError::Port(error) => match error.downcast::<Self>() {
-				Ok(error) => *error,
-				Err(error) => Self::External(error.to_string()),
-			},
+			ApplicationError::Port(error) | ApplicationError::TemporaryDatabase(error) => {
+				match error.downcast::<Self>() {
+					Ok(error) => *error,
+					Err(error) => Self::External(error.to_string()),
+				}
+			}
 		}
 	}
 }
@@ -489,6 +503,7 @@ impl From<Error> for aidash_application::Error {
 				retry_after,
 			},
 			Error::Plan(failure) => Self::Plan(failure),
+			error if error.is_transient_database() => Self::TemporaryDatabase(Box::new(error)),
 			error => Self::Port(Box::new(error)),
 		}
 	}

@@ -112,6 +112,8 @@ struct State {
 	memory_value: Mutex<Value>,
 	semantic_failure: Mutex<Option<(bool, aidash_domain::semantic::Failure)>>,
 	requests: Mutex<Vec<ModelRequest>>,
+	workspace_events: Mutex<Vec<WorkspaceEvent>>,
+	owned_tasks_pending: AtomicBool,
 	token: Uuid,
 	task: Mutex<Task>,
 	calls: Mutex<Vec<&'static str>>,
@@ -127,6 +129,7 @@ struct State {
 	provider_status: Option<u16>,
 	dependency_status: Option<TaskStatus>,
 	remote_home: bool,
+	child_summary: Mutex<Option<ChildTaskSummary>>,
 	human: Mutex<Option<HumanRequest>>,
 	human_key: Mutex<Option<String>>,
 	/// In-memory Context Journal keyed by Run, with the same append rule as Postgres.
@@ -197,6 +200,7 @@ struct State {
 	semantic_degrade: Mutex<Vec<bool>>,
 	inputs: Mutex<Vec<aidash_domain::run_input::RunInput>>,
 	instructions: String,
+	reference_files: usize,
 	/// The semantic read returns as much content as its budget allows.
 	fill_semantic_budget: bool,
 	/// Run messages carry media whose intake continues past this request.
@@ -400,6 +404,22 @@ fn unexpected(operation: &str) -> ! {
 
 #[async_trait]
 impl ExecutionStore for Backend {
+	async fn unfinished_owned_tasks(&self, _: &Run) -> Result<u64> {
+		Ok(u64::from(
+			self.0.owned_tasks_pending.load(Ordering::Acquire) || self.0.failed_children,
+		))
+	}
+	async fn workspace_events(&self, _: &Run, after: i64) -> Result<Vec<WorkspaceEvent>> {
+		Ok(self
+			.0
+			.workspace_events
+			.lock()
+			.unwrap()
+			.iter()
+			.filter(|event| event.generation > after)
+			.cloned()
+			.collect())
+	}
 	async fn resolve_research(&self, run: &mut Run) -> Result<()> {
 		for entry in &mut run.context.history {
 			if let ContextEvent::Tool { result, .. } = &mut entry.event
@@ -1022,9 +1042,13 @@ impl ExecutionHome for Backend {
 	}
 	async fn child_summary(&self, parent: Uuid) -> Result<ChildTaskSummary> {
 		let _ = parent;
+		if let Some(summary) = self.0.child_summary.lock().unwrap().clone() {
+			return Ok(summary);
+		}
 		Ok(ChildTaskSummary {
 			has_pending: self.0.failed_children,
 			has_failed: self.0.failed_children,
+			..Default::default()
 		})
 	}
 	async fn complete(&self, key: &str, artifact: &ArtifactInput) -> Result<Task> {
@@ -1348,6 +1372,12 @@ impl ExecutionEnvironment for Backend {
 		}
 	}
 
+	async fn poll_operation(&self, _run: &Run, operation: &str, input: Value) -> Result<Value> {
+		if operation != "shell_poll" {
+			return Err(Error::Forbidden);
+		}
+		Ok(json!({"status":"completed", "operation_id": input["operation_id"], "output":"done"}))
+	}
 	fn binding_resolver(&self) -> &dyn aidash_application::ports::bindings::BindingResolver {
 		self
 	}
@@ -1529,6 +1559,7 @@ impl ExecutionEnvironment for Backend {
 	}
 	fn agent(&self, _entry: &Entry) -> Result<ExecutionAgent> {
 		Ok(ExecutionAgent {
+			reference_files: self.0.reference_files,
 			model: EntityRef {
 				id: "model".into(),
 				version: "1.0.0".into(),
@@ -1766,6 +1797,8 @@ fn fixture() -> Fixture {
 		memory_value: Mutex::new(json!({"fact":"observed"})),
 		semantic_failure: Mutex::new(None),
 		requests: Mutex::new(vec![]),
+		workspace_events: Mutex::new(vec![]),
+		owned_tasks_pending: AtomicBool::new(false),
 		token,
 		task: Mutex::new(Task {
 			id: task,
@@ -1793,6 +1826,7 @@ fn fixture() -> Fixture {
 		provider_status: None,
 		dependency_status: None,
 		remote_home: false,
+		child_summary: Mutex::new(None),
 		human: Mutex::new(None),
 		human_key: Mutex::new(None),
 		journal: Mutex::new(vec![]),
@@ -1852,6 +1886,7 @@ fn fixture() -> Fixture {
 		semantic_degrade: Mutex::new(vec![]),
 		inputs: Mutex::new(vec![]),
 		instructions: "Do the task".into(),
+		reference_files: 0,
 		fill_semantic_budget: false,
 		human_media_pending: false,
 		prompt_cache: Default::default(),
@@ -4673,6 +4708,367 @@ fn last_write(fixture: &Fixture) -> (String, Run) {
 
 #[rstest]
 #[tokio::test]
+async fn a_running_shell_suspends_without_delivering_an_intermediate_tool_result(
+	mut fixture: Fixture,
+) {
+	let shell = Scripted::new(
+		ToolSpec {
+			name: "shell".into(),
+			description: "Shell".into(),
+			parameters: json!({"type":"object"}),
+		},
+		"shell",
+	);
+	let operation = Uuid::new_v4();
+	let earliest = chrono::Utc::now() + chrono::Duration::seconds(300);
+	*shell.outputs.lock().unwrap() = [json!({"status":"running", "operation_id":operation})].into();
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.custom
+		.insert("shell".into(), shell);
+	respond(
+		&mut fixture.run,
+		vec![call("call-1", "shell", json!({"command":"sleep 1"}))],
+	);
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(
+		matches!(&fixture.run.state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Operation { operation_id, .. } if *operation_id == operation))
+	);
+	assert!(
+		matches!(&fixture.run.state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Operation { wake_at, .. } if *wake_at >= earliest))
+	);
+	assert!(
+		!fixture
+			.run
+			.context
+			.events()
+			.any(|event| matches!(event, ContextEvent::Tool { .. }))
+	);
+	assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
+}
+
+/// A command past its deadline is still saving its files, and one that has not
+/// started has no deadline yet. Both wait, so polling them never spins the model.
+#[rstest]
+#[case::past_its_deadline("running", Some(-60))]
+#[case::not_started("submitted", None)]
+#[tokio::test]
+async fn an_active_shell_waits_whatever_its_deadline_says(
+	mut fixture: Fixture,
+	#[case] status: &str,
+	#[case] deadline_in_seconds: Option<i64>,
+) {
+	let shell = Scripted::new(
+		ToolSpec {
+			name: "shell".into(),
+			description: "Shell".into(),
+			parameters: json!({"type":"object"}),
+		},
+		"shell",
+	);
+	let operation = Uuid::new_v4();
+	let mut output = json!({"status":status, "operation_id":operation});
+	if let Some(seconds) = deadline_in_seconds {
+		output["operation_deadline"] =
+			json!(chrono::Utc::now() + chrono::Duration::seconds(seconds));
+	}
+	*shell.outputs.lock().unwrap() = [output].into();
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.custom
+		.insert("shell".into(), shell);
+	respond(
+		&mut fixture.run,
+		vec![call("call-1", "shell", json!({"command":"sleep 1"}))],
+	);
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(
+		matches!(&fixture.run.state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Operation { operation_id, .. } if *operation_id == operation))
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_woken_shell_returns_its_completed_result_without_an_intervening_model_call(
+	mut fixture: Fixture,
+) {
+	let operation = Uuid::new_v4();
+	let shell = Scripted::new(
+		ToolSpec {
+			name: "shell".into(),
+			description: "Shell".into(),
+			parameters: json!({"type":"object"}),
+		},
+		"shell",
+	);
+	*shell.outputs.lock().unwrap() = [json!({"status":"running", "operation_id":operation})].into();
+	let poll = Scripted::new(
+		ToolSpec {
+			name: "shell_poll".into(),
+			description: "Poll".into(),
+			parameters: json!({"type":"object"}),
+		},
+		"shell_poll",
+	);
+	*poll.outputs.lock().unwrap() =
+		[json!({"status":"completed", "operation_id":operation, "output":"done"})].into();
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.custom.insert("shell".into(), shell);
+	state.custom.insert("shell_poll".into(), poll);
+	respond(
+		&mut fixture.run,
+		vec![call("call-1", "shell", json!({"command":"sleep 1"}))],
+	);
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(fixture.run.context.events().any(
+		|event| matches!(event, ContextEvent::Tool { result, .. } if result["output"] == "done")
+	));
+	assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_woken_shell_can_finish_when_poll_is_not_model_visible(mut fixture: Fixture) {
+	let operation = Uuid::new_v4();
+	let shell = Scripted::new(
+		ToolSpec {
+			name: "shell".into(),
+			description: "Shell".into(),
+			parameters: json!({"type":"object"}),
+		},
+		"shell",
+	);
+	*shell.outputs.lock().unwrap() = [json!({"status":"running", "operation_id":operation})].into();
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.custom
+		.insert("shell".into(), shell);
+	respond(
+		&mut fixture.run,
+		vec![call("call-1", "shell", json!({"command":"sleep 1"}))],
+	);
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(fixture.run.context.events().any(
+		|event| matches!(event, ContextEvent::Tool { result, .. } if result["output"] == "done")
+	));
+	assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn workspace_wait_keeps_a_task_event_that_arrived_before_wait_commit(mut fixture: Fixture) {
+	let wait = Scripted::new(
+		ToolSpec {
+			name: "workspace_wait".into(),
+			description: "Wait".into(),
+			parameters: json!({"type":"object"}),
+		},
+		"workspace_wait",
+	);
+	*wait.outputs.lock().unwrap() = [json!({"wait_seconds":300})].into();
+	let task = Uuid::new_v4();
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.custom.insert("workspace_wait".into(), wait);
+	state.workspace_events.lock().unwrap().push(WorkspaceEvent {
+		generation: 42,
+		task_id: task,
+		status: "COMPLETED".into(),
+	});
+	respond(
+		&mut fixture.run,
+		vec![call("call-1", "workspace_wait", json!({}))],
+	);
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(
+		matches!(&fixture.run.state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Workspace { .. }))
+	);
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(fixture.run.context.events().any(|event| matches!(event, ContextEvent::Tool { result, .. } if result["reason"] == "workspace_event" && result["changes"][0]["task_id"] == json!(task))));
+	assert_eq!(fixture.run.recovery.workspace_event_cursor, Some(42));
+	assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
+}
+
+#[rstest]
+#[case::default_no_children(json!({}), false, 300)]
+#[case::default_pending_children(json!({}), true, 3600)]
+#[case::maximum(json!({"seconds":9999}), false, 3600)]
+#[tokio::test]
+async fn workspace_wait_defaults_and_clamps_its_ceiling(
+	mut fixture: Fixture,
+	#[case] arguments: Value,
+	#[case] pending: bool,
+	#[case] seconds: i64,
+) {
+	let wait = Scripted::new(
+		ToolSpec {
+			name: "workspace_wait".into(),
+			description: "Wait".into(),
+			parameters: json!({"type":"object"}),
+		},
+		"workspace_wait",
+	);
+	*wait.outputs.lock().unwrap() =
+		[json!({"wait_seconds": arguments["seconds"].as_i64().unwrap_or(300)})].into();
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.failed_children = pending;
+	state.custom.insert("workspace_wait".into(), wait);
+	respond(
+		&mut fixture.run,
+		vec![call("call-1", "workspace_wait", arguments)],
+	);
+	let before = chrono::Utc::now();
+	advance_sources(&mut fixture).await.unwrap();
+	let RunState::Waiting(wait) = &fixture.run.state else {
+		panic!("Run did not wait")
+	};
+	let WaitingState::Workspace { wake_at, .. } = wait.as_ref() else {
+		panic!("wrong wait")
+	};
+	assert!(*wake_at >= before + chrono::Duration::seconds(seconds));
+	assert!(*wake_at <= chrono::Utc::now() + chrono::Duration::seconds(seconds));
+}
+
+#[rstest]
+#[tokio::test]
+async fn workspace_wait_defaults_to_an_hour_for_an_unfinished_owned_nonchild_task(
+	mut fixture: Fixture,
+) {
+	let wait = Scripted::new(
+		ToolSpec {
+			name: "workspace_wait".into(),
+			description: "Wait".into(),
+			parameters: json!({"type":"object"}),
+		},
+		"workspace_wait",
+	);
+	*wait.outputs.lock().unwrap() = [json!({"wait_seconds":300})].into();
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.owned_tasks_pending.store(true, Ordering::Release);
+	state.custom.insert("workspace_wait".into(), wait);
+	respond(
+		&mut fixture.run,
+		vec![call("call-1", "workspace_wait", json!({}))],
+	);
+	let before = chrono::Utc::now();
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(
+		matches!(&fixture.run.state, RunState::Waiting(wait) if matches!(wait.as_ref(), WaitingState::Workspace { wake_at, .. } if *wake_at >= before + chrono::Duration::hours(1)))
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn remote_workspace_poll_stays_asleep_until_a_child_finishes(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.remote_home = true;
+	*state.child_summary.lock().unwrap() = Some(ChildTaskSummary::default());
+	fixture.run.recovery.remote_task_fingerprint = Some(ChildTaskSummary::default().fingerprint());
+	fixture.run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
+		wake_at: chrono::Utc::now() + chrono::Duration::minutes(5),
+		cursor: 0,
+		resume: ResumeState::Thinking(ThinkingState::default()),
+	}));
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(matches!(fixture.run.state, RunState::Waiting(_)));
+	let child = Uuid::new_v4();
+	let mut running = ChildTaskSummary::default();
+	running.include_task(child, TaskStatus::Running, 1);
+	*fixture.backend.0.child_summary.lock().unwrap() = Some(running);
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(matches!(fixture.run.state, RunState::Waiting(_)));
+	let mut completed = ChildTaskSummary::default();
+	completed.include_task(child, TaskStatus::Completed, 2);
+	*fixture.backend.0.child_summary.lock().unwrap() = Some(completed);
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(matches!(fixture.run.state, RunState::Thinking(_)));
+	assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn remote_wait_result_reports_fingerprint_change_without_task_details(mut fixture: Fixture) {
+	let wait = Scripted::new(
+		ToolSpec {
+			name: "workspace_wait".into(),
+			description: "Wait".into(),
+			parameters: json!({"type":"object"}),
+		},
+		"workspace_wait",
+	);
+	*wait.outputs.lock().unwrap() = [json!({"wait_seconds":300})].into();
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.remote_home = true;
+	state.custom.insert("workspace_wait".into(), wait);
+	state.workspace_events.lock().unwrap().push(WorkspaceEvent {
+		generation: 2,
+		task_id: Uuid::new_v4(),
+		status: "COMPLETED".into(),
+	});
+	*state.child_summary.lock().unwrap() = Some(ChildTaskSummary::default());
+	fixture.run.recovery.remote_task_fingerprint = Some(ChildTaskSummary::default().fingerprint());
+	respond(
+		&mut fixture.run,
+		vec![call("call-1", "workspace_wait", json!({}))],
+	);
+	advance_sources(&mut fixture).await.unwrap();
+	let mut completed = ChildTaskSummary::default();
+	completed.include_task(Uuid::new_v4(), TaskStatus::Completed, 1);
+	*fixture.backend.0.child_summary.lock().unwrap() = Some(completed);
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(fixture.run.context.events().any(|event| matches!(event, ContextEvent::Tool { result, .. } if result == &json!({"reason":"workspace_event","changes":[{"kind":"terminal_tasks_changed"}],"open_tasks":0}))));
+	assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn remote_child_resuming_changes_the_fingerprint_and_wakes_the_waiter(mut fixture: Fixture) {
+	let id = Uuid::new_v4();
+	let mut before = ChildTaskSummary::default();
+	before.include_task(id, TaskStatus::Blocked, 1);
+	let mut running = ChildTaskSummary::default();
+	running.include_task(id, TaskStatus::Running, 2);
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.remote_home = true;
+	*state.child_summary.lock().unwrap() = Some(running);
+	fixture.run.recovery.remote_task_fingerprint = Some(before.fingerprint());
+	fixture.run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
+		wake_at: chrono::Utc::now() + chrono::Duration::minutes(5),
+		cursor: 0,
+		resume: ResumeState::Thinking(ThinkingState::default()),
+	}));
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(matches!(fixture.run.state, RunState::Thinking(_)));
+}
+
+#[rstest]
+#[tokio::test]
+async fn remote_child_reentering_blocked_wakes_the_waiter(mut fixture: Fixture) {
+	let id = Uuid::new_v4();
+	let mut before = ChildTaskSummary::default();
+	before.include_task(id, TaskStatus::Blocked, 1);
+	let mut after = ChildTaskSummary::default();
+	after.include_task(id, TaskStatus::Blocked, 3);
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.remote_home = true;
+	*state.child_summary.lock().unwrap() = Some(after);
+	fixture.run.recovery.remote_task_fingerprint = Some(before.fingerprint());
+	fixture.run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
+		wake_at: chrono::Utc::now() + chrono::Duration::minutes(5),
+		cursor: 0,
+		resume: ResumeState::Thinking(ThinkingState::default()),
+	}));
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(matches!(fixture.run.state, RunState::Thinking(_)));
+}
+
+#[rstest]
+#[tokio::test]
 async fn deferred_first_request_advertises_only_mandatory_and_eager_capabilities(
 	mut fixture: Fixture,
 ) {
@@ -6219,4 +6615,32 @@ async fn recovered_step_emits_count_and_resets_it_only_when_the_step_ends(mut fi
 			assert_eq!(stored, Value::Null, "{kind}");
 		}
 	}
+}
+
+#[tokio::test]
+async fn a_model_learns_only_how_many_reference_files_exist() {
+	let mut fixture = fixture_with(|state| state.reference_files = 89);
+	thinking_with_history(&mut fixture, 0);
+	let _ = advance_sources(&mut fixture).await;
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let request = &requests[0];
+	assert!(
+		request
+			.instructions
+			.contains("You have 89 Reference files."),
+		"{}",
+		request.instructions
+	);
+	let sent = serde_json::to_string(request).unwrap();
+	assert!(!sent.contains("references/"), "{sent}");
+	assert!(!sent.contains("extracted.txt"), "{sent}");
+}
+
+#[tokio::test]
+async fn an_agent_without_reference_files_hears_nothing_about_them() {
+	let mut fixture = fixture();
+	thinking_with_history(&mut fixture, 0);
+	let _ = advance_sources(&mut fixture).await;
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	assert!(!requests[0].instructions.contains("Reference files"));
 }

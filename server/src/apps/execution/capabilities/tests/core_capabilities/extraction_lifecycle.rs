@@ -46,7 +46,7 @@ fn extraction_lifecycle_fixture(
 	let runtime_fixture = Box::pin(runtime_fixture);
 	async move {
 		let mut c = runtime_fixture.await;
-		let bytes = b"original bytes stay available";
+		let bytes = b"%PDF-original bytes stay available";
 		let (status, upload) = request(&c.app, &c.token, "POST", "/api/references/uploads", json!({"idempotency_key":Uuid::new_v4(),"name":"original.txt","media_type":"text/plain","size":bytes.len(),"digest":aidash_server::capabilities::objects::digest(bytes)})).await;
 		assert_eq!(status, 200, "{upload}");
 		let id: Uuid = serde_json::from_value(upload["reference_id"].clone()).unwrap();
