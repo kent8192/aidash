@@ -745,8 +745,14 @@ fn request_body(
 	}
 	if config.explicit_cache_only() {
 		body["prompt_cache_options"] = json!({"mode": "explicit"});
+		// Only Native put a history breakpoint on the previous step. An Ordered
+		// request splices provider activity after `system`, where no
+		// breakpoint ever sat, so marking there would pay a write nothing reads.
 		if request.cache_breakpoints
-			&& let Some(messages) = body["messages"].as_array_mut()
+			&& matches!(
+				request.context,
+				aidash_domain::provider::ModelContext::Native(_)
+			) && let Some(messages) = body["messages"].as_array_mut()
 		{
 			mark_previous_step(messages);
 		}
@@ -757,7 +763,8 @@ fn request_body(
 /// Explicit mode looks up only the breakpoints in the request itself, so the
 /// entry the previous step wrote is read only if its position is marked again:
 /// the last message with content before the last Model Turn, which is where
-/// Native put the history breakpoint on that step (ADR 0115).
+/// Native put the history breakpoint on that step (ADR 0115). Native layout
+/// only: the caller must not apply it to an Ordered request.
 fn mark_previous_step(messages: &mut [Value]) {
 	let Some(assistant) = messages
 		.iter()
