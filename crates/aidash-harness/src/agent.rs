@@ -1346,6 +1346,10 @@ impl<'a> Executor<'a> {
 						instructions.push_str(". Call connection_request with a resource to ask them to connect; after consent its plugin tools become available.\n");
 					}
 				}
+				if let Some(line) = reference_set_line(agent.reference_files) {
+					instructions.push('\n');
+					instructions.push_str(&line);
+				}
 				let fixed_sources = collect_data_phase(
 					self.environment,
 					run,
@@ -1913,6 +1917,7 @@ impl<'a> Executor<'a> {
 					&& !run_message_catchup
 					&& !media.defer_human
 					&& !media.defer_selected;
+				request.routing_run = Some(run.id);
 				request.disable_provider_transforms = !policy.is_legacy();
 				request
 					.ensure_fits(window)
@@ -4103,6 +4108,15 @@ fn fit_source_delivery(
 		}
 	}
 	Ok(fitted)
+}
+/// The only word a model gets about a Reference set until it reads one. A fixed
+/// line holds no file name, so the request's stable prefix never changes with one.
+fn reference_set_line(files: usize) -> Option<String> {
+	(files > 0).then(|| {
+		format!(
+			"You have {files} Reference files. List their paths with file_search (scope references, mode path, empty query), then read them with file_read."
+		)
+	})
 }
 fn text_placement<'a>(text: &'a str, pointer: &str) -> Option<&'a str> {
 	let (start, end) = pointer.strip_prefix("/@text/")?.split_once('/')?;

@@ -117,6 +117,18 @@ pub struct ExecutionPodSettings {
 	pub docker_enabled: bool,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub tenant_id: Option<String>,
+	/// The Pod's proof to the Egress gateway that it belongs to this Scratch Space.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub egress_credential: Option<EgressCredential>,
+}
+/// Serializes to the Runner as is, and never appears in `Debug` output.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct EgressCredential(pub String);
+impl std::fmt::Debug for EgressCredential {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str("EgressCredential(..)")
+	}
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PodReceipt {
@@ -219,5 +231,34 @@ mod tests {
 		assert_eq!(result.outcome.as_deref(), Some("unknown"));
 		assert_eq!(result.stdout.as_deref(), Some("AP8="));
 		assert_eq!(result.error_code.as_deref(), Some("command_interrupted"));
+	}
+}
+
+#[cfg(test)]
+mod egress_credential_tests {
+	use super::EgressCredential;
+
+	#[test]
+	fn it_reaches_the_runner_but_not_a_debug_line() {
+		let credential = EgressCredential("canary".into());
+		assert_eq!(serde_json::to_string(&credential).unwrap(), r#""canary""#);
+		assert!(!format!("{credential:?}").contains("canary"));
+	}
+
+	#[test]
+	fn the_runner_finds_it_under_the_name_it_reads() {
+		let settings = super::ExecutionPodSettings {
+			scratch_space_id: "s".into(),
+			image: "image".into(),
+			cpu: 1,
+			memory_bytes: 1,
+			capacity_bytes: 1,
+			docker_enabled: false,
+			tenant_id: None,
+			egress_credential: Some(EgressCredential("canary".into())),
+		};
+		let value = serde_json::to_value(&settings).unwrap();
+		assert_eq!(value["egress_credential"], "canary");
+		assert!(!format!("{settings:?}").contains("canary"));
 	}
 }

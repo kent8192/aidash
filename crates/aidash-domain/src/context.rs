@@ -472,6 +472,7 @@ pub fn tool_event_growth(context: &Context, event: &ContextEvent) -> usize {
 			content_parts: vec![],
 			cache_scope: None,
 			cache_breakpoints: false,
+			routing_run: None,
 			disable_provider_transforms: false,
 			input_format,
 			// Growth is in the unit of the Run's current byte quotas, so a
@@ -591,6 +592,7 @@ impl RequestBudget<'_> {
 			cache_scope,
 			// Set per step by the harness; salted estimates count it either way.
 			cache_breakpoints: false,
+			routing_run: None,
 			disable_provider_transforms: false,
 			input_format: self.input_format,
 			estimate: self.estimate,

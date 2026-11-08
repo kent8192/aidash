@@ -109,6 +109,7 @@ impl RunInput {
 		(sender, content, key): (&str, &str, &str),
 		limit: usize,
 		media: bool,
+		publisher: Option<Uuid>,
 	) -> Result<bool> {
 		if !media {
 			nonempty(content, "message")?;
@@ -192,7 +193,7 @@ impl RunInput {
 		tx.execute(&sql, convert_values(values)).await?;
 		if run.is_local(node) {
 			let message =
-				Message::append_in(tx, run.workspace_id, sender, content, key, None).await?;
+				Message::append_in(tx, run.workspace_id, sender, content, key, publisher).await?;
 			Self::bind_message(tx, run_id, key, message.id).await?;
 		}
 		Ok(false)
@@ -206,7 +207,21 @@ impl RunInput {
 		key: &str,
 		limit: usize,
 	) -> Result<()> {
-		Self::admit_with_media(tx, node, run, (sender, content, key), limit, false)
+		Self::admit_with_media(tx, node, run, (sender, content, key), limit, false, None)
+			.await
+			.map(|_| ())
+	}
+	/// Admit what another Run writes to `run`. Its copy in `run`'s Workspace names
+	/// the writing Run, as that Run's own messages do.
+	pub(crate) async fn admit_from_run(
+		tx: &mut dyn TransactionExecutor,
+		node: &str,
+		run: Uuid,
+		publisher: Uuid,
+		input: (&str, &str, &str),
+		limit: usize,
+	) -> Result<()> {
+		Self::admit_with_media(tx, node, run, input, limit, false, Some(publisher))
 			.await
 			.map(|_| ())
 	}
@@ -220,7 +235,8 @@ impl RunInput {
 		limit: usize,
 	) -> Result<(bool, InputContract)> {
 		let existing =
-			Self::admit_with_media(tx, node, run, (sender, content, key), limit, true).await?;
+			Self::admit_with_media(tx, node, run, (sender, content, key), limit, true, None)
+				.await?;
 		let input = Self::for_run(tx, run)
 			.await?
 			.into_iter()

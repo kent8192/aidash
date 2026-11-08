@@ -774,8 +774,9 @@ impl Access {
 
 	/// A dissolved Subnode Workspace is retained for reading and citations.
 	/// User mutations hold a shared Subnode lock until their transaction commits;
-	/// dissolution takes the exclusive lock. Worker mutations already hold it
-	/// through their narrower Subnode effect boundary.
+	/// dissolution takes the exclusive lock. A Run's writes are not checked here
+	/// (see `decide`): each path that writes for a Run must call
+	/// `subnodes::require_writable` first in its own transaction.
 	pub(crate) async fn ensure_subnode_writable(&mut self, workspace: Uuid) -> Result<()> {
 		use reinhardt::db::orm::{QueryRow, execution::convert_values};
 		use reinhardt::query::LockType;

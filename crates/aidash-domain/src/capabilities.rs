@@ -48,6 +48,8 @@ pub struct SkillAttachment {
 pub struct ReferenceAttachment {
 	pub reference_id: Uuid,
 	pub digest: String,
+	/// Where an Agent sees this file, relative to its Reference set.
+	pub path: String,
 }
 
 pub mod references;

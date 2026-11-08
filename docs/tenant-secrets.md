@@ -164,20 +164,79 @@ direction for each request streaming at that moment; once a counter is
 exhausted, the next request is refused before it starts. The stream's error,
 in both the request record and the client response, names the reason:
 
-| Code                    | Status | Meaning                                                           |
-| ----------------------- | ------ | ----------------------------------------------------------------- |
-| `egress_limit_exceeded` | 429    | A byte or request budget is exhausted.                            |
-| `operation_expired`     | 403    | The operation or Live preview ended, expired or no longer exists. |
-| `egress_forbidden`      | 403    | The Run's authority was revoked.                                  |
-| `EGRESS_UNAVAILABLE`    | 503    | The budget store could not record the debit.                      |
+| Code                    | Status | Meaning                                                    |
+| ----------------------- | ------ | ---------------------------------------------------------- |
+| `egress_limit_exceeded` | 429    | A byte or request budget is exhausted.                     |
+| `operation_expired`     | 403    | The operation or Live preview expired or no longer exists. |
+| `operation_inactive`    | 403    | The Run or operation is no longer active.                  |
+| `egress_forbidden`      | 403    | The Run's authority was revoked.                           |
+| `EGRESS_UNAVAILABLE`    | 503    | The budget store could not record the debit.               |
 
 A response whose headers were already sent ends with an incomplete body
-instead of a status.
+instead of a status. A temporary `EGRESS_UNAVAILABLE` in the middle of a download
+also stops the stream, but keeps its unbilled bytes and retries them in the
+background. The last debit of a response is different: the body has already been
+delivered, so the response ends normally and the gateway retries that debit, and
+writes the request record, in the background.
+
+A refusal is answered at once, and the gateway then discards what the client
+still sends, up to 8 MiB or 5 seconds, so that the client can read the answer.
+Discarded bytes are not charged. A client that sends more before it reads may
+see a reset instead of the refusal, and the cut is counted by
+`aidash_egress_linger_limit_total`. The reason reaches a request record only when
+one exists: a request refused before its record is created leaves only the count
+in `aidash_egress_refused_total`, and a connection refused for want of a slot
+only the count in `aidash_egress_connections_refused_total`.
+
+A response with a `Content-Length` settles after its last byte is handed on. A
+final debit that reaches a limit is recorded but can no longer stop that
+response; the next request is refused.
+
+The gateway serves 128 connections at once. Beyond that it answers
+`503 egress_connection_limit` within 2 seconds, then discards what the client
+still sends like any other refusal; when too many refusals are in progress it
+drops the connection unanswered.
 
 Run inspection lists the request time, operation, service, method, path,
 SHA-256 query digest, status, byte counts and duration. Bodies, header values
 and query contents are never recorded. A partially consumed response is
 recorded as interrupted rather than silently becoming a successful request.
+A response counts as complete once all its bytes are handed to the server's
+HTTP layer, so a client that disconnects at the very end can still appear as a
+success.
+
+A record starts with status 0 and the error `stream_interrupted`. The final debit and record are retried for about
+60 seconds when storage is unavailable, so a record that stays at status 0 has
+an unknown outcome: the process stopped first or storage stayed unavailable. A
+debit that is still unavailable after those 60 seconds is given up: its bytes are
+not charged, and a record that can still be written shows the error
+`egress_debit_abandoned`, so that its byte counts are not mistaken for complete.
+A decision about that debit, such as `egress_limit_exceeded`, is recorded instead,
+and a body that did not reach its end stays `stream_interrupted`.
+
+A settled record also shows what the request cost at the gateway, in the Run's
+`egress_requests`. `admission_ms` is the admission call: the token, the
+authority's recheck, the budget locks and the record's first write. `settle_ms`
+runs from the end of the response until its final debit settled, including a
+first attempt that failed and the retries after it, or until the debit was given
+up. Bytes kept when a debit failed in the middle of a stream are charged later in
+the background and are not counted. `duration_ms` starts after admission and
+includes the final debit only for a response that ends its own stream and whose
+debit did not fail. A record that never settled has neither time, and a request
+refused before its record exists has no record.
+
+Failures that leave no record are visible to the operator of the Deployment.
+Unexpected admission failures and abandoned retries log an error, and upstream
+failures log a warning. These lines name the service, method and cause, never
+the token, path, query or header values. Sandboxed code sees only the code in
+the table above. The metrics listener (`AIDASH_METRICS_LISTEN`) exposes:
+
+| Counter                                   | Labels             | Counts                                               |
+| ----------------------------------------- | ------------------ | ---------------------------------------------------- |
+| `aidash_egress_refused_total`             | `reason`           | Requests refused before a record exists.             |
+| `aidash_egress_connections_refused_total` | `outcome`          | Connections `answered` or `dropped` when full.       |
+| `aidash_egress_settle_failures_total`     | `stage`, `outcome` | Failed debits and records: `retried` or `abandoned`. |
+| `aidash_egress_linger_limit_total`        | `limit`            | Uploads cut off after a refusal: `bytes` or `time`.  |
 
 ### Clone a GitHub repository
 
@@ -318,8 +377,15 @@ hours. The gateway reauthenticates the credential and reloads scope and host
 policy every five seconds, including while idle. Revocation or a narrowed host
 allowlist closes an existing tunnel. Three consecutive transient errors or timed-out
 checks close it as `egress_authority_unavailable`; they are not reported as a
-suspension. The authority must verify opaque credentials in constant time, using
-fixed-length random tokens; credentials are excluded from records and logs.
+suspension. A traffic debit that fails because the store is unavailable ends it
+the same way, and a refund that fails ends it as `egress_refund_failed`; neither
+counts as an upstream failure. A scope credential is a MAC over the Tenant and
+Scratch Space under the server's key, verified in constant time, and is excluded
+from records and logs. It has one value per Scratch Space and stays valid until
+the space is deleted; deleting its Tenant or its Node closes it at once, before
+any purge, and a restore reopens it. An open tunnel closes at the next recheck. A
+Pod carries it in the user part of its proxy URL. No code starts Execution Pods
+yet, so no Agent uses Host connections until wave 2 of #697.
 
 Connection and event row retention remains a follow-up; operators must account
 for their storage until an automatic retention policy is implemented.
@@ -328,14 +394,33 @@ Connection records contain scope, host, port, sent and received byte counts,
 duration and outcome, rather than request paths or bodies. Invalid targets are
 recorded when a bounded host and port can be parsed; malformed targets without
 one are rejected without retaining the raw request. A record is created
-before the connection starts and updated when it ends. If the initial record
-cannot be written after retries, the gateway refuses the connection with
-`egress_audit_unavailable`. A process crash or sustained audit-store failure
-can leave the record's byte counts incomplete. Tunnel budget reservations and
+before the connection starts, with the outcome `unsettled`, and updated when it
+ends. `interrupted` means that the connection was cut other than by its client.
+`egress_client_closed` means that the client reset it or stopped reading, which
+may be a finished download or an abandoned one, since a tunnel cannot see inside
+TLS. If the initial
+record cannot be written after retries, the gateway refuses the connection with
+`egress_audit_unavailable`. The final record is retried for about 60 seconds
+without holding the connection's concurrency slot, or once more if the process
+is stopping. A process crash or sustained audit-store failure can leave a record
+`unsettled`, with incomplete byte counts. Tunnel budget reservations and
 refunds each have a five-second deadline. An interrupted connection or timed-out
-refund may retain unused reserved budget. The separate path-level External service route remains responsible
-for attaching Tenant Secrets; scope-based admission for that route is not yet
-wired. Its integration route is `/v2/services/<service>/<path>` with the scope
+refund may retain unused reserved budget.
+
+Sandboxed code can repeat failures of a Host connection at will, so each kind of
+failure logs at most one line per 10 seconds, with the number since the last
+line. The rest appear at `debug`. Unexpected admission failures and abandoned
+records log an error, and upstream failures log a warning. These lines name the
+kind, cause and connection record's ID, never the token or host: the record has
+the host, and under "allow all hosts" a Pod chooses it freely.
+`aidash_egress_host_connection_failures_total{kind}` counts every upstream
+failure, with `kind` one of `dns`, `connect`, `handshake`, `request`, `upgrade`
+or `transfer`. `transfer` counts only ends with no named code, and one failed
+connection can count under both `transfer` and `request`.
+
+The separate path-level External service route remains responsible
+for attaching Tenant Secrets; scope-based admission for that route is refused
+until #738. Its integration route is `/v2/services/<service>/<path>` with the scope
 credential in `Authorization: Bearer <scope-credential>`. The gateway removes
 that header before forwarding and attaches the External service's Tenant Secret
 separately. The legacy `/v1/<operation-token>/<service>/<path>` route continues

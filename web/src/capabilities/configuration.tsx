@@ -14,7 +14,12 @@ import { useRef, useState } from "react";
 import { Field, useI18n } from "../ui";
 import { apiFetch } from "../transport";
 import { post, saveFile } from "./client";
-export type ReferenceBinding = { reference_id: string; digest: string };
+import { pagesWithoutTextNotice } from "./reference-folder-model";
+export type ReferenceBinding = {
+  reference_id: string;
+  digest: string;
+  path: string;
+};
 export type CoreConfiguration = BindingConfiguration;
 export const emptyCore: CoreConfiguration = {
   bindings: [],
@@ -60,11 +65,13 @@ export function CapabilityConfiguration({
     />
   );
 }
-type Reference = ReferenceBinding & {
+type Reference = Omit<ReferenceBinding, "path"> & {
   name: string;
   state: string;
   revision: number;
   extraction_state?: string;
+  pages_without_text?: number[];
+  page_count?: number | null;
 };
 export function OriginalReferences({
   attached = [],
@@ -104,7 +111,7 @@ export function OriginalReferences({
       <h2>{ja ? "参照資料の原本" : "Original references"}</h2>
       <p>
         {ja
-          ? "原本は非公開で保存されます。抽出に失敗した資料もダウンロードできます。コピーを編集しても原本は変わりません。"
+          ? "原本は非公開で保存されます。テキストはそのまま Agent が読み、PDF と Excel は文字を抽出します。抽出に失敗した資料もダウンロードできます。コピーを編集しても原本は変わりません。"
           : "Originals are private and remain downloadable when extraction fails. Editing a working copy preserves the original."}
       </p>
       <Field
@@ -206,6 +213,11 @@ export function OriginalReferences({
           <Hint role="status">
             {r.state} · {r.extraction_state}
           </Hint>
+          {pagesWithoutTextNotice(r.pages_without_text, r.page_count, ja) && (
+            <Hint role="status">
+              {pagesWithoutTextNotice(r.pages_without_text, r.page_count, ja)}
+            </Hint>
+          )}
           <Facts
             items={[
               ["ID", r.reference_id, true],
@@ -226,9 +238,13 @@ export function OriginalReferences({
                 <Button
                   variant="outline"
                   type="button"
-                  disabled={r.state !== "ready" || attached.length >= 8}
+                  disabled={r.state !== "ready" || attached.length >= 256}
                   onClick={() =>
-                    onAttach({ reference_id: r.reference_id, digest: r.digest })
+                    onAttach({
+                      reference_id: r.reference_id,
+                      digest: r.digest,
+                      path: r.name,
+                    })
                   }
                 >
                   {ja ? "この Agent に追加" : "Attach to this Agent"}

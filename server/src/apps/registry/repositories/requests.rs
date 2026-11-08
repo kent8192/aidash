@@ -60,6 +60,12 @@ impl DefinitionLookup for TenantRegistration<'_> {
 	async fn definition(&mut self, id: &str, version: &str) -> Result<Entry> {
 		SqlScope(&mut self.access.tx).definition(id, version).await
 	}
+	async fn require_reference_read(&mut self, id: Uuid) -> Result<()> {
+		crate::capabilities::references::get(self.access, id, "reference.read")
+			.await
+			.map(|_| ())
+			.map_err(Into::into)
+	}
 	async fn agent_plugin(
 		&mut self,
 		digest: &str,

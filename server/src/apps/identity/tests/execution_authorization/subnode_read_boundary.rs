@@ -14,7 +14,7 @@ impl SubnodeRig {
 		f: &aidash_server::federation::Federation,
 		app: &common::TestApplication,
 	) -> Self {
-		let (mut policy, token, node, _) = Self::register(f, app, &MEMBERS, true).await;
+		let (mut policy, token, node, _) = Self::register(f, app, &MEMBERS, true, false).await;
 		policy["policies"][0]["actions"] = json!(aidash_domain::identity::tenancy::MEMBER_ACTIONS);
 		set_policy(f, app, &policy).await;
 		let (status, created) = request(

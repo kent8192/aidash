@@ -27,7 +27,7 @@ fn dispatch_fixture(
 		}
 		c.f.store.capabilities = Runtime::new(profile).unwrap();
 		c.app.context.set_singleton(c.f.clone());
-		let bytes = "東京\t\u{0001}\n".repeat(2000).into_bytes();
+		let bytes = format!("%PDF-{}", "東京\t\u{0001}\n".repeat(2000)).into_bytes();
 		let (status, upload) = request(&c.app, &c.token, "POST", "/api/references/uploads", json!({"idempotency_key":Uuid::new_v4(),"name":"bounded.txt","media_type":"text/plain","size":bytes.len(),"digest":aidash_server::capabilities::objects::digest(&bytes)})).await;
 		assert_eq!(status, 200, "{upload}");
 		let id: Uuid = serde_json::from_value(upload["reference_id"].clone()).unwrap();
