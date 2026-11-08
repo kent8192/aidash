@@ -14,6 +14,7 @@ use crate::database::{classification, native, purge};
 use crate::store::Store;
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::identity::tenancy::deletion::PurgeStep;
+use reinhardt::db::orm::execution::convert_values;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
 };
@@ -151,14 +152,12 @@ async fn capability_objects(store: &Store, tenant: &str) -> Result<()> {
 	// revision and receipt references before erasing its logical objects.
 	{
 		let mut tx = store.pool.begin(&scope()).await?;
-		native::query(
-			&Query::delete()
-				.from_table(Alias::new("core_blob_references"))
-				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(&mut *tx)
-		.await?;
+		let (sql, values) = Query::delete()
+			.from_table(Alias::new("core_blob_references"))
+			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+			.build(PostgresQueryBuilder);
+		// Unbounded until #744 splits it into batches.
+		crate::database::limits::execute_unlimited(&mut *tx, &sql, convert_values(values)).await?;
 		tx.commit().await?;
 	}
 	loop {

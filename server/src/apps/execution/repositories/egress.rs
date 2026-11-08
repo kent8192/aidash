@@ -397,6 +397,10 @@ fn expired() -> Error {
 	Error::Conflict(aidash_domain::egress::OPERATION_EXPIRED.into())
 }
 
+fn inactive() -> Error {
+	Error::Conflict(aidash_domain::egress::OPERATION_INACTIVE.into())
+}
+
 fn exhausted() -> Error {
 	Error::Conflict(aidash_domain::egress::LIMIT_EXCEEDED.into())
 }
@@ -447,13 +451,13 @@ async fn live(
 		.ok_or(Error::Forbidden)?;
 	let current: aidash_domain::Run = current.try_into()?;
 	if current.phase().is_terminal() || current.control != aidash_domain::RunControl::Active {
-		return Err(expired());
+		return Err(inactive());
 	}
 	let operation = super::operations::get(&mut access, operation).await?;
 	if !matches!(operation.state.as_str(), "submitted" | "running")
 		|| operation.result["termination_confirmed"] == true
 	{
-		return Err(expired());
+		return Err(inactive());
 	}
 	Ok((access, current))
 }
@@ -1014,6 +1018,7 @@ fn stops_stream(error: &Error) -> bool {
 		| Error::TenantDeleted => true,
 		Error::Conflict(code) => {
 			code == aidash_domain::egress::OPERATION_EXPIRED
+				|| code == aidash_domain::egress::OPERATION_INACTIVE
 				|| code == aidash_domain::egress::LIMIT_EXCEEDED
 		}
 		_ => false,

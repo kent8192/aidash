@@ -11,6 +11,7 @@ fn only_a_decision_about_the_operation_commits_its_bytes() {
 		Error::Unauthorized,
 		Error::TenantDeleted,
 		Error::Conflict(aidash_domain::egress::OPERATION_EXPIRED.into()),
+		Error::Conflict(aidash_domain::egress::OPERATION_INACTIVE.into()),
 		Error::Conflict(aidash_domain::egress::LIMIT_EXCEEDED.into()),
 	] {
 		assert!(stops_stream(&decision), "{decision}");

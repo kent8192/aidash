@@ -212,6 +212,18 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		&agent.version,
 	));
 	let area = sessions::for_run(&mut access, &run).await.unwrap();
+	crate::apps::execution::repositories::operations::set_area(
+		&mut access,
+		area.id,
+		"running",
+		area.epoch,
+	)
+	.await
+	.unwrap();
+	// A retained context remains usable while a command holds the Area busy.
+	sessions::context_authority(&mut access, run.metadata())
+		.await
+		.unwrap();
 	let operation = Uuid::now_v7();
 	let row = CoreOperations::build()
 		.id(operation)
@@ -423,7 +435,7 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 	// exhausted budget, and the bytes streamed before the refusal still count.
 	assert!(matches!(
 		first.meter.charge(Direction::Sent, 3).await,
-		Err(aidash_application::Error::Conflict(code)) if code == aidash_domain::egress::OPERATION_EXPIRED
+		Err(aidash_application::Error::Conflict(code)) if code == aidash_domain::egress::OPERATION_INACTIVE
 	));
 	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	let total = Budget::objects()

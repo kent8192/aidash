@@ -1,4 +1,5 @@
 //! Independently scheduled recovery keeps unreachable aborted history off active work.
+use crate::background::Passes;
 use aidash_application::{
 	Result,
 	transactions::{coordination::Coordinator, participation::Participant},
@@ -13,20 +14,30 @@ pub async fn run_coordinator(active: Coordinator, aborted: Coordinator) -> Resul
 }
 
 async fn recover(coordinator: Coordinator, aborted: bool) -> Result<()> {
+	let mut passes = if aborted {
+		Passes::new(
+			"transactions.coordinator.aborted",
+			Duration::from_millis(1000),
+		)
+	} else {
+		Passes::new(
+			"transactions.coordinator.active",
+			Duration::from_millis(100),
+		)
+	};
 	loop {
-		if let Err(error) = coordinator.recover_kind(aborted).await {
-			tracing::warn!(%error, aborted, "coordinator recovery failed; decisions retained");
-		}
-		tokio::time::sleep(Duration::from_millis(if aborted { 1000 } else { 100 })).await;
+		// A failed pass keeps the transaction decisions it could not act on.
+		passes.run(coordinator.recover_kind(aborted)).await;
+		passes.wait().await;
 	}
 }
 
 /// The supervisor retains recovery during drain and cancels the owned loop afterward.
 pub async fn run_participant(participant: Participant) -> Result<()> {
+	let mut passes = Passes::new("transactions.participant", Duration::from_secs(1));
 	loop {
-		if let Err(error) = participant.recover_once().await {
-			tracing::warn!(%error, "participant recovery failed; barriers retained");
-		}
-		tokio::time::sleep(Duration::from_secs(1)).await;
+		// A failed pass keeps the barriers it could not release.
+		passes.run(participant.recover_once()).await;
+		passes.wait().await;
 	}
 }

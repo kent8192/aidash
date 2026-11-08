@@ -181,8 +181,10 @@ their durable key. SIGKILL bypasses draining and exercises the same recovery.
 Port 8081 provides `/live` for process liveness and `/ready` for database readiness
 and draining. A startup probe allows the migration check and initial connections to
 finish before liveness checks begin. Unavailable PostgreSQL removes a Pod from service
-without putting it in a liveness-driven restart loop. A stopped background
-service terminates the process so the Deployment can replace it.
+without putting it in a liveness-driven restart loop. A background service logs a
+database failure and retries it, and `aidash_background_service_failures_total`
+counts each failure. A service that still ends, through a panic or a lost listener,
+terminates the process so the Deployment can replace it.
 
 ## Observe
 

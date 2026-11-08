@@ -15,7 +15,10 @@ pub struct ContentLimits {
 	pub reference_files: usize,
 	pub reference_bytes: u64,
 	pub reference_pages: usize,
+	/// The text of a whole Reference set.
 	pub reference_text_bytes: usize,
+	/// The extracted text of one PDF or Excel file.
+	pub reference_file_text_bytes: usize,
 	pub share_files: usize,
 	pub share_file_bytes: u64,
 	pub share_bytes: u64,
