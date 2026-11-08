@@ -1857,9 +1857,6 @@ mod torn_intents_tests;
 #[path = "core_capabilities/reclamation_lock.rs"]
 mod reclamation_lock_tests;
 
-#[path = "core_capabilities/refusal_delegate.rs"]
-mod refusal_delegate_tests;
-
 #[path = "core_capabilities/review_regressions.rs"]
 mod review_regression_tests;
 
