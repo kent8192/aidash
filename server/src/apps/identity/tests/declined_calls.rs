@@ -605,7 +605,62 @@ async fn a_member_who_may_see_the_run_but_not_decline_is_refused_for_that_action
 
 #[rstest::rstest]
 #[tokio::test]
-async fn nobody_else_sees_or_declines_a_run_that_has_a_working_area(
+async fn an_administrator_declines_a_run_with_a_working_area_though_they_cannot_read_it(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let w = world(fixture).await;
+	let erin = w.add_administrator("erin").await;
+	let bob = w.add_member_denied_decline("bob").await;
+	w.pause(true).await;
+	let before = w.other_credential().await;
+	w.set_credential(before).await;
+
+	// A Working Area is owned by the Run's person, and `file.read` on it decides who may read
+	// the Run (`run_area_readable`), so nobody else can read it.
+	let (status, page) = w.get(&erin).await;
+	assert_eq!(status, 403, "{page}");
+	// The content-free management view offers the call, by tool and kind only, to someone who
+	// may decline it, and to no one else.
+	let (status, management) = w.management(&erin).await;
+	assert_eq!(status, 200, "{management}");
+	assert_eq!(
+		management["declinable_call"],
+		json!({"call": w.key(), "tool": "task_delegate", "kind": "policy"})
+	);
+	assert!(
+		!management.to_string().contains("task.delegate"),
+		"{management}"
+	);
+	let (status, management) = w.management(&bob).await;
+	assert_eq!(status, 200, "{management}");
+	assert!(management.get("declinable_call").is_none(), "{management}");
+	let (status, body) = w.decline(&bob, &w.key()).await;
+	assert_eq!(status, 403, "{body}");
+	assert!(w.row().await.is_none());
+
+	let (status, declined) = w.decline(&erin, &w.key()).await;
+	assert_eq!(status, 200, "{declined}");
+	assert_eq!(declined["control"], "ACTIVE");
+	assert_eq!(w.credential().await, before);
+	let (row, result) = w.row().await.expect("a declined call has a row");
+	assert_eq!(row, "COMPLETED");
+	assert_eq!(result, Some(json!({"error": sentence()})));
+	let events = w.events().await;
+	let (_, event) = events
+		.iter()
+		.find(|(kind, _)| kind == "run.call_declined")
+		.unwrap();
+	assert_eq!(event["by"], "erin");
+	// Once the Run goes on, nothing is offered.
+	let (_, management) = w.management(&erin).await;
+	assert!(management.get("declinable_call").is_none(), "{management}");
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn what_the_run_read_still_stops_someone_else_with_the_same_reason(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
@@ -613,12 +668,14 @@ async fn nobody_else_sees_or_declines_a_run_that_has_a_working_area(
 	let w = world(fixture).await;
 	let erin = w.add_administrator("erin").await;
 	w.pause(true).await;
-	// A Working Area is owned by the Run's person, and `file.read` on it decides who may read
-	// the Run (`run_area_readable`). An administrator holding `run.decline_call` is no owner.
-	let (status, page) = w.get(&erin).await;
-	assert_eq!(status, 403, "{page}");
+	w.approve(false).await;
+	let (status, resume) = w.control(&w.alice.clone(), "resume").await;
+	assert_eq!(status, 409, "{resume}");
+	// The block is judged on the Run's reads alone, so the Run's content stays hidden from erin
+	// while the reason is the one the Run's person gets.
 	let (status, body) = w.decline(&erin, &w.key()).await;
-	assert_eq!(status, 403, "{body}");
+	assert_eq!(status, 409, "{body}");
+	assert_eq!(body["run_reads"], resume["run_reads"]);
 	assert!(w.row().await.is_none());
 	assert_eq!(w.management(&erin).await.1["control"], "PAUSED");
 }

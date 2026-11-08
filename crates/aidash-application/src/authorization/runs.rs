@@ -117,7 +117,8 @@ pub async fn decline_call(
 }
 
 /// The Run's person (under the same check as resuming) or a holder of `run.decline_call` may
-/// decline. Declining lets the Run go on, so it checks what resuming checks about the Run.
+/// decline. Declining lets the Run go on, so it checks what the Run read, as resuming does. The
+/// Run's person also has to be able to read the Run; someone else does not.
 pub async fn decline_call_in(
 	scope: &mut dyn RunControlScope,
 	id: Uuid,
@@ -131,14 +132,18 @@ pub async fn decline_call_in(
 	if !run.is_local(scope.node_id()) {
 		return Err(Error::Forbidden);
 	}
-	let block = reads_block(scope, &run).await?;
 	let own = is_own_grant(scope, id).await?;
-	if own {
+	let block = if own {
 		require_control(scope, id).await?;
+		// The Run's person is held to what resuming checks, including reading the Run.
+		reads_block(scope, &run).await?
 	} else {
 		let resource = scope.resource("run", &id.to_string(), json!({}));
 		scope.require(&resource, "run.decline_call").await?;
-	}
+		// Anyone else needs the Workspace and the action, not the Run's content (a Working Area
+		// is private to its owner): only what the Run read has to be readable (#763).
+		scope.run_reads_stop(&run).await?
+	};
 	if let Some(block) = block {
 		return Err(Error::ResumeBlocked(block));
 	}

@@ -81,6 +81,49 @@ pub(crate) async fn visible_within(
 	scope.access.get().wire = wire;
 	result
 }
+/// Whether the caller may decline the call the Run is paused on: the Run's person under
+/// `run.control`, anyone else under `run.decline_call`. Decided without writing a denial.
+pub(crate) async fn may_decline_run(
+	access: &mut Access,
+	run: &RunInspection,
+) -> NativeResult<bool> {
+	let grant: Option<super::Grant> = {
+		let query_bind_1 = run.id;
+		crate::database::native::query_as(
+			&Query::select()
+				.column(Asterisk)
+				.from(Alias::new("authorization_execution"))
+				.and_where(
+					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("run_id"))).eq(
+						SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						),
+					),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_optional(&mut **access.tx)
+		.await?
+	};
+	let Some(grant) = grant else {
+		return Ok(false);
+	};
+	let own =
+		grant.tenant == access.identity.tenant && grant.root_subject == access.identity.subject;
+	let resource = access.resource("run", run.id, serde_json::json!({}));
+	access
+		.decide(
+			&resource,
+			if own {
+				"run.control"
+			} else {
+				"run.decline_call"
+			},
+		)
+		.await
+}
+
 #[async_trait]
 impl RunDetailsScope for Scope<'_> {
 	fn node_id(&self) -> &str {
@@ -138,46 +181,9 @@ impl RunDetailsScope for Scope<'_> {
 			.map_err(Into::into)
 	}
 	async fn may_decline(&mut self, run: &RunInspection) -> Result<bool> {
-		let result: NativeResult<bool> = async {
-			let access = self.access.get();
-			let grant: Option<super::Grant> = {
-				let query_bind_1 = run.id;
-				crate::database::native::query_as(
-					&Query::select()
-						.column(Asterisk)
-						.from(Alias::new("authorization_execution"))
-						.and_where(
-							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("run_id"))).eq(
-								SimpleExpr::CustomWithExpr(
-									"(?)".to_owned(),
-									vec![Expr::value(query_bind_1.to_owned()).into()],
-								),
-							),
-						)
-						.to_string(PostgresQueryBuilder),
-				)
-				.fetch_optional(&mut **access.tx)
-				.await?
-			};
-			let Some(grant) = grant else {
-				return Ok(false);
-			};
-			let own = grant.tenant == access.identity.tenant
-				&& grant.root_subject == access.identity.subject;
-			let resource = access.resource("run", run.id, serde_json::json!({}));
-			access
-				.decide(
-					&resource,
-					if own {
-						"run.control"
-					} else {
-						"run.decline_call"
-					},
-				)
-				.await
-		}
-		.await;
-		result.map_err(Into::into)
+		may_decline_run(self.access.get(), run)
+			.await
+			.map_err(Into::into)
 	}
 	async fn egress_requests(
 		&mut self,

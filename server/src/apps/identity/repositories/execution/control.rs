@@ -104,6 +104,9 @@ impl RunControlScope for Scope<'_> {
 	async fn run_reads_block(&mut self, run: &RunInspection) -> Result<Option<RunReadsBlock>> {
 		self.access.run_reads_block(run).await.map_err(Into::into)
 	}
+	async fn run_reads_stop(&mut self, run: &RunInspection) -> Result<Option<RunReadsBlock>> {
+		self.access.run_reads_stop(run).await.map_err(Into::into)
+	}
 	async fn lock_execution_grant(&mut self, id: Uuid) -> Result<Option<ExecutionGrant>> {
 		let result: NativeResult<Option<Grant>> = async {
 			Ok({

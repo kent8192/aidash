@@ -86,6 +86,23 @@
               }
             ]
           },
+          "DeclinableCall": {
+            "additionalProperties": false,
+            "description": "What a person is offered to decline: the call by its key, the tool, and the kind of refusal.\nNever the action, the subject or the receiver's own sentence.",
+            "properties": {
+              "call": {
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/RefusalKind"
+              },
+              "tool": {
+                "type": "string"
+              }
+            },
+            "required": ["call", "tool", "kind"],
+            "type": "object"
+          },
           "ManagementView": {
             "anyOf": [
               {
@@ -96,6 +113,31 @@
               }
             ],
             "description": "What `GET` returns: a Subject's diagnostics, or an administrator's metadata."
+          },
+          "RefusalKind": {
+            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
+            "oneOf": [
+              {
+                "description": "The Tenant policy of the Node the Run executes on.",
+                "enum": ["policy"],
+                "type": "string"
+              },
+              {
+                "description": "Catalog Approval of a Registry entry.",
+                "enum": ["catalog_approval"],
+                "type": "string"
+              },
+              {
+                "description": "The Agent's own configuration.",
+                "enum": ["agent_configuration"],
+                "type": "string"
+              },
+              {
+                "description": "The authority of the Node the Run was delegated to.",
+                "enum": ["other_node"],
+                "type": "string"
+              }
+            ]
           },
           "RemoteSemanticFailure": {
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
@@ -177,6 +219,17 @@
               "control_source": {
                 "$ref": "#/components/schemas/ControlSource",
                 "description": "The kind of actor that last changed `control`."
+              },
+              "declinable_call": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DeclinableCall"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The tool call a paused Run stopped on, only for a caller who may decline it. Never file\ncontent: the tool and the kind of refusal."
               },
               "id": {
                 "format": "uuid",
@@ -371,6 +424,23 @@
               }
             ]
           },
+          "DeclinableCall": {
+            "additionalProperties": false,
+            "description": "What a person is offered to decline: the call by its key, the tool, and the kind of refusal.\nNever the action, the subject or the receiver's own sentence.",
+            "properties": {
+              "call": {
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/RefusalKind"
+              },
+              "tool": {
+                "type": "string"
+              }
+            },
+            "required": ["call", "tool", "kind"],
+            "type": "object"
+          },
           "ManagementResult": {
             "anyOf": [
               {
@@ -381,6 +451,31 @@
               }
             ],
             "description": "What `POST` returns: the Run for a Subject, or the receipt for an administrator."
+          },
+          "RefusalKind": {
+            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
+            "oneOf": [
+              {
+                "description": "The Tenant policy of the Node the Run executes on.",
+                "enum": ["policy"],
+                "type": "string"
+              },
+              {
+                "description": "Catalog Approval of a Registry entry.",
+                "enum": ["catalog_approval"],
+                "type": "string"
+              },
+              {
+                "description": "The Agent's own configuration.",
+                "enum": ["agent_configuration"],
+                "type": "string"
+              },
+              {
+                "description": "The authority of the Node the Run was delegated to.",
+                "enum": ["other_node"],
+                "type": "string"
+              }
+            ]
           },
           "RemoteSemanticFailure": {
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
@@ -431,6 +526,17 @@
               "control_source": {
                 "$ref": "#/components/schemas/ControlSource",
                 "description": "The kind of actor that last changed `control`."
+              },
+              "declinable_call": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DeclinableCall"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The tool call a paused Run stopped on, only for a caller who may decline it. Never file\ncontent: the tool and the kind of refusal."
               },
               "id": {
                 "format": "uuid",
@@ -38563,6 +38669,48 @@
               }
             ]
           },
+          "DeclinableCall": {
+            "additionalProperties": false,
+            "description": "What a person is offered to decline: the call by its key, the tool, and the kind of refusal.\nNever the action, the subject or the receiver's own sentence.",
+            "properties": {
+              "call": {
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/RefusalKind"
+              },
+              "tool": {
+                "type": "string"
+              }
+            },
+            "required": ["call", "tool", "kind"],
+            "type": "object"
+          },
+          "RefusalKind": {
+            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
+            "oneOf": [
+              {
+                "description": "The Tenant policy of the Node the Run executes on.",
+                "enum": ["policy"],
+                "type": "string"
+              },
+              {
+                "description": "Catalog Approval of a Registry entry.",
+                "enum": ["catalog_approval"],
+                "type": "string"
+              },
+              {
+                "description": "The Agent's own configuration.",
+                "enum": ["agent_configuration"],
+                "type": "string"
+              },
+              {
+                "description": "The authority of the Node the Run was delegated to.",
+                "enum": ["other_node"],
+                "type": "string"
+              }
+            ]
+          },
           "RemoteSemanticFailure": {
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
             "oneOf": [
@@ -38612,6 +38760,17 @@
               "control_source": {
                 "$ref": "#/components/schemas/ControlSource",
                 "description": "The kind of actor that last changed `control`."
+              },
+              "declinable_call": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DeclinableCall"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The tool call a paused Run stopped on, only for a caller who may decline it. Never file\ncontent: the tool and the kind of refusal."
               },
               "id": {
                 "format": "uuid",
@@ -55575,6 +55734,48 @@
               }
             ]
           },
+          "DeclinableCall": {
+            "additionalProperties": false,
+            "description": "What a person is offered to decline: the call by its key, the tool, and the kind of refusal.\nNever the action, the subject or the receiver's own sentence.",
+            "properties": {
+              "call": {
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/RefusalKind"
+              },
+              "tool": {
+                "type": "string"
+              }
+            },
+            "required": ["call", "tool", "kind"],
+            "type": "object"
+          },
+          "RefusalKind": {
+            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
+            "oneOf": [
+              {
+                "description": "The Tenant policy of the Node the Run executes on.",
+                "enum": ["policy"],
+                "type": "string"
+              },
+              {
+                "description": "Catalog Approval of a Registry entry.",
+                "enum": ["catalog_approval"],
+                "type": "string"
+              },
+              {
+                "description": "The Agent's own configuration.",
+                "enum": ["agent_configuration"],
+                "type": "string"
+              },
+              {
+                "description": "The authority of the Node the Run was delegated to.",
+                "enum": ["other_node"],
+                "type": "string"
+              }
+            ]
+          },
           "RemoteSemanticFailure": {
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
             "oneOf": [
@@ -55624,6 +55825,17 @@
               "control_source": {
                 "$ref": "#/components/schemas/ControlSource",
                 "description": "The kind of actor that last changed `control`."
+              },
+              "declinable_call": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DeclinableCall"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The tool call a paused Run stopped on, only for a caller who may decline it. Never file\ncontent: the tool and the kind of refusal."
               },
               "id": {
                 "format": "uuid",

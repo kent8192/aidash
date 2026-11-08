@@ -102,8 +102,6 @@ impl Access {
 		&mut self,
 		run: impl Into<crate::domain::RunMetadata>,
 	) -> crate::Result<Option<aidash_domain::run_state::RunReadsBlock>> {
-		use aidash_application::authorization::visibility::provenance::ReadBlock;
-		use aidash_domain::run_state::RunReadsBlock;
 		let run = run.into();
 		let Some(block) = self.read_block.take() else {
 			return Ok(None);
@@ -116,7 +114,40 @@ impl Access {
 		if !self.decide(&resource, "run.read").await? {
 			return Ok(None);
 		}
-		Ok(Some(match block {
+		self.describe_read_block(block).await.map(Some)
+	}
+
+	/// What stops a person from letting the Run go on: the Run's own read walk alone, without
+	/// asking whether this reader may read the Run itself (#763). Declining shows the tool and the
+	/// kind of refusal, never content, so it does not depend on `run.read` or on the Run's
+	/// Working Area; what the Run read still has to be readable. `None` when nothing stops it,
+	/// or when the Run is another Home's.
+	pub(crate) async fn run_reads_stop(
+		&mut self,
+		run: impl Into<crate::domain::RunMetadata>,
+	) -> crate::Result<Option<aidash_domain::run_state::RunReadsBlock>> {
+		let run = run.into();
+		if !run.is_local(&self.node_id) {
+			return Ok(None);
+		}
+		self.read_block = None;
+		if self.run_reads_visible(run.id).await? {
+			return Ok(None);
+		}
+		let Some(block) = self.read_block.take() else {
+			// The walk refused without saying which read; stay closed.
+			return Err(crate::Error::Forbidden);
+		};
+		self.describe_read_block(block).await.map(Some)
+	}
+
+	async fn describe_read_block(
+		&mut self,
+		block: aidash_application::authorization::visibility::provenance::ReadBlock,
+	) -> crate::Result<aidash_domain::run_state::RunReadsBlock> {
+		use aidash_application::authorization::visibility::provenance::ReadBlock;
+		use aidash_domain::run_state::RunReadsBlock;
+		Ok(match block {
 			ReadBlock::Definition(reference) => {
 				let entry = match crate::apps::registry::models::Definition::read_in(
 					&mut **self.tx,
@@ -139,7 +170,7 @@ impl Access {
 			ReadBlock::RemoteRead => RunReadsBlock::RemoteRead,
 			ReadBlock::SemanticRead => RunReadsBlock::SemanticRead,
 			ReadBlock::Source(source) => RunReadsBlock::Source { source },
-		}))
+		})
 	}
 
 	/// Preserve the reason when memory execution rechecks its complete Run graph.

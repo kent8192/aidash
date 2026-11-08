@@ -22,6 +22,8 @@ struct State {
 	principal: ExecutionPrincipal,
 	visible: bool,
 	block: Option<RunReadsBlock>,
+	/// What the Run's reads say against it, apart from whether the reader may read the Run.
+	stop: Option<RunReadsBlock>,
 	fail: Option<&'static str>,
 	deny: Option<&'static str>,
 	pending_control: bool,
@@ -102,6 +104,7 @@ fn repository() -> Repository {
 		},
 		visible: true,
 		block: None,
+		stop: None,
 		fail: None,
 		deny: None,
 		pending_control: false,
@@ -189,6 +192,12 @@ impl RunControlScope for Scope {
 		let mut state = self.state.lock().unwrap();
 		state.record("block")?;
 		Ok(state.block.clone())
+	}
+	async fn run_reads_stop(&mut self, run: &RunInspection) -> Result<Option<RunReadsBlock>> {
+		assert_eq!(run.id, id(1));
+		let mut state = self.state.lock().unwrap();
+		state.record("stop")?;
+		Ok(state.stop.clone())
 	}
 	async fn lock_execution_grant(&mut self, key: Uuid) -> Result<Option<ExecutionGrant>> {
 		assert_eq!(key, id(1));
@@ -465,9 +474,9 @@ fn expected_decline() -> Vec<&'static str> {
 		"run",
 		"workspace",
 		"workspace.read",
-		"visible",
 		"grant_lock",
 		"run.control",
+		"visible",
 		"credential",
 		"decline",
 		"commit",
@@ -504,6 +513,39 @@ async fn a_holder_of_run_decline_call_declines_and_leaves_the_credential(reposit
 	assert!(!state.calls.contains(&"credential".into()));
 	assert_eq!(state.credential, None);
 	assert_eq!(state.declined.as_deref(), Some(call()));
+}
+#[rstest]
+#[tokio::test]
+async fn someone_else_declines_a_run_they_cannot_read_by_its_read_walk_alone(
+	repository: Repository,
+) {
+	{
+		let mut state = repository.0.lock().unwrap();
+		state.grant.as_mut().unwrap().root_subject = "other".into();
+		// The Run is private to its person, as a Run with a Working Area is.
+		state.visible = false;
+	}
+	decline_call(&repository, id(1), call()).await.unwrap();
+	let state = repository.0.lock().unwrap();
+	assert!(!state.calls.contains(&"visible".into()));
+	assert!(!state.calls.contains(&"block".into()));
+	assert!(state.calls.contains(&"stop".into()));
+	assert_eq!(state.declined.as_deref(), Some(call()));
+}
+#[rstest]
+#[tokio::test]
+async fn what_the_run_read_still_stops_someone_else_with_the_same_reason(repository: Repository) {
+	{
+		let mut state = repository.0.lock().unwrap();
+		state.grant.as_mut().unwrap().root_subject = "other".into();
+		state.stop = Some(withdrawn());
+	}
+	let result = decline_call(&repository, id(1), call()).await;
+	assert!(matches!(result, Err(Error::ResumeBlocked(block)) if block == withdrawn()));
+	let state = repository.0.lock().unwrap();
+	assert!(state.declined.is_none());
+	assert_eq!(state.credential, None);
+	assert!(!state.committed);
 }
 #[rstest]
 #[case::another_person_with_only_run_control("other", "run.decline_call")]

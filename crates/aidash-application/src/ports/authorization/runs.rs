@@ -23,6 +23,9 @@ pub trait RunControlScope: Send {
 	/// What the failed [`Self::run_visible`] found in the Run's reads, in terms
 	/// this reader may see. `None` when the reader's own policy hides the Run.
 	async fn run_reads_block(&mut self, run: &RunInspection) -> Result<Option<RunReadsBlock>>;
+	/// What the Run's own reads say against letting it go on, without asking whether this reader
+	/// may read the Run. `None` when nothing stops it (#763).
+	async fn run_reads_stop(&mut self, run: &RunInspection) -> Result<Option<RunReadsBlock>>;
 	/// The resume grant remains locked FOR UPDATE until the surrounding transaction finishes.
 	async fn lock_execution_grant(&mut self, id: Uuid) -> Result<Option<ExecutionGrant>>;
 	async fn update_credential(&mut self, id: Uuid, credential: Uuid) -> Result<()>;
