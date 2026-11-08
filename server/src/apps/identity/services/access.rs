@@ -1370,7 +1370,7 @@ impl Access {
 			let denied = self
 				.pending_decisions
 				.iter()
-				.any(|(_, decision)| !decision.allowed);
+				.any(|row| !row.decision.allowed);
 			if denied
 				|| matches!(
 					result,
