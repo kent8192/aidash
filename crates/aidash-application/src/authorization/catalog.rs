@@ -42,27 +42,6 @@ fn catalog_refusal(action: &str) -> Error {
 	Error::Forbidden
 }
 
-/// [`entry`] for a definition met by a Read Recheck. The Recheck hands nothing
-/// over, so current policy decides, as it does for an authority that is not
-/// inherited: an inherited one need not have used the definition itself. What
-/// its Run may use does not grow, and it takes no lock that could queue behind
-/// its own lease.
-pub async fn recheck_entry(scope: &mut dyn CatalogScope, reference: &EntityRef) -> Result<()> {
-	if !scope.inherited_lease()
-		|| scope.approved(reference)
-		|| crate::registry::system::builtin_reference(reference)
-	{
-		return entry(scope, reference, "registry.read").await.map(|_| ());
-	}
-	let direct_user = scope.direct_user(reference);
-	if !scope.permits_restriction(reference, &direct_user).await? {
-		return Err(catalog_refusal("registry.read"));
-	}
-	current_definition(scope, reference, "registry.read", None)
-		.await
-		.map(|_| ())
-}
-
 /// The refusal of a Tenant policy denial met while admitting a Catalog entry for `tool`'s call.
 pub fn policy_refusal(tool: &str, action: &str) -> Error {
 	Error::AuthorityRefused(Box::new(aidash_domain::tool::AuthorityRefusal {
