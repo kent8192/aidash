@@ -80,8 +80,8 @@ fn record(upload: Upload) -> Record {
 
 #[rstest]
 fn parser_budget_is_immutable_after_the_dispatch_intent(mut record: Record) {
-	assert_eq!(text_budget(&record, 1000, 856), 100);
-	assert_eq!(text_budget(&record, 1000, 255), 0);
+	assert_eq!(text_budget(&record, 1000, 2648), 100);
+	assert_eq!(text_budget(&record, 1000, 2047), 0);
 	record.data["text_budget"] = json!(47);
 	assert_eq!(text_budget(&record, 1, 0), 47);
 }
@@ -133,4 +133,30 @@ fn the_reference_view_keeps_original_and_extraction_metadata_nullable(record: Re
 	assert!(value.original.is_none());
 	assert!(value.extraction.is_none());
 	assert!(value.extraction_state.is_none());
+}
+
+#[test]
+fn content_decides_how_a_file_is_read_whatever_its_declared_type() {
+	assert_eq!(readability(b"# plan\n"), Readability::Text);
+	assert_eq!(readability("東京の資料".as_bytes()), Readability::Text);
+	assert_eq!(readability(b"%PDF-1.7"), Readability::Parser);
+	assert_eq!(readability(b"PK\x03\x04"), Readability::Parser);
+	assert_eq!(readability(b"PKCE flow notes"), Readability::Text);
+	assert_eq!(
+		readability(&[0x93, 0xfa, 0x96, 0x7b]),
+		Readability::Unsupported
+	);
+	assert_eq!(readability(b"text\0with nul"), Readability::Unsupported);
+	assert_eq!(sniffed_media_type(b"%PDF-1.7"), "application/pdf");
+	assert_eq!(sniffed_media_type(b"# plan"), "text/plain");
+}
+
+#[test]
+fn a_text_file_counts_its_original_and_a_parsed_file_its_extraction() {
+	let text = json!({"plain_text":true,"original":{"size":10},"extraction":null});
+	let parsed = json!({"original":{"size":10},"extraction":{"size":3}});
+	let unreadable = json!({"original":{"size":10},"extraction":null});
+	assert_eq!(text_bytes(&text), 10);
+	assert_eq!(text_bytes(&parsed), 3);
+	assert_eq!(text_bytes(&unreadable), 0);
 }

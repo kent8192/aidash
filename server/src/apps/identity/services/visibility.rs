@@ -1,7 +1,7 @@
 //! Read authorization over native records, retaining the complete dependency graph.
 use super::NativeAccess;
 use crate::authorization::policy::Resource;
-use crate::registry::{EntityRef, Entry};
+use crate::registry::EntityRef;
 use crate::{Result, domain};
 use uuid::Uuid;
 
@@ -124,8 +124,8 @@ impl NativeAccess {
 		.map_err(Into::into)
 	}
 
-	pub(crate) async fn catalog_entry(&mut self, reference: &EntityRef) -> Result<Entry> {
-		aidash_application::authorization::catalog::retained::entry(
+	pub(crate) async fn catalog_recheck_entry(&mut self, reference: &EntityRef) -> Result<()> {
+		aidash_application::authorization::catalog::retained::recheck_entry(
 			&mut crate::bootstrap::native_run_visibility_scope(self),
 			reference,
 		)

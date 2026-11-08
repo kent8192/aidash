@@ -1,6 +1,8 @@
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../tests/support/legacy.rs"]
 mod common;
+#[path = "../../tests/support/late_subnode.rs"]
+mod late_subnode;
 use aidash_application::tenancy::TEST_FIXTURE;
 use common::upstream_fixtures;
 use common::{bootstrap, cleanup, request};
@@ -1506,7 +1508,7 @@ async fn reference_original_is_private_located_and_unchanged_by_python(
 	let source = reference_limit_tests::register_reference_source(
 		&c,
 		"uploaded-reference",
-		&[json!({"reference_id":id,"digest":digest})],
+		&[json!({"reference_id":id,"digest":digest,"path":"sales/fixture.xlsx"})],
 	)
 	.await;
 	agent.config["bindings"]
@@ -1880,3 +1882,9 @@ mod completion_gate_tests;
 
 #[path = "core_capabilities/web_research.rs"]
 mod web_research_tests;
+
+#[path = "core_capabilities/reference_set.rs"]
+mod reference_set_tests;
+
+#[path = "core_capabilities/reference_locks.rs"]
+mod reference_lock_tests;

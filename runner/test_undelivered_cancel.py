@@ -37,6 +37,7 @@ class UndeliveredCancelTest(unittest.TestCase):
         runner.root = Path(self.root)
         runner.lock = threading.RLock()
         runner.instance = INSTANCE
+        runner.proven = True
         runner.active = set()
         runner.aggregate = ActivityAggregate()
         runner.config = {"image": "runner-image", "maximum_seconds": 600, "working_bytes": 1 << 20, "limits": {}}
@@ -164,6 +165,7 @@ class UndeliveredCancelRouteTest(unittest.TestCase):
         runner.root = Path(directory.name)
         runner.lock = threading.RLock()
         runner.instance = INSTANCE
+        runner.proven = True
         runner.aggregate = ActivityAggregate()
         runner.token = "secret"
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)

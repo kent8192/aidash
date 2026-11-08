@@ -474,6 +474,10 @@ pub async fn sweep(repository: &dyn CleanupRepository, cursor: &mut Uuid) -> Res
 		*cursor = id;
 		let area = job.area_id;
 		if let Err(error) = Box::pin(erase_job(repository, job)).await {
+			if matches!(error, Error::TemporaryDatabase(_)) {
+				tracing::warn!(%id,%error,"file lifecycle reconciliation waits for the database");
+				continue;
+			}
 			repository.failure(id, area).await?;
 			tracing::warn!(%error,"file lifecycle reconciliation pending");
 		}

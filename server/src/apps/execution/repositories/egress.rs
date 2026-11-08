@@ -8,7 +8,7 @@ use crate::{
 	authorization::{access::Access, identity::SubjectIdentity},
 	store::Store,
 };
-use aidash_application::egress::{Admission, Authority, Direction, Meter};
+use aidash_application::egress::{Admission, Authority, Direction, Meter, RequestTimes};
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::tenant_secrets::{
 	CachedRoute, Resolution, Resolved, RouteCache, SecretCall, SecretIdentity, SecretRoute,
@@ -270,7 +270,7 @@ fn token(
 	Ok(format!("{}{preview}.{signature}", kind.prefix()))
 }
 
-fn runner_key(store: &Store) -> Result<secrecy::SecretString> {
+pub(super) fn runner_key(store: &Store) -> Result<secrecy::SecretString> {
 	let runner = store
 		.capabilities
 		.0
@@ -397,6 +397,10 @@ fn expired() -> Error {
 	Error::Conflict(aidash_domain::egress::OPERATION_EXPIRED.into())
 }
 
+fn inactive() -> Error {
+	Error::Conflict(aidash_domain::egress::OPERATION_INACTIVE.into())
+}
+
 fn exhausted() -> Error {
 	Error::Conflict(aidash_domain::egress::LIMIT_EXCEEDED.into())
 }
@@ -447,13 +451,13 @@ async fn live(
 		.ok_or(Error::Forbidden)?;
 	let current: aidash_domain::Run = current.try_into()?;
 	if current.phase().is_terminal() || current.control != aidash_domain::RunControl::Active {
-		return Err(expired());
+		return Err(inactive());
 	}
 	let operation = super::operations::get(&mut access, operation).await?;
 	if !matches!(operation.state.as_str(), "submitted" | "running")
 		|| operation.result["termination_confirmed"] == true
 	{
-		return Err(expired());
+		return Err(inactive());
 	}
 	Ok((access, current))
 }
@@ -665,6 +669,8 @@ async fn admit_session(
 		.sent_bytes(0)
 		.received_bytes(0)
 		.duration_ms(0)
+		.admission_ms(None)
+		.settle_ms(None)
 		.error(Some("stream_interrupted".to_owned()))
 		.secret_id(secret.as_ref().map(|secret| secret.id))
 		.secret_version(secret.as_ref().map(|secret| secret.version.clone()))
@@ -911,6 +917,8 @@ impl Authority for Gateway {
 				.sent_bytes(0)
 				.received_bytes(0)
 				.duration_ms(0)
+				.admission_ms(None)
+				.settle_ms(None)
 				.via("operation".to_owned())
 				.error(Some("stream_interrupted".to_owned()))
 				.secret_id(secret.as_ref().map(|secret| secret.id))
@@ -997,6 +1005,24 @@ async fn charge_session(
 		return Err(exhausted());
 	}
 	Ok(())
+}
+
+/// A decision that the operation may not continue, as opposed to a failure to
+/// find out. The gateway reads the same errors as a refusal, and charges again
+/// after anything else (see `Meter::charge`).
+fn stops_stream(error: &Error) -> bool {
+	match error {
+		Error::Forbidden
+		| Error::Unauthorized
+		| Error::AuthorityRefused(_)
+		| Error::TenantDeleted => true,
+		Error::Conflict(code) => {
+			code == aidash_domain::egress::OPERATION_EXPIRED
+				|| code == aidash_domain::egress::OPERATION_INACTIVE
+				|| code == aidash_domain::egress::LIMIT_EXCEEDED
+		}
+		_ => false,
+	}
 }
 
 async fn add_to_record(
@@ -1125,7 +1151,7 @@ impl Meter for RequestMeter {
 				}
 				// The bytes already crossed the gateway, so they still count
 				// although the operation can no longer use it.
-				Err(refusal) => {
+				Err(refusal) if stops_stream(&refusal) => {
 					let mut tx = self
 						.store
 						.pool
@@ -1143,6 +1169,8 @@ impl Meter for RequestMeter {
 					tx.commit().await?;
 					return Err(refusal);
 				}
+				// Nothing decided about this operation, and nothing committed.
+				Err(error) => return Err(error),
 			};
 			if recorded.expired {
 				return Err(expired());
@@ -1158,7 +1186,7 @@ impl Meter for RequestMeter {
 	async fn finish(
 		&self,
 		status: u16,
-		elapsed_ms: u64,
+		times: RequestTimes,
 		error: Option<&str>,
 	) -> aidash_application::Result<()> {
 		let result: Result<()> = async {
@@ -1179,7 +1207,9 @@ impl Meter for RequestMeter {
 				return Ok(());
 			};
 			record.status = i32::from(status);
-			record.duration_ms = elapsed_ms.min(i64::MAX as u64) as i64;
+			record.duration_ms = column(times.duration_ms);
+			record.admission_ms = Some(column(times.admission_ms));
+			record.settle_ms = Some(column(times.settle_ms));
 			record.error = error.map(str::to_owned);
 			RequestRecord::objects()
 				.save_with_executor(&mut *tx, &record)
@@ -1192,5 +1222,7 @@ impl Meter for RequestMeter {
 	}
 }
 
+#[cfg(test)]
+mod charge_tests;
 #[cfg(test)]
 mod session_tests;

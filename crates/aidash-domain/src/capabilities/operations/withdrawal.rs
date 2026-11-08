@@ -75,18 +75,20 @@ impl Snapshot {
 		Change {
 			state: self.state.clone(),
 			result,
-			area_state: None,
+			area_state: (stopped
+				&& self.state == "uncertain"
+				&& self.area_state == "uncertain"
+				&& self.area_epoch == self.epoch
+				&& self.area_generation == self.generation)
+				.then_some("active"),
 		}
 	}
 	pub fn change(&self, stop: WriterStop) -> Change {
 		let stopped = stop != WriterStop::Unconfirmed;
 		let never_dispatched = self.never_dispatched();
 		let never_ran = never_dispatched || stop == WriterStop::NeverRan;
-		// A Check never exports `/work` and a command that never ran changed
-		// nothing, so once such a writer is confirmed stopped the Area it fenced
-		// on an earlier pass is usable again.
-		let fenced_unchanged = self.area_state == "uncertain"
-			&& (self.kind == super::VERIFICATION || stop == WriterStop::NeverRan);
+		// A confirmed stop reopens the last saved Area even if the output was lost.
+		let fenced_area = self.area_state == "uncertain";
 		let mut result = self.result.clone();
 		result["termination_confirmed"] = json!(stopped);
 		result["effects_may_have_occurred"] = json!(!never_ran);
@@ -103,7 +105,7 @@ impl Snapshot {
 			result,
 			area_state: (self.area_epoch == self.epoch
 				&& self.area_generation == self.generation
-				&& (self.area_state == "running" || fenced_unchanged && stopped))
+				&& (self.area_state == "running" || fenced_area && stopped))
 				.then_some(if never_ran {
 					"active"
 				} else {

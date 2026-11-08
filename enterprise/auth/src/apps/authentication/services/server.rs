@@ -84,11 +84,15 @@ impl Authentication {
 		let options: sqlx::postgres::PgConnectOptions =
 			url.parse().map_err(|_| Error::Configuration)?;
 		let options = options.options([("search_path", "aidash_auth,pg_catalog")]);
-		let pool = sqlx::postgres::PgPoolOptions::new()
-			.max_connections(24)
-			.connect_with(options)
-			.await
-			.map_err(|_| Error::Unavailable)?;
+		let options = crate::apps::authentication::server::store::with_connection_limits(options)
+			.map_err(|_| Error::Configuration)?;
+		let pool = crate::apps::authentication::server::store::released_within_limit(
+			sqlx::postgres::PgPoolOptions::new(),
+		)
+		.max_connections(24)
+		.connect_with(options)
+		.await
+		.map_err(|_| Error::Unavailable)?;
 		let store = Store::from_pool(pool);
 		let (sql, values) = reinhardt::query::Query::select()
 			.expr_as(

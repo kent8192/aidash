@@ -6,7 +6,7 @@
 
 use aidash_application::{
 	Error,
-	egress::{Admission, Authority, Direction, Meter},
+	egress::{Admission, Authority, Direction, Meter, RequestTimes},
 	ports::tools::ToolTransport,
 	provider_access::KeylessAccess,
 	provider_credentials::Store as SecretStore,
@@ -812,7 +812,7 @@ impl Meter for GatewayLog {
 		.fetch_add(bytes, Ordering::Relaxed);
 		Ok(())
 	}
-	async fn finish(&self, status: u16, _: u64, error: Option<&str>) -> Result<(), Error> {
+	async fn finish(&self, status: u16, _: RequestTimes, error: Option<&str>) -> Result<(), Error> {
 		self.finished
 			.lock()
 			.unwrap()

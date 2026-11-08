@@ -188,6 +188,12 @@ pub(crate) struct Access {
 	/// The address of `node`, which Federation references name Nodes by.
 	pub(crate) node_address: Option<String>,
 	pub(crate) dependency_frontier: Option<Vec<super::peer::dependencies::Reference>>,
+	/// The Subnode Workspaces a Read Recheck in progress has opened, one entry per
+	/// Run it is checking, and what each Run opens.
+	pub(crate) recheck_workspaces: Vec<Vec<Uuid>>,
+	pub(crate) subnode_workspaces: std::collections::BTreeMap<Uuid, Vec<Uuid>>,
+	/// Which Run created the Subnode that owns a Workspace, if any.
+	pub(crate) subnode_creators: std::collections::BTreeMap<Uuid, Option<Uuid>>,
 	pub tx: AccessTransaction,
 	pub identity: SubjectIdentity,
 	pub snapshot: Snapshot,
@@ -403,6 +409,9 @@ impl Access {
 			checking_reads: Default::default(),
 			read_verdicts: Default::default(),
 			dependency_frontier: None,
+			recheck_workspaces: Default::default(),
+			subnode_workspaces: Default::default(),
+			subnode_creators: Default::default(),
 			wire,
 			node_id: node.to_owned(),
 			node: None,
@@ -526,6 +535,9 @@ impl Access {
 			checking_reads: Default::default(),
 			read_verdicts: Default::default(),
 			dependency_frontier: None,
+			recheck_workspaces: Default::default(),
+			subnode_workspaces: Default::default(),
+			subnode_creators: Default::default(),
 			wire: lease.wire.clone(),
 			node_id: lease.node_id.clone(),
 			node: lease.node.clone(),
@@ -762,8 +774,9 @@ impl Access {
 
 	/// A dissolved Subnode Workspace is retained for reading and citations.
 	/// User mutations hold a shared Subnode lock until their transaction commits;
-	/// dissolution takes the exclusive lock. Worker mutations already hold it
-	/// through their narrower Subnode effect boundary.
+	/// dissolution takes the exclusive lock. A Run's writes are not checked here
+	/// (see `decide`): each path that writes for a Run must call
+	/// `subnodes::require_writable` first in its own transaction.
 	pub(crate) async fn ensure_subnode_writable(&mut self, workspace: Uuid) -> Result<()> {
 		use reinhardt::db::orm::{QueryRow, execution::convert_values};
 		use reinhardt::query::LockType;

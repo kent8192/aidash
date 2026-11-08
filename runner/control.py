@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from urllib.parse import urlsplit, parse_qs
 import uuid
 
@@ -34,6 +35,28 @@ TERMINAL = {"completed", "cancelled", "failed", "uncertain"}
 # The sandbox image's runner/probe.py must emit exactly this evidence contract.
 PROBE_PROTOCOL = "aidash-admission-probe/2"
 ALLOCATION_OBSERVATION_ATTEMPTS = 5
+STOP_WATCH_SECONDS = 1800
+# Bounds the wait for a Pod to be ready and the retries of a start that keeps
+# failing. It does not bound the input upload or the dispatch: a command that
+# is ready to start is not refused for having uploaded many files (#709).
+START_LIMIT_SECONDS = 120
+DEFAULT_UNCERTAIN_RETENTION_SECONDS = 86400
+
+
+class SandboxGone(Rejected):
+    """A successful Kubernetes observation found the original Pod absent."""
+
+    def __init__(self):
+        super().__init__(409, 'original sandbox is absent or replaced')
+
+
+class StartupIdentityMismatch(Exception):
+    """A different sandbox or input was observed before dispatch."""
+
+
+class StoppedExportRefused(Exception):
+    def __init__(self, refusal):
+        self.refusal = refusal
 
 
 def scratch_resource_name(scratch_space_id):
@@ -78,6 +101,13 @@ def termination_time(terminated, started_at, observed):
     return min(observed, finished + 1)
 
 
+def cell_timed_out(record):
+    """Whether a Python cell ran into its limit. The node watchdog stops it there
+    without saying why, so a stop at or past the limit counts as one."""
+    stopped_at, running_at = record.get('stop_confirmed_at'), record.get('running_at')
+    return stopped_at is not None and running_at is not None and stopped_at >= running_at + record['request']['seconds']
+
+
 def settled(record):
     """No writer can still be running: terminal, with termination proven or frozen."""
     return record['status'] in TERMINAL and bool(record.get('termination_confirmed') or record.get('writer_frozen'))
@@ -106,8 +136,15 @@ class ActivityAggregate:
 
 
 class Runner(AllocationJournal):
+    # Set once the startup isolation proof passes. Without it the Runner takes
+    # no new work and restarts nothing it recovered; stops and status still work.
+    proven = False
+
     def __init__(self, config):
         self.config = config
+        retention = config.get('uncertain_retention_seconds', DEFAULT_UNCERTAIN_RETENTION_SECONDS)
+        if type(retention) is not int or retention < 1:
+            raise ValueError('uncertain output retention must be a positive integer')
         self.root = Path(config["journal"])
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.owner = (self.root / "owner.lock").open("a")
@@ -160,34 +197,127 @@ class Runner(AllocationJournal):
         self.ensure_v2_network_policy()
         self.verified = False
         self.python_verified = False
+        self.probe = None
         # Existing journals contain untrusted work too. Re-prove the current
         # isolation boundary before any recovery thread can execute that work.
-        self.verify_isolation()
-        if self.config.get("node_guard"):
-            self.verify_freeze()
-        self.retire_admission_probes()
-        self.recover()
+        # A failed proof refuses new work (the health report says unverified)
+        # and starts no recovery, but it must not stop the Runner watching the
+        # commands it already tracks. Execution Pod commands outlive a restart,
+        # and a crash loop here would leave nobody to deliver their stops (#722).
+        proof_failure = None
+        try:
+            self.verify_isolation()
+            if self.config.get("node_guard"):
+                self.verify_freeze()
+            self.proven = True
+        except Exception as failure:
+            # A proof that stopped half way proves nothing: the health report
+            # must not say verified because only the first step passed.
+            self.verified = self.python_verified = False
+            self.probe = None
+            proof_failure = str(failure) or type(failure).__name__
+            print(f"Deployment Administrator: isolation proof failed, so new work is refused: {proof_failure}",
+                  file=sys.stderr, flush=True)
+        try:
+            self.retire_admission_probes()
+        except Exception as failure:
+            print(f"Admission probe retirement failed: {failure}", file=sys.stderr, flush=True)
+        self.recover(resume=self.proven)
         self.execution_pods.recover_commands()
-        self.activate_execution_pods()
+        if self.proven:
+            self.activate_execution_pods()
+        else:
+            # Execution Pods stay unadmitted: commands already running are watched, none are accepted.
+            self.execution_pods.admission_error = 'Runner isolation proof failed: ' + proof_failure
         threading.Thread(target=self.allocation_loop, daemon=True).start()
+        threading.Thread(target=self.uncertain_output_loop, daemon=True).start()
 
     def operation_files(self):
         for path in self.root.glob("*.json"):
             if not path.name.startswith(("area-", "session-")):
                 yield path
 
-    def recover(self):
+    def recover(self, resume=True):
         """Seed the activity aggregate and resume interrupted work in one journal
         scan at startup, never per request. Each record is tracked before its work
-        restarts, so no later update of it can be overwritten by this read."""
+        restarts, so no later update of it can be overwritten by this read. Without
+        an isolation proof nothing restarts, yet the aggregate is still seeded: an
+        idle stop must not take the Runner down with that work in flight."""
         for path in self.operation_files():
             record = json.loads(path.read_bytes())
             with self.lock:
                 self.aggregate.track(path.stem, record)
             if record.get('output_harvested') and record['status'] in TERMINAL:
                 self.allocation_harvested(record, idle=record['status'] != 'uncertain' and record.get('writer_frozen') is True)
-            if record["status"] not in TERMINAL and record["status"] != "awaiting_files":
+            if resume and record["status"] not in TERMINAL and record["status"] != "awaiting_files":
                 self.start(record["operation_id"])
+
+    def uncertain_output_loop(self):
+        while True:
+            self.sweep_uncertain_output()
+            time.sleep(30)
+
+    def sweep_uncertain_output(self):
+        for path in self.operation_files():
+            try:
+                record = json.loads(path.read_bytes())
+                if record.get('startup_cleanup_pending'):
+                    self.cleanup_failed_start(record)
+                    continue
+                if (record.get('status') != 'uncertain' or not record.get('termination_confirmed')
+                        or record.get('output_harvested') or record.get('acknowledged')
+                        or record.get('request', {}).get('kind') not in ('shell', 'verify', 'python')):
+                    continue
+                operation = record['operation_id']
+                with self.lock:
+                    if operation in self.active:
+                        continue
+                    record = self.get(operation)
+                    if (record.get('status') != 'uncertain' or not record.get('termination_confirmed')
+                            or record.get('output_harvested') or record.get('acknowledged')):
+                        continue
+                    self.active.add(operation)
+                try:
+                    since = record.get('uncertain_at')
+                    if since is None:
+                        since = time.time()
+                        record = self.update(operation, uncertain_at=since)
+                    if time.time() < since + self.config.get('uncertain_retention_seconds', DEFAULT_UNCERTAIN_RETENTION_SECONDS):
+                        try:
+                            self.harvest_stopped_output(record)
+                        except StoppedExportRefused as refusal:
+                            detail = export_error(refusal.refusal)
+                            record = self.update(operation, output_harvested=True, output_discarded=True,
+                                                 files=[], displays=[], error=detail)
+                            self.allocation_harvested(record)
+                            self.close_allocation(record)
+                        except Exception:
+                            try:
+                                pod = self.pod(record.get('pod_operation', operation))
+                            except SandboxGone:
+                                pod = None
+                            if pod is not None:
+                                raise
+                            self.update(operation, output_harvested=True, output_discarded=True, files=[],
+                                        error={'code':'SANDBOX_LOST', 'message':"Sandbox is gone; the command's file changes were not saved."})
+                    else:
+                        self.allocation_harvested(record)
+                        self.close_allocation(record)
+                        try:
+                            pod = self.pod(record.get('pod_operation', operation))
+                        except SandboxGone:
+                            pod = None
+                        if pod is None or pod.get('metadata', {}).get('uid') != record.get('pod_uid'):
+                            record = self.update(operation, output_discarded=True, output_harvested=True,
+                                                 files=[], displays=[], truncated=True)
+                            proof = self.output_digest(record)
+                            self.update(operation, acknowledged=True, acknowledged_output_digest=proof)
+                            print(f"Deployment Administrator: discarded unreadable output for {operation}", file=sys.stderr, flush=True)
+                finally:
+                    with self.lock:
+                        self.active.discard(operation)
+            except Exception as error:
+                print(f"Uncertain output recovery {path.stem}: {error}", file=sys.stderr, flush=True)
 
     def verify_isolation(self):
         operation = str(uuid.uuid4())
@@ -358,6 +488,14 @@ class Runner(AllocationJournal):
 
     def public(self, record):
         public = {k: v for k, v in record.items() if k not in ("request", "pod_uid")}
+        if record.get('status') not in TERMINAL and isinstance(record.get('stdout'), str):
+            try:
+                data = base64.b64decode(record['stdout'], validate=True)
+                if len(data) > 16384:
+                    data = data[-16384:] if record.get('request', {}).get('kind') == 'verify' else data[:16384]
+                    public.update(stdout=base64.b64encode(data).decode(), truncated=True)
+            except ValueError:
+                pass
         if record.get('status') == 'uncertain' and record.get('output_harvested') is True and not record.get('acknowledged'):
             public['output_digest'] = self.output_digest(record)
         return public
@@ -368,6 +506,8 @@ class Runner(AllocationJournal):
         return hashlib.sha256(json.dumps(snapshot, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
 
     def accept(self, request, admission_probe=False):
+        if not self.proven and not admission_probe:
+            raise Rejected(503, "runner isolation is not proven; new work is refused")
         kind = request.get("kind")
         optional = {"session_id", "egress", "usage_tenant"} | ({"port"} if kind == "serve" else set())
         if set(request) - optional != {"operation_id", "area_id", "epoch", "digest", "kind", "code", "seconds", "files"}:
@@ -525,6 +665,8 @@ class Runner(AllocationJournal):
             return {"received": offset + len(data)}
 
     def commit_inputs(self, operation):
+        if not self.proven:
+            raise Rejected(503, "runner isolation is not proven; new work is refused")
         with self.lock:
             record = self.get(operation)
             if record["status"] != "awaiting_files":
@@ -561,6 +703,8 @@ class Runner(AllocationJournal):
                 raise Rejected(409, 'outcome is not ready to acknowledge')
             if operation in self.active:
                 raise Rejected(409, 'output collection remains active')
+            if record.get('startup_cleanup_pending'):
+                raise Rejected(409, 'startup cleanup remains pending')
             if record.get('acknowledged'):
                 if uncertain and output_digest != record.get('acknowledged_output_digest'):
                     raise Rejected(409, 'saved output acknowledgement proof changed')
@@ -692,6 +836,13 @@ class Runner(AllocationJournal):
             with self.lock:
                 if pod and self.path(operation).exists():
                     record = self.get(operation)
+                    if record.get('pod_uid') and pod.get('metadata', {}).get('uid') != record['pod_uid']:
+                        if not record.get('admission_probe'):
+                            try:
+                                self.observe_allocation(record, pod)
+                            except Rejected:
+                                pass
+                        raise SandboxGone()
                     if not record.get("admission_probe"):
                         path = path or self.allocations / (identity(pod['metadata']['uid']) + '.json')
                         current = json.loads(path.read_bytes()) if path.exists() else None
@@ -810,156 +961,281 @@ class Runner(AllocationJournal):
         return {"status": "stopped", "termination_confirmed": True}
 
     def reconcile_python(self, operation):
+        last_warning = 0
         try:
-            record = self.get(operation)
-            pod_operation = record.get("pod_operation", operation)
-            pod = self.pod(pod_operation)
-            cold = "pod_operation" not in record
-            if cold and pod is None:
-                if record["status"] != "accepted":
-                    raise RuntimeError("Python creation outcome uncertain; no replay")
-                self.update(operation, status="starting")
-                self.kube(["create", "-f", "-"], json.dumps(self.manifest(record)).encode(), check=False)
-            start_deadline = time.monotonic() + 120
             while True:
-                pod = self.pod(pod_operation)
-                if pod:
-                    statuses = {s["name"]: s for s in pod.get("status", {}).get("containerStatuses", [])}
-                    if all("running" in statuses.get(n, {}).get("state", {}) for n in ("execution", "collector")):
-                        break
-                    if any("terminated" in s.get("state", {}) for s in statuses.values()):
-                        raise RuntimeError("Python environment stopped before dispatch; no replay")
-                if time.monotonic() > start_deadline:
-                    raise RuntimeError("Python environment not ready")
-                time.sleep(.25)
-            if record.get("pod_uid", pod["metadata"]["uid"]) != pod["metadata"]["uid"]:
-                raise RuntimeError("Python environment identity changed")
-            cid = statuses["execution"]["containerID"].split("://", 1)[1]
-            record = self.update(operation, pod_operation=pod_operation, pod_uid=pod["metadata"]["uid"], container_id=cid,
-                                 cluster_node=pod['spec']['nodeName'], image=pod['spec']['containers'][0]['image'])
-            for attempt in range(ALLOCATION_OBSERVATION_ATTEMPTS):
-                with self.lock:
-                    allocation = self.allocations / (identity(record['pod_uid']) + '.json')
-                    current = json.loads(allocation.read_bytes()) if allocation.exists() else None
-                    if not current:
-                        raise RuntimeError('allocation journal unavailable')
-                    if current.get('receipt'):
-                        break
-                    if current.get('resource_version') == pod['metadata'].get('resourceVersion'):
-                        self.observe_allocation(record, pod)
-                        break
-                if attempt + 1 == ALLOCATION_OBSERVATION_ATTEMPTS:
-                    raise RuntimeError('allocation observation did not stabilize')
-                pod = self.pod(pod_operation)
-                if not pod or pod['metadata']['uid'] != record['pod_uid']:
-                    raise RuntimeError('Python environment identity changed')
-            limits = self.guard(record, 'limits', **self.execution_limits(record))
-            self.update(operation, resource_evidence=limits)
-            if pod_operation == operation and not record.get("hydrated"):
-                prepared = json.loads(self.exec_collector(pod_operation, ["prepared"]).stdout)
-                if prepared["digest"] is None:
-                    for file in record["request"]["files"]:
-                        with (self.root / (operation + ".inputs") / file["file_id"]).open("rb") as source:
-                            offset = 0
-                            while True:
-                                data = source.read(4194304)
-                                if not data and offset:
-                                    break
-                                self.exec_collector(pod_operation, ["write", file["scope"], file["path"], str(offset)], data)
-                                offset += len(data)
-                                if not data:
-                                    break
-                    payload = dict({k:v for k,v in record["request"].items() if k != "usage_tenant"}, working_bytes=self.config["working_bytes"], processes=self.config["processes"])
-                    self.exec_collector(pod_operation, ["hydrate"], json.dumps(payload).encode())
-                elif prepared["digest"] != record["request"]["digest"]:
-                    raise RuntimeError("Python input identity changed")
-                record = self.update(operation, hydrated=True)
-            record = self.update(operation, executed=True, status="running")
-            self.guard(record, "cell", operation_id=operation, code=record["request"]["code"],
-                       digest=record["digest"], seconds=record["request"]["seconds"], egress=record["request"].get("egress"))
-            memory_live = True
-            while True:
-                current = self.get(operation)
-                if current["cancel_requested"]:
-                    self.guard(record, "terminate")
-                    memory_live = False
-                    result = dict(status="cancelled", exit_code=137, stdout=current.get("stdout", ""),
-                                  truncated=True, error={"code":"CANCELLED", "message":"Python stopped; session reset."})
-                    break
-                result = self.guard(record, "cell_status", operation_id=operation)
-                if result["status"] == "stopped" and result.get("termination_confirmed"):
-                    memory_live = False
-                    result = dict(status="failed", exit_code=137, stdout=current.get("stdout", ""),
-                                  truncated=True, error={"code":"SESSION_LOST", "message":"Interpreter stopped during the cell; code was not replayed."})
-                    break
-                if result["status"] in ("completed", "failed"):
-                    break
-                if result["status"] == "uncertain":
-                    raise RuntimeError("Python reply uncertain; code will not be replayed")
-                self.update(operation, stdout=result.get("stdout", ""), truncated=result.get("truncated", False))
-                pod = self.pod(pod_operation)
-                if not pod or any("terminated" in s.get("state", {}) for s in pod.get("status", {}).get("containerStatuses", [])):
-                    self.guard(record, "terminate")
-                    memory_live = False
-                    result = dict(status="failed", exit_code=137, stdout=result.get("stdout", ""),
-                                  truncated=True, error={"code":"SESSION_LOST", "message":"Interpreter stopped during the cell; code was not replayed."})
-                    break
-                time.sleep(.2)
-            if memory_live:
-                frozen = self.guard(record, "freeze", idle_seconds=self.config["idle_seconds"])
-                if not frozen["writer_frozen"]:
-                    raise RuntimeError("Python memory no longer live")
-            self.update(operation, status="finishing", writer_frozen=memory_live, termination_confirmed=not memory_live,
-                        stdout=result.get('stdout', ''), displays=result.get('displays', []), truncated=result.get('truncated', False))
-            exported = self.guard(record, "export", working_bytes=self.writable_bytes(record))
-            if 'refused' in exported:
-                if memory_live:
-                    self.guard(record, 'terminate')
-                session = dict(session_id=record['session_id'], area_id=record['area_id'], operation_id=operation,
-                               pod_operation=pod_operation, pod_uid=record['pod_uid'], container_id=cid,
-                               status='stopped', last_used=time.time(), manifest=self.file_identity(record['request']['files']))
-                save(self.root / ('session-' + record['session_id'] + '.json'), session)
-                self.refuse_export(operation, exported['refused'], pod_operation, writer_frozen=False,
-                                   stdout=result.get('stdout', ''), truncated=result.get('truncated', False),
-                                   exit_code=result['exit_code'])
-                return
-            directory = self.root / (operation + ".files")
-            directory.mkdir(exist_ok=True, mode=0o700)
-            for file in exported["files"]:
-                digest = hashlib.sha256()
-                with (directory / file["object_id"]).open("wb") as output:
-                    offset = 0
-                    while offset < file["size"]:
-                        chunk = self.guard(record, "read", path=file["path"], offset=offset)
-                        data = base64.b64decode(chunk["data"], validate=True)
-                        if not data or offset + len(data) > file["size"]:
-                            raise RuntimeError("Python file changed after freeze")
-                        output.write(data)
-                        digest.update(data)
-                        offset += len(data)
-                    output.flush()
-                    os.fsync(output.fileno())
-                if digest.hexdigest() != file["digest"]:
-                    raise RuntimeError("Python file integrity")
-            sync_directory(directory)
-            manifest = [f for f in record["request"]["files"] if f["scope"] != "working"]
-            manifest += [dict(f, scope="working") for f in exported["files"]]
-            session = dict(session_id=record["session_id"], area_id=record["area_id"], operation_id=operation,
-                           pod_operation=pod_operation, pod_uid=record["pod_uid"], container_id=cid,
-                           status="frozen" if memory_live else "stopped", last_used=time.time(), manifest=self.file_identity(manifest))
-            save(self.root / ("session-" + record["session_id"] + ".json"), session)
-            self.update(operation, status=result["status"], writer_frozen=memory_live, termination_confirmed=not memory_live,
-                        output_harvested=True,
-                        finished_at=time.time(), stdout=result.get("stdout", ""), truncated=result.get("truncated", False),
-                        displays=result.get("displays", []), files=exported["files"], error=result.get("error"), exit_code=result["exit_code"])
-            self.allocation_harvested(self.get(operation), idle=memory_live)
-            if not memory_live:
-                self.close_allocation(record)
-        except Exception as error:
-            self.update(operation, status="uncertain", error=str(error)[-2000:])
+                try:
+                    record = self.get(operation)
+                    if not record.get('executed') and record.get('startup_at') is None:
+                        record = self.update(operation, startup_at=time.time())
+                    if not record.get('executed') and time.time() >= record['startup_at'] + START_LIMIT_SECONDS:
+                        self.fail_start(operation, 'Python startup timed out before dispatch')
+                        return
+                    self._reconcile_python_once(operation)
+                    return
+                except SandboxGone:
+                    if not self.get(operation).get('executed'):
+                        self.fail_start(operation, 'Python sandbox identity changed before dispatch')
+                    else:
+                        self.update(operation, status='uncertain', termination_confirmed=True, writer_frozen=False,
+                                    output_harvested=True, output_discarded=True, files=[], finished_at=time.time(),
+                                    uncertain_at=time.time(), error={'code':'SANDBOX_LOST',
+                                    'message':"Sandbox is gone; the command's file changes were not saved."})
+                    return
+                except Exception as error:
+                    record = self.get(operation)
+                    if not record.get('executed'):
+                        if isinstance(error, StartupIdentityMismatch):
+                            self.fail_start(operation, str(error))
+                            return
+                        if time.time() >= record['startup_at'] + START_LIMIT_SECONDS:
+                            self.fail_start(operation, 'Python startup timed out: ' + str(error))
+                            return
+                        time.sleep(1)
+                        continue
+                    now = time.time()
+                    stopped_at = record.get('stop_confirmed_at')
+                    if stopped_at is not None:
+                        if now >= stopped_at + STOP_WATCH_SECONDS:
+                            self.update(operation, status='uncertain', uncertain_at=now, finished_at=now,
+                                        error={'code':'OUTPUT_LOST', 'message':"The command's file changes were not saved."})
+                            return
+                        try:
+                            collected = self.collect_stopped_output(record)
+                            if collected is None:
+                                return
+                            exported, captured = collected
+                            saved = self.update(operation, status=record.get('pending_status', 'failed'), termination_confirmed=True,
+                                                writer_frozen=False, output_harvested=True, finished_at=now, files=exported['files'],
+                                                stdout=captured['stdout'], truncated=True, exit_code=record.get('exit_code', 137),
+                                                deadline_expired=cell_timed_out(record),
+                                                error=record.get('pending_error') or {'code':'SESSION_LOST', 'message':'Interpreter stopped; its saved files were recovered.'})
+                            self.allocation_harvested(saved)
+                            self.close_allocation(saved)
+                            return
+                        except Exception:
+                            pass
+                    started = record.get('running_at') or now
+                    if not record.get('running_at'):
+                        record = self.update(operation, running_at=started)
+                    deadline = started + record['request']['seconds'] + 30
+                    if not record.get('termination_confirmed') and now >= deadline:
+                        record = self.update(operation, status='cancelling', limit_stop_requested=True)
+                        if now >= started + record['request']['seconds'] + STOP_WATCH_SECONDS and now - last_warning >= 60:
+                            try:
+                                self.allocation_harvested(record)
+                                self.close_allocation(record)
+                            except Exception as cleanup_error:
+                                error = cleanup_error
+                            print(f"Deployment Administrator: awaiting Python Pod deletion for {operation}: {error}", file=sys.stderr, flush=True)
+                            last_warning = now
+                    time.sleep(1)
         finally:
             with self.lock:
                 self.active.discard(operation)
+
+    def _reconcile_python_once(self, operation):
+        record = self.get(operation)
+        pod_operation = record.get("pod_operation", operation)
+        pod = self.pod(pod_operation)
+        cold = pod_operation == operation
+        if pod is None and record.get('executed'):
+            raise SandboxGone()
+        if pod and record.get('pod_uid') and pod.get('metadata', {}).get('uid') != record['pod_uid']:
+            raise SandboxGone()
+        if cold and pod and not record.get('executed') and pod.get('metadata', {}).get('annotations', {}).get('aidash/digest') != record['wire_digest']:
+            raise StartupIdentityMismatch('Python sandbox identity mismatch')
+        if cold and pod is None:
+            if record["status"] not in ("accepted", "starting"):
+                raise SandboxGone()
+            self.update(operation, status="starting")
+            self.kube(["create", "-f", "-"], json.dumps(self.manifest(record)).encode(), check=False)
+        if record.get('executed') and record.get('cancel_requested'):
+            if self.guard(record, 'terminate').get('termination_confirmed') is not True:
+                raise RuntimeError('Python termination not confirmed')
+            self.update(operation, status='finishing', termination_confirmed=True, writer_frozen=False,
+                        stop_confirmed_at=record.get('stop_confirmed_at') or time.time(),
+                        pending_status='cancelled', pending_error={'code':'CANCELLED', 'message':'Python stopped; session reset.'}, exit_code=137)
+            raise RuntimeError('Python stopped; collecting its output')
+        while True:
+            pod = self.pod(pod_operation)
+            if pod is None and record.get('executed'):
+                raise SandboxGone()
+            if pod is None and cold:
+                self.update(operation, pod_uid=None)
+                raise RuntimeError('Python sandbox absent before dispatch')
+            if pod:
+                if cold and not record.get('executed') and pod.get('metadata', {}).get('annotations', {}).get('aidash/digest') != record['wire_digest']:
+                    raise StartupIdentityMismatch('Python sandbox identity mismatch')
+                statuses = {s["name"]: s for s in pod.get("status", {}).get("containerStatuses", [])}
+                execution = statuses.get('execution', {}).get('state', {})
+                if record.get('executed') and 'terminated' in execution:
+                    self.update(operation, status='finishing', termination_confirmed=True, writer_frozen=False,
+                                stop_confirmed_at=record.get('stop_confirmed_at') or time.time(),
+                                pending_status='failed', pending_error={'code':'SESSION_LOST', 'message':'Interpreter stopped during the cell; code was not replayed.'}, exit_code=137)
+                    raise RuntimeError('Python stopped; collecting its output')
+                if record.get('executed') and 'running' in execution:
+                    break
+                if all("running" in statuses.get(n, {}).get("state", {}) for n in ("execution", "collector")):
+                    break
+                if any("terminated" in s.get("state", {}) for s in statuses.values()):
+                    raise RuntimeError("Python environment stopped before dispatch; no replay")
+            if not record.get('executed') and time.time() >= record['startup_at'] + START_LIMIT_SECONDS:
+                raise RuntimeError("Python environment not ready")
+            time.sleep(.25)
+        if (record.get("pod_uid") or pod["metadata"]["uid"]) != pod["metadata"]["uid"]:
+            raise SandboxGone()
+        cid = statuses["execution"]["containerID"].split("://", 1)[1]
+        record = self.update(operation, pod_operation=pod_operation, pod_uid=pod["metadata"]["uid"], container_id=cid,
+                             cluster_node=pod['spec']['nodeName'], image=pod['spec']['containers'][0]['image'])
+        for attempt in range(ALLOCATION_OBSERVATION_ATTEMPTS):
+            with self.lock:
+                allocation = self.allocations / (identity(record['pod_uid']) + '.json')
+                current = json.loads(allocation.read_bytes()) if allocation.exists() else None
+                if not current:
+                    raise RuntimeError('allocation journal unavailable')
+                if current.get('receipt'):
+                    break
+                if current.get('resource_version') == pod['metadata'].get('resourceVersion'):
+                    self.observe_allocation(record, pod)
+                    break
+            if attempt + 1 == ALLOCATION_OBSERVATION_ATTEMPTS:
+                raise RuntimeError('allocation observation did not stabilize')
+            pod = self.pod(pod_operation)
+            if not pod or pod['metadata']['uid'] != record['pod_uid']:
+                raise RuntimeError('Python environment identity changed')
+        if not record.get('executed'):
+            limits = self.guard(record, 'limits', **self.execution_limits(record))
+            self.update(operation, resource_evidence=limits)
+        if pod_operation == operation and not record.get("hydrated"):
+            prepared = json.loads(self.exec_collector(pod_operation, ["prepared"]).stdout)
+            if prepared["digest"] is None:
+                for file in record["request"]["files"]:
+                    with (self.root / (operation + ".inputs") / file["file_id"]).open("rb") as source:
+                        offset = 0
+                        while True:
+                            data = source.read(4194304)
+                            if not data and offset:
+                                break
+                            self.exec_collector(pod_operation, ["write", file["scope"], file["path"], str(offset)], data)
+                            offset += len(data)
+                            if not data:
+                                break
+                payload = dict({k:v for k,v in record["request"].items() if k != "usage_tenant"}, working_bytes=self.config["working_bytes"], processes=self.config["processes"])
+                self.exec_collector(pod_operation, ["hydrate"], json.dumps(payload).encode())
+            elif prepared["digest"] != record["request"]["digest"]:
+                raise StartupIdentityMismatch("Python input identity changed")
+            record = self.update(operation, hydrated=True)
+        record = self.update(operation, executed=True, status=record.get('status') if record.get('status') == 'cancelling' else 'running',
+                             running_at=record.get('running_at') or time.time())
+        if not record.get('cancel_requested'):
+            self.guard(record, "cell", operation_id=operation, code=record["request"]["code"],
+                       digest=record["digest"], seconds=record["request"]["seconds"], egress=record["request"].get("egress"))
+        memory_live = True
+        reply_lost = False
+        while True:
+            current = self.get(operation)
+            if current["cancel_requested"]:
+                if self.guard(record, "terminate").get('termination_confirmed') is not True:
+                    raise RuntimeError('Python termination not confirmed')
+                memory_live = False
+                result = dict(status="cancelled", exit_code=137, stdout=current.get("stdout", ""),
+                              truncated=True, error={"code":"CANCELLED", "message":"Python stopped; session reset."})
+                break
+            result = self.guard(record, "cell_status", operation_id=operation)
+            if result["status"] == "stopped" and result.get("termination_confirmed"):
+                memory_live = False
+                result = dict(status="failed", exit_code=137, stdout=current.get("stdout", ""),
+                              truncated=True, error={"code":"SESSION_LOST", "message":"Interpreter stopped during the cell; code was not replayed."})
+                break
+            if result["status"] in ("completed", "failed"):
+                break
+            if result["status"] == "uncertain":
+                # The interpreter's reply was lost, so the cell may have finished. Its code is never replayed.
+                # Watch it like any running cell: the stop below ends it at its limit, and only then does its
+                # outcome stay uncertain. Until then the Working Area stays busy, not unavailable (#709).
+                reply_lost = True
+            elif 'stdout' in result:
+                self.update(operation, stdout=result['stdout'], truncated=result.get('truncated', False), output_fetched_at=time.time())
+            pod = self.pod(pod_operation)
+            if not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']:
+                raise SandboxGone()
+            if any("terminated" in s.get("state", {}) for s in pod.get("status", {}).get("containerStatuses", [])):
+                if self.guard(record, "terminate").get('termination_confirmed') is not True:
+                    raise RuntimeError('Python termination not confirmed')
+                memory_live = False
+                result = dict(status="failed", exit_code=137, stdout=result.get("stdout", ""),
+                              truncated=True, error={"code":"SESSION_LOST", "message":"Interpreter stopped during the cell; code was not replayed."})
+                break
+            if current.get('limit_stop_requested') or time.time() > record['running_at'] + record['request']['seconds'] + 30:
+                # The cell is seen unfinished past its limit: the Runner's watchdog stops it. Nobody cancelled, so
+                # it never reads as cancelled; a cell that finished during an outage was settled above instead.
+                self.update(operation, status='cancelling', limit_stop_requested=True)
+                if self.guard(record, "terminate").get('termination_confirmed') is not True:
+                    raise RuntimeError('Python termination not confirmed')
+                memory_live = False
+                if reply_lost:
+                    result = dict(status="uncertain", exit_code=None, stdout=current.get("stdout", ""), truncated=True,
+                                  error={"code":"EXECUTION_UNVERIFIED", "message":"The Python reply was lost, so the cell's outcome is unknown. It was stopped, its code was not replayed, and the session was reset."})
+                else:
+                    result = dict(status="failed", exit_code=137, stdout=current.get("stdout", ""), truncated=True,
+                                  error={"code":"SESSION_LOST", "message":"Interpreter stopped during the cell; code was not replayed."})
+                break
+            time.sleep(.2)
+        if memory_live:
+            frozen = self.guard(record, "freeze", idle_seconds=self.config["idle_seconds"])
+            if not frozen["writer_frozen"]:
+                raise RuntimeError("Python memory no longer live")
+        finishing = self.update(operation, status="finishing", writer_frozen=memory_live, termination_confirmed=not memory_live,
+                                stop_confirmed_at=None if memory_live else (self.get(operation).get('stop_confirmed_at') or time.time()),
+                                pending_status=result['status'], pending_error=result.get('error'), exit_code=result['exit_code'],
+                                output_fetched_at=time.time() if memory_live and 'stdout' in result else self.get(operation).get('output_fetched_at'),
+                                stdout=result.get('stdout', ''), displays=result.get('displays', []), truncated=result.get('truncated', False))
+        deadline_expired = cell_timed_out(finishing)
+        exported = self.guard(record, "export", working_bytes=self.writable_bytes(record))
+        if 'refused' in exported:
+            if memory_live:
+                self.guard(record, 'terminate')
+            session = dict(session_id=record['session_id'], area_id=record['area_id'], operation_id=operation,
+                           pod_operation=pod_operation, pod_uid=record['pod_uid'], container_id=cid,
+                           status='stopped', last_used=time.time(), manifest=self.file_identity(record['request']['files']))
+            save(self.root / ('session-' + record['session_id'] + '.json'), session)
+            self.refuse_export(operation, exported['refused'], pod_operation, writer_frozen=False,
+                               stdout=result.get('stdout', ''), truncated=result.get('truncated', False),
+                               exit_code=result['exit_code'], deadline_expired=deadline_expired)
+            return
+        directory = self.root / (operation + ".files")
+        directory.mkdir(exist_ok=True, mode=0o700)
+        for file in exported["files"]:
+            digest = hashlib.sha256()
+            with (directory / file["object_id"]).open("wb") as output:
+                offset = 0
+                while offset < file["size"]:
+                    chunk = self.guard(record, "read", path=file["path"], offset=offset)
+                    data = base64.b64decode(chunk["data"], validate=True)
+                    if not data or offset + len(data) > file["size"]:
+                        raise RuntimeError("Python file changed after freeze")
+                    output.write(data)
+                    digest.update(data)
+                    offset += len(data)
+                output.flush()
+                os.fsync(output.fileno())
+            if digest.hexdigest() != file["digest"]:
+                raise RuntimeError("Python file integrity")
+        sync_directory(directory)
+        manifest = [f for f in record["request"]["files"] if f["scope"] != "working"]
+        manifest += [dict(f, scope="working") for f in exported["files"]]
+        session = dict(session_id=record["session_id"], area_id=record["area_id"], operation_id=operation,
+                       pod_operation=pod_operation, pod_uid=record["pod_uid"], container_id=cid,
+                       status="frozen" if memory_live else "stopped", last_used=time.time(), manifest=self.file_identity(manifest))
+        save(self.root / ("session-" + record["session_id"] + ".json"), session)
+        self.update(operation, status=result["status"], writer_frozen=memory_live, termination_confirmed=not memory_live,
+                    output_harvested=True, finished_at=time.time(), stdout=result.get("stdout", ""), truncated=result.get("truncated", False),
+                    displays=result.get("displays", []), files=exported["files"], error=result.get("error"), exit_code=result["exit_code"],
+                    deadline_expired=deadline_expired)
+        self.allocation_harvested(self.get(operation), idle=memory_live)
+        if not memory_live:
+            self.close_allocation(record)
 
     def startup_log(self, operation):
         """A bounded tail of the Web server's own startup output."""
@@ -1149,20 +1425,23 @@ class Runner(AllocationJournal):
         exported, captured = collected
         operation = record['operation_id']
         self.update(operation, status='failed', exit_code=137, termination_confirmed=True,
-                    output_harvested=True,
-                    stdout=captured['stdout'], truncated=True, files=exported['files'],
+                    output_harvested=True, stdout=captured['stdout'], truncated=True, files=exported['files'],
                     finished_at=time.time(), error={'code':'SANDBOX_LOST', 'message':'Sandbox stopped; saved files were recovered and output may be incomplete.'})
         self.allocation_harvested(self.get(operation))
         self.close_allocation(record)
 
-    def collect_stopped_output(self, record):
+    def collect_stopped_output(self, record, *, refuse=True):
         exported = ({'files': []} if record['request']['kind'] == 'verify' else
                     self.guard(record, 'export', working_bytes=self.writable_bytes(record)))
-        captured = ({'stdout':record.get('stdout', '')} if record['request']['kind'] == 'python' else self.guard(record, 'logs'))
         operation = record['operation_id']
         if 'refused' in exported:
-            self.refuse_export(operation, exported['refused'], operation, stdout=captured['stdout'], truncated=True, output_harvested=True)
+            if not refuse:
+                raise StoppedExportRefused(exported['refused'])
+            captured = ({'stdout':record.get('stdout', '')} if record['request']['kind'] == 'python' else self.guard(record, 'logs'))
+            self.refuse_export(operation, exported['refused'], operation, stdout=captured['stdout'], truncated=True, output_harvested=True,
+                               deadline_expired=record['request']['kind'] == 'python' and cell_timed_out(record))
             return
+        captured = ({'stdout':record.get('stdout', '')} if record['request']['kind'] == 'python' else self.guard(record, 'logs'))
         directory = self.root / (operation + '.files')
         directory.mkdir(exist_ok=True, mode=0o700)
         for file in exported['files']:
@@ -1183,171 +1462,305 @@ class Runner(AllocationJournal):
         sync_directory(directory)
         return exported, captured
 
+    def collector_holds_output(self, record):
+        # A finished execution container leaves no runsc state for the guard to
+        # read, while its collector still serves /work, so reading stays possible.
+        if record['request']['kind'] == 'python':
+            return False
+        try:
+            pod = self.pod(record['operation_id'])
+        except Exception:
+            return False
+        if not pod or pod['metadata']['uid'] != record.get('pod_uid'):
+            return False
+        states = {s['name']: s.get('state', {}) for s in pod.get('status', {}).get('containerStatuses', [])}
+        return 'terminated' in states.get('execution', {}) and 'running' in states.get('collector', {})
+
+    def read_collector_files(self, operation, exported):
+        directory = self.root / (operation + ".files")
+        directory.mkdir(exist_ok=True, mode=0o700)
+        for file in exported["files"]:
+            output_path = directory / file["object_id"]
+            digest = hashlib.sha256()
+            with output_path.open("wb") as output:
+                offset = 0
+                while offset < file["size"]:
+                    data = self.exec_collector(operation, ["read", file["path"], str(offset)]).stdout
+                    if not data or offset + len(data) > file["size"]:
+                        raise RuntimeError("output file length changed")
+                    output.write(data)
+                    digest.update(data)
+                    offset += len(data)
+                output.flush()
+                os.fsync(output.fileno())
+            if digest.hexdigest() != file["digest"]:
+                raise RuntimeError("output file digest changed")
+        sync_directory(directory)
+
+    def collect_through_collector(self, record):
+        operation, kind = record['operation_id'], record['request']['kind']
+        captured = json.loads(self.exec_collector(operation, ["logs", str(self.config["output_bytes"]), "final",
+                                                              *(["tail"] if kind == "verify" else [])]).stdout)
+        exported = ({"files": []} if kind == "verify" else
+                    json.loads(self.exec_collector(operation, ["export", str(self.writable_bytes(record))], timeout=120).stdout))
+        if 'refused' in exported:
+            raise StoppedExportRefused(exported['refused'])
+        self.read_collector_files(operation, exported)
+        return exported, captured
+
     def harvest_stopped_output(self, record):
         # Never re-run code, reinterpret the semantic outcome, or substitute
         # shell output.bin for Python's saved stdout/displays.
-        if record.get('termination_confirmed') is not True or self.guard(record, 'status').get('termination_confirmed') is not True:
+        if record.get('termination_confirmed') is not True:
             raise Rejected(409, 'physical termination proof unavailable')
-        collected = self.collect_stopped_output(record)
+        collected = None
+        if self.collector_holds_output(record):
+            try:
+                collected = self.collect_through_collector(record)
+            except StoppedExportRefused:
+                raise
+            except Exception as error:
+                print(f"Collector harvest {record['operation_id']}: {error}", file=sys.stderr, flush=True)
         if collected is None:
-            return
+            if self.guard(record, 'status').get('termination_confirmed') is not True:
+                raise Rejected(409, 'physical termination proof unavailable')
+            collected = self.collect_stopped_output(record, refuse=False)
+            if collected is None:
+                return
         exported, captured = collected
         self.update(record['operation_id'], output_harvested=True, stdout=captured['stdout'],
                     files=exported['files'], displays=record.get('displays', []), truncated=True)
         self.allocation_harvested(self.get(record['operation_id']), idle=False)
         self.close_allocation(record)
 
-    def reconcile(self, operation):
+    def cleanup_failed_start(self, record):
+        operation = record['operation_id']
         try:
-            record = self.get(operation)
-            pod = self.pod(operation)
-            if pod is None:
-                if record["status"] != "accepted":
-                    raise RuntimeError("accepted sandbox disappeared; effects require reconciliation")
-                # Persist the attempt before talking to Kubernetes. A lost reply
-                # may be recovered by observing the named object, never by replay.
-                record = self.update(operation, status="starting")
-                result = self.kube(["create", "-f", "-"], json.dumps(self.manifest(record)).encode(), check=False)
-                pod = self.pod(operation)
-                if pod is None:
-                    raise RuntimeError("sandbox creation outcome unknown: " + result.stderr.decode(errors="replace")[-500:])
-            if pod["metadata"]["annotations"].get("aidash/digest") != record["wire_digest"]:
-                raise RuntimeError("sandbox identity mismatch")
-            uid = pod["metadata"]["uid"]
-            if record.get("pod_uid", uid) != uid:
-                raise RuntimeError("sandbox replaced")
-            self.update(operation, pod_uid=uid)
-            startup_deadline = time.monotonic() + 120
-            hydrated = record["status"] in ("running", "finishing")
-            preview_at = 0
-            while True:
-                pod = self.pod(operation)
-                if pod is None or pod["metadata"]["uid"] != uid:
-                    raise RuntimeError("sandbox disappeared before termination was confirmed")
-                statuses = {s["name"]: s for s in pod.get("status", {}).get("containerStatuses", [])}
-                execution = statuses.get("execution", {}).get("state", {})
-                collector = statuses.get("collector", {}).get("state", {})
-                if "running" in execution and "running" in collector and not hydrated:
-                    record = self.update(operation, pod_uid=uid, container_id=statuses['execution']['containerID'].split('://',1)[1],
-                                         cluster_node=pod['spec']['nodeName'], image=pod['spec']['containers'][0]['image'])
-                    limits = self.guard(record, 'limits', **self.execution_limits(record))
-                    self.update(operation, resource_evidence=limits)
-                    payload = dict({k:v for k,v in record["request"].items() if k != "usage_tenant"}, working_bytes=self.config["working_bytes"], processes=self.config["processes"])
-                    prepared = json.loads(self.exec_collector(operation, ["prepared"]).stdout)
-                    if prepared["digest"] is None:
-                        for file in record["request"]["files"]:
-                            with (self.root / (operation + ".inputs") / file["file_id"]).open("rb") as source:
-                                offset = 0
-                                while True:
-                                    data = source.read(4194304)
-                                    if not data and offset:
-                                        break
-                                    self.exec_collector(operation, ["write", file["scope"], file["path"], str(offset)], data)
-                                    offset += len(data)
-                                    if not data:
-                                        break
-                    elif prepared["digest"] != record["request"]["digest"]:
-                        raise RuntimeError("running input identity changed")
-                    self.update(operation, executed=True)
-                    # The collector stamps the start when it sets the deadline
-                    # and publishes the command, after verifying the inputs,
-                    # and returns the same stamp when hydrate is repeated after
-                    # a restart: a Check is charged from its command's start,
-                    # never for input checks or controller downtime. The
-                    # watchdog below counts from when hydrate returned.
-                    hydrated_reply = json.loads(self.exec_collector(
-                        operation, ["hydrate"], json.dumps(payload).encode(), timeout=120).stdout)
-                    now = time.time()
-                    self.update(operation, status="running", running_at=now,
-                                started_at=hydrated_reply.get("started_at") or now)
-                    hydrated = True
-                current = self.get(operation)
-                if current["cancel_requested"] and "running" in collector:
-                    self.exec_collector(operation, ["cancel"])
-                if "terminated" in execution:
-                    terminal = execution["terminated"]
-                    if current.get("started_at") is None and "running" in collector:
-                        # The controller stopped after hydrate published the
-                        # command but before it journaled the start, and the
-                        # command ended meanwhile: the collector kept the stamp.
-                        stamp = json.loads(self.exec_collector(operation, ["prepared"]).stdout).get("started_at")
-                        if stamp is not None:
-                            current = self.update(operation, started_at=stamp)
-                    # A Check is charged until its command stopped, not until
-                    # its output and files were harvested below.
-                    self.update(operation, status="finishing", termination_confirmed=True, exit_code=terminal["exitCode"],
-                                terminated_at=current.get("terminated_at")
-                                or termination_time(terminal, current.get("started_at"), time.time()))
-                    if "running" not in collector:
-                        self.recover_stopped_shell(self.get(operation))
-                        break
-                    # A Check keeps the end of its output, where the failure is.
-                    captured = json.loads(self.exec_collector(operation, ["logs", str(self.config["output_bytes"]), "final",
-                                                                          *(["tail"] if record["request"]["kind"] == "verify" else [])]).stdout)
-                    diagnostic = None
-                    if terminal["exitCode"] != 0 and not captured["stdout"]:
-                        diagnostic = self.kube(["logs", self.pod_name(operation), "-c", "execution", "--limit-bytes=16384"]).stdout.decode(errors="replace")
-                    exported = ({"files": []} if record["request"]["kind"] == "verify" else
-                                json.loads(self.exec_collector(operation, ["export", str(self.writable_bytes(record))], timeout=120).stdout))
-                    if 'refused' in exported:
-                        self.refuse_export(operation, exported['refused'], operation,
-                                           stdout=captured['stdout'], truncated=captured['truncated'])
-                        break
-                    directory = self.root / (operation + ".files")
-                    directory.mkdir(exist_ok=True, mode=0o700)
-                    for file in exported["files"]:
-                        output_path = directory / file["object_id"]
-                        digest = hashlib.sha256()
-                        with output_path.open("wb") as output:
-                            offset = 0
-                            while offset < file["size"]:
-                                data = self.exec_collector(operation, ["read", file["path"], str(offset)]).stdout
-                                if not data or offset + len(data) > file["size"]:
-                                    raise RuntimeError("output file length changed")
-                                output.write(data)
-                                digest.update(data)
-                                offset += len(data)
-                            output.flush()
-                            os.fsync(output.fileno())
-                        if digest.hexdigest() != file["digest"]:
-                            raise RuntimeError("output file digest changed")
-                    sync_directory(directory)
-                    self.update(operation, status="cancelled" if current["cancel_requested"] else
-                                ("completed" if terminal["exitCode"] == 0 else "failed"),
-                                output_harvested=True,
-                                finished_at=time.time(), stdout=captured["stdout"],
-                                truncated=captured["truncated"], files=exported["files"], error=diagnostic,
-                                deadline_expired=captured.get("deadline_expired"))
-                    self.allocation_harvested(self.get(operation))
-                    # Retain the terminal journal and files before collecting Kubernetes resources.
-                    self.close_allocation(self.get(operation))
-                    break
-                # Collect the bounded admission probe only after it reaps its
-                # children, avoiding needless processes during the fork check.
-                # Ordinary operation previews continue while execution runs.
-                if hydrated and operation != self.admission_operation and time.monotonic() - preview_at > 1:
-                    captured = json.loads(self.exec_collector(operation, ["logs", "16384"]).stdout)
-                    self.update(operation, stdout=captured["stdout"], truncated=captured["truncated"])
-                    preview_at = time.monotonic()
-                if not hydrated and time.monotonic() > startup_deadline:
-                    raise RuntimeError("sandbox startup not confirmed")
-                running_at = self.get(operation).get("running_at") or self.get(operation).get("started_at", time.time())
-                if hydrated and time.time() > running_at + record["request"]["seconds"] + 30:
-                    raise RuntimeError("sandbox termination not confirmed after deadline")
-                time.sleep(0.25)
+            if not record.get('pod_uid'):
+                pod = self.pod(record.get('pod_operation', operation))
+                if pod:
+                    if pod.get('metadata', {}).get('annotations', {}).get('aidash/digest') != record['wire_digest']:
+                        self.update(operation, startup_cleanup_pending=False)
+                        return
+                    record = self.update(operation, pod_uid=pod['metadata']['uid'])
+            self.allocation_harvested(record)
+            self.close_allocation(record)
+            self.update(operation, startup_cleanup_pending=False)
         except Exception as error:
-            print(f"Shell reconciliation {operation}: {error}", file=sys.stderr, flush=True)
-            try:
-                record = self.get(operation)
-                if not record.get('executed'):
-                    raise RuntimeError('not dispatched')
-                self.recover_stopped_shell(record)
-            except Exception as recovery_error:
-                print(f"Shell recovery {operation}: {recovery_error}", file=sys.stderr, flush=True)
-                self.update(operation, status="uncertain", error=str(error)[-2000:])
+            print(f"Deployment Administrator: startup cleanup pending for {operation}: {error}", file=sys.stderr, flush=True)
+
+    def fail_start(self, operation, message):
+        record = self.update(operation, status='failed', executed=False, termination_confirmed=True,
+                             output_harvested=True, startup_cleanup_pending=True, finished_at=time.time(),
+                             error={'code':'STARTUP_FAILED', 'message':message[-2000:]})
+        self.cleanup_failed_start(record)
+
+    def reconcile(self, operation):
+        last_warning = 0
+        try:
+            while True:
+                try:
+                    record = self.get(operation)
+                    if not record.get('executed') and record.get('startup_at') is None:
+                        record = self.update(operation, startup_at=time.time())
+                    if not record.get('executed') and time.time() >= record['startup_at'] + START_LIMIT_SECONDS:
+                        self.fail_start(operation, 'Sandbox startup timed out before dispatch')
+                        return
+                    self._reconcile_shell_once(operation)
+                    return
+                except SandboxGone:
+                    record = self.get(operation)
+                    if not record.get('executed'):
+                        self.fail_start(operation, 'Sandbox identity changed before dispatch')
+                    else:
+                        self.update(operation, status='uncertain', termination_confirmed=True,
+                                    output_harvested=True, output_discarded=True, files=[], finished_at=time.time(),
+                                    uncertain_at=time.time(), error={'code':'SANDBOX_LOST',
+                                    'message':"Sandbox is gone; the command's file changes were not saved."})
+                    return
+                except StartupIdentityMismatch as error:
+                    if self.get(operation).get('executed'):
+                        self.update(operation, status='uncertain', error=str(error)[-2000:])
+                    else:
+                        self.fail_start(operation, str(error))
+                    return
+                except Exception as error:
+                    record = self.get(operation)
+                    if not record.get('executed'):
+                        if time.time() >= record['startup_at'] + START_LIMIT_SECONDS:
+                            self.fail_start(operation, 'Sandbox startup timed out: ' + str(error))
+                            return
+                        time.sleep(1)
+                        continue
+                    now = time.time()
+                    stopped_at = record.get('stop_confirmed_at')
+                    if stopped_at is not None and now >= stopped_at + STOP_WATCH_SECONDS:
+                        self.update(operation, status='uncertain', uncertain_at=now, finished_at=now,
+                                    error={'code':'OUTPUT_LOST', 'message':"The command's file changes were not saved."})
+                        return
+                    started = record.get('running_at') or record.get('started_at') or record.get('dispatch_at') or now
+                    deadline = started + record['request']['seconds'] + 30
+                    if not record.get('termination_confirmed') and now >= deadline:
+                        record = self.update(operation, status='cancelling', limit_stop_requested=True)
+                        if now >= started + record['request']['seconds'] + STOP_WATCH_SECONDS and now - last_warning >= 60:
+                            # A normal completed Pod deletion means kubelet stopped every container.
+                            try:
+                                self.allocation_harvested(record)
+                                self.close_allocation(record)
+                            except Exception as cleanup_error:
+                                error = cleanup_error
+                            print(f"Deployment Administrator: awaiting Pod deletion for {operation}: {error}", file=sys.stderr, flush=True)
+                            last_warning = now
+                    time.sleep(1)
         finally:
             with self.lock:
                 self.active.discard(operation)
+
+    def _reconcile_shell_once(self, operation):
+        record = self.get(operation)
+        pod = self.pod(operation)
+        if pod is None:
+            if record.get('executed') or record["status"] not in ("accepted", "starting"):
+                raise SandboxGone()
+            # Persist the attempt before talking to Kubernetes. A lost reply
+            # may be recovered by observing the named object, never by replay.
+            record = self.update(operation, status="starting")
+            result = self.kube(["create", "-f", "-"], json.dumps(self.manifest(record)).encode(), check=False)
+            pod = self.pod(operation)
+            if pod is None:
+                raise RuntimeError("sandbox creation outcome unknown: " + result.stderr.decode(errors="replace")[-500:])
+        if pod["metadata"]["annotations"].get("aidash/digest") != record["wire_digest"]:
+            if record.get('executed'):
+                raise SandboxGone()
+            raise StartupIdentityMismatch("sandbox identity mismatch")
+        uid = pod["metadata"]["uid"]
+        if (record.get("pod_uid") or uid) != uid:
+            raise SandboxGone()
+        self.update(operation, pod_uid=uid)
+        hydrated = record["status"] in ("running", "finishing", "cancelling")
+        preview_at = 0
+        while True:
+            pod = self.pod(operation)
+            if pod is None and not self.get(operation).get('executed'):
+                self.update(operation, pod_uid=None)
+                raise RuntimeError('sandbox absent before dispatch')
+            if pod is None or pod["metadata"]["uid"] != uid:
+                raise SandboxGone()
+            statuses = {s["name"]: s for s in pod.get("status", {}).get("containerStatuses", [])}
+            execution = statuses.get("execution", {}).get("state", {})
+            collector = statuses.get("collector", {}).get("state", {})
+            if "running" in execution and "running" in collector and not hydrated:
+                record = self.update(operation, pod_uid=uid, container_id=statuses['execution']['containerID'].split('://',1)[1],
+                                     cluster_node=pod['spec']['nodeName'], image=pod['spec']['containers'][0]['image'])
+                limits = self.guard(record, 'limits', **self.execution_limits(record))
+                self.update(operation, resource_evidence=limits)
+                payload = dict({k:v for k,v in record["request"].items() if k != "usage_tenant"}, working_bytes=self.config["working_bytes"], processes=self.config["processes"])
+                prepared = json.loads(self.exec_collector(operation, ["prepared"]).stdout)
+                if prepared["digest"] is None:
+                    for file in record["request"]["files"]:
+                        with (self.root / (operation + ".inputs") / file["file_id"]).open("rb") as source:
+                            offset = 0
+                            while True:
+                                data = source.read(4194304)
+                                if not data and offset:
+                                    break
+                                self.exec_collector(operation, ["write", file["scope"], file["path"], str(offset)], data)
+                                offset += len(data)
+                                if not data:
+                                    break
+                elif prepared["digest"] != record["request"]["digest"]:
+                    raise StartupIdentityMismatch("running input identity changed")
+                self.update(operation, executed=True, dispatch_at=record.get('dispatch_at') or time.time())
+                # The collector stamps the start when it sets the deadline
+                # and publishes the command, after verifying the inputs,
+                # and returns the same stamp when hydrate is repeated after
+                # a restart: a Check is charged from its command's start,
+                # never for input checks or controller downtime. The
+                # watchdog below counts from when hydrate returned.
+                hydrated_reply = json.loads(self.exec_collector(
+                    operation, ["hydrate"], json.dumps(payload).encode(), timeout=120).stdout)
+                now = time.time()
+                self.update(operation, status="running", running_at=now,
+                            started_at=hydrated_reply.get("started_at") or now)
+                hydrated = True
+            current = self.get(operation)
+            # A watchdog stop is delivered like a cancel, but it only settles the command as cancelled when
+            # someone cancelled: a command that finished meanwhile settles from how it ended.
+            if (current["cancel_requested"] or current.get("limit_stop_requested")) and "terminated" not in execution:
+                try:
+                    if "running" not in collector:
+                        raise RuntimeError('collector unavailable for cancellation')
+                    self.exec_collector(operation, ["cancel"])
+                except Exception:
+                    started = current.get('running_at') or current.get('started_at') or current.get('dispatch_at') or time.time()
+                    if time.time() <= started + current['request']['seconds'] + 30:
+                        raise
+                    if self.guard(current, 'terminate').get('termination_confirmed') is not True:
+                        raise RuntimeError('sandbox termination not confirmed') from None
+                    current = self.update(operation, status='finishing', termination_confirmed=True,
+                                          stop_confirmed_at=current.get('stop_confirmed_at') or time.time())
+                    self.recover_stopped_shell(current)
+                    break
+            if "terminated" in execution:
+                terminal = execution["terminated"]
+                current = self.update(operation, status="finishing", termination_confirmed=True,
+                                      exit_code=terminal["exitCode"],
+                                      stop_confirmed_at=current.get('stop_confirmed_at') or time.time(),
+                                      terminated_at=current.get("terminated_at")
+                                      or termination_time(terminal, current.get("started_at"), time.time()))
+                if current.get("started_at") is None and "running" in collector:
+                    # The controller stopped after hydrate published the
+                    # command but before it journaled the start, and the
+                    # command ended meanwhile: the collector kept the stamp.
+                    stamp = json.loads(self.exec_collector(operation, ["prepared"]).stdout).get("started_at")
+                    if stamp is not None:
+                        current = self.update(operation, started_at=stamp)
+                # A Check is charged until its command stopped, not until
+                # its output and files were harvested below.
+                if "running" not in collector:
+                    self.recover_stopped_shell(self.get(operation))
+                    break
+                # A Check keeps the end of its output, where the failure is.
+                captured = json.loads(self.exec_collector(operation, ["logs", str(self.config["output_bytes"]), "final",
+                                                                      *(["tail"] if record["request"]["kind"] == "verify" else [])]).stdout)
+                self.update(operation, stdout=captured['stdout'], truncated=captured['truncated'], output_fetched_at=time.time())
+                diagnostic = None
+                if terminal["exitCode"] != 0 and not captured["stdout"]:
+                    log = self.kube(["logs", self.pod_name(operation), "-c", "execution", "--limit-bytes=16384"]).stdout.decode(errors="replace")
+                    # An empty log says nothing: the exit code stands alone.
+                    if log.strip():
+                        diagnostic = {"code": "COMMAND_FAILED", "message": log}
+                exported = ({"files": []} if record["request"]["kind"] == "verify" else
+                            json.loads(self.exec_collector(operation, ["export", str(self.writable_bytes(record))], timeout=120).stdout))
+                if 'refused' in exported:
+                    self.refuse_export(operation, exported['refused'], operation,
+                                       stdout=captured['stdout'], truncated=captured['truncated'],
+                                       deadline_expired=captured.get("deadline_expired"))
+                    break
+                self.read_collector_files(operation, exported)
+                self.update(operation, status="cancelled" if current["cancel_requested"] else
+                            ("completed" if terminal["exitCode"] == 0 else "failed"),
+                            output_harvested=True, finished_at=time.time(), stdout=captured["stdout"],
+                            truncated=captured["truncated"], files=exported["files"], error=diagnostic,
+                            deadline_expired=captured.get("deadline_expired"))
+                self.allocation_harvested(self.get(operation))
+                # Retain the terminal journal and files before collecting Kubernetes resources.
+                self.close_allocation(self.get(operation))
+                break
+            # Collect the bounded admission probe only after it reaps its
+            # children, avoiding needless processes during the fork check.
+            # Ordinary operation previews continue while execution runs.
+            if hydrated and operation != self.admission_operation and time.monotonic() - preview_at > 1:
+                captured = json.loads(self.exec_collector(operation, ["logs", "16384"]).stdout)
+                self.update(operation, stdout=captured["stdout"], truncated=captured["truncated"], output_fetched_at=time.time())
+                preview_at = time.monotonic()
+            if not hydrated and time.time() >= record['startup_at'] + START_LIMIT_SECONDS:
+                raise RuntimeError("sandbox startup not confirmed")
+            latest = self.get(operation)
+            running_at = latest.get('running_at') or latest.get('started_at') or latest.get('dispatch_at') or time.time()
+            if hydrated and time.time() > running_at + record["request"]["seconds"] + 30:
+                raise RuntimeError("sandbox termination not confirmed after deadline")
+            time.sleep(0.25)
 
     def refuse_undelivered(self, operation, refusal):
         """Record that an operation the caller has not seen delivered will never run.
@@ -1506,7 +1919,7 @@ class Handler(BaseHTTPRequestHandler):
             data, status = self.handle_request(), 200
         except ExecutionPodError as error:
             status = (404 if error.code == 'command_not_found' else
-                      503 if error.code in ('admission_unverified', 'startup_failed', 'pod_unavailable',
+                      503 if error.code in ('admission_unverified', 'startup_failed', 'pod_unavailable', 'pod_updating',
                                             'change_log_unavailable') else 409)
             data = {'code': error.code, 'message': error.message}
         except Rejected as error:
@@ -1533,11 +1946,23 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def main():
+    try:
+        profile = json.loads(Path(os.environ["AIDASH_CAPABILITY_PROFILE"]).read_bytes())
+        config = dict(profile, **profile["runner"])
+        runner = Runner(config)
+        runner.execution_pods.start_idle_monitor()
+        server = ThreadingHTTPServer((config["listen_host"], config["listen_port"]), Handler)
+        server.runner = runner
+        server.serve_forever()
+    except BaseException:
+        # Recovered commands are watched on non-daemon threads. An exception
+        # that ends startup after they began would otherwise leave this process
+        # alive and serving nothing, so leave explicitly and let it restart.
+        traceback.print_exc()
+        sys.stderr.flush()
+        os._exit(1)
+
+
 if __name__ == "__main__":
-    profile = json.loads(Path(os.environ["AIDASH_CAPABILITY_PROFILE"]).read_bytes())
-    config = dict(profile, **profile["runner"])
-    runner = Runner(config)
-    runner.execution_pods.start_idle_monitor()
-    server = ThreadingHTTPServer((config["listen_host"], config["listen_port"]), Handler)
-    server.runner = runner
-    server.serve_forever()
+    main()

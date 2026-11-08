@@ -580,6 +580,18 @@ impl FileScopePort for Scope<'_> {
 		result.map_err(Into::into)
 	}
 
+	async fn unusable_references(
+		&mut self,
+		ids: &[Uuid],
+	) -> Result<std::collections::BTreeSet<Uuid>> {
+		crate::apps::execution::capabilities::services::records::unusable_references(
+			self.access,
+			ids,
+		)
+		.await
+		.map_err(Into::into)
+	}
+
 	async fn open(&mut self, file: &MountedFile) -> Result<Box<dyn VerifiedFile>> {
 		let row: FileEntry = file.clone().into();
 		let file = self

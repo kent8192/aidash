@@ -36,7 +36,7 @@ fn withdrawal_touches_only_reconcilable_committed_operations(
 }
 #[rstest]
 #[case::prepared("prepared", WriterStop::Confirmed, "withdrawn", false, "active")]
-#[case::stopped("running", WriterStop::Confirmed, "withdrawn", true, "uncertain")]
+#[case::stopped("running", WriterStop::Confirmed, "withdrawn", true, "active")]
 #[case::pending("submitted", WriterStop::Unconfirmed, "cancelling", true, "uncertain")]
 fn dispatched_writers_keep_possible_effects_even_after_a_confirmed_stop(
 	mut snapshot: Snapshot,
@@ -70,6 +70,19 @@ fn an_old_operation_cannot_change_a_newer_area(mut snapshot: Snapshot, #[case] c
 	assert_eq!(snapshot.change(WriterStop::Confirmed).area_state, None);
 	assert_eq!(snapshot.change(WriterStop::NeverRan).area_state, None);
 }
+
+#[rstest]
+fn an_uncertain_terminal_writer_reopens_only_its_own_area_after_stop(mut snapshot: Snapshot) {
+	snapshot.state = "uncertain".into();
+	snapshot.area_state = "uncertain".into();
+	assert_eq!(snapshot.confirm_terminal_stop(false).area_state, None);
+	assert_eq!(
+		snapshot.confirm_terminal_stop(true).area_state,
+		Some("active")
+	);
+	snapshot.area_epoch += 1;
+	assert_eq!(snapshot.confirm_terminal_stop(true).area_state, None);
+}
 /// A withdrawn Check keeps the Area fenced only while its writer may run: it
 /// never exports `/work`, so a confirmed stop reopens the Area, including one
 /// an earlier unconfirmed pass fenced.
@@ -90,10 +103,13 @@ fn a_withdrawn_check_reopens_the_area_once_its_writer_stopped(
 	assert_eq!(snapshot.change(stop).area_state, expected);
 }
 #[rstest]
-fn a_withdrawn_shell_stays_fenced_after_a_confirmed_stop(mut snapshot: Snapshot) {
+fn a_withdrawn_shell_reopens_after_a_confirmed_stop(mut snapshot: Snapshot) {
 	snapshot.state = "cancelling".into();
 	snapshot.area_state = "uncertain".into();
-	assert_eq!(snapshot.change(WriterStop::Confirmed).area_state, None);
+	assert_eq!(
+		snapshot.change(WriterStop::Confirmed).area_state,
+		Some("active")
+	);
 }
 /// The Runner refused the send or stopped the command before it started, so
 /// nothing changed, whichever pass of the withdrawal learned it.
