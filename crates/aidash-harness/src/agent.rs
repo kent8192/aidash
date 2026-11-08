@@ -1,6 +1,7 @@
 //! Durable agent execution use case. All effects cross application ports.
 use aidash_application::{
 	Error, Result,
+	authorization::refusal_note::{self, Note as RefusalNote},
 	capabilities::approvals::{
 		AUTO_MODE_INSTRUCTION, DONT_ASK_HUMAN_REQUEST, INVOKE, ToolCallApproval, ToolCallRequest,
 		ToolCallTarget, answer_deadline_response, answer_for_model,
@@ -21,11 +22,25 @@ use aidash_domain::{
 	registry::bindings::{AgentBindings, BindingSnapshot},
 	research::citations,
 	semantic::{Failure, InputRead},
-	tool::{Continuation, ResultFitting, ToolIdentity, ToolUseMode},
+	tool::{
+		AuthorityRefusal, Continuation, RefusalCheck, ResultFitting, ToolIdentity, ToolUseMode,
+	},
 	*,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
+
+/// Appended to every call error that the model must not answer by calling again.
+const DO_NOT_REPEAT: &str = "Do not repeat this call.";
+/// Added when the tool is `Unsafe`: its effect may have committed in several steps.
+const PARTLY_HAPPENED: &str = " The call may have partly happened.";
+
+/// The tool whose effect just ended.
+#[derive(Clone, Copy)]
+struct DeliveredTool<'a> {
+	name: &'a str,
+	replay_safe: bool,
+}
 
 /// The calls of one response that a Tool Batch may cover, starting at the cursor.
 struct BatchStep<'a> {
@@ -45,13 +60,17 @@ pub struct Executor<'a> {
 	environment: &'a dyn ExecutionEnvironment,
 }
 impl<'a> Executor<'a> {
+	/// Turn the end of a tool's effect into what the Run does next. `outcome` carries the
+	/// refusal note the call left, read in the scope of the call itself.
 	async fn tool_delivery_result(
 		store: &dyn ExecutionStore,
 		run: &Run,
 		token: Uuid,
 		key: &str,
-		result: Result<Value>,
+		tool: DeliveredTool<'_>,
+		outcome: (Result<Value>, Option<RefusalNote>),
 	) -> Result<Value> {
+		let (result, note) = outcome;
 		// A Node that did not answer before the call took effect is retried
 		// like a request known not to have been delivered (#751).
 		let result = match result {
@@ -72,7 +91,51 @@ impl<'a> Executor<'a> {
 				Error::Invalid(message)
 				| Error::Refused(message)
 				| Error::Domain(aidash_domain::Error::Invalid(message)),
-			) => Ok(json!({"error":message})),
+			) => {
+				tracing::info!(run_id = %run.id, tool = tool.name, %message, "tool call refused");
+				Ok(json!({"error":message}))
+			}
+			// A refusal that names its check pauses the Run, and so does a plain one whose check
+			// left a note.
+			Err(Error::AuthorityRefused(refusal)) => {
+				Self::tool_refused(store, run, token, key, tool, *refusal).await
+			}
+			Err(Error::Forbidden | Error::Unauthorized) => match note {
+				Some(note) => {
+					let refusal = AuthorityRefusal {
+						tool: tool.name.to_owned(),
+						check: note.check,
+						action: note.action,
+						subject: note.subject,
+					};
+					Self::tool_refused(store, run, token, key, tool, refusal).await
+				}
+				// Nothing classified this refusal. No authority is lost by telling the model:
+				// every model request checks the Run's authority again.
+				None => {
+					tracing::warn!(
+						run_id = %run.id,
+						tool = tool.name,
+						key,
+						"unclassified refusal after the gate returned to the model"
+					);
+					let partly = if tool.replay_safe {
+						""
+					} else {
+						PARTLY_HAPPENED
+					};
+					Ok(json!({"error":format!(
+						"An internal check refused this call. Changing authority will not help, so \
+						 another way is needed.{partly} {DO_NOT_REPEAT}"
+					)}))
+				}
+			},
+			// A swallowed denial could leave a note behind; never read it here.
+			Err(Error::NotFound(message)) => Ok(json!({"error":format!(
+				"{}.{} {DO_NOT_REPEAT}",
+				message.trim_end_matches('.'),
+				if tool.replay_safe { "" } else { PARTLY_HAPPENED }
+			)})),
 			Err(Error::ToolNotDelivered {
 				message,
 				retry_after,
@@ -97,6 +160,34 @@ impl<'a> Executor<'a> {
 			}
 			Err(error) => Err(error),
 		}
+	}
+	/// Pause the Run on `refusal`. A replay-safe call that proved nothing ran ends `REFUSED` so
+	/// resuming runs it again. An `Unsafe` call stays `STARTED`, since running it again could
+	/// repeat the effect, and so does a call whose effect had already happened.
+	async fn tool_refused(
+		store: &dyn ExecutionStore,
+		run: &Run,
+		token: Uuid,
+		key: &str,
+		tool: DeliveredTool<'_>,
+		mut refusal: AuthorityRefusal,
+	) -> Result<Value> {
+		if refusal.tool.is_empty() {
+			refusal.tool = tool.name.to_owned();
+		}
+		// A refusal without a policy decision leaves no row in `authorization_decisions`; this
+		// line is what explains it afterwards.
+		tracing::info!(
+			run_id = %run.id,
+			tool = %refusal.tool,
+			check = ?refusal.check,
+			action = ?refusal.action,
+			"tool call refused by an authority check; pausing the Run"
+		);
+		if tool.replay_safe && refusal.check != RefusalCheck::RunAuthority {
+			store.invocation_refused(run, token, key, &refusal).await?;
+		}
+		Err(Error::AuthorityRefused(Box::new(refusal)))
 	}
 	pub fn new(environment: &'a dyn ExecutionEnvironment) -> Self {
 		Self { environment }
@@ -233,7 +324,8 @@ impl<'a> Executor<'a> {
 						Some(denial.map_or(result, |message| json!({"error":message})));
 					continue;
 				}
-				"STARTED" => {}
+				// A refused call is reopened by the store; it never ran, so it runs now.
+				"STARTED" | "REFUSED" => {}
 				_ => {
 					return Err(Error::Conflict(
 						"batched invocation is not replay-safe".into(),
@@ -247,6 +339,7 @@ impl<'a> Executor<'a> {
 					Ok(input) => Ok(input),
 					Err(
 						Error::Invalid(message)
+						| Error::Refused(message)
 						| Error::Domain(aidash_domain::Error::Invalid(message)),
 					) => Err(message),
 					Err(error) => return Err(error),
@@ -275,7 +368,11 @@ impl<'a> Executor<'a> {
 							admitted,
 							token,
 							key,
-							tool.dispatch(admitted, input, key).await,
+							DeliveredTool {
+								name: &calls[cursor + offset].name,
+								replay_safe: true,
+							},
+							refusal_note::scoped(tool.dispatch(admitted, input, key)).await,
 						)
 						.await?
 					}
@@ -352,7 +449,7 @@ impl<'a> Executor<'a> {
 				.behavior
 				.model_media_result(&call.arguments, &output)
 				|| !matches!(
-					FrameworkResult::decode(&contract, &output)?,
+					FrameworkResult::decode(&contract, &output, &call.arguments)?,
 					FrameworkResult::Ordinary
 				) {
 				return Err(Error::Conflict(
@@ -1137,6 +1234,9 @@ impl<'a> Executor<'a> {
 				store.save_run(run, token, "run.started").await?;
 			}
 			RunState::Thinking(thinking) => Box::pin(async {
+				if !home.local() {
+					run.recovery.remote_task_fingerprint = Some(home.child_summary(run.task_id).await?.fingerprint());
+				}
 				self.environment.reconcile_run_messages(run).await?;
 				// An accepted remote correction is durable even if its first home
 				// delivery failed. Deliver it before building any inference request.
@@ -1870,7 +1970,7 @@ impl<'a> Executor<'a> {
                 // Every Run prunes only through its own compaction Decider; one
                 // without a Decider may let the Summary Stage reduce it alone.
                 let decider = if fitting.fits(&context) { None } else { self.environment.compaction_decider(run, token).await? };
-                let compaction = compact_decided_execution(&mut context, run, token, self.environment.node_id(), decider.as_ref(), &fitting).await.map_err(|error| remote_budget(guard, error))?;
+                let compaction = compact_decided_execution(&mut context, run, token, self.environment.node_id(), decider.as_ref(), &fitting).await.map_err(at_stage("compaction")).map_err(|error| remote_budget(guard, error))?;
                 let plan = match compaction {
                     aidash_application::context::Compaction::Fits => None,
                     // The decision saved the pruned context and released the
@@ -1900,7 +2000,7 @@ impl<'a> Executor<'a> {
                                 tracing::warn!(run = %run.id, %error, "staged compaction decision was not recorded as rejected");
                             }
                         }
-                        return summarized.map_err(|error| remote_budget(guard, error));
+                        return summarized.map_err(at_stage("compaction")).map_err(|error| remote_budget(guard, error));
                     }
                 }
 
@@ -1931,6 +2031,7 @@ impl<'a> Executor<'a> {
 					&& !run_message_catchup
 					&& !media.defer_human
 					&& !media.defer_selected;
+				request.routing_run = Some(run.id);
 				request.disable_provider_transforms = !policy.is_legacy();
 				request
 					.ensure_fits(window)
@@ -2231,6 +2332,7 @@ impl<'a> Executor<'a> {
 					};
 				}
 				run.state = RunState::ToolCall(Box::new(ToolCallState {
+wait_result: None,
 connection: None,
 					response: result,
 					response_epoch: response_epoch(run.revision, run.step),
@@ -2570,9 +2672,10 @@ connection: None,
 									resume: ResumeState::Thinking(ThinkingState::default()),
 								}));
 							} else {
-								run.state = RunState::Waiting(Box::new(WaitingState::Children {
-									wake_at: chrono::Utc::now() + chrono::Duration::seconds(2),
-									resume: ThinkingState::default(),
+								run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
+									wake_at: chrono::Utc::now() + chrono::Duration::hours(1),
+									cursor: run.recovery.workspace_event_cursor.unwrap_or(0),
+									resume: ResumeState::Thinking(ThinkingState::default()),
 								}));
 							}
 							run.step += 1;
@@ -2663,9 +2766,10 @@ connection: None,
 								run.step += 1;
 								run.context.completion.basis = None;
 
-								run.state = RunState::Waiting(Box::new(WaitingState::Children {
-									wake_at: chrono::Utc::now() + chrono::Duration::seconds(2),
-									resume: ThinkingState::default(),
+								run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
+									wake_at: chrono::Utc::now() + chrono::Duration::hours(1),
+									cursor: run.recovery.workspace_event_cursor.unwrap_or(0),
+									resume: ResumeState::Thinking(ThinkingState::default()),
 								}));
 								store.save_run(run, token, "run.waiting").await?;
 								return Ok(());
@@ -2981,14 +3085,19 @@ connection: None,
 					return Ok(());
 				}
 				let unfinished_key = (invocation.status != "COMPLETED").then_some(key.as_str());
-				let output = if invocation.status == "COMPLETED" {
+				let waited_output = run.state.tool_mut()?.wait_result.take();
+				let resumed_operation = waited_output.is_some();
+				let output = if let Some(output) = waited_output {
+					output
+				} else if invocation.status == "COMPLETED" {
 					invocation.result.ok_or_else(|| {
 						Error::Conflict("completed invocation has no result".into())
 					})?
 				} else if let Some(output) = prepared_result {
 					output
 				} else {
-					match tool.invoke(run, call.arguments.clone(), &key).await {
+					let (invoked, note) = refusal_note::scoped(tool.invoke(run, call.arguments.clone(), &key)).await;
+					match invoked {
                         Ok(output) => {
                             if contract.behavior.tenant_tool_call() {
                                 self.checkpoint_connection_success(run, token, &call.name).await?;
@@ -2996,7 +3105,7 @@ connection: None,
                             output
                         },
                         Err(Error::Connection(cause)) => self.checkpoint_connection_refusal(run,token,connections::RefusedCall {call,tool:tool.as_ref(),guard,key:&key},cause).await?,
-                        other => Self::tool_delivery_result(store, run, token, &key, other).await?,
+                        other => Self::tool_delivery_result(store, run, token, &key, DeliveredTool { name: &call.name, replay_safe: contract.replay_safe() }, (other, note)).await?,
 					}
 				};
                 // Revalidate Research before deriving any media selection. A completed
@@ -3101,11 +3210,36 @@ connection: None,
                 let Some(output) = self.connection_result(run, token, connections::RefusedCall {call, tool:tool.as_ref(), guard, key:&key}, output).await? else { return Ok(()) };
 				// What a Tenant's HTTP or MCP tool returns is external data and never
 				// raises an approval, which would repeat the external call.
-				let framework = if contract.behavior.tenant_tool_call() {
+				let framework = if contract.behavior.tenant_tool_call() || resumed_operation {
 					FrameworkResult::Ordinary
 				} else {
-					FrameworkResult::decode(&contract, &output)?
+					FrameworkResult::decode(&contract, &output, &call.arguments)?
 				};
+				// The operation's end wakes the Run, so the wait is not cut at the
+				// command's deadline: saving its files comes after the stop, and a
+				// poll between the two would otherwise return at once every time.
+				if let FrameworkResult::Operation { id, seconds } = framework {
+					run.state = RunState::Waiting(Box::new(WaitingState::Operation {
+						operation_id: id,
+						wake_at: chrono::Utc::now() + chrono::Duration::seconds(seconds),
+						resume: Box::new(run.state.tool()?.clone()),
+					}));
+					store.save_run(run, token, "run.waiting_for_operation").await?;
+					return Ok(());
+				}
+				if let FrameworkResult::Wait(seconds) = framework && !resumed_operation {
+					let seconds = if call.arguments.get("seconds").is_none() {
+						let pending = if home.local() { store.unfinished_owned_tasks(run).await? > 0 } else { home.child_summary(run.task_id).await?.has_pending };
+						if pending { 3600 } else { 300 }
+					} else { seconds.clamp(1, 3600) };
+					run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
+						wake_at: chrono::Utc::now() + chrono::Duration::seconds(seconds),
+						cursor: run.recovery.workspace_event_cursor.unwrap_or(0),
+						resume: ResumeState::ToolCall(Box::new(run.state.tool()?.clone())),
+					}));
+					store.save_run(run, token, "run.waiting_for_workspace").await?;
+					return Ok(());
+				}
                 if contract.behavior.connection_request && let FrameworkResult::Human(request) = framework {
                     return self.builtin_connection_wait(run, token, call, request, &key, guard).await;
                 }
@@ -3173,14 +3307,9 @@ connection: None,
 							resume: ResumeState::Thinking(ThinkingState::default()),
 						}));
 					}
-					FrameworkResult::Wait(seconds) => {
-						run.suspend(|resume| WaitingState::Timer {
-							wake_at: chrono::Utc::now() + chrono::Duration::seconds(seconds),
-							resume,
-						})?
-					}
+					FrameworkResult::Wait(_) => unreachable!("workspace wait suspended above"),
 					// An approval returned above, before the call was recorded.
-					FrameworkResult::Ordinary | FrameworkResult::Approval(_) => {}
+					FrameworkResult::Ordinary | FrameworkResult::Approval(_) | FrameworkResult::Operation { .. } => {}
 				}
 				home.report(
 					&format!("{key}:tool"),
@@ -3290,9 +3419,67 @@ connection: None,
 				}
 				run.state = match waiting {
 					WaitingState::Dependencies { resume, .. } => RunState::Ready(resume),
-					WaitingState::Children { resume, .. } => RunState::Thinking(resume),
+					WaitingState::Workspace { wake_at, cursor, mut resume } => {
+						let inputs = store.run_inputs(run.id).await?;
+						let observed = match &resume { ResumeState::ToolCall(state) => state.included_input_seq, _ => run.observed_input_seq };
+						let input = inputs.last().is_some_and(|input| input.seq > observed);
+						let events = store.workspace_events(run, cursor).await?;
+						let remote = if !home.local() { Some(home.child_summary(run.task_id).await?) } else { None };
+						let remote_changed = remote.as_ref().is_some_and(|summary| run.recovery.remote_task_fingerprint.as_ref().is_some_and(|previous| *previous != summary.fingerprint()));
+						if !input && events.is_empty() && !remote_changed && chrono::Utc::now() < wake_at {
+							if let Some(summary) = remote { run.recovery.remote_task_fingerprint = Some(summary.fingerprint()); }
+							run.state = RunState::Waiting(Box::new(WaitingState::Workspace { wake_at, cursor, resume }));
+							store.save_run(run, token, "run.waiting_for_workspace").await?;
+							return Ok(());
+						}
+						if let Some(last) = events.last() { run.recovery.workspace_event_cursor = Some(last.generation); }
+						let mut changes = if home.local() { events.iter().map(|event| json!({"task_id":event.task_id,"status":event.status})).collect::<Vec<_>>() } else { Vec::new() };
+						if remote_changed { changes.push(json!({"kind":"terminal_tasks_changed"})); }
+						if let Some(summary) = &remote { run.recovery.remote_task_fingerprint = Some(summary.fingerprint()); }
+						let reason = if input { "input" } else if !events.is_empty() || remote_changed { "workspace_event" } else { "ceiling" };
+						let open_tasks = if let Some(summary) = &remote { summary.open_tasks } else { store.unfinished_owned_tasks(run).await? };
+						if let ResumeState::ToolCall(state) = &mut resume {
+							state.wait_result = Some(json!({"reason":reason,"changes":changes,"open_tasks":open_tasks}));
+						}
+						resume.into_state()
+					}
 					WaitingState::Timer { resume, .. } | WaitingState::Human { resume, .. } => {
 						resume.into_state()
+					}
+					WaitingState::Operation { operation_id, mut resume, .. } => {
+						let call = resume.response.tool_calls.get(resume.cursor)
+							.ok_or_else(|| Error::Invalid("operation wait has no call".into()))?;
+						let tools = self.environment.binding_resolver().tools(run).await?;
+						let original = tools.get(&call.name).ok_or_else(|| Error::Invalid("operation tool unavailable".into()))?;
+						let operation = match &original.contract().identity {
+							ToolIdentity::Builtin(name) => name.strip_prefix("builtin:").map(str::to_owned),
+							ToolIdentity::Descriptor(identity) => run.context.binding_snapshot.as_ref().and_then(|snapshot| snapshot.bindings.iter().find(|binding| binding.identity == *identity)).and_then(|binding| binding.definition.config["operation"].as_str()).map(str::to_owned),
+							_ => None,
+						}.ok_or_else(|| Error::Invalid("operation wait has no core operation".into()))?;
+						let poll_name = match operation.as_str() {
+							"shell" | "shell_poll" => "shell_poll",
+							"code_interpreter" | "python_poll" => "python_poll",
+							_ => return Err(Error::Invalid("unsupported operation wait".into())),
+						};
+						let poll = tools.iter().find(|(_, tool)| match &tool.contract().identity {
+							ToolIdentity::Builtin(name) => name == &format!("builtin:{poll_name}"),
+							ToolIdentity::Descriptor(identity) => run.context.binding_snapshot.as_ref().is_some_and(|snapshot| snapshot.bindings.iter().any(|binding| binding.identity == *identity && binding.definition.config["operation"] == poll_name && binding.definition.config["provider"].as_str().is_some_and(|provider| provider.starts_with("core.")))),
+							_ => false,
+						});
+						let arguments = json!({"operation_id": operation_id, "offset": call.arguments.get("offset"), "wait_seconds": 0});
+						let _permit = match self.environment.tool_slots() {
+							Some(slots) => Some(slots.acquire().await?),
+							None => None,
+						};
+						resume.wait_result = Some(if let Some(poll) = poll {
+							let poll_call = aidash_domain::provider::ToolCall { id: call.id.clone(), name: poll.0.clone(), arguments: arguments.clone() };
+							if let Some(guard) = guard { guard.tool(&poll_call, &poll.1.contract()).await?; }
+							poll.1.invoke(run, arguments, "").await?
+						} else {
+							if let Some(guard) = guard { guard.tool(call, &original.contract()).await?; }
+							self.environment.poll_operation(run, poll_name, arguments).await?
+						});
+						RunState::ToolCall(resume)
 					}
 					WaitingState::Approval { resume, .. }
 					| WaitingState::Reconciliation { resume, .. } => RunState::ToolCall(resume),
@@ -3309,6 +3496,24 @@ connection: None,
 			}
 		}
 		Ok(())
+	}
+}
+
+/// Name the stage of a refusal that nothing named: a plain `Forbidden` or `Unauthorized` becomes
+/// the Run's pause for `stage`, with the check its note recorded.
+fn at_stage(stage: &'static str) -> impl FnOnce(Error) -> Error {
+	move |error| match error {
+		Error::Forbidden | Error::Unauthorized => {
+			let note = refusal_note::take()
+				.unwrap_or_else(|| RefusalNote::new(RefusalCheck::Unnamed, None));
+			Error::AuthorityRefused(Box::new(AuthorityRefusal {
+				tool: stage.to_owned(),
+				check: note.check,
+				action: note.action,
+				subject: note.subject,
+			}))
+		}
+		error => error,
 	}
 }
 

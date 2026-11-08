@@ -109,6 +109,9 @@ pub struct HomeApproval {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ToolCallState {
+	/// A woken wait's result, awaiting delivery at this cursor.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub wait_result: Option<Value>,
 	/// Authentication refusals are known not to have executed. A new attempt gets a new journal key.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub connection: Option<ConnectionCallState>,
@@ -152,6 +155,7 @@ pub struct ToolCallState {
 impl ToolCallState {
 	/// Move to the call at `cursor`, leaving the approvals of earlier calls behind.
 	pub fn advance(&mut self, cursor: usize) {
+		self.wait_result = None;
 		self.cursor = cursor;
 		self.home_approval = None;
 		self.approval = None;
@@ -252,13 +256,21 @@ pub enum ApprovalRef {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WaitingState {
+	/// A Run waits for relevant workspace changes, input, or a ceiling.
+	Workspace {
+		wake_at: DateTime<Utc>,
+		cursor: i64,
+		resume: ResumeState,
+	},
+	/// An accepted command is rechecked when it settles or its ceiling arrives.
+	Operation {
+		operation_id: Uuid,
+		wake_at: DateTime<Utc>,
+		resume: Box<ToolCallState>,
+	},
 	Dependencies {
 		wake_at: DateTime<Utc>,
 		resume: ReadyState,
-	},
-	Children {
-		wake_at: DateTime<Utc>,
-		resume: ThinkingState,
 	},
 	Timer {
 		wake_at: DateTime<Utc>,
@@ -292,8 +304,9 @@ pub enum WaitingState {
 impl WaitingState {
 	pub fn deadline(&self) -> Option<DateTime<Utc>> {
 		match self {
-			Self::Dependencies { wake_at, .. }
-			| Self::Children { wake_at, .. }
+			Self::Workspace { wake_at, .. }
+			| Self::Operation { wake_at, .. }
+			| Self::Dependencies { wake_at, .. }
 			| Self::Timer { wake_at, .. }
 			| Self::FailureDelivery { wake_at, .. } => Some(*wake_at),
 			Self::Human { answer_by, .. } => *answer_by,
@@ -411,6 +424,12 @@ pub const LEASE_RECOVERY_LIMIT: u32 = 3;
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RecoveryState {
+	/// Last workspace event delivered to this Run.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub workspace_event_cursor: Option<i64>,
+	/// Fingerprint of remote terminal child Tasks observed before inference.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub remote_task_fingerprint: Option<String>,
 	/// Transport-proven, still-unsatisfied refusals. Tool result JSON never populates these.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub connection_refusals: Vec<ConnectionRefusal>,

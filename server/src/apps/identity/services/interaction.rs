@@ -5,6 +5,7 @@ use super::{
 	policy::Resource,
 };
 use crate::apps::execution::models::HumanRequest as HumanRequestRecord;
+use crate::apps::identity::models::DecisionOwner;
 use crate::{
 	Error, Result, apps::workspaces::serializers::tasks::ConversationResponse, domain::*,
 	federation::Federation,
@@ -32,6 +33,27 @@ impl Access {
 		)
 		.await
 		.map_err(Into::into)
+	}
+
+	/// What the Continuation Check knows of a Run: it exists and this authority
+	/// may still reach its Workspace. It never looks at what the Run has read; that
+	/// is the Read Recheck's job, so its cost does not grow with the reads (ADR 0116).
+	pub(crate) async fn run_for_continuation(&mut self, id: Uuid) -> Result<Run> {
+		self.recheck_owner = Some(DecisionOwner::Run(id));
+		let run = crate::apps::execution::models::Run::read_in(&mut **self.tx, id, None)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		let workspace = self.workspace(run.workspace_id).await?;
+		self.context = workspace.attributes.clone();
+		self.require(&workspace, "workspace.read").await?;
+		Ok(run)
+	}
+
+	/// The Read Recheck, in full. Every allow repeats the same question for this
+	/// Run, so a repeat adds no Authorization Decision.
+	pub(crate) async fn recheck_run_reads(&mut self, id: Uuid) -> Result<Run> {
+		self.recheck_owner = Some(DecisionOwner::Run(id));
+		self.run_for_interaction(id).await
 	}
 
 	pub(crate) async fn run_for_interaction(&mut self, id: Uuid) -> Result<Run> {

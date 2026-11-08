@@ -123,11 +123,15 @@ fn access() -> Access {
 		wire: None,
 		node_id: "aidash://home".into(),
 		dependency_frontier: None,
+		recheck_workspaces: Default::default(),
+		subnode_workspaces: Default::default(),
+		subnode_creators: Default::default(),
 		// Same-credential publisher checks perform no database I/O.
 		tx: AccessTransaction::default(),
 		identity,
 		snapshot,
 		subjects: vec!["alice".into()],
+		delegated_subject: None,
 		durable_audit: false,
 		audit: false,
 		context: json!({}),
@@ -136,6 +140,10 @@ fn access() -> Access {
 		cached_runs: Default::default(),
 		cached_humans: Default::default(),
 		pending_decisions: vec![],
+		recorded_decisions: Default::default(),
+		recheck_owner: None,
+		walk_root: None,
+		read_lookups: Default::default(),
 		last_policy_explicit_deny: false,
 		decision_serial: 0,
 		pool: sqlx::postgres::PgPoolOptions::new()
@@ -373,6 +381,56 @@ async fn a_publishers_silent_node_is_the_readers_only_if_the_reader_may_discover
 	);
 }
 
+#[rstest::rstest]
+#[case::delegated_agent_is_denied(Some("agent-x"), Some("agent-x"))]
+#[case::no_delegated_agent(None, None)]
+#[tokio::test]
+async fn a_denial_leaves_a_note_that_names_only_the_agent_delegated_to(
+	mut access: Access,
+	#[case] delegated: Option<&str>,
+	#[case] named: Option<&str>,
+) {
+	// Arrange: the chain ends in an Agent the policy does not know, so it is denied.
+	access.subjects = vec!["alice".into(), "agent-x".into()];
+	access.delegated_subject = delegated.map(str::to_owned);
+	let resource = access.resource("memory", "bank", json!({}));
+	// Act
+	let (result, note) = refusal_note::scoped(access.require(&resource, "memory.read")).await;
+	// Assert
+	assert!(matches!(result, Err(Error::Forbidden)));
+	assert_eq!(
+		note,
+		Some(
+			refusal_note::Note::new(RefusalCheck::Policy, Some("memory.read"))
+				.subject(named.map(str::to_owned))
+		)
+	);
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn an_allowed_check_supersedes_an_earlier_policy_refusal_but_not_another_kind(
+	mut access: Access,
+) {
+	let resource = access.resource("memory", "bank", json!({}));
+	let denied = access.resource("secret", "vault", json!({}));
+	let (_, note) = refusal_note::scoped(async {
+		assert!(access.require(&denied, "secret.use").await.is_err());
+		access.require(&resource, "memory.read").await.unwrap();
+	})
+	.await;
+	assert_eq!(note, None, "the last check wins");
+	let (_, note) = refusal_note::scoped(async {
+		refusal_note::set(refusal_note::Note::new(RefusalCheck::TenantDeletion, None));
+		access.require(&resource, "memory.read").await.unwrap();
+	})
+	.await;
+	assert_eq!(
+		note,
+		Some(refusal_note::Note::new(RefusalCheck::TenantDeletion, None))
+	);
+}
+
 /// A scoped response can audit hundreds of checks. Database round trips, rather
 /// than the number of decisions, must bound the cost of finishing that response.
 #[rstest::rstest]
@@ -436,7 +494,7 @@ async fn finishing_a_compound_check_bounds_audit_round_trips(
 	};
 	for id in 0..decisions {
 		let resource = access.resource("workspace", id, json!({}));
-		access.pending_decisions.push((
+		access.pending_decisions.push(DecisionRow::direct(
 			access.evaluation("alice", &resource, "workspace.read"),
 			decision.clone(),
 		));

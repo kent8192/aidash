@@ -1,6 +1,7 @@
 //! Lease supervision and terminal-outbox polling share the listener-free worker driver.
 use aidash_application::{
 	Result,
+	authorization::refusal_note,
 	ports::{
 		activation::ActivationRepository,
 		execution::{
@@ -91,8 +92,9 @@ pub async fn advance(
 	// administrator can name both in a Safety Stop (ADR 0101).
 	let tenant = scope.tenant().await.unwrap_or_default();
 	let span = tracing::info_span!("worker_step", run_id = %scope.metadata().id, %tenant);
-	advance_step(&STEP_GATE, scope, leases, token, seconds)
-		.instrument(span)
+	// One refusal note covers the step and its recovery, so a check that refuses outside a tool
+	// call can be named when the Run pauses.
+	refusal_note::within(advance_step(&STEP_GATE, scope, leases, token, seconds).instrument(span))
 		.await
 }
 
@@ -147,18 +149,21 @@ pub async fn failure_once(
 		return Ok(true);
 	}
 	let run = scope.metadata().id;
-	if let Completion::Completed(result) = keepalive(
-		terminal::deliver(scope.as_mut()),
-		leases,
-		run,
-		token,
-		seconds,
-	)
-	.await?
-	{
-		terminal::settle(scope.as_mut(), result).await?;
-	}
-	Ok(true)
+	refusal_note::within(async {
+		if let Completion::Completed(result) = keepalive(
+			terminal::deliver(scope.as_mut()),
+			leases,
+			run,
+			token,
+			seconds,
+		)
+		.await?
+		{
+			terminal::settle(scope.as_mut(), result).await?;
+		}
+		Ok(true)
+	})
+	.await
 }
 
 async fn terminal_once(

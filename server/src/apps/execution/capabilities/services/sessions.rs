@@ -38,6 +38,17 @@ pub(crate) async fn authorize(access: &mut Access, area: &Area, action: &str) ->
 /// Execution-owned read gate: a core run stays visible only while its working area grants
 /// `file.read` to the caller; runs without a core area are unaffected.
 pub(crate) async fn run_area_readable(access: &mut Access, run: Uuid) -> Result<bool> {
+	if let Some((readable, context)) = access.read_lookups.area(run) {
+		access.context = context;
+		return Ok(readable);
+	}
+	let readable = area_readable(access, run).await?;
+	let context = access.context.clone();
+	access.read_lookups.remember_area(run, readable, &context);
+	Ok(readable)
+}
+
+async fn area_readable(access: &mut Access, run: Uuid) -> Result<bool> {
 	let Some(area) = crate::apps::execution::repositories::sessions::run_area(access, run).await?
 	else {
 		return Ok(true);
@@ -45,6 +56,18 @@ pub(crate) async fn run_area_readable(access: &mut Access, run: Uuid) -> Result<
 	let Some(area) = area else {
 		return Ok(false);
 	};
+	if access.read_lookups.walking() {
+		let messages: Vec<_> = area
+			.constraints
+			.as_array()
+			.into_iter()
+			.flatten()
+			.filter(|source| source["kind"] == "message")
+			.filter_map(|source| serde_json::from_value(source["id"].clone()).ok())
+			.map(|id| (area.workspace_id, "message".to_owned(), id))
+			.collect();
+		access.prepare_read_sources(&messages).await?;
+	}
 	match authorize(access, &area, "file.read").await {
 		Ok(()) => Ok(true),
 		Err(crate::Error::Forbidden | crate::Error::NotFound(_)) => Ok(false),

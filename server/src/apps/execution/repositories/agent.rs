@@ -31,6 +31,89 @@ use uuid::Uuid;
 
 #[async_trait]
 impl ExecutionStore for RunStore {
+	async fn unfinished_owned_tasks(&self, run: &Run) -> Result<u64> {
+		use reinhardt::db::orm::execution::convert_values;
+		use reinhardt::query::{
+			Alias, Expr, ExprTrait, Func, PostgresQueryBuilder, Query, QueryStatementBuilder,
+		};
+		let created = Query::select()
+			.expr(Expr::value(1_i64))
+			.from(Alias::new("authorization_task_origins"))
+			.and_where(Expr::col("source_run_id").eq(Expr::value(run.id)))
+			.and_where(Expr::col("task_id").equals((Alias::new("tasks"), Alias::new("id"))))
+			.to_owned();
+		let delegated = Query::select()
+			.expr(Expr::value(1_i64))
+			.from(Alias::new("authorization_run_outputs"))
+			.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
+			.and_where(Expr::col("resource_kind").eq("delegated_task"))
+			.and_where(Expr::col("resource_id").equals((Alias::new("tasks"), Alias::new("id"))))
+			.to_owned();
+		let (sql, values) = Query::select()
+			.expr_as(Func::count(Expr::col("id").into()), Alias::new("pending"))
+			.from(Alias::new("tasks"))
+			.and_where(Expr::col("status").is_not_in(["COMPLETED", "ABANDONED"]))
+			.and_where(Expr::exists(created).or(Expr::exists(delegated)))
+			.build(PostgresQueryBuilder);
+		let mut tx = self.store.pool.begin(&self.scope).await?;
+		let row = tx
+			.fetch_one(&sql, convert_values(values))
+			.await
+			.map_err(crate::Error::from)?;
+		let pending: i64 = row
+			.get("pending")
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(crate::Error::from)?;
+		tx.commit().await?;
+		Ok(u64::try_from(pending).unwrap_or_default())
+	}
+	async fn workspace_events(&self, run: &Run, after: i64) -> Result<Vec<WorkspaceEvent>> {
+		use reinhardt::db::orm::execution::convert_values;
+		use reinhardt::query::{
+			Alias, Expr, ExprTrait, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
+		};
+		let (sql, values) = Query::select()
+			.columns([Alias::new("generation"), Alias::new("reason")])
+			.from(Alias::new("run_activations"))
+			.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
+			.and_where(Expr::col("generation").gt(Expr::value(after)))
+			.and_where(Expr::col("reason").like("workspace_task:%"))
+			.order_by(Alias::new("generation"), Order::Desc)
+			.limit(32)
+			.build(PostgresQueryBuilder);
+		let mut tx = self.store.pool.begin(&self.scope).await?;
+		let rows = tx
+			.fetch_all(&sql, convert_values(values))
+			.await
+			.map_err(crate::Error::from)?;
+		let mut events = Vec::with_capacity(rows.len());
+		for row in rows {
+			let generation: i64 = row
+				.get("generation")
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(crate::Error::from)?;
+			let reason: String = row
+				.get("reason")
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(crate::Error::from)?;
+			let (id, status) = reason
+				.strip_prefix("workspace_task:")
+				.and_then(|value| value.split_once(':'))
+				.ok_or_else(|| {
+					aidash_application::Error::Invalid("invalid workspace activation".into())
+				})?;
+			let task_id = Uuid::parse_str(id)
+				.map_err(|_| aidash_application::Error::Invalid("invalid workspace task".into()))?;
+			events.push(WorkspaceEvent {
+				generation,
+				task_id,
+				status: status.to_owned(),
+			});
+		}
+		events.reverse();
+		tx.commit().await?;
+		Ok(events)
+	}
 	async fn resolve_research(&self, run: &mut Run) -> Result<()> {
 		let mut tx = self
 			.store
@@ -269,6 +352,18 @@ impl ExecutionStore for RunStore {
 	) -> Result<u32> {
 		self.store
 			.invocation_not_delivered(&self.scope, run, token, key, failure)
+			.await
+			.map_err(Into::into)
+	}
+	async fn invocation_refused(
+		&self,
+		run: &Run,
+		token: Uuid,
+		key: &str,
+		refusal: &aidash_domain::tool::AuthorityRefusal,
+	) -> Result<()> {
+		self.store
+			.invocation_refused(&self.scope, run, token, key, refusal)
 			.await
 			.map_err(Into::into)
 	}
@@ -1179,6 +1274,20 @@ impl ExecutionEnvironment for Environment<'_> {
 			None,
 		)
 		.map_err(Into::into)
+	}
+	async fn poll_operation(&self, run: &Run, operation: &str, input: Value) -> Result<Value> {
+		if run.id != self.step_run.id || !matches!(operation, "shell_poll" | "python_poll") {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let home = self.native_home();
+		let authority = home
+			.authority
+			.as_ref()
+			.ok_or(aidash_application::Error::Forbidden)?;
+		authority
+			.core_tool(&self.federation.store, run, operation, input, "", false)
+			.await
+			.map_err(Into::into)
 	}
 	fn binding_resolver(&self) -> &dyn aidash_application::ports::bindings::BindingResolver {
 		self

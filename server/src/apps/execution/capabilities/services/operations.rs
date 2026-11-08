@@ -130,8 +130,10 @@ pub(crate) async fn remote(
 }
 
 pub async fn run(store: Store, stopping: tokio::sync::watch::Receiver<bool>) -> Result<()> {
+	let repository = crate::bootstrap::operation_processing_repository(&store);
 	aidash_runtime::capabilities::run(
-		&crate::bootstrap::operation_processing_repository(&store),
+		&repository,
+		&repository,
 		&crate::bootstrap::capability_background_jobs(&store),
 		stopping,
 	)

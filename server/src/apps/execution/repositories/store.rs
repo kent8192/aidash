@@ -2909,11 +2909,16 @@ impl Store {
 		if !valid {
 			return Err(Error::Forbidden);
 		}
+		let read_kind = if kind == "delegated_task" {
+			"task"
+		} else {
+			kind
+		};
 		crate::apps::identity::models::AuthorizationRunRead::record_sources(
 			&mut **tx,
 			run,
 			workspace,
-			&[(kind.to_owned(), id)],
+			&[(read_kind.to_owned(), id)],
 		)
 		.await?;
 		crate::database::native::query(
@@ -3243,6 +3248,10 @@ impl Store {
 		.fetch_optional(&mut **tx)
 		.await? }
 		.ok_or_else(|| Error::Conflict("worker lease lost".into()))?;
+		if saved.phase().is_terminal() {
+			// Closing an open attempt appends an event, so lock first; see `lock_end`.
+			super::subnodes::lock_for_end(tx, saved.id).await?;
+		}
 		if kind == "model.completed" {
 			super::source_delivery::accept(self, tx, &saved, worker).await?;
 		}
@@ -3367,6 +3376,8 @@ impl Store {
 		if valid.is_none() {
 			return Err(Error::Conflict("worker lease lost".into()));
 		}
+		// Before the first event below; see `lock_end`.
+		super::subnodes::lock_for_end(&mut tx, run.id).await?;
 		let saved: crate::domain::run_state::RawRun = crate::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
@@ -3627,6 +3638,13 @@ impl Store {
 		action: RunControlAction,
 		source: ControlSource,
 	) -> Result<RunInspection> {
+		if action == RunControlAction::Cancel
+			|| (action == RunControlAction::Pause
+				&& source == ControlSource::DeploymentAdministrator)
+		{
+			// Before `run.control` appends its event; see `lock_end`.
+			super::subnodes::lock_for_end(tx, id).await?;
+		}
 		let run = self.control_one_in_as(tx, id, action, source).await?;
 		if action == RunControlAction::Cancel {
 			let reason = if source == ControlSource::DeploymentAdministrator {
@@ -3780,6 +3798,7 @@ impl Store {
 		key: &str,
 	) -> Result<HumanRequest> {
 		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		super::subnodes::require_writable(tx.as_mut(), run.workspace_id).await?;
 		let request = self
 			.human_request_in(tx.as_mut(), run, kind, prompt, key)
 			.await?;
@@ -4304,6 +4323,24 @@ impl Store {
 			)
 			.execute(&mut *tx)
 			.await?;
+		} else if !created && invocation.status == "REFUSED" {
+			// A refusal that paused the Run is decided again on resume. It proved nothing ran, so
+			// it starts over and is never reconciled (#754).
+			crate::database::native::query(
+				&Query::update()
+					.table(Alias::new("invocations"))
+					.value(Alias::new("status"), "STARTED")
+					.value_expr(Alias::new("result"), Expr::cust("NULL"))
+					.value(Alias::new("delivery_pending"), false)
+					.value(Alias::new("uncertain_reason"), Option::<String>::None)
+					.and_where(Expr::col(Alias::new("idempotency_key")).eq(Expr::value(key)))
+					.and_where(Expr::col(Alias::new("status")).eq(Expr::value("REFUSED")))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *tx)
+			.await?;
+			invocation.status = "STARTED".into();
+			invocation.result = None;
 		} else if !created && invocation.status != "COMPLETED" && !invocation.replay_safe {
 			{
 				let query_bind_1 = key;
@@ -4383,6 +4420,27 @@ impl Store {
 		}
 		tx.commit().await?;
 		Ok(count)
+	}
+	/// Record that an authority check refused a replay-safe call and paused the Run. Only a
+	/// `STARTED` row changes, and resuming starts it again.
+	pub async fn invocation_refused(
+		&self,
+		scope: &TenancyScope,
+		run: &Run,
+		worker: Uuid,
+		key: &str,
+		refusal: &aidash_domain::tool::AuthorityRefusal,
+	) -> Result<()> {
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		if !RunRecord::hold_worker(tx.as_mut(), run.id, worker).await? {
+			return Err(Error::Conflict(
+				"worker lease lost while recording tool refusal".into(),
+			));
+		}
+		let result = json!({"error":{"kind":"authority_refused","message":refusal.to_string()}});
+		InvocationRecord::refuse(tx.as_mut(), run.id, key, &result).await?;
+		tx.commit().await?;
+		Ok(())
 	}
 	pub async fn invocation_answer_lost(
 		&self,

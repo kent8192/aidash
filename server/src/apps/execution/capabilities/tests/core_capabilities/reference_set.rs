@@ -2,11 +2,11 @@
 use super::*;
 use base64::{Engine, engine::general_purpose::STANDARD};
 
-fn file(path: &str, text: &str) -> Value {
+pub(super) fn file(path: &str, text: &str) -> Value {
 	json!({"path":path,"data":STANDARD.encode(text)})
 }
 
-async fn add(c: &CoreFixture, token: &str, files: Vec<Value>) -> (u16, Value) {
+pub(super) async fn add(c: &CoreFixture, token: &str, files: Vec<Value>) -> (u16, Value) {
 	request(
 		&c.app,
 		token,
@@ -17,7 +17,7 @@ async fn add(c: &CoreFixture, token: &str, files: Vec<Value>) -> (u16, Value) {
 	.await
 }
 
-fn agent_subject(c: &CoreFixture, version: &str) -> String {
+pub(super) fn agent_subject(c: &CoreFixture, version: &str) -> String {
 	aidash_server::domain::qualified_agent(
 		&aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),
 		"research",
@@ -43,7 +43,7 @@ async fn register_source(
 
 /// Registers and approves `research@1.2.0` bound to these Sources. Its subject
 /// holds no reference action, as an Agent on the default policy does not.
-async fn bind_agent(c: &mut CoreFixture, sources: &[(&str, Value)]) {
+pub(super) async fn bind_agent(c: &mut CoreFixture, sources: &[(&str, Value)]) {
 	let node = aidash_domain::nodes::NodeName::derived("acme");
 	let mut bindings = vec![];
 	for (id, references) in sources {
@@ -72,6 +72,8 @@ async fn bind_agent(c: &mut CoreFixture, sources: &[(&str, Value)]) {
 		.as_array_mut()
 		.unwrap()
 		.extend(bindings);
+	// Each tool call of a scripted Run spends about ten worker steps.
+	agent.config["max_steps"] = json!(200);
 	let (status, saved) = request(&c.app, &c.token, "POST", "/api/registry", json!(agent)).await;
 	assert_eq!(status, 200, "{saved}");
 	let subject = agent_subject(c, "1.2.0");

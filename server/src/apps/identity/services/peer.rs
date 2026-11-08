@@ -156,7 +156,31 @@ pub(crate) async fn access(f: &Federation, admitted: &Admitted) -> Result<Access
 
 // Authority RPCs distinguish a permanent denial from a transport outage while
 // never reflecting a peer's response body or internal error details.
+//
+// A peer's 404 reads as `Forbidden` here, as it always has: most callers branch on that and
+// were written before the two could be told apart. A caller whose result reaches the model
+// uses [`authority_request_keeping_not_found`] instead.
 pub(crate) async fn authority_request<T: serde::de::DeserializeOwned>(
+	f: &Federation,
+	sender: &aidash_domain::federation::route::Sender,
+	node: &str,
+	path: &str,
+	body: &serde_json::Value,
+) -> Result<T> {
+	fold_not_found(authority_request_keeping_not_found(f, sender, node, path, body).await)
+}
+
+/// A peer's 404 as the `Forbidden` it has always read as.
+fn fold_not_found<T>(result: Result<T>) -> Result<T> {
+	result.map_err(|error| match error {
+		crate::Error::NotFound(_) => crate::Error::Forbidden,
+		error => error,
+	})
+}
+
+/// [`authority_request`] that keeps a peer's 404 as `NotFound`, for a tool's effect: the model
+/// hears that the target Node did not find it instead of the Run pausing.
+pub(crate) async fn authority_request_keeping_not_found<T: serde::de::DeserializeOwned>(
 	f: &Federation,
 	sender: &aidash_domain::federation::route::Sender,
 	node: &str,
@@ -313,4 +337,24 @@ pub(crate) async fn discover_for(
 	}
 	.await;
 	access.finish(result).await
+}
+
+#[cfg(test)]
+mod authority_tests {
+	use super::*;
+
+	#[test]
+	fn a_peers_404_reads_as_forbidden_and_nothing_else_changes() {
+		assert!(matches!(
+			fold_not_found::<()>(Err(crate::Error::NotFound(
+				"the target Node did not find it".into()
+			))),
+			Err(crate::Error::Forbidden)
+		));
+		assert!(matches!(
+			fold_not_found::<()>(Err(crate::Error::Conflict("changed".into()))),
+			Err(crate::Error::Conflict(_))
+		));
+		assert_eq!(fold_not_found(Ok(7)).unwrap(), 7);
+	}
 }

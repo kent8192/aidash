@@ -9,8 +9,7 @@ use crate::{Error, Result};
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::db::orm::{Model, OrmExecutor, QueryRow};
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, Func, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder,
-	SimpleExpr,
+	Alias, Expr, ExprTrait, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -113,29 +112,42 @@ impl Task {
 		workspace: Uuid,
 		parent: Uuid,
 	) -> Result<ChildTaskSummary> {
-		let any = |predicate| {
-			Func::coalesce(vec![
-				SimpleExpr::FunctionCall("bool_or".into_iden(), vec![predicate]),
-				Expr::value(false).into(),
-			])
-		};
-		let (sql, values) = Query::select()
-			.expr_as(
-				any(Expr::col("status").is_not_in(["COMPLETED", "ABANDONED"])),
-				Alias::new("has_pending"),
-			)
-			.expr_as(
-				any(Expr::col("status").is_in(["FAILED", "BLOCKED", "CANCELLED"])),
-				Alias::new("has_failed"),
-			)
-			.from(Alias::new(Self::table_name()))
-			.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
-			.and_where(Expr::col("parent_id").eq(Expr::value(parent)))
-			.build(PostgresQueryBuilder);
-		let row = db.fetch_one(&sql, convert_values(values)).await?;
-		Ok(serde_json::from_value(
-			QueryRow::from_backend_row(row).data,
-		)?)
+		#[derive(serde::Deserialize)]
+		struct Child {
+			revision: i64,
+			id: Uuid,
+			status: crate::domain::TaskStatus,
+		}
+		let mut summary = ChildTaskSummary::default();
+		let mut after = None;
+		loop {
+			let mut query = Query::select();
+			query
+				.columns([
+					Alias::new("id"),
+					Alias::new("status"),
+					Alias::new("revision"),
+				])
+				.from(Alias::new(Self::table_name()))
+				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.and_where(Expr::col("parent_id").eq(Expr::value(parent)))
+				.order_by(Alias::new("id"), Order::Asc)
+				.limit(100);
+			if let Some(id) = after {
+				query.and_where(Expr::col("id").gt(Expr::value(id)));
+			}
+			let (sql, values) = query.build(PostgresQueryBuilder);
+			let rows = db.fetch_all(&sql, convert_values(values)).await?;
+			let end = rows.len() < 100;
+			for row in rows {
+				let child: Child = serde_json::from_value(QueryRow::from_backend_row(row).data)?;
+				after = Some(child.id);
+				summary.include_task(child.id, child.status, child.revision);
+			}
+			if end {
+				return Ok(summary);
+			}
+		}
 	}
 }
 

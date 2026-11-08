@@ -443,6 +443,7 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::Plan(failure) => Self::Plan(failure),
 			ApplicationError::InferenceStalled => Self::InferenceStalled,
 			ApplicationError::TransactionPending => Self::TransactionPending,
+			ApplicationError::RunLockContended => Self::External("Run row lock contended".into()),
 			// The broker fault keeps its generic Deployment Administrator message and correlation.
 			error @ (ApplicationError::BrokerUnavailable { .. }
 			| ApplicationError::BrokerRejected { .. }) => Self::External(error.to_string()),
@@ -466,8 +467,19 @@ impl From<Error> for aidash_application::Error {
 			Error::NotFound(message) => Self::NotFound(message),
 			Error::Unprocessable(message) => Self::Unprocessable(message),
 			Error::FederationDisabled => Self::FederationDisabled,
-			// Work stopped by a Tenant Deletion pauses like any refused authority.
-			Error::Forbidden | Error::TenantDeleted => Self::Forbidden,
+			Error::Forbidden => Self::Forbidden,
+			// Work stopped by a Tenant Deletion pauses like any refused authority. The note
+			// names the check where it reaches the application, so every source of the error
+			// (the Tenant's policy lock, its deletion record) is covered at once.
+			Error::TenantDeleted => {
+				aidash_application::authorization::refusal_note::set(
+					aidash_application::authorization::refusal_note::Note::new(
+						aidash_domain::tool::RefusalCheck::TenantDeletion,
+						None,
+					),
+				);
+				Self::Forbidden
+			}
 			Error::AuthorityRefused(refusal) => Self::AuthorityRefused(refusal),
 			Error::RemoteExecutionRefused(reason) => Self::RemoteExecutionRefused(reason),
 			Error::Refused(code) => Self::Refused(code),
