@@ -424,6 +424,66 @@ async fn web_disclosure_waits_for_an_exact_approval_that_one_dispatch_consumes(
 	r.close().await;
 }
 
+/// A search whose call passed the entrance just before the Run's Subnode ended
+/// opens no Web disclosure approval: it is refused at the write, nothing is
+/// sent or reserved, and the Run ends as cancelled (#759).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_web_disclosure_is_not_opened_once_the_subnode_ended(
+	#[future] research_fixture: Research,
+) {
+	// Arrange: the Run's own Workspace is a Subnode that permits the search tool.
+	let mut r = research_fixture.await;
+	let run = r.delegate().await;
+	r.require_disclosure_approval().await;
+	let tool = format!(
+		"{}/tools/{}@{}",
+		r.c.f.config.deployment,
+		r.search_tool["id"].as_str().unwrap(),
+		r.search_tool["version"].as_str().unwrap()
+	);
+	let subnode = crate::late_subnode::seed_subnode(&r.c.f, run.id, &[tool]).await;
+	let end = crate::late_subnode::EndFirst::begin(&r.c.f, subnode, run.id).await;
+	crate::late_subnode::stage(
+		&r.c.f,
+		run.id,
+		"research_search",
+		json!({"query":QUERY}),
+		"late-call",
+	)
+	.await;
+
+	// Act: the call is under way when the end commits.
+	let worker = crate::late_subnode::start_worker(&r.c.f);
+	let waiting = end.until_a_call_waits(&r.c.f, &worker).await;
+	end.commit().await;
+	worker.await.unwrap();
+
+	// Assert
+	let (status, approvals) = request(
+		&r.c.app,
+		&r.c.token,
+		"GET",
+		"/api/capabilities/approvals",
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 200, "{approvals}");
+	let disclosures = approvals["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.filter(|item| item["kind"] == "disclosure")
+		.count();
+	assert_eq!(disclosures, 0, "no approval may be opened: {approvals}");
+	assert_eq!(r.attempts(run.id).await, 0, "nothing is reserved or sent");
+	crate::late_subnode::assert_waited_at_the_subnode_check(waiting);
+	crate::late_subnode::assert_cancelled(
+		&crate::late_subnode::run_to_its_end(&r.c.f, run.id).await,
+	);
+	r.close().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn a_url_intent_asks_for_a_page_reading_whose_disclosure_still_waits_for_approval(

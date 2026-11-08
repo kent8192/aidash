@@ -1,4 +1,5 @@
 //! Periodic generation recovery is process work, independent of the web server.
+use crate::background::Passes;
 use aidash_application::{
 	Result, generation::provisioning, ports::generation::provisioning::GenerationProvisioning,
 	registry::DefinitionValidation,
@@ -10,10 +11,11 @@ pub async fn run(
 	repository: Arc<dyn GenerationProvisioning>,
 	validation: DefinitionValidation,
 ) -> Result<()> {
+	let mut passes = Passes::new("generation.reconciliation", Duration::from_millis(500));
 	loop {
-		if let Err(error) = provisioning::reconcile(repository.as_ref(), &validation).await {
-			tracing::warn!(%error, "generation reconciliation failed");
-		}
-		tokio::time::sleep(Duration::from_millis(500)).await;
+		passes
+			.run(provisioning::reconcile(repository.as_ref(), &validation))
+			.await;
+		passes.wait().await;
 	}
 }

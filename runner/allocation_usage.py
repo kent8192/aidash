@@ -66,7 +66,9 @@ class AllocationJournal:
             operation = record.get('pod_operation', record['operation_id'])
             origin = self.get(operation)
             annotations = pod['metadata'].get('annotations', {})
-            if (record.get('pod_uid', uid) != uid or origin.get('pod_uid', uid) != uid
+            # A record that dropped its Pod before dispatch holds `pod_uid: None`; that is no binding, so it
+            # must not reject the Pod a retry created.
+            if ((record.get('pod_uid') or uid) != uid or (origin.get('pod_uid') or uid) != uid
                     or record['area_id'] != origin['area_id']
                     or pod['metadata']['name'] != self.pod_name(operation)
                     or annotations.get('aidash/digest') != origin['wire_digest']

@@ -122,6 +122,9 @@ fn access() -> Access {
 		wire: None,
 		node_id: "aidash://home".into(),
 		dependency_frontier: None,
+		recheck_workspaces: Default::default(),
+		subnode_workspaces: Default::default(),
+		subnode_creators: Default::default(),
 		// Same-credential publisher checks perform no database I/O.
 		tx: AccessTransaction::default(),
 		identity,

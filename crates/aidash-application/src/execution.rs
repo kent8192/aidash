@@ -820,6 +820,7 @@ pub fn encoded_run_message_reservation(messages: &[Value]) -> usize {
 			content_parts: Vec::new(),
 			cache_scope: None,
 			cache_breakpoints: false,
+			routing_run: None,
 			disable_provider_transforms: false,
 			input_format: Default::default(),
 			estimate: Default::default(),

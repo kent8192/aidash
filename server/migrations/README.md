@@ -7,7 +7,7 @@ the partial unique indexes that keep one coalesced allow per Run or Remote Grant
 subject, action, resource and policy revision (ADR 0116). Both use typed
 operations.
 
-`execution/0119_event_waits` requests Run activation in the transaction that
+`execution/0120_event_waits` (after `execution/0119_egress_request_times`) requests Run activation in the transaction that
 finishes an operation or changes an owned Task to a terminal or blocked state.
 PostgreSQL trigger functions require SQL assets because
 Reinhardt migrations cannot express their bodies.
@@ -761,6 +761,12 @@ records the Tenant Secret, the pinned version its token names and the
 destination host, never the value or a header value. The typed operations update
 the ORM snapshot, so no state-only checkpoint is needed.
 
+`execution/0119_egress_request_times` (after `execution/0118_blob_uploads`) adds
+the nullable `admission_ms` and `settle_ms` of `egress_requests` with typed column
+operations (#752). A record holds them once its outcome settles, so a record that
+never settled and a record older than this migration leave them null. The typed
+operations update the ORM snapshot, so no state-only checkpoint is needed.
+
 ## Home ledger recovery eligibility (#434)
 
 `knowledge/0036_memory_recovery_eligibility` (after
@@ -782,6 +788,8 @@ the single Knowledge head, and no schema or model state is overwritten.
 `identity/0053_tenant_data_protection_state` records those two tables in ORM migration state. It executes no DDL; references, validity checks and row-level policies remain in the preceding database-only migrations.
 
 `registry/0062_provider_warning_tools` extends the closed Provider tool validation functions with the warning-tier tools (advisor, subagent, model search, tool search, shell) without replacing the previous contracts; its reverse refuses to run while any such definition or pinned Run exists. `identity/0054_provider_warning_acknowledgment` adds the nullable exact disclosure text to `authorization_catalog_history`, filled only when a warning tool is approved. `execution/0098_provider_container` adds the nullable `runs.provider_container` pin (OpenRouter container id and network policy). OpenRouter has no container delete API, so the pin is kept after the Run ends.
+
+`registry/0063_reference_set_limit` raises the most Reference files one Source can bind from 8 to 256 in the PostgreSQL context validator. The function body uses SQL assets because Reinhardt has no typed operation for replacing PostgreSQL functions. Reversal refuses while a Source or a Run snapshot holds more than 8.
 
 ## Run control provenance and Safety Stops (#485, ADR 0101)
 

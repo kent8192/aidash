@@ -376,6 +376,12 @@ cleanup requires a settled frozen-session handoff. Operation ACK cannot erase it
 An internal durable terminal harvest stamp replays an interrupted handoff after
 restart, and recovered Python dispatch revokes the old handoff before starting.
 
+For v2 Execution Pods, a Runner restart resumes normal commands and Python
+sessions in the same Pod. Docker-mode commands become interrupted with an
+unknown outcome and remain stoppable. A Runner update waits for foreground
+commands before replacing the Pod; background processes stop during replacement.
+New commands receive a retryable `pod_updating` response until then.
+
 Authenticated native housekeeping polls `GET /v1/allocations/receipts` in bounded
 pages and acknowledges each immutable digest with
 `POST /v1/allocations/<uid>/ack` only after the usage sink succeeds. Failed delivery

@@ -1229,6 +1229,7 @@ impl ExecutionEnvironment for Environment<'_> {
 			model: config.model,
 			instructions: config.instructions,
 			knowledge_digest: config.knowledge_digest,
+			reference_files: config.reference_attachments.len(),
 			tools: config.tools,
 			skills: config.skills,
 			max_steps: config.max_steps,

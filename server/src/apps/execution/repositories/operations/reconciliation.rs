@@ -158,6 +158,7 @@ impl OperationReconciliationScope for Scope<'_> {
 			working_bytes: profile.working_bytes,
 			output_bytes: profile.output_bytes,
 			read_bytes: profile.limits.read_bytes,
+			maximum_seconds: profile.maximum_seconds,
 		}
 	}
 	async fn load(&mut self, id: Uuid, run: Uuid) -> Result<Loaded> {
@@ -283,7 +284,7 @@ impl OperationReconciliationScope for Scope<'_> {
 	}
 	async fn upload_files(&mut self, operation: &Snapshot) -> Result<Vec<MountedFile>> {
 		let result: NativeResult<Vec<FileEntry>> = async {
-			Ok(service::files(self.area())?
+			Ok(operations::pod_files(self.area())?
 				.into_iter()
 				.chain(skills::mounted(&mut self.access, self.run.as_ref().unwrap().id).await?)
 				.chain(packages::inputs(&native(operation))?)

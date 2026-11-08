@@ -170,6 +170,77 @@ impl Access {
 		.map_err(Into::into)
 	}
 
+	/// See [`ReadProvenanceScope::open_run_reads`]. An authority that is not
+	/// inherited has no Workspace boundary to open.
+	///
+	/// [`ReadProvenanceScope::open_run_reads`]: aidash_application::ports::authorization::visibility::provenance::ReadProvenanceScope::open_run_reads
+	pub(crate) async fn open_run_reads(&mut self, run: Uuid) -> Result<bool> {
+		if !self.inherited_lease {
+			return Ok(false);
+		}
+		let workspaces = match self.subnode_workspaces.get(&run) {
+			Some(workspaces) => workspaces.clone(),
+			None => {
+				let workspaces =
+					crate::apps::execution::models::subnodes::SubnodeRecord::workspaces_of_run(
+						&mut **self.tx,
+						&self.identity.tenant,
+						run,
+					)
+					.await?;
+				self.subnode_workspaces.insert(run, workspaces.clone());
+				workspaces
+			}
+		};
+		if workspaces.is_empty() {
+			return Ok(false);
+		}
+		self.recheck_workspaces.push(workspaces);
+		Ok(true)
+	}
+	pub(crate) fn close_run_reads(&mut self) {
+		self.recheck_workspaces.pop();
+	}
+	pub(crate) fn recheck_reaches(&self, id: Uuid) -> bool {
+		self.recheck_workspaces
+			.iter()
+			.flatten()
+			.any(|opened| *opened == id)
+	}
+	/// The producers of a record in `workspace` whose reads this reader checks. A
+	/// Run working in a Subnode's Workspace leaves out the Run that created it:
+	/// what the creator puts there is its deliberate handoff, and the members
+	/// cannot read what the creator had read (ADR 0110). Anyone else checks it.
+	pub(crate) async fn producers_to_check(
+		&mut self,
+		workspace: Uuid,
+		mut producers: Vec<Uuid>,
+	) -> Result<Vec<Uuid>> {
+		if producers.is_empty()
+			|| self.read_run.is_none()
+			|| self.context["workspace_id"] != serde_json::json!(workspace.to_string())
+		{
+			return Ok(producers);
+		}
+		let creator = match self.subnode_creators.get(&workspace) {
+			Some(creator) => *creator,
+			None => {
+				let creator =
+					crate::apps::execution::models::subnodes::SubnodeRecord::creator_of_workspace(
+						&mut **self.tx,
+						&self.identity.tenant,
+						workspace,
+					)
+					.await?;
+				self.subnode_creators.insert(workspace, creator);
+				creator
+			}
+		};
+		if let Some(creator) = creator {
+			producers.retain(|producer| *producer != creator);
+		}
+		Ok(producers)
+	}
 	/// Walk recorded run dependencies iteratively; cycles between observation
 	/// journals must terminate without skipping any resource's current policy.
 	pub(crate) async fn run_reads_visible(&mut self, run: Uuid) -> Result<bool> {

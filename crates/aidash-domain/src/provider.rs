@@ -87,6 +87,11 @@ pub struct ModelRequest {
 	/// inference digests keep their bytes.
 	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
 	pub cache_breakpoints: bool,
+	/// The Run this request belongs to. With a Cache Scope, the transport
+	/// adapter derives an opaque sticky-routing id from it (ADR 0115). Never
+	/// serialized, so the request metadata and inference digest keep their bytes.
+	#[serde(skip)]
+	pub routing_run: Option<uuid::Uuid>,
 	/// Set for Agents that opted into a Context Policy, whose recovery alone
 	/// may reduce context: OpenRouter then receives `transforms: []`. Prune-only
 	/// requests keep the provider default; omitted when false, so their
@@ -345,7 +350,7 @@ pub fn image_token_allowance(byte_len: usize) -> Option<usize> {
 }
 
 /// A five-minute provider cache breakpoint, the provider default (ADR 0019).
-pub(crate) fn cache_control() -> Value {
+pub fn cache_control() -> Value {
 	json!({"type":"ephemeral"})
 }
 

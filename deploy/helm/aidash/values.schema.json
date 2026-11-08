@@ -94,6 +94,7 @@
         "runner": {
           "type": "object",
           "properties": {
+            "uncertainRetentionSeconds": { "type": "integer", "minimum": 1 },
             "enabled": {
               "type": "boolean"
             },
@@ -409,6 +410,17 @@
           "type": ["integer", "null"],
           "minimum": 30000,
           "maximum": 32767
+        }
+      }
+    },
+    "database": {
+      "type": "object",
+      "required": ["statementTimeoutSeconds"],
+      "properties": {
+        "statementTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400
         }
       }
     },

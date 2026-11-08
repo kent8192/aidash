@@ -43,6 +43,9 @@ impl WorkspaceResourceScope for Reads<'_> {
 	fn context(&self) -> &Value {
 		&self.access.context
 	}
+	fn recheck_reaches(&self, id: Uuid) -> bool {
+		self.access.recheck_reaches(id)
+	}
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
 		self.access.resource(kind, id, attributes)
 	}
@@ -249,6 +252,9 @@ impl WorkspaceResourceScope for NativeReads<'_> {
 	}
 	fn context(&self) -> &Value {
 		self.access.workspace_context()
+	}
+	fn recheck_reaches(&self, id: Uuid) -> bool {
+		self.access.recheck_reaches(id)
 	}
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
 		self.access.resource(kind, id, attributes)

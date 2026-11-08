@@ -159,11 +159,25 @@ impl SessionScope for Scope<'_> {
 			.map(|_| ())
 			.map_err(Into::into)
 	}
-	async fn reference(&mut self, id: Uuid) -> Result<()> {
-		references::get(self.access, id, "reference.read")
-			.await
-			.map(|_| ())
-			.map_err(Into::into)
+	async fn references(&mut self, ids: &[Uuid]) -> Result<()> {
+		let usable = crate::apps::execution::capabilities::services::records::get_many(
+			self.access,
+			ids,
+			"reference",
+		)
+		.await
+		.map_err(aidash_application::Error::from)?
+		.into_iter()
+		.filter(|record| !matches!(record.state.as_str(), "revoked" | "expired"))
+		.map(|record| record.id)
+		.collect::<std::collections::BTreeSet<_>>();
+		if ids.iter().all(|id| usable.contains(id)) {
+			Ok(())
+		} else {
+			Err(aidash_application::Error::NotFound(
+				"reference unavailable".into(),
+			))
+		}
 	}
 	async fn bind_task(&mut self, task: Uuid, thread: Uuid) -> Result<()> {
 		let result: NativeResult<_> = async {

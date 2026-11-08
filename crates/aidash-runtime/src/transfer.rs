@@ -1,4 +1,5 @@
 //! Transfer supervision drains each selected batch before stopping.
+use crate::background::Passes;
 use aidash_application::{
 	Result, capabilities::transfer, ports::capabilities::transfer::TransferRepository,
 };
@@ -8,11 +9,10 @@ pub async fn run(
 	repository: &dyn TransferRepository,
 	mut stopping: watch::Receiver<bool>,
 ) -> Result<()> {
-	loop {
-		if *stopping.borrow() {
-			return Ok(());
-		};
-		transfer::sweep(repository).await?;
-		tokio::select! {_=stopping.changed()=>{},_=tokio::time::sleep(Duration::from_millis(300))=>{}}
+	let mut passes = Passes::new("capabilities.transfer", Duration::from_millis(300));
+	while !*stopping.borrow() {
+		passes.run(transfer::sweep(repository)).await;
+		passes.pause(&mut stopping).await;
 	}
+	Ok(())
 }

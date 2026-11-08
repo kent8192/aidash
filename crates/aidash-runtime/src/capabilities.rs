@@ -1,4 +1,5 @@
 //! Capability process work owns every loop and waits for an in-flight batch before stopping.
+use crate::background::Passes;
 use aidash_application::{
 	Result,
 	capabilities::{
@@ -33,13 +34,12 @@ async fn execution_loop(
 	mut stopping: watch::Receiver<bool>,
 ) -> Result<()> {
 	let mut cursor = ReceiptCursor::default();
-	loop {
-		if *stopping.borrow() {
-			return Ok(());
-		}
-		processing::sweep(repository, &mut cursor).await?;
-		tokio::select! {_=stopping.changed()=>{},_=tokio::time::sleep(Duration::from_millis(300))=>{}}
+	let mut passes = Passes::new("capabilities.execution", Duration::from_millis(300));
+	while !*stopping.borrow() {
+		passes.run(processing::sweep(repository, &mut cursor)).await;
+		passes.pause(&mut stopping).await;
 	}
+	Ok(())
 }
 /// Apart from the operation sweep, so a slow check delays no other command.
 async fn read_recheck_loop(

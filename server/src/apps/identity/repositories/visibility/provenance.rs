@@ -87,6 +87,12 @@ impl ReadProvenanceScope for Reads<'_> {
 		}
 		Ok(Some(self.producers(workspace, kind, id).await?))
 	}
+	async fn open_run_reads(&mut self, run: Uuid) -> Result<bool> {
+		self.access.open_run_reads(run).await.map_err(Into::into)
+	}
+	fn close_run_reads(&mut self) {
+		self.access.close_run_reads();
+	}
 	async fn catalog_read(&mut self, run: Uuid, reference: &EntityRef) -> Result<()> {
 		let node = self.access.node.clone();
 		if self
@@ -96,12 +102,7 @@ impl ReadProvenanceScope for Reads<'_> {
 		{
 			return Ok(());
 		}
-		match crate::apps::identity::services::catalog::entry(
-			self.access,
-			reference,
-			"registry.read",
-		)
-		.await
+		match crate::apps::identity::services::catalog::recheck_entry(self.access, reference).await
 		{
 			Ok(_) => {
 				self.access
@@ -590,6 +591,12 @@ impl ReadProvenanceScope for NativeReads<'_> {
 		.await
 		.map_err(Into::into)
 	}
+	async fn open_run_reads(&mut self, run: Uuid) -> Result<bool> {
+		self.access.open_run_reads(run).await.map_err(Into::into)
+	}
+	fn close_run_reads(&mut self) {
+		self.access.close_run_reads();
+	}
 	async fn catalog_read(&mut self, _: Uuid, reference: &EntityRef) -> Result<()> {
 		let node = self.access.node.clone();
 		if self
@@ -599,7 +606,7 @@ impl ReadProvenanceScope for NativeReads<'_> {
 		{
 			return Ok(());
 		}
-		self.access.catalog_entry(reference).await?;
+		self.access.catalog_recheck_entry(reference).await?;
 		self.access
 			.read_lookups
 			.remember_catalog_read(&node, reference, true);

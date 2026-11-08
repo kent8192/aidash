@@ -950,6 +950,7 @@ impl ExecutionEnvironment for Bench {
 	}
 	fn agent(&self, _entry: &Entry) -> Result<ExecutionAgent> {
 		Ok(ExecutionAgent {
+			reference_files: 0,
 			model: EntityRef {
 				id: "model".into(),
 				version: "1.0.0".into(),
