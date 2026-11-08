@@ -47,25 +47,44 @@ class UndeliveredCancelTest(unittest.TestCase):
         return runner
 
     def assert_refused(self, runner, operation):
-        with self.assertRaises(Rejected) as rejected:
-            runner.accept(request(operation))
-        self.assertEqual(rejected.exception.code, 409)
+        """The send starts nothing and is answered with the refusal on record."""
+        reply = runner.accept(request(operation))
+        self.assert_refusal_reply(reply, operation)
         runner.kube_json.assert_not_called()
         runner.start.assert_not_called()
         self.assertEqual(list(Path(self.root).glob("area-*.json")), [])
 
-    def test_a_cancel_ahead_of_the_send_ends_the_operation_unexecuted(self):
-        reply = self.runner.cancel(self.operation, refusal())
-        self.assertEqual(reply["operation_id"], self.operation)
+    def assert_refusal_reply(self, reply, operation):
+        self.assertEqual(reply["operation_id"], operation)
         self.assertEqual(reply["digest"], DIGEST)
         self.assertEqual(reply["status"], "cancelled")
         self.assertIs(reply["termination_confirmed"], True)
         self.assertIs(reply["executed"], False)
+
+    def test_a_cancel_ahead_of_the_send_ends_the_operation_unexecuted(self):
+        reply = self.runner.cancel(self.operation, refusal())
+        self.assert_refusal_reply(reply, self.operation)
         self.runner.start.assert_not_called()
 
     def test_a_send_after_the_cancel_is_refused_and_starts_nothing(self):
         self.runner.cancel(self.operation, refusal())
         self.assert_refused(self.runner, self.operation)
+
+    def test_a_resend_after_a_lost_refusal_reply_gets_the_refusal_back(self):
+        # The refusal is recorded but its reply never reached the server, which
+        # still holds the operation as unsent and sends it again. The Runner must
+        # answer with the record so the server can settle, not conflict forever.
+        lost = self.runner.cancel(self.operation, refusal())
+        self.assertEqual(self.runner.accept(request(self.operation)), lost)
+        self.assertEqual(self.runner.accept(request(self.operation)), lost)
+        self.runner.start.assert_not_called()
+
+    def test_a_send_with_another_intent_than_the_refusal_is_a_conflict(self):
+        self.runner.cancel(self.operation, refusal())
+        with self.assertRaises(Rejected) as rejected:
+            self.runner.accept(dict(request(self.operation), digest="another-intent"))
+        self.assertEqual(rejected.exception.code, 409)
+        self.runner.start.assert_not_called()
 
     def test_a_repeated_cancel_returns_the_same_outcome(self):
         first = self.runner.cancel(self.operation, refusal())
@@ -139,9 +158,7 @@ class UndeliveredCancelTest(unittest.TestCase):
         outcome = []
 
         def send():
-            with self.assertRaises(Rejected) as rejected:
-                self.runner.accept(request(self.operation))
-            outcome.append(rejected.exception.code)
+            outcome.append(self.runner.accept(request(self.operation)))
 
         with self.runner.lock:
             waiting = threading.Thread(target=send)
@@ -150,7 +167,8 @@ class UndeliveredCancelTest(unittest.TestCase):
             self.assertTrue(waiting.is_alive())
             self.runner.cancel(self.operation, refusal())
         waiting.join(10)
-        self.assertEqual(outcome, [409])
+        self.assertEqual(len(outcome), 1)
+        self.assert_refusal_reply(outcome[0], self.operation)
         self.runner.kube_json.assert_not_called()
         self.runner.start.assert_not_called()
 

@@ -582,7 +582,13 @@ class Runner(AllocationJournal):
         with self.lock:
             if self.path(operation).exists():
                 old = self.get(operation)
-                if old["wire_digest"] != wire_digest:
+                # A refusal (`refuse_undelivered`) was never sent a request, so it has no
+                # transport digest. A send of the same intent is answered with the refusal:
+                # a caller whose cancel reply was lost sends again, and only this record
+                # lets it settle. Nothing starts. Another intent is a conflict.
+                same = (old["digest"] == request["digest"] if old["wire_digest"] is None
+                        else old["wire_digest"] == wire_digest)
+                if not same:
                     raise Rejected(409, "IDEMPOTENCY_CONFLICT")
                 return self.public(old)
             # A Live preview is a long-lived reader that never publishes its
@@ -1769,8 +1775,9 @@ class Runner(AllocationJournal):
         may still be waiting for this lock, or listing Pods under it, long after the
         caller's timeout. This takes the same lock, so either `accept` recorded the
         operation first and this is an ordinary cancel, or this record stands and
-        `accept` refuses the send. Another instance has another journal, whose silence
-        proves nothing about the operation, so its cancel stays absent."""
+        `accept` starts nothing and answers the send with this record. Another instance
+        has another journal, whose silence proves nothing about the operation, so its
+        cancel stays absent."""
         if (set(refusal) != {"digest", "instance"} or not isinstance(refusal["instance"], str)
                 or not isinstance(refusal["digest"], str) or not refusal["digest"]):
             raise Rejected(400, "invalid cancel refusal")
