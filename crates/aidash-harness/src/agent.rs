@@ -2422,8 +2422,10 @@ connection: None,
 					// This response predates an accepted correction. Discard its
 					// text and calls before any effect crosses the tool boundary. Keep
 					// the inference allowance and let the next stored response get a
-					// fresh response_epoch for idempotency keys.
+					// fresh response_epoch for idempotency keys. A call a person declined is
+					// answered first: the response is discarded, but the decision is not.
 					let mut context = run.context.clone();
+					deliver_declined_calls(run, &mut context)?;
 					let next_pending = stale_media_pending(
 						&mut context,
 						run.state.tool()?,
@@ -2504,6 +2506,7 @@ connection: None,
 					&& let Some(call) = result.tool_calls.get(cursor)
 					&& !tools.get(&call.name).is_some_and(|tool| is_required_message_read_for(&tool.contract(), call, &required_reads, &context))
 				{
+					deliver_declined_calls(run, &mut context)?;
 					context.push(ContextEvent::RunMessageReadRequired {
 						message_ids: required_reads.clone(),
 					});
@@ -3477,6 +3480,53 @@ async fn answer_at_deadline(home: &dyn ExecutionHome, request: Uuid) -> Result<H
 /// rejects its proposed answer. It is model-authored history, not evidence.
 /// The turn opens without text: the citation gate has not yet decided what of
 /// it may be kept, and [`record_model_turn`] adds what it keeps.
+/// A response is discarded whole when something newer than it arrived. A call a person declined
+/// is answered all the same: the decision is the person's, not the response's, and the next
+/// request must carry the call with its sentence or the model calls it again. Every call from
+/// the cursor on that `declined_calls` holds is put in the context with its sentence and removed
+/// from the decisions; the rest is dropped as before. Keys match the sequential path: the
+/// cursor's own key carries its approval and connection suffixes, later calls' do not.
+fn deliver_declined_calls(run: &mut Run, context: &mut Context) -> Result<()> {
+	if run.recovery.declined_calls.is_empty() {
+		return Ok(());
+	}
+	let pending = run.state.tool()?;
+	let cursor = pending.cursor;
+	let epoch = pending.response_epoch;
+	let cursor_key = {
+		let call_key = format!("{}:{epoch}:{cursor}", run.id);
+		let key = match pending.approval {
+			Some(approval) => format!("{call_key}:approval:{approval}"),
+			None => call_key,
+		};
+		match pending.connection.as_ref().map_or(0, |state| state.attempt) {
+			0 => key,
+			attempt => format!("{key}:connection:{attempt}"),
+		}
+	};
+	let calls = pending.response.tool_calls.clone();
+	for (index, call) in calls.into_iter().enumerate().skip(cursor) {
+		let key = if index == cursor {
+			cursor_key.clone()
+		} else {
+			format!("{}:{epoch}:{index}", run.id)
+		};
+		if let Some(position) = run
+			.recovery
+			.declined_calls
+			.iter()
+			.position(|declined| declined.key == key)
+		{
+			let declined = run.recovery.declined_calls.remove(position);
+			context.push(ContextEvent::tool(
+				call,
+				json!({"error": declined.kind.declined_sentence()}),
+			));
+		}
+	}
+	Ok(())
+}
+
 fn record_provider_turn(run: &mut Run, version: ProjectionVersion) -> Result<()> {
 	let response = &run.state.tool()?.response;
 	if response.provider_activity.is_empty() {

@@ -261,6 +261,8 @@ struct Desk {
 	refused: Mutex<BTreeSet<String>>,
 	/// Every call the gate was asked about.
 	consulted: Mutex<Vec<String>>,
+	/// Run messages accepted so far, newest last.
+	inputs: Mutex<Vec<aidash_domain::run_input::RunInput>>,
 	journal: Mutex<BTreeMap<String, Invocation>>,
 	/// Every batch admission: its keys and the Run persisted with it.
 	admissions: Mutex<Vec<(Vec<String>, Run)>>,
@@ -273,6 +275,21 @@ struct Desk {
 impl Bench {
 	fn deny(&self, call: &str) {
 		self.0.denied.lock().unwrap().insert(call.into());
+	}
+	/// A person's Run message the Run accepted after its response was stored.
+	fn accept_message(&self, seq: i64, content: &str) {
+		self.0
+			.inputs
+			.lock()
+			.unwrap()
+			.push(aidash_domain::run_input::RunInput {
+				seq,
+				sender: "alice".into(),
+				content: content.into(),
+				idempotency_key: format!("human:{seq}"),
+				message_id: None,
+				reference_only: false,
+			});
 	}
 	fn refuse(&self, call: &str) {
 		self.0.refused.lock().unwrap().insert(call.into());
@@ -400,6 +417,7 @@ fn bench(
 		denied: Mutex::new(BTreeSet::new()),
 		refused: Mutex::new(BTreeSet::new()),
 		consulted: Mutex::new(vec![]),
+		inputs: Mutex::new(vec![]),
 		journal: Mutex::new(BTreeMap::new()),
 		admissions: Mutex::new(vec![]),
 		starts: Mutex::new(vec![]),
@@ -486,7 +504,7 @@ impl ExecutionStore for Bench {
 		unexpected("ExecutionStore.finish_inference")
 	}
 	async fn run_inputs(&self, _run: Uuid) -> Result<Vec<aidash_domain::run_input::RunInput>> {
-		Ok(vec![])
+		Ok(self.0.inputs.lock().unwrap().clone())
 	}
 	async fn begin_final_completion(&self, _run: &Run, _token: Uuid) -> Result<bool> {
 		unexpected("ExecutionStore.begin_final_completion")
@@ -2140,4 +2158,46 @@ async fn declining_one_of_two_refused_calls_leaves_the_run_paused_on_the_other()
 	let second = pause_of(advance(&bench, &mut run).await);
 	assert_eq!(second.call.as_ref().unwrap().index, 1);
 	assert_eq!(second.call.unwrap().key, key(&run, 1));
+}
+
+#[tokio::test]
+async fn a_newer_message_does_not_swallow_the_answer_to_a_declined_call() {
+	let lab = Lab::echo();
+	let (bench, mut run) = bench(&lab, &["file_read", "file_read", "file_read"], 1, None);
+	bench.refuse("call-0");
+	// The person declined the call at the cursor and a later one, then sent a message that the
+	// stored response has not seen.
+	declined(&mut run, 0);
+	declined(&mut run, 2);
+	bench.accept_message(
+		run.state.tool().unwrap().included_input_seq + 1,
+		"Try the notes.",
+	);
+	advance(&bench, &mut run).await.unwrap();
+	// The response is discarded whole, as before, and nothing ran or consulted the gate.
+	assert!(matches!(run.state, RunState::Thinking(_)));
+	assert!(bench.consulted().is_empty());
+	assert!(lab.events("invoke").is_empty());
+	// Yet the next request holds the declined calls with their sentences, and no other call.
+	assert_eq!(
+		adopted(&run),
+		expected(&[
+			(0, json!({"error": sentence()})),
+			(2, json!({"error": sentence()}))
+		])
+	);
+	assert!(run.recovery.declined_calls.is_empty());
+}
+
+#[tokio::test]
+async fn a_newer_message_leaves_an_undeclined_response_to_be_discarded_alone() {
+	let lab = Lab::echo();
+	let (bench, mut run) = bench(&lab, &["file_read", "file_read"], 1, None);
+	bench.accept_message(
+		run.state.tool().unwrap().included_input_seq + 1,
+		"Try the notes.",
+	);
+	advance(&bench, &mut run).await.unwrap();
+	assert!(matches!(run.state, RunState::Thinking(_)));
+	assert!(adopted(&run).is_empty());
 }
