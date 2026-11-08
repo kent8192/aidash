@@ -190,11 +190,15 @@ async fn registration_accepts_prompt_cache_on_an_ordered_agent_and_explicit_mode
 	let inserted = register_definition(&mut scope, &validation, &agent, NODE)
 		.await
 		.unwrap();
-	// Assert
+	// Assert: only a Native Agent that names nothing gets the default (ADR 0115).
 	assert!(inserted);
+	let expected = match (prompt_cache, version) {
+		(None, "native") => Some(json!("explicit")),
+		_ => config.get("prompt_cache").cloned(),
+	};
 	assert_eq!(
 		scope.entries["agent@1.0.0"].config.get("prompt_cache"),
-		config.get("prompt_cache")
+		expected.as_ref()
 	);
 }
 
@@ -395,6 +399,126 @@ async fn new_agents_default_to_native_with_structured3(
 	assert_eq!(
 		stored.get("harness_contract"),
 		stored_contract.map(|v| json!(v)).as_ref()
+	);
+}
+
+#[tokio::test]
+async fn replaying_a_model_stored_without_a_cache_mode_is_idempotent() {
+	// Arrange: a model registered before ADR 0115 omits the field.
+	let validation = validation();
+	let mut config = model_config(Some(json!(["legacy", "ordered", "native"])));
+	config["model_id"] = json!("anthropic/claude-haiku-5.5");
+	config["endpoint"] = json!("https://openrouter.ai/api/v1");
+	let mut scope = scope_with(config.clone());
+	// Act
+	let inserted = register_definition(
+		&mut scope,
+		&validation,
+		&definition("model", "model", config),
+		NODE,
+	)
+	.await
+	.unwrap();
+	// Assert
+	assert!(!inserted);
+	assert!(
+		scope.entries["model@1.0.0"]
+			.config
+			.get("cache_mode")
+			.is_none()
+	);
+}
+
+/// A new model on a checked OpenRouter route declares explicit caching (ADR 0115).
+#[rstest]
+#[case::claude("anthropic/claude-haiku-5.5", None, Some("explicit"))]
+#[case::gpt("openai/gpt-6.1-terra", None, Some("explicit"))]
+#[case::gemini_caches_on_its_own("google/gemini-3.8-flash", None, None)]
+#[case::older_gpt("openai/gpt-5.5", None, None)]
+#[case::declared_off_is_kept("anthropic/claude-haiku-5.5", Some("none"), Some("none"))]
+#[tokio::test]
+async fn new_models_on_checked_routes_declare_explicit_caching(
+	validation: DefinitionValidation,
+	#[case] model_id: &str,
+	#[case] declared: Option<&str>,
+	#[case] stored: Option<&str>,
+) {
+	// Arrange
+	let mut scope = Scope::default();
+	scope.put_builtins(NODE);
+	let mut config = model_config(Some(json!(["legacy", "ordered", "native"])));
+	config["model_id"] = json!(model_id);
+	config["endpoint"] = json!("https://openrouter.ai/api/v1");
+	if let Some(declared) = declared {
+		config["cache_mode"] = json!(declared);
+	}
+	// Act
+	register_definition(
+		&mut scope,
+		&validation,
+		&definition("model", "model", config),
+		NODE,
+	)
+	.await
+	.unwrap();
+	// Assert
+	assert_eq!(
+		scope.entries["model@1.0.0"].config.get("cache_mode"),
+		stored.map(|mode| json!(mode)).as_ref()
+	);
+}
+
+/// A new Native Agent caches when its model accepts breakpoints (ADR 0115).
+#[rstest]
+// model mode, projection, contract, declared => stored
+#[case::native_default(Some("explicit"), None, None, None, Some("explicit"))]
+#[case::model_without_breakpoints(Some("none"), None, None, None, None)]
+#[case::model_omits_the_mode(None, None, None, None, None)]
+#[case::declared_off_is_kept(Some("explicit"), None, None, Some("off"), Some("off"))]
+#[case::ordered_keeps_the_opt_in(Some("explicit"), Some("ordered"), None, None, None)]
+#[case::legacy_contract_ends_the_prefix(
+	Some("explicit"),
+	Some("native"),
+	Some("legacy@1"),
+	None,
+	None
+)]
+#[tokio::test]
+async fn new_native_agents_cache_when_their_model_accepts_breakpoints(
+	validation: DefinitionValidation,
+	#[case] model_mode: Option<&str>,
+	#[case] projection: Option<&str>,
+	#[case] contract: Option<&str>,
+	#[case] declared: Option<&str>,
+	#[case] stored: Option<&str>,
+) {
+	// Arrange
+	let mut model = model_config(Some(json!(["legacy", "ordered", "native"])));
+	model["model_id"] = json!("anthropic/claude-haiku-5.5");
+	if let Some(mode) = model_mode {
+		model["cache_mode"] = json!(mode);
+	}
+	let mut scope = scope_with(model);
+	let mut config = agent_config(projection);
+	if let Some(contract) = contract {
+		config["harness_contract"] = json!(contract);
+	}
+	if let Some(declared) = declared {
+		config["prompt_cache"] = json!(declared);
+	}
+	// Act
+	register_definition(
+		&mut scope,
+		&validation,
+		&definition("agent", "agent", config),
+		NODE,
+	)
+	.await
+	.unwrap();
+	// Assert
+	assert_eq!(
+		scope.entries["agent@1.0.0"].config.get("prompt_cache"),
+		stored.map(|mode| json!(mode)).as_ref()
 	);
 }
 

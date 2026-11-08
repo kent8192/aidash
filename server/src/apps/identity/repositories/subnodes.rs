@@ -637,13 +637,12 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 		key: &str,
 		content: &str,
 	) -> Result<()> {
-		let sender = format!("{}@{} (run {})", run.agent_id, run.agent_version, run.id);
 		self.federation
 			.store
-			.accept_run_message_in(
+			.accept_member_message_in(
 				self.access.tx.native_mut(),
 				subnode.creator_run_id,
-				&sender,
+				run,
 				content,
 				key,
 				self.message_limit,

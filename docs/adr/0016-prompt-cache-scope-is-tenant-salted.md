@@ -23,3 +23,5 @@ From `Ordered` on, the first line of `system` is the Tenant Cache Salt: `aidash-
   - a change to instructions, policy or profile.
 
   Loads and unloads are applied in batches per step, and every identity change is recorded in the Usage Record (#177).
+
+Amended by ADR 0115 (2026-11-07): a node with no configured key derives one from `core.secret_key` instead of creating only Legacy Runs.

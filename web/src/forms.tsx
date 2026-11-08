@@ -490,6 +490,10 @@ export function EntityForm({
                   ...(s("reference_embedding")
                     ? { reference_embedding: ref(s("reference_embedding")) }
                     : {}),
+                  // Omitted lets registration turn caching on where it works.
+                  ...(s("prompt_cache")
+                    ? { prompt_cache: s("prompt_cache") }
+                    : {}),
                   ...core,
                   ...pluginConfig,
                 }
@@ -509,6 +513,10 @@ export function EntityForm({
                             // Omitted keeps the Chat Completions bytes.
                             ...(s("wire_api") === "responses"
                               ? { wire_api: "responses" }
+                              : {}),
+                            // Omitted lets registration choose by route.
+                            ...(s("cache_mode")
+                              ? { cache_mode: s("cache_mode") }
                               : {}),
                             // Native lets new Agents default to structured@3 (#532).
                             projection_versions: [
@@ -728,6 +736,13 @@ export function EntityForm({
                 placeholder={t("additionalInstructionsHelp")}
               />
             </Field>
+            <Field label={t("agentPromptCache")}>
+              <NativeSelect name="prompt_cache" defaultValue="">
+                <option value="">{t("promptCacheDefault")}</option>
+                <option value="off">{t("promptCacheOff")}</option>
+              </NativeSelect>
+            </Field>
+            <Hint>{t("agentPromptCacheHelp")}</Hint>
             <CapabilityConfiguration
               value={core}
               change={setCore}

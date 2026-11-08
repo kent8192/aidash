@@ -490,6 +490,7 @@ impl WorkerAuthority {
 		let receipt_key = operation_id(run.id, key, 9);
 		let receipt_digest =
 			crate::registry::digest(&json!(["workspace_message_files", run.id, content, paths]));
+		let agent = run.executor_subject(store.deployment.as_str());
 		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let prepare: Result<_> = async {
@@ -533,7 +534,7 @@ impl WorkerAuthority {
 				.await?;
 			if let Some((workspace, sender, original, publisher)) = &previous
 				&& (*workspace != run.workspace_id
-					|| sender != &access.identity.subject
+					|| sender != &agent
 					|| original != content
 					|| *publisher != Some(run.id))
 			{
@@ -579,6 +580,7 @@ impl WorkerAuthority {
 			}
 			let mut scope = crate::bootstrap::channel_scope(store, &mut lease);
 			scope.run_id = Some(run.id);
+			scope.agent = Some(agent);
 			aidash_application::workspaces::channels::post(
 				&mut scope,
 				run.workspace_id,
@@ -867,7 +869,8 @@ impl WorkerAuthority {
 					pending.area_id,
 				)
 				.await?;
-				let files = crate::apps::execution::capabilities::services::service::files(&area)?;
+				let files =
+					crate::apps::execution::capabilities::services::operations::pod_files(&area)?;
 				previews::dispatch_accept(store, &mut access, &pending, files, &input.command).await
 			}
 			.await;

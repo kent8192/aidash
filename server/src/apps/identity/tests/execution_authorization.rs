@@ -7190,8 +7190,17 @@ impl SubnodeRig {
 	async fn stage(&self, run: Uuid, name: &str, arguments: Value, call_id: &str) {
 		let response = json!({"text":"","tool_calls":[{"id":call_id,"name":name,"arguments":arguments}],"input_tokens":0,"output_tokens":0});
 		self.epoch.set(self.epoch.get() + 1);
+		// A response written before the Run's latest input is discarded as stale.
+		let included_input_seq = self
+			.f
+			.store
+			.run_inputs(&TEST_FIXTURE, run)
+			.await
+			.unwrap()
+			.last()
+			.map_or(0, |input| input.seq);
 		let pending = common::tool_pending(
-			json!({"response":response,"response_epoch":self.epoch.get(),"cursor":0,"request_window":120000,"request_tokens":0}),
+			json!({"response":response,"response_epoch":self.epoch.get(),"included_input_seq":included_input_seq,"cursor":0,"request_window":120000,"request_tokens":0}),
 		);
 		let sql = reinhardt::query::Query::update()
 			.table(reinhardt::query::Alias::new("runs"))
@@ -7389,17 +7398,109 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 		.run_inputs(&TEST_FIXTURE, creator_run)
 		.await
 		.unwrap();
-	assert!(
-		inputs
-			.iter()
-			.any(|input| input.content == "Investigation complete"),
-		"member message: {inputs:?}"
-	);
+	let input = inputs
+		.iter()
+		.find(|input| input.content == "Investigation complete")
+		.unwrap_or_else(|| panic!("member message: {inputs:?}"));
+	let member = child.executor_subject(f.config.deployment.as_str());
+	assert_eq!(input.sender, member);
+	// The creating Run's Workspace names the Agent and keeps the member's Run.
+	let home = f
+		.store
+		.run(&TEST_FIXTURE, creator_run)
+		.await
+		.unwrap()
+		.workspace_id;
+	let (status, history) = request(
+		app,
+		token,
+		"GET",
+		&format!("/api/workspaces/{home}/message-history"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "history: {history}");
+	let message = history["messages"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["message"]["content"] == "Investigation complete")
+		.unwrap_or_else(|| panic!("member message in history: {history}"));
+	assert_eq!(message["message"]["sender"], json!(member));
+	assert_eq!(message["message"]["run_id"], json!(child.id));
+	// A citation in that text opens from the member's Run in the Subnode's Workspace.
+	let (status, body) = request(
+		app,
+		token,
+		"GET",
+		&format!("/api/runs/{}", child.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "member Run: {body}");
 	sqlx::query("UPDATE runs SET control = 'ACTIVE' WHERE id = $1")
 		.bind(creator_run)
 		.execute(f.store.pool.fixture_driver())
 		.await
 		.unwrap();
+	// The creator now writes to its Workspace and observes it, events included. The
+	// member's message event names a Run of the Subnode's Workspace, which the
+	// creator's recorded reads must not treat as a vanished source.
+	sqlx::query("UPDATE runs SET control = 'PAUSED' WHERE id = $1")
+		.bind(child.id)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let note = inject(
+		"workspace_message",
+		json!({"content":"Creator note"}),
+		"creator-note",
+	)
+	.await;
+	assert!(note["error"].is_null(), "creator message: {note}");
+	let observed = inject("workspace_observe", json!({"limit":50}), "creator-observe").await;
+	assert!(
+		observed["events"].to_string().contains("message.created")
+			&& observed.to_string().contains("Investigation complete"),
+		"creator observation: {observed}"
+	);
+	sqlx::query("UPDATE runs SET control = 'ACTIVE' WHERE id = $1")
+		.bind(child.id)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let (status, body) = request(
+		app,
+		token,
+		"GET",
+		&format!("/api/runs/{creator_run}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "creator Run after observing: {body}");
+	let (status, history) = request(
+		app,
+		token,
+		"GET",
+		&format!("/api/workspaces/{home}/message-history"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "history after observing: {history}");
+	let contents: Vec<_> = history["messages"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.map(|item| item["message"]["content"].clone())
+		.collect();
+	assert!(
+		contents.contains(&json!("Creator note")),
+		"the creator's own output stays readable: {contents:?}"
+	);
+	assert!(
+		contents.contains(&json!("Investigation complete")),
+		"the member's message stays readable: {contents:?}"
+	);
 	let (status, body) = request(
 		app,
 		token,

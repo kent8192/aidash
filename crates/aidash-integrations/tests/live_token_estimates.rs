@@ -111,6 +111,7 @@ fn request(encoding: TokenEncoding) -> ModelRequest {
 		content_parts: vec![],
 		cache_scope: None,
 		cache_breakpoints: false,
+		routing_run: None,
 		disable_provider_transforms: false,
 		input_format: Default::default(),
 		estimate: EstimateSnapshot::tokenized(0, encoding, None),
