@@ -296,6 +296,8 @@ fn request_body_limit(method: &http::Method, path: &str) -> usize {
 		.is_some_and(|workspace| uuid::Uuid::parse_str(workspace).is_ok())
 	{
 		aidash_domain::workspaces::channels::MAX_ATTACHMENT_BYTES
+	} else if method == http::Method::POST && path == "/api/references/batch" {
+		16 * 1024 * 1024
 	} else if path.contains("/chunks") || path.contains("/scoped/files/") {
 		6 * 1024 * 1024
 	} else {

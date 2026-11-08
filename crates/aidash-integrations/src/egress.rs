@@ -313,6 +313,10 @@ impl Refusal {
 		status: StatusCode::FORBIDDEN,
 		code: aidash_domain::egress::OPERATION_EXPIRED,
 	};
+	const INACTIVE: Self = Self {
+		status: StatusCode::FORBIDDEN,
+		code: aidash_domain::egress::OPERATION_INACTIVE,
+	};
 	const FORBIDDEN: Self = Self {
 		status: StatusCode::FORBIDDEN,
 		code: "egress_forbidden",
@@ -328,6 +332,9 @@ impl Refusal {
 			Error::Conflict(code) if code == aidash_domain::egress::LIMIT_EXCEEDED => Self::LIMIT,
 			Error::Conflict(code) if code == aidash_domain::egress::OPERATION_EXPIRED => {
 				Self::EXPIRED
+			}
+			Error::Conflict(code) if code == aidash_domain::egress::OPERATION_INACTIVE => {
+				Self::INACTIVE
 			}
 			Error::Refused(code) if code == "egress_budget_exhausted" => Self {
 				status: StatusCode::TOO_MANY_REQUESTS,
@@ -938,6 +945,7 @@ pub async fn serve_with_scopes(
 	let mut refused = RefusedConnections::default();
 	let mut connections = tokio::task::JoinSet::new();
 	let tunnels = Arc::new(proxy::TunnelManager::new(stopping.clone(), limits));
+	let mut failures = crate::accept::AcceptFailures::new("egress gateway");
 	loop {
 		if *stopping.borrow() || stopping.has_changed().is_err() {
 			connections.abort_all();
@@ -949,14 +957,7 @@ pub async fn serve_with_scopes(
 			_ = stopping.changed() => {},
 			Some(_) = connections.join_next(), if !connections.is_empty() => {},
 			accepted = listener.accept() => {
-				let (socket, _) = match accepted {
-					Ok(accepted) => accepted,
-					Err(error) => {
-						tracing::warn!(%error, "Egress accept failed; retrying");
-						tokio::select! { _ = tokio::time::sleep(Duration::from_secs(1)) => {}, _ = stopping.changed() => {} }
-						continue;
-					}
-				};
+				let Some((socket, _)) = failures.settle(accepted, &mut stopping).await else { continue; };
 				let Ok(permit) = slots.clone().try_acquire_owned() else {
 					let answering = refusals.clone().try_acquire_owned();
 					refused.note(answering.is_ok());
@@ -1330,6 +1331,11 @@ async fn forward(
 			if code == aidash_domain::egress::OPERATION_EXPIRED =>
 		{
 			return refuse(Refusal::EXPIRED.status, Refusal::EXPIRED.code);
+		}
+		Err(aidash_application::Error::Conflict(code))
+			if code == aidash_domain::egress::OPERATION_INACTIVE =>
+		{
+			return refuse(Refusal::INACTIVE.status, Refusal::INACTIVE.code);
 		}
 		Err(aidash_application::Error::Conflict(_)) => {
 			return refuse(Refusal::LIMIT.status, Refusal::LIMIT.code);

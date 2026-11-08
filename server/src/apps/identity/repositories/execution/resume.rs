@@ -102,8 +102,10 @@ impl WorkerResumeScope for Scope<'_> {
 		.await
 	}
 	fn retryable(&self, error: &Error) -> bool {
-		matches!(error, Error::TransactionPending)
-			|| matches!(error,Error::Port(error) if error.downcast_ref::<crate::Error>().is_some_and(crate::Error::is_transient_database))
+		matches!(
+			error,
+			Error::TransactionPending | Error::TemporaryDatabase(_)
+		)
 	}
 	async fn discard_failed_refresh(&mut self) {
 		self.access.discard_failed_execution_refresh().await;

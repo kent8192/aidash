@@ -21,6 +21,7 @@ struct Repository {
 	entered: Notify,
 	release: Notify,
 	block: bool,
+	fail: bool,
 }
 #[async_trait]
 impl OperationReconciliationRepository for Repository {
@@ -49,6 +50,9 @@ impl OperationProcessingRepository for Repository {
 		self.entered.notify_one();
 		if self.block {
 			self.release.notified().await;
+		}
+		if self.fail {
+			return Err(Error::External("Database error: Pool timed out".into()));
 		}
 		Ok(vec![])
 	}
@@ -108,6 +112,28 @@ async fn successful_batches_retain_the_three_hundred_millisecond_cadence() {
 	assert_eq!(repository.ticks.load(Ordering::SeqCst), 2);
 	stop.send_replace(true);
 	task.await.unwrap().unwrap();
+}
+/// #728: this returned the error, which stopped the whole process.
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn a_sweep_that_fails_with_a_pool_timeout_does_not_end_the_loop() {
+	// Arrange
+	let repository = Arc::new(Repository {
+		fail: true,
+		..Default::default()
+	});
+	let (stop, receiver) = watch::channel(false);
+	let running = repository.clone();
+	let task = tokio::spawn(async move { execution_loop(&*running, receiver).await });
+	// Act: each failed pass is followed by another.
+	for _ in 0..4 {
+		repository.entered.notified().await;
+	}
+	// Assert: it stops when asked, with no error.
+	assert!(!task.is_finished());
+	stop.send_replace(true);
+	task.await.unwrap().unwrap();
+	assert!(repository.ticks.load(Ordering::SeqCst) >= 4);
 }
 struct Guard(Arc<AtomicUsize>);
 impl Drop for Guard {

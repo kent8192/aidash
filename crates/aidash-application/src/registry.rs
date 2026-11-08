@@ -46,6 +46,19 @@ pub async fn validate_references(
 	node: &str,
 ) -> Result<()> {
 	validation.validate_in(entry, true)?;
+	if entry.kind == "source"
+		&& let Some(aidash_domain::registry::bindings::sources::NativeContext {
+			source:
+				aidash_domain::registry::bindings::sources::NativeSource::ReferenceAttachments {
+					references,
+				},
+			..
+		}) = aidash_domain::registry::bindings::sources::validate_definition(entry)?
+	{
+		for reference in references {
+			scope.require_reference_read(reference.reference_id).await?;
+		}
+	}
 	// A Tenant Secret goes only to the hosts it records (ADR 0051). A personal-only
 	// definition names the person's own secret: only the name is validated here and
 	// the hosts are enforced against that row at dispatch (ADR 0100).

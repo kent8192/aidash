@@ -1677,6 +1677,258 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 	cleanup(f, &url, &schema).await;
 }
 
+/// Run one scripted tool call and return what the Run recorded for it. The
+/// invocation key is `run:epoch:cursor`, so `epoch` names the call.
+async fn run_tool(f: &Federation, run: Uuid, epoch: u64, name: &str, arguments: Value) -> Value {
+	let call = format!("call-{epoch}");
+	let response = json!({"text":"","tool_calls":[{"id":call,"name":name,"arguments":arguments}],"input_tokens":0,"output_tokens":0});
+	sqlx::query("UPDATE runs SET phase = 'TOOL_CALL', pending = $1 WHERE id = $2")
+		.bind(common::tool_pending(
+			json!({"response":response,"response_epoch":epoch,"cursor":0,"request_window":120000,"request_tokens":0}),
+		))
+		.bind(run)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let worker = Harness {
+		federation: f.clone(),
+	};
+	assert!(worker.worker_once().await.unwrap() || worker.worker_once().await.unwrap());
+	let saved = f.store.run(&TEST_FIXTURE, run).await.unwrap();
+	json!(saved.context)["history"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.rev()
+		.find(|entry| entry["event"]["call"]["id"] == call)
+		.map(|entry| entry["event"]["result"].clone())
+		.unwrap_or_else(|| panic!("missing result of {call}"))
+}
+
+async fn message_history(
+	app: &common::TestApplication,
+	token: &str,
+	workspace: &str,
+) -> Vec<Value> {
+	let (status, history) = request(
+		app,
+		token,
+		"GET",
+		&format!("/api/workspaces/{workspace}/message-history"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{history}");
+	history["messages"].as_array().unwrap().clone()
+}
+
+fn with_content<'a>(messages: &'a [Value], content: &str) -> Vec<&'a Value> {
+	messages
+		.iter()
+		.filter(|item| item["message"]["content"] == content)
+		.collect()
+}
+
+async fn attachment_status(
+	app: &common::TestApplication,
+	token: &str,
+	workspace: &str,
+	attachment: &str,
+) -> u16 {
+	app.api_http
+		.request(
+			http::Method::GET,
+			&format!("/api/workspaces/{workspace}/attachments/{attachment}"),
+		)
+		.header("Authorization", format!("Bearer {token}"))
+		.send()
+		.await
+		.unwrap()
+		.status_code()
+}
+
+/// Replace the rule that hides from Alice the messages `path` says `value` wrote.
+async fn hide_from_alice(
+	f: &Federation,
+	app: &common::TestApplication,
+	policy: &mut Value,
+	revision: i64,
+	path: &str,
+	value: &str,
+) {
+	let policies = policy["policies"].as_array_mut().unwrap();
+	policies.retain(|rule| rule["id"] != "hide-by-sender");
+	policies.push(json!({"id":"hide-by-sender","effect":"deny","subjects":{"ids":["alice"]},"actions":["message.read"],"resources":{"kinds":["message"]},"condition":{"op":"eq","left":{"source":"resource","path":path},"right":{"source":"literal","value":value}}}));
+	let (status, body) = request(
+		app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":revision,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+}
+
+/// A Run holds its lease in the name of the person who started it, yet what its
+/// Agent writes is sent by the Agent, with or without files, and rules on the
+/// sender decide who reads it.
+#[rstest::rstest]
+#[tokio::test]
+async fn an_agents_message_with_files_is_sent_by_the_agent(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+	#[from(selected_thread_requests)] _requests: SelectedThreadRequests,
+	#[from(selected_thread_router)]
+	#[with(_requests.clone())]
+	_router: Arc<Router>,
+	#[future(awt)]
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, token, _) = common::bootstrap_with_area(&f, &app, &server.url).await;
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	let (status, body) = request(
+		&app,
+		&f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let bob = common::issued_credential(&f.store, "acme", "bob").await;
+	let bob = bob["token"].as_str().unwrap();
+	let (status, created) = request(&app, &token, "POST", "/api/conversations", json!({"title":"Report", "goal":"Report with a file", "target":{"id":"research","version":"1.0.0"}, "target_kind":"agent"})).await;
+	assert_eq!(status, 200, "{created}");
+	let workspace = created["workspace"]["id"].as_str().unwrap().to_owned();
+	let run = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.workspace_id.to_string() == workspace)
+		.unwrap();
+	let agent = run.executor_subject(f.config.deployment.as_str());
+	// The Run reads Bob's message, because its outputs stay hidden from a reader
+	// who may not read what it read. Alice's own message stays out of that.
+	let attachment = upload(&app, bob, &workspace, "selected.png", "image/png", PNG).await;
+	let (status, body) = request(&app, bob, "POST", &format!("/api/workspaces/{workspace}/thread-messages"), json!({"content":"Please inspect", "idempotency_key":Uuid::new_v4(), "attachment_ids":[attachment["id"]]})).await;
+	assert_eq!(status, 200, "{body}");
+	let own = upload(&app, &token, &workspace, "own.png", "image/png", PNG).await;
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/thread-messages"),
+		json!({"content":"Alice's note", "idempotency_key":Uuid::new_v4(), "attachment_ids":[own["id"]]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, area) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/runs/{}/working-area", run.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{area}");
+	let copied = run_tool(&f, run.id, 1, "attachment_copy", json!({"id":attachment["id"], "path":"copied.png", "expected_revision":area["revision"], "idempotency_key":Uuid::new_v4()})).await;
+	assert_eq!(copied["file"]["path"], "copied.png", "{copied}");
+	let with_files = json!({"content":"Agent snapshot", "files":["copied.png"]});
+	let sent = run_tool(&f, run.id, 2, "workspace_message", with_files.clone()).await;
+	assert_eq!(sent["sent"], true, "{sent}");
+	let sent = run_tool(
+		&f,
+		run.id,
+		3,
+		"workspace_message",
+		json!({"content":"Agent note"}),
+	)
+	.await;
+	assert_eq!(sent["sent"], true, "{sent}");
+	// A worker can stop after the message commits and before its journal entry
+	// does, so the retried call finds the message and must recognize it.
+	let forgotten =
+		sqlx::query("DELETE FROM invocations WHERE run_id = $1 AND idempotency_key = $2")
+			.bind(run.id)
+			.bind(format!("{}:2:0", run.id))
+			.execute(f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(forgotten.rows_affected(), 1);
+	let retried = run_tool(&f, run.id, 2, "workspace_message", with_files).await;
+	assert_eq!(retried["sent"], true, "{retried}");
+
+	let messages = message_history(&app, &token, &workspace).await;
+	let posted = with_content(&messages, "Agent snapshot");
+	assert_eq!(posted.len(), 1, "{messages:?}");
+	assert_eq!(posted[0]["message"]["sender"], json!(agent));
+	assert_eq!(posted[0]["message"]["run_id"], json!(run.id));
+	let note = with_content(&messages, "Agent note");
+	assert_eq!(note[0]["message"]["sender"], json!(agent));
+	let person = with_content(&messages, "Alice's note");
+	assert_eq!(person[0]["message"]["sender"], "alice");
+	let posted_file = posted[0]["attachments"][0]["id"]
+		.as_str()
+		.unwrap()
+		.to_owned();
+	let own_file = own["id"].as_str().unwrap();
+
+	// A rule naming the person no longer reaches what the Agent wrote.
+	hide_from_alice(&f, &app, &mut policy, 2, "/sender", "alice").await;
+	let messages = message_history(&app, &token, &workspace).await;
+	assert!(
+		with_content(&messages, "Alice's note").is_empty(),
+		"{messages:?}"
+	);
+	assert_eq!(
+		with_content(&messages, "Agent snapshot").len(),
+		1,
+		"{messages:?}"
+	);
+	assert_eq!(
+		attachment_status(&app, &token, &workspace, own_file).await,
+		404
+	);
+	assert_eq!(
+		attachment_status(&app, &token, &workspace, &posted_file).await,
+		200
+	);
+
+	// A rule naming the Agent reaches it, and the message's file with it.
+	hide_from_alice(&f, &app, &mut policy, 3, "/created_by", &agent).await;
+	let messages = message_history(&app, &token, &workspace).await;
+	assert!(
+		with_content(&messages, "Agent snapshot").is_empty(),
+		"{messages:?}"
+	);
+	assert!(
+		with_content(&messages, "Agent note").is_empty(),
+		"{messages:?}"
+	);
+	assert_eq!(
+		with_content(&messages, "Alice's note").len(),
+		1,
+		"{messages:?}"
+	);
+	assert_eq!(
+		attachment_status(&app, &token, &workspace, &posted_file).await,
+		404
+	);
+	assert_eq!(
+		attachment_status(&app, &token, &workspace, own_file).await,
+		200
+	);
+	cleanup(f, &url, &schema).await;
+}
+
 // This proxy forwards the actual harness request unchanged, adding only the
 // test credential. It records the ID of the inference that carried the media;
 // OpenRouter's generation API is the independent assertion at the boundary.
