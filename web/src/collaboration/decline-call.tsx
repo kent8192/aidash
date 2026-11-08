@@ -12,26 +12,42 @@ import {
 
 /**
  * Decline the call a Run is paused on, so the Run goes on without it (#763). The optional
- * sentence is an ordinary Run message sent first; if declining then fails, the message stays in
- * the Thread, the Run stays paused and the error is shown by `submit`.
+ * sentence is an ordinary Run message. By default it goes first; if declining then fails, the
+ * message stays in the Thread, the Run stays paused and the error is shown by `submit`. For a
+ * Run on another Node (`order="decline-first"`) the receiver takes no message while the Run is
+ * paused, so the call is declined first. Someone who cannot read the Run cannot message it, so
+ * `withSentence={false}` offers the button alone.
  */
 export function DeclineCall({
   call,
   submit,
   send,
   decline,
+  order = "sentence-first",
+  withSentence = true,
+  onDeclined,
+  onFinished,
 }: {
   call: DeclinableCall;
   submit: Submit;
   /** Send the sentence as a Run message. */
-  send: (content: string, key: string) => Promise<unknown>;
+  send?: (content: string, key: string) => Promise<unknown>;
   decline: (call: string) => Promise<unknown>;
+  order?: "sentence-first" | "decline-first";
+  withSentence?: boolean;
+  /** The call is declined, though the sentence may still be unsent. The Run goes on, so a parent
+   *  that shows this form only while the call is offered must keep showing it. */
+  onDeclined?: () => void;
+  /** Every step went through and the form closed. */
+  onFinished?: () => void;
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [sentence, setSentence] = useState("");
   const [sent, setSent] = useState(false);
   const sentRef = useRef(false);
+  const [declined, setDeclined] = useState(false);
+  const declinedRef = useRef(false);
   const [key] = useState(() => crypto.randomUUID());
   const [busy, setBusy] = useState(false);
   if (!open)
@@ -47,22 +63,37 @@ export function DeclineCall({
     setBusy(true);
     try {
       // One submission: a successful one closes the Run's dialog, so the message and the decline
-      // must not be two. The ref records a sent message at once, so a retry never sends it again.
+      // must not be two. The refs record each step that went through at once, so a retry repeats
+      // only the step that has not, never a second decline or a second message.
       const ok = await submit(async () => {
-        if (
-          nextDeclineStep({ sentence, sent: sentRef.current }) === "message"
-        ) {
-          await send(sentence.trim(), key);
-          sentRef.current = true;
-          setSent(true);
+        for (;;) {
+          const step = nextDeclineStep({
+            sentence: withSentence && send ? sentence : "",
+            sent: sentRef.current,
+            declined: declinedRef.current,
+            order,
+          });
+          if (step === "done") return;
+          if (step === "message") {
+            await send!(sentence.trim(), key);
+            sentRef.current = true;
+            setSent(true);
+          } else {
+            await decline(call.call);
+            declinedRef.current = true;
+            setDeclined(true);
+            onDeclined?.();
+          }
         }
-        return decline(call.call);
       });
       if (ok) {
         setOpen(false);
         setSentence("");
         sentRef.current = false;
+        declinedRef.current = false;
         setSent(false);
+        setDeclined(false);
+        onFinished?.();
       }
     } finally {
       setBusy(false);
@@ -82,15 +113,28 @@ export function DeclineCall({
       </p>
       <p className="text-xs text-foreground [overflow-wrap:anywhere]">{what}</p>
       <Hint>{t("declineCallExplain")}</Hint>
-      <Field label={t("declineCallSentence")}>
-        <Textarea
-          maxLength={16000}
-          value={sentence}
-          disabled={sent || busy}
-          onChange={(event) => setSentence(event.target.value)}
-        />
-      </Field>
-      <Hint>{t("declineCallSentenceHint")}</Hint>
+      {withSentence && send && (
+        <>
+          <Field label={t("declineCallSentence")}>
+            <Textarea
+              maxLength={16000}
+              value={sentence}
+              disabled={sent || busy}
+              onChange={(event) => setSentence(event.target.value)}
+            />
+          </Field>
+          <Hint>
+            {t(
+              order === "decline-first"
+                ? "declineCallSentenceAfterHint"
+                : "declineCallSentenceHint",
+            )}
+          </Hint>
+        </>
+      )}
+      {declined && !sent && sentence.trim() && (
+        <Hint role="status">{t("declineCallAlreadyDeclined")}</Hint>
+      )}
       <div className="flex min-w-0 flex-wrap gap-2">
         <Button variant="destructive" type="submit" disabled={busy}>
           {t("declineCallConfirm")}

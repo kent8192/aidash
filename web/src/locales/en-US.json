@@ -77,6 +77,8 @@
   "declineCallExplain": "The Agent goes on without this call. It is told that a person declined it, and it gives the Agent no new authority.",
   "declineCallSentence": "Tell the Agent why (optional)",
   "declineCallSentenceHint": "This is sent to the Thread as a message before the call is declined. It stays there even if declining fails.",
+  "declineCallSentenceAfterHint": "This Run is on another Node, which takes no messages while the Run is paused. The call is declined first and the sentence is sent after it, so the Agent may take a step before it reads it.",
+  "declineCallAlreadyDeclined": "The call is declined. The sentence has not been sent yet; confirm to send it.",
   "declineCallConfirm": "Decline and continue",
   "declineKindPolicy": "this Node's policy refused",
   "declineKindCatalog": "this Node's Catalog Approval refused",

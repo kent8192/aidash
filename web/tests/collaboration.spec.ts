@@ -3053,3 +3053,173 @@ test("the decline button is absent when the server offers no call", async ({
   ).toHaveCount(0);
   expect(errors).toEqual([]);
 });
+
+test("a hidden Run offers declining a paused call without a sentence field", async ({
+  page,
+}) => {
+  const { errors } = await setup(page, { subject: true });
+  const declined: Record<string, unknown>[] = [];
+  let control = "PAUSED";
+  await page.route("**/api/runs/run-0**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/declined-calls")) {
+      declined.push(route.request().postDataJSON());
+      control = "ACTIVE";
+      return route.fulfill({ json: { id: "run-0", control } });
+    }
+    if (path.endsWith("/management"))
+      return route.fulfill({
+        json: {
+          id: "run-0",
+          phase: "THINKING",
+          control,
+          control_source: "tenant",
+          ...(control === "PAUSED"
+            ? {
+                declinable_call: {
+                  call: "run-0:3:0",
+                  tool: "task_delegate",
+                  kind: "policy",
+                },
+              }
+            : {}),
+        },
+      });
+    // The Run's content is private to its owner, so the reader gets a plain refusal.
+    return route.fulfill({ status: 403, json: { error: "forbidden" } });
+  });
+  await page.goto("/collaboration?channel=workspace-one");
+  await page
+    .getByRole("button", { name: "Execution history", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button")
+    .filter({ hasText: "Researcher" })
+    .click();
+  const panel = page.getByRole("region", { name: "Execution management" });
+  await panel
+    .getByRole("button", { name: "Decline this call", exact: true })
+    .click();
+  await expect(panel.getByText("task_delegate")).toBeVisible();
+  // Someone who cannot read the Run cannot send it a message: no sentence field.
+  await expect(panel.getByLabel("Tell the Agent why (optional)")).toHaveCount(
+    0,
+  );
+  await panel
+    .getByRole("button", { name: "Decline and continue", exact: true })
+    .click();
+  await expect.poll(() => declined).toEqual([{ call: "run-0:3:0" }]);
+  await expect(
+    panel.getByRole("button", { name: "Decline this call" }),
+  ).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+for (const failMessage of [false, true]) {
+  test(`on another Node the call is declined first and the sentence follows${failMessage ? ", and a retry sends only the sentence" : ""}`, async ({
+    page,
+  }) => {
+    const { errors } = await setup(page, { subject: true });
+    const grant = {
+      id: "4191ce62-a1a8-42d6-9926-bd32f5e0dc34",
+      task_id: "task-0",
+      node_id: "aidash://remote",
+      agent: { id: "researcher", version: "1.0.0" },
+      expires_at: new Date(Date.now() + 3600000).toISOString(),
+      revoked: false,
+    };
+    const execution: Record<string, unknown> = {
+      grant_id: grant.id,
+      admission_id: "829cb342-d2c8-43e4-99c2-0dbe96bc4f70",
+      run_id: "829cb342-d2c8-43e4-99c2-0dbe96bc4f70",
+      phase: "THINKING",
+      control: "PAUSED",
+      error: null,
+      declinable_call: {
+        call: "829cb342-d2c8-43e4-99c2-0dbe96bc4f70:5:0",
+        tool: "task_delegate",
+        kind: "other_node",
+      },
+    };
+    const semantic = {
+      state: "ready",
+      reason: null,
+      operation_id: "c8cf392a-f1d4-42e1-8261-a003d1422660",
+      retry_count: 0,
+      retry_at: null,
+      result_count: 0,
+      truncated: false,
+      retrieved_at: new Date().toISOString(),
+      recovery: null,
+    };
+    const order: string[] = [];
+    let failures = failMessage ? 1 : 0;
+    await page.route("**/api/tasks/task-0/remote-**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path.endsWith("/remote-executions"))
+        return route.fulfill({
+          json: [{ grant, execution, semantic, unavailable: false }],
+        });
+      if (path.endsWith("/declined-calls")) {
+        order.push("decline");
+        execution.control = "ACTIVE";
+        delete execution.declinable_call;
+        return route.fulfill({ json: execution });
+      }
+      if (path.endsWith("/messages")) {
+        order.push("message");
+        if (failures-- > 0)
+          return route.fulfill({
+            status: 503,
+            json: { error: { message: "receiver unavailable" } },
+          });
+        return route.fulfill({ json: { accepted: true } });
+      }
+      return route.fallback();
+    });
+    await page.goto("/collaboration?channel=workspace-one");
+    await page
+      .getByRole("button", { name: "Tasks and results", exact: true })
+      .click();
+    await page
+      .getByRole("dialog")
+      .getByRole("button")
+      .filter({ hasText: "Collect evidence" })
+      .click();
+    const panel = page.getByRole("region", {
+      name: "Remote execution",
+      exact: true,
+    });
+    await panel
+      .getByRole("button", { name: "Decline this call", exact: true })
+      .click();
+    // The hint says plainly that the sentence goes after the decline on another Node.
+    await expect(panel).toContainText("sent after it");
+    await panel
+      .getByLabel("Tell the Agent why (optional)")
+      .fill("Use the shared notes instead.");
+    await panel
+      .getByRole("button", { name: "Decline and continue", exact: true })
+      .click();
+    if (failMessage) {
+      await expect(panel.getByRole("alert")).toContainText(
+        "receiver unavailable",
+      );
+      expect(order).toEqual(["decline", "message"]);
+      // The call is declined and the form stays open; a retry sends only the sentence.
+      await expect(panel).toContainText("has not been sent yet");
+      await panel
+        .getByRole("button", { name: "Decline and continue", exact: true })
+        .click();
+    }
+    await expect
+      .poll(() => order)
+      .toEqual(
+        failMessage
+          ? ["decline", "message", "message"]
+          : ["decline", "message"],
+      );
+    expect(errors.filter((error) => !error.includes("503"))).toEqual([]);
+  });
+}

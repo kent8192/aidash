@@ -15,7 +15,7 @@ import { Badge, Field, useI18n } from "../ui";
 import { useFilePreview } from "../capabilities/file-preview-pane";
 import { inspectRemotePreview } from "../capabilities/remote-preview";
 import { DeclineCall } from "./decline-call";
-import { offeredDecline } from "./decline-call-model";
+import { offeredDecline, type DeclinableCall } from "./decline-call-model";
 import type { Submit } from "../forms";
 
 /**
@@ -40,6 +40,8 @@ export function RemoteExecutions({ task }: { task: string }) {
   const client = useQueryClient();
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
+  // A call declined here stops being offered at once, yet its sentence may still be unsent.
+  const [held, setHeld] = useState<Record<string, DeclinableCall>>({});
   const clock = useQuery({
     queryKey: ["remote-execution-clock"],
     queryFn: () => Date.now(),
@@ -257,12 +259,31 @@ export function RemoteExecutions({ task }: { task: string }) {
                           </Button>
                         )}
                         {live &&
-                          offeredDecline(execution, execution.control) && (
+                          (offeredDecline(execution, execution.control) ??
+                            held[grant.id]) && (
                             <DeclineCall
                               call={
-                                offeredDecline(execution, execution.control)!
+                                (offeredDecline(execution, execution.control) ??
+                                  held[grant.id])!
                               }
                               submit={submit}
+                              order="decline-first"
+                              onDeclined={() =>
+                                setHeld((current) => ({
+                                  ...current,
+                                  [grant.id]: (offeredDecline(
+                                    execution,
+                                    execution.control,
+                                  ) ?? current[grant.id])!,
+                                }))
+                              }
+                              onFinished={() =>
+                                setHeld((current) => {
+                                  const rest = { ...current };
+                                  delete rest[grant.id];
+                                  return rest;
+                                })
+                              }
                               send={(content) =>
                                 apiFetch(
                                   `/api/tasks/${task}/remote-grants/${grant.id}/messages`,

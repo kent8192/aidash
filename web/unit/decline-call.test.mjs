@@ -29,11 +29,39 @@ test("the form shows only for a paused Run the server offered a call for", () =>
   );
 });
 
+const steps = (over) => ({
+  sentence: "no",
+  sent: false,
+  declined: false,
+  order: "sentence-first",
+  ...over,
+});
+
 test("the sentence is sent once, before declining", () => {
-  assert.equal(nextDeclineStep({ sentence: "  ", sent: false }), "decline");
-  assert.equal(nextDeclineStep({ sentence: "no", sent: false }), "message");
+  assert.equal(nextDeclineStep(steps({ sentence: "  " })), "decline");
+  assert.equal(nextDeclineStep(steps({})), "message");
   // After the message went through, a retry only declines.
-  assert.equal(nextDeclineStep({ sentence: "no", sent: true }), "decline");
+  assert.equal(nextDeclineStep(steps({ sent: true })), "decline");
+  assert.equal(nextDeclineStep(steps({ sent: true, declined: true })), "done");
+});
+
+test("on another Node the call is declined first and the sentence follows", () => {
+  const remote = { order: "decline-first" };
+  assert.equal(nextDeclineStep(steps(remote)), "decline");
+  // Declined but the message failed: a retry sends only the message, never a second decline.
+  assert.equal(
+    nextDeclineStep(steps({ ...remote, declined: true })),
+    "message",
+  );
+  assert.equal(
+    nextDeclineStep(steps({ ...remote, declined: true, sent: true })),
+    "done",
+  );
+  // Without a sentence there is nothing to send afterwards.
+  assert.equal(
+    nextDeclineStep(steps({ ...remote, sentence: "", declined: true })),
+    "done",
+  );
 });
 
 test("each kind of refusal has its own words", () => {

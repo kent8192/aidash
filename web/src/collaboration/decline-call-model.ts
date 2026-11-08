@@ -42,12 +42,26 @@ export function offeredDecline(
   return call as DeclinableCall;
 }
 
-/** The sentence goes first and only once; declining may be retried after it failed. */
+/**
+ * Which step of a decline comes next. The sentence is an optional Run message. Where the Run
+ * takes messages while it is paused it goes first; on another Node the receiver refuses Home
+ * messages while the Run is paused, so the call is declined first and the sentence follows.
+ * Each step is done once: a retry after a failure repeats only what has not succeeded, never a
+ * second decline (which would answer `409`) or a second message.
+ */
 export type DeclineSteps = {
   sentence: string;
   sent: boolean;
+  declined: boolean;
+  order: "sentence-first" | "decline-first";
 };
 
-export function nextDeclineStep(steps: DeclineSteps): "message" | "decline" {
-  return steps.sentence.trim() && !steps.sent ? "message" : "decline";
+export function nextDeclineStep(
+  steps: DeclineSteps,
+): "message" | "decline" | "done" {
+  const message = !!steps.sentence.trim() && !steps.sent;
+  const decline = !steps.declined;
+  if (steps.order === "decline-first")
+    return decline ? "decline" : message ? "message" : "done";
+  return message ? "message" : decline ? "decline" : "done";
 }

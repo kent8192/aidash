@@ -13,6 +13,9 @@ import { Alert, Facts, Hint, formClass } from "../components/patterns";
 import { Field, useI18n } from "../ui";
 import type { RunManagement } from "../generated/models";
 import { collaborationCopy } from "./copy";
+import { DeclineCall } from "./decline-call";
+import { offeredDecline } from "./decline-call-model";
+import type { Submit } from "../forms";
 
 export function RemoteRunManagement({
   id,
@@ -53,6 +56,22 @@ export function RemoteRunManagement({
         setError(cause instanceof Error ? cause.message : String(cause)),
       )
       .finally(() => setBusy(false));
+  };
+  // A Run the caller cannot read is declined without a sentence: a message needs reading it.
+  const declinable = offeredDecline(state, state.control);
+  const submit: Submit = async (request) => {
+    setBusy(true);
+    setError("");
+    try {
+      await request();
+      await client.invalidateQueries();
+      return true;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+      return false;
+    } finally {
+      setBusy(false);
+    }
   };
   return (
     <section
@@ -95,6 +114,20 @@ export function RemoteRunManagement({
             {ja ? "実行を中止" : "Cancel execution"}
           </Button>
         </div>
+      )}
+      {declinable && !terminal && (
+        <DeclineCall
+          call={declinable}
+          submit={submit}
+          withSentence={false}
+          decline={(call) =>
+            apiFetch(`/api/runs/${id}/declined-calls`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ call }),
+            })
+          }
+        />
       )}
       {resumeElsewhere &&
         state.control === "PAUSED" &&
