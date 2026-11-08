@@ -2262,6 +2262,8 @@ fn completion(meter: Arc<dyn Meter>, expected: Option<u64>) -> Completion {
 		finished: false,
 		admission_ms: 7,
 		settle_ms: 0,
+		monitor: tokio::spawn(async {}),
+		interrupted_error: "stream_interrupted",
 	}
 }
 
