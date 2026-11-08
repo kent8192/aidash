@@ -956,6 +956,8 @@ async fn a_connection_shaped_tool_body_is_not_a_failure_deferral_candidate(
 #[case(&"x".repeat(65), false)]
 fn only_a_plain_tool_name_is_shown_as_the_stage(#[case] name: &str, #[case] plain: bool) {
 	assert_eq!(plain_tool_name(name), plain);
+}
+
 /// #728: a Run waiting on the database spends none of its attempts.
 #[rstest]
 #[tokio::test]
