@@ -1785,17 +1785,22 @@ class Runner(AllocationJournal):
             self.aggregate.track(operation, record)
 
     def cancel(self, operation, refusal=None):
-        if refusal is not None:
-            self.refuse_undelivered(operation, refusal)
-        record = self.get(operation)
-        if record["status"] == "awaiting_files":
-            record = self.update(operation, status="cancelled", cancel_requested=True, termination_confirmed=True)
-        elif record["status"] == "uncertain" and not record["termination_confirmed"]:
-            record = self.update(operation, status="cancelling", cancel_requested=True)
-            self.start(operation)
-        elif record["status"] not in TERMINAL:
-            record = self.update(operation, cancel_requested=True)
-        return self.public(record)
+        # One decision under one lock. `commit_inputs` starts the command under this
+        # lock, so a cancel that read `awaiting_files` and let go before writing
+        # `cancelled` could be overtaken by that start, and its reply would say
+        # "never ran" about a command that did.
+        with self.lock:
+            if refusal is not None:
+                self.refuse_undelivered(operation, refusal)
+            record = self.get(operation)
+            if record["status"] == "awaiting_files":
+                record = self.update(operation, status="cancelled", cancel_requested=True, termination_confirmed=True)
+            elif record["status"] == "uncertain" and not record["termination_confirmed"]:
+                record = self.update(operation, status="cancelling", cancel_requested=True)
+                self.start(operation)
+            elif record["status"] not in TERMINAL:
+                record = self.update(operation, cancel_requested=True)
+            return self.public(record)
 
     def activity(self):
         """Read-only activity; an unproven writer always prevents idle stop. It reads

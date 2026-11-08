@@ -1,4 +1,5 @@
 """A cancel can reach the Runner before the command it cancels, or instead of it."""
+import hashlib
 import http.client
 import json
 import tempfile
@@ -7,7 +8,7 @@ import unittest
 import uuid
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from control import ActivityAggregate, Handler, Rejected, Runner
 
@@ -100,6 +101,39 @@ class UndeliveredCancelTest(unittest.TestCase):
         cancel.join(10)
         self.assertEqual(replies[0]["status"], "accepted")
         self.assertIs(replies[0]["cancel_requested"], True)
+
+    def test_a_cancel_is_not_overtaken_by_the_start_of_the_command_it_read(self):
+        # `commit_inputs` starts the command under the lock. If the cancel read
+        # `awaiting_files` and released the lock before it wrote `cancelled`, the
+        # command would start in between while the reply, which the server trusts,
+        # says it never ran.
+        data = b"input"
+        file_id = str(uuid.uuid4())
+        staged = dict(request(self.operation), files=[{
+            "file_id": file_id, "path": "a", "scope": "working", "size": len(data),
+            "digest": hashlib.sha256(data).hexdigest()}])
+        self.runner.accept(staged)
+        self.runner.input_chunk(self.operation, file_id, 0, data)
+        read, canceller, committers = Runner.get, threading.Thread(), []
+
+        def get(runner, operation):
+            record = read(runner, operation)
+            if threading.current_thread() is canceller and not committers:
+                committers.append(threading.Thread(target=runner.commit_inputs, args=(operation,)))
+                committers[0].start()
+                committers[0].join(0.5)  # a correct cancel keeps the lock, so this times out
+            return record
+
+        replies = []
+        canceller = threading.Thread(target=lambda: replies.append(self.runner.cancel(self.operation, refusal())))
+        with patch.object(Runner, "get", get):
+            canceller.start()
+            canceller.join(10)
+            committers[0].join(10)
+        self.assertFalse(canceller.is_alive() or committers[0].is_alive())
+        never_ran = replies[0]["status"] == "cancelled" and replies[0]["executed"] is False
+        self.assertFalse(never_ran and self.runner.start.called,
+                         "the reply says the command never ran, but it was started")
 
     def test_a_send_waiting_for_the_lock_is_refused_after_the_cancel(self):
         outcome = []
