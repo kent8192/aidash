@@ -267,3 +267,53 @@ async fn an_expired_job_cannot_delete_a_new_generation() {
 	assert_eq!(state.rollbacks, 1);
 	assert_eq!(state.open, 0);
 }
+
+/// Every job fails to open its transaction with the given error.
+struct Unopened {
+	job: Record,
+	error: fn() -> Error,
+	failures: Mutex<usize>,
+}
+#[async_trait]
+impl CleanupRepository for Unopened {
+	async fn jobs(&self, _: Uuid) -> Result<Vec<Record>> {
+		Ok(vec![self.job.clone()])
+	}
+	async fn begin(&self) -> Result<Box<dyn ErasureScope + '_>> {
+		Err((self.error)())
+	}
+	async fn failure(&self, _: Uuid, _: Option<Uuid>) -> Result<()> {
+		*self.failures.lock().unwrap() += 1;
+		Ok(())
+	}
+}
+
+#[tokio::test]
+async fn a_temporary_database_error_does_not_mark_cleanup_as_failed() {
+	// Arrange
+	let job = fixture("deleting").0.lock().unwrap().record.clone();
+	let repository = Unopened {
+		job,
+		error: || Error::TemporaryDatabase(Box::new(std::io::Error::other("pool timed out"))),
+		failures: Mutex::default(),
+	};
+	// Act
+	sweep(&repository, &mut Uuid::nil()).await.unwrap();
+	// Assert
+	assert_eq!(*repository.failures.lock().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn any_other_cleanup_failure_is_still_marked() {
+	// Arrange
+	let job = fixture("deleting").0.lock().unwrap().record.clone();
+	let repository = Unopened {
+		job,
+		error: || Error::External("blob store failed".into()),
+		failures: Mutex::default(),
+	};
+	// Act
+	sweep(&repository, &mut Uuid::nil()).await.unwrap();
+	// Assert
+	assert_eq!(*repository.failures.lock().unwrap(), 1);
+}

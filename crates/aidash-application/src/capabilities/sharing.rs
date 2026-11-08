@@ -25,9 +25,11 @@ pub fn select_files(
 	let mut seen = std::collections::BTreeSet::new();
 	let mut size = 0;
 	for selection in selections {
+		// A Reference file can be read by a Run but never leaves it: a copy given
+		// to another Agent would outlive the file's revocation (ADR 0114).
 		let file = available
 			.iter()
-			.find(|f| f.file_id == selection.file_id)
+			.find(|f| f.file_id == selection.file_id && !f.is_reference_file())
 			.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
 		if file.digest != selection.expected_digest {
 			return Err(Error::Conflict(format!("FILE_CHANGED: {}", file.path)));

@@ -307,6 +307,7 @@ async fn adding_documents_twice_creates_no_duplicates_and_reports_each_file(
 		json!({"path":"empty.md","data":""}),
 		file("a/one.md", "again\n"),
 		file(&format!("long/{}.md", "長".repeat(90)), "long name\n"),
+		file("a/one.md.extracted.txt", "reserved for an extraction\n"),
 	];
 
 	let (status, first) = add(&c, &c.token, files.clone()).await;
@@ -326,6 +327,7 @@ async fn adding_documents_twice_creates_no_duplicates_and_reports_each_file(
 	assert_eq!(outcome[4]["error"], "REFERENCE_UPLOAD_LIMIT");
 	assert_eq!(outcome[5]["error"], "DUPLICATE_PATH");
 	assert_eq!(outcome[6]["error"], "REFERENCE_UPLOAD_LIMIT");
+	assert_eq!(outcome[7]["error"], "INVALID_PATH");
 	c.close().await;
 }
 
@@ -481,6 +483,118 @@ async fn revoking_a_file_does_not_lock_an_area_that_never_copied_it(
 	.await;
 
 	assert_eq!(status, 200, "{area}");
+	c.close().await;
+}
+
+/// A revoked file is gone from the Area's file routes too, even for a Run that has ended
+/// or is still the Area's latest, while the Area and its other files stay usable.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_revoked_file_stops_being_readable_through_the_run_file_routes(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let mut c = Box::pin(capability_fixture).await;
+	let token = c.token.clone();
+	let (status, added) = add(
+		&c,
+		&token,
+		vec![
+			file("keep.md", "needle in the kept file\n"),
+			file("gone.md", "needle in the revoked file\n"),
+		],
+	)
+	.await;
+	assert_eq!(status, 200, "{added}");
+	bind_agent(&mut c, &[("secret-docs", added["references"].clone())]).await;
+	let (status, started) = start(&c, &token, c.task).await;
+	assert_eq!(status, 200, "{started}");
+	let run = latest_run(&c).await;
+	let (status, found) = request(
+		&c.app,
+		&token,
+		"POST",
+		&format!("/api/runs/{}/files/search", run.id),
+		json!({"query":"needle","mode":"literal","scope":"references"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{found}");
+	let id_of = |path: &str| {
+		found["matches"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|item| item["path"] == path)
+			.unwrap_or_else(|| panic!("{path} not found in {found}"))
+			.clone()
+	};
+	let (kept, gone) = (id_of("references/keep.md"), id_of("references/gone.md"));
+	let revoked = &added["files"][1]["reference"];
+	let (status, result) = request(
+		&c.app,
+		&token,
+		"POST",
+		&format!(
+			"/api/references/{}/revoke",
+			revoked["reference_id"].as_str().unwrap()
+		),
+		json!({"expected_revision":revoked["revision"]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{result}");
+
+	let (status, denied) = request(
+		&c.app,
+		&token,
+		"POST",
+		&format!("/api/runs/{}/files/read", run.id),
+		json!({"file_id":gone["file_id"],"representation":"text"}),
+	)
+	.await;
+	assert_eq!(status, 404, "{denied}");
+	assert!(!denied.to_string().contains("revoked file"), "{denied}");
+	let (status, found) = request(
+		&c.app,
+		&token,
+		"POST",
+		&format!("/api/runs/{}/files/search", run.id),
+		json!({"query":"needle","mode":"literal","scope":"references"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{found}");
+	assert_eq!(found["matches"].as_array().unwrap().len(), 1, "{found}");
+	assert_eq!(found["matches"][0]["path"], "references/keep.md");
+	assert_eq!(
+		paths(&c, &token, run.id).await,
+		vec!["references/keep.md"],
+		"the listing omits the revoked file"
+	);
+	let (status, read) = request(
+		&c.app,
+		&token,
+		"POST",
+		&format!("/api/runs/{}/files/read", run.id),
+		json!({"file_id":kept["file_id"],"representation":"text"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{read}");
+	let (status, area) = request(
+		&c.app,
+		&token,
+		"GET",
+		&format!("/api/runs/{}/working-area", run.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{area}");
+	let (status, denied) = request(
+		&c.app,
+		&token,
+		"POST",
+		&format!("/api/runs/{}/files/materialize", run.id),
+		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"path":"copy.md","source":{"kind":"file","file_id":gone["file_id"],"expected_digest":gone["digest"]}}),
+	)
+	.await;
+	assert_eq!(status, 404, "{denied}");
 	c.close().await;
 }
 

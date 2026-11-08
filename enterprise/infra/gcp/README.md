@@ -428,10 +428,15 @@ runs. No idle timer resumes a stopped Environment.
   If Spot capacity is unavailable, the pool stays unscheduled: stop, or resume
   with `vm_mode=normal`.
 - **Deployment/migration/readiness failure:** data is retained and DNS withdrawn;
-  no destructive rollback or database downgrade is attempted. Repair the cause
-  and use explicit `resume` (with `force=true` if admission observation is broken).
-  A failed deployment generation is not retried by cron. HTTPS readiness checks
-  the Environment's node identity, not just an HTTP 200 from an old preview IP.
+  no destructive rollback or database downgrade is attempted. A nonproduction
+  Environment left unpublished stops one hour after the failure, which leaves time
+  to inspect it with `kubectl`. This acts like an explicit `force=true` stop because
+  its Runner usually cannot report activity, so any work still running is interrupted
+  and surfaces as uncertain. Repair the cause and use explicit `resume` (with
+  `force=true` if admission observation is broken); on staging, the next successful
+  Release CI also starts it again. A failed deployment generation is not retried by
+  cron. HTTPS readiness checks the Environment's node identity, not just an HTTP 200
+  from an old preview IP.
 - **Runtime credential rotation:** add a new version to that Environment's
   Secret Manager secret using secure file/stdin input, then explicitly resume
   with `force=true` to rematerialize `app-runtime`. Changing a GitHub seed secret

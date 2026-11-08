@@ -141,6 +141,25 @@ pub(crate) async fn get_many(access: &mut Access, ids: &[Uuid], kind: &str) -> R
 	.fetch_all(&mut **access.tx)
 	.await
 }
+/// Of these Reference records, the ids that can no longer be used: revoked,
+/// expired or gone (ADR 0114). One `get_many` however many ids, so it adds its
+/// shared lock and nothing more.
+pub(crate) async fn unusable_references(
+	access: &mut Access,
+	ids: &[Uuid],
+) -> Result<std::collections::BTreeSet<Uuid>> {
+	let usable = get_many(access, ids, "reference")
+		.await?
+		.into_iter()
+		.filter(|record| !matches!(record.state.as_str(), "revoked" | "expired"))
+		.map(|record| record.id)
+		.collect::<std::collections::BTreeSet<_>>();
+	Ok(ids
+		.iter()
+		.copied()
+		.filter(|id| !usable.contains(id))
+		.collect())
+}
 /// This subject's usable reference with exactly this content, if any.
 pub(crate) async fn existing_reference(
 	access: &mut Access,

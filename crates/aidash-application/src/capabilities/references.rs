@@ -242,7 +242,11 @@ fn prepare_batch_file(
 	data: &str,
 	maximum: u64,
 ) -> std::result::Result<Vec<u8>, &'static str> {
-	aidash_domain::registry::rules::validate_path(path).map_err(|_| "INVALID_PATH")?;
+	// The Source refuses a path its extraction could collide with, so refuse it here
+	// rather than report a file as added that no Source can bind.
+	if !aidash_domain::capabilities::references::valid_path(path) {
+		return Err("INVALID_PATH");
+	}
 	let bytes = STANDARD.decode(data).map_err(|_| "INVALID_DATA")?;
 	if bytes.is_empty() || bytes.len() as u64 > maximum || file_name(path).len() > 255 {
 		return Err("REFERENCE_UPLOAD_LIMIT");
@@ -300,7 +304,7 @@ pub async fn revoke(scope: &mut dyn ReferenceScope, id: Uuid, revision: i64) -> 
 /// A Run reads the Reference files its Agent version binds. Run admission has
 /// already established that this person may run that version, whose Sources are
 /// approved, so neither the uploader nor a `reference.read` grant is asked for
-/// here (ADR 0113). Only a revoked or removed file stops it.
+/// here (ADR 0114). Only a revoked or removed file stops it.
 pub async fn pin(scope: &mut dyn ReferenceScope, config: &AgentConfig) -> Result<()> {
 	let limits = scope.limits()?;
 	let mut mounts = scope.mounts()?;
@@ -521,7 +525,19 @@ pub async fn sweep(repository: &dyn ReferenceRepository, cursor: &mut Cursor) ->
 	let receipts = repository.receipts(cursor.receipt).await?;
 	cursor.receipt = lifecycle::next_receipt_cursor(&receipts);
 	for (id, data) in receipts {
-		let operation: Uuid = serde_json::from_value(data["operation_id"].clone())?;
+		// One unreadable row must not hold back the rest of the batch.
+		let operation: Uuid = match serde_json::from_value(data["operation_id"].clone()) {
+			Ok(operation) => operation,
+			Err(error) => {
+				metrics::counter!(
+					"aidash_background_service_failures_total",
+					"service" => "capabilities.references"
+				)
+				.increment(1);
+				tracing::warn!(%id,%error,"skipping a reference receipt that cannot be read");
+				continue;
+			}
+		};
 		if repository
 			.request(
 				"POST",
@@ -537,3 +553,6 @@ pub async fn sweep(repository: &dyn ReferenceRepository, cursor: &mut Cursor) ->
 	Ok(())
 }
 use sha2::Digest as _;
+
+#[cfg(test)]
+mod tests;

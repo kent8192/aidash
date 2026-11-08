@@ -1102,7 +1102,7 @@ pub(crate) async fn file_download(
 		{
 			service::available(&area)?;
 			// A Run can read a Reference file; downloading it, or a copy of it,
-			// stays with its uploader (ADR 0113).
+			// stays with its uploader (ADR 0114).
 			if entry.provenance["kind"] == "reference" {
 				let id = serde_json::from_value(entry.provenance["id"].clone())
 					.map_err(|_| Error::Forbidden)?;

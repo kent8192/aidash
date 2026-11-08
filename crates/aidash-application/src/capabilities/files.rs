@@ -17,9 +17,35 @@ use aidash_domain::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use uuid::Uuid;
 fn files(area: &Area) -> Result<Vec<FileEntry>> {
 	Ok(serde_json::from_value(area.manifest.clone())?)
+}
+/// The Reference record a Reference file of the Area was taken from. A malformed
+/// id names no record, so such a file is never usable.
+fn reference_of(file: &FileEntry) -> Option<Uuid> {
+	file.is_reference_file().then(|| {
+		file.provenance["id"]
+			.as_str()
+			.and_then(|id| id.parse().ok())
+			.unwrap_or_else(Uuid::nil)
+	})
+}
+/// An Area holds a Reference file only while its record can be used: the manifest
+/// keeps the entry after a revocation, so the file tools check the record (ADR 0114).
+async fn require_usable(scope: &mut dyn FileScopePort, file: &FileEntry) -> Result<()> {
+	let Some(id) = reference_of(file) else {
+		return Ok(());
+	};
+	if scope.unusable_references(&[id]).await?.is_empty() {
+		Ok(())
+	} else {
+		Err(Error::NotFound(format!(
+			"reference unavailable: {}",
+			file.path
+		)))
+	}
 }
 pub async fn settings(scope: &mut dyn FileScopePort, run: &RunMetadata) -> Result<AgentConfig> {
 	let entry = scope
@@ -151,16 +177,19 @@ pub async fn invoke(
 		scope.serialize_sharing().await?;
 	}
 	let mut area = scope.for_run(run).await?;
-	if !matches!(
-		name,
-		"shell"
-			| "shell_poll"
-			| "shell_cancel"
-			| "code_interpreter"
-			| "python_install"
-			| "python_poll"
-			| "python_cancel"
-	) {
+	// A running writer has not published its changes; this manifest is the last saved revision.
+	let saved_read = area.state == "running" && matches!(name, "file_read" | "file_search");
+	if !saved_read
+		&& !matches!(
+			name,
+			"shell"
+				| "shell_poll"
+				| "shell_cancel"
+				| "code_interpreter"
+				| "python_install"
+				| "python_poll"
+				| "python_cancel"
+		) {
 		available(&area.state)?;
 	}
 	if matches!(name, "file_read" | "file_search") {
@@ -296,6 +325,7 @@ pub async fn read(scope: &mut dyn FileScopePort, area: &Area, input: FileRead) -
 		.into_iter()
 		.find(|f| f.file_id == input.file_id)
 		.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
+	require_usable(scope, &file).await?;
 	if input
 		.expected_digest
 		.as_ref()
@@ -412,6 +442,18 @@ pub async fn search(
 		return Err(Error::Conflict("STALE_CURSOR".into()));
 	}
 	let files = files(area)?;
+	// A Reference file revoked after the Area was given it drops out of the search
+	// and the rest stay searchable. One query covers the whole Reference set.
+	let revoked = if input.scope == FileScope::References {
+		let ids = files.iter().filter_map(reference_of).collect::<Vec<_>>();
+		if ids.is_empty() {
+			BTreeSet::new()
+		} else {
+			scope.unusable_references(&ids).await?
+		}
+	} else {
+		BTreeSet::new()
+	};
 	let started = std::time::Instant::now();
 	// Stop early enough to return what was found before the caller's timeout,
 	// with a cursor to continue. Always make some progress first.
@@ -427,7 +469,8 @@ pub async fn search(
 		if serde_json::to_value(file.scope)? != serde_json::to_value(input.scope)?
 			|| input.path.as_ref().is_some_and(|path| {
 				file.path != *path && !file.path.starts_with(&format!("{path}/"))
-			}) {
+			}) || reference_of(file).is_some_and(|id| revoked.contains(&id))
+		{
 			cursor.file += 1;
 			cursor.line = 0;
 			continue;
@@ -450,9 +493,15 @@ pub async fn search(
 				// stop a search of everything else.
 				Err(Error::Invalid(message))
 					if message.starts_with("SEARCH_LINE_LIMIT")
-						&& input.path.as_deref() != Some(&file.path)
-						&& matches.len() + unavailable.len() < limit =>
+						&& input.path.as_deref() != Some(&file.path) =>
 				{
+					// A full page must not lose what it found: stop here with a cursor, and
+					// the next page, which starts empty, reports this file and moves on.
+					if matches.len() + unavailable.len() >= limit {
+						cursor.line = index;
+						exhausted = false;
+						break;
+					}
 					unavailable.push(json!({"file_id":file.file_id,"error":"SEARCH_LINE_LIMIT"}));
 					break;
 				}
@@ -622,6 +671,7 @@ pub async fn materialize(
 			Some(file) => file,
 			None => output_file(scope, &area, *file_id).await?,
 		};
+		require_usable(scope, &original).await?;
 		if original.digest != *expected_digest {
 			return Err(Error::Conflict("FILE_CHANGED".into()));
 		}
@@ -843,7 +893,9 @@ pub async fn snapshot_message_files(
 		return Err(Error::Forbidden);
 	}
 	let area = scope.for_run(run).await?;
-	available(&area.state)?;
+	if area.state != "running" {
+		available(&area.state)?;
+	}
 	scope.require_current(&area, run).await?;
 	scope.authorize(&area, "file.read").await?;
 	let entries = files(&area)?;

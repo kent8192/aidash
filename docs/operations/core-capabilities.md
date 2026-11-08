@@ -26,6 +26,34 @@ physical interpreter freeze/termination before admitting work. The node adapter
 also verifies cgroup CPU/memory/process ceilings and disables swap for the
 sandbox cgroup. A Kubernetes pod-deletion response alone is not termination
 proof. Missing support makes execution unavailable; there is no host fallback.
+A command or Python cell still running at its time limit is stopped, whatever
+exit code it then gives. The limit counts from when it starts, so preparing its
+sandbox does not use it up. Its result says `COMMAND_TIMED_OUT`, with the limit
+and the revision its file changes were saved as. If the save is refused, the
+result keeps `WORKING_EXPORT_REFUSED` and sets `deadline_expired`.
+
+When Kubernetes is unreachable, the Runner keeps tracking an accepted command
+and retries output, status and cancellation requests. The saved Area remains
+readable and busy; a new command receives `AREA_BUSY`. Polling reports the age
+of the last output preview. Egress is refused after the command's time limit.
+After a further 30-second grace period, the Runner requests a stop and polling
+reports that the stop is unconfirmed. The Run may continue with the saved files.
+
+If the stop is still unconfirmed 30 minutes later, the Runner requests a normal
+Pod deletion and keeps the Area busy until deletion completes. A completed
+normal deletion proves the Pod stopped; an API response accepting deletion
+alone does not. If stopped output cannot be read, the Runner retries for 30
+minutes, then reopens the Area with its last saved files and reports that the
+command's changes were not saved. It continues trying to retain the output
+without publishing it for 24 hours by default; the Runner profile's
+`uncertain_retention_seconds` overrides this interval. The Helm setting is
+`execution.runner.uncertainRetentionSeconds`.
+
+If a Pod will not disappear, a Deployment Administrator should inspect its
+deletion timestamp, node health, node guard logs and allocation receipt and
+finalizer. Restore the API server, node and guard so the Runner can confirm the
+stop and release its finalizer. Do not force-delete a Pod whose node or writer
+may still be running; keep the Area fenced until termination can be confirmed.
 The fork probe first creates a child, then lowers its own hard process limit to
 8 and verifies that further forks receive `EAGAIN`. It records both that probe
 limit and the configured inherited limit. The node adapter separately verifies
@@ -50,6 +78,11 @@ ID. A quota-enforcing storage class with a `Delete` reclaim policy and a
 controller deletion finalizer is required; a `Retain` volume is refused. Purge
 is acknowledged only after the bound PV disappears. Preserve the Runner journal
 across restarts; it records operation and volume identities and prevents replay.
+A Runner restart resumes watching normal commands and Python sessions in the same
+Pod, including their saved output. Saved output counts against the Scratch Space
+disk; if the disk is full, the output is marked incomplete. Docker-mode commands
+become interrupted with an unknown outcome; they can still be stopped. A Runner update waits for
+foreground commands, then replaces Pods and stops their background processes.
 
 A trusted, read-only injected helper copies the image filesystem into the PVC
 on first start, then runs commands as root in that persisted root. `/scratch`
@@ -347,10 +380,13 @@ at registration, across Sources too. Registering a Source requires being able to
 read every file it binds.
 
 Whoever may run an Agent version can have that Run read the Reference files of
-its approved Sources, and the Agent needs no `reference.*` action (ADR 0113).
+its approved Sources, and the Agent needs no `reference.*` action (ADR 0114).
 Direct download stays with the uploader, through both the reference and the
 working-area routes. Revoking one file refuses new Runs of every version that
-binds it, and the error names its path.
+binds it, and the error names its path. A Run that already holds the set stops
+reading a revoked file too: `file_read` and the copy refuse it, `file_search`
+skips it, and the set's other files stay readable. `file_share` refuses a
+Reference file, so no other Agent can keep a copy past its revocation.
 
 `POST /api/references/batch` adds several documents in one request of up to
 16 MiB and reports a result per file. The same person adding the same content

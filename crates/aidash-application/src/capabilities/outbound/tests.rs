@@ -12,6 +12,8 @@ enum Fetch {
 	Limit,
 	Rejected,
 	Pending,
+	/// Answers after a second, long enough for the authority monitor to run several times.
+	Slow,
 }
 struct State {
 	record: Record,
@@ -19,9 +21,29 @@ struct State {
 	failure: &'static str,
 	fetch: Fetch,
 	fetched: bool,
+	/// Set once the transport has answered, which ends the monitoring window.
+	answered: bool,
+	temporary_errors: usize,
 	scopes: usize,
 	failures: Vec<String>,
 	load_state: Option<&'static str>,
+}
+fn temporary() -> Error {
+	Error::TemporaryDatabase(Box::new(std::io::Error::other("pool timed out")))
+}
+impl State {
+	/// A temporary database error for failure modes that name `mode`.
+	fn pause(&mut self, mode: &str) -> Result<()> {
+		if self.failure == mode {
+			self.temporary_errors += 1;
+			return Err(temporary());
+		}
+		Ok(())
+	}
+	/// Whether the transport is in flight, which is when the monitor runs.
+	fn in_flight(&self) -> bool {
+		self.fetched && !self.answered
+	}
 }
 #[derive(Clone)]
 struct Repository(Arc<Mutex<State>>);
@@ -52,6 +74,8 @@ fn repository() -> Repository {
 		failure: "",
 		fetch: Fetch::Ready,
 		fetched: false,
+		answered: false,
+		temporary_errors: 0,
 		scopes: 0,
 		failures: vec![],
 		load_state: None,
@@ -72,6 +96,7 @@ impl OutboundRepository for Repository {
 		let mut state = self.0.lock().unwrap();
 		assert_eq!(id, state.record.id);
 		state.calls.push("snapshot".into());
+		state.pause("snapshot_temporary")?;
 		if state.failure == "snapshot" {
 			Err(Error::External("snapshot failed".into()))
 		} else {
@@ -83,6 +108,10 @@ impl OutboundRepository for Repository {
 		assert_eq!(record.owner, "owner");
 		assert_eq!(record.tenant, "tenant");
 		state.calls.push("begin".into());
+		state.pause("begin_temporary")?;
+		if state.in_flight() {
+			state.pause("monitor_begin_temporary")?;
+		}
 		if state.failure == "begin" || (state.failure == "begin_after_fetch" && state.fetched) {
 			return Err(Error::Forbidden);
 		}
@@ -126,8 +155,16 @@ impl OutboundTransport for Repository {
 			state.fetched = true;
 			state.fetch
 		};
+		if matches!(mode, Fetch::Slow) {
+			tokio::time::sleep(StdDuration::from_secs(1)).await;
+		}
+		if !matches!(mode, Fetch::Pending) {
+			self.0.lock().unwrap().answered = true;
+		}
 		match mode {
-			Fetch::Ready => Ok((201, b"hello".to_vec(), "https://example.com/final".into())),
+			Fetch::Ready | Fetch::Slow => {
+				Ok((201, b"hello".to_vec(), "https://example.com/final".into()))
+			}
 			Fetch::Limit => Err(Error::Invalid("OUTBOUND_RESPONSE_LIMIT".into())),
 			Fetch::Rejected => Err(Error::External("transport rejected".into())),
 			Fetch::Pending => std::future::pending().await,
@@ -149,6 +186,15 @@ impl OutboundScope for Scope {
 	async fn authorize(&mut self, record: &Record) -> Result<AuthorizedRun> {
 		let mut state = self.state.lock().unwrap();
 		state.calls.push(format!("authorize:{}", record.state));
+		if !state.fetched {
+			state.pause("admission_authorize_temporary")?;
+		}
+		if state.in_flight() {
+			state.pause("monitor_authorize_temporary")?;
+		}
+		if state.answered {
+			state.pause("publish_authorize_temporary")?;
+		}
 		if state.failure == "admission_authorize"
 			|| ((state.failure == "publish_authorize" || state.failure == "monitor_authorize")
 				&& state.fetched)
@@ -446,4 +492,72 @@ async fn a_failed_uncertain_update_is_returned_without_reporting_success(reposit
 	assert!(!state.fetched);
 	assert_eq!(state.record.state, "attempted");
 	assert_eq!(state.scopes, 0);
+}
+
+#[rstest]
+#[case::snapshot("snapshot_temporary")]
+#[case::scope_creation("begin_temporary")]
+#[case::authorization("admission_authorize_temporary")]
+#[tokio::test]
+async fn a_temporary_database_error_before_the_attempt_leaves_the_record_approved(
+	repository: Repository,
+	#[case] failure: &'static str,
+) {
+	repository.0.lock().unwrap().failure = failure;
+	reconcile(&repository, &repository, Uuid::from_u128(1)).await;
+	let state = repository.0.lock().unwrap();
+	assert_eq!(state.temporary_errors, 1);
+	assert!(state.failures.is_empty());
+	assert_eq!(state.record.state, "approved");
+	assert!(!state.fetched);
+	assert_eq!(state.scopes, 0);
+}
+
+#[rstest]
+#[case::authorization("monitor_authorize_temporary")]
+#[case::scope_creation("monitor_begin_temporary")]
+#[tokio::test(start_paused = true)]
+async fn a_temporary_database_error_while_watching_authority_does_not_stop_the_fetch(
+	repository: Repository,
+	#[case] failure: &'static str,
+) {
+	{
+		let mut state = repository.0.lock().unwrap();
+		state.failure = failure;
+		state.fetch = Fetch::Slow;
+	}
+	reconcile(&repository, &repository, Uuid::from_u128(1)).await;
+	let state = repository.0.lock().unwrap();
+	assert!(state.temporary_errors > 0);
+	assert!(state.failures.is_empty());
+	assert_eq!(state.record.state, "completed");
+	assert_eq!(state.record.data["http_status"], 201);
+	assert_eq!(state.scopes, 0);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_temporary_database_error_after_the_fetch_leaves_the_attempt_to_uncertainty_recovery(
+	repository: Repository,
+) {
+	repository.0.lock().unwrap().failure = "publish_authorize_temporary";
+	reconcile(&repository, &repository, Uuid::from_u128(1)).await;
+	{
+		let state = repository.0.lock().unwrap();
+		assert_eq!(state.temporary_errors, 1);
+		assert!(state.failures.is_empty());
+		assert_eq!(state.record.state, "attempted");
+		assert!(!state.calls.contains(&"put".into()));
+		assert_eq!(state.scopes, 0);
+	}
+	// The next pass sees an attempt it must not repeat.
+	repository.0.lock().unwrap().failure = "";
+	reconcile(&repository, &repository, Uuid::from_u128(1)).await;
+	let state = repository.0.lock().unwrap();
+	assert_eq!(state.failures, vec!["OUTBOUND_EFFECT_UNCERTAIN"]);
+	assert_eq!(state.record.state, "uncertain");
+	assert_eq!(
+		state.calls.iter().filter(|call| *call == "fetch").count(),
+		1
+	);
 }

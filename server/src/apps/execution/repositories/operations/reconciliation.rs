@@ -158,6 +158,7 @@ impl OperationReconciliationScope for Scope<'_> {
 			working_bytes: profile.working_bytes,
 			output_bytes: profile.output_bytes,
 			read_bytes: profile.limits.read_bytes,
+			maximum_seconds: profile.maximum_seconds,
 		}
 	}
 	async fn load(&mut self, id: Uuid, run: Uuid) -> Result<Loaded> {

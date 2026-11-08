@@ -86,5 +86,31 @@ async fn durable_uncertainty_is_projected_without_reading_bytes(
 		.await
 		.unwrap();
 	assert_eq!(result.effects_may_have_occurred, effects);
+	assert!(
+		serde_json::to_value(&result)
+			.unwrap()
+			.get("output_stale_seconds")
+			.is_none()
+	);
 	assert_eq!(reader.reads, 0);
+}
+
+#[tokio::test]
+async fn polling_exposes_preview_age_and_the_runners_error_message() {
+	let input = json!({});
+	let data = json!({"output_fetched_at":chrono::Utc::now().timestamp() - 12,
+		"error":{"code":"OUTPUT_LOST","message":"File changes were not saved."}});
+	let mut reader = Reader {
+		bytes: vec![],
+		limit: 3,
+		reads: 0,
+	};
+	let projected = result(&mut reader, &view("uncertain", &input, &data), 0)
+		.await
+		.unwrap();
+	assert!(projected.output_stale_seconds.unwrap() >= 12);
+	assert_eq!(
+		projected.error.unwrap().message,
+		"File changes were not saved."
+	);
 }
