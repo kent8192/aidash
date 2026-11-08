@@ -89,7 +89,7 @@ impl AccessBoundary {
 		self
 	}
 	/// A route that stops work, so that a person can always stop it while an
-	/// Authority Change waits (ADR 0116). A handler that can also start work
+	/// Authority Change waits (ADR 0121). A handler that can also start work
 	/// waits itself before it does.
 	pub fn stops_work(mut self) -> Self {
 		self.stops_work = true;
@@ -187,7 +187,7 @@ impl Middleware for AccessBoundary {
 			}
 			// New work waits behind an Authority Change here, before it holds a
 			// visibility lease or anything else. A peer's request does not wait: it
-			// may be a call back from work this Node is running (ADR 0116).
+			// may be a call back from work this Node is running (ADR 0121).
 			if !self.stops_work
 				&& let Some(Actor::Subject(identity)) = actor.as_ref()
 			{

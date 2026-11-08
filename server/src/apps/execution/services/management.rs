@@ -390,7 +390,7 @@ impl HarnessManagement {
 			return Err(Error::Forbidden);
 		};
 		// This route stops work without waiting behind an Authority Change, but
-		// resuming starts work again (ADR 0116).
+		// resuming starts work again (ADR 0121).
 		if !matches!(
 			input.action,
 			aidash_domain::RunControlAction::Pause | aidash_domain::RunControlAction::Cancel

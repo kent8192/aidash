@@ -31,4 +31,27 @@ impl Invocation {
 			.rows_affected
 			== 1)
 	}
+	/// A `STARTED` call refused by an authority check that paused the Run. Resuming starts it
+	/// again, so only a call that proved nothing ran may end this way.
+	pub(crate) async fn refuse(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		key: &str,
+		result: &Value,
+	) -> Result<bool> {
+		let (sql, values) = Query::update()
+			.table(Alias::new(Self::table_name()))
+			.value_expr(Alias::new("status"), Expr::value("REFUSED"))
+			.value_expr(Alias::new("result"), Expr::value(result.clone()))
+			.value(Alias::new("delivery_pending"), false)
+			.and_where(Expr::col("idempotency_key").eq(Expr::value(key)))
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.and_where(Expr::col("status").eq(Expr::value("STARTED")))
+			.build(PostgresQueryBuilder);
+		Ok(tx
+			.execute(&sql, convert_values(values))
+			.await?
+			.rows_affected
+			== 1)
+	}
 }

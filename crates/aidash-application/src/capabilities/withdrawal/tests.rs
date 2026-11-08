@@ -14,6 +14,9 @@ struct State {
 	failure: Option<&'static str>,
 	pending: bool,
 	committed: Option<Change>,
+	/// What the Runner answers, when it says more than `stopped`.
+	reply: Option<Value>,
+	refusals: Vec<Option<Value>>,
 }
 #[derive(Clone)]
 struct Repository(Arc<Mutex<State>>);
@@ -47,6 +50,8 @@ fn repository() -> Repository {
 		failure: None,
 		pending: false,
 		committed: None,
+		reply: None,
+		refusals: vec![],
 	})))
 }
 #[async_trait]
@@ -64,17 +69,26 @@ impl OperationWithdrawalRepository for Repository {
 		}
 		Ok(Box::new(Scope(self.0.clone())))
 	}
-	async fn cancel_bound(&self, operation: Uuid, digest: &str, instance: &str) -> Result<bool> {
+	async fn cancel_bound(
+		&self,
+		operation: Uuid,
+		digest: &str,
+		instance: &str,
+		refusal: Option<Value>,
+	) -> Result<WriterStop> {
 		assert_eq!(digest, "immutable-intent");
 		assert_eq!(instance, "original-runner");
-		Ok(self.cancel(operation).await?["termination_confirmed"] == true)
+		Ok(WriterStop::from_reply(
+			&self.cancel(operation, refusal).await?,
+		))
 	}
-	async fn cancel(&self, operation: Uuid) -> Result<Value> {
+	async fn cancel(&self, operation: Uuid, refusal: Option<Value>) -> Result<Value> {
 		assert_eq!(operation, Uuid::from_u128(1));
 		let pending = {
 			let mut state = self.0.lock().unwrap();
 			assert_eq!(state.alive, 1);
 			state.calls.push("cancel");
+			state.refusals.push(refusal);
 			if state.failure == Some("cancel") {
 				return Err(Error::External("cancel fault".into()));
 			}
@@ -83,7 +97,11 @@ impl OperationWithdrawalRepository for Repository {
 		if pending {
 			futures_util::future::pending::<()>().await;
 		}
-		Ok(json!({"termination_confirmed":self.0.lock().unwrap().stopped}))
+		let state = self.0.lock().unwrap();
+		Ok(state
+			.reply
+			.clone()
+			.unwrap_or_else(|| json!({"termination_confirmed":state.stopped})))
 	}
 }
 #[async_trait]
@@ -237,4 +255,83 @@ async fn a_saved_terminal_stop_schedules_missing_output_ack_without_repeating_ca
 		change.result,
 		json!({"termination_confirmed":true,"runner_acknowledged":false,"stdout":"retained"})
 	);
+}
+
+/// A cancel of an operation that may not have reached the Runner asks it to
+/// refuse a later send, then ends on what the Runner proved: a refused or
+/// unstarted command changed nothing, and an `absent` proves nothing.
+#[rstest]
+#[case::refused(json!({"status":"cancelled","termination_confirmed":true,"executed":false}), "withdrawn", false, Some("active"))]
+#[case::delivered_and_stopping(json!({"status":"accepted","termination_confirmed":false,"executed":false}), "cancelling", true, Some("uncertain"))]
+#[case::lost_journal(json!({"status":"absent"}), "cancelling", true, Some("uncertain"))]
+#[tokio::test]
+async fn a_withdrawn_pending_operation_ends_on_what_the_runner_proved(
+	repository: Repository,
+	#[case] reply: Value,
+	#[case] status: &str,
+	#[case] effects: bool,
+	#[case] area: Option<&str>,
+) {
+	{
+		let mut state = repository.0.lock().unwrap();
+		state.snapshot.state = "submitted".into();
+		state.snapshot.result = json!({"dispatch_pending":true});
+		state.reply = Some(reply);
+	}
+	withdraw(&repository, Uuid::from_u128(2), Uuid::from_u128(1))
+		.await
+		.unwrap();
+	let state = repository.0.lock().unwrap();
+	assert_eq!(
+		state.refusals,
+		vec![Some(
+			json!({"digest":"immutable-intent","instance":"original-runner"})
+		)]
+	);
+	let change = state.committed.as_ref().unwrap();
+	assert_eq!(change.state, status);
+	assert_eq!(change.result["effects_may_have_occurred"], effects);
+	assert_eq!(change.area_state, area);
+}
+
+#[rstest]
+#[case::refused(json!({"status":"cancelled","termination_confirmed":true,"executed":false}), "withdrawn", false, Some("active"))]
+#[case::lost_journal(json!({"status":"absent"}), "cancelling", true, Some("uncertain"))]
+#[tokio::test]
+async fn a_captured_pending_operation_ends_on_what_the_runner_proved(
+	repository: Repository,
+	#[case] reply: Value,
+	#[case] status: &str,
+	#[case] effects: bool,
+	#[case] area: Option<&str>,
+) {
+	{
+		let mut state = repository.0.lock().unwrap();
+		state.snapshot.state = "cancelling".into();
+		state.snapshot.result = json!({"dispatch_pending":true});
+		state.reply = Some(reply);
+	}
+	stop_captured_writer(&repository, Uuid::from_u128(2), Uuid::from_u128(1))
+		.await
+		.unwrap();
+	let state = repository.0.lock().unwrap();
+	assert_eq!(
+		state.refusals,
+		vec![Some(
+			json!({"digest":"immutable-intent","instance":"original-runner"})
+		)]
+	);
+	let change = state.committed.as_ref().unwrap();
+	assert_eq!(change.state, status);
+	assert_eq!(change.result["effects_may_have_occurred"], effects);
+	assert_eq!(change.area_state, area);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_withdrawal_after_the_runner_answered_asks_for_no_refusal(repository: Repository) {
+	withdraw(&repository, Uuid::from_u128(2), Uuid::from_u128(1))
+		.await
+		.unwrap();
+	assert_eq!(repository.0.lock().unwrap().refusals, vec![None]);
 }

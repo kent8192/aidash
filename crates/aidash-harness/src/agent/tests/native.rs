@@ -149,6 +149,12 @@ async fn native_steps_extend_the_stable_prefix_message_by_message(
 	assert!(advance_sources(&mut canonical).await.is_err());
 	// Assert: every message before the volatile one is unchanged.
 	let requests = canonical.backend.0.requests.lock().unwrap();
+	assert!(
+		requests
+			.iter()
+			.all(|request| request.routing_run == Some(canonical.run.id)),
+		"every step routes as one Run"
+	);
 	let bodies = requests
 		.iter()
 		.map(|request| {

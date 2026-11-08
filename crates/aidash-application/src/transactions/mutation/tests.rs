@@ -83,6 +83,8 @@ struct Scope {
 	keys: Vec<String>,
 	outputs: Vec<(Uuid, Uuid, String, Uuid)>,
 	events: Vec<(Option<Uuid>, String, Value)>,
+	/// The Runs whose Subnode end was locked, with the events appended by then.
+	end_locks: Vec<(Uuid, usize)>,
 }
 #[fixture]
 fn scope(task: Task, run: RawRun) -> Scope {
@@ -98,6 +100,7 @@ fn scope(task: Task, run: RawRun) -> Scope {
 		keys: vec![],
 		outputs: vec![],
 		events: vec![],
+		end_locks: vec![],
 	}
 }
 impl Scope {
@@ -189,6 +192,10 @@ impl MutationScope for Scope {
 		self.call("run")?;
 		assert_eq!(id, self.run.id);
 		Ok((self.run.clone(), self.leased))
+	}
+	async fn lock_subnode_end(&mut self, run: Uuid) -> Result<()> {
+		self.end_locks.push((run, self.events.len()));
+		Ok(())
 	}
 	async fn complete_run(&mut self, id: Uuid) -> Result<()> {
 		self.call("complete_run")?;
@@ -488,4 +495,22 @@ async fn provenance_failures_stop_event_publication(
 	);
 	assert_eq!(scope.calls, calls);
 	assert!(scope.events.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_finished_runs_subnode_end_is_locked_before_any_event_of_the_manifest(mut scope: Scope) {
+	let manifest = manifest(
+		"aidash://home/brave-otter-k3m9q2xa",
+		vec![completion(), finalization()],
+		None,
+	);
+	apply(&mut scope, "aidash://home/brave-otter-k3m9q2xa", &manifest)
+		.await
+		.unwrap();
+	assert_eq!(scope.end_locks, [(Uuid::from_u128(4), 0)]);
+	assert!(
+		scope.events.len() >= 2,
+		"the task and the Run events follow"
+	);
 }

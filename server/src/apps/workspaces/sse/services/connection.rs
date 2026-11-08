@@ -459,7 +459,7 @@ async fn read(
 		}
 		context.service.gate_check();
 		// The next page is new work: it waits behind an Authority Change, holding
-		// nothing, and the stream stays open (ADR 0116). The periodic authority
+		// nothing, and the stream stays open (ADR 0121). The periodic authority
 		// checks do not wait, since their time limit closes the stream.
 		crate::database::authority_change::enter(
 			&context.f.store.pool,

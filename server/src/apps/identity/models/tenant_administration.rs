@@ -399,7 +399,7 @@ impl TenantAdministrator {
 
 	/// Whether some policy could allow this subject `action`, read before an
 	/// Authority Change raises its flag. One that cannot takes the ordinary lock:
-	/// its check then refuses it, and the Tenant's work never waits for it (ADR 0116).
+	/// its check then refuses it, and the Tenant's work never waits for it (ADR 0121).
 	pub(crate) async fn may_change(&self, db: &Pool, action: &str) -> Result<bool> {
 		let snapshot = crate::authorization::Authorization { pool: db.clone() }
 			.snapshot(self.tenant())

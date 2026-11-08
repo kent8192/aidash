@@ -102,7 +102,7 @@ pub async fn initialize_as(
 		&settings.research_providers,
 		&crate::config::settings::profile(),
 	)?;
-	let cache_salt = settings.cache_salt.keys()?;
+	let cache_salt = settings.cache_salt.node_keys(&settings.core.secret_key)?;
 	// Only availability and the current key version; never key material.
 	match &cache_salt {
 		Some(keys) => tracing::info!(
@@ -189,7 +189,8 @@ pub async fn initialize_as(
 		config,
 		client,
 		notify: Arc::new(Notify::new()),
-	};
+	}
+	.bind_in_process();
 	crate::apps::workspaces::repositories::attachment_backfill::run(&federation.store).await?;
 	// Persist removed restrictions even for inactive Identities before this
 	// policy can serve requests or start workers. Provider IO is unnecessary.

@@ -67,6 +67,10 @@ struct State {
 	snapshot: Snapshot,
 	current_enabled: bool,
 	visible: bool,
+	/// The Task's Read dependencies, checked under the shared lease.
+	shared_visible: bool,
+	/// The job whose shared check meets a Node that did not answer.
+	silent_for: Option<Uuid>,
 	subjects: Vec<String>,
 	phase: Option<String>,
 	completion_ready: bool,
@@ -102,6 +106,8 @@ fn repository() -> Repository {
 		},
 		current_enabled: true,
 		visible: true,
+		shared_visible: true,
+		silent_for: None,
 		subjects: vec![],
 		phase: None,
 		completion_ready: true,
@@ -227,6 +233,17 @@ impl GenerationProvisioning for Repository {
 		point(&self.0, "read_begin").await?;
 		self.0.lock().unwrap().visibility += 1;
 		Ok(Box::new(Read(self.0.clone())))
+	}
+	async fn visible_shared(&self, job: &Request) -> Result<bool> {
+		point(&self.0, "visible_shared").await?;
+		let state = self.0.lock().unwrap();
+		if state.silent_for == Some(job.id) {
+			return Err(Error::NodeUnreachable {
+				node: "aidash://other/sibling".into(),
+				after_effect: false,
+			});
+		}
+		Ok(state.shared_visible)
 	}
 	async fn begin_activation(
 		&self,
@@ -357,8 +374,8 @@ impl GenerationActivationScope for Session {
 		assert_eq!((&job.tenant, job.id), (&tenant.to_owned(), id));
 		Ok(job)
 	}
-	async fn visible(&mut self, _: &Request) -> Result<bool> {
-		point(&self.state, "visible").await?;
+	async fn visible_row(&mut self, _: &Request) -> Result<bool> {
+		point(&self.state, "visible_row").await?;
 		Ok(self.state.lock().unwrap().visible)
 	}
 	async fn require_request(&mut self, _: &Request) -> Result<()> {
@@ -451,10 +468,11 @@ async fn activation_rechecks_authority_and_publishes_the_pinned_spec_in_one_scop
 			.map(String::as_str)
 			.collect::<Vec<_>>(),
 		[
+			"visible_shared",
 			"activation_begin",
 			"activation_load",
 			"subjects",
-			"visible",
+			"visible_row",
 			"generation.request",
 			"current_policy",
 			"pinned_policy",
@@ -821,4 +839,56 @@ async fn a_busy_tenant_does_not_stop_the_local_jobs(
 			.iter()
 			.any(|call| call == "scan")
 	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_refusal_under_the_shared_lease_is_the_admission_denial_before_any_exclusive_scope(
+	repository: Repository,
+	validation: DefinitionValidation,
+) {
+	let job = repository.0.lock().unwrap().job.clone();
+	repository.0.lock().unwrap().shared_visible = false;
+	assert_eq!(
+		activate(&repository, &job, &validation)
+			.await
+			.unwrap_err()
+			.to_string(),
+		"generated agent admission denied"
+	);
+	let state = repository.0.lock().unwrap();
+	assert!(!state.calls.iter().any(|call| call == "activation_begin"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_silent_node_leaves_the_job_queued_and_the_tick_goes_on_to_the_next_job(
+	repository: Repository,
+	validation: DefinitionValidation,
+) {
+	// Arrange: the first job's Task needs a Node that does not answer; the
+	// second is the one the repository holds and activates.
+	let second = repository.0.lock().unwrap().job.clone();
+	let mut first = second.clone();
+	first.id = Uuid::from_u128(77);
+	{
+		let mut state = repository.0.lock().unwrap();
+		state.scan = vec![first.clone(), second.clone()];
+		state.silent_for = Some(first.id);
+	}
+	// Act
+	let count = reconcile(&repository, &validation).await.unwrap();
+	// Assert: nothing was written for the first job, and the second ran.
+	assert_eq!(count, 2);
+	let state = repository.0.lock().unwrap();
+	assert!(!state.calls.iter().any(|call| call == "terminal_begin"));
+	assert_eq!(
+		state
+			.calls
+			.iter()
+			.filter(|call| *call == "activation_begin")
+			.count(),
+		1
+	);
+	assert_eq!(state.job.status, "ACTIVE");
 }

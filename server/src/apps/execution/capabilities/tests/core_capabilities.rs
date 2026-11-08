@@ -1,6 +1,8 @@
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 #[path = "../../tests/support/legacy.rs"]
 mod common;
+#[path = "../../tests/support/late_subnode.rs"]
+mod late_subnode;
 use aidash_application::tenancy::TEST_FIXTURE;
 use common::upstream_fixtures;
 use common::{bootstrap, cleanup, request};
@@ -1883,3 +1885,6 @@ mod web_research_tests;
 
 #[path = "core_capabilities/reference_set.rs"]
 mod reference_set_tests;
+
+#[path = "core_capabilities/reference_locks.rs"]
+mod reference_lock_tests;

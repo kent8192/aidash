@@ -27,6 +27,7 @@ impl Run {
 			"run.retrying"
 				| "run.semantic_retrying"
 				| "run.decider_retrying"
+				| "run.node_retrying"
 				| "run.failure_pending"
 		);
 		if !retrying {
@@ -35,6 +36,10 @@ impl Run {
 		// Only a scheduled Decider retry carries its count to the next lease.
 		if event != "run.decider_retrying" {
 			recovery.decider_retry = 0;
+		}
+		// Likewise a scheduled Node retry (#751).
+		if event != "run.node_retrying" {
+			recovery.node_retry = 0;
 		}
 		// A checkpoint inside the step keeps its Lease Recovery count, so a step
 		// that crashes after a checkpoint still reaches the bound (#604). Only a

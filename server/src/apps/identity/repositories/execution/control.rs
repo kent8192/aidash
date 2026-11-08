@@ -34,8 +34,7 @@ struct Scope<'a> {
 #[async_trait]
 impl RunControlRepository for Controls<'_> {
 	async fn begin(&self) -> Result<Box<dyn RunControlScope + '_>> {
-		let mut access = Access::begin(&self.federation.store, self.identity).await?;
-		access.wire = Some(crate::bootstrap::peer_transport(self.federation));
+		let access = Access::begin(&self.federation.store, self.identity).await?;
 		Ok(Box::new(Scope {
 			federation: self.federation,
 			access,

@@ -57,7 +57,49 @@ pub struct Federation {
 	pub client: reqwest::Client,
 	pub notify: std::sync::Arc<tokio::sync::Notify>,
 }
+
+/// Everything a `Federation` holds except its `Store`. A `Store` holds this
+/// once a server has bound it (#751), so a caller holding only a `Store`
+/// reaches the in-process handlers of the other Nodes of this Deployment.
+/// `Federation` contains `Store`, so the `Store` cannot hold a `Federation`
+/// without a cycle; none of these fields holds a `Store`.
+#[derive(Clone)]
+pub struct InProcess {
+	pub sandbox: aidash_runtime::sandbox::Sessions,
+	pub registry: Registry,
+	pub config: Config,
+	pub client: reqwest::Client,
+	pub notify: std::sync::Arc<tokio::sync::Notify>,
+}
+
+impl InProcess {
+	/// The `Federation` of `store` and these handlers.
+	pub fn federation(&self, store: Store) -> Federation {
+		Federation {
+			sandbox: self.sandbox.clone(),
+			store,
+			registry: self.registry.clone(),
+			config: self.config.clone(),
+			client: self.client.clone(),
+			notify: self.notify.clone(),
+		}
+	}
+}
+
 impl Federation {
+	/// Let every clone of this Federation's `Store` reach the other Nodes of
+	/// its Deployment. The first binding wins; a second is ignored.
+	pub fn bind_in_process(self) -> Self {
+		let _ = self.store.in_process.set(InProcess {
+			sandbox: self.sandbox.clone(),
+			registry: self.registry.clone(),
+			config: self.config.clone(),
+			client: self.client.clone(),
+			notify: self.notify.clone(),
+		});
+		self
+	}
+
 	pub async fn admit_run_message(
 		&self,
 		run: &Run,
@@ -549,7 +591,7 @@ impl Home {
 				error
 			}
 		})?;
-		crate::authorization::peer::authority_request(
+		crate::authorization::peer::authority_request_keeping_not_found(
 			&self.federation,
 			&sender,
 			&self.run.home_node,
@@ -1017,6 +1059,7 @@ impl Home {
 						tool: "task_delegate".into(),
 						check: aidash_domain::tool::RefusalCheck::Policy,
 						action: Some("federation.execute".into()),
+						subject: None,
 					})),
 					Error::RemoteExecutionRefused(
 						aidash_domain::federation::execution::Refusal::NodeUseAsk,
@@ -1024,6 +1067,7 @@ impl Home {
 						tool: "task_delegate".into(),
 						check: aidash_domain::tool::RefusalCheck::Policy,
 						action: Some("node.use".into()),
+						subject: None,
 					})),
 					Error::RemoteExecutionRefused(reason) => Error::Invalid(reason.to_string()),
 					Error::External(message)

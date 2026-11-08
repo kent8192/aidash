@@ -34,7 +34,7 @@ pub(crate) async fn control(
 	input: RemoteExecutionControlInput,
 ) -> Result<RemoteExecutionActivation> {
 	// This route stops work without waiting behind an Authority Change, but
-	// resuming starts work again (ADR 0116).
+	// resuming starts work again (ADR 0121).
 	if !matches!(
 		input.action,
 		RemoteExecutionControl::Pause | RemoteExecutionControl::Cancel

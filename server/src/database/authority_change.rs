@@ -1,4 +1,4 @@
-//! Authority Changes and the new work that waits for them (ADR 0116).
+//! Authority Changes and the new work that waits for them (ADR 0121).
 //!
 //! An Authority Change returns only once nothing admitted under the old rules
 //! is still running, so it waits on row locks that running work holds. A

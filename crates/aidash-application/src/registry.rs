@@ -278,7 +278,7 @@ pub async fn register(
 		scope.authorize(&entry).await?;
 	}
 	// The caller receives the definition as stored, defaults included.
-	apply_agent_defaults(scope, &mut entry).await;
+	apply_definition_defaults(scope, &mut entry).await;
 	let inserted = register_definition(scope, validation, &entry, node).await?;
 	if tracked && inserted {
 		scope
@@ -299,7 +299,7 @@ pub async fn register_definition(
 ) -> Result<bool> {
 	system::reject_owner_definition(entry)?;
 	let mut entry = entry.clone();
-	apply_agent_defaults(scope, &mut entry).await;
+	apply_definition_defaults(scope, &mut entry).await;
 	bindings::normalize_agent(
 		&mut bindings::catalog::LookupCatalog {
 			definitions: scope,
@@ -313,20 +313,35 @@ pub async fn register_definition(
 	scope.insert_definition(&entry).await
 }
 
-/// The Projection Version and Harness Contract a new Agent definition gets when
-/// it names neither (#532): Native with `structured@3`, if its model declares
-/// Native. The values are written into the definition, so its bytes, digest and
-/// every Binding snapshot pin them. A definition that names a Projection
-/// Version keeps it, a Native one without a contract gets `structured@3`, and
-/// an Agent whose model lacks Native keeps the omitted defaults (`legacy`,
-/// `legacy@1`). Stored definitions are never rewritten (ADR 0093): when this
-/// id and version are already registered, a field the stored definition omits
-/// stays omitted, so replaying a registration made before these defaults
-/// remains idempotent. Applying the defaults twice changes nothing, so
+/// The cache and projection settings a new definition gets when it names none.
+/// The values are written into the definition, so its bytes, digest and every
+/// Binding snapshot pin them. Stored definitions are never rewritten (ADR 0093):
+/// when this id and version are already registered, a field the stored
+/// definition omits stays omitted, so replaying a registration made before these
+/// defaults remains idempotent. Applying the defaults twice changes nothing, so
 /// callers apply them to the entry they return or test, and
 /// [`register_definition`] applies them again before the insert.
-pub async fn apply_agent_defaults(scope: &mut dyn DefinitionLookup, entry: &mut Entry) {
-	if entry.kind != "agent" || !entry.config.is_object() {
+///
+/// - A model on an allowlisted OpenRouter route declares `explicit` caching
+///   (ADR 0115).
+/// - An Agent on a model that declares Native gets Native with `structured@3`
+///   (#532). One that names a Projection Version keeps it, a Native one without
+///   a contract gets `structured@3`, and one whose model lacks Native keeps the
+///   omitted defaults (`legacy`, `legacy@1`).
+/// - A Native Agent on a structured contract gets `prompt_cache: explicit` when
+///   its model accepts breakpoints (ADR 0115). `legacy@1` appends per-turn text
+///   to `system`, which would end the cached prefix on those turns.
+pub async fn apply_definition_defaults(scope: &mut dyn DefinitionLookup, entry: &mut Entry) {
+	if !matches!(entry.kind.as_str(), "agent" | "model") || !entry.config.is_object() {
+		return;
+	}
+	// Reads nothing for a model this does not apply to; a config this cannot
+	// read is reported by validation.
+	if entry.kind == "model"
+		&& (entry.config.get("cache_mode").is_some()
+			|| !serde_json::from_value::<aidash_domain::model::ModelConfig>(entry.config.clone())
+				.is_ok_and(|config| config.explicit_cache_by_default()))
+	{
 		return;
 	}
 	let stored = if entry.id.is_empty() {
@@ -337,42 +352,57 @@ pub async fn apply_agent_defaults(scope: &mut dyn DefinitionLookup, entry: &mut 
 			.definition(&entry.id, &entry.version)
 			.await
 			.ok()
-			.filter(|stored| stored.kind == "agent")
+			.filter(|stored| stored.kind == entry.kind)
 	};
 	let stored_omits = |field: &str| {
 		stored
 			.as_ref()
 			.is_some_and(|stored| stored.config.get(field).is_none())
 	};
-	if entry.config.get("projection_version").is_none() && !stored_omits("projection_version") {
-		let model = entry.config.get("model").and_then(|model| {
-			Some((
-				model.get("id")?.as_str()?.to_owned(),
-				model.get("version")?.as_str()?.to_owned(),
-			))
-		});
-		// An unknown or invalid model is reported by reference validation.
-		let native = match model {
-			Some((id, version)) => match scope.definition(&id, &version).await {
-				Ok(model) if model.kind == "model" => serde_json::from_value::<
-					aidash_domain::model::ModelConfig,
-				>(model.config)
-				.is_ok_and(|config| {
-					config.supports_projection(aidash_domain::projection::ProjectionVersion::Native)
-				}),
-				_ => false,
-			},
-			None => false,
-		};
-		if native {
-			entry.config["projection_version"] = json!("native");
+	if entry.kind == "model" {
+		if !stored_omits("cache_mode") {
+			entry.config["cache_mode"] = json!("explicit");
 		}
+		return;
 	}
-	if entry.config.get("projection_version") == Some(&json!("native"))
-		&& entry.config.get("harness_contract").is_none()
-		&& !stored_omits("harness_contract")
+	let model = entry.config.get("model").and_then(|model| {
+		Some((
+			model.get("id")?.as_str()?.to_owned(),
+			model.get("version")?.as_str()?.to_owned(),
+		))
+	});
+	// An unknown or invalid model is reported by reference validation.
+	let model = match model {
+		Some((id, version)) => match scope.definition(&id, &version).await {
+			Ok(model) if model.kind == "model" => {
+				serde_json::from_value::<aidash_domain::model::ModelConfig>(model.config).ok()
+			}
+			_ => None,
+		},
+		None => None,
+	};
+	if entry.config.get("projection_version").is_none()
+		&& !stored_omits("projection_version")
+		&& model.as_ref().is_some_and(|config| {
+			config.supports_projection(aidash_domain::projection::ProjectionVersion::Native)
+		}) {
+		entry.config["projection_version"] = json!("native");
+	}
+	let native = entry.config.get("projection_version") == Some(&json!("native"));
+	if native && entry.config.get("harness_contract").is_none() && !stored_omits("harness_contract")
 	{
 		entry.config["harness_contract"] = json!("structured@3");
+	}
+	if native
+		&& entry.config.get("harness_contract") != Some(&json!("legacy@1"))
+		&& entry.config.get("harness_contract").is_some()
+		&& entry.config.get("prompt_cache").is_none()
+		&& !stored_omits("prompt_cache")
+		&& model
+			.as_ref()
+			.is_some_and(aidash_domain::model::ModelConfig::accepts_cache_breakpoints)
+	{
+		entry.config["prompt_cache"] = json!("explicit");
 	}
 }
 

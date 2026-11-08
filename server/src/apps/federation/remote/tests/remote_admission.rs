@@ -397,3 +397,95 @@ use reinhardt::query::QueryStatementBuilder as _;
 use reinhardt::query::SimpleExpr;
 
 use reinhardt::query::Expr;
+
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_home_child_summary_observes_terminal_transition(
+	#[future(awt)]
+	#[from(common::native_peer)]
+	first: common::PeerFixture,
+	#[future(awt)]
+	#[from(common::native_peer)]
+	#[with("aidash://wait-host")]
+	second: common::PeerFixture,
+) {
+	let (a, au, aschema) = first.runtime.parts();
+	let (b, bu, bschema) = second.runtime.parts();
+	let aa = first.application;
+	let ba = second.application;
+	let (mut policy, token, task) = bootstrap(&a, &aa, "http://localhost:1").await;
+	bootstrap(&b, &ba, "http://localhost:1").await;
+	policy["subjects"][aidash_domain::agent_subject(
+		&default_node(&b.store, "acme").await.to_string(),
+		"research",
+		"1.0.0",
+	)] = json!({"kind":"agent", "node":aidash_domain::nodes::NodeName::derived("acme")});
+	assert_eq!(
+		request(
+			&aa,
+			&a.config.api_token,
+			"POST",
+			"/api/authorization/acme",
+			json!({"expected_revision":1,"bundle":policy})
+		)
+		.await
+		.0,
+		200
+	);
+	common::register_pair((&a, &aa, "acme"), (&b, &ba, "acme")).await;
+	let credential = common::issued_credential(&b.store, "acme", "alice").await;
+	assert_eq!(common::set_peer_mapping(&b, "acme", "alice", json!({"node":default_node(&b.store,"acme").await.node,"source_node":default_node(&a.store,"acme").await,"source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0})).await.0, 200);
+	let grant = Uuid::new_v4();
+	let path = format!("/api/tasks/{task}/remote-grants");
+	let (status, prepared) = request(&aa, &token, "POST", &path, json!({"id":grant,"node_id":default_node(&b.store,"acme").await,"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300})).await;
+	assert_eq!(status, 200, "{prepared}");
+	let (status, activation) = request(
+		&aa,
+		&token,
+		"POST",
+		&format!("{path}/{grant}/activate"),
+		json!({}),
+	)
+	.await;
+	assert_eq!(status, 200, "{activation}");
+	let parent = a.store.task(&TEST_FIXTURE, task).await.unwrap();
+	let (status, child) = request(
+		&aa,
+		&token,
+		"POST",
+		&format!("/api/workspaces/{}/tasks", parent.workspace_id),
+		json!({"title":"Remote child","description":"Wait fixture","parent_id":task}),
+	)
+	.await;
+	assert_eq!(status, 200, "{child}");
+	let id = Uuid::parse_str(child["id"].as_str().unwrap()).unwrap();
+	let receiver = default_node(&a.store, "acme").await;
+	let command = json!({"grant_id":grant,"admission_id":activation["admission_id"],"operation":"workspace_children","data":{"parent_id":task}});
+	let fetch = || {
+		common::peer_request(
+			&aa,
+			(&b, "acme"),
+			&receiver,
+			"",
+			"/federation/v0.1/scoped/execution/commands",
+			command.clone(),
+		)
+	};
+	let (status, before) = fetch().await;
+	assert_eq!(status, 200, "{before}");
+	let fingerprint = before["terminal_fingerprint"].as_str().unwrap();
+	assert_eq!(fingerprint.len(), 32);
+	sqlx::query("UPDATE tasks SET status = 'COMPLETED' WHERE id = $1")
+		.bind(id)
+		.execute(a.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let (status, after) = fetch().await;
+	assert_eq!(status, 200, "{after}");
+	assert_ne!(after["terminal_fingerprint"], fingerprint);
+	assert!(serde_json::to_vec(&after).unwrap().len() < 128);
+	drop(aa);
+	drop(ba);
+	cleanup(a, &au, &aschema).await;
+	cleanup(b, &bu, &bschema).await;
+}

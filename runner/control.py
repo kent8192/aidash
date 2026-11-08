@@ -1156,7 +1156,8 @@ class Runner(AllocationJournal):
                 # outcome stay uncertain. Until then the Working Area stays busy, not unavailable (#709).
                 reply_lost = True
             elif 'stdout' in result:
-                self.update(operation, stdout=result['stdout'], truncated=result.get('truncated', False), output_fetched_at=time.time())
+                self.update(operation, stdout=result['stdout'], stdout_offset=result.get('stdout_offset', 0),
+                            truncated=result.get('truncated', False), output_fetched_at=time.time())
             pod = self.pod(pod_operation)
             if not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']:
                 raise SandboxGone()
@@ -1751,8 +1752,9 @@ class Runner(AllocationJournal):
             # children, avoiding needless processes during the fork check.
             # Ordinary operation previews continue while execution runs.
             if hydrated and operation != self.admission_operation and time.monotonic() - preview_at > 1:
-                captured = json.loads(self.exec_collector(operation, ["logs", "16384"]).stdout)
-                self.update(operation, stdout=captured["stdout"], truncated=captured["truncated"], output_fetched_at=time.time())
+                captured = json.loads(self.exec_collector(operation, ["logs", "16384", "window"]).stdout)
+                self.update(operation, stdout=captured["stdout"], stdout_offset=captured["offset"],
+                            truncated=captured["truncated"], output_fetched_at=time.time())
                 preview_at = time.monotonic()
             if not hydrated and time.time() >= record['startup_at'] + START_LIMIT_SECONDS:
                 raise RuntimeError("sandbox startup not confirmed")
@@ -1762,7 +1764,31 @@ class Runner(AllocationJournal):
                 raise RuntimeError("sandbox termination not confirmed after deadline")
             time.sleep(0.25)
 
-    def cancel(self, operation):
+    def refuse_undelivered(self, operation, refusal):
+        """Record that an operation the caller has not seen delivered will never run.
+
+        The caller cannot tell an unsent operation from a send it gave up on: `accept`
+        may still be waiting for this lock, or listing Pods under it, long after the
+        caller's timeout. This takes the same lock, so either `accept` recorded the
+        operation first and this is an ordinary cancel, or this record stands and
+        `accept` refuses the send. Another instance has another journal, whose silence
+        proves nothing about the operation, so its cancel stays absent."""
+        if (set(refusal) != {"digest", "instance"} or not isinstance(refusal["instance"], str)
+                or not isinstance(refusal["digest"], str) or not refusal["digest"]):
+            raise Rejected(400, "invalid cancel refusal")
+        with self.lock:
+            if refusal["instance"] != self.instance or self.path(operation).exists():
+                return
+            record = {"operation_id": operation, "digest": refusal["digest"], "wire_digest": None,
+                      "status": "cancelled", "request": {}, "created_at": time.time(), "cancel_requested": True,
+                      "termination_confirmed": True, "stdout": "", "truncated": False,
+                      "files": [], "error": None, "executed": False}
+            save(self.path(operation), record)
+            self.aggregate.track(operation, record)
+
+    def cancel(self, operation, refusal=None):
+        if refusal is not None:
+            self.refuse_undelivered(operation, refusal)
         record = self.get(operation)
         if record["status"] == "awaiting_files":
             record = self.update(operation, status="cancelled", cancel_requested=True, termination_confirmed=True)
@@ -1864,7 +1890,10 @@ class Handler(BaseHTTPRequestHandler):
             if self.command == "GET" and len(parts) == 4:
                 return runner.public(runner.get(operation))
             if self.command == "POST" and parts[4:] == ["cancel"]:
-                return runner.cancel(operation)
+                size = int(self.headers.get("Content-Length", "0"))
+                if size > 256:
+                    raise Rejected(413, "cancel request limit")
+                return runner.cancel(operation, json.loads(self.rfile.read(size)) if size else None)
             if self.command == "POST" and parts[4:] == ["start"]:
                 return runner.commit_inputs(operation)
             if self.command == "POST" and parts[4:] == ["ack"]:

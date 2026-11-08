@@ -84,12 +84,12 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		),
 		(
 			"shell",
-			"Start an isolated Shell operation. Poll the durable operation ID; cancellation cannot undo earlier effects. expected_revision is the revision from the previous result; a new area starts at 1.",
+			"Start a Shell operation and wait for completion without another model call. wait_seconds defaults to 300, is capped at 3600, and zero returns immediately. Cancellation cannot undo earlier effects. expected_revision is the revision from the previous result; a new area starts at 1.",
 			schema::<Shell>(),
 		),
 		(
 			"shell_poll",
-			"Observe the same Shell operation and bounded output continuation.",
+			"Wait for a Shell operation without polling in a loop. wait_seconds defaults to 300, is capped at 3600, and zero returns immediately. Use next_offset for later output.",
 			schema::<OperationInput>(),
 		),
 		(
@@ -99,12 +99,12 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 		),
 		(
 			"code_interpreter",
-			"Execute in the live isolated Python kernel. SESSION_RESET requires acknowledging the new ID before any code executes; saved files survive heap loss. expected_revision is the revision from the previous result; a new area starts at 1.",
+			"Execute in the live isolated Python kernel and wait for completion without another model call. wait_seconds defaults to 300, is capped at 3600, and zero returns immediately. SESSION_RESET requires acknowledging the new ID; saved files survive heap loss. expected_revision is the revision from the previous result; a new area starts at 1.",
 			schema::<Python>(),
 		),
 		(
 			"python_poll",
-			"Observe Python execution and bounded output continuation.",
+			"Wait for Python execution without polling in a loop. wait_seconds defaults to 300, is capped at 3600, and zero returns immediately. Use next_offset for later output.",
 			schema::<OperationInput>(),
 		),
 		(

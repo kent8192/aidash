@@ -266,6 +266,7 @@ impl Node {
 		};
 		// A restarted Node keeps its Deployment's egress and permitted origins.
 		common::peering::carry_over(&mut self.f, &original);
+		self.f = self.f.clone().bind_in_process();
 		self.application = environment
 			.bounded(
 				self.stage("restart", "rebuild the application"),

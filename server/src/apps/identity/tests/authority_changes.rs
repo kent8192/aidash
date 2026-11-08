@@ -1,4 +1,4 @@
-//! Authority Changes against running work (ADR 0116), over the production router
+//! Authority Changes against running work (ADR 0121), over the production router
 //! and PostgreSQL. A hold here stands in for a running step: a transaction that
 //! keeps the Tenant's policy row shared.
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.

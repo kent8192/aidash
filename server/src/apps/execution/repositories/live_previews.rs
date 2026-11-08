@@ -11,7 +11,7 @@ use crate::{
 		serializers::contracts::FileEntry,
 		services::retention,
 	},
-	authorization::access::Access,
+	authorization::{access::Access, identity::SubjectIdentity},
 	domain::Run,
 	store::Store,
 };
@@ -629,6 +629,127 @@ pub(crate) fn egress_token(store: &Store, preview: &LivePreview) -> NativeResult
 	Ok(Some(
 		crate::apps::execution::repositories::egress::session_token(preview.id, expires_at, store)?,
 	))
+}
+
+/// The Live previews a Read Recheck covers.
+pub(crate) async fn serving(store: &Store) -> NativeResult<Vec<Uuid>> {
+	let mut tx = store
+		.pool
+		.begin(&TenancyScope::Deployment(
+			aidash_application::tenancy::DeploymentScopeReason::CapabilityMaintenance,
+		))
+		.await?;
+	let mut ids = vec![];
+	for state in [State::Running, State::Stale] {
+		let rows = Row::objects()
+			.filter(Row::field_state().eq(state.as_str()))
+			.all_with_executor(&mut *tx)
+			.await
+			.map_err(|error| NativeError::External(error.to_string()))?;
+		ids.extend(rows.into_iter().map(|row| row.id));
+	}
+	tx.commit().await?;
+	Ok(ids)
+}
+
+async fn load_for_maintenance(store: &Store, id: Uuid) -> NativeResult<Option<LivePreview>> {
+	let mut tx = store
+		.pool
+		.begin(&TenancyScope::Deployment(
+			aidash_application::tenancy::DeploymentScopeReason::CapabilityMaintenance,
+		))
+		.await?;
+	let row = Row::objects()
+		.filter(Row::field_id().eq(id))
+		.all_with_executor(&mut *tx)
+		.await
+		.map_err(|error| NativeError::External(error.to_string()))?
+		.pop();
+	tx.commit().await?;
+	row.map(domain).transpose()
+}
+
+/// The Read Recheck of a serving Live preview, for everyone on its Run's chain
+/// (ADR 0070, ADR 0116). A Run that has finished stays covered: its grant remains.
+pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<()> {
+	use aidash_application::ports::authorization::ExecutionGrantRepository as _;
+	let Some(preview) = load_for_maintenance(store, id).await? else {
+		return Ok(());
+	};
+	let grant = crate::bootstrap::execution_grants(store)
+		.grant(preview.run_id)
+		.await?;
+	let (identity, subjects) = match grant {
+		Some(grant) => (
+			SubjectIdentity {
+				http_session: None,
+				credential_id: grant.credential_id,
+				tenant: grant.tenant,
+				subject: grant.root_subject,
+			},
+			Some(grant.subject_chain),
+		),
+		// A Run started through a Remote Grant has no local grant. Its session
+		// names the subject that holds the preview.
+		None => {
+			let mut tx = store
+				.pool
+				.begin(&TenancyScope::tenant(&preview.tenant)?)
+				.await?;
+			let session = EgressSession::objects()
+				.filter(EgressSession::field_id().eq(preview.id))
+				.all_with_executor(&mut *tx)
+				.await
+				.map_err(|error| NativeError::External(error.to_string()))?
+				.pop();
+			tx.commit().await?;
+			let Some(session) = session else {
+				tracing::debug!(%id, "live preview has no grant or session to recheck");
+				return Ok(());
+			};
+			(
+				SubjectIdentity {
+					http_session: None,
+					credential_id: session.credential_id,
+					tenant: session.tenant,
+					subject: session.principal,
+				},
+				None,
+			)
+		}
+	};
+	let mut access = Access::begin(store, &identity).await?;
+	if let Some(subjects) = subjects {
+		access.subjects = subjects;
+	}
+	let result = access.recheck_run_reads(preview.run_id).await.map(|_| ());
+	access.finish(result).await
+}
+
+/// Stop a serving Live preview for a Read Recheck's reason. As in the sweep, the
+/// row settles when the Runner proves the Pod is gone, here or on a later pass.
+pub(crate) async fn stop_serving(store: &Store, id: Uuid, reason: StopReason) -> NativeResult<()> {
+	let Some(mut preview) = load_for_maintenance(store, id).await? else {
+		return Ok(());
+	};
+	if !matches!(preview.state, State::Running | State::Stale) {
+		return Ok(());
+	}
+	let tenant = preview.tenant.clone();
+	preview.stopping(reason);
+	{
+		let mut tx = store.pool.begin(&TenancyScope::tenant(&tenant)?).await?;
+		Row::objects()
+			.save_with_executor(&mut *tx, &to_row(&preview))
+			.await
+			.map_err(|error| NativeError::External(error.to_string()))?;
+		tx.commit().await?;
+	}
+	if terminate(store, &preview).await.unwrap_or(false) {
+		preview.termination_confirmed = true;
+		settle_row(store, &tenant, &mut preview).await?;
+	}
+	Ok(())
 }
 
 /// One sweep pass: stale marking and stops at the idle, absolute and start

@@ -121,7 +121,7 @@ impl WorkerStep for Step {
 	}
 	async fn admit(&mut self) -> Result<()> {
 		// A new step is new work: it waits behind an Authority Change, giving up
-		// its visibility lease while it does (ADR 0116). A Run whose Tenant cannot
+		// its visibility lease while it does (ADR 0121). A Run whose Tenant cannot
 		// be read goes on to `Guard::begin`, which meets the same failure itself.
 		if let Ok(tenant) = self.federation.store.run_tenant(self.run.id).await {
 			crate::database::authority_change::enter_releasing(
@@ -312,6 +312,10 @@ pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 		NativeError::RemoteSemantic(reason) => ExecutionFailure::Semantic(*reason),
 		NativeError::Context(reason) => ExecutionFailure::Context(*reason),
 		NativeError::DeciderOutage => ExecutionFailure::DeciderOutage,
+		NativeError::NodeUnreachable { node, after_effect } => ExecutionFailure::NodeUnreachable {
+			node: node.clone(),
+			retry: !after_effect,
+		},
 		// The harness owns bounded compact-and-retry; an overflow that escapes
 		// it has exhausted recovery and must pause rather than transport-retry.
 		NativeError::ContextOverflow => ExecutionFailure::Context(

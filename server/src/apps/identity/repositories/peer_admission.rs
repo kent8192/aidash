@@ -1036,7 +1036,7 @@ impl PeerAdmissionRepository for Repository<'_> {
 		let subject = admitted.subject().unwrap_or("");
 		let store = &self.runtime.store;
 		let mut tx = store.pool.begin(&TenancyScope::tenant(tenant)?).await?;
-		// A stop waits for no Authority Change (ADR 0116). The admission's own row
+		// A stop waits for no Authority Change (ADR 0121). The admission's own row
 		// lock below is enough: its Run's step holds that row shared for as long as
 		// it runs, and the Home Node learns the admission's id only once it has
 		// committed, so a cancel cannot overtake its admission.

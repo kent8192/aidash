@@ -179,6 +179,15 @@ impl Authorization {
 		AuthorizationDecision::append_many(&mut **tx, tenant, records).await
 	}
 
+	/// Write the new rows of one Access's audit in its own transaction.
+	pub(super) async fn record_rows(
+		tx: &mut crate::database::native::Transaction,
+		tenant: &str,
+		rows: Vec<crate::apps::identity::models::DecisionRow>,
+	) -> Result<()> {
+		AuthorizationDecision::append_unrecorded(&mut **tx, tenant, rows).await
+	}
+
 	pub async fn evaluate(&self, tenant: &str, input: &Evaluation) -> Result<Decision> {
 		Ok(crate::bootstrap::authorization(self.pool.clone())
 			.evaluate(tenant, input)
