@@ -567,10 +567,7 @@ impl ModelProvider for OpenRouterProvider {
 						.line(scope)
 				})
 				.transpose()?;
-			let session = match (&request.cache_scope, request.routing_run, &self.cache_salt) {
-				(Some(scope), Some(run), Some(keys)) => Some(keys.session_id(scope, run)?),
-				_ => None,
-			};
+			let session = routing_session(self.cache_salt.as_ref(), &request)?;
 			for modality in request.content_parts.iter().filter_map(|part| match part {
 				ContentPart::Image { .. } => Some("image"),
 				ContentPart::Audio { .. } => Some("audio"),
@@ -704,6 +701,19 @@ fn billed_usage(result: &Result<ModelResponse>) -> Option<&ModelResponse> {
 	match result {
 		Ok(response) => Some(response),
 		Err(error) => error.terminal_usage(),
+	}
+}
+
+/// The sticky-routing id every step of a salted Run sends (ADR 0115), on the
+/// Chat and the Responses transport alike. Absent without a Cache Scope, a Run
+/// or the node's Cache Salt Keys, so Legacy and auxiliary requests send none.
+pub(crate) fn routing_session(
+	keys: Option<&CacheSaltKeys>,
+	request: &ModelRequest,
+) -> Result<Option<String>> {
+	match (&request.cache_scope, request.routing_run, keys) {
+		(Some(scope), Some(run), Some(keys)) => keys.session_id(scope, run).map(Some),
+		_ => Ok(None),
 	}
 }
 
