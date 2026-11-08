@@ -21,6 +21,8 @@ pub struct ExecutionAgent {
 	pub model: EntityRef,
 	pub instructions: String,
 	pub knowledge_digest: Option<String>,
+	/// How many Reference files this version binds; the model is told only this.
+	pub reference_files: usize,
 	pub tools: Vec<EntityRef>,
 	pub skills: Vec<EntityRef>,
 	pub max_steps: i32,

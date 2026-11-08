@@ -21,13 +21,33 @@ pub struct Store {
 	_lease: DatabaseConnectionLease,
 	pub connection: DatabaseConnection,
 }
+/// Match the Community server's connection limits (ADR 0113). Reinhardt builds
+/// this pool from the URL alone, so the limits travel as URL options.
+fn with_connection_limits(url: &str) -> Result<String> {
+	let seconds = match std::env::var("AIDASH_DATABASE_STATEMENT_TIMEOUT_SECONDS") {
+		Ok(value) => value.parse::<u64>().map_err(|_| Error::Unavailable)?,
+		Err(_) => 300,
+	};
+	let separator = if url.contains('?') { '&' } else { '?' };
+	let mut limited = format!(
+		"{url}{separator}options[tcp_keepalives_idle]=15\
+		&options[tcp_keepalives_interval]=5\
+		&options[tcp_keepalives_count]=3\
+		&options[tcp_user_timeout]=30000"
+	);
+	if seconds > 0 {
+		limited.push_str(&format!("&options[statement_timeout]={seconds}s"));
+	}
+	Ok(limited)
+}
+
 impl Store {
 	// This independent service owns its schema and role; Cloud's Tenant-scoped
 	// Pool cannot compose it. Bootstrap registers only this explicit owned lease,
 	// without installing a global/default connection.
 	#[allow(clippy::disallowed_methods)]
 	pub async fn connect(url: &str) -> Result<Self> {
-		let backend = Backend::connect_postgres(url)
+		let backend = Backend::connect_postgres(&with_connection_limits(url)?)
 			.await
 			.map_err(|_| Error::Unavailable)?;
 		let lease = DatabaseConnectionLease::register(backend)?;

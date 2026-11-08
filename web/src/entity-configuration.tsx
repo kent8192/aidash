@@ -1,3 +1,8 @@
+import {
+  ReferenceFolder,
+  type ReferenceEntry,
+} from "./capabilities/reference-folder";
+import { mergeReferences } from "./capabilities/reference-folder-model";
 import { ConnectionStep } from "./connections/install";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
@@ -599,27 +604,43 @@ export function EntityConfiguration({
               entries={data.registry}
             />
           ) : (
-            <Field label="Source settings (JSON)">
-              <Textarea
-                key={sourceAdapter}
-                value={sourceValue}
-                onChange={(e) => {
-                  setSourceValue(e.target.value);
-                  try {
-                    const value = JSON.parse(e.target.value);
-                    e.target.setCustomValidity(
-                      value &&
-                        !Array.isArray(value) &&
-                        typeof value === "object"
-                        ? ""
-                        : "Enter a JSON object",
+            <>
+              {sourceAdapter === "reference_attachments" && (
+                <ReferenceFolder
+                  onAdded={(references) => {
+                    const current = Array.isArray(settings.references)
+                      ? (settings.references as ReferenceEntry[])
+                      : [];
+                    setSourceValue(
+                      JSON.stringify({
+                        references: mergeReferences(current, references),
+                      }),
                     );
-                  } catch {
-                    e.target.setCustomValidity("Enter valid JSON");
-                  }
-                }}
-              />
-            </Field>
+                  }}
+                />
+              )}
+              <Field label="Source settings (JSON)">
+                <Textarea
+                  key={sourceAdapter}
+                  value={sourceValue}
+                  onChange={(e) => {
+                    setSourceValue(e.target.value);
+                    try {
+                      const value = JSON.parse(e.target.value);
+                      e.target.setCustomValidity(
+                        value &&
+                          !Array.isArray(value) &&
+                          typeof value === "object"
+                          ? ""
+                          : "Enter a JSON object",
+                      );
+                    } catch {
+                      e.target.setCustomValidity("Enter valid JSON");
+                    }
+                  }}
+                />
+              </Field>
+            </>
           )}
         </>
       )}
