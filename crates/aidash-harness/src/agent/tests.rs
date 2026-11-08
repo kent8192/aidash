@@ -1976,7 +1976,11 @@ async fn a_node_that_did_not_answer_before_the_effect_is_retried_then_returned_t
 			&fixture.run,
 			fixture.backend.0.token,
 			"call",
-			Err(unreachable()),
+			DeliveredTool {
+				name: "task_delegate",
+				replay_safe: true,
+			},
+			(Err(unreachable()), None),
 		)
 		.await
 		.unwrap_err();
@@ -1998,7 +2002,11 @@ async fn a_node_that_did_not_answer_before_the_effect_is_retried_then_returned_t
 		&fixture.run,
 		fixture.backend.0.token,
 		"call",
-		Err(unreachable()),
+		DeliveredTool {
+			name: "task_delegate",
+			replay_safe: true,
+		},
+		(Err(unreachable()), None),
 	)
 	.await
 	.unwrap();
@@ -2019,10 +2027,17 @@ async fn a_node_that_did_not_answer_after_the_effect_passes_through_without_a_re
 		&fixture.run,
 		fixture.backend.0.token,
 		"call",
-		Err(Error::NodeUnreachable {
-			node: "aidash://other/sibling".into(),
-			after_effect: true,
-		}),
+		DeliveredTool {
+			name: "task_delegate",
+			replay_safe: true,
+		},
+		(
+			Err(Error::NodeUnreachable {
+				node: "aidash://other/sibling".into(),
+				after_effect: true,
+			}),
+			None,
+		),
 	)
 	.await
 	.unwrap_err();
