@@ -66,7 +66,14 @@ impl RawRun {
 			updated_at: m.updated_at,
 		})
 	}
+	/// The call an Authority Pause stopped, if a person may decline it.
+	pub fn paused_call(&self) -> Option<super::PausedCall> {
+		decode(self.metadata.phase, self.pending.clone())
+			.ok()
+			.and_then(|(_, recovery)| recovery.paused_call)
+	}
 	pub fn inspect(self) -> RunInspection {
+		let declinable_call = self.paused_call().map(|paused| paused.declinable());
 		let lease_wait = StateRequirements::from_pending(&self.pending)
 			.ok()
 			.and_then(|requires| self.metadata.lease_wait(&requires));
@@ -75,10 +82,11 @@ impl RawRun {
 				state_version: StateVersion::default(),
 				metadata: self.metadata,
 				state: Some(run.state),
-				recovery: Some(run.recovery),
+				recovery: Some(run.recovery.hide_declines()),
 				context: Some(run.context),
 				state_error: None,
 				lease_wait,
+				declinable_call,
 			},
 			Err(error) => {
 				// A validated failure disposition is inspectable without making its
@@ -94,10 +102,11 @@ impl RawRun {
 					state_version: StateVersion::default(),
 					metadata: self.metadata,
 					state,
-					recovery,
+					recovery: recovery.map(RecoveryState::hide_declines),
 					context: None,
 					state_error: Some(error.to_string()),
 					lease_wait,
+					declinable_call,
 				}
 			}
 		}
@@ -143,6 +152,11 @@ pub struct RunInspection {
 	/// Set while only a worker with the listed capabilities may claim the Run.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub lease_wait: Option<LeaseWait>,
+	/// The call a paused Run stopped on (#763). Never serialized: the Run's `recovery` does not
+	/// carry it either, and a caller is shown it only after the check of whether they may decline.
+	#[serde(skip)]
+	#[schemars(skip)]
+	pub declinable_call: Option<super::DeclinableCall>,
 }
 impl std::ops::Deref for RunInspection {
 	type Target = RunMetadata;
@@ -160,6 +174,7 @@ impl From<Run> for RunInspection {
 			context: Some(run.context),
 			state_error: None,
 			lease_wait: None,
+			declinable_call: None,
 		}
 	}
 }
@@ -229,9 +244,13 @@ impl RawRun {
 		if !state.failure_delivery() {
 			self.decode()?;
 		}
-		if self.control == RunControl::Paused
-			&& (recovery.semantic_reason.is_some() || recovery.context_reason.is_some())
-		{
+		if self.control != RunControl::Paused {
+			return Ok(None);
+		}
+		// Resuming lifts the refusal, so the call is paused on no longer. Declined calls stay
+		// until the worker has answered them.
+		let had_call = recovery.paused_call.take().is_some();
+		if recovery.semantic_reason.is_some() || recovery.context_reason.is_some() {
 			recovery.retry = None;
 			recovery.semantic_reason = None;
 			recovery.context_reason = None;
@@ -245,6 +264,8 @@ impl RawRun {
 			// the decision cycle stays where it was.
 			recovery.retry = None;
 			recovery.node_retry = 0;
+			Ok(Some(encode(&state, &recovery)?))
+		} else if had_call {
 			Ok(Some(encode(&state, &recovery)?))
 		} else {
 			Ok(None)

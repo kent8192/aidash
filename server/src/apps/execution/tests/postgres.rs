@@ -660,6 +660,7 @@ async fn a_refused_invocation_is_accepted_and_resume_starts_it_again(
 		check: aidash_domain::tool::RefusalCheck::Policy,
 		action: Some("task.delegate".into()),
 		subject: None,
+		call: None,
 	};
 	for (key, replay_safe) in [("replay-safe", true), ("unsafe", false)] {
 		store

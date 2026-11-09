@@ -207,6 +207,7 @@ fn unnamed_failure() -> AuthorityFailure {
 		check: RefusalCheck::Unnamed,
 		action: None,
 		subject: None,
+		call: None,
 	}))
 }
 
@@ -216,6 +217,7 @@ fn refusal() -> AuthorityRefusal {
 		check: RefusalCheck::Policy,
 		action: Some("task.delegate".into()),
 		subject: None,
+		call: None,
 	}
 }
 

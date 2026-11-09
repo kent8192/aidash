@@ -16,6 +16,7 @@ pub fn scratch_refusal(error: Error) -> Error {
 				check: aidash_domain::tool::RefusalCheck::Policy,
 				action: Some("scratch.use".into()),
 				subject: None,
+				call: None,
 			}))
 		}
 		other => other,

@@ -1087,17 +1087,19 @@ impl Home {
 						aidash_domain::federation::execution::Refusal::PolicyAsk,
 					) => Error::AuthorityRefused(Box::new(aidash_domain::tool::AuthorityRefusal {
 						tool: "task_delegate".into(),
-						check: aidash_domain::tool::RefusalCheck::Policy,
+						check: aidash_domain::tool::RefusalCheck::RemoteAsk,
 						action: Some("federation.execute".into()),
 						subject: None,
+						call: None,
 					})),
 					Error::RemoteExecutionRefused(
 						aidash_domain::federation::execution::Refusal::NodeUseAsk,
 					) => Error::AuthorityRefused(Box::new(aidash_domain::tool::AuthorityRefusal {
 						tool: "task_delegate".into(),
-						check: aidash_domain::tool::RefusalCheck::Policy,
+						check: aidash_domain::tool::RefusalCheck::RemoteAsk,
 						action: Some("node.use".into()),
 						subject: None,
+						call: None,
 					})),
 					Error::RemoteExecutionRefused(reason) => Error::Invalid(reason.to_string()),
 					Error::External(message)

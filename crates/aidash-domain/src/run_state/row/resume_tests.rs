@@ -195,6 +195,44 @@ fn inspection_omits_source_text_while_storage_preserves_the_retry_cache(mut raw:
 	}
 }
 #[rstest]
+fn resuming_forgets_the_paused_call_and_keeps_declined_calls(mut raw: RawRun) {
+	let recovery = raw.pending["recovery"].as_object_mut().unwrap();
+	recovery.remove("semantic_reason");
+	recovery.insert(
+		"paused_call".into(),
+		json!({"key":"run:1:0","index":0,"replay_safe":true,"tool":"task_delegate","kind":"policy"}),
+	);
+	recovery.insert(
+		"declined_calls".into(),
+		json!([{"key":"run:1:1","kind":"catalog_approval"}]),
+	);
+	let result = raw.resumed_pending().unwrap().unwrap();
+	assert_eq!(result["data"], raw.pending["data"]);
+	assert!(result["recovery"].get("paused_call").is_none());
+	assert_eq!(
+		result["recovery"]["declined_calls"],
+		json!([{"key":"run:1:1","kind":"catalog_approval"}])
+	);
+	// An authority pause is not a compaction decision, so resuming it starts no new one.
+	assert!(result["recovery"].get("decision_cycle").is_none());
+}
+#[rstest]
+fn recovery_carries_a_paused_call_and_declined_calls_round_trip() {
+	let recovery: crate::RecoveryState = serde_json::from_value(json!({
+		"paused_call":{"key":"run:1:0","index":0,"replay_safe":false,"tool":"task_delegate","kind":"other_node"},
+		"declined_calls":[{"key":"run:1:2","kind":"agent_configuration"}],
+		"retry":null
+	}))
+	.unwrap();
+	let again: crate::RecoveryState =
+		serde_json::from_value(serde_json::to_value(&recovery).unwrap()).unwrap();
+	assert_eq!(again.paused_call, recovery.paused_call);
+	assert_eq!(again.declined_calls, recovery.declined_calls);
+	let plain: crate::RecoveryState = serde_json::from_value(json!({"retry":null})).unwrap();
+	let wire = serde_json::to_value(&plain).unwrap();
+	assert!(wire.get("paused_call").is_none() && wire.get("declined_calls").is_none());
+}
+#[rstest]
 fn resuming_after_a_node_did_not_answer_gives_a_fresh_set_of_retries(mut raw: RawRun) {
 	let recovery = raw.pending["recovery"].as_object_mut().unwrap();
 	recovery.remove("semantic_reason");

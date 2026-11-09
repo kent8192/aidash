@@ -3770,6 +3770,290 @@ async fn remote_inputs_are_durable_and_idempotent_and_controls_remain_scoped(
 	p.close().await;
 }
 
+const DECLINE_EPOCH: i64 = 5;
+
+impl Pair {
+	fn declined_key(&self) -> String {
+		format!("{}:{DECLINE_EPOCH}:0", self.admission)
+	}
+
+	/// The receiver's Run is paused on its only call, as an Authority Pause that no row
+	/// contradicts leaves it.
+	async fn pause_receiver_on_call(&self) {
+		use aidash_domain::provider::{ModelResponse, ToolCall};
+		use aidash_domain::run_state::{
+			PausedCall, RecoveryState, RunState, ToolCallState, encode,
+		};
+		let state = RunState::ToolCall(Box::new(ToolCallState {
+			response: ModelResponse {
+				tool_calls: vec![ToolCall {
+					id: "call-0".into(),
+					name: "task_delegate".into(),
+					arguments: json!({"task_id": Uuid::nil()}),
+				}],
+				..Default::default()
+			},
+			response_epoch: DECLINE_EPOCH,
+			..Default::default()
+		}));
+		let recovery = RecoveryState {
+			paused_call: Some(PausedCall {
+				key: self.declined_key(),
+				index: 0,
+				replay_safe: true,
+				tool: "task_delegate".into(),
+				kind: aidash_domain::tool::RefusalKind::OtherNode,
+			}),
+			..Default::default()
+		};
+		let phase = serde_json::to_value(state.phase()).unwrap();
+		sqlx::query(
+			"UPDATE runs SET pending = $1, phase = $2, control = 'PAUSED', lease_owner = NULL, \
+			 lease_until = NULL, error = 'task_delegate: the other Node refused' WHERE id = $3",
+		)
+		.bind(encode(&state, &recovery).unwrap())
+		.bind(phase.as_str().unwrap())
+		.bind(self.admission)
+		.execute(self.b.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	}
+
+	async fn events_of(store: &Federation, run: Uuid, kind: &str) -> Vec<Value> {
+		sqlx::query_scalar::<_, Value>(
+			"SELECT data FROM events WHERE kind = $1 AND data->>'run_id' = $2",
+		)
+		.bind(kind)
+		.bind(run.to_string())
+		.fetch_all(store.store.pool.fixture_driver())
+		.await
+		.unwrap()
+	}
+
+	async fn home_events(&self, kind: &str) -> Vec<Value> {
+		sqlx::query_scalar::<_, Value>("SELECT data FROM events WHERE kind = $1")
+			.bind(kind)
+			.fetch_all(self.a.store.pool.fixture_driver())
+			.await
+			.unwrap()
+	}
+
+	fn decline_path(&self) -> String {
+		format!(
+			"/api/tasks/{}/remote-grants/{}/declined-calls",
+			self.task, self.grant
+		)
+	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn the_home_requester_declines_a_call_a_run_on_the_receiver_is_paused_on(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	p.pause_receiver_on_call().await;
+	let key = p.declined_key();
+
+	// The Home sees which call stopped, by tool and kind, and nothing of the receiver's own
+	// words: no action, no subject.
+	let states = request(
+		&p.aa,
+		&p.token,
+		"GET",
+		&format!("/api/tasks/{}/remote-executions", p.task),
+		json!({}),
+	)
+	.await;
+	assert_eq!(states.0, 200, "{}", states.1);
+	let execution = &states.1[0]["execution"];
+	assert_eq!(execution["control"], "PAUSED");
+	assert_eq!(
+		execution["declinable_call"],
+		json!({"call": key, "tool": "task_delegate", "kind": "other_node"})
+	);
+	for leaked in ["task.delegate", "action", "subject", "other Node refused"] {
+		assert!(
+			!execution.to_string().contains(leaked),
+			"{leaked}: {execution}"
+		);
+	}
+
+	// A person of the receiver's own Node cannot decline, whatever they hold.
+	let (status, body) = request(
+		&p.ba,
+		&p.receiver_token,
+		"POST",
+		&format!("/api/runs/{}/declined-calls", p.admission),
+		json!({"call": key}),
+	)
+	.await;
+	assert_eq!(status, 403, "{body}");
+	assert_eq!(p.run().await.control.as_str(), "PAUSED");
+
+	// A sentence cannot be sent first for a Run on another Node: the receiver pauses it, and a
+	// paused Run takes no Run message from the Home (see the test of that name). Declining makes
+	// it active, after which the message goes through.
+	let message_path = format!("/api/tasks/{}/remote-grants/{}/messages", p.task, p.grant);
+	let (status, declined) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&p.decline_path(),
+		json!({"call": key}),
+	)
+	.await;
+	assert_eq!(status, 200, "{declined}");
+	assert_eq!(declined["control"], "ACTIVE");
+	assert!(declined.get("declinable_call").is_none(), "{declined}");
+	assert_eq!(p.run().await.control.as_str(), "ACTIVE");
+
+	let after = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&message_path,
+		json!({"id":Uuid::new_v4(),"content":"Find another way to split the work."}),
+	)
+	.await;
+	assert_eq!(after.0, 200, "{}", after.1);
+	assert_eq!(
+		p.b.store
+			.run_inputs(&TEST_FIXTURE, p.admission)
+			.await
+			.unwrap()
+			.len(),
+		1
+	);
+
+	// The receiver's row holds the sentence the model gets, and the call is not offered again.
+	let sentence = aidash_domain::tool::RefusalKind::OtherNode.declined_sentence();
+	let (status, result): (String, Option<Value>) =
+		sqlx::query_as("SELECT status, result FROM invocations WHERE idempotency_key = $1")
+			.bind(&key)
+			.fetch_one(p.b.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(status, "COMPLETED");
+	assert_eq!(result, Some(json!({"error": sentence})));
+	let (status, stale) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&p.decline_path(),
+		json!({"call": key}),
+	)
+	.await;
+	assert_eq!(status, 409, "{stale}");
+
+	// The receiver's event says the Home declined it and names no one; the Home's names the person.
+	let there = Pair::events_of(&p.b, p.admission, "run.call_declined").await;
+	assert_eq!(there.len(), 1, "{there:?}");
+	assert_eq!(there[0]["by"], "home");
+	assert_eq!(there[0]["kind"], "other_node");
+	assert!(!there[0].to_string().contains("alice"), "{}", there[0]);
+	let here = p.home_events("remote.call_declined").await;
+	assert_eq!(here.len(), 1, "{here:?}");
+	assert_eq!(here[0]["by"], "alice");
+	assert_eq!(here[0]["tool"], "task_delegate");
+	assert_eq!(here[0]["kind"], "other_node");
+	assert_eq!(here[0]["call"], key);
+	assert!(
+		!here[0].to_string().contains("task.delegate"),
+		"{}",
+		here[0]
+	);
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_home_member_who_is_not_the_requester_needs_run_decline_call(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	p.pause_receiver_on_call().await;
+	let key = p.declined_key();
+	let mut bundle = p.source_policy.clone();
+	bundle["subjects"]["mia"] = json!({"kind":"user"});
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"mia-no-decline","effect":"deny","subjects":{"ids":["mia"]},
+		"actions":["run.decline_call"],"resources":{"kinds":["*"]}
+	}));
+	common::replace_policy(&p.a.store, "acme", bundle).await;
+	let mia = common::subject_credential(&p.a.store, "acme", "mia").await;
+
+	let (status, body) =
+		request(&p.aa, &mia, "POST", &p.decline_path(), json!({"call": key})).await;
+	assert_eq!(status, 403, "{body}");
+	assert_eq!(p.run().await.control.as_str(), "PAUSED");
+	assert!(p.home_events("remote.call_declined").await.is_empty());
+
+	// Without the denial the same request is allowed for someone who is not the requester.
+	let mut bundle = p.source_policy.clone();
+	bundle["subjects"]["mia"] = json!({"kind":"user"});
+	common::replace_policy(&p.a.store, "acme", bundle).await;
+	let (status, declined) =
+		request(&p.aa, &mia, "POST", &p.decline_path(), json!({"call": key})).await;
+	assert_eq!(status, 200, "{declined}");
+	assert_eq!(p.run().await.control.as_str(), "ACTIVE");
+	let here = p.home_events("remote.call_declined").await;
+	assert_eq!(here[0]["by"], "mia");
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_run_message_from_the_home_cannot_reach_a_run_the_receiver_has_paused(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	let control = format!("/api/tasks/{}/remote-grants/{}/control", p.task, p.grant);
+	let path = format!("/api/tasks/{}/remote-grants/{}/messages", p.task, p.grant);
+	let paused = request(&p.aa, &p.token, "POST", &control, json!({"action":"pause"})).await;
+	assert_eq!(paused.0, 200, "{}", paused.1);
+	// The receiver's callback to the Home is refused while the Run is not active, so nothing is
+	// queued for a paused Run on another Node (`home_commands::require_in`).
+	let sent = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&path,
+		json!({"id":Uuid::new_v4(),"content":"while paused"}),
+	)
+	.await;
+	assert_eq!(sent.0, 403, "{}", sent.1);
+	assert!(
+		p.b.store
+			.run_inputs(&TEST_FIXTURE, p.admission)
+			.await
+			.unwrap()
+			.is_empty()
+	);
+	let resumed = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&control,
+		json!({"action":"resume"}),
+	)
+	.await;
+	assert_eq!(resumed.0, 200, "{}", resumed.1);
+	let sent = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&path,
+		json!({"id":Uuid::new_v4(),"content":"after resuming"}),
+	)
+	.await;
+	assert_eq!(sent.0, 200, "{}", sent.1);
+	p.close().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn revocation_during_remote_inference_discards_response_and_cancel_closes_both_sides(

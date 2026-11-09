@@ -449,6 +449,14 @@ pub struct RecoveryState {
 	/// Typed context-recovery reason for a paused Run; cleared on resume.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub context_reason: Option<crate::context::recovery::Failure>,
+	/// The tool call an Authority Pause stopped, when a person may decline it (#763). Cleared on
+	/// resume; people never read it, only whether they may decline.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub paused_call: Option<PausedCall>,
+	/// Calls a person declined, kept until the worker has answered them. Separate from
+	/// `paused_call`: an earlier sibling of a Tool Batch can pause the Run again first.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub declined_calls: Vec<DeclinedCall>,
 	pub retry: Option<RetryState>,
 	// A claim after a lost lease sets it to at least 1, which isolates the
 	// step; each Isolated Step adds one when it acquires the gate, so a claim
@@ -478,10 +486,52 @@ pub struct RecoveryState {
 	)]
 	pub degraded: crate::semantic::degraded::DegradedContext,
 }
+/// The call an Authority Pause stopped, recorded only when it certainly did not run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PausedCall {
+	pub key: String,
+	pub index: usize,
+	pub replay_safe: bool,
+	pub tool: String,
+	pub kind: crate::tool::RefusalKind,
+}
+/// What a person is offered to decline: the call by its key, the tool, and the kind of refusal.
+/// Never the action, the subject or the receiver's own sentence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeclinableCall {
+	pub call: String,
+	pub tool: String,
+	pub kind: crate::tool::RefusalKind,
+}
+impl PausedCall {
+	pub fn declinable(&self) -> DeclinableCall {
+		DeclinableCall {
+			call: self.key.clone(),
+			tool: self.tool.clone(),
+			kind: self.kind,
+		}
+	}
+}
+/// A call a person declined; the worker answers it with the kind's fixed sentence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DeclinedCall {
+	pub key: String,
+	pub kind: crate::tool::RefusalKind,
+}
 fn is_zero(value: &u32) -> bool {
 	*value == 0
 }
 impl RecoveryState {
+	/// What people read of a Run's recovery: the call it paused on and the calls declined are
+	/// offered separately, only to someone who may use them.
+	pub fn hide_declines(mut self) -> Self {
+		self.paused_call = None;
+		self.declined_calls.clear();
+		self
+	}
 	/// Whether this attempt may degrade an unavailable workspace slot: it is
 	/// the last one of the bounded outage retry, or an earlier step of the Run
 	/// already degraded and no retrieval has succeeded since (ADR 0059).

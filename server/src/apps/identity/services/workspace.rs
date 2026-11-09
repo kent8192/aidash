@@ -102,8 +102,6 @@ impl Access {
 		&mut self,
 		run: impl Into<crate::domain::RunMetadata>,
 	) -> crate::Result<Option<aidash_domain::run_state::RunReadsBlock>> {
-		use aidash_application::authorization::visibility::provenance::ReadBlock;
-		use aidash_domain::run_state::RunReadsBlock;
 		let run = run.into();
 		let Some(block) = self.read_block.take() else {
 			return Ok(None);
@@ -130,12 +128,31 @@ impl Access {
 		{
 			return Ok(None);
 		}
-		Ok(Some(match block {
-			ReadBlock::Definition(_) => RunReadsBlock::DefinitionNotReadable,
-			ReadBlock::RemoteRead => RunReadsBlock::RemoteRead,
-			ReadBlock::SemanticRead => RunReadsBlock::SemanticRead,
-			ReadBlock::Source(source) => RunReadsBlock::Source { source },
-		}))
+		Ok(Some(read_block_reason(block)))
+	}
+
+	/// What stops a person from letting the Run go on: the Run's own read walk alone, without
+	/// asking whether this reader may read the Run itself (#763). Declining shows the tool and the
+	/// kind of refusal, never content, so it does not depend on `run.read` or on the Run's
+	/// Working Area; what the Run read still has to be readable. `None` when nothing stops it,
+	/// or when the Run is another Home's.
+	pub(crate) async fn run_reads_stop(
+		&mut self,
+		run: impl Into<crate::domain::RunMetadata>,
+	) -> crate::Result<Option<aidash_domain::run_state::RunReadsBlock>> {
+		let run = run.into();
+		if !run.is_local(&self.node_id) {
+			return Ok(None);
+		}
+		self.read_block = None;
+		if self.run_reads_visible(run.id).await? {
+			return Ok(None);
+		}
+		let Some(block) = self.read_block.take() else {
+			// The walk refused without saying which read; stay closed.
+			return Err(crate::Error::Forbidden);
+		};
+		Ok(Some(read_block_reason(block)))
 	}
 
 	/// Preserve the reason when memory execution rechecks its complete Run graph.
@@ -516,5 +533,19 @@ impl Workspaces {
 		.await
 		.map_err(Into::into);
 		access.finish(result).await
+	}
+}
+
+/// The reason a person is given for a Run's read walk stopping, in terms that name no content.
+fn read_block_reason(
+	block: aidash_application::authorization::visibility::provenance::ReadBlock,
+) -> aidash_domain::run_state::RunReadsBlock {
+	use aidash_application::authorization::visibility::provenance::ReadBlock;
+	use aidash_domain::run_state::RunReadsBlock;
+	match block {
+		ReadBlock::Definition(_) => RunReadsBlock::DefinitionNotReadable,
+		ReadBlock::RemoteRead => RunReadsBlock::RemoteRead,
+		ReadBlock::SemanticRead => RunReadsBlock::SemanticRead,
+		ReadBlock::Source(source) => RunReadsBlock::Source { source },
 	}
 }

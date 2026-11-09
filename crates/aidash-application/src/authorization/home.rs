@@ -10,7 +10,7 @@ use aidash_domain::{
 		execution::{
 			PrepareInput, Refusal,
 			admission::{
-				Activation, Admission, Message, MessageReceipt, RemoteExecutionControl,
+				Activation, Admission, Declined, Message, MessageReceipt, RemoteExecutionControl,
 				RemoteExecutionControlState,
 			},
 			home::{FollowUpInput, Grant, Status},
@@ -108,6 +108,95 @@ pub async fn message<R: HomeRepository>(
 		return Err(Error::Forbidden);
 	}
 	Ok(receipt)
+}
+/// A person on the Home declines the call a remote Run is paused on (#763). The requester needs
+/// what `control` needs for a resume; anyone else needs `run.decline_call` and may read the Task.
+pub async fn decline_call<R: HomeRepository>(
+	repository: &R,
+	task: Uuid,
+	id: Uuid,
+	call: &str,
+) -> Result<Activation> {
+	if call.is_empty() || call.len() > 256 {
+		return Err(Error::Invalid("call key is empty or too long".into()));
+	}
+	let identity = subject(repository)?;
+	let mut scope = repository.begin().await?;
+	let found = scope.task_grant(task, id).await;
+	let grant = finish(scope, found).await?.ok_or(Error::Forbidden)?;
+	let own = grant.tenant == identity.tenant && grant.root_subject == identity.subject;
+	if own {
+		requester(repository, task, id, true).await?;
+	}
+	let mut scope = repository.begin().await?;
+	let result = async {
+		let task = if own {
+			managed_task(&mut scope, task, true).await?
+		} else {
+			scope.task_read(task).await?
+		};
+		let resource = scope.task_resource(&task).await?;
+		let binding = scope.binding(id).await?.ok_or(Error::Forbidden)?;
+		let run = scope.resource("run", binding.admission_id, resource.attributes);
+		scope
+			.require(
+				&run,
+				if own {
+					"run.control"
+				} else {
+					"run.decline_call"
+				},
+			)
+			.await?;
+		Ok((binding.admission_id, task.workspace_id))
+	}
+	.await;
+	let (admission, workspace) = finish(scope, result).await?;
+	if !serde_json::from_value::<Binding>(grant.semantic.clone())?.disabled() {
+		let (mut authority, description) = repository.description(&grant.node_id, id).await?;
+		let result = authority
+			.resume_semantic(
+				id,
+				admission,
+				description.task.workspace_id,
+				&identity.subject,
+			)
+			.await;
+		finish(authority, result).await?;
+	}
+	let declined: Declined = repository
+		.request(
+			grant.workspace_id,
+			&grant.node_id,
+			&format!("/scoped/execution/admissions/{admission}/declined-calls"),
+			&json!({"grant_id":id,"call":call}),
+		)
+		.await?;
+	let activation = declined.activation;
+	if activation.grant_id != id
+		|| activation.admission_id != admission
+		|| activation.run_id != admission
+	{
+		return Err(Error::Forbidden);
+	}
+	// The receiver's event does not name the person; this one does.
+	let mut scope = repository.begin().await?;
+	let result = scope
+		.call_declined(
+			workspace,
+			json!({
+				"task_id": task,
+				"grant_id": id,
+				"run_id": admission,
+				"call": call,
+				"tool": declined.tool,
+				"kind": declined.kind,
+				"by": identity.subject,
+			}),
+		)
+		.await;
+	finish(scope, result).await?;
+	Ok(activation)
 }
 pub async fn control<R: HomeRepository>(
 	repository: &R,
@@ -302,12 +391,37 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 			}
 			_ => {}
 		}
+		let mut execution = status.as_ref().ok().cloned().flatten();
+		// The paused call is shown only to a caller who may decline it; `list` already
+		// narrowed the grants to the caller's own, so the requester's check is `run.control`.
+		if execution
+			.as_ref()
+			.is_some_and(|activation| activation.declinable_call.is_some())
+		{
+			let allowed = async {
+				let mut scope = repository.begin().await?;
+				let result = async {
+					let task = scope.task_read(task).await?;
+					let resource = scope.task_resource(&task).await?;
+					let binding = scope.binding(grant.id).await?.ok_or(Error::Forbidden)?;
+					let run = scope.resource("run", binding.admission_id, resource.attributes);
+					scope.may(&run, "run.control").await
+				}
+				.await;
+				finish(scope, result).await
+			}
+			.await
+			.unwrap_or(false);
+			if !allowed && let Some(activation) = execution.as_mut() {
+				activation.declinable_call = None;
+			}
+		}
 		Ok(Status {
 			human_requests,
 			semantic,
 			grant: grant.prepared()?,
 			unavailable: status.is_err(),
-			execution: status.ok().flatten(),
+			execution,
 		})
 	}))
 	.buffered(4)

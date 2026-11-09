@@ -165,6 +165,16 @@ impl HomeScope for SourceSession {
 			Ok(())
 		}
 	}
+	async fn task_grant(&mut self, _: Uuid, _: Uuid) -> Result<Option<Grant>> {
+		self.repository.call("grant.by_task");
+		Ok(Some(grant(self.repository.state.lock().unwrap().semantic)))
+	}
+	async fn may(&mut self, _: &Resource, _: &str) -> Result<bool> {
+		Ok(true)
+	}
+	async fn call_declined(&mut self, _: Uuid, _: Value) -> Result<()> {
+		Ok(())
+	}
 	async fn requester_grant(&mut self, _: Uuid, _: Uuid) -> Result<Option<Grant>> {
 		Ok(Some(grant(self.repository.state.lock().unwrap().semantic)))
 	}

@@ -5524,6 +5524,43 @@ impl Store {
 }
 
 impl Store {
+	/// The call this refusal stopped, when a person may decline it (#763).
+	async fn declinable_pause(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		run: Uuid,
+		refusal: &aidash_domain::tool::AuthorityRefusal,
+	) -> Result<Option<aidash_domain::run_state::PausedCall>> {
+		let (Some(call), Some(kind)) = (&refusal.call, refusal.check.declinable_kind()) else {
+			return Ok(None);
+		};
+		let status: Option<String> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("status"))
+				.from(Alias::new("invocations"))
+				.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run)))
+				.and_where(
+					Expr::col(Alias::new("idempotency_key")).eq(Expr::value(call.key.as_str())),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut *tx)
+		.await?;
+		Ok(
+			matches!(status.as_deref(), None | Some("REFUSED")).then(|| {
+				aidash_domain::run_state::PausedCall {
+					key: call.key.clone(),
+					index: call.index,
+					replay_safe: call.replay_safe,
+					tool: refusal.tool.clone(),
+					kind,
+				}
+			}),
+		)
+	}
+}
+
+impl Store {
 	/// `recovery_reason` names a typed `pending.recovery` field recorded only
 	/// when this pause, rather than a Deployment Administrator, stops an active Run.
 	async fn pause_for_execution_reason(
@@ -5543,6 +5580,16 @@ impl Store {
 				DeploymentScopeReason::ActivationClaim,
 			))
 			.await?;
+		// A person may decline a refused call only if it certainly did not run: it has no
+		// invocation row (the gate refused it first) or a `REFUSED` one. This is the one place
+		// that decides it; `STARTED` and `COMPLETED` rows record nothing.
+		let recovery_reason = match (recovery_reason, refusal) {
+			(None, Some(refusal)) => match self.declinable_pause(&mut tx, run.id, refusal).await? {
+				Some(paused) => Some(("paused_call", serde_json::to_value(paused)?)),
+				None => None,
+			},
+			(reason, _) => reason,
+		};
 		let (query_bind_4, query_bind_5, query_bind_6) = match recovery_reason {
 			Some((field, value)) => (true, format!("{{recovery,{field}}}"), value),
 			None => (false, "{recovery}".to_owned(), Value::Null),
@@ -5568,6 +5615,10 @@ impl Store {
 			match refusal {
 				Some(refusal) => {
 					let mut payload = serde_json::to_value(refusal)?;
+					// The call's key is offered only to someone who may decline it.
+					if let Some(fields) = payload.as_object_mut() {
+						fields.remove("call");
+					}
 					payload["run_id"] = json!(run.id);
 					payload["task_id"] = json!(run.task_id);
 					payload
@@ -5589,6 +5640,8 @@ impl Store {
 		Ok(())
 	}
 }
+#[path = "store/declines.rs"]
+pub(crate) mod declines;
 #[path = "store/run_state.rs"]
 pub(crate) mod run_state;
 #[path = "store/tenancies.rs"]
@@ -5859,3 +5912,7 @@ mod targeted_leases;
 #[cfg(test)]
 #[path = "../tests/store_tool_parallelism.rs"]
 mod store_tool_parallelism;
+
+#[cfg(test)]
+#[path = "../tests/declined_calls.rs"]
+mod declined_calls;

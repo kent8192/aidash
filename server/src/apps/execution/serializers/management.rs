@@ -26,6 +26,13 @@ pub(crate) struct ClaimInput {
 	pub(crate) revision: i64,
 	pub(crate) agent: EntityRef,
 }
+/// The call a Run is paused on, by the key the Run offered it under.
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DeclineCallInput {
+	/// At most 256 characters.
+	pub(crate) call: String,
+}
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub(crate) struct ControlInput {
 	pub(crate) action: crate::domain::RunControlAction,
