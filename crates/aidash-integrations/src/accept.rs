@@ -1,18 +1,21 @@
-//! A gateway outlives a failed accept: it logs, waits and tries again (#743).
+//! A listener outlives a failed accept: it logs, waits and tries again. The
+//! gateways do this in their own accept loops (#743), and the server's API,
+//! probe and metrics listeners through Reinhardt's accept error handler (#779).
 //! Running out of file descriptors is the usual cause, and connections closing
-//! ends it, so no kind of error stops the gateway. A TCP probe can stay green
+//! ends it, so no kind of error stops a listener. A TCP probe can stay green
 //! meanwhile, because the kernel completes handshakes until its queue is full.
 use std::{io, time::Duration};
 use tokio::{sync::watch, time::Instant};
 
-const RETRY_AFTER: Duration = Duration::from_secs(1);
+/// The wait between a failed accept and the next try.
+pub const RETRY_AFTER: Duration = Duration::from_secs(1);
 const FAILURE_LOG_EVERY: Duration = Duration::from_secs(60);
 /// One accepted connection does not end a shortage: a descriptor may just have
 /// come free. Only this long without a failure does.
 const RECOVERED_AFTER: Duration = Duration::from_secs(60);
 
-/// The state one gateway keeps between accepts: whether they are failing, and for how long.
-pub(crate) struct AcceptFailures {
+/// The state one listener keeps between accepts: whether they are failing, and for how long.
+pub struct AcceptFailures {
 	service: &'static str,
 	failing: Option<Failing>,
 }
@@ -25,7 +28,7 @@ struct Failing {
 }
 
 impl AcceptFailures {
-	pub(crate) fn new(service: &'static str) -> Self {
+	pub fn new(service: &'static str) -> Self {
 		Self {
 			service,
 			failing: None,
@@ -39,11 +42,13 @@ impl AcceptFailures {
 		accepted: io::Result<T>,
 		stopping: &mut watch::Receiver<bool>,
 	) -> Option<T> {
-		self.end_failure_if_recovered();
 		match accepted {
-			Ok(accepted) => Some(accepted),
+			Ok(accepted) => {
+				self.accepted();
+				Some(accepted)
+			}
 			Err(error) => {
-				self.record_failure(&error);
+				self.failed(&error);
 				tokio::select! {
 					_ = tokio::time::sleep(RETRY_AFTER) => {},
 					_ = stopping.changed() => {},
@@ -53,7 +58,19 @@ impl AcceptFailures {
 		}
 	}
 
-	/// This runs on the next accept, so a quiet gateway reports recovery late, but
+	/// Record an accepted connection, for a listener that waits elsewhere.
+	pub fn accepted(&mut self) {
+		self.end_failure_if_recovered();
+	}
+
+	/// Record a failed accept, for a listener that waits elsewhere. It should
+	/// wait [`RETRY_AFTER`] before the next try.
+	pub fn failed(&mut self, error: &io::Error) {
+		self.end_failure_if_recovered();
+		self.record_failure(error);
+	}
+
+	/// This runs on the next accept, so a quiet listener reports recovery late, but
 	/// the seconds it reports still end at the last failure.
 	fn end_failure_if_recovered(&mut self) {
 		if let Some(failing) = self

@@ -1,5 +1,6 @@
 //! Native migration and HTTP launch paths used by the compatibility binary.
 use super::{ProcessRole, RuntimeTasks, initialize, initialize_as};
+use crate::apps::execution::services::accept::ListenerAcceptFailures;
 use crate::apps::execution::services::lifecycle::{ProbeServer, ProcessLifecycle};
 use crate::{
 	Error, Result,
@@ -87,6 +88,7 @@ pub async fn serve(settings: ProjectSettings, workers: bool) -> Result<()> {
 	.await?;
 	let server = HttpServer::new(crate::routes().into_server())
 		.with_request_admission(Arc::new((*protection).clone()))
+		.with_accept_error_handler(ListenerAcceptFailures::new("api listener"))
 		.with_di_context(context);
 	let serving = async {
 		server

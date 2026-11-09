@@ -75,8 +75,9 @@ impl ProbeServer {
 		let listener = TcpListener::bind(address).await?;
 		let shutdown = ShutdownCoordinator::new(Duration::from_secs(3));
 		let server_shutdown = shutdown.clone();
-		let server =
-			HttpServer::new(super::super::urls::probe_url_patterns()).with_di_context(context);
+		let server = HttpServer::new(super::super::urls::probe_url_patterns())
+			.with_accept_error_handler(super::accept::ListenerAcceptFailures::new("probe listener"))
+			.with_di_context(context);
 		let task = tokio::spawn(async move {
 			let result = server
 				.listen_on_with_shutdown(listener, server_shutdown)

@@ -55,6 +55,9 @@ pub async fn run(shutdown: ShutdownCoordinator) -> Result<()> {
 			)),
 		);
 		HttpServer::new(ServerRouter::new().endpoint(super::super::views::metrics::metrics))
+			.with_accept_error_handler(super::accept::ListenerAcceptFailures::new(
+				"metrics listener",
+			))
 			.with_di_context(Arc::new(context))
 			.listen_on_with_shutdown(listener, shutdown)
 			.await

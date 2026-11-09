@@ -183,8 +183,14 @@ and draining. A startup probe allows the migration check and initial connections
 finish before liveness checks begin. Unavailable PostgreSQL removes a Pod from service
 without putting it in a liveness-driven restart loop. A background service logs a
 database failure and retries it, and `aidash_background_service_failures_total`
-counts each failure. A service that still ends, through a panic or a lost listener,
-terminates the process so the Deployment can replace it.
+counts each failure. A listener that fails to accept a connection, usually because
+the process ran out of file descriptors, waits a second and tries again. While that
+lasts the probe listener does not answer `/live` either, so a shortage that outlasts
+the liveness probe still restarts the Pod and clears a descriptor leak; a shorter one
+does not. With the chart's liveness settings (every 10 s, 2 s timeout, 3 failures)
+that is about 30 seconds. A service that still ends, through
+a panic or a listener that cannot be bound, terminates the process so the Deployment
+can replace it.
 
 ## Observe
 
