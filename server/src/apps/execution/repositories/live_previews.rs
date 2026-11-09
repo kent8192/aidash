@@ -40,8 +40,8 @@ mod database_failure_tests {
 	) {
 		let database = database.await;
 		let driver = sqlx::postgres::PgPoolOptions::new()
-			.max_connections(1)
-			.acquire_timeout(std::time::Duration::from_millis(100))
+			.max_connections(8)
+			.acquire_timeout(std::time::Duration::from_secs(2))
 			.connect(&database.url)
 			.await
 			.unwrap();
@@ -51,7 +51,10 @@ mod database_failure_tests {
 		)
 		.await
 		.unwrap();
-		let _connection = driver.acquire().await.unwrap();
+		let mut connections = Vec::new();
+		for _ in 0..8 {
+			connections.push(driver.acquire().await.unwrap());
+		}
 		let error = serving(&store).await.unwrap_err();
 		assert!(matches!(
 			crate::apps::execution::repositories::worker::classify_failure(&error),
