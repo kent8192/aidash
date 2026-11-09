@@ -156,7 +156,7 @@ Aidash additionally emits:
 - `aidash_background_service_pass_age_seconds{service}`: how long the current pass of those loops, and of the `retention` service, has been running, once it passes 30 s, and 0 otherwise. A `retention` pass is one tick of its per-minute loop, which also runs the hourly Tenant and Node purges, so a stalled purge shows here. A value that keeps climbing past 300 means a stuck pass; the log repeats it every 5 minutes and nothing cancels it (ADR 0113).
 - `aidash_worker_crash_loop_failures_total`: Runs handed to failure delivery after three consecutive Lease Recoveries of one step.
 - `aidash_model_response_headers_seconds`: successful HTTP transport time until model response headers, not first-token latency.
-- `aidash_model_tokens_total{direction="input|output|input_cached_read|input_cached_write"}`: provider-reported usage from successfully parsed model responses, streamed or not. Cached reads and writes are breakdowns of `input`, not additional tokens.
+- `aidash_model_tokens_total{direction="input|output|input_cached_read|input_cached_write",family="anthropic|openai|google|deepseek|other"}`: provider-reported usage from successfully parsed model responses, streamed or not. Cached reads and writes are breakdowns of `input`, not additional tokens. `family` is the model ID's vendor, bounded so Tenant input never becomes a label.
 - `aidash_inference_first_delta_seconds`: time from the provider call to the first progress item offered by a streamed response. This is the first-token proxy.
 - `aidash_inference_accepted_seconds`: time from the provider call to the durable Accepted Response.
 - `aidash_inference_interruptions_total{reason}`: Inference Attempts closed without an Accepted Response. `reason` is `correction` for a discarded attempt, or `cancelled`, `lease_lost`, `stall`, `stream_error` or `revoked`. The harness counts the outcomes it writes; the server counts the orphaned and stale attempts it closes itself.
@@ -166,6 +166,21 @@ Aidash additionally emits:
 A `run.lease_recovery_claimed` event records the Run, its Lease Recovery count,
 and whether its next step is isolated before that step starts. A `run.crash_loop`
 event records the count when a Crash Loop Failure enters failure delivery.
+
+A prompt cache that stops working fails silently: requests succeed and the bill
+rises. Watch the read share per provider, and writes that approach all of `input`:
+
+```promql
+sum by (family) (rate(aidash_model_tokens_total{direction="input_cached_read"}[1h]))
+  / sum by (family) (rate(aidash_model_tokens_total{direction="input"}[1h]))
+
+sum by (family) (rate(aidash_model_tokens_total{direction="input_cached_write"}[1h]))
+  / sum by (family) (rate(aidash_model_tokens_total{direction="input"}[1h]))
+```
+
+A healthy Run reads most of its input and writes little more than each step's
+growth, so a read share near zero or a write share above 0.5 on a route that caches
+needs a look. Legacy Runs and Agents with caching off are expected to read little.
 
 These counters are operational observations, not billing records. A direction
 receives a sample only when the provider reported that value; missing usage is
