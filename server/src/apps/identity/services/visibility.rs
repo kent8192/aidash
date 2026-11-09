@@ -20,13 +20,14 @@ impl NativeAccess {
 		.map_err(Into::into)
 	}
 	pub(crate) async fn run_for_interaction(&mut self, id: Uuid) -> Result<domain::Run> {
+		let mark = self.access.call_mark();
 		let result = aidash_application::authorization::workspaces::run_for_interaction(
 			&mut crate::bootstrap::native_run_visibility_scope(self),
 			id,
 		)
 		.await
 		.map_err(Into::into);
-		result.map_err(|error| self.access.named(error))
+		result.map_err(|error| self.access.named_since(mark, error))
 	}
 
 	pub(crate) async fn human_resource(

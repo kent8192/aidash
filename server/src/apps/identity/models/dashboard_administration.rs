@@ -342,7 +342,11 @@ impl DashboardRegistrationRequest {
 			// Authority, including its exclusive policy lock, precedes every
 			// identity lock, as at execution boundaries.
 			let mut snapshot = match administrator {
-				Some(administrator) => Some(administrator.lock(tx, exclusive).await?),
+				Some(administrator) => Some(
+					administrator
+						.lock_change(tx, exclusive, tenant_administration::REGISTRATION_APPROVE)
+						.await?,
+				),
 				None => None,
 			};
 			let preliminary = Self::objects()
@@ -1183,7 +1187,9 @@ impl DashboardMapping {
 				// two administrators disabling each other's Mappings would deadlock
 				// on the target credential below. The exclusive policy lock
 				// serializes them before any credential lock is taken.
-				let snapshot = administrator.lock(tx, exclusive).await?;
+				let snapshot = administrator
+					.lock_change(tx, exclusive, tenant_administration::MAPPING_DISABLE)
+					.await?;
 				let target = Self::find(tx, id)
 					.await?
 					.filter(|mapping| mapping.tenant == administrator.tenant())
@@ -1213,9 +1219,21 @@ impl DashboardMapping {
 				.await?
 				.pop()
 				.ok_or_else(|| Error::Conflict("mapping revision changed".into()))?;
-			mapping
+			// A Tenant Administrator raised the flag with its exclusive policy lock
+			// above. A Deployment Administrator takes no policy lock, but the
+			// credentials it waits for on are held by running work all the same
+			// (Subject Credential revocation is an Authority Change, ADR 0121).
+			let waiting = match actor.tenant_administrator() {
+				Some(_) => None,
+				None => Some(crate::database::authority_change::raise(tx, &tenant).await?),
+			};
+			let disabled = mapping
 				.disable_in(tx, tenant_administration::MAPPING_DISABLE, actor)
-				.await
+				.await;
+			match waiting {
+				Some(waiting) => waiting.settle(tx, disabled).await,
+				None => disabled,
+			}
 		})
 		.await
 	}

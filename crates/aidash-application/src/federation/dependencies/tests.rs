@@ -52,6 +52,8 @@ struct Scope {
 	bound: Option<Uuid>,
 	entry: Entry,
 	marked: BTreeSet<String>,
+	/// Every Node a walk reported meeting as unavailable, in order, repeats included.
+	met: Vec<String>,
 }
 #[async_trait]
 impl DependencyScope for Scope {
@@ -143,6 +145,7 @@ impl DependencyScope for Scope {
 	}
 	fn mark_unavailable(&mut self, node: &str) {
 		self.marked.insert(node.into());
+		self.met.push(node.into());
 	}
 }
 struct Transport {
@@ -176,7 +179,7 @@ fn grant(node: &str, id: u128) -> Reference {
 fn scope() -> Scope {
 	Scope { calls:vec![],started:Instant::now(),elapsed:Duration::ZERO,latency:Duration::ZERO,latency_on_peer:Duration::ZERO,frontier:vec![],edges:BTreeMap::new(),decision:true,fault:None,admission:None,bound:None,
         entry:serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{},"config":{"model":{"id":"model","version":"1.0.0"}}})).unwrap(),
-        peer:Some(crate::test_support::foreign_route("aidash://foreign")),marked:BTreeSet::new(),
+        peer:Some(crate::test_support::foreign_route("aidash://foreign")),marked:BTreeSet::new(),met:Vec::new(),
     }
 }
 #[fixture]
@@ -405,6 +408,9 @@ async fn a_node_that_did_not_answer_is_marked_and_not_asked_again(
 	assert!(!first && !second);
 	assert!(scope.marked.contains("aidash://foreign"));
 	assert_eq!(transport.calls.lock().unwrap().len(), 1);
+	// Each walk met the Node, the second without asking it, so the call that made
+	// the second walk can tell that its refusal is that Node's silence.
+	assert_eq!(scope.met, ["aidash://foreign", "aidash://foreign"]);
 	assert_eq!(
 		scope.calls[calls_after_first..],
 		["decide:federation.discover:aidash://foreign"]

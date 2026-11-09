@@ -341,7 +341,9 @@ impl Nodes {
 							.pool
 							.atomic(&administrator.scope()?, async |tx| {
 								// The policy fence protects current authorization and Node admission.
-								let snapshot = administrator.lock(tx, exclusive).await?;
+								let snapshot = administrator
+									.lock_change(tx, exclusive, change.permission())
+									.await?;
 								let current = nodes::get(tx, &tenant, name.as_str()).await?;
 								administrator
 									.require(

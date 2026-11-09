@@ -127,7 +127,9 @@ impl Steward {
 				let snapshot = if deleted {
 					administrator.lock_deleted(tx).await?
 				} else {
-					administrator.lock(tx, exclusive).await?
+					administrator
+						.lock_change(tx, exclusive, TENANT_DELETE)
+						.await?
 				};
 				administrator
 					.require(tx, &snapshot, TENANT_DELETE, tenant, json!({}))

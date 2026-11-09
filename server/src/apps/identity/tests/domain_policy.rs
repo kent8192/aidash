@@ -237,3 +237,50 @@ fn may_allow_keeps_explicit_actions_out_of_a_wildcard(mut document: Value) {
 	assert!(bundle.may_allow("alice", "workspace.read"));
 	assert!(!bundle.may_allow("alice", "approval.mode.bypass"));
 }
+
+#[rstest::rstest]
+#[case::every_resource("alice", json!({"subjects":{"any":true},"resources":{"kinds":["*"]}}), false)]
+#[case::every_resource_named_by_id("alice", json!({"subjects":{"ids":["alice"]},"resources":{"kinds":["*"],"ids":["*"]}}), false)]
+#[case::a_delegator_denied("worker", json!({"subjects":{"ids":["alice"]},"resources":{"kinds":["*"]}}), false)]
+#[case::another_subject("alice", json!({"subjects":{"ids":["worker"]},"resources":{"kinds":["*"]}}), true)]
+#[case::another_action("alice", json!({"subjects":{"any":true},"actions":["workspace.write"],"resources":{"kinds":["*"]}}), true)]
+#[case::one_kind("alice", json!({"subjects":{"any":true},"resources":{"kinds":["workspace"]}}), true)]
+#[case::some_resources("alice", json!({"subjects":{"any":true},"resources":{"kinds":["*"],"ids":["w1"]}}), true)]
+#[case::a_condition("alice", json!({"subjects":{"any":true},"resources":{"kinds":["*"]},
+	"condition":{"op":"exists","value":{"source":"environment","path":"/network"}}}), true)]
+fn may_allow_gives_way_to_a_deny_that_covers_every_resource(
+	mut document: Value,
+	#[case] subject: &str,
+	#[case] deny: Value,
+	#[case] expected: bool,
+) {
+	let mut policy = json!({"id":"deny","effect":"deny","actions":["workspace.read"]});
+	policy
+		.as_object_mut()
+		.unwrap()
+		.extend(deny.as_object().unwrap().clone());
+	document["policies"].as_array_mut().unwrap().push(policy);
+	let bundle: PolicyBundle = serde_json::from_value(document).unwrap();
+	bundle.validate().unwrap();
+	assert_eq!(bundle.may_allow(subject, "workspace.read"), expected);
+}
+
+#[rstest::rstest]
+fn may_allow_never_allows_what_evaluate_denies_everywhere(mut document: Value, input: Evaluation) {
+	document["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny","effect":"deny","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}
+	}));
+	let bundle: PolicyBundle = serde_json::from_value(document).unwrap();
+	assert!(!bundle.evaluate(&input).allowed);
+	assert!(!bundle.may_allow(&input.subject, &input.action));
+}
+
+#[rstest::rstest]
+fn a_wildcard_deny_covers_the_explicit_actions_a_wildcard_allow_leaves_out(mut document: Value) {
+	document["policies"][0]["actions"] = json!(["approval.mode.bypass"]);
+	document["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny","effect":"deny","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}
+	}));
+	let bundle: PolicyBundle = serde_json::from_value(document).unwrap();
+	assert!(!bundle.may_allow("alice", "approval.mode.bypass"));
+}

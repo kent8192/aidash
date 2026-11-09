@@ -86,6 +86,8 @@ async fn check(
 		// After the decision: a mark may come from another identity of the
 		// same authority, and this reader's own right comes first.
 		if scope.unavailable(&node) {
+			// Not asked again, but this walk met it: its caller is told so (#751).
+			scope.mark_unavailable(&node);
 			return Ok(false);
 		}
 		let Some(route) = scope.route(&node).await? else {

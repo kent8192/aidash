@@ -46,7 +46,9 @@ pub trait DependencyScope: Send {
 	/// not asked again (#751).
 	fn unavailable(&self, node: &str) -> bool;
 	/// Remember that `node` did not answer, and that nothing is confirmed
-	/// negatively while any Node is in that state.
+	/// negatively while any Node is in that state. A walk calls this each time it
+	/// meets such a Node, including one it did not ask again, so the call that made
+	/// the walk can tell that its own refusal is that Node's silence.
 	fn mark_unavailable(&mut self, node: &str);
 }
 

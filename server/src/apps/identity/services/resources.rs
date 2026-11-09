@@ -18,14 +18,16 @@ impl Access {
 		.map_err(Into::into)
 	}
 	pub(crate) async fn task_read(&mut self, id: Uuid) -> Result<Task> {
+		let mark = self.call_mark();
 		let result = aidash_application::authorization::visibility::resources::task_read(
 			&mut crate::bootstrap::run_visibility_scope(self),
 			id,
 		)
 		.await
 		.map_err(Into::into);
-		// A refusal reached while a Node did not answer is that Node's silence (#751).
-		result.map_err(|error| self.named(error))
+		// A refusal reached while a Node did not answer is that Node's silence (#751),
+		// when this read's own walk met the Node and not an earlier call of the authority.
+		result.map_err(|error| self.named_since(mark, error))
 	}
 	pub(crate) async fn task_visible(&mut self, task: &Task) -> Result<bool> {
 		aidash_application::authorization::visibility::resources::task_visible(

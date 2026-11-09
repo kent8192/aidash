@@ -33,15 +33,8 @@ pub(crate) async fn control(
 	(task, id): (Uuid, Uuid),
 	input: RemoteExecutionControlInput,
 ) -> Result<RemoteExecutionActivation> {
-	// This route stops work without waiting behind an Authority Change, but
-	// resuming starts work again (ADR 0121).
-	if !matches!(
-		input.action,
-		RemoteExecutionControl::Pause | RemoteExecutionControl::Cancel
-	) && let Actor::Subject(identity) = &actor
-	{
-		crate::database::authority_change::enter(&f.store.pool, &identity.tenant).await;
-	}
+	// Resuming waits behind an Authority Change at the boundary, before the
+	// visibility lease begins; pausing and cancelling do not (ADR 0121).
 	aidash_application::authorization::home::control(
 		&crate::bootstrap::home_execution_repository(&f, actor),
 		task,
@@ -79,6 +72,7 @@ pub(crate) async fn delegate(
 		task,
 		node,
 		agent,
+		false,
 	)
 	.await
 	.map_err(Into::into)

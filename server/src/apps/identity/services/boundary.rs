@@ -32,12 +32,35 @@ enum Requirement {
 	Peer,
 }
 
+/// Whether a request waits behind an Authority Change before it holds anything
+/// (ADR 0121).
+#[derive(Clone, Copy)]
+enum Entrance {
+	/// New work.
+	Waits,
+	/// A stop, which a person can always make.
+	Open,
+	/// A stop unless the request starts work again, which the function tells from
+	/// the request, since the boundary decides before the route can.
+	OpenUnlessStarting(fn(&Request) -> bool),
+}
+
+impl Entrance {
+	fn waits(self, request: &Request) -> bool {
+		match self {
+			Self::Waits => true,
+			Self::Open => false,
+			Self::OpenUnlessStarting(starts_work) => starts_work(request),
+		}
+	}
+}
+
 /// Route policy evaluated before resolving request-scoped services.
 #[derive(Clone, Copy)]
 pub struct AccessBoundary {
 	requirement: Requirement,
 	visibility: bool,
-	stops_work: bool,
+	entrance: Entrance,
 }
 
 impl AccessBoundary {
@@ -45,7 +68,7 @@ impl AccessBoundary {
 		Self {
 			requirement: Requirement::Public,
 			visibility: false,
-			stops_work: false,
+			entrance: Entrance::Waits,
 		}
 	}
 	/// A Tenant route: only a Tenant Subject (browser Mapping or Subject
@@ -56,7 +79,7 @@ impl AccessBoundary {
 		Self {
 			requirement: Requirement::Authenticated,
 			visibility: false,
-			stops_work: false,
+			entrance: Entrance::Waits,
 		}
 	}
 	/// A route that is part of administering the Deployment: both Tenant
@@ -67,21 +90,21 @@ impl AccessBoundary {
 		Self {
 			requirement: Requirement::Administered,
 			visibility: false,
-			stops_work: false,
+			entrance: Entrance::Waits,
 		}
 	}
 	pub fn deployment_administrator() -> Self {
 		Self {
 			requirement: Requirement::DeploymentAdministrator,
 			visibility: false,
-			stops_work: false,
+			entrance: Entrance::Waits,
 		}
 	}
 	pub fn peer() -> Self {
 		Self {
 			requirement: Requirement::Peer,
 			visibility: false,
-			stops_work: false,
+			entrance: Entrance::Waits,
 		}
 	}
 	pub fn with_visibility(mut self) -> Self {
@@ -89,10 +112,17 @@ impl AccessBoundary {
 		self
 	}
 	/// A route that stops work, so that a person can always stop it while an
-	/// Authority Change waits (ADR 0121). A handler that can also start work
-	/// waits itself before it does.
+	/// Authority Change waits (ADR 0121).
 	pub fn stops_work(mut self) -> Self {
-		self.stops_work = true;
+		self.entrance = Entrance::Open;
+		self
+	}
+	/// [`Self::stops_work`] for a route that also starts work again, such as one
+	/// that resumes a Run. `starts_work` tells those requests, which wait at the
+	/// entrance like any new work, before the visibility lease begins: a wait
+	/// under the lease would keep one of the few visibility connections.
+	pub fn stops_work_unless(mut self, starts_work: fn(&Request) -> bool) -> Self {
+		self.entrance = Entrance::OpenUnlessStarting(starts_work);
 		self
 	}
 
@@ -188,7 +218,7 @@ impl Middleware for AccessBoundary {
 			// New work waits behind an Authority Change here, before it holds a
 			// visibility lease or anything else. A peer's request does not wait: it
 			// may be a call back from work this Node is running (ADR 0121).
-			if !self.stops_work
+			if self.entrance.waits(&request)
 				&& let Some(Actor::Subject(identity)) = actor.as_ref()
 			{
 				crate::database::authority_change::enter(&runtime.store.pool, &identity.tenant)

@@ -51,9 +51,10 @@ async fn restore_outer<T>(
 }
 
 async fn memory_run_check(access: &mut Access, run: &crate::domain::RunMetadata) -> Result<()> {
+	let mark = access.call_mark();
 	match access.run_invalidity(run).await? {
 		None => Ok(()),
-		Some(reason) => Err(access.memory_failure(reason)),
+		Some(reason) => Err(access.memory_failure_since(mark, reason)),
 	}
 }
 
@@ -133,6 +134,7 @@ pub(in crate::apps::identity) async fn refresh_access_for_run(
 	store: &Store,
 	run: &Run,
 ) -> Result<()> {
+	let mark = access.call_mark();
 	let result = aidash_application::authorization::execution::refresh_worker(
 		&mut crate::bootstrap::execution_grant_scope(access),
 		store.deployment.as_str(),
@@ -140,7 +142,7 @@ pub(in crate::apps::identity) async fn refresh_access_for_run(
 	)
 	.await
 	.map_err(Into::into);
-	result.map_err(|error| access.named(error))
+	result.map_err(|error| access.named_since(mark, error))
 }
 
 pub(crate) async fn inherit_task_origin(access: &mut Access, task: Uuid) -> Result<bool> {
@@ -302,6 +304,61 @@ pub(crate) async fn delegate_in(
 #[derive(Clone)]
 pub(crate) struct WorkerAuthority {
 	access: Arc<RwLock<Access>>,
+}
+
+/// A Run's worker authority as its step holds it, for integration tests outside
+/// this crate (#759). A test begins it while the Run's Subnode is active, ends
+/// the Subnode, and then calls a path that stands in for a call that passed the
+/// tool's entrance before the end. Production code gets the same authority from
+/// `Guard`.
+#[doc(hidden)]
+pub struct StepAuthority(WorkerAuthority);
+
+impl StepAuthority {
+	/// The authority of `run`. Its outer transaction is released at once, as it is
+	/// while a step waits on a tool, so that an end is never held up by it.
+	pub async fn begin(f: &Federation, run: &Run) -> Result<Self> {
+		let mut access = access_for_run(&f.store, &run.metadata(), true)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		access.suspend().await?;
+		Ok(Self(WorkerAuthority {
+			access: Arc::new(RwLock::new(access)),
+		}))
+	}
+
+	pub async fn sampling_approval(
+		&self,
+		store: &Store,
+		run: &Run,
+		request: aidash_application::capabilities::approvals::SamplingApprovalRequest,
+	) -> Result<aidash_application::capabilities::approvals::ToolCallApproval> {
+		self.0.sampling_approval(store, run, request).await
+	}
+
+	pub async fn consume_web_disclosure(
+		&self,
+		store: &Store,
+		run: &Run,
+		approval: Uuid,
+	) -> Result<bool> {
+		self.0.consume_web_disclosure(store, run, approval).await
+	}
+
+	/// A Live preview start that passed the tool's admission.
+	pub async fn live_preview_start(
+		&self,
+		store: &Store,
+		run: &Run,
+		command: &str,
+		port: u16,
+	) -> Result<Value> {
+		let input = aidash_application::preview::live::Start {
+			command: command.to_owned(),
+			port,
+		};
+		self.0.live_preview_start(store, run, input).await
+	}
 }
 
 fn unavailable_workspace_search(workspace: Uuid, disabled: bool) -> Value {
@@ -904,6 +961,20 @@ impl WorkerAuthority {
 			access.finish(result.map_err(Into::into)).await?
 		};
 		let input: aidash_application::preview::live::Start = serde_json::from_value(input)?;
+		self.live_preview_start(store, run, input).await
+	}
+
+	/// Start the Run's Live preview from a request that passed admission. Once
+	/// the Run's Subnode has ended neither the row nor the dispatch is written.
+	async fn live_preview_start(
+		&self,
+		store: &Store,
+		run: &Run,
+		input: aidash_application::preview::live::Start,
+	) -> Result<Value> {
+		use crate::apps::execution::repositories::live_previews as previews;
+		use aidash_domain::preview::live::StopReason;
+		let domain = store.preview_domain.clone();
 		if let Some(port) = store.preview_pod_port
 			&& input.port != port
 		{
@@ -1327,9 +1398,8 @@ impl WorkerAuthority {
 	}
 
 	/// Consume a one-time Web disclosure approval of `run` after its attempt
-	/// is reserved. Once the Subnode has ended nothing is consumed: the answer
-	/// is `false`, which settles the reserved attempt without sending anything,
-	/// as a lost race does. A refusal here would leave that attempt in flight.
+	/// is reserved. Once the Subnode has ended nothing is consumed and the call
+	/// is refused; the caller settles the reserved attempt without a reason.
 	pub async fn consume_web_disclosure(
 		&self,
 		store: &Store,
@@ -1339,15 +1409,11 @@ impl WorkerAuthority {
 		let outer = self.access.write().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let result = async {
-			match crate::apps::execution::repositories::subnodes::require_writable(
+			crate::apps::execution::repositories::subnodes::require_writable(
 				access.tx.native_mut(),
 				run.workspace_id,
 			)
-			.await
-			{
-				Err(Error::Forbidden) => return Ok(false),
-				other => other?,
-			}
+			.await?;
 			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
 			aidash_application::capabilities::approvals::consume_disclosure(
 				&mut scope,
@@ -1933,9 +1999,16 @@ impl WorkerAuthority {
 			return Err(Error::Forbidden);
 		}
 		if !aidash_domain::nodes::names_home(node, &run.home_node) {
-			let record = lease.task_read(task).await?;
+			// A missing task and one the Run may not see read the same, as for a local delegation.
+			let not_visible = || {
+				Error::from(aidash_application::authorization::worker_tasks::task_not_visible(task))
+			};
+			let record = lease.task_read(task).await.map_err(|error| match error {
+				Error::Forbidden => not_visible(),
+				error => error,
+			})?;
 			if record.workspace_id != run.workspace_id {
-				return Err(Error::Forbidden);
+				return Err(not_visible());
 			}
 			let identity = lease.identity.clone();
 			if lease.tx.is_active() {
@@ -1946,10 +2019,15 @@ impl WorkerAuthority {
 				actor: Some(super::identity::Actor::Subject(identity)),
 				worker: Some(run.metadata()),
 			};
-			let result =
-				aidash_application::authorization::home::delegate(&repository, task, node, agent)
-					.await
-					.map_err(Into::into);
+			let result = aidash_application::authorization::home::delegate(
+				&repository,
+				task,
+				node,
+				agent,
+				true,
+			)
+			.await
+			.map_err(Into::into);
 			// The delegation has reached the other Node, so a Run whose authority is gone
 			// pauses; the model is not told the call was refused.
 			refresh_access_for_run(&mut lease, &f.store, run)
@@ -2005,6 +2083,7 @@ pub(in crate::apps::identity) async fn authorize_guard(
 	access: &mut Access,
 	read_context: bool,
 ) -> Result<AgentConfig> {
+	let mark = access.call_mark();
 	let result = aidash_application::authorization::execution::guard::authorize(
 		&mut crate::bootstrap::run_guard_scope(f, access),
 		run,
@@ -2012,7 +2091,7 @@ pub(in crate::apps::identity) async fn authorize_guard(
 	)
 	.await
 	.map_err(Into::into);
-	result.map_err(|error| access.named(error))
+	result.map_err(|error| access.named_since(mark, error))
 }
 
 struct SnapshotAuthority {

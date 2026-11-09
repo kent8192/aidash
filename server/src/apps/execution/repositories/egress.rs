@@ -428,6 +428,9 @@ fn column(value: u64) -> i64 {
 /// read. The 30 second Read Recheck covers what it read and withdraws the command
 /// or stops the Live preview when that fails (ADR 0116).
 async fn continuation(access: &mut Access, run_id: Uuid) -> Result<aidash_domain::Run> {
+	// Everything here is the Continuation Check, whose repeated allows add no row.
+	// What the request asks after it is not, and is recorded as it is.
+	let mut access = access.rechecking(run_id);
 	let run = access.run_for_continuation(run_id).await?;
 	let task = crate::apps::workspaces::models::Task::read_in(
 		&mut **access.tx,
@@ -439,7 +442,7 @@ async fn continuation(access: &mut Access, run_id: Uuid) -> Result<aidash_domain
 	let resource = access.task_resource(&task).await?;
 	access.require(&resource, "task.execute").await?;
 	crate::authorization::catalog::entry(
-		access,
+		&mut access,
 		&aidash_domain::registry::EntityRef {
 			id: run.agent_id.clone(),
 			version: run.agent_version.clone(),
