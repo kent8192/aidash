@@ -2,6 +2,20 @@ use super::*;
 use crate::memory::recall::{Rankings, fuse, graph, temporal};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[test]
+fn journal_evidence_accepts_only_a_nonempty_ordered_range() {
+	let run = Uuid::from_u128(42);
+	let mut fact = unit(1).content;
+	for (from, through, valid) in [(1, 1, true), (1, 5, true), (0, 1, false), (5, 4, false)] {
+		let source: Evidence = serde_json::from_value(serde_json::json!({
+			"kind": "journal_range", "run_id": run, "from_seq": from, "through_seq": through
+		}))
+		.unwrap();
+		fact.evidence = vec![source];
+		assert_eq!(fact.validate(&bounds()).is_ok(), valid);
+	}
+}
+
 fn bounds() -> Bounds {
 	Bounds {
 		max_unit_bytes: 1024,

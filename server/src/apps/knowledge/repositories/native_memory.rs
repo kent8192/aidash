@@ -595,6 +595,7 @@ pub(crate) async fn refresh_dependencies(
 	if !unit.deleted {
 		for evidence in unit.content.evidence.iter().collect::<BTreeSet<_>>() {
 			let (kind, id, revision) = match evidence {
+				Evidence::JournalRange { .. } => return Err(Error::Forbidden),
 				Evidence::Publication { id, revision } => {
 					let (source, revision) = if unit.stale {
 						super::publications::retained_source(lease, *id).await?

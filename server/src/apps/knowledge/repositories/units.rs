@@ -243,6 +243,9 @@ pub(crate) fn current_in<'a>(
 				continue;
 			}
 			match source {
+				// Journal-backed admission needs a range reader with Run authority and
+				// revocation checks; reject until that path is connected.
+				Evidence::JournalRange { .. } => return Err(Error::Forbidden),
 				Evidence::Publication { id, revision } => {
 					Box::pin(super::publications::check(
 						lease, workspace, id, revision, max_visits, visits,

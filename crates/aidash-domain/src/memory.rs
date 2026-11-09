@@ -154,6 +154,12 @@ pub enum Evidence {
 		revision: i64,
 		digest: String,
 	},
+	/// Inclusive positions in the originating Run's Context Journal.
+	JournalRange {
+		run_id: Uuid,
+		from_seq: u64,
+		through_seq: u64,
+	},
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -304,6 +310,15 @@ impl Content {
 					revision,
 					digest,
 				} => !id.is_nil() && *revision > 0 && !digest.is_empty(),
+				Evidence::JournalRange {
+					run_id,
+					from_seq,
+					through_seq,
+				} => {
+					!run_id.is_nil()
+						&& *from_seq > 0 && from_seq <= through_seq
+						&& *through_seq <= i64::MAX as u64
+				}
 			};
 			if !valid {
 				return Err(Error::Invalid("invalid memory evidence revision".into()));
