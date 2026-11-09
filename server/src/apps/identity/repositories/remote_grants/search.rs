@@ -100,6 +100,7 @@ impl SemanticSearchRepository for Repository<'_> {
 			self.runtime,
 			operation.admission_id,
 			operation.grant_id,
+			node,
 		)
 		.await?;
 		crate::authorization::peer::authority_request(
@@ -117,6 +118,7 @@ impl SemanticSearchRepository for Repository<'_> {
 			self.runtime,
 			input.usage.admission_id,
 			input.usage.grant_id,
+			node,
 		)
 		.await?;
 		crate::authorization::peer::authority_request(

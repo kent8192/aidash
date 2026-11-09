@@ -973,6 +973,23 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		&["Uuid", "Uuid"],
 	)?;
 	contracts
+		.response::<_, crate::apps::identity::serializers::remote_execution::RemoteExecutionActivation>(
+			document,
+			views::remote_execution::decline_call,
+			200,
+			"application/json",
+		)?;
+	contracts
+		.request::<_, crate::apps::identity::serializers::remote_execution::RemoteExecutionDeclineInput>(
+			document,
+			views::remote_execution::decline_call,
+		)?;
+	contracts.path(
+		document,
+		views::remote_execution::decline_call,
+		&["Uuid", "Uuid"],
+	)?;
+	contracts
 		.response::<_, Vec<crate::apps::identity::serializers::remote_execution::RemoteExecutionStatus>>(
 			document,
 			views::remote_execution::list,
@@ -1041,6 +1058,18 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 			views::peer_execution::control,
 		)?;
 	contracts.path(document, views::peer_execution::control, &["Uuid"])?;
+	contracts.response::<_, aidash_domain::federation::execution::admission::Declined>(
+		document,
+		views::peer_execution::decline_call,
+		200,
+		"application/json",
+	)?;
+	contracts
+		.request::<_, crate::apps::identity::serializers::peer_admission::PeerDeclineCallInput>(
+			document,
+			views::peer_execution::decline_call,
+		)?;
+	contracts.path(document, views::peer_execution::decline_call, &["Uuid"])?;
 	contracts.response::<_, crate::apps::identity::serializers::remote_execution::RemoteExecutionMessageReceipt>(document,views::peer_execution::message,200,"application/json")?;
 	contracts.request::<_, crate::apps::identity::serializers::peer_admission::MessageInput>(
 		document,

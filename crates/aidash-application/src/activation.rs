@@ -86,7 +86,44 @@ pub async fn due(
 	let retry_at = recovery.retry.map(|r| r.at).filter(|d| *d > now);
 	let due = match &state {
 		RunState::Waiting(wait) => {
-			if let Some(id) = wait.request_id() {
+			if let WaitingState::Workspace {
+				wake_at,
+				cursor,
+				resume,
+				..
+			} = wait.as_ref()
+			{
+				let observed = match resume {
+					aidash_domain::ResumeState::ToolCall(state) => state.included_input_seq,
+					_ => m.observed_input_seq,
+				};
+				if scope.input_after(m.id, observed).await? {
+					Some(now)
+				} else if !m.is_local(node) {
+					Some((*wake_at).min(m.updated_at + chrono::Duration::seconds(15)))
+				} else {
+					Some(
+						scope
+							.workspace_event_after(m.id, *cursor)
+							.await?
+							.unwrap_or(*wake_at)
+							.min(*wake_at),
+					)
+				}
+			} else if let WaitingState::Operation {
+				operation_id,
+				resume,
+				wake_at,
+			} = wait.as_ref()
+			{
+				if scope.input_after(m.id, resume.included_input_seq).await?
+					|| scope.operation_finished(m.id, *operation_id).await?
+				{
+					Some(now)
+				} else {
+					Some(*wake_at)
+				}
+			} else if let Some(id) = wait.request_id() {
 				if raw.context["binding_snapshot"]["remote"] == true {
 					// Home journals the answer. Poll it through the authorized worker
 					// step after releasing this local scheduling transaction.

@@ -6,6 +6,7 @@ use rstest::rstest;
 #[case(Failure::OutcomeUnknown, "uncertain", false)]
 #[case(Failure::RateLimited, "error", true)]
 #[case(Failure::DisclosureDenied, "error", false)]
+#[case(Failure::Refused, "error", false)]
 fn failures_are_typed_recoverable_results(
 	#[case] failure: Failure,
 	#[case] status: &str,

@@ -10,6 +10,8 @@ mod common;
 mod review;
 #[path = "worker_activation/unblock.rs"]
 mod unblock;
+#[path = "worker_activation/waits.rs"]
+mod waits;
 use aidash_server::{
 	activation::{Broker, Settings},
 	federation::Federation,

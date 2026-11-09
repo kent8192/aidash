@@ -8,6 +8,8 @@ pub struct Reply {
 	pub semantic_reason: Option<Failure>,
 	pub execution_refusal: Option<aidash_domain::federation::execution::Refusal>,
 	pub transaction_pending: bool,
+	/// A refused Authority Change, with the seconds until it can be sent again.
+	pub policy_busy: Option<u64>,
 	pub body: Result<Vec<u8>>,
 }
 #[async_trait]

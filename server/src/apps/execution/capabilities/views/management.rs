@@ -467,6 +467,18 @@ pub async fn python_cancel(
 	crate::http::json(api::python_cancel(service.runtime.clone(), actor, id, input).await)
 }
 
+#[post("/api/references/batch", name = "!reference_batch", auth = "protected")]
+pub async fn reference_batch(
+	#[inject] service: Depends<CapabilitiesManagement>,
+	#[inject] actor: Actor,
+	Json(input): Json<crate::capabilities::references::Batch>,
+) -> ViewResult<Response> {
+	if let Err(error) = crate::http::validate(&input) {
+		return Ok(error.http_response());
+	}
+	crate::http::json(api::reference_batch(service.runtime.clone(), actor, input).await)
+}
+
 #[post(
 	"/api/references/uploads",
 	name = "!reference_upload",

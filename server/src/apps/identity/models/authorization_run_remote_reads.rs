@@ -22,6 +22,10 @@ pub struct AuthorizationRunRemoteRead {
 	pub digest: String,
 	#[field]
 	pub metadata: Json<Value>,
+	/// Whether the Node belongs to the reader's Tenant, so `federation.discover` decides it
+	/// without asking that Node (#769).
+	#[field(default = false)]
+	pub same_tenant: bool,
 }
 
 impl AuthorizationRunRemoteRead {}

@@ -1,4 +1,5 @@
 //! Retained-object maintenance drains its accepted batch before stopping.
+use crate::background::Passes;
 use aidash_application::{
 	Result,
 	capabilities::reclamation::{self, Cursor},
@@ -11,11 +12,12 @@ pub async fn run(
 	mut stopping: watch::Receiver<bool>,
 ) -> Result<()> {
 	let mut cursor = Cursor::default();
-	loop {
-		if *stopping.borrow() {
-			return Ok(());
-		}
-		reclamation::sweep(repository, &mut cursor).await?;
-		tokio::select! {_=stopping.changed()=>{},_=tokio::time::sleep(Duration::from_secs(1))=>{}}
+	let mut passes = Passes::new("capabilities.reclamation", Duration::from_secs(1));
+	while !*stopping.borrow() {
+		passes
+			.run(reclamation::sweep(repository, &mut cursor))
+			.await;
+		passes.pause(&mut stopping).await;
 	}
+	Ok(())
 }

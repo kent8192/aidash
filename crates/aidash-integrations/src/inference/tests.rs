@@ -48,6 +48,7 @@ fn media_reservation_covers_complete_request_growth(#[case] version: ProjectionV
 		content_parts: vec![],
 		cache_scope: None,
 		cache_breakpoints: false,
+		routing_run: None,
 		disable_provider_transforms: false,
 		input_format: Default::default(),
 		estimate: Default::default(),
@@ -861,11 +862,12 @@ fn only_context_policy_requests_disable_openrouter_transforms(
 		content_parts: vec![],
 		cache_scope: None,
 		cache_breakpoints: false,
+		routing_run: None,
 		disable_provider_transforms: opted_in,
 		input_format: Default::default(),
 		estimate: Default::default(),
 	};
-	let body = request_body(&config, &request, routes, None, Default::default());
+	let body = request_body(&config, &request, routes, None, None, Default::default());
 	// A prune-only Agent keeps OpenRouter's default transforms unchanged.
 	assert_eq!(body.get("transforms"), opted_in.then(|| json!([])).as_ref());
 	assert_eq!(body["model"], json!("vendor/model"));
@@ -1001,6 +1003,7 @@ mod cache_salt {
 			content_parts: vec![],
 			cache_scope: None,
 			cache_breakpoints: false,
+			routing_run: None,
 			disable_provider_transforms: false,
 			input_format: Default::default(),
 			estimate: Default::default(),
@@ -1352,6 +1355,181 @@ mod cache_salt {
 			.collect();
 		let error = CacheSaltKeys::new(&keys, current).unwrap_err();
 		assert!(!format!("{error:?}").contains(SECRET_ONE));
+	}
+
+	/// Explicit mode reads only the breakpoints in the request itself, so a GPT
+	/// route marks the previous step's position as well (ADR 0115).
+	#[tokio::test]
+	async fn gpt_routes_use_explicit_mode_and_mark_the_previous_step() {
+		// Arrange
+		let mut upstream = Upstream::start().await;
+		let provider = upstream.route(Some(keys()), "openai/gpt-6.1-terra", Some("explicit"));
+		let marked = ModelRequest {
+			cache_breakpoints: true,
+			..native(scope("tenant-a", 1))
+		};
+		// Act
+		provider
+			.infer(marked, &aidash_application::ports::NoProgress)
+			.await
+			.unwrap();
+		// Assert: system, the attachment the previous step ended on, the last result.
+		let bodies = upstream.bodies();
+		let body = &bodies[0];
+		let ephemeral = json!({"type":"ephemeral"});
+		assert_eq!(body["prompt_cache_options"], json!({"mode":"explicit"}));
+		let messages = body["messages"].as_array().unwrap();
+		let roles: Vec<&str> = messages
+			.iter()
+			.map(|m| m["role"].as_str().unwrap())
+			.collect();
+		assert_eq!(roles, ["system", "user", "assistant", "tool", "user"]);
+		assert_eq!(messages[0]["content"][0]["cache_control"], ephemeral);
+		let attachment = messages[1]["content"].as_array().unwrap();
+		assert_eq!(attachment.last().unwrap()["cache_control"], ephemeral);
+		assert_eq!(messages[3]["content"][0]["cache_control"], ephemeral);
+		assert_eq!(body.to_string().matches("cache_control").count(), 3);
+		assert!(messages[4]["content"].is_string(), "the volatile message");
+	}
+
+	/// Only Native has a previous-step position to mark. An Ordered Agent's
+	/// provider activity is spliced in after `system`, and those messages were
+	/// never breakpoints, so marking one would pay a write nothing reads.
+	#[tokio::test]
+	async fn an_ordered_request_on_a_gpt_route_marks_no_previous_step() {
+		// Arrange
+		let mut upstream = Upstream::start().await;
+		let provider = upstream.route(Some(keys()), "openai/gpt-6.1-terra", Some("explicit"));
+		let activity = |text: &str| json!({"kind":"assistant","text":text,"provider_activity":[{"type":"datetime_call"}]});
+		let marked = ModelRequest {
+			context: ModelContext::Ordered(OrderedContext {
+				stable:
+					json!({"identity":"fixture","history":[activity("first"), activity("second")]})
+						.to_string(),
+				volatile: r#"{"workspace":{}}"#.into(),
+			}),
+			cache_breakpoints: true,
+			..ordered(scope("tenant-a", 1))
+		};
+		// Act
+		provider
+			.infer(marked, &aidash_application::ports::NoProgress)
+			.await
+			.unwrap();
+		// Assert: system and the Stable Prefix part only, not the spliced turns.
+		let bodies = upstream.bodies();
+		let body = &bodies[0];
+		assert_eq!(body["prompt_cache_options"], json!({"mode":"explicit"}));
+		let messages = body["messages"].as_array().unwrap();
+		let roles: Vec<&str> = messages
+			.iter()
+			.map(|m| m["role"].as_str().unwrap())
+			.collect();
+		assert_eq!(roles, ["system", "assistant", "assistant", "user"]);
+		assert!(messages[1]["content"].is_string());
+		assert!(messages[2]["content"].is_string());
+		assert_eq!(body.to_string().matches("cache_control").count(), 2);
+	}
+
+	#[rstest::rstest]
+	#[case::unmarked_step_on_an_explicit_route("openai/gpt-6.1-terra", Some("explicit"), true)]
+	#[case::caching_declared_off("openai/gpt-5.6-sol", Some("none"), true)]
+	#[case::stored_model_without_a_mode("openai/gpt-6.1-terra", None, false)]
+	#[case::older_gpt("openai/gpt-5.5", Some("none"), false)]
+	#[case::claude("anthropic/claude-fixture", Some("explicit"), false)]
+	#[case::gemini("google/gemini-3.8-flash", Some("automatic"), false)]
+	#[tokio::test]
+	async fn explicit_mode_is_sent_only_where_it_turns_implicit_writes_off(
+		#[case] model: &str,
+		#[case] cache_mode: Option<&str>,
+		#[case] explicit_mode: bool,
+	) {
+		// Arrange
+		let mut upstream = Upstream::start().await;
+		let provider = upstream.route(Some(keys()), model, cache_mode);
+		// Act: no request here asks for breakpoints.
+		provider
+			.infer(
+				native(scope("tenant-a", 1)),
+				&aidash_application::ports::NoProgress,
+			)
+			.await
+			.unwrap();
+		// Assert
+		let bodies = upstream.bodies();
+		assert_eq!(
+			bodies[0].get("prompt_cache_options"),
+			explicit_mode.then(|| json!({"mode":"explicit"})).as_ref()
+		);
+		assert!(!bodies[0].to_string().contains("cache_control"));
+	}
+
+	#[tokio::test]
+	async fn a_run_keeps_one_opaque_session_id_that_names_neither_tenant_nor_run() {
+		// Arrange
+		let mut upstream = Upstream::start().await;
+		let provider = upstream.route(Some(keys()), "vendor/model", None);
+		let run = uuid::Uuid::from_u128(7);
+		let request = |tenant: &str, run: uuid::Uuid| ModelRequest {
+			routing_run: Some(run),
+			..native(scope(tenant, 1))
+		};
+		// Act
+		for request in [
+			request("tenant-a", run),
+			request("tenant-a", run),
+			request("tenant-a", uuid::Uuid::from_u128(8)),
+			request("tenant-b", run),
+		] {
+			provider
+				.infer(request, &aidash_application::ports::NoProgress)
+				.await
+				.unwrap();
+		}
+		// Assert
+		let bodies = upstream.bodies();
+		let ids: Vec<&str> = bodies
+			.iter()
+			.map(|body| body["session_id"].as_str().unwrap())
+			.collect();
+		assert_eq!(ids[0], ids[1], "the same Run stays on one key");
+		assert_ne!(ids[0], ids[2], "another Run has its own key");
+		assert_ne!(ids[0], ids[3], "another Tenant has its own key");
+		let hex = ids[0]
+			.strip_prefix(aidash_domain::projection::SESSION_ID_PREFIX)
+			.unwrap();
+		assert_eq!(hex.len(), 32);
+		assert!(
+			hex.bytes()
+				.all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+		);
+		assert!(!ids[0].contains("tenant-a") && !ids[0].contains(&run.simple().to_string()));
+	}
+
+	#[rstest::rstest]
+	#[case::legacy_has_no_scope(legacy(), Some(uuid::Uuid::from_u128(7)))]
+	#[case::outside_a_run(native(scope("tenant-a", 1)), None)]
+	#[tokio::test]
+	async fn requests_without_a_scope_or_a_run_send_no_session_id(
+		#[case] request: ModelRequest,
+		#[case] run: Option<uuid::Uuid>,
+	) {
+		// Arrange
+		let mut upstream = Upstream::start().await;
+		let provider = upstream.route(Some(keys()), "vendor/model", None);
+		// Act
+		provider
+			.infer(
+				ModelRequest {
+					routing_run: run,
+					..request
+				},
+				&aidash_application::ports::NoProgress,
+			)
+			.await
+			.unwrap();
+		// Assert
+		assert!(upstream.bodies()[0].get("session_id").is_none());
 	}
 
 	#[rstest::rstest]

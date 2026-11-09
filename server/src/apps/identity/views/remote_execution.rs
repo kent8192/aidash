@@ -41,6 +41,24 @@ pub async fn control(
 	crate::http::json(api::control(service.runtime.clone(), actor, (task, id), input).await)
 }
 
+/// A person on the Home declines the call a remote Run is paused on.
+#[post(
+	"/api/tasks/{task}/remote-grants/{id}/declined-calls",
+	name = "!remote_execution_decline_call",
+	auth = "protected"
+)]
+pub async fn decline_call(
+	#[inject] service: Depends<RemoteExecutionManagement>,
+	#[inject] actor: Actor,
+	Path((task, id)): Path<(Uuid, Uuid)>,
+	Json(input): Json<RemoteExecutionDeclineInput>,
+) -> ViewResult<Response> {
+	if let Err(error) = crate::http::validate(&input) {
+		return Ok(error.http_response());
+	}
+	crate::http::json(api::decline_call(service.runtime.clone(), actor, (task, id), input).await)
+}
+
 #[get(
 	"/api/tasks/{task}/remote-executions",
 	name = "!remote_execution_list",
