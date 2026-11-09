@@ -150,8 +150,6 @@ pub enum Refusal {
 	SubnodeLimit,
 	#[error("agent already belongs to the Subnode: {0}")]
 	DuplicateMember(String),
-	#[error("the creating agent cannot be a Subnode member")]
-	CreatorMember,
 	#[error("leader must be a member")]
 	LeaderNotMember,
 	#[error("leader cannot be removed")]
