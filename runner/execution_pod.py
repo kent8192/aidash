@@ -720,6 +720,14 @@ print(json.dumps(r))'''
             if quantity_bytes(current) != settings['capacity_bytes']:
                 raise ExecutionPodError('capacity_mismatch', 'Scratch Space capacity differs from the existing claim')
         existing_pod = self._get('pod', name)
+        if existing_pod:
+            status = existing_pod.get('status', {})
+            execution = next((item for item in status.get('containerStatuses', [])
+                              if item.get('name') == 'execution'), {})
+            if status.get('phase') in ('Failed', 'Succeeded') or 'terminated' in execution.get('state', {}):
+                # Retire the exact guarded writer and interrupt its command journal before replacement.
+                self.stop(settings['scratch_space_id'])
+                existing_pod = None
         if existing_pod is None:
             self._terminate_recorded_pod(settings['scratch_space_id'])
             pod['metadata']['annotations']['aidash.run/epoch'] = str(self.reserve_epoch(settings['scratch_space_id']))

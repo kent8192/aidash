@@ -585,15 +585,26 @@ class ExecutionPodControllerTest(unittest.TestCase):
             self.assertNotIn(settings['egress_credential'], path.read_text())
         controller._verify_running_pod.assert_called_once()
         pod = backend.objects[('pod', resource['pod'])]
-        pod['status'] = {'phase': 'Failed', 'containerStatuses': [
-            {'name': 'execution', 'ready': False, 'state': {'terminated': {'reason': 'OOMKilled'}}}]}
         from execution_pod import ExecutionPodError
+        pod['status'] = {'phase': 'Running', 'containerStatuses': [
+            {'name': 'execution', 'ready': False, 'state': {'running': {}}}]}
         with self.assertRaises(ExecutionPodError) as failure:
             controller.ensure(settings)
         self.assertEqual(failure.exception.code, 'pod_unavailable')
+        self.assertIs(backend.objects[('pod', resource['pod'])], pod)
+        # The node guard is exercised by the stop tests; here it confirms retirement.
+        controller._terminate_recorded_pod = Mock()
+        for phase in ('Failed', 'Succeeded', 'Running'):
+            pod['status'] = {'phase': phase, 'containerStatuses': [
+                {'name': 'execution', 'ready': False, 'state': {'terminated': {'reason': 'OOMKilled'}}}]}
+            self.assertEqual(controller.ensure(settings), resource)
+            self.assertIsNot(backend.objects[('pod', resource['pod'])], pod)
+            self.assertIn(('pvc', resource['claim']), backend.objects)
+            pod = backend.objects[('pod', resource['pod'])]
+        self.assertEqual(controller._verify_running_pod.call_count, 4)
         pod['status'] = {'phase': 'Pending'}
         waits = [args for args in backend.calls if args[0] == 'wait']
-        self.assertEqual(len(waits), 1)
+        self.assertEqual(len(waits), 4)
         self.assertIn('--timeout=1800s', waits[0])
         controller.stop('id')
         self.assertIn(('pvc', resource['claim']), backend.objects)
