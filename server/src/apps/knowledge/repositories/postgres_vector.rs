@@ -67,11 +67,15 @@ mod database_failure_tests {
 
 	#[tokio::test]
 	async fn pool_timeout_reaches_database_unavailable_recovery() {
-		let pool = sqlx::postgres::PgPoolOptions::new()
+		let driver = sqlx::postgres::PgPoolOptions::new()
 			.acquire_timeout(std::time::Duration::from_millis(100))
 			.connect_lazy("postgres://nobody@127.0.0.1:1/nothing")
 			.unwrap();
-		let failure = lookup_failure(Error::from(pool.acquire().await.err().unwrap()));
+		let pool = crate::database::native::Pool::from(driver);
+		let scope = aidash_application::tenancy::TenancyScope::Deployment(
+			aidash_application::tenancy::DeploymentScopeReason::SemanticMaintenance,
+		);
+		let failure = lookup_failure(pool.begin(&scope).await.err().unwrap());
 		assert!(matches!(
 			failure,
 			aidash_application::Error::TemporaryDatabase(_)
