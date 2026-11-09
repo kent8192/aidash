@@ -61,32 +61,6 @@ fn lookup_failure(error: Error) -> aidash_application::Error {
 	error.into()
 }
 
-#[cfg(test)]
-mod database_failure_tests {
-	use super::*;
-
-	#[tokio::test]
-	async fn pool_timeout_reaches_database_unavailable_recovery() {
-		let driver = sqlx::postgres::PgPoolOptions::new()
-			.acquire_timeout(std::time::Duration::from_millis(100))
-			.connect_lazy("postgres://nobody@127.0.0.1:1/nothing")
-			.unwrap();
-		let pool = crate::database::native::Pool::from(driver);
-		let scope = aidash_application::tenancy::TenancyScope::Deployment(
-			aidash_application::tenancy::DeploymentScopeReason::SemanticMaintenance,
-		);
-		let failure = lookup_failure(pool.begin(&scope).await.err().unwrap());
-		assert!(matches!(
-			failure,
-			aidash_application::Error::TemporaryDatabase(_)
-		));
-		let native = Error::from(failure);
-		assert!(matches!(
-			crate::apps::execution::repositories::worker::classify_failure(&native),
-			aidash_application::recovery::ExecutionFailure::DatabaseUnavailable
-		));
-	}
-}
 #[async_trait]
 impl EmbeddingProvider for Transport {
 	async fn embed(
@@ -387,5 +361,32 @@ impl VectorIndex for Transport {
 		.await
 		.map_err(lookup_failure)?;
 		Ok(count as usize == ids.iter().collect::<std::collections::BTreeSet<_>>().len())
+	}
+}
+
+#[cfg(test)]
+mod database_failure_tests {
+	use super::*;
+
+	#[tokio::test]
+	async fn pool_timeout_reaches_database_unavailable_recovery() {
+		let driver = sqlx::postgres::PgPoolOptions::new()
+			.acquire_timeout(std::time::Duration::from_millis(100))
+			.connect_lazy("postgres://nobody@127.0.0.1:1/nothing")
+			.unwrap();
+		let pool = crate::database::native::Pool::from(driver);
+		let scope = aidash_application::tenancy::TenancyScope::Deployment(
+			aidash_application::tenancy::DeploymentScopeReason::SemanticMaintenance,
+		);
+		let failure = lookup_failure(pool.begin(&scope).await.err().unwrap());
+		assert!(matches!(
+			failure,
+			aidash_application::Error::TemporaryDatabase(_)
+		));
+		let native = Error::from(failure);
+		assert!(matches!(
+			crate::apps::execution::repositories::worker::classify_failure(&native),
+			aidash_application::recovery::ExecutionFailure::DatabaseUnavailable
+		));
 	}
 }
