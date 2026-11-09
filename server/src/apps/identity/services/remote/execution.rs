@@ -70,6 +70,7 @@ pub(crate) async fn delegate(
 		task,
 		node,
 		agent,
+		false,
 	)
 	.await
 	.map_err(Into::into)

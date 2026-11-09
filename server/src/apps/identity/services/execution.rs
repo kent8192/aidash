@@ -1878,10 +1878,15 @@ impl WorkerAuthority {
 				actor: Some(super::identity::Actor::Subject(identity)),
 				worker: Some(run.metadata()),
 			};
-			let result =
-				aidash_application::authorization::home::delegate(&repository, task, node, agent)
-					.await
-					.map_err(Into::into);
+			let result = aidash_application::authorization::home::delegate(
+				&repository,
+				task,
+				node,
+				agent,
+				true,
+			)
+			.await
+			.map_err(Into::into);
 			// The delegation has reached the other Node, so a Run whose authority is gone
 			// pauses; the model is not told the call was refused.
 			refresh_access_for_run(&mut lease, &f.store, run)

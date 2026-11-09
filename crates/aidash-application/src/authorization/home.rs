@@ -449,18 +449,21 @@ pub async fn activation_binding<R: HomeRepository>(
 	.await;
 	finish(scope, result).await
 }
+/// Delegate `task` to an Agent on another Node. `by_tool` says whether a Run's tool asks, whose
+/// refusals reach the model, or a person through the API, who gets the plain error.
 pub async fn delegate<R: HomeRepository>(
 	repository: &R,
 	task: Uuid,
 	node: &str,
 	agent: &EntityRef,
+	by_tool: bool,
 ) -> Result<Delegation> {
 	subject(repository)?;
 	let mut scope = repository.begin().await?;
 	let result = async {
-		// A missing task and one the caller may not see read the same.
+		// For the model, a missing task and one the Run may not see read the same.
 		let task = scope.task_read(task).await.map_err(|error| match error {
-			Error::Forbidden => super::worker_tasks::task_not_visible(task),
+			Error::Forbidden if by_tool => super::worker_tasks::task_not_visible(task),
 			error => error,
 		})?;
 		let resource = scope.task_resource(&task).await?;
@@ -491,7 +494,7 @@ pub async fn delegate<R: HomeRepository>(
 			)
 			.await?;
 	}
-	activate_as(repository, task, id, true).await?;
+	activate_as(repository, task, id, by_tool).await?;
 	Ok(Delegation {
 		task_id: task,
 		node_id: node.into(),

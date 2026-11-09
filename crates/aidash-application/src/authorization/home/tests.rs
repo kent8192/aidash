@@ -652,12 +652,28 @@ async fn delegating_a_task_the_caller_cannot_read_says_it_is_not_found_or_not_vi
 		version: "1".into(),
 	};
 	// Act
-	let result = delegate(&repository, task().id, "aidash://receiver", &agent).await;
+	let result = delegate(&repository, task().id, "aidash://receiver", &agent, true).await;
 	// Assert
 	assert!(
 		matches!(&result, Err(Error::Refused(message)) if message.contains("was not found or is not visible")),
 		"{result:?}"
 	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_person_delegating_a_task_they_cannot_read_gets_the_plain_refusal() {
+	// Arrange
+	let repository = Repository::default();
+	repository.state.lock().unwrap().denied = Some("task.read");
+	let agent = EntityRef {
+		id: "agent".into(),
+		version: "1".into(),
+	};
+	// Act
+	let result = delegate(&repository, task().id, "aidash://receiver", &agent, false).await;
+	// Assert: the API answers as it does for any read it refuses, in no Run's words.
+	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
 }
 
 #[rstest]
