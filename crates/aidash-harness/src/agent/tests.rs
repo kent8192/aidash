@@ -113,6 +113,8 @@ struct State {
 	semantic_failure: Mutex<Option<(bool, aidash_domain::semantic::Failure)>>,
 	requests: Mutex<Vec<ModelRequest>>,
 	workspace_events: Mutex<Vec<WorkspaceEvent>>,
+	/// How many older events the store left out of `workspace_events`.
+	events_dropped: AtomicU64,
 	owned_tasks_pending: AtomicBool,
 	token: Uuid,
 	task: Mutex<Task>,
@@ -412,16 +414,19 @@ impl ExecutionStore for Backend {
 			self.0.owned_tasks_pending.load(Ordering::Acquire) || self.0.failed_children,
 		))
 	}
-	async fn workspace_events(&self, _: &Run, after: i64) -> Result<Vec<WorkspaceEvent>> {
-		Ok(self
-			.0
-			.workspace_events
-			.lock()
-			.unwrap()
-			.iter()
-			.filter(|event| event.generation > after)
-			.cloned()
-			.collect())
+	async fn workspace_events(&self, _: &Run, after: i64) -> Result<WorkspaceEvents> {
+		Ok(WorkspaceEvents {
+			events: self
+				.0
+				.workspace_events
+				.lock()
+				.unwrap()
+				.iter()
+				.filter(|event| event.generation > after)
+				.cloned()
+				.collect(),
+			dropped: self.0.events_dropped.load(Ordering::Acquire),
+		})
 	}
 	async fn resolve_research(&self, run: &mut Run) -> Result<()> {
 		for entry in &mut run.context.history {
@@ -1805,6 +1810,7 @@ fn fixture() -> Fixture {
 		semantic_failure: Mutex::new(None),
 		requests: Mutex::new(vec![]),
 		workspace_events: Mutex::new(vec![]),
+		events_dropped: AtomicU64::new(0),
 		owned_tasks_pending: AtomicBool::new(false),
 		token,
 		task: Mutex::new(Task {
@@ -5041,6 +5047,37 @@ async fn a_completion_refused_for_children_sleeps_only_as_long_as_something_can_
 
 #[rstest]
 #[tokio::test]
+async fn a_wake_says_how_many_older_changes_it_left_out(mut fixture: Fixture) {
+	let wait = Scripted::new(
+		ToolSpec {
+			name: "workspace_wait".into(),
+			description: "Wait".into(),
+			parameters: json!({"type":"object"}),
+		},
+		"workspace_wait",
+	);
+	*wait.outputs.lock().unwrap() = [json!({"wait_seconds":300})].into();
+	let task = Uuid::new_v4();
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.custom.insert("workspace_wait".into(), wait);
+	state.events_dropped.store(8, Ordering::Release);
+	state.workspace_events.lock().unwrap().push(WorkspaceEvent {
+		generation: 42,
+		task_id: task,
+		status: "COMPLETED".into(),
+	});
+	respond(
+		&mut fixture.run,
+		vec![call("call-1", "workspace_wait", json!({}))],
+	);
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(fixture.run.context.events().any(|event| matches!(event, ContextEvent::Tool { result, .. } if result["reason"] == "workspace_event" && result["changes"].as_array().is_some_and(|changes| changes.len() == 1) && result["dropped_changes"] == 8)));
+}
+
+#[rstest]
+#[tokio::test]
 async fn remote_workspace_poll_stays_asleep_until_a_child_finishes(mut fixture: Fixture) {
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.remote_home = true;
@@ -5099,7 +5136,7 @@ async fn remote_wait_result_reports_fingerprint_change_without_task_details(mut 
 	*fixture.backend.0.child_summary.lock().unwrap() = Some(completed);
 	advance_sources(&mut fixture).await.unwrap();
 	advance_sources(&mut fixture).await.unwrap();
-	assert!(fixture.run.context.events().any(|event| matches!(event, ContextEvent::Tool { result, .. } if result == &json!({"reason":"workspace_event","changes":[{"kind":"terminal_tasks_changed"}],"open_tasks":0}))));
+	assert!(fixture.run.context.events().any(|event| matches!(event, ContextEvent::Tool { result, .. } if result == &json!({"reason":"workspace_event","changes":[{"kind":"terminal_tasks_changed"}],"dropped_changes":0,"open_tasks":0}))));
 	assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
 }
 

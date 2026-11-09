@@ -3311,7 +3311,7 @@ connection: None,
 						let inputs = store.run_inputs(run.id).await?;
 						let observed = match &resume { ResumeState::ToolCall(state) => state.included_input_seq, _ => run.observed_input_seq };
 						let input = inputs.last().is_some_and(|input| input.seq > observed);
-						let events = store.workspace_events(run, cursor).await?;
+						let WorkspaceEvents { events, dropped } = store.workspace_events(run, cursor).await?;
 						let remote = if !home.local() { Some(home.child_summary(run.task_id).await?) } else { None };
 						let remote_changed = remote.as_ref().is_some_and(|summary| run.recovery.remote_task_fingerprint.as_ref().is_some_and(|previous| *previous != summary.fingerprint()));
 						if !input && events.is_empty() && !remote_changed && chrono::Utc::now() < wake_at {
@@ -3326,8 +3326,10 @@ connection: None,
 						if let Some(summary) = &remote { run.recovery.remote_task_fingerprint = Some(summary.fingerprint()); }
 						let reason = if input { "input" } else if !events.is_empty() || remote_changed { "workspace_event" } else { "ceiling" };
 						let open_tasks = if let Some(summary) = &remote { summary.open_tasks } else { store.unfinished_owned_tasks(run).await? };
+						// A remote Home reports no per-Task changes, so none were left out.
+						let dropped = if home.local() { dropped } else { 0 };
 						if let ResumeState::ToolCall(state) = &mut resume {
-							state.wait_result = Some(json!({"reason":reason,"changes":changes,"open_tasks":open_tasks}));
+							state.wait_result = Some(json!({"reason":reason,"changes":changes,"dropped_changes":dropped,"open_tasks":open_tasks}));
 						}
 						resume.into_state()
 					}
