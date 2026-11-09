@@ -420,7 +420,13 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 		// A member's Reference set stays inside the member's own Run (ADR 0114).
 		let file = serde_json::from_value::<Vec<FileEntry>>(area.manifest)?
 			.into_iter()
-			.find(|file| file.file_id == id && !file.is_reference_file())
+			.find(|file| {
+				file.file_id == id
+					&& !(matches!(
+						file.scope,
+						crate::apps::execution::capabilities::contracts::FileScope::References
+					) && file.provenance["kind"] == "reference")
+			})
 			.ok_or_else(|| aidash_application::Error::NotFound("file unavailable".into()))?;
 		let selected = SelectedFile {
 			file_id: file.file_id,
