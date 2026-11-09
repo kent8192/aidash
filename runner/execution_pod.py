@@ -667,6 +667,15 @@ print(json.dumps(r))'''
             self.backend.kube(['delete', 'pod', canary_name, '--ignore-not-found', '--wait=true'])
             self.backend.kube(['delete', 'networkpolicy', canary_name, '--ignore-not-found', '--wait=true'])
 
+    def sweep_canaries(self):
+        import json
+        # Remove permissive policies before their listener Pods.
+        for kind in ('networkpolicy', 'pod'):
+            result = self.backend.kube(['get', kind, '-l', 'aidash.run/v2-canary=true', '-o', 'json'])
+            for item in json.loads(result.stdout)['items']:
+                name = item['metadata']['name']
+                self.backend.kube(['delete', kind, name, '--ignore-not-found', '--wait=true'])
+
     def _old_helper_image(self, pod):
         containers = pod.get('spec', {}).get('containers', [])
         execution = next((item for item in containers if item.get('name') == 'execution'), None)
@@ -2310,7 +2319,8 @@ def network_canary_manifests(config, node, nonce):
         raise ValueError('network canary requires a node')
     name = 'admission-' + nonce
     labels = {'aidash-canary': nonce}
-    metadata = {'name': name, 'namespace': config['namespace'], 'labels': labels}
+    metadata = {'name': name, 'namespace': config['namespace'],
+                'labels': dict(labels, **{'aidash.run/v2-canary': 'true'})}
     security = {'runAsUser': 10000, 'runAsNonRoot': True, 'allowPrivilegeEscalation': False,
                 'readOnlyRootFilesystem': True, 'capabilities': {'drop': ['ALL']},
                 'seccompProfile': {'type': 'RuntimeDefault'}}
@@ -2326,7 +2336,8 @@ def network_canary_manifests(config, node, nonce):
                                                        'periodSeconds': 1, 'timeoutSeconds': 1},
                                     'resources': {'limits': {'cpu': '250m', 'memory': '128Mi'}}}]}}
     policy = {'apiVersion': 'networking.k8s.io/v1', 'kind': 'NetworkPolicy',
-              'metadata': {'name': name, 'namespace': config['namespace']},
+              'metadata': {'name': name, 'namespace': config['namespace'],
+                           'labels': {'aidash.run/v2-canary': 'true'}},
               'spec': {'podSelector': {'matchLabels': labels}, 'policyTypes': ['Ingress', 'Egress'],
                        'ingress': [{'ports': [{'protocol': 'TCP', 'port': 18080},
                                               {'protocol': 'UDP', 'port': 18081}]}], 'egress': [{}]}}

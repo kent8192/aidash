@@ -448,6 +448,7 @@ class Runner(AllocationJournal):
         error = None
         self.execution_pods.admitted = True  # startup is not serving requests yet
         try:
+            self.execution_pods.sweep_canaries()
             if config.get('allow_docker'):
                 runtime = self.kube_json(['get', 'runtimeclass', config['docker_runtime_class'], '-o', 'json'])
                 if runtime.get('handler') != 'runsc-docker':

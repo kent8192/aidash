@@ -3348,6 +3348,33 @@ class V2NetworkPolicyTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             v2_network_policy(dict(config, proxy_endpoint='http://169.254.169.254:80'))
 
+    def test_canary_resources_have_a_shared_cleanup_label(self):
+        from execution_pod import network_canary_manifests
+        policy, pod = network_canary_manifests(
+            {'namespace': 'sandbox', 'helper_image': 'helper'}, 'node', 'a' * 32)
+        for obj in (policy, pod):
+            self.assertEqual(obj['metadata']['labels']['aidash.run/v2-canary'], 'true')
+
+    def test_startup_removes_canary_leftovers(self):
+        import json
+        from types import SimpleNamespace
+        from execution_pod import ExecutionPodController
+        class Backend:
+            def __init__(self):
+                self.objects = {'networkpolicy': ['admission-a'], 'pod': ['admission-a']}
+            def kube(self, args, **kwargs):
+                if args[0] == 'get':
+                    return SimpleNamespace(stdout=json.dumps({'items': [
+                        {'metadata': {'name': name}} for name in self.objects[args[1]]]}).encode())
+                if args[0] == 'delete':
+                    self.objects[args[1]].remove(args[2])
+                    return SimpleNamespace(stdout=b'')
+                raise AssertionError(args)
+        backend = Backend()
+        controller = ExecutionPodController(backend, {})
+        controller.sweep_canaries()
+        self.assertEqual(backend.objects, {'networkpolicy': [], 'pod': []})
+
     def test_negative_probe_requires_reachable_positive_controls(self):
         from execution_pod import verify_positive_controls
         controls = {'peer': True, 'node': True, 'metadata': True, 'internet': True, 'gateway': True}
@@ -3452,7 +3479,7 @@ class StartupAdmissionTest(unittest.TestCase):
         runner = object.__new__(Runner)
         runner.config = {'image': 'image@sha256:' + 'a' * 64, 'cpu': 2, 'memory_bytes': 2 << 30}
         runner.execution_pods = SimpleNamespace(config={'enabled': True, 'helper_image': 'helper@sha256:' + 'b' * 64},
-            admitted=False, ensure=Mock(side_effect=RuntimeError('network probe failed')), delete=Mock())
+            admitted=False, sweep_canaries=Mock(), ensure=Mock(side_effect=RuntimeError('network probe failed')), delete=Mock())
         runner.activate_execution_pods()
         self.assertFalse(runner.execution_pods.admitted)
         self.assertIn('network probe failed', runner.execution_pods.admission_error)
@@ -3465,7 +3492,7 @@ class StartupAdmissionTest(unittest.TestCase):
         runner = object.__new__(Runner)
         runner.config = {'image': 'image@sha256:' + 'a' * 64, 'cpu': 2, 'memory_bytes': 2 << 30}
         runner.execution_pods = SimpleNamespace(config={'enabled': True, 'helper_image': 'helper@sha256:' + 'b' * 64},
-            admitted=False, ensure=Mock(), delete=Mock())
+            admitted=False, sweep_canaries=Mock(), ensure=Mock(), delete=Mock())
         runner.activate_execution_pods()
         self.assertTrue(runner.execution_pods.admitted)
         runner.execution_pods.ensure.assert_called_once()
