@@ -284,7 +284,7 @@ export function RemoteExecutions({ task }: { task: string }) {
                                   return rest;
                                 })
                               }
-                              send={(content) =>
+                              send={(content, key) =>
                                 apiFetch(
                                   `/api/tasks/${task}/remote-grants/${grant.id}/messages`,
                                   {
@@ -292,8 +292,9 @@ export function RemoteExecutions({ task }: { task: string }) {
                                     headers: {
                                       "content-type": "application/json",
                                     },
+                                    // The form's key, so a retry after a lost reply sends the sentence once.
                                     body: JSON.stringify({
-                                      id: crypto.randomUUID(),
+                                      id: key,
                                       content,
                                     }),
                                   },

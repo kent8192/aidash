@@ -200,6 +200,8 @@ impl Store {
 			}),
 		)
 		.await?;
+		// #763 item 18: one log line, as for a refusal (#754 item 11).
+		tracing::info!(run_id = %id, tool = %paused.tool, kind = ?paused.kind, call = key, "paused call declined");
 		Ok(Declined {
 			run: inspection,
 			call: paused,
