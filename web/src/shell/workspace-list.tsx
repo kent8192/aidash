@@ -1,4 +1,4 @@
-import { useEffect, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { authenticatedFetch } from "../transport";
 import type { Workspace } from "../types";
 import { Link } from "@tanstack/react-router";
@@ -48,13 +48,17 @@ export function WorkspaceList({
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
+  const generation = useRef(0);
   useEffect(() => {
+    generation.current += 1;
     setExtra([]);
     setCursor(data?.next_cursors.workspaces ?? null);
     setError(false);
+    setLoading(false);
   }, [node, data?.next_cursors.workspaces]);
   const loadMore = async () => {
     if (!cursor || loading) return;
+    const requestGeneration = generation.current;
     setLoading(true);
     setError(false);
     try {
@@ -63,12 +67,13 @@ export function WorkspaceList({
       const page = (await (
         await authenticatedFetch(`/api/workspaces?${params}`)
       ).json()) as { items: Workspace[]; next_cursor: string | null };
+      if (requestGeneration !== generation.current) return;
       setExtra((old) => [...old, ...page.items]);
       setCursor(page.next_cursor);
     } catch {
-      setError(true);
+      if (requestGeneration === generation.current) setError(true);
     } finally {
-      setLoading(false);
+      if (requestGeneration === generation.current) setLoading(false);
     }
   };
   const query = filter.toLocaleLowerCase();
@@ -180,10 +185,10 @@ export function WorkspaceList({
           onClick={() => void loadMore()}
           disabled={loading}
         >
-          {loading ? "Loading…" : "Show more"}
+          {loading ? copy.loading : copy.showMore}
         </Button>
       )}
-      {error && <p role="alert">Unable to load more workspaces.</p>}
+      {error && <p role="alert">{copy.moreError}</p>}
       {showCreate && (
         <div className="mt-1 border-t border-border pt-1">
           <Button

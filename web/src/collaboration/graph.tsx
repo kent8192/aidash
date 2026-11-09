@@ -774,13 +774,23 @@ export function Graph({
       aria-label="Graph View"
     >
       {data.next_cursors.conversations && (
-        <p className="text-xs text-faint">Older conversations exist</p>
+        <p className="text-xs text-faint">
+          {locale === "ja-JP"
+            ? "以前の会話があります"
+            : "Older conversations exist"}
+        </p>
       )}
       {data.next_cursors.runs && (
-        <p className="text-xs text-faint">Older runs exist</p>
+        <p className="text-xs text-faint">
+          {locale === "ja-JP" ? "以前の実行があります" : "Older runs exist"}
+        </p>
       )}
       {data.next_cursors.artifacts && (
-        <p className="text-xs text-faint">Older artifacts exist</p>
+        <p className="text-xs text-faint">
+          {locale === "ja-JP"
+            ? "以前の成果物があります"
+            : "Older artifacts exist"}
+        </p>
       )}
       {mode === "neighborhood" ? (
         <>

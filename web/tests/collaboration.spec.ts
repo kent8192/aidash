@@ -3510,3 +3510,40 @@ test("workspace history continues from its candidate cursor", async ({
   expect(new URL(requested).searchParams.get("node")).toBe(defaultNode.name);
   await expect(page.getByRole("button", { name: "Show more" })).toHaveCount(0);
 });
+
+test("pending requests continue within the selected node", async ({ page }) => {
+  await setup(page, { locale: "en-US" });
+  const data = fixture();
+  await page.route("**/api/state**", (route) =>
+    route.fulfill({
+      json: {
+        ...data,
+        access: { kind: "subject", tenant: "acme", subject: "alice" },
+        next_cursors: { ...data.next_cursors, human_requests: "next-human" },
+      },
+    }),
+  );
+  let requested = "";
+  await page.route("**/api/human-requests?**", (route) => {
+    requested = route.request().url();
+    return route.fulfill({
+      json: {
+        items: [
+          {
+            ...data.human_requests[0],
+            id: "older-question",
+            run_id: "old-run",
+          },
+        ],
+        next_cursor: null,
+      },
+    });
+  });
+  await page.goto("/collaboration?channel=workspace-one");
+  await page.getByRole("button", { name: /Switch request/ }).click();
+  await expect(page.getByRole("link", { name: "# Research" })).toContainText(
+    "Decisions 2",
+  );
+  expect(new URL(requested).searchParams.get("cursor")).toBe("next-human");
+  expect(new URL(requested).searchParams.get("node")).toBe(defaultNode.name);
+});
