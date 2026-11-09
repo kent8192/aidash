@@ -155,6 +155,20 @@ local kind installation, `setup-capability-runtime.py --execution-pods` accepts
 and one or more `--proxy-selector key=value` arguments; `--allow-docker` is
 optional. Provision the enforcing storage class and Egress gateway separately.
 
+For a disposable single-node kind rig, TopoLVM can provide the required fixed-size
+filesystem and CSI deletion finalizer. Create a dedicated loop-backed LVM volume
+group on the kind node, install TopoLVM with a device class for that group, and
+use an ext4 StorageClass with `reclaimPolicy: Delete` and
+`volumeBindingMode: WaitForFirstConsumer`. The #714 rig used TopoLVM chart
+17.3.1, a 20 GiB sparse loop file and `spare-gb: 0`; its 1 GiB probe passed
+node-guard capacity validation and the Runner's deletion-finalizer check, then
+the PV disappeared after PVC deletion. In this kind node, udev is not running;
+LVM needed `activation/udev_sync = 0` and `activation/udev_rules = 0` to create
+device nodes itself. These are node-wide settings, so use this procedure only
+on a dedicated disposable node. Record the loop file, device and volume group;
+never reuse or remove another workload's devices. This kind result is not a
+substitute for the required real-cloud-disk proof before production enablement.
+
 Known limits of this runtime, which no tool uses yet. Keep it disabled in
 production until wave 2 of #697 has run it on a live gVisor cluster:
 
