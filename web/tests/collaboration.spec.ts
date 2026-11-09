@@ -3618,3 +3618,29 @@ test("an empty pending-request page can continue", async ({ page }) => {
       .last(),
   ).toBeVisible();
 });
+
+test("an opened older workspace survives a fresh state window", async ({
+  page,
+}) => {
+  await setup(page, { locale: "en-US" });
+  const data = fixture();
+  await page.route("**/api/workspaces/older-workspace", (route) =>
+    route.fulfill({
+      json: {
+        workspace: {
+          ...data.workspaces[0],
+          id: "older-workspace",
+          title: "Older workspace",
+        },
+        tasks: [],
+        artifacts: [],
+        events: [],
+        messages: [],
+      },
+    }),
+  );
+  await page.goto("/collaboration?channel=older-workspace");
+  await expect(
+    page.getByRole("heading", { name: "# Older workspace" }),
+  ).toBeVisible();
+});

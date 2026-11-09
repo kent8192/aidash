@@ -129,7 +129,11 @@ async function setup(
           workspaces: [
             workspace("w-home", "Home research", "first"),
             workspace("w-lab", "Lab notebook", "second"),
-          ],
+          ].filter(
+            (row) =>
+              !new URL(request.url()).searchParams.get("node") ||
+              row.node === new URL(request.url()).searchParams.get("node"),
+          ),
           tasks: [],
           artifacts: [],
           events: [],
@@ -143,20 +147,23 @@ async function setup(
             human_requests: null,
             conversations: null,
           },
-          human_requests: options.lab?.request
-            ? [
-                {
-                  id: "ask-lab",
-                  workspace_id: "w-lab",
-                  run_id: "run-lab",
-                  kind: "QUESTION",
-                  prompt: "Which sample goes first?",
-                  response: null,
-                  answered_by: null,
-                  created_at: created,
-                },
-              ]
-            : [],
+          human_requests:
+            options.lab?.request &&
+            (!new URL(request.url()).searchParams.get("node") ||
+              new URL(request.url()).searchParams.get("node") === "second")
+              ? [
+                  {
+                    id: "ask-lab",
+                    workspace_id: "w-lab",
+                    run_id: "run-lab",
+                    kind: "QUESTION",
+                    prompt: "Which sample goes first?",
+                    response: null,
+                    answered_by: null,
+                    created_at: created,
+                  },
+                ]
+              : [],
         },
       });
     if (path === "/api/tenants/alpha/administration")
@@ -303,7 +310,10 @@ async function setup(
           workspace: workspace(
             snapshot[1],
             snapshot[1] === "w-lab" ? "Lab notebook" : "Home research",
-            snapshot[1] === "w-lab" ? "second" : "first",
+            snapshot[1] === "w-lab" ||
+              (snapshot[1] === "w-new" && posts.at(-1)?.body.node === "second")
+              ? "second"
+              : "first",
           ),
           tasks: [],
           artifacts: [],
@@ -527,13 +537,18 @@ test("registrations belong to the selected Node", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
-test("a question waiting in another Node is listed, and answering it goes to that Node", async ({
+test("a question is listed and answered within its selected Node", async ({
   page,
 }) => {
   const { errors } = await setup(page, { lab: { request: true } });
   await page.goto("/");
+  await expect(page.getByRole("button", { name: /^Decisions/ })).toHaveCount(0);
+  await openAccountMenu(page);
+  await page.getByTestId("node-selector").selectOption("second");
   await page.getByRole("button", { name: /^Decisions/ }).click();
-  const queue = page.getByRole("button", { name: /Which sample goes first\?/ });
+  const queue = page.getByRole("button", {
+    name: /Lab \/ Lab notebook.*Which sample goes first\?/,
+  });
   await expect(queue).toContainText("Lab / Lab notebook");
   await queue.click();
   const dialog = page.getByRole("dialog", { name: "Human input", exact: true });

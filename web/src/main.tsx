@@ -18,7 +18,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { session as getSession } from "./generated/aidash";
+import { session as getSession, workspaceGet } from "./generated/aidash";
 import { nodeLabel, nodeView } from "./node-selection";
 import { discoveryQuery, useNodeSelection } from "./nodes";
 import { AdministratorTenantNotice } from "./administrator-notice";
@@ -386,7 +386,54 @@ function Dashboard({
     }
   };
   // State is scoped to the selected Node.
-  const everything = state.isError ? undefined : state.data;
+  const projected = state.isError ? undefined : state.data;
+  const selectedWorkspace = useQuery({
+    queryKey: ["workspace", route.channel],
+    queryFn: () => workspaceGet(route.channel),
+    enabled: Boolean(
+      projected &&
+        route.channel &&
+        !projected.workspaces.some((row) => row.id === route.channel),
+    ),
+  });
+  useEffect(() => {
+    const workspace = selectedWorkspace.data?.workspace;
+    if (
+      workspace &&
+      workspace.id === route.channel &&
+      workspace.node !== remembered.selected?.name &&
+      remembered.nodes.some((node) => node.name === workspace.node)
+    ) {
+      remembered.select(workspace.node);
+    }
+  }, [selectedWorkspace.data, route.channel, remembered]);
+  const everything = useMemo(() => {
+    const snapshot = selectedWorkspace.data;
+    if (
+      !projected ||
+      !snapshot ||
+      snapshot.workspace.node !== remembered.selected?.name ||
+      projected.workspaces.some((row) => row.id === snapshot.workspace.id)
+    )
+      return projected;
+    return {
+      ...projected,
+      workspaces: [...projected.workspaces, snapshot.workspace],
+      tasks: [
+        ...new Map(
+          [...projected.tasks, ...snapshot.tasks].map((row) => [row.id, row]),
+        ).values(),
+      ],
+      artifacts: [
+        ...new Map(
+          [...projected.artifacts, ...snapshot.artifacts].map((row) => [
+            row.id,
+            row,
+          ]),
+        ).values(),
+      ],
+    };
+  }, [projected, selectedWorkspace.data, remembered.selected?.name]);
   const channelNode = route.channel
     ? everything?.workspaces.find((value) => value.id === route.channel)?.node
     : undefined;
