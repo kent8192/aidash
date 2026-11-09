@@ -188,6 +188,13 @@ async fn purge_removes_expired_oidc_rows_and_keeps_unexpired_rows() {
 		.await
 		.unwrap();
 	}
+	let pool = &fixture.auth.store.pool;
+	sqlx::query("INSERT INTO oauth_server_codes (digest, payload, client_id, expires_at) VALUES ('referenced', '{}'::jsonb, 'fixture', $1)")
+		.bind(now - 1).execute(pool).await.unwrap();
+	sqlx::query("INSERT INTO oauth_server_tokens (digest, payload, client_id, code_digest, expires_at) VALUES ('live-token', '{}'::jsonb, 'fixture', 'referenced', $1)")
+		.bind(now + 3600).execute(pool).await.unwrap();
+	sqlx::query("INSERT INTO oidc_op_codes (digest, payload, expires_at) VALUES ('referenced', '{}'::jsonb, $1), ('orphan', '{}'::jsonb, $1)")
+		.bind(now - 1).execute(pool).await.unwrap();
 	fixture.auth.store.purge_expired().await.unwrap();
 	let ids: Vec<String> = sqlx::query_scalar(
 		"SELECT id FROM oidc_op_pending WHERE id IN ('expired', 'live') ORDER BY id",
@@ -196,6 +203,13 @@ async fn purge_removes_expired_oidc_rows_and_keeps_unexpired_rows() {
 	.await
 	.unwrap();
 	assert_eq!(ids, ["live"]);
+	let codes: Vec<String> = sqlx::query_scalar(
+		"SELECT digest FROM oidc_op_codes WHERE digest IN ('referenced', 'orphan') ORDER BY digest",
+	)
+	.fetch_all(pool)
+	.await
+	.unwrap();
+	assert_eq!(codes, ["referenced"]);
 }
 // The fixture administrator provisions the services' isolated roles and schemas;
 // it never composes Cloud's scoped pool or supplies a serving credential.
