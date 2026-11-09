@@ -173,6 +173,30 @@ impl Drop for Fixture {
 		}
 	}
 }
+
+#[tokio::test]
+async fn purge_removes_expired_oidc_rows_and_keeps_unexpired_rows() {
+	let fixture = fixture(|_| {}).await;
+	let now = chrono::Utc::now().timestamp();
+	for (id, expiry) in [("expired", now - 1), ("live", now + 3600)] {
+		sqlx::query(
+			"INSERT INTO oidc_op_pending (id, payload, expires_at) VALUES ($1, '{}'::jsonb, $2)",
+		)
+		.bind(id)
+		.bind(expiry)
+		.execute(&fixture.auth.store.pool)
+		.await
+		.unwrap();
+	}
+	fixture.auth.store.purge_expired().await.unwrap();
+	let ids: Vec<String> = sqlx::query_scalar(
+		"SELECT id FROM oidc_op_pending WHERE id IN ('expired', 'live') ORDER BY id",
+	)
+	.fetch_all(&fixture.auth.store.pool)
+	.await
+	.unwrap();
+	assert_eq!(ids, ["live"]);
+}
 // The fixture administrator provisions the services' isolated roles and schemas;
 // it never composes Cloud's scoped pool or supplies a serving credential.
 #[allow(clippy::disallowed_methods)]
