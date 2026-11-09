@@ -302,7 +302,7 @@ function Dashboard({
     queryKey: ["state"],
     queryFn: () => getState(),
     enabled: connected,
-    refetchInterval: 5000,
+    refetchInterval: 60_000,
   });
   // A Deployment Administrator's role grants no Tenant content authority
   // (ADR 0102): the server refuses Tenant content routes and event streams in
