@@ -602,6 +602,19 @@ impl<'a> Executor<'a> {
 			}
 			let ids: Vec<Uuid> = tasks.iter().map(|task| task.id).collect();
 			home.abandon_unassigned(run.task_id, &ids).await?;
+			for task in tasks {
+				if !run
+					.recovery
+					.early_abandoned_tasks
+					.iter()
+					.any(|prior| prior.id == task.id)
+				{
+					run.recovery.early_abandoned_tasks.push(task.clone());
+				}
+			}
+			store
+				.save_run(run, token, "run.unassigned_tasks_abandoned")
+				.await?;
 		}
 		if !answer.delivered {
 			record_model_turn(run, agent.projection_version, answer.text, answer.calls)?;
@@ -2874,7 +2887,13 @@ connection: None,
 						}
 						// What people and coordinating Agents read says what was
 						// abandoned. The Model Turn keeps the model's own words.
-						let published = unassigned::answer_with_abandoned(&result.text, &abandoning);
+						let mut named = run.recovery.early_abandoned_tasks.clone();
+						for task in &abandoning {
+							if !named.iter().any(|prior| prior.id == task.id) {
+								named.push(task.clone());
+							}
+						}
+						let published = unassigned::answer_with_abandoned(&result.text, &named);
 						let artifact = ArtifactInput {
 							kind: "text".into(),
 							name: result_artifact_name(&home.task().await?.title),

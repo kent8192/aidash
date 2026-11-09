@@ -307,6 +307,26 @@ fn degraded_context_requires_the_degraded_context_capability() {
 	assert_eq!(encode(&state, &recovery).unwrap(), reserved);
 	assert!(matches!(&short, Error::Invalid(message) if message.contains("does not cover")));
 }
+#[test]
+fn early_abandoned_tasks_require_a_worker_that_can_preserve_them() {
+	let state = RunState::Thinking(ThinkingState::default());
+	let mut recovery = RecoveryState::default();
+	recovery
+		.early_abandoned_tasks
+		.push(crate::unassigned::UnassignedTask {
+			id: Uuid::from_u128(1),
+			title: "Abandoned".into(),
+			abandonable: true,
+			handed_over: false,
+		});
+	let pending = encode(&state, &recovery).unwrap();
+	let requires = StateRequirements::from_pending(&pending).unwrap();
+	assert_eq!(requires.names(), ["early_unassigned_abandonment"]);
+	assert_eq!(requires.unmet(&[]), ["early_unassigned_abandonment"]);
+	assert!(requires.unmet(PersistedCapability::supported()).is_empty());
+	assert!(decode(RunPhase::Thinking, pending).is_ok());
+}
+
 #[rstest::rstest]
 fn a_requirement_that_falls_short_is_invalid() {
 	// Arrange: a Tool Batch whose envelope does not declare `tool_batch_state`,

@@ -167,7 +167,7 @@ pub fn answer_with_abandoned(answer: &str, abandoned: &[UnassignedTask]) -> Stri
 		return answer.to_owned();
 	}
 	format!(
-		"{answer}\n\nNobody was given these subtasks, so they were abandoned when this Run finished: {}.",
+		"{answer}\n\nNobody was given these subtasks, so they were abandoned during this Run: {}.",
 		title_list(abandoned)
 	)
 }

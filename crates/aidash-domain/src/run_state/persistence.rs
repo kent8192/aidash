@@ -12,6 +12,7 @@ pub fn retains_lease(event: &str) -> bool {
 			| "run.estimate_pinned"
 			| "run.plugin_tools_pinned"
 			| "run.mcp_checkpoint"
+			| "run.unassigned_tasks_abandoned"
 			| "context.summary_revoked"
 	)
 }

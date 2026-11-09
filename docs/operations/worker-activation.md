@@ -171,6 +171,10 @@ Degraded context, and keeps it for as long as that record is kept. Only Agents w
 `workspace_retrieval` sources opt in with `on_unavailable: degrade` write it, so roll out
 every worker before an Agent opts in.
 
+Early Unassigned Task abandonments (#818) require `early_unassigned_abandonment` while
+`RecoveryState.early_abandoned_tasks` is present. This keeps older workers from leasing a Run
+whose final answer must name Tasks abandoned before the parent finished.
+
 Agent Plugin logical MCP calls (#414) require `mcp_call_state` while a
 `ToolCallState.mcp` checkpoint exists, including through human, approval and
 reconciliation waits. A recovered capable worker reuses journaled wire results;
