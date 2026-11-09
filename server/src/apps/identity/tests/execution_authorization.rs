@@ -2159,6 +2159,40 @@ async fn run_with_pending_call(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn delegation_to_missing_agent_returns_error_and_keeps_run_active(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let run = run_with_pending_call(
+		&f, &app, &token, task, &harness,
+		aidash_server::provider::ToolCall {
+			id: "missing-agent".into(),
+			name: "task_delegate".into(),
+			arguments: json!({"task_id":task,"node_id":f.config.deployment,"agent":{"id":"missing-agent","version":"1.0.0"}}),
+		}, false,
+	).await;
+	harness.worker_once().await.unwrap();
+	let run = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	assert_eq!(run.control.as_str(), "ACTIVE", "{:?}", run.error);
+	assert_eq!(run.phase().as_str(), "TOOL_CALL");
+	assert_eq!(json!(run.state)["data"]["cursor"], 1);
+	let history = json!(run.context);
+	let error = history["history"][0]["event"]["result"]["error"]
+		.as_str()
+		.unwrap();
+	assert!(error.contains("not found"), "{error}");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn a_delegation_naming_a_task_the_run_cannot_read_is_rejected_and_its_denial_is_audited(
 	#[future(awt)]
 	#[from(common::native_application)]

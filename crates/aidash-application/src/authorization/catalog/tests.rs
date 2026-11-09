@@ -179,6 +179,22 @@ async fn ordinary_exact_read_locks_distribution_before_catalog_and_policy() {
 		]
 	);
 }
+
+#[tokio::test]
+async fn missing_definition_is_a_correctable_call_error() {
+	let mut scope = Fixture::new();
+	let result = tool_entry(
+		&mut scope,
+		&reference("missing"),
+		"agent.execute",
+		"task_delegate",
+	)
+	.await;
+	assert!(
+		matches!(&result, Err(Error::Invalid(message)) if message.contains("not found")),
+		"{result:?}"
+	);
+}
 #[rstest]
 #[tokio::test]
 async fn repeated_exact_read_reuses_its_admission_and_decides_other_actions() {
