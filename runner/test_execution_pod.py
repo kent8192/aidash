@@ -2640,6 +2640,32 @@ class RecoveryRegressionTest(unittest.TestCase):
 
 
 class JournalRetentionTest(unittest.TestCase):
+    def test_two_hundred_sequential_commands_in_a_day_are_accepted(self):
+        import tempfile
+        import uuid
+        from concurrent.futures import Future
+        from pathlib import Path
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+            controller._get = Mock(return_value={'metadata': {'uid': 'uid'}, 'status': {'phase': 'Running'},
+                'spec': {'containers': [{'name': 'execution'}]}})
+            controller._admitted_uid = Mock(return_value='uid')
+            queue = Mock()
+            queue.submit.side_effect = lambda *args, **kwargs: Future()
+            controller.queues['s'] = queue
+            with patch('time.time') as clock:
+                for index in range(200):
+                    clock.return_value = 1_000_000 + index * 400
+                    operation = str(uuid.UUID(int=index + 1))
+                    request = {'operation_id': operation, 'scratch_space_id': 's', 'run_id': 'r', 'code': 'true'}
+                    self.assertEqual(controller.submit_command(request)['status'], 'queued')
+                    future = controller.futures[operation]
+                    controller._update_command(operation, status='completed', outcome='completed', exit_code=0)
+                    future.set_result(None)
+                self.assertEqual(queue.submit.call_count, 200)
+
     def test_pruning_keeps_retry_window_and_unsettled_records_in_their_space(self):
         import hashlib
         import json
@@ -2647,6 +2673,7 @@ class JournalRetentionTest(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import Mock, patch
         from execution_pod import ExecutionPodController, JOURNAL_RETENTION_SECONDS
+        self.assertEqual(JOURNAL_RETENTION_SECONDS, 24 * 60 * 60 + 15 * 60)
         now = 2_000_000
         ids = [f'e6ded09d-f783-4ce8-98e9-dbfca68884f{i}' for i in range(1, 5)]
         request = {'operation_id': ids[0], 'scratch_space_id': 's', 'run_id': 'r', 'code': 'true'}
@@ -2660,8 +2687,9 @@ class JournalRetentionTest(unittest.TestCase):
                 controller._command_path(op).write_text(json.dumps({'operation_id': op, 'scratch_space_id': space,
                     'run_id': 'r', 'status': state, 'terminal_at': finished, 'request_digest': digest}))
             with patch('time.time', return_value=now):
-                self.assertEqual(controller.submit_command(request)['status'], 'completed')
                 controller.prune_space('s')
+                self.assertEqual(controller.submit_command(request)['status'], 'completed')
+                controller.backend.kube.assert_not_called()
             self.assertTrue(controller._command_path(ids[0]).exists())
             self.assertFalse(controller._command_path(ids[1]).exists())
             self.assertTrue(controller._command_path(ids[2]).exists())
@@ -2692,9 +2720,10 @@ class JournalRetentionTest(unittest.TestCase):
         import hashlib
         import json
         import tempfile
+        from concurrent.futures import Future
         from pathlib import Path
         from unittest.mock import Mock, patch
-        from execution_pod import ExecutionPodController, ExecutionPodError
+        from execution_pod import ExecutionPodController, ExecutionPodError, JOURNAL_RETENTION_SECONDS
         op = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
         request = {'operation_id': op, 'scratch_space_id': 's', 'run_id': 'r', 'code': 'true'}
         digest = hashlib.sha256(json.dumps(request, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
@@ -2708,6 +2737,17 @@ class JournalRetentionTest(unittest.TestCase):
                     controller.submit_command(dict(request, operation_id='e6ded09d-f783-4ce8-98e9-dbfca68884f2'))
                 self.assertEqual(refused.exception.code, 'journal_full')
             controller.backend.kube.assert_not_called()
+            controller._get = Mock(return_value={'metadata': {'uid': 'uid'}, 'status': {'phase': 'Running'},
+                'spec': {'containers': [{'name': 'execution'}]}})
+            controller._admitted_uid = Mock(return_value='uid')
+            queue = Mock()
+            queue.submit.return_value = Future()
+            controller.queues['s'] = queue
+            with patch('execution_pod.JOURNAL_MAX_RECORDS_PER_SPACE', 1), \
+                    patch('time.time', return_value=1_000_000 + JOURNAL_RETENTION_SECONDS + 1):
+                new_request = dict(request, operation_id='e6ded09d-f783-4ce8-98e9-dbfca68884f2')
+                self.assertEqual(controller.submit_command(new_request)['status'], 'queued')
+            self.assertFalse(controller._command_path(op).exists())
 
 
 class BackgroundListingRegressionTest(unittest.TestCase):

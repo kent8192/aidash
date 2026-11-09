@@ -5,8 +5,11 @@ from threading import Lock, RLock
 STOP_RETRY_SECONDS = 15 * 60
 LATE_RESULT_SECONDS = 24 * 60 * 60
 OUTPUT_RETRY_SECONDS = 60
-JOURNAL_RETENTION_SECONDS = 7 * 24 * 60 * 60
-JOURNAL_MAX_RECORDS_PER_SPACE = 128
+# Late result observation lasts 24h; leave one 15-minute stop retry window as
+# margin. RunnerHttp's v2 command calls time out after 30s and its execution_pod
+# adapter does not retry requests itself (crates/aidash-integrations/src/runner).
+JOURNAL_RETENTION_SECONDS = max(LATE_RESULT_SECONDS, STOP_RETRY_SECONDS) + STOP_RETRY_SECONDS
+JOURNAL_MAX_RECORDS_PER_SPACE = 4096
 # How long a Python interpreter may take to show a terminal result once its stop was accepted. After the
 # stop signal the in-Pod supervisor (sandbox_v2.run_supervised) kills and reaps the interpreter's processes
 # within 5 s, joins its output readers for FORWARD_GRACE_SECONDS (5 s), drains a reader that is still held
@@ -531,11 +534,12 @@ class ExecutionPodController:
         return [self.backend.root / directory / name for name in names]
 
     def prune_space(self, scratch_space_id, *, now=None):
-        """Remove only settled records after their seven-day retry window."""
+        """Remove only settled records after the retry and late-result window."""
         import json
         import time
         current = time.time() if now is None else now
         with self._space_lock(scratch_space_id):
+            expired = []
             for path in self._space_journal_paths(scratch_space_id):
                 try:
                     candidate = json.loads(path.read_bytes())
@@ -546,6 +550,8 @@ class ExecutionPodController:
                         or not isinstance(terminal_at, (int, float)) or terminal_at > current - JOURNAL_RETENTION_SECONDS
                         or candidate.get('stop_pending')):
                     continue
+                expired.append((terminal_at, path))
+            for _, path in sorted(expired):
                 with self.lock:
                     if not path.exists():
                         continue
