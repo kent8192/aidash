@@ -623,7 +623,8 @@ except Exception:r["peer"]=False
 print(json.dumps(r))'''
             positive = self.backend.kube(['exec', canary_name, '-c', 'canary', '--', 'python3', '-I', '-c',
                                           control, json.dumps(targets)])
-            verify_positive_controls(json.loads(positive.stdout))
+            verify_positive_controls(json.loads(positive.stdout),
+                                     metadata_server_absent=self.config.get('metadata_server_absent', False))
             if settings['docker_enabled']:
                 self.backend.guard_execution_pod(pod, settings, 'execution', container_id, epoch,
                     action='v2_network_udp_control', address=peer_ip, port=18081)
@@ -2332,10 +2333,12 @@ def network_canary_manifests(config, node, nonce):
     return policy, pod
 
 
-def verify_positive_controls(report):
+def verify_positive_controls(report, *, metadata_server_absent=False):
     """Refuse negative evidence unless each target was independently reachable."""
+    if type(metadata_server_absent) is not bool:
+        raise ValueError('metadata_server_absent must be a boolean')
     missing = [name for name in ('peer', 'node', 'metadata', 'internet', 'gateway')
-               if report.get(name) is not True]
+               if not (name == 'metadata' and metadata_server_absent) and report.get(name) is not True]
     if missing:
         raise ValueError('network positive control unavailable: ' + ', '.join(missing))
 

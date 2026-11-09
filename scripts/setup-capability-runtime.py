@@ -59,6 +59,8 @@ def main():
     parser.add_argument('--proxy-endpoint', help='Internal Egress gateway IP origin')
     parser.add_argument('--proxy-namespace', help='Egress gateway namespace')
     parser.add_argument('--proxy-selector', action='append', default=[], help='Egress gateway label key=value')
+    parser.add_argument('--metadata-server-absent', action='store_true',
+                        help='Declare this cluster has no metadata server')
     parser.add_argument('--allow-docker', action='store_true', help='Allow Tenant-dedicated Docker Pods')
     args = parser.parse_args()
     if not re.fullmatch(r"aidash-[a-z0-9][a-z0-9-]{0,35}", args.name):
@@ -226,7 +228,7 @@ WantedBy=multi-user.target
         execution_pods = {'enabled': True, 'helper_image': args.helper_image, 'storage_class': args.storage_class,
                           'proxy_endpoint': args.proxy_endpoint, 'proxy_namespace': args.proxy_namespace,
                           'proxy_selector': selector, 'docker_runtime_class': 'aidash-gvisor-docker',
-                          'allow_docker': args.allow_docker}
+                          'allow_docker': args.allow_docker, 'metadata_server_absent': args.metadata_server_absent}
         write_private(directory / 'execution-pods.json', json.dumps(execution_pods, indent=2) + '\n')
     write_private(directory / "token", secrets.token_urlsafe(48) + "\n")
     print(json.dumps({"cluster": args.name, "profile": str(directory / "profile.json"), "image": image,

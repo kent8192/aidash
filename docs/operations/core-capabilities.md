@@ -109,11 +109,15 @@ sandbox to host cgroup CPU, memory and pids limits. It independently checks
 termination before a new writer starts. Normal-mode commands lose SYS_ADMIN,
 NET_ADMIN, NET_RAW and SYS_CHROOT from all capability sets including the bounding set and
 run with `no_new_privs`; admission runs a user process to verify this and the
-guest process limit. The v2 guest ceiling defaults to 512 tasks and can be set
-with `v2_processes` in the Execution Pod configuration. There is no service-account token. Network admission checks
+guest process limit. The default v2 guest ceiling scales with Pod memory at one task
+per 16 MiB, bounded between 32 and 128 tasks. An operator can override it with
+`v2_processes` in the Execution Pod configuration. There is no service-account token. Network admission checks
 the effective Kubernetes NetworkPolicies and probes a reachable peer Pod, node,
 metadata endpoint and external destination, allowing only the Egress gateway.
-It fails closed when its positive controls cannot be reached. Network probes
+It fails closed when its positive controls cannot be reached. On a cluster with
+no metadata server, explicitly set `execution.pods.metadataServerAbsent: true`
+(or `--metadata-server-absent` in the setup script) to omit only that positive
+control; the metadata isolation probe and other controls remain required. Network probes
 currently require IPv4. The CNI must enforce policy against raw and spoofed
 packets; Docker-mode admission also runs raw packet negative controls.
 

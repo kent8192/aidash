@@ -3355,6 +3355,10 @@ class V2NetworkPolicyTest(unittest.TestCase):
         for name in controls:
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'positive control'):
                 verify_positive_controls(dict(controls, **{name: False}))
+        verify_positive_controls(dict(controls, metadata=False), metadata_server_absent=True)
+        for name in ('peer', 'node', 'internet', 'gateway'):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'positive control'):
+                verify_positive_controls(dict(controls, metadata=False, **{name: False}), metadata_server_absent=True)
 
     def test_guard_network_control_distinguishes_spoof_from_positive_udp(self):
         import json
