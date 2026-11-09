@@ -290,6 +290,12 @@ async fn a_stopped_operation_releases_an_unread_response() {
 	tokio::time::timeout(Duration::from_secs(6), audit.finished.notified())
 		.await
 		.expect("the unread response retained its upstream after stop");
+	// The client never reads, so the stop is seen by the bridge and not by the
+	// body stream. The record still names the stop, as the client's error does.
+	assert_eq!(
+		*audit.finished_records.lock().unwrap(),
+		vec![(200, Some("operation_expired".into()))]
+	);
 	drop(response);
 	stop.send(true).unwrap();
 	gateway.await.unwrap().unwrap();
@@ -2263,7 +2269,6 @@ fn completion(meter: Arc<dyn Meter>, expected: Option<u64>) -> Completion {
 		admission_ms: 7,
 		settle_ms: 0,
 		monitor: tokio::spawn(async {}),
-		interrupted_error: "stream_interrupted",
 	}
 }
 
