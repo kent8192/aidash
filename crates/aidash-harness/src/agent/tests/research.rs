@@ -502,7 +502,6 @@ async fn a_summary_that_absorbed_revoked_research_is_discarded_without_pausing(
 ) {
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.context_policy = Some(recovery_policy(true));
-	state.jev_retention = Some(1.0);
 	*state.summary_text.lock().unwrap() = Some(valid_summary());
 	thinking_with_history(&mut fixture, 40);
 	let research = &mut fixture.run.context.history[1];
@@ -555,7 +554,6 @@ async fn a_summary_that_absorbed_an_expired_provider_result_is_discarded_without
 	// Arrange: a summary absorbs a page a provider with account terms read.
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.context_policy = Some(recovery_policy(true));
-	state.jev_retention = Some(1.0);
 	*state.summary_text.lock().unwrap() = Some(valid_summary());
 	thinking_with_history(&mut fixture, 40);
 	let research = &mut fixture.run.context.history[1];

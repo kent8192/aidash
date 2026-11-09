@@ -553,50 +553,10 @@ fn last_request(fixture: &Fixture) -> ModelRequest {
 
 #[rstest]
 #[tokio::test]
-async fn an_oversized_native_run_elides_old_results_and_keeps_every_turn_whole(
-	mut fixture: Fixture,
-) {
-	// Arrange: Jev drops every old result.
-	native_thinking_over_the_window(&mut fixture);
-	Arc::get_mut(&mut fixture.backend.0).unwrap().jev_retention = Some(0.0);
-	// Act: the decision saves the pruned context, which ends its step, and
-	// the next step infers from it.
-	advance_sources(&mut fixture).await.unwrap();
-	assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
-	advance_sources(&mut fixture).await.unwrap();
-	// Assert
-	let request = last_request(&fixture);
-	assert!(request.ensure_fits(128_000).is_ok());
-	let native = native_context(&request);
-	check_model_turns(&native.history).unwrap();
-	let tool_messages = native
-		.history
-		.iter()
-		.filter_map(|message| match message {
-			NativeMessage::Tool {
-				tool_call_id,
-				envelope,
-			} => Some((tool_call_id.as_str(), &envelope.content)),
-			_ => None,
-		})
-		.collect::<Vec<_>>();
-	assert_eq!(tool_messages.len(), 46);
-	for (id, content) in tool_messages {
-		if id.starts_with("old-") && id != "old-0" {
-			assert_eq!(content, &ContextEvent::elided_result(id));
-		} else {
-			assert!(content.is_string(), "{id} is protected");
-		}
-	}
-}
-
-#[rstest]
-#[tokio::test]
 async fn the_native_summary_stage_absorbs_whole_turns_before_inference(mut fixture: Fixture) {
-	// Arrange: Jev keeps everything, so only the Summary Stage can fit.
+	// Arrange: the Summary Stage must fit the older turns.
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.context_policy = Some(recovery_policy(true));
-	state.jev_retention = Some(1.0);
 	state.summary_estimate_diagnostics = Some(json!({
 		"calibrations": {
 			"legacy": {"ratio_ppm":250000,"samples":20},

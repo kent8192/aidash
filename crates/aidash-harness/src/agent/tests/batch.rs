@@ -762,7 +762,6 @@ impl ExecutionStore for Bench {
 		_token: Uuid,
 		_attempt: Uuid,
 		_settlement: &aidash_domain::context::recovery::Settlement,
-		_staged: Option<&aidash_application::decision::StagedDecision>,
 	) -> Result<()> {
 		unexpected("ExecutionStore.adopt_compaction")
 	}
@@ -965,9 +964,6 @@ impl ExecutionAuthority for Bench {
 		_summarizer: &aidash_domain::context::summary::SummaryProvider,
 	) -> Result<()> {
 		unexpected("ExecutionAuthority.recheck_summary")
-	}
-	async fn recheck_decider(&self, _: &aidash_domain::decision::DeciderPin) -> Result<()> {
-		unexpected("ExecutionAuthority.recheck_decider")
 	}
 }
 
