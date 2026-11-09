@@ -7,7 +7,7 @@
 /// force. macOS refuses a soft limit above `OPEN_MAX` even under an unlimited
 /// hard limit, so there it falls back to that.
 #[cfg(unix)]
-pub fn raise_soft_limit() -> std::io::Result<u64> {
+pub fn raise_soft_limit() -> std::io::Result<libc::rlim_t> {
 	let mut limit = libc::rlimit {
 		rlim_cur: 0,
 		rlim_max: 0,
@@ -17,15 +17,15 @@ pub fn raise_soft_limit() -> std::io::Result<u64> {
 		return Err(std::io::Error::last_os_error());
 	}
 	if limit.rlim_cur >= limit.rlim_max {
-		return Ok(limit.rlim_cur as u64);
+		return Ok(limit.rlim_cur);
 	}
 	let wanted = limit.rlim_max;
 	match set_soft(limit, wanted) {
-		Ok(()) => Ok(wanted as u64),
+		Ok(()) => Ok(wanted),
 		#[cfg(target_os = "macos")]
 		Err(_) if wanted > OPEN_MAX && limit.rlim_cur < OPEN_MAX => {
 			set_soft(limit, OPEN_MAX)?;
-			Ok(OPEN_MAX as u64)
+			Ok(OPEN_MAX)
 		}
 		Err(error) => Err(error),
 	}
@@ -61,7 +61,7 @@ mod tests {
 			0
 		);
 		let raised = super::raise_soft_limit().unwrap();
-		assert!(raised >= before.rlim_cur as u64);
-		assert!(raised <= before.rlim_max as u64);
+		assert!(raised >= before.rlim_cur);
+		assert!(raised <= before.rlim_max);
 	}
 }
