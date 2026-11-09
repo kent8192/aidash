@@ -3647,3 +3647,46 @@ test("an opened older workspace survives a fresh state window", async ({
     page.getByRole("heading", { name: "# Older workspace" }),
   ).toBeVisible();
 });
+
+test("task dependency picker can load older tasks on demand", async ({
+  page,
+}) => {
+  await setup(page, { locale: "en-US" });
+  const data = fixture();
+  await page.route("**/api/state**", (route) =>
+    route.fulfill({
+      json: {
+        ...data,
+        access: { kind: "subject", tenant: "acme", subject: "alice" },
+        next_cursors: { ...data.next_cursors, tasks: "next-task" },
+      },
+    }),
+  );
+  let reads = 0;
+  await page.route("**/api/tasks?**", (route) => {
+    reads += 1;
+    return route.fulfill({
+      json: {
+        tasks: [
+          { ...data.tasks[0], id: "old-task", title: "Older prerequisite" },
+        ],
+        next_offset: null,
+      },
+    });
+  });
+  await page.goto("/collaboration?channel=workspace-one");
+  await page
+    .getByRole("button", { name: "Show channel status", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("tab", { name: "Tasks and results", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Add task", exact: true }).click();
+  expect(reads).toBe(0);
+  await page.getByRole("button", { name: "Show more tasks" }).click();
+  await expect(
+    page.getByRole("option", { name: "Older prerequisite" }).first(),
+  ).toBeAttached();
+  expect(reads).toBe(1);
+});

@@ -1,3 +1,4 @@
+import { useTaskPickerPages } from "./task-picker-pages";
 import { contextSourceConfiguration } from "./context-source-model";
 import { selfHostedPlanConnections } from "@slots/plan-connections";
 import { coordinatorDefaults, hasInstructionalBinding } from "./agent-bindings";
@@ -316,12 +317,11 @@ export function TaskForm({
   submit: Submit;
   workspace?: string;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [selectedWorkspace, setSelectedWorkspace] = useState(workspace ?? "");
   const [parent, setParent] = useState("");
-  const tasks = data.tasks.filter(
-    (task) => task.workspace_id === selectedWorkspace,
-  );
+  const pages = useTaskPickerPages(data, selectedWorkspace);
+  const tasks = pages.tasks;
   const ancestors = new Set<string>();
   let ancestor: string | null | undefined = parent;
   while (ancestor && !ancestors.has(ancestor)) {
@@ -408,6 +408,23 @@ export function TaskForm({
             ))}
         </select>
       </Field>
+      {selectedWorkspace && pages.more && (
+        <Button
+          type="button"
+          variant="outline"
+          disabled={pages.loading}
+          onClick={pages.load}
+        >
+          {locale === "ja-JP" ? "タスクをさらに表示" : "Show more tasks"}
+        </Button>
+      )}
+      {pages.error && (
+        <p role="alert">
+          {locale === "ja-JP"
+            ? "タスクを読み込めませんでした。"
+            : "Unable to load tasks."}
+        </p>
+      )}
       <Field label={t("requirements")}>
         <Textarea
           name="requirements"
