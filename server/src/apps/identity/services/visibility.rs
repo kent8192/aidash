@@ -1,5 +1,6 @@
 //! Read authorization over native records, retaining the complete dependency graph.
 use super::NativeAccess;
+use crate::apps::identity::models::DecisionOwner;
 use crate::authorization::policy::Resource;
 use crate::registry::EntityRef;
 use crate::{Result, domain};
@@ -149,6 +150,9 @@ impl NativeAccess {
 		let Some(_visit) = self.access.checking_reads.enter(key) else {
 			return Ok(true);
 		};
+		let walk = self
+			.access
+			.begin_read_walk(DecisionOwner::Run(run), outermost);
 		let result = self.run_reads_visible_in(run).await;
 		match result {
 			Ok(verdict) => self
@@ -158,7 +162,7 @@ impl NativeAccess {
 			Err(_) if outermost => self.access.read_verdicts.abandon(),
 			Err(_) => {}
 		}
-		result
+		self.access.end_read_walk(walk, result).await
 	}
 
 	async fn run_reads_visible_in(&mut self, run: Uuid) -> Result<bool> {

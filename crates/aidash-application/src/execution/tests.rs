@@ -944,23 +944,66 @@ fn declared_continuations_keep_approval_precedence() {
 	let approval = uuid::Uuid::from_u128(17);
 	let request = uuid::Uuid::from_u128(18);
 	assert!(
-		matches!(super::FrameworkResult::decode(&human, &serde_json::json!({"human_request_id":request})).unwrap(), super::FrameworkResult::Human(id) if id == request)
+		matches!(super::FrameworkResult::decode(&human, &serde_json::json!({"human_request_id":request}), &serde_json::json!({})).unwrap(), super::FrameworkResult::Human(id) if id == request)
 	);
 	assert!(matches!(
-		super::FrameworkResult::decode(&wait, &serde_json::json!({"wait_seconds":7})).unwrap(),
+		super::FrameworkResult::decode(
+			&wait,
+			&serde_json::json!({"wait_seconds":7}),
+			&serde_json::json!({})
+		)
+		.unwrap(),
 		super::FrameworkResult::Wait(7)
 	));
 	for contract in [&human, &wait] {
 		assert!(
-			matches!(super::FrameworkResult::decode(contract, &serde_json::json!({"status":"approval_required", "approval_id":approval, "human_request_id":request, "wait_seconds":7})).unwrap(), super::FrameworkResult::Approval(id) if id == approval)
+			matches!(super::FrameworkResult::decode(contract, &serde_json::json!({"status":"approval_required", "approval_id":approval, "human_request_id":request, "wait_seconds":7}), &serde_json::json!({})).unwrap(), super::FrameworkResult::Approval(id) if id == approval)
 		);
 		assert!(
 			super::FrameworkResult::decode(
 				contract,
-				&serde_json::json!({"status":"approval_required"})
+				&serde_json::json!({"status":"approval_required"}),
+				&serde_json::json!({})
 			)
 			.is_err()
 		);
+	}
+}
+
+#[test]
+fn running_commands_suspend_but_completed_or_opted_out_commands_return() {
+	let contract = aidash_domain::tool::builtin_contract("shell_poll").unwrap();
+	let operation = uuid::Uuid::from_u128(19);
+	for status in ["prepared", "submitted", "running", "cancelling"] {
+		let output = serde_json::json!({"operation_id":operation,"status":status});
+		assert!(!matches!(
+			super::FrameworkResult::decode(&contract, &output, &serde_json::json!({})).unwrap(),
+			super::FrameworkResult::Ordinary
+		));
+	}
+	let running = serde_json::json!({"operation_id":operation,"status":"running"});
+	for (input, expected) in [
+		(serde_json::json!({}), 300),
+		(serde_json::json!({"wait_seconds":9999}), 3600),
+	] {
+		assert!(
+			matches!(super::FrameworkResult::decode(&contract, &running, &input).unwrap(), super::FrameworkResult::Operation { id, seconds } if id == operation && seconds == expected)
+		);
+	}
+	for (output, input) in [
+		(
+			serde_json::json!({"operation_id":operation,"status":"completed"}),
+			serde_json::json!({}),
+		),
+		(
+			serde_json::json!({"operation_id":operation,"status":"running"}),
+			serde_json::json!({"wait_seconds":0}),
+		),
+	] {
+		assert!(matches!(
+			super::FrameworkResult::decode(&contract, &output, &input).unwrap(),
+			super::FrameworkResult::Ordinary
+		));
 	}
 }
 

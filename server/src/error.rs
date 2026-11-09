@@ -431,6 +431,7 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::Plan(failure) => Self::Plan(failure),
 			ApplicationError::InferenceStalled => Self::InferenceStalled,
 			ApplicationError::TransactionPending => Self::TransactionPending,
+			ApplicationError::RunLockContended => Self::External("Run row lock contended".into()),
 			// The broker fault keeps its generic Deployment Administrator message and correlation.
 			error @ (ApplicationError::BrokerUnavailable { .. }
 			| ApplicationError::BrokerRejected { .. }) => Self::External(error.to_string()),

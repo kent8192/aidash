@@ -236,6 +236,9 @@ impl WorkspaceRecordScope for Reads<'_> {
 		}))
 	}
 	async fn message_record(&mut self, workspace_id: Uuid, id: Uuid) -> Result<Option<Message>> {
+		if let Some(message) = self.access.read_lookups.message(id, workspace_id) {
+			return Ok(message);
+		}
 		let result: NativeResult<Option<Message>> = async {
 			Ok({
 				let query_bind_1 = id;
@@ -311,11 +314,13 @@ impl WorkspaceRecordScope for Reads<'_> {
 	}
 }
 struct ChildTaskSummaryRow {
+	revision: i64,
 	id: Uuid,
 	created_by: String,
 	status: crate::domain::TaskStatus,
 }
 crate::native_record!(ChildTaskSummaryRow {
+	revision,
 	id,
 	created_by,
 	status
@@ -364,6 +369,7 @@ impl ChildSummaryScope for Reads<'_> {
 							Alias::new("id"),
 							Alias::new("created_by"),
 							Alias::new("status"),
+							Alias::new("revision"),
 						])
 						.from(Alias::new("tasks"))
 						.and_where(
@@ -403,13 +409,14 @@ impl ChildSummaryScope for Reads<'_> {
 						.limit(100)
 						.to_string(PostgresQueryBuilder),
 				)
-				.columns(&["id", "created_by", "status"])
+				.columns(&["id", "created_by", "status", "revision"])
 				.fetch_all(&mut **self.access.tx)
 				.await?
 			};
 			Ok(rows
 				.into_iter()
 				.map(|row| ChildTaskRecord {
+					revision: row.revision,
 					id: row.id,
 					created_by: row.created_by,
 					status: row.status,

@@ -132,6 +132,21 @@ impl SessionScope for Scope<'_> {
 			.map_err(Into::into)
 	}
 	async fn message(&mut self, workspace: Uuid, id: Uuid) -> Result<()> {
+		// A walk only rechecks what is already recorded. It hands nothing over, so
+		// it needs the policy and not the record.
+		if self.access.read_lookups.walking() {
+			let readable = aidash_application::authorization::records::messages_readable(
+				&mut crate::bootstrap::run_visibility_scope(self.access),
+				workspace,
+				[id],
+			)
+			.await?;
+			return if readable {
+				Ok(())
+			} else {
+				Err(aidash_application::Error::Forbidden)
+			};
+		}
 		self.access
 			.workspace_record(workspace, "message", id)
 			.await

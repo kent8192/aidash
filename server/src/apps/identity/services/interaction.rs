@@ -34,6 +34,26 @@ impl Access {
 		.map_err(Into::into)
 	}
 
+	/// What the Continuation Check knows of a Run: it exists and this authority
+	/// may still reach its Workspace. It never looks at what the Run has read; that
+	/// is the Read Recheck's job, so its cost does not grow with the reads (ADR 0116).
+	pub(crate) async fn run_for_continuation(&mut self, id: Uuid) -> Result<Run> {
+		let mut check = self.rechecking(id);
+		let run = crate::apps::execution::models::Run::read_in(&mut **check.tx, id, None)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		let workspace = check.workspace(run.workspace_id).await?;
+		check.context = workspace.attributes.clone();
+		check.require(&workspace, "workspace.read").await?;
+		Ok(run)
+	}
+
+	/// The Read Recheck, in full. Every allow repeats the same question for this
+	/// Run, so a repeat adds no Authorization Decision.
+	pub(crate) async fn recheck_run_reads(&mut self, id: Uuid) -> Result<Run> {
+		self.rechecking(id).run_for_interaction(id).await
+	}
+
 	pub(crate) async fn run_for_interaction(&mut self, id: Uuid) -> Result<Run> {
 		aidash_application::authorization::workspaces::run_for_interaction(
 			&mut crate::bootstrap::run_visibility_scope(self),

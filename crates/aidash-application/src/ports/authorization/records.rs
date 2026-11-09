@@ -34,6 +34,7 @@ pub trait WorkspaceRecordScope: Send {
 	async fn track(&mut self, snapshot: &WorkspaceSnapshot) -> Result<()>;
 }
 pub struct ChildTaskRecord {
+	pub revision: i64,
 	pub id: Uuid,
 	pub created_by: String,
 	pub status: TaskStatus,

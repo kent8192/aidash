@@ -1162,7 +1162,8 @@ class Runner(AllocationJournal):
                 # outcome stay uncertain. Until then the Working Area stays busy, not unavailable (#709).
                 reply_lost = True
             elif 'stdout' in result:
-                self.update(operation, stdout=result['stdout'], truncated=result.get('truncated', False), output_fetched_at=time.time())
+                self.update(operation, stdout=result['stdout'], stdout_offset=result.get('stdout_offset', 0),
+                            truncated=result.get('truncated', False), output_fetched_at=time.time())
             pod = self.pod(pod_operation)
             if not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']:
                 raise SandboxGone()
@@ -1757,8 +1758,9 @@ class Runner(AllocationJournal):
             # children, avoiding needless processes during the fork check.
             # Ordinary operation previews continue while execution runs.
             if hydrated and operation != self.admission_operation and time.monotonic() - preview_at > 1:
-                captured = json.loads(self.exec_collector(operation, ["logs", "16384"]).stdout)
-                self.update(operation, stdout=captured["stdout"], truncated=captured["truncated"], output_fetched_at=time.time())
+                captured = json.loads(self.exec_collector(operation, ["logs", "16384", "window"]).stdout)
+                self.update(operation, stdout=captured["stdout"], stdout_offset=captured["offset"],
+                            truncated=captured["truncated"], output_fetched_at=time.time())
                 preview_at = time.monotonic()
             if not hydrated and time.time() >= record['startup_at'] + START_LIMIT_SECONDS:
                 raise RuntimeError("sandbox startup not confirmed")

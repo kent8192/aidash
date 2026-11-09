@@ -151,6 +151,9 @@ pub enum Error {
 	},
 	#[error("atomic transaction visibility pending; retry after recovery")]
 	TransactionPending,
+	/// Another transaction holds the Run row during an activation claim.
+	#[error("Run row lock contended")]
+	RunLockContended,
 	/// The Tenant Secret broker could not serve the call. A person cannot repair
 	/// this: the message names no broker reason, only the Deployment Administrator-side fault
 	/// and the correlation the broker logged.

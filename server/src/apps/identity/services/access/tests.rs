@@ -138,6 +138,10 @@ fn access() -> Access {
 		cached_runs: Default::default(),
 		cached_humans: Default::default(),
 		pending_decisions: vec![],
+		recorded_decisions: Default::default(),
+		recheck_owner: None,
+		walk_root: None,
+		read_lookups: Default::default(),
 		last_policy_explicit_deny: false,
 		decision_serial: 0,
 		pool: sqlx::postgres::PgPoolOptions::new()
@@ -255,7 +259,7 @@ async fn finishing_a_compound_check_bounds_audit_round_trips(
 	};
 	for id in 0..decisions {
 		let resource = access.resource("workspace", id, json!({}));
-		access.pending_decisions.push((
+		access.pending_decisions.push(DecisionRow::direct(
 			access.evaluation("alice", &resource, "workspace.read"),
 			decision.clone(),
 		));

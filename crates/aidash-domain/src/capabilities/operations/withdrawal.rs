@@ -1,6 +1,9 @@
 //! Withdrawal narrows accepted authority without treating a dispatched writer as safe.
 use serde_json::{Value, json};
 use uuid::Uuid;
+/// Why an operation's authority ended, recorded in its result. A refused request
+/// keeps answering that its authority was revoked, not that it expired.
+pub const AUTHORITY_WITHDRAWN: &str = "AUTHORITY_WITHDRAWN";
 #[derive(Clone)]
 pub struct Snapshot {
 	pub operation_id: Uuid,
@@ -57,6 +60,11 @@ impl Snapshot {
 	pub fn never_dispatched(&self) -> bool {
 		self.state == "prepared"
 	}
+	/// A withdrawal has already recorded that this operation's authority ended.
+	/// The writer's stop may still be unconfirmed.
+	pub fn marked_withdrawn(&self) -> bool {
+		self.result["error"] == AUTHORITY_WITHDRAWN
+	}
 	pub fn undelivered_refusal(&self) -> Option<Value> {
 		if !self.active() {
 			return None;
@@ -92,7 +100,7 @@ impl Snapshot {
 		let mut result = self.result.clone();
 		result["termination_confirmed"] = json!(stopped);
 		result["effects_may_have_occurred"] = json!(!never_ran);
-		result["error"] = json!("AUTHORITY_WITHDRAWN");
+		result["error"] = json!(AUTHORITY_WITHDRAWN);
 		if !never_dispatched {
 			result
 				.as_object_mut()

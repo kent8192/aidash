@@ -1,6 +1,7 @@
 //! Output membership and native ordering stay in the caller's exact transaction.
 use super::{NativeReads, Reads};
 use crate::Result as NativeResult;
+use crate::apps::identity::models::DecisionOwner;
 use aidash_application::{
 	Result,
 	ports::authorization::visibility::provenance::{LocalOutputScope, OutputScope},
@@ -18,6 +19,9 @@ impl LocalOutputScope for Reads<'_> {
 			.map_err(Into::into)
 	}
 	async fn producers(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>> {
+		if let Some(producers) = self.access.read_lookups.producers(workspace, kind, id) {
+			return Ok(producers);
+		}
 		let result: NativeResult<Vec<Uuid>> = async {
 			let this = &mut *self.access;
 			let producers: Vec<Uuid> = {
@@ -59,14 +63,23 @@ impl LocalOutputScope for Reads<'_> {
 #[async_trait]
 impl OutputScope for Reads<'_> {
 	async fn grant_visible(&mut self, grant: Uuid) -> Result<bool> {
+		let outermost = self.access.reads_idle();
 		let Some(_visit) = self.access.output_visit(grant) else {
 			return Ok(true);
 		};
-		Box::pin(self.access.grant_output_visible(grant))
+		let walk = self
+			.access
+			.begin_read_walk(DecisionOwner::RemoteGrant(grant), outermost);
+		let result = Box::pin(self.access.grant_output_visible(grant)).await;
+		self.access
+			.end_read_walk(walk, result)
 			.await
 			.map_err(Into::into)
 	}
 	async fn remote_grants(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>> {
+		if let Some(grants) = self.access.read_lookups.remote_grants(workspace, kind, id) {
+			return Ok(grants);
+		}
 		let result: NativeResult<Vec<Uuid>> = async {
 			let this = &mut *self.access;
 			let grants: Vec<Uuid> = {
@@ -100,13 +113,18 @@ impl OutputScope for Reads<'_> {
 #[async_trait]
 impl LocalOutputScope for NativeReads<'_> {
 	async fn producers(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>> {
-		let producers = crate::apps::identity::models::AuthorizationRunOutput::producers(
-			self.access.tx.as_mut(),
-			workspace,
-			kind,
-			id,
-		)
-		.await?;
+		let producers = match self.access.read_lookups.producers(workspace, kind, id) {
+			Some(producers) => producers,
+			None => {
+				crate::apps::identity::models::AuthorizationRunOutput::producers(
+					self.access.tx.as_mut(),
+					workspace,
+					kind,
+					id,
+				)
+				.await?
+			}
+		};
 		self.access
 			.producers_to_check(workspace, producers)
 			.await
