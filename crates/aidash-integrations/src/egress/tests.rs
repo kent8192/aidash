@@ -1618,7 +1618,7 @@ async fn an_upgraded_connection_keeps_reading_after_closing_its_sending_side() {
 	});
 	let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
 	client
-		.write_all(b"CONNECT example.com:443 HTTP/1.1\r\nhost: example.com:443\r\n\r\n")
+		.write_all(b"CONNECT example.com:443 HTTP/1.1\r\nhost: example.com:443\r\ncontent-length: 5\r\n\r\n")
 		.await
 		.unwrap();
 	let mut answer = Vec::new();
