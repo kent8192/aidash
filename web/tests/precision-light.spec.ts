@@ -154,7 +154,7 @@ test("request progress keeps transactions available when ordinary data is blocke
   page,
 }) => {
   await setup(page, { subject: true });
-  await page.route("**/api/state", (route) =>
+  await page.route("**/api/state**", (route) =>
     route.fulfill({ status: 503, json: { error: "visibility pending" } }),
   );
   await page.route("**/api/transactions", (route) =>

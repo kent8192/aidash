@@ -773,6 +773,15 @@ export function Graph({
       )}
       aria-label="Graph View"
     >
+      {data.next_cursors.conversations && (
+        <p className="text-xs text-faint">Older conversations exist</p>
+      )}
+      {data.next_cursors.runs && (
+        <p className="text-xs text-faint">Older runs exist</p>
+      )}
+      {data.next_cursors.artifacts && (
+        <p className="text-xs text-faint">Older artifacts exist</p>
+      )}
       {mode === "neighborhood" ? (
         <>
           <div className="flex h-11 shrink-0 items-center gap-3 border-b border-border px-4">

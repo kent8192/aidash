@@ -116,6 +116,14 @@ export function fixture(reference = false) {
     events: [],
     artifacts: [] as Artifact[],
     installations: [],
+    next_cursors: {
+      workspaces: null,
+      tasks: null,
+      runs: null,
+      artifacts: null,
+      human_requests: null,
+      conversations: null,
+    },
     human_requests: [
       {
         id: "question-one",

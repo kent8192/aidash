@@ -2801,7 +2801,7 @@ test("topology renders each discovered Node once with its agents and cross-Node 
   const entity = data.registry.find((entry) => entry.kind === "agent")!;
   data.tasks[0].created_by = `${local}/agents/${entity.id}@${entity.version}`;
   data.tasks[0].owner = `${remote}/agents/${entity.id}@${entity.version}`;
-  await page.route("**/api/state", (route) => route.fulfill({ json: data }));
+  await page.route("**/api/state**", (route) => route.fulfill({ json: data }));
   await page.route("**/api/discover**", (route) =>
     route.fulfill({
       json: {
@@ -3469,3 +3469,44 @@ for (const failMessage of [false, true]) {
     expect(errors.filter((error) => !error.includes("503"))).toEqual([]);
   });
 }
+
+test("workspace history continues from its candidate cursor", async ({
+  page,
+}) => {
+  await setup(page, { locale: "en-US" });
+  const data = fixture();
+  await page.route("**/api/state**", (route) =>
+    route.fulfill({
+      json: {
+        ...data,
+        access: { kind: "subject", tenant: "acme", subject: "alice" },
+        next_cursors: { ...data.next_cursors, workspaces: "next-page" },
+      },
+    }),
+  );
+  let requested = "";
+  await page.route("**/api/workspaces?**", (route) => {
+    requested = route.request().url();
+    return route.fulfill({
+      json: {
+        items: [
+          {
+            ...data.workspaces[0],
+            id: "older-workspace",
+            title: "Older workspace",
+          },
+        ],
+        next_cursor: null,
+      },
+    });
+  });
+  await page.goto("/collaboration?channel=workspace-one");
+  await page.getByRole("button", { name: /Switch request/ }).click();
+  await page.getByRole("button", { name: "Show more" }).click();
+  await expect(
+    page.getByRole("link", { name: "# Older workspace" }),
+  ).toBeVisible();
+  expect(new URL(requested).searchParams.get("cursor")).toBe("next-page");
+  expect(new URL(requested).searchParams.get("node")).toBe(defaultNode.name);
+  await expect(page.getByRole("button", { name: "Show more" })).toHaveCount(0);
+});

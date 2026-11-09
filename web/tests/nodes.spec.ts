@@ -135,6 +135,14 @@ async function setup(
           events: [],
           runs: [],
           conversations: [],
+          next_cursors: {
+            workspaces: null,
+            tasks: null,
+            runs: null,
+            artifacts: null,
+            human_requests: null,
+            conversations: null,
+          },
           human_requests: options.lab?.request
             ? [
                 {

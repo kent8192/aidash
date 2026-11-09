@@ -1,4 +1,6 @@
-import type { RefObject } from "react";
+import { useEffect, useState, type RefObject } from "react";
+import { authenticatedFetch } from "../transport";
+import type { Workspace } from "../types";
 import { Link } from "@tanstack/react-router";
 import { Plus, Search } from "lucide-react";
 import { Button } from "../components/ui/button";
@@ -19,6 +21,7 @@ const dotTone = {
 /** Searchable request history: the workspace switcher body on desktop and in the mobile menu. */
 export function WorkspaceList({
   data,
+  node,
   current,
   filter,
   setFilter,
@@ -29,6 +32,7 @@ export function WorkspaceList({
   className,
 }: {
   data?: State;
+  node?: string;
   current: string;
   filter: string;
   setFilter: (value: string) => void;
@@ -40,11 +44,41 @@ export function WorkspaceList({
 }) {
   const { locale } = useI18n();
   const copy = shellCopy[locale];
+  const [extra, setExtra] = useState<Workspace[]>([]);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
+  useEffect(() => {
+    setExtra([]);
+    setCursor(data?.next_cursors.workspaces ?? null);
+    setError(false);
+  }, [node, data?.next_cursors.workspaces]);
+  const loadMore = async () => {
+    if (!cursor || loading) return;
+    setLoading(true);
+    setError(false);
+    try {
+      const params = new URLSearchParams({ cursor });
+      if (node) params.set("node", node);
+      const page = (await (
+        await authenticatedFetch(`/api/workspaces?${params}`)
+      ).json()) as { items: Workspace[]; next_cursor: string | null };
+      setExtra((old) => [...old, ...page.items]);
+      setCursor(page.next_cursor);
+    } catch {
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
+  };
   const query = filter.toLocaleLowerCase();
-  const workspaces =
-    data?.workspaces.filter((value) =>
-      `${value.title} ${value.goal}`.toLocaleLowerCase().includes(query),
-    ) ?? [];
+  const workspaces = [
+    ...new Map(
+      [...(data?.workspaces ?? []), ...extra].map((item) => [item.id, item]),
+    ).values(),
+  ].filter((value) =>
+    `${value.title} ${value.goal}`.toLocaleLowerCase().includes(query),
+  );
   return (
     <div className={cn("flex min-h-0 flex-col", className)}>
       <label className="relative mx-1 mb-1 flex items-center">
@@ -140,6 +174,16 @@ export function WorkspaceList({
           </p>
         )}
       </nav>
+      {cursor && (
+        <Button
+          variant="ghost"
+          onClick={() => void loadMore()}
+          disabled={loading}
+        >
+          {loading ? "Loading…" : "Show more"}
+        </Button>
+      )}
+      {error && <p role="alert">Unable to load more workspaces.</p>}
       {showCreate && (
         <div className="mt-1 border-t border-border pt-1">
           <Button

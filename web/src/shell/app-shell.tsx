@@ -330,6 +330,7 @@ export function AppShell({
   };
   const listProps = {
     data,
+    node: selected?.name,
     current: section === "collaboration" ? channel : "",
     filter,
     setFilter,

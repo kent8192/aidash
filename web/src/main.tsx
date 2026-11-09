@@ -18,7 +18,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { state as getState, session as getSession } from "./generated/aidash";
+import { session as getSession } from "./generated/aidash";
 import { nodeLabel, nodeView } from "./node-selection";
 import { discoveryQuery, useNodeSelection } from "./nodes";
 import { AdministratorTenantNotice } from "./administrator-notice";
@@ -27,6 +27,7 @@ import { coalescedRefresh } from "./query-refresh";
 import {
   AUTHENTICATION_EXPIRED,
   sessionFetch,
+  authenticatedFetch,
   signIn,
   signOut,
   dashboardContext,
@@ -45,6 +46,7 @@ const Configuration = lazy(() =>
   })),
 );
 
+import type { TenantState, HumanRequest } from "./types";
 import type { Selection } from "./collaboration/details";
 const OperationsDialog = lazy(() =>
   import("./collaboration/details").then((module) => ({
@@ -298,12 +300,6 @@ function Dashboard({
     enabled: connected,
     refetchInterval: 5000,
   });
-  const state = useQuery({
-    queryKey: ["state"],
-    queryFn: () => getState(),
-    enabled: connected,
-    refetchInterval: 60_000,
-  });
   // A Deployment Administrator's role grants no Tenant content authority
   // (ADR 0102): the server refuses Tenant content routes and event streams in
   // this context, so the dashboard does not ask for them.
@@ -323,6 +319,30 @@ function Dashboard({
       (mapping) => mappingContext(mapping) === context,
     )?.tenant ?? null;
   const remembered = useNodeSelection(subjectTenant ?? mappedTenant);
+  const state = useQuery({
+    queryKey: ["state", remembered.selected?.name],
+    queryFn: async (): Promise<TenantState> => {
+      const params = new URLSearchParams();
+      if (remembered.selected?.name)
+        params.set("node", remembered.selected.name);
+      const result = (await (
+        await authenticatedFetch(`/api/state?${params}`)
+      ).json()) as TenantState;
+      let cursor = result.next_cursors.human_requests;
+      const humans: HumanRequest[] = [...result.human_requests];
+      while (cursor) {
+        params.set("cursor", cursor);
+        const page = (await (
+          await authenticatedFetch(`/api/human-requests?${params}`)
+        ).json()) as { items: HumanRequest[]; next_cursor: string | null };
+        humans.push(...page.items);
+        cursor = page.next_cursor;
+      }
+      return { ...result, human_requests: humans };
+    },
+    enabled: connected && (administratorContext || !remembered.pending),
+    refetchInterval: 60_000,
+  });
   // State lists every Node of the Tenant; the dashboard works in one: the Node
   // of the open Workspace, whichever way it was reached, and otherwise the
   // Node this browser remembers.
@@ -338,7 +358,13 @@ function Dashboard({
     [remembered, current],
   );
   const nodeState = useMemo(
-    () => (everything ? nodeView(everything, current) : undefined),
+    () =>
+      everything
+        ? {
+            ...nodeView(everything, current),
+            human_requests: everything.human_requests,
+          }
+        : undefined,
     [everything, current],
   );
   // Capability approvals are addressed to tenant subjects, never to Deployment Administrators.

@@ -72,7 +72,7 @@ for (const locale of ["en-US", "ja-JP"]) {
     await routeRegistryVersions(page, () =>
       registry.map((entry) => registryVersion(entry)),
     );
-    await page.route("**/api/state", (route) =>
+    await page.route("**/api/state**", (route) =>
       route.fulfill({
         json: {
           access: tenantSubject,
@@ -89,6 +89,14 @@ for (const locale of ["en-US", "ja-JP"]) {
           events: [],
           runs: [],
           conversations: [],
+          next_cursors: {
+            workspaces: null,
+            tasks: null,
+            runs: null,
+            artifacts: null,
+            human_requests: null,
+            conversations: null,
+          },
           human_requests: [],
           installations: [],
         },

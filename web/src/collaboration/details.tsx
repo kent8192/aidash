@@ -355,7 +355,7 @@ export function OperationsDialog({
                   {data.access.kind === "subject" && (
                     <RemoteExecutions task={task.id} />
                   )}
-                  {abandonable(task, taskRuns) && (
+                  {!data.next_cursors.runs && abandonable(task, taskRuns) && (
                     <form
                       className="grid min-w-0 gap-3 border-t border-border pt-4"
                       onSubmit={(event) => {
@@ -381,6 +381,13 @@ export function OperationsDialog({
                         </Button>
                       </div>
                     </form>
+                  )}
+                  {data.next_cursors.runs && (
+                    <p className="text-xs text-faint">
+                      {locale === "ja-JP"
+                        ? "以前の実行があります"
+                        : "Older runs exist"}
+                    </p>
                   )}
                   {taskRuns.length > 0 && (
                     <Panel title={t("execution")}>

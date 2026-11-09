@@ -10,7 +10,7 @@ async function stateAfterLoad(page: Page) {
   const data: State = await page.evaluate(() =>
     fetch("/api/state").then((response) => response.json()),
   );
-  await page.route("**/api/state", (route) => route.fulfill({ json: data }));
+  await page.route("**/api/state**", (route) => route.fulfill({ json: data }));
   return data;
 }
 
@@ -58,7 +58,9 @@ for (const width of [1440, 390]) {
     const data: State = await page.evaluate(() =>
       fetch("/api/state").then((response) => response.json()),
     );
-    await page.route("**/api/state", (route) => route.fulfill({ json: data }));
+    await page.route("**/api/state**", (route) =>
+      route.fulfill({ json: data }),
+    );
     await page.clock.runFor(10_000);
     await expect(page.locator(".intent-toast")).toHaveCount(0);
     addRequest(data, "approval-new", "リリースの実行を承認してください。");
@@ -208,7 +210,7 @@ test("recent updates and throttled requests survive a temporary state outage", a
   await page.goto("/collaboration?channel=workspace-one");
   const data = await stateAfterLoad(page);
   let unavailable = false;
-  await page.route("**/api/state", (route) =>
+  await page.route("**/api/state**", (route) =>
     unavailable
       ? route.fulfill({
           status: 503,

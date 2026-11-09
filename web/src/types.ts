@@ -12,7 +12,6 @@ export type {
   Invocation,
   Discovery,
   Event as MeshEvent,
-  StateResponse as TenantState,
 } from "./generated/models";
 import type { StateResponse } from "./generated/models";
 
@@ -25,4 +24,14 @@ export interface WorkingNode {
 }
 
 /** What the dashboard reads: the Tenant's State with the Node it works in. */
-export type State = StateResponse & { node: WorkingNode };
+export type TenantState = Omit<StateResponse, "next_cursors"> & {
+  next_cursors: {
+    workspaces: string | null;
+    tasks: string | null;
+    runs: string | null;
+    artifacts: string | null;
+    human_requests: string | null;
+    conversations: string | null;
+  };
+};
+export type State = TenantState & { node: WorkingNode };
