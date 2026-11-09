@@ -137,6 +137,9 @@ pub struct PodReceipt {
 	pub claim: String,
 	#[serde(default)]
 	pub reset: bool,
+	/// The persisted system tree was initialized from a different or unknown image.
+	#[serde(default)]
+	pub image_changed: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CommandRequest {
@@ -214,6 +217,22 @@ pub trait ExecutionPodRuntime: Send + Sync {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn pod_receipt_preserves_image_change_and_defaults_for_older_runners() {
+		for (wire, expected) in [
+			(
+				r#"{"protocol":"aidash-runner/2","pod":"p","claim":"c","image_changed":true}"#,
+				true,
+			),
+			(
+				r#"{"protocol":"aidash-runner/2","pod":"p","claim":"c"}"#,
+				false,
+			),
+		] {
+			let receipt: PodReceipt = serde_json::from_str(wire).unwrap();
+			assert_eq!(receipt.image_changed, expected);
+		}
+	}
 	#[test]
 	fn remote_error_codes_preserve_known_and_future_values() {
 		assert_eq!(
