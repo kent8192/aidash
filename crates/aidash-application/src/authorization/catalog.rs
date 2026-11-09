@@ -142,10 +142,16 @@ async fn current_definition(
 	action: &str,
 	tool: Option<&str>,
 ) -> Result<Entry> {
-	let document = scope
-		.document(reference)
-		.await?
-		.ok_or_else(|| catalog_refusal(action))?;
+	let document = match scope.document(reference).await? {
+		Some(document) => document,
+		None if !scope.inherited_lease() && !scope.registered(reference).await? => {
+			return Err(Error::NotFound(format!(
+				"registry entry {}@{} was not found",
+				reference.id, reference.version
+			)));
+		}
+		None => return Err(catalog_refusal(action)),
+	};
 	let entry: Entry = serde_json::from_value(document)?;
 	if let Some(projection) = &entry.installation
 		&& (projection.contract != 1 || projection.tenant != scope.tenant())

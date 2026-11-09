@@ -2161,15 +2161,25 @@ async fn run_with_pending_call(
 }
 
 #[rstest::rstest]
+#[case::missing(false)]
+#[case::unapproved(true)]
 #[tokio::test]
-async fn delegation_to_missing_agent_returns_error_and_keeps_run_active(
+async fn delegation_distinguishes_missing_and_unapproved_agents(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
+	#[case] registered: bool,
 ) {
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	if registered {
+		let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+		let mut agent = f.registry.get(&tenant, "research", "1.0.0").await.unwrap();
+		agent.id = "missing-agent".into();
+		agent.binding_normalization = None;
+		f.registry.register(&tenant, agent).await.unwrap();
+	}
 	let harness = Harness {
 		federation: f.clone(),
 	};
@@ -2183,6 +2193,19 @@ async fn delegation_to_missing_agent_returns_error_and_keeps_run_active(
 	).await;
 	harness.worker_once().await.unwrap();
 	let run = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	if registered {
+		assert_eq!(run.control.as_str(), "PAUSED", "{:?}", run.error);
+		assert!(
+			run.error
+				.as_deref()
+				.unwrap_or_default()
+				.contains("Catalog Approval"),
+			"{:?}",
+			run.error
+		);
+		cleanup(f, &url, &schema).await;
+		return;
+	}
 	assert_eq!(run.control.as_str(), "ACTIVE", "{:?}", run.error);
 	assert_eq!(run.phase().as_str(), "TOOL_CALL");
 	assert_eq!(json!(run.state)["data"]["cursor"], 1);
