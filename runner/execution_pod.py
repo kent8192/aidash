@@ -684,7 +684,16 @@ print(json.dumps(r))'''
 
     def ensure(self, settings):
         with self._space_lock(settings['scratch_space_id']):
-            return self._ensure(settings)
+            try:
+                return self._ensure(settings)
+            except Exception as error:
+                credential = settings.get('egress_credential')
+                if isinstance(credential, str) and credential and credential in str(error):
+                    message = str(error).replace(credential, '[redacted]')
+                    if isinstance(error, ExecutionPodError):
+                        raise ExecutionPodError(error.code, message) from None
+                    raise RuntimeError(message) from None
+                raise
 
     def _ensure(self, settings):
         import hashlib

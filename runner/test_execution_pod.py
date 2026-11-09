@@ -238,14 +238,20 @@ class ImageEnvironmentRegressionTest(unittest.TestCase):
             root = Path(directory) / 'rootfs'
             root.mkdir()
             save_image_environment(root.parent, {'PATH': '/opt/rust/bin:/usr/bin', 'CARGO_HOME': '/cargo',
-                                                 'AIDASH_PROCESS_LIMIT': 'evil'})
+                                                 'AIDASH_PROCESS_LIMIT': 'evil', 'HTTPS_PROXY': 'http://image-proxy',
+                                                 'NO_PROXY': 'image-value'})
+            proxy_env = {key: 'http://aidash:token@proxy' for key in
+                         ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy')}
+            proxy_env.update({'NO_PROXY': 'localhost,127.0.0.1,::1,proxy',
+                              'no_proxy': 'localhost,127.0.0.1,::1,proxy'})
             with patch('sandbox_v2.enter_user_root'), patch('os.execvpe') as execute, \
-                 patch.dict('os.environ', {'AIDASH_PROCESS_LIMIT': '128', 'HTTPS_PROXY': 'http://proxy'}, clear=True):
+                 patch.dict('os.environ', dict(proxy_env, AIDASH_PROCESS_LIMIT='128'), clear=True):
                 chroot_command(str(root), '.', ['/bin/sh'], False)
             env = execute.call_args.args[2]
             self.assertEqual(env['PATH'], '/opt/rust/bin:/usr/bin')
             self.assertEqual(env['CARGO_HOME'], '/cargo')
-            self.assertEqual(env['HTTPS_PROXY'], 'http://proxy')
+            for key, value in proxy_env.items():
+                self.assertEqual(env[key], value)
             self.assertNotIn('AIDASH_PROCESS_LIMIT', env)
 
 
@@ -482,6 +488,37 @@ class ExecutionPodControllerTest(unittest.TestCase):
             for queue in queues.values():
                 queue.close()
 
+    def test_credential_is_not_exposed_by_pod_creation_failure(self):
+        import contextlib
+        import io
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from execution_pod import ExecutionPodController
+        token = 'aidash-scope-v1.secret-token'
+        class Backend:
+            def __init__(self, root): self.root = Path(root)
+            def kube(self, args, data=None, **kwargs):
+                if args[0] == 'get': return SimpleNamespace(stdout=b'')
+                obj = json.loads(data)
+                if obj['kind'] == 'Pod': raise RuntimeError('API echoed ' + token)
+                return SimpleNamespace(stdout=b'')
+        settings = {'scratch_space_id': 's', 'image': 'image@sha256:' + 'a' * 64,
+                    'cpu': 2, 'memory_bytes': 2 << 30, 'capacity_bytes': 2 << 30,
+                    'docker_enabled': False, 'egress_credential': token}
+        config = {'runtime_class': 'gvisor', 'helper_image': 'helper@sha256:' + 'b' * 64,
+                  'namespace': 'sandbox', 'proxy_endpoint': 'http://10.0.0.8:8888',
+                  'proxy_namespace': 'gateway', 'proxy_selector': {'app': 'gateway'}}
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Backend(directory), config, admitted=True)
+            logs = io.StringIO()
+            with contextlib.redirect_stderr(logs), self.assertRaises(Exception) as failure:
+                controller.ensure(settings)
+            output = str(failure.exception) + logs.getvalue()
+            output += ''.join(p.read_text(errors='replace') for p in Path(directory).rglob('*') if p.is_file())
+            self.assertNotIn(token, output)
+
     def test_ensure_is_idempotent_and_stop_preserves_claim(self):
         import json
         import tempfile
@@ -515,9 +552,11 @@ class ExecutionPodControllerTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         backend.root = Path(temporary.name)
         config = {'runtime_class': 'aidash-gvisor', 'helper_image': 'helper@sha256:' + 'b' * 64,
-                  'namespace': 'aidash-sandbox'}
+                  'namespace': 'aidash-sandbox', 'proxy_endpoint': 'http://10.0.0.8:8888',
+                  'proxy_namespace': 'gateway', 'proxy_selector': {'app': 'gateway'}}
         settings = {'scratch_space_id': 'id', 'image': 'image@sha256:' + 'a' * 64, 'cpu': 2,
-                    'memory_bytes': 1 << 30, 'capacity_bytes': 1 << 30, 'docker_enabled': False}
+                    'memory_bytes': 1 << 30, 'capacity_bytes': 1 << 30, 'docker_enabled': False,
+                    'egress_credential': 'aidash-scope-v1.test-secret'}
         controller = ExecutionPodController(backend, config, admitted=True)
         controller._admit_pod = Mock()
         import threading
@@ -538,6 +577,9 @@ class ExecutionPodControllerTest(unittest.TestCase):
             release.set()
             resource = first.result(timeout=3)
             self.assertEqual(second.result(timeout=3), resource)
+        self.assertNotIn(settings['egress_credential'], json.dumps(resource))
+        for path in backend.root.rglob('*.json'):
+            self.assertNotIn(settings['egress_credential'], path.read_text())
         controller._verify_running_pod.assert_called_once()
         pod = backend.objects[('pod', resource['pod'])]
         pod['status'] = {'phase': 'Failed', 'containerStatuses': [
