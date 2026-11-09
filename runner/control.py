@@ -1152,6 +1152,12 @@ class Runner(AllocationJournal):
                 break
             result = self.guard(record, "cell_status", operation_id=operation)
             if result["status"] == "stopped" and result.get("termination_confirmed"):
+                pod = self.pod(pod_operation)
+                if not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']:
+                    raise SandboxGone()
+                execution = next((s.get('state', {}).get('terminated') for s in pod.get('status', {}).get('containerStatuses', []) if s.get('name') == 'execution'), None)
+                if execution is not None:
+                    self.update(operation, cell_stopped_at=termination_time(execution, record.get('running_at'), time.time()))
                 memory_live = False
                 result = dict(status="failed", exit_code=137, stdout=current.get("stdout", ""),
                               truncated=True, error={"code":"SESSION_LOST", "message":"Interpreter stopped during the cell; code was not replayed."})
