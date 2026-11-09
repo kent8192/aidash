@@ -194,6 +194,61 @@ pub(crate) struct WorkerAuthority {
 	access: Arc<RwLock<Access>>,
 }
 
+/// A Run's worker authority as its step holds it, for integration tests outside
+/// this crate (#759). A test begins it while the Run's Subnode is active, ends
+/// the Subnode, and then calls a path that stands in for a call that passed the
+/// tool's entrance before the end. Production code gets the same authority from
+/// `Guard`.
+#[doc(hidden)]
+pub struct StepAuthority(WorkerAuthority);
+
+impl StepAuthority {
+	/// The authority of `run`. Its outer transaction is released at once, as it is
+	/// while a step waits on a tool, so that an end is never held up by it.
+	pub async fn begin(f: &Federation, run: &Run) -> Result<Self> {
+		let mut access = access_for_run(&f.store, &run.metadata(), true)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		access.suspend().await?;
+		Ok(Self(WorkerAuthority {
+			access: Arc::new(RwLock::new(access)),
+		}))
+	}
+
+	pub async fn sampling_approval(
+		&self,
+		store: &Store,
+		run: &Run,
+		request: aidash_application::capabilities::approvals::SamplingApprovalRequest,
+	) -> Result<aidash_application::capabilities::approvals::ToolCallApproval> {
+		self.0.sampling_approval(store, run, request).await
+	}
+
+	pub async fn consume_web_disclosure(
+		&self,
+		store: &Store,
+		run: &Run,
+		approval: Uuid,
+	) -> Result<bool> {
+		self.0.consume_web_disclosure(store, run, approval).await
+	}
+
+	/// A Live preview start that passed the tool's admission.
+	pub async fn live_preview_start(
+		&self,
+		store: &Store,
+		run: &Run,
+		command: &str,
+		port: u16,
+	) -> Result<Value> {
+		let input = aidash_application::preview::live::Start {
+			command: command.to_owned(),
+			port,
+		};
+		self.0.live_preview_start(store, run, input).await
+	}
+}
+
 fn unavailable_workspace_search(workspace: Uuid, disabled: bool) -> Value {
 	let mut result = json!({"workspace_id":workspace, "matches":[], "estimated_tokens":0,
 		"truncated":false, "workspace":{"status":"unavailable", "cause":if disabled {"disabled"} else {"missing"}}});
@@ -794,6 +849,20 @@ impl WorkerAuthority {
 			access.finish(result.map_err(Into::into)).await?
 		};
 		let input: aidash_application::preview::live::Start = serde_json::from_value(input)?;
+		self.live_preview_start(store, run, input).await
+	}
+
+	/// Start the Run's Live preview from a request that passed admission. Once
+	/// the Run's Subnode has ended neither the row nor the dispatch is written.
+	async fn live_preview_start(
+		&self,
+		store: &Store,
+		run: &Run,
+		input: aidash_application::preview::live::Start,
+	) -> Result<Value> {
+		use crate::apps::execution::repositories::live_previews as previews;
+		use aidash_domain::preview::live::StopReason;
+		let domain = store.preview_domain.clone();
 		if let Some(port) = store.preview_pod_port
 			&& input.port != port
 		{
