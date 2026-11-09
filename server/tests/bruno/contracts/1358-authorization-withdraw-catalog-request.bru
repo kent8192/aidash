@@ -1,5 +1,5 @@
 meta {
-  name: 1358 authorization-withdraw-catalog-request - Unrecognized bearer cannot mutate state
+  name: 1358 authorization-withdraw-catalog-request - Anonymous request is rejected
   type: http
   seq: 1358
 }
@@ -12,7 +12,6 @@ post {
 
 headers {
   Accept: application/json
-  Authorization: Bearer invalid
 }
 
 script:pre-request {

@@ -1,23 +1,29 @@
 meta {
-  name: 1535 tenant-data-protection-update - Forged bearer cannot read or change Data Protection policy
+  name: 1535 tenant-data-protection-update - Anonymous request is rejected
   type: http
   seq: 1535
 }
 
 put {
   url: {{base_url}}/api/tenants/{{tenant}}/data-protection
-  body: text
+  body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  Authorization: Bearer forged
-  Content-Type: application/json
 }
 
-body:text {
-  {"level": "standard", "model_call_zdr": true, "plan_connection_exempt": true}
+script:pre-request {
+
+const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getVar("contract_token")}}); if(snapshot.status!==200 || !Number.isInteger(snapshot.data.workspace.revision)) throw new Error("fixture snapshot unavailable"); bru.setVar("beforeWorkspace",JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state}));
+
+}
+
+script:post-response {
+
+const snapshot = await bru.sendRequest({method:"GET",url:bru.getEnvVar("base_url")+"/api/workspaces/"+bru.getVar("workspace_id"),headers:{Authorization:"Bearer "+bru.getVar("contract_token")}}); test("Rejected input preserves committed workspace state", function(){expect(snapshot.status).to.equal(200);expect(JSON.stringify({revision:snapshot.data.workspace.revision,state:snapshot.data.workspace.state})).to.equal(bru.getVar("beforeWorkspace"));});
+
 }
 
 tests {

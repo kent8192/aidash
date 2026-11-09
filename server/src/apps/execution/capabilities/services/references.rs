@@ -66,6 +66,20 @@ pub(crate) async fn batch(
 		.map(Into::into)
 		.map_err(Into::into)
 }
+pub(crate) async fn revocation(
+	access: &mut Access,
+	id: Uuid,
+) -> Result<super::management::ReferenceRevocation> {
+	let mut scope = crate::bootstrap::reference_scope(None, access, None);
+	aidash_application::capabilities::references::revocation(&mut scope, id)
+		.await
+		.map(|record| super::management::ReferenceRevocation {
+			reference_id: record.id,
+			revision: record.revision,
+			state: record.state,
+		})
+		.map_err(Into::into)
+}
 pub(crate) async fn revoke(access: &mut Access, id: Uuid, revision: i64) -> Result<()> {
 	let mut scope = crate::bootstrap::reference_scope(None, access, None);
 	aidash_application::capabilities::references::revoke(&mut scope, id, revision)

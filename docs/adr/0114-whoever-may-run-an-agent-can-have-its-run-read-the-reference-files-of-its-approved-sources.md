@@ -17,7 +17,7 @@ Registering a Source and having it approved is the moment a person makes its fil
 ## Consequences
 
 - A person who runs the Agent can have the model quote its documents, or read them through their Run's file routes, even without the right to download them. This boundary limits direct access only.
-- Files stay usable after the uploader leaves the Tenant. A Tenant Administrator stops them by withdrawing the Source's Catalog Approval.
+- Files stay usable after the uploader leaves the Tenant. A Tenant Administrator stops them by withdrawing the Source's Catalog Approval. A subject the Tenant's policy grants `reference.delete` can also revoke a file after its uploader leaves, which reaches copies already made in Working Areas (#826).
 - Revoking one file refuses new Runs of every Agent version that binds it, and the error names the file's path. A Run never continues with part of its Reference set missing.
 - An Area given a Reference set cannot export files to another Node. Revoking a file never locks that Area, because it holds nothing of the file until it copies it. While a copy is there, revoking the file makes the Area unusable, and only the uploader can download the copy as made. Editing a copy or attaching it to a message makes it that person's own file, and this boundary does not follow it: someone who may read a file can already retype it.
 - Who may upload is not changed by this decision.
