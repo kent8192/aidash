@@ -183,9 +183,12 @@ A refusal is answered at once, and the gateway then discards what the client
 still sends, up to 8 MiB or 5 seconds, so that the client can read the answer.
 Discarded bytes are not charged. A client that sends more before it reads may
 see a reset instead of the refusal, and the cut is counted by
-`aidash_egress_linger_limit_total`. The time limit is counted only while the
-request body is incomplete. The reason reaches a request record only when
-one exists: a request refused before its record is created leaves only the count
+`aidash_egress_linger_limit_total`. The time limit is counted only if the gateway
+discarded at least one byte during linger. A client dripping slower than one
+byte per five seconds may send nothing during linger and is then not counted. An
+upload already sent may still be counted if its bytes are discarded during linger.
+The reason reaches a request record only when one exists: a request refused
+before its record is created leaves only the count
 in `aidash_egress_refused_total`, and a connection refused for want of a slot
 only the count in `aidash_egress_connections_refused_total`.
 
