@@ -60,6 +60,11 @@ impl Snapshot {
 	pub fn never_dispatched(&self) -> bool {
 		self.state == "prepared"
 	}
+	/// A withdrawal has already recorded that this operation's authority ended.
+	/// The writer's stop may still be unconfirmed.
+	pub fn marked_withdrawn(&self) -> bool {
+		self.result["error"] == AUTHORITY_WITHDRAWN
+	}
 	pub fn undelivered_refusal(&self) -> Option<Value> {
 		if !self.active() {
 			return None;

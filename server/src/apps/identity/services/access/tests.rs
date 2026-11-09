@@ -193,6 +193,9 @@ fn access() -> Access {
 		remote_read_cache: Default::default(),
 		unavailable_peers: Default::default(),
 		denied: false,
+		silent_events: 0,
+		silent_last: None,
+		denial_events: 0,
 		checking_reads: Default::default(),
 		read_verdicts: Default::default(),
 		wire: None,
@@ -306,6 +309,71 @@ async fn a_forbidden_after_a_silent_node_names_the_node_unless_this_authority_de
 	assert!(matches!(access.named(Error::Forbidden), Error::Forbidden));
 }
 
+/// One authority serves several calls, such as the calls of a Tool Batch. A Node
+/// an earlier call met, or a denial it made, says nothing about a later call's
+/// refusal: only what the call itself met and denied counts (#751).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_call_is_blamed_on_a_silent_node_only_if_its_own_checks_met_the_node(mut access: Access) {
+	let sibling = "aidash://other/sibling";
+	let workspace = access.resource("workspace", "w", json!({}));
+	let silent = |error: Error| matches!(error, Error::NodeUnreachable { node, after_effect: false } if node == sibling);
+	// A call that met the Node: its refusal is the Node's silence.
+	let first = access.call_mark();
+	access.mark_peer_unavailable(sibling);
+	assert!(silent(access.named_since(first, Error::Forbidden)));
+	// A later call on the same authority never met it, and is refused as it is.
+	let second = access.call_mark();
+	assert!(matches!(
+		access.named_since(second, Error::Forbidden),
+		Error::Forbidden
+	));
+	// The reading of a whole authority, which serves one call, still names it.
+	assert!(silent(access.named(Error::Forbidden)));
+	// A call that meets the Node again is told it is silent, though it is not asked again.
+	let third = access.call_mark();
+	assert!(access.peer_unavailable(sibling));
+	access.mark_peer_unavailable(sibling);
+	assert!(silent(access.named_since(third, Error::Forbidden)));
+	// Unless a `require` of that same call denied: that is a real refusal.
+	assert!(matches!(
+		access.require(&workspace, "workspace.read").await,
+		Err(Error::Forbidden)
+	));
+	assert!(matches!(
+		access.named_since(third, Error::Forbidden),
+		Error::Forbidden
+	));
+	// A denial of an earlier call does not hide a later call's silence.
+	let fourth = access.call_mark();
+	access.mark_peer_unavailable(sibling);
+	assert!(silent(access.named_since(fourth, Error::Forbidden)));
+	// Only a refusal is made into silence.
+	assert!(matches!(
+		access.named_since(fourth, Error::Conflict("x".into())),
+		Error::Conflict(_)
+	));
+}
+
+/// What a publisher view finds silent is not the reader call's own (#751).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_publishers_silent_node_does_not_count_for_the_readers_call(mut access: Access) {
+	let identity = access.identity.clone();
+	let call = access.call_mark();
+	{
+		let mut publisher = access
+			.publisher_view(identity, vec!["alice".into()])
+			.await
+			.unwrap();
+		publisher.mark_peer_unavailable("aidash://other/publisher");
+	}
+	assert!(matches!(
+		access.named_since(call, Error::Forbidden),
+		Error::Forbidden
+	));
+}
+
 /// No negative read verdict is kept while a Node has not answered, and a
 /// positive one is (#751).
 #[rstest::rstest]
@@ -333,37 +401,70 @@ async fn no_negative_read_verdict_is_remembered_while_a_node_is_silent(mut acces
 #[tokio::test]
 async fn a_memory_step_names_a_silent_node_for_authority_and_invalidated(mut access: Access) {
 	use aidash_domain::semantic::Failure;
+	let step = CallMark::default();
 	// Nobody is silent: the old mapping.
 	assert!(matches!(
-		access.memory_failure(Failure::Authority),
+		access.memory_failure_since(step, Failure::Authority),
 		Error::Forbidden
 	));
 	assert!(matches!(
-		access.memory_failure(Failure::Invalidated),
+		access.memory_failure_since(step, Failure::Invalidated),
 		Error::RemoteSemantic(Failure::Invalidated)
 	));
 	access.mark_peer_unavailable("aidash://other/sibling");
 	for reason in [Failure::Authority, Failure::Invalidated] {
 		assert!(matches!(
-			access.memory_failure(reason),
+			access.memory_failure_since(step, reason),
 			Error::NodeUnreachable { node, after_effect: false } if node == "aidash://other/sibling"
 		));
 	}
 	// Another reason is not made into silence.
 	assert!(matches!(
-		access.memory_failure(Failure::Allowance),
+		access.memory_failure_since(step, Failure::Allowance),
 		Error::RemoteSemantic(Failure::Allowance)
 	));
 	// A denial of this authority stays a refusal.
-	access.denied = true;
+	let workspace = access.resource("workspace", "w", json!({}));
 	assert!(matches!(
-		access.memory_failure(Failure::Authority),
+		access.require(&workspace, "workspace.read").await,
+		Err(Error::Forbidden)
+	));
+	assert!(matches!(
+		access.memory_failure_since(step, Failure::Authority),
 		Error::Forbidden
 	));
 	assert!(matches!(
-		access.memory_failure(Failure::Invalidated),
+		access.memory_failure_since(step, Failure::Invalidated),
 		Error::RemoteSemantic(Failure::Invalidated)
 	));
+}
+
+/// The memory path reads a call the same way: only a Node that call's own
+/// checks met is named, not one an earlier call found silent (#751).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_memory_step_names_only_a_node_its_own_call_met(mut access: Access) {
+	use aidash_domain::semantic::Failure;
+	access.mark_peer_unavailable("aidash://other/sibling");
+	let later = access.call_mark();
+	assert!(matches!(
+		access.memory_failure_since(later, Failure::Authority),
+		Error::Forbidden
+	));
+	assert!(matches!(
+		access.memory_failure_since(later, Failure::Invalidated),
+		Error::RemoteSemantic(Failure::Invalidated)
+	));
+	access.mark_peer_unavailable("aidash://other/sibling");
+	for reason in [Failure::Authority, Failure::Invalidated] {
+		assert!(matches!(
+			access.memory_failure_since(later, reason),
+			Error::NodeUnreachable {
+				after_effect: false,
+				..
+			}
+		));
+	}
 }
 
 /// A publisher check runs under another identity on the reader's `Access`. Its

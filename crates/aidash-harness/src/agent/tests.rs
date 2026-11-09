@@ -113,6 +113,8 @@ struct State {
 	semantic_failure: Mutex<Option<(bool, aidash_domain::semantic::Failure)>>,
 	requests: Mutex<Vec<ModelRequest>>,
 	workspace_events: Mutex<Vec<WorkspaceEvent>>,
+	/// How many older events the store left out of `workspace_events`.
+	events_dropped: AtomicU64,
 	owned_tasks_pending: AtomicBool,
 	token: Uuid,
 	task: Mutex<Task>,
@@ -130,6 +132,9 @@ struct State {
 	dependency_status: Option<TaskStatus>,
 	remote_home: bool,
 	child_summary: Mutex<Option<ChildTaskSummary>>,
+	/// Children that appear after the Run's last look at them: the next
+	/// completion finds them and is refused.
+	late_children: Mutex<Option<ChildTaskSummary>>,
 	human: Mutex<Option<HumanRequest>>,
 	human_key: Mutex<Option<String>>,
 	/// In-memory Context Journal keyed by Run, with the same append rule as Postgres.
@@ -409,16 +414,19 @@ impl ExecutionStore for Backend {
 			self.0.owned_tasks_pending.load(Ordering::Acquire) || self.0.failed_children,
 		))
 	}
-	async fn workspace_events(&self, _: &Run, after: i64) -> Result<Vec<WorkspaceEvent>> {
-		Ok(self
-			.0
-			.workspace_events
-			.lock()
-			.unwrap()
-			.iter()
-			.filter(|event| event.generation > after)
-			.cloned()
-			.collect())
+	async fn workspace_events(&self, _: &Run, after: i64) -> Result<WorkspaceEvents> {
+		Ok(WorkspaceEvents {
+			events: self
+				.0
+				.workspace_events
+				.lock()
+				.unwrap()
+				.iter()
+				.filter(|event| event.generation > after)
+				.cloned()
+				.collect(),
+			dropped: self.0.events_dropped.load(Ordering::Acquire),
+		})
 	}
 	async fn resolve_research(&self, run: &mut Run) -> Result<()> {
 		for entry in &mut run.context.history {
@@ -1054,6 +1062,10 @@ impl ExecutionHome for Backend {
 	async fn complete(&self, key: &str, artifact: &ArtifactInput) -> Result<Task> {
 		let _ = key;
 		self.record("home.complete");
+		if let Some(late) = self.0.late_children.lock().unwrap().take() {
+			*self.0.child_summary.lock().unwrap() = Some(late);
+			return Err(Error::Conflict("a child Task is unfinished".into()));
+		}
 		self.0
 			.artifacts
 			.lock()
@@ -1798,6 +1810,7 @@ fn fixture() -> Fixture {
 		semantic_failure: Mutex::new(None),
 		requests: Mutex::new(vec![]),
 		workspace_events: Mutex::new(vec![]),
+		events_dropped: AtomicU64::new(0),
 		owned_tasks_pending: AtomicBool::new(false),
 		token,
 		task: Mutex::new(Task {
@@ -1827,6 +1840,7 @@ fn fixture() -> Fixture {
 		dependency_status: None,
 		remote_home: false,
 		child_summary: Mutex::new(None),
+		late_children: Mutex::new(None),
 		human: Mutex::new(None),
 		human_key: Mutex::new(None),
 		journal: Mutex::new(vec![]),
@@ -5072,6 +5086,114 @@ async fn workspace_wait_defaults_to_an_hour_for_an_unfinished_owned_nonchild_tas
 	);
 }
 
+/// A Run that answers while its Task has unfinished children sleeps. Only a
+/// Task it created or delegated wakes it early, so the hour applies only while
+/// it has one; a person's or an earlier Run's children get the five-minute
+/// default. A remote Home is polled for every child.
+#[rstest]
+#[case::a_task_of_its_own(true, false, 3600)]
+#[case::only_other_childrens_tasks(false, false, 300)]
+#[case::a_remote_home(false, true, 3600)]
+#[tokio::test]
+async fn an_answer_with_children_pending_sleeps_only_as_long_as_something_can_wake_it(
+	mut fixture: Fixture,
+	#[case] owned: bool,
+	#[case] remote: bool,
+	#[case] seconds: i64,
+) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.owned_tasks_pending.store(owned, Ordering::Release);
+	state.remote_home = remote;
+	let mut pending = ChildTaskSummary::default();
+	pending.include_task(Uuid::new_v4(), TaskStatus::Running, 1);
+	*state.child_summary.lock().unwrap() = Some(pending);
+	fixture.run.state = RunState::ToolCall(Box::new(ToolCallState {
+		response: ModelResponse {
+			text: "Done.".into(),
+			usage_complete: true,
+			..Default::default()
+		},
+		..Default::default()
+	}));
+	let before = chrono::Utc::now();
+	advance_sources(&mut fixture).await.unwrap();
+	let RunState::Waiting(wait) = &fixture.run.state else {
+		panic!("Run did not wait: {:?}", fixture.run.state)
+	};
+	let WaitingState::Workspace { wake_at, .. } = wait.as_ref() else {
+		panic!("wrong wait")
+	};
+	assert!(*wake_at >= before + chrono::Duration::seconds(seconds));
+	assert!(*wake_at <= chrono::Utc::now() + chrono::Duration::seconds(seconds));
+	assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
+}
+
+#[rstest]
+#[case::a_task_of_its_own(true, 3600)]
+#[case::only_other_childrens_tasks(false, 300)]
+#[tokio::test]
+async fn a_completion_refused_for_children_sleeps_only_as_long_as_something_can_wake_it(
+	mut fixture: Fixture,
+	#[case] owned: bool,
+	#[case] seconds: i64,
+) {
+	// The children appear after the Run last looked, so only completing finds them.
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.owned_tasks_pending.store(owned, Ordering::Release);
+	let mut pending = ChildTaskSummary::default();
+	pending.include_task(Uuid::new_v4(), TaskStatus::Running, 1);
+	*state.late_children.lock().unwrap() = Some(pending);
+	fixture.run.state = RunState::ToolCall(Box::new(ToolCallState {
+		response: ModelResponse {
+			text: "Done.".into(),
+			usage_complete: true,
+			..Default::default()
+		},
+		..Default::default()
+	}));
+	let before = chrono::Utc::now();
+	advance_sources(&mut fixture).await.unwrap();
+	let RunState::Waiting(wait) = &fixture.run.state else {
+		panic!("Run did not wait: {:?}", fixture.run.state)
+	};
+	let WaitingState::Workspace { wake_at, .. } = wait.as_ref() else {
+		panic!("wrong wait")
+	};
+	assert!(*wake_at >= before + chrono::Duration::seconds(seconds));
+	assert!(*wake_at <= chrono::Utc::now() + chrono::Duration::seconds(seconds));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_wake_says_how_many_older_changes_it_left_out(mut fixture: Fixture) {
+	let wait = Scripted::new(
+		ToolSpec {
+			name: "workspace_wait".into(),
+			description: "Wait".into(),
+			parameters: json!({"type":"object"}),
+		},
+		"workspace_wait",
+	);
+	*wait.outputs.lock().unwrap() = [json!({"wait_seconds":300})].into();
+	let task = Uuid::new_v4();
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.custom.insert("workspace_wait".into(), wait);
+	state.events_dropped.store(8, Ordering::Release);
+	state.workspace_events.lock().unwrap().push(WorkspaceEvent {
+		generation: 42,
+		task_id: task,
+		status: "COMPLETED".into(),
+	});
+	respond(
+		&mut fixture.run,
+		vec![call("call-1", "workspace_wait", json!({}))],
+	);
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(fixture.run.context.events().any(|event| matches!(event, ContextEvent::Tool { result, .. } if result["reason"] == "workspace_event" && result["changes"].as_array().is_some_and(|changes| changes.len() == 1) && result["dropped_changes"] == 8)));
+}
+
 #[rstest]
 #[tokio::test]
 async fn remote_workspace_poll_stays_asleep_until_a_child_finishes(mut fixture: Fixture) {
@@ -5132,7 +5254,7 @@ async fn remote_wait_result_reports_fingerprint_change_without_task_details(mut 
 	*fixture.backend.0.child_summary.lock().unwrap() = Some(completed);
 	advance_sources(&mut fixture).await.unwrap();
 	advance_sources(&mut fixture).await.unwrap();
-	assert!(fixture.run.context.events().any(|event| matches!(event, ContextEvent::Tool { result, .. } if result == &json!({"reason":"workspace_event","changes":[{"kind":"terminal_tasks_changed"}],"open_tasks":0}))));
+	assert!(fixture.run.context.events().any(|event| matches!(event, ContextEvent::Tool { result, .. } if result == &json!({"reason":"workspace_event","changes":[{"kind":"terminal_tasks_changed"}],"dropped_changes":0,"open_tasks":0}))));
 	assert!(fixture.backend.0.requests.lock().unwrap().is_empty());
 }
 

@@ -570,8 +570,10 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 			|| actual.authority.root_subject != identity.subject
 			|| actual.authority.subject_chain != scope.subjects()
 		{
-			return Err(aidash_application::Error::Conflict(
-				"task already has a different origin".into(),
+			// The call caused this, as for `task_create`: the model hears it instead of the Run
+			// failing, and a new call creates a new task.
+			return Err(aidash_application::Error::Refused(
+				"a task from an earlier attempt of this call has a different origin, so it cannot be reused; calling subnode_task again creates a new task".into(),
 			));
 		}
 		let resource = scope.task_resource(&task).await?;
@@ -585,8 +587,8 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 				&subnode.leader.version,
 			));
 			if existing.subject_chain != chain || existing.credential_id != identity.credential_id {
-				return Err(aidash_application::Error::Conflict(
-					"task already has a different authority".into(),
+				return Err(aidash_application::Error::Refused(
+					"the task was already delegated under a different authority".into(),
 				));
 			}
 		} else {

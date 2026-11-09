@@ -1105,3 +1105,86 @@ async fn resuming_while_a_node_is_silent_answers_503_and_leaves_the_run_paused(
 async fn world_post(world: &World, path: &str, body: Value) -> (u16, Value) {
 	request(&world.app, &world.token, "POST", path, body).await
 }
+
+/// Waits until a backend is queued for the Deployment's distribution lock in
+/// `mode` (`ShareLock` or `ExclusiveLock`), which is how a test orders requests
+/// for it. The key is the one `marketplace::services::storage::lock` takes.
+async fn wait_queued_for_distribution_lock(driver: &sqlx::PgPool, mode: &str) {
+	tokio::time::timeout(Duration::from_secs(30), async {
+		loop {
+			let queued: i64 = sqlx::query_scalar(
+				"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = 0 \
+				 AND objid = 74003201 AND objsubid = 1 AND NOT granted AND mode = $1 \
+				 AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
+			)
+			.bind(mode)
+			.fetch_one(driver)
+			.await
+			.unwrap();
+			if queued > 0 {
+				return;
+			}
+			tokio::time::sleep(Duration::from_millis(10)).await;
+		}
+	})
+	.await
+	.unwrap_or_else(|_| panic!("nothing queued for the distribution lock in {mode}"));
+}
+
+/// A reader holds the distribution lock shared, as its catalog admissions take
+/// it, and a Marketplace writer queues for it. The Node the reader then asks for
+/// its Read dependency runs in process inside the reader's lock, and so must not
+/// request the lock again: behind the queued writer that request waits for the
+/// reader, and the reader waits for it until the 10 s limit, then blames a
+/// healthy Node (#751, decision 13).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_peer_check_does_not_queue_behind_a_writer_for_the_lock_its_reader_holds(
+	#[future(awt)] provider: Provider,
+) {
+	*provider.script.delegate.lock().unwrap() = false;
+	let world = world(provider).await;
+	world.run_coordinator(WITHOUT_DELEGATION).await;
+	let child = world.handed_over().await;
+	let path = format!("/api/tasks/{}/runs", child.id);
+	let driver = world.f.store.pool.fixture_driver().clone();
+	// A barrier holds the lock until the read is queued for it, and a writer behind
+	// the read. When the barrier ends the read is granted the lock first and the
+	// writer stays queued for as long as the read holds it.
+	let mut barrier = driver.begin().await.unwrap();
+	sqlx::query("SELECT pg_advisory_xact_lock(74003201)")
+		.execute(&mut *barrier)
+		.await
+		.unwrap();
+	let read = async {
+		let started = std::time::Instant::now();
+		let answer = world.get(&path).await;
+		(answer, started.elapsed())
+	};
+	let writer = async {
+		wait_queued_for_distribution_lock(&driver, "ShareLock").await;
+		let mut tx = driver.begin().await.unwrap();
+		sqlx::query("SELECT pg_advisory_xact_lock(74003201)")
+			.execute(&mut *tx)
+			.await
+			.unwrap();
+		tx.commit().await.unwrap();
+	};
+	let release = async {
+		wait_queued_for_distribution_lock(&driver, "ShareLock").await;
+		wait_queued_for_distribution_lock(&driver, "ExclusiveLock").await;
+		barrier.commit().await.unwrap();
+	};
+	let (((status, body), elapsed), (), ()) = tokio::time::timeout(
+		Duration::from_secs(60),
+		futures_util::future::join3(read, writer, release),
+	)
+	.await
+	.expect("neither the read nor the writer may wait for the other");
+	assert_eq!(status, 200, "{body}");
+	assert!(
+		elapsed < Duration::from_secs(8),
+		"the check waited for the writer until its 10 s limit: {elapsed:?}"
+	);
+	world.close().await;
+}
