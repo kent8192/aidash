@@ -693,6 +693,45 @@ async fn a_recheck_that_only_repeats_adds_no_rows_for_a_running_command(
 	assert_eq!(fixture.rows("true").await, written);
 }
 
+/// The sweep loads a running command on every pass, about every 300 ms. Loading is
+/// its Continuation Check, so a pass that only repeats it adds no row.
+#[rstest]
+#[tokio::test]
+async fn a_sweep_pass_that_only_repeats_adds_no_rows_for_a_running_command(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_application::ports::capabilities::reconciliation::{
+		OperationReconciliationRepository, OperationReconciliationScope,
+	};
+	// Arrange: the command's Run is bound to its Working Area, as a started Run is.
+	let fixture = fixture(database.await, 1).await;
+	let (operation, _) = running_targets(&fixture).await;
+	sqlx::query("INSERT INTO core_runs (run_id,tenant,area_id,sequence,initialized,generation) SELECT $1,'acme',id,1,true,generation FROM core_areas WHERE id=(SELECT area_id FROM core_operations WHERE id=$2)")
+		.bind(fixture.run)
+		.bind(operation)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	let pass = async || {
+		let snapshot = repository.snapshot(operation).await.unwrap();
+		let mut scope = repository.begin(&snapshot).await.unwrap();
+		scope.load(operation, snapshot.run_id).await.unwrap();
+		scope.finish(Ok(())).await.unwrap();
+	};
+	pass().await;
+	let written = fixture.rows("true").await;
+	assert!(written > 0, "the first pass records what it allowed");
+
+	// Act
+	pass().await;
+
+	// Assert
+	assert_eq!(fixture.rows("true").await, written);
+}
+
 #[rstest]
 #[tokio::test]
 async fn a_run_reached_two_ways_in_one_walk_is_checked_once(#[future] database: DatabaseFixture) {
