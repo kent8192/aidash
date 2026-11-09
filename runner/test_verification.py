@@ -811,6 +811,23 @@ class VerificationTest(unittest.TestCase):
             self.assertFalse(record['writer_frozen'])
 
 
+    def test_recovered_python_pod_uses_guard_deadline_evidence(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            operation, pod_uid = str(uuid.uuid4()), str(uuid.uuid4())
+            record = {'operation_id': operation, 'request': request('python'), 'status': 'running',
+                      'pod_operation': 'existing', 'pod_uid': pod_uid, 'executed': True,
+                      'cancel_requested': False, 'running_at': time.time() - 120, 'stdout': ''}
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.active = {operation}
+            runner.pod = Mock(return_value={'metadata': {'uid': pod_uid}, 'status': {'containerStatuses': [
+                {'name': 'execution', 'state': {'terminated': {'exitCode': 137}}},
+                {'name': 'collector', 'state': {'running': {}}}]}})
+            runner.guard = Mock(side_effect=lambda _, action, **kwargs: {'status': 'stopped', 'termination_confirmed': True, 'deadline_expired': True} if action == 'cell_status' else {'files': []})
+            runner.reconcile_python(operation)
+            self.assertTrue(record['deadline_expired'])
+
     def finished_shell(self, root, log, *, exported=None, expired=False):
         """A shell command that exited with no output, seen by the running controller."""
         runner = self.runner(root)

@@ -1094,7 +1094,12 @@ class Runner(AllocationJournal):
                 execution = statuses.get('execution', {}).get('state', {})
                 if record.get('executed') and 'terminated' in execution:
                     observed = time.time()
+                    try:
+                        stop_evidence = self.guard(record, 'cell_status', operation_id=operation)
+                    except Exception:
+                        stop_evidence = {}
                     self.update(operation, status='finishing', termination_confirmed=True, writer_frozen=False,
+                                cell_deadline_expired=stop_evidence.get('deadline_expired', record.get('cell_deadline_expired')),
                                 cell_stopped_at=cell_termination_time(execution['terminated'], record.get('running_at'), observed),
                                 stop_confirmed_at=record.get('stop_confirmed_at') or observed,
                                 pending_status='failed', pending_error={'code':'SESSION_LOST', 'message':'Interpreter stopped during the cell; code was not replayed.'}, exit_code=137)
