@@ -1,9 +1,11 @@
 //! Resource attributes come from stored rows and their authoritative workspace.
 use super::{access::Access, policy::Resource};
+use crate::apps::identity::models::DecisionOwner;
 use crate::{
 	Result,
 	domain::{Artifact, Event, Message, Task},
 };
+use aidash_application::authorization::visibility::provenance::ReadBlock;
 use uuid::Uuid;
 
 impl Access {
@@ -16,12 +18,16 @@ impl Access {
 		.map_err(Into::into)
 	}
 	pub(crate) async fn task_read(&mut self, id: Uuid) -> Result<Task> {
-		aidash_application::authorization::visibility::resources::task_read(
+		let mark = self.call_mark();
+		let result = aidash_application::authorization::visibility::resources::task_read(
 			&mut crate::bootstrap::run_visibility_scope(self),
 			id,
 		)
 		.await
-		.map_err(Into::into)
+		.map_err(Into::into);
+		// A refusal reached while a Node did not answer is that Node's silence (#751),
+		// when this read's own walk met the Node and not an earlier call of the authority.
+		result.map_err(|error| self.named_since(mark, error))
 	}
 	pub(crate) async fn task_visible(&mut self, task: &Task) -> Result<bool> {
 		aidash_application::authorization::visibility::resources::task_visible(
@@ -169,6 +175,77 @@ impl Access {
 		.map_err(Into::into)
 	}
 
+	/// See [`ReadProvenanceScope::open_run_reads`]. An authority that is not
+	/// inherited has no Workspace boundary to open.
+	///
+	/// [`ReadProvenanceScope::open_run_reads`]: aidash_application::ports::authorization::visibility::provenance::ReadProvenanceScope::open_run_reads
+	pub(crate) async fn open_run_reads(&mut self, run: Uuid) -> Result<bool> {
+		if !self.inherited_lease {
+			return Ok(false);
+		}
+		let workspaces = match self.subnode_workspaces.get(&run) {
+			Some(workspaces) => workspaces.clone(),
+			None => {
+				let workspaces =
+					crate::apps::execution::models::subnodes::SubnodeRecord::workspaces_of_run(
+						&mut **self.tx,
+						&self.identity.tenant,
+						run,
+					)
+					.await?;
+				self.subnode_workspaces.insert(run, workspaces.clone());
+				workspaces
+			}
+		};
+		if workspaces.is_empty() {
+			return Ok(false);
+		}
+		self.recheck_workspaces.push(workspaces);
+		Ok(true)
+	}
+	pub(crate) fn close_run_reads(&mut self) {
+		self.recheck_workspaces.pop();
+	}
+	pub(crate) fn recheck_reaches(&self, id: Uuid) -> bool {
+		self.recheck_workspaces
+			.iter()
+			.flatten()
+			.any(|opened| *opened == id)
+	}
+	/// The producers of a record in `workspace` whose reads this reader checks. A
+	/// Run working in a Subnode's Workspace leaves out the Run that created it:
+	/// what the creator puts there is its deliberate handoff, and the members
+	/// cannot read what the creator had read (ADR 0110). Anyone else checks it.
+	pub(crate) async fn producers_to_check(
+		&mut self,
+		workspace: Uuid,
+		mut producers: Vec<Uuid>,
+	) -> Result<Vec<Uuid>> {
+		if producers.is_empty()
+			|| self.read_run.is_none()
+			|| self.context["workspace_id"] != serde_json::json!(workspace.to_string())
+		{
+			return Ok(producers);
+		}
+		let creator = match self.subnode_creators.get(&workspace) {
+			Some(creator) => *creator,
+			None => {
+				let creator =
+					crate::apps::execution::models::subnodes::SubnodeRecord::creator_of_workspace(
+						&mut **self.tx,
+						&self.identity.tenant,
+						workspace,
+					)
+					.await?;
+				self.subnode_creators.insert(workspace, creator);
+				creator
+			}
+		};
+		if let Some(creator) = creator {
+			producers.retain(|producer| *producer != creator);
+		}
+		Ok(producers)
+	}
 	/// Walk recorded run dependencies iteratively; cycles between observation
 	/// journals must terminate without skipping any resource's current policy.
 	pub(crate) async fn run_reads_visible(&mut self, run: Uuid) -> Result<bool> {
@@ -182,6 +259,7 @@ impl Access {
 		let Some(_visit) = self.checking_reads.enter(key.clone()) else {
 			return Ok(true);
 		};
+		let walk = self.begin_read_walk(DecisionOwner::Run(run), outermost);
 		let coordinator = self.dependency_frontier.is_none();
 		if coordinator {
 			self.dependency_frontier = Some(vec![]);
@@ -191,22 +269,37 @@ impl Access {
 			let pending = self.dependency_frontier.take().unwrap_or_default();
 			if matches!(result, Ok(true)) {
 				result = self.verify_dependencies(pending).await;
+				if matches!(result, Ok(false)) {
+					self.read_block.get_or_insert(ReadBlock::RemoteRead);
+				}
 			}
 		}
+		// A `false` reached while a Node did not answer may be that Node's
+		// silence; it is kept like an abandoned check, not as a verdict (#751).
+		let unconfirmed = matches!(result, Ok(false)) && !self.unavailable_peers.is_empty();
 		match result {
+			Ok(_) if unconfirmed && outermost => self.read_verdicts.abandon(),
+			Ok(_) if unconfirmed => {}
 			Ok(verdict) => self.read_verdicts.record(key, verdict, outermost),
 			Err(_) if outermost => self.read_verdicts.abandon(),
 			Err(_) => {}
 		}
-		result
+		self.end_read_walk(walk, result).await
 	}
 	async fn run_reads_visible_in(&mut self, run: Uuid) -> Result<bool> {
-		aidash_application::authorization::visibility::provenance::run_reads_visible(
+		let block = aidash_application::authorization::visibility::provenance::run_reads_block(
 			&mut crate::bootstrap::run_visibility_scope(self),
 			run,
 		)
-		.await
-		.map_err(Into::into)
+		.await?;
+		// A nested walk records first, so this keeps the read that actually stopped it.
+		match block {
+			Some(block) => {
+				self.read_block.get_or_insert(block);
+				Ok(false)
+			}
+			None => Ok(true),
+		}
 	}
 	pub(crate) async fn grant_reads_visible(&mut self, grant: Uuid) -> Result<bool> {
 		aidash_application::authorization::journals::grant_reads_visible(

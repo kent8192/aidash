@@ -9,7 +9,7 @@ pub use contract::*;
 pub mod provider_tools;
 pub mod providers;
 pub mod refusal;
-pub use refusal::{AuthorityRefusal, RefusalCheck};
+pub use refusal::{AuthorityRefusal, DO_NOT_REPEAT, RefusalCheck, RefusalKind, RefusedCall};
 
 /// The native Agent cutover still consumes the original tagged transport shape.
 /// Select it only by its string tag; malformed descriptors never fall back to it.

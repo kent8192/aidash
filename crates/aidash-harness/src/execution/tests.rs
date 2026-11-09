@@ -145,10 +145,16 @@ impl ExecutionRecoveryStore for Scope {
 		event: &str,
 		refusal: Option<&aidash_domain::tool::AuthorityRefusal>,
 	) -> Result<()> {
-		assert!(refusal.is_none());
+		assert_eq!(
+			refusal.map(|refusal| refusal.check),
+			Some(aidash_domain::tool::RefusalCheck::Unnamed)
+		);
 		assert_eq!(run.id, self.run.id);
 		assert_eq!(token, Uuid::nil());
-		assert_eq!(reason, "execution authority denied");
+		assert!(
+			reason.ends_with(": an authority check refused this step"),
+			"{reason}"
+		);
 		assert_eq!(event, "run.authorization_blocked");
 		self.trace.lock().unwrap().push("pause");
 		Ok(())

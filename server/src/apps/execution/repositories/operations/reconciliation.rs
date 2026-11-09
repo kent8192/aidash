@@ -162,14 +162,21 @@ impl OperationReconciliationScope for Scope<'_> {
 		}
 	}
 	async fn load(&mut self, id: Uuid, run: Uuid) -> Result<Loaded> {
-		let run = self.access.run_for_interaction(run).await?;
+		// The Read Recheck runs on its own 30 second loop (`read_recheck`), so this
+		// pass does not walk what the Run has read. Loading is this pass's
+		// Continuation Check, whose repeated allows add no row (ADR 0116). What the
+		// pass does with the loaded operation is not part of it. It still refuses once
+		// the Run may no longer use what its Binding names (the Use Recheck, #769).
+		let mut check = self.access.rechecking(run);
+		let run = check.run_for_continued_use(run).await?;
 		crate::apps::execution::repositories::subnodes::require_writable(
-			self.access.tx.native_mut(),
+			check.tx.native_mut(),
 			run.workspace_id,
 		)
 		.await?;
-		let area = sessions::for_run(&mut self.access, &run).await?;
-		let operation = super::get(&mut self.access, id).await?;
+		let area = sessions::for_run(&mut check, &run).await?;
+		let operation = super::get(&mut check, id).await?;
+		drop(check);
 		let result = Loaded {
 			run: run.metadata(),
 			area: Area {
@@ -188,7 +195,8 @@ impl OperationReconciliationScope for Scope<'_> {
 	}
 	async fn configuration(&mut self) -> Result<CoreCapabilities> {
 		let run = self.run.as_ref().expect("reconciliation scope loaded");
-		service::settings(&mut self.access, run)
+		// The Agent's own Catalog Approval is part of the Continuation Check too.
+		service::settings(&mut self.access.rechecking(run.id), run)
 			.await
 			.map(|config| config.core_capabilities)
 			.map_err(Into::into)
@@ -282,7 +290,7 @@ impl OperationReconciliationScope for Scope<'_> {
 	}
 	async fn upload_files(&mut self, operation: &Snapshot) -> Result<Vec<MountedFile>> {
 		let result: NativeResult<Vec<FileEntry>> = async {
-			Ok(service::files(self.area())?
+			Ok(operations::pod_files(self.area())?
 				.into_iter()
 				.chain(skills::mounted(&mut self.access, self.run.as_ref().unwrap().id).await?)
 				.chain(packages::inputs(&native(operation))?)

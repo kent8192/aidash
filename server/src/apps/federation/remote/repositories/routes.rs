@@ -51,6 +51,21 @@ fn sibling(sender: &Sender, from: NodeAddress, to: NodeAddress) -> Route {
 	}
 }
 
+/// Whether `target` is a Node of `tenant` in this Deployment, whose name claim `tenant` holds.
+/// Not the same as [`Route::local`], which also covers another Tenant's Node of this Deployment.
+pub(crate) async fn is_tenant_node(
+	tx: &mut dyn TransactionExecutor,
+	own: &DeploymentId,
+	tenant: &str,
+	target: &NodeAddress,
+) -> Result<bool> {
+	Ok(target.deployment == *own
+		&& registrations::name_tenant(tx, target.node.as_str())
+			.await?
+			.as_deref()
+			== Some(tenant))
+}
+
 /// The route to `target`, or `None` when the sender has none: the target is
 /// itself, or is neither a Node of the sender's Tenant nor registered and
 /// enabled at the sending Node. `lock` holds the registration until the
@@ -71,12 +86,7 @@ pub(crate) async fn route(
 	if *target == from {
 		return Ok(None);
 	}
-	if target.deployment == *own
-		&& registrations::name_tenant(tx, target.node.as_str())
-			.await?
-			.as_deref()
-			== Some(tenant)
-	{
+	if is_tenant_node(tx, own, tenant, target).await? {
 		if !nodes::is_live(tx, tenant, target.node.as_str()).await? {
 			return Ok(None);
 		}

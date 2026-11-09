@@ -551,7 +551,7 @@ impl Builtin {
 			}
 			"attachment_copy" => ctx.operations.attachment_copy(input).await,
 			"workspace_wait" => {
-				Ok(json!({"wait_seconds":input["seconds"].as_u64().unwrap_or(2).clamp(1,60)}))
+				Ok(json!({"wait_seconds":input["seconds"].as_u64().unwrap_or(300).clamp(1,3600)}))
 			}
 			"memory_mutate" => {
 				let input: MemoryMutationInput = serde_json::from_value(input)?;
@@ -680,7 +680,7 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "task_create",
 			contract: aidash_domain::tool::builtin_contract("task_create")
 				.expect("declared builtin"),
-			description: "Decompose a goal or task. Create a subtask in this workspace; returns its ID. Delegate it next.",
+			description: "Decompose a goal or task. Create a subtask in this workspace; returns its ID. Delegate it next. A subtask nobody is given is abandoned when this Run finishes.",
 			schema: json!({"type":"object","required":["title","description"],"properties":{"title":string,"description":string,"requirements":{"type":"object"},"dependencies":{"type":"array","items":string},"parent_id":string},"additionalProperties":false}),
 		},
 		Builtin {
@@ -743,8 +743,8 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "workspace_wait",
 			contract: aidash_domain::tool::builtin_contract("workspace_wait")
 				.expect("declared builtin"),
-			description: "Wait without inference until peers have made progress. Recheck workspace tasks on the next turn.",
-			schema: json!({"type":"object","required":["seconds"],"properties":{"seconds":{"type":"integer","minimum":1,"maximum":60}},"additionalProperties":false}),
+			description: "Wait without inference for a Task you created or delegated to finish, block or fail, or for a message or person. The default is 60 minutes while your Tasks remain unfinished and 5 minutes otherwise; the maximum is 60 minutes. The result summarizes changes. For remote Tasks, use workspace_observe to read details after a change.",
+			schema: json!({"type":"object","properties":{"seconds":{"type":"integer","minimum":1,"maximum":3600}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "memory_mutate",

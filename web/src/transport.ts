@@ -62,11 +62,67 @@ export function csrfToken(): string | null {
 export class ApiError extends Error {
   status: number;
   readonly responseReceived: boolean;
-  constructor(message: string, status: number, responseReceived = false) {
+  /** The message says which of a Run's reads keeps it from this reader. */
+  readonly runReads: boolean;
+  /** Seconds until a refused Authority Change can be sent again. */
+  readonly retryAfter?: number;
+  constructor(
+    message: string,
+    status: number,
+    responseReceived = false,
+    runReads = false,
+    retryAfter?: number,
+  ) {
     super(message);
     this.status = status;
     this.responseReceived = responseReceived;
+    this.runReads = runReads;
+    this.retryAfter = retryAfter;
   }
+}
+/** What a refused read or resume of a Run says: what it read, or what it uses. */
+type RunReadsBlock =
+  | {
+      kind: "definition_not_approved";
+      definition?: { id: string; version: string };
+    }
+  | { kind: "definition_not_readable" }
+  | { kind: "definition_not_usable" }
+  | { kind: "remote_read" }
+  | { kind: "semantic_read" }
+  | { kind: "source"; source: string };
+function runReadsMessage(block: RunReadsBlock, messages: typeof en): string {
+  switch (block.kind) {
+    case "definition_not_approved":
+      return block.definition
+        ? messages.runReadsDefinitionNamed.replace(
+            "{definition}",
+            `${block.definition.id}@${block.definition.version}`,
+          )
+        : messages.runReadsDefinition;
+    case "definition_not_readable":
+      return messages.runReadsNotReadable;
+    case "definition_not_usable":
+      return messages.runReadsNotUsable;
+    case "remote_read":
+      return messages.runReadsRemote;
+    case "semantic_read":
+      return messages.runReadsSemantic;
+    case "source":
+      return messages.runReadsSource.replace("{source}", block.source);
+  }
+}
+/** The wait a Policy Busy refusal asks for, or `undefined` for any other response. */
+export async function policyBusyWait(
+  response: Response,
+): Promise<number | undefined> {
+  if (response.status !== 503) return undefined;
+  const body = (await response
+    .clone()
+    .json()
+    .catch(() => ({}))) as { error?: unknown };
+  if (body.error !== "POLICY_BUSY") return undefined;
+  return Number(response.headers.get("retry-after")) || 1;
 }
 function current(generation: number): void {
   if (generation !== contextGeneration)
@@ -228,8 +284,23 @@ export async function authenticatedFetch(
       );
       throw new ApiError(messages.credentialInvalid, response.status, true);
     }
+    if (data.run_reads)
+      throw new ApiError(
+        runReadsMessage(data.run_reads, messages),
+        response.status,
+        true,
+        true,
+      );
     if (response.status === 403)
       throw new ApiError(messages.accessDenied, response.status, true);
+    if (response.status === 503 && data.error === "POLICY_BUSY")
+      throw new ApiError(
+        messages.policyBusy,
+        response.status,
+        true,
+        false,
+        Number(response.headers.get("retry-after")) || 1,
+      );
     // The chosen Tenant was deleted; the session no longer offers it.
     if (response.status === 410)
       window.dispatchEvent(new Event(SESSION_CHANGED));

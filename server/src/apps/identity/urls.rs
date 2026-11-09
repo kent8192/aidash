@@ -1,4 +1,5 @@
 //! Application endpoint registration and access policies.
+use super::serializers::remote_execution::RemoteExecutionControlInput;
 use super::views::{
 	admissions, execution, management, peer_mappings, policies, reads, remote_grants, sessions,
 };
@@ -175,7 +176,7 @@ pub fn url_patterns() -> UnifiedRouter {
 			.endpoint(super::views::state_management::get)
 			.with_route_middleware(AccessBoundary::administered().with_visibility())
 			.endpoint(super::views::state_management::control)
-			.with_route_middleware(AccessBoundary::administered().with_visibility())
+			.with_route_middleware(AccessBoundary::administered().with_visibility().stops_work())
 			.endpoint(super::views::provenance::provenance)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::provenance::follow_up)
@@ -187,6 +188,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.endpoint(super::views::peer_execution::activate)
 			.with_route_middleware(AccessBoundary::peer().with_visibility())
 			.endpoint(super::views::peer_execution::control)
+			.with_route_middleware(AccessBoundary::peer().with_visibility())
+			.endpoint(super::views::peer_execution::decline_call)
 			.with_route_middleware(AccessBoundary::peer().with_visibility())
 			.endpoint(super::views::peer_execution::message)
 			.with_route_middleware(AccessBoundary::peer().with_visibility())
@@ -203,6 +206,12 @@ pub fn url_patterns() -> UnifiedRouter {
 			.endpoint(super::views::remote_execution::message)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::remote_execution::control)
+			.with_route_middleware(
+				AccessBoundary::authenticated()
+					.with_visibility()
+					.stops_work_unless(RemoteExecutionControlInput::starts_work),
+			)
+			.endpoint(super::views::remote_execution::decline_call)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::remote_execution::answer_human)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())

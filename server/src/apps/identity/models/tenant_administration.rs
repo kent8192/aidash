@@ -397,6 +397,36 @@ impl TenantAdministrator {
 			.await
 	}
 
+	/// Whether some policy could allow this subject `action`, read before an
+	/// Authority Change raises its flag. One that cannot takes the ordinary lock:
+	/// its check then refuses it, and the Tenant's work never waits for it (ADR 0121).
+	/// The lock is taken with [`Self::lock_change`], which checks the decision
+	/// again against the policy it locked.
+	pub(crate) async fn may_change(&self, db: &Pool, action: &str) -> Result<bool> {
+		let snapshot = crate::authorization::Authorization { pool: db.clone() }
+			.snapshot(self.tenant())
+			.await?;
+		Ok(snapshot.bundle.may_allow(&self.identity.subject, action))
+	}
+
+	/// [`Self::lock`] for an Authority Change that [`Self::may_change`] decided
+	/// on a read taken before the lock. A policy committed meanwhile can allow
+	/// `action` after all, and a change that holds the policy only shared would
+	/// replace it with no flag and no limit, so that is answered like a stale
+	/// revision: the caller reads again and sends the change again.
+	pub(crate) async fn lock_change(
+		&self,
+		tx: &mut dyn TransactionExecutor,
+		exclusive: bool,
+		action: &str,
+	) -> Result<Snapshot> {
+		let snapshot = self.lock(tx, exclusive).await?;
+		if !exclusive && snapshot.bundle.may_allow(&self.identity.subject, action) {
+			return Err(Error::Conflict("authorization revision changed".into()));
+		}
+		Ok(snapshot)
+	}
+
 	/// [`Self::lock`] for restoring this administrator's deleted Tenant.
 	pub(crate) async fn lock_deleted(&self, tx: &mut dyn TransactionExecutor) -> Result<Snapshot> {
 		self.identity.lock_deleted(tx, Some(&self.policy)).await
@@ -794,8 +824,11 @@ impl TenantAdministrator {
 		input: MembershipUpdate,
 	) -> Result<Membership> {
 		aidash_domain::policy::identifier(&subject)?;
+		let exclusive = self.may_change(db, rules::SUBJECT_GROUP_UPDATE).await?;
 		db.atomic(&self.scope()?, async |tx| {
-			let mut snapshot = self.lock(tx, true).await?;
+			let mut snapshot = self
+				.lock_change(tx, exclusive, rules::SUBJECT_GROUP_UPDATE)
+				.await?;
 			if snapshot.revision != input.expected_policy_revision {
 				return Err(Error::Conflict("authorization revision changed".into()));
 			}

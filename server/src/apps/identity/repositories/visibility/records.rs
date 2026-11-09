@@ -1,6 +1,7 @@
 //! Record reads keep workspace predicates and strict status decoding in one transaction.
 use super::Reads;
 use crate::Result as NativeResult;
+use crate::apps::workspaces::models::child_flags;
 use aidash_application::{
 	Result,
 	ports::authorization::records::{ChildSummaryScope, ChildTaskRecord, WorkspaceRecordScope},
@@ -236,6 +237,9 @@ impl WorkspaceRecordScope for Reads<'_> {
 		}))
 	}
 	async fn message_record(&mut self, workspace_id: Uuid, id: Uuid) -> Result<Option<Message>> {
+		if let Some(message) = self.access.read_lookups.message(id, workspace_id) {
+			return Ok(message);
+		}
 		let result: NativeResult<Option<Message>> = async {
 			Ok({
 				let query_bind_1 = id;
@@ -311,14 +315,24 @@ impl WorkspaceRecordScope for Reads<'_> {
 	}
 }
 struct ChildTaskSummaryRow {
+	revision: i64,
 	id: Uuid,
+	title: String,
 	created_by: String,
 	status: crate::domain::TaskStatus,
+	dependencies: Vec<Uuid>,
+	started: bool,
+	abandonable: bool,
 }
 crate::native_record!(ChildTaskSummaryRow {
+	revision,
 	id,
+	title,
 	created_by,
-	status
+	status,
+	dependencies,
+	started,
+	abandonable
 });
 
 #[async_trait]
@@ -362,9 +376,20 @@ impl ChildSummaryScope for Reads<'_> {
 					&Query::select()
 						.columns([
 							Alias::new("id"),
+							Alias::new("title"),
 							Alias::new("created_by"),
 							Alias::new("status"),
+							Alias::new("revision"),
+							Alias::new("dependencies"),
 						])
+						.expr_as(
+							child_flags::open_or_claimed().and(child_flags::started()),
+							Alias::new("started"),
+						)
+						.expr_as(
+							child_flags::open_or_claimed().and(child_flags::abandonable(parent_id)),
+							Alias::new("abandonable"),
+						)
 						.from(Alias::new("tasks"))
 						.and_where(
 							reinhardt::query::SimpleExpr::from(Expr::col(Alias::new(
@@ -403,16 +428,30 @@ impl ChildSummaryScope for Reads<'_> {
 						.limit(100)
 						.to_string(PostgresQueryBuilder),
 				)
-				.columns(&["id", "created_by", "status"])
+				.columns(&[
+					"id",
+					"title",
+					"created_by",
+					"status",
+					"revision",
+					"dependencies",
+					"started",
+					"abandonable",
+				])
 				.fetch_all(&mut **self.access.tx)
 				.await?
 			};
 			Ok(rows
 				.into_iter()
 				.map(|row| ChildTaskRecord {
+					revision: row.revision,
 					id: row.id,
+					title: row.title,
 					created_by: row.created_by,
 					status: row.status,
+					dependencies: row.dependencies,
+					started: row.started,
+					abandonable: row.abandonable,
 				})
 				.collect())
 		}

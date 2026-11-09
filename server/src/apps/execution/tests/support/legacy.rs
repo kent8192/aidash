@@ -1138,6 +1138,8 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 		};
 		// Every fixture Deployment holds its own Deployment Key (#241).
 		peering::give_key(&mut federation);
+		// Like a running server, whose Store reaches the Deployment's other Nodes.
+		let federation = federation.bind_in_process();
 		RuntimeFixture {
 			federation,
 			url: database.url.clone(),

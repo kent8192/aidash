@@ -257,6 +257,10 @@ impl Store {
 				"failure delivery lease or revision lost".into(),
 			));
 		}
+		if state.phase().is_terminal() {
+			// Before the first event; see `lock_end`.
+			crate::apps::execution::repositories::subnodes::lock_for_end(&mut tx, m.id).await?;
+		}
 		self.run_event(
 			&mut tx,
 			m.id,

@@ -145,7 +145,9 @@ impl ApprovalScope for Scope<'_> {
 		Ok(metadata)
 	}
 	async fn interaction_run(&mut self, id: Uuid) -> Result<RunMetadata> {
-		let run = self.access.run_for_interaction(id).await?;
+		// An outbound request acts for the Run: it also stops once the Run may no longer use its
+		// Agent or anything its Binding names (the Use Recheck, #769).
+		let run = self.access.run_for_action(id).await?;
 		let metadata = run.metadata();
 		self.run = Some(Box::new(run));
 		Ok(metadata)

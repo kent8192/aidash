@@ -51,6 +51,9 @@ const RECORD_WAIT: Duration = Duration::from_secs(1);
 /// The record's error when the final debit ran out of retries: the bytes it held
 /// are not in the request's counts or the budgets.
 const DEBIT_ABANDONED: &str = "egress_debit_abandoned";
+/// The record's error for a body that stopped before its end, unless something
+/// said why: a client that went away, or a response cut short.
+const STREAM_INTERRUPTED: &str = "stream_interrupted";
 /// Connections served at once. Beyond this a connection is refused.
 const CONNECTION_SLOTS: usize = 128;
 /// Refused connections answered at once, and for how long each. Sandboxed code
@@ -377,6 +380,10 @@ struct Debits {
 	/// The upload's refusal. Reqwest reports a failed request body only as a
 	/// failed request, so the response path reads the real cause here.
 	refused: OnceLock<Refusal>,
+	/// Why the stream was cut off. The body stream owns [`Completion`], so the
+	/// bridge that drops the stream on a stop sets this first; the record then
+	/// names the stop instead of a client that went away. The first cause wins.
+	interrupted: OnceLock<&'static str>,
 }
 impl Debits {
 	fn new(meter: Arc<dyn Meter>, label: Label) -> Self {
@@ -389,6 +396,7 @@ impl Debits {
 			failed_received: AtomicU64::new(0),
 			handed: AtomicU64::new(0),
 			refused: OnceLock::new(),
+			interrupted: OnceLock::new(),
 		}
 	}
 
@@ -509,8 +517,22 @@ struct Completion {
 	admission_ms: u64,
 	/// How long [`Completion::settle`] took, once it has run.
 	settle_ms: u64,
+	monitor: tokio::task::JoinHandle<()>,
+}
+async fn stopped(receiver: &mut watch::Receiver<Option<Refusal>>) -> Refusal {
+	loop {
+		if let Some(refusal) = *receiver.borrow_and_update() {
+			return refusal;
+		}
+		if receiver.changed().await.is_err() {
+			return Refusal::UNAVAILABLE;
+		}
+	}
 }
 impl Completion {
+	fn interrupted(&mut self, code: &'static str) {
+		let _ = self.debits.interrupted.set(code);
+	}
 	/// Debits what both directions still hold. A stream that ended cleanly
 	/// must do so within the operation deadline; a failed one gets a short
 	/// grace so the bytes it did stream still count. A decision is returned in
@@ -612,6 +634,12 @@ impl Completion {
 		let debits = self.debits.clone();
 		let status = self.status;
 		let admission_ms = self.admission_ms;
+		let interrupted_error = self
+			.debits
+			.interrupted
+			.get()
+			.copied()
+			.unwrap_or(STREAM_INTERRUPTED);
 		tokio::spawn(async move {
 			let mut settling = Settling::new();
 			let mut refused = None;
@@ -637,7 +665,7 @@ impl Completion {
 			// A body that did not reach its end stays interrupted; otherwise a
 			// decision wins over a debit that was given up.
 			let error = if !complete {
-				Some("stream_interrupted")
+				Some(interrupted_error)
 			} else if let Some(refusal) = refused {
 				Some(refusal.code)
 			} else if abandoned {
@@ -664,6 +692,7 @@ impl Completion {
 }
 impl Drop for Completion {
 	fn drop(&mut self) {
+		self.monitor.abort();
 		if !self.finished {
 			let handed = self.debits.handed.load(Ordering::Relaxed);
 			let complete = self.expected.is_some_and(|expected| handed >= expected);
@@ -945,6 +974,7 @@ pub async fn serve_with_scopes(
 	let mut refused = RefusedConnections::default();
 	let mut connections = tokio::task::JoinSet::new();
 	let tunnels = Arc::new(proxy::TunnelManager::new(stopping.clone(), limits));
+	let mut failures = crate::accept::AcceptFailures::new("egress gateway");
 	loop {
 		if *stopping.borrow() || stopping.has_changed().is_err() {
 			connections.abort_all();
@@ -956,14 +986,7 @@ pub async fn serve_with_scopes(
 			_ = stopping.changed() => {},
 			Some(_) = connections.join_next(), if !connections.is_empty() => {},
 			accepted = listener.accept() => {
-				let (socket, _) = match accepted {
-					Ok(accepted) => accepted,
-					Err(error) => {
-						tracing::warn!(%error, "Egress accept failed; retrying");
-						tokio::select! { _ = tokio::time::sleep(Duration::from_secs(1)) => {}, _ = stopping.changed() => {} }
-						continue;
-					}
-				};
+				let Some((socket, _)) = failures.settle(accepted, &mut stopping).await else { continue; };
 				let Ok(permit) = slots.clone().try_acquire_owned() else {
 					let answering = refusals.clone().try_acquire_owned();
 					refused.note(answering.is_ok());
@@ -1341,7 +1364,7 @@ async fn forward(
 		Err(aidash_application::Error::Conflict(code))
 			if code == aidash_domain::egress::OPERATION_INACTIVE =>
 		{
-			return Refusal::INACTIVE.response();
+			return refuse(Refusal::INACTIVE.status, Refusal::INACTIVE.code);
 		}
 		Err(aidash_application::Error::Conflict(_)) => {
 			return refuse(Refusal::LIMIT.status, Refusal::LIMIT.code);
@@ -1382,6 +1405,31 @@ async fn forward(
 		.to_std()
 		.unwrap_or_default();
 	let deadline = tokio::time::Instant::now() + remaining;
+	let (active_tx, mut active_rx) = watch::channel(None);
+	let meter = admission.meter.clone();
+	let monitor = tokio::spawn(async move {
+		let mut interval = tokio::time::interval(Duration::from_secs(4));
+		interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+		interval.tick().await;
+		let mut failures = 0;
+		loop {
+			interval.tick().await;
+			match tokio::time::timeout(Duration::from_secs(1), meter.check_active()).await {
+				Ok(Ok(())) => failures = 0,
+				Ok(Err(error)) if Refusal::of(&error) != Refusal::UNAVAILABLE => {
+					let _ = active_tx.send(Some(Refusal::of(&error)));
+					break;
+				}
+				_ => {
+					failures += 1;
+					if failures >= 3 {
+						let _ = active_tx.send(Some(Refusal::UNAVAILABLE));
+						break;
+					}
+				}
+			}
+		}
+	});
 	let mut completion = Completion {
 		debits: Arc::new(Debits::new(
 			admission.meter.clone(),
@@ -1395,6 +1443,7 @@ async fn forward(
 		status: 502,
 		expected: None,
 		finished: false,
+		monitor,
 		admission_ms,
 		settle_ms: 0,
 	};
@@ -1523,12 +1572,17 @@ async fn forward(
 		}
 	};
 	let body = body.map_err(|error: BoxError| error);
-	let response = match tokio::time::timeout_at(
+	let response = match tokio::select! {
+		refusal = stopped(&mut active_rx) => {
+			completion.status = refusal.status.as_u16();
+			completion.interrupted(refusal.code);
+			return refusal.response();
+		}
+		response = tokio::time::timeout_at(
 		deadline,
 		upstream.body(reqwest::Body::wrap_stream(body)).send(),
-	)
-	.await
-	{
+		) => response,
+	} {
 		Ok(Ok(response)) => response,
 		failed => {
 			// A refused upload debit fails the request; report the refusal
@@ -1656,9 +1710,13 @@ async fn forward(
 	{
 		let mut buffer = Vec::new();
 		loop {
-			let next =
-				tokio::time::timeout_at(deadline, tokio::time::timeout(IDLE, downstream.next()))
-					.await;
+			let next = tokio::select! {
+				refusal = stopped(&mut active_rx) => {
+					completion.interrupted(refusal.code);
+					return refusal.response();
+				}
+				next = tokio::time::timeout_at(deadline, tokio::time::timeout(IDLE, downstream.next())) => next,
+			};
 			let bytes = match next {
 				Ok(Ok(Some(Ok(bytes)))) => bytes,
 				Ok(Ok(None)) => break,
@@ -1738,9 +1796,19 @@ async fn forward(
 		.and_then(|value| value.to_str().ok())
 		.and_then(|value| value.parse().ok());
 	let debits = completion.debits.clone();
+	let bridge_debits = completion.debits.clone();
+	let mut bridge_active = active_rx.clone();
 	let output = async_stream::try_stream! {
 		loop {
-			let next = match tokio::time::timeout_at(deadline,tokio::time::timeout(IDLE,downstream.next())).await {
+			let checked = tokio::select! {
+				refusal = stopped(&mut active_rx) => Err(refusal),
+				next = tokio::time::timeout_at(deadline,tokio::time::timeout(IDLE,downstream.next())) => Ok(next),
+			};
+			let next = match checked {
+				Ok(next) => next,
+				Err(refusal) => { completion.interrupted(refusal.code); Err(io_error(refusal.code))?; unreachable!() }
+			};
+			let next = match next {
 				Ok(Ok(next)) => next,
 				_ => { upstream_failed(&debits.label, "timed out"); completion.finish(Some("egress_timeout")).await; Err(io_error("egress_timeout"))?; unreachable!() }
 			};
@@ -1762,12 +1830,49 @@ async fn forward(
 			};
 			debits.count(Direction::Received, bytes.len());
 			yield Frame::data(bytes);
-			if let Err(refusal) = debits.flush_due(Direction::Received, deadline).await {
-				completion.finish(Some(refusal.code)).await; Err(io_error(refusal.code))?;
+			let debit = tokio::select! {
+				refusal = stopped(&mut active_rx) => Err((refusal, true)),
+				result = debits.flush_due(Direction::Received, deadline) => result.map_err(|refusal| (refusal, false)),
+			};
+			if let Err((refusal, interrupted)) = debit {
+				if interrupted { completion.interrupted(refusal.code); } else { completion.finish(Some(refusal.code)).await; }
+				Err(io_error(refusal.code))?;
 			}
 		}
 	};
-	let output = output.map_err(|error: BoxError| error);
+	// Drive the upstream independently of downstream backpressure. Otherwise a
+	// client that stops reading also prevents the stop check from dropping the
+	// upstream response. The single-frame channel bounds buffered output.
+	let (sender, receiver) = tokio::sync::mpsc::channel(1);
+	tokio::spawn(async move {
+		let interrupted = {
+			let mut output = Box::pin(output);
+			let stop = loop {
+				let frame = tokio::select! {
+					refusal = stopped(&mut bridge_active) => break Some(refusal),
+					frame = output.next() => frame,
+				};
+				let Some(frame) = frame else { break None };
+				tokio::select! {
+					refusal = stopped(&mut bridge_active) => break Some(refusal),
+					result = sender.send(frame) => if result.is_err() { break None },
+				}
+			};
+			// Dropping `output` below writes the request's record. The stream
+			// never saw this stop (the bridge won the race), so name it here or
+			// the record would blame a client that went away.
+			if let Some(refusal) = stop {
+				let _ = bridge_debits.interrupted.set(refusal.code);
+			}
+			stop
+		};
+		if let Some(refusal) = interrupted {
+			let _ = sender.send(Err(io_error(refusal.code))).await;
+		}
+	});
+	let output = futures_util::stream::unfold(receiver, |mut receiver| async move {
+		receiver.recv().await.map(|frame| (frame, receiver))
+	});
 	let mut result = Response::new(StreamBody::new(output).boxed_unsync());
 	*result.status_mut() = status;
 	*result.headers_mut() = headers;

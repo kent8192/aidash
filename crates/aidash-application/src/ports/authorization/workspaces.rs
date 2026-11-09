@@ -8,6 +8,10 @@ use uuid::Uuid;
 pub trait WorkspaceResourceScope: Send {
 	fn inherited(&self) -> bool;
 	fn context(&self) -> &Value;
+	/// Whether a Read Recheck in progress has opened `id` for this authority.
+	fn recheck_reaches(&self, _id: Uuid) -> bool {
+		false
+	}
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
 	async fn owner(&mut self, id: Uuid, lock: bool) -> Result<Option<String>>;
 }
