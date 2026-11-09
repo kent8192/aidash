@@ -672,7 +672,6 @@ async fn load_for_maintenance(store: &Store, id: Uuid) -> NativeResult<Option<Li
 /// The Read Recheck of a serving Live preview, for everyone on its Run's chain
 /// (ADR 0070, ADR 0116). A Run that has finished stays covered: its grant remains.
 pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> {
-	use crate::apps::federation::peer::models::AuthorizationRemoteAdmission;
 	use aidash_application::ports::authorization::ExecutionGrantRepository as _;
 	let Some(preview) = load_for_maintenance(store, id).await? else {
 		return Ok(true);
@@ -704,17 +703,15 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> 
 				.await
 				.map_err(|error| NativeError::External(error.to_string()))?
 				.pop();
-			let admission = AuthorizationRemoteAdmission::objects()
-				.filter(AuthorizationRemoteAdmission::field_id().eq(preview.run_id))
-				.all_with_executor(&mut *tx)
-				.await
-				.map_err(|error| NativeError::External(error.to_string()))?
-				.pop();
+			let subjects = crate::apps::federation::peer::repositories::admissions::subject_chain(
+				&mut *tx,
+				preview.run_id,
+			)
+			.await?;
 			tx.commit().await?;
-			let (Some(session), Some(admission)) = (session, admission) else {
+			let (Some(session), Some(mut subjects)) = (session, subjects) else {
 				return Ok(false);
 			};
-			let mut subjects = admission.subject_chain;
 			if subjects.is_empty() {
 				return Ok(false);
 			}
