@@ -202,7 +202,7 @@ async fn full_candidate_window_advances_even_when_denied_and_unions_item_workspa
 	denied.workspace_id = id(99);
 	let mut scope = Scope {
 		candidates: (1..=49).map(id).chain(std::iter::once(id(99))).collect(),
-		tasks: vec![other, repeated, denied],
+		tasks: vec![other, repeated, denied, task(1003)],
 		..Default::default()
 	};
 	let result = state(&mut scope, None).await.unwrap();
@@ -213,6 +213,14 @@ async fn full_candidate_window_advances_even_when_denied_and_unions_item_workspa
 			.calls
 			.iter()
 			.filter(|&&workspace| workspace == id(90))
+			.count(),
+		1
+	);
+	assert_eq!(
+		scope
+			.calls
+			.iter()
+			.filter(|&&workspace| workspace == id(1))
 			.count(),
 		1
 	);
@@ -228,7 +236,7 @@ async fn full_candidate_window_advances_even_when_denied_and_unions_item_workspa
 			.iter()
 			.any(|workspace| workspace.id == id(99))
 	);
-	assert_eq!(result.tasks.len(), 2);
+	assert_eq!(result.tasks.len(), 3);
 }
 
 #[tokio::test]
