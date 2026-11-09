@@ -170,7 +170,7 @@ never reuse or remove another workload's devices. This kind result is not a
 substitute for the required real-cloud-disk proof before production enablement.
 
 Known limits of this runtime, which no tool uses yet. Keep it disabled in
-production until wave 2 of #697 has run it on a live gVisor cluster:
+production until wave 2 of #697 has verified it on a real cloud disk:
 
 - Docker mode has no boundary inside the Pod. A user process keeps `SYS_ADMIN`,
   so it can attack the trusted supervisor, the admission probe and the result
@@ -181,8 +181,9 @@ production until wave 2 of #697 has run it on a live gVisor cluster:
   image, whose `/etc/ld.so.preload` is honoured. Such code runs without mount
   capabilities and sees only its own `image-root` subPath, and the controller
   refuses a symlinked root before `chroot`.
-- Full-disk recovery, the guest process ceiling and admission are covered by
-  unit tests against mocks and have not been exercised on a real PVC and gVisor.
+- Admission, the default guest process ceiling and full-disk recovery passed
+  on kind with gVisor and a quota-enforcing TopoLVM PVC. A real cloud disk
+  remains a production enablement prerequisite.
 - Images that need more than the fixed startup deadline to pull and copy fail.
   There is no progress-based extension (F12).
 - Change tracking scans the system tree, with the associated cost and fragility
