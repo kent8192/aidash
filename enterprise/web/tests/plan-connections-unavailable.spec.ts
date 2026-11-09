@@ -71,6 +71,14 @@ test("hosted bundles omit personal Plan entrypoints and never call Plan endpoint
           runs: [],
           conversations: [],
           human_requests: [],
+          next_cursors: {
+            workspaces: null,
+            tasks: null,
+            runs: null,
+            artifacts: null,
+            human_requests: null,
+            conversations: null,
+          },
           installations: [],
         },
       });
