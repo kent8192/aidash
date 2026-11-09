@@ -19,7 +19,7 @@ from pathlib import Path
 import uuid
 
 from remote_memory_cluster_acceptance import RemoteMemory, ref
-from transaction_cluster_acceptance import ROOT, now
+from transaction_cluster_acceptance import ADMINISTRATOR, ROOT, now
 
 
 class NativeMemory(RemoteMemory):
@@ -50,11 +50,12 @@ class NativeMemory(RemoteMemory):
                         "spec": {"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": "1Gi"}}}})
                     self.claims.add(claim)
                 spec["securityContext"] = {"runAsUser": 10001, "runAsGroup": 10001, "fsGroup": 10001}
-                spec["volumes"] = [{"name": "memory", "persistentVolumeClaim": {"claimName": claim}}]
+                # Keep the Deployment Key and settings volumes the Node already mounts.
+                spec.setdefault("volumes", []).append({"name": "memory", "persistentVolumeClaim": {"claimName": claim}})
                 container = spec["containers"][0]
                 # The fsGroup grants creation under the volume root. The child
                 # directory is created and secured by the application UID.
-                container["volumeMounts"] = [{"name": "memory", "mountPath": "/var/lib/aidash"}]
+                container.setdefault("volumeMounts", []).append({"name": "memory", "mountPath": "/var/lib/aidash"})
                 container["env"].append({"name": "AIDASH_MEMORY_RECOVERY_DIR", "value": "/var/lib/aidash/memory-recovery"})
         super().apply(value)
 
@@ -107,17 +108,14 @@ class NativeMemory(RemoteMemory):
             def binding(kind, target, origin=node):
                 return {"kind": kind, "target": {"registry_deployment": f"aidash://tx-{origin:02}", **target}, "narrow": {}}
             # Remote Agent names still belong to the policy's local receiving/Home Node.
-            subjects = {"alice": {"kind": "user"}, **{f"{self.nodes[n]['address']}/agents/research@1.0.0": {"kind": "agent", "node": self.nodes[node]["node"]} for n in range(2)}}
+            subjects = {"alice": {"kind": "user"}, ADMINISTRATOR: {"kind": "user"}, **{f"{self.nodes[n]['address']}/agents/research@1.0.0": {"kind": "agent", "node": self.nodes[node]["node"]} for n in range(2)}}
             subjects[f"{self.nodes[node]['address']}/agents/learning@1.0.0"] = {"kind": "agent", "node": self.nodes[node]["node"]}
             bundle = {"tenant": self.tenants[node], "subjects": subjects, "policies": [{"id": "approved-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
             self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}", {"expected_revision": 1, "bundle": bundle}))
             credential = self.issue_credential(node, self.tenants[node], "alice")
             self.tokens.append(credential["token"])
-            # TODO(#578): a Peer Mapping needs a Tenant Administrator, a browser Mapping
-            # session through a test OIDC issuer the Pods can reach (oidc_fixture.py);
-            # the shared api_token below is a Deployment Administrator and is refused,
-            # so this acceptance cannot pass until that issuer runs in the cluster.
-            self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}/peer-mappings", {"node": self.nodes[node]["node"], "source_node": self.nodes[1 - node]["address"], "source_subject": "alice", "credential_id": credential["credential"]["id"], "enabled": True, "expected_revision": 0}))
+            # A Peer Mapping needs the Tenant's administrator, through a browser Mapping (#484).
+            self.ok(self.administer(node, f"/api/authorization/{self.tenants[node]}/peer-mappings", {"node": self.nodes[node]["node"], "source_node": self.nodes[1 - node]["address"], "source_subject": "alice", "credential_id": credential["credential"]["id"], "enabled": True, "expected_revision": 0}))
             for kind, name, config in [
                 ("model", "model", {"provider": "openrouter", "model_id": "fixture", "endpoint": "http://provider:8080/v1", "context_window": 128000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {}}),
                 ("embedding", "home-embedding", self.embedding), ("reranker", "native-reranker", {"provider": "rrf"}),

@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 from native_memory_cluster_acceptance import NativeMemory
 from remote_memory_cluster_acceptance import RemoteMemory
-from transaction_cluster_acceptance import Cluster, main, transaction_cases
+from transaction_cluster_acceptance import ADMINISTRATOR, BROWSER_ORIGIN, Cluster, main, transaction_cases
 
 
 class TransactionPartitionTests(unittest.TestCase):
@@ -137,6 +137,7 @@ class MemoryNodeContractTests(unittest.TestCase):
                         return 201, {"name": "unregistered-new-tenant"}
                     return 200, {}
                 fixture.api = Mock(side_effect=api)
+                fixture.administer = Mock(return_value=(200, {}))
                 # The first credential comes from the host, never over HTTP (#484).
                 fixture.issue_credential = Mock(return_value={"token": "alice-token", "credential": {"id": "alice-credential"}})
 
@@ -149,10 +150,13 @@ class MemoryNodeContractTests(unittest.TestCase):
                 for node in range(2):
                     policy = next(call for call in fixture.api.call_args_list
                                   if call.args[:2] == (node, f"/api/authorization/{fixture.tenants[node]}"))
-                    mapping = next(call for call in fixture.api.call_args_list
+                    # Only the Tenant Administrator writes a Peer Mapping (#484, #578).
+                    self.assertFalse(any(call.args[1].endswith("/peer-mappings") for call in fixture.api.call_args_list))
+                    mapping = next(call for call in fixture.administer.call_args_list
                                    if call.args[:2] == (node, f"/api/authorization/{fixture.tenants[node]}/peer-mappings"))
                     subjects = policy.args[2]["bundle"]["subjects"]
                     self.assertIsNone(subjects["alice"].get("node"))
+                    self.assertEqual(subjects[ADMINISTRATOR], {"kind": "user"})
                     owning_node = ("home-12345678", "worker-abcdef12")[node]
                     agent_subjects = ["aidash://tx-00/home-12345678/agents/research@1.0.0",
                                       "aidash://tx-01/worker-abcdef12/agents/research@1.0.0"]
@@ -167,6 +171,20 @@ class MemoryNodeContractTests(unittest.TestCase):
                         "source_subject": "alice", "credential_id": "alice-credential", "enabled": True, "expected_revision": 0,
                     })
 
+    def test_native_memory_keeps_the_deployment_key_volumes(self):
+        fixture = object.__new__(NativeMemory)
+        fixture.claims = {"memory-home-0"}
+        deployment = {"kind": "Deployment", "metadata": {"name": "tx-0-server"}, "spec": {"template": {"spec": {
+            "volumes": [{"name": "key"}], "containers": [{"env": [], "volumeMounts": [{"name": "key", "mountPath": "/keys"}]},
+                                                         {"name": "oidc-relay"}]}}}}
+        with patch.object(RemoteMemory, "apply") as applied:
+            fixture.apply(deployment)
+
+        spec = applied.call_args.args[0]["spec"]["template"]["spec"]
+        self.assertEqual([volume["name"] for volume in spec["volumes"]], ["key", "memory"])
+        self.assertEqual([mount["name"] for mount in spec["containers"][0]["volumeMounts"]], ["key", "memory"])
+        self.assertEqual(spec["containers"][1], {"name": "oidc-relay"})
+
     def test_memory_registration_approves_the_receiving_node(self):
         fixture = object.__new__(RemoteMemory)
         fixture.nodes = {0: {"node": "home-12345678"}}
@@ -179,6 +197,37 @@ class MemoryNodeContractTests(unittest.TestCase):
         approval = fixture.user.call_args_list[1]
         self.assertEqual(approval.args[1], "/api/authorization/home-tenant/catalog")
         self.assertEqual(approval.args[2], {"node": "home-12345678", "entry": {"id": "memory", "version": "1.0.0"}, "enabled": True, "expected_revision": 0})
+
+
+class TenantAdministratorTests(unittest.TestCase):
+    def fixture(self, groups):
+        cluster = object.__new__(Cluster)
+        cluster.administrator_groups = groups
+        cluster.administrators = {}
+        cluster.nodes = {0: {"tenant": "tenant-0"}}
+        cluster.token = "deployment-administrator"
+        cluster.issuer = Mock(issuer="http://127.0.0.1:4100/issuer")
+        cluster.reach_issuer = Mock()
+        cluster.forward = Mock(side_effect=["http://127.0.0.1:5000", "http://127.0.0.1:5000", "http://127.0.0.1:5001"])
+        return cluster
+
+    def test_signs_in_once_and_follows_the_nodes_current_forward(self):
+        cluster = self.fixture(["administrators"])
+        session = Mock()
+        session.call.return_value = (200, {"ok": True})
+        with patch("transaction_cluster_acceptance.tenant_administrator", return_value=session) as sign_in:
+            self.assertEqual(cluster.administer(0, "/api/x", {"a": 1}), (200, {"ok": True}))
+            self.assertEqual(cluster.administer(0, "/api/x"), (200, {"ok": True}))
+
+        sign_in.assert_called_once_with("http://127.0.0.1:5000", BROWSER_ORIGIN, cluster.issuer, "deployment-administrator",
+                                        "tenant-0", ADMINISTRATOR, groups=["administrators"])
+        cluster.reach_issuer.assert_called_once_with()
+        self.assertEqual(session.call.call_args_list, [call("POST", "/api/x", {"a": 1}), call("GET", "/api/x", None)])
+        self.assertEqual(session.base, "http://127.0.0.1:5001")
+
+    def test_a_driver_that_names_the_administrator_adds_no_groups(self):
+        self.assertIsNone(RemoteMemory.administrator_groups)
+        self.assertEqual(Cluster.administrator_groups, ["administrators"])
 
 
 class ExtensionBootstrapTests(unittest.TestCase):

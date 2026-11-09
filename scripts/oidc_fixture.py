@@ -11,14 +11,21 @@ that person: it logs in through the issuer, asks for a Mapping, has the
 Deployment Administrator approve it through the administered
 `/api/dashboard/registrations/{id}/approve` route, and then acts with the
 dashboard's cookie, CSRF token, Origin and Mapping context.
+
+Aidash accepts an HTTPS issuer or a loopback `http://127.0.0.1` one. Inside a
+Kubernetes namespace the issuer therefore runs as its own Pod (`python3
+oidc_fixture.py serve`), and each server Pod reaches it through a loopback
+relay sidecar (`relay_container`), as `deploy/local-oidc/` does for Compose.
 """
 
 import base64
 import hashlib
 import http.server
 import json
+import pathlib
 import secrets
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -38,30 +45,40 @@ def checked(command, **kwargs):
     return subprocess.run(command, check=True, capture_output=True, **kwargs)
 
 
+def generate_key(path):
+    """Write a new RS256 signing key for the issuer to `path`."""
+    checked(["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", str(path)])
+    path.chmod(0o600)
+    return path
+
+
+class Issuer:
+    """An issuer this process reaches but does not run, such as one in a Pod.
+
+    `BrowserSession` and `oidc_environment` need only its URL and client ID.
+    """
+
+    def __init__(self, issuer, client_id=CLIENT_ID):
+        self.issuer = issuer
+        self.client_id = client_id
+
+
 class IdentityProvider:
     """A private RS256 issuer with bound authorization codes and S256 PKCE.
 
-    Every login signs in the person named by `next_subject` (the `sub` claim),
-    which `BrowserSession.login` sets before it starts. Aidash maps an External
-    Identity by issuer and `sub`, so distinct subjects are distinct people.
+    Every login signs in the person named by the authorization request's
+    `login_hint` (the `sub` claim), or `DEFAULT_SUBJECT` without one. Aidash
+    maps an External Identity by issuer and `sub`, so distinct subjects are
+    distinct people.
+
+    By default it generates a key in `directory` and listens on a free loopback
+    port. A Pod passes the `key` it was given, the `address` to listen on and
+    the `issuer` URL the server Pods reach it at through their relay.
     """
 
-    def __init__(self, directory, client_id=CLIENT_ID):
+    def __init__(self, directory=None, client_id=CLIENT_ID, key=None, address=("127.0.0.1", 0), issuer=None):
         self.client_id = client_id
-        self.key = directory / "issuer-key.pem"
-        checked(
-            [
-                "openssl",
-                "genpkey",
-                "-algorithm",
-                "RSA",
-                "-pkeyopt",
-                "rsa_keygen_bits:2048",
-                "-out",
-                str(self.key),
-            ]
-        )
-        self.key.chmod(0o600)
+        self.key = key or generate_key(directory / "issuer-key.pem")
         modulus = (
             checked(
                 ["openssl", "rsa", "-in", str(self.key), "-noout", "-modulus"],
@@ -79,19 +96,16 @@ class IdentityProvider:
             "e": "AQAB",
         }
         self.codes = {}
-        self.next_subject = DEFAULT_SUBJECT
         self.lock = threading.Lock()
-        self.login_lock = threading.Lock()
         self.calls = {
             "discovery": 0,
             "authorization": 0,
             "exchange": 0,
             "jwks": 0,
         }
-        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self.handler())
+        self.server = http.server.ThreadingHTTPServer(address, self.handler())
         self.server.daemon_threads = True
-        self.origin = f"http://127.0.0.1:{self.server.server_port}"
-        self.issuer = self.origin + "/issuer"
+        self.issuer = issuer or f"http://127.0.0.1:{self.server.server_port}/issuer"
         self.thread = threading.Thread(
             target=self.server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True
         )
@@ -201,7 +215,7 @@ class IdentityProvider:
                             "challenge": query["code_challenge"][0],
                             "nonce": query["nonce"][0],
                             "redirect": redirect,
-                            "subject": provider.next_subject,
+                            "subject": query.get("login_hint", [DEFAULT_SUBJECT])[0],
                         }
                     provider.count("authorization")
                     self.respond(
@@ -341,11 +355,9 @@ class BrowserSession:
         authorization = headers["Location"]
         assert authorization.startswith(self.provider.issuer), authorization
         self._take_cookies(headers)
-        # The issuer, not Aidash, answers /authorize; it names the person to sign in.
-        # Logins are serialized so that concurrent sessions cannot swap people.
-        with self.provider.login_lock:
-            self.provider.next_subject = subject
-            status, headers, _ = _send(urllib.request.Request(authorization))
+        # The issuer, not Aidash, answers /authorize; the hint names the person to sign in.
+        hint = urllib.parse.urlencode({"login_hint": subject})
+        status, headers, _ = _send(urllib.request.Request(f"{authorization}&{hint}"))
         assert status == 307, f"the issuer's authorize answered {status}"
         callback = headers["Location"]
         assert callback.startswith(self.browser_origin + "/auth/callback?"), callback
@@ -412,14 +424,16 @@ class BrowserSession:
         return mapping
 
 
-def tenant_administrator(base, browser_origin, provider, api_token, tenant, subject):
+def tenant_administrator(base, browser_origin, provider, api_token, tenant, subject, groups=None):
     """A browser session acting as `subject` of `tenant`, a Tenant Administrator.
 
     The person registers through the dashboard; the Deployment Administrator
     approves the Mapping through the administered approve route and holds no
     other Tenant authority. `subject` must exist in the Tenant's policy and be
-    allowed the administration it will exercise. The person's External Identity
-    is unique to the Tenant and subject, so one Node can host many such people.
+    allowed the administration it will exercise, unless `groups` is given: the
+    approval then creates `subject` in those groups. The person's External
+    Identity is unique to the Tenant and subject, so one Node can host many such
+    people.
     """
     session = BrowserSession(base, browser_origin, provider)
     session.login(f"administrator-{tenant}-{subject}")
@@ -427,7 +441,7 @@ def tenant_administrator(base, browser_origin, provider, api_token, tenant, subj
     assert status == 200 and registration["status"] == "pending", registration
     request = urllib.request.Request(
         base + f"/api/dashboard/registrations/{registration['id']}/approve",
-        data=json.dumps({"tenant": tenant, "subject": subject}).encode(),
+        data=json.dumps({"tenant": tenant, "subject": subject, **({"groups": groups} if groups else {})}).encode(),
         headers={
             "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/json",
@@ -438,3 +452,57 @@ def tenant_administrator(base, browser_origin, provider, api_token, tenant, subj
     assert status == 200, f"approving the Mapping answered {status}: {raw[:300]!r}"
     session.select(tenant)
     return session
+
+
+# A loopback TCP relay: `python3 -c RELAY <port> <host:port>` listens on
+# 127.0.0.1:<port> and forwards each connection to the upstream. It is inline so
+# a sidecar needs no volume.
+RELAY = """
+import socket, sys, threading
+port, upstream = int(sys.argv[1]), sys.argv[2].rsplit(":", 1)
+def pipe(source, target):
+    try:
+        while data := source.recv(65536):
+            target.sendall(data)
+    except OSError:
+        pass
+    finally:
+        for end in (source, target):
+            try:
+                end.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+listener = socket.create_server(("127.0.0.1", port))
+while True:
+    client, _ = listener.accept()
+    try:
+        server = socket.create_connection((upstream[0], int(upstream[1])), timeout=10)
+    except OSError:
+        client.close()
+        continue
+    server.settimeout(None)
+    for source, target in ((client, server), (server, client)):
+        threading.Thread(target=pipe, args=(source, target), daemon=True).start()
+"""
+
+
+def relay_container(port, upstream, image):
+    """A sidecar that makes the issuer at `upstream` answer on 127.0.0.1:`port` in its Pod."""
+    return {"name": "oidc-relay", "image": image, "imagePullPolicy": "IfNotPresent",
+            "command": ["python3", "-c", RELAY, str(port), upstream],
+            "resources": {"requests": {"cpu": "10m", "memory": "16Mi"}, "limits": {"memory": "64Mi"}}}
+
+
+def serve(arguments):
+    """`serve --key PEM --issuer URL --port N`: run the issuer in the foreground, as a Pod does."""
+    options = dict(zip(arguments[::2], arguments[1::2]))
+    provider = IdentityProvider(key=pathlib.Path(options["--key"]), address=("0.0.0.0", int(options["--port"])),
+                                issuer=options["--issuer"])
+    print(f"OIDC fixture issuer {provider.issuer} ready", flush=True)
+    provider.server.serve_forever(poll_interval=0.5)
+
+
+if __name__ == "__main__":
+    if sys.argv[1:2] != ["serve"]:
+        sys.exit("usage: oidc_fixture.py serve --key PEM --issuer URL --port N")
+    serve(sys.argv[2:])

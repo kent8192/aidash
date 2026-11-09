@@ -4,8 +4,12 @@ import hashlib
 import http.server
 import json
 import pathlib
+import socket
+import subprocess
+import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.parse
 import urllib.request
@@ -95,6 +99,78 @@ class BrowserSessionTests(unittest.TestCase):
             self.assertEqual(session.headers()["X-Aidash-Context"], "mapping:acme:m1")
             self.assertEqual(session.headers()["Cookie"], "__Host-aidash-session=s1; aidash-csrf=c1")
             self.assertEqual(provider.calls["exchange"], 1)
+
+    def test_the_approval_creates_the_administrator_in_the_given_groups(self):
+        with tempfile.TemporaryDirectory() as directory, oidc_fixture.IdentityProvider(pathlib.Path(directory)) as provider:
+            FakeAidash.subjects, FakeAidash.approved = [], []
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeAidash)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+            FakeAidash.issuer = provider.issuer
+            FakeAidash.origin_https = f"https://127.0.0.1:{server.server_port}"
+
+            oidc_fixture.tenant_administrator(f"http://127.0.0.1:{server.server_port}", FakeAidash.origin_https, provider,
+                                              "admin-token", "acme", "alice", groups=["administrators"])
+
+            self.assertEqual(FakeAidash.approved, [{"tenant": "acme", "subject": "alice", "groups": ["administrators"]}])
+
+
+def authorize(issuer, **extra):
+    """The subject the issuer signs in for one authorization request."""
+    query = urllib.parse.urlencode({"client_id": oidc_fixture.CLIENT_ID, "code_challenge_method": "S256",
+                                    "code_challenge": "c", "nonce": "n", "state": "s",
+                                    "redirect_uri": "https://127.0.0.1:1/auth/callback", **extra})
+    status, headers, _ = oidc_fixture._send(urllib.request.Request(f"{issuer}/authorize?{query}"))
+    assert status == 307, status
+    return urllib.parse.parse_qs(urllib.parse.urlsplit(headers["Location"]).query)["code"][0]
+
+
+class IssuerTests(unittest.TestCase):
+    def test_login_hint_names_the_person_and_its_absence_the_default(self):
+        with tempfile.TemporaryDirectory() as directory, oidc_fixture.IdentityProvider(pathlib.Path(directory)) as provider:
+            hinted = authorize(provider.issuer, login_hint="carol")
+            plain = authorize(provider.issuer)
+
+            self.assertEqual(provider.codes[hinted]["subject"], "carol")
+            self.assertEqual(provider.codes[plain]["subject"], oidc_fixture.DEFAULT_SUBJECT)
+
+    def test_a_pod_issuer_names_the_url_its_relays_answer_at_and_reaches_through_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            key = oidc_fixture.generate_key(pathlib.Path(directory) / "given.pem")
+            with socket.socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                port = listener.getsockname()[1]
+            issuer = f"http://127.0.0.1:{port}/issuer"
+            with oidc_fixture.IdentityProvider(key=key, issuer=issuer) as provider:
+                upstream = f"127.0.0.1:{provider.server.server_port}"
+                relay = subprocess.Popen([sys.executable, "-c", oidc_fixture.RELAY, str(port), upstream])
+                self.addCleanup(relay.wait, 10)
+                self.addCleanup(relay.terminate)
+                for _ in range(100):
+                    self.assertIsNone(relay.poll(), "the relay exited")
+                    try:
+                        socket.create_connection(("127.0.0.1", port), timeout=0.1).close()
+                        break
+                    except OSError:
+                        time.sleep(0.05)
+
+                with urllib.request.urlopen(issuer + "/.well-known/openid-configuration", timeout=5) as response:
+                    discovery = json.load(response)
+                code = authorize(issuer, login_hint="dave")
+
+                self.assertEqual(provider.key, key)
+                self.assertEqual(discovery["issuer"], issuer)
+                self.assertEqual(discovery["authorization_endpoint"], issuer + "/authorize")
+                claims = provider.token("n", provider.codes[code]["subject"]).split(".")[1]
+                claims = json.loads(base64.urlsafe_b64decode(claims + "=" * (-len(claims) % 4)))
+                self.assertEqual((claims["iss"], claims["sub"]), (issuer, "dave"))
+
+    def test_the_relay_sidecar_runs_inline_and_forwards_to_the_issuer_service(self):
+        container = oidc_fixture.relay_container(4100, "oidc:8000", "python:3.13-slim")
+
+        self.assertEqual(container["command"], ["python3", "-c", oidc_fixture.RELAY, "4100", "oidc:8000"])
+        self.assertNotIn("volumeMounts", container)
 
 
 if __name__ == "__main__":

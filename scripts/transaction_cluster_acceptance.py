@@ -15,16 +15,27 @@ import os
 import pathlib
 import socket
 import subprocess
+import tempfile
 import time
 import threading
 import urllib.error
 import urllib.request
 import uuid
 
+from oidc_fixture import Issuer, generate_key, oidc_environment, relay_container, tenant_administrator
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 # Where a Pod keeps its Deployment Key, and the settings overlay that names it.
 KEY_DIRECTORY = "/keys"
 SETTINGS_OVERLAY = "/app/server/settings/local.toml"
+# The test OIDC issuer Pod and the server Pods' loopback relays to it (#578).
+ISSUER_IMAGE = "python:3.13-slim"
+# The dashboard origin Aidash checks a session's Origin and callback against.
+# Nothing listens there: the script sends its requests to a Node's port-forward.
+BROWSER_ORIGIN = "https://127.0.0.1:8443"
+# The person who administers each Tenant: Node Registrations and Peer Mappings
+# need a Tenant Administrator acting through a browser Mapping (#484).
+ADMINISTRATOR = "federation-administrator"
 PHASES = [("coordinator.submit", False), ("coordinator.vote", False),
           ("coordinator.commit", False), ("coordinator.abort", True),
           ("coordinator.visible", False), ("coordinator.complete", False),
@@ -94,6 +105,15 @@ class Cluster:
         self.queries = json.loads(pathlib.Path(args.queries).read_text())
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
         self.created = False
+        # Aidash takes only an HTTPS or a loopback HTTP issuer. The server Pods'
+        # relays and this script's port-forward both answer on 127.0.0.1:P, so
+        # the issuer URL is the same on both sides and nothing rewrites it.
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            self.issuer_port = listener.getsockname()[1]
+        self.issuer = Issuer(f"http://127.0.0.1:{self.issuer_port}/issuer")
+        self.issuer_forward = None
+        self.administrators = {}
 
     def kube(self, *args, value=None, check=True):
         return subprocess.run(["kubectl", "-n", self.namespace, *args],
@@ -157,6 +177,72 @@ class Cluster:
                     "volumeMounts": [{"name": "secret", "mountPath": "/secret", "readOnly": True}, {"name": "key", "mountPath": KEY_DIRECTORY}]}],
                 "volumes": [{"name": "secret", "secret": {"secretName": f"tx-{node}-key"}}, {"name": "key", "emptyDir": {}},
                     {"name": "settings", "configMap": {"name": f"tx-{node}-settings"}}]}
+
+    def provision_issuer(self):
+        """Run the test OIDC issuer in the namespace, signing with a key made here."""
+        with tempfile.TemporaryDirectory() as directory:
+            key = generate_key(pathlib.Path(directory) / "issuer-key.pem").read_text()
+        self.apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": "oidc-key"}, "stringData": {"issuer-key.pem": key}})
+        self.apply({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "oidc-fixture"},
+            "data": {"oidc_fixture.py": (ROOT / "scripts" / "oidc_fixture.py").read_text()}})
+        labels = {"app": "oidc"}
+        self.apply({"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "oidc"},
+            "spec": {"replicas": 1, "selector": {"matchLabels": labels}, "template": {"metadata": {"labels": labels},
+            "spec": {"automountServiceAccountToken": False, "containers": [{"name": "issuer", "image": ISSUER_IMAGE,
+                "imagePullPolicy": "IfNotPresent",
+                "command": ["python3", "/fixture/oidc_fixture.py", "serve", "--key", "/key/issuer-key.pem",
+                            "--issuer", self.issuer.issuer, "--port", "8000"],
+                "ports": [{"containerPort": 8000}],
+                "readinessProbe": {"httpGet": {"path": "/issuer/.well-known/openid-configuration", "port": 8000}, "periodSeconds": 1},
+                "volumeMounts": [{"name": "fixture", "mountPath": "/fixture", "readOnly": True},
+                                 {"name": "key", "mountPath": "/key", "readOnly": True}]}],
+            "volumes": [{"name": "fixture", "configMap": {"name": "oidc-fixture"}},
+                        {"name": "key", "secret": {"secretName": "oidc-key", "defaultMode": 0o400}}]}}}})
+        self.service("oidc", 8000, labels)
+        self.rollout("oidc")
+
+    def reach_issuer(self):
+        """Port-forward 127.0.0.1:P to the issuer, where a login's `/authorize` redirect points."""
+        if self.issuer_forward and self.issuer_forward[0].poll() is None:
+            return
+        if self.issuer_forward:
+            self.issuer_forward[0].wait(timeout=10)
+            self.issuer_forward[1].close()
+        log = (self.directory / "forward-oidc.log").open("a")
+        process = subprocess.Popen(["kubectl", "-n", self.namespace, "port-forward", "service/oidc", f"{self.issuer_port}:8000"],
+                                   env=self.env, stdout=log, stderr=log)
+        self.issuer_forward = (process, log)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise ConnectionError(f"the issuer's port-forward on {self.issuer_port} exited; see forward-oidc.log")
+            try:
+                with socket.create_connection(("127.0.0.1", self.issuer_port), timeout=0.2):
+                    return
+            except OSError:
+                time.sleep(0.05)
+        raise TimeoutError(f"the issuer's port-forward did not listen on {self.issuer_port} within 10 seconds")
+
+    # Groups the approval puts the administrator in. The Tenant's initial policy
+    # lets `administrators` administer it; a driver that names the
+    # administrator in its own policy sets this to None.
+    administrator_groups = ["administrators"]
+
+    def administrator(self, node):
+        """Node `node`'s Tenant Administrator, signed in once through the issuer."""
+        session = self.administrators.get(node)
+        if session is None:
+            self.reach_issuer()
+            session = tenant_administrator(self.forward(node), BROWSER_ORIGIN, self.issuer, self.token,
+                                           self.nodes[node]["tenant"], ADMINISTRATOR, groups=self.administrator_groups)
+            self.administrators[node] = session
+        # A rollout replaces the Node's port-forward; the session cookie stays valid.
+        session.base = self.forward(node)
+        return session
+
+    def administer(self, node, path, body=None):
+        """Like `api`, as Node `node`'s Tenant Administrator."""
+        return self.administrator(node).call("GET" if body is None else "POST", path, body)
 
     def start_migration(self, node):
         """Apply the native history as the owner; servers refuse pending migrations."""
@@ -342,12 +428,14 @@ class Cluster:
         self.service("nats", 4222, {"app": "nats"})
         self.rollout("postgres", "statefulset")
         self.rollout("nats")
+        # Servers read the issuer's discovery document when a person logs in.
+        self.provision_issuer()
         for node in range(count):
             # Each node has its own database; there are no runtime cross-DB reads.
             self.provision_database(node)
             self.apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": f"tx-{node}"},
                 "stringData": {"DATABASE_URL": self.login_url("server", node),
-                "AIDASH_API_TOKEN": self.token}})
+                "AIDASH_API_TOKEN": self.token, **oidc_environment(self.issuer, BROWSER_ORIGIN, idle_seconds=86400)}})
             self.provision_deployment_key(node)
             self.start_migration(node)
         # Servers and workers start only once every migration is applied.
@@ -374,7 +462,8 @@ class Cluster:
                     # Registering another Deployment's Node at its Service needs that origin permitted.
                     {"name": "AIDASH_KEYLESS_PRIVATE_ORIGINS", "value": ",".join(["http://provider:8080", *(f"http://tx-{peer}:8080" for peer in range(count))])}],
                     "resources": {"requests": {"cpu": "50m", "memory": "128Mi"}},
-                    **({"readinessProbe": {"httpGet": {"path": "/health", "port": 8080}, "periodSeconds": 1}} if role == "server" else {})}]}}}})
+                    **({"readinessProbe": {"httpGet": {"path": "/health", "port": 8080}, "periodSeconds": 1}} if role == "server" else {})},
+                    *([relay_container(self.issuer_port, "oidc:8000", ISSUER_IMAGE)] if role == "server" else [])]}}}})
             self.service(f"tx-{node}", 8080, {"app": f"tx-{node}", "role": "server"})
         for node in range(count):
             self.rollout(f"tx-{node}-server")
@@ -398,11 +487,8 @@ class Cluster:
                     f"http://tx-{remote}:8080/.well-known/aidash").stdout
                 key_id = json.loads(key_id)["key"]["id"]
                 owner = self.nodes[local]
-                # TODO(#578): a Node Registration needs a Tenant Administrator, a browser
-                # Mapping session through a test OIDC issuer the Pods can reach
-                # (oidc_fixture.py). The api_token is a Deployment Administrator and is
-                # refused, so this fails until that issuer runs in the cluster.
-                status, response = self.api(local, f"/api/tenants/{owner['tenant']}/nodes/{owner['node']}/registrations",
+                # A Node Registration needs a Tenant Administrator (#484).
+                status, response = self.administer(local, f"/api/tenants/{owner['tenant']}/nodes/{owner['node']}/registrations",
                     {"source_node": self.nodes[remote]["address"], "endpoint": f"http://tx-{remote}:8080", "key_id": key_id,
                      "atomic_transactions": True, "enabled": True, "expected_revision": 0})
                 assert status == 200, (local, remote, status, response)
@@ -553,6 +639,10 @@ class Cluster:
             process.terminate()
             process.wait(timeout=10)
             log.close()
+        if self.issuer_forward:
+            self.issuer_forward[0].terminate()
+            self.issuer_forward[0].wait(timeout=10)
+            self.issuer_forward[1].close()
         self.executor.shutdown(wait=False, cancel_futures=True)
         if self.created and not self.args.keep:
             self.kube("delete", "namespace", self.namespace, "--wait=true", "--timeout=180s", check=False)
