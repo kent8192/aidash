@@ -104,7 +104,7 @@ def termination_time(terminated, started_at, observed):
 def cell_timed_out(record):
     """Whether a Python cell ran into its limit. The node watchdog stops it there
     without saying why, so a stop at or past the limit counts as one."""
-    stopped_at, running_at = record.get('stop_confirmed_at'), record.get('running_at')
+    stopped_at, running_at = record.get('cell_stopped_at', record.get('stop_confirmed_at')), record.get('running_at')
     return stopped_at is not None and running_at is not None and stopped_at >= running_at + record['request']['seconds']
 
 
@@ -1043,8 +1043,10 @@ class Runner(AllocationJournal):
                 statuses = {s["name"]: s for s in pod.get("status", {}).get("containerStatuses", [])}
                 execution = statuses.get('execution', {}).get('state', {})
                 if record.get('executed') and 'terminated' in execution:
+                    observed = time.time()
                     self.update(operation, status='finishing', termination_confirmed=True,
-                                stop_confirmed_at=record.get('stop_confirmed_at') or time.time(),
+                                cell_stopped_at=termination_time(execution['terminated'], observed, record.get('running_at')),
+                                stop_confirmed_at=record.get('stop_confirmed_at') or observed,
                                 pending_status='failed', pending_error={'code':'SESSION_LOST', 'message':'Interpreter stopped during the cell; code was not replayed.'}, exit_code=137)
                     raise RuntimeError('Python stopped; collecting its output')
                 if record.get('executed') and 'running' in execution:

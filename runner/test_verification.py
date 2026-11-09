@@ -599,6 +599,27 @@ class VerificationTest(unittest.TestCase):
             self.assertTrue(record['output_harvested'])
             self.assertEqual(record['error']['code'], 'SESSION_LOST')
 
+    def test_outage_does_not_turn_an_early_python_stop_into_a_timeout(self):
+        with tempfile.TemporaryDirectory() as root:
+            runner = self.runner(root)
+            operation, pod_uid = str(uuid.uuid4()), str(uuid.uuid4())
+            now = time.time()
+            from datetime import datetime, timezone
+            finished = datetime.fromtimestamp(now - 100, timezone.utc).isoformat()
+            record = {'operation_id': operation, 'request': request('python'), 'status': 'running',
+                      'pod_operation': 'existing', 'pod_uid': pod_uid, 'executed': True,
+                      'cancel_requested': False, 'running_at': now - 120, 'stdout': ''}
+            runner.get = Mock(side_effect=lambda _: record.copy())
+            runner.update = Mock(side_effect=lambda _, **changes: record.update(changes) or record.copy())
+            runner.active = {operation}
+            runner.pod = Mock(return_value={'metadata': {'uid': pod_uid}, 'status': {'containerStatuses': [
+                {'name': 'execution', 'state': {'terminated': {'exitCode': 137, 'finishedAt': finished}}},
+                {'name': 'collector', 'state': {'running': {}}}]}})
+            runner.guard = Mock(return_value={'files': []})
+            runner.reconcile_python(operation)
+            self.assertFalse(record['deadline_expired'])
+            self.assertEqual(record['error']['code'], 'SESSION_LOST')
+
     def finished_shell(self, root, log, *, exported=None, expired=False):
         """A shell command that exited with no output, seen by the running controller."""
         runner = self.runner(root)

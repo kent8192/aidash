@@ -1223,3 +1223,18 @@ async fn an_export_over_the_byte_quota_is_refused_before_any_download(repository
 	assert!(!trace.calls.contains(&"begin_output".into()));
 	assert!(!trace.calls.contains(&"publish".into()));
 }
+
+#[rstest]
+#[tokio::test]
+async fn a_timed_out_install_gets_install_advice(repository: Repository) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.operation.kind = "python_install".into();
+		trace.observed = past_its_limit("failed", 143);
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	let message = trace.saved[0].result["error"]["message"].as_str().unwrap();
+	assert!(message.contains("wheels"), "{message}");
+	assert!(!message.contains("shorter commands"), "{message}");
+}
