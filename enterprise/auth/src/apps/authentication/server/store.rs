@@ -187,6 +187,7 @@ impl Store {
 			][..],
 			&["oidc_op_pending", "oidc_op_codes"][..],
 		] {
+			#[allow(clippy::disallowed_methods)] // Purge is confined to this service-owned schema.
 			let mut tx = self.connection.begin().await.map_err(database_failure)?;
 			for &table in tables {
 				let mut query = Query::delete();
