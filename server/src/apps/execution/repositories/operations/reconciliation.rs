@@ -157,11 +157,7 @@ impl OperationReconciliationScope for Scope<'_> {
 			.context
 			.binding_snapshot
 			.as_ref()?
-			.operation(if kind == "python_install" {
-				"code_interpreter"
-			} else {
-				kind
-			})
+			.operation(aidash_domain::capabilities::operations::capability_of(kind))
 			.ok()?
 			.narrow
 			.limits
