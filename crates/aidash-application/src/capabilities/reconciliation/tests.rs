@@ -1468,6 +1468,9 @@ async fn a_timed_out_install_gets_install_advice(repository: Repository) {
 	let trace = repository.0.lock().unwrap();
 	let message = trace.saved[0].result["error"]["message"].as_str().unwrap();
 	assert!(message.contains("wheels"), "{message}");
+	assert!(message.contains("complete"), "{message}");
+	assert!(message.contains("dependencies"), "{message}");
+	assert!(!message.contains("at a time"), "{message}");
 	assert!(!message.contains("shorter commands"), "{message}");
 }
 

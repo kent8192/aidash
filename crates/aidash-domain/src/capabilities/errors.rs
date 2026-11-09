@@ -99,7 +99,9 @@ impl CapabilityError {
 			String::new()
 		};
 		let advice = if install {
-			format!("{longer}install fewer wheels at a time.")
+			format!(
+				"{longer}choose a smaller complete set of wheels, including its dependencies, for the replacement environment."
+			)
 		} else {
 			format!("{longer}split it into {pieces} or print progress.")
 		};
