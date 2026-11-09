@@ -319,6 +319,10 @@ function Dashboard({
       (mapping) => mappingContext(mapping) === context,
     )?.tenant ?? null;
   const remembered = useNodeSelection(subjectTenant ?? mappedTenant);
+  const nodeGeneration = useRef(0);
+  useEffect(() => {
+    nodeGeneration.current += 1;
+  }, [remembered.selected?.name]);
   const state = useQuery({
     queryKey: ["state", remembered.selected?.name],
     queryFn: async (): Promise<TenantState> => {
@@ -892,7 +896,7 @@ function Dashboard({
           : title,
     };
   });
-  const visit = (target: NoticeTarget) => {
+  const visit = async (target: NoticeTarget) => {
     // An approval is decided in the decision queue, where its card lives.
     if (target.kind === "approval") return setQueueOpen(true);
     const item =
@@ -906,10 +910,50 @@ function Dashboard({
       target.kind === "task"
         ? everything?.tasks.find((task) => task.id === target.id)
         : undefined;
-    const owner = everything?.workspaces.find(
+    let owner = everything?.workspaces.find(
       (workspace) => workspace.id === target.workspace,
     );
-    if ((!item && !task) || !owner) return;
+    if (!item && !task) return;
+    if (!owner && item) {
+      const generation = nodeGeneration.current;
+      try {
+        const response = await authenticatedFetch(
+          `/api/workspaces/${encodeURIComponent(target.workspace)}`,
+        );
+        const snapshot = (await response.json()) as {
+          workspace: TenantState["workspaces"][number];
+        };
+        if (
+          nodeGeneration.current !== generation ||
+          client.getQueryState(["state", remembered.selected?.name])
+            ?.dataUpdatedAt !== state.dataUpdatedAt
+        )
+          return;
+        owner = snapshot.workspace;
+        client.setQueryData<TenantState>(
+          ["state", remembered.selected?.name],
+          (old) =>
+            old
+              ? {
+                  ...old,
+                  workspaces: [
+                    ...new Map(
+                      [...old.workspaces, snapshot.workspace].map((row) => [
+                        row.id,
+                        row,
+                      ]),
+                    ).values(),
+                  ],
+                }
+              : old,
+          { updatedAt: state.dataUpdatedAt },
+        );
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+        return;
+      }
+    }
+    if (!owner) return;
     nodes.select(owner.node);
     go("collaboration", { channel: owner.id, focus: "" });
     if (item) open({ kind: "human", request: item.request, node: item.node });

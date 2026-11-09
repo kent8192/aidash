@@ -57,24 +57,35 @@ export function WorkspaceList({
   const loadMore = async () => {
     if (!cursor || loading) return;
     setStatus({ node, loading: true, error: false });
+    const updatedAt = client.getQueryState(["state", node])?.dataUpdatedAt;
     try {
       const params = new URLSearchParams({ cursor });
       if (node) params.set("node", node);
       const page = (await (
         await authenticatedFetch(`/api/workspaces?${params}`)
       ).json()) as { items: Workspace[]; next_cursor: string | null };
-      client.setQueryData<TenantState>(["state", node], (old) => {
-        if (!old || old.next_cursors.workspaces !== cursor) return old;
-        return {
-          ...old,
-          workspaces: [
-            ...new Map(
-              [...old.workspaces, ...page.items].map((row) => [row.id, row]),
-            ).values(),
-          ],
-          next_cursors: { ...old.next_cursors, workspaces: page.next_cursor },
-        };
-      });
+      if (client.getQueryState(["state", node])?.dataUpdatedAt !== updatedAt) {
+        setStatus((old) =>
+          old.node === node ? { node, loading: false, error: false } : old,
+        );
+        return;
+      }
+      client.setQueryData<TenantState>(
+        ["state", node],
+        (old) => {
+          if (!old || old.next_cursors.workspaces !== cursor) return old;
+          return {
+            ...old,
+            workspaces: [
+              ...new Map(
+                [...old.workspaces, ...page.items].map((row) => [row.id, row]),
+              ).values(),
+            ],
+            next_cursors: { ...old.next_cursors, workspaces: page.next_cursor },
+          };
+        },
+        { updatedAt },
+      );
       setStatus((old) =>
         old.node === node ? { node, loading: false, error: false } : old,
       );

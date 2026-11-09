@@ -3538,6 +3538,7 @@ test("pending requests continue within the selected node", async ({ page }) => {
             ...data.human_requests[0],
             id: "older-question",
             run_id: "old-run",
+            workspace_id: "older-workspace",
             prompt: "Older request from an old run",
           },
         ],
@@ -3545,15 +3546,37 @@ test("pending requests continue within the selected node", async ({ page }) => {
       },
     });
   });
+  await page.route("**/api/workspaces/older-workspace", (route) =>
+    route.fulfill({
+      json: {
+        workspace: {
+          ...data.workspaces[0],
+          id: "older-workspace",
+          title: "Older workspace",
+        },
+        tasks: [],
+        artifacts: [],
+        events: [],
+        messages: [],
+      },
+    }),
+  );
   await page.goto("/collaboration?channel=workspace-one");
   await page.getByRole("button", { name: /Decisions 1/ }).click();
   expect(requested).toBe("");
   await page.getByRole("button", { name: "Show more" }).click();
   await expect(
     page.getByRole("button", {
-      name: /Information requested Research.*Older request from an old run/,
+      name: /Information requested.*Older request from an old run/,
     }),
   ).toBeVisible();
   expect(new URL(requested).searchParams.get("cursor")).toBe("next-human");
   expect(new URL(requested).searchParams.get("node")).toBe(defaultNode.name);
+  await page
+    .getByRole("button", {
+      name: /Information requested.*Older request from an old run/,
+    })
+    .last()
+    .click();
+  await expect(page).toHaveURL(/channel=older-workspace/);
 });
