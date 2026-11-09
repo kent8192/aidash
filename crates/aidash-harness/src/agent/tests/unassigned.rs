@@ -351,10 +351,19 @@ async fn a_completion_gate_send_back_abandons_nothing(mut fixture: Fixture) {
 }
 
 #[rstest]
+#[case::a_task_of_its_own(true, 3600)]
+#[case::only_other_childrens_tasks(false, 300)]
 #[tokio::test]
 async fn the_ceiling_of_the_internal_wait_rechecks_children_without_a_model_call(
 	mut fixture: Fixture,
+	#[case] owned: bool,
+	#[case] seconds: i64,
 ) {
+	// The next look comes as late as #644's ceiling allows for what can wake it.
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.owned_tasks_pending
+		.store(owned, Ordering::Release);
 	set_children(&fixture, children(1, false, vec![]));
 	let past = chrono::Utc::now() - chrono::Duration::minutes(1);
 	fixture.run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
@@ -375,7 +384,9 @@ async fn the_ceiling_of_the_internal_wait_rechecks_children_without_a_model_call
 	let WaitingState::Workspace { wake_at, .. } = **waiting else {
 		panic!("expected a workspace wait");
 	};
-	assert!(wake_at > chrono::Utc::now() + chrono::Duration::minutes(59));
+	let before = chrono::Utc::now();
+	assert!(wake_at > before + chrono::Duration::seconds(seconds - 60));
+	assert!(wake_at <= before + chrono::Duration::seconds(seconds));
 }
 
 #[rstest]
