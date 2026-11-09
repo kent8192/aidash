@@ -819,3 +819,302 @@ async fn a_passed_walk_is_not_reused_under_another_authority(#[future] database:
 	assert!(!chain, "the chain's authority is asked afresh");
 	access.finish(Ok(())).await.unwrap();
 }
+
+/// A Run that has finished, with the grant every Run executes under (ADR 0043).
+async fn finished_run(fixture: &Fixture) -> Uuid {
+	let pending = aidash_domain::run_state::encode(
+		&aidash_domain::run_state::RunState::Completed(aidash_domain::run_state::TerminalState {}),
+		&aidash_domain::run_state::RecoveryState::default(),
+	)
+	.unwrap();
+	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
+	let [run, task] = [Uuid::new_v4(), Uuid::new_v4()];
+	sqlx::query("INSERT INTO tasks (id,tenant,workspace_id,title,description,status,revision,created_by) VALUES ($1,'acme',$2,'Fixture','Fixture','COMPLETED',1,'reader')").bind(task).bind(fixture.workspace).execute(fixture.driver()).await.unwrap();
+	sqlx::query("INSERT INTO runs (id,tenant,task_id,workspace_id,node,home_node,agent_id,agent_version,phase,pending,revision) VALUES ($1,'acme',$2,$3,$4,$5,'fixture','1.0.0','COMPLETED',$6,1)").bind(run).bind(task).bind(fixture.workspace).bind(&node).bind(DEPLOYMENT).bind(pending).execute(fixture.driver()).await.unwrap();
+	let mut tx = fixture
+		.store
+		.pool
+		.begin(&TenancyScope::tenant("acme").unwrap())
+		.await
+		.unwrap();
+	crate::apps::identity::repositories::admission::persist_grant_in(
+		&mut *tx,
+		&ExecutionGrant {
+			run_id: run,
+			task_id: task,
+			workspace_id: fixture.workspace,
+			tenant: "acme".into(),
+			credential_id: fixture.identity.credential_id,
+			root_subject: "reader".into(),
+			subject_chain: vec!["reader".into(), "helper".into()],
+		},
+	)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+	run
+}
+
+/// Everything is allowed, except `subject` reading the one `resource`.
+fn policy_hiding(subject: &str, action: &str, resource: Uuid) -> Value {
+	let mut bundle = policy(None);
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"hidden", "effect":"deny", "subjects":{"ids":[subject]},
+		"actions":[action], "resources":{"kinds":["*"],"ids":[resource.to_string()]}
+	}));
+	bundle
+}
+
+/// Whether the viewer's own walk over the Run `fixture.run` passes.
+async fn viewer_passes(access: &mut Access, fixture: &Fixture) -> bool {
+	access.run_reads_visible(fixture.run).await.unwrap()
+}
+
+/// What a Remote Grant's producer sees of `message`, a source the grant discloses.
+async fn disclosure_passes(
+	access: &mut Access,
+	grant: &aidash_domain::federation::execution::home::Grant,
+	message: Uuid,
+	workspace: Uuid,
+) -> bool {
+	let row = crate::apps::workspaces::models::Message::read_in(
+		access.tx.as_mut(),
+		message,
+		workspace,
+		true,
+	)
+	.await
+	.unwrap()
+	.unwrap();
+	let producer =
+		crate::apps::identity::repositories::remote_grants::reads::Producer::lend(access, grant)
+			.await
+			.unwrap();
+	producer.access.message_visible(&row).await.unwrap()
+}
+
+/// Run X read a Task nobody else read, and produced the Message the viewer's Run
+/// read as well as the one a Remote Grant discloses. The viewer's walk and the
+/// grant's producer both reach X, one under the viewer's chain and one under the
+/// grant's, so each must read X's reads for itself, whichever comes first.
+#[rstest]
+#[case::the_viewer_first_and_the_grants_root_lost_the_read("helper", "reader", true)]
+#[case::the_grant_first_and_the_viewer_lost_the_read("helper", "helper", false)]
+#[tokio::test]
+async fn a_grants_producer_reads_a_run_for_its_own_chain_whichever_walk_reached_it_first(
+	#[future] database: DatabaseFixture,
+	#[case] viewer: &str,
+	#[case] lost: &str,
+	#[case] viewer_first: bool,
+) {
+	// Arrange
+	let fixture = fixture(database.await, 1).await;
+	let x = finished_run(&fixture).await;
+	let [x_only, disclosed] = [Uuid::new_v4(), Uuid::new_v4()];
+	sqlx::query("INSERT INTO tasks (id,tenant,workspace_id,title,description,status,revision,created_by) VALUES ($1,'acme',$2,'Only X','Fixture','COMPLETED',1,'reader')").bind(x_only).bind(fixture.workspace).execute(fixture.driver()).await.unwrap();
+	sqlx::query("INSERT INTO messages (id,tenant,workspace_id,sender,content) VALUES ($1,'acme',$2,'reader','Disclosed')").bind(disclosed).bind(fixture.workspace).execute(fixture.driver()).await.unwrap();
+	let read: Uuid = sqlx::query_scalar(
+		"SELECT resource_id FROM authorization_run_reads WHERE run_id=$1 AND resource_kind='message'",
+	)
+	.bind(fixture.run)
+	.fetch_one(fixture.driver())
+	.await
+	.unwrap();
+	let mut tx = fixture
+		.store
+		.pool
+		.begin(&TenancyScope::tenant("acme").unwrap())
+		.await
+		.unwrap();
+	crate::apps::identity::models::AuthorizationRunRead::record_sources(
+		&mut *tx,
+		x,
+		fixture.workspace,
+		&[("task".to_owned(), x_only)],
+	)
+	.await
+	.unwrap();
+	for message in [read, disclosed] {
+		crate::apps::identity::models::AuthorizationRunOutput::record(
+			&mut *tx,
+			x,
+			fixture.workspace,
+			"message",
+			message,
+		)
+		.await
+		.unwrap();
+	}
+	tx.commit().await.unwrap();
+	Authorization {
+		pool: fixture.store.pool.clone(),
+	}
+	.replace(
+		"acme",
+		1,
+		serde_json::from_value(policy_hiding(lost, "task.read", x_only)).unwrap(),
+		"deployment_administrator",
+	)
+	.await
+	.unwrap();
+	let grant = aidash_domain::federation::execution::home::Grant {
+		id: Uuid::new_v4(),
+		task_id: fixture.task,
+		task_revision: 1,
+		workspace_id: fixture.workspace,
+		node_id: "aidash://peer".into(),
+		tenant: "acme".into(),
+		credential_id: fixture.identity.credential_id,
+		root_subject: "reader".into(),
+		subject_chain: vec!["reader".into()],
+		inspection: json!({}),
+		expires_at: chrono::Utc::now() + chrono::Duration::days(1),
+		revoked: false,
+		semantic: json!({}),
+	};
+	let mut access = fixture.access().await;
+	access.subjects = vec![viewer.to_owned()];
+	// The viewer's walk is under way when it reaches the grant's output, as in
+	// `grant_visible`.
+	let outermost = access.reads_idle();
+	let _visit = access.authority_read_visit("run", fixture.run);
+	let walk = access.begin_read_walk(DecisionOwner::Run(fixture.run), outermost);
+
+	// Act
+	let (viewer_sees, grant_sees) = if viewer_first {
+		let viewer_sees = viewer_passes(&mut access, &fixture).await;
+		let grant_sees = disclosure_passes(&mut access, &grant, disclosed, fixture.workspace).await;
+		(viewer_sees, grant_sees)
+	} else {
+		let grant_sees = disclosure_passes(&mut access, &grant, disclosed, fixture.workspace).await;
+		let viewer_sees = viewer_passes(&mut access, &fixture).await;
+		(viewer_sees, grant_sees)
+	};
+
+	// Assert: only the chain that lost the read is refused.
+	assert_eq!(
+		(viewer_sees, grant_sees),
+		(lost != viewer, lost != "reader"),
+		"viewer, grant"
+	);
+	access.end_read_walk(walk, Ok(false)).await.unwrap();
+	access.finish(Ok(())).await.unwrap();
+}
+
+/// Egress refuses a stream from the operation row. When the Runner cannot be
+/// asked to stop a command, that row must still say its authority is gone.
+#[rstest]
+#[tokio::test]
+async fn a_command_is_marked_withdrawn_even_when_the_runner_cannot_be_asked(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_application::ports::capabilities::read_recheck::{
+		Outcome, ReadRecheckRepository, Target,
+	};
+	// Arrange: the Runner holds the command, and this Store has no Runner to ask.
+	let fixture = fixture(database.await, 3).await;
+	let (operation, _) = running_targets(&fixture).await;
+	sqlx::query(
+		"UPDATE core_operations SET state='running', runner_instance='runner-1' WHERE id=$1",
+	)
+	.bind(operation)
+	.execute(fixture.driver())
+	.await
+	.unwrap();
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	let target = Target::Operation(operation);
+	fixture
+		.set_policy(1, Some(("reader", "message.read")))
+		.await;
+	assert_eq!(repository.check(target).await.unwrap(), Outcome::Refused);
+
+	// Act
+	let stopped = repository.stop_refused(target).await;
+
+	// Assert
+	assert!(stopped.is_err(), "no Runner could stop it");
+	let (state, result) = operation_state(&fixture, operation).await;
+	assert_eq!(state, "cancelling");
+	assert_eq!(result["error"], "AUTHORITY_WITHDRAWN");
+	let targets = repository.targets().await.unwrap();
+	assert!(
+		!targets.contains(&target),
+		"the loop is done with it: the sweep goes on asking the Runner, {targets:?}"
+	);
+}
+
+/// A Continuation Check or Read Recheck repeats the same question, so its allows
+/// add no row. What the Access is asked after it is not part of it.
+#[rstest]
+#[tokio::test]
+async fn what_an_access_is_asked_after_a_check_is_recorded_as_it_is_today(
+	#[future] database: DatabaseFixture,
+) {
+	// Arrange
+	let fixture = fixture(database.await, 1).await;
+	let mut access = fixture.access().await;
+
+	// Act: the check ends on every path, a refusal included.
+	let unknown = access.run_for_continuation(Uuid::new_v4()).await;
+	assert!(matches!(unknown, Err(Error::Forbidden)), "{unknown:?}");
+	assert!(access.recheck_owner.is_none());
+	access.run_for_continuation(fixture.run).await.unwrap();
+	assert!(access.recheck_owner.is_none());
+	access.recheck_run_reads(fixture.run).await.unwrap();
+	assert!(access.recheck_owner.is_none());
+	let later = access.resource("note", "later", json!({}));
+	assert!(access.decide(&later, "note.read").await.unwrap());
+	access.finish(Ok(())).await.unwrap();
+
+	// Assert
+	assert_eq!(
+		fixture.rows("action = 'note.read' AND NOT coalesced").await,
+		1
+	);
+	assert_eq!(fixture.rows("action = 'note.read' AND coalesced").await, 0);
+}
+
+/// The fence a Subnode puts on writes closes between two identical checks, so a
+/// repeat must not be answered from what the first one allowed.
+#[rstest]
+#[tokio::test]
+async fn a_write_a_subnode_fences_is_checked_afresh_inside_a_check(
+	#[future] database: DatabaseFixture,
+) {
+	// Arrange: the Run's own Workspace is an active Subnode.
+	let fixture = fixture(database.await, 1).await;
+	sqlx::query(
+		"INSERT INTO subnodes (id, tenant, node, creator_run_id, creator_task_id, \
+		  creator_agent_id, creator_agent_version, leader_agent_id, leader_agent_version, \
+		  allowance, workspace_id, title, state, created_at, creation_key, creation_fingerprint) \
+		 SELECT $1, tenant, node, id, task_id, agent_id, agent_version, agent_id, agent_version, \
+		  $2, workspace_id, 'Fenced', 'active', now(), 'fenced', 'fenced' \
+		 FROM runs WHERE id = $3",
+	)
+	.bind(Uuid::new_v4())
+	.bind(json!({"tools":[],"secrets":[]}))
+	.bind(fixture.run)
+	.execute(fixture.driver())
+	.await
+	.unwrap();
+	let mut access = fixture.access().await;
+	let workspace = access.resource("workspace", fixture.workspace, json!({}));
+	let mut check = access.rechecking(fixture.run);
+	assert!(check.decide(&workspace, "workspace.update").await.unwrap());
+
+	// Act: the Subnode ends in this transaction, which holds its share lock.
+	crate::database::native::query(&format!(
+		"UPDATE subnodes SET state='dissolved', ended_at=now(), ended_reason='dissolved' \
+		 WHERE workspace_id='{}'",
+		fixture.workspace
+	))
+	.execute(&mut **check.tx)
+	.await
+	.unwrap();
+	let repeat = check.decide(&workspace, "workspace.update").await;
+
+	// Assert
+	assert!(matches!(repeat, Err(Error::Forbidden)), "{repeat:?}");
+}
