@@ -601,8 +601,9 @@ pub async fn serve(
 ) -> crate::Result<()> {
 	let client = upstream_client()?;
 	let mut connections = tokio::task::JoinSet::new();
+	let mut failures = crate::accept::AcceptFailures::new("preview gateway");
 	loop {
-		if *stopping.borrow() {
+		if *stopping.borrow() || stopping.has_changed().is_err() {
 			connections.abort_all();
 			return Ok(());
 		}
@@ -610,9 +611,7 @@ pub async fn serve(
 			_ = stopping.changed() => {},
 			Some(_) = connections.join_next(), if !connections.is_empty() => {},
 			accepted = listener.accept() => {
-				let (socket, _) = accepted.map_err(|_| aidash_application::Error::External(
-					"Preview listener unavailable".into(),
-				))?;
+				let Some((socket, _)) = failures.settle(accepted, &mut stopping).await else { continue; };
 				let authority = authority.clone();
 				let client = client.clone();
 				connections.spawn(async move {

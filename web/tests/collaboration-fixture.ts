@@ -258,6 +258,10 @@ export async function setup(
     runMediaRoutes?: string[][];
     invalidRun?: boolean;
     semanticPause?: string;
+    /** The Run is paused on a call the server offers to decline (#763). */
+    declinableCall?: boolean;
+    /** Declining fails, as when the Run is no longer paused on that call. */
+    failDecline?: boolean;
     failureDeliveryRun?: boolean;
     openTask?: boolean;
     foreignRun?: boolean | string;
@@ -325,6 +329,10 @@ export async function setup(
     data.runs[0].control = "PAUSED";
     data.runs[0].recovery.semantic_reason = options.semanticPause;
   }
+  let declinable: Record<string, string> | null = options.declinableCall
+    ? { call: "run-0:3:0", tool: "task_delegate", kind: "policy" }
+    : null;
+  if (options.declinableCall) data.runs[0].control = "PAUSED";
   if (options.invalidRun || options.failureDeliveryRun) {
     data.runs[0].control = "PAUSED";
     data.runs[0].context = null;
@@ -815,6 +823,18 @@ export async function setup(
         controlled.control = body.action === "pause" ? "PAUSED" : "ACTIVE";
         return route.fulfill({ json: controlled });
       }
+      if (path === "/api/runs/run-0/message")
+        return route.fulfill({ json: { sent: true } });
+      if (path === "/api/runs/run-0/declined-calls") {
+        if (options.failDecline)
+          return route.fulfill({
+            status: 409,
+            json: { error: "the run is not paused on that call" },
+          });
+        declinable = null;
+        data.runs[0].control = "ACTIVE";
+        return route.fulfill({ json: data.runs[0] });
+      }
       if (path === "/api/human-requests/question-one/answer") {
         data.human_requests[0].response = body;
         return route.fulfill({ json: data.human_requests[0] });
@@ -850,6 +870,9 @@ export async function setup(
       return route.fulfill({
         json: {
           run,
+          ...(declinable && run.id === "run-0"
+            ? { declinable_call: declinable }
+            : {}),
           invocations: [],
           media_input_routes: runMediaRoutes,
           memory: options.runMemory

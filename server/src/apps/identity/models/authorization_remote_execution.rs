@@ -24,4 +24,8 @@ pub struct AuthorizationRemoteExecution {
 	pub human_requests: Json<Value>,
 	#[field(auto_now_add = true)]
 	pub created_at: DateTime<Utc>,
+	/// Set once the receiving Node's activation response matched; a binding
+	/// without it may belong to a refused activation (#772).
+	#[field(null = true)]
+	pub activated_at: Option<DateTime<Utc>>,
 }

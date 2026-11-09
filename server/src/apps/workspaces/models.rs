@@ -1,5 +1,6 @@
 //! Persistent records owned by the collaboration app.
 mod catalog;
+pub(crate) mod child_flags;
 mod inspection;
 mod mutations;
 

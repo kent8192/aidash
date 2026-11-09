@@ -109,6 +109,10 @@ fn federation_registration_retains_the_previous_undocumented_peer_protocol() {
 		),
 		(
 			"POST",
+			"/federation/v0.1/scoped/execution/admissions/{id}/declined-calls",
+		),
+		(
+			"POST",
 			"/federation/v0.1/scoped/execution/admissions/{id}/messages",
 		),
 		(

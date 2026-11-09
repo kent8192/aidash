@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::apps::execution::serializers::management::ClaimInput;
 use crate::apps::execution::serializers::management::ControlInput;
+use crate::apps::execution::serializers::management::DeclineCallInput;
 use crate::apps::execution::serializers::management::EventQuery;
 use crate::apps::execution::serializers::management::InferenceStreamQuery;
 use crate::apps::execution::serializers::management::{HumanListQuery, RunListQuery};
@@ -130,6 +131,21 @@ pub async fn run_control(
 	Json(input): Json<ControlInput>,
 ) -> ViewResult<Response> {
 	crate::http::json(service.run_control(actor, id, input).await)
+}
+
+/// A person answers the tool call a paused Run stopped on, so the Run goes on without it.
+#[post(
+	"/api/runs/{id}/declined-calls",
+	name = "run-decline-call",
+	auth = "protected"
+)]
+pub async fn run_decline_call(
+	#[inject] service: Depends<HarnessManagement>,
+	#[inject] actor: Actor,
+	Path(id): Path<Uuid>,
+	Json(input): Json<DeclineCallInput>,
+) -> ViewResult<Response> {
+	crate::http::json(service.run_decline_call(actor, id, input).await)
 }
 
 #[post("/api/runs/{id}/message", name = "run-message", auth = "protected")]

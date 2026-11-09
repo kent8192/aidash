@@ -189,7 +189,10 @@ def mount_rootfs(docker_enabled):
             raise OSError(code, os.strerror(code), target)
 
 
-def run_supervised(argv, timeout, stop_requested=None):
+FORWARD_GRACE_SECONDS = 5
+
+
+def run_supervised(argv, timeout, stop_requested=None, *, output_directory=None, operation_id=None, output_limit=8388608):
     """Run one command in a dedicated supervisor and reap escaped descendants.
 
     This must be called in a single-purpose process: becoming a subreaper also
@@ -206,7 +209,115 @@ def run_supervised(argv, timeout, stop_requested=None):
     if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
         code = ctypes.get_errno()
         raise OSError(code, os.strerror(code))
-    process = subprocess.Popen(argv, start_new_session=True)
+    import select
+    import threading
+    from pathlib import Path
+    streams = {}
+    readers = []
+    output_state = {'used': 0, 'incomplete': False, 'truncated': False, 'forward_incomplete': False}
+    output_lock = threading.Lock()
+    reader_stop = threading.Event()
+    forward_stop = threading.Event()
+    if output_directory is not None:
+        try:
+            Path(output_directory).mkdir(mode=0o700, parents=True, exist_ok=True)
+            for name in ('stdout', 'stderr'):
+                fd = os.open(Path(output_directory) / (operation_id + '.' + name),
+                             os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                streams[name] = os.fdopen(fd, 'wb', buffering=0)
+        except OSError:
+            output_state['incomplete'] = True
+    process = subprocess.Popen(argv, start_new_session=True,
+                               stdout=subprocess.PIPE if output_directory is not None else None,
+                               stderr=subprocess.PIPE if output_directory is not None else None)
+    def drain(name, source, target):
+        forwarding = True
+        save = streams.get(name)
+        try:
+            while not reader_stop.is_set():
+                readable, _, _ = select.select([source], [], [], .1)
+                if not readable:
+                    continue
+                data = os.read(source.fileno(), 65536)
+                if not data:
+                    break
+                with output_lock:
+                    chunk = data[:max(0, output_limit - output_state['used'])]
+                    output_state['used'] += len(chunk)
+                    if len(chunk) < len(data):
+                        output_state['truncated'] = True
+                    if chunk and save:
+                        try:
+                            view = memoryview(chunk)
+                            while view:
+                                count = save.write(view)
+                                if not count:
+                                    raise OSError('output save made no progress')
+                                view = view[count:]
+                        except OSError:
+                            output_state['incomplete'] = True
+                            try:
+                                save.close()
+                            except OSError:
+                                pass
+                            save = None
+                    elif chunk and not save:
+                        output_state['incomplete'] = True
+                if forwarding and forward_stop.is_set():
+                    forwarding = False
+                    output_state['forward_incomplete'] = True
+                if forwarding:
+                    try:
+                        view = memoryview(data)
+                        while view and not reader_stop.is_set() and not forward_stop.is_set():
+                            _, writable, _ = select.select([], [target], [], .1)
+                            if writable:
+                                count = os.write(target, view[:4096])
+                                if not count:
+                                    raise BrokenPipeError()
+                                view = view[count:]
+                        if view:
+                            forwarding = False
+                            output_state['forward_incomplete'] = True
+                    except (OSError, ValueError):
+                        forwarding = False
+                        output_state['forward_incomplete'] = True
+        except OSError:
+            output_state['incomplete'] = True
+        finally:
+            if save:
+                try:
+                    save.close()
+                except OSError:
+                    output_state['incomplete'] = True
+            source.close()
+    if output_directory is not None:
+        for name, source, target in (('stdout', process.stdout, 1), ('stderr', process.stderr, 2)):
+            reader = threading.Thread(target=drain, args=(name, source, target), daemon=True)
+            reader.start()
+            readers.append(reader)
+    def finish(result):
+        if readers:
+            deadline = time.monotonic() + FORWARD_GRACE_SECONDS
+            for reader in readers:
+                reader.join(max(0, deadline - time.monotonic()))
+            unfinished = any(reader.is_alive() for reader in readers)
+            if unfinished:
+                forward_stop.set()
+                # Reaping every descendant guarantees EOF, so only a survivor can
+                # hold a pipe open. The bound keeps a stuck save from losing the result.
+                drain_deadline = time.monotonic() + (0 if result['status'] == 'termination_unconfirmed' else 30)
+                for reader in readers:
+                    reader.join(max(0, drain_deadline - time.monotonic()))
+                unfinished = any(reader.is_alive() for reader in readers)
+                if unfinished:
+                    reader_stop.set()
+                    for reader in readers:
+                        reader.join(.5)
+            result['output_incomplete'] = output_state['incomplete'] or unfinished
+            result['output_truncated'] = output_state['truncated']
+            result['forward_incomplete'] = output_state['forward_incomplete'] or unfinished
+        return result
     expires = None if timeout is None else time.monotonic() + timeout
     while expires is None or time.monotonic() < expires:
         if stop_requested is not None and stop_requested.is_set():
@@ -219,7 +330,7 @@ def run_supervised(argv, timeout, stop_requested=None):
                 while os.waitpid(-1, os.WNOHANG)[0] > 0:
                     pass
             except ChildProcessError:
-                return {'status': 'completed', 'exit_code': exit_code}
+                return finish({'status': 'completed', 'exit_code': exit_code})
         time.sleep(0.02)
 
     stopped = stop_requested is not None and stop_requested.is_set()
@@ -231,9 +342,9 @@ def run_supervised(argv, timeout, stop_requested=None):
             with open(f'/proc/self/task/{os.getpid()}/children') as file:
                 children = [int(value) for value in file.read().split()]
         except FileNotFoundError:
-            return {'status': 'termination_unconfirmed'}
+            return finish({'status': 'termination_unconfirmed'})
         if not children:
-            return {'status': 'stopped' if stopped else 'timed_out'}
+            return finish({'status': 'stopped' if stopped else 'timed_out'})
         for pid in children:
             try:
                 fd = os.pidfd_open(pid)
@@ -247,7 +358,7 @@ def run_supervised(argv, timeout, stop_requested=None):
             except (ProcessLookupError, FileNotFoundError):
                 continue
             except OSError:
-                return {'status': 'termination_unconfirmed'}
+                return finish({'status': 'termination_unconfirmed'})
         for pid in children:
             if pid == process.pid:
                 process.poll()
@@ -257,7 +368,7 @@ def run_supervised(argv, timeout, stop_requested=None):
                 except ChildProcessError:
                     pass
         time.sleep(0.02)
-    return {'status': 'termination_unconfirmed'}
+    return finish({'status': 'termination_unconfirmed'})
 
 
 def disk_tolerant_track(action, reserve, on_full=None):
@@ -284,7 +395,7 @@ def disk_tolerant_track(action, reserve, on_full=None):
 
 
 def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, *, expected_pod_uid,
-                      record_changes=True):
+                      record_changes=True, output_limit=8388608):
     """Execute once, persist its outcome, and record its observed system changes."""
     import json
     from pathlib import Path
@@ -307,19 +418,10 @@ def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, 
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from execution_pod import change_interval, helper_command
 
-    state = Path('/scratch-system/operations')
+    state = Path(OPERATION_DIRECTORY)
     state.mkdir(mode=0o700, exist_ok=True)
-    marker = state / (operation_id + '.started')
-    fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    directory = os.open(state, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(directory)
-    finally:
-        os.close(directory)
+    if not claim_operation(operation_id, state):
+        raise FileExistsError('operation already started')
     root = '/scratch-system/image-root/rootfs'
     stopping = threading.Event()
     signal.signal(signal.SIGUSR1, lambda *_: stopping.set())
@@ -355,7 +457,9 @@ def supervise_command(operation_id, run_id, cwd, code, timeout, docker_enabled, 
             tracker.start()
     argv = helper_command('chroot', 'docker' if docker_enabled else 'normal', root, cwd, '/bin/sh', '-c', code)
     try:
-        result = run_supervised(argv, timeout, stop_requested=stopping)
+        result = run_supervised(argv, timeout, stop_requested=stopping,
+                                output_directory=OUTPUT_DIRECTORY,
+                                operation_id=operation_id, output_limit=output_limit)
     finally:
         if tracking_started:
             interval_stop.set()
@@ -432,13 +536,50 @@ def log_chunk(path, offset, limit):
     return {'data': base64.b64encode(data).decode('ascii'), 'next_offset': offset + len(data), 'eof': eof}
 
 
-def forget_operation(operation_id, directory='/scratch-system/operations'):
+def claim_operation(operation_id, directory='/scratch-system/operations'):
+    import uuid
+    from pathlib import Path
+    if str(uuid.UUID(operation_id)) != operation_id:
+        raise ValueError('canonical operation UUID required')
+    directory = Path(directory)
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        fd = os.open(directory / (operation_id + '.started'),
+                     os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        return False
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return True
+
+
+def operation_output(operation_id, stream, offset, limit, directory='/scratch-system/operation-output'):
+    import uuid
+    from pathlib import Path
+    if str(uuid.UUID(operation_id)) != operation_id or stream not in ('stdout', 'stderr'):
+        raise ValueError('invalid operation output')
+    path = Path(directory) / (operation_id + '.' + stream)
+    if not path.exists():
+        raise FileNotFoundError('operation output unavailable')
+    return log_chunk(path, offset, limit)
+
+
+def forget_operation(operation_id, directory='/scratch-system/operations', output_directory='/scratch-system/operation-output'):
     import uuid
     from pathlib import Path
     if str(uuid.UUID(operation_id)) != operation_id:
         raise ValueError('canonical operation UUID required')
     for suffix in ('.started', '.running', '.running.new', '.new', '.json'):
         (Path(directory) / (operation_id + suffix)).unlink(missing_ok=True)
+    for suffix in ('.stdout', '.stderr'):
+        (Path(output_directory) / (operation_id + suffix)).unlink(missing_ok=True)
 
 
 def operation_running(operation_id):
@@ -474,6 +615,8 @@ def read_result(operation_id):
     return json.loads(data)
 
 
+OPERATION_DIRECTORY = '/scratch-system/operations'
+OUTPUT_DIRECTORY = '/scratch-system/operation-output'
 BOOTSTRAP_READY_PATH = '/scratch-system/operations/.bootstrap-ready'
 BOOTSTRAP_TRACKER_PATH = '/scratch-system/change-tracker.json'
 
@@ -502,6 +645,16 @@ def bootstrap():
     if process_limit < 32:
         raise ValueError('invalid guest process ceiling')
     resource.setrlimit(resource.RLIMIT_NPROC, (process_limit, process_limit))
+    import shutil
+    output = Path(OUTPUT_DIRECTORY)
+    try:
+        if output.is_symlink():
+            output.unlink()
+        elif output.exists():
+            shutil.rmtree(output)
+        output.mkdir(mode=0o700)
+    except OSError:
+        pass
     mount_rootfs(os.environ.get('AIDASH_DOCKER_ENABLED') == 'true')
     Path(BOOTSTRAP_TRACKER_PATH).unlink(missing_ok=True)
     fd = os.open(BOOTSTRAP_READY_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -525,7 +678,7 @@ if __name__ == '__main__':
         bootstrap()
     if sys.argv[1:] == ['ready']:
         raise SystemExit(0 if bootstrap_ready() else 1)
-    if (len(sys.argv) == 10 and sys.argv[1] == 'supervise' and sys.argv[2] in ('docker', 'normal')
+    if (len(sys.argv) == 11 and sys.argv[1] == 'supervise' and sys.argv[2] in ('docker', 'normal')
             and sys.argv[3] in ('command', 'session')):
         seconds = None if sys.argv[7] == 'background' else int(sys.argv[7])
         token = None
@@ -539,12 +692,20 @@ if __name__ == '__main__':
             os.close(null)
         outcome = supervise_command(sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[9], seconds,
                                     sys.argv[2] == 'docker', expected_pod_uid=sys.argv[8],
-                                    record_changes=sys.argv[3] == 'command')
+                                    record_changes=sys.argv[3] == 'command', output_limit=int(sys.argv[10]))
         if token is not None:
             import json
             frame = b'\x1eaidash-result:' + token + b':' + json.dumps(outcome, separators=(',', ':')).encode() + b'\n'
             os.write(2, frame)
         raise SystemExit(0 if outcome['status'] in ('completed', 'timed_out', 'stopped') else 1)
+    if len(sys.argv) == 3 and sys.argv[1] == 'claim':
+        import json
+        print(json.dumps({'created': claim_operation(sys.argv[2])}))
+        raise SystemExit(0)
+    if len(sys.argv) == 6 and sys.argv[1] == 'output':
+        import json
+        print(json.dumps(operation_output(sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5]))))
+        raise SystemExit(0)
     if len(sys.argv) == 3 and sys.argv[1] == 'stop':
         stop_operation(sys.argv[2])
         raise SystemExit(0)

@@ -15,6 +15,13 @@ pub async fn activate(
 	requested: &Request,
 	validation: &DefinitionValidation,
 ) -> Result<()> {
+	// The Task's Read dependencies may need other Nodes, which cannot be asked
+	// under the exclusive lock; a shared lease checks them first. A real refusal
+	// is the admission denial it always was; a Node that did not answer leaves
+	// the job queued (#751).
+	if !repository.visible_shared(requested).await? {
+		return Err(Error::Conflict("generated agent admission denied".into()));
+	}
 	let mut scope = repository.begin_activation(requested).await?;
 	let result = activate_in(scope.as_mut(), requested, validation).await;
 	// A rejected admission must roll back its proposed policy revision. A denial
@@ -40,7 +47,7 @@ pub async fn activate_in(
 		return Err(Error::Conflict("generation request expired".into()));
 	}
 	scope.replace_subjects(job.subject_chain.clone());
-	if !scope.visible(&job).await? {
+	if !scope.visible_row(&job).await? {
 		return Err(Error::Forbidden);
 	}
 	scope.require_request(&job).await?;
@@ -158,30 +165,45 @@ pub async fn reconcile(
 	repository: &dyn GenerationProvisioning,
 	validation: &DefinitionValidation,
 ) -> Result<usize> {
-	repository.dispatch_remote().await?;
-	repository.reconcile_foreign().await?;
+	next_pass_if_busy(repository.dispatch_remote().await)?;
+	next_pass_if_busy(repository.reconcile_foreign().await)?;
 	let mut visibility = repository.begin_read().await?;
 	let jobs = visibility.jobs().await?;
 	let count = jobs.len();
 	for job in jobs {
-		if job.expires_at <= repository.now() {
-			terminal(repository, &job, "EXPIRED", "generation lifetime elapsed").await?;
+		let result = if job.expires_at <= repository.now() {
+			terminal(repository, &job, "EXPIRED", "generation lifetime elapsed").await
 		} else if job.status == "QUEUED" {
-			if let Err(error) = activate(repository, &job, validation).await {
-				if admission_rejected(&error) {
-					terminal(repository, &job, "FAILED", &error.to_string()).await?;
-				} else {
-					return Err(error);
+			match activate(repository, &job, validation).await {
+				Err(Error::NodeUnreachable { node, .. }) => {
+					// Nothing was refused: the job stays queued for the next tick,
+					// and the others in this one still run.
+					tracing::warn!(job = %job.id, %node, "a Node did not answer; the generation request stays queued");
+					Ok(())
 				}
+				Err(error) if admission_rejected(&error) => {
+					terminal(repository, &job, "FAILED", &error.to_string()).await
+				}
+				result => result,
 			}
 		} else {
-			terminal(repository, &job, "FAILED", "run reached terminal state").await?;
-		}
+			terminal(repository, &job, "FAILED", "run reached terminal state").await
+		};
+		next_pass_if_busy(result)?;
 	}
 	if count > 0 {
 		visibility.notify();
 	}
 	Ok(count)
+}
+
+/// A job whose Tenant refused its Authority Change waits for the next pass, and
+/// the jobs of other Tenants go on without it.
+fn next_pass_if_busy(result: Result<()>) -> Result<()> {
+	match result {
+		Err(Error::PolicyBusy { .. }) => Ok(()),
+		result => result,
+	}
 }
 
 fn admission_rejected(error: &Error) -> bool {

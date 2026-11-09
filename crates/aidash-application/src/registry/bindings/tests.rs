@@ -226,7 +226,7 @@ async fn previously_normalized_agent_resolves_without_rewriting_its_builtin_bind
 #[rstest::rstest]
 #[case("reference_attachments", 1, 1, false, true)]
 #[case("reference_attachments", 1, 1, true, false)]
-#[case("reference_attachments", 5, 4, false, false)]
+#[case("reference_attachments", 129, 128, false, false)]
 #[case("skill_attachments", 1, 1, false, true)]
 #[case("skill_attachments", 1, 1, true, false)]
 #[case("skill_attachments", 9, 8, false, false)]
@@ -245,7 +245,7 @@ async fn mounted_source_aggregation_rejects_ambiguous_ids_and_shared_limits(
 		let ids = (offset..offset + count).map(|id| uuid::Uuid::from_u128(id as u128));
 		match adapter {
 			"reference_attachments" => {
-				json!({"adapter":adapter,"references":ids.map(|id|json!({"reference_id":id,"digest":"a".repeat(64)})).collect::<Vec<_>>()})
+				json!({"adapter":adapter,"references":ids.map(|id|json!({"reference_id":id,"digest":"a".repeat(64),"path":format!("{id}.md")})).collect::<Vec<_>>()})
 			}
 			"skill_attachments" => json!({"adapter":adapter,"attachments":ids.map(|id| {
 				let mut skill: aidash_domain::capabilities::SkillAttachment = serde_json::from_value(json!({"skill_id":id,"origin":"fixture","digest":"","instructions":"---\nname: test\ndescription: Fixture\n---\nRead this.","files":[]})).unwrap();
@@ -1900,7 +1900,7 @@ async fn aggregate_reference_mounts_require_files_and_unique_identities() {
 	let mut config = agent_config();
 	let reference_id = uuid::Uuid::new_v4();
 	for name in ["first", "second"] {
-		catalog.insert(entry(name, "source", json!({"schema_version":1,"source":{"adapter":"reference_attachments","references":[{"reference_id":reference_id,"digest":"a".repeat(64)}]}})));
+		catalog.insert(entry(name, "source", json!({"schema_version":1,"source":{"adapter":"reference_attachments","references":[{"reference_id":reference_id,"digest":"a".repeat(64),"path":"shared.md"}]}})));
 		config.bindings.push(Binding {
 			kind: BindingKind::Source,
 			target: reference(name),

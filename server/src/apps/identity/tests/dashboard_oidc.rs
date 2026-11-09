@@ -2482,9 +2482,8 @@ async fn tenant_administration_works_without_a_tenant_binding(
 		.unwrap();
 	common::wait_for_blocked(&fixture.federation.store.pool, pid, 1).await;
 	let probe = Query::select()
-		.expr(SimpleExpr::FunctionCall(
-			"pg_try_advisory_xact_lock".into_iden(),
-			vec![Expr::value(71003202_i64).into()],
+		.expr(Expr::cust(
+			"pg_try_advisory_xact_lock(71003202, hashtext('acme'))",
 		))
 		.to_string(PostgresQueryBuilder);
 	let audit_available: bool = sqlx::query_scalar(&probe).fetch_one(pool).await.unwrap();
@@ -2493,7 +2492,7 @@ async fn tenant_administration_works_without_a_tenant_binding(
 	let (status, report) = report_request.await.unwrap();
 	assert!(
 		audit_available,
-		"a report must not hold the cross-Tenant audit lock while reading"
+		"a report must not hold the Tenant's audit lock while reading"
 	);
 	assert_eq!(status, 200, "{report}");
 	assert_eq!(report["metrics"]["total_approvals"], 0);

@@ -11,7 +11,7 @@ The previous model recreated the Execution Pod for every command, copied and re-
 - **One Pod per Workspace.** A new conversation creates a Workspace, so every conversation would start from an empty disk. Rejected in favour of named Scratch Spaces chosen per conversation.
 - **Keep naming each destination as an External service and widen the package-index adapters.** Keeps path-level records, but each ecosystem (cargo sparse indexes, Go proxies, apt, Docker registries) needs its own rewriting. Rejected: host-level records are enough for public hosts; path-level records remain for requests that carry a Tenant Secret.
 - **A TLS-intercepting proxy.** Would record paths for every host, but the Pod would have to trust Aidash's CA and pinned clients break. Still rejected, as in ADR 0054.
-- **Mount each Run's Working Area into the shared Pod.** Other people's Agents in the same Pod could read it. Rejected: deliverables, Thread Attachments and Reference Documents are copied into the Scratch Space by tools that check the Run's authority.
+- **Mount each Run's Working Area into the shared Pod.** Other people's Agents in the same Pod could read it. Rejected: deliverables, Thread Attachments and Reference files are copied into the Scratch Space by tools that check the Run's authority.
 - **Run each Run's commands as a separate Linux user** to hide per-Run gateway tokens from other processes. Rejected: shared files then depend on group permissions that many tools break. External services with secrets are made available to a Scratch Space instead, so its users share them knowingly.
 - **Grant Docker-level capabilities to every Pod.** Lets Agents run Testcontainers, but in-sandbox `SYS_ADMIN` and raw packets widen the gVisor surface a malicious user can probe, while Execution Pods of different Tenants share nodes. Rejected: the Deployment operator allows them per Offering or Tenant, and such Pods run on nodes dedicated to their Tenant. An approval by the Tenant's own people would not protect other Tenants.
 
@@ -24,3 +24,7 @@ The previous model recreated the Execution Pod for every command, copied and re-
 - The `core.npm` and `core.pypi` built-in indexes with response rewriting, the hash-pinned wheel overlay, per-command export of `/work` and the tools that edit a Working Area directly are removed.
 - Checks run in a Check Pod from the unmodified image against registered content, with the Scratch Space read-only (amends ADR 0030). Whether the Completion Gate stays is #698.
 - Supersedes ADR 0071 and amends ADR 0054.
+
+## Amendment (2026-11-05, #719)
+
+An Agent's Reference set stays readable through `file_read` and `file_search` without being copied, because a copied file is visible to everyone using the Scratch Space. The file tools cover the Scratch Space and the Reference set. Copying remains for a command that needs a file on disk. "Reference files" replaces "Reference Documents" above, because a Reference Document is an Agent's private knowledge, which is sent with every request and is not copied.

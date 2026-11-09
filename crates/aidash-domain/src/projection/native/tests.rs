@@ -273,6 +273,47 @@ fn a_citation_correction_survives_turns_that_gather_evidence() {
 }
 
 #[test]
+fn the_unassigned_notice_survives_turns_that_delegate_some_of_the_tasks() {
+	// Arrange: the model is told about two Tasks, delegates one and calls tools
+	// before it answers again.
+	let notice = ContextEvent::UnassignedTasksTold {
+		tasks: vec![
+			crate::context::ToldTask {
+				id: uuid::Uuid::from_u128(1),
+				title: "First".into(),
+			},
+			crate::context::ToldTask {
+				id: uuid::Uuid::from_u128(2),
+				title: "Second".into(),
+			},
+		],
+		instruction: "Hand them over or answer again.".into(),
+	};
+	let delegating = context(vec![
+		assistant(1, "", &["a"]),
+		tool("a"),
+		notice.clone(),
+		assistant(2, "Delegating the first.", &["b"]),
+		tool("b"),
+	]);
+	let mut answered = delegating.clone();
+	answered.push(assistant(3, "Done.", &[]));
+	let pinned = json!({"agent_state": {"step": 4}});
+	// Act
+	let delegating = native_context(&delegating, &pinned);
+	let answered = native_context(&answered, &pinned);
+	// Assert: the notice stays a marker, never history, until an answer
+	// without calls.
+	let volatile: Value = serde_json::from_str(&delegating.volatile).unwrap();
+	assert_eq!(
+		volatile,
+		json!({"agent_state": {"step": 4}, "markers": [notice]})
+	);
+	let volatile: Value = serde_json::from_str(&answered.volatile).unwrap();
+	assert_eq!(volatile, pinned);
+}
+
+#[test]
 fn a_completion_repair_survives_turns_that_repair_the_files() {
 	// Arrange: the refused candidate opened no Model Turn; the model edits
 	// files before it answers again.

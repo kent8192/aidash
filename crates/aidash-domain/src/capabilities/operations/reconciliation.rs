@@ -37,6 +37,7 @@ pub struct Limits {
 	pub working_bytes: u64,
 	pub output_bytes: u64,
 	pub read_bytes: usize,
+	pub maximum_seconds: u64,
 }
 impl Snapshot {
 	pub fn active(&self) -> bool {

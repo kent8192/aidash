@@ -120,7 +120,9 @@ async fn inspect_in(
 	)
 	.await?;
 	if pinned.is_none() && !access.active_installation(&entry).await? {
-		return Err(Error::Forbidden);
+		return Err(Error::RemoteExecutionRefused(
+			aidash_domain::federation::execution::Refusal::InstallationInactive,
+		));
 	}
 	access.pinned_installation(&entry).await?;
 	if !input.requirements.matches(&entry) {
@@ -148,13 +150,17 @@ async fn inspect_in(
 		|| snapshot.agent.registry_deployment != access.node_id()
 		|| snapshot.agent.local() != input.agent
 	{
-		return Err(Error::Forbidden);
+		return Err(Error::RemoteExecutionRefused(
+			aidash_domain::federation::execution::Refusal::ExecutorMismatch,
+		));
 	}
 	// A delegated agent's own dependencies are restricted to that agent.
 	let delegated = snapshot.delegated_users()?;
 	for pinned in &snapshot.definitions {
 		if pinned.identity.registry_deployment != access.node_id() {
-			return Err(Error::Forbidden);
+			return Err(Error::RemoteExecutionRefused(
+				aidash_domain::federation::execution::Refusal::ExecutorMismatch,
+			));
 		}
 		if aidash_domain::registry::bindings::defaults::is_compaction_decider(&pinned.definition) {
 			access
@@ -202,7 +208,9 @@ async fn inspect_in(
 		.await?;
 		access.pinned_installation(&current).await?;
 		if digest(&serde_json::to_value(current)?) != pinned.digest {
-			return Err(Error::Forbidden);
+			return Err(Error::RemoteExecutionRefused(
+				aidash_domain::federation::execution::Refusal::DefinitionChanged,
+			));
 		}
 	}
 	if let Some(decider) = &input.decider {

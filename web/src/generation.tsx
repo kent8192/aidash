@@ -40,6 +40,7 @@ import {
   RowList,
   Section,
 } from "./components/patterns";
+import { useBusyRetry } from "./policy-busy";
 import {
   generationAssign,
   generationControl,
@@ -117,6 +118,7 @@ export function GenerationPage({ data }: { data: State }) {
   const [editing, setEditing] = useState<GenerationPolicy | "new" | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const busyRetry = useBusyRetry();
   const [busy, setBusy] = useState(false);
   const policies = useQuery({
     queryKey: ["generation", tenant, "policies"],
@@ -140,6 +142,7 @@ export function GenerationPage({ data }: { data: State }) {
     if (busy) return;
     setBusy(true);
     setError("");
+    busyRetry.clear();
     try {
       await action();
       await client.invalidateQueries();
@@ -148,6 +151,7 @@ export function GenerationPage({ data }: { data: State }) {
         setSelected(null);
       }
     } catch (e) {
+      busyRetry.note(e, () => void mutate(action, close));
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
@@ -192,7 +196,9 @@ export function GenerationPage({ data }: { data: State }) {
           </p>
         )}
         {!tenant && <Hint>{t("generationTenantHelp")}</Hint>}
-        {error && !editing && !selected && <Alert>{error}</Alert>}
+        {error && !editing && !selected && (
+          <Alert {...busyRetry.alert}>{error}</Alert>
+        )}
         {queryError && <Alert>{queryError.message}</Alert>}
       </div>
       {tenant && (

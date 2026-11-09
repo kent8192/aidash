@@ -157,12 +157,14 @@ pub(crate) fn request_body(
 
 /// OpenRouter's Responses body. It uses flat function tools and no namespace
 /// on calls, keeps the same provider preferences as the chat body, and never
-/// sends conversation state or a previous response ID. Streaming
+/// sends conversation state or a previous response ID. A Run's opaque
+/// `session_id` keeps it on one provider, as on chat. Streaming
 /// is added by the caller only when the model streams.
 fn openrouter_request_body(
 	config: &ModelConfig,
 	request: &ModelRequest,
 	salt: Option<&str>,
+	session: Option<&str>,
 	media_routes: Vec<String>,
 	requirement: aidash_domain::data_protection::Requirement,
 ) -> Result<Value> {
@@ -180,6 +182,9 @@ fn openrouter_request_body(
 	body["provider"] = super::provider_preferences(config, media_routes, requirement);
 	if let Some(effort) = config.reasoning_effort {
 		body["reasoning"] = json!({"effort": effort});
+	}
+	if let Some(session) = session {
+		body["session_id"] = json!(session);
 	}
 	Ok(body)
 }
@@ -410,6 +415,7 @@ impl ResponsesProvider {
 			.provider_tools = prepared.provider_tools.clone();
 		let request = &prepared;
 		let salt = salt_line(self, request)?;
+		let session = super::routing_session(self.cache_salt.as_ref(), request)?;
 		let media_routes = super::verified_routes(
 			&self.clients,
 			&self.config,
@@ -422,6 +428,7 @@ impl ResponsesProvider {
 			&self.config,
 			request,
 			salt.as_deref(),
+			session.as_deref(),
 			media_routes,
 			context.data_protection.requirement(),
 		)?;
@@ -471,7 +478,7 @@ impl ResponsesProvider {
 		} else {
 			parse_response(&crate::response::bytes(response, MAX_RESPONSE_BYTES).await?)
 		};
-		record_token_metrics(&result);
+		record_token_metrics(&result, self.config.metric_family());
 		result
 	}
 }
@@ -514,7 +521,7 @@ fn parse_response(body: &[u8]) -> Result<ModelResponse> {
 
 /// Token metrics match the Chat Completions path: a billed response counts,
 /// a failure with no reported usage does not.
-fn record_token_metrics(result: &Result<ModelResponse>) {
+fn record_token_metrics(result: &Result<ModelResponse>, family: &'static str) {
 	if let Some(usage) = super::billed_usage(result) {
 		for (direction, tokens) in [
 			("input", usage.reported.input_tokens),
@@ -523,8 +530,12 @@ fn record_token_metrics(result: &Result<ModelResponse>) {
 			("input_cached_write", usage.reported.cache_write_tokens),
 		] {
 			if let Some(tokens) = tokens {
-				metrics::counter!("aidash_model_tokens_total", "direction" => direction)
-					.increment(tokens);
+				metrics::counter!(
+					"aidash_model_tokens_total",
+					"direction" => direction,
+					"family" => family
+				)
+				.increment(tokens);
 			}
 		}
 	}

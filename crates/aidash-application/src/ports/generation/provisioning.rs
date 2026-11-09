@@ -18,7 +18,10 @@ pub trait GenerationActivationScope: GenerationPublication {
 	fn now(&self) -> DateTime<Utc>;
 	fn replace_subjects(&mut self, subjects: Vec<String>);
 	async fn load(&mut self, tenant: &str, id: Uuid) -> Result<Request>;
-	async fn visible(&mut self, job: &Request) -> Result<bool>;
+	/// Visibility without the Read dependencies of the Task, which
+	/// [`GenerationProvisioning::visible_shared`] has checked: this scope holds
+	/// the policy row exclusively, where other Nodes cannot be asked (#751).
+	async fn visible_row(&mut self, job: &Request) -> Result<bool>;
 	async fn require_request(&mut self, job: &Request) -> Result<()>;
 	async fn current_policy(&mut self, job: &Request) -> Result<Policy>;
 	async fn pinned_policy(&mut self, job: &Request) -> Result<Value>;
@@ -67,6 +70,10 @@ pub trait GenerationProvisioning: Send + Sync {
 	async fn dispatch_remote(&self) -> Result<()>;
 	async fn reconcile_foreign(&self) -> Result<()>;
 	async fn begin_read(&self) -> Result<Box<dyn GenerationProvisionRead>>;
+	/// Whether the job's requester may still see its Task, with the Task's Read
+	/// dependencies checked under a shared lease. A Node that does not answer is
+	/// `Error::NodeUnreachable`, not `false`.
+	async fn visible_shared(&self, job: &Request) -> Result<bool>;
 	async fn begin_activation(&self, job: &Request)
 	-> Result<Box<dyn GenerationActivationSession>>;
 	/// Drain explicitly opted-in completion work under the original live allowance.
