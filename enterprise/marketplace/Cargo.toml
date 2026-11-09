@@ -49,6 +49,10 @@ reqwest = { version = "0.13", default-features = false, features = [
 ] }
 sha2 = "0.10"
 subtle = "2"
+sqlx = { version = "0.8.6", default-features = false, features = [
+  "runtime-tokio",
+  "postgres",
+] }
 thiserror = "2"
 tokio.workspace = true
 url = "2"

@@ -6,7 +6,7 @@
 use super::super::models::Document;
 use crate::{Error, Result};
 use reinhardt::db::{
-	backends::DatabaseConnection as Backend,
+	backends::{DatabaseConnection as Backend, PostgresBackend},
 	orm::{
 		AtomicTransaction, DatabaseConnection, DatabaseConnectionLease, Model, OrmExecutor,
 		execution::convert_values,
@@ -16,13 +16,13 @@ use reinhardt::query::{
 	Alias, Expr, IntoIden, OnConflict, PostgresQueryBuilder, Query, QueryStatementBuilder,
 };
 use serde::{Serialize, de::DeserializeOwned};
+use std::sync::Arc;
 
 pub struct Store {
 	_lease: DatabaseConnectionLease,
 	pub connection: DatabaseConnection,
 }
-/// Match the Community server's connection limits (ADR 0113). Reinhardt builds
-/// this pool from the URL alone, so the limits travel as URL options.
+/// Match the Community server's connection limits (ADR 0113).
 fn with_connection_limits(url: &str) -> Result<String> {
 	let seconds = match std::env::var("AIDASH_DATABASE_STATEMENT_TIMEOUT_SECONDS") {
 		Ok(value) => value.parse::<u64>().map_err(|_| Error::Unavailable)?,
@@ -41,15 +41,30 @@ fn with_connection_limits(url: &str) -> Result<String> {
 	Ok(limited)
 }
 
+/// Bound the health check performed while returning a connection to the pool.
+fn released_within_limit(options: sqlx::postgres::PgPoolOptions) -> sqlx::postgres::PgPoolOptions {
+	options.after_release(|connection, _| {
+		Box::pin(async move {
+			use sqlx::Connection as _;
+			tokio::time::timeout(std::time::Duration::from_secs(5), connection.ping())
+				.await
+				.map_err(|_| sqlx::Error::PoolTimedOut)??;
+			Ok(true)
+		})
+	})
+}
+
 impl Store {
 	// This independent service owns its schema and role; Cloud's Tenant-scoped
 	// Pool cannot compose it. Bootstrap registers only this explicit owned lease,
 	// without installing a global/default connection.
 	#[allow(clippy::disallowed_methods)]
 	pub async fn connect(url: &str) -> Result<Self> {
-		let backend = Backend::connect_postgres(&with_connection_limits(url)?)
+		let pool = released_within_limit(sqlx::postgres::PgPoolOptions::new())
+			.connect(&with_connection_limits(url)?)
 			.await
 			.map_err(|_| Error::Unavailable)?;
+		let backend = Backend::new(Arc::new(PostgresBackend::new(pool)));
 		let lease = DatabaseConnectionLease::register(backend)?;
 		let connection = lease.handle();
 		let (sql, values) = Query::select()
