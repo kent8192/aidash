@@ -1,4 +1,5 @@
 """A cancel can reach the Runner before the command it cancels, or instead of it."""
+import hashlib
 import http.client
 import json
 import tempfile
@@ -7,7 +8,7 @@ import unittest
 import uuid
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from control import ActivityAggregate, Handler, Rejected, Runner
 
@@ -46,25 +47,44 @@ class UndeliveredCancelTest(unittest.TestCase):
         return runner
 
     def assert_refused(self, runner, operation):
-        with self.assertRaises(Rejected) as rejected:
-            runner.accept(request(operation))
-        self.assertEqual(rejected.exception.code, 409)
+        """The send starts nothing and is answered with the refusal on record."""
+        reply = runner.accept(request(operation))
+        self.assert_refusal_reply(reply, operation)
         runner.kube_json.assert_not_called()
         runner.start.assert_not_called()
         self.assertEqual(list(Path(self.root).glob("area-*.json")), [])
 
-    def test_a_cancel_ahead_of_the_send_ends_the_operation_unexecuted(self):
-        reply = self.runner.cancel(self.operation, refusal())
-        self.assertEqual(reply["operation_id"], self.operation)
+    def assert_refusal_reply(self, reply, operation):
+        self.assertEqual(reply["operation_id"], operation)
         self.assertEqual(reply["digest"], DIGEST)
         self.assertEqual(reply["status"], "cancelled")
         self.assertIs(reply["termination_confirmed"], True)
         self.assertIs(reply["executed"], False)
+
+    def test_a_cancel_ahead_of_the_send_ends_the_operation_unexecuted(self):
+        reply = self.runner.cancel(self.operation, refusal())
+        self.assert_refusal_reply(reply, self.operation)
         self.runner.start.assert_not_called()
 
     def test_a_send_after_the_cancel_is_refused_and_starts_nothing(self):
         self.runner.cancel(self.operation, refusal())
         self.assert_refused(self.runner, self.operation)
+
+    def test_a_resend_after_a_lost_refusal_reply_gets_the_refusal_back(self):
+        # The refusal is recorded but its reply never reached the server, which
+        # still holds the operation as unsent and sends it again. The Runner must
+        # answer with the record so the server can settle, not conflict forever.
+        lost = self.runner.cancel(self.operation, refusal())
+        self.assertEqual(self.runner.accept(request(self.operation)), lost)
+        self.assertEqual(self.runner.accept(request(self.operation)), lost)
+        self.runner.start.assert_not_called()
+
+    def test_a_send_with_another_intent_than_the_refusal_is_a_conflict(self):
+        self.runner.cancel(self.operation, refusal())
+        with self.assertRaises(Rejected) as rejected:
+            self.runner.accept(dict(request(self.operation), digest="another-intent"))
+        self.assertEqual(rejected.exception.code, 409)
+        self.runner.start.assert_not_called()
 
     def test_a_repeated_cancel_returns_the_same_outcome(self):
         first = self.runner.cancel(self.operation, refusal())
@@ -101,13 +121,44 @@ class UndeliveredCancelTest(unittest.TestCase):
         self.assertEqual(replies[0]["status"], "accepted")
         self.assertIs(replies[0]["cancel_requested"], True)
 
+    def test_a_cancel_is_not_overtaken_by_the_start_of_the_command_it_read(self):
+        # `commit_inputs` starts the command under the lock. If the cancel read
+        # `awaiting_files` and released the lock before it wrote `cancelled`, the
+        # command would start in between while the reply, which the server trusts,
+        # says it never ran.
+        data = b"input"
+        file_id = str(uuid.uuid4())
+        staged = dict(request(self.operation), files=[{
+            "file_id": file_id, "path": "a", "scope": "working", "size": len(data),
+            "digest": hashlib.sha256(data).hexdigest()}])
+        self.runner.accept(staged)
+        self.runner.input_chunk(self.operation, file_id, 0, data)
+        read, canceller, committers = Runner.get, threading.Thread(), []
+
+        def get(runner, operation):
+            record = read(runner, operation)
+            if threading.current_thread() is canceller and not committers:
+                committers.append(threading.Thread(target=runner.commit_inputs, args=(operation,)))
+                committers[0].start()
+                committers[0].join(0.5)  # a correct cancel keeps the lock, so this times out
+            return record
+
+        replies = []
+        canceller = threading.Thread(target=lambda: replies.append(self.runner.cancel(self.operation, refusal())))
+        with patch.object(Runner, "get", get):
+            canceller.start()
+            canceller.join(10)
+            committers[0].join(10)
+        self.assertFalse(canceller.is_alive() or committers[0].is_alive())
+        never_ran = replies[0]["status"] == "cancelled" and replies[0]["executed"] is False
+        self.assertFalse(never_ran and self.runner.start.called,
+                         "the reply says the command never ran, but it was started")
+
     def test_a_send_waiting_for_the_lock_is_refused_after_the_cancel(self):
         outcome = []
 
         def send():
-            with self.assertRaises(Rejected) as rejected:
-                self.runner.accept(request(self.operation))
-            outcome.append(rejected.exception.code)
+            outcome.append(self.runner.accept(request(self.operation)))
 
         with self.runner.lock:
             waiting = threading.Thread(target=send)
@@ -116,7 +167,8 @@ class UndeliveredCancelTest(unittest.TestCase):
             self.assertTrue(waiting.is_alive())
             self.runner.cancel(self.operation, refusal())
         waiting.join(10)
-        self.assertEqual(outcome, [409])
+        self.assertEqual(len(outcome), 1)
+        self.assert_refusal_reply(outcome[0], self.operation)
         self.runner.kube_json.assert_not_called()
         self.runner.start.assert_not_called()
 

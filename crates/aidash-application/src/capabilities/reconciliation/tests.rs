@@ -754,6 +754,39 @@ async fn a_stopped_pending_operation_is_refused_and_ends_without_effects(
 	assert!(trace.published.is_empty());
 	assert!(trace.commit);
 }
+/// A refusal the server never committed (its reply was lost, or the commit
+/// failed) leaves the operation unsent in the journal. The next pass sends it
+/// again, and the Runner answers with the refusal it recorded. That settles the
+/// operation: it neither runs nor stays pending.
+#[rstest]
+#[tokio::test]
+async fn a_resent_operation_the_runner_already_refused_ends_without_effects(
+	repository: Repository,
+) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.operation.result = json!({"dispatch_pending":true});
+		trace.observed = json!({"operation_id":Uuid::from_u128(1),"digest":"digest","status":"cancelled",
+			"termination_confirmed":true,"executed":false});
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert!(
+		trace
+			.calls
+			.contains(&"request:POST:/v1/operations".to_owned())
+	);
+	assert!(!trace.calls.iter().any(|call| call.ends_with("/start")));
+	assert!(!trace.calls.contains(&"upload_files".to_owned()));
+	assert_eq!(trace.saved[0].state, "cancelled");
+	assert_eq!(
+		trace.saved[0].result,
+		json!({"termination_confirmed":true,"effects_may_have_occurred":false,"runner_acknowledged":false})
+	);
+	assert!(trace.calls.contains(&"area:active".to_owned()));
+	assert!(trace.published.is_empty());
+	assert!(trace.commit);
+}
 #[rstest]
 #[case::shell("shell", None)]
 #[case::check(VERIFICATION, None)]

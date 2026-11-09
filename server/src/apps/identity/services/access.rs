@@ -324,8 +324,9 @@ pub(crate) struct Access {
 	pending_decisions: Vec<DecisionRow>,
 	/// Rows this Access has queued or written, so a repeat adds none.
 	recorded_decisions: std::collections::BTreeSet<RecordedKey>,
-	/// The Run a Continuation Check or the loop's Read Recheck is made for. Every
-	/// allow under it is a repeat of the same question (ADR 0116).
+	/// The Run a Continuation Check or the loop's Read Recheck is made for, while
+	/// it is being made (`rechecking`). Every allow under it is a repeat of the same
+	/// question (ADR 0116).
 	pub(crate) recheck_owner: Option<DecisionOwner>,
 	/// The Run or Remote Grant whose reads are being walked for this reader.
 	pub(super) walk_root: Option<DecisionOwner>,
@@ -394,7 +395,41 @@ impl Drop for PublicationView<'_> {
 	}
 }
 
+/// An Access while it makes the Continuation Check or the Read Recheck of one Run
+/// (ADR 0116). Every allow made through it repeats the same question. Dropping it
+/// ends that, on every path, so what the Access is asked afterwards is recorded as
+/// it is today.
+pub(crate) struct Rechecking<'a> {
+	access: &'a mut Access,
+	previous: Option<DecisionOwner>,
+}
+impl Deref for Rechecking<'_> {
+	type Target = Access;
+	fn deref(&self) -> &Access {
+		self.access
+	}
+}
+impl DerefMut for Rechecking<'_> {
+	fn deref_mut(&mut self) -> &mut Access {
+		self.access
+	}
+}
+impl Drop for Rechecking<'_> {
+	fn drop(&mut self) {
+		self.access.recheck_owner = self.previous.take();
+	}
+}
+
 impl Access {
+	/// Check `run` as its Continuation Check or Read Recheck until the guard drops.
+	pub(crate) fn rechecking(&mut self, run: Uuid) -> Rechecking<'_> {
+		let previous = self.recheck_owner.replace(DecisionOwner::Run(run));
+		Rechecking {
+			access: self,
+			previous,
+		}
+	}
+
 	/// The scope of every transaction this authority opens: its subject's Tenant.
 	pub(crate) fn tenancy(&self) -> Result<aidash_application::tenancy::TenancyScope> {
 		self.identity.tenancy()
@@ -411,7 +446,7 @@ impl Access {
 	}
 	// The same compound operation can narrow its subject chain or change the
 	// workspace context. Never reuse a read decision from its earlier authority.
-	pub(super) fn authority_context(&self) -> String {
+	pub(crate) fn authority_context(&self) -> String {
 		crate::registry::digest(
 			&json!({"subjects":self.subjects,"context":self.context,"environment":self.environment}),
 		)
@@ -1014,10 +1049,9 @@ impl Access {
 	/// from the Tenant's policy. The rule is structural: no change of policy lifts it.
 	async fn decide_with_cause(&mut self, resource: &Resource, action: &str) -> Result<Verdict> {
 		// Within one authority, a repeated allow needs no second evaluation. A
-		// denial is evaluated and recorded every time.
-		let repeat = self
-			.audit_class(action)
-			.1
+		// denial is evaluated and recorded every time. So is a write a Subnode can
+		// fence: the fence closes between two identical checks.
+		let repeat = (self.audit_class(action).1 && !subnode_workspace_write(action))
 			.then(|| self.repeat_key(resource, action));
 		if let Some(key) = &repeat
 			&& self.read_lookups.allowed.contains(key)

@@ -51,6 +51,9 @@ const RECORD_WAIT: Duration = Duration::from_secs(1);
 /// The record's error when the final debit ran out of retries: the bytes it held
 /// are not in the request's counts or the budgets.
 const DEBIT_ABANDONED: &str = "egress_debit_abandoned";
+/// The record's error for a body that stopped before its end, unless something
+/// said why: a client that went away, or a response cut short.
+const STREAM_INTERRUPTED: &str = "stream_interrupted";
 /// Connections served at once. Beyond this a connection is refused.
 const CONNECTION_SLOTS: usize = 128;
 /// Refused connections answered at once, and for how long each. Sandboxed code
@@ -377,6 +380,10 @@ struct Debits {
 	/// The upload's refusal. Reqwest reports a failed request body only as a
 	/// failed request, so the response path reads the real cause here.
 	refused: OnceLock<Refusal>,
+	/// Why the stream was cut off. The body stream owns [`Completion`], so the
+	/// bridge that drops the stream on a stop sets this first; the record then
+	/// names the stop instead of a client that went away. The first cause wins.
+	interrupted: OnceLock<&'static str>,
 }
 impl Debits {
 	fn new(meter: Arc<dyn Meter>, label: Label) -> Self {
@@ -389,6 +396,7 @@ impl Debits {
 			failed_received: AtomicU64::new(0),
 			handed: AtomicU64::new(0),
 			refused: OnceLock::new(),
+			interrupted: OnceLock::new(),
 		}
 	}
 
@@ -510,7 +518,6 @@ struct Completion {
 	/// How long [`Completion::settle`] took, once it has run.
 	settle_ms: u64,
 	monitor: tokio::task::JoinHandle<()>,
-	interrupted_error: &'static str,
 }
 async fn stopped(receiver: &mut watch::Receiver<Option<Refusal>>) -> Refusal {
 	loop {
@@ -524,7 +531,7 @@ async fn stopped(receiver: &mut watch::Receiver<Option<Refusal>>) -> Refusal {
 }
 impl Completion {
 	fn interrupted(&mut self, code: &'static str) {
-		self.interrupted_error = code;
+		let _ = self.debits.interrupted.set(code);
 	}
 	/// Debits what both directions still hold. A stream that ended cleanly
 	/// must do so within the operation deadline; a failed one gets a short
@@ -627,7 +634,12 @@ impl Completion {
 		let debits = self.debits.clone();
 		let status = self.status;
 		let admission_ms = self.admission_ms;
-		let interrupted_error = self.interrupted_error;
+		let interrupted_error = self
+			.debits
+			.interrupted
+			.get()
+			.copied()
+			.unwrap_or(STREAM_INTERRUPTED);
 		tokio::spawn(async move {
 			let mut settling = Settling::new();
 			let mut refused = None;
@@ -1432,7 +1444,6 @@ async fn forward(
 		expected: None,
 		finished: false,
 		monitor,
-		interrupted_error: "stream_interrupted",
 		admission_ms,
 		settle_ms: 0,
 	};
@@ -1785,6 +1796,7 @@ async fn forward(
 		.and_then(|value| value.to_str().ok())
 		.and_then(|value| value.parse().ok());
 	let debits = completion.debits.clone();
+	let bridge_debits = completion.debits.clone();
 	let mut bridge_active = active_rx.clone();
 	let output = async_stream::try_stream! {
 		loop {
@@ -1835,7 +1847,7 @@ async fn forward(
 	tokio::spawn(async move {
 		let interrupted = {
 			let mut output = Box::pin(output);
-			loop {
+			let stop = loop {
 				let frame = tokio::select! {
 					refusal = stopped(&mut bridge_active) => break Some(refusal),
 					frame = output.next() => frame,
@@ -1845,7 +1857,14 @@ async fn forward(
 					refusal = stopped(&mut bridge_active) => break Some(refusal),
 					result = sender.send(frame) => if result.is_err() { break None },
 				}
+			};
+			// Dropping `output` below writes the request's record. The stream
+			// never saw this stop (the bridge won the race), so name it here or
+			// the record would blame a client that went away.
+			if let Some(refusal) = stop {
+				let _ = bridge_debits.interrupted.set(refusal.code);
 			}
+			stop
 		};
 		if let Some(refusal) = interrupted {
 			let _ = sender.send(Err(io_error(refusal.code))).await;

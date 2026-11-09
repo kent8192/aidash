@@ -10,7 +10,7 @@ use aidash_domain::{
 use uuid::Uuid;
 /// A missing task and a task the Run may not see read the same, so the model cannot probe for
 /// the existence of either.
-fn task_not_visible(task: Uuid) -> Error {
+pub fn task_not_visible(task: Uuid) -> Error {
 	Error::Refused(format!(
 		"task {task} was not found or is not visible to this Run"
 	))

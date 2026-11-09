@@ -23,6 +23,16 @@ pub struct WorkspaceEvent {
 	pub status: String,
 }
 
+/// The Workspace task changes a waiting Run is told about.
+#[derive(Debug, Clone, Default)]
+pub struct WorkspaceEvents {
+	/// The newest changes, oldest first. The store bounds how many it returns.
+	pub events: Vec<WorkspaceEvent>,
+	/// How many older changes the bound left out. The Run's cursor moves past
+	/// them, so only this count tells the Agent that it was not told of them.
+	pub dropped: u64,
+}
+
 /// Validated projection of the registered agent configuration used by execution.
 pub struct ExecutionAgent {
 	pub model: EntityRef,
@@ -111,7 +121,7 @@ pub enum InferenceInterruption {
 #[async_trait]
 pub trait ExecutionStore: Send + Sync {
 	/// Workspace task changes after the Run's durable cursor, in generation order.
-	async fn workspace_events(&self, run: &Run, after: i64) -> Result<Vec<WorkspaceEvent>>;
+	async fn workspace_events(&self, run: &Run, after: i64) -> Result<WorkspaceEvents>;
 	/// Number of locally created or delegated Tasks that remain unfinished.
 	async fn unfinished_owned_tasks(&self, run: &Run) -> Result<u64>;
 	/// Saving `model.completed` also closes the Run's pending Inference Attempt as
