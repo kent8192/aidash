@@ -279,6 +279,11 @@ def pod_proxy_url(endpoint, credential):
     return urlunsplit(parts._replace(netloc=f'aidash:{credential}@{parts.netloc}'))
 
 
+def v2_process_limit(settings, config):
+    # The sentry shares the Pod's memory; bound the default to 128 per 2 GiB.
+    return config.get('v2_processes', max(32, min(128, settings['memory_bytes'] // (16 << 20))))
+
+
 def execution_manifests(settings, config):
     """Build the durable claim and sandbox Pod for one Scratch Space."""
     import hashlib
@@ -298,7 +303,7 @@ def execution_manifests(settings, config):
                          ('capacity_bytes', min(config.get('max_capacity_bytes', 1 << 40), 1 << 40))):
         if type(ceiling) is not int or ceiling <= 0 or settings[key] > ceiling:
             raise ValueError(key + ' exceeds the Deployment ceiling')
-    processes = config.get('v2_processes', 512)
+    processes = v2_process_limit(settings, config)
     if type(processes) is not int or processes < 32:
         raise ValueError('processes must be an integer of at least 32')
     docker = settings['docker_enabled']
@@ -555,7 +560,7 @@ class ExecutionPodController:
         try:
             report = json.loads(result.stdout)
             verify_user_probe(report, docker=settings['docker_enabled'],
-                              processes=self.config.get('v2_processes', 512))
+                              processes=v2_process_limit(settings, self.config))
         except (ValueError, KeyError, TypeError) as error:
             raise ExecutionPodError('admission_failed', 'User isolation probe failed: ' + str(error)) from error
         self._record_guard(pod, 'execution', container_id, epoch, host_evidence=evidence, user_evidence=report)

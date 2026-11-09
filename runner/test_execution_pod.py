@@ -306,7 +306,13 @@ class StartupStorageRegressionTest(unittest.TestCase):
                   'namespace': 'sandbox', 'processes': 128}
         _, pod = execution_manifests(settings, config)
         env = {item['name']: item.get('value') for item in pod['spec']['containers'][0]['env']}
-        self.assertEqual(env['AIDASH_PROCESS_LIMIT'], '512')
+        self.assertEqual(env['AIDASH_PROCESS_LIMIT'], '128')
+        _, small = execution_manifests(dict(settings, memory_bytes=1 << 30), config)
+        small_env = {item['name']: item.get('value') for item in small['spec']['containers'][0]['env']}
+        self.assertEqual(small_env['AIDASH_PROCESS_LIMIT'], '64')
+        _, overridden = execution_manifests(settings, dict(config, v2_processes=200))
+        override_env = {item['name']: item.get('value') for item in overridden['spec']['containers'][0]['env']}
+        self.assertEqual(override_env['AIDASH_PROCESS_LIMIT'], '200')
 
     def test_tmp_is_memory_bounded_and_ephemeral_storage_has_a_limit(self):
         from execution_pod import execution_manifests
