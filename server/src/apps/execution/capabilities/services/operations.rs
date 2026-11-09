@@ -44,12 +44,18 @@ pub async fn run(store: Store, stopping: tokio::sync::watch::Receiver<bool>) -> 
 	let repository = crate::bootstrap::operation_processing_repository(&store);
 	let jobs = crate::bootstrap::capability_background_jobs(&store);
 	tokio::try_join!(
-		aidash_runtime::capabilities::execution_loop(&repository, stopping.clone()),
-		aidash_runtime::capabilities::read_recheck_loop(&repository, stopping.clone()),
-		jobs.network(stopping.clone()),
-		jobs.references(stopping.clone()),
-		jobs.cleanup(stopping.clone()),
-		jobs.reclamation(stopping),
+		Box::pin(aidash_runtime::capabilities::execution_loop(
+			&repository,
+			stopping.clone()
+		)),
+		Box::pin(aidash_runtime::capabilities::read_recheck_loop(
+			&repository,
+			stopping.clone()
+		)),
+		Box::pin(jobs.network(stopping.clone())),
+		Box::pin(jobs.references(stopping.clone())),
+		Box::pin(jobs.cleanup(stopping.clone())),
+		Box::pin(jobs.reclamation(stopping)),
 	)
 	.map_err(crate::Error::from)?;
 	Ok(())
