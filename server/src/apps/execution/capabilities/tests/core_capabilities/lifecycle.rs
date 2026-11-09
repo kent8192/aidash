@@ -827,6 +827,59 @@ async fn cleanup_fault_fixture(#[future] capability_fixture: CoreFixture) -> (Co
 
 #[rstest::rstest]
 #[tokio::test]
+async fn cleanup_retries_when_blob_lock_is_held(
+	#[future] cleanup_fault_fixture: (CoreFixture, Value),
+) {
+	use reinhardt::query::{Expr, PostgresQueryBuilder, Query, SimpleExpr};
+	let (c, area) = Box::pin(cleanup_fault_fixture).await;
+	let id = area["id"].as_str().unwrap();
+	let digest = area["manifest"][1]["digest"].as_str().unwrap();
+	let owned = blob_path(&c, digest);
+	let backup = c.root.join("lock-test-backup");
+	let (status, confirmation) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/working-areas/{id}/deletion-confirmation"),
+		json!({"expected_revision":area["revision"]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{confirmation}");
+	let (status, deletion) = request(&c.app, &c.token, "POST", &format!("/api/working-areas/{id}/cleanup"), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"choice":"irreversible","confirmation_id":confirmation["confirmation_id"]})).await;
+	assert_eq!(status, 200, "{deletion}");
+	tokio::fs::rename(&owned, &backup).await.unwrap();
+	tokio::fs::create_dir(&owned).await.unwrap();
+	let mut lock = c.f.store.pool.fixture_driver().begin().await.unwrap();
+	let query = Query::select()
+		.expr(SimpleExpr::CustomWithExpr(
+			"pg_advisory_xact_lock(hashtextextended(?, 0))".into(),
+			vec![Expr::value(format!("core-blob:acme:{digest}")).into()],
+		))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&query).execute(&mut *lock).await.unwrap();
+	let path = format!(
+		"/api/file-cleanups/{}/reconcile",
+		deletion["operation_id"].as_str().unwrap()
+	);
+	let (status, result) = request(&c.app, &c.token, "POST", &path, json!({})).await;
+	assert_eq!(status, 200, "{result}");
+	assert!(owned.is_dir());
+	assert_eq!(
+		result["state"], "deleting",
+		"locked blob must remain pending while its bytes exist"
+	);
+	lock.rollback().await.unwrap();
+	tokio::fs::remove_dir(&owned).await.unwrap();
+	tokio::fs::rename(&backup, &owned).await.unwrap();
+	let (status, result) = request(&c.app, &c.token, "POST", &path, json!({})).await;
+	assert_eq!(status, 200, "{result}");
+	assert_eq!(result["state"], "deleted");
+	assert!(!owned.exists());
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn failed_snapshot_preserves_active_files_and_interrupted_delete_is_reconcilable(
 	#[future] cleanup_fault_fixture: (CoreFixture, Value),
 	#[from(worker_control)] control_1: WorkerControl,
