@@ -115,12 +115,12 @@ async fn full_candidate_window_advances_even_when_denied_and_unions_item_workspa
 	let mut denied = task(1002);
 	denied.workspace_id = id(99);
 	let mut scope = Scope {
-		candidates: (1..=50).map(id).collect(),
+		candidates: (1..=49).map(id).chain(std::iter::once(id(99))).collect(),
 		tasks: vec![other, repeated, denied],
 		..Default::default()
 	};
 	let result = state(&mut scope, None).await.unwrap();
-	assert_eq!(result.next_cursors.workspaces, Some(id(50).to_string()));
+	assert_eq!(result.next_cursors.workspaces, Some(id(99).to_string()));
 	assert_eq!(result.next_cursors.tasks, None);
 	assert_eq!(
 		scope
