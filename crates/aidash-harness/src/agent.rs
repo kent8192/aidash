@@ -2562,7 +2562,7 @@ connection: None,
 								}));
 							} else {
 								run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
-									wake_at: chrono::Utc::now() + chrono::Duration::hours(1),
+									wake_at: chrono::Utc::now() + children_ceiling(store, home.as_ref(), run).await?,
 									cursor: run.recovery.workspace_event_cursor.unwrap_or(0),
 									resume: ResumeState::Thinking(ThinkingState::default()),
 								}));
@@ -2656,7 +2656,7 @@ connection: None,
 								run.context.completion.basis = None;
 
 								run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
-									wake_at: chrono::Utc::now() + chrono::Duration::hours(1),
+									wake_at: chrono::Utc::now() + children_ceiling(store, home.as_ref(), run).await?,
 									cursor: run.recovery.workspace_event_cursor.unwrap_or(0),
 									resume: ResumeState::Thinking(ThinkingState::default()),
 								}));
@@ -3385,6 +3385,26 @@ connection: None,
 		}
 		Ok(())
 	}
+}
+
+/// How long a Run that has Task children still unfinished sleeps before it
+/// looks again (#644). Only a Task the Run created or delegated wakes it early,
+/// and the children of its Task may be a person's or an earlier Run's, so the
+/// hour applies only while it has such a Task of its own; otherwise it looks
+/// again in five minutes, as `workspace_wait` does. A remote Home is polled for
+/// every child, so any pending child can wake the Run there.
+async fn children_ceiling(
+	store: &dyn ExecutionStore,
+	home: &dyn ExecutionHome,
+	run: &Run,
+) -> Result<chrono::Duration> {
+	Ok(
+		if !home.local() || store.unfinished_owned_tasks(run).await? > 0 {
+			chrono::Duration::hours(1)
+		} else {
+			chrono::Duration::minutes(5)
+		},
+	)
 }
 
 /// Answer a model's question on the system's behalf because its person's
