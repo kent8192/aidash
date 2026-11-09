@@ -671,10 +671,11 @@ async fn load_for_maintenance(store: &Store, id: Uuid) -> NativeResult<Option<Li
 
 /// The Read Recheck of a serving Live preview, for everyone on its Run's chain
 /// (ADR 0070, ADR 0116). A Run that has finished stays covered: its grant remains.
-pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<()> {
+pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> {
+	use crate::apps::federation::peer::models::AuthorizationRemoteAdmission;
 	use aidash_application::ports::authorization::ExecutionGrantRepository as _;
 	let Some(preview) = load_for_maintenance(store, id).await? else {
-		return Ok(());
+		return Ok(true);
 	};
 	let grant = crate::bootstrap::execution_grants(store)
 		.grant(preview.run_id)
@@ -698,15 +699,28 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<()> {
 				.await?;
 			let session = EgressSession::objects()
 				.filter(EgressSession::field_id().eq(preview.id))
+				.filter(EgressSession::field_run_id().eq(preview.run_id))
+				.all_with_executor(&mut *tx)
+				.await
+				.map_err(|error| NativeError::External(error.to_string()))?
+				.pop();
+			let admission = AuthorizationRemoteAdmission::objects()
+				.filter(AuthorizationRemoteAdmission::field_id().eq(preview.run_id))
 				.all_with_executor(&mut *tx)
 				.await
 				.map_err(|error| NativeError::External(error.to_string()))?
 				.pop();
 			tx.commit().await?;
-			let Some(session) = session else {
-				tracing::debug!(%id, "live preview has no grant or session to recheck");
-				return Ok(());
+			let (Some(session), Some(admission)) = (session, admission) else {
+				return Ok(false);
 			};
+			let mut subjects = admission.subject_chain;
+			if subjects.is_empty() {
+				return Ok(false);
+			}
+			if !subjects.contains(&session.principal) {
+				subjects.push(session.principal.clone());
+			}
 			(
 				SubjectIdentity {
 					http_session: None,
@@ -714,7 +728,7 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<()> {
 					tenant: session.tenant,
 					subject: session.principal,
 				},
-				None,
+				Some(subjects),
 			)
 		}
 	};
@@ -723,7 +737,7 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<()> {
 		access.subjects = subjects;
 	}
 	let result = access.recheck_run_reads(preview.run_id).await.map(|_| ());
-	access.finish(result).await
+	access.finish(result).await.map(|()| true)
 }
 
 /// Stop a serving Live preview for a Read Recheck's reason. As in the sweep, the
