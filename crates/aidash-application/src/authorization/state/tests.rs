@@ -86,6 +86,27 @@ struct Scope {
 	runs: Vec<RawRun>,
 	run_reads: usize,
 	deadline: Option<DateTime<Utc>>,
+	listing_fails: bool,
+	listing_called: bool,
+	policy_fails: bool,
+}
+#[async_trait]
+impl WorkspaceListingScope for Scope {
+	async fn visible(&mut self, _: &str) -> Result<Vec<Uuid>> {
+		if self.listing_fails {
+			return Err(crate::Error::Forbidden);
+		}
+		Ok(vec![id(1)])
+	}
+	async fn task_page(&mut self, workspaces: &[Uuid], offset: u64) -> Result<TaskPage> {
+		assert_eq!(workspaces, [id(1)]);
+		assert_eq!(offset, 400);
+		self.listing_called = true;
+		Ok(TaskPage {
+			tasks: vec![task(2)],
+			next_offset: Some(9),
+		})
+	}
 }
 #[async_trait]
 impl WorkspaceStateScope for Scope {
@@ -164,7 +185,11 @@ impl WorkspaceStateScope for Scope {
 		unreachable!()
 	}
 	async fn decide(&mut self, _: &Resource, _: &str) -> Result<bool> {
-		Ok(true)
+		if self.policy_fails {
+			Err(crate::Error::Forbidden)
+		} else {
+			Ok(true)
+		}
 	}
 }
 #[tokio::test]
@@ -226,6 +251,19 @@ async fn pending_requests_of_an_older_run_remain_visible_and_share_its_decision(
 }
 
 #[tokio::test]
+async fn policy_failure_does_not_return_partial_state() {
+	let mut scope = Scope {
+		humans: vec![human(20, true)],
+		policy_fails: true,
+		..Default::default()
+	};
+	assert!(matches!(
+		state(&mut scope, None).await,
+		Err(crate::Error::Forbidden)
+	));
+}
+
+#[tokio::test]
 async fn hidden_task_candidates_still_advance_the_page() {
 	let mut scope = Scope {
 		tasks: (1..=50)
@@ -241,6 +279,24 @@ async fn hidden_task_candidates_still_advance_the_page() {
 	assert!(output.tasks.is_empty());
 	assert_eq!(output.next_cursors.tasks, Some(id(50).to_string()));
 	assert_eq!(scope.calls, [id(99)]);
+}
+
+#[tokio::test]
+async fn standalone_task_page_preserves_cursor_and_stops_on_authority_failure() {
+	let mut scope = Scope::default();
+	let page = task_page(&mut scope, 400).await.unwrap();
+	assert_eq!(page.tasks[0].id, id(2));
+	assert_eq!(page.next_offset, Some(9));
+	assert!(scope.listing_called);
+	let mut denied = Scope {
+		listing_fails: true,
+		..Default::default()
+	};
+	assert!(matches!(
+		task_page(&mut denied, 400).await,
+		Err(crate::Error::Forbidden)
+	));
+	assert!(!denied.listing_called);
 }
 
 #[tokio::test]
