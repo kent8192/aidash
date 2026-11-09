@@ -836,7 +836,9 @@ impl Research<'_> {
 	}
 
 	/// Consume a one-time approval after the reservation. A lost race settles
-	/// the reserved attempt without sending anything.
+	/// the reserved attempt without sending anything. So does a Run that may no
+	/// longer write because its Subnode ended, but with a failure that names no
+	/// cause: the Run is cancelled with the end (ADR 0110).
 	async fn consume(
 		&self,
 		call: &Call<'_>,
@@ -846,8 +848,16 @@ impl Research<'_> {
 		let Some(approval) = approval else {
 			return Ok(None);
 		};
-		if self.gate.consume(call.run, approval).await? {
-			return Ok(None);
+		match self.gate.consume(call.run, approval).await {
+			Ok(true) => return Ok(None),
+			Ok(false) => {}
+			Err(Error::Forbidden) => {
+				return self
+					.settle_failure(call, operation, Failure::Refused, false)
+					.await
+					.map(Some);
+			}
+			Err(error) => return Err(error),
 		}
 		self.settle_failure(call, operation, Failure::DisclosureDenied, false)
 			.await
