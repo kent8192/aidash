@@ -55,6 +55,10 @@ mod database_failure_tests {
 		for _ in 0..8 {
 			connections.push(driver.acquire().await.unwrap());
 		}
+		assert!(matches!(
+			driver.acquire().await.err(),
+			Some(sqlx::Error::PoolTimedOut)
+		));
 		let error = serving(&store).await.unwrap_err();
 		assert!(matches!(
 			crate::apps::execution::repositories::worker::classify_failure(&error),
