@@ -25,6 +25,7 @@ pub trait Scope: Send {
 		state: HumanState,
 		cursor: Option<Uuid>,
 	) -> Result<Vec<HumanRequest>>;
+	async fn workspace_allowed(&mut self, id: Uuid) -> Result<bool>;
 	async fn human_resource(&mut self, request: &HumanRequest) -> Result<Resource>;
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool>;
 }

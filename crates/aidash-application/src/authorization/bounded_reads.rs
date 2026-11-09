@@ -44,6 +44,7 @@ pub async fn humans(
 	cursor: Option<Uuid>,
 ) -> Result<HumanPage> {
 	let mut visible = HashMap::new();
+	let mut workspaces = HashMap::new();
 	if let Some(id) = run {
 		visible.insert(id, Some(scope.require_run(id).await?));
 	}
@@ -51,6 +52,14 @@ pub async fn humans(
 	let next_cursor = (rows.len() == PAGE_SIZE).then(|| rows.last().unwrap().id.to_string());
 	let mut items = Vec::new();
 	for mut request in rows {
+		if let std::collections::hash_map::Entry::Vacant(entry) =
+			workspaces.entry(request.workspace_id)
+		{
+			entry.insert(scope.workspace_allowed(request.workspace_id).await?);
+		}
+		if !workspaces[&request.workspace_id] {
+			continue;
+		}
 		if let std::collections::hash_map::Entry::Vacant(entry) = visible.entry(request.run_id) {
 			entry.insert(scope.visible_run(request.run_id).await?);
 		}
@@ -128,6 +137,9 @@ mod tests {
 		) -> Result<Vec<HumanRequest>> {
 			unreachable!()
 		}
+		async fn workspace_allowed(&mut self, _: Uuid) -> Result<bool> {
+			Ok(true)
+		}
 		async fn human_resource(&mut self, _: &HumanRequest) -> Result<Resource> {
 			unreachable!()
 		}
@@ -185,6 +197,9 @@ mod tests {
 					answer_by: None,
 				})
 				.collect())
+		}
+		async fn workspace_allowed(&mut self, _: Uuid) -> Result<bool> {
+			Ok(true)
 		}
 		async fn human_resource(&mut self, request: &HumanRequest) -> Result<Resource> {
 			Ok(Resource {
