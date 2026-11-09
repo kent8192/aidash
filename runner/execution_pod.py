@@ -381,14 +381,18 @@ def execution_manifests(settings, config):
                                         'valueFrom': {'fieldRef': {'fieldPath': 'metadata.uid'}}}],
                                'securityContext': security, 'resources': {'limits': limits},
                                'volumeMounts': mounts}], 'volumes': volumes}
+    podspec['nodeSelector'] = dict(config.get('node_selector', {}))
+    podspec['tolerations'] = list(config.get('tolerations', []))
     if docker:
         tenant = settings.get('tenant_id')
         if not isinstance(tenant, str) or not tenant:
             raise ValueError('tenant_id required for Docker execution')
         tenant_label = 'tenant-' + hashlib.sha256(tenant.encode()).hexdigest()[:48]
-        podspec['nodeSelector'] = {'aidash.run/tenant': tenant_label}
-        podspec['tolerations'] = [{'key': 'aidash.run/tenant', 'operator': 'Equal',
-                                   'value': tenant_label, 'effect': 'NoSchedule'}]
+        if podspec['nodeSelector'].get('aidash.run/tenant', tenant_label) != tenant_label:
+            raise ValueError('sandbox selector conflicts with tenant')
+        podspec['nodeSelector']['aidash.run/tenant'] = tenant_label
+        podspec['tolerations'].append({'key': 'aidash.run/tenant', 'operator': 'Equal',
+                                       'value': tenant_label, 'effect': 'NoSchedule'})
     pod = {'apiVersion': 'v1', 'kind': 'Pod', 'metadata': dict(metadata,
            labels={'aidash-sandbox': 'true', 'aidash-v2': 'true'}), 'spec': podspec}
     if config.get('proxy_endpoint'):
@@ -708,6 +712,12 @@ print(json.dumps(r))'''
             raise ExecutionPodError('settings_mismatch', 'Existing Execution Pod has different settings')
         uid = existing_pod.get('metadata', {}).get('uid') if existing_pod else None
         if uid and uid == self._admitted_uid(settings['scratch_space_id']):
+            status = existing_pod.get('status', {})
+            execution = next((item for item in status.get('containerStatuses', [])
+                              if item.get('name') == 'execution'), {})
+            if (status.get('phase') != 'Running' or not execution.get('ready') or
+                    'running' not in execution.get('state', {})):
+                raise ExecutionPodError('pod_unavailable', 'Execution Pod is not running and ready')
             return {'protocol': 'aidash-runner/2', 'pod': name, 'claim': name}
         try:
             self._admit_pod(name, settings)

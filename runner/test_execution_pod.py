@@ -389,6 +389,19 @@ class PodManifestTest(unittest.TestCase):
                             for v in pod['spec']['volumes']))
         self.assertFalse(any('hostPath' in v for v in pod['spec']['volumes']))
 
+    def test_v2_pod_inherits_sandbox_pool_scheduling(self):
+        from execution_pod import execution_manifests
+        settings = {'scratch_space_id': 's', 'image': 'image@sha256:' + 'a' * 64,
+                    'cpu': 2, 'memory_bytes': 2 << 30, 'capacity_bytes': 2 << 30,
+                    'docker_enabled': False}
+        selector = {'pool': 'sandbox'}
+        tolerations = [{'key': 'sandbox', 'operator': 'Exists', 'effect': 'NoSchedule'}]
+        config = {'runtime_class': 'gvisor', 'helper_image': 'helper@sha256:' + 'b' * 64,
+                  'namespace': 'sandbox', 'node_selector': selector, 'tolerations': tolerations}
+        _, pod = execution_manifests(settings, config)
+        self.assertEqual(pod['spec']['nodeSelector'], selector)
+        self.assertEqual(pod['spec']['tolerations'], tolerations)
+
     def test_docker_requires_operator_authority_and_dedicated_tenant(self):
         from execution_pod import execution_manifests
 
@@ -513,6 +526,9 @@ class ExecutionPodControllerTest(unittest.TestCase):
         def verify(*args):
             started.set()
             self.assertTrue(release.wait(3))
+            pod = next(obj for (kind, _), obj in backend.objects.items() if kind == 'pod')
+            pod['status'] = {'phase': 'Running', 'containerStatuses': [
+                {'name': 'execution', 'ready': True, 'state': {'running': {}}}]}
             return 'pod-uid'
         controller._verify_running_pod = Mock(side_effect=verify)
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -523,6 +539,14 @@ class ExecutionPodControllerTest(unittest.TestCase):
             resource = first.result(timeout=3)
             self.assertEqual(second.result(timeout=3), resource)
         controller._verify_running_pod.assert_called_once()
+        pod = backend.objects[('pod', resource['pod'])]
+        pod['status'] = {'phase': 'Failed', 'containerStatuses': [
+            {'name': 'execution', 'ready': False, 'state': {'terminated': {'reason': 'OOMKilled'}}}]}
+        from execution_pod import ExecutionPodError
+        with self.assertRaises(ExecutionPodError) as failure:
+            controller.ensure(settings)
+        self.assertEqual(failure.exception.code, 'pod_unavailable')
+        pod['status'] = {'phase': 'Pending'}
         waits = [args for args in backend.calls if args[0] == 'wait']
         self.assertEqual(len(waits), 1)
         self.assertIn('--timeout=1800s', waits[0])
