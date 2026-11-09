@@ -196,8 +196,19 @@ async fn denied_background_delivery_has_no_remote_or_task_effects(mut scope: Sco
 	let result = deliver(&mut scope).await;
 	settle(&mut scope, result).await.unwrap();
 	assert_eq!(scope.calls, ["admit", "pause"]);
-	assert_eq!(scope.paused, Some(AuthorityFailure::Denied(None)));
+	assert_eq!(scope.paused, Some(unnamed_failure()));
 	assert_eq!(scope.finished, None);
+}
+
+/// A refusal nothing named, reported under the stage of failure delivery.
+fn unnamed_failure() -> AuthorityFailure {
+	AuthorityFailure::Denied(Some(AuthorityRefusal {
+		tool: "failure delivery".into(),
+		check: RefusalCheck::Unnamed,
+		action: None,
+		subject: None,
+		call: None,
+	}))
 }
 
 fn refusal() -> AuthorityRefusal {
@@ -205,12 +216,14 @@ fn refusal() -> AuthorityRefusal {
 		tool: "task_delegate".into(),
 		check: RefusalCheck::Policy,
 		action: Some("task.delegate".into()),
+		subject: None,
+		call: None,
 	}
 }
 
 #[rstest]
-#[case(Error::Forbidden, AuthorityFailure::Denied(None))]
-#[case(Error::Unauthorized, AuthorityFailure::Denied(None))]
+#[case(Error::Forbidden, unnamed_failure())]
+#[case(Error::Unauthorized, unnamed_failure())]
 #[case(
 	Error::IdentityStatusUnavailable,
 	AuthorityFailure::IdentityUnavailable

@@ -43,6 +43,29 @@ impl GenerationControls for NativeControls {
 	fn principal(&self) -> &Principal {
 		&self.principal
 	}
+	async fn visible_shared(&self, tenant: &str, id: Uuid) -> aidash_application::Result<bool> {
+		let Actor::Subject(identity) = &self.actor else {
+			return Err(aidash_application::Error::Forbidden);
+		};
+		if identity.tenant != tenant {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		let mut access = Access::begin(&self.runtime.store, identity).await?;
+		let result = async {
+			let job = crate::generation::lifecycle::load(&mut access.tx, tenant, id).await?;
+			aidash_application::generation::visibility::visible(
+				&mut crate::bootstrap::generation_visibility_scope(&mut access),
+				&job,
+			)
+			.await
+			.map_err(Error::from)
+		}
+		.await;
+		access
+			.finish_deciding(result)
+			.await
+			.map_err(aidash_application::Error::from)
+	}
 	async fn begin(
 		&self,
 		scope: &TenancyScope,
@@ -54,7 +77,16 @@ impl GenerationControls for NativeControls {
 		if identity.tenancy()? != *scope {
 			return Err(aidash_application::Error::Forbidden);
 		}
-		let access = Box::new(Access::begin_exclusive(&self.runtime.store, identity).await?);
+		use aidash_domain::generation::requests::Action;
+		let access = Box::new(
+			Access::begin_change(
+				&self.runtime.store,
+				identity,
+				&[Action::Approve, Action::Stop, Action::Delete]
+					.map(|action| action.authorization()),
+			)
+			.await?,
+		);
 		Ok(Box::new(Scope {
 			runtime: self.runtime.clone(),
 			access,
@@ -66,9 +98,9 @@ impl GenerationControls for NativeControls {
 }
 #[async_trait]
 impl GenerationControlScope for Scope {
-	async fn visible(&mut self, job: &Request) -> aidash_application::Result<bool> {
+	async fn visible_row(&mut self, job: &Request) -> aidash_application::Result<bool> {
 		let access = &mut self.access;
-		aidash_application::generation::visibility::visible(
+		aidash_application::generation::visibility::visible_row(
 			&mut crate::bootstrap::generation_visibility_scope(access),
 			job,
 		)

@@ -1,4 +1,5 @@
-//! A retained remote definition requires exact metadata, both local policies and live peer proof.
+//! A retained remote definition requires exact metadata, local `registry.read` and, unless the
+//! Node is the reader's own Tenant's, live peer proof. A Catalog Approval is not consulted.
 use crate::{
 	Error, Result,
 	ports::federation::registry_reads::{
@@ -33,7 +34,7 @@ async fn check(
 	run: Uuid,
 ) -> Result<bool> {
 	let mut nodes: BTreeMap<String, Vec<Reference>> = BTreeMap::new();
-	for (node, id, version, hash, metadata) in scope.dependencies(run).await? {
+	for (node, id, version, hash, metadata, same_tenant) in scope.dependencies(run).await? {
 		let entry: Entry = serde_json::from_value(metadata.clone())?;
 		if entry.id != id
 			|| entry.version != version
@@ -45,10 +46,17 @@ async fn check(
 		let mut resource = scope.catalog_resource(&entry);
 		resource.id = aidash_domain::agent_subject(&node, &id, &version);
 		resource.attributes["remote_node"] = json!(node);
-		if !scope.decide(&resource, "registry.read").await?
-			|| !scope.decide(&resource, "agent.execute").await?
-		{
+		if !scope.decide(&resource, "registry.read").await? {
 			return Ok(false);
+		}
+		if same_tenant {
+			// Policy decides within a Tenant: deleting the Node, or its not answering,
+			// hides nothing, so there is no route, frontier or transport to consult.
+			let node = scope.resource("node", &node, json!({"remote_node":node}));
+			if !scope.decide(&node, "federation.discover").await? {
+				return Ok(false);
+			}
+			continue;
 		}
 		nodes.entry(node).or_default().push(Reference {
 			entry: EntityRef { id, version },
@@ -71,11 +79,15 @@ async fn check(
 		return Ok(pending.len() <= LIMIT);
 	}
 	for (node, references) in nodes {
-		if scope.unavailable(&node) {
-			return Ok(false);
-		}
 		let resource = scope.resource("node", &node, json!({"remote_node":node}));
 		if !scope.decide(&resource, "federation.discover").await? {
+			return Ok(false);
+		}
+		// After the decision: a mark may come from another identity of the
+		// same authority, and this reader's own right comes first.
+		if scope.unavailable(&node) {
+			// Not asked again, but this walk met it: its caller is told so (#751).
+			scope.mark_unavailable(&node);
 			return Ok(false);
 		}
 		let Some(route) = scope.route(&node).await? else {
@@ -84,7 +96,7 @@ async fn check(
 		for batch in references.chunks(128) {
 			match transport.verify(&route, batch).await {
 				Verification::Verified => {}
-				Verification::Rejected => return Ok(false),
+				Verification::Rejected | Verification::NotAsked => return Ok(false),
 				Verification::Unavailable => {
 					scope.mark_unavailable(&node);
 					return Ok(false);
@@ -107,12 +119,7 @@ pub async fn verify(
 			Err(Error::Forbidden | Error::NotFound(_)) => return Ok(false),
 			Err(error) => return Err(error),
 		};
-		if entry.kind != "agent"
-			|| digest(&serde_json::to_value(&entry)?) != reference.digest
-			|| !scope
-				.decide(&scope.catalog_resource(&entry), "agent.execute")
-				.await?
-		{
+		if entry.kind != "agent" || digest(&serde_json::to_value(&entry)?) != reference.digest {
 			return Ok(false);
 		}
 	}

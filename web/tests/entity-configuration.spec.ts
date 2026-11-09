@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test, expect } from "@playwright/test";
 import { installBearerDashboard } from "./auth-fixture";
 import {
@@ -691,6 +694,72 @@ test("changing Source adapter clears unsupported settings and prior validation",
     schema_version: 1,
     source: { adapter: "workspace_retrieval" },
   });
+});
+
+test("a folder of documents fills a Reference Source after a person reviews its files", async ({
+  page,
+}) => {
+  const folder = mkdtempSync(join(tmpdir(), "reference-folder-"));
+  mkdirSync(join(folder, "backend"));
+  mkdirSync(join(folder, ".git"));
+  writeFileSync(join(folder, "backend", "api.md"), "# API\n");
+  writeFileSync(join(folder, "secrets.md"), "token\n");
+  writeFileSync(join(folder, "scan.pdf"), "%PDF-1.7\n");
+  writeFileSync(join(folder, ".git", "config"), "hidden\n");
+  writeFileSync(join(folder, "empty.md"), "");
+  let sent: { path: string; data: string }[] = [];
+  await page.route("**/api/references/batch", (route) => {
+    sent = route.request().postDataJSON().files;
+    return route.fulfill({
+      json: {
+        files: sent.map(({ path }, index) => ({
+          path,
+          reused: false,
+          duplicate_of: null,
+          error: null,
+          reference: {
+            reference_id: `reference-${index}`,
+            state: "ready",
+            page_count: path.endsWith(".pdf") ? 2 : null,
+            pages_without_text: path.endsWith(".pdf") ? [1, 2] : [],
+          },
+        })),
+        references: sent.map(({ path }, index) => ({
+          reference_id: `reference-${index}`,
+          digest: "a".repeat(64),
+          path,
+        })),
+      },
+    });
+  });
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Entity type").selectOption("source");
+  await dialog
+    .getByLabel("Context source")
+    .selectOption("reference_attachments");
+
+  await dialog.getByLabel("Add folder", { exact: true }).setInputFiles(folder);
+
+  await expect(dialog.getByText("Secrets are not detected")).toBeVisible();
+  await expect(dialog.getByRole("checkbox", { name: "empty.md" })).toHaveCount(
+    0,
+  );
+  await expect(dialog.getByText(".git/config")).toHaveCount(0);
+  await dialog.getByRole("checkbox", { name: "secrets.md" }).uncheck();
+  await dialog
+    .getByRole("button", { name: "Add 2 documents", exact: true })
+    .click();
+
+  await expect(dialog.getByText("None of the 2 pages has text")).toBeVisible();
+  expect(sent.map(({ path }) => path)).toEqual(["backend/api.md", "scan.pdf"]);
+  expect(sent[0].data).toBe(Buffer.from("# API\n").toString("base64"));
+  const settings = JSON.parse(
+    await dialog.getByLabel("Source settings (JSON)").inputValue(),
+  );
+  expect(settings.references.map((r: { path: string }) => r.path)).toEqual([
+    "backend/api.md",
+    "scan.pdf",
+  ]);
 });
 
 test("an External service form submits its destination, methods and Secret attachment", async ({

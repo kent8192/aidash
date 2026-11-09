@@ -8,6 +8,13 @@ use aidash_domain::{
 	registry::EntityRef,
 };
 use uuid::Uuid;
+/// A missing task and a task the Run may not see read the same, so the model cannot probe for
+/// the existence of either.
+pub fn task_not_visible(task: Uuid) -> Error {
+	Error::Refused(format!(
+		"task {task} was not found or is not visible to this Run"
+	))
+}
 async fn subnode_members(
 	scope: &mut dyn WorkerTaskScope,
 	run: &RunMetadata,
@@ -34,7 +41,7 @@ pub async fn assign(
 ) -> Result<Assignment> {
 	let members = subnode_members(scope, run).await?;
 	if scope.task_workspace(task).await? != Some(run.workspace_id) {
-		return Err(Error::Forbidden);
+		return Err(task_not_visible(task));
 	}
 	let assignment = scope
 		.assign(task, policy, reason, members.as_deref())
@@ -76,8 +83,8 @@ pub async fn create_task(
 		},
 	};
 	if actual != expected {
-		return Err(Error::Conflict(
-			"task already has a different origin".into(),
+		return Err(Error::Refused(
+			"a task from an earlier attempt of this call has a different origin, so it cannot be reused; calling task_create again creates a new task".into(),
 		));
 	}
 	Ok(task)
@@ -103,9 +110,12 @@ pub async fn delegate(
 		));
 	}
 	if scope.task_workspace(task).await? != Some(run.workspace_id) {
-		return Err(Error::Forbidden);
+		return Err(task_not_visible(task));
 	}
-	let record = scope.task_read(task).await?;
+	let record = scope.task_read(task).await.map_err(|error| match error {
+		Error::Forbidden => task_not_visible(task),
+		error => error,
+	})?;
 	let resource = scope.task_resource(&record).await?;
 	scope.require(&resource, "task.delegate").await?;
 	if let Some(existing) = scope.execution_grant(task).await? {
@@ -118,10 +128,11 @@ pub async fn delegate(
 		if existing.subject_chain != expected
 			|| existing.credential_id != scope.identity().credential_id
 		{
-			return Err(Error::Conflict(
-				"task already has a different authority".into(),
+			return Err(Error::Refused(
+				"the task was already delegated under a different authority".into(),
 			));
 		}
+		scope.record_output(run, "delegated_task", task).await?;
 		return Ok(Delegation {
 			task_id: task,
 			node_id: node.into(),
@@ -130,7 +141,9 @@ pub async fn delegate(
 			delivered: true,
 		});
 	}
-	scope.delegate(task, agent).await
+	let delegation = scope.delegate(task, agent).await?;
+	scope.record_output(run, "delegated_task", task).await?;
+	Ok(delegation)
 }
 #[cfg(test)]
 mod tests;

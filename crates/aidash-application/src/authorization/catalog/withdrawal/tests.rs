@@ -177,6 +177,18 @@ async fn an_unreferenced_version_has_no_impact_and_reads_no_runs() {
 
 #[rstest]
 #[tokio::test]
+async fn runs_that_only_read_the_version_are_not_an_impact() {
+	// Arrange: nothing depends on the version, whatever else has read it.
+	let mut fixture = Fixture::new(vec![agent("none", &["compaction"])]);
+	// Act
+	let impact = impact(&mut fixture, &decider()).await.unwrap();
+	// Assert
+	assert!(impact.agents.is_empty());
+	assert_eq!(impact.running_runs, 0);
+}
+
+#[rstest]
+#[tokio::test]
 async fn reading_the_impact_needs_the_right_to_withdraw() {
 	// Arrange
 	let mut fixture = Fixture::new(vec![agent("a", &[])]);

@@ -393,6 +393,7 @@ pub async fn activate<R: PeerAdmissionRepository>(
 			semantic_reason: run.recovery.semantic_reason,
 			context_reason: run.recovery.context_reason,
 			error: run.error,
+			declinable_call: None,
 		})
 	}
 	.await;
@@ -432,6 +433,7 @@ pub async fn status<R: PeerAdmissionRepository>(
 			.as_ref()
 			.and_then(|r| r.recovery.as_ref())
 			.and_then(|r| r.context_reason),
+		declinable_call: run.as_ref().and_then(|r| r.declinable_call.clone()),
 		error: run.and_then(|r| {
 			r.error
 				.clone()
@@ -492,10 +494,64 @@ pub async fn control<R: PeerAdmissionRepository>(
 		control: run.control.into(),
 		semantic_reason: run.recovery.as_ref().and_then(|r| r.semantic_reason),
 		context_reason: run.recovery.as_ref().and_then(|r| r.context_reason),
+		declinable_call: run.declinable_call.clone(),
 		error: run
 			.error
 			.clone()
 			.map(|_| "Remote execution requires attention.".into()),
+	})
+}
+/// The Home declines the call a Run is paused on. The receiver checks the record, the grant and
+/// the lease as for resuming; whether the call can be declined is the store's to say (#763).
+pub async fn decline_call<R: PeerAdmissionRepository>(
+	repository: &R,
+	admitted: &crate::federation::inbound::Admitted,
+	id: Uuid,
+	grant: Uuid,
+	call: &str,
+) -> Result<aidash_domain::federation::execution::admission::Declined> {
+	if call.is_empty() || call.len() > 256 {
+		return Err(Error::Invalid("call key is empty or too long".into()));
+	}
+	let tenant = admitted.tenant.as_str();
+	let receiver = &admitted.receiver.node;
+	let source = admitted.sender.to_string();
+	let source = source.as_str();
+	let record = repository.record(id).await?.ok_or(Error::Forbidden)?;
+	if record.tenant != tenant
+		|| record.node != *receiver
+		|| record.source_node != source
+		|| record.grant_id != grant
+	{
+		return Err(Error::Forbidden);
+	}
+	let run = repository.inspect_run(id).await?;
+	if run.home_node != source || run_grant(repository, &run.metadata).await? != Some(grant) {
+		return Err(Error::Forbidden);
+	};
+	let (scope, _) = worker_lease(repository, &run.metadata)
+		.await?
+		.ok_or(Error::Forbidden)?;
+	finish(scope, Ok(())).await?;
+	let (run, declined) = repository.decline_call(id, call).await?;
+	repository.notify();
+	Ok(aidash_domain::federation::execution::admission::Declined {
+		activation: Activation {
+			grant_id: grant,
+			admission_id: id,
+			run_id: id,
+			phase: run.phase().into(),
+			control: run.control.into(),
+			semantic_reason: run.recovery.as_ref().and_then(|r| r.semantic_reason),
+			context_reason: run.recovery.as_ref().and_then(|r| r.context_reason),
+			declinable_call: None,
+			error: run
+				.error
+				.clone()
+				.map(|_| "Remote execution requires attention.".into()),
+		},
+		tool: declined.tool,
+		kind: declined.kind,
 	})
 }
 pub async fn message<R: PeerAdmissionRepository>(

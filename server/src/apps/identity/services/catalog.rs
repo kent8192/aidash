@@ -116,9 +116,18 @@ pub(crate) async fn metadata(access: &mut Access, reference: &EntityRef) -> Resu
 	{
 		return Err(crate::Error::Forbidden);
 	}
-	access
-		.require(&resource(access, &entry), "registry.read")
-		.await?;
+	// Decided once per transaction, like `readable`: a walk reaches the same Decider through
+	// every Run that pins it.
+	let read_check = access.catalog_admission(
+		reference,
+		aidash_application::authorization::catalog::READ_CHECK,
+	);
+	if access.tx.admitted(&read_check).is_none() {
+		access
+			.require(&resource(access, &entry), "registry.read")
+			.await?;
+		access.tx.admit(read_check, entry.clone());
+	}
 	crate::marketplace::check_pinned(access, &entry).await?;
 	if aidash_domain::registry::bindings::defaults::is_compaction_decider(&entry) {
 		// A child Run admitted under this lease starts only with its own
@@ -126,6 +135,66 @@ pub(crate) async fn metadata(access: &mut Access, reference: &EntityRef) -> Resu
 		// a definition only when the parent's closure names it; this one is a
 		// closure member although its approval is checked when needed. The
 		// current approval is still read by the child's own start check.
+		access
+			.approved_catalog
+			.insert((reference.id.clone(), reference.version.clone()));
+	}
+	Ok(entry)
+}
+
+/// A definition a Run read, as its reader may see it: `registry.read` decides, and a Catalog
+/// Approval or its restriction does not (#769). Unlike [`entry`], this takes no distribution
+/// lock, admits no use and leaves the approved set alone ([`read_recorded`] adds to it). A
+/// missing definition is `Forbidden`, as for [`entry`].
+///
+/// The decision is kept for the transaction under its own key, so a walk over many Runs with
+/// overlapping Bindings decides each definition once. A read-check result never counts as an
+/// approval; a `registry.read` admission already made by [`entry`] counts as a read check.
+pub(crate) async fn readable(access: &mut Access, reference: &EntityRef) -> Result<Entry> {
+	let read_check = access.catalog_admission(
+		reference,
+		aidash_application::authorization::catalog::READ_CHECK,
+	);
+	if let Some(entry) = access.tx.admitted(&read_check) {
+		return Ok(entry);
+	}
+	if let Some(entry) = access
+		.tx
+		.admitted(&access.catalog_admission(reference, "registry.read"))
+	{
+		return Ok(entry);
+	}
+	let entry = crate::apps::registry::models::Definition::read_in(
+		&mut **access.tx,
+		&reference.id,
+		&reference.version,
+	)
+	.await
+	.map_err(|error| match error {
+		crate::Error::NotFound(_) => crate::Error::Forbidden,
+		other => other,
+	})?;
+	if let Some(projection) = &entry.installation
+		&& (projection.contract != 1 || projection.tenant != access.identity.tenant)
+	{
+		return Err(crate::Error::Forbidden);
+	}
+	access
+		.require(&resource(access, &entry), "registry.read")
+		.await?;
+	access.tx.admit(read_check, entry.clone());
+	Ok(entry)
+}
+
+/// [`readable`] for a definition a Run recorded as read (its Binding, `agent_discover`, memory).
+///
+/// A read of the Run's own authority also puts the definition in the set a retained lease may
+/// admit a delegated Run from. The read walk used to do this as a side effect of approving each
+/// definition; admission still reads the current approval, so membership alone admits nothing.
+/// A read under an inherited lease must not enlarge that lease, so it adds nothing there.
+pub(crate) async fn read_recorded(access: &mut Access, reference: &EntityRef) -> Result<Entry> {
+	let entry = readable(access, reference).await?;
+	if !access.inherited_lease {
 		access
 			.approved_catalog
 			.insert((reference.id.clone(), reference.version.clone()));

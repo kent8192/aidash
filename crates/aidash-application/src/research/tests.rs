@@ -1889,6 +1889,70 @@ async fn a_spent_approval_settles_the_reserved_attempt_without_dispatch() {
 	));
 }
 
+/// A Run whose Subnode ended is refused when it consumes an approval (ADR 0110).
+struct Ended;
+#[async_trait]
+impl DisclosureGate for Ended {
+	async fn admit(&self, _: Uuid, _: &WebDisclosure) -> Result<DisclosureState> {
+		Ok(DisclosureState::Approved {
+			approval_id: Uuid::from_u128(7),
+		})
+	}
+	async fn consume(&self, _: Uuid, _: Uuid) -> Result<bool> {
+		Err(Error::Forbidden)
+	}
+}
+
+/// A refusal because the Subnode ended settles the reserved attempt like a lost
+/// race, without sending anything, but with no reason: it must not claim that
+/// the approval was denied or has expired.
+#[tokio::test]
+async fn a_refused_consume_settles_the_attempt_without_a_reason() {
+	let store = Memory::default();
+	let research = Research {
+		store: &store,
+		gate: &Ended,
+		limits: Limits::default(),
+	};
+	let run = Uuid::new_v4();
+	let searches = Search::new("brave", "api.search.brave.com");
+	let searched = research
+		.search(
+			&call(run, "k1", "research.brave@1"),
+			&searches,
+			&json!({"query":"a"}),
+		)
+		.await
+		.unwrap();
+	let pages = Pages::new();
+	let fetched = research
+		.fetch(
+			&call(run, "k2", "research.page@1"),
+			&pages,
+			&json!({"url":"https://example.com/page"}),
+		)
+		.await
+		.unwrap();
+	for (result, key) in [(&searched, "k1"), (&fetched, "k2")] {
+		assert_eq!(result["status"], "error", "{result}");
+		assert_eq!(result["error"]["code"], "refused", "{result}");
+		let explanation = result["error"]["explanation"].as_str().unwrap();
+		assert!(
+			!explanation.contains("denied") && !explanation.contains("expired"),
+			"the refusal must not give a reason: {explanation}"
+		);
+		assert!(matches!(
+			store.attempt(run, key).await.unwrap(),
+			Some(AttemptState::Settled {
+				outcome: AttemptOutcome::Failed,
+				..
+			})
+		));
+	}
+	assert_eq!(searches.calls.load(Ordering::SeqCst), 0);
+	assert_eq!(pages.calls.load(Ordering::SeqCst), 0);
+}
+
 /// A provider failure after the call stays attributed; only an attempt
 /// stopped before the call (above) is not.
 #[rstest::rstest]

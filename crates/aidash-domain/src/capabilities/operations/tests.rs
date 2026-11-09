@@ -83,6 +83,21 @@ fn cancellation_never_marks_a_dispatched_or_unknown_writer_as_safely_terminated(
 		);
 	}
 }
+#[rstest]
+#[case::pending(json!({"dispatch_pending":true}), Some("runner"), true)]
+#[case::runner_answered(json!({"preview":""}), Some("runner"), false)]
+#[case::not_pending(json!({"dispatch_pending":false}), Some("runner"), false)]
+#[case::no_recorded_runner(json!({"dispatch_pending":true}), None, false)]
+fn only_a_send_the_recorded_runner_may_not_have_is_refused(
+	#[case] result: Value,
+	#[case] instance: Option<&str>,
+	#[case] refused: bool,
+) {
+	assert_eq!(
+		undelivered_refusal(&result, "digest", instance),
+		refused.then(|| json!({"digest":"digest","instance":"runner"}))
+	);
+}
 #[fixture]
 fn input() -> ShellRequest {
 	ShellRequest {
@@ -219,4 +234,25 @@ fn area_availability_keeps_busy_distinct_from_unavailable(
 			assert!(matches!(available(state),Err(Error::Conflict(actual)) if actual==code))
 		}
 	}
+}
+
+#[test]
+fn reference_files_use_none_of_the_working_area() {
+	let file = |scope, kind: &str| MountedFile {
+		file_id: Uuid::new_v4(),
+		path: "file".into(),
+		digest: "a".repeat(64),
+		size: 1,
+		media_type: "text/plain".into(),
+		scope,
+		provenance: json!({"kind":kind}),
+	};
+	let files = [
+		file(FileScope::References, "reference"),
+		file(FileScope::References, "reference_text"),
+		file(FileScope::Working, "reference"),
+		file(FileScope::Received, "transfer_in"),
+	];
+	assert!(files[0].is_reference_file());
+	assert_eq!(counted_files(&files).count(), 3);
 }

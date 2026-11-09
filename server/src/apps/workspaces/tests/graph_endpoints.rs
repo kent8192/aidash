@@ -157,7 +157,15 @@ async fn concurrent_parent_and_dependency_changes_cannot_commit_a_cycle(
 	let (first, second) = (first.unwrap(), second.unwrap());
 	let mut statuses = [first.status_code(), second.status_code()];
 	statuses.sort();
-	assert_eq!(statuses, [200, 500], "{}; {}", first.text(), second.text());
+	// One change commits. The other meets the cycle trigger (500), or Postgres ends it
+	// as a deadlock victim first, which is a temporary database error (503, #728).
+	assert_eq!(statuses[0], 200, "{}; {}", first.text(), second.text());
+	assert!(
+		matches!(statuses[1], 500 | 503),
+		"{statuses:?}: {}; {}",
+		first.text(),
+		second.text()
+	);
 	assert_eq!(
 		Task::objects()
 			.all()

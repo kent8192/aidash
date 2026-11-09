@@ -1,6 +1,6 @@
 //! One withdrawal scope owns the Area-before-operation locks until commit or drop.
 use crate::Result;
-use aidash_domain::capabilities::operations::withdrawal::{Change, Snapshot};
+use aidash_domain::capabilities::operations::withdrawal::{Change, Snapshot, WriterStop};
 use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
@@ -13,7 +13,13 @@ pub trait OperationWithdrawalScope: Send {
 #[async_trait]
 pub trait OperationWithdrawalRepository: Send + Sync {
 	async fn lock(&self, area: Uuid, operation: Uuid) -> Result<Box<dyn OperationWithdrawalScope>>;
-	async fn cancel(&self, operation: Uuid) -> Result<Value>;
+	async fn cancel(&self, operation: Uuid, refusal: Option<Value>) -> Result<Value>;
 	/// Positive proof for the original physical instance, operation and digest.
-	async fn cancel_bound(&self, operation: Uuid, digest: &str, instance: &str) -> Result<bool>;
+	async fn cancel_bound(
+		&self,
+		operation: Uuid,
+		digest: &str,
+		instance: &str,
+		refusal: Option<Value>,
+	) -> Result<WriterStop>;
 }

@@ -574,7 +574,6 @@ pub(crate) mod generation;
 
 pub(crate) mod outputs;
 
-pub(crate) mod catalog;
 pub(crate) mod semantic;
 
 pub(crate) mod registry_reads;

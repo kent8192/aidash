@@ -97,8 +97,8 @@ impl DependencyScope for NativeDependencies<'_> {
 		.await
 		.map_err(Into::into)
 	}
-	async fn catalog_entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
-		catalog::entry(self.0, reference, action)
+	async fn readable_entry(&mut self, reference: &EntityRef) -> Result<Entry> {
+		catalog::readable(self.0, reference)
 			.await
 			.map_err(Into::into)
 	}
@@ -107,5 +107,11 @@ impl DependencyScope for NativeDependencies<'_> {
 		node: &str,
 	) -> Result<Option<aidash_domain::federation::route::Route>> {
 		self.0.route_to(node).await.map_err(Into::into)
+	}
+	fn unavailable(&self, node: &str) -> bool {
+		self.0.peer_unavailable(node)
+	}
+	fn mark_unavailable(&mut self, node: &str) {
+		self.0.mark_peer_unavailable(node);
 	}
 }
