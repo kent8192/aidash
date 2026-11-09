@@ -227,6 +227,34 @@ async fn with_no_step_left_there_is_no_notice_and_the_run_still_completes(mut fi
 
 #[rstest]
 #[tokio::test]
+async fn asking_a_person_at_the_step_limit_leaves_room_to_resume(mut fixture: Fixture) {
+	set_children(&fixture, children(1, false, vec![task(1, false, false)]));
+	fixture.run.step = 63;
+	answer(&mut fixture.run, "All done.");
+	advance_sources(&mut fixture).await.unwrap();
+	let (_, saved) = last_write(&fixture);
+	assert!(matches!(saved.state, RunState::Waiting(_)));
+	fixture.run = saved;
+	fixture
+		.backend
+		.0
+		.human
+		.lock()
+		.unwrap()
+		.as_mut()
+		.unwrap()
+		.response = Some(json!({"answer": "Done"}));
+	advance_sources(&mut fixture).await.unwrap();
+	assert_eq!(fixture.run.phase(), RunPhase::Thinking);
+	set_children(&fixture, children(0, false, vec![]));
+	// The answer allows one final model turn and completion.
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	assert_eq!(fixture.run.phase(), RunPhase::Completed);
+}
+
+#[rstest]
+#[tokio::test]
 async fn a_running_child_beside_an_unassigned_task_means_waiting_without_a_notice(
 	mut fixture: Fixture,
 ) {

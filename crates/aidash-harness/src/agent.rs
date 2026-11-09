@@ -643,7 +643,13 @@ impl<'a> Executor<'a> {
 				}));
 			}
 		}
-		run.step += 1;
+		// A person-created Unassigned Task needs a further model turn after the
+		// person answers. At the limit, keep the last step for that turn.
+		if !matches!(&decision, Decision::AskAboutUnassigned(_))
+			|| run.step.saturating_add(1) < agent.max_steps
+		{
+			run.step += 1;
+		}
 		store.save_run(run, token, "run.waiting").await?;
 		Ok(())
 	}
