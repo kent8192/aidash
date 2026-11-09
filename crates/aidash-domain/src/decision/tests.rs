@@ -28,14 +28,14 @@ fn clef() -> DeciderRoute {
 }
 fn config() -> DeciderConfig {
 	DeciderConfig {
-		hook: Hook::Compaction,
+		hook: Hook::Approval,
 		answer_type: AnswerType::Noul,
 		description: "Retain required history".into(),
 		provider_credential: "openrouter".into(),
 		routes: vec![jev()],
-		builder: BUILDER.into(),
-		option_source: OPTION_SOURCE.into(),
-		rule: RULE.into(),
+		builder: APPROVAL_BUILDER.into(),
+		option_source: APPROVAL_OPTION_SOURCE.into(),
+		rule: APPROVAL_RULE.into(),
 		mode: Mode::Enforce,
 		max_calls_per_run: 20,
 		state_retention: policy::StateRetention::default(),
@@ -199,58 +199,6 @@ fn binary64_evidence_round_trips_subnormals_negative_zero_and_boundary_neighbors
 	] {
 		assert!(serde_json::from_value::<Probability>(serde_json::json!(encoded)).is_err());
 	}
-}
-#[test]
-fn threshold_is_inclusive_and_result_precedes_call() {
-	let below =
-		Probability::new(f64::from_bits(Probability::half().value().to_bits() - 1)).unwrap();
-	let half = Probability::half();
-	assert_eq!(branch(below, half, half), Branch::Keep);
-	assert_eq!(branch(half, below, half), Branch::TruncateResult);
-	assert_eq!(branch(below, below, half), Branch::Drop);
-	assert_eq!(branch(half, half, half), Branch::Keep);
-}
-#[test]
-fn the_fit_rule_is_an_opt_in_alternative_for_compaction_only() {
-	let mut fit = config();
-	fit.rule = FIT_RULE.into();
-	fit.validate().unwrap();
-	assert_ne!(
-		fit.contract_digest().unwrap(),
-		config().contract_digest().unwrap()
-	);
-	assert!(Hook::Compaction.allows_rule(RULE));
-	for hook in [
-		Hook::Approval,
-		Hook::ContextSelection,
-		Hook::ApprovalObservation,
-	] {
-		assert!(!hook.allows_rule(FIT_RULE), "{hook:?}");
-	}
-}
-#[test]
-fn fit_order_ranks_kept_unprotected_results_below_the_ceiling_lowest_first() {
-	let p = |value| Probability::new(value).unwrap();
-	let candidate = |history_index, keep_result, branch, protected| FitCandidate {
-		history_index,
-		keep_result: p(keep_result),
-		branch,
-		protected,
-	};
-	let order = fit_order(&[
-		candidate(1, 0.55, Branch::Keep, false),
-		candidate(3, 0.51, Branch::Keep, false),
-		// Already below the threshold: `branch` dropped or truncated it.
-		candidate(5, 0.30, Branch::Drop, false),
-		candidate(7, 0.51, Branch::Keep, false),
-		// At the ceiling: never truncated, however tight the window.
-		candidate(9, FIT_CEILING, Branch::Keep, false),
-		// Protected tail.
-		candidate(11, 0.40, Branch::Keep, true),
-		candidate(13, 0.69, Branch::Keep, false),
-	]);
-	// Lowest keep probability first, older history first on ties.
-	assert_eq!(order, vec![3, 7, 1, 13]);
 }
 #[test]
 fn narrowing_cannot_increase_deletion_and_intersections_preserve_both_constraints() {
@@ -501,146 +449,4 @@ fn the_admitted_allowance_takes_the_lower_call_limit() {
 	};
 	assert_eq!(bound(None).allowance().max_calls_per_run, 20);
 	assert_eq!(bound(Some(4)).allowance().max_calls_per_run, 4);
-}
-mod pruning_rules {
-	use super::*;
-	use crate::context::{ContextEvent, HistoryEntry};
-	use crate::decision::pruning::{Units, apply, protected};
-	use crate::provider::ToolCall;
-	use serde_json::json;
-
-	fn assistant(seq: u64, text: &str, calls: &[&str]) -> HistoryEntry {
-		HistoryEntry {
-			research: None,
-			seq,
-			event: ContextEvent::Assistant {
-				provider_activity: vec![],
-				epoch: 1,
-				text: text.into(),
-				calls: calls.iter().map(|call| (*call).to_owned()).collect(),
-			},
-		}
-	}
-	fn tool(seq: u64, id: &str, result: &str) -> HistoryEntry {
-		HistoryEntry {
-			research: None,
-			seq,
-			event: ContextEvent::Tool {
-				call: ToolCall {
-					id: id.into(),
-					name: "file_read".into(),
-					arguments: json!({"path": id}),
-				},
-				result: json!(result),
-			},
-		}
-	}
-
-	#[test]
-	fn legacy_protects_events_and_native_protects_whole_turns() {
-		assert!(protected(0, None, 20, None, 6));
-		assert!(!protected(13, None, 20, None, 6));
-		assert!(protected(14, None, 20, None, 6));
-		// Event 13 sits in the third of nine turns, far from the protected tail.
-		assert!(!protected(13, Some(2), 20, Some(9), 6));
-		assert!(protected(13, Some(3), 20, Some(9), 6));
-		assert!(protected(1, Some(0), 20, Some(9), 6));
-	}
-
-	#[test]
-	fn native_elides_dropped_results_and_removes_a_turn_only_as_a_whole() {
-		let history = vec![
-			assistant(1, "", &["a", "b"]),
-			tool(2, "a", "first"),
-			tool(3, "b", "second"),
-			assistant(4, "I read c", &["c"]),
-			tool(5, "c", "third"),
-		];
-		let units = Units::of(&history, true);
-		assert_eq!(units.turns, Some(2));
-		let whole = apply(
-			&history,
-			&BTreeMap::from([(1, Branch::Drop), (2, Branch::Drop), (4, Branch::Drop)]),
-			&units,
-		);
-		// The first turn has no text, so it leaves whole; the second keeps its
-		// response and elides the dropped result under its call.
-		assert_eq!(whole.removed, 3);
-		assert_eq!(whole.history.len(), 2);
-		let ContextEvent::Tool { result, .. } = &whole.history[1].event else {
-			panic!("tool expected");
-		};
-		assert!(ContextEvent::is_elided_result(result));
-		let partial = apply(&history, &BTreeMap::from([(1, Branch::Drop)]), &units);
-		assert_eq!(partial.removed, 0);
-		assert_eq!(partial.history.len(), 5);
-	}
-
-	#[test]
-	fn native_removes_a_dropped_orphaned_tool_and_its_arguments() {
-		let history = vec![
-			tool(1, "orphan", &"x".repeat(2000)),
-			assistant(2, "Keep this response", &[]),
-		];
-		let units = Units::of(&history, true);
-		assert_eq!(units.turn_of[0], None);
-		let pruned = apply(&history, &BTreeMap::from([(0, Branch::Drop)]), &units);
-		assert_eq!(pruned.removed, 1);
-		assert_eq!(pruned.history, vec![history[1].clone()]);
-	}
-
-	#[test]
-	fn legacy_removes_dropped_events_and_truncates_long_results_only() {
-		let history = vec![
-			tool(1, "a", "short"),
-			tool(2, "b", &"x".repeat(1000)),
-			tool(3, "c", "short"),
-		];
-		let units = Units::of(&history, false);
-		let pruned = apply(
-			&history,
-			&BTreeMap::from([
-				(0, Branch::TruncateResult),
-				(1, Branch::TruncateResult),
-				(2, Branch::Drop),
-			]),
-			&units,
-		);
-		assert_eq!((pruned.removed, pruned.truncated), (1, 1));
-		assert_eq!(pruned.history.len(), 2);
-		assert_eq!(pruned.history[0], history[0]);
-	}
-
-	#[test]
-	fn truncation_never_grows_a_result() {
-		let history = vec![
-			tool(1, "a", &"x".repeat(421)),
-			tool(2, "b", &"x".repeat(1000)),
-		];
-		let units = Units::of(&history, false);
-		let pruned = apply(
-			&history,
-			&BTreeMap::from([(0, Branch::TruncateResult), (1, Branch::TruncateResult)]),
-			&units,
-		);
-		assert_eq!(pruned.truncated, 1);
-		assert_eq!(pruned.history[0], history[0]);
-		let ContextEvent::Tool { result, .. } = &pruned.history[1].event else {
-			panic!("tool expected");
-		};
-		assert!(result.as_str().unwrap().chars().count() < 1000);
-		assert!(crate::decision::pruning::truncated_result(result));
-	}
-
-	#[test]
-	fn the_pre_626_truncation_marker_is_still_recognized() {
-		let legacy = json!(format!(
-			"{}\n[decision compaction truncated 200 chars of this tool result; full result remains in the execution journal]",
-			"x".repeat(300)
-		));
-		assert!(crate::decision::pruning::truncated_result(&legacy));
-		assert!(!crate::decision::pruning::truncated_result(&json!(
-			"plain result"
-		)));
-	}
 }

@@ -141,39 +141,17 @@ fn an_approval_decider_names_the_approval_contract_and_keeps_no_state() {
 		serde_json::from_value::<DeciderConfig>(json).unwrap(),
 		config()
 	);
-	let mismatches: [fn(&mut DeciderConfig); 5] = [
-		|c| c.builder = BUILDER.into(),
-		|c| c.option_source = OPTION_SOURCE.into(),
-		|c| c.rule = RULE.into(),
+	let mismatches: [fn(&mut DeciderConfig); 4] = [
+		|c| c.builder = "aidash.compaction/3".into(),
+		|c| c.option_source = "history_event/1".into(),
+		|c| c.rule = "compaction.keep/1".into(),
 		|c| c.state_retention.enabled = true,
-		|c| c.hook = Hook::Compaction,
 	];
 	for change in mismatches {
 		let mut invalid = config();
 		change(&mut invalid);
 		assert!(invalid.validate().is_err(), "{invalid:?}");
 	}
-	// The compaction contract stays as it was, and neither hook takes the other's.
-	let mut compaction = config();
-	compaction.hook = Hook::Compaction;
-	compaction.builder = BUILDER.into();
-	compaction.option_source = OPTION_SOURCE.into();
-	compaction.rule = RULE.into();
-	compaction.validate().unwrap();
-	compaction.hook = Hook::Approval;
-	assert!(compaction.validate().is_err());
-	assert_ne!(
-		config().contract_digest().unwrap(),
-		DeciderConfig {
-			hook: Hook::Compaction,
-			builder: BUILDER.into(),
-			option_source: OPTION_SOURCE.into(),
-			rule: RULE.into(),
-			..config()
-		}
-		.contract_digest()
-		.unwrap()
-	);
 }
 
 #[test]
@@ -370,4 +348,9 @@ fn shadow_records_the_verdict_without_acting_on_it() {
 	shadow.validate().unwrap();
 	assert_eq!(shadow.outcome(), ApprovalOutcome::Shadow);
 	assert_eq!(shadow.verdict, Verdict::Blocked(BlockReason::Injected));
+}
+
+#[test]
+fn compaction_is_not_a_supported_decider_hook() {
+	assert!(serde_json::from_str::<Hook>("\"compaction\"").is_err());
 }
