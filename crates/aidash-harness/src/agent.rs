@@ -23,8 +23,8 @@ use aidash_domain::{
 	research::citations,
 	semantic::{Failure, InputRead},
 	tool::{
-		AuthorityRefusal, Continuation, DO_NOT_REPEAT, RefusalCheck, RefusedCall, ResultFitting,
-		ToolIdentity, ToolUseMode,
+		AuthorityRefusal, Continuation, DO_NOT_REPEAT, RefusalCheck, RefusedCall, RefusedToolCall,
+		ResultFitting, ToolIdentity, ToolUseMode,
 	},
 	unassigned, *,
 };
@@ -38,6 +38,7 @@ const PARTLY_HAPPENED: &str = " The call may have partly happened.";
 #[derive(Clone, Copy)]
 struct DeliveredTool<'a> {
 	name: &'a str,
+	arguments: &'a Value,
 	/// The call's position in its model response, which a person declining it names.
 	index: usize,
 	replay_safe: bool,
@@ -197,6 +198,10 @@ impl<'a> Executor<'a> {
 			key: key.to_owned(),
 			index: tool.index,
 			replay_safe: tool.replay_safe,
+			tool_call: Some(RefusedToolCall {
+				name: tool.name.to_owned(),
+				arguments: tool.arguments.clone(),
+			}),
 		});
 		Err(Error::AuthorityRefused(Box::new(refusal)))
 	}
@@ -306,6 +311,10 @@ impl<'a> Executor<'a> {
 						key,
 						index,
 						replay_safe: contract.replay_safe(),
+						tool_call: Some(RefusedToolCall {
+							name: call.name.clone(),
+							arguments: call.arguments.clone(),
+						}),
 					});
 					return Err(Error::AuthorityRefused(refusal));
 				}
@@ -404,6 +413,7 @@ impl<'a> Executor<'a> {
 							key,
 							DeliveredTool {
 								name: &calls[cursor + offset].name,
+								arguments: &calls[cursor + offset].arguments,
 								index: cursor + offset,
 								replay_safe: true,
 							},
@@ -3094,7 +3104,7 @@ connection: None,
 						Err(Error::Invalid(message) | Error::Domain(aidash_domain::Error::Invalid(message))) => return self.tool_error(run, token, &call, cursor, message).await,
 						// The gate runs before the call is journaled, so the pause names the call.
 						Err(Error::AuthorityRefused(mut refusal)) => {
-							refusal.call = Some(RefusedCall { key, index: cursor, replay_safe: contract.replay_safe() });
+							refusal.call = Some(RefusedCall { key, index: cursor, replay_safe: contract.replay_safe(), tool_call: Some(RefusedToolCall { name: call.name.clone(), arguments: call.arguments.clone() }) });
 							return Err(Error::AuthorityRefused(refusal));
 						}
 						Err(error) => return Err(error),
@@ -3314,7 +3324,7 @@ connection: None,
                             output
                         },
                         Err(Error::Connection(cause)) => self.checkpoint_connection_refusal(run,token,connections::RefusedCall {call,tool:tool.as_ref(),guard,key:&key},cause).await?,
-                        other => Self::tool_delivery_result(store, run, token, &key, DeliveredTool { name: &call.name, index: cursor, replay_safe: contract.replay_safe() }, (other, note)).await?,
+                        other => Self::tool_delivery_result(store, run, token, &key, DeliveredTool { name: &call.name, arguments: &call.arguments, index: cursor, replay_safe: contract.replay_safe() }, (other, note)).await?,
 					}
 				};
                 // Revalidate Research before deriving any media selection. A completed

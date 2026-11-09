@@ -5552,8 +5552,12 @@ impl Store {
 					key: call.key.clone(),
 					index: call.index,
 					replay_safe: call.replay_safe,
-					tool: refusal.tool.clone(),
+					tool: call
+						.tool_call
+						.as_ref()
+						.map_or_else(|| refusal.tool.clone(), |stopped| stopped.name.clone()),
 					kind,
+					tool_call: call.tool_call.clone(),
 				}
 			}),
 		)

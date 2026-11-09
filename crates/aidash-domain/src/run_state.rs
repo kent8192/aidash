@@ -498,6 +498,9 @@ pub struct PausedCall {
 	pub replay_safe: bool,
 	pub tool: String,
 	pub kind: crate::tool::RefusalKind,
+	/// Exact input at the authority check; absent on pauses saved by older workers.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub tool_call: Option<crate::tool::RefusedToolCall>,
 }
 /// What a person is offered to decline: the call by its key, the tool, and the kind of refusal.
 /// Never the action, the subject or the receiver's own sentence.

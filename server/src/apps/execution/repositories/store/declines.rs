@@ -91,11 +91,20 @@ impl Store {
 				let RunState::ToolCall(progress) = &state else {
 					return Err(not_paused_on_call());
 				};
-				let call = progress
-					.response
-					.tool_calls
-					.get(paused.index)
-					.ok_or_else(not_paused_on_call)?;
+				let (tool, input) = match &paused.tool_call {
+					Some(call) if call.name == paused.tool => (&call.name, &call.arguments),
+					Some(_) => return Err(not_paused_on_call()),
+					None => {
+						// Older pauses did not retain the input. Never journal a different tool.
+						let call = progress
+							.response
+							.tool_calls
+							.get(paused.index)
+							.filter(|call| call.name == paused.tool)
+							.ok_or_else(not_paused_on_call)?;
+						(&call.name, &call.arguments)
+					}
+				};
 				// Written straight to `COMPLETED`: nothing started, so no `tool.started`.
 				crate::database::native::query(
 					&Query::insert()
@@ -122,11 +131,11 @@ impl Store {
 								))
 								.expr(SimpleExpr::CustomWithExpr(
 									"(?)".to_owned(),
-									vec![Expr::value(call.name.clone()).into()],
+									vec![Expr::value(tool.clone()).into()],
 								))
 								.expr(SimpleExpr::CustomWithExpr(
 									"(?)".to_owned(),
-									vec![Expr::value(call.arguments.clone()).into()],
+									vec![Expr::value(input.clone()).into()],
 								))
 								.expr(reinhardt::query::Expr::cust("'COMPLETED'"))
 								.expr(SimpleExpr::CustomWithExpr(

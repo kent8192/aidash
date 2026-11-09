@@ -87,6 +87,22 @@ impl RefusalCheck {
 	}
 }
 
+/// The tool and input of a stopped call, retained privately for the invocation journal.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct RefusedToolCall {
+	pub name: String,
+	pub arguments: serde_json::Value,
+}
+
+impl fmt::Debug for RefusedToolCall {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		f.debug_struct("RefusedToolCall")
+			.field("name", &self.name)
+			.field("arguments", &"[redacted]")
+			.finish()
+	}
+}
+
 /// The tool call a refusal stopped, so a pause can offer to decline it. Never shown to people:
 /// the call is named only to someone who may decline it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +113,9 @@ pub struct RefusedCall {
 	pub index: usize,
 	/// Whether the tool may run again, which decides whether a row is left `REFUSED`.
 	pub replay_safe: bool,
+	/// The actual call, since its cursor may index a filtered response.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub tool_call: Option<RefusedToolCall>,
 }
 
 /// A step refused by the Run's authority. It names the tool (or stage) and the check,
@@ -307,6 +326,17 @@ mod tests {
 	}
 
 	#[rstest]
+	fn debugging_a_stopped_call_does_not_expose_its_arguments() {
+		let stopped = RefusedToolCall {
+			name: "workspace_read".into(),
+			arguments: serde_json::json!({"private": "sensitive-value"}),
+		};
+		let debug = format!("{stopped:?}");
+		assert!(debug.contains("workspace_read"));
+		assert!(!debug.contains("sensitive-value"));
+	}
+
+	#[rstest]
 	fn refused_call_stays_off_the_wire_until_set() {
 		let mut refusal = AuthorityRefusal {
 			tool: "task_delegate".into(),
@@ -325,6 +355,7 @@ mod tests {
 			key: "run:1:0".into(),
 			index: 0,
 			replay_safe: true,
+			tool_call: None,
 		});
 		let wire = serde_json::to_value(&refusal).unwrap();
 		assert_eq!(wire["call"]["key"], "run:1:0");

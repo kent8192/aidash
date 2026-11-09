@@ -3802,6 +3802,7 @@ impl Pair {
 				index: 0,
 				replay_safe: true,
 				tool: "task_delegate".into(),
+				tool_call: None,
 				kind: aidash_domain::tool::RefusalKind::OtherNode,
 			}),
 			..Default::default()

@@ -2004,6 +2004,7 @@ async fn refused_tool_call_is_a_model_correctable_result(fixture: Fixture) {
 		"refused-call",
 		DeliveredTool {
 			name: "task_delegate",
+			arguments: &Value::Null,
 			index: 0,
 			replay_safe: true,
 		},
@@ -2041,6 +2042,7 @@ async fn a_node_that_did_not_answer_before_the_effect_is_retried_then_returned_t
 			"call",
 			DeliveredTool {
 				name: "task_delegate",
+				arguments: &Value::Null,
 				index: 0,
 				replay_safe: true,
 			},
@@ -2068,6 +2070,7 @@ async fn a_node_that_did_not_answer_before_the_effect_is_retried_then_returned_t
 		"call",
 		DeliveredTool {
 			name: "task_delegate",
+			arguments: &Value::Null,
 			index: 0,
 			replay_safe: true,
 		},
@@ -2094,6 +2097,7 @@ async fn a_node_that_did_not_answer_after_the_effect_passes_through_without_a_re
 		"call",
 		DeliveredTool {
 			name: "task_delegate",
+			arguments: &Value::Null,
 			index: 0,
 			replay_safe: true,
 		},
