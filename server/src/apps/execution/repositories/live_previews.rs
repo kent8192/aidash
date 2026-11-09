@@ -73,6 +73,40 @@ mod database_failure_tests {
 		assert_eq!(response.status.as_u16(), 503);
 		assert_eq!(response.headers[http::header::RETRY_AFTER], "1");
 	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn live_preview_repository_preserves_orm_statement_timeout(
+		#[future] database: DatabaseFixture,
+	) {
+		let database = database.await;
+		let options: sqlx::postgres::PgConnectOptions = database.url.parse().unwrap();
+		let driver = sqlx::postgres::PgPoolOptions::new()
+			.max_connections(8)
+			.connect_with(options.options([("statement_timeout", "2s")]))
+			.await
+			.unwrap();
+		let store = Store::from_pool(
+			driver,
+			aidash_domain::nodes::DeploymentId::parse("aidash://preview-test").unwrap(),
+		)
+		.await
+		.unwrap();
+		let owner = sqlx::PgPool::connect(&database.owner_url).await.unwrap();
+		let mut lock = owner.begin().await.unwrap();
+		sqlx::query("LOCK TABLE core_live_previews IN ACCESS EXCLUSIVE MODE")
+			.execute(&mut *lock)
+			.await
+			.unwrap();
+		let error = serving(&store).await.unwrap_err();
+		assert!(error.has_database_code("57014"), "{error:?}");
+		assert!(error.is_transient_database(), "{error:?}");
+		assert!(matches!(
+			aidash_application::Error::from(error),
+			aidash_application::Error::TemporaryDatabase(_)
+		));
+		lock.rollback().await.unwrap();
+	}
 }
 
 pub(crate) fn domain(row: Row) -> NativeResult<LivePreview> {
