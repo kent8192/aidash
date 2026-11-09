@@ -1078,7 +1078,7 @@ class Runner(AllocationJournal):
                 if record.get('executed') and 'terminated' in execution:
                     observed = time.time()
                     self.update(operation, status='finishing', termination_confirmed=True, writer_frozen=False,
-                                cell_stopped_at=termination_time(execution['terminated'], observed, record.get('running_at')),
+                                cell_stopped_at=termination_time(execution['terminated'], record.get('running_at'), observed),
                                 stop_confirmed_at=record.get('stop_confirmed_at') or observed,
                                 pending_status='failed', pending_error={'code':'SESSION_LOST', 'message':'Interpreter stopped during the cell; code was not replayed.'}, exit_code=137)
                     raise RuntimeError('Python stopped; collecting its output')
@@ -1170,6 +1170,9 @@ class Runner(AllocationJournal):
             if not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']:
                 raise SandboxGone()
             if any("terminated" in s.get("state", {}) for s in pod.get("status", {}).get("containerStatuses", [])):
+                execution = next((s.get('state', {}).get('terminated') for s in pod.get('status', {}).get('containerStatuses', []) if s.get('name') == 'execution'), None)
+                if execution is not None:
+                    self.update(operation, cell_stopped_at=termination_time(execution, record.get('running_at'), time.time()))
                 if self.guard(record, "terminate").get('termination_confirmed') is not True:
                     raise RuntimeError('Python termination not confirmed')
                 memory_live = False
