@@ -28,6 +28,9 @@ use uuid::Uuid;
 pub(crate) fn unavailable(_: impl std::fmt::Display) -> Error {
 	Error::External("authentication persistence unavailable".into())
 }
+fn database_failure(error: reinhardt::core::exception::Error) -> Error {
+	aidash_server::Error::from(error).into()
+}
 pub(crate) fn encode(value: &impl Serialize) -> Result<serde_json::Value> {
 	Ok(serde_json::to_value(value)?)
 }
@@ -94,7 +97,7 @@ impl Store {
 	}
 	#[allow(clippy::disallowed_methods)] // This service owns an isolated schema and contains no Tenant data.
 	pub(crate) async fn scope(&self) -> Result<AuthScope> {
-		let mut tx = self.connection.begin().await.map_err(unavailable)?;
+		let mut tx = self.connection.begin().await.map_err(database_failure)?;
 		// All authentication lifecycle updates and admissions share a primary lock.
 		// This is deliberately coarse initially: completed stops cannot race a stale
 		// replica read, first association, proof consumption or session creation.
@@ -106,7 +109,7 @@ impl Store {
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(args))
 			.await
-			.map_err(unavailable)?;
+			.map_err(database_failure)?;
 		let (sql, args) = Query::select()
 			.expr_as(
 				SimpleExpr::FunctionCall(Alias::new("pg_is_in_recovery").into_iden(), vec![]),
@@ -116,7 +119,7 @@ impl Store {
 		let row = tx
 			.fetch_one(&sql, convert_values(args))
 			.await
-			.map_err(unavailable)?;
+			.map_err(database_failure)?;
 		if row.data.get("standby") != Some(&reinhardt::db::backends::QueryValue::Bool(false)) {
 			return Err(Error::External(
 				"authentication requires the writable primary".into(),
@@ -129,7 +132,7 @@ impl Store {
 		use sha2::{Digest, Sha256};
 		let hash = Sha256::digest(raw.as_bytes());
 		let key = i32::from_be_bytes(hash[..4].try_into().expect("four hash bytes"));
-		let mut tx = self.refresh_locks.begin().await.map_err(unavailable)?;
+		let mut tx = self.refresh_locks.begin().await.map_err(database_failure)?;
 		let (sql, args) = Query::select()
 			.expr(SimpleExpr::FunctionCall(
 				Alias::new("pg_advisory_xact_lock").into_iden(),
@@ -138,7 +141,7 @@ impl Store {
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(args))
 			.await
-			.map_err(unavailable)?;
+			.map_err(database_failure)?;
 		Ok(tx)
 	}
 	pub async fn purge_expired(&self) -> Result<()> {
@@ -159,7 +162,7 @@ impl Store {
 			tx.executor()
 				.execute(&sql, convert_values(args))
 				.await
-				.map_err(unavailable)?;
+				.map_err(database_failure)?;
 		}
 		let (sql, args) = Query::delete()
 			.from_table(Alias::new("auth_rate_limits"))
@@ -168,7 +171,7 @@ impl Store {
 		tx.executor()
 			.execute(&sql, convert_values(args))
 			.await
-			.map_err(unavailable)?;
+			.map_err(database_failure)?;
 		Box::new(tx).commit().await?;
 		reinhardt::auth::oauth2_server::PostgresOAuthStore::new(self.pool.clone())
 			.purge_expired(now)
@@ -249,7 +252,7 @@ impl AuthScope {
 			.select_for_update()
 			.all_with_executor(self.executor())
 			.await
-			.map_err(unavailable)?
+			.map_err(database_failure)?
 			.pop()
 			.map(|row| decode(row.document.0))
 			.transpose()
@@ -263,7 +266,7 @@ impl AuthScope {
 			.filter(SourceObservation::field_identity_id().eq(identity))
 			.all_with_executor(self.executor())
 			.await
-			.map_err(unavailable)?
+			.map_err(database_failure)?
 			.pop();
 		let maximum = old.as_ref().and_then(|v| v.valid_since).max(valid_since);
 		let row = SourceObservation {
@@ -274,19 +277,19 @@ impl AuthScope {
 			SourceObservation::objects()
 				.save_with_executor(self.executor(), &row)
 				.await
-				.map_err(unavailable)?;
+				.map_err(database_failure)?;
 		} else {
 			SourceObservation::objects()
 				.insert_with_executor(self.executor(), &row)
 				.await
-				.map_err(unavailable)?;
+				.map_err(database_failure)?;
 		}
 		if let Some(since) = maximum {
 			let sessions = SessionRecord::objects()
 				.filter(SessionRecord::field_identity_id().eq(identity))
 				.all_with_executor(self.executor())
 				.await
-				.map_err(unavailable)?;
+				.map_err(database_failure)?;
 			for row in sessions {
 				let mut session: ProductSession = decode(row.document.0)?;
 				if session.issued_at < since && session.revoked_at.is_none() {
@@ -302,7 +305,7 @@ impl AuthScope {
 			.filter(SessionRecord::field_id().eq(id))
 			.all_with_executor(self.executor())
 			.await
-			.map_err(unavailable)?
+			.map_err(database_failure)?
 			.pop()
 			.map(|row| row.session_kind))
 	}
@@ -311,14 +314,14 @@ impl AuthScope {
 			.filter(SessionRecord::field_id().eq(id))
 			.all_with_executor(self.executor())
 			.await
-			.map_err(unavailable)?
+			.map_err(database_failure)?
 			.pop()
 			.ok_or(Error::Unauthorized)?;
 		row.session_kind = "desktop".into();
 		SessionRecord::objects()
 			.save_with_executor(self.executor(), &row)
 			.await
-			.map_err(unavailable)?;
+			.map_err(database_failure)?;
 		Ok(())
 	}
 
@@ -333,7 +336,7 @@ impl AuthScope {
 				},
 			)
 			.await
-			.map_err(unavailable)?;
+			.map_err(database_failure)?;
 		Ok(())
 	}
 	/// Only the verified upstream SignIn at this proof's exact source may supply
@@ -375,7 +378,7 @@ impl AuthScope {
 				},
 			)
 			.await
-			.map_err(unavailable)?;
+			.map_err(database_failure)?;
 		Ok(())
 	}
 	pub(crate) async fn copy_profile(
@@ -402,7 +405,7 @@ impl AuthScope {
 		EphemeralProfile::objects()
 			.insert_with_executor(self.executor(), &profile)
 			.await
-			.map_err(unavailable)?;
+			.map_err(database_failure)?;
 		Ok(())
 	}
 	pub(crate) async fn session_profile(
@@ -426,7 +429,7 @@ impl AuthScope {
 			.filter(EphemeralProfile::field_id().eq(id))
 			.all_with_executor(self.executor())
 			.await
-			.map_err(unavailable)?
+			.map_err(database_failure)?
 			.pop())
 	}
 	pub(crate) async fn flow<T: DeserializeOwned>(
@@ -440,7 +443,7 @@ impl AuthScope {
 			.select_for_update()
 			.all_with_executor(self.executor())
 			.await
-			.map_err(unavailable)?
+			.map_err(database_failure)?
 			.pop()
 			.map(|row| decode(row.document.0))
 			.transpose()
@@ -467,18 +470,18 @@ impl AuthScope {
 			.filter(FlowRecord::field_id().eq(id))
 			.all_with_executor(self.executor())
 			.await
-			.map_err(unavailable)?
+			.map_err(database_failure)?
 			.is_empty();
 		if exists {
 			FlowRecord::objects()
 				.save_with_executor(self.executor(), &row)
 				.await
-				.map_err(unavailable)?;
+				.map_err(database_failure)?;
 		} else {
 			FlowRecord::objects()
 				.insert_with_executor(self.executor(), &row)
 				.await
-				.map_err(unavailable)?;
+				.map_err(database_failure)?;
 		}
 		Ok(())
 	}
@@ -505,18 +508,18 @@ impl AuthScope {
 				.filter(TokenBinding::field_digest().eq(row.digest.clone()))
 				.all_with_executor(self.executor())
 				.await
-				.map_err(unavailable)?
+				.map_err(database_failure)?
 				.is_empty()
 		{
 			TokenBinding::objects()
 				.save_with_executor(self.executor(), &row)
 				.await
-				.map_err(unavailable)?;
+				.map_err(database_failure)?;
 		} else {
 			TokenBinding::objects()
 				.insert_with_executor(self.executor(), &row)
 				.await
-				.map_err(unavailable)?;
+				.map_err(database_failure)?;
 		}
 		Ok(())
 	}
@@ -526,7 +529,7 @@ impl AuthScope {
 			.filter(TokenBinding::field_kind().eq(kind.to_owned()))
 			.all_with_executor(self.executor())
 			.await
-			.map_err(unavailable)?
+			.map_err(database_failure)?
 			.pop()
 			.map(|row| row.session_id))
 	}
@@ -538,7 +541,7 @@ impl AuthScope {
 			.filter(RefreshResponse::field_digest().eq(digest.to_owned()))
 			.all_with_executor(self.executor())
 			.await
-			.map_err(unavailable)?
+			.map_err(database_failure)?
 			.pop()
 			.map(|row| decode(row.document.0))
 			.transpose()
@@ -552,7 +555,7 @@ impl AuthScope {
 			.filter(RefreshResponse::field_digest().eq(digest.to_owned()))
 			.all_with_executor(self.executor())
 			.await
-			.map_err(unavailable)?
+			.map_err(database_failure)?
 			.is_empty();
 		let document = encode(value)?;
 		let expires_at = document
@@ -568,12 +571,12 @@ impl AuthScope {
 			RefreshResponse::objects()
 				.save_with_executor(self.executor(), &row)
 				.await
-				.map_err(unavailable)?;
+				.map_err(database_failure)?;
 		} else {
 			RefreshResponse::objects()
 				.insert_with_executor(self.executor(), &row)
 				.await
-				.map_err(unavailable)?;
+				.map_err(database_failure)?;
 		}
 		Ok(())
 	}
@@ -583,7 +586,7 @@ impl AuthScope {
 			.filter(RateLimit::field_bucket().eq(bucket.to_owned()))
 			.all_with_executor(self.executor())
 			.await
-			.map_err(unavailable)?
+			.map_err(database_failure)?
 			.pop();
 		let mut current = row.unwrap_or(RateLimit {
 			bucket: bucket.into(),
@@ -600,12 +603,12 @@ impl AuthScope {
 			RateLimit::objects()
 				.save_with_executor(self.executor(), &current)
 				.await
-				.map_err(unavailable)?;
+				.map_err(database_failure)?;
 		} else {
 			RateLimit::objects()
 				.insert_with_executor(self.executor(), &current)
 				.await
-				.map_err(unavailable)?;
+				.map_err(database_failure)?;
 		}
 		Ok(current.attempts <= limit)
 	}
@@ -618,7 +621,7 @@ impl Scope for AuthScope {
 			.select_for_update()
 			.all_with_executor(self.executor())
 			.await
-			.map_err(unavailable)?
+			.map_err(database_failure)?
 			.pop()
 			.map(|row| decode(row.document.0))
 			.transpose()
@@ -629,7 +632,7 @@ impl Scope for AuthScope {
 			.select_for_update()
 			.all_with_executor(self.executor())
 			.await
-			.map_err(unavailable)?
+			.map_err(database_failure)?
 			.pop()
 			.map(|row| decode(row.document.0))
 			.transpose()
@@ -640,7 +643,7 @@ impl Scope for AuthScope {
 			.select_for_update()
 			.all_with_executor(self.executor())
 			.await
-			.map_err(unavailable)?
+			.map_err(database_failure)?
 			.pop()
 			.map(|row| decode(row.document.0))
 			.transpose()
@@ -655,12 +658,12 @@ impl Scope for AuthScope {
 			AccountRecord::objects()
 				.save_with_executor(self.executor(), &row)
 				.await
-				.map_err(unavailable)?;
+				.map_err(database_failure)?;
 		} else {
 			AccountRecord::objects()
 				.insert_with_executor(self.executor(), &row)
 				.await
-				.map_err(unavailable)?;
+				.map_err(database_failure)?;
 		}
 		Ok(())
 	}
@@ -685,12 +688,12 @@ impl Scope for AuthScope {
 			IdentityRecord::objects()
 				.save_with_executor(self.executor(), &row)
 				.await
-				.map_err(unavailable)?;
+				.map_err(database_failure)?;
 		} else {
 			IdentityRecord::objects()
 				.insert_with_executor(self.executor(), &row)
 				.await
-				.map_err(unavailable)?;
+				.map_err(database_failure)?;
 		}
 		Ok(())
 	}
@@ -716,12 +719,12 @@ impl Scope for AuthScope {
 			SessionRecord::objects()
 				.save_with_executor(self.executor(), &row)
 				.await
-				.map_err(unavailable)?;
+				.map_err(database_failure)?;
 		} else {
 			SessionRecord::objects()
 				.insert_with_executor(self.executor(), &row)
 				.await
-				.map_err(unavailable)?;
+				.map_err(database_failure)?;
 		}
 		Ok(())
 	}
@@ -731,7 +734,7 @@ impl Scope for AuthScope {
 			.select_for_update()
 			.all_with_executor(self.executor())
 			.await
-			.map_err(unavailable)?
+			.map_err(database_failure)?
 			.pop();
 		let (sql, args) = Query::delete()
 			.from_table(Alias::new("auth_proofs"))
@@ -740,7 +743,7 @@ impl Scope for AuthScope {
 		self.executor()
 			.execute(&sql, convert_values(args))
 			.await
-			.map_err(unavailable)?;
+			.map_err(database_failure)?;
 		row.map(|row| decode(row.document.0)).transpose()
 	}
 	async fn revoke_identity_sessions(&mut self, identity: Uuid, now: DateTime<Utc>) -> Result<()> {
@@ -748,7 +751,7 @@ impl Scope for AuthScope {
 			.filter(SessionRecord::field_identity_id().eq(identity))
 			.all_with_executor(self.executor())
 			.await
-			.map_err(unavailable)?;
+			.map_err(database_failure)?;
 		for row in rows {
 			let mut value: ProductSession = decode(row.document.0)?;
 			value.revoked_at = Some(now);
@@ -761,7 +764,7 @@ impl Scope for AuthScope {
 			.filter(SessionRecord::field_account_id().eq(account))
 			.all_with_executor(self.executor())
 			.await
-			.map_err(unavailable)?;
+			.map_err(database_failure)?;
 		for row in rows {
 			let mut value: ProductSession = decode(row.document.0)?;
 			value.revoked_at = Some(now);
@@ -775,7 +778,7 @@ impl Scope for AuthScope {
 			.expect("active transaction")
 			.commit()
 			.await
-			.map_err(unavailable)?;
+			.map_err(database_failure)?;
 		Ok(())
 	}
 }
