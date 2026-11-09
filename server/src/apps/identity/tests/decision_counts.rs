@@ -243,6 +243,13 @@ async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
 			.await;
 			assert_eq!(status, 200, "{run}");
 		}
+		// Keep the newest Task and Run windows aligned with the newest Workspace
+		// window: otherwise scheduler updates can change how many distinct
+		// Workspaces the windows happen to reference between the measurements.
+		sqlx::query("UPDATE tasks SET created_at = workspaces.created_at FROM workspaces WHERE tasks.workspace_id = workspaces.id AND tasks.tenant = 'acme'")
+			.execute(f.store.pool.fixture_driver()).await.unwrap();
+		sqlx::query("UPDATE runs SET updated_at = tasks.created_at FROM tasks WHERE runs.task_id = tasks.id AND runs.tenant = 'acme' AND runs.id <> $1")
+			.bind(run_id).execute(f.store.pool.fixture_driver()).await.unwrap();
 		// Hold the independent event projection constant while changing the sizes
 		// of the Workspace and Run collections.
 		sqlx::query("DELETE FROM events WHERE tenant = 'acme'")
