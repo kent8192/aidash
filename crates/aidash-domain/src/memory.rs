@@ -62,6 +62,57 @@ pub enum TokenizerConfig {
 	Utf8UpperBound,
 }
 
+/// Selects the calling Agent's model or an explicitly registered role model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(from = "RoleModelWire", into = "RoleModelWire")]
+#[schemars(with = "RoleModelWire")]
+pub enum RoleModel {
+	Entry(EntityRef),
+	AgentModel,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum RoleModelWire {
+	Entry(EntityRef),
+	Named(RoleModelName),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum RoleModelName {
+	AgentModel,
+}
+
+impl From<RoleModelWire> for RoleModel {
+	fn from(value: RoleModelWire) -> Self {
+		match value {
+			RoleModelWire::Entry(entry) => Self::Entry(entry),
+			RoleModelWire::Named(RoleModelName::AgentModel) => Self::AgentModel,
+		}
+	}
+}
+impl From<RoleModel> for RoleModelWire {
+	fn from(value: RoleModel) -> Self {
+		match value {
+			RoleModel::Entry(entry) => Self::Entry(entry),
+			RoleModel::AgentModel => Self::Named(RoleModelName::AgentModel),
+		}
+	}
+}
+impl RoleModel {
+	pub fn validate(&self) -> Result<()> {
+		if let Self::Entry(entry) = self
+			&& (entry.id.trim().is_empty() || entry.version.trim().is_empty())
+		{
+			return Err(Error::Invalid(
+				"memory model role requires a pinned entry".into(),
+			));
+		}
+		Ok(())
+	}
+}
+
 /// Issued by the Home authority for a participant, independently of a definition version.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

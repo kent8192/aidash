@@ -3,6 +3,27 @@ use crate::memory::recall::{Rankings, fuse, graph, temporal};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
+fn role_model_accepts_agent_model_or_a_pinned_entry() {
+	let own: RoleModel = serde_json::from_str("\"agent_model\"").unwrap();
+	assert!(own.validate().is_ok());
+	assert_eq!(
+		serde_json::to_value(&own).unwrap(),
+		serde_json::json!("agent_model")
+	);
+	let entry: RoleModel =
+		serde_json::from_value(serde_json::json!({"id":"model","version":"1.0.0"})).unwrap();
+	assert!(entry.validate().is_ok());
+	assert_eq!(
+		serde_json::to_value(&entry).unwrap(),
+		serde_json::json!({"id":"model","version":"1.0.0"})
+	);
+	let invalid: RoleModel =
+		serde_json::from_value(serde_json::json!({"id":"model","version":""})).unwrap();
+	assert!(invalid.validate().is_err());
+	assert!(serde_json::from_str::<RoleModel>("\"other\"").is_err());
+}
+
+#[test]
 fn journal_evidence_accepts_only_a_nonempty_ordered_range() {
 	let run = Uuid::from_u128(42);
 	let mut fact = unit(1).content;
