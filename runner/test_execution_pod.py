@@ -592,6 +592,18 @@ class ExecutionPodControllerTest(unittest.TestCase):
             controller.ensure(settings)
         self.assertEqual(failure.exception.code, 'pod_unavailable')
         self.assertIs(backend.objects[('pod', resource['pod'])], pod)
+        # A failed node guard must fence the Space and interrupt the old command.
+        operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        controller._command_path(operation).write_text(json.dumps({'operation_id': operation,
+            'scratch_space_id': 'id', 'run_id': 'run', 'status': 'running'}))
+        pod['status'] = {'phase': 'Failed'}
+        controller._terminate_recorded_pod = Mock(side_effect=ExecutionPodError('termination_unconfirmed', 'guard unavailable'))
+        with self.assertRaises(ExecutionPodError) as failure:
+            controller.ensure(settings)
+        self.assertEqual(failure.exception.code, 'termination_unconfirmed')
+        self.assertIs(backend.objects[('pod', resource['pod'])], pod)
+        self.assertEqual(controller._read_command(operation)['status'], 'interrupted')
+        controller._clear_space_unconfirmed('id')
         # The node guard is exercised by the stop tests; here it confirms retirement.
         controller._terminate_recorded_pod = Mock()
         for phase in ('Failed', 'Succeeded', 'Running'):
@@ -2576,6 +2588,77 @@ class RecoveryRegressionTest(unittest.TestCase):
             controller._require_space_termination_confirmed('s')
 
 
+class JournalRetentionTest(unittest.TestCase):
+    def test_pruning_keeps_retry_window_and_unsettled_records_in_their_space(self):
+        import hashlib
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController, JOURNAL_RETENTION_SECONDS
+        now = 2_000_000
+        ids = [f'e6ded09d-f783-4ce8-98e9-dbfca68884f{i}' for i in range(1, 5)]
+        request = {'operation_id': ids[0], 'scratch_space_id': 's', 'run_id': 'r', 'code': 'true'}
+        digest = hashlib.sha256(json.dumps(request, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+            for op, space, state, finished in ((ids[0], 's', 'completed', now - JOURNAL_RETENTION_SECONDS + 1),
+                                               (ids[1], 's', 'completed', now - JOURNAL_RETENTION_SECONDS - 1),
+                                               (ids[2], 's', 'running', 1),
+                                               (ids[3], 'other', 'completed', 1)):
+                controller._command_path(op).write_text(json.dumps({'operation_id': op, 'scratch_space_id': space,
+                    'run_id': 'r', 'status': state, 'terminal_at': finished, 'request_digest': digest}))
+            with patch('time.time', return_value=now):
+                self.assertEqual(controller.submit_command(request)['status'], 'completed')
+                controller.prune_space('s')
+            self.assertTrue(controller._command_path(ids[0]).exists())
+            self.assertFalse(controller._command_path(ids[1]).exists())
+            self.assertTrue(controller._command_path(ids[2]).exists())
+            self.assertTrue(controller._command_path(ids[3]).exists())
+
+    def test_rebuilt_index_isolates_spaces_and_keeps_unconfirmed_stops(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController, JOURNAL_RETENTION_SECONDS
+        first = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        other = 'e6ded09d-f783-4ce8-98e9-dbfca68884f2'
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+            for op, space in ((first, 's'), (other, 'other')):
+                controller._command_path(op).write_text(json.dumps({'operation_id': op, 'scratch_space_id': space,
+                    'run_id': 'r', 'status': 'interrupted', 'terminal_at': 1, 'stop_pending': True,
+                    'background': True}))
+            controller._ensure_journal_index()
+            controller._command_path(other).write_text('{unreadable')
+            controller.prune_space('s', now=JOURNAL_RETENTION_SECONDS + 2)
+            self.assertTrue(controller._command_path(first).exists())
+            self.assertEqual(len(controller.background_processes('s')['processes']), 0)
+            self.assertTrue(controller._command_path(other).exists())
+
+    def test_full_space_rejects_new_work_without_rejecting_retry(self):
+        import hashlib
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController, ExecutionPodError
+        op = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        request = {'operation_id': op, 'scratch_space_id': 's', 'run_id': 'r', 'code': 'true'}
+        digest = hashlib.sha256(json.dumps(request, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+            controller._command_path(op).write_text(json.dumps({'operation_id': op, 'scratch_space_id': 's',
+                'run_id': 'r', 'status': 'completed', 'terminal_at': 1_000_000, 'request_digest': digest}))
+            with patch('execution_pod.JOURNAL_MAX_RECORDS_PER_SPACE', 1), patch('time.time', return_value=1_000_001):
+                self.assertEqual(controller.submit_command(request)['status'], 'completed')
+                with self.assertRaises(ExecutionPodError) as refused:
+                    controller.submit_command(dict(request, operation_id='e6ded09d-f783-4ce8-98e9-dbfca68884f2'))
+                self.assertEqual(refused.exception.code, 'journal_full')
+            controller.backend.kube.assert_not_called()
+
+
 class BackgroundListingRegressionTest(unittest.TestCase):
     def test_listing_omits_output_and_old_terminal_records(self):
         import json
@@ -2918,8 +3001,8 @@ class PythonSessionMappingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
             operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
-            controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id':operation}))
-            controller._command_path(operation).write_text(json.dumps({'operation_id':operation, 'status':'interrupted', 'pod_uid': 'uid'}))
+            controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id':operation, 'scratch_space_id': 's'}))
+            controller._command_path(operation).write_text(json.dumps({'operation_id':operation, 'scratch_space_id': 's', 'status':'interrupted', 'pod_uid': 'uid'}))
             controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
             controller.command_result = Mock(return_value={'status':'interrupted'})
             controller.submit_command = Mock()
@@ -2937,8 +3020,8 @@ class PythonSessionMappingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             controller = ExecutionPodController(Mock(root=Path(directory)), {'output_bytes': 8388608}, admitted=True)
             operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
-            controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id': operation}))
-            controller._command_path(operation).write_text(json.dumps({'operation_id': operation,
+            controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id': operation, 'scratch_space_id': 's'}))
+            controller._command_path(operation).write_text(json.dumps({'operation_id': operation, 'scratch_space_id': 's',
                 'status': 'interrupted', 'pod_uid': 'old'}))
             controller._get = Mock(return_value={'metadata': {'uid': 'new'}})
             controller.submit_command = Mock(return_value={'status': 'queued'})
@@ -2957,8 +3040,8 @@ class PythonSessionMappingTest(unittest.TestCase):
             controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
             op = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
             path = controller._python_session_path('s', 'r')
-            path.write_text(json.dumps({'operation_id': op}))
-            controller._command_path(op).write_text(json.dumps({'operation_id': op, 'status': 'interrupted', 'pod_uid': 'old'}))
+            path.write_text(json.dumps({'operation_id': op, 'scratch_space_id': 's'}))
+            controller._command_path(op).write_text(json.dumps({'operation_id': op, 'scratch_space_id': 's', 'status': 'interrupted', 'pod_uid': 'old'}))
             controller._get = Mock(return_value={'metadata': {'uid': 'new'}})
             controller.submit_command = Mock(return_value={'status': 'queued'})
             first = controller.start_python('s', 'r')
@@ -2992,8 +3075,8 @@ class PythonSessionMappingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
             op = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
-            controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id': op}))
-            controller._command_path(op).write_text(json.dumps({'operation_id': op, 'status': 'stopped', 'pod_uid': 'old'}))
+            controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id': op, 'scratch_space_id': 's'}))
+            controller._command_path(op).write_text(json.dumps({'operation_id': op, 'scratch_space_id': 's', 'status': 'stopped', 'pod_uid': 'old'}))
             controller._get = Mock(return_value={'metadata': {'uid': 'new'}})
             controller.submit_command = Mock(return_value={'status': 'queued'})
             self.assertFalse(controller.start_python('s', 'r').get('session_replaced', False))
@@ -3986,7 +4069,7 @@ class PythonInterpreterStopTest(unittest.TestCase):
                     'pod_uid': 'uid', 'docker_enabled': False, 'background': False, 'status': 'running',
                     'kind': 'python_cell', 'session_operation_id': self.session}
             controller._command_path(self.cell).write_text(json.dumps(cell))
-            controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id': self.session}))
+            controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id': self.session, 'scratch_space_id': 's'}))
             # The session stays `running` in the journal: after a Runner restart its watcher polls only every 5 s
             # and then reads saved output, which fails here.
             controller._command_path(self.session).write_text(json.dumps({'operation_id': self.session,
@@ -4245,8 +4328,8 @@ class PythonSessionRefusalTest(unittest.TestCase):
         for age in (0, 30 * 86400):
             with self.subTest(age=age), tempfile.TemporaryDirectory() as directory:
                 controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
-                controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id': self.operation}))
-                controller._command_path(self.operation).write_text(json.dumps({'operation_id': self.operation,
+                controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id': self.operation, 'scratch_space_id': 's'}))
+                controller._command_path(self.operation).write_text(json.dumps({'operation_id': self.operation, 'scratch_space_id': 's',
                     'status': 'interrupted', 'pod_uid': 'old', 'terminal_at': 1_000_000 - age}))
                 controller._get = Mock(return_value=None)
                 controller.submit_command = Mock(return_value={'status': 'queued'})

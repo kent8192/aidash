@@ -99,7 +99,12 @@ Pod; background processes have a separate pool of 16. The
 default deadline is ten minutes and the maximum is 60 minutes. Foreground
 commands waiting for a Run may be cancelled; background processes expose their
 starting Run and bounded logs. Commands interrupted by a lost Pod or node have
-an unknown outcome and are never replayed. Python interpreters are per Run.
+an unknown outcome and are never replayed during the retry window. Terminal
+command records are retained for at least seven days after completion; unsettled
+commands and stops awaiting confirmation are retained. Each Space is limited to
+128 command records. At the limit, new commands are refused until records can
+expire, while retries of retained commands still return their prior results.
+Python interpreters are per Run.
 The Pod stops after 30 minutes without a command or Live preview viewer;
 background processes alone do not extend its life. Preview and MCP integration
 with the application remains for wave 2.

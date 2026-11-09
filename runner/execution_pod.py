@@ -5,6 +5,8 @@ from threading import Lock, RLock
 STOP_RETRY_SECONDS = 15 * 60
 LATE_RESULT_SECONDS = 24 * 60 * 60
 OUTPUT_RETRY_SECONDS = 60
+JOURNAL_RETENTION_SECONDS = 7 * 24 * 60 * 60
+JOURNAL_MAX_RECORDS_PER_SPACE = 128
 # How long a Python interpreter may take to show a terminal result once its stop was accepted. After the
 # stop signal the in-Pod supervisor (sandbox_v2.run_supervised) kills and reaps the interpreter's processes
 # within 5 s, joins its output readers for FORWARD_GRACE_SECONDS (5 s), drains a reader that is still held
@@ -455,6 +457,75 @@ class ExecutionPodController:
         self.lifecycle_locks = {}
         self.command_stop_locks = [RLock() for _ in range(64)]
         self.helper_checks = set()
+        self.index_lock = Lock()
+        self.journal_index = None
+        self.session_index = None
+
+    def _ensure_journal_index(self):
+        """Rebuild the per-Space index once from the durable journals at startup."""
+        import json
+        if self.journal_index is not None:
+            return
+        with self.index_lock:
+            if self.journal_index is not None:
+                return
+            indexes = []
+            for directory in ('execution-v2', 'execution-v2-python'):
+                index = {}
+                root = self.backend.root / directory
+                for path in root.glob('*.json') if root.exists() else ():
+                    record = json.loads(path.read_bytes())
+                    space = record['scratch_space_id']
+                    if not isinstance(space, str) or not space:
+                        raise ValueError('invalid journal Space identity')
+                    index.setdefault(space, set()).add(path.name)
+                indexes.append(index)
+            # All new records wait for the rebuild before they are written.
+            self.session_index = indexes[1]
+            self.journal_index = indexes[0]
+
+    def _space_journal_paths(self, scratch_space_id, *, sessions=False):
+        self._ensure_journal_index()
+        with self.lock:
+            index = self.session_index if sessions else self.journal_index
+            names = tuple(index.get(scratch_space_id, ()))
+        directory = 'execution-v2-python' if sessions else 'execution-v2'
+        return [self.backend.root / directory / name for name in names]
+
+    def prune_space(self, scratch_space_id, *, now=None):
+        """Remove only settled records after their seven-day retry window."""
+        import json
+        import time
+        current = time.time() if now is None else now
+        with self._space_lock(scratch_space_id):
+            for path in self._space_journal_paths(scratch_space_id):
+                try:
+                    candidate = json.loads(path.read_bytes())
+                except FileNotFoundError:
+                    continue
+                terminal_at = candidate.get('terminal_at')
+                if (candidate.get('status') not in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted')
+                        or not isinstance(terminal_at, (int, float)) or terminal_at > current - JOURNAL_RETENTION_SECONDS
+                        or candidate.get('stop_pending')):
+                    continue
+                with self.lock:
+                    if not path.exists():
+                        continue
+                    record = json.loads(path.read_bytes())
+                    terminal_at = record.get('terminal_at')
+                    if (record.get('status') not in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted')
+                            or not isinstance(terminal_at, (int, float)) or terminal_at > current - JOURNAL_RETENTION_SECONDS
+                            or record.get('stop_pending') or record.get('operation_id') in self.futures):
+                        continue
+                    # A Python session pointer cannot outlive the record it names.
+                    run = record.get('run_id')
+                    if record.get('kind') == 'python_session' and run:
+                        session_path = self._python_session_path(scratch_space_id, run)
+                        if session_path.exists() and json.loads(session_path.read_bytes()).get('operation_id') == record['operation_id']:
+                            session_path.unlink()
+                            self.session_index.get(scratch_space_id, set()).discard(session_path.name)
+                    path.unlink()
+                    self.journal_index.get(scratch_space_id, set()).discard(path.name)
 
     def _space_lock(self, scratch_space_id):
         with self.lock:
@@ -883,13 +954,18 @@ print(json.dumps(r))'''
         import json
         import time
         from control import save
-        directory = self.backend.root / 'execution-v2'
-        if not directory.exists():
-            return
-        with self.lock:
-            for path in directory.glob('*.json'):
+        for path in self._space_journal_paths(scratch_space_id):
+            try:
+                candidate = json.loads(path.read_bytes())
+            except FileNotFoundError:
+                continue
+            if candidate.get('status') not in ('queued', 'running'):
+                continue
+            with self.lock:
+                if not path.exists():
+                    continue
                 record = json.loads(path.read_bytes())
-                if record.get('scratch_space_id') == scratch_space_id and record.get('status') in ('queued', 'running'):
+                if record.get('status') in ('queued', 'running'):
                     prior = record['status']
                     record.update(status='interrupted' if prior == 'running' else 'cancelled',
                                   outcome='unknown' if prior == 'running' else 'not_started', terminal_at=time.time())
@@ -1023,6 +1099,7 @@ print(json.dumps(r))'''
             claim = self._get('pvc', name)
             if claim and claim.get('spec', {}).get('volumeName'):
                 self._volume_for_purge(claim)
+            journal_paths = self._space_journal_paths(scratch_space_id)
             with self.lock:
                 path = self.backend.root / 'execution-v2-spaces' / (name + '.json')
                 path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1030,14 +1107,7 @@ print(json.dumps(r))'''
                     'scratch_space_id': scratch_space_id, 'last_command_at': time.time()}
                 state['purging'] = True
                 save(path, state)
-                directory = self.backend.root / 'execution-v2'
-                operations = []
-                for record_path in directory.glob('*.json') if directory.exists() else ():
-                    record = json.loads(record_path.read_bytes())
-                    if record.get('scratch_space_id') == scratch_space_id:
-                        future = self.futures.get(record.get('operation_id'))
-                        if future:
-                            operations.append(future)
+                operations = [self.futures[path.stem] for path in journal_paths if path.stem in self.futures]
             self._stop(scratch_space_id)
         if operations:
             _, pending = wait(operations, timeout=30)
@@ -1049,14 +1119,14 @@ print(json.dumps(r))'''
             return result
 
     def _purge_local_state(self, scratch_space_id):
-        import json
         from control import scratch_resource_name
+        journal_paths = self._space_journal_paths(scratch_space_id)
+        session_paths = self._space_journal_paths(scratch_space_id, sessions=True)
+        for path in journal_paths + session_paths:
+            path.unlink(missing_ok=True)
         with self.lock:
-            for directory in ('execution-v2', 'execution-v2-python'):
-                root = self.backend.root / directory
-                for path in root.glob('*.json') if root.exists() else ():
-                    if json.loads(path.read_bytes()).get('scratch_space_id') == scratch_space_id:
-                        path.unlink()
+            self.journal_index.pop(scratch_space_id, None)
+            self.session_index.pop(scratch_space_id, None)
             path = self.backend.root / 'execution-v2-spaces' / (scratch_resource_name(scratch_space_id) + '.json')
             path.unlink(missing_ok=True)
             self.foreground_jobs.pop(scratch_space_id, None)
@@ -1306,6 +1376,9 @@ print(json.dumps(r))'''
                 if prior.get('request_digest') != digest:
                     raise ExecutionPodError('command_conflict', 'Operation ID was already used for another command')
                 return self.command_result(operation_id, observe_late=False)
+        self.prune_space(scratch_id)
+        if len(self._space_journal_paths(scratch_id)) >= JOURNAL_MAX_RECORDS_PER_SPACE:
+            raise ExecutionPodError('journal_full', 'Scratch Space command journal is full; retry after retention expires')
         pod = self._get('pod', name)
         with self.lock:
             # Different Spaces use different lifecycle locks, so another Space
@@ -1343,6 +1416,7 @@ print(json.dumps(r))'''
             if client_digest:
                 record['client_digest'] = client_digest
             save(path, record)
+            self.journal_index.setdefault(scratch_id, set()).add(path.name)
             self.touch_space(scratch_id)
             if not background:
                 self.foreground_jobs[scratch_id] = self.foreground_jobs.get(scratch_id, 0) + 1
@@ -1769,10 +1843,12 @@ print(json.dumps(r))'''
                 queue = self.queues.get(scratch_space_id)
             if queue:
                 queue.cancel_waiting(run_id)
-            directory = self.backend.root / 'execution-v2'
             failures = []
-            for path in directory.glob('*.json') if directory.exists() else ():
-                record = json.loads(path.read_bytes())
+            for path in self._space_journal_paths(scratch_space_id):
+                try:
+                    record = json.loads(path.read_bytes())
+                except FileNotFoundError:
+                    continue
                 if (record.get('scratch_space_id') == scratch_space_id and record.get('run_id') == run_id
                         and not record.get('background') and (record.get('status') in ('queued', 'running')
                             or (record.get('status') == 'interrupted' and record.get('docker_enabled')))):
@@ -1790,13 +1866,13 @@ print(json.dumps(r))'''
         from control import scratch_resource_name
 
         scratch_resource_name(scratch_space_id)
-        directory = self.backend.root / 'execution-v2'
-        if not directory.exists():
-            return {'processes': []}
         result = []
         terminal = {'completed', 'timed_out', 'stopped', 'cancelled', 'interrupted'}
-        for path in directory.glob('*.json'):
-            record = json.loads(path.read_bytes())
+        for path in self._space_journal_paths(scratch_space_id):
+            try:
+                record = json.loads(path.read_bytes())
+            except FileNotFoundError:
+                continue
             if (record.get('scratch_space_id') == scratch_space_id and record.get('background')
                     and record.get('kind') != 'python_session'):
                 finished = record.get('terminal_at') or record.get('accepted_at')
@@ -1976,6 +2052,7 @@ print(json.dumps(r))'''
             try:
                 scratch_id = json.loads(path.read_bytes())['scratch_space_id']
                 with self._space_lock(scratch_id):
+                    self.prune_space(scratch_id, now=current)
                     with self.lock:
                         space = json.loads(path.read_bytes())
                         unconfirmed = space.get('termination_unconfirmed', False)
@@ -2075,7 +2152,10 @@ print(json.dumps(r))'''
                              'run_id': run_id, 'code': code, 'background': True}, kind='python_session')
         session = {'operation_id': operation_id, 'scratch_space_id': scratch_space_id,
                    'run_id': run_id, 'socket_path': socket_path}
+        self._ensure_journal_index()
         save(path, session)
+        with self.lock:
+            self.session_index.setdefault(scratch_space_id, set()).add(path.name)
         return dict(session, session_replaced=True) if replaced else session
 
     def python_cell(self, request):
