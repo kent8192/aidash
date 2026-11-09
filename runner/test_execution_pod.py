@@ -109,6 +109,50 @@ class SystemTreeTest(unittest.TestCase):
             self.assertIn('link', index)
             self.assertNotIn('link/secret', index)
 
+    def test_image_change_is_reported_until_reset_applies_it(self):
+        import tempfile
+        from pathlib import Path
+        from execution_pod import initialize_system_root, system_image_changed
+        image_a, image_b = 'image@sha256:' + 'a' * 64, 'image@sha256:' + 'b' * 64
+        with tempfile.TemporaryDirectory() as directory:
+            image, store = Path(directory) / 'image', Path(directory) / 'store'
+            image.mkdir()
+            (image / 'version').write_text('first')
+            initialize_system_root(image, store, image_identity=image_a)
+            self.assertFalse(system_image_changed(store, image_a))
+            (image / 'version').write_text('second')
+            initialize_system_root(image, store, image_identity=image_b)
+            self.assertTrue(system_image_changed(store, image_b))
+            self.assertEqual((store / 'rootfs' / 'version').read_text(), 'first')
+            initialize_system_root(image, store, reset=True, image_identity=image_b)
+            self.assertFalse(system_image_changed(store, image_b))
+            self.assertEqual((store / 'rootfs' / 'version').read_text(), 'second')
+
+    def test_interrupted_reset_does_not_leave_a_stale_image_marker(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from execution_pod import initialize_system_root, system_image_changed
+        image_id = 'image@sha256:' + 'a' * 64
+        with tempfile.TemporaryDirectory() as directory:
+            image, store = Path(directory) / 'image', Path(directory) / 'store'
+            image.mkdir()
+            initialize_system_root(image, store, image_identity=image_id)
+            with patch('shutil.copytree', side_effect=OSError('copy interrupted')):
+                with self.assertRaises(OSError):
+                    initialize_system_root(image, store, reset=True, image_identity='image@sha256:' + 'b' * 64)
+            self.assertTrue(system_image_changed(store, image_id))
+
+    def test_image_status_helper_runs_with_isolated_python(self):
+        import json
+        import subprocess
+        import sys
+        from pathlib import Path
+        helper = Path(__file__).with_name('sandbox_v2.py')
+        result = subprocess.run([sys.executable, '-I', str(helper), 'image-status', 'image@sha256:' + 'a' * 64],
+                                capture_output=True, check=True)
+        self.assertIsInstance(json.loads(result.stdout)['image_changed'], bool)
+
     def test_initial_copy_reuses_system_and_reset_recopies_image(self):
         import tempfile
         from pathlib import Path
@@ -536,6 +580,9 @@ class ExecutionPodControllerTest(unittest.TestCase):
                 self.calls = []
             def kube(self, args, data=None, **_kwargs):
                 self.calls.append(args)
+                if args[0] == 'exec' and 'image-status' in args:
+                    return SimpleNamespace(stdout=json.dumps({'image_changed': args[-1] !=
+                        'image@sha256:' + 'a' * 64}).encode())
                 if args[0] == 'get':
                     obj = self.objects.get((args[1], args[2]))
                     return SimpleNamespace(stdout=json.dumps(obj).encode() if obj else b'')
@@ -580,6 +627,10 @@ class ExecutionPodControllerTest(unittest.TestCase):
             release.set()
             resource = first.result(timeout=3)
             self.assertEqual(second.result(timeout=3), resource)
+        self.assertFalse(resource['image_changed'])
+        changed = controller.ensure(dict(settings, image='image@sha256:' + 'c' * 64))
+        self.assertTrue(changed['image_changed'])
+        self.assertIn(('pod', resource['pod']), backend.objects)
         self.assertNotIn(settings['egress_credential'], json.dumps(resource))
         for path in backend.root.rglob('*.json'):
             self.assertNotIn(settings['egress_credential'], path.read_text())

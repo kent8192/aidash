@@ -670,9 +670,17 @@ if __name__ == '__main__':
         from pathlib import Path
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from execution_pod import initialize_system_root
-        copied = initialize_system_root('/', '/scratch-image', reset=os.environ.get('AIDASH_RESET_SYSTEM') == 'true')
+        copied = initialize_system_root('/', '/scratch-image', reset=os.environ.get('AIDASH_RESET_SYSTEM') == 'true',
+                                        image_identity=os.environ['AIDASH_IMAGE_ID'])
         if copied or not (Path('/scratch-image') / 'environment.json').exists():
             save_image_environment('/scratch-image', os.environ)
+        raise SystemExit(0)
+    if len(sys.argv) == 3 and sys.argv[1] == 'image-status':
+        import json
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from execution_pod import system_image_changed
+        print(json.dumps({'image_changed': system_image_changed('/scratch-system/image-root', sys.argv[2])}))
         raise SystemExit(0)
     if sys.argv[1:] == ['bootstrap']:
         bootstrap()

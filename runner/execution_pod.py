@@ -110,7 +110,7 @@ def system_tree_diff(before, after):
             'removed': sorted(old - new)}
 
 
-def initialize_system_root(image_root, store, *, reset=False):
+def initialize_system_root(image_root, store, *, reset=False, image_identity=None):
     """Copy image contents once, or replace them after the caller stops the Pod.
 
     The caller serializes startup and reset and must stop all user processes
@@ -135,6 +135,13 @@ def initialize_system_root(image_root, store, *, reset=False):
         os.replace(backup, root)
     if root.exists() and not reset:
         return False
+    # Never leave an old identity attached to a root that may be replaced.
+    (store / 'image-identity.json').unlink(missing_ok=True)
+    directory = os.open(store, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
     if reset:
         if root.exists():
             shutil.rmtree(root)
@@ -183,10 +190,40 @@ def initialize_system_root(image_root, store, *, reset=False):
             raise
         if backup.exists():
             shutil.rmtree(backup)
+        if image_identity is not None:
+            import json
+            marker_tmp = store / ('image-identity.' + uuid.uuid4().hex + '.new')
+            try:
+                with marker_tmp.open('x', encoding='utf-8') as file:
+                    json.dump({'image': image_identity}, file)
+                    file.flush()
+                    os.fsync(file.fileno())
+                os.replace(marker_tmp, store / 'image-identity.json')
+                directory = os.open(store, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+            finally:
+                marker_tmp.unlink(missing_ok=True)
     finally:
         if staging.exists():
             shutil.rmtree(staging)
     return True
+
+
+def system_image_changed(store, requested_image):
+    import json
+    import os
+    from pathlib import Path
+    try:
+        fd = os.open(Path(store) / 'image-identity.json', os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        # Legacy roots have no trustworthy identity; require an explicit reset.
+        return True
+    with os.fdopen(fd, 'rb') as file:
+        marker = json.load(file)
+    return marker.get('image') != requested_image
 
 
 def append_change_log(path, run_id, changes):
@@ -368,7 +405,8 @@ def execution_manifests(settings, config):
                                 '/.aidash-helpers/python/bin/python3', '-I',
                                 '/.aidash-helpers/sandbox_v2.py', 'init'],
                     'env': [{'name': key, 'value': ''} for key in ('LD_PRELOAD', 'LD_AUDIT', 'LD_LIBRARY_PATH', 'PYTHONPATH', 'PYTHONHOME')] +
-                           [{'name': 'AIDASH_RESET_SYSTEM', 'value': str(bool(settings.get('_reset_system'))).lower()}],
+                           [{'name': 'AIDASH_RESET_SYSTEM', 'value': str(bool(settings.get('_reset_system'))).lower()},
+                            {'name': 'AIDASH_IMAGE_ID', 'value': settings['image']}],
                     'securityContext': image_security, 'resources': {'limits': limits},
                     'volumeMounts': [{'name': 'scratch', 'mountPath': '/scratch-image', 'subPath': 'image-root'},
                                      {'name': 'helpers', 'mountPath': '/.aidash-helpers', 'readOnly': True}]},
@@ -753,6 +791,18 @@ print(json.dumps(r))'''
         image = self.config.get('helper_image')
         return bool(image and execution and execution.get('image') and execution['image'] != image)
 
+    def _pod_receipt(self, name, requested_image):
+        import json
+        try:
+            result = self.backend.kube(['exec', name, '-c', 'execution', '--'] +
+                                       helper_command('image-status', requested_image))
+            changed = json.loads(result.stdout)['image_changed']
+            if type(changed) is not bool:
+                raise ValueError('invalid image status')
+        except Exception as error:
+            raise ExecutionPodError('image_status_unavailable', 'Could not verify the system image identity') from error
+        return {'protocol': 'aidash-runner/2', 'pod': name, 'claim': name, 'image_changed': changed}
+
     def ensure(self, settings):
         with self._space_lock(settings['scratch_space_id']):
             try:
@@ -807,7 +857,19 @@ print(json.dumps(r))'''
         elif self._old_helper_image(existing_pod):
             raise ExecutionPodError('pod_updating', 'Execution Pod is updating; retry shortly')
         elif existing_pod.get('metadata', {}).get('annotations', {}).get('aidash.run/spec-digest') != fingerprint:
-            raise ExecutionPodError('settings_mismatch', 'Existing Execution Pod has different settings')
+            old_image = next((item.get('image') for item in existing_pod.get('spec', {}).get('initContainers', [])
+                              if item.get('name') == 'image-root'), None)
+            if old_image and old_image != settings['image']:
+                prior_spec = json.loads(json.dumps(fingerprint_spec))
+                prior_spec['initContainers'][1]['image'] = old_image
+                for item in prior_spec['initContainers'][1]['env']:
+                    if item['name'] == 'AIDASH_IMAGE_ID':
+                        item['value'] = old_image
+                prior_digest = hashlib.sha256(json.dumps(prior_spec, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+            else:
+                prior_digest = None
+            if existing_pod.get('metadata', {}).get('annotations', {}).get('aidash.run/spec-digest') != prior_digest:
+                raise ExecutionPodError('settings_mismatch', 'Existing Execution Pod has different settings')
         uid = existing_pod.get('metadata', {}).get('uid') if existing_pod else None
         if uid and uid == self._admitted_uid(settings['scratch_space_id']):
             status = existing_pod.get('status', {})
@@ -816,7 +878,7 @@ print(json.dumps(r))'''
             if (status.get('phase') != 'Running' or not execution.get('ready') or
                     'running' not in execution.get('state', {})):
                 raise ExecutionPodError('pod_unavailable', 'Execution Pod is not running and ready')
-            return {'protocol': 'aidash-runner/2', 'pod': name, 'claim': name}
+            return self._pod_receipt(name, settings['image'])
         try:
             self._admit_pod(name, settings)
             self.backend.kube(['wait', '--for=condition=Ready', 'pod/' + name, '--timeout=1800s'], timeout=1810)
@@ -841,7 +903,7 @@ print(json.dumps(r))'''
                 self._mark_space_unconfirmed(settings['scratch_space_id'])
                 raise ExecutionPodError('termination_unconfirmed', 'Admission cleanup failed: ' + str(cleanup)) from cleanup
             raise ExecutionPodError('startup_failed', 'Execution Pod did not become ready: ' + detail[-2000:]) from error
-        return {'protocol': 'aidash-runner/2', 'pod': name, 'claim': name}
+        return self._pod_receipt(name, settings['image'])
 
     def stop(self, scratch_space_id):
         with self._space_lock(scratch_space_id):

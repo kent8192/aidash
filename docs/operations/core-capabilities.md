@@ -87,8 +87,10 @@ foreground commands, then replaces Pods and stops their background processes.
 A trusted, read-only injected helper copies the image filesystem into the PVC
 on first start, then runs commands as root in that persisted root. `/scratch`
 contains user files; the copied system tree lives separately on the same PVC.
-Installed packages survive Pod restarts. Reset replaces the system tree from the
-image and preserves `/scratch`. The change log records cheap mtime/size diffs
+Installed packages survive Pod restarts. The Runner receipt reports `image_changed`
+when the requested image differs from the image used to initialize the tree;
+unknown legacy image identity also reports a change. Reset replaces the system
+tree from the requested image and preserves `/scratch`. The change log records cheap mtime/size diffs
 at active-command transitions and periodically while commands run. An interval
 with one command is attributed to its Run; overlapping commands produce an
 `ambiguous` record listing the Runs. The index does not capture every possible
