@@ -30500,7 +30500,7 @@
     "method": "GET",
     "name": "state",
     "path": "/api/state",
-    "query_parameters": [],
+    "query_parameters": ["node"],
     "responses": {
       "200": {
         "definitions": {
@@ -33707,7 +33707,8 @@
               "human_requests",
               "conversations",
               "events",
-              "artifacts"
+              "artifacts",
+              "next_cursors"
             ],
             "properties": {
               "access": {
@@ -33768,6 +33769,9 @@
                 "items": {
                   "$ref": "#/components/schemas/Workspace"
                 }
+              },
+              "next_cursors": {
+                "$ref": "#/components/schemas/NextCursors"
               }
             }
           },
@@ -34696,6 +34700,37 @@
               }
             },
             "required": ["id", "title", "abandonable", "handed_over"],
+            "type": "object"
+          },
+          "NextCursors": {
+            "properties": {
+              "artifacts": {
+                "type": ["string", "null"]
+              },
+              "conversations": {
+                "type": ["string", "null"]
+              },
+              "human_requests": {
+                "type": ["string", "null"]
+              },
+              "runs": {
+                "type": ["string", "null"]
+              },
+              "tasks": {
+                "type": ["string", "null"]
+              },
+              "workspaces": {
+                "type": ["string", "null"]
+              }
+            },
+            "required": [
+              "workspaces",
+              "tasks",
+              "runs",
+              "artifacts",
+              "human_requests",
+              "conversations"
+            ],
             "type": "object"
           }
         },
@@ -54952,7 +54987,7 @@
     "method": "GET",
     "name": "human-requests",
     "path": "/api/human-requests",
-    "query_parameters": ["cursor", "run", "state"],
+    "query_parameters": ["cursor", "node", "run", "state"],
     "responses": {
       "200": {
         "definitions": {
@@ -57030,5 +57065,84 @@
     },
     "source": "server/src/apps/identity/views/peer_execution.rs",
     "uuid_parameters": ["id"]
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "workspace-list",
+    "path": "/api/workspaces",
+    "query_parameters": ["cursor", "node"],
+    "responses": {
+      "200": {
+        "definitions": {
+          "NodeName": {
+            "description": "The identifier Aidash assigns to a Node, in the same form as a Tenant name:\n`<adjective>-<noun>-<8 random characters>`. Unique within its Deployment,\nnever changed and never reused.",
+            "type": "string"
+          },
+          "Workspace": {
+            "properties": {
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "goal": {
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "node": {
+                "$ref": "#/components/schemas/NodeName",
+                "description": "The Node of its Tenant that the Workspace, its Tasks and its Runs belong to."
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "scratch_space_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "state": {},
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "scratch_space_id",
+              "node",
+              "title",
+              "goal",
+              "state",
+              "revision",
+              "created_at"
+            ],
+            "type": "object"
+          },
+          "WorkspacePage": {
+            "properties": {
+              "items": {
+                "items": {
+                  "$ref": "#/components/schemas/Workspace"
+                },
+                "type": "array"
+              },
+              "next_cursor": {
+                "type": ["string", "null"]
+              }
+            },
+            "required": ["items", "next_cursor"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/WorkspacePage"
+        }
+      }
+    },
+    "source": "server/src/apps/workspaces/views/management.rs",
+    "uuid_parameters": []
   }
 ]

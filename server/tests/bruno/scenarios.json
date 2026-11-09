@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 403,
+  "endpoint_count": 404,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -17746,6 +17746,62 @@
         "Rejected input preserves committed workspace state",
         "Exact HTTP 401",
         "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1606 workspace-list - Anonymous request is rejected",
+      "file": "contracts/1606-workspace-list.bru",
+      "endpoint": "GET /api/workspaces",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1607 workspace-list - Deployment Administrator cannot read Tenant data",
+      "file": "contracts/1607-workspace-list.bru",
+      "endpoint": "GET /api/workspaces",
+      "scenario": "Deployment Administrator cannot read Tenant data",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1608 workspace-list - Malformed bearer syntax is rejected",
+      "file": "contracts/1608-workspace-list.bru",
+      "endpoint": "GET /api/workspaces",
+      "scenario": "Malformed bearer syntax is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1609 workspace-list - Application read preserves the typed response contract",
+      "file": "contracts/1609-workspace-list.bru",
+      "endpoint": "GET /api/workspaces",
+      "scenario": "Application read preserves the typed response contract",
+      "status": 200,
+      "required_checks": [
+        "Exact HTTP 200",
+        "Documented response fields and types",
+        "Application read preserves the typed response contract contract"
+      ]
+    },
+    {
+      "name": "1610 workspace-list - Paging rejects nonnumeric or malformed cursors",
+      "file": "contracts/1610-workspace-list.bru",
+      "endpoint": "GET /api/workspaces",
+      "scenario": "Paging rejects nonnumeric or malformed cursors",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     }
   ]
