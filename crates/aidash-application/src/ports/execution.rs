@@ -23,11 +23,23 @@ pub struct WorkspaceEvent {
 	pub status: String,
 }
 
+/// The Workspace task changes a waiting Run is told about.
+#[derive(Debug, Clone, Default)]
+pub struct WorkspaceEvents {
+	/// The newest changes, oldest first. The store bounds how many it returns.
+	pub events: Vec<WorkspaceEvent>,
+	/// How many older changes the bound left out. The Run's cursor moves past
+	/// them, so only this count tells the Agent that it was not told of them.
+	pub dropped: u64,
+}
+
 /// Validated projection of the registered agent configuration used by execution.
 pub struct ExecutionAgent {
 	pub model: EntityRef,
 	pub instructions: String,
 	pub knowledge_digest: Option<String>,
+	/// How many Reference files this version binds; the model is told only this.
+	pub reference_files: usize,
 	pub tools: Vec<EntityRef>,
 	pub skills: Vec<EntityRef>,
 	pub max_steps: i32,
@@ -109,7 +121,7 @@ pub enum InferenceInterruption {
 #[async_trait]
 pub trait ExecutionStore: Send + Sync {
 	/// Workspace task changes after the Run's durable cursor, in generation order.
-	async fn workspace_events(&self, run: &Run, after: i64) -> Result<Vec<WorkspaceEvent>>;
+	async fn workspace_events(&self, run: &Run, after: i64) -> Result<WorkspaceEvents>;
 	/// Number of locally created or delegated Tasks that remain unfinished.
 	async fn unfinished_owned_tasks(&self, run: &Run) -> Result<u64>;
 	/// Saving `model.completed` also closes the Run's pending Inference Attempt as
@@ -274,6 +286,17 @@ pub trait ExecutionStore: Send + Sync {
 		Err(crate::Error::Invalid(
 			"tool delivery journal unavailable".into(),
 		))
+	}
+	/// Record that an authority check refused a replay-safe call and paused the Run, under the
+	/// worker lease. Only a `STARTED` row changes. Starting the key again reopens it.
+	async fn invocation_refused(
+		&self,
+		_run: &Run,
+		_token: Uuid,
+		_key: &str,
+		_refusal: &aidash_domain::tool::AuthorityRefusal,
+	) -> Result<()> {
+		Ok(())
 	}
 	/// Record an answer lost after sending, before releasing the worker lease.
 	async fn invocation_answer_lost(&self, _run: &Run, _token: Uuid, _key: &str) -> Result<()> {

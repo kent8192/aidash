@@ -3088,6 +3088,67 @@ async fn remote_grant_reports_the_receivers_missing_catalog_approval(
 	p.close().await;
 }
 
+/// A Run executing here for another Home is checked against its Binding like any other when an
+/// operation acts for it, so a withdrawal on the executing Node stops its running commands (#769).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_withdrawal_on_the_executing_node_stops_a_foreign_runs_actions(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	let authorization = aidash_server::authorization::Authorization {
+		pool: p.b.store.pool.clone(),
+	};
+	let blocked = async |local_only: bool| {
+		let aidash_server::authorization::identity::Actor::Subject(identity) =
+			authorization.authenticate(&p.receiver_token).await.unwrap()
+		else {
+			panic!("a Subject Credential authenticates a subject")
+		};
+		let run = p.run().await;
+		let chain: Vec<String> = sqlx::query_scalar(
+			"SELECT subject_chain FROM authorization_remote_admissions WHERE task_id = $1",
+		)
+		.bind(run.task_id)
+		.fetch_one(p.b.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		aidash_server::authorization::services::execution::use_recheck_blocks(
+			&p.b.store,
+			&identity,
+			chain,
+			&run.metadata(),
+			local_only,
+		)
+		.await
+		.unwrap()
+	};
+	assert_eq!(
+		blocked(false).await,
+		None,
+		"a healthy foreign Run is usable"
+	);
+	let reference = EntityRef {
+		id: "research".into(),
+		version: "1.0.0".into(),
+	};
+	authorization
+		.set_catalog(
+			"acme",
+			&aidash_domain::nodes::NodeName::derived("acme"),
+			&reference,
+			1,
+			false,
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	// An operation acting for it is stopped; a person's resume does not control such a Run.
+	assert_eq!(blocked(false).await, Some(reference));
+	assert_eq!(blocked(true).await, None);
+	p.close().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn review_receiver_only_executor_activates_required_home(

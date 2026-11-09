@@ -87,6 +87,17 @@ impl Steward {
 		}
 	}
 
+	/// Whether this steward could be allowed to delete the Tenant, read before
+	/// the deletion waits for the Tenant's running work.
+	async fn may_delete(&self, pool: &crate::database::native::Pool) -> Result<bool> {
+		match self {
+			Self::DeploymentAdministrator(_) => Ok(true),
+			Self::TenantAdministrator(administrator) => {
+				administrator.may_change(pool, TENANT_DELETE).await
+			}
+		}
+	}
+
 	/// Locks the Tenant's policy exclusively, so no boundary interleaves, and
 	/// checks this steward's authority over it. `deleted` reads the policy
 	/// the Tenant was deleted with, for a restore.
@@ -95,6 +106,7 @@ impl Steward {
 		tx: &mut dyn TransactionExecutor,
 		tenant: &str,
 		deleted: bool,
+		exclusive: bool,
 	) -> Result<()> {
 		match self {
 			Self::DeploymentAdministrator(origin) => {
@@ -115,7 +127,9 @@ impl Steward {
 				let snapshot = if deleted {
 					administrator.lock_deleted(tx).await?
 				} else {
-					administrator.lock(tx, true).await?
+					administrator
+						.lock_change(tx, exclusive, TENANT_DELETE)
+						.await?
 				};
 				administrator
 					.require(tx, &snapshot, TENANT_DELETE, tenant, json!({}))
@@ -177,11 +191,12 @@ impl TenantDeletions {
 		};
 		let f = &self.runtime;
 		let grace_days = f.config.tenancy.deletion_grace_days;
+		let exclusive = steward.may_delete(&f.store.pool).await?;
 		let result = f
 			.store
 			.pool
 			.atomic(&TenancyScope::tenant(&tenant)?, async |tx| {
-				steward.authorize(tx, &tenant, false).await?;
+				steward.authorize(tx, &tenant, false, exclusive).await?;
 				let deletion =
 					tenant_deletions::record(tx, &tenant, steward.actor(), grace_days).await?;
 				steward
@@ -221,7 +236,7 @@ impl TenantDeletions {
 			let mut check = f.store.pool.begin(&scope).await?;
 			let checked = async {
 				refuse_purged(&mut check, &tenant).await?;
-				steward.authorize(&mut check, &tenant, true).await?;
+				steward.authorize(&mut check, &tenant, true, true).await?;
 				tenant_deletions::current_locked(&mut check, &tenant)
 					.await?
 					.ok_or_else(|| Error::Conflict("the Tenant is not deleted".into()))
@@ -245,7 +260,7 @@ impl TenantDeletions {
 				.pool
 				.atomic(&scope, async |tx| {
 					refuse_purged(tx, &tenant).await?;
-					steward.authorize(tx, &tenant, true).await?;
+					steward.authorize(tx, &tenant, true, true).await?;
 					let deletion = tenant_deletions::current_locked(tx, &tenant)
 						.await?
 						.ok_or_else(|| Error::Conflict("the Tenant is not deleted".into()))?;
@@ -291,7 +306,7 @@ impl TenantDeletions {
 				if tenant_deletions::ended(tx, &tenant).await? == Some("tenant_purged") {
 					return Err(Error::Conflict("tenant_purged".into()));
 				}
-				steward.authorize(tx, &tenant, true).await?;
+				steward.authorize(tx, &tenant, true, true).await?;
 				let deletion = tenant_deletions::current_locked(tx, &tenant)
 					.await?
 					.ok_or_else(|| Error::Conflict("the Tenant is not deleted".into()))?;

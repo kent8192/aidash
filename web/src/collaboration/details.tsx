@@ -8,6 +8,7 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
 import { RemoteMemoryProvenance, RemoteRunManagement } from "./remote-memory";
+import { ApiError } from "../transport";
 import { RemoteExecutions } from "./remote-executions";
 import { ReferenceName } from "../record-view";
 import {
@@ -499,15 +500,22 @@ function RunPanel({
     attachments: string[];
     key: string;
   } | null>(null);
-  if (!run)
+  if (!run) {
+    const hiddenBy =
+      query.error instanceof ApiError && query.error.runReads
+        ? query.error.message
+        : undefined;
     return (
       <>
         <Hint role="status">
-          {query.isPending ? copy.processing : copy.unavailable}
+          {query.isPending ? copy.processing : (hiddenBy ?? copy.unavailable)}
         </Hint>
-        {data.access.kind === "subject" && <RemoteRunManagement id={id} />}
+        {data.access.kind === "subject" && (
+          <RemoteRunManagement id={id} resumeElsewhere={!hiddenBy} />
+        )}
       </>
     );
+  }
   const mediaInputRoutes = query.data?.pages[0].media_input_routes ?? [];
   const mediaAccept = runMediaAccept(mediaInputRoutes);
   // Sending attachments still requires an exact Node, even when an

@@ -15,13 +15,23 @@ pub(crate) async fn prepare(
 	prepare_kind(store, access, run, area, input, "shell", json!({})).await
 }
 
+/// What a Pod receives from an Area: Reference files stay with the file tools.
+pub(crate) fn pod_files(area: &Area) -> Result<Vec<FileEntry>> {
+	Ok(service::files(area)?
+		.into_iter()
+		.filter(|file| {
+			!(matches!(file.scope, FileScope::References) && file.provenance["kind"] == "reference")
+		})
+		.collect())
+}
+
 pub(in crate::apps::execution) async fn request_files(
 	access: &mut Access,
 	run: Uuid,
 	area: &Area,
 	package_files: Vec<FileEntry>,
 ) -> Result<Vec<FileEntry>> {
-	let mut files = service::files(area)?;
+	let mut files = pod_files(area)?;
 	files.extend(super::skills::mounted(access, run).await?);
 	files.extend(package_files);
 	Ok(files)
@@ -120,8 +130,10 @@ pub(crate) async fn remote(
 }
 
 pub async fn run(store: Store, stopping: tokio::sync::watch::Receiver<bool>) -> Result<()> {
+	let repository = crate::bootstrap::operation_processing_repository(&store);
 	aidash_runtime::capabilities::run(
-		&crate::bootstrap::operation_processing_repository(&store),
+		&repository,
+		&repository,
 		&crate::bootstrap::capability_background_jobs(&store),
 		stopping,
 	)

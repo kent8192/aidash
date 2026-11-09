@@ -74,7 +74,7 @@ pub(crate) fn implementations() -> BTreeMap<String, Arc<dyn Tool>> {
 	for (name, description, mut parameters) in [
 		(
 			"file_search",
-			"Search authorized files with located provenance and revision-bound continuation.",
+			"Search authorized files with located provenance and revision-bound continuation. In path mode an empty query lists every path in the scope.",
 			schema::<FileSearch>(),
 		),
 		(

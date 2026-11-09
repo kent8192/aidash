@@ -14,11 +14,59 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+/// The Run's own authority was gone when its tool call had already had its effect. The harness
+/// fills in the tool and leaves the invocation `STARTED`. A Node that did not answer is not
+/// retried either ([`after_effect`]).
+fn authority_gone_after_effect(error: Error) -> Error {
+	match error {
+		Error::Forbidden | Error::Unauthorized => {
+			Error::AuthorityRefused(Box::new(aidash_domain::tool::AuthorityRefusal {
+				tool: String::new(),
+				check: aidash_domain::tool::RefusalCheck::RunAuthority,
+				action: None,
+				subject: None,
+			}))
+		}
+		error => after_effect(error),
+	}
+}
+
+/// Give the Run's own lease back after a tool suspended it, on every path: an early refusal of
+/// the tool's own authority can now reach the model as a Rejected Call, and the Run then goes on
+/// with this lease. If the lease cannot be restored, the Run's authority is gone and it pauses,
+/// whatever `result` says.
+async fn restore_outer<T>(
+	outer: &mut Access,
+	store: &Store,
+	run: &Run,
+	result: Result<T>,
+) -> Result<T> {
+	refresh_access_for_run(outer, store, run)
+		.await
+		.map_err(authority_gone_after_effect)?;
+	memory_run_check(outer, &run.metadata())
+		.await
+		.map_err(authority_gone_after_effect)?;
+	result
+}
+
 async fn memory_run_check(access: &mut Access, run: &crate::domain::RunMetadata) -> Result<()> {
+	let mark = access.call_mark();
 	match access.run_invalidity(run).await? {
 		None => Ok(()),
-		Some(crate::semantic::remote::Failure::Authority) => Err(Error::Forbidden),
-		Some(reason) => Err(Error::RemoteSemantic(reason)),
+		Some(reason) => Err(access.memory_failure_since(mark, reason)),
+	}
+}
+
+/// A Node that did not answer a recheck run after a tool took effect (#751):
+/// running the tool again could repeat the effect, so the Run is not retried.
+fn after_effect(error: Error) -> Error {
+	match error {
+		Error::NodeUnreachable { node, .. } => Error::NodeUnreachable {
+			node,
+			after_effect: true,
+		},
+		error => error,
 	}
 }
 
@@ -86,13 +134,15 @@ pub(in crate::apps::identity) async fn refresh_access_for_run(
 	store: &Store,
 	run: &Run,
 ) -> Result<()> {
-	aidash_application::authorization::execution::refresh_worker(
+	let mark = access.call_mark();
+	let result = aidash_application::authorization::execution::refresh_worker(
 		&mut crate::bootstrap::execution_grant_scope(access),
 		store.deployment.as_str(),
 		&run.metadata(),
 	)
 	.await
-	.map_err(Into::into)
+	.map_err(Into::into);
+	result.map_err(|error| access.named_since(mark, error))
 }
 
 pub(crate) async fn inherit_task_origin(access: &mut Access, task: Uuid) -> Result<bool> {
@@ -121,6 +171,68 @@ async fn admit(
 	)
 	.await
 	.map_err(Into::into)
+}
+
+/// Whether an operation that acts for `run` may go on, as the operation sweep decides it: an
+/// authority for the saved identity, with the subjects the operation saved (the Run's chain).
+/// Tests drive the sweep's check through this seam; production uses `run_for_action` directly.
+#[doc(hidden)]
+pub async fn operation_may_act(
+	store: &Store,
+	identity: &SubjectIdentity,
+	subjects: Vec<String>,
+	run: Uuid,
+) -> Result<()> {
+	let mut access = Access::begin(store, identity).await?;
+	access.subjects = subjects;
+	let result = access.run_for_action(run).await.map(|_| ());
+	access.finish(result).await
+}
+
+/// The Use Recheck alone, for tests: the first definition of `run`'s Binding (or its Agent) that
+/// these subjects may no longer use. `local_only` is the resume's rule, which leaves out a Run of
+/// another Home executing here.
+#[doc(hidden)]
+pub async fn use_recheck_blocks(
+	store: &Store,
+	identity: &SubjectIdentity,
+	subjects: Vec<String>,
+	run: &crate::domain::RunMetadata,
+	local_only: bool,
+) -> Result<Option<EntityRef>> {
+	let mut access = Access::begin(store, identity).await?;
+	access.subjects = subjects;
+	let result = crate::apps::identity::repositories::execution::guard::use_block(
+		&mut access,
+		run,
+		local_only,
+	)
+	.await
+	.map_err(Into::into);
+	access.finish(result).await
+}
+
+/// The definitions a read of `run` leaves in the set a retained lease may admit from, for tests:
+/// read under the Run's own authority, or under a lease inherited from it.
+#[doc(hidden)]
+pub async fn retained_after_read(
+	store: &Store,
+	identity: &SubjectIdentity,
+	subjects: Vec<String>,
+	run: Uuid,
+	inherited: bool,
+) -> Result<std::collections::BTreeSet<(String, String)>> {
+	let mut outer = Access::begin(store, identity).await?;
+	outer.subjects = subjects;
+	let mut access = if inherited {
+		Access::under_lease(&outer).await?
+	} else {
+		outer
+	};
+	let _ = access.run_for_action(run).await;
+	let retained = access.approved_catalog.clone();
+	access.finish(Ok(())).await?;
+	Ok(retained)
 }
 
 pub async fn claim(
@@ -192,6 +304,61 @@ pub(crate) async fn delegate_in(
 #[derive(Clone)]
 pub(crate) struct WorkerAuthority {
 	access: Arc<RwLock<Access>>,
+}
+
+/// A Run's worker authority as its step holds it, for integration tests outside
+/// this crate (#759). A test begins it while the Run's Subnode is active, ends
+/// the Subnode, and then calls a path that stands in for a call that passed the
+/// tool's entrance before the end. Production code gets the same authority from
+/// `Guard`.
+#[doc(hidden)]
+pub struct StepAuthority(WorkerAuthority);
+
+impl StepAuthority {
+	/// The authority of `run`. Its outer transaction is released at once, as it is
+	/// while a step waits on a tool, so that an end is never held up by it.
+	pub async fn begin(f: &Federation, run: &Run) -> Result<Self> {
+		let mut access = access_for_run(&f.store, &run.metadata(), true)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		access.suspend().await?;
+		Ok(Self(WorkerAuthority {
+			access: Arc::new(RwLock::new(access)),
+		}))
+	}
+
+	pub async fn sampling_approval(
+		&self,
+		store: &Store,
+		run: &Run,
+		request: aidash_application::capabilities::approvals::SamplingApprovalRequest,
+	) -> Result<aidash_application::capabilities::approvals::ToolCallApproval> {
+		self.0.sampling_approval(store, run, request).await
+	}
+
+	pub async fn consume_web_disclosure(
+		&self,
+		store: &Store,
+		run: &Run,
+		approval: Uuid,
+	) -> Result<bool> {
+		self.0.consume_web_disclosure(store, run, approval).await
+	}
+
+	/// A Live preview start that passed the tool's admission.
+	pub async fn live_preview_start(
+		&self,
+		store: &Store,
+		run: &Run,
+		command: &str,
+		port: u16,
+	) -> Result<Value> {
+		let input = aidash_application::preview::live::Start {
+			command: command.to_owned(),
+			port,
+		};
+		self.0.live_preview_start(store, run, input).await
+	}
 }
 
 fn unavailable_workspace_search(workspace: Uuid, disabled: bool) -> Value {
@@ -490,9 +657,18 @@ impl WorkerAuthority {
 		let receipt_key = operation_id(run.id, key, 9);
 		let receipt_digest =
 			crate::registry::digest(&json!(["workspace_message_files", run.id, content, paths]));
+		let agent = run.executor_subject(store.deployment.as_str());
 		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let prepare: Result<_> = async {
+			// First, before the replay check below, so that this transaction holds
+			// the Subnode lock through the upload and the post. A retry after the
+			// Subnode ended is refused even when the first attempt was recorded.
+			crate::apps::execution::repositories::subnodes::require_writable(
+				access.tx.native_mut(),
+				run.workspace_id,
+			)
+			.await?;
 			let workspace = access.workspace(run.workspace_id).await?;
 			access.require(&workspace, "message.create").await?;
 			// Older successful posts predate the receipt below. The invocation
@@ -525,7 +701,7 @@ impl WorkerAuthority {
 				.await?;
 			if let Some((workspace, sender, original, publisher)) = &previous
 				&& (*workspace != run.workspace_id
-					|| sender != &access.identity.subject
+					|| sender != &agent
 					|| original != content
 					|| *publisher != Some(run.id))
 			{
@@ -571,6 +747,7 @@ impl WorkerAuthority {
 			}
 			let mut scope = crate::bootstrap::channel_scope(store, &mut lease);
 			scope.run_id = Some(run.id);
+			scope.agent = Some(agent);
 			aidash_application::workspaces::channels::post(
 				&mut scope,
 				run.workspace_id,
@@ -616,6 +793,11 @@ impl WorkerAuthority {
 		let access = Access::under_lease(&outer).await?;
 		let mut lease = crate::collaboration::access::Lease::from_access(access);
 		let result: Result<Value> = async {
+			crate::apps::execution::repositories::subnodes::require_writable(
+				lease.access_mut().tx.native_mut(),
+				run.workspace_id,
+			)
+			.await?;
 			let record = lease
 				.access_mut()
 				.workspace_record(run.workspace_id, "attachment", attachment_id)
@@ -779,6 +961,20 @@ impl WorkerAuthority {
 			access.finish(result.map_err(Into::into)).await?
 		};
 		let input: aidash_application::preview::live::Start = serde_json::from_value(input)?;
+		self.live_preview_start(store, run, input).await
+	}
+
+	/// Start the Run's Live preview from a request that passed admission. Once
+	/// the Run's Subnode has ended neither the row nor the dispatch is written.
+	async fn live_preview_start(
+		&self,
+		store: &Store,
+		run: &Run,
+		input: aidash_application::preview::live::Start,
+	) -> Result<Value> {
+		use crate::apps::execution::repositories::live_previews as previews;
+		use aidash_domain::preview::live::StopReason;
+		let domain = store.preview_domain.clone();
 		if let Some(port) = store.preview_pod_port
 			&& input.port != port
 		{
@@ -821,25 +1017,64 @@ impl WorkerAuthority {
 		let pending = {
 			let outer = self.access.read().await;
 			let mut access = Access::under_lease(&outer).await?;
-			let result =
-				previews::prepare(store, &mut access, run, domain.clone(), input.clone()).await;
+			let result = async {
+				// Only a start is fenced: stopping, replacing and settling stay open
+				// so that a Pod can still be stopped.
+				crate::apps::execution::repositories::subnodes::require_writable(
+					access.tx.native_mut(),
+					run.workspace_id,
+				)
+				.await?;
+				previews::prepare(store, &mut access, run, domain.clone(), input.clone()).await
+			}
+			.await;
 			access.finish(result).await?
 		};
-		{
+		let mut refused = false;
+		let accepted = {
 			let outer = self.access.read().await;
 			let mut access = Access::under_lease(&outer).await?;
 			let result = async {
+				if let Err(error) =
+					crate::apps::execution::repositories::subnodes::require_writable(
+						access.tx.native_mut(),
+						run.workspace_id,
+					)
+					.await
+				{
+					refused = true;
+					return Err(error);
+				}
 				let area = crate::apps::execution::capabilities::services::sessions::load(
 					&mut access,
 					pending.area_id,
 				)
 				.await?;
-				let files = crate::apps::execution::capabilities::services::service::files(&area)?;
+				let files =
+					crate::apps::execution::capabilities::services::operations::pod_files(&area)?;
 				previews::dispatch_accept(store, &mut access, &pending, files, &input.command).await
 			}
 			.await;
+			access.finish(result).await
+		};
+		if refused {
+			// The Subnode ended after the row was recorded, which marked it stopped.
+			// Nothing reached the Runner, so no Pod proof will ever settle it: end it
+			// as a start that never served, which releases its hold.
+			let outer = self.access.read().await;
+			let mut access = Access::under_lease(&outer).await?;
+			let result = previews::finish_start(
+				store,
+				&mut access,
+				run,
+				domain.clone(),
+				pending.clone(),
+				previews::Dispatch::failed(String::new()),
+			)
+			.await;
 			access.finish(result).await?;
 		}
+		accepted?;
 		let dispatched = previews::wait_ready(store, &pending)
 			.await
 			.unwrap_or_else(|error| previews::Dispatch::failed(error.to_string()));
@@ -893,6 +1128,14 @@ impl WorkerAuthority {
 	) -> Result<aidash_application::ports::research::DisclosureState> {
 		let outer = self.access.write().await;
 		let mut access = Access::under_lease(&outer).await?;
+		if let Err(error) = crate::apps::execution::repositories::subnodes::require_writable(
+			access.tx.native_mut(),
+			run.workspace_id,
+		)
+		.await
+		{
+			return access.finish(Err(error)).await;
+		}
 		// Under the Run's research lock, so a revocation that commits after
 		// the caller's own check still closes, or prevents, this approval.
 		let result = match crate::apps::execution::repositories::research::revoked_under_lock(
@@ -947,6 +1190,11 @@ impl WorkerAuthority {
 		let outer = self.access.write().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let result = async {
+			crate::apps::execution::repositories::subnodes::require_writable(
+				access.tx.native_mut(),
+				run.workspace_id,
+			)
+			.await?;
 			// A core Run's approval belongs to its Working Area, so its Thread
 			// lists it; other Runs have none.
 			let area =
@@ -979,6 +1227,11 @@ impl WorkerAuthority {
 		let outer = self.access.write().await;
 		let mut access = Access::under_lease(&outer).await?;
 		let result = async {
+			crate::apps::execution::repositories::subnodes::require_writable(
+				access.tx.native_mut(),
+				run.workspace_id,
+			)
+			.await?;
 			// A core Run's approval belongs to its Working Area, so its Thread
 			// lists it; other Runs have none.
 			let area =
@@ -1145,7 +1398,8 @@ impl WorkerAuthority {
 	}
 
 	/// Consume a one-time Web disclosure approval of `run` after its attempt
-	/// is reserved.
+	/// is reserved. Once the Subnode has ended nothing is consumed and the call
+	/// is refused; the caller settles the reserved attempt without a reason.
 	pub async fn consume_web_disclosure(
 		&self,
 		store: &Store,
@@ -1154,7 +1408,12 @@ impl WorkerAuthority {
 	) -> Result<bool> {
 		let outer = self.access.write().await;
 		let mut access = Access::under_lease(&outer).await?;
-		let result = {
+		let result = async {
+			crate::apps::execution::repositories::subnodes::require_writable(
+				access.tx.native_mut(),
+				run.workspace_id,
+			)
+			.await?;
 			let mut scope = crate::bootstrap::approval_scope(Some(store), &mut access, None);
 			aidash_application::capabilities::approvals::consume_disclosure(
 				&mut scope,
@@ -1163,7 +1422,8 @@ impl WorkerAuthority {
 			)
 			.await
 			.map_err(Error::from)
-		};
+		}
+		.await;
 		access.finish(result).await
 	}
 
@@ -1178,17 +1438,19 @@ impl WorkerAuthority {
 		if outer.tx.is_active() {
 			outer.suspend().await?;
 		}
-		let mut access = access_for_run(store, &run.metadata(), true)
-			.await?
-			.ok_or(Error::Forbidden)?;
-		memory_run_check(&mut access, &run.metadata()).await?;
-		let mut lease = crate::semantic::service::Lease::Scoped(Box::new(access));
-		let result =
-			crate::semantic::native_memory::run_mutate(store, &mut lease, run, key, changes).await;
-		let result = lease.finish(result).await;
-		refresh_access_for_run(&mut outer, store, run).await?;
-		memory_run_check(&mut outer, &run.metadata()).await?;
-		result
+		let result = async {
+			let mut access = access_for_run(store, &run.metadata(), true)
+				.await?
+				.ok_or(Error::Forbidden)?;
+			memory_run_check(&mut access, &run.metadata()).await?;
+			let mut lease = crate::semantic::service::Lease::Scoped(Box::new(access));
+			let result =
+				crate::semantic::native_memory::run_mutate(store, &mut lease, run, key, changes)
+					.await;
+			lease.finish(result).await
+		}
+		.await;
+		restore_outer(&mut outer, store, run, result).await
 	}
 	pub async fn memory_recall(
 		&self,
@@ -1202,18 +1464,20 @@ impl WorkerAuthority {
 		if outer.tx.is_active() {
 			outer.suspend().await?;
 		}
-		let mut access = access_for_run(store, &run.metadata(), true)
-			.await?
-			.ok_or(Error::Forbidden)?;
-		memory_run_check(&mut access, &run.metadata()).await?;
-		let mut lease = crate::semantic::service::Lease::Scoped(Box::new(access));
-		let result =
-			crate::semantic::native_memory::run_recall(store, &mut lease, run, key, query, reflect)
-				.await;
-		let result = lease.finish(result).await;
-		refresh_access_for_run(&mut outer, store, run).await?;
-		memory_run_check(&mut outer, &run.metadata()).await?;
-		result
+		let result = async {
+			let mut access = access_for_run(store, &run.metadata(), true)
+				.await?
+				.ok_or(Error::Forbidden)?;
+			memory_run_check(&mut access, &run.metadata()).await?;
+			let mut lease = crate::semantic::service::Lease::Scoped(Box::new(access));
+			let result = crate::semantic::native_memory::run_recall(
+				store, &mut lease, run, key, query, reflect,
+			)
+			.await;
+			lease.finish(result).await
+		}
+		.await;
+		restore_outer(&mut outer, store, run, result).await
 	}
 
 	pub async fn assign(
@@ -1272,6 +1536,13 @@ impl WorkerAuthority {
 		let allowed = decision.allowed;
 		lease.record(&[(evaluation, decision)]).await?;
 		if !allowed {
+			// This check evaluates the policy itself rather than through `Access::require`.
+			aidash_application::authorization::refusal_note::set(
+				aidash_application::authorization::refusal_note::Note::new(
+					aidash_domain::tool::RefusalCheck::Policy,
+					Some(aidash_domain::identity::tenant_administration::SUBNODE_CREATE),
+				),
+			);
 			return Err(Error::Forbidden);
 		}
 		lease.set_node(run.node.clone());
@@ -1728,9 +1999,16 @@ impl WorkerAuthority {
 			return Err(Error::Forbidden);
 		}
 		if !aidash_domain::nodes::names_home(node, &run.home_node) {
-			let record = lease.task_read(task).await?;
+			// A missing task and one the Run may not see read the same, as for a local delegation.
+			let not_visible = || {
+				Error::from(aidash_application::authorization::worker_tasks::task_not_visible(task))
+			};
+			let record = lease.task_read(task).await.map_err(|error| match error {
+				Error::Forbidden => not_visible(),
+				error => error,
+			})?;
 			if record.workspace_id != run.workspace_id {
-				return Err(Error::Forbidden);
+				return Err(not_visible());
 			}
 			let identity = lease.identity.clone();
 			if lease.tx.is_active() {
@@ -1741,11 +2019,20 @@ impl WorkerAuthority {
 				actor: Some(super::identity::Actor::Subject(identity)),
 				worker: Some(run.metadata()),
 			};
-			let result =
-				aidash_application::authorization::home::delegate(&repository, task, node, agent)
-					.await
-					.map_err(Into::into);
-			refresh_access_for_run(&mut lease, &f.store, run).await?;
+			let result = aidash_application::authorization::home::delegate(
+				&repository,
+				task,
+				node,
+				agent,
+				true,
+			)
+			.await
+			.map_err(Into::into);
+			// The delegation has reached the other Node, so a Run whose authority is gone
+			// pauses; the model is not told the call was refused.
+			refresh_access_for_run(&mut lease, &f.store, run)
+				.await
+				.map_err(authority_gone_after_effect)?;
 			return result;
 		}
 		// Prepare the child's closure on the outer transaction: an inner shared
@@ -1796,13 +2083,15 @@ pub(in crate::apps::identity) async fn authorize_guard(
 	access: &mut Access,
 	read_context: bool,
 ) -> Result<AgentConfig> {
-	aidash_application::authorization::execution::guard::authorize(
+	let mark = access.call_mark();
+	let result = aidash_application::authorization::execution::guard::authorize(
 		&mut crate::bootstrap::run_guard_scope(f, access),
 		run,
 		read_context,
 	)
 	.await
-	.map_err(Into::into)
+	.map_err(Into::into);
+	result.map_err(|error| access.named_since(mark, error))
 }
 
 struct SnapshotAuthority {
@@ -2644,16 +2933,10 @@ impl SummaryApproval<'_> {
 	}
 }
 
-pub async fn control(
-	f: &Federation,
-	identity: &SubjectIdentity,
-	id: Uuid,
-	action: RunControlAction,
-) -> Result<RunInspection> {
-	aidash_application::authorization::runs::control(
+pub async fn resume(f: &Federation, identity: &SubjectIdentity, id: Uuid) -> Result<RunInspection> {
+	aidash_application::authorization::runs::resume(
 		&crate::bootstrap::run_control_repository(f, identity),
 		id,
-		action,
 	)
 	.await
 	.map_err(Into::into)

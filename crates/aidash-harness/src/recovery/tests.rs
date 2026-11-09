@@ -1,5 +1,5 @@
 use super::*;
-use aidash_application::recovery::AuthorityFailure;
+use aidash_application::{authorization::refusal_note, recovery::AuthorityFailure};
 use aidash_domain::{
 	RecoveryState, Run, StateVersion, ThinkingState,
 	context::{Context, recovery::Failure as ContextFailure},
@@ -345,7 +345,10 @@ async fn provider_contract_and_transient_failures_have_distinct_recovery(
 	}
 }
 #[rstest]
-#[case(AuthorityFailure::Denied(None), "execution authority denied")]
+#[case(
+	AuthorityFailure::Denied(None),
+	"model call: an authority check refused this step"
+)]
 #[case(AuthorityFailure::IdentityUnavailable, "identity status unavailable")]
 #[tokio::test]
 async fn lost_authority_pauses_instead_of_replaying_work(
@@ -354,6 +357,7 @@ async fn lost_authority_pauses_instead_of_replaying_work(
 	#[case] failure: AuthorityFailure,
 	#[case] reason: &str,
 ) {
+	let failure_kind = matches!(failure, AuthorityFailure::Denied(None));
 	let retry = recover(
 		&repository,
 		repository.token,
@@ -363,14 +367,57 @@ async fn lost_authority_pauses_instead_of_replaying_work(
 	.await
 	.unwrap();
 	assert!(!retry);
+	let writes = repository.writes.lock().unwrap();
+	match (&failure_kind, writes.as_slice()) {
+		(true, [Write::Refused(actual, event, refusal)]) => {
+			assert_eq!(actual, reason);
+			assert_eq!(event, "run.authorization_blocked");
+			assert_eq!(refusal.check, RefusalCheck::Unnamed);
+		}
+		(false, [Write::Pause(actual, event)]) => {
+			assert_eq!(actual, reason);
+			assert_eq!(event, "run.authorization_blocked");
+		}
+		other => panic!("unexpected writes {other:?}"),
+	}
+}
+#[rstest]
+#[tokio::test]
+async fn an_unnamed_refusal_takes_its_check_from_the_note_of_the_step(
+	repository: Repository,
+	now: DateTime<Utc>,
+) {
+	let retry = refusal_note::within(async {
+		refusal_note::set(refusal_note::Note::new(
+			RefusalCheck::Catalog,
+			Some("catalog.use"),
+		));
+		recover(
+			&repository,
+			repository.token,
+			ExecutionFailure::Authority(AuthorityFailure::Denied(None)),
+			now,
+		)
+		.await
+	})
+	.await
+	.unwrap();
+	assert!(!retry);
 	assert_eq!(
 		*repository.writes.lock().unwrap(),
-		[Write::Pause(
-			reason.into(),
-			"run.authorization_blocked".into()
+		[Write::Refused(
+			"model call: Catalog Approval refused catalog.use".into(),
+			"run.authorization_blocked".into(),
+			AuthorityRefusal {
+				tool: "model call".into(),
+				check: RefusalCheck::Catalog,
+				action: Some("catalog.use".into()),
+				subject: None,
+			}
 		)]
 	);
 }
+
 #[rstest]
 #[tokio::test]
 async fn a_refused_tool_pauses_naming_the_tool_and_the_check(
@@ -381,6 +428,7 @@ async fn a_refused_tool_pauses_naming_the_tool_and_the_check(
 		tool: "task_delegate".into(),
 		check: RefusalCheck::Policy,
 		action: Some("task.delegate".into()),
+		subject: None,
 	};
 	let retry = recover(
 		&repository,
@@ -630,6 +678,76 @@ async fn a_decider_outage_retries_as_new_decisions_then_pauses(
 }
 #[rstest]
 #[tokio::test]
+async fn a_node_that_did_not_answer_is_retried_then_pauses_naming_it(
+	repository: Repository,
+	now: DateTime<Utc>,
+) {
+	let failure = || ExecutionFailure::NodeUnreachable {
+		node: "aidash://other/sibling".into(),
+		retry: true,
+	};
+	for retries in 1..=5_u32 {
+		let retry = recover(&repository, repository.token, failure(), now)
+			.await
+			.unwrap();
+		assert!(!retry);
+		let run = repository.run.lock().unwrap();
+		let run = run.as_ref().unwrap();
+		assert_eq!(run.recovery.node_retry, retries);
+		assert_eq!(
+			run.recovery.retry.as_ref().unwrap().at,
+			now + chrono::Duration::seconds(2_i64.pow(retries))
+		);
+	}
+	recover(&repository, repository.token, failure(), now)
+		.await
+		.unwrap();
+	let writes = repository.writes.lock().unwrap();
+	assert_eq!(writes.len(), 6);
+	assert!(
+		writes[..5]
+			.iter()
+			.all(|write| *write == Write::Save("run.node_retrying".into()))
+	);
+	let Write::Pause(reason, event) = &writes[5] else {
+		panic!("the sixth failure pauses: {:?}", writes[5])
+	};
+	assert!(reason.contains("aidash://other/sibling"), "{reason}");
+	assert_eq!(event, "run.node_unreachable");
+	assert!(!failure().retryable());
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_node_that_did_not_answer_after_a_tools_effect_pauses_at_once(
+	repository: Repository,
+	now: DateTime<Utc>,
+) {
+	recover(
+		&repository,
+		repository.token,
+		ExecutionFailure::NodeUnreachable {
+			node: "aidash://other/sibling".into(),
+			retry: false,
+		},
+		now,
+	)
+	.await
+	.unwrap();
+	let writes = repository.writes.lock().unwrap();
+	assert_eq!(writes.len(), 1);
+	assert!(
+		matches!(&writes[0], Write::Pause(reason, event)
+			if event == "run.node_unreachable" && reason.contains("aidash://other/sibling")),
+		"{:?}",
+		writes[0]
+	);
+	let run = repository.run.lock().unwrap();
+	assert_eq!(run.as_ref().unwrap().recovery.node_retry, 0);
+}
+
+#[rstest]
+#[tokio::test]
 async fn transport_failures_still_retry(repository: Repository, now: DateTime<Utc>) {
 	let retry = recover(
 		&repository,
@@ -825,5 +943,73 @@ async fn a_connection_shaped_tool_body_is_not_a_failure_deferral_candidate(
 			.unwrap()
 			.state
 			.failure_delivery()
+	);
+}
+
+#[rstest]
+#[case("task_delegate", true)]
+#[case("plugin__remote__ask", true)]
+#[case("", false)]
+#[case("two words", false)]
+#[case("line\nbreak", false)]
+#[case("<script>", false)]
+#[case(&"x".repeat(65), false)]
+fn only_a_plain_tool_name_is_shown_as_the_stage(#[case] name: &str, #[case] plain: bool) {
+	assert_eq!(plain_tool_name(name), plain);
+}
+
+/// #728: a Run waiting on the database spends none of its attempts.
+#[rstest]
+#[tokio::test]
+async fn waiting_on_the_database_spends_no_retry_allowance(
+	repository: Repository,
+	now: DateTime<Utc>,
+) {
+	// Arrange
+	{
+		let mut run = repository.run.lock().unwrap();
+		run.as_mut().unwrap().recovery.retry = Some(RetryState { count: 2, at: now });
+	}
+	// Act
+	for _ in 0..8 {
+		recover(
+			&repository,
+			repository.token,
+			ExecutionFailure::DatabaseUnavailable,
+			now,
+		)
+		.await
+		.unwrap();
+	}
+	// Assert
+	let run = repository.run.lock().unwrap();
+	let retry = run.as_ref().unwrap().recovery.retry.as_ref().unwrap();
+	assert_eq!(retry.count, 2);
+	assert_eq!(retry.at, now + chrono::Duration::seconds(1));
+}
+
+/// #728: the Run shows why it waits, not the error of an earlier step.
+#[rstest]
+#[tokio::test]
+async fn waiting_on_the_database_says_so(repository: Repository, now: DateTime<Utc>) {
+	// Arrange
+	{
+		let mut run = repository.run.lock().unwrap();
+		run.as_mut().unwrap().error = Some("an earlier step failed".into());
+	}
+	// Act
+	recover(
+		&repository,
+		repository.token,
+		ExecutionFailure::DatabaseUnavailable,
+		now,
+	)
+	.await
+	.unwrap();
+	// Assert
+	let run = repository.run.lock().unwrap();
+	assert_eq!(
+		run.as_ref().unwrap().error.as_deref(),
+		Some("the database is temporarily unavailable")
 	);
 }

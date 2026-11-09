@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 399,
+  "endpoint_count": 400,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -17583,6 +17583,42 @@
       "name": "1592 tenant-subnode-limits-update - Malformed JSON cannot reach the use case",
       "file": "contracts/1592-tenant-subnode-limits-update.bru",
       "endpoint": "PUT /api/tenants/{tenant}/subnode-limits",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1593 reference_batch - Anonymous request is rejected",
+      "file": "contracts/1593-reference_batch.bru",
+      "endpoint": "POST /api/references/batch",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1594 reference_batch - Wrong JSON media type is rejected",
+      "file": "contracts/1594-reference_batch.bru",
+      "endpoint": "POST /api/references/batch",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1595 reference_batch - Malformed JSON cannot reach the use case",
+      "file": "contracts/1595-reference_batch.bru",
+      "endpoint": "POST /api/references/batch",
       "scenario": "Malformed JSON cannot reach the use case",
       "status": 400,
       "required_checks": [

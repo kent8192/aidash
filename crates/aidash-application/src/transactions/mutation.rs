@@ -11,6 +11,13 @@ fn participant<'a>(manifest: &'a Manifest, address: &str) -> Result<&'a Particip
 /// Preparation and commit invoke this same workflow; storage alone owns the
 /// rollback-only savepoint and the visibility gate around the caller's transaction.
 pub async fn apply(scope: &mut dyn MutationScope, node: &str, manifest: &Manifest) -> Result<()> {
+	// A finished Run ends its Subnodes, and an event appended by an earlier
+	// mutation must not come before the locks that end takes.
+	for mutation in &participant(manifest, node)?.mutations {
+		if let Mutation::FinishRun { run_id, .. } = mutation {
+			scope.lock_subnode_end(*run_id).await?;
+		}
+	}
 	for mutation in &participant(manifest, node)?.mutations {
 		match mutation {
 			Mutation::WorkspaceState {

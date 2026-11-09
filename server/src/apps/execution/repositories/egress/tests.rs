@@ -1,6 +1,8 @@
 //! The real gateway authority and meters share PostgreSQL budgets across calls.
 #[path = "../../tests/support/settings.rs"]
 pub(crate) mod settings;
+#[path = "../../tests/support/statements.rs"]
+pub(crate) mod statements;
 #[path = "../../tests/support/tenant_roots.rs"]
 pub(crate) mod tenant_roots;
 use crate::apps::execution::test_database::{DatabaseFixture, database};
@@ -16,6 +18,7 @@ use crate::apps::execution::{
 	repositories::egress::{Gateway, attach},
 };
 use crate::{
+	apps::identity::models::AuthorizationBundle,
 	authorization::{Authorization, access::Access, identity::Actor},
 	capabilities::{Profile, RunnerProfile, Runtime},
 };
@@ -26,7 +29,11 @@ use aidash_application::{
 use chrono::Utc;
 use reinhardt::{
 	Response, ServerRouter,
-	db::orm::{Json, Model},
+	db::{
+		backends::TransactionExecutor,
+		orm::{Json, Model, execution::convert_values},
+	},
+	query::{Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder},
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -212,6 +219,18 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		&agent.version,
 	));
 	let area = sessions::for_run(&mut access, &run).await.unwrap();
+	crate::apps::execution::repositories::operations::set_area(
+		&mut access,
+		area.id,
+		"running",
+		area.epoch,
+	)
+	.await
+	.unwrap();
+	// A retained context remains usable while a command holds the Area busy.
+	sessions::context_authority(&mut access, run.metadata())
+		.await
+		.unwrap();
 	let operation = Uuid::now_v7();
 	let row = CoreOperations::build()
 		.id(operation)
@@ -437,6 +456,50 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		.execute(db)
 		.await
 		.unwrap();
+
+	// A wake reports only the newest 32 Task changes. The Run's cursor moves
+	// past the older ones, so the wake must count what it left out.
+	let cursor: i64 = sqlx::query_scalar(
+		"SELECT COALESCE(MAX(generation), 0) FROM run_activations WHERE run_id = $1",
+	)
+	.bind(run.id)
+	.fetch_one(db)
+	.await
+	.unwrap();
+	for _ in 0..40 {
+		sqlx::query("SELECT aidash_request_activation($1, $2)")
+			.bind(run.id)
+			.bind(format!("workspace_task:{}:COMPLETED", Uuid::new_v4()))
+			.execute(db)
+			.await
+			.unwrap();
+	}
+	let generations: Vec<i64> = sqlx::query_scalar("SELECT generation FROM run_activations WHERE run_id = $1 AND generation > $2 AND reason LIKE 'workspace_task:%' ORDER BY generation")
+		.bind(run.id).bind(cursor).fetch_all(db).await.unwrap();
+	assert_eq!(generations.len(), 40);
+	let executor = f.store.for_run(scope.clone());
+	for (after, kept, dropped) in [
+		(cursor, 32, 8),
+		(generations[6], 32, 1),
+		(generations[7], 32, 0),
+		(generations[8], 31, 0),
+	] {
+		let news = aidash_application::ports::execution::ExecutionStore::workspace_events(
+			&executor, &run, after,
+		)
+		.await
+		.unwrap();
+		assert_eq!(news.events.len(), kept, "after {after}");
+		assert_eq!(news.dropped, dropped, "after {after}");
+		// Oldest first, ending at the newest change: the cursor lands on it.
+		assert_eq!(news.events.last().unwrap().generation, generations[39]);
+		assert!(
+			news.events
+				.windows(2)
+				.all(|pair| pair[0].generation < pair[1].generation)
+		);
+	}
+
 	let token = request["egress"]["token"].as_str().unwrap();
 	let digest = "a".repeat(64);
 	// Admission must not wait behind an activation claim on the Run row.
@@ -529,6 +592,87 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 			.await,
 		Err(aidash_application::Error::Forbidden)
 	));
+	// A command's request waits behind an Authority Change, and the change does
+	// not wait for it, since the step that started the command has gone on (ADR 0121).
+	// A running step stands in for the work the change waits for. The request
+	// ends refused after its checks, so that it does not count against the budget.
+	let applied_before: chrono::DateTime<Utc> =
+		sqlx::query_scalar("SELECT updated_at FROM authorization_bundles WHERE tenant = 'acme'")
+			.fetch_one(db)
+			.await
+			.unwrap();
+	let mut running = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	AuthorizationBundle::lock_frozen(&mut *running, "acme", false)
+		.await
+		.unwrap();
+	let change = {
+		let store = f.store.clone();
+		tokio::spawn(async move {
+			let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
+			AuthorizationBundle::lock_frozen(&mut *tx, "acme", true).await?;
+			let (sql, values) = Query::update()
+				.table(Alias::new("authorization_bundles"))
+				.value_expr(Alias::new("updated_at"), Expr::current_timestamp())
+				.and_where(Expr::col("tenant").eq(Expr::value("acme")))
+				.build(PostgresQueryBuilder);
+			let executor: &mut dyn TransactionExecutor = &mut *tx;
+			executor.execute(&sql, convert_values(values)).await?;
+			tx.commit().await?;
+			Ok::<_, crate::Error>(())
+		})
+	};
+	tokio::time::timeout(std::time::Duration::from_secs(5), async {
+		while crate::database::authority_change::is_clear(&f.store.pool, "acme").await {
+			tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+		}
+	})
+	.await
+	.expect("the change raised its flag");
+	let admitting = {
+		let (gateway, token, digest) = (
+			Gateway::new(f.store.clone()),
+			token.to_owned(),
+			digest.clone(),
+		);
+		tokio::spawn(async move {
+			gateway
+				.admit(&token, "absent", "GET", "download", &digest)
+				.await
+		})
+	};
+	tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+	assert!(
+		!admitting.is_finished(),
+		"the request passed a waiting change"
+	);
+	assert!(
+		!change.is_finished(),
+		"the change did not wait for the step"
+	);
+	running.commit().await.unwrap();
+	// Had the request waited after taking its share of the policy, the change
+	// would be waiting for it now, and would only end by being refused.
+	tokio::time::timeout(std::time::Duration::from_secs(5), change)
+		.await
+		.expect("the change waited for the request")
+		.unwrap()
+		.expect("the change is applied");
+	let applied_after: chrono::DateTime<Utc> =
+		sqlx::query_scalar("SELECT updated_at FROM authorization_bundles WHERE tenant = 'acme'")
+			.fetch_one(db)
+			.await
+			.unwrap();
+	assert!(
+		applied_after > applied_before,
+		"the change wrote the policy"
+	);
+	assert!(matches!(
+		tokio::time::timeout(std::time::Duration::from_secs(5), admitting)
+			.await
+			.expect("the request went on once the change ended")
+			.unwrap(),
+		Err(aidash_application::Error::Forbidden)
+	));
 	first.meter.charge(Direction::Sent, 6).await.unwrap();
 	// A fresh gateway instance sees the same durable operation budget.
 	let gateway = Gateway::new(f.store.clone());
@@ -559,8 +703,19 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		first.meter.charge(Direction::Received, 2).await,
 		Err(aidash_application::Error::Conflict(code)) if code == aidash_domain::egress::LIMIT_EXCEEDED
 	));
-	first.meter.finish(201, 20, None).await.unwrap();
-	second.meter.finish(200, 25, None).await.unwrap();
+	// A record holds no times until its outcome is settled.
+	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	let unsettled = RequestRecord::objects()
+		.filter(RequestRecord::field_id().eq(first.request))
+		.all_with_executor(&mut *tx)
+		.await
+		.unwrap()
+		.pop()
+		.unwrap();
+	assert_eq!((unsettled.admission_ms, unsettled.settle_ms), (None, None));
+	tx.commit().await.unwrap();
+	first.meter.finish(201, times(20), None).await.unwrap();
+	second.meter.finish(200, times(25), None).await.unwrap();
 	assert!(matches!(
 		Gateway::new(f.store.clone())
 			.admit(token, "images", "GET", "third", &digest)
@@ -594,6 +749,12 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 			.iter()
 			.all(|r| r.error.is_none() && r.query_digest == digest && r.status >= 200)
 	);
+	// Run details read these records through the domain type.
+	for record in &records {
+		let shown: aidash_domain::egress::RequestRecord =
+			serde_json::from_value(serde_json::to_value(record).unwrap()).unwrap();
+		assert_eq!((shown.admission_ms, shown.settle_ms), (Some(3), Some(4)));
+	}
 	tx.commit().await.unwrap();
 	let preview_meter = live_preview_credentials(&f, &identity, &run, area.id).await;
 	auth.set_catalog(
@@ -630,14 +791,108 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 	.await
 	.unwrap();
 	first.meter.charge(Direction::Sent, 0).await.unwrap();
+	// Failing to find out whether the operation may go on is not a decision about
+	// it: nothing is committed, so charging the same bytes again counts them once.
+	let before = sent_so_far(&f, operation, first.request).await;
+	assert_eq!(before, (14, 10));
+	sqlx::query(
+		"UPDATE core_operations SET subjects = jsonb_build_object('unreadable', subjects) WHERE id = $1",
+	)
+	.bind(operation)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let failure = first.meter.charge(Direction::Sent, 5).await.unwrap_err();
+	assert!(
+		!matches!(
+			failure,
+			aidash_application::Error::Conflict(_)
+				| aidash_application::Error::Forbidden
+				| aidash_application::Error::Unauthorized
+		),
+		"{failure}"
+	);
+	assert_eq!(
+		sent_so_far(&f, operation, first.request).await,
+		before,
+		"a failure that decides nothing commits nothing"
+	);
+	sqlx::query("UPDATE core_operations SET subjects = subjects -> 'unreadable' WHERE id = $1")
+		.bind(operation)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	// The gateway's retry. The budget is spent, so this is a decision, and one
+	// that commits the bytes it reports on.
+	assert!(matches!(
+		first.meter.charge(Direction::Sent, 5).await,
+		Err(aidash_application::Error::Conflict(code)) if code == aidash_domain::egress::LIMIT_EXCEEDED
+	));
+	assert_eq!(
+		sent_so_far(&f, operation, first.request).await,
+		(before.0 + 5, before.1 + 5),
+		"the bytes are counted once, in the budget and in the record"
+	);
+	// Egress asks only whether the Run may still run, whatever it has read
+	// (ADR 0116). The 30 second Read Recheck covers the reads.
+	let (active, statements) = statements::recorded(first.meter.check_active()).await;
+	active.unwrap();
+	assert!(!statements.is_empty(), "the counter sees statements");
+	assert!(
+		statements
+			.iter()
+			.all(|statement| !statement.contains("authorization_run_reads")),
+		"{statements:#?}"
+	);
+	// Withdrawing the Agent's own Catalog Approval leaves the policy revision as
+	// it was, and the next check refuses the request all the same.
+	let reference = aidash_domain::registry::EntityRef {
+		id: agent.id.clone(),
+		version: agent.version.clone(),
+	};
+	let approved = auth
+		.catalog("acme", &run.node)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|binding| binding.entry_id == agent.id && binding.entry_version == agent.version)
+		.unwrap()
+		.revision;
+	let revision = auth.snapshot("acme").await.unwrap().revision;
+	auth.set_catalog(
+		"acme",
+		&run.node,
+		&reference,
+		approved,
+		false,
+		"deployment_administrator",
+	)
+	.await
+	.unwrap();
+	assert_eq!(auth.snapshot("acme").await.unwrap().revision, revision);
+	assert!(matches!(
+		first.meter.check_active().await,
+		Err(aidash_application::Error::Forbidden)
+	));
+	auth.set_catalog(
+		"acme",
+		&run.node,
+		&reference,
+		approved + 1,
+		true,
+		"deployment_administrator",
+	)
+	.await
+	.unwrap();
 	first.meter.check_active().await.unwrap();
 	f.store
 		.control(&scope, run.id, aidash_domain::RunControlAction::Cancel)
 		.await
 		.unwrap();
+	// A stopped Run's operation is inactive; the preview's session has ended.
 	assert!(matches!(
 		first.meter.check_active().await,
-		Err(aidash_application::Error::Conflict(code)) if code == aidash_domain::egress::OPERATION_EXPIRED
+		Err(aidash_application::Error::Conflict(code)) if code == aidash_domain::egress::OPERATION_INACTIVE
 	));
 	assert!(matches!(
 		preview_meter.check_active().await,
@@ -647,7 +902,7 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 	// exhausted budget, and the bytes streamed before the refusal still count.
 	assert!(matches!(
 		first.meter.charge(Direction::Sent, 3).await,
-		Err(aidash_application::Error::Conflict(code)) if code == aidash_domain::egress::OPERATION_EXPIRED
+		Err(aidash_application::Error::Conflict(code)) if code == aidash_domain::egress::OPERATION_INACTIVE
 	));
 	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	let total = Budget::objects()
@@ -658,7 +913,7 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		.unwrap()
 		.pop()
 		.unwrap();
-	assert_eq!(total.sent_bytes, 17);
+	assert_eq!(total.sent_bytes, 22);
 	let record = RequestRecord::objects()
 		.filter(RequestRecord::field_id().eq(first.request))
 		.all_with_executor(&mut *tx)
@@ -666,8 +921,61 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		.unwrap()
 		.pop()
 		.unwrap();
-	assert_eq!(record.sent_bytes, 6 + 4 + 3);
+	assert_eq!(record.sent_bytes, 6 + 4 + 5 + 3);
 	tx.commit().await.unwrap();
+	// A command the Read Recheck withdrew lost its authority rather than ending,
+	// and its requests say so, even after the Run has stopped too.
+	sqlx::query(
+		"UPDATE core_operations SET result = result || '{\"error\":\"AUTHORITY_WITHDRAWN\"}' WHERE id=$1",
+	)
+	.bind(operation)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert!(matches!(
+		first.meter.check_active().await,
+		Err(aidash_application::Error::Forbidden)
+	));
+	assert!(matches!(
+		first.meter.charge(Direction::Sent, 1).await,
+		Err(aidash_application::Error::Forbidden)
+	));
+}
+
+/// The operation's total sent bytes, and those of one of its requests.
+async fn sent_so_far(
+	f: &crate::federation::Federation,
+	operation: Uuid,
+	request: Uuid,
+) -> (i64, i64) {
+	let mut tx = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	let total = Budget::objects()
+		.filter(Budget::field_operation_id().eq(operation))
+		.filter(Budget::field_service().eq(""))
+		.all_with_executor(&mut *tx)
+		.await
+		.unwrap()
+		.pop()
+		.unwrap()
+		.sent_bytes;
+	let record = RequestRecord::objects()
+		.filter(RequestRecord::field_id().eq(request))
+		.all_with_executor(&mut *tx)
+		.await
+		.unwrap()
+		.pop()
+		.unwrap()
+		.sent_bytes;
+	tx.commit().await.unwrap();
+	(total, record)
+}
+
+fn times(duration_ms: u64) -> aidash_application::egress::RequestTimes {
+	aidash_application::egress::RequestTimes {
+		duration_ms,
+		admission_ms: 3,
+		settle_ms: 4,
+	}
 }
 
 async fn live_preview_credentials(
@@ -725,7 +1033,7 @@ async fn live_preview_credentials(
 		(&pod, "pod", Some("api.example.test")),
 		(&page, "page", None),
 	] {
-		admission.meter.finish(200, 1, None).await.unwrap();
+		admission.meter.finish(200, times(1), None).await.unwrap();
 		let (recorded, secret_host): (String, Option<String>) =
 			sqlx::query_as("SELECT via, secret_host FROM egress_requests WHERE id = $1")
 				.bind(admission.request)
@@ -762,7 +1070,7 @@ async fn live_preview_credentials(
 			admitted.route.as_ref().unwrap().token.expose_secret(),
 			"fixture-route-token"
 		);
-		admitted.meter.finish(200, 1, None).await.unwrap();
+		admitted.meter.finish(200, times(1), None).await.unwrap();
 		let row: (Option<Uuid>, Option<String>, Option<String>) = sqlx::query_as(
 			"SELECT secret_id, secret_version, secret_host FROM egress_requests WHERE id = $1",
 		)

@@ -14,3 +14,7 @@ Decided on 2026-11-04 for #715. Egress admission and metering read Run control a
 - Operation tokens and Live preview sessions retain a bounded stop guarantee, including while a stream is idle.
 - The future Scratch Space External service admission must also avoid locking the Run row.
 - Amends ADR 0054.
+
+## Amendment (2026-11-07, #758)
+
+An in-flight request's check is the Continuation Check. It notices a stopped Run within five seconds, and a revoked read once the Read Recheck has withdrawn the command, so the bound for a read is 30 seconds, plus one pass of that loop, plus these five seconds (ADR 0116).

@@ -24,6 +24,35 @@ async fn server_refuses_a_login_that_bypasses_row_level_security(
 	assert!(error.to_string().contains(reason), "{error}");
 }
 
+async fn statement_timeout(connection: reinhardt::db::backends::DatabaseConnection) -> String {
+	let pool = connection.into_postgres().unwrap();
+	sqlx::query_scalar("SHOW statement_timeout")
+		.fetch_one(&pool)
+		.await
+		.unwrap()
+}
+
+/// A host command such as `issue-subject-credential` or Secret Store recovery is
+/// neither a request nor a worker, so the statement limit does not apply to it
+/// (ADR 0113, #728). It still refuses a login that row-level security would not bind.
+#[rstest]
+#[tokio::test]
+async fn host_commands_run_without_the_statement_limit_but_keep_the_login_check(
+	#[future] database: DatabaseFixture,
+) {
+	// Arrange
+	let f = database.await;
+	// Act
+	let server = runtime::connect(&f.url, 2).await.unwrap();
+	let command = runtime::connect_command(&f.url, 2).await.unwrap();
+	let refused = runtime::connect_command(&with_login(&f.url, ADMIN), 2).await;
+	// Assert: `0` is how PostgreSQL reports no limit.
+	assert_ne!(statement_timeout(server).await, "0");
+	assert_eq!(statement_timeout(command).await, "0");
+	let error = refused.err().expect("a superuser is refused");
+	assert!(error.to_string().contains("is a superuser"), "{error}");
+}
+
 /// The migration Job runs maintenance commands such as `demo-data` as the
 /// owner. Row-level security is forced on the owner too, so those commands may
 /// connect as it, but a login that bypasses the policy is refused as before.

@@ -4,8 +4,8 @@
 use reinhardt::db::migrations::prelude::*;
 
 pub(super) fn migration() -> Migration {
-	Migration::new("0068_remote_execution_activation", "identity")
-		.add_dependency("identity", "0067_scratch_member_policy")
+	Migration::new("0072_remote_execution_activation", "identity")
+		.add_dependency("identity", "0071_remote_reads_same_tenant_state")
 		.add_operation(Operation::AddColumn {
 			table: "authorization_remote_execution".into(),
 			column: ColumnDefinition::new("activated_at", FieldType::TimestampTz)

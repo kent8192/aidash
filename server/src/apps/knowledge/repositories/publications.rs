@@ -109,6 +109,11 @@ pub(crate) async fn check(
 				visits,
 			))
 			.await;
+			// A Node the publisher found silent is the reader's silence too,
+			// if the reader may discover it; it is not a refusal (#751).
+			let silent = publisher.take_peer_marks();
+			drop(publisher);
+			access.adopt_silent_peers(silent).await?;
 			return result;
 		}
 		// Deployment Administrator views use the same physical transaction too: a queued source

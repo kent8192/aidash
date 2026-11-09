@@ -146,6 +146,11 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 
+database:
+  # Longest a server or worker statement may run, lock waits included; 0 turns
+  # it off. ADR 0113 lists the statements that are exempt and why.
+  statementTimeoutSeconds: 300
+
 # Per-Environment scheduling (e.g. cloud.google.com/gke-nodepool: develop).
 environment:
   nodeSelector: {}
@@ -222,6 +227,8 @@ execution:
     image: aidash-runner:0.1.0
   runner:
     enabled: false
+    # Optional uncertain-output retention override in seconds; omitted uses the Runner default.
+    # uncertainRetentionSeconds: 60
     # Build from the trusted ref, never the deployed PR source.
     image: aidash-runner:0.1.0
     existingSecret: ""

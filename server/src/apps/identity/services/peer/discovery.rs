@@ -57,10 +57,22 @@ pub(crate) async fn discover_in(
 	// with a shared lock until the authority transaction ends.
 	let routes = routes::all(&mut *access.tx, &f.config.deployment, &sender, true).await?;
 	let mut targets = vec![];
+	// Nodes of the caller's own Tenant: their reads are decided by policy alone (#769).
+	let mut same_tenant = BTreeSet::new();
 	for route in routes {
 		let target = route.target.to_string();
 		let resource = access.resource("node", &target, json!({"remote_node":target}));
 		if access.decide(&resource, "federation.discover").await? {
+			if routes::is_tenant_node(
+				&mut *access.tx,
+				&f.config.deployment,
+				sender.tenant.as_str(),
+				&route.target,
+			)
+			.await?
+			{
+				same_tenant.insert(target.clone());
+			}
 			targets.push(target);
 		}
 	}
@@ -132,6 +144,6 @@ pub(crate) async fn discover_in(
 	result
 		.errors
 		.sort_by(|left, right| left.node_id.cmp(&right.node_id));
-	access.track_discovery(&result.agents).await?;
+	access.track_discovery(&result.agents, &same_tenant).await?;
 	Ok(result)
 }

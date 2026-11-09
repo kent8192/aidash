@@ -10,6 +10,7 @@ import {
 import type { RegistryVersion, WithdrawalImpact } from "./generated/models";
 import type { EntityRef, Entry, State } from "./types";
 import { ApiError } from "./transport";
+import { useBusyRetry } from "./policy-busy";
 import { keylessOrigin } from "./keyless";
 import { toolReplay } from "./tool-declaration";
 import { deciderRecipients, type DeciderRecipient } from "./decider";
@@ -220,6 +221,7 @@ export function CatalogApprovalSection({
   const [impact, setImpact] = useState<WithdrawalImpact | null>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const busyRetry = useBusyRetry();
   const entry = version.entry;
   const state = approvalState(version);
   const origin = keylessOrigin(entry);
@@ -277,6 +279,7 @@ export function CatalogApprovalSection({
     if (busy) return;
     setBusy(true);
     setError("");
+    busyRetry.clear();
     try {
       await action();
       await client.invalidateQueries();
@@ -287,8 +290,10 @@ export function CatalogApprovalSection({
       } else if (reason instanceof ApiError && reason.status === 409) {
         setError(t("catalogConflict"));
         await client.invalidateQueries({ queryKey: ["registry-versions"] });
-      } else
+      } else {
+        busyRetry.note(reason, () => void decide(action));
         setError(reason instanceof Error ? reason.message : String(reason));
+      }
     } finally {
       setBusy(false);
     }
@@ -587,6 +592,7 @@ export function CatalogApprovalSection({
                 </span>
               </>
             )}
+            <span>{t("catalogWithdrawScope")}</span>
             <div className="flex flex-wrap gap-2">
               <Button
                 size="sm"
@@ -608,7 +614,7 @@ export function CatalogApprovalSection({
           </div>
         </Notice>
       )}
-      {error && <Alert>{error}</Alert>}
+      {error && <Alert {...busyRetry.alert}>{error}</Alert>}
       {version.needs_approval && (
         <div className="grid gap-1.5">
           <h5 className={subheading}>{t("catalogHistory")}</h5>

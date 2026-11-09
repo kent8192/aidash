@@ -691,7 +691,7 @@ impl HomeRepository for Repository {
 		let Some(Actor::Subject(identity)) = &self.actor else {
 			return Err(NativeError::Forbidden.into());
 		};
-		crate::authorization::peer::authority_request(
+		crate::authorization::peer::authority_request_keeping_not_found(
 			&self.runtime,
 			&aidash_domain::federation::route::Sender {
 				node: Some(self.workspace_node(workspace).await?),

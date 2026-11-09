@@ -23,7 +23,7 @@ pub(super) async fn add(pool: &Pool, tenant: &str, wanted: &[Wanted]) -> Result<
 		if tenant_deletions::is_deleted(&mut **tx, tenant).await? {
 			return Ok(false);
 		}
-		let mut snapshot = AuthorizationBundle::lock_snapshot(&mut **tx, tenant, true).await?;
+		let mut snapshot = AuthorizationBundle::lock_for_maintenance(&mut **tx, tenant).await?;
 		let mut changed = false;
 		for (subject, groups) in wanted {
 			if snapshot.bundle.subjects.contains_key(subject) {

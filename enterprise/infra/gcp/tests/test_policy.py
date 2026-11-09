@@ -13,6 +13,7 @@ from policy import (
     Refused,
     attach_release,
     build_needed,
+    failed_stop_due,
     idle_due,
     preview_command,
     transition,
@@ -193,6 +194,46 @@ class LifecycleTests(unittest.TestCase):
             idle_due(value, 10121)
         with self.assertRaises(Refused):
             idle_due(dict(value, protocol="unknown"), 10000)
+
+    def test_failed_stop_waits_an_hour_from_the_deployment_failure_or_latest_request(self):
+        self.assertFalse(failed_stop_due({"failed_deployment_at": 1000}, 4599))
+        self.assertTrue(failed_stop_due({"failed_deployment_at": 1000}, 4600))
+        self.assertFalse(failed_stop_due({"failed_deployment_at": 1000, "keepalive_at": 2000}, 4600))
+        self.assertFalse(failed_stop_due({"failed_deployment_at": 1000, "requested_at": 2000}, 4600))
+        # An earlier outcome receipt does not start the hour before the deployment failed.
+        self.assertFalse(failed_stop_due({"outcome_at": 1000, "failed_deployment_at": 9000}, 9000 + 3599))
+        self.assertTrue(failed_stop_due({"outcome_at": 1000, "failed_deployment_at": 9000}, 9000 + 3600))
+        # Without a failure time it still counts from the request.
+        self.assertFalse(failed_stop_due({"requested_at": 1000}, 4599))
+        self.assertTrue(failed_stop_due({"requested_at": 1000}, 4600))
+
+    def test_update_keeps_the_force_of_a_stop_that_has_not_completed(self):
+        request = self.request(identity="develop")
+        request["source_ref"] = "develop/0.1.0"
+        state = self.apply({}, request)
+        state = self.apply(state, dict(request, action="stop", sequence=2, force=True))
+        update = dict(request, action="update", sequence=3, sha="b" * 40)
+        entry = self.apply(state, update)["environments"]["develop"]
+        self.assertEqual((entry["desired"], entry["force"]), ("stopped", True))
+        # The update's own request cannot be weaker than the stop it follows,
+        # and a second update still sees the stop pending.
+        state = self.apply(state, update)
+        entry = self.apply(state, dict(update, sequence=4, sha="c" * 40))["environments"]["develop"]
+        self.assertEqual((entry["desired"], entry["force"]), ("stopped", True))
+        # A completed stop has nothing left to force.
+        state["environments"]["develop"]["status"] = "stopped"
+        entry = self.apply(state, dict(update, sequence=5, sha="d" * 40))["environments"]["develop"]
+        self.assertFalse(entry["force"])
+
+    def test_update_does_not_carry_force_onto_a_running_environment(self):
+        request = self.request("up", identity="develop", force=True)
+        request["source_ref"] = "develop/0.1.0"
+        state = self.apply({}, dict(request, action="create"))
+        state = self.apply(state, request | {"sequence": 2})
+        self.assertTrue(state["environments"]["develop"]["force"])
+        update = dict(request, action="update", sequence=3, sha="b" * 40)
+        entry = self.apply(state, update | {"force": False})["environments"]["develop"]
+        self.assertEqual((entry["desired"], entry["force"]), ("running", False))
 
 
 if __name__ == "__main__":

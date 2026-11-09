@@ -29,6 +29,26 @@ pub async fn track_snapshot(
 	if !snapshot.events.is_empty() {
 		sources.insert(("workspace_events".into(), snapshot.workspace.id));
 	}
+	// A message may name a Run of another Workspace, as a Subnode member's message
+	// to its creator does. Provenance resolves a source Run in this Workspace only,
+	// so recording that Run would invalidate every later check of these reads.
+	let message_runs: Vec<Uuid> = snapshot
+		.events
+		.iter()
+		.filter(|event| event.kind == "message.created")
+		.filter_map(|event| id(&event.data["run_id"]))
+		.collect::<BTreeSet<_>>()
+		.into_iter()
+		.collect();
+	let local_message_runs: BTreeSet<Uuid> = if message_runs.is_empty() {
+		BTreeSet::new()
+	} else {
+		scope
+			.runs_in_workspace(snapshot.workspace.id, &message_runs)
+			.await?
+			.into_iter()
+			.collect()
+	};
 	for event in &snapshot.events {
 		let source = if event.kind.starts_with("conversation.") {
 			id(&event.data["id"]).map(|id| ("conversation", id))
@@ -37,7 +57,9 @@ pub async fn track_snapshot(
 		} else if event.kind == "run.created" {
 			id(&event.data["id"]).map(|id| ("run", id))
 		} else {
-			id(&event.data["run_id"]).map(|id| ("run", id))
+			id(&event.data["run_id"])
+				.filter(|run| event.kind != "message.created" || local_message_runs.contains(run))
+				.map(|id| ("run", id))
 		};
 		if let Some((kind, id)) = source
 			&& (kind != "run" || Some(id) != read_run)

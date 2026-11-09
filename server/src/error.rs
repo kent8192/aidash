@@ -40,6 +40,10 @@ pub enum Error {
 	#[error("forbidden")]
 	AuthorityRefused(Box<aidash_domain::tool::AuthorityRefusal>),
 	#[error("{0}")]
+	ResumeBlocked(aidash_domain::run_state::RunReadsBlock),
+	#[error("forbidden")]
+	RunHidden(aidash_domain::run_state::RunReadsBlock),
+	#[error("{0}")]
 	RemoteExecutionRefused(aidash_domain::federation::execution::Refusal),
 	/// The build's admission gate refused new work (402); the code is stable.
 	#[error("{0}")]
@@ -67,6 +71,10 @@ pub enum Error {
 	},
 	#[error("atomic transaction visibility pending; retry after recovery")]
 	TransactionPending,
+	/// Running work did not finish within the limit of an Authority Change,
+	/// which was not applied (503). The same request can be sent again.
+	#[error("POLICY_BUSY")]
+	PolicyBusy { retry_after: u64 },
 	#[error("an atomic transaction committed during inference; retrying from fresh state")]
 	StaleInference,
 	#[error("semantic backend unavailable or invalid; inspect index status and retry")]
@@ -91,6 +99,9 @@ pub enum Error {
 		message: String,
 		retry_after: Option<std::time::Duration>,
 	},
+	/// Another Node did not answer a check this call depends on (#751).
+	#[error("Node {node} could not be reached to confirm this. Try again.")]
+	NodeUnreachable { node: String, after_effect: bool },
 	#[error("{message}")]
 	ToolRetry {
 		message: String,
@@ -129,9 +140,10 @@ impl Error {
 			Self::Unprocessable(s) => (StatusCode::UNPROCESSABLE_ENTITY, s.clone()),
 			Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".into()),
 			Self::Connection(cause) => (StatusCode::CONFLICT, cause.code().into()),
-			Self::Forbidden | Self::AuthorityRefused(_) => {
+			Self::Forbidden | Self::AuthorityRefused(_) | Self::RunHidden(_) => {
 				(StatusCode::FORBIDDEN, "forbidden".into())
 			}
+			Self::ResumeBlocked(block) => (StatusCode::CONFLICT, block.to_string()),
 			Self::RemoteExecutionRefused(reason) => (StatusCode::FORBIDDEN, reason.to_string()),
 			Self::Refused(code) => (StatusCode::PAYMENT_REQUIRED, code.clone()),
 			Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
@@ -165,7 +177,9 @@ impl Error {
 			),
 			Self::StaleInference => (StatusCode::CONFLICT, self.to_string()),
 			Self::Context(_) => (StatusCode::CONFLICT, self.to_string()),
-			Self::DeciderOutage => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
+			Self::DeciderOutage | Self::NodeUnreachable { .. } => {
+				(StatusCode::SERVICE_UNAVAILABLE, self.to_string())
+			}
 			Self::ContextOverflow => (
 				StatusCode::BAD_REQUEST,
 				"the request exceeded the model context window".into(),
@@ -210,6 +224,14 @@ impl Error {
 				StatusCode::SERVICE_UNAVAILABLE,
 				"atomic transaction visibility pending; retry after recovery".into(),
 			),
+			Self::PolicyBusy { .. } => (StatusCode::SERVICE_UNAVAILABLE, "POLICY_BUSY".into()),
+			_ if self.is_transient_database() => {
+				tracing::warn!(error = %self, "request failed on a temporary database error");
+				(
+					StatusCode::SERVICE_UNAVAILABLE,
+					"database temporarily unavailable; retry".into(),
+				)
+			}
 			Self::Framework(error) if error.database_error().is_some() => {
 				tracing::error!(error = %error, "request failed");
 				(
@@ -232,10 +254,17 @@ impl Error {
 				)
 			}
 		};
+		let mut envelope = match &self {
+			Self::NodeUnreachable { node, .. } => {
+				json!({"error": message, "code": "node_unreachable", "node": node})
+			}
+			_ => json!({"error": message}),
+		};
+		if let Self::RunHidden(block) | Self::ResumeBlocked(block) = &self {
+			envelope["run_reads"] = json!(block);
+		}
 		let mut response = HttpResponse::new(status)
-			.with_body(
-				serde_json::to_vec(&json!({"error": message})).expect("error envelope serializes"),
-			)
+			.with_body(serde_json::to_vec(&envelope).expect("error envelope serializes"))
 			.with_header("Content-Type", "application/json");
 		if let Self::RemoteExecutionRefused(reason) = &self
 			&& let Some(code) = serde_json::to_value(reason)
@@ -264,6 +293,14 @@ impl Error {
 			response
 				.headers
 				.insert(RETRY_AFTER, HeaderValue::from(*retry_after_seconds));
+		} else if let Self::PolicyBusy { retry_after } = &self {
+			response
+				.headers
+				.insert(RETRY_AFTER, HeaderValue::from(*retry_after));
+			// A peer's client keeps no body of a refusal.
+			response
+				.headers
+				.insert("x-aidash-policy-busy", HeaderValue::from(*retry_after));
 		} else if status == StatusCode::SERVICE_UNAVAILABLE
 			|| status == StatusCode::TOO_MANY_REQUESTS
 		{
@@ -310,7 +347,11 @@ impl Error {
 			code.starts_with("08")
 				|| matches!(
 					code,
-					"40001" | "40P01" | "53300" | "55P03" | "57P01" | "57P02" | "57P03" | "A3301"
+					"40001"
+						| "40P01" | "53300"
+						| "55P03" | "57014"
+						| "57P01" | "57P02"
+						| "57P03" | "A3301"
 				)
 		}
 		match self {
@@ -371,6 +412,8 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::Unauthorized => Self::Unauthorized,
 			ApplicationError::Forbidden => Self::Forbidden,
 			ApplicationError::AuthorityRefused(refusal) => Self::AuthorityRefused(refusal),
+			ApplicationError::ResumeBlocked(block) => Self::ResumeBlocked(block),
+			ApplicationError::RunHidden(block) => Self::RunHidden(block),
 			ApplicationError::RemoteExecutionRefused(reason) => {
 				Self::RemoteExecutionRefused(reason)
 			}
@@ -383,6 +426,9 @@ impl From<aidash_application::Error> for Error {
 				message,
 				retry_after,
 			},
+			ApplicationError::NodeUnreachable { node, after_effect } => {
+				Self::NodeUnreachable { node, after_effect }
+			}
 			ApplicationError::ToolServiceStatus { status, .. } => {
 				Self::External(format!("tool service returned HTTP {status}"))
 			}
@@ -420,14 +466,17 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::Plan(failure) => Self::Plan(failure),
 			ApplicationError::InferenceStalled => Self::InferenceStalled,
 			ApplicationError::TransactionPending => Self::TransactionPending,
+			ApplicationError::PolicyBusy { retry_after } => Self::PolicyBusy { retry_after },
 			ApplicationError::RunLockContended => Self::External("Run row lock contended".into()),
 			// The broker fault keeps its generic Deployment Administrator message and correlation.
 			error @ (ApplicationError::BrokerUnavailable { .. }
 			| ApplicationError::BrokerRejected { .. }) => Self::External(error.to_string()),
-			ApplicationError::Port(error) => match error.downcast::<Self>() {
-				Ok(error) => *error,
-				Err(error) => Self::External(error.to_string()),
-			},
+			ApplicationError::Port(error) | ApplicationError::TemporaryDatabase(error) => {
+				match error.downcast::<Self>() {
+					Ok(error) => *error,
+					Err(error) => Self::External(error.to_string()),
+				}
+			}
 		}
 	}
 }
@@ -442,9 +491,22 @@ impl From<Error> for aidash_application::Error {
 			Error::NotFound(message) => Self::NotFound(message),
 			Error::Unprocessable(message) => Self::Unprocessable(message),
 			Error::FederationDisabled => Self::FederationDisabled,
-			// Work stopped by a Tenant Deletion pauses like any refused authority.
-			Error::Forbidden | Error::TenantDeleted => Self::Forbidden,
+			Error::Forbidden => Self::Forbidden,
+			// Work stopped by a Tenant Deletion pauses like any refused authority. The note
+			// names the check where it reaches the application, so every source of the error
+			// (the Tenant's policy lock, its deletion record) is covered at once.
+			Error::TenantDeleted => {
+				aidash_application::authorization::refusal_note::set(
+					aidash_application::authorization::refusal_note::Note::new(
+						aidash_domain::tool::RefusalCheck::TenantDeletion,
+						None,
+					),
+				);
+				Self::Forbidden
+			}
 			Error::AuthorityRefused(refusal) => Self::AuthorityRefused(refusal),
+			Error::ResumeBlocked(block) => Self::ResumeBlocked(block),
+			Error::RunHidden(block) => Self::RunHidden(block),
 			Error::RemoteExecutionRefused(reason) => Self::RemoteExecutionRefused(reason),
 			Error::Refused(code) => Self::Refused(code),
 			Error::Unauthorized => Self::Unauthorized,
@@ -461,6 +523,7 @@ impl From<Error> for aidash_application::Error {
 			Error::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
 			Error::ConnectionStoreUnavailable => Self::ConnectionStoreUnavailable,
 			Error::TransactionPending => Self::TransactionPending,
+			Error::PolicyBusy { retry_after } => Self::PolicyBusy { retry_after },
 			Error::InferenceStalled => Self::InferenceStalled,
 			Error::ToolNotDelivered {
 				message,
@@ -469,6 +532,9 @@ impl From<Error> for aidash_application::Error {
 				message,
 				retry_after,
 			},
+			Error::NodeUnreachable { node, after_effect } => {
+				Self::NodeUnreachable { node, after_effect }
+			}
 			Error::ToolRetry {
 				message,
 				count,
@@ -479,6 +545,7 @@ impl From<Error> for aidash_application::Error {
 				retry_after,
 			},
 			Error::Plan(failure) => Self::Plan(failure),
+			error if error.is_transient_database() => Self::TemporaryDatabase(Box::new(error)),
 			error => Self::Port(Box::new(error)),
 		}
 	}

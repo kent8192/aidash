@@ -1,20 +1,20 @@
 //! Bounded dependency RPCs use the same tokens and bound decoding at 128 KiB.
-use super::HttpTransport;
-use aidash_application::ports::federation::dependencies::DependencyTransport;
-use aidash_domain::federation::{
-	dependencies::{Checked, Input},
-	route::Route,
+use super::{HttpTransport, unavailable};
+use aidash_application::{
+	Error,
+	ports::federation::dependencies::{Check, DependencyTransport},
 };
+use aidash_domain::federation::{dependencies::Input, route::Route};
 use async_trait::async_trait;
 use serde_json::json;
 use std::time::Duration;
 
 #[async_trait]
 impl DependencyTransport for HttpTransport {
-	async fn check(&self, route: &Route, input: &Input, remaining: Duration) -> Option<Checked> {
+	async fn check(&self, route: &Route, input: &Input, remaining: Duration) -> Check {
 		// The caller's remaining time bounds the headers and the whole body.
-		tokio::time::timeout(remaining.min(Duration::from_secs(10)), async {
-			let reply = self
+		let answered = tokio::time::timeout(remaining.min(Duration::from_secs(10)), async {
+			let reply = match self
 				.send(
 					route,
 					"POST",
@@ -22,14 +22,36 @@ impl DependencyTransport for HttpTransport {
 					Some(&json!({"reference":input.reference})),
 				)
 				.await
-				.ok()?;
-			if !reply.status().is_success() {
-				return None;
+			{
+				Ok(reply) => reply,
+				// Nothing was sent: this Deployment refuses to federate.
+				Err(Error::FederationDisabled) => return Check::Refused,
+				Err(error) => {
+					unavailable(route, &error);
+					return Check::Unavailable;
+				}
+			};
+			let status = reply.status();
+			if !status.is_success() {
+				let check = Check::of_status(status.as_u16());
+				if matches!(check, Check::Unavailable) {
+					unavailable(route, &format!("HTTP {status}"));
+				}
+				return check;
 			}
-			crate::response::json(reply, 131072).await.ok()
+			match crate::response::json(reply, 131072).await {
+				Ok(checked) => Check::Confirmed(checked),
+				Err(error) => {
+					unavailable(route, &error);
+					Check::Unavailable
+				}
+			}
 		})
-		.await
-		.ok()?
+		.await;
+		answered.unwrap_or_else(|_| {
+			unavailable(route, &"the request timed out");
+			Check::Unavailable
+		})
 	}
 }
 

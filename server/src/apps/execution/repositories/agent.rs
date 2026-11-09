@@ -29,6 +29,9 @@ use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// How many of a Run's newest Workspace task changes one wake reports.
+const WORKSPACE_EVENT_WINDOW: u64 = 32;
+
 #[async_trait]
 impl ExecutionStore for RunStore {
 	async fn unfinished_owned_tasks(&self, run: &Run) -> Result<u64> {
@@ -70,10 +73,10 @@ impl ExecutionStore for RunStore {
 		tx.commit().await?;
 		Ok(u64::try_from(pending).unwrap_or_default())
 	}
-	async fn workspace_events(&self, run: &Run, after: i64) -> Result<Vec<WorkspaceEvent>> {
+	async fn workspace_events(&self, run: &Run, after: i64) -> Result<WorkspaceEvents> {
 		use reinhardt::db::orm::execution::convert_values;
 		use reinhardt::query::{
-			Alias, Expr, ExprTrait, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
+			Alias, Expr, ExprTrait, Func, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
 		};
 		let (sql, values) = Query::select()
 			.columns([Alias::new("generation"), Alias::new("reason")])
@@ -82,7 +85,7 @@ impl ExecutionStore for RunStore {
 			.and_where(Expr::col("generation").gt(Expr::value(after)))
 			.and_where(Expr::col("reason").like("workspace_task:%"))
 			.order_by(Alias::new("generation"), Order::Desc)
-			.limit(32)
+			.limit(WORKSPACE_EVENT_WINDOW)
 			.build(PostgresQueryBuilder);
 		let mut tx = self.store.pool.begin(&self.scope).await?;
 		let rows = tx
@@ -114,8 +117,37 @@ impl ExecutionStore for RunStore {
 			});
 		}
 		events.reverse();
+		// The window holds the newest events, and the caller moves its cursor to
+		// the newest one it got. Whatever lies between the cursor and the oldest
+		// event returned is never delivered, so count exactly that: an event
+		// committed since the first query is newer and comes with the next wake.
+		let mut dropped = 0;
+		if events.len() as u64 == WORKSPACE_EVENT_WINDOW
+			&& let Some(oldest) = events.first()
+		{
+			let (sql, values) = Query::select()
+				.expr_as(
+					Func::count(Expr::col("generation").into()),
+					Alias::new("dropped"),
+				)
+				.from(Alias::new("run_activations"))
+				.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
+				.and_where(Expr::col("generation").gt(Expr::value(after)))
+				.and_where(Expr::col("generation").lt(Expr::value(oldest.generation)))
+				.and_where(Expr::col("reason").like("workspace_task:%"))
+				.build(PostgresQueryBuilder);
+			let row = tx
+				.fetch_one(&sql, convert_values(values))
+				.await
+				.map_err(crate::Error::from)?;
+			let count: i64 = row
+				.get("dropped")
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(crate::Error::from)?;
+			dropped = u64::try_from(count).unwrap_or_default();
+		}
 		tx.commit().await?;
-		Ok(events)
+		Ok(WorkspaceEvents { events, dropped })
 	}
 	async fn resolve_research(&self, run: &mut Run) -> Result<()> {
 		let mut tx = self
@@ -355,6 +387,18 @@ impl ExecutionStore for RunStore {
 	) -> Result<u32> {
 		self.store
 			.invocation_not_delivered(&self.scope, run, token, key, failure)
+			.await
+			.map_err(Into::into)
+	}
+	async fn invocation_refused(
+		&self,
+		run: &Run,
+		token: Uuid,
+		key: &str,
+		refusal: &aidash_domain::tool::AuthorityRefusal,
+	) -> Result<()> {
+		self.store
+			.invocation_refused(&self.scope, run, token, key, refusal)
 			.await
 			.map_err(Into::into)
 	}
@@ -736,13 +780,20 @@ impl InferenceReservation for Reservation {
 pub(crate) struct Visibility<'a> {
 	pub visibility: &'a mut crate::transactions::gate::ReadLease,
 	pub store: &'a Store,
+	pub tenant: Option<&'a str>,
 }
 #[async_trait]
 impl ExecutionVisibility for Visibility<'_> {
 	async fn suspend(&mut self) -> Result<()> {
 		self.visibility.suspend().await.map_err(Into::into)
 	}
+	/// The harness takes this lease back before the authority it gave up for a
+	/// model or plugin wait. So a Run waits behind an Authority Change here, while
+	/// it holds neither (ADR 0121).
 	async fn resume(&mut self) -> Result<()> {
+		if let Some(tenant) = self.tenant {
+			crate::database::authority_change::enter(&self.store.pool, tenant).await;
+		}
 		self.visibility.resume(self.store).await.map_err(Into::into)
 	}
 }
@@ -1242,6 +1293,7 @@ impl ExecutionEnvironment for Environment<'_> {
 			model: config.model,
 			instructions: config.instructions,
 			knowledge_digest: config.knowledge_digest,
+			reference_files: config.reference_attachments.len(),
 			tools: config.tools,
 			skills: config.skills,
 			max_steps: config.max_steps,

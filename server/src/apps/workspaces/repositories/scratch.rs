@@ -33,6 +33,15 @@ pub(crate) async fn load(
 	load_with_lock(tx, tenant, id, true).await
 }
 
+/// Reads without a lock, for a check that decides nothing about the row's future.
+pub(crate) async fn read(
+	tx: &mut dyn TransactionExecutor,
+	tenant: &str,
+	id: Uuid,
+) -> Result<Option<ScratchSpace>> {
+	load_with_lock(tx, tenant, id, false).await
+}
+
 async fn load_with_lock(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
@@ -438,7 +447,7 @@ pub(crate) trait ScratchServices: Send {
 	) -> aidash_application::Result<(Uuid, String)>;
 }
 
-fn effective_policy(
+pub(crate) fn effective_policy(
 	policy: &crate::config::ScratchOperatorPolicy,
 	tenant: &str,
 ) -> (ScratchCeilings, HostAllowlist) {
@@ -774,6 +783,10 @@ impl NativeScratchServices<'_> {
 			let tenant = access.identity.tenant.clone();
 			let (sql, values) = Query::select()
 				.column(Alias::new("credential_id"))
+				.expr_as(
+					Expr::cust("COALESCE(subject_chain[1], '')"),
+					Alias::new("root_subject"),
+				)
 				.from(Alias::new("authorization_remote_admissions"))
 				.and_where(Expr::col("id").eq(Expr::value(run.id)))
 				.and_where(Expr::col("tenant").eq(Expr::value(tenant.clone())))
@@ -805,25 +818,38 @@ impl NativeScratchServices<'_> {
 				.get("credential_id")
 				.map_err(reinhardt::core::exception::Error::from)
 				.map_err(crate::Error::from)?;
-			let (sql, values) = Query::select()
-				.column(Alias::new("subject"))
-				.from(Alias::new("authorization_credentials"))
-				.and_where(Expr::col("id").eq(Expr::value(credential)))
-				.and_where(Expr::col("tenant").eq(tenant.clone()))
-				.and_where(Expr::col("revoked_at").is_null())
-				.and_where(Expr::col("expires_at").gt(Expr::value(chrono::Utc::now())))
-				.lock(LockType::Share)
-				.build(PostgresQueryBuilder);
-			let row = access
-				.tx
-				.fetch_optional(&sql, convert_values(values))
-				.await
-				.map_err(crate::Error::from)?
-				.ok_or(aidash_application::Error::Forbidden)?;
-			let person: String = row
-				.get("subject")
-				.map_err(reinhardt::core::exception::Error::from)
-				.map_err(crate::Error::from)?;
+			let person: String = if credential.is_nil() {
+				// A Node of the Run's own Tenant acts for a subject of that Tenant
+				// without a credential (ADR 0064), so the person who started the
+				// work is the root of the chain the admission recorded (#751).
+				let root: String = admission
+					.get("root_subject")
+					.map_err(reinhardt::core::exception::Error::from)
+					.map_err(crate::Error::from)?;
+				if root.is_empty() {
+					return Err(aidash_application::Error::Forbidden);
+				}
+				root
+			} else {
+				let (sql, values) = Query::select()
+					.column(Alias::new("subject"))
+					.from(Alias::new("authorization_credentials"))
+					.and_where(Expr::col("id").eq(Expr::value(credential)))
+					.and_where(Expr::col("tenant").eq(tenant.clone()))
+					.and_where(Expr::col("revoked_at").is_null())
+					.and_where(Expr::col("expires_at").gt(Expr::value(chrono::Utc::now())))
+					.lock(LockType::Share)
+					.build(PostgresQueryBuilder);
+				let row = access
+					.tx
+					.fetch_optional(&sql, convert_values(values))
+					.await
+					.map_err(crate::Error::from)?
+					.ok_or(aidash_application::Error::Forbidden)?;
+				row.get("subject")
+					.map_err(reinhardt::core::exception::Error::from)
+					.map_err(crate::Error::from)?
+			};
 			if !access.subjects.contains(&person) {
 				return Err(aidash_application::Error::Forbidden);
 			}

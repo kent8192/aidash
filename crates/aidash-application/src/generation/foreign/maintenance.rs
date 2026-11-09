@@ -86,7 +86,11 @@ pub async fn reconcile(repository: &dyn ForeignGenerationMaintenance) -> Result<
 		} else {
 			"EXPIRED"
 		};
-		terminate(repository, &job, status).await?;
+		// A busy Tenant waits for the next pass, without holding up other Tenants' jobs.
+		match terminate(repository, &job, status).await {
+			Err(Error::PolicyBusy { .. }) => {}
+			result => result?,
+		}
 	}
 	Ok(())
 }

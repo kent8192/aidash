@@ -25,7 +25,16 @@ pub(super) async fn adopt(
 		let proof = observed["acknowledged_output_digest"]
 			.as_str()
 			.ok_or(Error::Forbidden)?;
-		scope.commit(proof, Value::Null).await?;
+		let output = if observed["output_discarded"] == true {
+			let health = repository.runner_request("GET", "/v1/health", None).await?;
+			if health["instance"] != instance {
+				return Err(Error::Forbidden);
+			}
+			json!({"discarded":true})
+		} else {
+			Value::Null
+		};
+		scope.commit(proof, output).await?;
 		return Ok(Some(proof.to_owned()));
 	}
 	if observed["output_harvested"] != true {
