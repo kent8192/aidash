@@ -328,24 +328,60 @@ function Dashboard({
       const result = (await (
         await authenticatedFetch(`/api/state?${params}`)
       ).json()) as TenantState;
-      let cursor = result.next_cursors.human_requests;
-      const humans: HumanRequest[] = [...result.human_requests];
-      while (cursor) {
-        params.set("cursor", cursor);
-        const page = (await (
-          await authenticatedFetch(`/api/human-requests?${params}`)
-        ).json()) as { items: HumanRequest[]; next_cursor: string | null };
-        humans.push(...page.items);
-        cursor = page.next_cursor;
-      }
-      return { ...result, human_requests: humans };
+      return result;
     },
     enabled: connected && (administratorContext || !remembered.pending),
     refetchInterval: 60_000,
   });
-  // State lists every Node of the Tenant; the dashboard works in one: the Node
-  // of the open Workspace, whichever way it was reached, and otherwise the
-  // Node this browser remembers.
+  const humanKey = `${remembered.selected?.name ?? ""}:${state.dataUpdatedAt}`;
+  const [humanPages, setHumanPages] = useState<{
+    key: string;
+    items: HumanRequest[];
+    cursor: string | null;
+    loading: boolean;
+    error: boolean;
+  }>({ key: "", items: [], cursor: null, loading: false, error: false });
+  const humanPage =
+    humanPages.key === humanKey
+      ? humanPages
+      : {
+          key: humanKey,
+          items: [],
+          cursor: state.data?.next_cursors.human_requests ?? null,
+          loading: false,
+          error: false,
+        };
+  const olderHumans = humanPage.items;
+  const humanCursor = humanPage.cursor;
+  const humanLoading = humanPage.loading;
+  const humanError = humanPage.error;
+  const loadOlderHumans = async () => {
+    if (!humanCursor || humanLoading) return;
+    setHumanPages({ ...humanPage, loading: true, error: false });
+    try {
+      const params = new URLSearchParams({ cursor: humanCursor });
+      if (remembered.selected?.name)
+        params.set("node", remembered.selected.name);
+      const page = (await (
+        await authenticatedFetch(`/api/human-requests?${params}`)
+      ).json()) as { items: HumanRequest[]; next_cursor: string | null };
+      setHumanPages((old) =>
+        old.key === humanKey
+          ? {
+              ...old,
+              items: [...old.items, ...page.items],
+              cursor: page.next_cursor,
+              loading: false,
+            }
+          : old,
+      );
+    } catch {
+      setHumanPages((old) =>
+        old.key === humanKey ? { ...old, error: true, loading: false } : old,
+      );
+    }
+  };
+  // State is scoped to the selected Node.
   const everything = state.isError ? undefined : state.data;
   const channelNode = route.channel
     ? everything?.workspaces.find((value) => value.id === route.channel)?.node
@@ -362,10 +398,17 @@ function Dashboard({
       everything
         ? {
             ...nodeView(everything, current),
-            human_requests: everything.human_requests,
+            human_requests: [
+              ...new Map(
+                [...everything.human_requests, ...olderHumans].map((row) => [
+                  row.id,
+                  row,
+                ]),
+              ).values(),
+            ],
           }
         : undefined,
-    [everything, current],
+    [everything, current, olderHumans],
   );
   // Capability approvals are addressed to tenant subjects, never to Deployment Administrators.
   const inbox = useApprovalInbox(connected && subjectTenant !== null);
@@ -830,9 +873,8 @@ function Dashboard({
   const runs = data
     ? data.runs.map((run) => ({ run, node: data.node.id }))
     : [];
-  // What awaits the person is Tenant-wide: a request in another Node's
-  // Workspace is as pending as one in the selected Node's.
-  const requests = (everything?.human_requests ?? []).map((request) => {
+  // The queue includes the selected Node's pending requests.
+  const requests = (data?.human_requests ?? []).map((request) => {
     const owner = everything?.workspaces.find(
       (value) => value.id === request.workspace_id,
     );
@@ -841,6 +883,7 @@ function Dashboard({
       request,
       node:
         nodes.nodes.find((value) => value.name === owner?.node)?.address ??
+        current?.address ??
         everything?.deployment.id ??
         "",
       workspace:
@@ -890,6 +933,12 @@ function Dashboard({
           deploymentAdministrator={deploymentAdministrator}
           streamStatus={administratorContext ? "live" : streamStatus}
           decisions={requests.filter((item) => item.request.response === null)}
+          humanMore={{
+            available: humanCursor !== null,
+            loading: humanLoading,
+            error: humanError,
+            load: loadOlderHumans,
+          }}
           inbox={inbox}
           queueOpen={queueOpen}
           setQueueOpen={setQueueOpen}

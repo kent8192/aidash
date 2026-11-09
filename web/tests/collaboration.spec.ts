@@ -3509,6 +3509,11 @@ test("workspace history continues from its candidate cursor", async ({
   expect(new URL(requested).searchParams.get("cursor")).toBe("next-page");
   expect(new URL(requested).searchParams.get("node")).toBe(defaultNode.name);
   await expect(page.getByRole("button", { name: "Show more" })).toHaveCount(0);
+  await page.getByRole("link", { name: "# Older workspace" }).click();
+  await expect(page).toHaveURL(/channel=older-workspace/);
+  await expect(
+    page.getByRole("heading", { name: "# Older workspace" }),
+  ).toBeVisible();
 });
 
 test("pending requests continue within the selected node", async ({ page }) => {
@@ -3533,6 +3538,7 @@ test("pending requests continue within the selected node", async ({ page }) => {
             ...data.human_requests[0],
             id: "older-question",
             run_id: "old-run",
+            prompt: "Older request from an old run",
           },
         ],
         next_cursor: null,
@@ -3540,10 +3546,14 @@ test("pending requests continue within the selected node", async ({ page }) => {
     });
   });
   await page.goto("/collaboration?channel=workspace-one");
-  await page.getByRole("button", { name: /Switch request/ }).click();
-  await expect(page.getByRole("link", { name: "# Research" })).toContainText(
-    "Decisions 2",
-  );
+  await page.getByRole("button", { name: /Decisions 1/ }).click();
+  expect(requested).toBe("");
+  await page.getByRole("button", { name: "Show more" }).click();
+  await expect(
+    page.getByRole("button", {
+      name: /Information requested Research.*Older request from an old run/,
+    }),
+  ).toBeVisible();
   expect(new URL(requested).searchParams.get("cursor")).toBe("next-human");
   expect(new URL(requested).searchParams.get("node")).toBe(defaultNode.name);
 });

@@ -200,6 +200,7 @@ export function AppShell({
   deploymentAdministrator,
   streamStatus,
   decisions,
+  humanMore,
   inbox,
   queueOpen,
   setQueueOpen,
@@ -218,6 +219,12 @@ export function AppShell({
   deploymentAdministrator: boolean;
   streamStatus: "live" | "reconnecting";
   decisions: PendingDecision[];
+  humanMore: {
+    available: boolean;
+    loading: boolean;
+    error: boolean;
+    load: () => void;
+  };
   inbox: ApprovalInbox;
   queueOpen: boolean;
   setQueueOpen: (open: boolean) => void;
@@ -582,6 +589,7 @@ export function AppShell({
             </Button>
             <DecisionQueue
               decisions={decisions}
+              humanMore={humanMore}
               inbox={inbox}
               open={queueOpen}
               onOpenChange={setQueueOpen}

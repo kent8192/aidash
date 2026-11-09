@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useState, type RefObject } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { authenticatedFetch } from "../transport";
-import type { Workspace } from "../types";
+import type { TenantState, Workspace } from "../types";
 import { Link } from "@tanstack/react-router";
 import { Plus, Search } from "lucide-react";
 import { Button } from "../components/ui/button";
@@ -44,44 +45,47 @@ export function WorkspaceList({
 }) {
   const { locale } = useI18n();
   const copy = shellCopy[locale];
-  const [extra, setExtra] = useState<Workspace[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(false);
-  const generation = useRef(0);
-  useEffect(() => {
-    generation.current += 1;
-    setExtra([]);
-    setCursor(data?.next_cursors.workspaces ?? null);
-    setError(false);
-    setLoading(false);
-  }, [node, data?.next_cursors.workspaces]);
+  const client = useQueryClient();
+  const [status, setStatus] = useState<{
+    node?: string;
+    loading: boolean;
+    error: boolean;
+  }>({ loading: false, error: false });
+  const loading = status.node === node && status.loading;
+  const error = status.node === node && status.error;
+  const cursor = data?.next_cursors.workspaces ?? null;
   const loadMore = async () => {
     if (!cursor || loading) return;
-    const requestGeneration = generation.current;
-    setLoading(true);
-    setError(false);
+    setStatus({ node, loading: true, error: false });
     try {
       const params = new URLSearchParams({ cursor });
       if (node) params.set("node", node);
       const page = (await (
         await authenticatedFetch(`/api/workspaces?${params}`)
       ).json()) as { items: Workspace[]; next_cursor: string | null };
-      if (requestGeneration !== generation.current) return;
-      setExtra((old) => [...old, ...page.items]);
-      setCursor(page.next_cursor);
+      client.setQueryData<TenantState>(["state", node], (old) => {
+        if (!old || old.next_cursors.workspaces !== cursor) return old;
+        return {
+          ...old,
+          workspaces: [
+            ...new Map(
+              [...old.workspaces, ...page.items].map((row) => [row.id, row]),
+            ).values(),
+          ],
+          next_cursors: { ...old.next_cursors, workspaces: page.next_cursor },
+        };
+      });
+      setStatus((old) =>
+        old.node === node ? { node, loading: false, error: false } : old,
+      );
     } catch {
-      if (requestGeneration === generation.current) setError(true);
-    } finally {
-      if (requestGeneration === generation.current) setLoading(false);
+      setStatus((old) =>
+        old.node === node ? { node, loading: false, error: true } : old,
+      );
     }
   };
   const query = filter.toLocaleLowerCase();
-  const workspaces = [
-    ...new Map(
-      [...(data?.workspaces ?? []), ...extra].map((item) => [item.id, item]),
-    ).values(),
-  ].filter((value) =>
+  const workspaces = (data?.workspaces ?? []).filter((value) =>
     `${value.title} ${value.goal}`.toLocaleLowerCase().includes(query),
   );
   return (
