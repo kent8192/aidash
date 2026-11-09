@@ -586,7 +586,7 @@ fn a_sole_unindexed_choice_is_choice_zero() {
 }
 
 #[rstest::rstest]
-fn only_data_events_count_as_liveness() {
+fn comments_count_as_liveness_only_before_output() {
 	// Arrange
 	let (recorder, received) = recorder();
 	let mut assembler = StreamAssembler::new(&recorder, 1_048_576);
@@ -599,10 +599,11 @@ fn only_data_events_count_as_liveness() {
 	let (head, tail) = event.split_at(event.len() - 1);
 	let partial = assembler.push(head.as_bytes()).unwrap();
 	let reasoning = assembler.push(tail.as_bytes()).unwrap();
+	let after_output = assembler.push(b": keepalive\n\n").unwrap();
 
-	// Assert: only a dispatched nonempty event is liveness.
-	assert!(!comment && !blank && !empty && !partial);
-	assert!(reasoning);
+	// Assert
+	assert!(comment && reasoning);
+	assert!(!blank && !empty && !partial && !after_output);
 	assert!(received.try_recv().is_err());
 }
 

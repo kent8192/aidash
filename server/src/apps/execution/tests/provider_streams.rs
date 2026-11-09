@@ -578,8 +578,11 @@ async fn keepalives_before_first_output_keep_stream_alive(
 #[rstest::rstest]
 #[case::after_text(Some(delta(json!({"content":"Hi"}))), false)]
 #[case::after_reasoning(Some(delta(json!({"reasoning":"thinking"}))), false)]
+#[case::after_reasoning_details(Some(delta(json!({"reasoning_details":[{"type":"reasoning.text","text":"thinking"}]}))), false)]
+#[case::after_reasoning_summary(Some(delta(json!({"reasoning_details":[{"type":"reasoning.summary","summary":"thinking"}]}))), false)]
 #[case::after_tool_call(Some(delta(json!({"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"read","arguments":""}}]}))), false)]
 #[case::silence(None, true)]
+#[case::silence_after_output(Some(delta(json!({"content":"Hi"}))), true)]
 #[tokio::test]
 async fn output_then_comments_or_silence_stalls(
 	#[case] first: Option<Step>,
@@ -588,6 +591,9 @@ async fn output_then_comments_or_silence_stalls(
 	streaming_client: reqwest::Client,
 ) {
 	let mut steps: Vec<Step> = first.into_iter().collect();
+	if steps.is_empty() {
+		steps.push(keepalive());
+	}
 	if silence {
 		steps.push(Step::Sleep(Duration::from_secs(2)));
 	} else {
@@ -635,10 +641,13 @@ impl aidash_application::provider_access::ProviderAccess for PlanAccess {
 #[rstest::rstest]
 #[case::comments_before_output("before", true)]
 #[case::empty_then_comments("empty", true)]
+#[case::usage_then_comments("usage", true)]
 #[case::comments_after_output("after", false)]
 #[case::silence("silence", false)]
+#[case::silence_after_output("after_silence", false)]
 #[case::reasoning_then_comments("reasoning", false)]
 #[case::tool_then_comments("tool", false)]
+#[case::tool_item_then_comments("tool_item", false)]
 #[tokio::test]
 async fn responses_stream_liveness_phases(
 	#[case] scenario: &str,
@@ -646,9 +655,15 @@ async fn responses_stream_liveness_phases(
 	streaming_client: reqwest::Client,
 ) {
 	let mut steps = match scenario {
-		"empty" => vec![data(json!({"type":"response.created","response":{}}))],
-		"after" => vec![data(
+		"empty" => vec![data(
+			json!({"type":"response.output_text.delta","delta":""}),
+		)],
+		"silence" => vec![keepalive()],
+		"after" | "after_silence" => vec![data(
 			json!({"type":"response.output_text.delta","delta":"Hi"}),
+		)],
+		"usage" => vec![data(
+			json!({"type":"response.in_progress","response":{"usage":{"input_tokens":1}}}),
 		)],
 		"reasoning" => vec![data(
 			json!({"type":"response.reasoning_summary_text.delta","delta":"thinking"}),
@@ -656,9 +671,12 @@ async fn responses_stream_liveness_phases(
 		"tool" => vec![data(
 			json!({"type":"response.function_call_arguments.delta","output_index":0,"delta":"{"}),
 		)],
+		"tool_item" => vec![data(
+			json!({"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call-1","name":"read"}}),
+		)],
 		_ => vec![],
 	};
-	if scenario == "silence" {
+	if scenario == "silence" || scenario == "after_silence" {
 		steps.push(Step::Sleep(Duration::from_secs(2)));
 	} else {
 		for _ in 0..15 {

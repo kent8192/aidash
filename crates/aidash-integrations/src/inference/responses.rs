@@ -630,6 +630,7 @@ pub(crate) struct Assembler<'a> {
 	streamed: usize,
 	calls: BTreeMap<u64, (Option<String>, Option<String>, u64)>,
 	finished: Option<Result<ModelResponse>>,
+	output_started: bool,
 }
 
 impl<'a> Assembler<'a> {
@@ -654,6 +655,7 @@ impl<'a> Assembler<'a> {
 			streamed: 0,
 			calls: BTreeMap::new(),
 			finished: None,
+			output_started: false,
 		}
 	}
 
@@ -663,8 +665,8 @@ impl<'a> Assembler<'a> {
 		self.finished.is_some()
 	}
 
-	/// Consumes one network chunk; returns whether it carried event data.
-	/// Comments and empty `data:` fields never count as liveness.
+	/// Consumes one network chunk; data is live in both phases, while
+	/// comments are live only before the first output.
 	pub(crate) fn push(&mut self, mut chunk: &[u8]) -> Result<bool> {
 		let stream_limit = self.limit.saturating_mul(STREAM_ENVELOPE_FACTOR);
 		if chunk.len() > stream_limit.saturating_sub(self.received) {
@@ -724,7 +726,7 @@ impl<'a> Assembler<'a> {
 			return Ok(false);
 		}
 		if line[0] == b':' {
-			return Ok(false);
+			return Ok(!self.output_started);
 		}
 		let (name, value) = match line.iter().position(|byte| *byte == b':') {
 			Some(colon) => {
@@ -755,6 +757,22 @@ impl<'a> Assembler<'a> {
 		}
 		let event: Value = serde_json::from_slice(data)
 			.map_err(|error| Error::External(format!("invalid response JSON: {error}")))?;
+		let kind = event["type"].as_str().unwrap_or_default();
+		let output_delta = kind == "response.output_text.delta"
+			|| (self.openrouter && kind == "response.content_part.delta")
+			|| kind == "response.function_call_arguments.delta"
+			|| (kind.starts_with("response.reasoning") && kind.ends_with(".delta"));
+		self.output_started |= (output_delta
+			&& event["delta"]
+				.as_str()
+				.is_some_and(|delta| !delta.is_empty()))
+			|| (kind == "response.output_item.added"
+				&& event["item"]["type"] == "function_call"
+				&& ["call_id", "name", "arguments"].into_iter().any(|key| {
+					event["item"][key]
+						.as_str()
+						.is_some_and(|value| !value.is_empty())
+				}));
 		match event["type"].as_str() {
 			// OpenRouter also emits `response.content_part.delta` for text.
 			Some("response.output_text.delta") => {

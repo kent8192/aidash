@@ -40,8 +40,10 @@ pub struct ModelConfig {
 	/// values use the release default; `false` keeps the non-streamed path.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub streaming: Option<bool>,
-	/// Longest silence, in seconds, between streamed data chunks. Provider
-	/// comment lines do not count as data. Omitted values use 120 seconds.
+	/// Longest silence, in seconds, in a streamed response. Provider comments
+	/// count as liveness before the first text, reasoning or tool-call output;
+	/// afterward only data counts. The request timeout bounds both phases.
+	/// Omitted values use 120 seconds.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub stream_stall_timeout_secs: Option<u32>,
 	#[serde(default)]

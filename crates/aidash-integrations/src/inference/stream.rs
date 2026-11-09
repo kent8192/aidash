@@ -81,6 +81,7 @@ pub(crate) struct StreamAssembler<'a> {
 	/// unknown even if a later chunk repeats one of the alternatives.
 	ambiguous_identity: BTreeSet<&'static str>,
 	done: bool,
+	output_started: bool,
 }
 
 impl<'a> StreamAssembler<'a> {
@@ -106,6 +107,7 @@ impl<'a> StreamAssembler<'a> {
 			identity: ProviderIdentity::default(),
 			ambiguous_identity: BTreeSet::new(),
 			done: false,
+			output_started: false,
 		}
 	}
 
@@ -114,9 +116,8 @@ impl<'a> StreamAssembler<'a> {
 		self.done
 	}
 
-	/// Consume one network chunk. Returns whether it dispatched a nonempty
-	/// `data` event, the only liveness signal; comments, empty `data:` fields and
-	/// events still being received never count.
+	/// Consume one network chunk. Dispatched data is live in both phases;
+	/// comments are live until the first output.
 	pub(crate) fn push(&mut self, mut chunk: &[u8]) -> Result<bool> {
 		let stream_limit = self.limit.saturating_mul(STREAM_ENVELOPE_FACTOR);
 		if chunk.len() > stream_limit.saturating_sub(self.received) {
@@ -227,7 +228,7 @@ impl<'a> StreamAssembler<'a> {
 			return Ok(false);
 		}
 		if line[0] == b':' {
-			return Ok(false);
+			return Ok(!self.output_started);
 		}
 		let (name, value) = match line.iter().position(|byte| *byte == b':') {
 			Some(colon) => {
@@ -329,6 +330,18 @@ impl<'a> StreamAssembler<'a> {
 
 	fn choice(&mut self, choice: &Value) -> Result<()> {
 		let delta = &choice["delta"];
+		self.output_started |= ["content", "reasoning", "reasoning_content"]
+			.into_iter()
+			.any(|key| delta[key].as_str().is_some_and(|text| !text.is_empty()))
+			|| delta["reasoning_details"].as_array().is_some_and(|items| {
+				items.iter().any(|item| {
+					["text", "summary", "data"]
+						.into_iter()
+						.any(|key| item[key].as_str().is_some_and(|text| !text.is_empty()))
+				})
+			}) || delta["tool_calls"]
+			.as_array()
+			.is_some_and(|calls| !calls.is_empty());
 		if let Some(annotations) = delta.get("annotations").and_then(Value::as_array) {
 			let size = serde_json::to_vec(annotations)?.len();
 			if size > self.limit.saturating_sub(self.assembled) {
