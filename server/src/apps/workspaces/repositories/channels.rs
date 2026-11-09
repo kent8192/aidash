@@ -26,6 +26,9 @@ pub(crate) struct NativeChannels<'a> {
 	pub(crate) lease: &'a mut Lease,
 	pub(crate) federation: Option<&'a crate::federation::Federation>,
 	pub(crate) run_id: Option<Uuid>,
+	/// The Agent writing for `run_id`. Its Run holds the lease in the name of the
+	/// person who started it, who is not the sender of what the Agent writes.
+	pub(crate) agent: Option<String>,
 }
 #[derive(Debug)]
 struct LinkRecord {
@@ -91,7 +94,7 @@ impl AttachmentObjects for NativeChannels<'_> {
 #[async_trait]
 impl ChannelScope for NativeChannels<'_> {
 	fn sender(&self) -> String {
-		self.lease.sender()
+		self.agent.clone().unwrap_or_else(|| self.lease.sender())
 	}
 	fn principal(&self) -> String {
 		match self.run_id {

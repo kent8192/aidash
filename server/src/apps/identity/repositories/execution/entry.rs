@@ -22,11 +22,7 @@ impl WorkerEntryRepository<Access> for Entries<'_> {
 			.map_err(Into::into)
 	}
 	async fn local_lease(&self, run: &RunMetadata, durable_audit: bool) -> Result<Option<Access>> {
-		let mut lease = access_for_run(&self.federation.store, run, durable_audit).await?;
-		if let Some(access) = &mut lease {
-			access.wire = Some(crate::bootstrap::peer_transport(self.federation));
-		}
-		Ok(lease)
+		Ok(access_for_run(&self.federation.store, run, durable_audit).await?)
 	}
 	async fn authorize(
 		&self,

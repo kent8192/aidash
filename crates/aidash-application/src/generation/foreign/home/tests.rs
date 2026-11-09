@@ -292,6 +292,12 @@ impl HomeGenerationScope for Scope {
 		assert_eq!(id, task.id);
 		Ok(task)
 	}
+	async fn task_row(&mut self, id: Uuid) -> Result<Task> {
+		point(&self.world, "task_row").await?;
+		let task = self.world.lock().unwrap().task.clone();
+		assert_eq!(id, task.id);
+		Ok(task)
+	}
 	async fn insert(&mut self, intent: &Intent) -> Result<()> {
 		point(&self.world, "insert").await?;
 		let w = self.world.lock().unwrap();
@@ -526,6 +532,43 @@ async fn revalidation_fences_changes_before_subject_registration(
 	assert!(w.record.is_some());
 	assert_eq!(w.snapshot.revision, 9);
 	assert!(w.events.contains(&"rollback".into()));
+}
+#[rstest]
+#[tokio::test]
+async fn an_exclusive_lease_checks_the_task_shared_first_and_reads_only_its_row(
+	repository: Repository,
+) {
+	request(&repository, Uuid::from_u128(1), input())
+		.await
+		.unwrap();
+	let w = repository.world.lock().unwrap();
+	let events = &w.events;
+	let after = &events[events.iter().position(|e| e == "rpc").unwrap()..];
+	let at = |name: &str| after.iter().position(|e| e == name).unwrap();
+	// The Read Recheck of the Task runs under the shared lease, which other
+	// Nodes can answer; the lock held exclusively reads the row alone.
+	assert!(at("shared") < at("task") && at("task") < at("exclusive"));
+	assert!(at("exclusive") < at("task_row"));
+	assert_eq!(after.iter().filter(|e| *e == "task").count(), 1);
+	assert_eq!(after.iter().filter(|e| *e == "task_row").count(), 1);
+}
+#[rstest]
+#[tokio::test]
+async fn an_exclusive_lease_stops_when_the_shared_check_refuses(repository: Repository) {
+	request(&repository, Uuid::from_u128(1), input())
+		.await
+		.unwrap();
+	repository.world.lock().unwrap().failure = Some("task");
+	// The shared check fails as the Task read does; the exclusive lease is never taken.
+	repository.world.lock().unwrap().events.clear();
+	let error = lease(&repository, "aidash://executor", input().id, true)
+		.await
+		.err()
+		.unwrap();
+	assert!(matches!(error, Error::External(_)));
+	let w = repository.world.lock().unwrap();
+	assert!(!w.events.contains(&"exclusive".into()));
+	assert_eq!(w.leases, 0);
 }
 #[rstest]
 #[tokio::test]

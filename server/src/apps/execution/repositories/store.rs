@@ -119,6 +119,10 @@ pub struct Store {
 	/// Decides whether new work may begin. The build installs it; Community's
 	/// admits everything.
 	pub admission: std::sync::Arc<dyn aidash_application::usage::Admission>,
+	/// What a running server binds so that a caller holding only this Store
+	/// reaches the other Nodes of its Deployment (#751). Empty in a process
+	/// that never built a `Federation`. Shared by every clone of this Store.
+	pub(crate) in_process: std::sync::Arc<std::sync::OnceLock<crate::federation::InProcess>>,
 }
 
 /// Worker slots are capped at four. Each holds an outer authority transaction
@@ -399,11 +403,16 @@ impl Store {
 	/// The Node that acts for the operation `remote_tenancy` found: the Node a
 	/// remote Run executes at, the Node a remote grant was issued from, or the
 	/// Node of a local Run.
+	/// The Node a cross-Node operation of this admission and grant is sent from.
+	/// In one Deployment the Home's grant and the receiver's Run live in the same
+	/// database, so a row naming `peer` itself is the other end of the exchange
+	/// and not the sender (#751).
 	pub(crate) async fn remote_node(
 		&self,
 		scope: &TenancyScope,
 		admission: Uuid,
 		grant: Uuid,
+		peer: Option<&aidash_domain::nodes::NodeName>,
 	) -> Result<aidash_domain::nodes::NodeName> {
 		let name: Option<String> = self
 			.pool
@@ -422,7 +431,10 @@ impl Store {
 					)
 					.scalar_optional(&mut **tx)
 					.await?;
-					if node.is_some() {
+					if node
+						.as_deref()
+						.is_some_and(|node| peer.is_none_or(|peer| peer.as_str() != node))
+					{
 						return Ok(node);
 					}
 				}
@@ -526,6 +538,7 @@ impl Store {
 			provider_key_material_reader: None,
 			capability_issuer: None,
 			capabilities: crate::capabilities::Runtime::from_env()?,
+			in_process: Default::default(),
 		}
 		.with_memory_recovery(memory_recovery))
 	}
@@ -672,6 +685,7 @@ impl Store {
 			provider_key_material_reader: self.provider_key_material_reader.clone(),
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
+			in_process: self.in_process.clone(),
 		})
 	}
 
@@ -731,6 +745,7 @@ impl Store {
 			provider_key_material_reader: self.provider_key_material_reader.clone(),
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
+			in_process: self.in_process.clone(),
 		})
 	}
 	pub async fn event(
@@ -1695,18 +1710,33 @@ impl Store {
 			.fetch_one(&mut **tx)
 			.await?
 		};
+		let unassigned =
+			task.status == crate::domain::TaskStatus::Open && !self.started_in(tx, id).await?;
 		if task.revision != revision
-			|| !matches!(
-				task.status,
-				crate::domain::TaskStatus::Failed
-					| crate::domain::TaskStatus::Blocked
-					| crate::domain::TaskStatus::Cancelled
-			) {
+			|| !(unassigned
+				|| matches!(
+					task.status,
+					crate::domain::TaskStatus::Failed
+						| crate::domain::TaskStatus::Blocked
+						| crate::domain::TaskStatus::Cancelled
+				)) {
 			return Err(Error::Conflict(
-				"only a failed, blocked or cancelled task at the current revision can be abandoned"
+				"only a failed, blocked or cancelled task, or an open task nobody has started, at the current revision can be abandoned"
 					.into(),
 			));
 		}
+		self.abandon_locked_in(tx, &task, reason, actor).await
+	}
+	/// Abandon a Task whose row this transaction has locked and whose state
+	/// the caller has already judged abandonable.
+	async fn abandon_locked_in(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		task: &Task,
+		reason: &str,
+		actor: &str,
+	) -> Result<Task> {
+		let id = task.id;
 		let active_children: bool = {
 			let query_bind_1 = id;
 			crate::database::native::query_scalar(&reinhardt::query::Query::select().expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM tasks WHERE parent_id = ? AND NOT status IN ('COMPLETED', 'ABANDONED')))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder)).scalar_one(&mut **tx).await?
@@ -1748,6 +1778,159 @@ impl Store {
 		.await?;
 		Ok(updated)
 	}
+	/// Whether anybody has the Task: a Run under way, another Node that took
+	/// it, or a generated specialist on its way. Read under the Task's row
+	/// lock, so a concurrent handover has either committed or waits.
+	async fn started_in(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		id: Uuid,
+	) -> Result<bool> {
+		let started: bool = crate::database::native::query_scalar(
+			&Query::select()
+				.expr(crate::apps::workspaces::models::child_flags::started())
+				.from(Alias::new("tasks"))
+				.and_where(Expr::col("id").eq(Expr::value(id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut **tx)
+		.await?;
+		Ok(started)
+	}
+	/// Abandon the listed children of `parent` that are still Unassigned
+	/// Tasks created by a Run of it. One that has since been handed over, or
+	/// is no longer open, is left alone: that is not an error here, because
+	/// completing the parent then fails on the unresolved child and rolls the
+	/// whole transaction back.
+	pub(crate) async fn abandon_unassigned_in(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		parent: Uuid,
+		ids: &[Uuid],
+		actor: &str,
+	) -> Result<()> {
+		// A fixed order keeps two transactions from locking in opposite ones.
+		let mut ids = ids.to_vec();
+		ids.sort();
+		ids.dedup();
+		for id in ids {
+			let locked: Option<Task> = {
+				let query_bind_1 = id;
+				aidash_server::database::query_as(
+					&reinhardt::query::Query::select()
+						.expr(reinhardt::query::SimpleExpr::from(
+							reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
+						))
+						.from(reinhardt::query::Alias::new("tasks"))
+						.and_where(SimpleExpr::CustomWithExpr(
+							"(id = ?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						))
+						.lock(reinhardt::query::LockType::Update)
+						.to_string(reinhardt::query::PostgresQueryBuilder),
+				)
+				.fetch_optional(&mut **tx)
+				.await?
+			};
+			let Some(child) = locked else { continue };
+			if child.parent_id != Some(parent) || child.status != crate::domain::TaskStatus::Open {
+				continue;
+			}
+			let eligible: bool = crate::database::native::query_scalar(
+				&Query::select()
+					.expr(
+						crate::apps::workspaces::models::child_flags::started()
+							.not()
+							.and(crate::apps::workspaces::models::child_flags::abandonable(
+								parent,
+							)),
+					)
+					.from(Alias::new("tasks"))
+					.and_where(Expr::col("id").eq(Expr::value(id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_one(&mut **tx)
+			.await?;
+			if !eligible {
+				continue;
+			}
+			self.abandon_locked_in(tx, &child, aidash_domain::unassigned::ABANDON_REASON, actor)
+				.await?;
+		}
+		Ok(())
+	}
+	/// Abandon Unassigned children of a running parent without completing it.
+	pub async fn abandon_unassigned(
+		&self,
+		scope: &TenancyScope,
+		parent: Uuid,
+		owner: &str,
+		ids: &[Uuid],
+	) -> Result<()> {
+		let mut tx = self.pool.begin(scope).await?;
+		self.abandon_unassigned_for_in(&mut tx, parent, owner, ids)
+			.await?;
+		tx.commit().await?;
+		Ok(())
+	}
+	pub(crate) async fn abandon_unassigned_for_in(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		parent: Uuid,
+		owner: &str,
+		ids: &[Uuid],
+	) -> Result<()> {
+		let task: Task = {
+			let query_bind_1 = parent;
+			aidash_server::database::query_as(
+				&reinhardt::query::Query::select()
+					.expr(reinhardt::query::SimpleExpr::from(
+						reinhardt::query::Expr::col(reinhardt::query::ColumnRef::Asterisk),
+					))
+					.from(reinhardt::query::Alias::new("tasks"))
+					.and_where(SimpleExpr::CustomWithExpr(
+						"(id = ?)".to_owned(),
+						vec![Expr::value(query_bind_1.to_owned()).into()],
+					))
+					.lock(reinhardt::query::LockType::Update)
+					.to_string(reinhardt::query::PostgresQueryBuilder),
+			)
+			.fetch_one(&mut **tx)
+			.await?
+		};
+		if task.owner.as_deref() != Some(owner) {
+			return Err(Error::Unauthorized);
+		}
+		if task.status != crate::domain::TaskStatus::Running {
+			return Err(Error::Conflict(
+				"only a running task can abandon its unassigned children".into(),
+			));
+		}
+		self.abandon_unassigned_in(tx, parent, ids, owner).await
+	}
+	/// Complete a Task and abandon the listed Unassigned children in the same
+	/// transaction (#772).
+	pub async fn complete_abandoning(
+		&self,
+		scope: &TenancyScope,
+		id: Uuid,
+		owner: &str,
+		key: &str,
+		artifact: &ArtifactInput,
+		abandon: &[Uuid],
+	) -> Result<Task> {
+		self.complete_from_run(
+			scope,
+			id,
+			owner,
+			key,
+			artifact,
+			Publication::default(),
+			None,
+			abandon,
+		)
+		.await
+	}
 	pub async fn complete(
 		&self,
 		scope: &TenancyScope,
@@ -1764,6 +1947,7 @@ impl Store {
 			artifact,
 			Publication::default(),
 			None,
+			&[],
 		)
 		.await
 	}
@@ -1777,6 +1961,7 @@ impl Store {
 		artifact: &ArtifactInput,
 		publication: Publication,
 		remote_run_fence: Option<(Uuid, i64)>,
+		abandon: &[Uuid],
 	) -> Result<Task> {
 		let mut tx = self.pool.begin(scope).await?;
 		let result = self
@@ -1788,6 +1973,7 @@ impl Store {
 				artifact,
 				publication,
 				remote_run_fence,
+				abandon,
 			)
 			.await?;
 		tx.commit().await?;
@@ -1804,6 +1990,7 @@ impl Store {
 		artifact: &ArtifactInput,
 		publication: Publication,
 		remote_run_fence: Option<(Uuid, i64)>,
+		abandon: &[Uuid],
 	) -> Result<Task> {
 		nonempty(key, "idempotency key")?;
 		artifact.validate()?;
@@ -1870,6 +2057,10 @@ impl Store {
 		if t.status != crate::domain::TaskStatus::Running {
 			return Err(Error::Conflict("only a running task can complete".into()));
 		}
+		// After the key replay above, so a replayed completion abandons nothing.
+		// A child handed over since the Run looked is kept and then blocks the
+		// completion below, which rolls these abandonments back with it.
+		self.abandon_unassigned_in(tx, id, abandon, owner).await?;
 		let unresolved: bool = {
 			let query_bind_1 = id;
 			crate::database::native::query_scalar(&reinhardt::query::Query::select().expr(SimpleExpr::CustomWithExpr("(EXISTS(SELECT 1 FROM tasks WHERE parent_id = ? AND NOT status IN ('COMPLETED', 'ABANDONED')))".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder)).scalar_one(&mut **tx).await?
@@ -2554,6 +2745,27 @@ impl Store {
 		)
 		.await
 	}
+	/// A Subnode member's message to the Run that created the Subnode.
+	pub(crate) async fn accept_member_message_in(
+		&self,
+		tx: &mut dyn TransactionExecutor,
+		creator: Uuid,
+		member: &RunMetadata,
+		content: &str,
+		key: &str,
+		max_input_tokens: usize,
+	) -> Result<()> {
+		let deployment = self.deployment.as_str();
+		InputRecord::admit_from_run(
+			tx,
+			deployment,
+			creator,
+			member.id,
+			(&member.executor_subject(deployment), content, key),
+			max_input_tokens,
+		)
+		.await
+	}
 	/// The pages people asked `run_id` to read, oldest first (ADR 0052).
 	pub async fn url_intents(
 		&self,
@@ -2759,6 +2971,7 @@ impl Store {
 			return Ok(false);
 		}
 		current.state.tool_mut()?.finalizing = true;
+		current.state.tool_mut()?.abandoning = run.state.tool()?.abandoning.clone();
 		let changed = {
 			let query_bind_1 = run.id;
 			let query_bind_2 = worker;
@@ -2873,11 +3086,16 @@ impl Store {
 		if !valid {
 			return Err(Error::Forbidden);
 		}
+		let read_kind = if kind == "delegated_task" {
+			"task"
+		} else {
+			kind
+		};
 		crate::apps::identity::models::AuthorizationRunRead::record_sources(
 			&mut **tx,
 			run,
 			workspace,
-			&[(kind.to_owned(), id)],
+			&[(read_kind.to_owned(), id)],
 		)
 		.await?;
 		crate::database::native::query(
@@ -3207,6 +3425,10 @@ impl Store {
 		.fetch_optional(&mut **tx)
 		.await? }
 		.ok_or_else(|| Error::Conflict("worker lease lost".into()))?;
+		if saved.phase().is_terminal() {
+			// Closing an open attempt appends an event, so lock first; see `lock_end`.
+			super::subnodes::lock_for_end(tx, saved.id).await?;
+		}
 		if kind == "model.completed" {
 			super::source_delivery::accept(self, tx, &saved, worker).await?;
 		}
@@ -3331,6 +3553,8 @@ impl Store {
 		if valid.is_none() {
 			return Err(Error::Conflict("worker lease lost".into()));
 		}
+		// Before the first event below; see `lock_end`.
+		super::subnodes::lock_for_end(&mut tx, run.id).await?;
 		let saved: crate::domain::run_state::RawRun = crate::database::query_as(
 			&Query::select()
 				.column(reinhardt::query::ColumnRef::Asterisk)
@@ -3591,6 +3815,13 @@ impl Store {
 		action: RunControlAction,
 		source: ControlSource,
 	) -> Result<RunInspection> {
+		if action == RunControlAction::Cancel
+			|| (action == RunControlAction::Pause
+				&& source == ControlSource::DeploymentAdministrator)
+		{
+			// Before `run.control` appends its event; see `lock_end`.
+			super::subnodes::lock_for_end(tx, id).await?;
+		}
 		let run = self.control_one_in_as(tx, id, action, source).await?;
 		if action == RunControlAction::Cancel {
 			let reason = if source == ControlSource::DeploymentAdministrator {
@@ -3744,6 +3975,7 @@ impl Store {
 		key: &str,
 	) -> Result<HumanRequest> {
 		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		super::subnodes::require_writable(tx.as_mut(), run.workspace_id).await?;
 		let request = self
 			.human_request_in(tx.as_mut(), run, kind, prompt, key)
 			.await?;
@@ -4268,6 +4500,24 @@ impl Store {
 			)
 			.execute(&mut *tx)
 			.await?;
+		} else if !created && invocation.status == "REFUSED" {
+			// A refusal that paused the Run is decided again on resume. It proved nothing ran, so
+			// it starts over and is never reconciled (#754).
+			crate::database::native::query(
+				&Query::update()
+					.table(Alias::new("invocations"))
+					.value(Alias::new("status"), "STARTED")
+					.value_expr(Alias::new("result"), Expr::cust("NULL"))
+					.value(Alias::new("delivery_pending"), false)
+					.value(Alias::new("uncertain_reason"), Option::<String>::None)
+					.and_where(Expr::col(Alias::new("idempotency_key")).eq(Expr::value(key)))
+					.and_where(Expr::col(Alias::new("status")).eq(Expr::value("REFUSED")))
+					.to_string(PostgresQueryBuilder),
+			)
+			.execute(&mut *tx)
+			.await?;
+			invocation.status = "STARTED".into();
+			invocation.result = None;
 		} else if !created && invocation.status != "COMPLETED" && !invocation.replay_safe {
 			{
 				let query_bind_1 = key;
@@ -4347,6 +4597,27 @@ impl Store {
 		}
 		tx.commit().await?;
 		Ok(count)
+	}
+	/// Record that an authority check refused a replay-safe call and paused the Run. Only a
+	/// `STARTED` row changes, and resuming starts it again.
+	pub async fn invocation_refused(
+		&self,
+		scope: &TenancyScope,
+		run: &Run,
+		worker: Uuid,
+		key: &str,
+		refusal: &aidash_domain::tool::AuthorityRefusal,
+	) -> Result<()> {
+		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		if !RunRecord::hold_worker(tx.as_mut(), run.id, worker).await? {
+			return Err(Error::Conflict(
+				"worker lease lost while recording tool refusal".into(),
+			));
+		}
+		let result = json!({"error":{"kind":"authority_refused","message":refusal.to_string()}});
+		InvocationRecord::refuse(tx.as_mut(), run.id, key, &result).await?;
+		tx.commit().await?;
+		Ok(())
 	}
 	pub async fn invocation_answer_lost(
 		&self,
@@ -5253,6 +5524,43 @@ impl Store {
 }
 
 impl Store {
+	/// The call this refusal stopped, when a person may decline it (#763).
+	async fn declinable_pause(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		run: Uuid,
+		refusal: &aidash_domain::tool::AuthorityRefusal,
+	) -> Result<Option<aidash_domain::run_state::PausedCall>> {
+		let (Some(call), Some(kind)) = (&refusal.call, refusal.check.declinable_kind()) else {
+			return Ok(None);
+		};
+		let status: Option<String> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("status"))
+				.from(Alias::new("invocations"))
+				.and_where(Expr::col(Alias::new("run_id")).eq(Expr::value(run)))
+				.and_where(
+					Expr::col(Alias::new("idempotency_key")).eq(Expr::value(call.key.as_str())),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut *tx)
+		.await?;
+		Ok(
+			matches!(status.as_deref(), None | Some("REFUSED")).then(|| {
+				aidash_domain::run_state::PausedCall {
+					key: call.key.clone(),
+					index: call.index,
+					replay_safe: call.replay_safe,
+					tool: refusal.tool.clone(),
+					kind,
+				}
+			}),
+		)
+	}
+}
+
+impl Store {
 	/// `recovery_reason` names a typed `pending.recovery` field recorded only
 	/// when this pause, rather than a Deployment Administrator, stops an active Run.
 	async fn pause_for_execution_reason(
@@ -5272,6 +5580,16 @@ impl Store {
 				DeploymentScopeReason::ActivationClaim,
 			))
 			.await?;
+		// A person may decline a refused call only if it certainly did not run: it has no
+		// invocation row (the gate refused it first) or a `REFUSED` one. This is the one place
+		// that decides it; `STARTED` and `COMPLETED` rows record nothing.
+		let recovery_reason = match (recovery_reason, refusal) {
+			(None, Some(refusal)) => match self.declinable_pause(&mut tx, run.id, refusal).await? {
+				Some(paused) => Some(("paused_call", serde_json::to_value(paused)?)),
+				None => None,
+			},
+			(reason, _) => reason,
+		};
 		let (query_bind_4, query_bind_5, query_bind_6) = match recovery_reason {
 			Some((field, value)) => (true, format!("{{recovery,{field}}}"), value),
 			None => (false, "{recovery}".to_owned(), Value::Null),
@@ -5297,6 +5615,10 @@ impl Store {
 			match refusal {
 				Some(refusal) => {
 					let mut payload = serde_json::to_value(refusal)?;
+					// The call's key is offered only to someone who may decline it.
+					if let Some(fields) = payload.as_object_mut() {
+						fields.remove("call");
+					}
 					payload["run_id"] = json!(run.id);
 					payload["task_id"] = json!(run.task_id);
 					payload
@@ -5318,6 +5640,8 @@ impl Store {
 		Ok(())
 	}
 }
+#[path = "store/declines.rs"]
+pub(crate) mod declines;
 #[path = "store/run_state.rs"]
 pub(crate) mod run_state;
 #[path = "store/tenancies.rs"]
@@ -5588,3 +5912,7 @@ mod targeted_leases;
 #[cfg(test)]
 #[path = "../tests/store_tool_parallelism.rs"]
 mod store_tool_parallelism;
+
+#[cfg(test)]
+#[path = "../tests/declined_calls.rs"]
+mod declined_calls;

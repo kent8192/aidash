@@ -568,6 +568,9 @@ pub(crate) async fn run_mutate(
 	if !run.is_local(store.deployment.as_str()) {
 		return Err(Error::Forbidden);
 	}
+	// Before `lock_workspace`, so `subnodes` is locked before `workspaces`.
+	crate::apps::execution::repositories::subnodes::require_writable(lease.tx(), run.workspace_id)
+		.await?;
 	let binding = super::super::repositories::bindings::load(&mut **lease.tx(), &run.metadata())
 		.await?
 		.ok_or(Error::Forbidden)?;

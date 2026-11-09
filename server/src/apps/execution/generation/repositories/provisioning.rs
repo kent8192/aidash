@@ -68,6 +68,21 @@ impl GenerationProvisioning for NativeProvisioning {
 			_visibility: visibility,
 		}))
 	}
+	async fn visible_shared(&self, job: &Request) -> aidash_application::Result<bool> {
+		let identity = SubjectIdentity {
+			http_session: None,
+			credential_id: job.credential_id,
+			tenant: job.tenant.clone(),
+			subject: job.root_subject.clone(),
+		};
+		let mut access = Access::begin(&self.runtime.store, &identity).await?;
+		access.subjects = job.subject_chain.clone();
+		let result = job.visible(&mut access).await;
+		access
+			.finish_deciding(result)
+			.await
+			.map_err(aidash_application::Error::from)
+	}
 	async fn begin_activation(
 		&self,
 		job: &Request,
@@ -236,8 +251,12 @@ impl GenerationActivationScope for Activation {
 			.await
 			.map_err(Into::into)
 	}
-	async fn visible(&mut self, job: &Request) -> aidash_application::Result<bool> {
-		job.visible(&mut self.access).await.map_err(Into::into)
+	async fn visible_row(&mut self, job: &Request) -> aidash_application::Result<bool> {
+		aidash_application::generation::visibility::visible_row(
+			&mut crate::bootstrap::generation_visibility_scope(&mut self.access),
+			job,
+		)
+		.await
 	}
 	async fn require_request(&mut self, job: &Request) -> aidash_application::Result<()> {
 		let resource = crate::generation::resource(&self.access, &job.policy_id);

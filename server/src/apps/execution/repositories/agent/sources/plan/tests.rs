@@ -137,7 +137,7 @@ async fn plugin_only_skills_have_an_instruction_source(#[case] deferred: bool) {
 
 #[tokio::test]
 async fn reference_mounts_do_not_create_automatic_document_fields() {
-	let attachment = admitted(json!({"adapter":"reference_attachments","references":[{"reference_id":Uuid::from_u128(1),"digest":"a".repeat(64)}]})).await;
+	let attachment = admitted(json!({"adapter":"reference_attachments","references":[{"reference_id":Uuid::from_u128(1),"digest":"a".repeat(64),"path":"shared.md"}]})).await;
 	let private = admitted(json!({"adapter":"private_references","digest":"b".repeat(64)})).await;
 	let documents = ContextSourceTarget::Pinned("reference_documents".into());
 	let plan = compile_context_source_plan(Uuid::from_u128(2), &attachment, true, false).unwrap();

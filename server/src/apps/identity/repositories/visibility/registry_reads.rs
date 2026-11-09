@@ -56,7 +56,7 @@ impl RegistryReadScope for Reads<'_> {
 	}
 	async fn dependencies(&mut self, run: Uuid) -> Result<Vec<RegistryJournalRow>> {
 		let result: NativeResult<Vec<RegistryJournalRow>> = async {
-			let rows: Vec<(String, String, String, String, Value)> = {
+			let rows: Vec<RegistryJournalRow> = {
 				let query_bind_1 = run;
 				crate::database::native::query_as(
 					&reinhardt::query::Query::select()
@@ -76,6 +76,11 @@ impl RegistryReadScope for Reads<'_> {
 						))
 						.expr(reinhardt::query::SimpleExpr::from(
 							reinhardt::query::Expr::col(reinhardt::query::Alias::new("metadata")),
+						))
+						.expr(reinhardt::query::SimpleExpr::from(
+							reinhardt::query::Expr::col(reinhardt::query::Alias::new(
+								"same_tenant",
+							)),
 						))
 						.from(reinhardt::query::Alias::new(
 							"authorization_run_remote_reads",
@@ -110,7 +115,14 @@ impl RegistryReadScope for Reads<'_> {
 						)
 						.to_string(reinhardt::query::PostgresQueryBuilder),
 				)
-				.columns(&["node_id", "entry_id", "entry_version", "digest", "metadata"])
+				.columns(&[
+					"node_id",
+					"entry_id",
+					"entry_version",
+					"digest",
+					"metadata",
+					"same_tenant",
+				])
 				.fetch_all(&mut **self.access.tx)
 				.await?
 			};
@@ -206,7 +218,7 @@ impl RegistryVerificationScope for VerificationScope<'_> {
 			.map_err(Into::into)
 	}
 	async fn entry(&mut self, reference: &EntityRef) -> Result<Entry> {
-		crate::authorization::catalog::entry(self.access, reference, "registry.read")
+		crate::authorization::catalog::readable(self.access, reference)
 			.await
 			.map_err(Into::into)
 	}

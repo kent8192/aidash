@@ -8,12 +8,18 @@ use aidash_domain::{
 use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
-pub type RegistryJournalRow = (String, String, String, String, Value);
+/// A remote read: its Node, the Agent's id and version, the digest and metadata read, and
+/// whether the Node belongs to the reader's own Tenant.
+pub type RegistryJournalRow = (String, String, String, String, Value, bool);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verification {
 	Verified,
 	Rejected,
+	/// The peer did not answer: a timeout, `5xx`, a transport error, an
+	/// unreadable answer or a pending transaction.
 	Unavailable,
+	/// Nobody was asked: a same-Deployment route with no in-process runtime.
+	NotAsked,
 }
 #[async_trait]
 pub trait RegistryTransport: Send + Sync {
@@ -25,7 +31,9 @@ pub trait RegistryReadScope: Send {
 	fn cached(&self, run: Uuid) -> Option<bool>;
 	fn remember(&mut self, run: Uuid, visible: bool);
 	fn frontier(&mut self) -> Option<&mut Vec<Dependency>>;
+	/// Whether a Node already failed to answer within this authority (#751).
 	fn unavailable(&self, node: &str) -> bool;
+	/// As for the dependency walk: called each time a walk meets such a Node.
 	fn mark_unavailable(&mut self, node: &str);
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
 	fn catalog_resource(&self, entry: &Entry) -> Resource;
@@ -40,5 +48,6 @@ pub trait RegistryVerificationScope: Send {
 	fn catalog_resource(&self, entry: &Entry) -> Resource;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool>;
+	/// The definition under `registry.read` alone: a Catalog Approval does not decide who may read.
 	async fn entry(&mut self, reference: &EntityRef) -> Result<Entry>;
 }

@@ -14,6 +14,7 @@ fn id(value: u128) -> Uuid {
 struct State {
 	raw: Option<RawRun>,
 	visible: bool,
+	block: Option<aidash_domain::run_state::RunReadsBlock>,
 	memory: Option<aidash_domain::memory::Binding>,
 	calls: Vec<String>,
 	fail: Option<&'static str>,
@@ -74,6 +75,7 @@ fn repository() -> Repository {
 			pending: json!({"state_version":1,"data":{},"recovery":{"retry":null}}),
 		}),
 		visible: true,
+		block: None,
 		memory: None,
 		calls: vec![],
 		fail: None,
@@ -133,6 +135,13 @@ impl RunDetailsScope for Scope {
 		let mut state = self.state.lock().unwrap();
 		state.record("visible")?;
 		Ok(state.visible)
+	}
+	async fn run_reads_block(
+		&mut self,
+		run: &aidash_domain::RunInspection,
+	) -> Result<Option<aidash_domain::run_state::RunReadsBlock>> {
+		assert_eq!(run.id, id(1));
+		Ok(self.state.lock().unwrap().block.clone())
 	}
 	async fn invocations(&mut self, key: Uuid, offset: u64) -> Result<Vec<InvocationSummary>> {
 		assert_eq!(key, id(1));
@@ -290,6 +299,30 @@ async fn missing_or_invisible_runs_never_read_invocations_memory_or_routes(
 	let state = repository.0.lock().unwrap();
 	assert!(!state.calls.contains(&"invocations".into()));
 	assert_eq!(state.calls.last().map(String::as_str), Some("rollback"));
+}
+#[rstest]
+#[tokio::test]
+async fn inspecting_a_run_hidden_by_its_reads_says_why_but_a_plain_check_does_not(
+	repository: Repository,
+) {
+	use aidash_domain::run_state::RunReadsBlock;
+	{
+		let mut state = repository.0.lock().unwrap();
+		state.visible = false;
+		state.block = Some(RunReadsBlock::DefinitionNotApproved { definition: None });
+	}
+	assert!(matches!(
+		inspect(&repository, id(1), 0).await,
+		Err(Error::RunHidden(RunReadsBlock::DefinitionNotApproved {
+			definition: None
+		}))
+	));
+	assert!(matches!(
+		visible(&repository, id(1)).await,
+		Err(Error::Forbidden)
+	));
+	let state = repository.0.lock().unwrap();
+	assert!(!state.calls.contains(&"invocations".into()));
 }
 #[rstest]
 #[tokio::test]

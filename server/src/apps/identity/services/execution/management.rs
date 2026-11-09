@@ -17,6 +17,8 @@ pub struct RunManagement {
 	pub id: Uuid,
 	pub phase: RunPhase,
 	pub control: RunControl,
+	/// The kind of actor that last changed `control`.
+	pub control_source: aidash_domain::entities::ControlSource,
 	pub semantic_reason: Option<crate::semantic::remote::Failure>,
 	/// The exact semantic cause and its authorized next actions while the Run
 	/// can still be recovered; absent for a cancelled or finished Run.
@@ -24,6 +26,10 @@ pub struct RunManagement {
 	pub semantic_recovery: Option<aidash_domain::semantic::recovery::Recovery>,
 	/// Typed context-recovery pause reason; cleared on resume.
 	pub context_reason: Option<aidash_domain::context::recovery::Failure>,
+	/// The tool call a paused Run stopped on, only for a caller who may decline it. Never file
+	/// content: the tool and the kind of refusal.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub declinable_call: Option<aidash_domain::run_state::DeclinableCall>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub memory_cleanup:
 		Option<crate::apps::knowledge::repositories::receiver_caches::CleanupStatus>,
@@ -35,6 +41,7 @@ impl From<RunInspection> for RunManagement {
 			id: run.id,
 			phase: run.phase,
 			control: run.control,
+			control_source: run.control_source,
 			semantic_reason: run.recovery.as_ref().and_then(|r| r.semantic_reason),
 			// A paused Run is excluded from retry scheduling, so its retry only
 			// counts as scheduled while the Run is active.
@@ -47,6 +54,7 @@ impl From<RunInspection> for RunManagement {
 				})
 			}),
 			context_reason: run.recovery.as_ref().and_then(|r| r.context_reason),
+			declinable_call: None,
 			memory_cleanup: None,
 		}
 	}
@@ -208,9 +216,25 @@ pub(crate) async fn get(f: Federation, actor: Actor, id: Uuid) -> Result<RunMana
 	};
 	let mut access = Access::begin(&f.store, &identity).await?;
 	let result = async {
-		let mut result: RunManagement = authorized(&mut access, id, f.config.deployment.as_str())
-			.await?
-			.into();
+		let mut run = authorized(&mut access, id, f.config.deployment.as_str()).await?;
+		// Offered only to someone who may decline it, decided without writing a denial.
+		let offered = run.declinable_call.take();
+		let declinable_call = match offered {
+			Some(offered)
+				if run.control == RunControl::Paused
+					&& run.is_local(f.config.deployment.as_str())
+					&& crate::apps::identity::repositories::execution::details::may_decline_run(
+						&mut access,
+						&run,
+					)
+					.await? =>
+			{
+				Some(offered)
+			}
+			_ => None,
+		};
+		let mut result: RunManagement = run.into();
+		result.declinable_call = declinable_call;
 		result.memory_cleanup =
 			crate::apps::knowledge::repositories::receiver_caches::status(&mut access.tx, id)
 				.await?;

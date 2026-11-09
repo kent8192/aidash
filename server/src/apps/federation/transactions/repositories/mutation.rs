@@ -94,6 +94,11 @@ impl MutationScope for Scope<'_> {
 			leased,
 		))
 	}
+	async fn lock_subnode_end(&mut self, run: Uuid) -> Result<()> {
+		crate::apps::execution::repositories::subnodes::lock_for_end(self.0, run)
+			.await
+			.map_err(Into::into)
+	}
 	async fn complete_run(&mut self, id: Uuid) -> Result<()> {
 		Run::complete(self.0, id).await?;
 		aidash_application::subnodes::control_for_creator(

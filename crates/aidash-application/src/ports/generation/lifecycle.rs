@@ -57,7 +57,9 @@ pub trait GenerationLifecycleScope: Send {
 pub trait GenerationControlScope: GenerationLifecycleScope {
 	// This adapter invokes the shared application visibility use case against
 	// the same owned subject scope; it must not create another transaction.
-	async fn visible(&mut self, job: &Request) -> Result<bool>;
+	/// Visibility without the Read dependencies of the Task, which
+	/// [`GenerationControls::visible_shared`] has checked (#751).
+	async fn visible_row(&mut self, job: &Request) -> Result<bool>;
 	async fn decide(&mut self, job: &Request, action: &str) -> Result<bool>;
 	/// Decide `catalog.approve` on the version the request would publish.
 	async fn decide_catalog(&mut self, job: &Request) -> Result<bool>;
@@ -66,6 +68,10 @@ pub trait GenerationControlScope: GenerationLifecycleScope {
 #[async_trait]
 pub trait GenerationControls: Send + Sync {
 	fn principal(&self) -> &Principal;
+	/// Whether the caller may see the request's Task, with the Task's Read
+	/// dependencies checked under a shared lease before the exclusive scope
+	/// begins. A Node that does not answer is `Error::NodeUnreachable`.
+	async fn visible_shared(&self, tenant: &str, id: Uuid) -> Result<bool>;
 	async fn begin(&self, scope: &TenancyScope) -> Result<Box<dyn GenerationControlScope>>;
 	fn notify(&self);
 }
