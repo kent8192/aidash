@@ -173,63 +173,67 @@ impl Store {
 			.execute(&sql, convert_values(args))
 			.await
 			.map_err(database_failure)?;
+		Box::new(tx).commit().await?;
 		// Reinhardt's purge helpers stringify database failures. Keep their
-		// expiration and reference rules here so retryable errors remain typed.
-		for table in [
-			"oauth_server_pending",
-			"oauth_server_tokens",
-			"oauth_server_refresh_tokens",
-			"oauth_server_token_families",
-			"oauth_server_codes",
-			"oauth_server_device_authorizations",
-			"oidc_op_pending",
-			"oidc_op_codes",
+		// expiration, reference and transaction rules so errors remain typed.
+		for tables in [
+			&[
+				"oauth_server_pending",
+				"oauth_server_tokens",
+				"oauth_server_refresh_tokens",
+				"oauth_server_token_families",
+				"oauth_server_codes",
+				"oauth_server_device_authorizations",
+			][..],
+			&["oidc_op_pending", "oidc_op_codes"][..],
 		] {
-			let mut query = Query::delete();
-			query.from_table(Alias::new(table));
-			if table == "oauth_server_refresh_tokens" {
-				let mut families = Query::select();
-				families
-					.column(Alias::new("family_id"))
-					.from(Alias::new("oauth_server_token_families"))
-					.and_where(Expr::col(Alias::new("absolute_expires_at")).lte(now));
-				query.and_where(Expr::col(Alias::new("family_id")).in_subquery(families));
-			} else {
-				let expiration = if table == "oauth_server_token_families" {
-					"absolute_expires_at"
+			let mut tx = self.connection.begin().await.map_err(database_failure)?;
+			for &table in tables {
+				let mut query = Query::delete();
+				query.from_table(Alias::new(table));
+				if table == "oauth_server_refresh_tokens" {
+					let mut families = Query::select();
+					families
+						.column(Alias::new("family_id"))
+						.from(Alias::new("oauth_server_token_families"))
+						.and_where(Expr::col(Alias::new("absolute_expires_at")).lte(now));
+					query.and_where(Expr::col(Alias::new("family_id")).in_subquery(families));
 				} else {
-					"expires_at"
-				};
-				query.and_where(Expr::col(Alias::new(expiration)).lte(now));
-			}
-			if table == "oauth_server_codes" {
-				for referencing in ["oauth_server_tokens", "oauth_server_token_families"] {
+					let expiration = if table == "oauth_server_token_families" {
+						"absolute_expires_at"
+					} else {
+						"expires_at"
+					};
+					query.and_where(Expr::col(Alias::new(expiration)).lte(now));
+				}
+				if table == "oauth_server_codes" {
+					for referencing in ["oauth_server_tokens", "oauth_server_token_families"] {
+						let mut used = Query::select();
+						used.column(Alias::new("code_digest"))
+							.from(Alias::new(referencing))
+							.and_where(
+								Expr::col((referencing, "code_digest"))
+									.eq(Expr::col(("oauth_server_codes", "digest"))),
+							);
+						query.and_where(Expr::not_exists(used));
+					}
+				} else if table == "oidc_op_codes" {
 					let mut used = Query::select();
-					used.column(Alias::new("code_digest"))
-						.from(Alias::new(referencing))
+					used.column(Alias::new("digest"))
+						.from(Alias::new("oauth_server_codes"))
 						.and_where(
-							Expr::col((referencing, "code_digest"))
-								.eq(Expr::col(("oauth_server_codes", "digest"))),
+							Expr::col(("oauth_server_codes", "digest"))
+								.eq(Expr::col(("oidc_op_codes", "digest"))),
 						);
 					query.and_where(Expr::not_exists(used));
 				}
-			} else if table == "oidc_op_codes" {
-				let mut used = Query::select();
-				used.column(Alias::new("digest"))
-					.from(Alias::new("oauth_server_codes"))
-					.and_where(
-						Expr::col(("oauth_server_codes", "digest"))
-							.eq(Expr::col(("oidc_op_codes", "digest"))),
-					);
-				query.and_where(Expr::not_exists(used));
+				let (sql, args) = query.build(PostgresQueryBuilder);
+				tx.execute(&sql, convert_values(args))
+					.await
+					.map_err(database_failure)?;
 			}
-			let (sql, args) = query.build(PostgresQueryBuilder);
-			tx.executor()
-				.execute(&sql, convert_values(args))
-				.await
-				.map_err(database_failure)?;
+			tx.commit().await.map_err(database_failure)?;
 		}
-		Box::new(tx).commit().await?;
 		Ok(())
 	}
 	pub async fn migrate(&self) -> Result<()> {
