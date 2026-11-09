@@ -151,6 +151,23 @@ impl Scope<'_> {
 }
 #[async_trait]
 impl OperationReconciliationScope for Scope<'_> {
+	fn timeout_ceiling(&self, kind: &str) -> Option<u64> {
+		self.run
+			.as_ref()?
+			.context
+			.binding_snapshot
+			.as_ref()?
+			.operation(if kind == "python_install" {
+				"code_interpreter"
+			} else {
+				kind
+			})
+			.ok()?
+			.narrow
+			.limits
+			.get("timeout_seconds")
+			.copied()
+	}
 	fn limits(&self) -> Limits {
 		let profile = &self.store.capabilities.0;
 		Limits {

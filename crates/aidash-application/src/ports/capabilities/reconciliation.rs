@@ -30,6 +30,7 @@ pub trait OperationReconciliationRepository: Send + Sync {
 #[async_trait]
 pub trait OperationReconciliationScope: Send {
 	fn limits(&self) -> Limits;
+	fn timeout_ceiling(&self, kind: &str) -> Option<u64>;
 	async fn load(&mut self, id: Uuid, run: Uuid) -> Result<Loaded>;
 	async fn configuration(&mut self) -> Result<CoreCapabilities>;
 	async fn require_builtin(&mut self, kind: &str) -> Result<()>;
