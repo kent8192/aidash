@@ -105,7 +105,7 @@ async fn a_refusal_stops_the_target_as_a_revocation(#[case] target: Target) {
 }
 
 #[tokio::test]
-async fn a_refused_target_whose_stop_failed_is_retried_without_waiting_a_period() {
+async fn a_failed_stop_is_retried_after_a_growing_wait_that_never_passes_a_period() {
 	// Arrange
 	let repository = Repository {
 		stop_fails: true,
@@ -114,13 +114,56 @@ async fn a_refused_target_whose_stop_failed_is_retried_without_waiting_a_period(
 	let mut schedule = Schedule::default();
 	let start = Instant::now();
 
-	// Act
+	// Act and Assert: the first failure waits 5 seconds, the next 10, then 20, and
+	// no wait is longer than a period.
+	for (seconds, retried) in [
+		(0, true),
+		(1, false),
+		(4, false),
+		(5, true),
+		(14, false),
+		(15, true),
+		(34, false),
+		(35, true),
+		(64, false),
+		(65, true),
+		(94, false),
+		(95, true),
+	] {
+		let before = repository.checks();
+		let now = start + Duration::from_secs(seconds);
+		pass(&repository, &mut schedule, now).await.unwrap();
+		assert_eq!(repository.checks() > before, retried, "at {seconds} s");
+	}
+}
+
+#[tokio::test]
+async fn a_stop_that_works_ends_the_retries() {
+	// Arrange
+	let target = operation();
+	let mut repository = Repository {
+		stop_fails: true,
+		..Repository::with(target, Outcome::Refused)
+	};
+	let mut schedule = Schedule::default();
+	let start = Instant::now();
 	pass(&repository, &mut schedule, start).await.unwrap();
-	pass(&repository, &mut schedule, start + Duration::from_secs(1))
+
+	// Act
+	repository.stop_fails = false;
+	pass(&repository, &mut schedule, start + RETRY_FROM)
 		.await
 		.unwrap();
+	pass(
+		&repository,
+		&mut schedule,
+		start + RETRY_FROM + Duration::from_secs(1),
+	)
+	.await
+	.unwrap();
 
-	// Assert
+	// Assert: one stop, and then the ordinary period.
+	assert_eq!(*repository.refused.lock().unwrap(), vec![target]);
 	assert_eq!(repository.checks(), 2);
 }
 

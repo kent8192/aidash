@@ -1,7 +1,9 @@
 //! What a walk over recorded reads has loaded, so it asks each table once per Run
 //! and not once per read (ADR 0116). Loaded rows end with the walk. What passed
 //! lasts while later walks ask under the same authority, until a walk fails or the
-//! authority is refreshed, as `read_verdicts` does.
+//! authority is refreshed, as `read_verdicts` does. A scope that reads under
+//! another authority than the walk's, as a Remote Grant's producer does, lends
+//! its own passes for as long as it does.
 use super::Access;
 use crate::apps::workspaces::models::{Artifact, Conversation, Message, Task};
 use crate::{Result, domain};
@@ -60,8 +62,10 @@ pub(crate) struct ReadLookups {
 /// A walk reaches the same Run and definition many ways, so it asks about each
 /// once. A walk passes only if everything it reached passes, and a failed walk
 /// forgets all of this, so a list that hides one item cannot pass it by accident.
+/// All of it is true of one authority: a Run visited under one chain has not been
+/// visited under another.
 #[derive(Default)]
-struct Passes {
+pub(crate) struct Passes {
 	authority: Option<String>,
 	visited: BTreeSet<(Uuid, bool)>,
 	dependencies: BTreeSet<(Uuid, bool)>,
@@ -80,13 +84,32 @@ impl ReadLookups {
 	}
 	pub(super) fn start_walk(&mut self, authority: String) {
 		self.forget_rows();
+		self.rebind(authority);
+		self.walking = true;
+	}
+	/// Keep the passes only if they were made under `authority`.
+	pub(crate) fn rebind(&mut self, authority: String) {
 		if self.passes.authority.as_deref() != Some(authority.as_str()) {
 			self.passes = Passes {
 				authority: Some(authority),
 				..Passes::default()
 			};
 		}
-		self.walking = true;
+	}
+	/// Hand the passes to a scope that reads under `authority`, which starts with
+	/// none. The caller gives them back with [`ReadLookups::restore_passes`].
+	pub(crate) fn lend_passes(&mut self, authority: String) -> Passes {
+		std::mem::replace(
+			&mut self.passes,
+			Passes {
+				authority: Some(authority),
+				..Passes::default()
+			},
+		)
+	}
+	/// What the scope that borrowed the walk's authority leaves behind is dropped.
+	pub(crate) fn restore_passes(&mut self, passes: Passes) {
+		self.passes = passes;
 	}
 	pub(super) fn end_walk(&mut self, passed: bool) {
 		self.forget_rows();

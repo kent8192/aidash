@@ -32,8 +32,9 @@ async fn check_operation(repository: &Repository<'_>, id: Uuid) -> NativeResult<
 	let mut access = Access::begin(repository.store, &identity).await?;
 	access.subjects = serde_json::from_value(snapshot.subjects.clone())?;
 	let result = async {
-		let run = access.recheck_run_reads(snapshot.run_id).await?;
-		access.task_read(run.task_id).await.map(|_| ())
+		let mut check = access.rechecking(snapshot.run_id);
+		let run = check.recheck_run_reads(snapshot.run_id).await?;
+		check.task_read(run.task_id).await.map(|_| ())
 	}
 	.await;
 	access.finish(result).await

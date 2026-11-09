@@ -57,6 +57,14 @@ fn dispatched_writers_keep_possible_effects_even_after_a_confirmed_stop(
 	assert_eq!(change.result, expected);
 }
 #[rstest]
+fn a_withdrawal_marks_the_operation_even_before_the_writer_is_confirmed_stopped(
+	mut snapshot: Snapshot,
+) {
+	assert!(!snapshot.marked_withdrawn());
+	snapshot.result = snapshot.change(WriterStop::Unconfirmed).result;
+	assert!(snapshot.marked_withdrawn());
+}
+#[rstest]
 #[case::epoch("epoch")]
 #[case::generation("generation")]
 #[case::state("state")]
