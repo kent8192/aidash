@@ -1062,6 +1062,7 @@ pub mod observation;
 
 pub mod sources;
 
+pub mod journal_export;
 pub mod policy;
 pub mod recovery;
 pub mod research;
