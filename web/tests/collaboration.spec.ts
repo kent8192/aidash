@@ -3691,3 +3691,18 @@ test("task dependency picker can load older tasks on demand", async ({
   ).toBeAttached();
   expect(reads).toBe(1);
 });
+
+test("returning focus refreshes the current state", async ({ page }) => {
+  await setup(page, { locale: "en-US" });
+  let reads = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/state") reads += 1;
+  });
+  await page.goto("/collaboration?channel=workspace-one");
+  await expect(
+    page.getByRole("heading", { name: "# Research", exact: true }),
+  ).toBeVisible();
+  const before = reads;
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect.poll(() => reads).toBeGreaterThan(before);
+});

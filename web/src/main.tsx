@@ -675,36 +675,36 @@ function Dashboard({
   }, [browserSessionId, client]);
   useEffect(() => {
     if (!connected) return;
-    if (administratorContext) return;
     const controller = new AbortController();
     const refresher = coalescedRefresh(client);
     const onFocus = () => refresher.refresh("state");
     window.addEventListener("focus", onFocus);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    void subscribe(
-      controller.signal,
-      () => {
-        if (timer) return;
-        timer = setTimeout(() => {
-          for (const key of [
-            "state",
-            "human-request",
-            "workspace",
-            "channel-history",
-            "run",
-            "marketplace",
-            "generation",
-            "provider-credentials",
-            "provider-credential-bindings",
-            "scratch-space",
-          ]) {
-            refresher.refresh(key);
-          }
-          timer = undefined;
-        }, 250);
-      },
-      setStreamStatus,
-    );
+    if (!administratorContext)
+      void subscribe(
+        controller.signal,
+        () => {
+          if (timer) return;
+          timer = setTimeout(() => {
+            for (const key of [
+              "state",
+              "human-request",
+              "workspace",
+              "channel-history",
+              "run",
+              "marketplace",
+              "generation",
+              "provider-credentials",
+              "provider-credential-bindings",
+              "scratch-space",
+            ]) {
+              refresher.refresh(key);
+            }
+            timer = undefined;
+          }, 250);
+        },
+        setStreamStatus,
+      );
     return () => {
       window.removeEventListener("focus", onFocus);
       controller.abort();
