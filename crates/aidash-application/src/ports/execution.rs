@@ -397,7 +397,6 @@ pub trait ExecutionStore: Send + Sync {
 		token: Uuid,
 		attempt: Uuid,
 		settlement: &aidash_domain::context::recovery::Settlement,
-		staged: Option<&crate::decision::StagedDecision>,
 	) -> Result<()>;
 }
 #[async_trait]
@@ -659,11 +658,6 @@ pub trait ExecutionAuthority: Send + Sync {
 		&self,
 		summarizer: &aidash_domain::context::summary::SummaryProvider,
 	) -> Result<()>;
-	/// Repeat the Catalog Approval check of the exact pinned Decider version
-	/// after a Summary Stage, before the staged decision it completes is
-	/// adopted (ADR 0056). Returns `Error::Context(DeciderUnapproved)` when
-	/// the approval was withdrawn.
-	async fn recheck_decider(&self, decider: &aidash_domain::decision::DeciderPin) -> Result<()>;
 	async fn suspend(&self) -> Result<()>;
 	/// While suspended for inference, briefly reacquire the authority boundary,
 	/// authorize inference again, and release it. Failure means the Run may no
@@ -716,15 +710,6 @@ pub trait ExecutionEnvironment: Send + Sync {
 		None
 	}
 	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>>;
-	/// The Run's compaction Decider and the ports its decisions use under the
-	/// current lease, or `None` when the Run has no compaction Decider.
-	async fn compaction_decider(
-		&self,
-		_run: &Run,
-		_token: Uuid,
-	) -> Result<Option<super::decision::DecisionPorts<'_>>> {
-		Ok(None)
-	}
 	/// The approval Decider the Tenant chose for `run`, with the Agent Binding's
 	/// narrowing of its thresholds, and the ports its decisions use under the
 	/// current lease. `None` when Auto is not available to the Run, which then

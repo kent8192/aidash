@@ -107,9 +107,6 @@ pub async fn visible(scope: &mut dyn ForeignRunReadScope, run: &RunMetadata) -> 
 		return Ok(false);
 	}
 	for definition in &d.inspection.definitions {
-		let dormant_compaction = aidash_domain::registry::bindings::defaults::is_compaction_decider(
-			&definition.metadata,
-		) && d.inspection.decider.as_ref() != Some(&definition.entry);
 		let entry = if let Some(entry) = historical.as_ref().filter(|entry| {
 			entry.id == definition.entry.id && entry.version == definition.entry.version
 		}) {
@@ -121,14 +118,9 @@ pub async fn visible(scope: &mut dyn ForeignRunReadScope, run: &RunMetadata) -> 
 			}
 			entry.clone()
 		} else {
-			// Dormant compaction was admitted as metadata; dispatch owns its approval gate.
-			let current = if dormant_compaction {
-				source.metadata(&definition.entry).await
-			} else {
-				source
-					.catalog_entry(&definition.entry, "registry.read")
-					.await
-			};
+			let current = source
+				.catalog_entry(&definition.entry, "registry.read")
+				.await;
 			match current {
 				Ok(entry) => entry,
 				Err(Error::Forbidden | Error::NotFound(_)) => return Ok(false),
@@ -141,7 +133,6 @@ pub async fn visible(scope: &mut dyn ForeignRunReadScope, run: &RunMetadata) -> 
 			"tool" => "tool.invoke",
 			"skill" => "skill.use",
 			"cluster" => "cluster.execute",
-			"decider" if dormant_compaction => "registry.read",
 			"decider" => "decision.invoke",
 			"bundle" | "memory" | "source" | "embedding" | "reranker" | "tokenizer"
 			| "external_service" => "registry.read",

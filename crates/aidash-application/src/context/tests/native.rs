@@ -130,7 +130,7 @@ fn a_turn_that_renders_nothing_takes_no_protected_slot() {
 #[tokio::test]
 async fn native_summaries_absorb_whole_turns_and_keep_the_recent_ones() {
 	// Arrange: pruning keeps everything, so only the Summary Stage can fit.
-	let mut context = turns(12);
+	let context = turns(12);
 	let pinned = json!({"task": {"description": "Ship the release"}});
 	let mut retained = context.clone();
 	let candidates = native_summary_candidates(&context, 6);
@@ -151,11 +151,7 @@ async fn native_summaries_absorb_whole_turns_and_keep_the_recent_ones() {
 		policy: &policy,
 	};
 	// Act
-	let plan = needs_summary(
-		super::super::compact_decided(&mut context, None, &fitting)
-			.await
-			.unwrap(),
-	);
+	let plan = needs_summary(super::super::compact(&context, &fitting).unwrap());
 	let (adopted, _) = summary_candidate(
 		&plan,
 		&summary_text(&[], &[], &[]),

@@ -39,13 +39,13 @@ fn reference(id: &str) -> EntityRef {
 	}
 }
 fn decider() -> EntityRef {
-	reference("aidash.compaction-decider")
+	reference("aidash.approval-decider")
 }
 
 impl Fixture {
 	fn new(approved_agents: Vec<Entry>) -> Self {
 		let mut definitions = approved_agents.clone();
-		definitions.push(crate::registry::system::compaction_decider().unwrap());
+		definitions.push(crate::registry::system::approval_decider().unwrap());
 		Self {
 			definitions,
 			approved_agents,
@@ -79,23 +79,6 @@ impl WithdrawalImpactScope for Fixture {
 		self.run_queries.push(agents.to_vec());
 		Ok(self.runs)
 	}
-}
-
-#[rstest]
-#[tokio::test]
-async fn withdrawing_the_decider_lists_agents_that_keep_the_default_binding() {
-	// Arrange
-	let mut fixture = Fixture::new(vec![
-		agent("b", &[]),
-		agent("a", &[]),
-		agent("none", &["compaction"]),
-	]);
-	// Act
-	let impact = impact(&mut fixture, &decider()).await.unwrap();
-	// Assert
-	assert_eq!(impact.agents, [reference("a"), reference("b")]);
-	assert_eq!(impact.running_runs, 3);
-	assert_eq!(fixture.run_queries, [[reference("a"), reference("b")]]);
 }
 
 impl Fixture {
@@ -167,7 +150,7 @@ async fn withdrawing_an_agent_lists_the_agent_itself() {
 #[tokio::test]
 async fn an_unreferenced_version_has_no_impact_and_reads_no_runs() {
 	// Arrange
-	let mut fixture = Fixture::new(vec![agent("none", &["compaction"])]);
+	let mut fixture = Fixture::new(vec![agent("none", &[])]);
 	// Act
 	let impact = impact(&mut fixture, &decider()).await.unwrap();
 	// Assert
@@ -179,7 +162,7 @@ async fn an_unreferenced_version_has_no_impact_and_reads_no_runs() {
 #[tokio::test]
 async fn runs_that_only_read_the_version_are_not_an_impact() {
 	// Arrange: nothing depends on the version, whatever else has read it.
-	let mut fixture = Fixture::new(vec![agent("none", &["compaction"])]);
+	let mut fixture = Fixture::new(vec![agent("none", &[])]);
 	// Act
 	let impact = impact(&mut fixture, &decider()).await.unwrap();
 	// Assert

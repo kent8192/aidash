@@ -175,9 +175,6 @@ impl DecisionAuthority for Rig {
 			state_retention: Default::default(),
 		})
 	}
-	async fn read(&self, _: &Evidence, _: bool) -> Result<()> {
-		unreachable!()
-	}
 }
 #[async_trait]
 impl ObservationJournal for Rig {
@@ -272,22 +269,8 @@ impl DecisionJournal for Rig {
 			.insert(permit.record.attempt, report.clone());
 		Ok(())
 	}
-	async fn commit(
-		&self,
-		_: &Evidence,
-		_: Option<&Context>,
-		_: Option<&RetainedState>,
-	) -> Result<()> {
-		panic!("observer cannot mutate a Run")
-	}
 	async fn commit_approval(&self, _: &ApprovalEvidence) -> Result<()> {
 		panic!("observer cannot settle approval")
-	}
-	async fn expire_states(&self, _: DateTime<Utc>) -> Result<usize> {
-		unreachable!()
-	}
-	async fn append_outcome(&self, _: &OutcomeLink) -> Result<()> {
-		unreachable!()
 	}
 }
 #[async_trait]

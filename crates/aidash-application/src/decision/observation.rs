@@ -400,9 +400,7 @@ impl DecisionGate<'_> {
 							UnavailableReason::AuthorityRevoked
 						}
 						Reason::JournalFailure => UnavailableReason::JournalFailure,
-						Reason::InvalidAnswers | Reason::IncompleteAnswers => {
-							UnavailableReason::InvalidAnswers
-						}
+						Reason::InvalidAnswers => UnavailableReason::InvalidAnswers,
 						_ if record.attempts.is_empty() => UnavailableReason::CredentialUnavailable,
 						_ => UnavailableReason::ProviderFailure,
 					}

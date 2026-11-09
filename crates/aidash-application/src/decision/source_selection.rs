@@ -230,9 +230,7 @@ impl DecisionGate<'_> {
 					last_failure = selection_failure(
 						&error,
 						match reason {
-							Reason::InvalidAnswers | Reason::IncompleteAnswers => {
-								SelectionFailure::InvalidAnswers
-							}
+							Reason::InvalidAnswers => SelectionFailure::InvalidAnswers,
 							Reason::JournalFailure => SelectionFailure::JournalUnavailable,
 							Reason::AuthorityFailure | Reason::Forbidden => {
 								SelectionFailure::AuthorityUnavailable

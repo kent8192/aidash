@@ -18,24 +18,9 @@ use async_trait::async_trait;
 use futures_util::FutureExt;
 use serde_json::json;
 
-/// A compaction Decider configuration as a definition declares it.
+/// An approval Decider configuration for tests.
 pub(crate) fn decider_config() -> serde_json::Value {
-	serde_json::to_value(aidash_domain::decision::DeciderConfig {
-		hook: aidash_domain::decision::Hook::Compaction,
-		answer_type: aidash_domain::decision::AnswerType::Noul,
-		description: "Keep needed history".into(),
-		provider_credential: "openrouter".into(),
-		routes: vec![aidash_domain::decision::DeciderRoute::jev(
-			"typesafe/jev-1.14",
-		)],
-		builder: aidash_domain::decision::BUILDER.into(),
-		option_source: aidash_domain::decision::OPTION_SOURCE.into(),
-		rule: aidash_domain::decision::RULE.into(),
-		mode: aidash_domain::decision::Mode::Enforce,
-		max_calls_per_run: 20,
-		state_retention: Default::default(),
-	})
-	.expect("a Decider configuration serializes")
+	crate::registry::system::approval_decider().unwrap().config
 }
 
 pub(crate) fn entry(id: &str, kind: &str, config: serde_json::Value) -> Entry {
@@ -133,9 +118,6 @@ impl BindingCatalog for Catalog {
 			return Ok(
 				aidash_domain::registry::bindings::source_defaults::workspace_observation()?,
 			);
-		}
-		if reference.id == crate::registry::system::COMPACTION_DECIDER_ID {
-			return crate::registry::system::compaction_decider();
 		}
 		if let Some(operation) = reference.id.strip_prefix("aidash.") {
 			let mut definition = entry(
@@ -270,7 +252,6 @@ pub(crate) fn builtin_entries(node: &str) -> Vec<Entry> {
 	entries.push(current);
 	entries
 		.push(aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap());
-	entries.push(crate::registry::system::compaction_decider().unwrap());
 	entries
 }
 pub(crate) fn binding(kind: &str, node: &str, id: &str) -> serde_json::Value {

@@ -218,9 +218,9 @@ async fn prune_only(
 		pinned,
 		policy: &policy,
 	};
-	match super::compact_decided(context, None, &fitting).await? {
+	match super::compact(context, &fitting)? {
 		Compaction::Fits => Ok(()),
-		Compaction::NeedsSummary(_) | Compaction::Saved => {
+		Compaction::NeedsSummary(_) => {
 			panic!("a prune-only policy without a Decider never summarizes or saves")
 		}
 	}
@@ -323,7 +323,7 @@ impl Scenario {
 			pinned: &self.pinned,
 			policy,
 		};
-		super::compact_decided(context, None, &fitting).await
+		super::compact(context, &fitting)
 	}
 	fn adopt(
 		&self,
@@ -344,7 +344,7 @@ impl Scenario {
 fn needs_summary(compaction: Compaction) -> SummaryPlan {
 	match compaction {
 		Compaction::NeedsSummary(plan) => *plan,
-		Compaction::Fits | Compaction::Saved => panic!("expected the Summary Stage"),
+		Compaction::Fits => panic!("expected the Summary Stage"),
 	}
 }
 

@@ -32,7 +32,7 @@ struct Scope {
 impl Scope {
 	fn new() -> Self {
 		let subject = qualified_agent(&node(), "agent", "1.0.0");
-		Self{task:Some(Task{id:Uuid::from_u128(1),workspace_id:Uuid::from_u128(2),title:"task".into(),description:String::new(),status:TaskStatus::Open,requirements:json!({}),owner:None,created_by:"root".into(),dependencies:vec![],parent_id:None,revision:7,created_at:chrono::Utc::now()}),entry:serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{"schema_version":1,"instructions":"Fixture","bindings":[],"remove_default":["compaction"],"model":{"id":"model","version":"1.0.0"}}})).unwrap(),bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{subject:{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"delegated_by":null}}})).unwrap(),identity:ExecutionPrincipal{tenant:"tenant".into(),subject:"root".into(),credential_id:Uuid::from_u128(4)},subjects:vec!["root".into()],context:json!({}),calls:vec![],fail:None,deny:None,active:true,origin:None,remote:None,federated:false,plan_admissions:vec![],mapping:false,grants:vec![],claim_args:None,bound_origin:None,deciders:vec![]}
+		Self{task:Some(Task{id:Uuid::from_u128(1),workspace_id:Uuid::from_u128(2),title:"task".into(),description:String::new(),status:TaskStatus::Open,requirements:json!({}),owner:None,created_by:"root".into(),dependencies:vec![],parent_id:None,revision:7,created_at:chrono::Utc::now()}),entry:serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{"schema_version":1,"instructions":"Fixture","bindings":[],"remove_default":[],"model":{"id":"model","version":"1.0.0"}}})).unwrap(),bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{subject:{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme"),"delegated_by":null}}})).unwrap(),identity:ExecutionPrincipal{tenant:"tenant".into(),subject:"root".into(),credential_id:Uuid::from_u128(4)},subjects:vec!["root".into()],context:json!({}),calls:vec![],fail:None,deny:None,active:true,origin:None,remote:None,federated:false,plan_admissions:vec![],mapping:false,grants:vec![],claim_args:None,bound_origin:None,deciders:vec![]}
 	}
 	fn call(&mut self, name: &str) -> Result<()> {
 		self.calls.push(name.into());
@@ -465,59 +465,6 @@ async fn local_descendants_of_remote_origins_stay_federated() {
 	assert_eq!(s.plan_admissions, [true]);
 }
 
-fn compaction() -> EntityRef {
-	EntityRef {
-		id: crate::registry::system::COMPACTION_DECIDER_ID.into(),
-		version: crate::registry::system::COMPACTION_DECIDER_VERSION.into(),
-	}
-}
-
-/// A Run whose Agent keeps the Node's default compaction Binding starts only
-/// once that Decider holds its Catalog Approval (#540).
-#[tokio::test]
-async fn an_unapproved_default_compaction_decider_refuses_the_start_before_any_effect() {
-	let mut s = Scope::new();
-	s.entry.config["remove_default"] = json!([]);
-	let e = admit(&mut s, Uuid::from_u128(1), None, &agent(), false)
-		.await
-		.unwrap_err();
-	assert!(
-		matches!(&e, Error::Conflict(m) if m == "COMPACTION_DECIDER_UNAPPROVED: aidash.compaction-decider@1.0.0"),
-		"{e:?}"
-	);
-	assert!(s.calls.contains(&"decider".into()));
-	assert!(s.claim_args.is_none());
-	assert!(s.grants.is_empty());
-}
-
-#[tokio::test]
-async fn an_approved_compaction_decider_lets_the_run_start() {
-	let mut s = Scope::new();
-	s.entry.config["remove_default"] = json!([]);
-	s.deciders = vec![(
-		compaction(),
-		crate::registry::system::compaction_decider().unwrap(),
-	)];
-	let claimed = admit(&mut s, Uuid::from_u128(1), None, &agent(), false)
-		.await
-		.unwrap();
-	assert_eq!(claimed.status, TaskStatus::Claimed);
-}
-
-#[tokio::test]
-async fn a_changed_compaction_decider_definition_counts_as_unapproved() {
-	let mut s = Scope::new();
-	s.entry.config["remove_default"] = json!([]);
-	let mut changed = crate::registry::system::compaction_decider().unwrap();
-	changed.description.insert("en".into(), "changed".into());
-	s.deciders = vec![(compaction(), changed)];
-	let e = admit(&mut s, Uuid::from_u128(1), None, &agent(), false)
-		.await
-		.unwrap_err();
-	assert!(matches!(&e, Error::Conflict(m) if m.starts_with("COMPACTION_DECIDER_UNAPPROVED")));
-	assert!(s.claim_args.is_none());
-}
-
 #[tokio::test]
 async fn an_agent_without_the_default_never_looks_up_a_compaction_decider() {
 	let mut s = Scope::new();
@@ -525,17 +472,6 @@ async fn an_agent_without_the_default_never_looks_up_a_compaction_decider() {
 		.await
 		.unwrap();
 	assert!(!s.calls.contains(&"decider".into()));
-}
-
-#[tokio::test]
-async fn a_decider_lookup_fault_is_not_reported_as_unapproved() {
-	let mut s = Scope::new();
-	s.entry.config["remove_default"] = json!([]);
-	s.fail = Some("decider");
-	let e = admit(&mut s, Uuid::from_u128(1), None, &agent(), false)
-		.await
-		.unwrap_err();
-	assert!(matches!(e, Error::Port(_)));
 }
 
 fn node() -> aidash_domain::nodes::NodeAddress {
