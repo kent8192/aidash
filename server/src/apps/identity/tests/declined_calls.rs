@@ -2,7 +2,6 @@
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 use aidash_domain::{
 	provider::{ModelResponse, ToolCall},
-	registry::EntityRef,
 	run_state::{PausedCall, RecoveryState, RunState, ToolCallState, encode},
 	tool::RefusalKind,
 };
@@ -22,13 +21,6 @@ struct World {
 	run: Uuid,
 	alice: String,
 	_runtime: common::RuntimeFixture,
-}
-
-fn listed() -> EntityRef {
-	EntityRef {
-		id: LISTED.into(),
-		version: "1.0.0".into(),
-	}
 }
 
 async fn world(fixture: common::ApplicationFixture) -> World {
@@ -141,30 +133,18 @@ impl World {
 		.await
 	}
 
-	/// Sets the listed definition's approval on the Run's Node.
-	async fn approve(&self, enabled: bool) {
-		let authorization = aidash_server::authorization::Authorization {
+	/// `subjects` may not read the listed definition, which the Run has read. Since #769 a
+	/// withdrawn Catalog Approval no longer hides what a Run read; a denied `registry.read` does.
+	async fn keep_definition_from(&self, subjects: &[&str]) {
+		let current = aidash_server::authorization::Authorization {
 			pool: self.f.store.pool.clone(),
-		};
-		let node = common::default_node(&self.f.store, "acme").await;
-		let current = authorization
-			.catalog("acme", &node.node)
-			.await
-			.unwrap()
-			.into_iter()
-			.find(|binding| binding.entry_id == LISTED)
-			.unwrap();
-		authorization
-			.set_catalog(
-				"acme",
-				&node.node,
-				&listed(),
-				current.revision,
-				enabled,
-				"deployment_administrator",
-			)
-			.await
-			.unwrap();
+		}
+		.snapshot("acme")
+		.await
+		.unwrap();
+		let mut bundle = serde_json::to_value(&current.bundle).unwrap();
+		bundle["policies"].as_array_mut().unwrap().push(json!({"id":"no-definition","effect":"deny","subjects":{"ids":subjects},"actions":["registry.read"],"resources":{"kinds":["agent"],"ids":[LISTED]}}));
+		common::replace_policy(&self.f.store, "acme", bundle).await;
 	}
 }
 
@@ -439,7 +419,7 @@ async fn a_run_blocked_by_what_it_read_answers_like_resuming(
 	let w = world(fixture).await;
 	let alice = w.alice.clone();
 	w.pause(true).await;
-	w.approve(false).await;
+	w.keep_definition_from(&["alice"]).await;
 	let (status, resume) = w.control(&alice, "resume").await;
 	assert_eq!(status, 409, "{resume}");
 	let (status, body) = w.decline(&alice, &w.key()).await;
@@ -668,7 +648,8 @@ async fn what_the_run_read_still_stops_someone_else_with_the_same_reason(
 	let w = world(fixture).await;
 	let erin = w.add_administrator("erin").await;
 	w.pause(true).await;
-	w.approve(false).await;
+	// The non-owner's walk is judged under erin's own policy, so both are kept from it.
+	w.keep_definition_from(&["alice", "erin"]).await;
 	let (status, resume) = w.control(&w.alice.clone(), "resume").await;
 	assert_eq!(status, 409, "{resume}");
 	// The block is judged on the Run's reads alone, so the Run's content stays hidden from erin
