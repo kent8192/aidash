@@ -1461,7 +1461,6 @@ async fn a_timed_out_install_gets_install_advice(repository: Repository) {
 	{
 		let mut trace = repository.0.lock().unwrap();
 		trace.operation.kind = "python_install".into();
-		trace.operation.state = "cancelling".into();
 		trace.observed = past_its_limit("failed", 143);
 	}
 	run(&repository).await.unwrap();
@@ -1472,6 +1471,8 @@ async fn a_timed_out_install_gets_install_advice(repository: Repository) {
 	assert!(message.contains("dependencies"), "{message}");
 	assert!(!message.contains("at a time"), "{message}");
 	assert!(!message.contains("shorter commands"), "{message}");
+	assert!(trace.calls.contains(&"require:code_interpreter".into()));
+	assert!(trace.calls.contains(&"packages".into()));
 }
 
 #[rstest]

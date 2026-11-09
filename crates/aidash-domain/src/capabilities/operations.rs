@@ -165,7 +165,11 @@ pub fn export_quota_refusal(quota: ExportQuota, path: &str, limit: u64) -> Value
 pub const VERIFICATION: &str = "verification";
 /// The bound operation whose authority an operation kind runs under.
 pub fn capability_of(kind: &str) -> &str {
-	if kind == VERIFICATION { "shell" } else { kind }
+	match kind {
+		VERIFICATION => "shell",
+		"python_install" => "code_interpreter",
+		_ => kind,
+	}
 }
 /// A lost outcome leaves the last saved Area intact. It remains fenced while
 /// the original writer may still run, and reopens once its stop is proven.
