@@ -28,6 +28,46 @@ use uuid::Uuid;
 
 type Row = CoreLivePreviews;
 
+#[cfg(test)]
+mod database_failure_tests {
+	use super::*;
+	use crate::apps::execution::test_database::{DatabaseFixture, database};
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn live_preview_repository_preserves_real_pool_timeout(
+		#[future] database: DatabaseFixture,
+	) {
+		let database = database.await;
+		let driver = sqlx::postgres::PgPoolOptions::new()
+			.max_connections(1)
+			.acquire_timeout(std::time::Duration::from_millis(100))
+			.connect(&database.url)
+			.await
+			.unwrap();
+		let store = Store::from_pool(
+			driver.clone(),
+			aidash_domain::nodes::DeploymentId::parse("aidash://preview-test").unwrap(),
+		)
+		.await
+		.unwrap();
+		let _connection = driver.acquire().await.unwrap();
+		let error = serving(&store).await.unwrap_err();
+		assert!(matches!(
+			crate::apps::execution::repositories::worker::classify_failure(&error),
+			aidash_application::recovery::ExecutionFailure::DatabaseUnavailable
+		));
+		let application = aidash_application::Error::from(error);
+		assert!(matches!(
+			application,
+			aidash_application::Error::TemporaryDatabase(_)
+		));
+		let response = NativeError::from(application).http_response();
+		assert_eq!(response.status.as_u16(), 503);
+		assert_eq!(response.headers[http::header::RETRY_AFTER], "1");
+	}
+}
+
 pub(crate) fn domain(row: Row) -> NativeResult<LivePreview> {
 	let port = u16::try_from(row.port).map_err(|_| NativeError::Invalid("invalid port".into()))?;
 	Ok(LivePreview {
