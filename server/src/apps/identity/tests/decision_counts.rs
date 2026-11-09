@@ -258,6 +258,26 @@ async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
 		assert!(state["next_cursors"]["workspaces"].is_string());
 		assert!(state["next_cursors"]["runs"].is_string());
 		measurements.push(after - before);
+		let cursor = state["next_cursors"]["workspaces"].as_str().unwrap();
+		let node = state["workspaces"][0]["node"].as_str().unwrap();
+		let (status, page) = common::request(
+			&app,
+			&token,
+			"GET",
+			&format!("/api/workspaces?node={node}&cursor={cursor}"),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{page}");
+		let workspaces = page["items"].as_array().unwrap();
+		assert!(!workspaces.is_empty());
+		assert!(workspaces.len() <= 50);
+		assert!(
+			workspaces
+				.iter()
+				.all(|row| row["node"] == node && row["id"] != cursor)
+		);
+		assert_eq!(page["next_cursor"].is_string(), workspaces.len() == 50);
 	}
 	assert_eq!(
 		measurements[0], measurements[1],
