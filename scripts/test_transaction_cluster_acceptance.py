@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 from native_memory_cluster_acceptance import NativeMemory
 from remote_memory_cluster_acceptance import RemoteMemory
-from transaction_cluster_acceptance import ADMINISTRATOR, BROWSER_ORIGIN, Cluster, main, transaction_cases
+from transaction_cluster_acceptance import ADMINISTRATOR, BROWSER_ORIGIN, PEER_SUBJECT, Cluster, main, transaction_cases
 
 
 class TransactionPartitionTests(unittest.TestCase):
@@ -132,24 +132,32 @@ class MemoryNodeContractTests(unittest.TestCase):
                 }
                 fixture.tokens = []
                 fixture.register = Mock()
-                def api(node, path, body):
+                def api(node, path, body=None):
                     if path == "/api/tenants":
                         return 201, {"name": "unregistered-new-tenant"}
+                    if body is None and path.startswith("/api/authorization/"):
+                        # Approving the administrator revised the initial policy.
+                        return 200, {"revision": 2}
                     return 200, {}
                 fixture.api = Mock(side_effect=api)
                 fixture.administer = Mock(return_value=(200, {}))
                 # The first credential comes from the host, never over HTTP (#484).
-                fixture.issue_credential = Mock(return_value={"token": "alice-token", "credential": {"id": "alice-credential"}})
+                fixture.issue_credential = Mock(side_effect=lambda node, tenant, subject: {
+                    "token": f"{subject}-token", "credential": {"id": f"{subject}-credential-{node}"}})
 
                 fixture.configure()
 
                 self.assertEqual(fixture.tenants, ["home-tenant", "worker-tenant"])
                 self.assertFalse(any(call.args[1] == "/api/tenants" for call in fixture.api.call_args_list))
                 self.assertFalse(any(call.args[1].endswith("/credentials") for call in fixture.api.call_args_list))
-                self.assertEqual(fixture.issue_credential.call_args_list, [call(0, "home-tenant", "alice"), call(1, "worker-tenant", "alice")])
+                self.assertEqual(fixture.issue_credential.call_args_list, [
+                    call(0, "home-tenant", "alice"), call(0, "home-tenant", PEER_SUBJECT),
+                    call(1, "worker-tenant", "alice"), call(1, "worker-tenant", PEER_SUBJECT)])
+                self.assertEqual(fixture.tokens, ["alice-token", "alice-token"])
                 for node in range(2):
                     policy = next(call for call in fixture.api.call_args_list
-                                  if call.args[:2] == (node, f"/api/authorization/{fixture.tenants[node]}"))
+                                  if call.args[:2] == (node, f"/api/authorization/{fixture.tenants[node]}") and len(call.args) == 3)
+                    self.assertEqual(policy.args[2]["expected_revision"], 2)
                     # Only the Tenant Administrator writes a Peer Mapping (#484, #578).
                     self.assertFalse(any(call.args[1].endswith("/peer-mappings") for call in fixture.api.call_args_list))
                     mapping = next(call for call in fixture.administer.call_args_list
@@ -157,6 +165,9 @@ class MemoryNodeContractTests(unittest.TestCase):
                     subjects = policy.args[2]["bundle"]["subjects"]
                     self.assertIsNone(subjects["alice"].get("node"))
                     self.assertEqual(subjects[ADMINISTRATOR], {"kind": "user"})
+                    owning_node = ("home-12345678", "worker-abcdef12")[node]
+                    # A Peer Mapping binds a service subject's exportable credential, never a person's.
+                    self.assertEqual(subjects[PEER_SUBJECT], {"kind": "service", "node": owning_node})
                     owning_node = ("home-12345678", "worker-abcdef12")[node]
                     agent_subjects = ["aidash://tx-00/home-12345678/agents/research@1.0.0",
                                       "aidash://tx-01/worker-abcdef12/agents/research@1.0.0"]
@@ -168,7 +179,7 @@ class MemoryNodeContractTests(unittest.TestCase):
                             self.assertEqual(subjects[subject], {"kind": "agent", "node": owning_node})
                     self.assertEqual(mapping.args[2], {
                         "node": fixture.nodes[node]["node"], "source_node": fixture.nodes[1 - node]["address"],
-                        "source_subject": "alice", "credential_id": "alice-credential", "enabled": True, "expected_revision": 0,
+                        "source_subject": "alice", "credential_id": f"{PEER_SUBJECT}-credential-{node}", "enabled": True, "expected_revision": 0,
                     })
 
     def test_native_memory_keeps_the_deployment_key_volumes(self):
@@ -200,9 +211,8 @@ class MemoryNodeContractTests(unittest.TestCase):
 
 
 class TenantAdministratorTests(unittest.TestCase):
-    def fixture(self, groups):
+    def fixture(self):
         cluster = object.__new__(Cluster)
-        cluster.administrator_groups = groups
         cluster.administrators = {}
         cluster.nodes = {0: {"tenant": "tenant-0"}}
         cluster.token = "deployment-administrator"
@@ -212,7 +222,7 @@ class TenantAdministratorTests(unittest.TestCase):
         return cluster
 
     def test_signs_in_once_and_follows_the_nodes_current_forward(self):
-        cluster = self.fixture(["administrators"])
+        cluster = self.fixture()
         session = Mock()
         session.call.return_value = (200, {"ok": True})
         with patch("transaction_cluster_acceptance.tenant_administrator", return_value=session) as sign_in:
@@ -224,10 +234,6 @@ class TenantAdministratorTests(unittest.TestCase):
         cluster.reach_issuer.assert_called_once_with()
         self.assertEqual(session.call.call_args_list, [call("POST", "/api/x", {"a": 1}), call("GET", "/api/x", None)])
         self.assertEqual(session.base, "http://127.0.0.1:5001")
-
-    def test_a_driver_that_names_the_administrator_adds_no_groups(self):
-        self.assertIsNone(RemoteMemory.administrator_groups)
-        self.assertEqual(Cluster.administrator_groups, ["administrators"])
 
 
 class ExtensionBootstrapTests(unittest.TestCase):

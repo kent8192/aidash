@@ -36,6 +36,9 @@ BROWSER_ORIGIN = "https://127.0.0.1:8443"
 # The person who administers each Tenant: Node Registrations and Peer Mappings
 # need a Tenant Administrator acting through a browser Mapping (#484).
 ADMINISTRATOR = "federation-administrator"
+# The service subject another Node's alice acts as here. A Peer Mapping binds
+# only an exportable credential, which a person's user subject never has.
+PEER_SUBJECT = "remote-alice"
 PHASES = [("coordinator.submit", False), ("coordinator.vote", False),
           ("coordinator.commit", False), ("coordinator.abort", True),
           ("coordinator.visible", False), ("coordinator.complete", False),
@@ -223,18 +226,17 @@ class Cluster:
                 time.sleep(0.05)
         raise TimeoutError(f"the issuer's port-forward did not listen on {self.issuer_port} within 10 seconds")
 
-    # Groups the approval puts the administrator in. The Tenant's initial policy
-    # lets `administrators` administer it; a driver that names the
-    # administrator in its own policy sets this to None.
-    administrator_groups = ["administrators"]
-
     def administrator(self, node):
-        """Node `node`'s Tenant Administrator, signed in once through the issuer."""
+        """Node `node`'s Tenant Administrator, signed in once through the issuer.
+
+        The approval creates the person in the Tenant's initial `administrators`
+        group. A driver that later replaces the policy must keep `ADMINISTRATOR`.
+        """
         session = self.administrators.get(node)
         if session is None:
             self.reach_issuer()
             session = tenant_administrator(self.forward(node), BROWSER_ORIGIN, self.issuer, self.token,
-                                           self.nodes[node]["tenant"], ADMINISTRATOR, groups=self.administrator_groups)
+                                           self.nodes[node]["tenant"], ADMINISTRATOR, groups=["administrators"])
             self.administrators[node] = session
         # A rollout replaces the Node's port-forward; the session cookie stays valid.
         session.base = self.forward(node)
@@ -473,7 +475,9 @@ class Cluster:
         # Each Deployment has one Tenant, and its default Node is what a transaction names.
         for node in range(count):
             tenant = self.api(node, "/api/tenants", {"label": f"tx-{node}"})[1]["name"]
-            default = next(item for item in self.api(node, f"/api/tenants/{tenant}/nodes")[1] if item["default"])
+            # A Deployment Administrator reads a Tenant's Nodes only from the
+            # deleted-Node view purge uses (#484, ADR 0102).
+            default = next(item for item in self.api(node, f"/api/tenants/{tenant}/nodes?include_deleted=true")[1] if item["default"])
             self.nodes[node] = {"tenant": tenant, "node": default["name"], "address": default["address"]}
         for node in range(1, count):
             for local, remote in [(0, node), (node, 0)]:
