@@ -171,7 +171,31 @@ async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
 ) {
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
-	let (_, token, _) = common::bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (_, token, first_task) = common::bootstrap(&f, &app, "http://127.0.0.1:9").await;
+
+	let (status, first_run) = common::request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{first_task}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{first_run}");
+
+	let run_id: Uuid = sqlx::query_scalar("SELECT id FROM runs WHERE task_id = $1")
+		.bind(first_task)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let workspace: Uuid = sqlx::query_scalar("SELECT workspace_id FROM tasks WHERE id = $1")
+		.bind(first_task)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let request_id = Uuid::new_v4();
+	sqlx::query("INSERT INTO human_requests (id, tenant, workspace_id, run_id, kind, prompt, request_key, created_at) VALUES ($1, 'acme', $2, $3, 'QUESTION', 'Still waiting?', 'old-request', now())")
+        .bind(request_id).bind(workspace).bind(run_id).execute(f.store.pool.fixture_driver()).await.unwrap();
 	let count = || async {
 		sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM authorization_decisions")
 			.fetch_one(f.store.pool.fixture_driver())
@@ -179,8 +203,8 @@ async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
 			.unwrap()
 	};
 	let mut measurements = Vec::new();
-	for _ in 0..2 {
-		for _ in 0..60 {
+	for batch in [59, 60] {
+		for _ in 0..batch {
 			let (status, workspace) = common::request(
 				&app,
 				&token,
@@ -213,6 +237,23 @@ async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
 		let before = count().await;
 		let (status, state) = common::request(&app, &token, "GET", "/api/state", Value::Null).await;
 		assert_eq!(status, 200, "{state}");
+
+		assert!(
+			state["human_requests"]
+				.as_array()
+				.unwrap()
+				.iter()
+				.any(|row| row["id"] == request_id.to_string()),
+			"old pending request missing: {state}"
+		);
+		assert!(
+			!state["runs"]
+				.as_array()
+				.unwrap()
+				.iter()
+				.any(|row| row["id"] == run_id.to_string()),
+			"old run is still inside the window"
+		);
 		let after = count().await;
 		assert!(state["next_cursors"]["workspaces"].is_string());
 		assert!(state["next_cursors"]["runs"].is_string());
@@ -222,5 +263,83 @@ async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
 		measurements[0], measurements[1],
 		"decision counts: {measurements:?}"
 	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn state_node_scope_empty_cursors_and_administrator_collections(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, _) = common::bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, state) = common::request(&app, &token, "GET", "/api/state", Value::Null).await;
+	assert_eq!(status, 200, "{state}");
+	let workspace = &state["workspaces"][0];
+	let node = workspace["node"].as_str().unwrap();
+	assert!(state["next_cursors"]["workspaces"].is_null());
+	let (status, scoped) = common::request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/state?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{scoped}");
+	assert!(
+		scoped["workspaces"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|row| row["node"] == node)
+	);
+	assert!(
+		scoped["workspaces"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|row| row["id"] == workspace["id"])
+	);
+	let (status, absent) = common::request(
+		&app,
+		&token,
+		"GET",
+		"/api/state?node=missing-node",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{absent}");
+	for field in [
+		"workspaces",
+		"tasks",
+		"runs",
+		"artifacts",
+		"human_requests",
+		"conversations",
+	] {
+		assert!(
+			absent[field].as_array().unwrap().is_empty(),
+			"{field}: {absent}"
+		);
+		assert!(absent["next_cursors"][field].is_null());
+	}
+	let (status, admin) =
+		common::request(&app, &f.config.api_token, "GET", "/api/state", Value::Null).await;
+	assert_eq!(status, 200, "{admin}");
+	for field in [
+		"workspaces",
+		"tasks",
+		"runs",
+		"artifacts",
+		"human_requests",
+		"conversations",
+	] {
+		assert!(admin[field].as_array().unwrap().is_empty());
+		assert!(admin["next_cursors"][field].is_null());
+	}
 	common::cleanup(f, &url, &schema).await;
 }

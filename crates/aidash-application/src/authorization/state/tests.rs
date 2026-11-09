@@ -1,5 +1,8 @@
 use super::*;
-use aidash_domain::{RunMetadata, TaskStatus, policy::Resource, run_state::RawRun};
+use aidash_domain::{
+	RunControl, RunMetadata, RunPhase, TaskStatus, context::Context, policy::Resource,
+	run_state::RawRun,
+};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::json;
@@ -34,11 +37,54 @@ fn task(value: u128) -> Task {
 		created_at: Utc::now(),
 	}
 }
+fn run(value: u128, visible: bool) -> RawRun {
+	RawRun {
+		metadata: RunMetadata {
+			node: "brave-otter-k3m9q2xa".parse().unwrap(),
+			id: id(value),
+			task_id: id(2),
+			workspace_id: id(1),
+			home_node: "aidash://home".into(),
+			agent_id: if visible { "saved-agent" } else { "hidden" }.into(),
+			agent_version: "1".into(),
+			phase: RunPhase::Ready,
+			control: RunControl::Active,
+			step: 0,
+			revision: 3,
+			observed_input_seq: 0,
+			ledger_worker_ready: false,
+			control_revision: 0,
+			control_source: Default::default(),
+			error: None,
+			lease_owner: None,
+			lease_until: None,
+			updated_at: Utc::now(),
+		},
+		context: serde_json::to_value(Context::default()).unwrap(),
+		pending: json!({"state_version":1,"data":{},"recovery":{"retry":null}}),
+	}
+}
+fn human(value: u128, visible: bool) -> HumanRequest {
+	HumanRequest {
+		id: id(value),
+		workspace_id: id(1),
+		run_id: id(3),
+		kind: "question".into(),
+		prompt: if visible { "saved-author" } else { "hidden" }.into(),
+		response: None,
+		answered_by: None,
+		answer_by: None,
+		created_at: Utc::now(),
+	}
+}
 #[derive(Default)]
 struct Scope {
 	candidates: Vec<Uuid>,
 	tasks: Vec<Task>,
 	calls: Vec<Uuid>,
+	humans: Vec<HumanRequest>,
+	runs: Vec<RawRun>,
+	run_reads: usize,
 }
 #[async_trait]
 impl WorkspaceStateScope for Scope {
@@ -73,10 +119,10 @@ impl WorkspaceStateScope for Scope {
 		Ok(vec![])
 	}
 	async fn run_candidates(&mut self, _: Option<&str>) -> Result<Vec<RawRun>> {
-		Ok(vec![])
+		Ok(self.runs.clone())
 	}
 	async fn pending_human_candidates(&mut self, _: Option<&str>) -> Result<Vec<HumanRequest>> {
-		Ok(vec![])
+		Ok(self.humans.clone())
 	}
 	async fn conversation_candidates(&mut self, _: Option<&str>) -> Result<Vec<Conversation>> {
 		Ok(vec![])
@@ -90,20 +136,26 @@ impl WorkspaceStateScope for Scope {
 	async fn artifact_visible(&mut self, _: &Artifact) -> Result<bool> {
 		unreachable!()
 	}
-	async fn run_visible(&mut self, _: &RunMetadata) -> Result<bool> {
-		unreachable!()
+	async fn run_visible(&mut self, row: &RunMetadata) -> Result<bool> {
+		Ok(row.agent_id != "hidden")
 	}
-	async fn visible_run(&mut self, _: Uuid) -> Result<Option<RunInspection>> {
-		unreachable!()
+	async fn visible_run(&mut self, id: Uuid) -> Result<Option<RunInspection>> {
+		self.run_reads += 1;
+		Ok(Some(run(id.as_u128(), true).inspect()))
 	}
-	async fn human_resource(&mut self, _: &HumanRequest) -> Result<Resource> {
-		unreachable!()
+	async fn human_resource(&mut self, row: &HumanRequest) -> Result<Resource> {
+		Ok(Resource {
+			tenant: "tenant".into(),
+			kind: "human".into(),
+			id: row.id.to_string(),
+			attributes: json!({}),
+		})
 	}
 	async fn conversation_resource(&mut self, _: &Conversation) -> Result<Resource> {
 		unreachable!()
 	}
 	async fn decide(&mut self, _: &Resource, _: &str) -> Result<bool> {
-		unreachable!()
+		Ok(true)
 	}
 }
 #[tokio::test]
@@ -143,4 +195,56 @@ async fn full_candidate_window_advances_even_when_denied_and_unions_item_workspa
 			.any(|workspace| workspace.id == id(99))
 	);
 	assert_eq!(result.tasks.len(), 2);
+}
+
+#[tokio::test]
+async fn pending_requests_of_an_older_run_remain_visible_and_share_its_decision() {
+	let mut scope = Scope {
+		humans: vec![human(20, true), human(21, true)],
+		..Default::default()
+	};
+	let output = state(&mut scope, None).await.unwrap();
+	assert!(output.runs.is_empty());
+	assert_eq!(output.human_requests.len(), 2);
+	assert_eq!(scope.run_reads, 1);
+	assert_eq!(scope.calls, [id(1)]);
+	assert_eq!(output.workspaces[0].id, id(1));
+	assert!(output.next_cursors.human_requests.is_none());
+}
+
+#[tokio::test]
+async fn hidden_task_candidates_still_advance_the_page() {
+	let mut scope = Scope {
+		tasks: (1..=50)
+			.map(|n| {
+				let mut row = task(n);
+				row.workspace_id = id(99);
+				row
+			})
+			.collect(),
+		..Default::default()
+	};
+	let output = state(&mut scope, None).await.unwrap();
+	assert!(output.tasks.is_empty());
+	assert_eq!(output.next_cursors.tasks, Some(id(50).to_string()));
+	assert_eq!(scope.calls, [id(99)]);
+}
+
+#[tokio::test]
+async fn malformed_visible_run_does_not_hide_its_neighbors_and_hidden_run_is_omitted() {
+	let mut malformed = run(8, true);
+	malformed.pending = json!({"state_version":999});
+	let mut hidden = run(9, false);
+	hidden.pending = json!({});
+	let mut scope = Scope {
+		runs: vec![malformed, hidden, run(3, true)],
+		..Default::default()
+	};
+	let output = state(&mut scope, None).await.unwrap();
+	assert_eq!(
+		output.runs.iter().map(|row| row.id).collect::<Vec<_>>(),
+		[id(8), id(3)]
+	);
+	assert!(output.runs[0].state_error.is_some());
+	assert!(output.runs[1].state_error.is_none());
 }
