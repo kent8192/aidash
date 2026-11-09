@@ -92,6 +92,7 @@ impl Scope<'_> {
 			.filter(Row::field_id().eq(id))
 			.all_with_executor(&mut **self.access.tx)
 			.await
+			.map_err(reinhardt::core::exception::Error::from)
 			.map_err(NativeError::from)?
 			.pop();
 		row.map(domain).transpose()
@@ -125,7 +126,7 @@ impl application::Scope for Scope<'_> {
 			&self.run.metadata(),
 		)
 		.await
-		.map_err(NativeError::from)?;
+		.map_err(|error| NativeError::External(error.to_string()))?;
 		Ok(RunFacts {
 			id: self.run.id,
 			tenant: self.access.identity.tenant.clone(),
@@ -146,6 +147,7 @@ impl application::Scope for Scope<'_> {
 			.filter(Row::field_run_id().eq(run))
 			.all_with_executor(&mut **self.access.tx)
 			.await
+			.map_err(reinhardt::core::exception::Error::from)
 			.map_err(NativeError::from)?;
 		let row = rows.into_iter().max_by_key(|row| row.started_at);
 		row.map(domain).transpose().map_err(Into::into)
@@ -157,6 +159,7 @@ impl application::Scope for Scope<'_> {
 		Row::objects()
 			.insert_with_executor(&mut **self.access.tx, &to_row(preview))
 			.await
+			.map_err(reinhardt::core::exception::Error::from)
 			.map_err(NativeError::from)?;
 		Ok(())
 	}
@@ -164,6 +167,7 @@ impl application::Scope for Scope<'_> {
 		Row::objects()
 			.save_with_executor(&mut **self.access.tx, &to_row(preview))
 			.await
+			.map_err(reinhardt::core::exception::Error::from)
 			.map_err(NativeError::from)?;
 		Ok(())
 	}
@@ -190,6 +194,7 @@ impl application::Scope for Scope<'_> {
 			.filter(Row::field_id().ne(Uuid::nil()))
 			.all_with_executor(&mut **self.access.tx)
 			.await
+			.map_err(reinhardt::core::exception::Error::from)
 			.map_err(NativeError::from)?;
 		rows.into_iter()
 			.map(domain)
@@ -242,6 +247,7 @@ impl application::Scope for Scope<'_> {
 					.finish(),
 			)
 			.await
+			.map_err(reinhardt::core::exception::Error::from)
 			.map_err(NativeError::from)?;
 		preview.egress_expires_at = Some(expires_at);
 		Ok(())
@@ -330,7 +336,7 @@ pub(crate) async fn dispatch_accept(
 	let observed = runner
 		.request("POST", "/v1/operations", Some(&input))
 		.await
-		.map_err(NativeError::from)?;
+		.map_err(|error| NativeError::External(error.to_string()))?;
 	if observed["status"].as_str() != Some("awaiting_files") {
 		return Ok(());
 	}
@@ -354,7 +360,7 @@ pub(crate) async fn dispatch_accept(
 					),
 				)
 				.await
-				.map_err(NativeError::from)?;
+				.map_err(|error| NativeError::External(error.to_string()))?;
 			offset += bytes.len() as u64;
 			if offset >= file.size {
 				break;
@@ -368,7 +374,7 @@ pub(crate) async fn dispatch_accept(
 			None,
 		)
 		.await
-		.map_err(NativeError::from)?;
+		.map_err(|error| NativeError::External(error.to_string()))?;
 	Ok(())
 }
 
@@ -383,7 +389,7 @@ pub(crate) async fn wait_ready(store: &Store, preview: &LivePreview) -> NativeRe
 		let observed = runner
 			.request("GET", &format!("/v1/operations/{}", preview.id), None)
 			.await
-			.map_err(NativeError::from)?;
+			.map_err(|error| NativeError::External(error.to_string()))?;
 		let serve = &observed["serve"];
 		let log = serve["startup_log"].as_str().unwrap_or_default().to_owned();
 		match serve["status"].as_str() {
@@ -556,7 +562,7 @@ pub(crate) async fn terminate(store: &Store, preview: &LivePreview) -> NativeRes
 		let observed = runner
 			.request("GET", &format!("/v1/operations/{}", preview.id), None)
 			.await
-			.map_err(NativeError::from)?;
+			.map_err(|error| NativeError::External(error.to_string()))?;
 		if observed["termination_confirmed"] == true {
 			return Ok(true);
 		}
@@ -645,6 +651,7 @@ pub(crate) async fn serving(store: &Store) -> NativeResult<Vec<Uuid>> {
 			.filter(Row::field_state().eq(state.as_str()))
 			.all_with_executor(&mut *tx)
 			.await
+			.map_err(reinhardt::core::exception::Error::from)
 			.map_err(NativeError::from)?;
 		ids.extend(rows.into_iter().map(|row| row.id));
 	}
@@ -663,6 +670,7 @@ async fn load_for_maintenance(store: &Store, id: Uuid) -> NativeResult<Option<Li
 		.filter(Row::field_id().eq(id))
 		.all_with_executor(&mut *tx)
 		.await
+		.map_err(reinhardt::core::exception::Error::from)
 		.map_err(NativeError::from)?
 		.pop();
 	tx.commit().await?;
@@ -700,6 +708,7 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<()> {
 				.filter(EgressSession::field_id().eq(preview.id))
 				.all_with_executor(&mut *tx)
 				.await
+				.map_err(reinhardt::core::exception::Error::from)
 				.map_err(NativeError::from)?
 				.pop();
 			tx.commit().await?;
@@ -742,6 +751,7 @@ pub(crate) async fn stop_serving(store: &Store, id: Uuid, reason: StopReason) ->
 		Row::objects()
 			.save_with_executor(&mut *tx, &to_row(&preview))
 			.await
+			.map_err(reinhardt::core::exception::Error::from)
 			.map_err(NativeError::from)?;
 		tx.commit().await?;
 	}
@@ -767,6 +777,7 @@ pub(crate) async fn sweep(store: &Store) -> NativeResult<()> {
 			.filter(Row::field_id().ne(Uuid::nil()))
 			.all_with_executor(&mut *tx)
 			.await
+			.map_err(reinhardt::core::exception::Error::from)
 			.map_err(NativeError::from)?;
 		tx.commit().await?;
 		rows
@@ -791,6 +802,7 @@ pub(crate) async fn sweep(store: &Store) -> NativeResult<()> {
 					Row::objects()
 						.save_with_executor(&mut *tx, &to_row(&preview))
 						.await
+						.map_err(reinhardt::core::exception::Error::from)
 						.map_err(NativeError::from)?;
 				}
 				tx.commit().await?;
@@ -803,6 +815,7 @@ pub(crate) async fn sweep(store: &Store) -> NativeResult<()> {
 			Row::objects()
 				.save_with_executor(&mut *tx, &to_row(&preview))
 				.await
+				.map_err(reinhardt::core::exception::Error::from)
 				.map_err(NativeError::from)?;
 			tx.commit().await?;
 		}
@@ -827,6 +840,7 @@ async fn sweep_stopping(store: &Store) -> NativeResult<()> {
 			.filter(Row::field_termination_confirmed().eq(false))
 			.all_with_executor(&mut *tx)
 			.await
+			.map_err(reinhardt::core::exception::Error::from)
 			.map_err(NativeError::from)?;
 		tx.commit().await?;
 		rows
@@ -850,6 +864,7 @@ async fn settle_row(store: &Store, tenant: &str, preview: &mut LivePreview) -> N
 	Row::objects()
 		.save_with_executor(&mut *tx, &to_row(preview))
 		.await
+		.map_err(reinhardt::core::exception::Error::from)
 		.map_err(NativeError::from)?;
 	release_hold(&mut tx, tenant, preview.id).await?;
 	tx.commit().await?;
