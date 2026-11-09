@@ -700,9 +700,7 @@ async fn a_recheck_that_only_repeats_adds_no_rows_for_a_running_command(
 async fn a_sweep_pass_that_only_repeats_adds_no_rows_for_a_running_command(
 	#[future] database: DatabaseFixture,
 ) {
-	use aidash_application::ports::capabilities::reconciliation::{
-		OperationReconciliationRepository, OperationReconciliationScope,
-	};
+	use aidash_application::ports::capabilities::reconciliation::OperationReconciliationRepository;
 	// Arrange: the command's Run is bound to its Working Area, as a started Run is.
 	let fixture = fixture(database.await, 1).await;
 	let (operation, _) = running_targets(&fixture).await;
