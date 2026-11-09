@@ -678,6 +678,8 @@ function Dashboard({
     if (administratorContext) return;
     const controller = new AbortController();
     const refresher = coalescedRefresh(client);
+    const onFocus = () => refresher.refresh("state");
+    window.addEventListener("focus", onFocus);
     let timer: ReturnType<typeof setTimeout> | undefined;
     void subscribe(
       controller.signal,
@@ -686,6 +688,7 @@ function Dashboard({
         timer = setTimeout(() => {
           for (const key of [
             "state",
+            "human-request",
             "workspace",
             "channel-history",
             "run",
@@ -703,6 +706,7 @@ function Dashboard({
       setStreamStatus,
     );
     return () => {
+      window.removeEventListener("focus", onFocus);
       controller.abort();
       refresher.close();
       clearTimeout(timer);

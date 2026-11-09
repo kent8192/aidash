@@ -608,7 +608,19 @@ export async function setup(
     if (path === "/api/session")
       return route.fulfill({ json: { access, node_id: data.deployment.id } });
     if (path === "/api/state")
-      return route.fulfill({ json: { ...data, access } });
+      return route.fulfill({
+        json: {
+          ...data,
+          human_requests: data.human_requests.filter(
+            (request) => request.response === null,
+          ),
+          access,
+        },
+      });
+    if (path === "/api/human-requests" && request.method() === "GET")
+      return route.fulfill({
+        json: { items: data.human_requests, next_cursor: null },
+      });
     if (path === "/api/tenants/acme/nodes")
       return route.fulfill({
         json: [

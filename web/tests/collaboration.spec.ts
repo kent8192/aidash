@@ -1565,6 +1565,7 @@ test("a question closed at the Answer Deadline reads as unanswered", async ({
   ).toBeVisible();
 
   passAnswerDeadline();
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(dialog.getByRole("status")).toHaveText(
     "No answer before the Answer Deadline",
     { timeout: 15_000 },
