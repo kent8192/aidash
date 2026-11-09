@@ -51,9 +51,10 @@ async fn restore_outer<T>(
 }
 
 async fn memory_run_check(access: &mut Access, run: &crate::domain::RunMetadata) -> Result<()> {
+	let mark = access.call_mark();
 	match access.run_invalidity(run).await? {
 		None => Ok(()),
-		Some(reason) => Err(access.memory_failure(reason)),
+		Some(reason) => Err(access.memory_failure_since(mark, reason)),
 	}
 }
 
@@ -133,6 +134,7 @@ pub(in crate::apps::identity) async fn refresh_access_for_run(
 	store: &Store,
 	run: &Run,
 ) -> Result<()> {
+	let mark = access.call_mark();
 	let result = aidash_application::authorization::execution::refresh_worker(
 		&mut crate::bootstrap::execution_grant_scope(access),
 		store.deployment.as_str(),
@@ -140,7 +142,7 @@ pub(in crate::apps::identity) async fn refresh_access_for_run(
 	)
 	.await
 	.map_err(Into::into);
-	result.map_err(|error| access.named(error))
+	result.map_err(|error| access.named_since(mark, error))
 }
 
 pub(crate) async fn inherit_task_origin(access: &mut Access, task: Uuid) -> Result<bool> {
@@ -1943,6 +1945,7 @@ pub(in crate::apps::identity) async fn authorize_guard(
 	access: &mut Access,
 	read_context: bool,
 ) -> Result<AgentConfig> {
+	let mark = access.call_mark();
 	let result = aidash_application::authorization::execution::guard::authorize(
 		&mut crate::bootstrap::run_guard_scope(f, access),
 		run,
@@ -1950,7 +1953,7 @@ pub(in crate::apps::identity) async fn authorize_guard(
 	)
 	.await
 	.map_err(Into::into);
-	result.map_err(|error| access.named(error))
+	result.map_err(|error| access.named_since(mark, error))
 }
 
 struct SnapshotAuthority {

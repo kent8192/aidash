@@ -256,6 +256,21 @@ impl DerefMut for AccessTransaction {
 	}
 }
 
+/// Where an authority's silent-Node and denial counts stood when a call began
+/// (see [`Access::call_mark`]).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CallMark {
+	silent: u64,
+	denials: u64,
+}
+
+/// What a refusal is read against: everything this authority has seen, or one call's.
+#[derive(Clone, Copy)]
+enum Scope {
+	Authority,
+	Call(CallMark),
+}
+
 pub(crate) struct Access {
 	pub marketplace_audit: Option<serde_json::Value>,
 	pub core_gc_complete: bool,
@@ -266,6 +281,13 @@ pub(crate) struct Access {
 	/// Whether a `require` of this authority has denied. Such a denial is a
 	/// real refusal, so it is never reported as a Node that could not answer.
 	pub(super) denied: bool,
+	/// How often a check of this authority met a Node that did not answer, and the
+	/// Node it met last. One authority serves several calls, so a call tells its own
+	/// silence from an earlier call's by comparing these with a [`CallMark`].
+	pub(super) silent_events: u64,
+	pub(super) silent_last: Option<String>,
+	/// How often a `require` of this authority has denied.
+	pub(super) denial_events: u64,
 	pub(super) checking_reads: aidash_application::authorization::visits::ReadVisits,
 	pub(crate) read_verdicts: aidash_application::authorization::visits::ReadVerdicts,
 	/// How this authority's reads reach other Nodes. A transaction lent to a
@@ -337,6 +359,9 @@ pub(crate) struct PublicationContext {
 	/// the publisher's identity must never name a Node to the reader.
 	unavailable_peers: std::collections::BTreeSet<String>,
 	denied: bool,
+	silent_events: u64,
+	silent_last: Option<String>,
+	denial_events: u64,
 	checking_reads: aidash_application::authorization::visits::ReadVisits,
 	read_verdicts: aidash_application::authorization::visits::ReadVerdicts,
 	dependency_frontier: Option<Vec<super::peer::dependencies::Reference>>,
@@ -531,6 +556,9 @@ impl Access {
 			remote_read_cache: Default::default(),
 			unavailable_peers: Default::default(),
 			denied: false,
+			silent_events: 0,
+			silent_last: None,
+			denial_events: 0,
 			checking_reads: Default::default(),
 			read_verdicts: Default::default(),
 			dependency_frontier: None,
@@ -617,6 +645,9 @@ impl Access {
 			remote_read_cache: std::mem::take(&mut self.remote_read_cache),
 			unavailable_peers: std::mem::take(&mut self.unavailable_peers),
 			denied: std::mem::take(&mut self.denied),
+			silent_events: std::mem::take(&mut self.silent_events),
+			silent_last: self.silent_last.take(),
+			denial_events: std::mem::take(&mut self.denial_events),
 			checking_reads: std::mem::take(&mut self.checking_reads),
 			read_verdicts: std::mem::take(&mut self.read_verdicts),
 			dependency_frontier: self.dependency_frontier.take(),
@@ -652,6 +683,9 @@ impl Access {
 		self.remote_read_cache = old.remote_read_cache;
 		self.unavailable_peers = old.unavailable_peers;
 		self.denied = old.denied;
+		self.silent_events = old.silent_events;
+		self.silent_last = old.silent_last;
+		self.denial_events = old.denial_events;
 		self.checking_reads = old.checking_reads;
 		self.read_verdicts = old.read_verdicts;
 		self.dependency_frontier = old.dependency_frontier;
@@ -675,6 +709,9 @@ impl Access {
 			remote_read_cache: Default::default(),
 			unavailable_peers: Default::default(),
 			denied: false,
+			silent_events: 0,
+			silent_last: None,
+			denial_events: 0,
 			checking_reads: Default::default(),
 			read_verdicts: Default::default(),
 			dependency_frontier: None,
@@ -1218,10 +1255,12 @@ impl Access {
 			// A structural refusal is no policy denial: it reaches the model as a Rejected Call.
 			Verdict::SubnodeReadOnly => {
 				self.denied = true;
+				self.denial_events += 1;
 				Err(Error::Forbidden)
 			}
 			Verdict::Denied => {
 				self.denied = true;
+				self.denial_events += 1;
 				self.note_denial(resource, action);
 				Err(Error::Forbidden)
 			}
@@ -1268,16 +1307,21 @@ impl Access {
 		Ok(())
 	}
 
-	/// The error for a Run whose graph a memory step found invalid. `Authority`
-	/// and `Invalidated` both come from a read that was not confirmed, so while
-	/// a Node has not answered they name that Node (#751). Otherwise the
-	/// mapping is the old one. Limit: after a mark, an `Authority` that is a
-	/// real refusal reads as silence; the Run still stops and Resume finds out.
-	pub(crate) fn memory_failure(&self, reason: aidash_domain::semantic::Failure) -> Error {
+	/// The error for a Run whose graph a memory step found invalid, for the call
+	/// that began at `mark`. `Authority` and `Invalidated` both come from a read
+	/// that was not confirmed, so when this call's own checks met a Node that did
+	/// not answer they name that Node (#751). Otherwise the mapping is the old
+	/// one. Limit: after such a meeting, an `Authority` that is a real refusal
+	/// reads as silence; the Run still stops and Resume finds out.
+	pub(crate) fn memory_failure_since(
+		&self,
+		mark: CallMark,
+		reason: aidash_domain::semantic::Failure,
+	) -> Error {
 		use aidash_domain::semantic::Failure;
 		match reason {
-			Failure::Authority => self.named(Error::Forbidden),
-			Failure::Invalidated => match self.named(Error::Forbidden) {
+			Failure::Authority => self.named_since(mark, Error::Forbidden),
+			Failure::Invalidated => match self.named_since(mark, Error::Forbidden) {
 				silent @ Error::NodeUnreachable { .. } => silent,
 				_ => Error::RemoteSemantic(Failure::Invalidated),
 			},
@@ -1287,10 +1331,42 @@ impl Access {
 
 	/// What an error of this authority says to its caller. A `Forbidden` that
 	/// follows a Node that did not answer, with no `require` of this authority
-	/// having denied, is that Node's silence and not a refusal (#751).
+	/// having denied, is that Node's silence and not a refusal (#751). For an
+	/// authority that serves one call, such as the one behind a single request.
 	pub(crate) fn named(&self, error: Error) -> Error {
-		match (&error, self.unavailable_peers.first()) {
-			(Error::Forbidden, Some(node)) if !self.denied => Error::NodeUnreachable {
+		self.named_in(Scope::Authority, error)
+	}
+
+	/// Where this authority's counts stand as a call begins.
+	pub(crate) fn call_mark(&self) -> CallMark {
+		CallMark {
+			silent: self.silent_events,
+			denials: self.denial_events,
+		}
+	}
+
+	/// [`Self::named`] for a call that shares this authority with others, such as
+	/// one Tool Batch of a worker. A refusal of this call is that Node's silence
+	/// only if this call's own checks met the Node, and no `require` of this call
+	/// denied. A Node an earlier call found silent, or a denial it made, says
+	/// nothing about this call's refusal: it would be retried as undelivered
+	/// instead of reaching the model as the refusal it is (#751).
+	pub(crate) fn named_since(&self, mark: CallMark, error: Error) -> Error {
+		self.named_in(Scope::Call(mark), error)
+	}
+
+	fn named_in(&self, scope: Scope, error: Error) -> Error {
+		let silent = match scope {
+			Scope::Authority => (!self.denied)
+				.then(|| self.unavailable_peers.first())
+				.flatten(),
+			Scope::Call(mark) => (self.silent_events > mark.silent
+				&& self.denial_events == mark.denials)
+				.then_some(self.silent_last.as_ref())
+				.flatten(),
+		};
+		match (&error, silent) {
+			(Error::Forbidden, Some(node)) => Error::NodeUnreachable {
 				node: node.clone(),
 				after_effect: false,
 			},
@@ -1526,8 +1602,12 @@ impl Access {
 	pub(crate) fn peer_unavailable(&self, node: &str) -> bool {
 		self.unavailable_peers.contains(node)
 	}
+	/// A check met a Node that did not answer: now, or earlier in this authority,
+	/// when it was not asked again. Each meeting counts for the call that made it.
 	pub(crate) fn mark_peer_unavailable(&mut self, node: &str) {
 		self.unavailable_peers.insert(node.into());
+		self.silent_events += 1;
+		self.silent_last = Some(node.into());
 	}
 }
 

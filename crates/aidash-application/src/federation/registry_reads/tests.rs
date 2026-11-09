@@ -394,6 +394,7 @@ async fn unavailable_peer_still_requires_saved_metadata_policy(mut scope: Scope)
 			"registry.read",
 			"agent.execute",
 			"federation.discover",
+			"unavailable:aidash://leaf",
 			"remember:false"
 		]
 	);

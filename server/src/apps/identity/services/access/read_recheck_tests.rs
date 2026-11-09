@@ -820,6 +820,29 @@ async fn a_passed_walk_is_not_reused_under_another_authority(#[future] database:
 	access.finish(Ok(())).await.unwrap();
 }
 
+/// One authority serves several calls, as it does for a Tool Batch. The Task a
+/// call asks for is refused to the person, and an earlier call on the same
+/// authority found a Node silent: the refusal reaches the caller as a refusal,
+/// not as that Node's silence, which would be retried as undelivered (#751).
+#[rstest]
+#[tokio::test]
+async fn a_refusal_is_not_blamed_on_a_node_an_earlier_call_found_silent(
+	#[future] database: DatabaseFixture,
+) {
+	// Arrange
+	let fixture = fixture(database.await, 1).await;
+	fixture.set_policy(1, Some(("reader", "task.read"))).await;
+	let mut access = fixture.access().await;
+	access.mark_peer_unavailable("aidash://other/sibling");
+
+	// Act
+	let refused = access.task_read(fixture.task).await;
+	access.finish(Ok(())).await.unwrap();
+
+	// Assert
+	assert!(matches!(refused, Err(Error::Forbidden)), "{refused:?}");
+}
+
 /// An authority asks other Nodes inside the distribution lock its transaction
 /// holds, so a Node of this Deployment reached in process requests none of its
 /// own (#751). An authority under a lease holds what the lease holds, and none
