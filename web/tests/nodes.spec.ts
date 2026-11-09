@@ -342,6 +342,12 @@ test("the selected Node decides which Workspaces are listed, and is remembered",
   page,
 }) => {
   const { errors } = await setup(page);
+  const stateNodes: (string | null)[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/state")
+      stateNodes.push(url.searchParams.get("node"));
+  });
   await page.goto("/");
   await switcher(page).click();
   const list = page.getByRole("navigation", { name: "Workspaces" });
@@ -358,6 +364,8 @@ test("the selected Node decides which Workspaces are listed, and is remembered",
   await expect(selector).toHaveValue("first");
   await selector.selectOption("second");
   await expect(page.getByText("home / Lab", { exact: true })).toBeVisible();
+  await expect.poll(() => stateNodes).toContain("second");
+  expect(stateNodes).toContain("first");
 
   await switcher(page).click();
   await expect(
