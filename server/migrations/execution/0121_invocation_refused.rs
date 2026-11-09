@@ -1,10 +1,10 @@
 // reinhardt-migration-source: 1
 // A paused refusal of a replay-safe tool ends REFUSED (#754). The historical CHECK is
-// database-only; 0121 tracks the typed ModelEnum separately.
+// database-only; 0122 tracks the typed ModelEnum separately.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0120_invocation_refused", "execution")
-		.add_dependency("execution", "0118_blob_uploads")
+	Migration::new("0121_invocation_refused", "execution")
+		.add_dependency("execution", "0120_event_waits")
 		.atomic(true)
 		.database_only(true)
 		.add_operation(Operation::DropConstraintDefinition {

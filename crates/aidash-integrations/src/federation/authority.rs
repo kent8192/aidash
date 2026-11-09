@@ -33,6 +33,11 @@ impl Transport for HttpTransport {
 			.headers()
 			.get("x-aidash-transaction-pending")
 			.is_some_and(|value| value == "1");
+		let policy_busy = response
+			.headers()
+			.get("x-aidash-policy-busy")
+			.and_then(|value| value.to_str().ok())
+			.and_then(|value| value.parse().ok());
 		let body = if status.is_success() {
 			let limit = if path == "/thread-attachment/1/fetch" {
 				12 * 1024 * 1024
@@ -48,6 +53,7 @@ impl Transport for HttpTransport {
 			semantic_reason,
 			execution_refusal,
 			transaction_pending,
+			policy_busy,
 			body,
 		})
 	}

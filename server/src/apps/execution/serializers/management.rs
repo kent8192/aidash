@@ -37,6 +37,20 @@ pub(crate) struct DeclineCallInput {
 pub(crate) struct ControlInput {
 	pub(crate) action: crate::domain::RunControlAction,
 }
+impl ControlInput {
+	/// Whether `request` starts work again rather than stops it, for the
+	/// boundary to decide before the route runs (ADR 0121). A body that does
+	/// not parse counts as starting: the route refuses it, but a stop is only
+	/// ever a request that says so.
+	pub(crate) fn starts_work(request: &reinhardt::Request) -> bool {
+		serde_json::from_slice::<Self>(request.body()).map_or(true, |input| {
+			!matches!(
+				input.action,
+				crate::domain::RunControlAction::Pause | crate::domain::RunControlAction::Cancel
+			)
+		})
+	}
+}
 #[derive(Default, Deserialize, JsonSchema)]
 pub(crate) struct EventQuery {
 	#[serde(default)]

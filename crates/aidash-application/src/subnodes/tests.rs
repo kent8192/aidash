@@ -486,3 +486,54 @@ async fn creator_pause_preserves_subnode_and_terminal_end_cancels_members() {
 		]
 	);
 }
+
+/// Records the order of calls, to show what an end locks before it appends.
+#[derive(Default)]
+struct Logged {
+	calls: Vec<&'static str>,
+}
+#[async_trait]
+impl crate::ports::subnodes::EndScope for Logged {
+	async fn active_subnodes(&mut self, _: Uuid) -> Result<Vec<(SubnodeId, Uuid)>> {
+		self.calls.push("subnodes");
+		Ok(vec![(SubnodeId(Uuid::from_u128(4)), Uuid::from_u128(5))])
+	}
+	async fn mark_ended(&mut self, _: SubnodeId, _: Uuid, _: subnodes::EndReason) -> Result<()> {
+		self.calls.push("mark_ended");
+		Ok(())
+	}
+	async fn active_runs(&mut self, _: Uuid) -> Result<Vec<Uuid>> {
+		self.calls.push("runs");
+		Ok(vec![Uuid::from_u128(8)])
+	}
+	async fn control_run(
+		&mut self,
+		_: Uuid,
+		_: aidash_domain::RunControlAction,
+		_: aidash_domain::ControlSource,
+	) -> Result<()> {
+		self.calls.push("control_run");
+		Ok(())
+	}
+}
+#[tokio::test]
+async fn an_end_locks_subnodes_then_runs_before_it_marks_anything_ended() {
+	use aidash_domain::{ControlSource, RunControlAction};
+	let mut scope = Logged::default();
+	control_for_creator(
+		&mut scope,
+		run().id,
+		RunControlAction::Cancel,
+		ControlSource::System,
+		Some(subnodes::EndReason::CreatorCancelled),
+	)
+	.await
+	.unwrap();
+	let first_mark = scope.calls.iter().position(|call| *call == "mark_ended");
+	let first_runs = scope.calls.iter().position(|call| *call == "runs");
+	assert!(first_runs < first_mark, "{:?}", scope.calls);
+	assert_eq!(scope.calls[..2], ["subnodes", "runs"]);
+	let mut locking = Logged::default();
+	lock_end(&mut locking, run().id).await.unwrap();
+	assert_eq!(locking.calls, ["subnodes", "runs"]);
+}

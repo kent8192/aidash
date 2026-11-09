@@ -177,6 +177,7 @@ impl Runtime {
 		let mut broker_rx = self.broker.subscribe();
 		let mut last_scan = Instant::now() - self.settings.recovery.max(self.settings.fallback);
 		let mut startup = true;
+		let mut contention = Contention::default();
 		while !*stopping.borrow() {
 			let broker = broker_rx.borrow_and_update().clone();
 			let cadence = if broker.as_ref().is_some_and(|b| !b.disconnected())
@@ -240,6 +241,7 @@ impl Runtime {
 						Err(activation::unavailable())
 					}
 				});
+			let mut attempted = false;
 			let result = match delivery {
 				Ok(Some(message)) if !*stopping.borrow() && !broker.disconnected() => {
 					// A test barrier can arrive while a pull is already in flight.
@@ -258,6 +260,7 @@ impl Runtime {
 					if *stopping.borrow() || broker.disconnected() {
 						continue;
 					}
+					attempted = true;
 					self.receive(repository.as_ref(), message.as_ref()).await
 				}
 				Ok(_) => {
@@ -266,12 +269,26 @@ impl Runtime {
 				}
 				Err(error) => Err(error),
 			};
-			if let Err(error) = result {
-				if matches!(error, aidash_application::Error::External(_)) {
-					self.failed.store(true, Ordering::Release);
+			match result {
+				Err(aidash_application::Error::RunLockContended) => {
+					metrics::counter!("aidash_activation_run_lock_contention_total").increment(1);
+					if contention.contended(Instant::now()) {
+						tracing::warn!(
+							"activation Run row lock contention has lasted at least 30 seconds"
+						);
+					}
+					tokio::time::sleep(Duration::from_millis(100)).await;
 				}
-				tracing::warn!(%error,"activation delivery deferred");
-				tokio::time::sleep(Duration::from_millis(100)).await;
+				Err(error) => {
+					contention.clear();
+					if matches!(error, aidash_application::Error::External(_)) {
+						self.failed.store(true, Ordering::Release);
+					}
+					tracing::warn!(%error,"activation delivery deferred");
+					tokio::time::sleep(Duration::from_millis(100)).await;
+				}
+				Ok(()) if attempted => contention.clear(),
+				Ok(()) => {}
 			}
 		}
 		Ok(())
@@ -301,6 +318,44 @@ impl Runtime {
 			visibility.advance(*run, token).await?;
 		}
 		Ok(())
+	}
+}
+/// How long Run row lock contention may go quiet and still count as one
+/// continuing contention. A contended delivery is deferred for 250 ms and the
+/// worker sleeps 100 ms, with idle pulls in between, so passes without
+/// contention are normal while it lasts; only a silence this long ends it.
+const CONTENTION_GAP: Duration = Duration::from_secs(5);
+/// How long contention lasts before the worker warns once.
+const CONTENTION_WARNING: Duration = Duration::from_secs(30);
+
+/// Run row lock contention that a worker keeps meeting (#715). Without the gap,
+/// two contentions far apart would add up to one that "lasted 30 seconds".
+#[derive(Default)]
+struct Contention {
+	since: Option<Instant>,
+	last: Option<Instant>,
+	warned: bool,
+}
+impl Contention {
+	/// Records a contended pass and says whether to warn: true once per
+	/// contention, when it has lasted [`CONTENTION_WARNING`].
+	fn contended(&mut self, now: Instant) -> bool {
+		if self
+			.last
+			.is_none_or(|last| now.duration_since(last) > CONTENTION_GAP)
+		{
+			self.since = Some(now);
+			self.warned = false;
+		}
+		self.last = Some(now);
+		let lasted = now.duration_since(*self.since.get_or_insert(now));
+		let warn = !self.warned && lasted >= CONTENTION_WARNING;
+		self.warned |= warn;
+		warn
+	}
+	/// A delivery went through or failed another way: the contention is over.
+	fn clear(&mut self) {
+		*self = Self::default();
 	}
 }
 async fn stopped(receiver: &mut watch::Receiver<bool>) {

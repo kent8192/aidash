@@ -26,6 +26,10 @@ pub trait RunControlScope: Send {
 	/// What the Run's own reads say against letting it go on, without asking whether this reader
 	/// may read the Run. `None` when nothing stops it (#763).
 	async fn run_reads_stop(&mut self, run: &RunInspection) -> Result<Option<RunReadsBlock>>;
+	/// The first definition the Run uses that it may no longer use (the Use Recheck), as
+	/// this caller may see it. `None` for a Run of another Home. A Run whose Binding
+	/// snapshot cannot be read is checked for its own Agent only, as its next boundary is.
+	async fn use_block(&mut self, run: &RunInspection) -> Result<Option<RunReadsBlock>>;
 	/// The resume grant remains locked FOR UPDATE until the surrounding transaction finishes.
 	async fn lock_execution_grant(&mut self, id: Uuid) -> Result<Option<ExecutionGrant>>;
 	async fn update_credential(&mut self, id: Uuid, credential: Uuid) -> Result<()>;

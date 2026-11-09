@@ -10,6 +10,7 @@ fn reply(status: u16) -> Reply {
 		semantic_reason: None,
 		execution_refusal: None,
 		transaction_pending: false,
+		policy_busy: None,
 		body: Ok(serde_json::to_vec(&json!({"ok":true})).unwrap()),
 	}
 }
@@ -56,6 +57,15 @@ fn conflict_and_pending_visibility_remain_distinct() {
 	let mut pending = reply(503);
 	pending.transaction_pending = true;
 	assert!(matches!(classify(pending), Err(Error::TransactionPending)));
+}
+#[rstest]
+fn a_peer_refusing_an_authority_change_keeps_its_wait() {
+	let mut busy = reply(503);
+	busy.policy_busy = Some(30);
+	assert!(matches!(
+		classify(busy),
+		Err(Error::PolicyBusy { retry_after: 30 })
+	));
 }
 #[rstest]
 #[case(401)]

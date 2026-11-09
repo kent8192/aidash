@@ -44,6 +44,7 @@ pub async fn authorize_sources(
 	workspace: Uuid,
 	constraints: &Value,
 ) -> Result<()> {
+	let mut references = Vec::new();
 	for source in constraints
 		.as_array()
 		.ok_or_else(|| Error::Conflict("invalid area constraints".into()))?
@@ -59,11 +60,9 @@ pub async fn authorize_sources(
 					.agent(&serde_json::from_value(source["agent"].clone())?)
 					.await?
 			}
-			Some("reference") => {
-				scope
-					.reference(serde_json::from_value(source["id"].clone())?)
-					.await?
-			}
+			// An Area given a Reference file holds nothing of it until it copies it.
+			Some("reference_bound") => {}
+			Some("reference") => references.push(serde_json::from_value(source["id"].clone())?),
 			Some("received_scope") => {
 				let owner = source["owner"].as_str().ok_or(Error::Forbidden)?;
 				let agent = source["agent"].as_str().ok_or(Error::Forbidden)?;
@@ -73,6 +72,10 @@ pub async fn authorize_sources(
 			}
 			_ => return Err(Error::Forbidden),
 		}
+	}
+	// One query: an Area can hold a whole Reference set, and this runs on every file tool call.
+	if !references.is_empty() {
+		scope.references(&references).await?;
 	}
 	Ok(())
 }

@@ -2,8 +2,8 @@
 // Keep the ORM domain in sync with the additional invocation status.
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
-	Migration::new("0121_invocation_refused_state", "execution")
-		.add_dependency("execution", "0120_invocation_refused")
+	Migration::new("0122_invocation_refused_state", "execution")
+		.add_dependency("execution", "0121_invocation_refused")
 		.atomic(true)
 		.state_only(true)
 		.add_operation(Operation::DropConstraintDefinition {

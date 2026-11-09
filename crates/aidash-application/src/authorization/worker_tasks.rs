@@ -10,7 +10,7 @@ use aidash_domain::{
 use uuid::Uuid;
 /// A missing task and a task the Run may not see read the same, so the model cannot probe for
 /// the existence of either.
-fn task_not_visible(task: Uuid) -> Error {
+pub fn task_not_visible(task: Uuid) -> Error {
 	Error::Refused(format!(
 		"task {task} was not found or is not visible to this Run"
 	))
@@ -132,6 +132,7 @@ pub async fn delegate(
 				"the task was already delegated under a different authority".into(),
 			));
 		}
+		scope.record_output(run, "delegated_task", task).await?;
 		return Ok(Delegation {
 			task_id: task,
 			node_id: node.into(),
@@ -140,7 +141,9 @@ pub async fn delegate(
 			delivered: true,
 		});
 	}
-	scope.delegate(task, agent).await
+	let delegation = scope.delegate(task, agent).await?;
+	scope.record_output(run, "delegated_task", task).await?;
+	Ok(delegation)
 }
 #[cfg(test)]
 mod tests;

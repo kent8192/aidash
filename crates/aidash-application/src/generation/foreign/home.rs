@@ -19,6 +19,15 @@ pub async fn lease(
 	id: Uuid,
 	exclusive: bool,
 ) -> Result<(Box<dyn HomeGenerationScope>, Intent)> {
+	if exclusive {
+		// The Task's Read dependencies may need other Nodes, which cannot be
+		// asked while this session holds the policy row exclusively. A shared
+		// session makes that check first; the gap before the lock is
+		// milliseconds, and the next Read Recheck stops a Run whose reads were
+		// revoked (#751).
+		let (shared, _) = Box::pin(lease(repository, source, id, false)).await?;
+		shared.finish().await?;
+	}
 	let record = repository.load(id).await?;
 	let intent: Intent = serde_json::from_value(record.binding.clone())?;
 	if record.cancelled
@@ -41,7 +50,11 @@ pub async fn lease(
 			return Err(Error::Forbidden);
 		}
 		scope.replace_subjects(record.subject_chain);
-		let task = scope.task(intent.task.id).await?;
+		let task = if exclusive {
+			scope.task_row(intent.task.id).await?
+		} else {
+			scope.task(intent.task.id).await?
+		};
 		if task.revision != intent.task.revision || task.status != TaskStatus::Open {
 			return Err(Error::Forbidden);
 		}

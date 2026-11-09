@@ -89,6 +89,12 @@ pub enum Error {
 		message: String,
 		retry_after: Option<std::time::Duration>,
 	},
+	/// Another Node of this Tenant did not answer a check the call depends
+	/// on, so the call is neither allowed nor refused (#751). `after_effect`
+	/// is set when the check ran after the call took effect, where running it
+	/// again could repeat the effect.
+	#[error("Node {node} could not be reached to confirm this. Try again.")]
+	NodeUnreachable { node: String, after_effect: bool },
 	/// An MCP HTTP endpoint answered with a failure before protocol decoding.
 	#[error("tool service returned HTTP {status}")]
 	ToolServiceStatus {
@@ -158,6 +164,13 @@ pub enum Error {
 	},
 	#[error("atomic transaction visibility pending; retry after recovery")]
 	TransactionPending,
+	/// Running work did not finish within the limit of an Authority Change,
+	/// which was not applied. Recurring work leaves it for its next pass.
+	#[error("POLICY_BUSY")]
+	PolicyBusy { retry_after: u64 },
+	/// Another transaction holds the Run row during an activation claim.
+	#[error("Run row lock contended")]
+	RunLockContended,
 	/// The Tenant Secret broker could not serve the call. A person cannot repair
 	/// this: the message names no broker reason, only the Deployment Administrator-side fault
 	/// and the correlation the broker logged.
@@ -176,6 +189,11 @@ pub enum Error {
 	/// Opaque adapter errors retain their identity for retry and recovery.
 	#[error(transparent)]
 	Port(Box<dyn std::error::Error + Send + Sync>),
+	/// The database could not serve this call for now and the work is unchanged.
+	/// It waits and tries again: it never fails a Run or counts towards a limit
+	/// on failures. The adapter decides what qualifies and keeps its own error.
+	#[error(transparent)]
+	TemporaryDatabase(Box<dyn std::error::Error + Send + Sync>),
 }
 
 impl Error {

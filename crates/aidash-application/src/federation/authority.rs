@@ -95,6 +95,9 @@ fn classify(reply: Reply) -> Result<Vec<u8>> {
 		404 => Err(Error::NotFound("the target Node did not find it".into())),
 		409 => Err(Error::Conflict("remote execution authority changed".into())),
 		503 if reply.transaction_pending => Err(Error::TransactionPending),
+		503 if reply.policy_busy.is_some() => Err(Error::PolicyBusy {
+			retry_after: reply.policy_busy.unwrap_or(1),
+		}),
 		_ => Err(Error::External(
 			"remote execution authority unavailable".into(),
 		)),

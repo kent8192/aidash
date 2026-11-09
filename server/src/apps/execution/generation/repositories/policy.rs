@@ -80,7 +80,7 @@ impl GenerationPolicies for NativePolicies {
 			return Err(aidash_application::Error::Forbidden);
 		}
 		let access = Box::new(if exclusive {
-			Access::begin_exclusive(&self.store, identity).await
+			Access::begin_change(&self.store, identity, &["generation.manage"]).await
 		} else {
 			Access::begin(&self.store, identity).await
 		}?);

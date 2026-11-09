@@ -237,7 +237,8 @@ impl RunMetadata {
 
 impl RawRun {
 	/// Manual retry of a semantic or context pause clears its typed reason and
-	/// retry schedule while retaining the execution state.
+	/// retry schedule while retaining the execution state. A pause after a Node
+	/// did not answer clears its retry schedule and count the same way.
 	pub fn resumed_pending(&self) -> crate::Result<Option<Value>> {
 		let (state, mut recovery) = decode(self.phase, self.pending.clone())?;
 		if !state.failure_delivery() {
@@ -255,6 +256,14 @@ impl RawRun {
 			recovery.context_reason = None;
 			recovery.decision_cycle = recovery.decision_cycle.saturating_add(1);
 			recovery.decider_retry = 0;
+			recovery.node_retry = 0;
+			Ok(Some(encode(&state, &recovery)?))
+		} else if self.control == RunControl::Paused && recovery.node_retry > 0 {
+			// A pause after a Node did not answer (#751): resuming checks again
+			// with a fresh set of retries. It is not a compaction decision, so
+			// the decision cycle stays where it was.
+			recovery.retry = None;
+			recovery.node_retry = 0;
 			Ok(Some(encode(&state, &recovery)?))
 		} else if had_call {
 			Ok(Some(encode(&state, &recovery)?))

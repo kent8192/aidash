@@ -68,6 +68,14 @@ impl RunContext {
 		self.base.scope.can_emit(&probe).await
 	}
 
+	/// The same decision when the stream is opened. A Node that did not answer
+	/// is `503 node_unreachable`, which the Web retries; a refusal stays `false`
+	/// and is answered `403` (#751).
+	async fn visible_on_open(&self) -> Result<bool> {
+		let probe = self.probe();
+		self.base.scope.can_emit_naming_silence(&probe).await
+	}
+
 	fn render(&self, delivery: &Delivery) -> Frame {
 		match delivery {
 			Delivery::Row(row) => {
@@ -230,7 +238,7 @@ impl Service {
 		context.base.authority(true).await?;
 		let cursor = {
 			let _visibility = ReadLease::begin(&context.base.f.store).await?;
-			if !context.visible().await? {
+			if !context.visible_on_open().await? {
 				return Err(Error::Forbidden);
 			}
 			match cursor {

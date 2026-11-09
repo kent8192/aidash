@@ -391,7 +391,9 @@ impl HarnessManagement {
 			return Err(Error::Forbidden);
 		};
 		// Stopping never depends on what the Run has read, and there is one
-		// check for it; resuming does depend on it.
+		// check for it; resuming does depend on it. Resuming waits behind an
+		// Authority Change at the boundary, before the visibility lease begins;
+		// pausing and cancelling do not (ADR 0121).
 		let action = match input.action {
 			crate::domain::RunControlAction::Resume => {
 				return Ok(execution::resume(&f, identity, id).await?.into());

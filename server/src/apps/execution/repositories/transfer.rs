@@ -360,7 +360,7 @@ impl TransferScope for Scope<'_> {
 	async fn run(&mut self, id: Uuid) -> Result<RunMetadata> {
 		self.authority
 			.get_mut()
-			.run_for_interaction(id)
+			.run_for_action(id)
 			.await
 			.map(|r| r.metadata())
 			.map_err(Into::into)

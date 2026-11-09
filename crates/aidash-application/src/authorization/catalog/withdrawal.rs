@@ -21,8 +21,6 @@ pub struct WithdrawalImpact {
 	pub agents: Vec<EntityRef>,
 	/// Non-terminal Runs of those Agent versions on the Node.
 	pub running_runs: u64,
-	/// Non-terminal Runs on the Node that have read the withdrawn version.
-	pub reading_runs: u64,
 }
 
 /// Compute the impact. Only a subject who may withdraw the version may read it.
@@ -66,11 +64,9 @@ pub async fn impact(
 	} else {
 		scope.non_terminal_runs(&agents).await?
 	};
-	let reading_runs = scope.non_terminal_runs_reading(reference).await?;
 	Ok(WithdrawalImpact {
 		agents,
 		running_runs,
-		reading_runs,
 	})
 }
 

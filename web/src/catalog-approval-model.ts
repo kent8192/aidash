@@ -215,13 +215,9 @@ export function approvalRequest(
 }
 
 /** Whether withdrawing an approval stops nothing: no approved Agent depends on
- *  it, no Run of one is in flight (#540), and no in-flight Run has read it (#753). */
+ *  it and no Run of one is in flight (#540). Runs that only read it go on (#769). */
 export function withdrawalHasNoImpact(impact: WithdrawalImpact): boolean {
-  return (
-    impact.agents.length === 0 &&
-    impact.running_runs === 0 &&
-    impact.reading_runs === 0
-  );
+  return impact.agents.length === 0 && impact.running_runs === 0;
 }
 
 /** The Agents a withdrawal stops from starting, as `id@version` labels in a

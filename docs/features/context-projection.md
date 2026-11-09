@@ -101,7 +101,7 @@ without text whose every call is dropped is removed whole. The Summary Stage
 absorbs whole turns that reached an accepted inference and lie outside the
 protected turns.
 
-With `prompt_cache: explicit`, the second breakpoint sits on the last history
+With `prompt_cache: explicit`, the history breakpoint sits on the last history
 message, or on the last attachment when there is no history.
 
 ## Cache Salt Key
@@ -122,8 +122,8 @@ secret = "${AIDASH_CACHE_SALT_KEY_V1}"
 ```
 
 Use a long random secret, and never reuse a provider API key. A node without
-keys creates only `legacy` Runs: creating an `ordered` Run fails, and startup
-logs a warning. To rotate, add a new key version and change `current`. Later
+configured keys derives version 1 from `core.secret_key`, so new Native Agents run
+without any setup. Configure keys to rotate the salt on its own. To rotate, add a new key version and change `current`. Later
 requests use the new version, and the only effect is cache misses. The OpenRouter
 adapter adds the salt just before sending. Request metadata, compaction input,
 logs and diagnostics show only the key version. A remote Run is salted with the
@@ -182,54 +182,48 @@ consumed source invalidates it as before (a follow-up Task continues the work).
 Any other corpus change, such as a new entry, answers `stale`: the Run drops the
 cached retrieval and retrieves once more. See [protocol](../protocol.md).
 
-## Explicit prompt caching
+## Prompt caching
 
-Some routes cache a prompt prefix on their own. Others cache only up to a
-`cache_control` breakpoint in the request. A model version declares which
-applies with `cache_mode`:
+Prompt caching is on by default for new definitions ([ADR 0115](../adr/0115-prompt-caching-is-on-by-default-and-its-method-follows-the-route.md)). Registration writes the settings below into a definition that names none. Stored definitions and pinned Runs do not change.
 
-| `cache_mode`      | Meaning                                                                                      |
-| ----------------- | -------------------------------------------------------------------------------------------- |
-| `none` or omitted | No prompt caching is assumed.                                                                |
-| `automatic`       | The route caches matching prefixes without request markers.                                  |
-| `explicit`        | The route caches only up to `cache_control` breakpoints. Accepted only for `anthropic/` IDs. |
+A model version declares its route's behaviour with `cache_mode`:
 
-An Agent version on such a model opts in with `prompt_cache` (`off`, the
-default, or `explicit`):
+| `cache_mode`      | Meaning                                                                                           |
+| ----------------- | ------------------------------------------------------------------------------------------------- |
+| `none` or omitted | No prompt caching is assumed.                                                                     |
+| `automatic`       | The route caches matching prefixes without request markers.                                       |
+| `explicit`        | The route caches up to `cache_control` breakpoints. Accepted only for the IDs in the table below. |
 
-```json
-{
-  "schema_version": 1,
-  "model": { "id": "model", "version": "1.0.0" },
-  "instructions": "Do the task.",
-  "projection_version": "ordered",
-  "prompt_cache": "explicit"
-}
-```
+Registration writes `explicit` on a new model whose ID is in the table, on OpenRouter's Chat API at `https://openrouter.ai/`. An Agent version uses it through `prompt_cache` (`off` or `explicit`). Registration writes `explicit` on a new Agent on Native with a structured Harness Contract when its model accepts breakpoints. Both opt-outs are explicit: `prompt_cache: off`, or `cache_mode: none` on the model.
 
-`prompt_cache: explicit` requires `projection_version: ordered` or `native` and a model
-that declares `cache_mode: explicit` for an allowlisted ID. Registration,
-publication, installation and each inference check this pairing. An opt-in is
-never dropped silently, and no other route ever receives `cache_control`.
+| Model IDs                                  | What a request sends                                                                          |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------- |
+| `anthropic/`                               | Breakpoints on `system` and the Stable Prefix.                                                |
+| `openai/gpt-5.6`, `openai/gpt-6`           | Those, one on the previous step's position, and `prompt_cache_options: {"mode": "explicit"}`. |
+| Anything else, such as Gemini and DeepSeek | No markers. These routes cache on their own, Gemini unevenly.                                 |
 
-An opted-in request carries two `{"type":"ephemeral"}` breakpoints: one on
-`system`, sent as a single text block that starts with the Tenant Cache Salt,
-and one on the Stable Prefix part. The volatile part and media parts are never
-marked. Run-message catch-up and media-deferral steps narrow or clear the
-tools, which precede the cached prefix, so they carry no breakpoints. Request
-estimates always count the breakpoint framing for `ordered`, so opting in never
-changes a fitting or compaction decision. Both fields are omitted from stored
-definitions when absent. Migration `registry/0018_prompt_cache` lets the
-registry database constraints accept them.
+A breakpoint is `{"type":"ephemeral"}`. `system` becomes a single text block that starts with the Tenant Cache Salt. The volatile part and media parts are never marked. Run-message catch-up and media-deferral steps narrow or clear the tools, which precede the cached prefix, so they carry no breakpoints. Request estimates always count the breakpoint framing, so turning caching on never changes a fitting or compaction decision.
 
-Cache writes cost more than ordinary input (1.25× on Anthropic routes), so
-enable explicit caching for Agents whose Runs take several steps. The matched
-comparison on `anthropic/claude-haiku-5.5` is recorded in
-[the explicit-caching evidence](../operations/evidence/2026-10-10-prompt-cache-explicit/README.md).
+`prompt_cache: explicit` requires `projection_version: ordered` or `native` and a model that declares `cache_mode: explicit` for a listed ID. Registration, publication, installation and each inference check this pairing. An opt-in is never dropped silently, and no other route ever receives `cache_control`.
+
+Without markers, GPT-5.6 and later write through the last message of every request at 1.25× the input price and read only the start of the prefix. `cache_mode: none` sends explicit mode there too, which really turns caching off. A model that omits `cache_mode` keeps its implicit writes, so its stored bytes do not change.
+
+### Staying on one provider
+
+Caches are local to a provider, so every step of an Ordered or Native Run sends `session_id`, and OpenRouter keeps the Run on one provider while it can. The value is `aidash-session-` followed by an HMAC of the Tenant and the Run under the Cache Salt Key, truncated to 128 bits. It reaches OpenRouter and its Broadcast destinations, so it names neither. The broker rejects any other form.
+
+### Costs to expect
+
+Cache writes cost 1.25× ordinary input on Claude and GPT-5.6 or later. Reads cost 0.1× on most models and 0.05× on Claude Opus 5.5, Claude Sonnet 5.5 and GPT-6.1 Sol and Terra. Writing once and reading once already costs less than two uncached requests, so only an Agent that makes one model call per Run should turn caching off.
+
+Removing tokens from the middle of history makes the provider rewrite everything after them. Claude Haiku 5.5 charges five times the price above 100,000 prompt tokens, counting cached tokens.
+
+The evidence is in [the route check](../operations/evidence/2026-11-07-prompt-cache-routes/README.md) and [the first explicit-caching comparison](../operations/evidence/2026-10-10-prompt-cache-explicit/README.md).
 
 ## Operations
 
 Register `ordered` Agent versions only after every worker and receiving peer
 that may run them is upgraded and configured with a Cache Salt Key; see
 [Worker activation](../operations/worker-activation.md). Cache-hit metrics come
-from the usage ledger (#177).
+from the usage ledger (#177) and `aidash_model_tokens_total`; see
+[HTTP observability](../operations/http-observability.md).

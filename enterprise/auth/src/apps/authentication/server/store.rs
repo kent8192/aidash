@@ -41,11 +41,49 @@ pub struct Store {
 	pub(crate) pool: sqlx::PgPool,
 	refresh_locks: DatabaseConnection,
 }
+/// Match the Community server's connection limits (ADR 0113): the same statement
+/// limit, and a server that notices a vanished client within about 30 s.
+pub fn with_connection_limits(
+	options: sqlx::postgres::PgConnectOptions,
+) -> std::result::Result<sqlx::postgres::PgConnectOptions, std::num::ParseIntError> {
+	let seconds = match std::env::var("AIDASH_DATABASE_STATEMENT_TIMEOUT_SECONDS") {
+		Ok(value) => value.parse::<u64>()?,
+		Err(_) => 300,
+	};
+	let options = options.options([
+		("tcp_keepalives_idle", "15"),
+		("tcp_keepalives_interval", "5"),
+		("tcp_keepalives_count", "3"),
+		("tcp_user_timeout", "30000"),
+	]);
+	Ok(if seconds > 0 {
+		options.options([("statement_timeout", format!("{seconds}s").as_str())])
+	} else {
+		options
+	})
+}
+
+/// SQLx tests a returned connection with no time limit of its own, so a server
+/// that stopped answering would keep the pool slot.
+pub fn released_within_limit(
+	options: sqlx::postgres::PgPoolOptions,
+) -> sqlx::postgres::PgPoolOptions {
+	options.after_release(|connection, _| {
+		Box::pin(async move {
+			use sqlx::Connection as _;
+			tokio::time::timeout(std::time::Duration::from_secs(5), connection.ping())
+				.await
+				.map_err(|_| sqlx::Error::PoolTimedOut)??;
+			Ok(true)
+		})
+	})
+}
+
 impl Store {
 	pub fn from_pool(pool: sqlx::PgPool) -> Self {
 		// A refresh retains its family lock while using the lifecycle/OAuth pool.
 		// Keep lock holders and waiters off that pool so they cannot exhaust it.
-		let refresh_pool = sqlx::postgres::PgPoolOptions::new()
+		let refresh_pool = released_within_limit(sqlx::postgres::PgPoolOptions::new())
 			.max_connections(pool.options().get_max_connections())
 			.connect_lazy_with(pool.connect_options().as_ref().clone());
 		Self {

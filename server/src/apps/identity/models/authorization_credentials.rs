@@ -106,10 +106,33 @@ impl AuthorizationCredential {
 
 	pub(crate) async fn revoke(db: &Pool, tenant: &str, id: Uuid) -> Result<Credential> {
 		db.atomic(&TenancyScope::tenant(tenant)?, async |tx| {
-			super::AuthorizationBundle::lock_snapshot(tx, tenant, false).await?;
+			let waiting = crate::database::authority_change::raise(tx, tenant).await?;
+			let held = match super::AuthorizationBundle::lock_snapshot(tx, tenant, false).await {
+				Ok(_) => Self::exportable(tx, tenant, id).await,
+				Err(error) => Err(error),
+			};
+			waiting.settle(tx, held).await?;
 			Self::revoke_in(tx, tenant, id).await
 		})
 		.await
+	}
+
+	/// Whether `id` is a credential of `tenant` issued through `mapping`. Reads
+	/// without a lock, for deciding whether to wait for the credential at all.
+	pub(crate) async fn issued_through(
+		tx: &mut dyn TransactionExecutor,
+		tenant: &str,
+		id: Uuid,
+		mapping: Uuid,
+	) -> Result<bool> {
+		Ok(Self::objects()
+			.filter(Self::field_id().eq(id))
+			.filter(Self::field_tenant().eq(tenant))
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.pop()
+			.is_some_and(|credential| credential.mapping_id == Some(mapping)))
 	}
 
 	/// An exportable credential of `tenant`, never a Mapping's own, locked for
@@ -117,7 +140,7 @@ impl AuthorizationCredential {
 	/// before it appends its audit decision: holding the global audit cursor
 	/// while waiting would deadlock with a reader that audits afterwards.
 	pub(crate) async fn exportable(
-		tx: &mut AtomicTransaction,
+		tx: &mut dyn TransactionExecutor,
 		tenant: &str,
 		id: Uuid,
 	) -> Result<Option<Self>> {

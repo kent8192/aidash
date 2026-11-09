@@ -86,6 +86,21 @@ async fn reads_block(
 		.map(Some)
 }
 
+/// A Run whose Binding names a definition that may no longer be used would be refused at its
+/// next worker boundary: say so now instead of waking it (#769). A Run that has ended, or whose
+/// cancellation is requested, is not woken whatever it uses, and the control itself answers that.
+/// Resuming and declining both let the Run go on, so both ask it (#763).
+async fn use_block(
+	scope: &mut dyn RunControlScope,
+	run: &RunInspection,
+) -> Result<Option<RunReadsBlock>> {
+	let open = !run.phase.is_terminal() && run.control != aidash_domain::RunControl::Cancelled;
+	if !open {
+		return Ok(None);
+	}
+	scope.use_block(run).await
+}
+
 pub async fn resume_in(scope: &mut dyn RunControlScope, id: Uuid) -> Result<RunInspection> {
 	let run = in_workspace(scope, id).await?;
 	let block = reads_block(scope, &run).await?;
@@ -93,6 +108,9 @@ pub async fn resume_in(scope: &mut dyn RunControlScope, id: Uuid) -> Result<RunI
 	require_control(scope, id).await?;
 	require_own_grant(scope, id).await?;
 	if let Some(block) = block {
+		return Err(Error::ResumeBlocked(block));
+	}
+	if let Some(block) = use_block(scope, &run).await? {
 		return Err(Error::ResumeBlocked(block));
 	}
 	let credential = scope.identity().credential_id;
@@ -145,6 +163,9 @@ pub async fn decline_call_in(
 		scope.run_reads_stop(&run).await?
 	};
 	if let Some(block) = block {
+		return Err(Error::ResumeBlocked(block));
+	}
+	if let Some(block) = use_block(scope, &run).await? {
 		return Err(Error::ResumeBlocked(block));
 	}
 	// Only the Run's person takes the Run over; anyone else's decline leaves its credential.

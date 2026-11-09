@@ -72,6 +72,20 @@ impl<'a> Executor<'a> {
 		outcome: (Result<Value>, Option<RefusalNote>),
 	) -> Result<Value> {
 		let (result, note) = outcome;
+		// A Node that did not answer before the call took effect is retried
+		// like a request known not to have been delivered (#751).
+		let result = match result {
+			Err(
+				error @ Error::NodeUnreachable {
+					after_effect: false,
+					..
+				},
+			) => Err(Error::ToolNotDelivered {
+				message: error.to_string(),
+				retry_after: None,
+			}),
+			other => other,
+		};
 		match result {
 			Ok(value) => Ok(value),
 			Err(
@@ -119,11 +133,14 @@ impl<'a> Executor<'a> {
 				}
 			},
 			// A swallowed denial could leave a note behind; never read it here.
-			Err(Error::NotFound(message)) => Ok(json!({"error":format!(
-				"{}.{} {DO_NOT_REPEAT}",
-				message.trim_end_matches('.'),
-				if tool.replay_safe { "" } else { PARTLY_HAPPENED }
-			)})),
+			Err(Error::NotFound(message)) => {
+				tracing::info!(run_id = %run.id, tool = tool.name, %message, "tool call found nothing");
+				Ok(json!({"error":format!(
+					"{}.{} {DO_NOT_REPEAT}",
+					message.trim_end_matches('.'),
+					if tool.replay_safe { "" } else { PARTLY_HAPPENED }
+				)}))
+			}
 			Err(Error::ToolNotDelivered {
 				message,
 				retry_after,
@@ -467,7 +484,7 @@ impl<'a> Executor<'a> {
 				.behavior
 				.model_media_result(&call.arguments, &output)
 				|| !matches!(
-					FrameworkResult::decode(&contract, &output)?,
+					FrameworkResult::decode(&contract, &output, &call.arguments)?,
 					FrameworkResult::Ordinary
 				) {
 				return Err(Error::Conflict(
@@ -1256,6 +1273,9 @@ impl<'a> Executor<'a> {
 				store.save_run(run, token, "run.started").await?;
 			}
 			RunState::Thinking(thinking) => Box::pin(async {
+				if !home.local() {
+					run.recovery.remote_task_fingerprint = Some(home.child_summary(run.task_id).await?.fingerprint());
+				}
 				self.environment.reconcile_run_messages(run).await?;
 				// An accepted remote correction is durable even if its first home
 				// delivery failed. Deliver it before building any inference request.
@@ -1478,6 +1498,10 @@ impl<'a> Executor<'a> {
 						instructions.push_str(&serde_json::to_string(&resources)?);
 						instructions.push_str(". Call connection_request with a resource to ask them to connect; after consent its plugin tools become available.\n");
 					}
+				}
+				if let Some(line) = reference_set_line(agent.reference_files) {
+					instructions.push('\n');
+					instructions.push_str(&line);
 				}
 				let fixed_sources = collect_data_phase(
 					self.environment,
@@ -2046,6 +2070,7 @@ impl<'a> Executor<'a> {
 					&& !run_message_catchup
 					&& !media.defer_human
 					&& !media.defer_selected;
+				request.routing_run = Some(run.id);
 				request.disable_provider_transforms = !policy.is_legacy();
 				request
 					.ensure_fits(window)
@@ -2348,6 +2373,7 @@ impl<'a> Executor<'a> {
 				// Keys of an older response can never match the new one's.
 				run.recovery.declined_calls.clear();
 				run.state = RunState::ToolCall(Box::new(ToolCallState {
+wait_result: None,
 connection: None,
 					response: result,
 					response_epoch: response_epoch(run.revision, run.step),
@@ -2690,9 +2716,10 @@ connection: None,
 									resume: ResumeState::Thinking(ThinkingState::default()),
 								}));
 							} else {
-								run.state = RunState::Waiting(Box::new(WaitingState::Children {
-									wake_at: chrono::Utc::now() + chrono::Duration::seconds(2),
-									resume: ThinkingState::default(),
+								run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
+									wake_at: chrono::Utc::now() + children_ceiling(store, home.as_ref(), run).await?,
+									cursor: run.recovery.workspace_event_cursor.unwrap_or(0),
+									resume: ResumeState::Thinking(ThinkingState::default()),
 								}));
 							}
 							run.step += 1;
@@ -2783,9 +2810,10 @@ connection: None,
 								run.step += 1;
 								run.context.completion.basis = None;
 
-								run.state = RunState::Waiting(Box::new(WaitingState::Children {
-									wake_at: chrono::Utc::now() + chrono::Duration::seconds(2),
-									resume: ThinkingState::default(),
+								run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
+									wake_at: chrono::Utc::now() + children_ceiling(store, home.as_ref(), run).await?,
+									cursor: run.recovery.workspace_event_cursor.unwrap_or(0),
+									resume: ResumeState::Thinking(ThinkingState::default()),
 								}));
 								store.save_run(run, token, "run.waiting").await?;
 								return Ok(());
@@ -3112,7 +3140,11 @@ connection: None,
 					return Ok(());
 				}
 				let unfinished_key = (invocation.status != "COMPLETED").then_some(key.as_str());
-				let output = if invocation.status == "COMPLETED" {
+				let waited_output = run.state.tool_mut()?.wait_result.take();
+				let resumed_operation = waited_output.is_some();
+				let output = if let Some(output) = waited_output {
+					output
+				} else if invocation.status == "COMPLETED" {
 					invocation.result.ok_or_else(|| {
 						Error::Conflict("completed invocation has no result".into())
 					})?
@@ -3233,11 +3265,36 @@ connection: None,
                 let Some(output) = self.connection_result(run, token, connections::RefusedCall {call, tool:tool.as_ref(), guard, key:&key}, output).await? else { return Ok(()) };
 				// What a Tenant's HTTP or MCP tool returns is external data and never
 				// raises an approval, which would repeat the external call.
-				let framework = if contract.behavior.tenant_tool_call() {
+				let framework = if contract.behavior.tenant_tool_call() || resumed_operation {
 					FrameworkResult::Ordinary
 				} else {
-					FrameworkResult::decode(&contract, &output)?
+					FrameworkResult::decode(&contract, &output, &call.arguments)?
 				};
+				// The operation's end wakes the Run, so the wait is not cut at the
+				// command's deadline: saving its files comes after the stop, and a
+				// poll between the two would otherwise return at once every time.
+				if let FrameworkResult::Operation { id, seconds } = framework {
+					run.state = RunState::Waiting(Box::new(WaitingState::Operation {
+						operation_id: id,
+						wake_at: chrono::Utc::now() + chrono::Duration::seconds(seconds),
+						resume: Box::new(run.state.tool()?.clone()),
+					}));
+					store.save_run(run, token, "run.waiting_for_operation").await?;
+					return Ok(());
+				}
+				if let FrameworkResult::Wait(seconds) = framework && !resumed_operation {
+					let seconds = if call.arguments.get("seconds").is_none() {
+						let pending = if home.local() { store.unfinished_owned_tasks(run).await? > 0 } else { home.child_summary(run.task_id).await?.has_pending };
+						if pending { 3600 } else { 300 }
+					} else { seconds.clamp(1, 3600) };
+					run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
+						wake_at: chrono::Utc::now() + chrono::Duration::seconds(seconds),
+						cursor: run.recovery.workspace_event_cursor.unwrap_or(0),
+						resume: ResumeState::ToolCall(Box::new(run.state.tool()?.clone())),
+					}));
+					store.save_run(run, token, "run.waiting_for_workspace").await?;
+					return Ok(());
+				}
                 if contract.behavior.connection_request && let FrameworkResult::Human(request) = framework {
                     return self.builtin_connection_wait(run, token, call, request, &key, guard).await;
                 }
@@ -3305,14 +3362,9 @@ connection: None,
 							resume: ResumeState::Thinking(ThinkingState::default()),
 						}));
 					}
-					FrameworkResult::Wait(seconds) => {
-						run.suspend(|resume| WaitingState::Timer {
-							wake_at: chrono::Utc::now() + chrono::Duration::seconds(seconds),
-							resume,
-						})?
-					}
+					FrameworkResult::Wait(_) => unreachable!("workspace wait suspended above"),
 					// An approval returned above, before the call was recorded.
-					FrameworkResult::Ordinary | FrameworkResult::Approval(_) => {}
+					FrameworkResult::Ordinary | FrameworkResult::Approval(_) | FrameworkResult::Operation { .. } => {}
 				}
 				home.report(
 					&format!("{key}:tool"),
@@ -3422,9 +3474,69 @@ connection: None,
 				}
 				run.state = match waiting {
 					WaitingState::Dependencies { resume, .. } => RunState::Ready(resume),
-					WaitingState::Children { resume, .. } => RunState::Thinking(resume),
+					WaitingState::Workspace { wake_at, cursor, mut resume } => {
+						let inputs = store.run_inputs(run.id).await?;
+						let observed = match &resume { ResumeState::ToolCall(state) => state.included_input_seq, _ => run.observed_input_seq };
+						let input = inputs.last().is_some_and(|input| input.seq > observed);
+						let WorkspaceEvents { events, dropped } = store.workspace_events(run, cursor).await?;
+						let remote = if !home.local() { Some(home.child_summary(run.task_id).await?) } else { None };
+						let remote_changed = remote.as_ref().is_some_and(|summary| run.recovery.remote_task_fingerprint.as_ref().is_some_and(|previous| *previous != summary.fingerprint()));
+						if !input && events.is_empty() && !remote_changed && chrono::Utc::now() < wake_at {
+							if let Some(summary) = remote { run.recovery.remote_task_fingerprint = Some(summary.fingerprint()); }
+							run.state = RunState::Waiting(Box::new(WaitingState::Workspace { wake_at, cursor, resume }));
+							store.save_run(run, token, "run.waiting_for_workspace").await?;
+							return Ok(());
+						}
+						if let Some(last) = events.last() { run.recovery.workspace_event_cursor = Some(last.generation); }
+						let mut changes = if home.local() { events.iter().map(|event| json!({"task_id":event.task_id,"status":event.status})).collect::<Vec<_>>() } else { Vec::new() };
+						if remote_changed { changes.push(json!({"kind":"terminal_tasks_changed"})); }
+						if let Some(summary) = &remote { run.recovery.remote_task_fingerprint = Some(summary.fingerprint()); }
+						let reason = if input { "input" } else if !events.is_empty() || remote_changed { "workspace_event" } else { "ceiling" };
+						let open_tasks = if let Some(summary) = &remote { summary.open_tasks } else { store.unfinished_owned_tasks(run).await? };
+						// A remote Home reports no per-Task changes, so none were left out.
+						let dropped = if home.local() { dropped } else { 0 };
+						if let ResumeState::ToolCall(state) = &mut resume {
+							state.wait_result = Some(json!({"reason":reason,"changes":changes,"dropped_changes":dropped,"open_tasks":open_tasks}));
+						}
+						resume.into_state()
+					}
 					WaitingState::Timer { resume, .. } | WaitingState::Human { resume, .. } => {
 						resume.into_state()
+					}
+					WaitingState::Operation { operation_id, mut resume, .. } => {
+						let call = resume.response.tool_calls.get(resume.cursor)
+							.ok_or_else(|| Error::Invalid("operation wait has no call".into()))?;
+						let tools = self.environment.binding_resolver().tools(run).await?;
+						let original = tools.get(&call.name).ok_or_else(|| Error::Invalid("operation tool unavailable".into()))?;
+						let operation = match &original.contract().identity {
+							ToolIdentity::Builtin(name) => name.strip_prefix("builtin:").map(str::to_owned),
+							ToolIdentity::Descriptor(identity) => run.context.binding_snapshot.as_ref().and_then(|snapshot| snapshot.bindings.iter().find(|binding| binding.identity == *identity)).and_then(|binding| binding.definition.config["operation"].as_str()).map(str::to_owned),
+							_ => None,
+						}.ok_or_else(|| Error::Invalid("operation wait has no core operation".into()))?;
+						let poll_name = match operation.as_str() {
+							"shell" | "shell_poll" => "shell_poll",
+							"code_interpreter" | "python_poll" => "python_poll",
+							_ => return Err(Error::Invalid("unsupported operation wait".into())),
+						};
+						let poll = tools.iter().find(|(_, tool)| match &tool.contract().identity {
+							ToolIdentity::Builtin(name) => name == &format!("builtin:{poll_name}"),
+							ToolIdentity::Descriptor(identity) => run.context.binding_snapshot.as_ref().is_some_and(|snapshot| snapshot.bindings.iter().any(|binding| binding.identity == *identity && binding.definition.config["operation"] == poll_name && binding.definition.config["provider"].as_str().is_some_and(|provider| provider.starts_with("core.")))),
+							_ => false,
+						});
+						let arguments = json!({"operation_id": operation_id, "offset": call.arguments.get("offset"), "wait_seconds": 0});
+						let _permit = match self.environment.tool_slots() {
+							Some(slots) => Some(slots.acquire().await?),
+							None => None,
+						};
+						resume.wait_result = Some(if let Some(poll) = poll {
+							let poll_call = aidash_domain::provider::ToolCall { id: call.id.clone(), name: poll.0.clone(), arguments: arguments.clone() };
+							if let Some(guard) = guard { guard.tool(&poll_call, &poll.1.contract()).await?; }
+							poll.1.invoke(run, arguments, "").await?
+						} else {
+							if let Some(guard) = guard { guard.tool(call, &original.contract()).await?; }
+							self.environment.poll_operation(run, poll_name, arguments).await?
+						});
+						RunState::ToolCall(resume)
 					}
 					WaitingState::Approval { resume, .. }
 					| WaitingState::Reconciliation { resume, .. } => RunState::ToolCall(resume),
@@ -3461,6 +3573,26 @@ fn at_stage(stage: &'static str) -> impl FnOnce(Error) -> Error {
 		}
 		error => error,
 	}
+}
+
+/// How long a Run that has Task children still unfinished sleeps before it
+/// looks again (#644). Only a Task the Run created or delegated wakes it early,
+/// and the children of its Task may be a person's or an earlier Run's, so the
+/// hour applies only while it has such a Task of its own; otherwise it looks
+/// again in five minutes, as `workspace_wait` does. A remote Home is polled for
+/// every child, so any pending child can wake the Run there.
+async fn children_ceiling(
+	store: &dyn ExecutionStore,
+	home: &dyn ExecutionHome,
+	run: &Run,
+) -> Result<chrono::Duration> {
+	Ok(
+		if !home.local() || store.unfinished_owned_tasks(run).await? > 0 {
+			chrono::Duration::hours(1)
+		} else {
+			chrono::Duration::minutes(5)
+		},
+	)
 }
 
 /// Answer a model's question on the system's behalf because its person's
@@ -4319,6 +4451,15 @@ fn fit_source_delivery(
 		}
 	}
 	Ok(fitted)
+}
+/// The only word a model gets about a Reference set until it reads one. A fixed
+/// line holds no file name, so the request's stable prefix never changes with one.
+fn reference_set_line(files: usize) -> Option<String> {
+	(files > 0).then(|| {
+		format!(
+			"You have {files} Reference files. List their paths with file_search (scope references, mode path, empty query), then read them with file_read."
+		)
+	})
 }
 fn text_placement<'a>(text: &'a str, pointer: &str) -> Option<&'a str> {
 	let (start, end) = pointer.strip_prefix("/@text/")?.split_once('/')?;

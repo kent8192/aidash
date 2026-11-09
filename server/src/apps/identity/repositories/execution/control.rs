@@ -12,7 +12,7 @@ use aidash_application::{
 	ports::authorization::runs::{RunControlRepository, RunControlScope},
 };
 use aidash_domain::{
-	RawRun, RunControlAction, RunInspection,
+	RawRun, RunControlAction, RunInspection, RunMetadata,
 	identity::execution::{ExecutionGrant, ExecutionPrincipal},
 	policy::Resource,
 	run_state::RunReadsBlock,
@@ -35,8 +35,7 @@ struct Scope<'a> {
 #[async_trait]
 impl RunControlRepository for Controls<'_> {
 	async fn begin(&self) -> Result<Box<dyn RunControlScope + '_>> {
-		let mut access = Access::begin(&self.federation.store, self.identity).await?;
-		access.wire = Some(crate::bootstrap::peer_transport(self.federation));
+		let access = Access::begin(&self.federation.store, self.identity).await?;
 		Ok(Box::new(Scope {
 			federation: self.federation,
 			access,
@@ -106,6 +105,42 @@ impl RunControlScope for Scope<'_> {
 	}
 	async fn run_reads_stop(&mut self, run: &RunInspection) -> Result<Option<RunReadsBlock>> {
 		self.access.run_reads_stop(run).await.map_err(Into::into)
+	}
+	async fn use_block(&mut self, run: &RunInspection) -> Result<Option<RunReadsBlock>> {
+		let metadata = RunMetadata::from(run);
+		// The Run uses its definitions as its own subject chain, not as the person who resumes
+		// it: a dependency restricted to the Agent that uses it, or an Agent version restricted to
+		// its delegating parent, would otherwise refuse the person (ADR 0095). The grant is
+		// already locked by the resume's ownership check.
+		let grant = self
+			.lock_execution_grant(run.id)
+			.await?
+			.ok_or(aidash_application::Error::Forbidden)?;
+		let person = std::mem::replace(&mut self.access.subjects, grant.subject_chain);
+		let blocked = super::guard::use_block(&mut self.access, &metadata, true).await;
+		// Who may be told its name is decided as the person, so restore their subjects first.
+		self.access.subjects = person;
+		let Some(reference) = blocked? else {
+			return Ok(None);
+		};
+		let entry = match crate::apps::registry::models::Definition::read_in(
+			&mut **self.access.tx,
+			&reference.id,
+			&reference.version,
+		)
+		.await
+		{
+			Ok(entry) => Some(entry),
+			Err(crate::Error::NotFound(_)) => None,
+			Err(error) => return Err(error.into()),
+		};
+		aidash_application::authorization::catalog::use_block(
+			&mut crate::bootstrap::catalog_scope(&mut self.access),
+			&reference,
+			entry.as_ref(),
+		)
+		.await
+		.map(Some)
 	}
 	async fn lock_execution_grant(&mut self, id: Uuid) -> Result<Option<ExecutionGrant>> {
 		let result: NativeResult<Option<Grant>> = async {

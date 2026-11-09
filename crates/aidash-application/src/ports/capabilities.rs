@@ -63,6 +63,8 @@ pub mod reconciliation;
 
 pub mod processing;
 
+pub mod read_recheck;
+
 pub mod outbound;
 
 pub mod references;

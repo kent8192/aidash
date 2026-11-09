@@ -26,7 +26,7 @@ async fn supervisor_drop_cancels_owned_tasks() {
 	let mut supervisor = Supervisor::new(Duration::from_secs(20));
 	let (started, ready) = oneshot::channel();
 	let resource = Released(released.clone());
-	supervisor.spawn_worker(async move {
+	supervisor.spawn_worker("test worker", async move {
 		let _resource = resource;
 		started.send(()).unwrap();
 		pending::<()>().await;
@@ -49,22 +49,31 @@ async fn service_failure_stops_and_drains_workers() {
 	let completed = drained.clone();
 	let mut supervisor = Supervisor::new(Duration::from_secs(20));
 	let mut token = supervisor.stop_token();
-	supervisor.spawn_worker(async move {
+	supervisor.spawn_worker("test worker", async move {
 		token.stopped().await;
 		completed.store(true, Ordering::SeqCst);
 		Ok(())
 	});
-	supervisor.spawn_service(async { Err(Error::External("broker unavailable".into())) });
+	supervisor.spawn_service("test service", async {
+		Err(Error::External("broker unavailable".into()))
+	});
 
 	let result = supervisor.run(pending()).await;
 
-	assert!(
-		result
-			.unwrap_err()
-			.to_string()
-			.contains("broker unavailable")
-	);
+	let message = result.unwrap_err().to_string();
+	assert!(message.contains("broker unavailable"), "{message}");
+	assert!(message.contains("test service"), "{message}");
 	assert!(drained.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn a_panicking_service_is_named_when_it_stops_the_process() {
+	let mut supervisor = Supervisor::new(Duration::from_secs(20));
+	supervisor.spawn_service("panicking service", async { panic!("boom") });
+
+	let message = supervisor.run(pending()).await.unwrap_err().to_string();
+
+	assert!(message.contains("panicking service"), "{message}");
 }
 
 #[tokio::test]
@@ -74,13 +83,13 @@ async fn requested_shutdown_wins_over_a_service_observing_the_same_signal() {
 		let mut token = supervisor.stop_token();
 		let drained = Arc::new(AtomicBool::new(false));
 		let completed = drained.clone();
-		supervisor.spawn_worker(async move {
+		supervisor.spawn_worker("test worker", async move {
 			token.stopped().await;
 			completed.store(true, Ordering::SeqCst);
 			Ok(())
 		});
 		let (exited, observed) = oneshot::channel();
-		supervisor.spawn_service(async move {
+		supervisor.spawn_service("test service", async move {
 			exited.send(()).unwrap();
 			Ok(())
 		});
@@ -99,13 +108,13 @@ async fn requested_shutdown_takes_precedence_over_a_completed_service() {
 	let completed = drained.clone();
 	let mut supervisor = Supervisor::new(Duration::from_secs(20));
 	let mut token = supervisor.stop_token();
-	supervisor.spawn_worker(async move {
+	supervisor.spawn_worker("test worker", async move {
 		token.stopped().await;
 		completed.store(true, Ordering::SeqCst);
 		Ok(())
 	});
 	let (finished, ready) = oneshot::channel();
-	supervisor.spawn_service(async move {
+	supervisor.spawn_service("test service", async move {
 		finished.send(()).unwrap();
 		Ok(())
 	});
@@ -130,7 +139,7 @@ async fn drain_timeout_aborts_uncooperative_workers() {
 	let released = Arc::new(AtomicBool::new(false));
 	let mut supervisor = Supervisor::new(Duration::from_secs(20));
 	let resource = Released(released.clone());
-	supervisor.spawn_worker(async move {
+	supervisor.spawn_worker("test worker", async move {
 		let _resource = resource;
 		pending::<()>().await;
 		Ok(())

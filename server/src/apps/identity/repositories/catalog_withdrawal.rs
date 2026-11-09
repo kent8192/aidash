@@ -3,7 +3,7 @@
 use crate::{
 	apps::{
 		execution::models::{Run, states::RunPhase},
-		identity::models::{AuthorizationCatalog, AuthorizationRunRegistryRead},
+		identity::models::AuthorizationCatalog,
 	},
 	authorization::access::Access,
 	registry::{EntityRef, Entry},
@@ -101,28 +101,5 @@ impl WithdrawalImpactScope for WithdrawalScope<'_> {
 				.map_err(|error| orm(error.into()))? as u64;
 		}
 		Ok(total)
-	}
-	async fn non_terminal_runs_reading(&mut self, reference: &EntityRef) -> Result<u64> {
-		let tenant = self.access.identity.tenant.clone();
-		let reads = AuthorizationRunRegistryRead::objects()
-			.filter(AuthorizationRunRegistryRead::field_tenant().eq(tenant.clone()))
-			.filter(AuthorizationRunRegistryRead::field_entry_id().eq(reference.id.clone()))
-			.filter(
-				AuthorizationRunRegistryRead::field_entry_version().eq(reference.version.clone()),
-			)
-			.all_with_executor(self.access.tx.native_mut())
-			.await
-			.map_err(|error| orm(error.into()))?;
-		if reads.is_empty() {
-			return Ok(0);
-		}
-		Ok(Run::objects()
-			.filter(Run::field_tenant().eq(tenant))
-			.filter(Run::field_node().eq(self.node.node.as_str().to_owned()))
-			.filter(Run::field_id().is_in(reads.into_iter().map(|read| read.run_id)))
-			.filter(Run::field_phase().is_in(NON_TERMINAL))
-			.count_with_executor(self.access.tx.native_mut())
-			.await
-			.map_err(|error| orm(error.into()))? as u64)
 	}
 }

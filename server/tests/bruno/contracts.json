@@ -86,23 +86,6 @@
               }
             ]
           },
-          "DeclinableCall": {
-            "additionalProperties": false,
-            "description": "What a person is offered to decline: the call by its key, the tool, and the kind of refusal.\nNever the action, the subject or the receiver's own sentence.",
-            "properties": {
-              "call": {
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              },
-              "tool": {
-                "type": "string"
-              }
-            },
-            "required": ["call", "tool", "kind"],
-            "type": "object"
-          },
           "ManagementView": {
             "anyOf": [
               {
@@ -113,31 +96,6 @@
               }
             ],
             "description": "What `GET` returns: a Subject's diagnostics, or an administrator's metadata."
-          },
-          "RefusalKind": {
-            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
-            "oneOf": [
-              {
-                "description": "The Tenant policy of the Node the Run executes on.",
-                "enum": ["policy"],
-                "type": "string"
-              },
-              {
-                "description": "Catalog Approval of a Registry entry.",
-                "enum": ["catalog_approval"],
-                "type": "string"
-              },
-              {
-                "description": "The Agent's own configuration.",
-                "enum": ["agent_configuration"],
-                "type": "string"
-              },
-              {
-                "description": "The authority of the Node the Run was delegated to.",
-                "enum": ["other_node"],
-                "type": "string"
-              }
-            ]
           },
           "RemoteSemanticFailure": {
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
@@ -219,17 +177,6 @@
               "control_source": {
                 "$ref": "#/components/schemas/ControlSource",
                 "description": "The kind of actor that last changed `control`."
-              },
-              "declinable_call": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/DeclinableCall"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The tool call a paused Run stopped on, only for a caller who may decline it. Never file\ncontent: the tool and the kind of refusal."
               },
               "id": {
                 "format": "uuid",
@@ -424,23 +371,6 @@
               }
             ]
           },
-          "DeclinableCall": {
-            "additionalProperties": false,
-            "description": "What a person is offered to decline: the call by its key, the tool, and the kind of refusal.\nNever the action, the subject or the receiver's own sentence.",
-            "properties": {
-              "call": {
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              },
-              "tool": {
-                "type": "string"
-              }
-            },
-            "required": ["call", "tool", "kind"],
-            "type": "object"
-          },
           "ManagementResult": {
             "anyOf": [
               {
@@ -451,31 +381,6 @@
               }
             ],
             "description": "What `POST` returns: the Run for a Subject, or the receipt for an administrator."
-          },
-          "RefusalKind": {
-            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
-            "oneOf": [
-              {
-                "description": "The Tenant policy of the Node the Run executes on.",
-                "enum": ["policy"],
-                "type": "string"
-              },
-              {
-                "description": "Catalog Approval of a Registry entry.",
-                "enum": ["catalog_approval"],
-                "type": "string"
-              },
-              {
-                "description": "The Agent's own configuration.",
-                "enum": ["agent_configuration"],
-                "type": "string"
-              },
-              {
-                "description": "The authority of the Node the Run was delegated to.",
-                "enum": ["other_node"],
-                "type": "string"
-              }
-            ]
           },
           "RemoteSemanticFailure": {
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
@@ -526,17 +431,6 @@
               "control_source": {
                 "$ref": "#/components/schemas/ControlSource",
                 "description": "The kind of actor that last changed `control`."
-              },
-              "declinable_call": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/DeclinableCall"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The tool call a paused Run stopped on, only for a caller who may decline it. Never file\ncontent: the tool and the kind of refusal."
               },
               "id": {
                 "format": "uuid",
@@ -1501,17 +1395,6 @@
               "control": {
                 "$ref": "#/components/schemas/RemoteExecutionControlState"
               },
-              "declinable_call": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/DeclinableCall"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The tool call a paused Run stopped on that its Home may decline: the key, the tool and the\nkind of refusal, never the action, the subject or the receiver's own sentence (#763)."
-              },
               "error": {
                 "type": ["string", "null"]
               },
@@ -1567,48 +1450,6 @@
               "refused"
             ],
             "type": "string"
-          },
-          "DeclinableCall": {
-            "additionalProperties": false,
-            "description": "What a person is offered to decline: the call by its key, the tool, and the kind of refusal.\nNever the action, the subject or the receiver's own sentence.",
-            "properties": {
-              "call": {
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              },
-              "tool": {
-                "type": "string"
-              }
-            },
-            "required": ["call", "tool", "kind"],
-            "type": "object"
-          },
-          "RefusalKind": {
-            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
-            "oneOf": [
-              {
-                "description": "The Tenant policy of the Node the Run executes on.",
-                "enum": ["policy"],
-                "type": "string"
-              },
-              {
-                "description": "Catalog Approval of a Registry entry.",
-                "enum": ["catalog_approval"],
-                "type": "string"
-              },
-              {
-                "description": "The Agent's own configuration.",
-                "enum": ["agent_configuration"],
-                "type": "string"
-              },
-              {
-                "description": "The authority of the Node the Run was delegated to.",
-                "enum": ["other_node"],
-                "type": "string"
-              }
-            ]
           },
           "RemoteExecutionControlState": {
             "enum": ["INACTIVE", "ACTIVE", "PAUSED", "CANCELLED"],
@@ -1691,17 +1532,6 @@
               "control": {
                 "$ref": "#/components/schemas/RemoteExecutionControlState"
               },
-              "declinable_call": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/DeclinableCall"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The tool call a paused Run stopped on that its Home may decline: the key, the tool and the\nkind of refusal, never the action, the subject or the receiver's own sentence (#763)."
-              },
               "error": {
                 "type": ["string", "null"]
               },
@@ -1757,48 +1587,6 @@
               "refused"
             ],
             "type": "string"
-          },
-          "DeclinableCall": {
-            "additionalProperties": false,
-            "description": "What a person is offered to decline: the call by its key, the tool, and the kind of refusal.\nNever the action, the subject or the receiver's own sentence.",
-            "properties": {
-              "call": {
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              },
-              "tool": {
-                "type": "string"
-              }
-            },
-            "required": ["call", "tool", "kind"],
-            "type": "object"
-          },
-          "RefusalKind": {
-            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
-            "oneOf": [
-              {
-                "description": "The Tenant policy of the Node the Run executes on.",
-                "enum": ["policy"],
-                "type": "string"
-              },
-              {
-                "description": "Catalog Approval of a Registry entry.",
-                "enum": ["catalog_approval"],
-                "type": "string"
-              },
-              {
-                "description": "The Agent's own configuration.",
-                "enum": ["agent_configuration"],
-                "type": "string"
-              },
-              {
-                "description": "The authority of the Node the Run was delegated to.",
-                "enum": ["other_node"],
-                "type": "string"
-              }
-            ]
           },
           "RemoteExecutionControlState": {
             "enum": ["INACTIVE", "ACTIVE", "PAUSED", "CANCELLED"],
@@ -1916,17 +1704,6 @@
               "control": {
                 "$ref": "#/components/schemas/RemoteExecutionControlState"
               },
-              "declinable_call": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/DeclinableCall"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The tool call a paused Run stopped on that its Home may decline: the key, the tool and the\nkind of refusal, never the action, the subject or the receiver's own sentence (#763)."
-              },
               "error": {
                 "type": ["string", "null"]
               },
@@ -1982,48 +1759,6 @@
               "refused"
             ],
             "type": "string"
-          },
-          "DeclinableCall": {
-            "additionalProperties": false,
-            "description": "What a person is offered to decline: the call by its key, the tool, and the kind of refusal.\nNever the action, the subject or the receiver's own sentence.",
-            "properties": {
-              "call": {
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              },
-              "tool": {
-                "type": "string"
-              }
-            },
-            "required": ["call", "tool", "kind"],
-            "type": "object"
-          },
-          "RefusalKind": {
-            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
-            "oneOf": [
-              {
-                "description": "The Tenant policy of the Node the Run executes on.",
-                "enum": ["policy"],
-                "type": "string"
-              },
-              {
-                "description": "Catalog Approval of a Registry entry.",
-                "enum": ["catalog_approval"],
-                "type": "string"
-              },
-              {
-                "description": "The Agent's own configuration.",
-                "enum": ["agent_configuration"],
-                "type": "string"
-              },
-              {
-                "description": "The authority of the Node the Run was delegated to.",
-                "enum": ["other_node"],
-                "type": "string"
-              }
-            ]
           },
           "RemoteExecutionControlState": {
             "enum": ["INACTIVE", "ACTIVE", "PAUSED", "CANCELLED"],
@@ -2147,48 +1882,6 @@
             ],
             "type": "string"
           },
-          "DeclinableCall": {
-            "additionalProperties": false,
-            "description": "What a person is offered to decline: the call by its key, the tool, and the kind of refusal.\nNever the action, the subject or the receiver's own sentence.",
-            "properties": {
-              "call": {
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              },
-              "tool": {
-                "type": "string"
-              }
-            },
-            "required": ["call", "tool", "kind"],
-            "type": "object"
-          },
-          "RefusalKind": {
-            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
-            "oneOf": [
-              {
-                "description": "The Tenant policy of the Node the Run executes on.",
-                "enum": ["policy"],
-                "type": "string"
-              },
-              {
-                "description": "Catalog Approval of a Registry entry.",
-                "enum": ["catalog_approval"],
-                "type": "string"
-              },
-              {
-                "description": "The Agent's own configuration.",
-                "enum": ["agent_configuration"],
-                "type": "string"
-              },
-              {
-                "description": "The authority of the Node the Run was delegated to.",
-                "enum": ["other_node"],
-                "type": "string"
-              }
-            ]
-          },
           "RemoteExecutionActivation": {
             "properties": {
               "admission_id": {
@@ -2208,17 +1901,6 @@
               },
               "control": {
                 "$ref": "#/components/schemas/RemoteExecutionControlState"
-              },
-              "declinable_call": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/DeclinableCall"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The tool call the remote Run is paused on, present only when the caller may decline it."
               },
               "error": {
                 "type": ["string", "null"]
@@ -2379,23 +2061,6 @@
               "refused"
             ],
             "type": "string"
-          },
-          "DeclinableCall": {
-            "additionalProperties": false,
-            "description": "What a person is offered to decline: the call by its key, the tool, and the kind of refusal.\nNever the action, the subject or the receiver's own sentence.",
-            "properties": {
-              "call": {
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              },
-              "tool": {
-                "type": "string"
-              }
-            },
-            "required": ["call", "tool", "kind"],
-            "type": "object"
           },
           "EntityRef": {
             "properties": {
@@ -2651,31 +2316,6 @@
             ],
             "type": "object"
           },
-          "RefusalKind": {
-            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
-            "oneOf": [
-              {
-                "description": "The Tenant policy of the Node the Run executes on.",
-                "enum": ["policy"],
-                "type": "string"
-              },
-              {
-                "description": "Catalog Approval of a Registry entry.",
-                "enum": ["catalog_approval"],
-                "type": "string"
-              },
-              {
-                "description": "The Agent's own configuration.",
-                "enum": ["agent_configuration"],
-                "type": "string"
-              },
-              {
-                "description": "The authority of the Node the Run was delegated to.",
-                "enum": ["other_node"],
-                "type": "string"
-              }
-            ]
-          },
           "RemoteExecutionActivation": {
             "properties": {
               "admission_id": {
@@ -2695,17 +2335,6 @@
               },
               "control": {
                 "$ref": "#/components/schemas/RemoteExecutionControlState"
-              },
-              "declinable_call": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/DeclinableCall"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The tool call the remote Run is paused on, present only when the caller may decline it."
               },
               "error": {
                 "type": ["string", "null"]
@@ -3093,48 +2722,6 @@
             ],
             "type": "string"
           },
-          "DeclinableCall": {
-            "additionalProperties": false,
-            "description": "What a person is offered to decline: the call by its key, the tool, and the kind of refusal.\nNever the action, the subject or the receiver's own sentence.",
-            "properties": {
-              "call": {
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              },
-              "tool": {
-                "type": "string"
-              }
-            },
-            "required": ["call", "tool", "kind"],
-            "type": "object"
-          },
-          "RefusalKind": {
-            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
-            "oneOf": [
-              {
-                "description": "The Tenant policy of the Node the Run executes on.",
-                "enum": ["policy"],
-                "type": "string"
-              },
-              {
-                "description": "Catalog Approval of a Registry entry.",
-                "enum": ["catalog_approval"],
-                "type": "string"
-              },
-              {
-                "description": "The Agent's own configuration.",
-                "enum": ["agent_configuration"],
-                "type": "string"
-              },
-              {
-                "description": "The authority of the Node the Run was delegated to.",
-                "enum": ["other_node"],
-                "type": "string"
-              }
-            ]
-          },
           "RemoteExecutionActivation": {
             "properties": {
               "admission_id": {
@@ -3154,17 +2741,6 @@
               },
               "control": {
                 "$ref": "#/components/schemas/RemoteExecutionControlState"
-              },
-              "declinable_call": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/DeclinableCall"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The tool call the remote Run is paused on, present only when the caller may decline it."
               },
               "error": {
                 "type": ["string", "null"]
@@ -7879,6 +7455,10 @@
                 "format": "uuid",
                 "type": "string"
               },
+              "deadline_expired": {
+                "description": "True when the command was still running at its time limit. Absent otherwise.",
+                "type": ["boolean", "null"]
+              },
               "displays": {
                 "items": {
                   "$ref": "#/components/schemas/FileEntry"
@@ -7918,12 +7498,26 @@
                 "minimum": 0,
                 "type": ["integer", "null"]
               },
+              "operation_deadline": {
+                "description": "When a running command will be stopped. Absent before it starts and after it ends.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
               "operation_id": {
                 "format": "uuid",
                 "type": "string"
               },
               "output": {
                 "type": "string"
+              },
+              "output_stale_seconds": {
+                "description": "Seconds since the output shown was last fetched from the running command. It keeps growing when the view is stalled, which does not mean the command is. Absent when no output was fetched.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "output_unchanged": {
+                "type": "boolean"
               },
               "policy_revision": {
                 "format": "int64",
@@ -7964,7 +7558,6 @@
               "session_id",
               "displays",
               "exit_code",
-              "output",
               "next_offset",
               "truncated",
               "effects_may_have_occurred",
@@ -8106,6 +7699,10 @@
                 "format": "uuid",
                 "type": "string"
               },
+              "deadline_expired": {
+                "description": "True when the command was still running at its time limit. Absent otherwise.",
+                "type": ["boolean", "null"]
+              },
               "displays": {
                 "items": {
                   "$ref": "#/components/schemas/FileEntry"
@@ -8145,12 +7742,26 @@
                 "minimum": 0,
                 "type": ["integer", "null"]
               },
+              "operation_deadline": {
+                "description": "When a running command will be stopped. Absent before it starts and after it ends.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
               "operation_id": {
                 "format": "uuid",
                 "type": "string"
               },
               "output": {
                 "type": "string"
+              },
+              "output_stale_seconds": {
+                "description": "Seconds since the output shown was last fetched from the running command. It keeps growing when the view is stalled, which does not mean the command is. Absent when no output was fetched.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "output_unchanged": {
+                "type": "boolean"
               },
               "policy_revision": {
                 "format": "int64",
@@ -8191,7 +7802,6 @@
               "session_id",
               "displays",
               "exit_code",
-              "output",
               "next_offset",
               "truncated",
               "effects_may_have_occurred",
@@ -8279,6 +7889,10 @@
                 "format": "uuid",
                 "type": "string"
               },
+              "deadline_expired": {
+                "description": "True when the command was still running at its time limit. Absent otherwise.",
+                "type": ["boolean", "null"]
+              },
               "displays": {
                 "items": {
                   "$ref": "#/components/schemas/FileEntry"
@@ -8318,12 +7932,26 @@
                 "minimum": 0,
                 "type": ["integer", "null"]
               },
+              "operation_deadline": {
+                "description": "When a running command will be stopped. Absent before it starts and after it ends.",
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
               "operation_id": {
                 "format": "uuid",
                 "type": "string"
               },
               "output": {
                 "type": "string"
+              },
+              "output_stale_seconds": {
+                "description": "Seconds since the output shown was last fetched from the running command. It keeps growing when the view is stalled, which does not mean the command is. Absent when no output was fetched.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
+              },
+              "output_unchanged": {
+                "type": "boolean"
               },
               "policy_revision": {
                 "format": "int64",
@@ -8364,7 +7992,6 @@
               "session_id",
               "displays",
               "exit_code",
-              "output",
               "next_offset",
               "truncated",
               "effects_may_have_occurred",
@@ -9811,15 +9438,28 @@
     "query_parameters": [],
     "responses": {
       "200": {
+        "schema": {
+          "$ref": "#/components/schemas/Reference"
+        },
         "definitions": {
           "FileEntry": {
+            "type": "object",
+            "required": [
+              "file_id",
+              "path",
+              "digest",
+              "size",
+              "media_type",
+              "scope",
+              "provenance"
+            ],
             "properties": {
               "digest": {
                 "type": "string"
               },
               "file_id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
               },
               "media_type": {
                 "type": "string"
@@ -9832,27 +9472,33 @@
                 "$ref": "#/components/schemas/FileScope"
               },
               "size": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               }
-            },
-            "required": [
-              "file_id",
-              "path",
-              "digest",
-              "size",
-              "media_type",
-              "scope",
-              "provenance"
-            ],
-            "type": "object"
+            }
           },
           "FileScope": {
-            "enum": ["working", "references", "received"],
-            "type": "string"
+            "type": "string",
+            "enum": ["working", "references", "received"]
           },
           "Reference": {
+            "type": "object",
+            "required": [
+              "reference_id",
+              "revision",
+              "state",
+              "name",
+              "media_type",
+              "size",
+              "digest",
+              "uploaded_bytes",
+              "original",
+              "extraction",
+              "extraction_state",
+              "pages_without_text",
+              "page_count"
+            ],
             "properties": {
               "digest": {
                 "type": "string"
@@ -9886,46 +9532,43 @@
                   }
                 ]
               },
+              "page_count": {
+                "type": ["integer", "null"],
+                "format": "uint32",
+                "minimum": 0
+              },
+              "pages_without_text": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0
+                },
+                "description": "Pages of a PDF, counted from 1, whose text an Agent cannot read."
+              },
               "reference_id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
               },
               "revision": {
-                "format": "int64",
-                "type": "integer"
+                "type": "integer",
+                "format": "int64"
               },
               "size": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               },
               "state": {
                 "type": "string"
               },
               "uploaded_bytes": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               }
-            },
-            "required": [
-              "reference_id",
-              "revision",
-              "state",
-              "name",
-              "media_type",
-              "size",
-              "digest",
-              "uploaded_bytes",
-              "original",
-              "extraction",
-              "extraction_state"
-            ],
-            "type": "object"
+            }
           }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/Reference"
         }
       }
     },
@@ -9940,15 +9583,28 @@
     "query_parameters": [],
     "responses": {
       "200": {
+        "schema": {
+          "$ref": "#/components/schemas/Reference"
+        },
         "definitions": {
           "FileEntry": {
+            "type": "object",
+            "required": [
+              "file_id",
+              "path",
+              "digest",
+              "size",
+              "media_type",
+              "scope",
+              "provenance"
+            ],
             "properties": {
               "digest": {
                 "type": "string"
               },
               "file_id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
               },
               "media_type": {
                 "type": "string"
@@ -9961,27 +9617,33 @@
                 "$ref": "#/components/schemas/FileScope"
               },
               "size": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               }
-            },
-            "required": [
-              "file_id",
-              "path",
-              "digest",
-              "size",
-              "media_type",
-              "scope",
-              "provenance"
-            ],
-            "type": "object"
+            }
           },
           "FileScope": {
-            "enum": ["working", "references", "received"],
-            "type": "string"
+            "type": "string",
+            "enum": ["working", "references", "received"]
           },
           "Reference": {
+            "type": "object",
+            "required": [
+              "reference_id",
+              "revision",
+              "state",
+              "name",
+              "media_type",
+              "size",
+              "digest",
+              "uploaded_bytes",
+              "original",
+              "extraction",
+              "extraction_state",
+              "pages_without_text",
+              "page_count"
+            ],
             "properties": {
               "digest": {
                 "type": "string"
@@ -10015,46 +9677,43 @@
                   }
                 ]
               },
+              "page_count": {
+                "type": ["integer", "null"],
+                "format": "uint32",
+                "minimum": 0
+              },
+              "pages_without_text": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0
+                },
+                "description": "Pages of a PDF, counted from 1, whose text an Agent cannot read."
+              },
               "reference_id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
               },
               "revision": {
-                "format": "int64",
-                "type": "integer"
+                "type": "integer",
+                "format": "int64"
               },
               "size": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               },
               "state": {
                 "type": "string"
               },
               "uploaded_bytes": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               }
-            },
-            "required": [
-              "reference_id",
-              "revision",
-              "state",
-              "name",
-              "media_type",
-              "size",
-              "digest",
-              "uploaded_bytes",
-              "original",
-              "extraction",
-              "extraction_state"
-            ],
-            "type": "object"
+            }
           }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/Reference"
         }
       }
     },
@@ -10069,15 +9728,28 @@
     "query_parameters": [],
     "responses": {
       "200": {
+        "schema": {
+          "$ref": "#/components/schemas/Reference"
+        },
         "definitions": {
           "FileEntry": {
+            "type": "object",
+            "required": [
+              "file_id",
+              "path",
+              "digest",
+              "size",
+              "media_type",
+              "scope",
+              "provenance"
+            ],
             "properties": {
               "digest": {
                 "type": "string"
               },
               "file_id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
               },
               "media_type": {
                 "type": "string"
@@ -10090,27 +9762,33 @@
                 "$ref": "#/components/schemas/FileScope"
               },
               "size": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               }
-            },
-            "required": [
-              "file_id",
-              "path",
-              "digest",
-              "size",
-              "media_type",
-              "scope",
-              "provenance"
-            ],
-            "type": "object"
+            }
           },
           "FileScope": {
-            "enum": ["working", "references", "received"],
-            "type": "string"
+            "type": "string",
+            "enum": ["working", "references", "received"]
           },
           "Reference": {
+            "type": "object",
+            "required": [
+              "reference_id",
+              "revision",
+              "state",
+              "name",
+              "media_type",
+              "size",
+              "digest",
+              "uploaded_bytes",
+              "original",
+              "extraction",
+              "extraction_state",
+              "pages_without_text",
+              "page_count"
+            ],
             "properties": {
               "digest": {
                 "type": "string"
@@ -10144,46 +9822,43 @@
                   }
                 ]
               },
+              "page_count": {
+                "type": ["integer", "null"],
+                "format": "uint32",
+                "minimum": 0
+              },
+              "pages_without_text": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0
+                },
+                "description": "Pages of a PDF, counted from 1, whose text an Agent cannot read."
+              },
               "reference_id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
               },
               "revision": {
-                "format": "int64",
-                "type": "integer"
+                "type": "integer",
+                "format": "int64"
               },
               "size": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               },
               "state": {
                 "type": "string"
               },
               "uploaded_bytes": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               }
-            },
-            "required": [
-              "reference_id",
-              "revision",
-              "state",
-              "name",
-              "media_type",
-              "size",
-              "digest",
-              "uploaded_bytes",
-              "original",
-              "extraction",
-              "extraction_state"
-            ],
-            "type": "object"
+            }
           }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/Reference"
         }
       }
     },
@@ -10198,15 +9873,28 @@
     "query_parameters": [],
     "responses": {
       "200": {
+        "schema": {
+          "$ref": "#/components/schemas/Reference"
+        },
         "definitions": {
           "FileEntry": {
+            "type": "object",
+            "required": [
+              "file_id",
+              "path",
+              "digest",
+              "size",
+              "media_type",
+              "scope",
+              "provenance"
+            ],
             "properties": {
               "digest": {
                 "type": "string"
               },
               "file_id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
               },
               "media_type": {
                 "type": "string"
@@ -10219,27 +9907,33 @@
                 "$ref": "#/components/schemas/FileScope"
               },
               "size": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               }
-            },
-            "required": [
-              "file_id",
-              "path",
-              "digest",
-              "size",
-              "media_type",
-              "scope",
-              "provenance"
-            ],
-            "type": "object"
+            }
           },
           "FileScope": {
-            "enum": ["working", "references", "received"],
-            "type": "string"
+            "type": "string",
+            "enum": ["working", "references", "received"]
           },
           "Reference": {
+            "type": "object",
+            "required": [
+              "reference_id",
+              "revision",
+              "state",
+              "name",
+              "media_type",
+              "size",
+              "digest",
+              "uploaded_bytes",
+              "original",
+              "extraction",
+              "extraction_state",
+              "pages_without_text",
+              "page_count"
+            ],
             "properties": {
               "digest": {
                 "type": "string"
@@ -10273,46 +9967,43 @@
                   }
                 ]
               },
+              "page_count": {
+                "type": ["integer", "null"],
+                "format": "uint32",
+                "minimum": 0
+              },
+              "pages_without_text": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0
+                },
+                "description": "Pages of a PDF, counted from 1, whose text an Agent cannot read."
+              },
               "reference_id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
               },
               "revision": {
-                "format": "int64",
-                "type": "integer"
+                "type": "integer",
+                "format": "int64"
               },
               "size": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               },
               "state": {
                 "type": "string"
               },
               "uploaded_bytes": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               }
-            },
-            "required": [
-              "reference_id",
-              "revision",
-              "state",
-              "name",
-              "media_type",
-              "size",
-              "digest",
-              "uploaded_bytes",
-              "original",
-              "extraction",
-              "extraction_state"
-            ],
-            "type": "object"
+            }
           }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/Reference"
         }
       }
     },
@@ -11653,15 +11344,28 @@
     "query_parameters": ["cursor"],
     "responses": {
       "200": {
+        "schema": {
+          "$ref": "#/components/schemas/ReferencePage"
+        },
         "definitions": {
           "FileEntry": {
+            "type": "object",
+            "required": [
+              "file_id",
+              "path",
+              "digest",
+              "size",
+              "media_type",
+              "scope",
+              "provenance"
+            ],
             "properties": {
               "digest": {
                 "type": "string"
               },
               "file_id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
               },
               "media_type": {
                 "type": "string"
@@ -11674,27 +11378,33 @@
                 "$ref": "#/components/schemas/FileScope"
               },
               "size": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               }
-            },
-            "required": [
-              "file_id",
-              "path",
-              "digest",
-              "size",
-              "media_type",
-              "scope",
-              "provenance"
-            ],
-            "type": "object"
+            }
           },
           "FileScope": {
-            "enum": ["working", "references", "received"],
-            "type": "string"
+            "type": "string",
+            "enum": ["working", "references", "received"]
           },
           "Reference": {
+            "type": "object",
+            "required": [
+              "reference_id",
+              "revision",
+              "state",
+              "name",
+              "media_type",
+              "size",
+              "digest",
+              "uploaded_bytes",
+              "original",
+              "extraction",
+              "extraction_state",
+              "pages_without_text",
+              "page_count"
+            ],
             "properties": {
               "digest": {
                 "type": "string"
@@ -11728,62 +11438,59 @@
                   }
                 ]
               },
+              "page_count": {
+                "type": ["integer", "null"],
+                "format": "uint32",
+                "minimum": 0
+              },
+              "pages_without_text": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0
+                },
+                "description": "Pages of a PDF, counted from 1, whose text an Agent cannot read."
+              },
               "reference_id": {
-                "format": "uuid",
-                "type": "string"
+                "type": "string",
+                "format": "uuid"
               },
               "revision": {
-                "format": "int64",
-                "type": "integer"
+                "type": "integer",
+                "format": "int64"
               },
               "size": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               },
               "state": {
                 "type": "string"
               },
               "uploaded_bytes": {
+                "type": "integer",
                 "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
+                "minimum": 0
               }
-            },
-            "required": [
-              "reference_id",
-              "revision",
-              "state",
-              "name",
-              "media_type",
-              "size",
-              "digest",
-              "uploaded_bytes",
-              "original",
-              "extraction",
-              "extraction_state"
-            ],
-            "type": "object"
+            }
           },
           "ReferencePage": {
+            "type": "object",
+            "required": ["items", "next_cursor"],
             "properties": {
               "items": {
+                "type": "array",
                 "items": {
                   "$ref": "#/components/schemas/Reference"
-                },
-                "type": "array"
+                }
               },
               "next_cursor": {
-                "format": "uuid",
-                "type": ["string", "null"]
+                "type": ["string", "null"],
+                "format": "uuid"
               }
-            },
-            "required": ["items", "next_cursor"],
-            "type": "object"
+            }
           }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/ReferencePage"
         }
       }
     },
@@ -31446,20 +31153,6 @@
             ],
             "type": "object"
           },
-          "DeclinedCall": {
-            "additionalProperties": false,
-            "description": "A call a person declined; the worker answers it with the kind's fixed sentence.",
-            "properties": {
-              "key": {
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              }
-            },
-            "required": ["key", "kind"],
-            "type": "object"
-          },
           "DeferredRead": {
             "additionalProperties": false,
             "properties": {
@@ -32537,31 +32230,6 @@
             "required": ["max_tool_calls", "parameters"],
             "type": "object"
           },
-          "PausedCall": {
-            "additionalProperties": false,
-            "description": "The call an Authority Pause stopped, recorded only when it certainly did not run.",
-            "properties": {
-              "index": {
-                "format": "uint",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "key": {
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              },
-              "replay_safe": {
-                "type": "boolean"
-              },
-              "tool": {
-                "type": "string"
-              }
-            },
-            "required": ["key", "index", "replay_safe", "tool", "kind"],
-            "type": "object"
-          },
           "PendingCheck": {
             "additionalProperties": false,
             "description": "A started Check whose operation has not been recorded as evidence yet.",
@@ -32871,13 +32539,6 @@
                 "minimum": 0,
                 "type": "integer"
               },
-              "declined_calls": {
-                "description": "Calls a person declined, kept until the worker has answered them. Separate from\n`paused_call`: an earlier sibling of a Tool Batch can pause the Run again first.",
-                "items": {
-                  "$ref": "#/components/schemas/DeclinedCall"
-                },
-                "type": "array"
-              },
               "degraded": {
                 "$ref": "#/components/schemas/DegradedContext",
                 "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
@@ -32888,16 +32549,15 @@
                 "minimum": 0,
                 "type": "integer"
               },
-              "paused_call": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/PausedCall"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The tool call an Authority Pause stopped, when a person may decline it (#763). Cleared on\nresume; people never read it, only whether they may decline."
+              "node_retry": {
+                "description": "Retries of the current step after another Node did not answer a check\n(#751). A retry asks again, so it is reset once the step saves anything else.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "remote_task_fingerprint": {
+                "description": "Fingerprint of remote terminal child Tasks observed before inference.",
+                "type": ["string", "null"]
               },
               "retry": {
                 "anyOf": [
@@ -32918,35 +32578,15 @@
                     "type": "null"
                   }
                 ]
+              },
+              "workspace_event_cursor": {
+                "description": "Last workspace event delivered to this Run.",
+                "format": "int64",
+                "type": ["integer", "null"]
               }
             },
             "required": ["retry"],
             "type": "object"
-          },
-          "RefusalKind": {
-            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
-            "oneOf": [
-              {
-                "description": "The Tenant policy of the Node the Run executes on.",
-                "enum": ["policy"],
-                "type": "string"
-              },
-              {
-                "description": "Catalog Approval of a Registry entry.",
-                "enum": ["catalog_approval"],
-                "type": "string"
-              },
-              {
-                "description": "The Agent's own configuration.",
-                "enum": ["agent_configuration"],
-                "type": "string"
-              },
-              {
-                "description": "The authority of the Node the Run was delegated to.",
-                "enum": ["other_node"],
-                "type": "string"
-              }
-            ]
           },
           "RemoteSemanticFailure": {
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
@@ -34119,6 +33759,9 @@
                   }
                 ]
               },
+              "wait_result": {
+                "description": "A woken wait's result, awaiting delivery at this cursor."
+              },
               "workspace_observation_plan": {
                 "anyOf": [
                   {
@@ -34238,6 +33881,52 @@
             "oneOf": [
               {
                 "additionalProperties": false,
+                "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
+                "properties": {
+                  "cursor": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "reason": {
+                    "enum": ["workspace"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ResumeState"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": ["reason", "wake_at", "cursor", "resume"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "An accepted command is rechecked when it settles or its ceiling arrives.",
+                "properties": {
+                  "operation_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "enum": ["operation"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ToolCallState"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": ["reason", "operation_id", "wake_at", "resume"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
                 "properties": {
                   "reason": {
                     "enum": ["dependencies"],
@@ -34245,24 +33934,6 @@
                   },
                   "resume": {
                     "$ref": "#/components/schemas/ReadyState"
-                  },
-                  "wake_at": {
-                    "format": "date-time",
-                    "type": "string"
-                  }
-                },
-                "required": ["reason", "wake_at", "resume"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "reason": {
-                    "enum": ["children"],
-                    "type": "string"
-                  },
-                  "resume": {
-                    "$ref": "#/components/schemas/ThinkingState"
                   },
                   "wake_at": {
                     "format": "date-time",
@@ -35719,37 +35390,6 @@
               }
             ]
           },
-          "DeclinableCall": {
-            "additionalProperties": false,
-            "description": "What a person is offered to decline: the call by its key, the tool, and the kind of refusal.\nNever the action, the subject or the receiver's own sentence.",
-            "properties": {
-              "call": {
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              },
-              "tool": {
-                "type": "string"
-              }
-            },
-            "required": ["call", "tool", "kind"],
-            "type": "object"
-          },
-          "DeclinedCall": {
-            "additionalProperties": false,
-            "description": "A call a person declined; the worker answers it with the kind's fixed sentence.",
-            "properties": {
-              "key": {
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              }
-            },
-            "required": ["key", "kind"],
-            "type": "object"
-          },
           "DeferredRead": {
             "additionalProperties": false,
             "properties": {
@@ -36670,31 +36310,6 @@
             "required": ["max_tool_calls", "parameters"],
             "type": "object"
           },
-          "PausedCall": {
-            "additionalProperties": false,
-            "description": "The call an Authority Pause stopped, recorded only when it certainly did not run.",
-            "properties": {
-              "index": {
-                "format": "uint",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "key": {
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              },
-              "replay_safe": {
-                "type": "boolean"
-              },
-              "tool": {
-                "type": "string"
-              }
-            },
-            "required": ["key", "index", "replay_safe", "tool", "kind"],
-            "type": "object"
-          },
           "PendingCheck": {
             "additionalProperties": false,
             "description": "A started Check whose operation has not been recorded as evidence yet.",
@@ -37028,13 +36643,6 @@
                 "minimum": 0,
                 "type": "integer"
               },
-              "declined_calls": {
-                "description": "Calls a person declined, kept until the worker has answered them. Separate from\n`paused_call`: an earlier sibling of a Tool Batch can pause the Run again first.",
-                "items": {
-                  "$ref": "#/components/schemas/DeclinedCall"
-                },
-                "type": "array"
-              },
               "degraded": {
                 "$ref": "#/components/schemas/DegradedContext",
                 "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
@@ -37045,16 +36653,15 @@
                 "minimum": 0,
                 "type": "integer"
               },
-              "paused_call": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/PausedCall"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The tool call an Authority Pause stopped, when a person may decline it (#763). Cleared on\nresume; people never read it, only whether they may decline."
+              "node_retry": {
+                "description": "Retries of the current step after another Node did not answer a check\n(#751). A retry asks again, so it is reset once the step saves anything else.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "remote_task_fingerprint": {
+                "description": "Fingerprint of remote terminal child Tasks observed before inference.",
+                "type": ["string", "null"]
               },
               "retry": {
                 "anyOf": [
@@ -37075,35 +36682,15 @@
                     "type": "null"
                   }
                 ]
+              },
+              "workspace_event_cursor": {
+                "description": "Last workspace event delivered to this Run.",
+                "format": "int64",
+                "type": ["integer", "null"]
               }
             },
             "required": ["retry"],
             "type": "object"
-          },
-          "RefusalKind": {
-            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
-            "oneOf": [
-              {
-                "description": "The Tenant policy of the Node the Run executes on.",
-                "enum": ["policy"],
-                "type": "string"
-              },
-              {
-                "description": "Catalog Approval of a Registry entry.",
-                "enum": ["catalog_approval"],
-                "type": "string"
-              },
-              {
-                "description": "The Agent's own configuration.",
-                "enum": ["agent_configuration"],
-                "type": "string"
-              },
-              {
-                "description": "The authority of the Node the Run was delegated to.",
-                "enum": ["other_node"],
-                "type": "string"
-              }
-            ]
           },
           "RemoteSemanticFailure": {
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
@@ -37154,6 +36741,11 @@
           },
           "RequestRecord": {
             "properties": {
+              "admission_ms": {
+                "description": "The gateway's admission call, in milliseconds. Absent until the outcome\nis settled.",
+                "format": "int64",
+                "type": ["integer", "null"]
+              },
               "created_at": {
                 "format": "date-time",
                 "type": "string"
@@ -37208,6 +36800,11 @@
               },
               "service": {
                 "type": "string"
+              },
+              "settle_ms": {
+                "description": "From the end of the response until its final debit settled, in\nmilliseconds. Absent until the outcome is settled.",
+                "format": "int64",
+                "type": ["integer", "null"]
               },
               "status": {
                 "format": "int32",
@@ -37445,17 +37042,6 @@
           },
           "RunDetails": {
             "properties": {
-              "declinable_call": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/DeclinableCall"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The tool call a paused Run stopped on, present only when the caller may decline it."
-              },
               "egress_requests": {
                 "default": [],
                 "description": "Metadata-only gateway requests, paged with the inspection offset.",
@@ -38280,6 +37866,9 @@
                   }
                 ]
               },
+              "wait_result": {
+                "description": "A woken wait's result, awaiting delivery at this cursor."
+              },
               "workspace_observation_plan": {
                 "anyOf": [
                   {
@@ -38399,6 +37988,52 @@
             "oneOf": [
               {
                 "additionalProperties": false,
+                "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
+                "properties": {
+                  "cursor": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "reason": {
+                    "enum": ["workspace"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ResumeState"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": ["reason", "wake_at", "cursor", "resume"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "An accepted command is rechecked when it settles or its ceiling arrives.",
+                "properties": {
+                  "operation_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "enum": ["operation"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ToolCallState"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": ["reason", "operation_id", "wake_at", "resume"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
                 "properties": {
                   "reason": {
                     "enum": ["dependencies"],
@@ -38406,24 +38041,6 @@
                   },
                   "resume": {
                     "$ref": "#/components/schemas/ReadyState"
-                  },
-                  "wake_at": {
-                    "format": "date-time",
-                    "type": "string"
-                  }
-                },
-                "required": ["reason", "wake_at", "resume"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "reason": {
-                    "enum": ["children"],
-                    "type": "string"
-                  },
-                  "resume": {
-                    "$ref": "#/components/schemas/ThinkingState"
                   },
                   "wake_at": {
                     "format": "date-time",
@@ -38669,48 +38286,6 @@
               }
             ]
           },
-          "DeclinableCall": {
-            "additionalProperties": false,
-            "description": "What a person is offered to decline: the call by its key, the tool, and the kind of refusal.\nNever the action, the subject or the receiver's own sentence.",
-            "properties": {
-              "call": {
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              },
-              "tool": {
-                "type": "string"
-              }
-            },
-            "required": ["call", "tool", "kind"],
-            "type": "object"
-          },
-          "RefusalKind": {
-            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
-            "oneOf": [
-              {
-                "description": "The Tenant policy of the Node the Run executes on.",
-                "enum": ["policy"],
-                "type": "string"
-              },
-              {
-                "description": "Catalog Approval of a Registry entry.",
-                "enum": ["catalog_approval"],
-                "type": "string"
-              },
-              {
-                "description": "The Agent's own configuration.",
-                "enum": ["agent_configuration"],
-                "type": "string"
-              },
-              {
-                "description": "The authority of the Node the Run was delegated to.",
-                "enum": ["other_node"],
-                "type": "string"
-              }
-            ]
-          },
           "RemoteSemanticFailure": {
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
             "oneOf": [
@@ -38760,17 +38335,6 @@
               "control_source": {
                 "$ref": "#/components/schemas/ControlSource",
                 "description": "The kind of actor that last changed `control`."
-              },
-              "declinable_call": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/DeclinableCall"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The tool call a paused Run stopped on, only for a caller who may decline it. Never file\ncontent: the tool and the kind of refusal."
               },
               "id": {
                 "format": "uuid",
@@ -47567,12 +47131,6 @@
                 },
                 "type": "array"
               },
-              "reading_runs": {
-                "description": "Non-terminal Runs on the Node that have read the withdrawn version.",
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
               "running_runs": {
                 "description": "Non-terminal Runs of those Agent versions on the Node.",
                 "format": "uint64",
@@ -47580,7 +47138,7 @@
                 "type": "integer"
               }
             },
-            "required": ["agents", "running_runs", "reading_runs"],
+            "required": ["agents", "running_runs"],
             "type": "object"
           }
         },
@@ -51828,20 +51386,6 @@
               }
             ]
           },
-          "DeclinedCall": {
-            "additionalProperties": false,
-            "description": "A call a person declined; the worker answers it with the kind's fixed sentence.",
-            "properties": {
-              "key": {
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              }
-            },
-            "required": ["key", "kind"],
-            "type": "object"
-          },
           "DeferredRead": {
             "additionalProperties": false,
             "properties": {
@@ -52725,31 +52269,6 @@
             "required": ["max_tool_calls", "parameters"],
             "type": "object"
           },
-          "PausedCall": {
-            "additionalProperties": false,
-            "description": "The call an Authority Pause stopped, recorded only when it certainly did not run.",
-            "properties": {
-              "index": {
-                "format": "uint",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "key": {
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              },
-              "replay_safe": {
-                "type": "boolean"
-              },
-              "tool": {
-                "type": "string"
-              }
-            },
-            "required": ["key", "index", "replay_safe", "tool", "kind"],
-            "type": "object"
-          },
           "PendingCheck": {
             "additionalProperties": false,
             "description": "A started Check whose operation has not been recorded as evidence yet.",
@@ -53059,13 +52578,6 @@
                 "minimum": 0,
                 "type": "integer"
               },
-              "declined_calls": {
-                "description": "Calls a person declined, kept until the worker has answered them. Separate from\n`paused_call`: an earlier sibling of a Tool Batch can pause the Run again first.",
-                "items": {
-                  "$ref": "#/components/schemas/DeclinedCall"
-                },
-                "type": "array"
-              },
               "degraded": {
                 "$ref": "#/components/schemas/DegradedContext",
                 "description": "Steps that ran with Degraded context (ADR 0059). Kept across resumes."
@@ -53076,16 +52588,15 @@
                 "minimum": 0,
                 "type": "integer"
               },
-              "paused_call": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/PausedCall"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The tool call an Authority Pause stopped, when a person may decline it (#763). Cleared on\nresume; people never read it, only whether they may decline."
+              "node_retry": {
+                "description": "Retries of the current step after another Node did not answer a check\n(#751). A retry asks again, so it is reset once the step saves anything else.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "remote_task_fingerprint": {
+                "description": "Fingerprint of remote terminal child Tasks observed before inference.",
+                "type": ["string", "null"]
               },
               "retry": {
                 "anyOf": [
@@ -53106,35 +52617,15 @@
                     "type": "null"
                   }
                 ]
+              },
+              "workspace_event_cursor": {
+                "description": "Last workspace event delivered to this Run.",
+                "format": "int64",
+                "type": ["integer", "null"]
               }
             },
             "required": ["retry"],
             "type": "object"
-          },
-          "RefusalKind": {
-            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
-            "oneOf": [
-              {
-                "description": "The Tenant policy of the Node the Run executes on.",
-                "enum": ["policy"],
-                "type": "string"
-              },
-              {
-                "description": "Catalog Approval of a Registry entry.",
-                "enum": ["catalog_approval"],
-                "type": "string"
-              },
-              {
-                "description": "The Agent's own configuration.",
-                "enum": ["agent_configuration"],
-                "type": "string"
-              },
-              {
-                "description": "The authority of the Node the Run was delegated to.",
-                "enum": ["other_node"],
-                "type": "string"
-              }
-            ]
           },
           "RemoteSemanticFailure": {
             "description": "Public reasons contain no query, source ID, upstream body, or credential.",
@@ -54171,6 +53662,9 @@
                   }
                 ]
               },
+              "wait_result": {
+                "description": "A woken wait's result, awaiting delivery at this cursor."
+              },
               "workspace_observation_plan": {
                 "anyOf": [
                   {
@@ -54290,6 +53784,52 @@
             "oneOf": [
               {
                 "additionalProperties": false,
+                "description": "A Run waits for relevant workspace changes, input, or a ceiling.",
+                "properties": {
+                  "cursor": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "reason": {
+                    "enum": ["workspace"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ResumeState"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": ["reason", "wake_at", "cursor", "resume"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "An accepted command is rechecked when it settles or its ceiling arrives.",
+                "properties": {
+                  "operation_id": {
+                    "format": "uuid",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "enum": ["operation"],
+                    "type": "string"
+                  },
+                  "resume": {
+                    "$ref": "#/components/schemas/ToolCallState"
+                  },
+                  "wake_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  }
+                },
+                "required": ["reason", "operation_id", "wake_at", "resume"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
                 "properties": {
                   "reason": {
                     "enum": ["dependencies"],
@@ -54297,24 +53837,6 @@
                   },
                   "resume": {
                     "$ref": "#/components/schemas/ReadyState"
-                  },
-                  "wake_at": {
-                    "format": "date-time",
-                    "type": "string"
-                  }
-                },
-                "required": ["reason", "wake_at", "resume"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "reason": {
-                    "enum": ["children"],
-                    "type": "string"
-                  },
-                  "resume": {
-                    "$ref": "#/components/schemas/ThinkingState"
                   },
                   "wake_at": {
                     "format": "date-time",
@@ -55650,693 +55172,219 @@
   {
     "json": true,
     "method": "POST",
-    "name": "run-decline-call",
-    "path": "/api/runs/{id}/declined-calls",
+    "name": "reference_batch",
+    "path": "/api/references/batch",
     "query_parameters": [],
     "responses": {
       "200": {
+        "schema": {
+          "$ref": "#/components/schemas/ReferenceBatchResult"
+        },
         "definitions": {
-          "CleanupStatus": {
+          "Attachment": {
+            "type": "object",
+            "required": ["reference_id", "digest", "path"],
             "properties": {
-              "attempts": {
-                "format": "int32",
-                "type": "integer"
-              },
-              "expires_at": {
-                "format": "date-time",
+              "digest": {
                 "type": "string"
               },
-              "invalidated": {
-                "type": "boolean"
+              "path": {
+                "type": "string",
+                "description": "Where an Agent sees this file, relative to its Reference set."
               },
-              "last_error": {
+              "reference_id": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "additionalProperties": false
+          },
+          "FileEntry": {
+            "type": "object",
+            "required": [
+              "file_id",
+              "path",
+              "digest",
+              "size",
+              "media_type",
+              "scope",
+              "provenance"
+            ],
+            "properties": {
+              "digest": {
+                "type": "string"
+              },
+              "file_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "media_type": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "provenance": {},
+              "scope": {
+                "$ref": "#/components/schemas/FileScope"
+              },
+              "size": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              }
+            }
+          },
+          "FileScope": {
+            "type": "string",
+            "enum": ["working", "references", "received"]
+          },
+          "Reference": {
+            "type": "object",
+            "required": [
+              "reference_id",
+              "revision",
+              "state",
+              "name",
+              "media_type",
+              "size",
+              "digest",
+              "uploaded_bytes",
+              "original",
+              "extraction",
+              "extraction_state",
+              "pages_without_text",
+              "page_count"
+            ],
+            "properties": {
+              "digest": {
+                "type": "string"
+              },
+              "extraction": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/FileEntry"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "extraction_state": {
                 "type": ["string", "null"]
               },
-              "max_attempts": {
-                "format": "int32",
-                "type": "integer"
-              },
-              "next_attempt": {
-                "format": "date-time",
+              "media_type": {
                 "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "original": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/FileEntry"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "page_count": {
+                "type": ["integer", "null"],
+                "format": "uint32",
+                "minimum": 0
+              },
+              "pages_without_text": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "uint32",
+                  "minimum": 0
+                },
+                "description": "Pages of a PDF, counted from 1, whose text an Agent cannot read."
+              },
+              "reference_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "revision": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "size": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
               },
               "state": {
                 "type": "string"
+              },
+              "uploaded_bytes": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
               }
-            },
+            }
+          },
+          "ReferenceBatchOutcome": {
+            "type": "object",
             "required": [
-              "state",
-              "invalidated",
-              "expires_at",
-              "attempts",
-              "max_attempts",
-              "next_attempt",
-              "last_error"
+              "path",
+              "reference",
+              "reused",
+              "duplicate_of",
+              "error"
             ],
-            "type": "object"
-          },
-          "ContextRecoveryFailure": {
-            "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
-            "enum": [
-              "source_selection_unavailable",
-              "source_selection_forbidden",
-              "source_selection_unapproved",
-              "source_selection_calls_exhausted",
-              "context_unreducible",
-              "decider_unapproved",
-              "decider_calls_exhausted",
-              "decider_unavailable",
-              "summary_unavailable",
-              "summary_invalid",
-              "overflow_retries_exhausted",
-              "output_truncated",
-              "refused"
-            ],
-            "type": "string"
-          },
-          "ControlSource": {
-            "description": "The kind of actor that last changed a Run's control. It is shown to anyone\nwho can see the Run; the person and the reason are not.",
-            "oneOf": [
-              {
-                "description": "A Tenant Subject, or the Run's creation.",
-                "enum": ["tenant"],
-                "type": "string"
-              },
-              {
-                "description": "A Deployment Administrator's Safety Stop.",
-                "enum": ["deployment_administrator"],
-                "type": "string"
-              },
-              {
-                "description": "Aidash itself, such as the pause for an identity status outage.",
-                "enum": ["system"],
-                "type": "string"
-              }
-            ]
-          },
-          "DeclinableCall": {
-            "additionalProperties": false,
-            "description": "What a person is offered to decline: the call by its key, the tool, and the kind of refusal.\nNever the action, the subject or the receiver's own sentence.",
             "properties": {
-              "call": {
+              "duplicate_of": {
+                "type": ["string", "null"],
+                "description": "Another path in this request holds the same content."
+              },
+              "error": {
+                "type": ["string", "null"]
+              },
+              "path": {
                 "type": "string"
               },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              },
-              "tool": {
-                "type": "string"
-              }
-            },
-            "required": ["call", "tool", "kind"],
-            "type": "object"
-          },
-          "RefusalKind": {
-            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
-            "oneOf": [
-              {
-                "description": "The Tenant policy of the Node the Run executes on.",
-                "enum": ["policy"],
-                "type": "string"
-              },
-              {
-                "description": "Catalog Approval of a Registry entry.",
-                "enum": ["catalog_approval"],
-                "type": "string"
-              },
-              {
-                "description": "The Agent's own configuration.",
-                "enum": ["agent_configuration"],
-                "type": "string"
-              },
-              {
-                "description": "The authority of the Node the Run was delegated to.",
-                "enum": ["other_node"],
-                "type": "string"
-              }
-            ]
-          },
-          "RemoteSemanticFailure": {
-            "description": "Public reasons contain no query, source ID, upstream body, or credential.",
-            "oneOf": [
-              {
-                "enum": [
-                  "configuration",
-                  "authority",
-                  "invalidated",
-                  "provider_contract",
-                  "embedding_model_not_found",
-                  "context_budget",
-                  "durable_memory_budget",
-                  "allowance",
-                  "unavailable",
-                  "retries_exhausted",
-                  "pending"
-                ],
-                "type": "string"
-              },
-              {
-                "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"],
-                "type": "string"
-              }
-            ]
-          },
-          "RunControl": {
-            "enum": ["ACTIVE", "PAUSED", "CANCELLED"],
-            "type": "string"
-          },
-          "RunManagement": {
-            "properties": {
-              "context_reason": {
+              "reference": {
                 "anyOf": [
                   {
-                    "$ref": "#/components/schemas/ContextRecoveryFailure"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "Typed context-recovery pause reason; cleared on resume."
-              },
-              "control": {
-                "$ref": "#/components/schemas/RunControl"
-              },
-              "control_source": {
-                "$ref": "#/components/schemas/ControlSource",
-                "description": "The kind of actor that last changed `control`."
-              },
-              "declinable_call": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/DeclinableCall"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The tool call a paused Run stopped on, only for a caller who may decline it. Never file\ncontent: the tool and the kind of refusal."
-              },
-              "id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "memory_cleanup": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/CleanupStatus"
+                    "$ref": "#/components/schemas/Reference"
                   },
                   {
                     "type": "null"
                   }
                 ]
               },
-              "phase": {
-                "$ref": "#/components/schemas/RunPhase"
-              },
-              "semantic_reason": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/RemoteSemanticFailure"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "semantic_recovery": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/SemanticRecovery"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The exact semantic cause and its authorized next actions while the Run\ncan still be recovered; absent for a cancelled or finished Run."
+              "reused": {
+                "type": "boolean",
+                "description": "An existing Reference with the same content was returned."
               }
-            },
-            "required": [
-              "id",
-              "phase",
-              "control",
-              "control_source",
-              "semantic_reason",
-              "context_reason"
-            ],
-            "type": "object"
+            }
           },
-          "RunPhase": {
-            "enum": [
-              "READY",
-              "THINKING",
-              "TOOL_CALL",
-              "WAITING",
-              "COMPLETED",
-              "FAILED",
-              "CANCELLED"
-            ],
-            "type": "string"
-          },
-          "SemanticRecovery": {
-            "additionalProperties": false,
+          "ReferenceBatchResult": {
+            "type": "object",
+            "required": ["files", "references"],
             "properties": {
-              "actions": {
-                "description": "Authorized next steps, most preferred first. Never empty.",
+              "files": {
+                "type": "array",
                 "items": {
-                  "$ref": "#/components/schemas/SemanticRecoveryAction"
+                  "$ref": "#/components/schemas/ReferenceBatchOutcome"
+                }
+              },
+              "references": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Attachment"
                 },
-                "type": "array"
-              },
-              "cause": {
-                "$ref": "#/components/schemas/RemoteSemanticFailure"
+                "description": "Entries ready to paste into a `reference_attachments` Source."
               }
-            },
-            "required": ["cause", "actions"],
-            "type": "object"
-          },
-          "SemanticRecoveryAction": {
-            "oneOf": [
-              {
-                "description": "Indexing or the semantic backend is still working and the Run holds an\nautomatic retry; it retries on its own schedule and nobody needs to act.",
-                "enum": ["wait"],
-                "type": "string"
-              },
-              {
-                "description": "An authorized manual retry resumes the Run with its unchanged Binding. The\nretry passes only if every pinned revision and current authority hold.",
-                "enum": ["retry_unchanged_binding"],
-                "type": "string"
-              },
-              {
-                "description": "Create a new Task whose instructions the requester supplies explicitly. It\nhas no parent or dependency link to the stopped Run, so no invalidated\ncontext, approval or verification is carried over.",
-                "enum": ["create_follow_up_task"],
-                "type": "string"
-              }
-            ]
+            }
           }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/RunManagement"
         }
       }
     },
-    "source": "server/src/apps/execution/views/management.rs",
-    "uuid_parameters": ["id"]
-  },
-  {
-    "json": true,
-    "method": "POST",
-    "name": "remote_execution_decline_call",
-    "path": "/api/tasks/{task}/remote-grants/{id}/declined-calls",
-    "query_parameters": [],
-    "responses": {
-      "200": {
-        "definitions": {
-          "ContextRecoveryFailure": {
-            "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
-            "enum": [
-              "source_selection_unavailable",
-              "source_selection_forbidden",
-              "source_selection_unapproved",
-              "source_selection_calls_exhausted",
-              "context_unreducible",
-              "decider_unapproved",
-              "decider_calls_exhausted",
-              "decider_unavailable",
-              "summary_unavailable",
-              "summary_invalid",
-              "overflow_retries_exhausted",
-              "output_truncated",
-              "refused"
-            ],
-            "type": "string"
-          },
-          "DeclinableCall": {
-            "additionalProperties": false,
-            "description": "What a person is offered to decline: the call by its key, the tool, and the kind of refusal.\nNever the action, the subject or the receiver's own sentence.",
-            "properties": {
-              "call": {
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              },
-              "tool": {
-                "type": "string"
-              }
-            },
-            "required": ["call", "tool", "kind"],
-            "type": "object"
-          },
-          "RefusalKind": {
-            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
-            "oneOf": [
-              {
-                "description": "The Tenant policy of the Node the Run executes on.",
-                "enum": ["policy"],
-                "type": "string"
-              },
-              {
-                "description": "Catalog Approval of a Registry entry.",
-                "enum": ["catalog_approval"],
-                "type": "string"
-              },
-              {
-                "description": "The Agent's own configuration.",
-                "enum": ["agent_configuration"],
-                "type": "string"
-              },
-              {
-                "description": "The authority of the Node the Run was delegated to.",
-                "enum": ["other_node"],
-                "type": "string"
-              }
-            ]
-          },
-          "RemoteExecutionActivation": {
-            "properties": {
-              "admission_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "context_reason": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/ContextRecoveryFailure"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "Typed context-recovery pause reason of the remote Run."
-              },
-              "control": {
-                "$ref": "#/components/schemas/RemoteExecutionControlState"
-              },
-              "declinable_call": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/DeclinableCall"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The tool call the remote Run is paused on, present only when the caller may decline it."
-              },
-              "error": {
-                "type": ["string", "null"]
-              },
-              "grant_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "phase": {
-                "$ref": "#/components/schemas/RemoteExecutionPhase"
-              },
-              "run_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "semantic_reason": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/RemoteSemanticFailure"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            },
-            "required": [
-              "grant_id",
-              "admission_id",
-              "run_id",
-              "phase",
-              "control",
-              "error",
-              "semantic_reason",
-              "context_reason"
-            ],
-            "type": "object"
-          },
-          "RemoteExecutionControlState": {
-            "enum": ["INACTIVE", "ACTIVE", "PAUSED", "CANCELLED"],
-            "type": "string"
-          },
-          "RemoteExecutionPhase": {
-            "enum": [
-              "ADMITTED",
-              "READY",
-              "THINKING",
-              "TOOL_CALL",
-              "WAITING",
-              "COMPLETED",
-              "FAILED",
-              "CANCELLED"
-            ],
-            "type": "string"
-          },
-          "RemoteSemanticFailure": {
-            "description": "Public reasons contain no query, source ID, upstream body, or credential.",
-            "oneOf": [
-              {
-                "enum": [
-                  "configuration",
-                  "authority",
-                  "invalidated",
-                  "provider_contract",
-                  "embedding_model_not_found",
-                  "context_budget",
-                  "durable_memory_budget",
-                  "allowance",
-                  "unavailable",
-                  "retries_exhausted",
-                  "pending"
-                ],
-                "type": "string"
-              },
-              {
-                "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"],
-                "type": "string"
-              }
-            ]
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/RemoteExecutionActivation"
-        }
-      }
-    },
-    "source": "server/src/apps/identity/views/remote_execution.rs",
-    "uuid_parameters": ["id", "task"]
-  },
-  {
-    "json": true,
-    "method": "POST",
-    "name": "peerexecutionmanagement-decline-call",
-    "path": "/federation/v0.1/scoped/execution/admissions/{id}/declined-calls",
-    "query_parameters": [],
-    "responses": {
-      "200": {
-        "definitions": {
-          "Activation": {
-            "properties": {
-              "admission_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "context_reason": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/ContextRecoveryFailure"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "Typed context-recovery pause reason. Omitted when absent, so peers\nwithout the field keep their exact wire shape."
-              },
-              "control": {
-                "$ref": "#/components/schemas/RemoteExecutionControlState"
-              },
-              "declinable_call": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/DeclinableCall"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The tool call a paused Run stopped on that its Home may decline: the key, the tool and the\nkind of refusal, never the action, the subject or the receiver's own sentence (#763)."
-              },
-              "error": {
-                "type": ["string", "null"]
-              },
-              "grant_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "phase": {
-                "$ref": "#/components/schemas/RemoteExecutionPhase"
-              },
-              "run_id": {
-                "format": "uuid",
-                "type": "string"
-              },
-              "semantic_cause": {},
-              "semantic_reason": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/RemoteSemanticFailure"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            },
-            "required": [
-              "grant_id",
-              "admission_id",
-              "run_id",
-              "phase",
-              "control",
-              "error",
-              "semantic_reason"
-            ],
-            "type": "object"
-          },
-          "ContextRecoveryFailure": {
-            "description": "Why a Run paused instead of sending or acting on a provider request.\nEach reason is final for its step; none of them is retried as transport.",
-            "enum": [
-              "source_selection_unavailable",
-              "source_selection_forbidden",
-              "source_selection_unapproved",
-              "source_selection_calls_exhausted",
-              "context_unreducible",
-              "decider_unapproved",
-              "decider_calls_exhausted",
-              "decider_unavailable",
-              "summary_unavailable",
-              "summary_invalid",
-              "overflow_retries_exhausted",
-              "output_truncated",
-              "refused"
-            ],
-            "type": "string"
-          },
-          "DeclinableCall": {
-            "additionalProperties": false,
-            "description": "What a person is offered to decline: the call by its key, the tool, and the kind of refusal.\nNever the action, the subject or the receiver's own sentence.",
-            "properties": {
-              "call": {
-                "type": "string"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              },
-              "tool": {
-                "type": "string"
-              }
-            },
-            "required": ["call", "tool", "kind"],
-            "type": "object"
-          },
-          "Declined": {
-            "description": "What the receiver answers when its Home declines a call: the Run as `control` answers it,\nand what was declined, so the Home can write its own record after the receiver has forgotten\nthe pause. The tool and the kind of refusal, never the action, the subject or a person.",
-            "properties": {
-              "activation": {
-                "$ref": "#/components/schemas/Activation"
-              },
-              "kind": {
-                "$ref": "#/components/schemas/RefusalKind"
-              },
-              "tool": {
-                "type": "string"
-              }
-            },
-            "required": ["activation", "tool", "kind"],
-            "type": "object"
-          },
-          "RefusalKind": {
-            "description": "Which authority refused a call a person could have lifted (#763). A closed set the model is\ntold about, so it names no action, subject or person.",
-            "oneOf": [
-              {
-                "description": "The Tenant policy of the Node the Run executes on.",
-                "enum": ["policy"],
-                "type": "string"
-              },
-              {
-                "description": "Catalog Approval of a Registry entry.",
-                "enum": ["catalog_approval"],
-                "type": "string"
-              },
-              {
-                "description": "The Agent's own configuration.",
-                "enum": ["agent_configuration"],
-                "type": "string"
-              },
-              {
-                "description": "The authority of the Node the Run was delegated to.",
-                "enum": ["other_node"],
-                "type": "string"
-              }
-            ]
-          },
-          "RemoteExecutionControlState": {
-            "enum": ["INACTIVE", "ACTIVE", "PAUSED", "CANCELLED"],
-            "type": "string"
-          },
-          "RemoteExecutionPhase": {
-            "enum": [
-              "ADMITTED",
-              "READY",
-              "THINKING",
-              "TOOL_CALL",
-              "WAITING",
-              "COMPLETED",
-              "FAILED",
-              "CANCELLED"
-            ],
-            "type": "string"
-          },
-          "RemoteSemanticFailure": {
-            "description": "Public reasons contain no query, source ID, upstream body, or credential.",
-            "oneOf": [
-              {
-                "enum": [
-                  "configuration",
-                  "authority",
-                  "invalidated",
-                  "provider_contract",
-                  "embedding_model_not_found",
-                  "context_budget",
-                  "durable_memory_budget",
-                  "allowance",
-                  "unavailable",
-                  "retries_exhausted",
-                  "pending"
-                ],
-                "type": "string"
-              },
-              {
-                "description": "A reused retrieval no longer matches the Home corpus; the Run retrieves\nit again instead of pausing.",
-                "enum": ["stale"],
-                "type": "string"
-              }
-            ]
-          }
-        },
-        "schema": {
-          "$ref": "#/components/schemas/Declined"
-        }
-      }
-    },
-    "source": "server/src/apps/identity/views/peer_execution.rs",
-    "uuid_parameters": ["id"]
+    "source": "server/src/apps/execution/capabilities/views/management.rs",
+    "uuid_parameters": []
   }
 ]
