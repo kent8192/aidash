@@ -582,7 +582,13 @@ class Runner(AllocationJournal):
         with self.lock:
             if self.path(operation).exists():
                 old = self.get(operation)
-                if old["wire_digest"] != wire_digest:
+                # A refusal (`refuse_undelivered`) was never sent a request, so it has no
+                # transport digest. A send of the same intent is answered with the refusal:
+                # a caller whose cancel reply was lost sends again, and only this record
+                # lets it settle. Nothing starts. Another intent is a conflict.
+                same = (old["digest"] == request["digest"] if old["wire_digest"] is None
+                        else old["wire_digest"] == wire_digest)
+                if not same:
                     raise Rejected(409, "IDEMPOTENCY_CONFLICT")
                 return self.public(old)
             # A Live preview is a long-lived reader that never publishes its
@@ -1762,16 +1768,46 @@ class Runner(AllocationJournal):
                 raise RuntimeError("sandbox termination not confirmed after deadline")
             time.sleep(0.25)
 
-    def cancel(self, operation):
-        record = self.get(operation)
-        if record["status"] == "awaiting_files":
-            record = self.update(operation, status="cancelled", cancel_requested=True, termination_confirmed=True)
-        elif record["status"] == "uncertain" and not record["termination_confirmed"]:
-            record = self.update(operation, status="cancelling", cancel_requested=True)
-            self.start(operation)
-        elif record["status"] not in TERMINAL:
-            record = self.update(operation, cancel_requested=True)
-        return self.public(record)
+    def refuse_undelivered(self, operation, refusal):
+        """Record that an operation the caller has not seen delivered will never run.
+
+        The caller cannot tell an unsent operation from a send it gave up on: `accept`
+        may still be waiting for this lock, or listing Pods under it, long after the
+        caller's timeout. This takes the same lock, so either `accept` recorded the
+        operation first and this is an ordinary cancel, or this record stands and
+        `accept` starts nothing and answers the send with this record. Another instance
+        has another journal, whose silence proves nothing about the operation, so its
+        cancel stays absent."""
+        if (set(refusal) != {"digest", "instance"} or not isinstance(refusal["instance"], str)
+                or not isinstance(refusal["digest"], str) or not refusal["digest"]):
+            raise Rejected(400, "invalid cancel refusal")
+        with self.lock:
+            if refusal["instance"] != self.instance or self.path(operation).exists():
+                return
+            record = {"operation_id": operation, "digest": refusal["digest"], "wire_digest": None,
+                      "status": "cancelled", "request": {}, "created_at": time.time(), "cancel_requested": True,
+                      "termination_confirmed": True, "stdout": "", "truncated": False,
+                      "files": [], "error": None, "executed": False}
+            save(self.path(operation), record)
+            self.aggregate.track(operation, record)
+
+    def cancel(self, operation, refusal=None):
+        # One decision under one lock. `commit_inputs` starts the command under this
+        # lock, so a cancel that read `awaiting_files` and let go before writing
+        # `cancelled` could be overtaken by that start, and its reply would say
+        # "never ran" about a command that did.
+        with self.lock:
+            if refusal is not None:
+                self.refuse_undelivered(operation, refusal)
+            record = self.get(operation)
+            if record["status"] == "awaiting_files":
+                record = self.update(operation, status="cancelled", cancel_requested=True, termination_confirmed=True)
+            elif record["status"] == "uncertain" and not record["termination_confirmed"]:
+                record = self.update(operation, status="cancelling", cancel_requested=True)
+                self.start(operation)
+            elif record["status"] not in TERMINAL:
+                record = self.update(operation, cancel_requested=True)
+            return self.public(record)
 
     def activity(self):
         """Read-only activity; an unproven writer always prevents idle stop. It reads
@@ -1864,7 +1900,10 @@ class Handler(BaseHTTPRequestHandler):
             if self.command == "GET" and len(parts) == 4:
                 return runner.public(runner.get(operation))
             if self.command == "POST" and parts[4:] == ["cancel"]:
-                return runner.cancel(operation)
+                size = int(self.headers.get("Content-Length", "0"))
+                if size > 256:
+                    raise Rejected(413, "cancel request limit")
+                return runner.cancel(operation, json.loads(self.rfile.read(size)) if size else None)
             if self.command == "POST" and parts[4:] == ["start"]:
                 return runner.commit_inputs(operation)
             if self.command == "POST" and parts[4:] == ["ack"]:
