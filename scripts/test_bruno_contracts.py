@@ -166,6 +166,14 @@ class NativeCatalogProjectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unannotated"):
             EXPORT.project(saved.replace("tenant-node-default", "unknown-default"), document, metadata)
 
+    def test_workspace_list_is_owned_by_the_workspace_app(self):
+        path = "/api/workspaces"
+        saved = "[INFO] /api/workspaces GET workspace-list -"
+        document = {"paths": {path: {"get": {"operationId": "workspace-list", "responses": {}}}}}
+        route, = EXPORT.project(saved, document, [])
+        self.assertEqual(route["source"], "server/src/apps/workspaces/views/management.rs")
+        self.assertEqual(route["name"], "workspace-list")
+
     def test_legacy_name_migration_requires_both_native_exports_to_agree(self):
         path = "/api/tasks/{task}/remote-grants/{grant}/human-requests/answer"
         metadata = [{"method": "POST", "path": path, "name": "remote-human-answer", "source": "reviewed-owner"}]
