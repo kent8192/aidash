@@ -31,8 +31,10 @@ The Sandboxed tools (shell, code, package installs, outbound requests, patches a
 
 `shell` and `code_interpreter` wait for completion by default without another
 model call. Their poll companions do the same: `wait_seconds` defaults to 300,
-is capped at 3600, and zero returns immediately. The wait never extends beyond
-the command deadline. A running command exposes the latest bounded window of
+is capped at 3600, and zero returns immediately. The wait ends when the command
+completes or after `wait_seconds`, whichever comes first. The command's own
+deadline does not cut it short, because saving the command's files comes after
+the stop. A running command exposes the latest bounded window of
 stored output. Poll replies provide an absolute byte `next_offset` for subsequent
 output; if the window has advanced past an older offset, the reply starts at the
 available window. When nothing has changed they omit `output` and set

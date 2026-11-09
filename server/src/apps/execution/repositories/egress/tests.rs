@@ -451,6 +451,50 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		.execute(db)
 		.await
 		.unwrap();
+
+	// A wake reports only the newest 32 Task changes. The Run's cursor moves
+	// past the older ones, so the wake must count what it left out.
+	let cursor: i64 = sqlx::query_scalar(
+		"SELECT COALESCE(MAX(generation), 0) FROM run_activations WHERE run_id = $1",
+	)
+	.bind(run.id)
+	.fetch_one(db)
+	.await
+	.unwrap();
+	for _ in 0..40 {
+		sqlx::query("SELECT aidash_request_activation($1, $2)")
+			.bind(run.id)
+			.bind(format!("workspace_task:{}:COMPLETED", Uuid::new_v4()))
+			.execute(db)
+			.await
+			.unwrap();
+	}
+	let generations: Vec<i64> = sqlx::query_scalar("SELECT generation FROM run_activations WHERE run_id = $1 AND generation > $2 AND reason LIKE 'workspace_task:%' ORDER BY generation")
+		.bind(run.id).bind(cursor).fetch_all(db).await.unwrap();
+	assert_eq!(generations.len(), 40);
+	let executor = f.store.for_run(scope.clone());
+	for (after, kept, dropped) in [
+		(cursor, 32, 8),
+		(generations[6], 32, 1),
+		(generations[7], 32, 0),
+		(generations[8], 31, 0),
+	] {
+		let news = aidash_application::ports::execution::ExecutionStore::workspace_events(
+			&executor, &run, after,
+		)
+		.await
+		.unwrap();
+		assert_eq!(news.events.len(), kept, "after {after}");
+		assert_eq!(news.dropped, dropped, "after {after}");
+		// Oldest first, ending at the newest change: the cursor lands on it.
+		assert_eq!(news.events.last().unwrap().generation, generations[39]);
+		assert!(
+			news.events
+				.windows(2)
+				.all(|pair| pair[0].generation < pair[1].generation)
+		);
+	}
+
 	let token = request["egress"]["token"].as_str().unwrap();
 	let digest = "a".repeat(64);
 	// Admission must not wait behind an activation claim on the Run row.

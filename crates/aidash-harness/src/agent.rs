@@ -2562,7 +2562,7 @@ connection: None,
 								}));
 							} else {
 								run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
-									wake_at: chrono::Utc::now() + chrono::Duration::hours(1),
+									wake_at: chrono::Utc::now() + children_ceiling(store, home.as_ref(), run).await?,
 									cursor: run.recovery.workspace_event_cursor.unwrap_or(0),
 									resume: ResumeState::Thinking(ThinkingState::default()),
 								}));
@@ -2656,7 +2656,7 @@ connection: None,
 								run.context.completion.basis = None;
 
 								run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
-									wake_at: chrono::Utc::now() + chrono::Duration::hours(1),
+									wake_at: chrono::Utc::now() + children_ceiling(store, home.as_ref(), run).await?,
 									cursor: run.recovery.workspace_event_cursor.unwrap_or(0),
 									resume: ResumeState::Thinking(ThinkingState::default()),
 								}));
@@ -3311,7 +3311,7 @@ connection: None,
 						let inputs = store.run_inputs(run.id).await?;
 						let observed = match &resume { ResumeState::ToolCall(state) => state.included_input_seq, _ => run.observed_input_seq };
 						let input = inputs.last().is_some_and(|input| input.seq > observed);
-						let events = store.workspace_events(run, cursor).await?;
+						let WorkspaceEvents { events, dropped } = store.workspace_events(run, cursor).await?;
 						let remote = if !home.local() { Some(home.child_summary(run.task_id).await?) } else { None };
 						let remote_changed = remote.as_ref().is_some_and(|summary| run.recovery.remote_task_fingerprint.as_ref().is_some_and(|previous| *previous != summary.fingerprint()));
 						if !input && events.is_empty() && !remote_changed && chrono::Utc::now() < wake_at {
@@ -3326,8 +3326,10 @@ connection: None,
 						if let Some(summary) = &remote { run.recovery.remote_task_fingerprint = Some(summary.fingerprint()); }
 						let reason = if input { "input" } else if !events.is_empty() || remote_changed { "workspace_event" } else { "ceiling" };
 						let open_tasks = if let Some(summary) = &remote { summary.open_tasks } else { store.unfinished_owned_tasks(run).await? };
+						// A remote Home reports no per-Task changes, so none were left out.
+						let dropped = if home.local() { dropped } else { 0 };
 						if let ResumeState::ToolCall(state) = &mut resume {
-							state.wait_result = Some(json!({"reason":reason,"changes":changes,"open_tasks":open_tasks}));
+							state.wait_result = Some(json!({"reason":reason,"changes":changes,"dropped_changes":dropped,"open_tasks":open_tasks}));
 						}
 						resume.into_state()
 					}
@@ -3385,6 +3387,26 @@ connection: None,
 		}
 		Ok(())
 	}
+}
+
+/// How long a Run that has Task children still unfinished sleeps before it
+/// looks again (#644). Only a Task the Run created or delegated wakes it early,
+/// and the children of its Task may be a person's or an earlier Run's, so the
+/// hour applies only while it has such a Task of its own; otherwise it looks
+/// again in five minutes, as `workspace_wait` does. A remote Home is polled for
+/// every child, so any pending child can wake the Run there.
+async fn children_ceiling(
+	store: &dyn ExecutionStore,
+	home: &dyn ExecutionHome,
+	run: &Run,
+) -> Result<chrono::Duration> {
+	Ok(
+		if !home.local() || store.unfinished_owned_tasks(run).await? > 0 {
+			chrono::Duration::hours(1)
+		} else {
+			chrono::Duration::minutes(5)
+		},
+	)
 }
 
 /// Answer a model's question on the system's behalf because its person's
