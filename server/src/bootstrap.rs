@@ -412,11 +412,11 @@ impl RuntimeTasks {
 				)),
 			);
 		}
-		for service in build::current()
+		for (name, service) in build::current()
 			.extension
 			.services(&federation, receiver.clone())
 		{
-			tasks.spawn_service("extension", runtime_task(service));
+			tasks.spawn_service(name, runtime_task(service));
 		}
 		if let Some(tenant_secrets) = federation.store.tenant_secrets.clone() {
 			let mut stopping = receiver.clone();
