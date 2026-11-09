@@ -60,6 +60,29 @@ fn vector(values: &[f32]) -> Result<SimpleExpr> {
 fn lookup_failure(error: Error) -> aidash_application::Error {
 	error.into()
 }
+
+#[cfg(test)]
+mod database_failure_tests {
+	use super::*;
+
+	#[tokio::test]
+	async fn pool_timeout_reaches_database_unavailable_recovery() {
+		let pool = sqlx::postgres::PgPoolOptions::new()
+			.acquire_timeout(std::time::Duration::from_millis(100))
+			.connect_lazy("postgres://nobody@127.0.0.1:1/nothing")
+			.unwrap();
+		let failure = lookup_failure(Error::from(pool.acquire().await.err().unwrap()));
+		assert!(matches!(
+			failure,
+			aidash_application::Error::TemporaryDatabase(_)
+		));
+		let native = Error::from(failure);
+		assert!(matches!(
+			crate::apps::execution::repositories::worker::classify_failure(&native),
+			aidash_application::recovery::ExecutionFailure::DatabaseUnavailable
+		));
+	}
+}
 #[async_trait]
 impl EmbeddingProvider for Transport {
 	async fn embed(
