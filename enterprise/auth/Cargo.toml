@@ -29,7 +29,6 @@ cfg_aliases = "0.2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 aidash-application.workspace = true
-aidash-server.workspace = true
 aidash-domain.workspace = true
 aidash-gcp.workspace = true
 aidash-integrations = { workspace = true, features = ["authentication"] }

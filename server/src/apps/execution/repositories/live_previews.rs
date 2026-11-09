@@ -129,10 +129,10 @@ impl application::Scope for Scope<'_> {
 		.map_err(|error| {
 			let message = error.to_string();
 			let native = NativeError::from(error);
-			match &native {
-				NativeError::Database(_) => native,
-				NativeError::Framework(error) if error.database_error().is_some() => native,
-				_ => NativeError::External(message),
+			if native.is_database() {
+				native
+			} else {
+				NativeError::External(message)
 			}
 		})?;
 		Ok(RunFacts {

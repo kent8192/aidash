@@ -34,10 +34,11 @@ fn native_db_error(error: crate::Error) -> Error {
 		reason = "database operation failed",
 		"Secret Store operation failed"
 	);
-	match &error {
-		crate::Error::Database(_) => error.into(),
-		crate::Error::Framework(framework) if framework.database_error().is_some() => error.into(),
-		_ => Error::External("Secret Store is unavailable".into()),
+	// Only a temporary failure stays typed, so callers wait; the rest stays redacted.
+	if error.is_transient_database() {
+		error.into()
+	} else {
+		Error::External("Secret Store is unavailable".into())
 	}
 }
 fn db_error(error: impl Into<reinhardt::core::exception::Error>) -> Error {

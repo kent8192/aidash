@@ -458,37 +458,37 @@ impl RuntimeTasks {
 		);
 		if std::env::var_os("AIDASH_CAPABILITY_PROFILE").is_some() {
 			let operations = federation.for_runtime_workers().await?;
-			for name in [
-				"capabilities.execution",
-				"capabilities.read_recheck",
-				"capabilities.network",
-				"capabilities.references",
-				"capabilities.cleanup",
-				"capabilities.reclamation",
-			] {
-				let store = operations.store.clone();
-				let stopping = receiver.clone();
-				tasks.spawn_service(name, async move {
-					use aidash_application::ports::capabilities::processing::CapabilityBackgroundJobs as _;
-					let repository = operation_processing_repository(&store);
-					let jobs = capability_background_jobs(&store);
-					match name {
-						"capabilities.execution" => {
-							aidash_runtime::capabilities::execution_loop(&repository, stopping)
-								.await
-						}
-						"capabilities.read_recheck" => {
-							aidash_runtime::capabilities::read_recheck_loop(&repository, stopping)
-								.await
-						}
-						"capabilities.network" => jobs.network(stopping).await,
-						"capabilities.references" => jobs.references(stopping).await,
-						"capabilities.cleanup" => jobs.cleanup(stopping).await,
-						"capabilities.reclamation" => jobs.reclamation(stopping).await,
-						_ => unreachable!(),
-					}
-				});
-			}
+			// Each loop is its own service, so a panic names the loop that ended (#787).
+			use aidash_application::ports::capabilities::processing::CapabilityBackgroundJobs as _;
+			let store = operations.store;
+			let (jobs, stopping) = (store.clone(), receiver.clone());
+			tasks.spawn_service("capabilities.execution", async move {
+				let repository = operation_processing_repository(&jobs);
+				aidash_runtime::capabilities::execution_loop(&repository, stopping).await
+			});
+			let (jobs, stopping) = (store.clone(), receiver.clone());
+			tasks.spawn_service("capabilities.read_recheck", async move {
+				let repository = operation_processing_repository(&jobs);
+				aidash_runtime::capabilities::read_recheck_loop(&repository, stopping).await
+			});
+			let (jobs, stopping) = (store.clone(), receiver.clone());
+			tasks.spawn_service("capabilities.network", async move {
+				capability_background_jobs(&jobs).network(stopping).await
+			});
+			let (jobs, stopping) = (store.clone(), receiver.clone());
+			tasks.spawn_service("capabilities.references", async move {
+				capability_background_jobs(&jobs).references(stopping).await
+			});
+			let (jobs, stopping) = (store.clone(), receiver.clone());
+			tasks.spawn_service("capabilities.cleanup", async move {
+				capability_background_jobs(&jobs).cleanup(stopping).await
+			});
+			let (jobs, stopping) = (store, receiver.clone());
+			tasks.spawn_service("capabilities.reclamation", async move {
+				capability_background_jobs(&jobs)
+					.reclamation(stopping)
+					.await
+			});
 			let transfers = federation.for_runtime_workers().await?;
 			let stopping = receiver.clone();
 			tasks.spawn_service(
@@ -689,10 +689,12 @@ impl Drop for RuntimeTasks {
 async fn runtime_task(
 	work: impl std::future::Future<Output = Result<()>>,
 ) -> aidash_application::Result<()> {
-	work.await.map_err(|error| match &error {
-		Error::Database(_) => error.into(),
-		Error::Framework(framework) if framework.database_error().is_some() => error.into(),
-		_ => aidash_application::Error::External(error.to_string()),
+	work.await.map_err(|error| {
+		if error.is_database() {
+			error.into()
+		} else {
+			aidash_application::Error::External(error.to_string())
+		}
 	})
 }
 

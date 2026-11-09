@@ -1,4 +1,5 @@
-//! Capability process work owns every loop and waits for an in-flight batch before stopping.
+//! Capability loops. The server supervises each as its own named service; every
+//! loop finishes its in-flight batch once stopping is signalled.
 use crate::background::Passes;
 use aidash_application::{
 	Result,

@@ -28,9 +28,34 @@ use uuid::Uuid;
 pub(crate) fn unavailable(_: impl std::fmt::Display) -> Error {
 	Error::External("authentication persistence unavailable".into())
 }
-fn database_failure(error: impl Into<reinhardt::core::exception::Error>) -> Error {
+/// A temporary database failure stays typed so callers answer 503 with
+/// `Retry-After`; anything else keeps the redacted message. This copies the
+/// Community server's classification (`server/src/error.rs`) instead of
+/// depending on the server crate (#787).
+pub(crate) fn database_failure(error: impl Into<reinhardt::core::exception::Error>) -> Error {
+	use reinhardt::core::exception::DatabaseErrorKind;
 	let error: reinhardt::core::exception::Error = error.into();
-	aidash_server::Error::from(error).into()
+	let temporary = error.database_error().is_some_and(|database| {
+		matches!(
+			database.kind(),
+			DatabaseErrorKind::Connection | DatabaseErrorKind::Timeout
+		) || database.code().is_some_and(|code| {
+			code.starts_with("08")
+				|| matches!(
+					code,
+					"40001"
+						| "40P01" | "53300"
+						| "55P03" | "57014"
+						| "57P01" | "57P02"
+						| "57P03" | "A3301"
+				)
+		})
+	});
+	if temporary {
+		Error::TemporaryDatabase(Box::new(error))
+	} else {
+		unavailable(error)
+	}
 }
 pub(crate) fn encode(value: &impl Serialize) -> Result<serde_json::Value> {
 	Ok(serde_json::to_value(value)?)
@@ -174,67 +199,16 @@ impl Store {
 			.await
 			.map_err(database_failure)?;
 		Box::new(tx).commit().await?;
-		// Reinhardt's purge helpers stringify database failures. Keep their
-		// expiration, reference and transaction rules so errors remain typed.
-		for tables in [
-			&[
-				"oauth_server_pending",
-				"oauth_server_tokens",
-				"oauth_server_refresh_tokens",
-				"oauth_server_token_families",
-				"oauth_server_codes",
-				"oauth_server_device_authorizations",
-			][..],
-			&["oidc_op_pending", "oidc_op_codes"][..],
-		] {
-			#[allow(clippy::disallowed_methods)] // Purge is confined to this service-owned schema.
-			let mut tx = self.connection.begin().await.map_err(database_failure)?;
-			for &table in tables {
-				let mut query = Query::delete();
-				query.from_table(Alias::new(table));
-				if table == "oauth_server_refresh_tokens" {
-					let mut families = Query::select();
-					families
-						.column(Alias::new("family_id"))
-						.from(Alias::new("oauth_server_token_families"))
-						.and_where(Expr::col(Alias::new("absolute_expires_at")).lte(now));
-					query.and_where(Expr::col(Alias::new("family_id")).in_subquery(families));
-				} else {
-					let expiration = if table == "oauth_server_token_families" {
-						"absolute_expires_at"
-					} else {
-						"expires_at"
-					};
-					query.and_where(Expr::col(Alias::new(expiration)).lte(now));
-				}
-				if table == "oauth_server_codes" {
-					for referencing in ["oauth_server_tokens", "oauth_server_token_families"] {
-						let mut used = Query::select();
-						used.column(Alias::new("code_digest"))
-							.from(Alias::new(referencing))
-							.and_where(
-								Expr::col((referencing, "code_digest"))
-									.eq(Expr::col(("oauth_server_codes", "digest"))),
-							);
-						query.and_where(Expr::not_exists(used));
-					}
-				} else if table == "oidc_op_codes" {
-					let mut used = Query::select();
-					used.column(Alias::new("digest"))
-						.from(Alias::new("oauth_server_codes"))
-						.and_where(
-							Expr::col(("oauth_server_codes", "digest"))
-								.eq(Expr::col(("oidc_op_codes", "digest"))),
-						);
-					query.and_where(Expr::not_exists(used));
-				}
-				let (sql, args) = query.build(PostgresQueryBuilder);
-				tx.execute(&sql, convert_values(args))
-					.await
-					.map_err(database_failure)?;
-			}
-			tx.commit().await.map_err(database_failure)?;
-		}
+		// Reinhardt's purge helpers return a string, so a temporary failure here
+		// is not typed; the next pass retries it (#787, reinhardt-web#6899).
+		reinhardt::auth::oauth2_server::PostgresOAuthStore::new(self.pool.clone())
+			.purge_expired(now)
+			.await
+			.map_err(unavailable)?;
+		reinhardt::auth::oidc_op::PostgresOidcStore::new(self.pool.clone())
+			.purge_expired(now)
+			.await
+			.map_err(unavailable)?;
 		Ok(())
 	}
 	pub async fn migrate(&self) -> Result<()> {

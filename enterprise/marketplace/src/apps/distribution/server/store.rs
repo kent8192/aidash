@@ -62,7 +62,8 @@ impl Store {
 	// without installing a global/default connection.
 	#[allow(clippy::disallowed_methods)]
 	pub async fn connect(url: &str) -> Result<Self> {
-		// Keep the limits used by Reinhardt's connect_postgres pool.
+		// The same pool settings, including `DATABASE_POOL_MAX_CONNECTIONS`, that
+		// Reinhardt's `connect_postgres` uses; only `after_release` is new (#787).
 		let max_connections = std::env::var("DATABASE_POOL_MAX_CONNECTIONS")
 			.ok()
 			.and_then(|value| value.parse::<u32>().ok())

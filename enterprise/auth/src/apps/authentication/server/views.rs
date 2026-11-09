@@ -1307,14 +1307,18 @@ fn failure(error: Error) -> Response {
 mod database_failure_tests {
 	use super::*;
 
-	#[tokio::test]
-	async fn temporary_database_failure_returns_retry_after() {
-		let pool = sqlx::postgres::PgPoolOptions::new()
-			.acquire_timeout(std::time::Duration::from_millis(100))
-			.connect_lazy("postgres://nobody@127.0.0.1:1/nothing")
-			.unwrap();
-		let error = aidash_server::Error::from(pool.acquire().await.err().unwrap());
-		let response = failure(Error::Application(error.into()));
+	#[test]
+	fn temporary_database_failure_returns_retry_after() {
+		use reinhardt::core::exception::{DatabaseError, DatabaseErrorKind};
+		let timeout = crate::store::database_failure(DatabaseError::new(
+			DatabaseErrorKind::Timeout,
+			"pool timed out",
+		));
+		assert!(matches!(
+			timeout,
+			aidash_application::Error::TemporaryDatabase(_)
+		));
+		let response = failure(Error::Application(timeout));
 		assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
 		assert_eq!(response.headers[header::RETRY_AFTER], "1");
 		let nested = aidash_application::Error::TemporaryDatabase(Box::new(std::io::Error::other(
@@ -1325,5 +1329,17 @@ mod database_failure_tests {
 		)));
 		assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
 		assert_eq!(response.headers[header::RETRY_AFTER], "1");
+	}
+
+	#[test]
+	fn a_permanent_database_failure_stays_redacted() {
+		use reinhardt::core::exception::{DatabaseError, DatabaseErrorKind};
+		let error = crate::store::database_failure(DatabaseError::new(
+			DatabaseErrorKind::Query,
+			"relation does not exist",
+		));
+		assert!(
+			matches!(error, aidash_application::Error::External(message) if message == "authentication persistence unavailable")
+		);
 	}
 }
