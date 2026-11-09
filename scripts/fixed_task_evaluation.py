@@ -1324,6 +1324,14 @@ def grade(corpus, task, observation, allow_code_execution, required_loads=()):
         passed, checks, detail = oracle_overdue(corpus, oracle, answer)
     elif kind in ("constraint-retention", "compaction-retention"):
         passed, checks, detail = oracle_constraints(oracle, answer)
+        if task.get("fixture_record_pages"):
+            calls = [call for call in observation.get("tool_calls", [])
+                     if call.get("name") == "record_note" and not call.get("dispatch_rejected")]
+            pages = [call.get("arguments", {}).get("page") for call in calls]
+            ok = pages == list(range(1, task["reference_pages"] + 1)) and all(not call.get("error") for call in calls)
+            checks.append({"check": "each-page-recorded-once", "passed": ok})
+            if not ok:
+                passed, detail = False, "the ledger did not record each page exactly once in order"
         if kind == "compaction-retention":
             adopted = observation.get("recovery_operations", [])
             operation = oracle["operation"]
