@@ -1,18 +1,17 @@
 meta {
-  name: 1601 peerexecutionmanagement-decline-call - Require the Federation token
+  name: 1599 remote_execution_decline_call - Anonymous request is rejected
   type: http
-  seq: 1601
+  seq: 1599
 }
 
 post {
-  url: {{base_url}}/federation/v0.1/scoped/execution/admissions/11111111-1111-4111-8111-111111111111/declined-calls
+  url: {{base_url}}/api/tasks/11111111-1111-4111-8111-111111111111/remote-grants/11111111-1111-4111-8111-111111111111/declined-calls
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  X-Aidash-Protocol: 0.5
 }
 
 script:pre-request {

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 400,
+  "endpoint_count": 403,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -17625,6 +17625,127 @@
         "Rejected input preserves committed workspace state",
         "Exact HTTP 400",
         "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1596 run-decline-call - Anonymous request is rejected",
+      "file": "contracts/1596-run-decline-call.bru",
+      "endpoint": "POST /api/runs/{id}/declined-calls",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1597 run-decline-call - Wrong JSON media type is rejected",
+      "file": "contracts/1597-run-decline-call.bru",
+      "endpoint": "POST /api/runs/{id}/declined-calls",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1598 run-decline-call - Malformed JSON cannot reach the use case",
+      "file": "contracts/1598-run-decline-call.bru",
+      "endpoint": "POST /api/runs/{id}/declined-calls",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1599 remote_execution_decline_call - Anonymous request is rejected",
+      "file": "contracts/1599-remote_execution_decline_call.bru",
+      "endpoint": "POST /api/tasks/{task}/remote-grants/{id}/declined-calls",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1600 remote_execution_decline_call - Wrong JSON media type is rejected",
+      "file": "contracts/1600-remote_execution_decline_call.bru",
+      "endpoint": "POST /api/tasks/{task}/remote-grants/{id}/declined-calls",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1601 remote_execution_decline_call - Malformed JSON cannot reach the use case",
+      "file": "contracts/1601-remote_execution_decline_call.bru",
+      "endpoint": "POST /api/tasks/{task}/remote-grants/{id}/declined-calls",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1602 peerexecutionmanagement-decline-call - Reject unsupported federation protocol",
+      "file": "contracts/1602-peerexecutionmanagement-decline-call.bru",
+      "endpoint": "POST /federation/v0.1/scoped/execution/admissions/{id}/declined-calls",
+      "scenario": "Reject unsupported federation protocol",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials",
+        "Reject unsupported federation protocol contract"
+      ]
+    },
+    {
+      "name": "1603 peerexecutionmanagement-decline-call - Reject the retired federation protocol 0.3",
+      "file": "contracts/1603-peerexecutionmanagement-decline-call.bru",
+      "endpoint": "POST /federation/v0.1/scoped/execution/admissions/{id}/declined-calls",
+      "scenario": "Reject the retired federation protocol 0.3",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1604 peerexecutionmanagement-decline-call - Require the Federation token",
+      "file": "contracts/1604-peerexecutionmanagement-decline-call.bru",
+      "endpoint": "POST /federation/v0.1/scoped/execution/admissions/{id}/declined-calls",
+      "scenario": "Require the Federation token",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1605 peerexecutionmanagement-decline-call - Refuse a token that does not verify",
+      "file": "contracts/1605-peerexecutionmanagement-decline-call.bru",
+      "endpoint": "POST /federation/v0.1/scoped/execution/admissions/{id}/declined-calls",
+      "scenario": "Refuse a token that does not verify",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
       ]
     }
   ]
