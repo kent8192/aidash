@@ -364,6 +364,7 @@ async fn reconcile(
 							.min(limits.maximum_seconds),
 						revision: area.revision,
 						python: operation.kind == "code_interpreter",
+						install: operation.kind == "python_install",
 					}))?;
 			}
 			if operation.kind == "code_interpreter" {

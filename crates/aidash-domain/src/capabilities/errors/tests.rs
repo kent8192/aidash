@@ -47,6 +47,7 @@ fn a_timed_out_command_says_what_was_saved_and_what_to_do_next() {
 		maximum_seconds: 600,
 		revision: 22,
 		python: false,
+		install: false,
 	});
 	assert_eq!(error.code, COMMAND_TIMED_OUT);
 	assert!(!error.retryable);
@@ -74,6 +75,7 @@ fn a_command_at_the_maximum_is_not_told_to_raise_its_limit() {
 		maximum_seconds: 600,
 		revision: 22,
 		python: false,
+		install: false,
 	});
 	assert!(
 		!error.message.contains("timeout_seconds"),
@@ -94,6 +96,7 @@ fn a_timed_out_python_cell_says_its_session_was_reset() {
 		maximum_seconds: 600,
 		revision: 4,
 		python: true,
+		install: false,
 	});
 	assert_eq!(error.code, COMMAND_TIMED_OUT);
 	for part in [
@@ -114,6 +117,7 @@ fn a_timed_out_error_survives_being_stored() {
 		maximum_seconds: 600,
 		revision: 4,
 		python: false,
+		install: false,
 	});
 	let stored = CapabilityError::stored(&serde_json::to_value(&error).unwrap()).unwrap();
 	assert_eq!(stored.code, COMMAND_TIMED_OUT);
