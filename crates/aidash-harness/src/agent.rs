@@ -117,11 +117,14 @@ impl<'a> Executor<'a> {
 				}
 			},
 			// A swallowed denial could leave a note behind; never read it here.
-			Err(Error::NotFound(message)) => Ok(json!({"error":format!(
-				"{}.{} {DO_NOT_REPEAT}",
-				message.trim_end_matches('.'),
-				if tool.replay_safe { "" } else { PARTLY_HAPPENED }
-			)})),
+			Err(Error::NotFound(message)) => {
+				tracing::info!(run_id = %run.id, tool = tool.name, %message, "tool call found nothing");
+				Ok(json!({"error":format!(
+					"{}.{} {DO_NOT_REPEAT}",
+					message.trim_end_matches('.'),
+					if tool.replay_safe { "" } else { PARTLY_HAPPENED }
+				)}))
+			}
 			Err(Error::ToolNotDelivered {
 				message,
 				retry_after,

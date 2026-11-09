@@ -1715,6 +1715,63 @@ async fn not_found_from_an_unsafe_tool_says_it_may_have_partly_happened() {
 	);
 }
 
+/// The fields of every event logged since `capture_logs` first ran. The subscriber is global
+/// because a thread-local one misses events when parallel tests register the same call site first:
+/// tracing then caches it as disabled for threads that set their own subscriber later.
+static LOGGED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+struct LoggedEvents;
+impl tracing::Subscriber for LoggedEvents {
+	fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+		true
+	}
+	fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+		tracing::span::Id::from_u64(1)
+	}
+	fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+	fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+	fn event(&self, event: &tracing::Event<'_>) {
+		struct Fields(String);
+		impl tracing::field::Visit for Fields {
+			fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+				use std::fmt::Write;
+				let _ = write!(self.0, "{}={value:?} ", field.name());
+			}
+		}
+		let mut fields = Fields(String::new());
+		event.record(&mut fields);
+		LOGGED.lock().unwrap().push(fields.0);
+	}
+	fn enter(&self, _: &tracing::span::Id) {}
+	fn exit(&self, _: &tracing::span::Id) {}
+}
+fn capture_logs() {
+	static INSTALL: std::sync::Once = std::sync::Once::new();
+	INSTALL.call_once(|| {
+		tracing::subscriber::set_global_default(LoggedEvents)
+			.expect("no other test sets a global subscriber");
+	});
+}
+
+#[tokio::test]
+async fn a_not_found_call_leaves_a_log_line_naming_the_run_and_the_tool() {
+	// Arrange: a refusal without a policy decision leaves no row, so the log is its record.
+	capture_logs();
+	let lab = Lab::new(|_, _| async { Err(Error::NotFound("file unavailable".into())) }.boxed());
+	let (bench, mut run) = bench(&lab, &["file_read"], 1, None);
+	// Act
+	advance(&bench, &mut run).await.unwrap();
+	// Assert: other tests log too, so only this Run's lines count.
+	let lines = LOGGED.lock().unwrap().clone();
+	assert!(
+		lines.iter().any(|line| {
+			line.contains(&run.id.to_string())
+				&& line.contains("file_read")
+				&& line.contains("file unavailable")
+		}),
+		"{lines:?}"
+	);
+}
+
 #[tokio::test]
 async fn a_conflict_still_fails_the_run() {
 	let lab = Lab::new(|_, _| {
