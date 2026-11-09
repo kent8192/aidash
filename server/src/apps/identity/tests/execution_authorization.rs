@@ -12,7 +12,9 @@ mod late_subnode;
 mod subnode_read_boundary;
 #[path = "../../execution/tests/support/tenant_openrouter.rs"]
 mod tenant_openrouter;
-use aidash_server::{domain::qualified_agent, harness::Harness};
+use aidash_server::{
+	authorization::services::execution::StepAuthority, domain::qualified_agent, harness::Harness,
+};
 
 use common::*;
 use serde_json::{Value, json};
@@ -8348,6 +8350,98 @@ async fn human_request_after_the_subnode_ended_is_refused(
 		"a request after the end must be refused: {outcome:?}, rows {requests}"
 	);
 	assert_eq!(requests, 0, "no request may be recorded");
+	assert_cancelled(&run_to_its_end(&rig, late.member.id).await);
+	cleanup(f, &url, &schema).await;
+}
+
+/// A member Run's sampling approval is not opened once its Subnode ended: the
+/// approval is refused, no record is written and the Run ends as cancelled. The
+/// authority is begun while the Subnode is active, as a step does, so the call
+/// stands in for one that passed the tool's entrance before the end (#759).
+#[rstest::rstest]
+#[tokio::test]
+async fn sampling_approval_after_the_subnode_ended_is_refused(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::new(&f, &fixture.application, &["subnode-leader"], true).await;
+	let late = late_subnode(&rig, &SUBNODE_TOOLS).await;
+	let authority = StepAuthority::begin(&f, &late.member).await.unwrap();
+	let (status, body) = end_subnode(&rig).await;
+	assert_eq!(status, 200, "end: {body}");
+	assert_eq!(subnode_state(&rig, late.subnode).await, "dissolved");
+	let request = aidash_application::capabilities::approvals::SamplingApprovalRequest {
+		key: "late-sampling".into(),
+		target: serde_json::from_value(json!({
+			"agent": late.member.agent_id,
+			"plugin": "late-plugin",
+			"server": "late-server",
+			"digest": format!("sha256:{}", "0".repeat(64)),
+			"origin": "https://example.com",
+		}))
+		.unwrap(),
+		request: serde_json::from_value(json!({
+			"messages": [{"role": "user", "text": "Late question"}],
+			"system_prompt": "",
+			"max_tokens": 16,
+		}))
+		.unwrap(),
+		expires_at: chrono::Utc::now() + chrono::Duration::minutes(5),
+		area: None,
+	};
+	let asked = authority
+		.sampling_approval(&f.store, &late.member, request)
+		.await;
+	let records: i64 =
+		sqlx::query_scalar("SELECT count(*) FROM core_records WHERE kind = 'sampling'")
+			.fetch_one(f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert!(
+		matches!(asked, Err(aidash_server::Error::Forbidden)),
+		"a sampling approval after the end must be refused: {asked:?}, rows {records}"
+	);
+	assert_eq!(records, 0, "no approval may be recorded");
+	assert_cancelled(&run_to_its_end(&rig, late.member.id).await);
+	cleanup(f, &url, &schema).await;
+}
+
+/// A member Run's Live preview is not started once its Subnode ended: the start
+/// is refused, no row is recorded and the Run ends as cancelled. The authority is
+/// begun while the Subnode is active and the request has passed admission, so
+/// the call stands in for one that passed the tool's entrance before the end
+/// (#759). The refusal after the row is recorded needs the end to commit between
+/// the row and the dispatch, which a test cannot place without a hook.
+#[rstest::rstest]
+#[tokio::test]
+async fn live_preview_start_after_the_subnode_ended_is_refused(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::new(&f, &fixture.application, &["subnode-leader"], true).await;
+	let late = late_subnode(&rig, &SUBNODE_TOOLS).await;
+	let authority = StepAuthority::begin(&f, &late.member).await.unwrap();
+	let (status, body) = end_subnode(&rig).await;
+	assert_eq!(status, 200, "end: {body}");
+	assert_eq!(subnode_state(&rig, late.subnode).await, "dissolved");
+	let started = authority
+		.live_preview_start(&f.store, &late.member, "python3 -m http.server 8000", 8000)
+		.await;
+	let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM core_live_previews WHERE run_id = $1")
+		.bind(late.member.id)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert!(
+		matches!(started, Err(aidash_server::Error::Forbidden)),
+		"a start after the end must be refused: {started:?}, rows {rows}"
+	);
+	assert_eq!(rows, 0, "no Live preview row may be recorded");
+	assert_cancelled(&run_to_its_end(&rig, late.member.id).await);
 	cleanup(f, &url, &schema).await;
 }
 
