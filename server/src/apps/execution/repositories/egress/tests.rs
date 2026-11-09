@@ -18,6 +18,7 @@ use crate::apps::execution::{
 	repositories::egress::{Gateway, attach},
 };
 use crate::{
+	apps::identity::models::AuthorizationBundle,
 	authorization::{Authorization, access::Access, identity::Actor},
 	capabilities::{Profile, RunnerProfile, Runtime},
 };
@@ -28,7 +29,11 @@ use aidash_application::{
 use chrono::Utc;
 use reinhardt::{
 	Response, ServerRouter,
-	db::orm::{Json, Model},
+	db::{
+		backends::TransactionExecutor,
+		orm::{Json, Model, execution::convert_values},
+	},
+	query::{Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder},
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -585,6 +590,87 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 				&digest
 			)
 			.await,
+		Err(aidash_application::Error::Forbidden)
+	));
+	// A command's request waits behind an Authority Change, and the change does
+	// not wait for it, since the step that started the command has gone on (ADR 0121).
+	// A running step stands in for the work the change waits for. The request
+	// ends refused after its checks, so that it does not count against the budget.
+	let applied_before: chrono::DateTime<Utc> =
+		sqlx::query_scalar("SELECT updated_at FROM authorization_bundles WHERE tenant = 'acme'")
+			.fetch_one(db)
+			.await
+			.unwrap();
+	let mut running = f.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	AuthorizationBundle::lock_frozen(&mut *running, "acme", false)
+		.await
+		.unwrap();
+	let change = {
+		let store = f.store.clone();
+		tokio::spawn(async move {
+			let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
+			AuthorizationBundle::lock_frozen(&mut *tx, "acme", true).await?;
+			let (sql, values) = Query::update()
+				.table(Alias::new("authorization_bundles"))
+				.value_expr(Alias::new("updated_at"), Expr::current_timestamp())
+				.and_where(Expr::col("tenant").eq(Expr::value("acme")))
+				.build(PostgresQueryBuilder);
+			let executor: &mut dyn TransactionExecutor = &mut *tx;
+			executor.execute(&sql, convert_values(values)).await?;
+			tx.commit().await?;
+			Ok::<_, crate::Error>(())
+		})
+	};
+	tokio::time::timeout(std::time::Duration::from_secs(5), async {
+		while crate::database::authority_change::is_clear(&f.store.pool, "acme").await {
+			tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+		}
+	})
+	.await
+	.expect("the change raised its flag");
+	let admitting = {
+		let (gateway, token, digest) = (
+			Gateway::new(f.store.clone()),
+			token.to_owned(),
+			digest.clone(),
+		);
+		tokio::spawn(async move {
+			gateway
+				.admit(&token, "absent", "GET", "download", &digest)
+				.await
+		})
+	};
+	tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+	assert!(
+		!admitting.is_finished(),
+		"the request passed a waiting change"
+	);
+	assert!(
+		!change.is_finished(),
+		"the change did not wait for the step"
+	);
+	running.commit().await.unwrap();
+	// Had the request waited after taking its share of the policy, the change
+	// would be waiting for it now, and would only end by being refused.
+	tokio::time::timeout(std::time::Duration::from_secs(5), change)
+		.await
+		.expect("the change waited for the request")
+		.unwrap()
+		.expect("the change is applied");
+	let applied_after: chrono::DateTime<Utc> =
+		sqlx::query_scalar("SELECT updated_at FROM authorization_bundles WHERE tenant = 'acme'")
+			.fetch_one(db)
+			.await
+			.unwrap();
+	assert!(
+		applied_after > applied_before,
+		"the change wrote the policy"
+	);
+	assert!(matches!(
+		tokio::time::timeout(std::time::Duration::from_secs(5), admitting)
+			.await
+			.expect("the request went on once the change ended")
+			.unwrap(),
 		Err(aidash_application::Error::Forbidden)
 	));
 	first.meter.charge(Direction::Sent, 6).await.unwrap();

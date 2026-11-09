@@ -62,11 +62,31 @@ export function csrfToken(): string | null {
 export class ApiError extends Error {
   status: number;
   readonly responseReceived: boolean;
-  constructor(message: string, status: number, responseReceived = false) {
+  /** Seconds until a refused Authority Change can be sent again. */
+  readonly retryAfter?: number;
+  constructor(
+    message: string,
+    status: number,
+    responseReceived = false,
+    retryAfter?: number,
+  ) {
     super(message);
     this.status = status;
     this.responseReceived = responseReceived;
+    this.retryAfter = retryAfter;
   }
+}
+/** The wait a Policy Busy refusal asks for, or `undefined` for any other response. */
+export async function policyBusyWait(
+  response: Response,
+): Promise<number | undefined> {
+  if (response.status !== 503) return undefined;
+  const body = (await response
+    .clone()
+    .json()
+    .catch(() => ({}))) as { error?: unknown };
+  if (body.error !== "POLICY_BUSY") return undefined;
+  return Number(response.headers.get("retry-after")) || 1;
 }
 function current(generation: number): void {
   if (generation !== contextGeneration)
@@ -230,6 +250,13 @@ export async function authenticatedFetch(
     }
     if (response.status === 403)
       throw new ApiError(messages.accessDenied, response.status, true);
+    if (response.status === 503 && data.error === "POLICY_BUSY")
+      throw new ApiError(
+        messages.policyBusy,
+        response.status,
+        true,
+        Number(response.headers.get("retry-after")) || 1,
+      );
     // The chosen Tenant was deleted; the session no longer offers it.
     if (response.status === 410)
       window.dispatchEvent(new Event(SESSION_CHANGED));

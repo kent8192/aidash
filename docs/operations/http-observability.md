@@ -13,6 +13,7 @@ No cluster-wide quota or automatic request retry is introduced.
 | Variable                               | Default | Meaning                                                                                                     |
 | -------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------- |
 | `AIDASH_HTTP_TIMEOUT_SECONDS`          | `30`    | Deadline for body reception and response headers (1–3600 seconds)                                           |
+| `AIDASH_POLICY_WAIT_SECONDS`           | `10`    | Longest wait of an Authority Change (1–3600 seconds); must be under half of `AIDASH_HTTP_TIMEOUT_SECONDS`   |
 | `AIDASH_HTTP_CONCURRENCY`              | `128`   | Shared admitted requests, including body reception and responses (1–65536)                                  |
 | `AIDASH_SSE_CONNECTIONS`               | `128`   | Active SSE response bodies (1–65536)                                                                        |
 | `AIDASH_AUTH_RATE_BURST`               | `30`    | `/auth/*` burst per socket peer IP, except discovery; refill one request every 2 seconds                    |
@@ -147,6 +148,9 @@ long-lived streams from response-future concurrency.
 
 Aidash additionally emits:
 
+- `aidash_authority_change_refusals_total`: Authority Changes refused after waiting for running work. A warning names the Tenant and how long the oldest holder of a policy lock had run.
+- `aidash_authority_change_wait_seconds`: how long an Authority Change waited for its locks.
+- `aidash_authority_change_entrance_wait_seconds`: how long new work waited behind an Authority Change.
 - `aidash_sse_connections`: live accepted SSE bodies.
 - `aidash_sse_disconnects_total`: bodies completed or dropped, including normal closes.
 - `aidash_worker_active_steps`: leased steps currently handled by this process.

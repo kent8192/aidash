@@ -215,6 +215,21 @@ fn tool_retry_survives_native_worker_error_conversion() {
 	);
 }
 
+#[test]
+fn a_refused_authority_change_says_so_and_when_to_try_again() {
+	let response = Error::PolicyBusy { retry_after: 30 }.http_response();
+	assert_eq!(response.status.as_u16(), 503);
+	assert_eq!(response.headers["retry-after"], "30");
+	assert_eq!(response.headers["x-aidash-policy-busy"], "30");
+	assert!(
+		!response
+			.headers
+			.contains_key("x-aidash-transaction-pending")
+	);
+	let body: Value = serde_json::from_slice(&response.body).unwrap();
+	assert_eq!(body["error"], "POLICY_BUSY");
+}
+
 /// #728: a temporary failure used to end the Run for good.
 #[rstest]
 #[case("40001")]

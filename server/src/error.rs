@@ -67,6 +67,10 @@ pub enum Error {
 	},
 	#[error("atomic transaction visibility pending; retry after recovery")]
 	TransactionPending,
+	/// Running work did not finish within the limit of an Authority Change,
+	/// which was not applied (503). The same request can be sent again.
+	#[error("POLICY_BUSY")]
+	PolicyBusy { retry_after: u64 },
 	#[error("an atomic transaction committed during inference; retrying from fresh state")]
 	StaleInference,
 	#[error("semantic backend unavailable or invalid; inspect index status and retry")]
@@ -215,6 +219,7 @@ impl Error {
 				StatusCode::SERVICE_UNAVAILABLE,
 				"atomic transaction visibility pending; retry after recovery".into(),
 			),
+			Self::PolicyBusy { .. } => (StatusCode::SERVICE_UNAVAILABLE, "POLICY_BUSY".into()),
 			_ if self.is_transient_database() => {
 				tracing::warn!(error = %self, "request failed on a temporary database error");
 				(
@@ -280,6 +285,14 @@ impl Error {
 			response
 				.headers
 				.insert(RETRY_AFTER, HeaderValue::from(*retry_after_seconds));
+		} else if let Self::PolicyBusy { retry_after } = &self {
+			response
+				.headers
+				.insert(RETRY_AFTER, HeaderValue::from(*retry_after));
+			// A peer's client keeps no body of a refusal.
+			response
+				.headers
+				.insert("x-aidash-policy-busy", HeaderValue::from(*retry_after));
 		} else if status == StatusCode::SERVICE_UNAVAILABLE
 			|| status == StatusCode::TOO_MANY_REQUESTS
 		{
@@ -443,6 +456,7 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::Plan(failure) => Self::Plan(failure),
 			ApplicationError::InferenceStalled => Self::InferenceStalled,
 			ApplicationError::TransactionPending => Self::TransactionPending,
+			ApplicationError::PolicyBusy { retry_after } => Self::PolicyBusy { retry_after },
 			ApplicationError::RunLockContended => Self::External("Run row lock contended".into()),
 			// The broker fault keeps its generic Deployment Administrator message and correlation.
 			error @ (ApplicationError::BrokerUnavailable { .. }
@@ -497,6 +511,7 @@ impl From<Error> for aidash_application::Error {
 			Error::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
 			Error::ConnectionStoreUnavailable => Self::ConnectionStoreUnavailable,
 			Error::TransactionPending => Self::TransactionPending,
+			Error::PolicyBusy { retry_after } => Self::PolicyBusy { retry_after },
 			Error::InferenceStalled => Self::InferenceStalled,
 			Error::ToolNotDelivered {
 				message,

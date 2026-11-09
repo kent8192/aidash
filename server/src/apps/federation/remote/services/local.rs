@@ -14,7 +14,8 @@
 //! shared lock would wait on it. One that holds the Deployment's distribution
 //! lock shares it with the peer it asks (`database::native::distribution`),
 //! because a shared request of the peer's own would queue behind a writer that
-//! waits for the lock its caller holds.
+//! waits for the lock its caller holds. So nothing here may wait for work that
+//! this request's own caller is holding up.
 use crate::{
 	Error, Result,
 	apps::federation::transactions::{
@@ -39,6 +40,7 @@ pub(crate) struct Outcome {
 	pub semantic_reason: Option<Failure>,
 	pub execution_refusal: Option<aidash_domain::federation::execution::Refusal>,
 	pub transaction_pending: bool,
+	pub policy_busy: Option<u64>,
 	pub run_message_pending: bool,
 }
 
@@ -51,6 +53,7 @@ impl Outcome {
 				semantic_reason: None,
 				execution_refusal: None,
 				transaction_pending: false,
+				policy_busy: None,
 				run_message_pending: false,
 			},
 			Err(error) => Error::from(error).into(),
@@ -81,6 +84,8 @@ fn response(response: Response) -> Outcome {
 			.and_then(|reason| serde_json::from_value(json!(reason)).ok()),
 		transaction_pending: header(&response.headers, "x-aidash-transaction-pending")
 			.is_some_and(|value| value == "1"),
+		policy_busy: header(&response.headers, "x-aidash-policy-busy")
+			.and_then(|value| value.parse().ok()),
 		run_message_pending: response
 			.headers
 			.contains_key("x-aidash-run-message-pending"),

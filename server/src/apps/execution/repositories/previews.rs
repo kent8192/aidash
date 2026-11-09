@@ -773,6 +773,7 @@ impl Gateway {
 		if (Session { expires_at }).accept(Utc::now()).is_err() {
 			return Err(NativeError::Forbidden);
 		}
+		crate::database::authority_change::enter(&self.store.pool, &preview.tenant).await;
 		// The cookie is not authority: re-run the download decision under the
 		// stored credential, so a revoked subject stops at the next request.
 		let mut access = self
@@ -945,6 +946,7 @@ impl Gateway {
 		if (Session { expires_at }).accept(Utc::now()).is_err() {
 			return Err(NativeError::Forbidden);
 		}
+		crate::database::authority_change::enter(&self.store.pool, &resolved.tenant).await;
 		let mut access = self
 			.viewer_access(
 				&resolved.tenant,

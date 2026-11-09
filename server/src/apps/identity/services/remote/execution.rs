@@ -33,6 +33,8 @@ pub(crate) async fn control(
 	(task, id): (Uuid, Uuid),
 	input: RemoteExecutionControlInput,
 ) -> Result<RemoteExecutionActivation> {
+	// Resuming waits behind an Authority Change at the boundary, before the
+	// visibility lease begins; pausing and cancelling do not (ADR 0121).
 	aidash_application::authorization::home::control(
 		&crate::bootstrap::home_execution_repository(&f, actor),
 		task,

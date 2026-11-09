@@ -187,6 +187,7 @@
   "subject": "Subject",
   "administrator": "Administrator",
   "accessDenied": "Your current permissions do not allow this operation.",
+  "policyBusy": "The change was not applied, because work already running did not finish in time. You can retry in a moment.",
   "credentialInvalid": "Your token is invalid, expired or revoked. Sign in with a current token.",
   "generation": "Agent generation",
   "generationHelp": "Create specialists from approved definitions, with clear limits and a reviewable history.",

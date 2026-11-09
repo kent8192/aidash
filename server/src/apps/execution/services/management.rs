@@ -389,6 +389,8 @@ impl HarnessManagement {
 		let Actor::Subject(identity) = actor else {
 			return Err(Error::Forbidden);
 		};
+		// Resuming waits behind an Authority Change at the boundary, before the
+		// visibility lease begins; pausing and cancelling do not (ADR 0121).
 		execution::control(&f, &identity, id, input.action).await
 	}
 	pub(crate) async fn run_message(
