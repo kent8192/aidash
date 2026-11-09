@@ -207,7 +207,15 @@ impl application::Scope for Scope<'_> {
 			&self.run.metadata(),
 		)
 		.await
-		.map_err(NativeError::from)?;
+		.map_err(|error| {
+			let message = error.to_string();
+			let native = NativeError::from(error);
+			match &native {
+				NativeError::Database(_) => native,
+				NativeError::Framework(error) if error.database_error().is_some() => native,
+				_ => NativeError::External(message),
+			}
+		})?;
 		Ok(RunFacts {
 			id: self.run.id,
 			tenant: self.access.identity.tenant.clone(),
