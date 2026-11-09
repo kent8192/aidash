@@ -29,12 +29,38 @@ pub(crate) struct RecoveryInventory {
 	pub versions: Vec<(String, i64)>,
 	pub keys: Vec<String>,
 }
-fn db_error(_: impl std::fmt::Display) -> Error {
+fn native_db_error(error: crate::Error) -> Error {
 	tracing::error!(
 		reason = "database operation failed",
 		"Secret Store operation failed"
 	);
-	Error::External("Secret Store is unavailable".into())
+	match &error {
+		crate::Error::Database(_) => error.into(),
+		crate::Error::Framework(framework) if framework.database_error().is_some() => error.into(),
+		_ => Error::External("Secret Store is unavailable".into()),
+	}
+}
+fn db_error(error: impl Into<reinhardt::core::exception::Error>) -> Error {
+	let error: reinhardt::core::exception::Error = error.into();
+	native_db_error(crate::Error::from(error))
+}
+
+#[cfg(test)]
+mod database_failure_tests {
+	use super::*;
+
+	#[test]
+	fn temporary_database_errors_remain_typed_and_non_database_errors_stay_redacted() {
+		let timeout = reinhardt::core::exception::DatabaseError::new(
+			reinhardt::core::exception::DatabaseErrorKind::Timeout,
+			"database timed out",
+		);
+		assert!(matches!(db_error(timeout), Error::TemporaryDatabase(_)));
+		let other = native_db_error(crate::Error::Invalid("sensitive detail".into()));
+		assert!(
+			matches!(other, Error::External(message) if message == "Secret Store is unavailable")
+		);
+	}
 }
 fn invalid(reason: &str) -> Error {
 	Error::Invalid(reason.into())
@@ -251,7 +277,7 @@ impl PostgresStore {
 			.await?
 			.into_executor()
 			.await
-			.map_err(db_error)
+			.map_err(native_db_error)
 	}
 	/// Key Material of one Tenant.
 	async fn begin_tenant(&self, tenant: &str) -> Result<Box<dyn TransactionExecutor>> {

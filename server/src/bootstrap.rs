@@ -689,8 +689,29 @@ impl Drop for RuntimeTasks {
 async fn runtime_task(
 	work: impl std::future::Future<Output = Result<()>>,
 ) -> aidash_application::Result<()> {
-	work.await
-		.map_err(|error| aidash_application::Error::External(error.to_string()))
+	work.await.map_err(|error| match &error {
+		Error::Database(_) => error.into(),
+		Error::Framework(framework) if framework.database_error().is_some() => error.into(),
+		_ => aidash_application::Error::External(error.to_string()),
+	})
+}
+
+#[cfg(test)]
+mod database_failure_tests {
+	use super::*;
+
+	#[tokio::test]
+	async fn runtime_service_preserves_database_outages() {
+		let result = runtime_task(async { Err(Error::Database(sqlx::Error::PoolTimedOut)) }).await;
+		assert!(matches!(
+			result,
+			Err(aidash_application::Error::TemporaryDatabase(_))
+		));
+		let result = runtime_task(async { Err(Error::Invalid("bad input".into())) }).await;
+		assert!(
+			matches!(result, Err(aidash_application::Error::External(message)) if message == "bad input")
+		);
+	}
 }
 
 /// Bind the policy use case to the same PostgreSQL pool used by HTTP and workers.
