@@ -264,8 +264,6 @@ def execution_manifests(settings, config):
     """Build the durable claim and sandbox Pod for one Scratch Space."""
     import hashlib
     import re
-    import uuid
-    from urllib.parse import urlsplit
     from control import scratch_resource_name
 
     name = scratch_resource_name(settings['scratch_space_id'])
@@ -370,27 +368,9 @@ def execution_manifests(settings, config):
            labels={'aidash-sandbox': 'true', 'aidash-v2': 'true'}), 'spec': podspec}
     if config.get('proxy_endpoint'):
         v2_network_policy(config)  # validate before passing the proxy to user processes
-        endpoint = urlsplit(config['proxy_endpoint'])
-        token, credential_id = settings.get('proxy_credential'), settings.get('proxy_credential_id')
-        if (token is None) != (credential_id is None):
-            raise ValueError('proxy credential and id must be supplied together')
-        if token is not None:
-            if not isinstance(token, str) or not re.fullmatch(r'[A-Za-z0-9_-]{32,256}', token):
-                raise ValueError('invalid proxy credential')
-            try:
-                credential_id = str(uuid.UUID(credential_id))
-            except (ValueError, TypeError, AttributeError):
-                raise ValueError('invalid proxy credential id') from None
-            secret_name = 'proxy-' + credential_id
-            pod['metadata'].setdefault('annotations', {})['aidash.run/proxy-credential-id'] = credential_id
-            proxy_env = {'valueFrom': {'secretKeyRef': {'name': secret_name, 'key': 'proxy'}}}
-        else:
-            proxy_env = {'value': config['proxy_endpoint']}
-        pod['metadata'].setdefault('annotations', {})['aidash.run/scratch-space-id'] = settings['scratch_space_id']
+        proxy = config['proxy_endpoint']
         podspec['containers'][0]['env'] += [
-            dict(name=key, **proxy_env) for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy')]
-        no_proxy = 'localhost,127.0.0.1,::1,' + endpoint.hostname
-        podspec['containers'][0]['env'] += [{'name': key, 'value': no_proxy} for key in ('NO_PROXY', 'no_proxy')]
+            {'name': key, 'value': proxy} for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy')]
     return claim, pod
 
 
@@ -678,12 +658,8 @@ print(json.dumps(r))'''
         for item in fingerprint_spec['initContainers'][1]['env']:
             if item['name'] == 'AIDASH_RESET_SYSTEM':
                 item['value'] = 'false'
-        for item in fingerprint_spec['containers'][0]['env']:
-            ref = item.get('valueFrom', {}).get('secretKeyRef')
-            if ref:
-                ref['name'] = 'pod-proxy-credential'
         fingerprint = hashlib.sha256(json.dumps(fingerprint_spec, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-        pod['metadata'].setdefault('annotations', {})['aidash.run/spec-digest'] = fingerprint
+        pod['metadata']['annotations'] = {'aidash.run/spec-digest': fingerprint}
         self._require_space_termination_confirmed(settings['scratch_space_id'])
         existing_claim = self._get('pvc', name)
         if existing_claim is None:
@@ -698,34 +674,13 @@ print(json.dumps(r))'''
             pod['metadata']['annotations']['aidash.run/epoch'] = str(self.reserve_epoch(settings['scratch_space_id']))
             self.backend.kube(['create', '-f', '-'], json.dumps(pod).encode())
             self.touch_space(settings['scratch_space_id'])
-            credential_id = pod['metadata']['annotations'].get('aidash.run/proxy-credential-id')
-            if credential_id:
-                from urllib.parse import urlsplit
-                created = self._get('pod', name)
-                uid = created and created.get('metadata', {}).get('uid')
-                if not uid:
-                    raise ExecutionPodError('startup_failed', 'Created Pod identity is unavailable')
-                endpoint = urlsplit(self.config['proxy_endpoint'])
-                # Kubernetes resolves this Secret into the environment; no Secret volume is mounted.
-                url = 'http://scratch:' + settings['proxy_credential'] + '@' + endpoint.netloc
-                secret = {'apiVersion': 'v1', 'kind': 'Secret',
-                          'metadata': {'name': 'proxy-' + credential_id, 'namespace': self.config['namespace'],
-                                       'ownerReferences': [{'apiVersion': 'v1', 'kind': 'Pod', 'name': name,
-                                                            'uid': uid, 'controller': True}]},
-                          'stringData': {'proxy': url}}
-                try:
-                    self.backend.kube(['create', '-f', '-'], json.dumps(secret).encode())
-                except Exception:
-                    # A Kubernetes error may echo the submitted Secret; never return it.
-                    raise ExecutionPodError('startup_failed', 'Could not create Pod proxy credential') from None
         elif self._old_helper_image(existing_pod):
             raise ExecutionPodError('pod_updating', 'Execution Pod is updating; retry shortly')
         elif existing_pod.get('metadata', {}).get('annotations', {}).get('aidash.run/spec-digest') != fingerprint:
             raise ExecutionPodError('settings_mismatch', 'Existing Execution Pod has different settings')
         uid = existing_pod.get('metadata', {}).get('uid') if existing_pod else None
         if uid and uid == self._admitted_uid(settings['scratch_space_id']):
-            return {'protocol': 'aidash-runner/2', 'pod': name, 'claim': name,
-                    'proxy_credential_id': existing_pod.get('metadata', {}).get('annotations', {}).get('aidash.run/proxy-credential-id')}
+            return {'protocol': 'aidash-runner/2', 'pod': name, 'claim': name}
         try:
             self._admit_pod(name, settings)
             self.backend.kube(['wait', '--for=condition=Ready', 'pod/' + name, '--timeout=1800s'], timeout=1810)
@@ -750,24 +705,7 @@ print(json.dumps(r))'''
                 self._mark_space_unconfirmed(settings['scratch_space_id'])
                 raise ExecutionPodError('termination_unconfirmed', 'Admission cleanup failed: ' + str(cleanup)) from cleanup
             raise ExecutionPodError('startup_failed', 'Execution Pod did not become ready: ' + detail[-2000:]) from error
-        return {'protocol': 'aidash-runner/2', 'pod': name, 'claim': name,
-                'proxy_credential_id': verified.get('metadata', {}).get('annotations', {}).get('aidash.run/proxy-credential-id')}
-
-    def list_pods(self):
-        import json
-        result = self.backend.kube(['get', 'pods', '-l', 'aidash-v2=true', '-o', 'json'])
-        pods = json.loads(result.stdout)['items']
-        result = []
-        for pod in pods:
-            metadata = pod.get('metadata', {})
-            annotations = metadata.get('annotations', {})
-            if metadata.get('deletionTimestamp') or pod.get('status', {}).get('phase') in ('Succeeded', 'Failed'):
-                continue
-            space = annotations.get('aidash.run/scratch-space-id')
-            credential = annotations.get('aidash.run/proxy-credential-id')
-            if space and credential:
-                result.append({'scratch_space_id': space, 'proxy_credential_id': credential})
-        return result
+        return {'protocol': 'aidash-runner/2', 'pod': name, 'claim': name}
 
     def stop(self, scratch_space_id):
         with self._space_lock(scratch_space_id):
