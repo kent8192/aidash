@@ -3579,6 +3579,9 @@ test("pending requests continue within the selected node", async ({ page }) => {
     .last()
     .click();
   await expect(page).toHaveURL(/channel=older-workspace/);
+  await expect(page.getByRole("dialog", { name: "Human input" })).toContainText(
+    "Older request from an old run",
+  );
 });
 
 test("an empty pending-request page can continue", async ({ page }) => {
