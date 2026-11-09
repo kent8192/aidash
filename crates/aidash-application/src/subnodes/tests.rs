@@ -215,7 +215,8 @@ async fn creator_agent_needs_an_explicit_grant_but_the_root_does_not() {
 }
 
 #[tokio::test]
-async fn creation_refuses_nested_remote_over_limit_and_uncovered_member() {
+async fn creation_refuses_nested_remote_over_limit_and_uncovered_members_but_admits_the_creator_agent()
+ {
 	let mut scope = scope();
 	scope.grant();
 	scope.nested = true;
