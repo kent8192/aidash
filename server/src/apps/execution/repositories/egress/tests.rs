@@ -713,6 +713,7 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		.pop()
 		.unwrap();
 	assert_eq!((unsettled.admission_ms, unsettled.settle_ms), (None, None));
+	assert_eq!((unsettled.status, unsettled.error.as_deref()), (0, None));
 	tx.commit().await.unwrap();
 	first.meter.finish(201, times(20), None).await.unwrap();
 	second.meter.finish(200, times(25), None).await.unwrap();
@@ -1033,6 +1034,13 @@ async fn live_preview_credentials(
 		(&pod, "pod", Some("api.example.test")),
 		(&page, "page", None),
 	] {
+		let unsettled: (i32, Option<String>) =
+			sqlx::query_as("SELECT status, error FROM egress_requests WHERE id = $1")
+				.bind(admission.request)
+				.fetch_one(f.store.pool.fixture_driver())
+				.await
+				.unwrap();
+		assert_eq!(unsettled, (0, None));
 		admission.meter.finish(200, times(1), None).await.unwrap();
 		let (recorded, secret_host): (String, Option<String>) =
 			sqlx::query_as("SELECT via, secret_host FROM egress_requests WHERE id = $1")
