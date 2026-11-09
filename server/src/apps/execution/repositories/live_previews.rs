@@ -217,8 +217,7 @@ impl application::Scope for Scope<'_> {
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
 		.scalar_optional(&mut **self.access.tx)
-		.await
-		.map_err(NativeError::from)?;
+		.await?;
 		Ok(revision)
 	}
 	async fn mint_egress(&mut self, preview: &mut LivePreview) -> aidash_application::Result<()> {
@@ -887,7 +886,6 @@ async fn area_revision(
 	)
 	.scalar_optional(&mut **tx)
 	.await
-	.map_err(NativeError::from)
 }
 
 async fn release_hold(
