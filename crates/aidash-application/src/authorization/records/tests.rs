@@ -246,8 +246,12 @@ impl ChildSummaryScope for Scope {
 			.map(|row| ChildTaskRecord {
 				revision: 0,
 				id: row.0,
+				title: format!("task {}", row.0),
 				created_by: row.1.clone(),
 				status: row.2,
+				dependencies: Vec::new(),
+				started: false,
+				abandonable: true,
 			})
 			.collect())
 	}
@@ -495,7 +499,11 @@ async fn child_summary_detects_each_terminal_change_but_ignores_starting(mut sco
 	let running = children(&mut scope, Uuid::from_u128(1), Uuid::from_u128(99))
 		.await
 		.unwrap();
-	assert_eq!(before, running);
+	// Starting is not a terminal change. The open child was an Unassigned
+	// Task and the running one is not, so compare what the fingerprint covers.
+	assert_eq!(before.terminal_fingerprint, running.terminal_fingerprint);
+	assert_eq!(before.unassigned.len(), 1);
+	assert!(running.unassigned.is_empty());
 	scope.children[0].2 = TaskStatus::Completed;
 	let one_done = children(&mut scope, Uuid::from_u128(1), Uuid::from_u128(99))
 		.await

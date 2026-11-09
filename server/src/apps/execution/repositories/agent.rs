@@ -35,6 +35,7 @@ const WORKSPACE_EVENT_WINDOW: u64 = 32;
 #[async_trait]
 impl ExecutionStore for RunStore {
 	async fn unfinished_owned_tasks(&self, run: &Run) -> Result<u64> {
+		use crate::apps::workspaces::models::child_flags::unstarted_open;
 		use reinhardt::db::orm::execution::convert_values;
 		use reinhardt::query::{
 			Alias, Expr, ExprTrait, Func, PostgresQueryBuilder, Query, QueryStatementBuilder,
@@ -57,6 +58,8 @@ impl ExecutionStore for RunStore {
 			.from(Alias::new("tasks"))
 			.and_where(Expr::col("status").is_not_in(["COMPLETED", "ABANDONED"]))
 			.and_where(Expr::exists(created).or(Expr::exists(delegated)))
+			// An Unassigned Task is not unfinished work: nobody is on it.
+			.and_where(unstarted_open().not())
 			.build(PostgresQueryBuilder);
 		let mut tx = self.store.pool.begin(&self.scope).await?;
 		let row = tx
@@ -723,8 +726,18 @@ impl ExecutionHome for NativeHome {
 			.await
 			.map_err(Into::into)
 	}
-	async fn complete(&self, key: &str, artifact: &ArtifactInput) -> Result<Task> {
-		Home::complete(&self.0, key, artifact)
+	async fn complete(
+		&self,
+		key: &str,
+		artifact: &ArtifactInput,
+		abandon: &[Uuid],
+	) -> Result<Task> {
+		Home::complete(&self.0, key, artifact, abandon)
+			.await
+			.map_err(Into::into)
+	}
+	async fn abandon_unassigned(&self, parent: Uuid, ids: &[Uuid]) -> Result<()> {
+		Home::abandon_unassigned(&self.0, parent, ids)
 			.await
 			.map_err(Into::into)
 	}

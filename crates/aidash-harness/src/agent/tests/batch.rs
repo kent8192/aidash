@@ -798,8 +798,16 @@ impl ExecutionHome for Bench {
 	async fn child_summary(&self, _parent: Uuid) -> Result<ChildTaskSummary> {
 		unexpected("ExecutionHome.child_summary")
 	}
-	async fn complete(&self, _key: &str, _artifact: &ArtifactInput) -> Result<Task> {
+	async fn complete(
+		&self,
+		_key: &str,
+		_artifact: &ArtifactInput,
+		_abandon: &[Uuid],
+	) -> Result<Task> {
 		unexpected("ExecutionHome.complete")
+	}
+	async fn abandon_unassigned(&self, _parent: Uuid, _ids: &[Uuid]) -> Result<()> {
+		unexpected("ExecutionHome.abandon_unassigned")
 	}
 	async fn report(&self, key: &str, kind: &str, _data: Value) -> Result<()> {
 		assert_eq!(kind, "remote.tool.completed");

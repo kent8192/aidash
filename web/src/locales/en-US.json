@@ -177,7 +177,7 @@
   "ABANDONED": "Abandoned",
   "abandonTask": "Abandon task",
   "abandonReason": "Reason for abandonment",
-  "abandonHelp": "Records an explicit decision to skip this result. Answer the parent’s pending request to continue.",
+  "abandonHelp": "Records an explicit decision to skip this task’s result. If the parent has a pending request, answer it to continue.",
   "administratorNoTenantContent": "Tenant content is not available to a Deployment Administrator.",
   "administratorSwitchToMapping": "To see a Tenant's content, switch to a Mapping in that Tenant.",
   "administratorOpenSwitcher": "Switch to a Mapping",

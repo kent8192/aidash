@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 #[derive(Default)]
 struct State {
+	mark_activated_fails: bool,
 	calls: Vec<String>,
 	scopes: usize,
 	rpcs: usize,
@@ -352,6 +353,13 @@ impl HomeScope for Scope {
 		self.repository.state.lock().unwrap().revision = Some(revision);
 		Ok(())
 	}
+	async fn mark_activated(&mut self, _: Uuid) -> Result<()> {
+		self.repository.call("mark_activated");
+		if self.repository.state.lock().unwrap().mark_activated_fails {
+			return Err(Error::External("binding unavailable".into()));
+		}
+		Ok(())
+	}
 	async fn resume_semantic(&mut self, _: Uuid, _: Uuid, _: Uuid, _: &str) -> Result<()> {
 		self.repository.call("resume_semantic");
 		Ok(())
@@ -676,6 +684,47 @@ async fn a_person_delegating_a_task_they_cannot_read_gets_the_plain_refusal() {
 	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
 }
 
+#[rstest]
+#[tokio::test]
+async fn a_confirmed_activation_is_marked_after_the_receiver_answers() {
+	let repository = Repository::default();
+	activate(&repository, task().id, Uuid::from_u128(4))
+		.await
+		.unwrap();
+	let calls = repository.calls();
+	let started = calls
+		.iter()
+		.position(|call| call.ends_with("/activate"))
+		.unwrap();
+	let marked = calls
+		.iter()
+		.position(|call| call == "mark_activated")
+		.unwrap();
+	assert!(started < marked);
+}
+#[rstest]
+#[tokio::test]
+async fn a_started_run_is_not_reported_failed_when_the_mark_cannot_be_recorded() {
+	let repository = Repository::default();
+	repository.state.lock().unwrap().mark_activated_fails = true;
+	let activation = activate(&repository, task().id, Uuid::from_u128(4)).await;
+	assert!(activation.is_ok(), "{activation:?}");
+	assert!(repository.calls().contains(&"mark_activated".into()));
+}
+#[rstest]
+#[tokio::test]
+async fn a_refused_activation_is_never_marked_as_started() {
+	// The binding is committed before the receiver is asked to start; only a
+	// matching activation response may say the Run started (#772).
+	let repository = Repository::default();
+	repository.state.lock().unwrap().binding_changed = true;
+	assert!(
+		activate(&repository, task().id, Uuid::from_u128(4))
+			.await
+			.is_err()
+	);
+	assert!(!repository.calls().contains(&"mark_activated".into()));
+}
 #[rstest]
 #[case("grant_id")]
 #[case("source_node")]

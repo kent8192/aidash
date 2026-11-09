@@ -1823,6 +1823,16 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 		.create_task(&ACME, workspace.id, &input, "human", None)
 		.await
 		.unwrap();
+	// A child somebody is running holds the parent. (An open child nobody has
+	// started is an Unassigned Task: the model is told about it instead.)
+	sqlx::query(
+		"UPDATE tasks SET status = 'RUNNING', owner = 'human', revision = revision + 1 WHERE id = $1",
+	)
+	.bind(child.id)
+	.execute(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let child = store.task(&ACME, child.id).await.unwrap();
 	final_response(&store, parent.id).await;
 	harness.worker_once().await.unwrap();
 	let waiting = store.run(&ACME, run.id).await.unwrap();
@@ -2409,6 +2419,8 @@ fn request_id(run: &Run) -> Uuid {
 
 #[path = "postgres/typed_state.rs"]
 mod typed_state;
+#[path = "postgres/unassigned.rs"]
+mod unassigned;
 
 #[rstest::fixture]
 fn successful_tool_retry_resets_the_next_invocation_budget_router() -> Arc<Router> {
