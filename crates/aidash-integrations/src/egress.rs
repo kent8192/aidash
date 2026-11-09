@@ -817,6 +817,7 @@ struct LingeringClose<S> {
 	closed: bool,
 	/// Told once the answer has been written and the sending side is closed.
 	answered: Option<tokio::sync::oneshot::Sender<()>>,
+	tunnel: Option<Arc<std::sync::Mutex<Option<Arc<proxy::TunnelPermit>>>>>,
 }
 impl<S> LingeringClose<S> {
 	fn new(inner: S, unread: UnreadBody) -> Self {
@@ -827,7 +828,16 @@ impl<S> LingeringClose<S> {
 			linger: None,
 			closed: false,
 			answered: None,
+			tunnel: None,
 		}
+	}
+
+	fn releasing_tunnel(
+		mut self,
+		tunnel: Arc<std::sync::Mutex<Option<Arc<proxy::TunnelPermit>>>>,
+	) -> Self {
+		self.tunnel = Some(tunnel);
+		self
 	}
 
 	/// Reports through `answered` when the answer is out, so that a caller can
@@ -909,6 +919,9 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWr
 			}
 		}
 		if self.unread.0.load(Ordering::Relaxed) {
+			if let Some(tunnel) = self.tunnel.take() {
+				drop(tunnel.lock().unwrap().take());
+			}
 			std::task::ready!(self.poll_discard(cx));
 		}
 		std::task::Poll::Ready(Ok(()))
@@ -1001,6 +1014,7 @@ pub async fn serve_with_scopes(
 					let connection_lease = Arc::new(std::sync::Mutex::new(None));
 					let unread = UnreadBody::default();
 					let noting = unread.clone();
+					let lingering_tunnel = connection_lease.clone();
 					let service = service_fn(move |request| {
 						noting.note(&request);
 						let authority=authority.clone(); let client=client.clone(); let public=public.clone(); let scopes=scopes.clone(); let permit=permit.clone(); let tunnels=tunnels.clone(); let connection_lease=connection_lease.clone();
@@ -1016,7 +1030,7 @@ pub async fn serve_with_scopes(
 					});
 					let _ = hyper::server::conn::http1::Builder::new().timer(TokioTimer::new())
 						.header_read_timeout(IDLE).max_headers(64)
-						.serve_connection(TokioIo::new(LingeringClose::new(WriteDeadline::new(socket, IDLE), unread)), service).with_upgrades().await;
+						.serve_connection(TokioIo::new(LingeringClose::new(WriteDeadline::new(socket, IDLE), unread).releasing_tunnel(lingering_tunnel)), service).with_upgrades().await;
 				});
 			}
 		}

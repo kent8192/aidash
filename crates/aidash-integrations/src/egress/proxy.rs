@@ -1782,6 +1782,53 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn a_lingering_upload_releases_its_tunnel_capacity() {
+		let mut settings = test_settings();
+		settings.allowed_hosts.hosts = vec!["127.0.0.1".into()];
+		settings.tunnel_limits.concurrent = 1;
+		let scopes = Arc::new(MemoryScopes::new("token".into(), settings));
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = listener.local_addr().unwrap();
+		let (stop, receiver) = tokio::sync::watch::channel(false);
+		let server = tokio::spawn(super::super::serve_with_scopes(
+			listener,
+			Arc::new(DenyLegacy),
+			Some(scopes),
+			super::super::ProxyLimits::default(),
+			receiver,
+		));
+		let mut first = tokio::net::TcpStream::connect(address).await.unwrap();
+		first.write_all(b"POST http://127.0.0.1/upload HTTP/1.1\r\nHost: 127.0.0.1\r\nProxy-Authorization: Bearer token\r\nContent-Length: 1048576\r\nConnection: close\r\n\r\n").await.unwrap();
+		let mut answer = Vec::new();
+		tokio::time::timeout(
+			std::time::Duration::from_secs(3),
+			first.read_to_end(&mut answer),
+		)
+		.await
+		.unwrap()
+		.unwrap();
+		assert!(String::from_utf8_lossy(&answer).contains("egress_destination_forbidden"));
+		let mut second = tokio::net::TcpStream::connect(address).await.unwrap();
+		second.write_all(b"GET http://127.0.0.1/ HTTP/1.1\r\nHost: 127.0.0.1\r\nProxy-Authorization: Bearer token\r\nConnection: close\r\n\r\n").await.unwrap();
+		let mut answer = Vec::new();
+		tokio::time::timeout(
+			std::time::Duration::from_secs(3),
+			second.read_to_end(&mut answer),
+		)
+		.await
+		.unwrap()
+		.unwrap();
+		assert!(
+			String::from_utf8_lossy(&answer).contains("egress_destination_forbidden"),
+			"{}",
+			String::from_utf8_lossy(&answer)
+		);
+		drop(first);
+		stop.send(true).unwrap();
+		server.await.unwrap().unwrap();
+	}
+
+	#[tokio::test]
 	async fn proxy_requires_scope_credential_and_rejects_private_resolution() {
 		let settings = ScopeSettings {
 			id: ScopeId {
