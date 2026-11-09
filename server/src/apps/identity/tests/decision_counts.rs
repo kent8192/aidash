@@ -160,3 +160,67 @@ async fn one_worker_boundary_writes_the_registry_read_rows_it_wrote_before(
 	assert!(total > 0, "the boundary decided nothing");
 	common::cleanup(f, &url, &schema).await;
 }
+
+/// A larger Tenant must not increase the decision cost of a dashboard read.
+#[rstest::rstest]
+#[tokio::test]
+async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, _) = common::bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let count = || async {
+		sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM authorization_decisions")
+			.fetch_one(f.store.pool.fixture_driver())
+			.await
+			.unwrap()
+	};
+	let mut measurements = Vec::new();
+	for _ in 0..2 {
+		for _ in 0..60 {
+			let (status, workspace) = common::request(
+				&app,
+				&token,
+				"POST",
+				"/api/workspaces",
+				json!({"title":"Window", "goal":"Bounded state"}),
+			)
+			.await;
+			assert_eq!(status, 200, "{workspace}");
+			let workspace = workspace["id"].as_str().unwrap();
+			let (status, task) = common::request(
+				&app,
+				&token,
+				"POST",
+				&format!("/api/workspaces/{workspace}/tasks"),
+				json!({"title":"Window task", "description":"Create a run"}),
+			)
+			.await;
+			assert_eq!(status, 200, "{task}");
+			let (status, run) = common::request(
+				&app,
+				&token,
+				"POST",
+				&format!("/api/tasks/{}/claim", task["id"].as_str().unwrap()),
+				json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+			)
+			.await;
+			assert_eq!(status, 200, "{run}");
+		}
+		let before = count().await;
+		let (status, state) = common::request(&app, &token, "GET", "/api/state", Value::Null).await;
+		assert_eq!(status, 200, "{state}");
+		let after = count().await;
+		assert!(state["next_cursors"]["workspaces"].is_string());
+		assert!(state["next_cursors"]["runs"].is_string());
+		measurements.push(after - before);
+	}
+	assert_eq!(
+		measurements[0], measurements[1],
+		"decision counts: {measurements:?}"
+	);
+	common::cleanup(f, &url, &schema).await;
+}

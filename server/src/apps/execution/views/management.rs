@@ -52,8 +52,18 @@ pub async fn human_requests(
 pub async fn state(
 	#[inject] service: Depends<HarnessManagement>,
 	#[inject] actor: Actor,
+	Query(query): Query<crate::apps::execution::serializers::state::StateQuery>,
 ) -> ViewResult<Response> {
-	crate::http::response(service.state(actor).await)
+	crate::http::response(service.state(actor, query).await)
+}
+
+#[get("/api/workspaces", name = "workspace-list", auth = "protected")]
+pub async fn workspace_list(
+	#[inject] service: Depends<HarnessManagement>,
+	#[inject] actor: Actor,
+	Query(query): Query<crate::apps::execution::serializers::state::WorkspacePageQuery>,
+) -> ViewResult<Response> {
+	crate::http::json(service.workspace_page(actor, query).await)
 }
 
 #[get(

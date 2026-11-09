@@ -14,6 +14,8 @@ pub fn url_patterns() -> UnifiedRouter {
 				.endpoint(super::views::schema::document)
 				.endpoint(management::state)
 				.with_route_middleware(AccessBoundary::administered().with_visibility())
+				.endpoint(management::workspace_list)
+				.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 				.endpoint(management::openrouter_models)
 				.with_route_middleware(AccessBoundary::administered().with_visibility())
 				.endpoint(management::task_claim)

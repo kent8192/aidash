@@ -450,19 +450,17 @@ UI strings live in `web/src/locales/en-US.json` and `ja-JP.json`. Entity names a
 ### Bounded inspection and retry identifiers
 
 `GET /api/tasks?offset=N` returns up to 500 authorized tasks, newest first, with
-`next_offset` for the next page. `/api/state` includes only the first task page.
+`next_offset` for the next page.
+`GET /api/state?node=<name>` returns candidate windows for the selected Node; without `node`, windows cover the Tenant. Workspaces, Tasks, Runs, Artifacts, pending Human Requests and Conversations scan at most 50 candidates each, newest first. The response keeps each collection as an array and adds `next_cursors` with a cursor or null for each collection. Filtering can produce short or empty pages with a cursor; a full page can lead to an empty final page. Returned Workspaces include the Workspace window and the Workspaces of all returned items. `GET /api/workspaces?node=<name>&cursor=<cursor>` continues the Workspace window and returns `{items, next_cursor}`. Deployment Administrators receive empty state collections and null cursors.
 `GET /api/tasks/{id}/runs` and `GET /api/human-requests` return `{items, next_cursor}`
 in newest-first order, with up to 50 candidates per page. Supply the opaque `cursor` to
 continue; visibility filtering can leave a page short or empty even when it has
 a next cursor. A full candidate page can also lead to an empty final page.
-Human Requests accept `run` and `state=pending|answered|all`;
+Human Requests accept `run`, `node`, and `state=pending|answered|all`;
 the default is `pending`. An unanswered request's `answer_by` comes from the
 owning Run's waiting state. Run creation times for records predating the
 creation-time migration are approximated by their last update at migration. The
-cursor currently encodes the last scanned candidate ID; candidate queries are
-restricted to the caller's readable Workspaces before individual visibility checks.
-Without `run`, the Human Request list first evaluates Workspace visibility across
-the Tenant; with `run`, it checks only that Run's Workspace.
+cursor currently encodes the last scanned candidate ID. Each candidate Workspace is checked for read access before the item is disclosed.
 Run visibility still checks its dependencies, including every Human Request of
 the Run; the Human Request list reuses each Run decision within the page.
 `GET /api/runs/{id}?offset=N` returns at most 100 invocation previews; request the
