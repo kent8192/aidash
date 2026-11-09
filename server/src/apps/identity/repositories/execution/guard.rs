@@ -91,17 +91,14 @@ pub(crate) async fn use_block(
 	run: &RunMetadata,
 	local_only: bool,
 ) -> Result<Option<EntityRef>> {
-	use aidash_application::authorization::execution::guard::{UseRecheck, recheck};
+	use aidash_application::authorization::execution::guard::recheck;
 	if local_only && !run.is_local(&access.node_id) {
 		return Ok(None);
 	}
 	let binding = stored_snapshot(access, run).await?.is_some();
-	Ok(
-		match recheck(&mut UseGuard { access }, run, binding).await? {
-			UseRecheck::Usable { .. } => None,
-			UseRecheck::Blocked(reference) => Some(reference),
-		},
-	)
+	Ok(recheck(&mut UseGuard { access }, run, binding)
+		.await?
+		.blocked())
 }
 
 #[async_trait]

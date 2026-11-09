@@ -17,6 +17,24 @@ pub enum UseRecheck {
 	},
 	/// The first definition the Run may not use.
 	Blocked(EntityRef),
+	/// The Agent's reference embedding is missing or no longer approved. The Run may not use it,
+	/// as with [`Self::Blocked`]; the difference is what [`authorize`] answers, which is to
+	/// register a new Agent version rather than to refuse.
+	EmbeddingUnavailable(EntityRef),
+}
+
+impl UseRecheck {
+	/// The definition the Run may not use, if there is one.
+	pub fn blocked(self) -> Option<EntityRef> {
+		match self {
+			Self::Usable { .. } => None,
+			Self::Blocked(reference) | Self::EmbeddingUnavailable(reference) => Some(reference),
+		}
+	}
+}
+
+fn embedding_unavailable() -> Error {
+	Error::Invalid("reference embedding is unavailable; register a new agent version".into())
 }
 
 /// The first definition the Run may not use, or none: its own Agent
@@ -29,10 +47,7 @@ pub async fn use_recheck(
 	scope: &mut dyn UseRecheckScope,
 	run: &RunMetadata,
 ) -> Result<Option<EntityRef>> {
-	Ok(match recheck(scope, run, true).await? {
-		UseRecheck::Usable { .. } => None,
-		UseRecheck::Blocked(reference) => Some(reference),
-	})
+	Ok(recheck(scope, run, true).await?.blocked())
 }
 
 /// [`use_recheck`] that also hands back what [`authorize`] needs of the Agent.
@@ -80,9 +95,7 @@ pub async fn recheck(
 				.reference_embedding_available(&saved.identity.local())
 				.await?
 		{
-			return Err(Error::Invalid(
-				"reference embedding is unavailable; register a new agent version".into(),
-			));
+			return Ok(UseRecheck::EmbeddingUnavailable(saved.identity.local()));
 		}
 		let current =
 			if aidash_domain::registry::bindings::sources::is_selection_decider(&saved.definition)
@@ -113,9 +126,7 @@ pub async fn recheck(
 		};
 		if aidash_domain::registry::rules::digest(&serde_json::to_value(current)?) != saved.digest {
 			return Err(if is_reference_embedding {
-				Error::Invalid(
-					"reference embedding is unavailable; register a new agent version".into(),
-				)
+				embedding_unavailable()
 			} else {
 				Error::Conflict("admitted definition changed".into())
 			});
@@ -159,6 +170,7 @@ pub async fn authorize(
 	let (entry, agent) = match recheck(scope, run, read_context).await? {
 		UseRecheck::Usable { entry, agent } => (entry, agent),
 		UseRecheck::Blocked(_) => return Err(Error::Forbidden),
+		UseRecheck::EmbeddingUnavailable(_) => return Err(embedding_unavailable()),
 	};
 	super::require_agent(scope.bundle(), &run.executor_subject(scope.node_id()))?;
 	scope.check_pinned(&entry).await?;

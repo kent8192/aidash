@@ -211,6 +211,19 @@ async fn unavailable_reference_embedding_requires_new_version_but_policy_denial_
 	#[case] available: bool,
 	#[case] denied: bool,
 ) {
+	with_reference_embedding(&mut scope, available);
+	if denied {
+		scope.deny = Some("catalog:reference-embedding:registry.read".into());
+	}
+	let error = authorize(&mut scope, &run, true).await.unwrap_err();
+	if available {
+		assert!(matches!(error, Error::Forbidden));
+	} else {
+		assert!(error.to_string().contains("register a new agent version"));
+	}
+}
+/// Makes the Agent of `scope` pin a reference embedding, and sets whether it is still available.
+fn with_reference_embedding(scope: &mut Scope, available: bool) {
 	let mut agent = scope
 		.snapshot
 		.definitions
@@ -229,15 +242,21 @@ async fn unavailable_reference_embedding_requires_new_version_but_policy_denial_
 	definitions.push(crate::test_support::entry("reference-embedding", "embedding", json!({"provider":"openai","endpoint":"https://example.com","model":"fixture","model_version":"1","dimensions":2,"inputs":["text","image"]})));
 	scope.snapshot = crate::test_support::resolve("aidash://local", &agent, false, definitions);
 	scope.reference_available = available;
-	if denied {
-		scope.deny = Some("catalog:reference-embedding:registry.read".into());
-	}
-	let error = authorize(&mut scope, &run, true).await.unwrap_err();
-	if available {
-		assert!(matches!(error, Error::Forbidden));
-	} else {
-		assert!(error.to_string().contains("register a new agent version"));
-	}
+}
+#[rstest]
+#[tokio::test]
+async fn use_recheck_blocks_a_run_whose_reference_embedding_is_no_longer_available(
+	mut scope: Scope,
+	run: RunMetadata,
+) {
+	// Unlike `authorize`, which asks for a new Agent version, the Use Recheck names the
+	// definition: a worker boundary, a running operation and a resume all act on a block, and an
+	// error would leave the operation running (#769).
+	with_reference_embedding(&mut scope, false);
+	let blocked = use_recheck(&mut scope, &run).await.unwrap().unwrap();
+	assert_eq!(blocked.id, "reference-embedding");
+	with_reference_embedding(&mut scope, true);
+	assert_eq!(use_recheck(&mut scope, &run).await.unwrap(), None);
 }
 #[rstest]
 #[tokio::test]
