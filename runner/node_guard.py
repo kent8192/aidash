@@ -594,6 +594,7 @@ def handle(request):
             save(path, binding(request, state, frozen=True, deadline=time.time()+min(request.get('idle_seconds',1800),1800)))
             return {'writer_frozen': state['status']=='paused', 'termination_confirmed': state['status']=='stopped', 'container_id': cid, 'pod_uid': pod}
         if op == 'terminate':
+            stop_requested_at = time.time()
             if state['status'] in ('running', 'paused'):
                 stopped = binding(request, state)
                 kill_sandbox(state)
@@ -602,9 +603,9 @@ def handle(request):
             else:
                 raise ValueError('physical writer stop unconfirmed')
             if bound and previous.get('action') == 'cell' and previous.get('deadline') is not None:
-                if state['status'] in ('running', 'paused') or time.time() < previous['deadline']:
+                if state['status'] in ('running', 'paused') or stop_requested_at < previous['deadline']:
                     stopped.update(cell_operation_id=previous.get('operation_id'),
-                                   cell_deadline_expired=state['status'] in ('running', 'paused') and time.time() >= previous['deadline'])
+                                   cell_deadline_expired=state['status'] in ('running', 'paused') and stop_requested_at >= previous['deadline'])
             stopped.update(frozen=False, terminated=True, deadline=None)
             save(path, stopped)
             handoff_cleanup(path, stopped)
