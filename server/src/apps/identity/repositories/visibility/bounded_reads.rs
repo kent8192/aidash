@@ -226,12 +226,14 @@ fn before(at: DateTime<Utc>, id: Uuid) -> Condition {
 }
 
 fn node_filter(tenant: &str, node: &str) -> SimpleExpr {
-	Expr::col(Alias::new("workspace_id")).in_subquery(
-		Query::select()
-			.column(Alias::new("id"))
-			.from(Alias::new("workspaces"))
-			.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant.to_owned())))
-			.and_where(Expr::col(Alias::new("node")).eq(Expr::value(node.to_owned())))
-			.to_owned(),
-	)
+	Expr::col(Alias::new("workspace_id"))
+		.in_subquery(
+			Query::select()
+				.column(Alias::new("id"))
+				.from(Alias::new("workspaces"))
+				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant.to_owned())))
+				.and_where(Expr::col(Alias::new("node")).eq(Expr::value(node.to_owned())))
+				.to_owned(),
+		)
+		.into()
 }
