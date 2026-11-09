@@ -50,7 +50,7 @@ impl LocalOutputScope for Reads<'_> {
 				.scalar_all(&mut **this.tx)
 				.await?
 			};
-			Ok(producers)
+			this.producers_to_check(workspace, producers).await
 		}
 		.await;
 		result.map_err(Into::into)
@@ -100,14 +100,17 @@ impl OutputScope for Reads<'_> {
 #[async_trait]
 impl LocalOutputScope for NativeReads<'_> {
 	async fn producers(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>> {
-		crate::apps::identity::models::AuthorizationRunOutput::producers(
+		let producers = crate::apps::identity::models::AuthorizationRunOutput::producers(
 			self.access.tx.as_mut(),
 			workspace,
 			kind,
 			id,
 		)
-		.await
-		.map_err(Into::into)
+		.await?;
+		self.access
+			.producers_to_check(workspace, producers)
+			.await
+			.map_err(Into::into)
 	}
 	async fn producer_reads_visible(&mut self, run: Uuid) -> Result<bool> {
 		Box::pin(self.access.run_reads_visible(run))

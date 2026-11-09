@@ -8,6 +8,8 @@ use upstream_fixtures::{async_upstream, reply};
 mod common;
 #[path = "../../execution/tests/support/late_subnode.rs"]
 mod late_subnode;
+#[path = "execution_authorization/subnode_read_boundary.rs"]
+mod subnode_read_boundary;
 #[path = "../../execution/tests/support/tenant_openrouter.rs"]
 mod tenant_openrouter;
 use aidash_server::{
@@ -7036,6 +7038,7 @@ struct SubnodeRig {
 	token: String,
 	node: aidash_domain::nodes::NodeAddress,
 	creator_run: Uuid,
+	policy: Value,
 	/// Each injected response needs its own epoch: the invocation key is
 	/// `run:epoch:cursor`, and reusing it with different input is a Conflict.
 	epoch: std::cell::Cell<u64>,
@@ -7072,6 +7075,37 @@ impl SubnodeRig {
 		grant: bool,
 		files: bool,
 	) -> Self {
+		let (policy, token, node, task_id) = Self::register(f, app, members, grant, files).await;
+		let (status, body) = request(
+			app,
+			&token,
+			"POST",
+			&format!("/api/tasks/{task_id}/claim"),
+			json!({"revision":0,"agent":{"id":"subnode-creator","version":"1.0.0"}}),
+		)
+		.await;
+		assert_eq!(status, 200, "claim: {body}");
+		let creator_run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0).id;
+		Self {
+			f: f.clone(),
+			app: app.clone(),
+			token,
+			node,
+			creator_run,
+			policy,
+			epoch: std::cell::Cell::new(0),
+		}
+	}
+
+	/// Register the same agents, and return the policy, the owner's token, the
+	/// Node and the bootstrap Task. With `files`, members keep the file tools.
+	async fn register(
+		f: &aidash_server::federation::Federation,
+		app: &common::TestApplication,
+		members: &[&str],
+		grant: bool,
+		files: bool,
+	) -> (Value, String, aidash_domain::nodes::NodeAddress, Uuid) {
 		let (mut policy, token, task_id) = if files {
 			bootstrap_with_area(f, app, "http://127.0.0.1:9").await
 		} else {
@@ -7115,6 +7149,7 @@ impl SubnodeRig {
 				entry["config"]["bindings"].as_array_mut().unwrap().extend([
 					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_create","version":"1.0.0"},"alias":"subnode_create","narrow":{}}),
 					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_task","version":"1.0.0"},"alias":"subnode_task","narrow":{}}),
+					json!({"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"aidash.subnode_dissolve","version":"1.0.0"},"alias":"subnode_dissolve","narrow":{}}),
 				]);
 			} else {
 				entry["config"]["bindings"] = json!([]);
@@ -7156,24 +7191,7 @@ impl SubnodeRig {
 			let (status, body) = request(app, &token, "POST", "/api/authorization/acme/catalog", json!({"node":node.node.as_str(),"entry":{"id":name,"version":"1.0.0"},"expected_revision":0,"enabled":true})).await;
 			assert_eq!(status, 200, "approve {name}: {body}");
 		}
-		let (status, body) = request(
-			app,
-			&token,
-			"POST",
-			&format!("/api/tasks/{task_id}/claim"),
-			json!({"revision":0,"agent":{"id":"subnode-creator","version":"1.0.0"}}),
-		)
-		.await;
-		assert_eq!(status, 200, "claim: {body}");
-		let creator_run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0).id;
-		Self {
-			f: f.clone(),
-			app: app.clone(),
-			token,
-			node,
-			creator_run,
-			epoch: std::cell::Cell::new(0),
-		}
+		(policy, token, node, task_id)
 	}
 
 	/// Script one model tool call on `run` and let the worker take one step.

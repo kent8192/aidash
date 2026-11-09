@@ -9,6 +9,15 @@ use uuid::Uuid;
 pub type RecordedRead = (Uuid, String, Uuid);
 #[async_trait]
 pub trait ReadProvenanceScope: ResourceVisibilityScope {
+	/// Open the Subnode Workspaces that `run` created or works in while its reads
+	/// are checked. An inherited authority otherwise reaches only its own
+	/// Workspace, and a Run's reads may lie in those (ADR 0110). Returns whether
+	/// anything opened; a caller that got `true` calls [`Self::close_run_reads`]
+	/// after that Run.
+	async fn open_run_reads(&mut self, _run: Uuid) -> Result<bool> {
+		Ok(false)
+	}
+	fn close_run_reads(&mut self) {}
 	async fn registry_entries(&mut self, run: Uuid) -> Result<Vec<EntityRef>>;
 	async fn catalog_read(&mut self, run: Uuid, reference: &EntityRef) -> Result<()>;
 	async fn remote_reads(&mut self, run: Uuid) -> Result<bool>;
