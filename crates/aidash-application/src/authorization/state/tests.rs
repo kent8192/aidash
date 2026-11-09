@@ -85,6 +85,7 @@ struct Scope {
 	humans: Vec<HumanRequest>,
 	runs: Vec<RawRun>,
 	run_reads: usize,
+	deadline: Option<DateTime<Utc>>,
 }
 #[async_trait]
 impl WorkspaceStateScope for Scope {
@@ -141,7 +142,15 @@ impl WorkspaceStateScope for Scope {
 	}
 	async fn visible_run(&mut self, id: Uuid) -> Result<Option<RunInspection>> {
 		self.run_reads += 1;
-		Ok(Some(run(id.as_u128(), true).inspect()))
+		let mut result = run(id.as_u128(), true).inspect();
+		if let Some(deadline) = self.deadline {
+			result.state = Some(RunState::Waiting(Box::new(WaitingState::Human {
+				request_id: self.humans[0].id,
+				answer_by: Some(deadline),
+				resume: aidash_domain::ResumeState::Ready(aidash_domain::ReadyState {}),
+			})));
+		}
+		Ok(Some(result))
 	}
 	async fn human_resource(&mut self, row: &HumanRequest) -> Result<Resource> {
 		Ok(Resource {
@@ -199,13 +208,17 @@ async fn full_candidate_window_advances_even_when_denied_and_unions_item_workspa
 
 #[tokio::test]
 async fn pending_requests_of_an_older_run_remain_visible_and_share_its_decision() {
+	let deadline: DateTime<Utc> = "2026-10-19T00:00:00Z".parse().unwrap();
 	let mut scope = Scope {
 		humans: vec![human(20, true), human(21, true)],
+		deadline: Some(deadline),
 		..Default::default()
 	};
 	let output = state(&mut scope, None).await.unwrap();
 	assert!(output.runs.is_empty());
 	assert_eq!(output.human_requests.len(), 2);
+	assert_eq!(output.human_requests[0].answer_by, Some(deadline));
+	assert_eq!(output.human_requests[1].answer_by, None);
 	assert_eq!(scope.run_reads, 1);
 	assert_eq!(scope.calls, [id(1)]);
 	assert_eq!(output.workspaces[0].id, id(1));
