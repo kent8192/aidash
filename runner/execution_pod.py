@@ -283,6 +283,7 @@ def execution_manifests(settings, config):
     """Build the durable claim and sandbox Pod for one Scratch Space."""
     import hashlib
     import re
+    from urllib.parse import urlsplit
     from control import scratch_resource_name
 
     name = scratch_resource_name(settings['scratch_space_id'])
@@ -390,6 +391,9 @@ def execution_manifests(settings, config):
         proxy = pod_proxy_url(config['proxy_endpoint'], settings.get('egress_credential'))
         podspec['containers'][0]['env'] += [
             {'name': key, 'value': proxy} for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy')]
+        # Loopback (Live previews) and the gateway itself must not be sent through the proxy.
+        bypass = 'localhost,127.0.0.1,::1,' + urlsplit(config['proxy_endpoint']).hostname
+        podspec['containers'][0]['env'] += [{'name': key, 'value': bypass} for key in ('NO_PROXY', 'no_proxy')]
     return claim, pod
 
 
