@@ -439,10 +439,30 @@ impl Access {
 		}
 		.snapshot(&identity.tenant)
 		.await?;
-		let exclusive = actions
-			.iter()
-			.any(|action| snapshot.bundle.may_allow(&identity.subject, action));
-		Self::begin_with_lock(store, identity, exclusive).await
+		Self::begin_change_deciding_on(store, identity, actions, &snapshot.bundle).await
+	}
+
+	/// [`Self::begin_change`] on the policy `read` before the lock. A policy
+	/// committed since can allow one of the actions after all, and a change that
+	/// holds the policy only shared would replace it with no flag and no limit,
+	/// so that is answered like a stale revision: send the change again.
+	async fn begin_change_deciding_on(
+		store: &Store,
+		identity: &SubjectIdentity,
+		actions: &[&str],
+		read: &PolicyBundle,
+	) -> Result<Self> {
+		let may_allow = |bundle: &PolicyBundle| {
+			actions
+				.iter()
+				.any(|action| bundle.may_allow(&identity.subject, action))
+		};
+		let exclusive = may_allow(read);
+		let access = Self::begin_with_lock(store, identity, exclusive).await?;
+		if !exclusive && may_allow(&access.snapshot.bundle) {
+			return Err(Error::Conflict("authorization revision changed".into()));
+		}
+		Ok(access)
 	}
 
 	async fn begin_with_lock(

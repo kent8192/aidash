@@ -87,6 +87,81 @@ async fn a_catalog_admission_does_not_cross_nodes_in_one_transaction(
 	access.finish(Ok(())).await.unwrap();
 }
 
+#[rstest::rstest]
+#[tokio::test]
+async fn a_change_decided_on_a_policy_that_has_since_granted_it_is_refused_as_stale(
+	#[from(native_database::database)] database: native_database::DatabaseFuture,
+) {
+	// Arrange: the member may not update the policy, and a read says so.
+	let database = database.await;
+	database.tenant("acme").await;
+	let pool = database.pool().await;
+	let deployment = aidash_domain::nodes::DeploymentId::parse("aidash://stale-change").unwrap();
+	let store = Store::from_pool(pool.fixture_driver().clone(), deployment)
+		.await
+		.unwrap();
+	let authorization = Authorization { pool: pool.clone() };
+	let mut document = json!({
+		"tenant":"acme",
+		"subjects":{
+			"admin":{"kind":"user","groups":["administrators"]},
+			"member":{"kind":"user"}
+		},
+		"groups":{"administrators":{"roles":["administrator"]}},
+		"roles":{"administrator":{}},
+		"policies":[{
+			"id":"administer","effect":"allow","subjects":{"roles":["administrator"]},
+			"actions":["*"],"resources":{"kinds":["*"]}
+		}]
+	});
+	authorization
+		.replace(
+			"acme",
+			0,
+			serde_json::from_value(document.clone()).unwrap(),
+			"fixture",
+		)
+		.await
+		.unwrap();
+	let issued = authorization
+		.issue_credential("acme", "member", 3600, "fixture")
+		.await
+		.unwrap();
+	let identity = SubjectIdentity {
+		http_session: None,
+		tenant: "acme".into(),
+		subject: "member".into(),
+		credential_id: issued.credential.id,
+	};
+	let read = authorization.snapshot("acme").await.unwrap();
+	// Act: a change grants the member the permission before the member's lock.
+	document["subjects"]["member"]["groups"] = json!(["administrators"]);
+	authorization
+		.replace(
+			"acme",
+			read.revision,
+			serde_json::from_value(document).unwrap(),
+			"fixture",
+		)
+		.await
+		.unwrap();
+	let stale =
+		Access::begin_change_deciding_on(&store, &identity, &["policy.update"], &read.bundle).await;
+	let current = authorization.snapshot("acme").await.unwrap();
+	let fresh =
+		Access::begin_change_deciding_on(&store, &identity, &["policy.update"], &current.bundle)
+			.await;
+
+	// Assert: the shared lock the stale decision took is not used to change the
+	// policy, while a decision on the current policy takes the exclusive lock.
+	assert!(matches!(stale, Err(Error::Conflict(_))));
+	fresh
+		.expect("a decision on the current policy stands")
+		.finish(Ok(()))
+		.await
+		.unwrap();
+}
+
 #[rstest::fixture]
 fn access() -> Access {
 	let identity = SubjectIdentity {

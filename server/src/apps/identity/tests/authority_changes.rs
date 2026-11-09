@@ -7,6 +7,7 @@ mod endpoint_fixtures;
 #[path = "../../execution/tests/support/native_database.rs"]
 mod native_database;
 use aidash_application::tenancy::TEST_FIXTURE;
+use aidash_server::apps::identity::services::node_purge;
 use aidash_server::authorization::Authorization;
 use aidash_server::database::authority_change;
 use aidash_server::database::native::{Pool, Transaction};
@@ -19,6 +20,7 @@ use rstest::rstest;
 use serde_json::{Value, json};
 use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 /// Every test first shortens the limit, before anything reads it, to this value.
 const LIMIT: Duration = Duration::from_secs(2);
@@ -381,4 +383,196 @@ async fn revoking_a_credential_in_use_is_refused_at_the_limit(#[future] endpoint
 		.revoke_credential("revoking", issued.credential.id)
 		.await
 		.expect("the revocation passes once the step has ended");
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_resume_waits_at_the_entrance_before_it_holds_a_visibility_lease(
+	#[future] endpoint: EndpointFixture,
+) {
+	short_limit();
+	let app = endpoint.await;
+	tenant(&app, "resuming").await;
+	tenant(&app, "bystander").await;
+	let pool = app.runtime.store.pool.clone();
+	let admin = client(&app, "resuming", "admin").await;
+	let bystander = client(&app, "bystander", "admin").await;
+	let step = hold(&pool, "resuming").await;
+	let change = replacing(&pool, "resuming", 1);
+	raised(&pool, "resuming").await;
+
+	// More resumes than the visibility pool has connections (16). Each one that
+	// waited under its lease would pin one, and no other request could get one.
+	let unknown = Uuid::new_v4();
+	let mut resuming = tokio::task::JoinSet::new();
+	for _ in 0..24 {
+		let admin = admin.clone();
+		resuming.spawn(async move {
+			admin
+				.post(
+					&format!("/api/runs/{unknown}/control"),
+					&json!({"action":"resume"}),
+					"json",
+				)
+				.await
+				.unwrap()
+				.status_code()
+		});
+	}
+	tokio::time::sleep(Duration::from_millis(300)).await;
+	let reader = tokio::time::timeout(Duration::from_secs(1), bystander.get("/api/state"))
+		.await
+		.expect("resumes waiting at the entrance took the visibility pool from another Tenant")
+		.unwrap();
+	assert_eq!(reader.status_code(), 200);
+	assert!(
+		resuming.len() == 24 && !change.is_finished(),
+		"a resume passed a waiting change"
+	);
+	step.commit().await.unwrap();
+	change.await.unwrap().expect("the change passes");
+	while let Some(status) = resuming.join_next().await {
+		// The Run does not exist, but the resume got through the entrance.
+		assert_ne!(status.unwrap(), 503);
+	}
+}
+
+/// A due Node deletion of `tenant` on a Node of its own. `purged` is how many
+/// days ago the purge finished, if it has; otherwise the purge is due since
+/// `due` days.
+async fn deletion(app: &EndpointFixture, tenant: &str, due: i32, purged: Option<i32>) -> Uuid {
+	let db = app.runtime.store.pool.fixture_driver();
+	let node = endpoint_fixtures::second_node_in(db, tenant).await;
+	let id = Uuid::new_v4();
+	sqlx::query(
+		"INSERT INTO node_deletions (id,tenant,node,deleted_at,deleted_by_kind,purge_after,purged_at,purge_failures) \
+		 VALUES ($1,$2,$3,clock_timestamp()-make_interval(days=>$4+30),'deployment_administrator',\
+		 clock_timestamp()-make_interval(days=>$4),clock_timestamp()-make_interval(days=>$5),0)",
+	)
+	.bind(id)
+	.bind(tenant)
+	.bind(node.as_str())
+	.bind(due)
+	.bind(purged)
+	.execute(db)
+	.await
+	.unwrap();
+	id
+}
+
+async fn deletions(app: &EndpointFixture, id: Uuid) -> i64 {
+	sqlx::query_scalar("SELECT count(*) FROM node_deletions WHERE id = $1")
+		.bind(id)
+		.fetch_one(app.runtime.store.pool.fixture_driver())
+		.await
+		.unwrap()
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_busy_tenant_does_not_stop_the_purge_of_other_tenants(
+	#[future] endpoint: EndpointFixture,
+) {
+	short_limit();
+	let app = endpoint.await;
+	tenant(&app, "busy-purge").await;
+	tenant(&app, "quiet-purge").await;
+	let pool = app.runtime.store.pool.clone();
+	// The busy Tenant's deadline is the older, so it comes first.
+	let busy = deletion(&app, "busy-purge", 10, None).await;
+	let quiet = deletion(&app, "quiet-purge", 1, None).await;
+	let step = hold(&pool, "busy-purge").await;
+
+	let claimed = node_purge::claim(&app.runtime.store).await;
+	step.commit().await.unwrap();
+	let claimed = claimed.expect("a Tenant that stays busy leaves its Node to the next pass");
+	assert_eq!(
+		claimed
+			.iter()
+			.map(|deletion| deletion.id)
+			.collect::<Vec<_>>(),
+		vec![quiet]
+	);
+	assert_eq!(deletions(&app, busy).await, 1);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_busy_tenant_does_not_stop_the_audit_erasure_of_other_tenants(
+	#[future] endpoint: EndpointFixture,
+) {
+	short_limit();
+	let app = endpoint.await;
+	tenant(&app, "busy-audit").await;
+	tenant(&app, "quiet-audit").await;
+	let pool = app.runtime.store.pool.clone();
+	// The busy Tenant's purge is the older, so it comes first.
+	let busy = deletion(&app, "busy-audit", 401, Some(400)).await;
+	let quiet = deletion(&app, "quiet-audit", 400, Some(399)).await;
+	let step = hold(&pool, "busy-audit").await;
+
+	let erased = node_purge::erase_audit(&app.runtime.store, 365).await;
+	step.commit().await.unwrap();
+	erased.expect("a Tenant that stays busy leaves its audit to the next pass");
+	assert_eq!(deletions(&app, quiet).await, 0);
+	assert_eq!(deletions(&app, busy).await, 1);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_deployment_administrator_disabling_a_mapping_is_an_authority_change(
+	#[future] endpoint: EndpointFixture,
+) {
+	short_limit();
+	let app = endpoint.await;
+	tenant(&app, "disabling").await;
+	let pool = app.runtime.store.pool.clone();
+	let mapping = endpoint_fixtures::browser_mapping(&app, "disabling", "member").await;
+	let administrator = Arc::new(endpoint_fixtures::browser_administrator(&app).await);
+	let credential: Uuid = mapping.credential.parse().unwrap();
+	let (id, revision): (Uuid, i64) =
+		sqlx::query_as("SELECT id, revision FROM dashboard_mappings WHERE credential_id = $1")
+			.bind(credential)
+			.fetch_one(pool.fixture_driver())
+			.await
+			.unwrap();
+	// A running step keeps the Mapping's credential shared.
+	let mut step = pool.begin(&TEST_FIXTURE).await.unwrap();
+	aidash_server::database::native::query(
+		&Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("authorization_credentials"))
+			.and_where(Expr::col(Alias::new("id")).eq(Expr::value(credential)))
+			.lock(LockType::Share)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut step)
+	.await
+	.unwrap();
+
+	let started = Instant::now();
+	let disabling = {
+		let administrator = administrator.clone();
+		tokio::spawn(async move {
+			administrator
+				.send(
+					"POST",
+					&format!("/api/dashboard/mappings/{id}/disable"),
+					json!({"expected_revision": revision}),
+				)
+				.await
+		})
+	};
+	// It must raise the flag, or overlapping Runs would starve it for good.
+	raised(&pool, "disabling").await;
+	let (status, body) = disabling.await.unwrap();
+	assert!(started.elapsed() >= LIMIT);
+	assert_eq!((status, body["error"].as_str()), (503, Some("POLICY_BUSY")));
+	step.commit().await.unwrap();
+	let enabled: bool = sqlx::query_scalar("SELECT enabled FROM dashboard_mappings WHERE id = $1")
+		.bind(id)
+		.fetch_one(pool.fixture_driver())
+		.await
+		.unwrap();
+	assert!(enabled, "the refused change left the Mapping as it was");
 }

@@ -1,4 +1,5 @@
 //! Application endpoint registration and access policies.
+use super::serializers::management::ControlInput;
 use super::views::management;
 use crate::apps::identity::services::boundary::AccessBoundary;
 use reinhardt::{ServerRouter, UnifiedRouter};
@@ -45,7 +46,7 @@ pub fn url_patterns() -> UnifiedRouter {
 				.with_route_middleware(
 					AccessBoundary::authenticated()
 						.with_visibility()
-						.stops_work(),
+						.stops_work_unless(ControlInput::starts_work),
 				)
 				.endpoint(management::run_message)
 				.with_route_middleware(AccessBoundary::authenticated().with_visibility())

@@ -106,7 +106,17 @@ async fn administrative(
 			)
 			.await?;
 	let mut tx = runtime.store.pool.begin(&admin.scope()?).await?;
-	let snapshot = admin.lock(&mut *tx, exclusive).await?;
+	let snapshot = if write {
+		admin
+			.lock_change(
+				&mut *tx,
+				exclusive,
+				aidash_domain::identity::tenancy::TENANT_UPDATE,
+			)
+			.await?
+	} else {
+		admin.lock(&mut *tx, false).await?
+	};
 	let allowed = admin
 		.require(
 			&mut *tx,

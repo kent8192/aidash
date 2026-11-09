@@ -22,6 +22,19 @@ impl TenantAdministrator {
 		Ok(snapshot)
 	}
 
+	/// [`Self::locked_for`] for an Authority Change decided by [`Self::may_change`].
+	pub(crate) async fn locked_for_change(
+		&self,
+		tx: &mut AtomicTransaction,
+		action: &str,
+		exclusive: bool,
+	) -> Result<Snapshot> {
+		let snapshot = self.lock_change(tx, exclusive, action).await?;
+		self.require(tx, &snapshot, action, rules::COLLECTION, json!({}))
+			.await?;
+		Ok(snapshot)
+	}
+
 	pub(crate) async fn policy_snapshot(&self, db: &Pool) -> Result<Snapshot> {
 		db.atomic(&self.scope()?, async |tx| {
 			self.locked_for(tx, rules::POLICY_READ, false).await
@@ -102,7 +115,9 @@ impl TenantAdministrator {
 		)?;
 		let exclusive = self.may_change(db, rules::POLICY_UPDATE).await?;
 		db.atomic(&self.scope()?, async |tx| {
-			let mut snapshot = self.locked_for(tx, rules::POLICY_UPDATE, exclusive).await?;
+			let mut snapshot = self
+				.locked_for_change(tx, rules::POLICY_UPDATE, exclusive)
+				.await?;
 			if snapshot.revision != expected_revision {
 				return Err(Error::Conflict("authorization revision changed".into()));
 			}
