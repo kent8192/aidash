@@ -20,7 +20,11 @@ impl LocalOutputScope for Reads<'_> {
 	}
 	async fn producers(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>> {
 		if let Some(producers) = self.access.read_lookups.producers(workspace, kind, id) {
-			return Ok(producers);
+			return self
+				.access
+				.producers_to_check(workspace, producers)
+				.await
+				.map_err(Into::into);
 		}
 		let result: NativeResult<Vec<Uuid>> = async {
 			let this = &mut *self.access;
