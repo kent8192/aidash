@@ -55,15 +55,10 @@ fn vector(values: &[f32]) -> Result<SimpleExpr> {
 		vec![Expr::value(value).into()],
 	))
 }
-/// A transient database failure is the vector outage a Run retries (#233). The
-/// use case cannot inspect an untyped port error, so type it here; a permanent
-/// one, such as an undefined table, stays a non-retried failure.
+/// Preserve temporary database failures so Runs wait without consuming attempts.
+/// Permanent failures remain non-retried failures.
 fn lookup_failure(error: Error) -> aidash_application::Error {
-	if error.is_transient_database() {
-		aidash_application::Error::RemoteSemantic(aidash_domain::semantic::Failure::Unavailable)
-	} else {
-		error.into()
-	}
+	error.into()
 }
 #[async_trait]
 impl EmbeddingProvider for Transport {
