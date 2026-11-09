@@ -104,7 +104,6 @@ dependencies = [
  "aidash-gcp",
  "aidash-integrations",
  "aidash-marketplace-server",
- "aidash-server",
  "async-trait",
  "base64 0.22.1",
  "bytes",
