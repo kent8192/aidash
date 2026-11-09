@@ -377,7 +377,8 @@ impl PolicyBundle {
 
 	/// Whether some policy could allow `action` for `subject` and everyone who
 	/// delegated to it, whatever the resource and conditions. `false` means
-	/// [`Self::evaluate`] denies every evaluation of that action.
+	/// [`Self::evaluate`] denies every evaluation of that action: no policy
+	/// allows it, or one denies it for every resource and under every condition.
 	pub fn may_allow(&self, subject: &str, action: &str) -> bool {
 		if self.validate().is_err() {
 			return false;
@@ -390,12 +391,23 @@ impl PolicyBundle {
 			let Ok(roles) = self.effective_roles(entry) else {
 				return false;
 			};
-			if !entry.enabled
-				|| !self.policies.iter().any(|policy| {
-					policy.effect == Effect::Allow
-						&& policy.subjects.matches(id, entry, &roles)
-						&& matches_action(&policy.actions, action, &policy.effect)
-				}) {
+			let applies = |policy: &Policy| {
+				policy.subjects.matches(id, entry, &roles)
+					&& matches_action(&policy.actions, action, &policy.effect)
+			};
+			let allowed = self
+				.policies
+				.iter()
+				.any(|policy| policy.effect == Effect::Allow && applies(policy));
+			// A deny that holds whatever the resource and conditions.
+			let denied = self.policies.iter().any(|policy| {
+				policy.effect == Effect::Deny
+					&& policy.condition.is_none()
+					&& policy.resources.kinds.contains("*")
+					&& (policy.resources.ids.is_empty() || policy.resources.ids.contains("*"))
+					&& applies(policy)
+			});
+			if !entry.enabled || !allowed || denied {
 				return false;
 			}
 			next = entry.delegated_by.as_deref();
