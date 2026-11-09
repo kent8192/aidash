@@ -1288,14 +1288,57 @@ pub(super) async fn run_visible(
 	store: &Store,
 	run: Uuid,
 ) -> bool {
-	let state = scope
-		.state(aidash_server::config::DeploymentIdentity {
-			id: store.deployment.to_string(),
+	// The state projection needs a Federation for pending Human Requests. This
+	// fixture has only local Runs, so reuse its Store and construct the remaining
+	// handles without starting any services.
+	let federation = aidash_server::federation::Federation {
+		sandbox: Default::default(),
+		store: store.clone(),
+		registry: aidash_server::registry::Registry::new(store.pool.clone(), &store.deployment)
+			.unwrap(),
+		config: aidash_server::config::Config {
+			tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
+				aidash_domain::offering::Offering::SelfHosted,
+			),
+			deployment: store.deployment.clone(),
 			endpoint: "http://127.0.0.1:9".into(),
-			protocol_version: "0.1".into(),
-			key_rollover: None,
-			key: None,
-		})
+			database_url: String::new(),
+			nats_url: "nats://127.0.0.1:9".into(),
+			api_token: "fixture-deployment-administrator".into(),
+			web_dir: "web/dist".into(),
+			lease_seconds: 30,
+			demo_data: false,
+			oidc: None,
+			federation: false,
+			deployment_key: None,
+			sign_in: None,
+			marketplace: aidash_server::config::marketplace::MarketplaceSettings {
+				endpoint: None,
+				connections: Vec::new(),
+				poll_seconds: 60,
+			},
+			common_auth: None,
+			common_issuers: None,
+			tier_limits: Arc::new(aidash_application::ports::nodes::NoTierLimits),
+			preview: None,
+			dashboard_origin: "http://localhost:3000".into(),
+			scratch_policy: Default::default(),
+		},
+		client: reqwest::Client::new(),
+		notify: Arc::new(tokio::sync::Notify::new()),
+	};
+	let state = scope
+		.state(
+			aidash_server::config::DeploymentIdentity {
+				id: store.deployment.to_string(),
+				endpoint: "http://127.0.0.1:9".into(),
+				protocol_version: "0.1".into(),
+				key_rollover: None,
+				key: None,
+			},
+			&federation,
+			None,
+		)
 		.await
 		.unwrap();
 	state.runs.iter().any(|inspection| inspection.id == run)
