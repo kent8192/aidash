@@ -308,14 +308,18 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 		Err(error) => return Err(error),
 	};
 	let mut scope = repository.begin().await?;
+	let mut task_read_denied = false;
 	let result = async {
-		scope.task_read(task).await?;
+		if let Err(error) = scope.task_read(task).await {
+			task_read_denied = matches!(&error, Error::Forbidden);
+			return Err(error);
+		}
 		scope.holder_grants(task).await
 	}
 	.await;
 	let holder_grants = match finish(scope, result).await {
 		Ok(grants) => grants,
-		Err(Error::Forbidden) => vec![],
+		Err(Error::Forbidden) if task_read_denied => vec![],
 		Err(error) => return Err(error),
 	};
 	let results: Vec<Result<Status>> = stream::iter(grants.into_iter().map(|grant| async move {
@@ -474,6 +478,7 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 			if activation.declinable_call.is_none() {
 				return Ok(None);
 			}
+			// Authority or the grant may have changed while the peer RPC was in flight.
 			if !holder_may_decline(repository, task, grant.id).await? {
 				return Ok(None);
 			}
@@ -505,7 +510,7 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 			result.push(holder);
 		}
 	}
-	if requester_denied && result.is_empty() {
+	if (requester_denied || task_read_denied) && result.is_empty() {
 		return Err(Error::Forbidden);
 	}
 	Ok(result)

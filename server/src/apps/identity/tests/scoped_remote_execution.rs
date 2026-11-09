@@ -3979,12 +3979,23 @@ async fn a_home_member_who_is_not_the_requester_needs_run_decline_call(
 	let mut bundle = p.source_policy.clone();
 	bundle["subjects"]["mia"] = json!({"kind":"user"});
 	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"mia-no-task-read","effect":"deny","subjects":{"ids":["mia"]},
+		"actions":["task.read"],"resources":{"kinds":["*"]}
+	}));
+	common::replace_policy(&p.a.store, "acme", bundle.clone()).await;
+	let mia = common::subject_credential(&p.a.store, "acme", "mia").await;
+	let path = format!("/api/tasks/{}/remote-executions", p.task);
+	let (status, body) = request(&p.aa, &mia, "GET", &path, json!({})).await;
+	assert_eq!(status, 403, "{body}");
+	bundle["policies"]
+		.as_array_mut()
+		.unwrap()
+		.retain(|policy| policy["id"] != "mia-no-task-read");
+	bundle["policies"].as_array_mut().unwrap().push(json!({
 		"id":"mia-no-decline","effect":"deny","subjects":{"ids":["mia"]},
 		"actions":["run.decline_call"],"resources":{"kinds":["*"]}
 	}));
 	common::replace_policy(&p.a.store, "acme", bundle).await;
-	let mia = common::subject_credential(&p.a.store, "acme", "mia").await;
-	let path = format!("/api/tasks/{}/remote-executions", p.task);
 	let (status, states) = request(&p.aa, &mia, "GET", &path, json!({})).await;
 	assert_eq!(status, 200, "{states}");
 	assert_eq!(states, json!([]));
