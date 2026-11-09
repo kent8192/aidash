@@ -1958,13 +1958,127 @@ async fn lingering_connections_give_their_slots_back_at_the_time_limit() {
 	shutdown(tasks, stop).await;
 }
 
+#[tokio::test]
+async fn a_complete_upload_does_not_count_as_a_time_limit() {
+	use tokio::io::{AsyncReadExt, AsyncWriteExt};
+	let observed = Observed::start();
+	let (origin, _audit, tasks, stop) = metered_gateway(u64::MAX, false).await;
+	for early in [0, 512] {
+		let mut socket = tokio::net::TcpStream::connect(origin.trim_start_matches("http://"))
+			.await
+			.unwrap();
+		let mut request = b"POST /v1/wrong-token/images/upload HTTP/1.1\r\nhost: gateway\r\ncontent-length: 1024\r\n\r\n".to_vec();
+		request.extend_from_slice(&[1; 512][..early]);
+		socket.write_all(&request).await.unwrap();
+		let mut answer = Vec::new();
+		tokio::time::timeout(Duration::from_secs(3), socket.read_to_end(&mut answer))
+			.await
+			.unwrap()
+			.unwrap();
+		assert!(answer.starts_with(b"HTTP/1.1 403"));
+		socket.write_all(&[1; 1024][..1024 - early]).await.unwrap();
+		tokio::time::sleep(LINGER_TIME + Duration::from_secs(1)).await;
+		assert_eq!(
+			observed.count(r#"aidash_egress_linger_limit_total{limit="time"}"#),
+			0,
+			"{early} bytes sent with the request head"
+		);
+		drop(socket);
+	}
+	shutdown(tasks, stop).await;
+}
+
+#[tokio::test]
+async fn a_complete_chunked_upload_does_not_count_as_a_time_limit() {
+	use tokio::io::{AsyncReadExt, AsyncWriteExt};
+	let observed = Observed::start();
+	let (origin, _audit, tasks, stop) = metered_gateway(u64::MAX, false).await;
+	let mut socket = tokio::net::TcpStream::connect(origin.trim_start_matches("http://"))
+		.await
+		.unwrap();
+	socket.write_all(b"POST /v1/wrong-token/images/upload HTTP/1.1\r\nhost: gateway\r\ntransfer-encoding: chunked\r\n\r\n").await.unwrap();
+	let mut answer = Vec::new();
+	tokio::time::timeout(Duration::from_secs(3), socket.read_to_end(&mut answer))
+		.await
+		.unwrap()
+		.unwrap();
+	assert!(answer.starts_with(b"HTTP/1.1 403"));
+	socket
+		.write_all(b"4\r\ndata\r\n0\r\nchecksum: ok\r\n\r\n")
+		.await
+		.unwrap();
+	tokio::time::sleep(LINGER_TIME + Duration::from_secs(1)).await;
+	assert_eq!(
+		observed.count(r#"aidash_egress_linger_limit_total{limit="time"}"#),
+		0
+	);
+	drop(socket);
+	shutdown(tasks, stop).await;
+}
+
+#[tokio::test]
+async fn a_completed_pipelined_upload_after_chunked_body_is_not_a_time_limit() {
+	use tokio::io::{AsyncReadExt, AsyncWriteExt};
+	let observed = Observed::start();
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let address = listener.local_addr().unwrap();
+	let task = tokio::spawn(async move {
+		let (socket, _) = listener.accept().await.unwrap();
+		let unread = UnreadBody::default();
+		let noting = unread.clone();
+		let service = service_fn(move |request: Request<hyper::body::Incoming>| {
+			noting.note(&request);
+			async move {
+				if request.uri().path() == "/first" {
+					request.into_body().collect().await.unwrap();
+					Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(b"ok"))))
+				} else {
+					Ok(Response::builder()
+						.status(403)
+						.header("connection", "close")
+						.body(Full::new(Bytes::new()))
+						.unwrap())
+				}
+			}
+		});
+		hyper::server::conn::http1::Builder::new()
+			.serve_connection(TokioIo::new(LingeringClose::new(socket, unread)), service)
+			.await
+			.unwrap();
+	});
+	let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+	let mut request = b"POST /first HTTP/1.1\r\nhost: gateway\r\ntransfer-encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\nPOST /second HTTP/1.1\r\nhost: gateway\r\ncontent-length: 1024\r\n\r\n".to_vec();
+	request.extend_from_slice(&[1; 512]);
+	client.write_all(&request).await.unwrap();
+	let mut answers = Vec::new();
+	tokio::time::timeout(Duration::from_secs(3), client.read_to_end(&mut answers))
+		.await
+		.unwrap()
+		.unwrap();
+	assert!(String::from_utf8_lossy(&answers).contains("HTTP/1.1 403"));
+	client.write_all(&[1; 512]).await.unwrap();
+	tokio::time::sleep(LINGER_TIME + Duration::from_secs(1)).await;
+	assert_eq!(
+		observed.count(r#"aidash_egress_linger_limit_total{limit="time"}"#),
+		0
+	);
+	drop(client);
+	task.await.unwrap();
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_client_still_sending_at_the_time_limit_is_counted() {
 	use tokio::io::AsyncWriteExt;
 	let observed = Observed::start();
 	let (socket, mut client) = tokio::io::duplex(1024);
 	let closing = tokio::spawn(async move {
-		let unread = UnreadBody(Arc::new(true.into()));
+		let unread = UnreadBody::default();
+		unread.read(b"POST / HTTP/1.1\r\ncontent-length: 100\r\n\r\n");
+		let request = Request::builder()
+			.method("POST")
+			.body(Full::new(Bytes::from(vec![0; 100])))
+			.unwrap();
+		unread.note(&request);
 		LingeringClose::new(socket, unread).shutdown().await
 	});
 	client.write_all(b"unread").await.unwrap();
