@@ -42,7 +42,9 @@ fn with_connection_limits(url: &str) -> Result<String> {
 }
 
 /// Bound the health check performed while returning a connection to the pool.
-fn released_within_limit(options: sqlx::postgres::PgPoolOptions) -> sqlx::postgres::PgPoolOptions {
+pub(super) fn released_within_limit(
+	options: sqlx::postgres::PgPoolOptions,
+) -> sqlx::postgres::PgPoolOptions {
 	options.after_release(|connection, _| {
 		Box::pin(async move {
 			use sqlx::Connection as _;

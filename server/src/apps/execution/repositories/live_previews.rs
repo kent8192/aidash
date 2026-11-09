@@ -126,7 +126,7 @@ impl application::Scope for Scope<'_> {
 			&self.run.metadata(),
 		)
 		.await
-		.map_err(|error| NativeError::External(error.to_string()))?;
+		.map_err(NativeError::from)?;
 		Ok(RunFacts {
 			id: self.run.id,
 			tenant: self.access.identity.tenant.clone(),
