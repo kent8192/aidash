@@ -680,6 +680,48 @@ class ExecutionPodController:
         self._verify_network_pod(pod, settings, container_id, epoch)
         return pod['metadata']['uid']
 
+    def _verify_ingress_pod(self, pod, canary_name):
+        """Prove a live listener is unreachable from another Pod."""
+        import ipaddress
+        import json
+        import select
+        import subprocess
+        address = str(ipaddress.IPv4Address(pod['status']['podIP']))
+        name = pod['metadata']['name']
+        transport = subprocess.Popen(self.backend.command + ['exec', '-i', name, '-c', 'execution', '--'] +
+                                     helper_command('ingress-listen'), stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                     env=self.backend.environment)
+        try:
+            readable, _, _ = select.select([transport.stdout], [], [], 15)
+            if not readable:
+                raise ValueError('ingress listener did not start')
+            port = json.loads(transport.stdout.readline())['port']
+            if type(port) is not int or not 1 <= port <= 65535:
+                raise ValueError('ingress listener returned an invalid port')
+            probe = ('import json,socket,sys\n'
+                     'try:\n s=socket.create_connection((sys.argv[1],int(sys.argv[2])),timeout=2);s.close();ok=True\n'
+                     'except OSError:ok=False\n'
+                     'print(json.dumps({"connected":ok}))')
+            def connect(target, container, ip):
+                result = self.backend.kube(['exec', target, '-c', container, '--',
+                                            'python3', '-I', '-c', probe, ip, str(port)])
+                return json.loads(result.stdout)['connected']
+            if connect(name, 'execution', '127.0.0.1') is not True:
+                raise ValueError('ingress listener positive control unavailable')
+            if connect(canary_name, 'canary', address) is not False:
+                raise ValueError('network isolation admits ingress from a peer Pod')
+        finally:
+            if transport.stdin:
+                transport.stdin.close()
+            try:
+                transport.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                transport.kill()
+                transport.wait()
+            if transport.stdout:
+                transport.stdout.close()
+
     def _verify_network_pod(self, pod, settings, container_id, epoch):
         import ipaddress
         import json
@@ -734,6 +776,7 @@ print(json.dumps(r))'''
                                           control, json.dumps(targets)])
             verify_positive_controls(json.loads(positive.stdout),
                                      metadata_server_absent=self.config.get('metadata_server_absent', False))
+            self._verify_ingress_pod(pod, canary_name)
             if settings['docker_enabled']:
                 self.backend.guard_execution_pod(pod, settings, 'execution', container_id, epoch,
                     action='v2_network_udp_control', address=peer_ip, port=18081)

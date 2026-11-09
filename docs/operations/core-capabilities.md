@@ -121,6 +121,8 @@ per 16 MiB, bounded between 32 and 128 tasks. An operator can override it with
 `v2_processes` in the Execution Pod configuration. There is no service-account token. Network admission checks
 the effective Kubernetes NetworkPolicies and probes a reachable peer Pod, node,
 metadata endpoint and external destination, allowing only the Egress gateway.
+It also verifies that a listener in the Execution Pod is reachable locally but
+not from the admission canary.
 It fails closed when its positive controls cannot be reached. On a cluster with
 no metadata server, explicitly set `execution.pods.metadataServerAbsent: true`
 (or `--metadata-server-absent` in the setup script) to omit only that positive

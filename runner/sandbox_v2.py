@@ -682,6 +682,24 @@ if __name__ == '__main__':
         from execution_pod import system_image_changed
         print(json.dumps({'image_changed': system_image_changed('/scratch-system/image-root', sys.argv[2])}))
         raise SystemExit(0)
+    if sys.argv[1:] == ['ingress-listen']:
+        import json
+        import select
+        import socket
+        import time
+        with socket.socket() as server:
+            server.bind(('0.0.0.0', 0))
+            server.listen(4)
+            print(json.dumps({'port': server.getsockname()[1]}), flush=True)
+            deadline = time.monotonic() + 90
+            while time.monotonic() < deadline:
+                ready, _, _ = select.select([server, sys.stdin], [], [], max(0, deadline - time.monotonic()))
+                if sys.stdin in ready:
+                    break
+                if server in ready:
+                    connection, _ = server.accept()
+                    connection.close()
+        raise SystemExit(0)
     if sys.argv[1:] == ['bootstrap']:
         bootstrap()
     if sys.argv[1:] == ['ready']:

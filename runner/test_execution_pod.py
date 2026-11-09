@@ -3565,6 +3565,31 @@ class V2NetworkPolicyTest(unittest.TestCase):
         controller.sweep_canaries()
         self.assertEqual(backend.objects, {'networkpolicy': [], 'pod': []})
 
+    def test_admission_requires_a_reachable_listener_and_blocked_ingress(self):
+        import json
+        import sys
+        from pathlib import Path
+        from types import SimpleNamespace
+        from execution_pod import ExecutionPodController
+        helper = Path(__file__).with_name('sandbox_v2.py')
+        pod = {'metadata': {'name': 'target'}, 'status': {'podIP': '10.1.2.3'}}
+        for local, remote, accepted in ((True, False, True), (False, False, False), (True, True, False)):
+            with self.subTest(local=local, remote=remote):
+                class Backend:
+                    command = [sys.executable, '-I', '-c',
+                               'import runpy,sys;sys.argv=[sys.argv[1],"ingress-listen"];runpy.run_path(sys.argv[0],run_name="__main__")',
+                               str(helper)]
+                    environment = {}
+                    def kube(self, args, local=local, remote=remote, **kwargs):
+                        connected = local if args[1] == 'target' else remote
+                        return SimpleNamespace(stdout=json.dumps({'connected': connected}).encode())
+                controller = ExecutionPodController(Backend(), {})
+                if accepted:
+                    controller._verify_ingress_pod(pod, 'canary')
+                else:
+                    with self.assertRaises(ValueError):
+                        controller._verify_ingress_pod(pod, 'canary')
+
     def test_negative_probe_requires_reachable_positive_controls(self):
         from execution_pod import verify_positive_controls
         controls = {'peer': True, 'node': True, 'metadata': True, 'internet': True, 'gateway': True}
