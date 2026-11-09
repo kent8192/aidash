@@ -243,6 +243,12 @@ async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
 			.await;
 			assert_eq!(status, 200, "{run}");
 		}
+		// Hold the independent event projection constant while changing the sizes
+		// of the Workspace and Run collections.
+		sqlx::query("DELETE FROM events WHERE tenant = 'acme'")
+			.execute(f.store.pool.fixture_driver())
+			.await
+			.unwrap();
 		let before = count().await;
 		let (status, state) = common::request(&app, &token, "GET", "/api/state", Value::Null).await;
 		assert_eq!(status, 200, "{state}");
