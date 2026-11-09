@@ -321,7 +321,9 @@ pub enum DisclosureState {
 pub trait DisclosureGate: Send + Sync {
 	async fn admit(&self, run: Uuid, disclosure: &WebDisclosure) -> Result<DisclosureState>;
 	/// Consume a one-time approval. `false` when it was already consumed or is
-	/// no longer approved; the disclosure must then not be sent.
+	/// no longer approved; the disclosure must then not be sent. `Err(Forbidden)`
+	/// when the Run may no longer write because its Subnode ended; nothing is
+	/// consumed and the disclosure must not be sent either.
 	async fn consume(&self, run: Uuid, approval_id: Uuid) -> Result<bool>;
 }
 
