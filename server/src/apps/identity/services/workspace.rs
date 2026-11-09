@@ -96,8 +96,8 @@ impl Access {
 	}
 
 	/// What the failed [`Self::run_visible`] found in the Run's reads, in terms
-	/// this reader may see. `None` when the reader's own policy hides the Run, or
-	/// when the Run is another Home's.
+	/// this reader may see. `None` when the reader's own policy hides the Run
+	/// (`run.read`, `memory.read` or a human request), or when the Run is another Home's.
 	pub(crate) async fn run_reads_block(
 		&mut self,
 		run: impl Into<crate::domain::RunMetadata>,
@@ -114,6 +114,20 @@ impl Access {
 		let workspace = self.workspace(run.workspace_id).await?;
 		let resource = self.resource("run", run.id, workspace.attributes);
 		if !self.decide(&resource, "run.read").await? {
+			return Ok(None);
+		}
+		// The walk may have stopped on a producer Run's reads while checking this Run's Task,
+		// before it decided this Run's own memory and human requests. If either hides the Run
+		// from this reader, the producer's read is not theirs to hear about, and approving it
+		// again would not help.
+		let memory = match self.memory_resource(run.clone()).await {
+			Ok(memory) => memory,
+			Err(crate::Error::Forbidden) => return Ok(None),
+			Err(error) => return Err(error),
+		};
+		if !self.decide(&memory, "memory.read").await?
+			|| !self.human_reads(run.workspace_id, run.id).await?
+		{
 			return Ok(None);
 		}
 		Ok(Some(match block {

@@ -16,6 +16,9 @@ struct World {
 	f: Federation,
 	app: common::TestApplication,
 	run: Uuid,
+	task: Uuid,
+	workspace: Uuid,
+	agent: aidash_server::registry::Entry,
 	alice: String,
 	_runtime: common::RuntimeFixture,
 }
@@ -98,6 +101,9 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 		f,
 		app,
 		run: run.id,
+		task: task.id,
+		workspace: workspace.id,
+		agent: registered[1].clone(),
 		alice,
 		_runtime: fixture.runtime,
 	}
@@ -190,6 +196,72 @@ impl World {
 			vec![json!({"id":"no-definition","effect":"deny","subjects":{"ids":["alice"]},"actions":["registry.read"],"resources":{"kinds":["agent"],"ids":[LISTED]}})],
 		)
 		.await;
+	}
+
+	/// A second Run that produced this Run's Task and has read the listed definition, as the
+	/// parent that delegated the Task has. The listed definition is no longer among this Run's
+	/// own reads, so a walk meets it only while checking the Task.
+	async fn add_parent_that_read_the_listed_definition(&self) {
+		let acme = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
+		let task = self
+			.f
+			.store
+			.create_task(
+				&acme,
+				self.workspace,
+				&aidash_server::domain::NewTask {
+					title: "Parent".into(),
+					description: "The Run that delegated the Task".into(),
+					requirements: json!({}),
+					dependencies: vec![],
+					parent_id: None,
+				},
+				"human",
+				None,
+			)
+			.await
+			.unwrap();
+		let parent = common::admitted_run(&self.f, "acme", &task, &self.agent).await;
+		let pool = self.f.store.pool.fixture_driver();
+		sqlx::query("DELETE FROM authorization_run_registry_reads WHERE run_id = $1")
+			.bind(self.run)
+			.execute(pool)
+			.await
+			.unwrap();
+		sqlx::query(
+			"INSERT INTO authorization_run_registry_reads (run_id, entry_id, entry_version, tenant) \
+			 VALUES ($1, $2, $3, 'acme')",
+		)
+		.bind(parent.id)
+		.bind(LISTED)
+		.bind("1.0.0")
+		.execute(pool)
+		.await
+		.unwrap();
+		sqlx::query(
+			"INSERT INTO authorization_run_outputs (run_id, tenant, workspace_id, resource_kind, resource_id) \
+			 VALUES ($1, 'acme', $2, 'task', $3)",
+		)
+		.bind(parent.id)
+		.bind(self.workspace)
+		.bind(self.task)
+		.execute(pool)
+		.await
+		.unwrap();
+	}
+
+	/// The Run has asked a person a question, as a Run waiting on a human has.
+	async fn add_human_request(&self) {
+		sqlx::query(
+			"INSERT INTO human_requests (id, tenant, workspace_id, run_id, kind, prompt, request_key, created_at) \
+			 VALUES ($1, 'acme', $2, $3, 'QUESTION', 'Which one?', 'ask', now())",
+		)
+		.bind(Uuid::new_v4())
+		.bind(self.workspace)
+		.bind(self.run)
+		.execute(self.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
 	}
 
 	/// `carol` may control Runs but not read them.
@@ -374,4 +446,49 @@ async fn someone_who_may_not_read_the_run_can_stop_it_but_learns_nothing_of_its_
 	assert_eq!(status, 403, "{body}");
 	assert!(body.get("run_reads").is_none(), "{body}");
 	assert_eq!(w.management(&bob).await.1["control"], "PAUSED");
+}
+
+#[rstest::rstest]
+#[case::memory("memory.read", "memory")]
+#[case::human_request("human.read", "human_request")]
+#[tokio::test]
+async fn a_read_met_before_the_runs_own_policy_is_not_reported_to_someone_that_policy_hides_it_from(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+	#[case] action: &str,
+	#[case] kind: &str,
+) {
+	let w = world(fixture).await;
+	let alice = w.alice.clone();
+	w.add_parent_that_read_the_listed_definition().await;
+	w.add_human_request().await;
+	w.keep_definition_from_alice().await;
+	let (status, paused) = w.control(&alice, "pause").await;
+	assert_eq!(status, 200, "{paused}");
+
+	// The parent's read is checked with the Task, before the Run's own memory and human
+	// requests, and it stops alice. Her policy allows the Run, so she is told what stopped it.
+	let (status, body) = w.get(&alice).await;
+	assert_eq!(status, 403, "{body}");
+	assert_eq!(body["run_reads"], json!({"kind":"definition_not_readable"}));
+	let (status, body) = w.control(&alice, "resume").await;
+	assert_eq!(status, 409, "{body}");
+	assert_eq!(body["run_reads"], json!({"kind":"definition_not_readable"}));
+
+	// Her own policy hides the Run as well, so approving the parent's read again would not
+	// help her, and she is told nothing of what the parent read.
+	w.add_policies(
+		None,
+		vec![json!({"id":"hidden-from-alice","effect":"deny","subjects":{"ids":["alice"]},"actions":[action],"resources":{"kinds":[kind]}})],
+	)
+	.await;
+	let (status, body) = w.get(&alice).await;
+	assert_eq!(status, 403, "{body}");
+	assert!(body.get("run_reads").is_none(), "{body}");
+	let (status, body) = w.control(&alice, "resume").await;
+	assert_eq!(status, 403, "{body}");
+	assert!(body.get("run_reads").is_none(), "{body}");
+	// She can still stop it.
+	assert_eq!(w.management(&alice).await.1["control"], "PAUSED");
 }
