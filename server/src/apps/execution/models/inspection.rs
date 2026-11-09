@@ -31,6 +31,25 @@ impl Run {
 			.transpose()
 	}
 
+	/// The Binding snapshot in a Run's stored context. Unlike [`Self::read_in`], a context that
+	/// does not decode is not an error: such a Run has no snapshot, as its inspection shows it.
+	pub(crate) async fn binding_snapshot_in(
+		tx: &mut dyn TransactionExecutor,
+		id: Uuid,
+	) -> Result<Option<aidash_domain::registry::bindings::BindingSnapshot>> {
+		Ok(Self::objects()
+			.filter(Self::field_id().eq(id))
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.pop()
+			.and_then(|row| {
+				serde_json::from_value::<aidash_domain::context::Context>(row.context.0).ok()
+			})
+			.and_then(|context| context.binding_snapshot)
+			.map(|snapshot| *snapshot))
+	}
+
 	pub(crate) async fn agent_page(
 		tx: &mut dyn TransactionExecutor,
 		agent: &str,

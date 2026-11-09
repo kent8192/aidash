@@ -114,6 +114,7 @@ async function refusal(response: Response, english: boolean) {
     await failure(response.clone(), english),
     response.status,
     true,
+    false,
     await policyBusyWait(response),
   );
 }

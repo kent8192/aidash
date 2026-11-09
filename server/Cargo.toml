@@ -192,6 +192,18 @@ name = "safety_stop"
 path = "src/apps/identity/tests/safety_stop.rs"
 
 [[test]]
+name = "run_control"
+path = "src/apps/identity/tests/run_control.rs"
+
+[[test]]
+name = "decision_counts"
+path = "src/apps/identity/tests/decision_counts.rs"
+
+[[test]]
+name = "approval_governs_use"
+path = "src/apps/identity/tests/approval_governs_use.rs"
+
+[[test]]
 name = "demo_data"
 path = "src/apps/identity/tests/demo_data.rs"
 

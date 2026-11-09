@@ -1,4 +1,4 @@
-//! Current catalog authority, inherited approval fences and exact retained definitions.
+//! Current catalog authority, inherited approval fences and exact definitions.
 use crate::Result;
 use aidash_domain::{
 	identity::catalog::RestrictionChange,
@@ -108,5 +108,3 @@ pub trait CatalogAdministrator: CatalogMutation {
 	async fn load_tenant(&mut self, tenant: &str) -> Result<()>;
 	async fn definition(&mut self, reference: &EntityRef) -> Result<Entry>;
 }
-
-pub mod retained;

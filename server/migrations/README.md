@@ -873,6 +873,14 @@ Plugin settings validator, including its compaction rules, and restores that
 validator on rollback. The join is an empty state-only migration that preserves
 existing identities and one leaf per app.
 
+## Remote reads record whether the Node is the reader's own Tenant's
+
+`identity/0070_remote_reads_same_tenant` (after `identity/0069_decision_coalescing_indexes`) adds `same_tenant boolean NOT NULL DEFAULT false` to
+`authorization_run_remote_reads`; `identity/0071_remote_reads_same_tenant_state` is its ORM state.
+A row written before it is treated as another Tenant's, which keeps asking that Node (the stricter
+check), so nothing needs backfilling. Rollback drops the column. A read of an Agent on a Node of
+the reader's own Tenant is then decided by `registry.read` and `federation.discover` alone (#769).
+
 ## Merged Node lifetime and Auth histories
 
 `identity/0066_node_auth_history_merge` joins the Common Auth origin binding,

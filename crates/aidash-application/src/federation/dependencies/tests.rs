@@ -126,10 +126,9 @@ impl DependencyScope for Scope {
 			None => Ok(true),
 		}
 	}
-	async fn catalog_entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
+	async fn readable_entry(&mut self, reference: &EntityRef) -> Result<Entry> {
 		assert_eq!(reference.id, "agent");
 		assert_eq!(reference.version, "1.0.0");
-		assert_eq!(action, "registry.read");
 		self.calls.push("catalog".into());
 		match self.fault {
 			Some(fault) => Err(fault.error()),
@@ -575,11 +574,11 @@ async fn another_nodes_local_reference_never_reads_this_database(mut scope: Scop
 }
 
 #[rstest]
-#[case("agent", true, true, 3)]
+#[case("agent", true, true, 2)]
 #[case("model", true, false, 2)]
 #[case("agent", false, false, 2)]
 #[tokio::test]
-async fn registry_dependency_keeps_kind_digest_and_execution_authority_gates(
+async fn registry_dependency_keeps_kind_and_digest_gates_without_asking_for_execution(
 	mut scope: Scope,
 	#[case] kind: &str,
 	#[case] digest_matches: bool,
@@ -601,9 +600,12 @@ async fn registry_dependency_keeps_kind_digest_and_execution_authority_gates(
 	assert_eq!(check_local(&mut scope, &reference).await.unwrap(), visible);
 	assert_eq!(scope.calls.len(), calls);
 	assert_eq!(scope.calls[0], "decide:federation.discover:aidash://local");
-	if visible {
-		assert_eq!(scope.calls[2], "decide:agent.execute:agent");
-	}
+	assert!(
+		!scope
+			.calls
+			.iter()
+			.any(|call| call.contains("agent.execute"))
+	);
 }
 
 #[rstest]

@@ -165,9 +165,10 @@ impl OperationReconciliationScope for Scope<'_> {
 		// The Read Recheck runs on its own 30 second loop (`read_recheck`), so this
 		// pass does not walk what the Run has read. Loading is this pass's
 		// Continuation Check, whose repeated allows add no row (ADR 0116). What the
-		// pass does with the loaded operation is not part of it.
+		// pass does with the loaded operation is not part of it. It still refuses once
+		// the Run may no longer use what its Binding names (the Use Recheck, #769).
 		let mut check = self.access.rechecking(run);
-		let run = check.run_for_continuation(run).await?;
+		let run = check.run_for_continued_use(run).await?;
 		crate::apps::execution::repositories::subnodes::require_writable(
 			check.tx.native_mut(),
 			run.workspace_id,

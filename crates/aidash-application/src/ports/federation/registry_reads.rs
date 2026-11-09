@@ -8,7 +8,9 @@ use aidash_domain::{
 use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
-pub type RegistryJournalRow = (String, String, String, String, Value);
+/// A remote read: its Node, the Agent's id and version, the digest and metadata read, and
+/// whether the Node belongs to the reader's own Tenant.
+pub type RegistryJournalRow = (String, String, String, String, Value, bool);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verification {
 	Verified,
@@ -46,5 +48,6 @@ pub trait RegistryVerificationScope: Send {
 	fn catalog_resource(&self, entry: &Entry) -> Resource;
 	async fn require(&mut self, resource: &Resource, action: &str) -> Result<()>;
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool>;
+	/// The definition under `registry.read` alone: a Catalog Approval does not decide who may read.
 	async fn entry(&mut self, reference: &EntityRef) -> Result<Entry>;
 }

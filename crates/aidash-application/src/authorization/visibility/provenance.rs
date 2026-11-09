@@ -3,25 +3,47 @@ use super::resources::{artifact_visible, conversation_resource, message_visible,
 use crate::ports::authorization::visibility::resources::ResourceVisibilityScope;
 use crate::{Error, Result, ports::authorization::visibility::provenance::ReadProvenanceScope};
 use aidash_domain::semantic::Failure;
-use aidash_domain::{Artifact, HumanRequest, Task, policy::Resource};
+use aidash_domain::{Artifact, HumanRequest, Task, policy::Resource, registry::EntityRef};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::BTreeSet;
 use uuid::Uuid;
+/// The read at which a walk of a Run's recorded reads stopped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadBlock {
+	Definition(EntityRef),
+	RemoteRead,
+	SemanticRead,
+	Source(String),
+}
+
+async fn registry_read_block(
+	scope: &mut dyn ReadProvenanceScope,
+	run: Uuid,
+) -> Result<Option<EntityRef>> {
+	for reference in scope.registry_entries(run).await? {
+		match scope.catalog_read(run, &reference).await {
+			Ok(()) => {}
+			Err(Error::Forbidden) => return Ok(Some(reference)),
+			Err(error) => return Err(error),
+		}
+	}
+	Ok(None)
+}
 pub async fn registry_reads_visible(
 	scope: &mut dyn ReadProvenanceScope,
 	run: Uuid,
 ) -> Result<bool> {
-	for reference in scope.registry_entries(run).await? {
-		match scope.catalog_read(run, &reference).await {
-			Ok(()) => {}
-			Err(Error::Forbidden) => return Ok(false),
-			Err(error) => return Err(error),
-		}
-	}
-	Ok(true)
+	Ok(registry_read_block(scope, run).await?.is_none())
 }
 pub async fn run_reads_visible(scope: &mut dyn ReadProvenanceScope, run: Uuid) -> Result<bool> {
+	Ok(run_reads_block(scope, run).await?.is_none())
+}
+/// Walk a Run's recorded reads and return the first that stops this reader.
+pub async fn run_reads_block(
+	scope: &mut dyn ReadProvenanceScope,
+	run: Uuid,
+) -> Result<Option<ReadBlock>> {
 	let mut pending = vec![run];
 	let mut visited = BTreeSet::new();
 	while let Some(run) = pending.pop() {
@@ -29,37 +51,39 @@ pub async fn run_reads_visible(scope: &mut dyn ReadProvenanceScope, run: Uuid) -
 			continue;
 		}
 		let opened = scope.open_run_reads(run).await?;
-		let visible = one_run_reads_visible(scope, run, &mut pending).await;
+		let block = one_run_reads_block(scope, run, &mut pending).await;
 		if opened {
 			scope.close_run_reads();
 		}
-		if !visible? {
-			return Ok(false);
+		if let Some(block) = block? {
+			return Ok(Some(block));
 		}
 	}
-	Ok(true)
+	Ok(None)
 }
 
-async fn one_run_reads_visible(
+async fn one_run_reads_block(
 	scope: &mut dyn ReadProvenanceScope,
 	run: Uuid,
 	pending: &mut Vec<Uuid>,
-) -> Result<bool> {
-	if !registry_reads_visible(scope, run).await?
-		|| !scope.remote_reads(run).await?
-		|| !scope.semantic_reads(run).await?
-		|| !scope.received_semantic(run).await?
-	{
-		return Ok(false);
+) -> Result<Option<ReadBlock>> {
+	if let Some(reference) = registry_read_block(scope, run).await? {
+		return Ok(Some(ReadBlock::Definition(reference)));
+	}
+	if !scope.remote_reads(run).await? {
+		return Ok(Some(ReadBlock::RemoteRead));
+	}
+	if !scope.semantic_reads(run).await? || !scope.received_semantic(run).await? {
+		return Ok(Some(ReadBlock::SemanticRead));
 	}
 	let sources = scope.sources(run).await?;
 	scope.prepare_sources(&sources).await?;
 	for (workspace, kind, id) in sources {
 		if !source_visible(scope, workspace, &kind, id, pending).await? {
-			return Ok(false);
+			return Ok(Some(ReadBlock::Source(kind)));
 		}
 	}
-	Ok(true)
+	Ok(None)
 }
 
 /// Classify the same dependency graph for memory execution recovery.

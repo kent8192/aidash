@@ -245,9 +245,10 @@ impl Wire {
 
 /// The transport of an authority that may hold none: a transaction lent to a
 /// disclosure check reaches no other Node, so it asks nobody and reports that
-/// it did not ask. The second field is the distribution lock the authority's
-/// transaction holds: a Node of this Deployment it asks in process runs inside
-/// that transaction's lock and requests none of its own (#751).
+/// it did not ask. Agents found on a Node of the reader's own Tenant need no
+/// proof: policy decides them (#769). The second field is the distribution lock
+/// the authority's transaction holds: a Node of this Deployment it asks in
+/// process runs inside that transaction's lock and requests none of its own (#751).
 pub(crate) struct Reach(pub Option<Wire>, pub Hold);
 
 #[async_trait]

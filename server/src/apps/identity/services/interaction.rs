@@ -48,6 +48,24 @@ impl Access {
 		Ok(run)
 	}
 
+	/// [`Self::run_for_continuation`] for a pass over a running command: it also refuses once
+	/// the Run may no longer use its Agent or anything its Binding names (the Use Recheck,
+	/// #769). Like the Continuation Check, it never looks at what the Run has read.
+	pub(crate) async fn run_for_continued_use(&mut self, id: Uuid) -> Result<Run> {
+		let run = self.run_for_continuation(id).await?;
+		if crate::apps::identity::repositories::execution::guard::use_block(
+			self,
+			&run.metadata(),
+			false,
+		)
+		.await?
+		.is_some()
+		{
+			return Err(crate::Error::Forbidden);
+		}
+		Ok(run)
+	}
+
 	/// The Read Recheck, in full. Every allow repeats the same question for this
 	/// Run, so a repeat adds no Authorization Decision.
 	pub(crate) async fn recheck_run_reads(&mut self, id: Uuid) -> Result<Run> {
@@ -61,6 +79,24 @@ impl Access {
 		)
 		.await
 		.map_err(Into::into)
+	}
+
+	/// [`Self::run_for_interaction`] for work done on the Run's behalf: its tools, running
+	/// commands and operations. It also refuses once the Run may no longer use its Agent or
+	/// anything its Binding names (the Use Recheck), which a read of the Run does not.
+	pub(crate) async fn run_for_action(&mut self, id: Uuid) -> Result<Run> {
+		let run = self.run_for_interaction(id).await?;
+		if crate::apps::identity::repositories::execution::guard::use_block(
+			self,
+			&run.metadata(),
+			false,
+		)
+		.await?
+		.is_some()
+		{
+			return Err(crate::Error::Forbidden);
+		}
+		Ok(run)
 	}
 
 	pub(crate) async fn conversation_resource(

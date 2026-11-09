@@ -592,6 +592,7 @@ export function CatalogApprovalSection({
                 </span>
               </>
             )}
+            <span>{t("catalogWithdrawScope")}</span>
             <div className="flex flex-wrap gap-2">
               <Button
                 size="sm"

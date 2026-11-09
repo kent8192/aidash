@@ -2,7 +2,6 @@
 use super::NativeAccess;
 use crate::apps::identity::models::DecisionOwner;
 use crate::authorization::policy::Resource;
-use crate::registry::EntityRef;
 use crate::{Result, domain};
 use uuid::Uuid;
 
@@ -122,15 +121,6 @@ impl NativeAccess {
 			workspace,
 			kind,
 			id,
-		)
-		.await
-		.map_err(Into::into)
-	}
-
-	pub(crate) async fn catalog_recheck_entry(&mut self, reference: &EntityRef) -> Result<()> {
-		aidash_application::authorization::catalog::retained::recheck_entry(
-			&mut crate::bootstrap::native_run_visibility_scope(self),
-			reference,
 		)
 		.await
 		.map_err(Into::into)

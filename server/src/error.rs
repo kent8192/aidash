@@ -40,6 +40,10 @@ pub enum Error {
 	#[error("forbidden")]
 	AuthorityRefused(Box<aidash_domain::tool::AuthorityRefusal>),
 	#[error("{0}")]
+	ResumeBlocked(aidash_domain::run_state::RunReadsBlock),
+	#[error("forbidden")]
+	RunHidden(aidash_domain::run_state::RunReadsBlock),
+	#[error("{0}")]
 	RemoteExecutionRefused(aidash_domain::federation::execution::Refusal),
 	/// The build's admission gate refused new work (402); the code is stable.
 	#[error("{0}")]
@@ -136,9 +140,10 @@ impl Error {
 			Self::Unprocessable(s) => (StatusCode::UNPROCESSABLE_ENTITY, s.clone()),
 			Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".into()),
 			Self::Connection(cause) => (StatusCode::CONFLICT, cause.code().into()),
-			Self::Forbidden | Self::AuthorityRefused(_) => {
+			Self::Forbidden | Self::AuthorityRefused(_) | Self::RunHidden(_) => {
 				(StatusCode::FORBIDDEN, "forbidden".into())
 			}
+			Self::ResumeBlocked(block) => (StatusCode::CONFLICT, block.to_string()),
 			Self::RemoteExecutionRefused(reason) => (StatusCode::FORBIDDEN, reason.to_string()),
 			Self::Refused(code) => (StatusCode::PAYMENT_REQUIRED, code.clone()),
 			Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
@@ -249,12 +254,15 @@ impl Error {
 				)
 			}
 		};
-		let envelope = match &self {
+		let mut envelope = match &self {
 			Self::NodeUnreachable { node, .. } => {
 				json!({"error": message, "code": "node_unreachable", "node": node})
 			}
 			_ => json!({"error": message}),
 		};
+		if let Self::RunHidden(block) | Self::ResumeBlocked(block) = &self {
+			envelope["run_reads"] = json!(block);
+		}
 		let mut response = HttpResponse::new(status)
 			.with_body(serde_json::to_vec(&envelope).expect("error envelope serializes"))
 			.with_header("Content-Type", "application/json");
@@ -404,6 +412,8 @@ impl From<aidash_application::Error> for Error {
 			ApplicationError::Unauthorized => Self::Unauthorized,
 			ApplicationError::Forbidden => Self::Forbidden,
 			ApplicationError::AuthorityRefused(refusal) => Self::AuthorityRefused(refusal),
+			ApplicationError::ResumeBlocked(block) => Self::ResumeBlocked(block),
+			ApplicationError::RunHidden(block) => Self::RunHidden(block),
 			ApplicationError::RemoteExecutionRefused(reason) => {
 				Self::RemoteExecutionRefused(reason)
 			}
@@ -495,6 +505,8 @@ impl From<Error> for aidash_application::Error {
 				Self::Forbidden
 			}
 			Error::AuthorityRefused(refusal) => Self::AuthorityRefused(refusal),
+			Error::ResumeBlocked(block) => Self::ResumeBlocked(block),
+			Error::RunHidden(block) => Self::RunHidden(block),
 			Error::RemoteExecutionRefused(reason) => Self::RemoteExecutionRefused(reason),
 			Error::Refused(code) => Self::Refused(code),
 			Error::Unauthorized => Self::Unauthorized,

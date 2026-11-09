@@ -290,6 +290,9 @@ pub(crate) struct Access {
 	pub(super) denial_events: u64,
 	pub(super) checking_reads: aidash_application::authorization::visits::ReadVisits,
 	pub(crate) read_verdicts: aidash_application::authorization::visits::ReadVerdicts,
+	/// The first read that stopped a walk in this authority boundary.
+	pub(crate) read_block:
+		Option<aidash_application::authorization::visibility::provenance::ReadBlock>,
 	/// How this authority's reads reach other Nodes. A transaction lent to a
 	/// disclosure check holds none, so its remote proofs are unavailable.
 	pub(crate) wire: Option<crate::apps::federation::remote::services::wire::Wire>,
@@ -365,6 +368,7 @@ pub(crate) struct PublicationContext {
 	denial_events: u64,
 	checking_reads: aidash_application::authorization::visits::ReadVisits,
 	read_verdicts: aidash_application::authorization::visits::ReadVerdicts,
+	read_block: Option<aidash_application::authorization::visibility::provenance::ReadBlock>,
 	dependency_frontier: Option<Vec<super::peer::dependencies::Reference>>,
 	recheck_owner: Option<DecisionOwner>,
 	walk_root: Option<DecisionOwner>,
@@ -635,6 +639,7 @@ impl Access {
 			denial_events: 0,
 			checking_reads: Default::default(),
 			read_verdicts: Default::default(),
+			read_block: None,
 			dependency_frontier: None,
 			recheck_workspaces: Default::default(),
 			subnode_workspaces: Default::default(),
@@ -724,6 +729,7 @@ impl Access {
 			denial_events: std::mem::take(&mut self.denial_events),
 			checking_reads: std::mem::take(&mut self.checking_reads),
 			read_verdicts: std::mem::take(&mut self.read_verdicts),
+			read_block: self.read_block.take(),
 			dependency_frontier: self.dependency_frontier.take(),
 			recheck_owner: self.recheck_owner.take(),
 			walk_root: self.walk_root.take(),
@@ -762,6 +768,7 @@ impl Access {
 		self.denial_events = old.denial_events;
 		self.checking_reads = old.checking_reads;
 		self.read_verdicts = old.read_verdicts;
+		self.read_block = old.read_block;
 		self.dependency_frontier = old.dependency_frontier;
 		self.recheck_owner = old.recheck_owner;
 		self.walk_root = old.walk_root;
@@ -788,6 +795,7 @@ impl Access {
 			denial_events: 0,
 			checking_reads: Default::default(),
 			read_verdicts: Default::default(),
+			read_block: None,
 			dependency_frontier: None,
 			recheck_workspaces: Default::default(),
 			subnode_workspaces: Default::default(),
@@ -879,6 +887,7 @@ impl Access {
 		self.denied = false;
 		self.checking_reads.clear();
 		self.read_verdicts.clear();
+		self.read_block = None;
 		self.read_lookups = Default::default();
 		self.walk_root = None;
 		self.recheck_owner = None;
@@ -1508,7 +1517,9 @@ impl Access {
 					result,
 					Err(Error::Forbidden
 						| Error::AuthorityRefused(_)
-						| Error::RemoteExecutionRefused(_))
+						| Error::RemoteExecutionRefused(_)
+						| Error::ResumeBlocked(_)
+						| Error::RunHidden(_))
 				) {
 				// Denials survive rollback with the evaluated policy revision.
 				let mut audit: Box<dyn TransactionExecutor> = self
@@ -1614,16 +1625,6 @@ impl Access {
 impl NativeAccess {
 	pub(crate) fn tenant_transaction(&mut self) -> (&mut dyn TransactionExecutor, &str) {
 		(self.access.tx.as_mut(), &self.access.identity.tenant)
-	}
-	pub(crate) fn catalog_approved(&self, reference: &crate::registry::EntityRef) -> bool {
-		self.access
-			.approved_catalog
-			.contains(&(reference.id.clone(), reference.version.clone()))
-	}
-	pub(crate) fn remember_catalog(&mut self, reference: &crate::registry::EntityRef) {
-		self.access
-			.approved_catalog
-			.insert((reference.id.clone(), reference.version.clone()));
 	}
 }
 

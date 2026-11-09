@@ -47,7 +47,7 @@ async fn run_access(f: &Federation, actor: Actor, id: Uuid) -> Result<(Access, R
 	execution::inherit_run_authority(&mut access, &run)
 		.await
 		.map_err(unavailable)?;
-	let run = access.run_for_interaction(id).await?;
+	let run = access.run_for_action(id).await?;
 	let config = service::settings(&mut access, &run).await?;
 	if config.core_capabilities.enabled() {
 		sessions::initialize(&f.store, &mut access, &run, &config).await?;

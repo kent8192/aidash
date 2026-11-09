@@ -95,6 +95,49 @@ impl Access {
 		.map_err(Into::into)
 	}
 
+	/// What the failed [`Self::run_visible`] found in the Run's reads, in terms
+	/// this reader may see. `None` when the reader's own policy hides the Run
+	/// (`run.read`, `memory.read` or a human request), or when the Run is another Home's.
+	pub(crate) async fn run_reads_block(
+		&mut self,
+		run: impl Into<crate::domain::RunMetadata>,
+	) -> crate::Result<Option<aidash_domain::run_state::RunReadsBlock>> {
+		use aidash_application::authorization::visibility::provenance::ReadBlock;
+		use aidash_domain::run_state::RunReadsBlock;
+		let run = run.into();
+		let Some(block) = self.read_block.take() else {
+			return Ok(None);
+		};
+		if !run.is_local(&self.node_id) {
+			return Ok(None);
+		}
+		let workspace = self.workspace(run.workspace_id).await?;
+		let resource = self.resource("run", run.id, workspace.attributes);
+		if !self.decide(&resource, "run.read").await? {
+			return Ok(None);
+		}
+		// The walk may have stopped on a producer Run's reads while checking this Run's Task,
+		// before it decided this Run's own memory and human requests. If either hides the Run
+		// from this reader, the producer's read is not theirs to hear about, and approving it
+		// again would not help.
+		let memory = match self.memory_resource(run.clone()).await {
+			Ok(memory) => memory,
+			Err(crate::Error::Forbidden) => return Ok(None),
+			Err(error) => return Err(error),
+		};
+		if !self.decide(&memory, "memory.read").await?
+			|| !self.human_reads(run.workspace_id, run.id).await?
+		{
+			return Ok(None);
+		}
+		Ok(Some(match block {
+			ReadBlock::Definition(_) => RunReadsBlock::DefinitionNotReadable,
+			ReadBlock::RemoteRead => RunReadsBlock::RemoteRead,
+			ReadBlock::SemanticRead => RunReadsBlock::SemanticRead,
+			ReadBlock::Source(source) => RunReadsBlock::Source { source },
+		}))
+	}
+
 	/// Preserve the reason when memory execution rechecks its complete Run graph.
 	pub(crate) async fn run_invalidity(
 		&mut self,

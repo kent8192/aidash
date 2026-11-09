@@ -4,6 +4,10 @@ use aidash_domain::{
 	identity::catalog::{CatalogRestriction, RestrictionChange},
 	registry::{EntityRef, Entry, Search},
 };
+/// The admission key of a read check that decided `registry.read` without a Catalog Approval.
+/// It is separate from the `registry.read` admission of [`entry`] so that a read-only result
+/// never counts as an approval; [`admit`] may reuse it to decide `registry.read` once (#769).
+pub const READ_CHECK: &str = "registry.read:read-check";
 pub async fn entry(
 	scope: &mut dyn CatalogScope,
 	reference: &EntityRef,
@@ -38,27 +42,6 @@ fn catalog_refusal(action: &str) -> Error {
 	Error::Forbidden
 }
 
-/// [`entry`] for a definition met by a Read Recheck. The Recheck hands nothing
-/// over, so current policy decides, as it does for an authority that is not
-/// inherited: an inherited one need not have used the definition itself. What
-/// its Run may use does not grow, and it takes no lock that could queue behind
-/// its own lease.
-pub async fn recheck_entry(scope: &mut dyn CatalogScope, reference: &EntityRef) -> Result<()> {
-	if !scope.inherited_lease()
-		|| scope.approved(reference)
-		|| crate::registry::system::builtin_reference(reference)
-	{
-		return entry(scope, reference, "registry.read").await.map(|_| ());
-	}
-	let direct_user = scope.direct_user(reference);
-	if !scope.permits_restriction(reference, &direct_user).await? {
-		return Err(catalog_refusal("registry.read"));
-	}
-	current_definition(scope, reference, "registry.read", None)
-		.await
-		.map(|_| ())
-}
-
 /// The refusal of a Tenant policy denial met while admitting a Catalog entry for `tool`'s call.
 pub fn policy_refusal(tool: &str, action: &str) -> Error {
 	Error::AuthorityRefused(Box::new(aidash_domain::tool::AuthorityRefusal {
@@ -78,6 +61,30 @@ pub async fn tool_entry(
 	tool: &str,
 ) -> Result<Entry> {
 	admit(scope, reference, action, Some(tool), &[]).await
+}
+
+/// Why a Run may not go on using `reference`, one of its Binding's definitions. `entry` is
+/// its raw definition, approved or not; the version is named only to a holder of
+/// `registry.read` on it. A definition that is still approved is not named at all.
+pub async fn use_block(
+	scope: &mut dyn CatalogScope,
+	reference: &EntityRef,
+	entry: Option<&Entry>,
+) -> Result<aidash_domain::run_state::RunReadsBlock> {
+	use aidash_domain::run_state::RunReadsBlock;
+	if scope.document(reference).await?.is_some() {
+		return Ok(RunReadsBlock::DefinitionNotUsable);
+	}
+	let readable = match entry {
+		Some(entry) => {
+			let resource = scope.resource(entry);
+			scope.decide(&resource, "registry.read").await?
+		}
+		None => false,
+	};
+	Ok(RunReadsBlock::DefinitionNotApproved {
+		definition: readable.then(|| reference.clone()),
+	})
 }
 
 async fn admit(
@@ -145,13 +152,21 @@ async fn current_definition(
 		return Err(catalog_refusal(action));
 	}
 	let resource = scope.resource(&entry);
-	scope
-		.require(&resource, action)
-		.await
-		.map_err(|error| match error {
-			Error::Forbidden => tool.map_or(Error::Forbidden, |tool| policy_refusal(tool, action)),
-			error => error,
-		})?;
+	// A read check already decided `registry.read` for this reference under this authority in
+	// this transaction: the approval and its document are still read above, the policy
+	// decision is not repeated.
+	let decided = action == "registry.read" && scope.admitted(reference, READ_CHECK).is_some();
+	if !decided {
+		scope
+			.require(&resource, action)
+			.await
+			.map_err(|error| match error {
+				Error::Forbidden => {
+					tool.map_or(Error::Forbidden, |tool| policy_refusal(tool, action))
+				}
+				error => error,
+			})?;
+	}
 	Ok(entry)
 }
 pub async fn list(scope: &mut dyn CatalogScope, search: &Search) -> Result<Vec<Entry>> {
@@ -367,7 +382,6 @@ pub async fn set_catalog_with_restriction(
 mod mutation_tests;
 
 pub mod approvals;
-pub mod retained;
 pub mod review;
 pub mod withdrawal;
 
