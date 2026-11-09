@@ -125,6 +125,7 @@ test-support = []
 [dev-dependencies]
 aidash-application = { workspace = true, features = ["test-support"] }
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
+socket2 = "0.6"
 tracing-subscriber = { version = "0.3", default-features = false, features = [
   "fmt",
 ] }
@@ -139,6 +140,7 @@ jsonwebtoken = { version = "11.1", default-features = false, features = [
 ] }
 rstest.workspace = true
 axum = "0.8"
+libc = "0.2"
 tempfile = "3"
 tokio = { workspace = true, features = ["test-util"] }
 flate2 = "1"

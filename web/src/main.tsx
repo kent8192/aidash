@@ -573,6 +573,7 @@ function Dashboard({
             "generation",
             "provider-credentials",
             "provider-credential-bindings",
+            "scratch-space",
           ]) {
             refresher.refresh(key);
           }

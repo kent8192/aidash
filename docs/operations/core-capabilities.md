@@ -26,6 +26,12 @@ physical interpreter freeze/termination before admitting work. The node adapter
 also verifies cgroup CPU/memory/process ceilings and disables swap for the
 sandbox cgroup. A Kubernetes pod-deletion response alone is not termination
 proof. Missing support makes execution unavailable; there is no host fallback.
+A command or Python cell still running at its time limit is stopped, whatever
+exit code it then gives. The limit counts from when it starts, so preparing its
+sandbox does not use it up. Its result says `COMMAND_TIMED_OUT`, with the limit
+and the revision its file changes were saved as. If the save is refused, the
+result keeps `WORKING_EXPORT_REFUSED` and sets `deadline_expired`.
+
 When Kubernetes is unreachable, the Runner keeps tracking an accepted command
 and retries output, status and cancellation requests. The saved Area remains
 readable and busy; a new command receives `AREA_BUSY`. Polling reports the age
@@ -292,24 +298,25 @@ keys, and local upload intents.
 
 ## Initial ceilings
 
-| Resource                               | Default                                                          |
-| -------------------------------------- | ---------------------------------------------------------------- |
-| CPU / memory / processes               | 2 CPUs / 2 GiB / 128                                             |
-| Working files / temporary scratch      | 1 GiB / 256 MiB per area                                         |
-| Retained objects                       | 10 GiB per Tenant, counted once per distinct blob                |
-| Ordinary / maximum execution           | 120 / 600 seconds                                                |
-| Package installation                   | 300 seconds                                                      |
-| Idle interpreter                       | 30 minutes                                                       |
-| Inline read / search page              | 16 KiB / 50 matches                                              |
-| Command / patch input                  | 64 KiB / 256 KiB                                                 |
-| Search response / duration             | 32 KiB / 5 seconds                                               |
-| Direct Skill package                   | 64 files / 256,000 bytes (existing import ceiling)               |
-| Captured operation / broker output     | 8 MiB, with bounded continuation                                 |
-| Run permission grant                   | At most 1 hour and no later than Run termination                 |
-| Pending approval / uncommitted staging | 24 hours                                                         |
-| Cleanup recovery                       | 7 days                                                           |
-| Reference set                          | 8 files, 10 MiB each, 200 PDF pages, 64 KiB extracted text total |
-| Shared snapshot                        | 64 files, 100 MiB each, 256 MiB total; 4 MiB transfer chunks     |
+| Resource                               | Default                                                        |
+| -------------------------------------- | -------------------------------------------------------------- |
+| CPU / memory / processes               | 2 CPUs / 2 GiB / 128                                           |
+| Working files / temporary scratch      | 1 GiB / 256 MiB per area                                       |
+| Retained objects                       | 10 GiB per Tenant, counted once per distinct blob              |
+| Ordinary / maximum execution           | 120 / 600 seconds                                              |
+| Package installation                   | 300 seconds                                                    |
+| Idle interpreter                       | 30 minutes                                                     |
+| Inline read / search page              | 16 KiB / 50 matches                                            |
+| Command / patch input                  | 64 KiB / 256 KiB                                               |
+| Search response / duration             | 32 KiB / 5 seconds                                             |
+| Direct Skill package                   | 64 files / 256,000 bytes (existing import ceiling)             |
+| Captured operation / broker output     | 8 MiB, with bounded continuation                               |
+| Run permission grant                   | At most 1 hour and no later than Run termination               |
+| Pending approval / uncommitted staging | 24 hours                                                       |
+| Cleanup recovery                       | 7 days                                                         |
+| Reference set                          | 256 files, 10 MiB each, 200 PDF pages, 32 MiB of text in total |
+| Extracted text of one PDF or Excel     | 1 MiB                                                          |
+| Shared snapshot                        | 64 files, 100 MiB each, 256 MiB total; 4 MiB transfer chunks   |
 
 Working storage cannot exceed the 1-GiB runner export ceiling.
 The profile can lower applicable ceilings. Agent input cannot raise them. Disk
@@ -334,6 +341,7 @@ keeping the deployment's existing runner, storage and resource settings:
     "reference_bytes": 5242880,
     "reference_pages": 100,
     "reference_text_bytes": 32768,
+    "reference_file_text_bytes": 16384,
     "share_files": 32,
     "share_file_bytes": 52428800,
     "share_bytes": 134217728
@@ -348,11 +356,55 @@ protocol framing limits. Transfer negotiation advertises the Node's lowered file
 budgets. Configuration and Run admission both enforce reference-set limits;
 lowering a limit never rewrites a published Agent version or deletes originals.
 
-The working-file byte ceiling includes mounted reference and received files.
-Those read-only mounts reserve capacity from the writable `/work` volume and
-from every export, including Shell recovery and persistent Python operations.
-Filling the writable allowance therefore keeps the combined manifest within
-the same ceiling used when publishing results.
+The working-file byte ceiling includes received files. These read-only mounts
+reserve capacity from the writable `/work` volume and from every export,
+including Shell recovery and persistent Python operations. Filling the writable
+allowance therefore keeps the combined manifest within the same ceiling used
+when publishing results. Reference files use none of this capacity, because no
+Pod receives them.
+
+## Reference sets
+
+A Reference set is all the Reference files one Agent version can read, across
+every Source it binds. It does not enter the model's context. Each request says
+only how many files there are. An Agent lists their paths with `file_search` in
+`path` mode and an empty query under the `references` scope, and reads them with
+`file_read`. Neither tool reaches a Pod or the runner. Shell and Python do not
+see Reference files. An API client can copy one into the Working Area with
+`POST /api/runs/{id}/files/materialize`. An Agent tool for this arrives with the
+copy tools of #697.
+
+A Source gives each file a relative `path`, shown to the Agent under
+`references/`. Two entries with the same path in one Agent version are refused
+at registration, across Sources too. Registering a Source requires being able to
+read every file it binds.
+
+Whoever may run an Agent version can have that Run read the Reference files of
+its approved Sources, and the Agent needs no `reference.*` action (ADR 0114).
+Direct download stays with the uploader, through both the reference and the
+working-area routes. Revoking one file refuses new Runs of every version that
+binds it, and the error names its path. A Run that already holds the set stops
+reading a revoked file too: `file_read` and the copy refuse it, `file_search`
+skips it, and the set's other files stay readable. `file_share` refuses a
+Reference file, so no other Agent can keep a copy past its revocation.
+
+`POST /api/references/batch` adds several documents in one request of up to
+16 MiB and reports a result per file. The same person adding the same content
+gets the existing Reference, unless it is revoked or expired, and two paths with
+the same content in one request become one entry. Its `references` field can be
+pasted into a `reference_attachments` Source. The request creates no Source,
+because a Source needs approval. A larger file uses the chunked upload.
+
+The server decides how a file is read from its content, not its declared type.
+UTF-8 text without NUL is ready at once, with no Pod, and Agents read the
+original. A file starting with `%PDF-` or `PK` goes to the sandboxed parser.
+Anything else keeps its original and is marked `unsupported`.
+
+A PDF page with fewer than 16 non-whitespace characters is marked in the
+extracted text, such as `[Page 3: no text]`, and listed in the reference's
+`pages_without_text` and on screen. A PDF where every page lacks text is
+`non_extractable`. Adding it is not refused, because a page may hold only a
+figure. OCR is not performed (#742).
 
 ## Files, references, Skills and packages
 
@@ -376,7 +428,7 @@ the remaining text representations. Individual matches exceeding the configured
 page budget return an explicit error instead of a non-advancing cursor.
 The original remains downloadable by its authorized owner when the upload was
 accepted; committing it ends the upload staging expiry. OCR, formula recalculation and universal format preservation are not
-provided. Text-only legacy references remain text-only until re-uploaded.
+provided.
 The desktop browser download flow accepts files up to 128 MiB and verifies their
 digest incrementally. Inline image preview is limited to 16 MiB; these browser
 limits do not remove an authorized original from storage.
@@ -450,8 +502,8 @@ refuses to export:
 
 - a symbolic link, such as the `node_modules/.bin` links npm writes;
 - a hard-link alias, such as the files pnpm links from its store;
-- more than 4096 files in the Working Area manifest, mounted references
-  included;
+- more than 4096 files in the Working Area manifest, not counting Reference
+  files;
 - more bytes than the configured Working Area quota leaves writable;
 - a directory or file whose name is not a printable relative path, or a special
   file.

@@ -4,6 +4,7 @@ use crate::{Error, Result, database::native, store::Store};
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::memory::{Retention, Unit};
 use chrono::{Duration, Utc};
+use reinhardt::db::orm::execution::convert_values;
 use reinhardt::query::{
 	Alias, ColumnRef, Expr, ExprTrait, LockType, OnConflict, Order, PostgresQueryBuilder, Query,
 	QueryStatementBuilder,
@@ -76,21 +77,20 @@ pub(crate) async fn history(
 	let boundary = unit
 		.revision
 		.saturating_sub(retention.history_versions as i64);
-	native::query(
-		&Query::delete()
-			.from_table(Alias::new("memory_history"))
-			.and_where(Expr::col("unit_id").eq(Expr::value(unit.id)))
-			.and_where(
-				reinhardt::query::Condition::any()
-					.add(Expr::col("revision").lte(boundary))
-					.add(Expr::col("updated_at").lt(Expr::value(
-						Utc::now() - Duration::days(i64::from(retention.history_days)),
-					))),
-			)
-			.to_string(PostgresQueryBuilder),
-	)
-	.execute(&mut **lease.tx())
-	.await?;
+	let (sql, values) = Query::delete()
+		.from_table(Alias::new("memory_history"))
+		.and_where(Expr::col("unit_id").eq(Expr::value(unit.id)))
+		.and_where(
+			reinhardt::query::Condition::any()
+				.add(Expr::col("revision").lte(boundary))
+				.add(Expr::col("updated_at").lt(Expr::value(
+					Utc::now() - Duration::days(i64::from(retention.history_days)),
+				))),
+		)
+		.build(PostgresQueryBuilder);
+	// Unbounded until #744 splits it into batches.
+	crate::database::limits::execute_unlimited(&mut **lease.tx(), &sql, convert_values(values))
+		.await?;
 	Ok(())
 }
 
@@ -231,8 +231,9 @@ pub(crate) async fn sweep(store: &Store) -> Result<usize> {
 					Error::Conflict(_) => "purge_dependency_limit_or_fence",
 					_ => "purge_storage_unavailable",
 				};
-				// Do not consume a retry before its policy could be loaded.
-				let attempt = if max_retries.is_some() {
+				// Do not consume a retry before its policy could be loaded, or
+				// because the database could not serve this attempt (#728).
+				let attempt = if max_retries.is_some() && !error.is_transient_database() {
 					attempts.saturating_add(1)
 				} else {
 					attempts

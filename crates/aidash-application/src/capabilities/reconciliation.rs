@@ -6,11 +6,15 @@ use crate::{
 	},
 };
 use aidash_domain::{
-	capabilities::operations::{
-		ExportQuota, FileScope, MAX_AREA_FILES, MountedFile, VERIFICATION, WORKING_EXPORT_REFUSED,
-		capability_of, export_quota_refusal, lost_area_state,
-		reconciliation::{Area, Limits, Snapshot},
-		request_validation_failure,
+	capabilities::{
+		errors::{CapabilityError, TimedOut, also_timed_out},
+		operations::{
+			ExportQuota, FileScope, MAX_AREA_FILES, MountedFile, VERIFICATION,
+			WORKING_EXPORT_REFUSED, capability_of, counted_files, export_quota_refusal,
+			lost_area_state,
+			reconciliation::{Area, Limits, Snapshot},
+			request_validation_failure, undelivered_refusal,
+		},
 	},
 	completion::{MAX_DIAGNOSTIC_BYTES, bounded_tail},
 };
@@ -108,8 +112,13 @@ async fn reconcile(
 	}
 	let observed = if cancelling {
 		operation.state = "cancelling".into();
+		let refusal = undelivered_refusal(
+			&operation.result,
+			&operation.digest,
+			operation.runner_instance.as_deref(),
+		);
 		scope
-			.request("POST", &format!("/v1/operations/{id}/cancel"), None)
+			.request("POST", &format!("/v1/operations/{id}/cancel"), refusal)
 			.await?
 	} else if operation.result["dispatch_pending"] == true {
 		let files = scope.dispatch_files(&operation).await?;
@@ -238,12 +247,12 @@ async fn reconcile(
 			} else {
 				scope.upload_files(&operation).await?
 			};
-			let mut size = entries.iter().map(|file| file.size).sum::<u64>();
+			let mut size = counted_files(&entries).map(|file| file.size).sum::<u64>();
 			let mut seen = std::collections::BTreeSet::new();
 			for file in exported {
 				let path = file["path"].as_str().ok_or(Error::Forbidden)?;
 				aidash_domain::registry::rules::validate_path(path)?;
-				if !seen.insert(path) || entries.len() >= MAX_AREA_FILES {
+				if !seen.insert(path) || counted_files(&entries).count() >= MAX_AREA_FILES {
 					return Err(Error::Invalid("invalid runner paths".into()));
 				}
 				let file_size = file["size"].as_u64().ok_or(Error::Forbidden)?;
@@ -340,6 +349,20 @@ async fn reconcile(
 			operation.revision = area.revision;
 			operation.state = observed["status"].as_str().unwrap().into();
 			operation.result = json!({"displays":displays,"session_id":operation.input["session_id"],"writer_frozen":observed["writer_frozen"],"output_file":output,"exit_code":observed["exit_code"],"truncated":observed["truncated"],"termination_confirmed":observed["termination_confirmed"],"runner_acknowledged":false,"error":observed["error"]});
+			// The limit decides, whatever exit code the command then gave and
+			// whoever stopped it. Its files are published by now, so the error
+			// can say they were saved.
+			if observed["deadline_expired"] == true {
+				operation.state = "failed".into();
+				operation.result["deadline_expired"] = json!(true);
+				operation.result["error"] =
+					serde_json::to_value(CapabilityError::command_timed_out(&TimedOut {
+						limit_seconds: time_limit(&operation),
+						maximum_seconds: limits.maximum_seconds,
+						revision: area.revision,
+						python: operation.kind == "code_interpreter",
+					}))?;
+			}
 			if operation.kind == "code_interpreter" {
 				scope.complete_python(&operation, &observed).await?;
 			}
@@ -386,10 +409,24 @@ async fn reconcile(
 			if bytes.len() > 16384 {
 				return Err(Error::Invalid("runner preview limit".into()));
 			}
-			let text = String::from_utf8_lossy(&bytes);
-			let mut end = text.len().min(limits.read_bytes);
-			while !text.is_char_boundary(end) {
-				end -= 1;
+			let mut start = bytes.len().saturating_sub(limits.read_bytes);
+			while !super::projection::boundary(&bytes, start) {
+				start += 1;
+			}
+			let offset = observed["stdout_offset"]
+				.as_u64()
+				.unwrap_or(0)
+				.checked_add(start as u64)
+				.ok_or_else(|| Error::Invalid("invalid runner output offset".into()))?;
+			let preview = &bytes[start..];
+			operation.result = json!({"preview":String::from_utf8_lossy(preview),"preview_bytes":STANDARD.encode(preview),"preview_offset":offset,"truncated":observed["truncated"]});
+			// The Time Limit counts from the command's start, which only the
+			// runner knows. A Python cell's start is when it was dispatched.
+			if let Some(started) = observed["started_at"]
+				.as_f64()
+				.or_else(|| observed["running_at"].as_f64())
+			{
+				operation.result["started_at"] = json!(started);
 			}
 			let error = if observed["status"] == "cancelling"
 				&& observed["termination_confirmed"] != true
@@ -398,7 +435,6 @@ async fn reconcile(
 			} else {
 				observed["error"].clone()
 			};
-			operation.result = json!({"preview":&text[..end],"truncated":observed["truncated"]});
 			if !observed["output_fetched_at"].is_null() {
 				operation.result["output_fetched_at"] = observed["output_fetched_at"].clone();
 			}
@@ -449,11 +485,12 @@ fn quota_refusal(
 	exported: &[Value],
 	working_bytes: u64,
 ) -> Result<Option<Value>> {
-	let mounted = entries.iter().map(|file| file.size).sum::<u64>();
+	let mounted = counted_files(entries).map(|file| file.size).sum::<u64>();
+	let counted = counted_files(entries).count();
 	let mut size = mounted;
 	for (index, file) in exported.iter().enumerate() {
 		let path = file["path"].as_str().ok_or(Error::Forbidden)?;
-		if entries.len() + index >= MAX_AREA_FILES {
+		if counted + index >= MAX_AREA_FILES {
 			return Ok(Some(export_quota_refusal(
 				ExportQuota::Files,
 				path,
@@ -471,23 +508,36 @@ fn quota_refusal(
 	}
 	Ok(None)
 }
+/// The Time Limit the operation was started with.
+fn time_limit(operation: &Snapshot) -> u64 {
+	operation.input["seconds"].as_u64().unwrap_or_default()
+}
 /// Ends an operation whose export was refused as a failed tool call: nothing is
 /// published, the Area reopens at its previous revision and the Run continues.
 /// A Python session resets, since its memory no longer matches those files.
+/// A command past its limit keeps the refusal as its error, because what the
+/// Agent has to act on first is that nothing was saved, and adds the limit.
 async fn refuse_export(
 	scope: &mut dyn OperationReconciliationScope,
 	area: &Area,
 	mut operation: Snapshot,
 	observed: &Value,
-	error: Value,
+	mut error: Value,
 ) -> Result<()> {
 	let id = operation.id;
+	let timed_out = observed["deadline_expired"] == true;
+	if timed_out && let Some(message) = error["message"].as_str() {
+		error["message"] = json!(also_timed_out(message, time_limit(&operation)));
+	}
 	let limits = scope.limits();
 	let output = store_output(scope, id, observed, limits).await?;
 	scope.set_area("active").await?;
 	operation.revision = area.revision;
 	operation.state = "failed".into();
 	operation.result = json!({"session_id":operation.input["session_id"],"writer_frozen":false,"output_file":output,"exit_code":observed["exit_code"],"truncated":observed["truncated"],"termination_confirmed":true,"runner_acknowledged":false,"error":error});
+	if timed_out {
+		operation.result["deadline_expired"] = json!(true);
+	}
 	if operation.kind == "code_interpreter" {
 		scope
 			.complete_python(&operation, &json!({"writer_frozen":false}))

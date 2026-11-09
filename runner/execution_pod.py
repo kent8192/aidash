@@ -5,6 +5,13 @@ from threading import Lock, RLock
 STOP_RETRY_SECONDS = 15 * 60
 LATE_RESULT_SECONDS = 24 * 60 * 60
 OUTPUT_RETRY_SECONDS = 60
+# How long a Python interpreter may take to show a terminal result once its stop was accepted. After the
+# stop signal the in-Pod supervisor (sandbox_v2.run_supervised) kills and reaps the interpreter's processes
+# within 5 s, joins its output readers for FORWARD_GRACE_SECONDS (5 s), drains a reader that is still held
+# open for up to 30 s more, and gives up on each of the two readers after 0.5 s: 5 + 5 + 30 + 1 = 41 s.
+# A session records no system changes (record_changes is off for kind `session`), so no tree scan adds to
+# that. The other 19 s are for the 5 s kubectl exec of each result read and for scheduling.
+PYTHON_STOP_SECONDS = 60
 
 
 def helper_command(*args):
@@ -260,6 +267,18 @@ def read_change_log(path):
         return [json.loads(line) for line in file]
 
 
+def pod_proxy_url(endpoint, credential):
+    """The proxy address a Pod uses, carrying its credential to the Egress gateway."""
+    import re
+    from urllib.parse import urlsplit, urlunsplit
+    if credential is None:
+        return endpoint
+    if not isinstance(credential, str) or not re.fullmatch(r'[A-Za-z0-9._-]{1,512}', credential):
+        raise ValueError('invalid egress credential')
+    parts = urlsplit(endpoint)
+    return urlunsplit(parts._replace(netloc=f'aidash:{credential}@{parts.netloc}'))
+
+
 def execution_manifests(settings, config):
     """Build the durable claim and sandbox Pod for one Scratch Space."""
     import hashlib
@@ -368,7 +387,7 @@ def execution_manifests(settings, config):
            labels={'aidash-sandbox': 'true', 'aidash-v2': 'true'}), 'spec': podspec}
     if config.get('proxy_endpoint'):
         v2_network_policy(config)  # validate before passing the proxy to user processes
-        proxy = config['proxy_endpoint']
+        proxy = pod_proxy_url(config['proxy_endpoint'], settings.get('egress_credential'))
         podspec['containers'][0]['env'] += [
             {'name': key, 'value': proxy} for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy')]
     return claim, pod
@@ -742,17 +761,35 @@ print(json.dumps(r))'''
                 raise ExecutionPodError('termination_unconfirmed',
                     'The node is absent; a Deployment Administrator must verify the writer stopped') from None
             uid = (pod or {}).get('metadata', {}).get('uid')
-            if (not uid or guard.get('pod_uid') != uid
-                    or pod.get('spec', {}).get('nodeName') != node):
-                raise ExecutionPodError('termination_unconfirmed', 'The original Pod cannot be bound to a normal deletion') from None
-            endpoint = '/api/v1/namespaces/' + self.config['namespace'] + '/pods/' + name
-            self.backend.kube(['delete', '--raw', endpoint, '-f', '-'],
-                              json.dumps({'preconditions':{'uid':uid}}).encode(), timeout=70)
-            try:
-                self.backend.kube(['wait', '--for=delete', 'pod/' + name, '--timeout=60s'], timeout=70)
-            except Exception:
-                if self._get('pod', name) is not None:
+            # The delete may have been applied by an earlier attempt whose wait, lookup or reply was lost.
+            # Its Pod is then gone, and only this record can bind that deletion to the guarded Pod.
+            issued = state.get('normal_delete_pod_uid')
+            already_deleted = bool(issued) and pod is None and issued == guard.get('pod_uid')
+            if not already_deleted:
+                if (not uid or guard.get('pod_uid') != uid
+                        or pod.get('spec', {}).get('nodeName') != node):
+                    raise ExecutionPodError('termination_unconfirmed', 'The original Pod cannot be bound to a normal deletion') from None
+                # Persist which Pod the delete is issued for before issuing it: a reply lost after
+                # the delete applied must not leave the Space fenced for good. The record is only
+                # intent, so a delete the API server refused takes it back again, unless an earlier
+                # attempt for the same Pod left its outcome open.
+                unresolved = issued == uid
+                state['normal_delete_pod_uid'] = uid
+                save(path, state)
+                endpoint = '/api/v1/namespaces/' + self.config['namespace'] + '/pods/' + name
+                try:
+                    self.backend.kube(['delete', '--raw', endpoint, '-f', '-'],
+                                      json.dumps({'preconditions':{'uid':uid}}).encode(), timeout=70)
+                except Exception as error:
+                    if not unresolved and self._delete_refused(error):
+                        state.pop('normal_delete_pod_uid', None)
+                        save(path, state)
                     raise
+                try:
+                    self.backend.kube(['wait', '--for=delete', 'pod/' + name, '--timeout=60s'], timeout=70)
+                except Exception:
+                    if self._get('pod', name) is not None:
+                        raise
             # A completed normal delete proves kubelet stopped the Pod only while its node remains registered.
             registered = self._get('node', node)
             if (registered or {}).get('metadata', {}).get('uid') != node_uid or self._get('pod', name):
@@ -762,6 +799,7 @@ print(json.dumps(r))'''
                 state.setdefault('terminated_pods', []).append(guard['pod_uid'])
             state['termination_unconfirmed'] = False
             state.pop('stop_requested_at', None)
+            state.pop('normal_delete_pod_uid', None)
             save(path, state)
         else:
             try:
@@ -776,6 +814,24 @@ print(json.dumps(r))'''
         if queue:
             queue.close(wait=False)
         return {'stopped': True}
+
+    # Statuses with which the API server rejects a request without acting on it. Any other failure,
+    # such as a timeout, a dropped connection or a status like ServerTimeout or ServiceUnavailable,
+    # leaves it open whether the request was applied.
+    REFUSED_REASONS = frozenset({'Unauthorized', 'Forbidden', 'NotFound', 'Invalid', 'BadRequest', 'Conflict',
+                                 'MethodNotAllowed', 'NotAcceptable', 'RequestEntityTooLarge',
+                                 'UnsupportedMediaType', 'TooManyRequests'})
+
+    @classmethod
+    def _delete_refused(cls, error):
+        """Whether a failed kubectl call shows that the API server answered and refused the request."""
+        import re
+        if not isinstance(error, RuntimeError):
+            return False
+        # Backend.kube turns a nonzero kubectl exit into RuntimeError(stderr); kubectl prints the API
+        # status as `Error from server (<Reason>): <message>`.
+        match = re.search(r'(?m)^Error from server \((\w+)\)', str(error))
+        return bool(match) and match.group(1) in cls.REFUSED_REASONS
 
     def _interrupt_space_commands(self, scratch_space_id):
         import json
@@ -1356,6 +1412,10 @@ print(json.dumps(r))'''
                 return
             if record['docker_enabled']:
                 outcome = transport.get('framed_result')
+                # The framed result is authenticated by the nonce; the saved files are not trusted here,
+                # so lost forwarding can only be reported, not recovered.
+                if isinstance(outcome, dict) and outcome.get('forward_incomplete'):
+                    transport['output']['truncated'] = True
             else:
                 outcome = self._await_normal_result(record, result_deadline)
                 if self._read_command(operation_id)['status'] == 'interrupted':
@@ -1436,6 +1496,11 @@ print(json.dumps(r))'''
         limit = self.config.get('output_bytes', getattr(self.backend, 'config', {}).get('output_bytes', 8388608))
         output = BoundedOutput(limit)
         fallback = self._partial_output(record) if tolerate_missing else None
+        # The supervisor already reported a file it could not fully save: one read is worth trying,
+        # but waiting for it to improve is not.
+        unusable = bool(outcome.get('output_incomplete'))
+        # The budget bounds how long a failing read is retried. Every chunk that was read restarts it,
+        # because a large output takes many reads and must not run out of time while they succeed.
         deadline = time.monotonic() + OUTPUT_RETRY_SECONDS
         for stream in ('stdout', 'stderr'):
             data_so_far = bytearray()
@@ -1447,11 +1512,12 @@ print(json.dumps(r))'''
                     data_so_far.extend(data)
                     if len(data_so_far) > limit:
                         raise ValueError('saved output exceeds limit')
+                    deadline = time.monotonic() + OUTPUT_RETRY_SECONDS
                     if eof:
                         break
                 except Exception:
                     remaining = deadline - time.monotonic()
-                    if remaining <= 0:
+                    if remaining <= 0 or unusable:
                         if not tolerate_missing:
                             raise
                         failed = True
@@ -1603,16 +1669,48 @@ print(json.dumps(r))'''
 
     def _stop_python_interpreter(self, operation_id):
         import time
+        # From here until the Pod shows a terminal result the interpreter is on its way out, and
+        # `_start_python` must not hand the session to a new cell.
+        self._update_command(operation_id, interpreter_stopping=True)
         result = self.stop_background(operation_id)
-        deadline = time.monotonic() + 10
+        # The Pod's own result is the evidence: a session watcher resumed after a Runner restart polls only
+        # every few seconds and then reads saved output, and must not decide whether the stop worked. An
+        # accepted stop request proves nothing by itself, so without a terminal result the limit ends in
+        # stop_failed and the Pod is deleted.
+        deadline = time.monotonic() + PYTHON_STOP_SECONDS
         while True:
             status = result.get('status')
             if status in ('completed', 'timed_out', 'stopped', 'cancelled'):
                 return
-            if status == 'interrupted' or time.monotonic() >= deadline:
+            if status == 'interrupted':
                 raise ExecutionPodError('stop_failed', 'Python interpreter termination could not be confirmed')
-            time.sleep(.1)
+            outcome = self._interpreter_outcome(operation_id)
+            if outcome in ('completed', 'timed_out', 'stopped'):
+                return
+            if outcome == 'termination_unconfirmed' or time.monotonic() >= deadline:
+                raise ExecutionPodError('stop_failed', 'Python interpreter termination could not be confirmed')
+            time.sleep(.25)
             result = self.command_result(operation_id)
+
+    def _interpreter_outcome(self, operation_id):
+        """Read the status the Pod recorded for a Python session, or None while it is unavailable."""
+        import json
+        record = self._read_command(operation_id)
+        if record.get('docker_enabled'):
+            # Docker mode never trusts a result file; its journal comes from the authenticated frame.
+            return None
+        try:
+            observed = self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
+                                         helper_command('result', operation_id), check=False, timeout=5)
+            if observed.returncode != 0:
+                return None
+            outcome = json.loads(observed.stdout)
+        except Exception:
+            return None
+        if (isinstance(outcome, dict) and outcome.get('operation_id') == operation_id
+                and outcome.get('run_id') == record.get('run_id')):
+            return outcome.get('status')
+        return None
 
     def cancel_run(self, scratch_space_id, run_id):
         import json
@@ -1697,7 +1795,34 @@ print(json.dumps(r))'''
             if type(running) is not bool:
                 raise ValueError('Invalid Docker command state')
             return running
-        if interrupted_docker and not docker_running():
+        def docker_finished():
+            # An interrupted Docker command whose supervisor has not published its marker yet is not
+            # finished. Claiming the operation first fences that supervisor out, so it can never start
+            # a command that was meant to stop.
+            observed = self.backend.kube(['exec', record['pod'], '-c', 'execution', '--'] +
+                                         helper_command('claim', operation_id), check=False, timeout=5)
+            if observed.returncode != 0:
+                raise RuntimeError('Could not fence Docker command start')
+            created = json.loads(observed.stdout).get('created')
+            if type(created) is not bool:
+                raise ValueError('Invalid Docker command claim')
+            if created:
+                return True
+            # A claim that already exists shows only that the supervisor started. It may have claimed
+            # without publishing `.running` yet, so the command counts as finished only when that marker
+            # stays absent for the same window the stop below waits for it. A Docker command's result
+            # files are never evidence here.
+            # A cancel holds the Space's lock, so only the first stop waits out the window. A later one
+            # still looks once: a supervisor that published late must still get its stop.
+            window = time.monotonic() + (0 if record.get('fence_window_elapsed') else 10)
+            while not docker_running():
+                if time.monotonic() >= window:
+                    return True
+                time.sleep(.1)
+            return False
+        if interrupted_docker and docker_finished():
+            self._update_command(operation_id, status='interrupted', terminal_at=record.get('terminal_at', time.time()),
+                                 fence_window_elapsed=True)
             return self.command_result(operation_id, retry_stop=False)
         # A future can leave the queue before its in-Pod supervisor publishes
         # the stop marker. Wait for that short startup window instead of losing
@@ -1886,7 +2011,14 @@ print(json.dumps(r))'''
                                             'The previous Python session outcome is unknown; it cannot be restarted yet')
                 record = self._read_command(prior['operation_id'])
             if record['status'] in ('queued', 'running') and same_pod:
-                return prior
+                if not record.get('interpreter_stopping'):
+                    return prior
+                # A cell is waiting for this session's interpreter to stop. Only the Pod's own result shows
+                # that it is gone, because the journal can lag behind it; until then two interpreters must
+                # not run in one Run, and the dying one must not receive a cell.
+                if self._interpreter_outcome(prior['operation_id']) not in ('completed', 'timed_out', 'stopped'):
+                    raise ExecutionPodError('session_interrupted',
+                                            'The previous Python session is being stopped; it cannot be restarted yet')
             replaced = not same_pod and record['status'] in ('running', 'queued', 'interrupted')
         else:
             replaced = False

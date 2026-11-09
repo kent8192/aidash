@@ -48,6 +48,8 @@ export function livePreviewStopReasonKey(
       return "livePreviewStop_run_cancelled";
     case "run_authority_revoked":
       return "livePreviewStop_run_authority_revoked";
+    case "node_unreachable":
+      return "livePreviewStop_node_unreachable";
     case "tenant_deleted":
       return "livePreviewStop_tenant_deleted";
     case "replaced":

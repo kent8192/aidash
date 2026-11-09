@@ -222,7 +222,11 @@ impl RemoteCommandEffects for Scope {
 			Effect::Artifact {
 				artifact,
 				complete_through,
-			} => json!({"kind":"artifact","artifact":artifact,"through":complete_through}),
+				abandon,
+			} => {
+				json!({"kind":"artifact","artifact":artifact,"through":complete_through,"abandon":abandon})
+			}
+			Effect::AbandonUnassigned { ids } => json!({"kind":"abandon_unassigned","ids":ids}),
 			Effect::CreateTask { task } => json!({"kind":"create_task","task":task}),
 			Effect::Delegate { child, agent } => {
 				json!({"kind":"delegate","child":child,"agent":agent})
@@ -425,6 +429,40 @@ async fn a_dependency_in_another_workspace_stops_child_creation_before_any_effec
 	));
 	assert!(scope.applied.is_empty());
 	assert!(scope.journal.is_empty());
+}
+#[rstest]
+#[case::another_grant_of_the_same_parent(false, true)]
+#[case::this_grant(true, true)]
+#[case::another_parent(true, false)]
+#[tokio::test]
+async fn abandoning_asks_for_the_parent_not_for_the_grant_that_created_the_child(
+	mut scope: Scope,
+	#[case] created: bool,
+	#[case] of_this_parent: bool,
+) {
+	// A follow-up Run under another grant completes a Task whose child an
+	// earlier Run of the same parent created: that is the same parent.
+	let mut child = scope.child();
+	if !of_this_parent {
+		child.parent_id = Some(Uuid::from_u128(77));
+	}
+	let id = child.id;
+	scope.additional.insert(id, child);
+	scope.created = created;
+	let data = json!({"key":"abandon-1","abandon":[id]});
+	let result = run(&mut scope, "run_abandon_unassigned", &data).await;
+	if of_this_parent {
+		assert!(result.is_ok(), "{result:?}");
+		assert_eq!(
+			scope.applied[0]["effect"],
+			json!({"kind":"abandon_unassigned","ids":[id]})
+		);
+	} else {
+		assert!(matches!(result, Err(Error::Forbidden)));
+		assert!(scope.applied.is_empty());
+	}
+	// Who created the child is the Home's row-lock check, not this one.
+	assert!(!scope.calls.contains(&"provenance".into()));
 }
 #[rstest]
 #[case::provenance(false, "aidash://home", false)]

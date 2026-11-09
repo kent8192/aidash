@@ -151,6 +151,10 @@ pub struct Activation {
 	/// without the field keep their exact wire shape.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub context_reason: Option<crate::context::recovery::Failure>,
+	/// The tool call a paused Run stopped on that its Home may decline: the key, the tool and the
+	/// kind of refusal, never the action, the subject or the receiver's own sentence (#763).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub declinable_call: Option<crate::run_state::DeclinableCall>,
 }
 impl Activation {
 	/// Whether the remote Run can still continue: neither cancelled nor finished.
@@ -164,6 +168,15 @@ impl Activation {
 					| RemoteExecutionPhase::Cancelled
 			)
 	}
+}
+/// What the receiver answers when its Home declines a call: the Run as `control` answers it,
+/// and what was declined, so the Home can write its own record after the receiver has forgotten
+/// the pause. The tool and the kind of refusal, never the action, the subject or a person.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Declined {
+	pub activation: Activation,
+	pub tool: String,
+	pub kind: crate::tool::RefusalKind,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

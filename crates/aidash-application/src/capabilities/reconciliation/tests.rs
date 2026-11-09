@@ -3,6 +3,7 @@ use aidash_domain::{
 	RunControl, RunMetadata, RunPhase,
 	capabilities::{
 		CoreCapabilities,
+		errors::COMMAND_TIMED_OUT,
 		operations::reconciliation::{Area, Limits},
 	},
 };
@@ -89,6 +90,7 @@ fn repository() -> Repository {
 			working_bytes: 1024,
 			output_bytes: 1024,
 			read_bytes: 8,
+			maximum_seconds: 600,
 		},
 		capabilities: CoreCapabilities {
 			shell: true,
@@ -438,18 +440,57 @@ async fn active_runner_states_keep_the_original_progress_mapping(
 	#[case] observed: &str,
 	#[case] expected: &str,
 ) {
-	repository.0.lock().unwrap().observed =
-		json!({"status":observed,"stdout":STANDARD.encode("こんにちは"),"truncated":true});
+	repository.0.lock().unwrap().observed = json!({"status":observed,"stdout":STANDARD.encode("こんにちは"),"stdout_offset":10,"truncated":true});
 	run(&repository).await.unwrap();
 	let trace = repository.0.lock().unwrap();
 	assert_eq!(trace.saved[0].state, expected);
 	assert_eq!(
 		trace.saved[0].result,
-		json!({"preview":"こん","truncated":true})
+		json!({"preview":"ちは","preview_bytes":STANDARD.encode("ちは"),"preview_offset":19,"truncated":true})
 	);
 	assert_eq!(trace.events.len(), 1);
 	assert!(trace.commit);
 }
+/// The command's deadline counts from these, and only the runner knows them.
+#[rstest]
+#[case::shell(json!({"status":"running","stdout":"","started_at":1000.5,"running_at":1002.0}), Some(1000.5))]
+#[case::python(json!({"status":"running","stdout":"","running_at":1002.0}), Some(1002.0))]
+#[case::not_started(json!({"status":"accepted","stdout":""}), None)]
+#[tokio::test]
+async fn an_active_operation_keeps_when_its_command_started(
+	repository: Repository,
+	#[case] observed: Value,
+	#[case] started_at: Option<f64>,
+) {
+	repository.0.lock().unwrap().observed = observed;
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(trace.saved[0].result["started_at"].as_f64(), started_at);
+}
+#[rstest]
+#[tokio::test]
+async fn running_preview_preserves_the_runner_bytes_and_absolute_offset(repository: Repository) {
+	repository.0.lock().unwrap().observed = json!({"status":"running", "stdout":STANDARD.encode([0xff, b'x']), "stdout_offset":4, "truncated":false});
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(
+		trace.saved[0].result,
+		json!({"preview":"�x", "preview_bytes":STANDARD.encode([0xff, b'x']), "preview_offset":4, "truncated":false})
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn running_preview_keeps_a_standalone_invalid_initial_byte(repository: Repository) {
+	repository.0.lock().unwrap().observed = json!({"status":"running", "stdout":STANDARD.encode([0x80, b'x']), "stdout_offset":0, "truncated":false});
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(
+		trace.saved[0].result,
+		json!({"preview":"�x", "preview_bytes":STANDARD.encode([0x80, b'x']), "preview_offset":0, "truncated":false})
+	);
+}
+
 #[rstest]
 #[tokio::test]
 async fn a_pending_dispatch_uploads_the_existing_inputs_before_start_and_records_the_observed_result(
@@ -667,6 +708,162 @@ async fn cancelling_a_running_operation_uses_the_same_runner_identity_and_cancel
 	assert_eq!(trace.saved[0].state, "cancelling");
 	assert!(!trace.calls.contains(&"configuration".into()));
 }
+/// However the stop came about, an operation that may not have reached the
+/// Runner is never sent. The Runner refuses a later send and answers that the
+/// command did not run, so nothing changed and the Run goes on.
+#[rstest]
+#[case::agent_cancel("cancelling", RunControl::Active, RunPhase::Ready, true)]
+#[case::person_cancelled_the_run("submitted", RunControl::Cancelled, RunPhase::Ready, true)]
+#[case::run_ended("submitted", RunControl::Active, RunPhase::Completed, true)]
+#[case::admission_off("submitted", RunControl::Active, RunPhase::Ready, false)]
+#[tokio::test]
+async fn a_stopped_pending_operation_is_refused_and_ends_without_effects(
+	repository: Repository,
+	#[case] state: &str,
+	#[case] control: RunControl,
+	#[case] phase: RunPhase,
+	#[case] admission: bool,
+) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.operation.state = state.into();
+		trace.operation.result = json!({"dispatch_pending":true});
+		trace.run.control = control;
+		trace.run.phase = phase;
+		trace.limits.admission = admission;
+		trace.observed =
+			json!({"status":"cancelled","termination_confirmed":true,"executed":false});
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(
+		trace.bodies,
+		vec![json!({"digest":"digest","instance":"runner"})]
+	);
+	assert!(
+		!trace
+			.calls
+			.contains(&"request:POST:/v1/operations".to_owned())
+	);
+	assert_eq!(trace.saved[0].state, "cancelled");
+	assert_eq!(
+		trace.saved[0].result,
+		json!({"termination_confirmed":true,"effects_may_have_occurred":false,"runner_acknowledged":false})
+	);
+	assert!(trace.calls.contains(&"area:active".to_owned()));
+	assert!(trace.published.is_empty());
+	assert!(trace.commit);
+}
+/// A refusal the server never committed (its reply was lost, or the commit
+/// failed) leaves the operation unsent in the journal. The next pass sends it
+/// again, and the Runner answers with the refusal it recorded. That settles the
+/// operation: it neither runs nor stays pending.
+#[rstest]
+#[tokio::test]
+async fn a_resent_operation_the_runner_already_refused_ends_without_effects(
+	repository: Repository,
+) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.operation.result = json!({"dispatch_pending":true});
+		trace.observed = json!({"operation_id":Uuid::from_u128(1),"digest":"digest","status":"cancelled",
+			"termination_confirmed":true,"executed":false});
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert!(
+		trace
+			.calls
+			.contains(&"request:POST:/v1/operations".to_owned())
+	);
+	assert!(!trace.calls.iter().any(|call| call.ends_with("/start")));
+	assert!(!trace.calls.contains(&"upload_files".to_owned()));
+	assert_eq!(trace.saved[0].state, "cancelled");
+	assert_eq!(
+		trace.saved[0].result,
+		json!({"termination_confirmed":true,"effects_may_have_occurred":false,"runner_acknowledged":false})
+	);
+	assert!(trace.calls.contains(&"area:active".to_owned()));
+	assert!(trace.published.is_empty());
+	assert!(trace.commit);
+}
+#[rstest]
+#[case::shell("shell", None)]
+#[case::check(VERIFICATION, None)]
+#[case::package_install("python_install", None)]
+#[case::python_cell("code_interpreter", Some("python:false"))]
+#[tokio::test]
+async fn every_kind_of_pending_operation_ends_the_same_way(
+	repository: Repository,
+	#[case] kind: &str,
+	#[case] python: Option<&str>,
+) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.operation.kind = kind.into();
+		trace.operation.state = "cancelling".into();
+		trace.operation.result = json!({"dispatch_pending":true});
+		trace.observed =
+			json!({"status":"cancelled","termination_confirmed":true,"executed":false});
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(trace.saved[0].state, "cancelled");
+	assert!(trace.calls.contains(&"area:active".to_owned()));
+	assert_eq!(
+		trace
+			.calls
+			.iter()
+			.find(|call| call.starts_with("python:"))
+			.map(String::as_str),
+		python
+	);
+}
+/// A send that did arrive is an ordinary cancel, and the reply clears the intent.
+#[rstest]
+#[tokio::test]
+async fn a_pending_operation_the_runner_holds_is_cancelled_as_usual(repository: Repository) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.operation.state = "cancelling".into();
+		trace.operation.result = json!({"dispatch_pending":true});
+		trace.observed = json!({"status":"accepted","stdout":""});
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(trace.saved[0].state, "cancelling");
+	assert_eq!(trace.saved[0].result["dispatch_pending"], Value::Null);
+}
+#[rstest]
+#[tokio::test]
+async fn a_cancel_after_the_runner_answered_asks_for_no_refusal(repository: Repository) {
+	repository.0.lock().unwrap().operation.state = "cancelling".into();
+	run(&repository).await.unwrap();
+	assert!(repository.0.lock().unwrap().bodies.is_empty());
+}
+/// A replaced journal proves nothing about what the old Runner did, so neither
+/// its absence nor a new Runner's word can say that nothing ran.
+#[rstest]
+#[case::runner_replaced(json!({"instance":"replacement"}), json!({"status":"cancelled","termination_confirmed":true,"executed":false}))]
+#[case::runner_says_absent(json!({"instance":"runner"}), json!({"status":"absent"}))]
+#[tokio::test]
+async fn a_pending_cancel_the_runner_cannot_prove_stays_uncertain(
+	repository: Repository,
+	#[case] health: Value,
+	#[case] observed: Value,
+) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.operation.state = "cancelling".into();
+		trace.operation.result = json!({"dispatch_pending":true});
+		trace.health = health;
+		trace.observed = observed;
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	assert_eq!(trace.saved[0].state, "uncertain");
+	assert!(trace.calls.contains(&"area:uncertain".to_owned()));
+}
 #[rstest]
 #[tokio::test]
 async fn short_input_reads_stop_before_starting_the_runner(repository: Repository) {
@@ -782,6 +979,163 @@ async fn a_finished_completion_check_keeps_its_output_tail_and_never_publishes(
 	assert!(trace.published.is_empty());
 	assert_eq!(trace.events.len(), 1);
 	assert!(trace.commit);
+}
+/// What the runner reports when a command's Time Limit passed while it ran.
+fn past_its_limit(status: &str, exit_code: i64) -> Value {
+	json!({"status":status,"termination_confirmed":true,"executed":true,"files":[],
+		"stdout":STANDARD.encode("stdout"),"displays":[],"exit_code":exit_code,"error":null,
+		"deadline_expired":true})
+}
+/// The limit decides, whatever exit code the command then gave and whoever
+/// stopped it. Its files are published, so the error can say they were saved.
+#[rstest]
+#[case::killed("failed", 143)]
+#[case::exited_zero_after_the_limit("completed", 0)]
+#[case::stopped_by_the_runner("cancelled", 137)]
+#[tokio::test]
+async fn a_command_past_its_limit_saves_its_files_and_reports_the_time_out(
+	repository: Repository,
+	#[case] status: &str,
+	#[case] exit_code: i64,
+) {
+	repository.0.lock().unwrap().observed = past_its_limit(status, exit_code);
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	let saved = &trace.saved[0];
+	assert_eq!(saved.state, "failed");
+	assert_eq!(saved.revision, 8);
+	assert_eq!(saved.result["exit_code"], exit_code);
+	assert_eq!(saved.result["deadline_expired"], true);
+	assert_eq!(saved.result["error"]["code"], COMMAND_TIMED_OUT);
+	assert_eq!(saved.result["error"]["retryable"], false);
+	assert_eq!(
+		saved.result["error"]["details"],
+		json!({"limit_seconds":1,"revision":8})
+	);
+	let message = saved.result["error"]["message"].as_str().unwrap();
+	assert!(message.contains("revision 8"), "{message}");
+	assert!(message.contains("at most 600"), "{message}");
+	assert!(trace.calls.contains(&"publish".into()));
+	assert!(trace.commit);
+}
+#[rstest]
+#[tokio::test]
+async fn a_python_cell_past_its_limit_reports_the_time_out_and_its_reset_session(
+	repository: Repository,
+) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.operation.kind = "code_interpreter".into();
+		trace.operation.input["session_id"] = json!(Uuid::from_u128(20));
+		trace.observed = past_its_limit("failed", 137);
+		trace.observed["error"] = json!({"code":"SESSION_LOST","message":"Interpreter stopped"});
+		trace.observed["writer_frozen"] = json!(false);
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	let saved = &trace.saved[0];
+	assert_eq!(saved.state, "failed");
+	assert_eq!(saved.result["error"]["code"], COMMAND_TIMED_OUT);
+	let message = saved.result["error"]["message"].as_str().unwrap();
+	assert!(message.contains("session was reset"), "{message}");
+	assert!(trace.calls.contains(&"python:false".into()));
+}
+/// A command that ended before its limit keeps the runner's own word, and its
+/// result does not grow a field that says nothing happened.
+#[rstest]
+#[case::cancelled("cancelled", 137, json!({"code":"CANCELLED","message":"Stopped"}), Some(false))]
+#[case::failed("failed", 1, Value::Null, Some(false))]
+#[case::the_runner_could_not_tell("failed", 1, Value::Null, None)]
+#[tokio::test]
+async fn a_command_that_ended_before_its_limit_keeps_its_outcome(
+	repository: Repository,
+	#[case] status: &str,
+	#[case] exit_code: i64,
+	#[case] error: Value,
+	#[case] deadline_expired: Option<bool>,
+) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.observed = past_its_limit(status, exit_code);
+		trace.observed["error"] = error.clone();
+		match deadline_expired {
+			Some(expired) => trace.observed["deadline_expired"] = json!(expired),
+			None => {
+				trace
+					.observed
+					.as_object_mut()
+					.unwrap()
+					.remove("deadline_expired");
+			}
+		}
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	let saved = &trace.saved[0];
+	assert_eq!(saved.state, status);
+	assert_eq!(saved.result["error"], error);
+	assert!(saved.result.get("deadline_expired").is_none());
+}
+/// Nothing was saved, so the refusal stays the error and the limit is added to it.
+#[rstest]
+#[tokio::test]
+async fn a_command_past_its_limit_whose_save_the_runner_refused_says_both(repository: Repository) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.observed = refused_export("symlink", "a", Value::Null);
+		trace.observed["deadline_expired"] = json!(true);
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	let saved = &trace.saved[0];
+	assert_eq!(saved.state, "failed");
+	assert_eq!(saved.revision, 7);
+	assert_eq!(saved.result["deadline_expired"], true);
+	assert_eq!(saved.result["error"]["code"], "WORKING_EXPORT_REFUSED");
+	let message = saved.result["error"]["message"].as_str().unwrap();
+	assert!(
+		message.starts_with("symlinks are not supported"),
+		"{message}"
+	);
+	assert!(
+		message.ends_with("under /tmp. The command had also reached its 1 s time limit."),
+		"{message}"
+	);
+	assert!(!trace.calls.contains(&"publish".into()));
+}
+#[rstest]
+#[tokio::test]
+async fn a_command_past_its_limit_over_the_quota_says_both(repository: Repository) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.observed = past_its_limit("failed", 143);
+		trace.observed["files"] = json!([working_file("big", 2048)]);
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	let saved = &trace.saved[0];
+	assert_eq!(saved.state, "failed");
+	assert_eq!(saved.revision, 7);
+	assert_eq!(saved.result["deadline_expired"], true);
+	assert_eq!(saved.result["error"]["code"], "WORKING_EXPORT_REFUSED");
+	let message = saved.result["error"]["message"].as_str().unwrap();
+	assert!(message.contains("1 s time limit"), "{message}");
+}
+/// A Check saves nothing and has its own timed-out outcome, so it never gets
+/// the time-out error, which would say that files were saved.
+#[rstest]
+#[tokio::test]
+async fn a_completion_check_past_its_limit_gets_no_time_out_error(repository: Repository) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.operation.kind = VERIFICATION.into();
+		trace.observed = past_its_limit("failed", 143);
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	let saved = &trace.saved[0];
+	assert_eq!(saved.result["deadline_expired"], true);
+	assert!(saved.result["error"].is_null());
 }
 /// A Check never exports `/work`, so losing its journal leaves the Area's files
 /// as they were: the Check's result is unknown, but the Area stays usable for
@@ -1046,6 +1400,37 @@ async fn an_export_over_the_file_ceiling_is_refused_before_any_download(reposito
 	assert!(!trace.calls.contains(&"begin_output".into()));
 	assert!(!trace.calls.contains(&"publish".into()));
 	assert!(trace.calls.contains(&"area:active".into()));
+}
+#[test]
+fn reference_files_leave_the_whole_quota_to_an_export() {
+	let mounted = |scope, kind: &str| MountedFile {
+		file_id: Uuid::from_u128(77),
+		path: "references/manual.pdf".into(),
+		digest: "a".repeat(64),
+		size: 5000,
+		media_type: "application/pdf".into(),
+		scope,
+		provenance: json!({"kind":kind}),
+	};
+	let exported = [working_file("small", 24)];
+	assert!(
+		quota_refusal(
+			&[mounted(FileScope::References, "reference")],
+			&exported,
+			1024
+		)
+		.unwrap()
+		.is_none()
+	);
+	assert!(
+		quota_refusal(
+			&[mounted(FileScope::Received, "transfer_in")],
+			&exported,
+			1024
+		)
+		.unwrap()
+		.is_some()
+	);
 }
 #[rstest]
 #[tokio::test]

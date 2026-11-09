@@ -9,7 +9,10 @@ pub struct Limits {
 	pub admission: bool,
 	pub reference_bytes: u64,
 	pub reference_files: usize,
+	/// The whole Reference set of one Agent version.
 	pub reference_text_bytes: usize,
+	/// The extraction of one PDF or Excel file.
+	pub reference_file_text_bytes: usize,
 	pub reference_pages: usize,
 	pub working_bytes: u64,
 	pub output_bytes: u64,
@@ -30,6 +33,10 @@ pub trait ReferenceScope: Send {
 	fn set_constraints(&mut self, value: Value) -> Result<()>;
 	fn set_manifest(&mut self, value: Value) -> Result<()>;
 	async fn load(&mut self, id: Uuid) -> Result<Record>;
+	/// Every listed reference that exists, without excluding concurrent readers.
+	async fn load_many(&mut self, ids: &[Uuid]) -> Result<Vec<Record>>;
+	/// This subject's usable reference with this exact content, if any.
+	async fn find_existing(&mut self, digest: &str) -> Result<Option<Record>>;
 	async fn require(&mut self, id: Uuid, owner: &str, action: &str) -> Result<()>;
 	async fn require_upload(&mut self) -> Result<()>;
 	async fn cached(&mut self, key: Uuid, digest: &str) -> Result<Option<Value>>;
@@ -48,7 +55,6 @@ pub trait ReferenceScope: Send {
 	async fn begin_original(&mut self, size: u64) -> Result<()>;
 	async fn write_original(&mut self, bytes: &[u8]) -> Result<()>;
 	async fn finish_original(&mut self, digest: &str) -> Result<(Uuid, String)>;
-	async fn release_python(&mut self, reason: &str) -> Result<()>;
 	async fn publish(&mut self) -> Result<()>;
 	async fn verified_health(&mut self) -> Result<Value>;
 	async fn request(&mut self, method: &str, path: &str, body: Option<Value>) -> Result<Value>;

@@ -29,6 +29,7 @@ import type {
   Snapshot,
 } from "./generated/models";
 import { ApiError, apiFetch } from "./transport";
+import { useBusyRetry } from "./policy-busy";
 import {
   Badge,
   Empty,
@@ -218,6 +219,7 @@ function TenantAuthorization({
   const [issuedChoices, setIssuedChoices] = useState<Credential[]>([]);
   const [revoking, setRevoking] = useState<Credential | null>(null);
   const [error, setError] = useState("");
+  const busyRetry = useBusyRetry();
   const [busy, setBusy] = useState(false);
   const snapshot = useQuery({
     queryKey: ["authorization", tenant, "snapshot"],
@@ -272,18 +274,24 @@ function TenantAuthorization({
       : reason instanceof Error
         ? t(reason.message)
         : String(reason);
-  const mutate = async (action: () => Promise<unknown>) => {
+  const mutate = async (
+    action: () => Promise<unknown>,
+    done?: () => void,
+  ): Promise<boolean> => {
     if (busy) return false;
     setBusy(true);
     setError("");
+    busyRetry.clear();
     try {
       await action();
       await client.invalidateQueries();
+      done?.();
       return true;
     } catch (reason) {
       if (reason instanceof ApiError && reason.status === 409) {
         await client.invalidateQueries({ queryKey: ["authorization", tenant] });
       }
+      busyRetry.note(reason, () => void mutate(action, done));
       setError(message(reason));
       return false;
     } finally {
@@ -322,7 +330,7 @@ function TenantAuthorization({
             {t("transactionRevocationPending")}
           </Notice>
         )}
-        {error && !modal && <Alert>{error}</Alert>}
+        {error && !modal && <Alert {...busyRetry.alert}>{error}</Alert>}
         {access.can("policy.read") && snapshot.isPending && <Loading />}
         {access.can("policy.read") && snapshot.isError && !missing && (
           <Alert retry={() => void snapshot.refetch()}>
@@ -513,16 +521,16 @@ function TenantAuthorization({
             snapshot={editor}
             busy={busy}
             error={error}
+            errorActions={busyRetry.alert}
             save={async (bundle) => {
-              if (
-                await mutate(() =>
+              await mutate(
+                () =>
                   authorizationReplace(path, {
                     expected_revision: editor.revision,
                     bundle,
                   }),
-                )
-              )
-                setEditor(null);
+                () => setEditor(null),
+              );
             }}
           />
         </Modal>
@@ -548,7 +556,7 @@ function TenantAuthorization({
               });
             }}
           >
-            {error && <Alert>{error}</Alert>}
+            {error && <Alert {...busyRetry.alert}>{error}</Alert>}
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label={t("authSubject")}>
                 <NativeSelect name="subject" required className="font-mono">
@@ -629,7 +637,7 @@ function TenantAuthorization({
                 ],
               ]}
             />
-            {error && <Alert>{error}</Alert>}
+            {error && <Alert {...busyRetry.alert}>{error}</Alert>}
             <div className="flex flex-wrap justify-end gap-2 border-t border-border pt-4">
               <Button variant="outline" disabled={busy} onClick={close}>
                 {t("cancel")}
@@ -678,9 +686,11 @@ function PolicyEditor({
   snapshot,
   busy,
   error,
+  errorActions,
   save,
 }: {
   snapshot: Snapshot;
+  errorActions: { retry?: () => void; retryDisabled?: boolean };
   busy: boolean;
   error: string;
   save: (bundle: PolicyBundle) => Promise<void>;
@@ -735,7 +745,9 @@ function PolicyEditor({
           ],
         ]}
       />
-      {(error || invalid) && <Alert>{error || invalid}</Alert>}
+      {(error || invalid) && (
+        <Alert {...(error ? errorActions : {})}>{error || invalid}</Alert>
+      )}
       {review ? (
         <>
           <Notice tone="warning">{t("authReviewHelp")}</Notice>
@@ -1088,6 +1100,11 @@ function HistoryPanel({
         kind === "revisions" ? "authRevisionHistory" : "authDecisionHistory",
       )}
     >
+      {kind === "decisions" && (
+        <p className="text-xs text-muted-foreground">
+          {t("authDecisionHistoryCoalesced")}
+        </p>
+      )}
       {query.isError && <Alert>{query.error.message}</Alert>}
       {query.isPending && <Loading />}
       {records?.length === 0 && (

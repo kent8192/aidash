@@ -28,6 +28,7 @@ import {
   authenticatedFetch,
   dashboardContext,
 } from "./transport";
+import { useBusyRetry } from "./policy-busy";
 import { useNodes } from "./nodes";
 import { Badge as StatusBadge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
@@ -150,6 +151,7 @@ export function ScopedMarketplace({
   const [selected, setSelected] = useState<string>();
   const [editing, setEditing] = useState<MarketplaceInstallationRevision>();
   const [message, setMessage] = useState("");
+  const busyRetry = useBusyRetry();
   const [busy, setBusy] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [denied, setDenied] = useState(false);
@@ -288,6 +290,7 @@ export function ScopedMarketplace({
   ) {
     setBusy(true);
     setMessage("");
+    busyRetry.clear();
     try {
       await action();
       setMessage(success);
@@ -305,12 +308,16 @@ export function ScopedMarketplace({
         setConsentDraft(undefined);
         cache.removeQueries({ queryKey: ["marketplace"] });
         setMessage(copy.operationUnavailable);
-      } else
+      } else {
+        busyRetry.note(error, () => void run(action, success));
         setMessage(
           error instanceof ApiError && error.status === 409
             ? copy.conflict
-            : String(error),
+            : error instanceof ApiError && error.retryAfter !== undefined
+              ? error.message
+              : String(error),
         );
+      }
     } finally {
       setBusy(false);
     }
@@ -362,7 +369,12 @@ export function ScopedMarketplace({
   const view = selected ? detail.data : undefined;
   return (
     <div className="grid min-w-0 gap-6">
-      {message && <Notice role="status">{message}</Notice>}
+      {message &&
+        (busyRetry.alert.retry ? (
+          <Alert {...busyRetry.alert}>{message}</Alert>
+        ) : (
+          <Notice role="status">{message}</Notice>
+        ))}
       <div
         className={cn(
           "grid min-w-0 items-start gap-6",

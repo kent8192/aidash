@@ -34,6 +34,46 @@ pub struct Reference {
 	pub original: Option<FileEntry>,
 	pub extraction: Option<FileEntry>,
 	pub extraction_state: Option<String>,
+	/// Pages of a PDF, counted from 1, whose text an Agent cannot read.
+	pub pages_without_text: Vec<u32>,
+	pub page_count: Option<u32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "ReferenceBatchFile")]
+pub struct BatchFile {
+	/// Where this document sits, such as `backend/api.md`.
+	pub path: String,
+	/// Base64 bytes.
+	pub data: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "ReferenceBatch")]
+pub struct Batch {
+	pub files: Vec<BatchFile>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[schemars(rename = "ReferenceBatchOutcome")]
+pub struct BatchOutcome {
+	pub path: String,
+	pub reference: Option<Reference>,
+	/// An existing Reference with the same content was returned.
+	pub reused: bool,
+	/// Another path in this request holds the same content.
+	pub duplicate_of: Option<String>,
+	pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[schemars(rename = "ReferenceBatchResult")]
+pub struct BatchResult {
+	pub files: Vec<BatchOutcome>,
+	/// Entries ready to paste into a `reference_attachments` Source.
+	pub references: Vec<Attachment>,
 }
 
 use uuid::Uuid;

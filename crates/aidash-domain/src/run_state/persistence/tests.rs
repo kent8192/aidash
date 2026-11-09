@@ -17,6 +17,7 @@ fn run() -> Run {
 #[case::retry("run.retrying", true, true)]
 #[case::semantic_retry("run.semantic_retrying", true, true)]
 #[case::decider_retry("run.decider_retrying", true, true)]
+#[case::node_retry("run.node_retrying", true, true)]
 #[case::failure_delivery("run.failure_pending", true, true)]
 #[case::failed("run.failed", false, true)]
 #[case::model_completed("model.completed", false, false)]
@@ -69,6 +70,25 @@ fn only_a_scheduled_decider_retry_carries_its_count_to_the_next_lease(mut run: R
 		let snapshot = run.worker_snapshot(event).unwrap();
 		assert_eq!(
 			snapshot.pending["recovery"]["decider_retry"],
+			Value::Null,
+			"{event}"
+		);
+	}
+}
+#[rstest]
+fn only_a_scheduled_node_retry_carries_its_count_to_the_next_lease(mut run: Run) {
+	run.recovery.node_retry = 3;
+	let scheduled = run.worker_snapshot("run.node_retrying").unwrap();
+	assert_eq!(scheduled.pending["recovery"]["node_retry"], 3);
+	for event in [
+		"run.retrying",
+		"run.decider_retrying",
+		"run.node_unreachable",
+		"model.completed",
+	] {
+		let snapshot = run.worker_snapshot(event).unwrap();
+		assert_eq!(
+			snapshot.pending["recovery"]["node_retry"],
 			Value::Null,
 			"{event}"
 		);

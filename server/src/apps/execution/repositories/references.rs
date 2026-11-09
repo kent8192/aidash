@@ -7,7 +7,7 @@ use crate::apps::execution::capabilities::{
 	},
 	services::{
 		objects::PendingObject,
-		operations, python,
+		operations,
 		records::{self, Record as NativeRecord},
 		service, sessions,
 	},
@@ -102,6 +102,30 @@ impl From<Reference> for NativeReference {
 			original: value.original.map(Into::into),
 			extraction: value.extraction.map(Into::into),
 			extraction_state: value.extraction_state,
+			pages_without_text: value.pages_without_text,
+			page_count: value.page_count,
+		}
+	}
+}
+impl From<aidash_domain::capabilities::references::lifecycle::BatchResult>
+	for crate::apps::execution::capabilities::serializers::references::BatchResult
+{
+	fn from(value: aidash_domain::capabilities::references::lifecycle::BatchResult) -> Self {
+		Self {
+			files: value
+				.files
+				.into_iter()
+				.map(|file| {
+					crate::apps::execution::capabilities::serializers::references::BatchOutcome {
+						path: file.path,
+						reference: file.reference.map(Into::into),
+						reused: file.reused,
+						duplicate_of: file.duplicate_of,
+						error: file.error,
+					}
+				})
+				.collect(),
+			references: value.references,
 		}
 	}
 }
@@ -260,6 +284,7 @@ impl ReferenceScope for Scope<'_> {
 			reference_bytes: profile.limits.reference_bytes,
 			reference_files: profile.limits.reference_files,
 			reference_text_bytes: profile.limits.reference_text_bytes,
+			reference_file_text_bytes: profile.limits.reference_file_text_bytes,
 			reference_pages: profile.limits.reference_pages,
 			working_bytes: profile.working_bytes,
 			output_bytes: profile.output_bytes,
@@ -287,6 +312,18 @@ impl ReferenceScope for Scope<'_> {
 		records::get(self.authority.get_mut(), id, "reference")
 			.await
 			.map(domain)
+			.map_err(Into::into)
+	}
+	async fn load_many(&mut self, ids: &[Uuid]) -> Result<Vec<Record>> {
+		records::get_many(self.authority.get_mut(), ids, "reference")
+			.await
+			.map(|records| records.into_iter().map(domain).collect())
+			.map_err(Into::into)
+	}
+	async fn find_existing(&mut self, digest: &str) -> Result<Option<Record>> {
+		records::existing_reference(self.authority.get_mut(), digest)
+			.await
+			.map(|record| record.map(domain))
 			.map_err(Into::into)
 	}
 	async fn require(&mut self, id: Uuid, owner: &str, action: &str) -> Result<()> {
@@ -398,16 +435,6 @@ impl ReferenceScope for Scope<'_> {
 			.finish(self.authority.get_mut(), Some(digest))
 			.await
 			.map_err(Into::into)
-	}
-	async fn release_python(&mut self, reason: &str) -> Result<()> {
-		python::release(
-			self.store.ok_or_else(missing)?,
-			self.authority.get_mut(),
-			self.area.as_deref_mut().ok_or_else(missing)?,
-			reason,
-		)
-		.await
-		.map_err(Into::into)
 	}
 	async fn publish(&mut self) -> Result<()> {
 		service::publish(

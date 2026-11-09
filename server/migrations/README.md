@@ -1,5 +1,17 @@
 # Aidash native migration history
 
+`identity/0068_decision_coalescing` adds `run_id`, `remote_grant_id` and
+`coalesced` to `authorization_decisions`. Existing rows name neither and stay as
+they are. `identity/0069_decision_coalescing_indexes` is database-only and adds
+the partial unique indexes that keep one coalesced allow per Run or Remote Grant,
+subject, action, resource and policy revision (ADR 0116). Both use typed
+operations.
+
+`execution/0120_event_waits` (after `execution/0119_egress_request_times`) requests Run activation in the transaction that
+finishes an operation or changes an owned Task to a terminal or blocked state.
+PostgreSQL trigger functions require SQL assets because
+Reinhardt migrations cannot express their bodies.
+
 `execution/0113_content_object_references` is a destructive undeployed
 content-store cutover. It discards UUID-backed objects, resets existing Working
 Area manifests, deletes Thread Attachment rows whose original or WAV object ID
@@ -749,6 +761,12 @@ records the Tenant Secret, the pinned version its token names and the
 destination host, never the value or a header value. The typed operations update
 the ORM snapshot, so no state-only checkpoint is needed.
 
+`execution/0119_egress_request_times` (after `execution/0118_blob_uploads`) adds
+the nullable `admission_ms` and `settle_ms` of `egress_requests` with typed column
+operations (#752). A record holds them once its outcome settles, so a record that
+never settled and a record older than this migration leave them null. The typed
+operations update the ORM snapshot, so no state-only checkpoint is needed.
+
 ## Home ledger recovery eligibility (#434)
 
 `knowledge/0036_memory_recovery_eligibility` (after
@@ -770,6 +788,8 @@ the single Knowledge head, and no schema or model state is overwritten.
 `identity/0053_tenant_data_protection_state` records those two tables in ORM migration state. It executes no DDL; references, validity checks and row-level policies remain in the preceding database-only migrations.
 
 `registry/0062_provider_warning_tools` extends the closed Provider tool validation functions with the warning-tier tools (advisor, subagent, model search, tool search, shell) without replacing the previous contracts; its reverse refuses to run while any such definition or pinned Run exists. `identity/0054_provider_warning_acknowledgment` adds the nullable exact disclosure text to `authorization_catalog_history`, filled only when a warning tool is approved. `execution/0098_provider_container` adds the nullable `runs.provider_container` pin (OpenRouter container id and network policy). OpenRouter has no container delete API, so the pin is kept after the Run ends.
+
+`registry/0063_reference_set_limit` raises the most Reference files one Source can bind from 8 to 256 in the PostgreSQL context validator. The function body uses SQL assets because Reinhardt has no typed operation for replacing PostgreSQL functions. Reversal refuses while a Source or a Run snapshot holds more than 8.
 
 ## Run control provenance and Safety Stops (#485, ADR 0101)
 
@@ -853,6 +873,14 @@ Plugin settings validator, including its compaction rules, and restores that
 validator on rollback. The join is an empty state-only migration that preserves
 existing identities and one leaf per app.
 
+## Remote reads record whether the Node is the reader's own Tenant's
+
+`identity/0070_remote_reads_same_tenant` (after `identity/0069_decision_coalescing_indexes`) adds `same_tenant boolean NOT NULL DEFAULT false` to
+`authorization_run_remote_reads`; `identity/0071_remote_reads_same_tenant_state` is its ORM state.
+A row written before it is treated as another Tenant's, which keeps asking that Node (the stricter
+check), so nothing needs backfilling. Rollback drops the column. A read of an Agent on a Node of
+the reader's own Tenant is then decided by `registry.read` and `federation.discover` alone (#769).
+
 ## Merged Node lifetime and Auth histories
 
 `identity/0066_node_auth_history_merge` joins the Common Auth origin binding,
@@ -874,6 +902,8 @@ Federation retains its pre-existing separate `0007_model_state` leaf alongside
 `0021_node_preview_origin_merge`.
 
 `identity/0067_scratch_member_policy` uses a Reinhardt Query-generated data asset to add `scratch.create` only to unchanged default member policies. It opens Deployment Scope before updating Tenant policy bundles and increments their revisions. Its reverse is a no-op: later policy edits cannot be distinguished safely from the migrated grant, so rollback preserves them. `migrationseeds` checks both Query-generated assets for drift.
+
+`identity/0072_remote_execution_activation` adds the nullable `authorization_remote_execution.activated_at` (#772). The Home sets it after the receiving Node's activation response matched, so a binding left behind by a refused activation is not read as a Run that started. One Reinhardt `AddColumn` carries both the table and the model state; nothing is backfilled, because nothing is deployed. A binding counts as live only while its `task_revision` equals the Task's revision, so a Task reopened after its remote Run ended is an Unassigned Task again.
 
 `workspaces/0019_scratch_spaces` adds Node-owned Scratch Spaces, their Tenant-scoped settings, and membership. Composite foreign keys keep each child and its parent in the same Tenant. `0020_scratch_spaces_row_level_security` applies the standard Tenant row policies. Reinhardt has no row-policy migration operation, so this migration uses the reversible policy SQL template. `0021_conversation_scratch_space` fixes each conversation to one Scratch Space in the same Tenant. `0022_scratch_space_model_state` records the ORM relationship state without changing the database-enforced constraints. The Query-generated `migrationseeds` assets backfill conversations before enforcing the binding. `0024_workspace_scratch_space` moves Run resolution to Workspace bindings, creating a dedicated space for each Workspace. It recovers the starter from Workspace ownership, a conversation, or the earliest Task. `0025_scratch_workspace_model_state` records the ORM relationship without changing the physical foreign key. A cleared space retains a tombstone while conversations still reference it; runtime reclamation is delivered separately.
 

@@ -142,6 +142,7 @@ impl ReceiptOutputScope for Scope<'_> {
 			working_bytes: profile.working_bytes,
 			output_bytes: profile.output_bytes,
 			read_bytes: profile.limits.read_bytes,
+			maximum_seconds: profile.maximum_seconds,
 		}
 	}
 	async fn put(

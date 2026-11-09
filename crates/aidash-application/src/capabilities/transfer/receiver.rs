@@ -159,7 +159,7 @@ pub async fn prepare(
             Err(error) => return Err(error),
         }
         available(&area.state)?;
-        if serde_json::from_value::<Vec<FileEntry>>(area.manifest.clone())?.iter().map(|f|f.size).sum::<u64>()+total+scope.retained_bytes(&area).await?>scope.limits()?.working_bytes {return Err(Error::Conflict("RECIPIENT_QUOTA".into()));}
+        if aidash_domain::capabilities::operations::counted_files(&serde_json::from_value::<Vec<FileEntry>>(area.manifest.clone())?).map(|f|f.size).sum::<u64>()+total+scope.retained_bytes(&area).await?>scope.limits()?.working_bytes {return Err(Error::Conflict("RECIPIENT_QUOTA".into()));}
         // Reserve both provisional chunks and final immutable objects. Actual
         // allocation consumes this reservation transactionally, never twice.
 		scope.lock_conversion().await?;
@@ -261,7 +261,7 @@ pub async fn commit(
         available(&area.state)?;
         let mut entries=serde_json::from_value::<Vec<FileEntry>>(area.manifest.clone())?;
         let total=description.files.iter().map(|f|f.size).sum::<u64>();
-        if entries.len()+description.files.len()>4096||entries.iter().map(|f|f.size).sum::<u64>()+total+scope.retained_bytes(&area).await?>scope.limits()?.working_bytes {return Err(Error::Conflict("RECIPIENT_QUOTA".into()));}
+        if aidash_domain::capabilities::operations::counted_files(&entries).count()+description.files.len()>4096||aidash_domain::capabilities::operations::counted_files(&entries).map(|f|f.size).sum::<u64>()+total+scope.retained_bytes(&area).await?>scope.limits()?.working_bytes {return Err(Error::Conflict("RECIPIENT_QUOTA".into()));}
         let mut delivered=vec![];
 		scope.lock_conversion().await?;
 		let mut conversion_credit = 0i64;

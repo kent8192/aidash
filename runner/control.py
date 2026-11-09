@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from urllib.parse import urlsplit, parse_qs
 import uuid
 
@@ -35,6 +36,9 @@ TERMINAL = {"completed", "cancelled", "failed", "uncertain"}
 PROBE_PROTOCOL = "aidash-admission-probe/2"
 ALLOCATION_OBSERVATION_ATTEMPTS = 5
 STOP_WATCH_SECONDS = 1800
+# Bounds the wait for a Pod to be ready and the retries of a start that keeps
+# failing. It does not bound the input upload or the dispatch: a command that
+# is ready to start is not refused for having uploaded many files (#709).
 START_LIMIT_SECONDS = 120
 DEFAULT_UNCERTAIN_RETENTION_SECONDS = 86400
 
@@ -44,10 +48,6 @@ class SandboxGone(Rejected):
 
     def __init__(self):
         super().__init__(409, 'original sandbox is absent or replaced')
-
-
-class PythonReplyUncertain(Exception):
-    """The interpreter itself reported an uncertain cell result."""
 
 
 class StartupIdentityMismatch(Exception):
@@ -101,6 +101,13 @@ def termination_time(terminated, started_at, observed):
     return min(observed, finished + 1)
 
 
+def cell_timed_out(record):
+    """Whether a Python cell ran into its limit. The node watchdog stops it there
+    without saying why, so a stop at or past the limit counts as one."""
+    stopped_at, running_at = record.get('stop_confirmed_at'), record.get('running_at')
+    return stopped_at is not None and running_at is not None and stopped_at >= running_at + record['request']['seconds']
+
+
 def settled(record):
     """No writer can still be running: terminal, with termination proven or frozen."""
     return record['status'] in TERMINAL and bool(record.get('termination_confirmed') or record.get('writer_frozen'))
@@ -129,6 +136,10 @@ class ActivityAggregate:
 
 
 class Runner(AllocationJournal):
+    # Set once the startup isolation proof passes. Without it the Runner takes
+    # no new work and restarts nothing it recovered; stops and status still work.
+    proven = False
+
     def __init__(self, config):
         self.config = config
         retention = config.get('uncertain_retention_seconds', DEFAULT_UNCERTAIN_RETENTION_SECONDS)
@@ -186,15 +197,38 @@ class Runner(AllocationJournal):
         self.ensure_v2_network_policy()
         self.verified = False
         self.python_verified = False
+        self.probe = None
         # Existing journals contain untrusted work too. Re-prove the current
         # isolation boundary before any recovery thread can execute that work.
-        self.verify_isolation()
-        if self.config.get("node_guard"):
-            self.verify_freeze()
-        self.retire_admission_probes()
-        self.recover()
+        # A failed proof refuses new work (the health report says unverified)
+        # and starts no recovery, but it must not stop the Runner watching the
+        # commands it already tracks. Execution Pod commands outlive a restart,
+        # and a crash loop here would leave nobody to deliver their stops (#722).
+        proof_failure = None
+        try:
+            self.verify_isolation()
+            if self.config.get("node_guard"):
+                self.verify_freeze()
+            self.proven = True
+        except Exception as failure:
+            # A proof that stopped half way proves nothing: the health report
+            # must not say verified because only the first step passed.
+            self.verified = self.python_verified = False
+            self.probe = None
+            proof_failure = str(failure) or type(failure).__name__
+            print(f"Deployment Administrator: isolation proof failed, so new work is refused: {proof_failure}",
+                  file=sys.stderr, flush=True)
+        try:
+            self.retire_admission_probes()
+        except Exception as failure:
+            print(f"Admission probe retirement failed: {failure}", file=sys.stderr, flush=True)
+        self.recover(resume=self.proven)
         self.execution_pods.recover_commands()
-        self.activate_execution_pods()
+        if self.proven:
+            self.activate_execution_pods()
+        else:
+            # Execution Pods stay unadmitted: commands already running are watched, none are accepted.
+            self.execution_pods.admission_error = 'Runner isolation proof failed: ' + proof_failure
         threading.Thread(target=self.allocation_loop, daemon=True).start()
         threading.Thread(target=self.uncertain_output_loop, daemon=True).start()
 
@@ -203,17 +237,19 @@ class Runner(AllocationJournal):
             if not path.name.startswith(("area-", "session-")):
                 yield path
 
-    def recover(self):
+    def recover(self, resume=True):
         """Seed the activity aggregate and resume interrupted work in one journal
         scan at startup, never per request. Each record is tracked before its work
-        restarts, so no later update of it can be overwritten by this read."""
+        restarts, so no later update of it can be overwritten by this read. Without
+        an isolation proof nothing restarts, yet the aggregate is still seeded: an
+        idle stop must not take the Runner down with that work in flight."""
         for path in self.operation_files():
             record = json.loads(path.read_bytes())
             with self.lock:
                 self.aggregate.track(path.stem, record)
             if record.get('output_harvested') and record['status'] in TERMINAL:
                 self.allocation_harvested(record, idle=record['status'] != 'uncertain' and record.get('writer_frozen') is True)
-            if record["status"] not in TERMINAL and record["status"] != "awaiting_files":
+            if resume and record["status"] not in TERMINAL and record["status"] != "awaiting_files":
                 self.start(record["operation_id"])
 
     def uncertain_output_loop(self):
@@ -470,6 +506,8 @@ class Runner(AllocationJournal):
         return hashlib.sha256(json.dumps(snapshot, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
 
     def accept(self, request, admission_probe=False):
+        if not self.proven and not admission_probe:
+            raise Rejected(503, "runner isolation is not proven; new work is refused")
         kind = request.get("kind")
         optional = {"session_id", "egress", "usage_tenant"} | ({"port"} if kind == "serve" else set())
         if set(request) - optional != {"operation_id", "area_id", "epoch", "digest", "kind", "code", "seconds", "files"}:
@@ -544,7 +582,13 @@ class Runner(AllocationJournal):
         with self.lock:
             if self.path(operation).exists():
                 old = self.get(operation)
-                if old["wire_digest"] != wire_digest:
+                # A refusal (`refuse_undelivered`) was never sent a request, so it has no
+                # transport digest. A send of the same intent is answered with the refusal:
+                # a caller whose cancel reply was lost sends again, and only this record
+                # lets it settle. Nothing starts. Another intent is a conflict.
+                same = (old["digest"] == request["digest"] if old["wire_digest"] is None
+                        else old["wire_digest"] == wire_digest)
+                if not same:
                     raise Rejected(409, "IDEMPOTENCY_CONFLICT")
                 return self.public(old)
             # A Live preview is a long-lived reader that never publishes its
@@ -627,6 +671,8 @@ class Runner(AllocationJournal):
             return {"received": offset + len(data)}
 
     def commit_inputs(self, operation):
+        if not self.proven:
+            raise Rejected(503, "runner isolation is not proven; new work is refused")
         with self.lock:
             record = self.get(operation)
             if record["status"] != "awaiting_files":
@@ -933,27 +979,21 @@ class Runner(AllocationJournal):
                         return
                     self._reconcile_python_once(operation)
                     return
-                except PythonReplyUncertain as error:
-                    self.update(operation, status='uncertain', error=str(error)[-2000:])
-                    return
                 except SandboxGone:
                     if not self.get(operation).get('executed'):
                         self.fail_start(operation, 'Python sandbox identity changed before dispatch')
                     else:
-                        self.update(operation, status='uncertain', termination_confirmed=True,
+                        self.update(operation, status='uncertain', termination_confirmed=True, writer_frozen=False,
                                     output_harvested=True, output_discarded=True, files=[], finished_at=time.time(),
                                     uncertain_at=time.time(), error={'code':'SANDBOX_LOST',
                                     'message':"Sandbox is gone; the command's file changes were not saved."})
                     return
-                except StartupIdentityMismatch as error:
-                    if self.get(operation).get('executed'):
-                        self.update(operation, status='uncertain', error=str(error)[-2000:])
-                    else:
-                        self.fail_start(operation, str(error))
-                    return
                 except Exception as error:
                     record = self.get(operation)
                     if not record.get('executed'):
+                        if isinstance(error, StartupIdentityMismatch):
+                            self.fail_start(operation, str(error))
+                            return
                         if time.time() >= record['startup_at'] + START_LIMIT_SECONDS:
                             self.fail_start(operation, 'Python startup timed out: ' + str(error))
                             return
@@ -972,8 +1012,9 @@ class Runner(AllocationJournal):
                                 return
                             exported, captured = collected
                             saved = self.update(operation, status=record.get('pending_status', 'failed'), termination_confirmed=True,
-                                                output_harvested=True, finished_at=now, files=exported['files'],
+                                                writer_frozen=False, output_harvested=True, finished_at=now, files=exported['files'],
                                                 stdout=captured['stdout'], truncated=True, exit_code=record.get('exit_code', 137),
+                                                deadline_expired=cell_timed_out(record),
                                                 error=record.get('pending_error') or {'code':'SESSION_LOST', 'message':'Interpreter stopped; its saved files were recovered.'})
                             self.allocation_harvested(saved)
                             self.close_allocation(saved)
@@ -985,7 +1026,7 @@ class Runner(AllocationJournal):
                         record = self.update(operation, running_at=started)
                     deadline = started + record['request']['seconds'] + 30
                     if not record.get('termination_confirmed') and now >= deadline:
-                        record = self.update(operation, status='cancelling', cancel_requested=True)
+                        record = self.update(operation, status='cancelling', limit_stop_requested=True)
                         if now >= started + record['request']['seconds'] + STOP_WATCH_SECONDS and now - last_warning >= 60:
                             try:
                                 self.allocation_harvested(record)
@@ -1018,7 +1059,7 @@ class Runner(AllocationJournal):
         if record.get('executed') and record.get('cancel_requested'):
             if self.guard(record, 'terminate').get('termination_confirmed') is not True:
                 raise RuntimeError('Python termination not confirmed')
-            self.update(operation, status='finishing', termination_confirmed=True,
+            self.update(operation, status='finishing', termination_confirmed=True, writer_frozen=False,
                         stop_confirmed_at=record.get('stop_confirmed_at') or time.time(),
                         pending_status='cancelled', pending_error={'code':'CANCELLED', 'message':'Python stopped; session reset.'}, exit_code=137)
             raise RuntimeError('Python stopped; collecting its output')
@@ -1035,7 +1076,7 @@ class Runner(AllocationJournal):
                 statuses = {s["name"]: s for s in pod.get("status", {}).get("containerStatuses", [])}
                 execution = statuses.get('execution', {}).get('state', {})
                 if record.get('executed') and 'terminated' in execution:
-                    self.update(operation, status='finishing', termination_confirmed=True,
+                    self.update(operation, status='finishing', termination_confirmed=True, writer_frozen=False,
                                 stop_confirmed_at=record.get('stop_confirmed_at') or time.time(),
                                 pending_status='failed', pending_error={'code':'SESSION_LOST', 'message':'Interpreter stopped during the cell; code was not replayed.'}, exit_code=137)
                     raise RuntimeError('Python stopped; collecting its output')
@@ -1091,14 +1132,13 @@ class Runner(AllocationJournal):
             elif prepared["digest"] != record["request"]["digest"]:
                 raise StartupIdentityMismatch("Python input identity changed")
             record = self.update(operation, hydrated=True)
-        if not record.get('executed') and time.time() >= record['startup_at'] + START_LIMIT_SECONDS:
-            raise RuntimeError('Python startup timed out before dispatch')
         record = self.update(operation, executed=True, status=record.get('status') if record.get('status') == 'cancelling' else 'running',
                              running_at=record.get('running_at') or time.time())
         if not record.get('cancel_requested'):
             self.guard(record, "cell", operation_id=operation, code=record["request"]["code"],
                        digest=record["digest"], seconds=record["request"]["seconds"], egress=record["request"].get("egress"))
         memory_live = True
+        reply_lost = False
         while True:
             current = self.get(operation)
             if current["cancel_requested"]:
@@ -1117,9 +1157,13 @@ class Runner(AllocationJournal):
             if result["status"] in ("completed", "failed"):
                 break
             if result["status"] == "uncertain":
-                raise PythonReplyUncertain("Python reply uncertain; code will not be replayed")
-            if 'stdout' in result:
-                self.update(operation, stdout=result['stdout'], truncated=result.get('truncated', False), output_fetched_at=time.time())
+                # The interpreter's reply was lost, so the cell may have finished. Its code is never replayed.
+                # Watch it like any running cell: the stop below ends it at its limit, and only then does its
+                # outcome stay uncertain. Until then the Working Area stays busy, not unavailable (#709).
+                reply_lost = True
+            elif 'stdout' in result:
+                self.update(operation, stdout=result['stdout'], stdout_offset=result.get('stdout_offset', 0),
+                            truncated=result.get('truncated', False), output_fetched_at=time.time())
             pod = self.pod(pod_operation)
             if not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']:
                 raise SandboxGone()
@@ -1130,18 +1174,31 @@ class Runner(AllocationJournal):
                 result = dict(status="failed", exit_code=137, stdout=result.get("stdout", ""),
                               truncated=True, error={"code":"SESSION_LOST", "message":"Interpreter stopped during the cell; code was not replayed."})
                 break
-            if time.time() > record['running_at'] + record['request']['seconds'] + 30:
-                self.update(operation, status='cancelling', cancel_requested=True)
+            if current.get('limit_stop_requested') or time.time() > record['running_at'] + record['request']['seconds'] + 30:
+                # The cell is seen unfinished past its limit: the Runner's watchdog stops it. Nobody cancelled, so
+                # it never reads as cancelled; a cell that finished during an outage was settled above instead.
+                self.update(operation, status='cancelling', limit_stop_requested=True)
+                if self.guard(record, "terminate").get('termination_confirmed') is not True:
+                    raise RuntimeError('Python termination not confirmed')
+                memory_live = False
+                if reply_lost:
+                    result = dict(status="uncertain", exit_code=None, stdout=current.get("stdout", ""), truncated=True,
+                                  error={"code":"EXECUTION_UNVERIFIED", "message":"The Python reply was lost, so the cell's outcome is unknown. It was stopped, its code was not replayed, and the session was reset."})
+                else:
+                    result = dict(status="failed", exit_code=137, stdout=current.get("stdout", ""), truncated=True,
+                                  error={"code":"SESSION_LOST", "message":"Interpreter stopped during the cell; code was not replayed."})
+                break
             time.sleep(.2)
         if memory_live:
             frozen = self.guard(record, "freeze", idle_seconds=self.config["idle_seconds"])
             if not frozen["writer_frozen"]:
                 raise RuntimeError("Python memory no longer live")
-        self.update(operation, status="finishing", writer_frozen=memory_live, termination_confirmed=not memory_live,
-                    stop_confirmed_at=None if memory_live else (self.get(operation).get('stop_confirmed_at') or time.time()),
-                    pending_status=result['status'], pending_error=result.get('error'), exit_code=result['exit_code'],
-                    output_fetched_at=time.time() if memory_live and 'stdout' in result else self.get(operation).get('output_fetched_at'),
-                    stdout=result.get('stdout', ''), displays=result.get('displays', []), truncated=result.get('truncated', False))
+        finishing = self.update(operation, status="finishing", writer_frozen=memory_live, termination_confirmed=not memory_live,
+                                stop_confirmed_at=None if memory_live else (self.get(operation).get('stop_confirmed_at') or time.time()),
+                                pending_status=result['status'], pending_error=result.get('error'), exit_code=result['exit_code'],
+                                output_fetched_at=time.time() if memory_live and 'stdout' in result else self.get(operation).get('output_fetched_at'),
+                                stdout=result.get('stdout', ''), displays=result.get('displays', []), truncated=result.get('truncated', False))
+        deadline_expired = cell_timed_out(finishing)
         exported = self.guard(record, "export", working_bytes=self.writable_bytes(record))
         if 'refused' in exported:
             if memory_live:
@@ -1152,7 +1209,7 @@ class Runner(AllocationJournal):
             save(self.root / ('session-' + record['session_id'] + '.json'), session)
             self.refuse_export(operation, exported['refused'], pod_operation, writer_frozen=False,
                                stdout=result.get('stdout', ''), truncated=result.get('truncated', False),
-                               exit_code=result['exit_code'])
+                               exit_code=result['exit_code'], deadline_expired=deadline_expired)
             return
         directory = self.root / (operation + ".files")
         directory.mkdir(exist_ok=True, mode=0o700)
@@ -1181,7 +1238,8 @@ class Runner(AllocationJournal):
         save(self.root / ("session-" + record["session_id"] + ".json"), session)
         self.update(operation, status=result["status"], writer_frozen=memory_live, termination_confirmed=not memory_live,
                     output_harvested=True, finished_at=time.time(), stdout=result.get("stdout", ""), truncated=result.get("truncated", False),
-                    displays=result.get("displays", []), files=exported["files"], error=result.get("error"), exit_code=result["exit_code"])
+                    displays=result.get("displays", []), files=exported["files"], error=result.get("error"), exit_code=result["exit_code"],
+                    deadline_expired=deadline_expired)
         self.allocation_harvested(self.get(operation), idle=memory_live)
         if not memory_live:
             self.close_allocation(record)
@@ -1387,7 +1445,8 @@ class Runner(AllocationJournal):
             if not refuse:
                 raise StoppedExportRefused(exported['refused'])
             captured = ({'stdout':record.get('stdout', '')} if record['request']['kind'] == 'python' else self.guard(record, 'logs'))
-            self.refuse_export(operation, exported['refused'], operation, stdout=captured['stdout'], truncated=True, output_harvested=True)
+            self.refuse_export(operation, exported['refused'], operation, stdout=captured['stdout'], truncated=True, output_harvested=True,
+                               deadline_expired=record['request']['kind'] == 'python' and cell_timed_out(record))
             return
         captured = ({'stdout':record.get('stdout', '')} if record['request']['kind'] == 'python' else self.guard(record, 'logs'))
         directory = self.root / (operation + '.files')
@@ -1549,7 +1608,7 @@ class Runner(AllocationJournal):
                     started = record.get('running_at') or record.get('started_at') or record.get('dispatch_at') or now
                     deadline = started + record['request']['seconds'] + 30
                     if not record.get('termination_confirmed') and now >= deadline:
-                        record = self.update(operation, status='cancelling', cancel_requested=True)
+                        record = self.update(operation, status='cancelling', limit_stop_requested=True)
                         if now >= started + record['request']['seconds'] + STOP_WATCH_SECONDS and now - last_warning >= 60:
                             # A normal completed Pod deletion means kubelet stopped every container.
                             try:
@@ -1618,8 +1677,6 @@ class Runner(AllocationJournal):
                                     break
                 elif prepared["digest"] != record["request"]["digest"]:
                     raise StartupIdentityMismatch("running input identity changed")
-                if time.time() >= record['startup_at'] + START_LIMIT_SECONDS:
-                    raise RuntimeError('sandbox startup timed out before dispatch')
                 self.update(operation, executed=True, dispatch_at=record.get('dispatch_at') or time.time())
                 # The collector stamps the start when it sets the deadline
                 # and publishes the command, after verifying the inputs,
@@ -1634,7 +1691,9 @@ class Runner(AllocationJournal):
                             started_at=hydrated_reply.get("started_at") or now)
                 hydrated = True
             current = self.get(operation)
-            if current["cancel_requested"] and "terminated" not in execution:
+            # A watchdog stop is delivered like a cancel, but it only settles the command as cancelled when
+            # someone cancelled: a command that finished meanwhile settles from how it ended.
+            if (current["cancel_requested"] or current.get("limit_stop_requested")) and "terminated" not in execution:
                 try:
                     if "running" not in collector:
                         raise RuntimeError('collector unavailable for cancellation')
@@ -1674,12 +1733,16 @@ class Runner(AllocationJournal):
                 self.update(operation, stdout=captured['stdout'], truncated=captured['truncated'], output_fetched_at=time.time())
                 diagnostic = None
                 if terminal["exitCode"] != 0 and not captured["stdout"]:
-                    diagnostic = self.kube(["logs", self.pod_name(operation), "-c", "execution", "--limit-bytes=16384"]).stdout.decode(errors="replace")
+                    log = self.kube(["logs", self.pod_name(operation), "-c", "execution", "--limit-bytes=16384"]).stdout.decode(errors="replace")
+                    # An empty log says nothing: the exit code stands alone.
+                    if log.strip():
+                        diagnostic = {"code": "COMMAND_FAILED", "message": log}
                 exported = ({"files": []} if record["request"]["kind"] == "verify" else
                             json.loads(self.exec_collector(operation, ["export", str(self.writable_bytes(record))], timeout=120).stdout))
                 if 'refused' in exported:
                     self.refuse_export(operation, exported['refused'], operation,
-                                       stdout=captured['stdout'], truncated=captured['truncated'])
+                                       stdout=captured['stdout'], truncated=captured['truncated'],
+                                       deadline_expired=captured.get("deadline_expired"))
                     break
                 self.read_collector_files(operation, exported)
                 self.update(operation, status="cancelled" if current["cancel_requested"] else
@@ -1695,8 +1758,9 @@ class Runner(AllocationJournal):
             # children, avoiding needless processes during the fork check.
             # Ordinary operation previews continue while execution runs.
             if hydrated and operation != self.admission_operation and time.monotonic() - preview_at > 1:
-                captured = json.loads(self.exec_collector(operation, ["logs", "16384"]).stdout)
-                self.update(operation, stdout=captured["stdout"], truncated=captured["truncated"], output_fetched_at=time.time())
+                captured = json.loads(self.exec_collector(operation, ["logs", "16384", "window"]).stdout)
+                self.update(operation, stdout=captured["stdout"], stdout_offset=captured["offset"],
+                            truncated=captured["truncated"], output_fetched_at=time.time())
                 preview_at = time.monotonic()
             if not hydrated and time.time() >= record['startup_at'] + START_LIMIT_SECONDS:
                 raise RuntimeError("sandbox startup not confirmed")
@@ -1706,16 +1770,46 @@ class Runner(AllocationJournal):
                 raise RuntimeError("sandbox termination not confirmed after deadline")
             time.sleep(0.25)
 
-    def cancel(self, operation):
-        record = self.get(operation)
-        if record["status"] == "awaiting_files":
-            record = self.update(operation, status="cancelled", cancel_requested=True, termination_confirmed=True)
-        elif record["status"] == "uncertain" and not record["termination_confirmed"]:
-            record = self.update(operation, status="cancelling", cancel_requested=True)
-            self.start(operation)
-        elif record["status"] not in TERMINAL:
-            record = self.update(operation, cancel_requested=True)
-        return self.public(record)
+    def refuse_undelivered(self, operation, refusal):
+        """Record that an operation the caller has not seen delivered will never run.
+
+        The caller cannot tell an unsent operation from a send it gave up on: `accept`
+        may still be waiting for this lock, or listing Pods under it, long after the
+        caller's timeout. This takes the same lock, so either `accept` recorded the
+        operation first and this is an ordinary cancel, or this record stands and
+        `accept` starts nothing and answers the send with this record. Another instance
+        has another journal, whose silence proves nothing about the operation, so its
+        cancel stays absent."""
+        if (set(refusal) != {"digest", "instance"} or not isinstance(refusal["instance"], str)
+                or not isinstance(refusal["digest"], str) or not refusal["digest"]):
+            raise Rejected(400, "invalid cancel refusal")
+        with self.lock:
+            if refusal["instance"] != self.instance or self.path(operation).exists():
+                return
+            record = {"operation_id": operation, "digest": refusal["digest"], "wire_digest": None,
+                      "status": "cancelled", "request": {}, "created_at": time.time(), "cancel_requested": True,
+                      "termination_confirmed": True, "stdout": "", "truncated": False,
+                      "files": [], "error": None, "executed": False}
+            save(self.path(operation), record)
+            self.aggregate.track(operation, record)
+
+    def cancel(self, operation, refusal=None):
+        # One decision under one lock. `commit_inputs` starts the command under this
+        # lock, so a cancel that read `awaiting_files` and let go before writing
+        # `cancelled` could be overtaken by that start, and its reply would say
+        # "never ran" about a command that did.
+        with self.lock:
+            if refusal is not None:
+                self.refuse_undelivered(operation, refusal)
+            record = self.get(operation)
+            if record["status"] == "awaiting_files":
+                record = self.update(operation, status="cancelled", cancel_requested=True, termination_confirmed=True)
+            elif record["status"] == "uncertain" and not record["termination_confirmed"]:
+                record = self.update(operation, status="cancelling", cancel_requested=True)
+                self.start(operation)
+            elif record["status"] not in TERMINAL:
+                record = self.update(operation, cancel_requested=True)
+            return self.public(record)
 
     def activity(self):
         """Read-only activity; an unproven writer always prevents idle stop. It reads
@@ -1808,7 +1902,10 @@ class Handler(BaseHTTPRequestHandler):
             if self.command == "GET" and len(parts) == 4:
                 return runner.public(runner.get(operation))
             if self.command == "POST" and parts[4:] == ["cancel"]:
-                return runner.cancel(operation)
+                size = int(self.headers.get("Content-Length", "0"))
+                if size > 256:
+                    raise Rejected(413, "cancel request limit")
+                return runner.cancel(operation, json.loads(self.rfile.read(size)) if size else None)
             if self.command == "POST" and parts[4:] == ["start"]:
                 return runner.commit_inputs(operation)
             if self.command == "POST" and parts[4:] == ["ack"]:
@@ -1863,11 +1960,23 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def main():
+    try:
+        profile = json.loads(Path(os.environ["AIDASH_CAPABILITY_PROFILE"]).read_bytes())
+        config = dict(profile, **profile["runner"])
+        runner = Runner(config)
+        runner.execution_pods.start_idle_monitor()
+        server = ThreadingHTTPServer((config["listen_host"], config["listen_port"]), Handler)
+        server.runner = runner
+        server.serve_forever()
+    except BaseException:
+        # Recovered commands are watched on non-daemon threads. An exception
+        # that ends startup after they began would otherwise leave this process
+        # alive and serving nothing, so leave explicitly and let it restart.
+        traceback.print_exc()
+        sys.stderr.flush()
+        os._exit(1)
+
+
 if __name__ == "__main__":
-    profile = json.loads(Path(os.environ["AIDASH_CAPABILITY_PROFILE"]).read_bytes())
-    config = dict(profile, **profile["runner"])
-    runner = Runner(config)
-    runner.execution_pods.start_idle_monitor()
-    server = ThreadingHTTPServer((config["listen_host"], config["listen_port"]), Handler)
-    server.runner = runner
-    server.serve_forever()
+    main()

@@ -13,6 +13,7 @@ struct Scope {
 	environment: Value,
 	context: Value,
 	inherited: bool,
+	rechecking: Vec<Uuid>,
 	owner: Option<String>,
 	rows: Vec<(Uuid, String)>,
 	run: Option<Run>,
@@ -51,7 +52,7 @@ fn run() -> Run {
 }
 #[fixture]
 fn scope() -> Scope {
-	Scope{snapshot:Snapshot{revision:31,bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{"reader":{"kind":"user"}},"policies":[{"id":"read","effect":"allow","subjects":{"any":true},"actions":["workspace.read"],"resources":{"kinds":["workspace"],"ids":[Uuid::from_u128(1),Uuid::from_u128(2),Uuid::from_u128(3)]}},{"id":"events","effect":"allow","subjects":{"any":true},"actions":["workspace.events"],"resources":{"kinds":["workspace"],"ids":[Uuid::from_u128(1),Uuid::from_u128(3)]}}]})).unwrap()},subjects:vec!["reader".into()],environment:json!({"transport":"worker"}),context:json!({"workspace_id":Uuid::from_u128(1),"created_by":"lease-default"}),inherited:false,owner:Some("stored-owner".into()),rows:vec![(Uuid::from_u128(3),"third-owner".into()),(Uuid::from_u128(2),"second-owner".into()),(Uuid::from_u128(4),"fourth-owner".into()),(Uuid::from_u128(1),"first-owner".into())],run:Some(run()),run_visible:true,require_allowed:true,calls:vec![],owner_lookups:vec![],records:vec![],fail:None}
+	Scope{snapshot:Snapshot{revision:31,bundle:serde_json::from_value(json!({"tenant":"tenant","subjects":{"reader":{"kind":"user"}},"policies":[{"id":"read","effect":"allow","subjects":{"any":true},"actions":["workspace.read"],"resources":{"kinds":["workspace"],"ids":[Uuid::from_u128(1),Uuid::from_u128(2),Uuid::from_u128(3)]}},{"id":"events","effect":"allow","subjects":{"any":true},"actions":["workspace.events"],"resources":{"kinds":["workspace"],"ids":[Uuid::from_u128(1),Uuid::from_u128(3)]}}]})).unwrap()},subjects:vec!["reader".into()],environment:json!({"transport":"worker"}),context:json!({"workspace_id":Uuid::from_u128(1),"created_by":"lease-default"}),inherited:false,rechecking:vec![],owner:Some("stored-owner".into()),rows:vec![(Uuid::from_u128(3),"third-owner".into()),(Uuid::from_u128(2),"second-owner".into()),(Uuid::from_u128(4),"fourth-owner".into()),(Uuid::from_u128(1),"first-owner".into())],run:Some(run()),run_visible:true,require_allowed:true,calls:vec![],owner_lookups:vec![],records:vec![],fail:None}
 }
 impl Scope {
 	fn touch(&mut self, name: &'static str) -> Result<()> {
@@ -87,6 +88,9 @@ impl WorkspaceResourceScope for Scope {
 	}
 	fn context(&self) -> &Value {
 		&self.context
+	}
+	fn recheck_reaches(&self, id: Uuid) -> bool {
+		self.rechecking.contains(&id)
 	}
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
 		super::super::lease::resource("tenant", &self.context, kind, id, attributes)
@@ -181,6 +185,25 @@ async fn inherited_resource_cannot_expand_its_workspace_before_any_lookup(
 		Err(Error::Forbidden)
 	));
 	assert!(scope.calls.is_empty());
+}
+#[rstest]
+#[tokio::test]
+async fn inherited_resource_reaches_only_what_a_read_recheck_opened_and_takes_no_lock(
+	mut scope: Scope,
+) {
+	let own = Uuid::from_u128(1);
+	let opened = Uuid::from_u128(2);
+	let other = Uuid::from_u128(3);
+	scope.inherited = true;
+	scope.context = json!({"workspace_id":own});
+	scope.rechecking = vec![opened];
+	resource(&mut scope, opened).await.unwrap();
+	assert_eq!(scope.owner_lookups, vec![(opened, false)]);
+	assert!(matches!(
+		resource(&mut scope, other).await,
+		Err(Error::Forbidden)
+	));
+	assert_eq!(scope.owner_lookups, vec![(opened, false)]);
 }
 #[rstest]
 #[tokio::test]

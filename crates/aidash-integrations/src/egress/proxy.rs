@@ -23,6 +23,10 @@ const STOPPING_ATTEMPT: std::time::Duration = std::time::Duration::from_secs(5);
 /// A live connection, or one whose final record was never written.
 const UNSETTLED: &str = "unsettled";
 const INVALID_TARGET: &str = "invalid_proxy_target";
+const WRITE_FAILED: &str = "write failed";
+/// The client reset or stopped reading. A tunnel cannot see inside TLS, so this
+/// may be a finished download or an abandoned one, and it is no failure of ours.
+const CLIENT_CLOSED: &str = "egress_client_closed";
 
 /// Failures of each kind since that kind's last log line.
 #[derive(Default)]
@@ -201,25 +205,49 @@ struct Batch {
 	direction: Direction,
 	day: chrono::NaiveDate,
 	remaining: u64,
+	failure: FailureReport,
+}
+/// A failed debit, named so that `tunnel_ended` tells our own store from the
+/// upstream. A decision keeps the code it was made with.
+fn debit_failed(error: aidash_application::Error) -> io::Error {
+	use aidash_application::Error;
+	match error {
+		Error::Refused(code) => io::Error::other(code),
+		Error::Forbidden | Error::Unauthorized => io::Error::other("egress_credential_revoked"),
+		error => io::Error::other(format!("egress_authority_unavailable: {error}")),
+	}
 }
 impl Batch {
-	fn new(scopes: Arc<dyn EgressScopes>, settings: ScopeSettings, direction: Direction) -> Self {
+	fn new(
+		scopes: Arc<dyn EgressScopes>,
+		settings: ScopeSettings,
+		direction: Direction,
+		failure: FailureReport,
+	) -> Self {
 		Self {
 			scopes,
 			settings,
 			direction,
 			day: chrono::Utc::now().date_naive(),
 			remaining: 0,
+			failure,
 		}
 	}
 	async fn charge(&mut self, bytes: usize) -> io::Result<()> {
 		let day = chrono::Utc::now().date_naive();
 		if day != self.day {
 			if self.remaining != 0 {
-				self.scopes
+				// Reported like the refund that ends a tunnel, which this one is.
+				if let Err(error) = self
+					.scopes
 					.refund(&self.settings, self.direction, self.remaining, self.day)
 					.await
-					.map_err(|e| io::Error::other(e.to_string()))?;
+				{
+					let error = io::Error::other(format!("egress_refund_failed: {error}"));
+					super::settle_failure("refund", "abandoned");
+					self.failure.internal("refund", &error);
+					return Err(error);
+				}
 			}
 			self.day = day;
 			self.remaining = 0;
@@ -240,10 +268,10 @@ impl Batch {
 					self.scopes
 						.debit(&self.settings, self.direction, need, day)
 						.await
-						.map_err(|e| io::Error::other(e.to_string()))?;
+						.map_err(debit_failed)?;
 					self.remaining += need;
 				}
-				Err(error) => return Err(io::Error::other(error.to_string())),
+				Err(error) => return Err(debit_failed(error)),
 			}
 		}
 		Ok(())
@@ -309,8 +337,10 @@ async fn pump<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 					batch.remaining -= bytes as u64;
 					count.fetch_add(bytes as u64, Ordering::Relaxed);
 				}
+				// Only a failed read keeps its kind, so that a tunnel can tell which
+				// side went away.
 				Err(error) => {
-					return Err(error);
+					return Err(io::Error::other(format!("{WRITE_FAILED}: {error}")));
 				}
 			}
 		}
@@ -369,8 +399,18 @@ where
 	let sent = counts.sent;
 	let received = counts.received;
 	let failure = counts.failure;
-	let mut sent_batch = Batch::new(scopes.clone(), settings.clone(), Direction::Sent);
-	let mut received_batch = Batch::new(scopes.clone(), settings.clone(), Direction::Received);
+	let mut sent_batch = Batch::new(
+		scopes.clone(),
+		settings.clone(),
+		Direction::Sent,
+		failure.clone(),
+	);
+	let mut received_batch = Batch::new(
+		scopes.clone(),
+		settings.clone(),
+		Direction::Received,
+		failure.clone(),
+	);
 	let (activity_tx, mut activity_rx) = tokio::sync::watch::channel(());
 	let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
 	let result = {
@@ -388,7 +428,10 @@ where
 				if result.is_err() {
 					cancel_tx.send_replace(true);
 				}
-				result
+				result.map_err(|error| match error.kind() {
+					io::ErrorKind::ConnectionReset => io::Error::other(CLIENT_CLOSED),
+					_ => error,
+				})
 			};
 			let receive = async {
 				let result = pump(
@@ -403,7 +446,13 @@ where
 				if result.is_err() {
 					cancel_tx.send_replace(true);
 				}
-				result
+				result.map_err(|error| {
+					if error.to_string().starts_with(WRITE_FAILED) {
+						io::Error::other(CLIENT_CLOSED)
+					} else {
+						error
+					}
+				})
 			};
 			let (sent, received) = tokio::join!(send, receive);
 			match (sent, received) {
@@ -908,6 +957,7 @@ fn tunnel_outcome(result: &io::Result<()>) -> &'static str {
 		"egress_authority_unavailable",
 		"egress_refund_failed",
 		"egress_refund_timeout",
+		CLIENT_CLOSED,
 	] {
 		if message.contains(code) {
 			return code;
@@ -1946,6 +1996,31 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn a_refused_proxied_upload_reaches_a_client_that_sends_everything_first() {
+		let scopes = Arc::new(MemoryScopes::new("token".into(), test_settings()));
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = listener.local_addr().unwrap();
+		let (stop, receiver) = tokio::sync::watch::channel(false);
+		let server = tokio::spawn(super::super::serve_with_scopes(
+			listener,
+			Arc::new(DenyLegacy),
+			Some(scopes),
+			super::super::ProxyLimits::default(),
+			receiver,
+		));
+		let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+		let length = 64 * 64 * 1024;
+		client.write_all(format!("POST http://denied.example/upload HTTP/1.1\r\nHost: denied.example\r\nProxy-Authorization: Bearer token\r\nContent-Length: {length}\r\n\r\n").as_bytes()).await.unwrap();
+		client.write_all(&vec![1; length]).await.unwrap();
+		let mut response = String::new();
+		client.read_to_string(&mut response).await.unwrap();
+		assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+		assert!(response.contains("egress_host_forbidden"), "{response}");
+		stop.send(true).unwrap();
+		server.await.unwrap().unwrap();
+	}
+
+	#[tokio::test]
 	async fn absolute_http_forwards_without_proxy_credentials_and_records_wire_bytes() {
 		use hyper::{Request, Response, service::service_fn};
 		use std::convert::Infallible;
@@ -2413,6 +2488,7 @@ mod tests {
 	struct FaultyScopes {
 		memory: Arc<MemoryScopes>,
 		resolve_fails: bool,
+		debit_fails: bool,
 		refund_fails: bool,
 		record_hangs: bool,
 		record_fails:
@@ -2423,6 +2499,7 @@ mod tests {
 			Self {
 				memory: Arc::new(MemoryScopes::new(CREDENTIAL.into(), settings.clone())),
 				resolve_fails: false,
+				debit_fails: false,
 				refund_fails: false,
 				record_hangs: false,
 				record_fails: Box::new(|_| false),
@@ -2466,6 +2543,11 @@ mod tests {
 			n: u64,
 			day: chrono::NaiveDate,
 		) -> aidash_application::Result<()> {
+			if self.debit_fails {
+				return Err(aidash_application::Error::External(
+					"pool timed out debiting".into(),
+				));
+			}
 			self.memory.debit(s, d, n, day).await
 		}
 		async fn refund(
@@ -2937,6 +3019,10 @@ mod tests {
 			super::tunnel_ended(&report, &failed("egress_idle_timeout")),
 			"egress_idle_timeout"
 		);
+		assert_eq!(
+			super::tunnel_ended(&report, &failed(super::CLIENT_CLOSED)),
+			super::CLIENT_CLOSED
+		);
 		assert_eq!(observed.count(&failures("transfer")), 0);
 		assert_eq!(
 			super::tunnel_ended(&report, &failed(&format!("reset by {HOST}"))),
@@ -2956,6 +3042,53 @@ mod tests {
 		assert_eq!(lines_at(&logs, "ERROR", "authority").len(), 1, "{logs}");
 		assert!(logs.contains("the check timed out"), "{logs}");
 		assert_private(&logs);
+	}
+
+	/// Closing with linger 0 sends a reset rather than a normal close.
+	fn reset(socket: tokio::net::TcpStream) {
+		socket2::SockRef::from(&socket)
+			.set_linger(Some(std::time::Duration::ZERO))
+			.unwrap();
+		drop(socket);
+	}
+
+	async fn socket_pair() -> (tokio::net::TcpStream, tokio::net::TcpStream) {
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let near = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+			.await
+			.unwrap();
+		let (far, _) = listener.accept().await.unwrap();
+		(near, far)
+	}
+
+	#[tokio::test]
+	async fn a_reset_tells_which_side_went_away() {
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let settings = test_settings();
+		let scopes = Arc::new(MemoryScopes::new(CREDENTIAL.into(), settings.clone()));
+		for (client_resets, outcome) in [(true, super::CLIENT_CLOSED), (false, "interrupted")] {
+			let (gateway_client, client) = socket_pair().await;
+			let (gateway_upstream, upstream) = socket_pair().await;
+			let task = tokio::spawn(super::tunnel_controlled(
+				gateway_client,
+				gateway_upstream,
+				scopes.clone(),
+				settings.clone(),
+				CREDENTIAL.into(),
+				HOST.into(),
+				super::TunnelReports::default(),
+				receiver.clone(),
+			));
+			let (gone, stays) = if client_resets {
+				(client, upstream)
+			} else {
+				(upstream, client)
+			};
+			reset(gone);
+			let result = task.await.unwrap().2;
+			drop(stays);
+			assert_eq!(super::tunnel_outcome(&result), outcome, "{result:?}");
+		}
 	}
 
 	#[tokio::test(start_paused = true)]
@@ -2993,6 +3126,77 @@ mod tests {
 			),
 			1
 		);
+	}
+
+	/// A store that cannot be asked is our own failure, not the upstream's.
+	#[tokio::test(start_paused = true)]
+	async fn a_failed_debit_is_the_authority_s_failure_and_not_an_upstream_transfer() {
+		let observed = super::super::tests::Observed::start();
+		let settings = test_settings();
+		let mut scopes = FaultyScopes::new(&settings);
+		scopes.debit_fails = true;
+		let (mut client, gateway_client) = tokio::io::duplex(64);
+		let (gateway_server, _server) = tokio::io::duplex(64);
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let reports = super::TunnelReports::default();
+		let report = reports.failure.clone();
+		let task = tokio::spawn(super::tunnel_controlled(
+			gateway_client,
+			gateway_server,
+			Arc::new(scopes),
+			settings,
+			CREDENTIAL.into(),
+			HOST.into(),
+			reports,
+			receiver,
+		));
+		client.write_all(b"hello").await.unwrap();
+		let (_, _, result) = task.await.unwrap();
+		assert_eq!(
+			super::tunnel_ended(&report, &result),
+			"egress_authority_unavailable",
+			"{result:?}"
+		);
+		assert_eq!(observed.count(&failures("transfer")), 0);
+		let logs = observed.logs();
+		assert_eq!(lines_at(&logs, "ERROR", "authority").len(), 1, "{logs}");
+		assert!(logs.contains("pool timed out debiting"), "{logs}");
+		assert!(lines_at(&logs, "WARN", "transfer").is_empty(), "{logs}");
+	}
+
+	/// A tunnel that crosses UTC midnight refunds the day before it, and that
+	/// refund is the same store failure as the one that ends a tunnel.
+	#[tokio::test]
+	async fn a_refund_that_fails_when_the_day_rolls_is_named_and_counted() {
+		let observed = super::super::tests::Observed::start();
+		let settings = test_settings();
+		let mut scopes = FaultyScopes::new(&settings);
+		scopes.refund_fails = true;
+		let report = report_for(HOST);
+		let mut batch = super::Batch::new(
+			Arc::new(scopes),
+			settings,
+			aidash_application::egress::Direction::Sent,
+			report.clone(),
+		);
+		batch.day = batch.day.pred_opt().unwrap();
+		batch.remaining = 10;
+		let result = batch.charge(1).await;
+		assert_eq!(
+			super::tunnel_ended(&report, &result),
+			"egress_refund_failed",
+			"{result:?}"
+		);
+		assert_eq!(observed.count(&failures("transfer")), 0);
+		assert_eq!(
+			observed.count(
+				r#"aidash_egress_settle_failures_total{stage="refund",outcome="abandoned"}"#
+			),
+			1
+		);
+		let logs = observed.logs();
+		assert_eq!(lines_at(&logs, "ERROR", "refund").len(), 1, "{logs}");
+		assert!(logs.contains("pool timed out refunding"), "{logs}");
 	}
 
 	fn record(settings: &ScopeSettings) -> aidash_application::egress::ConnectionRecord {

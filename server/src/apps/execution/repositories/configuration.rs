@@ -1,8 +1,7 @@
 //! Native version registration preserves provenance and historical attachments in one transaction.
 use super::capability_records::domain;
 use crate::apps::execution::capabilities::{
-	serializers::configuration::Configure as NativeConfigure,
-	services::{references, sessions},
+	serializers::configuration::Configure as NativeConfigure, services::sessions,
 };
 use crate::{
 	authorization::access::Access,
@@ -60,11 +59,20 @@ impl ConfigurationScope for Scope<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	/// Binding an approved Source asks only that its files can still be used:
+	/// the person registering the Source was asked whether they may read them.
 	async fn reference(&mut self, id: Uuid) -> Result<Record> {
-		references::get(self.access, id, "reference.read")
-			.await
-			.map(domain)
-			.map_err(Into::into)
+		crate::apps::execution::capabilities::services::records::get_many(
+			self.access,
+			&[id],
+			"reference",
+		)
+		.await
+		.map_err(aidash_application::Error::from)?
+		.pop()
+		.filter(|record| !matches!(record.state.as_str(), "revoked" | "expired"))
+		.map(domain)
+		.ok_or_else(|| aidash_application::Error::NotFound("reference unavailable".into()))
 	}
 	async fn bindings(
 		&mut self,

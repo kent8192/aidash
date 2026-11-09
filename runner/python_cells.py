@@ -16,6 +16,13 @@ from egress import VARIABLES as EGRESS_VARIABLES, environment as egress_environm
 from jupyter_client import BlockingKernelClient
 
 
+def output_window(output, limit):
+    offset = max(0, len(output) - limit)
+    while offset < len(output) and output[offset] & 0xC0 == 0x80:
+        offset += 1
+    return offset, output[offset:]
+
+
 def save(path, data):
     temporary = path.with_suffix('.pending')
     with temporary.open('w') as file:
@@ -102,8 +109,10 @@ def serve():
                     elif kind == 'status' and content.get('execution_state') == 'idle':
                         break
                     if time.monotonic() - last_preview > .5:
+                        offset, preview = output_window(output, 16384)
                         save(result_path, {'status': 'running', 'digest': incoming['digest'],
-                                          'stdout': base64.b64encode(output[:16384]).decode(), 'truncated': truncated})
+                                          'stdout': base64.b64encode(preview).decode(),
+                                          'stdout_offset': offset, 'truncated': truncated})
                         last_preview = time.monotonic()
                 save(result_path, {'status': 'failed' if failure else 'completed', 'digest': incoming['digest'],
                                   'stdout': base64.b64encode(output).decode(), 'displays': displays,

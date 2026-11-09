@@ -1,6 +1,6 @@
 //! Internal HTTP streaming adapter. The dashboard framework buffers incoming
 //! bodies, so this listener uses Hyper directly; it has no public API routes.
-use aidash_application::egress::{Admission, Authority, Direction, Meter};
+use aidash_application::egress::{Admission, Authority, Direction, Meter, RequestTimes};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use bytes::Bytes;
 use futures_util::{StreamExt, TryStreamExt};
@@ -44,6 +44,16 @@ const SETTLE_BUDGET: Duration = Duration::from_secs(60);
 /// so that a stalled attempt reports the pool's error instead of this timeout.
 const SETTLE_ATTEMPT: Duration = Duration::from_secs(15);
 const SETTLE_MAX_DELAY: Duration = Duration::from_secs(15);
+/// How long a response waits for its request record to be written before it ends
+/// anyway. The write goes on in a task of its own, so a stalled store never holds
+/// a client and a client that disconnects never loses the record.
+const RECORD_WAIT: Duration = Duration::from_secs(1);
+/// The record's error when the final debit ran out of retries: the bytes it held
+/// are not in the request's counts or the budgets.
+const DEBIT_ABANDONED: &str = "egress_debit_abandoned";
+/// The record's error for a body that stopped before its end, unless something
+/// said why: a client that went away, or a response cut short.
+const STREAM_INTERRUPTED: &str = "stream_interrupted";
 /// Connections served at once. Beyond this a connection is refused.
 const CONNECTION_SLOTS: usize = 128;
 /// Refused connections answered at once, and for how long each. Sandboxed code
@@ -56,6 +66,14 @@ const REFUSAL_WINDOW: Duration = Duration::from_secs(2);
 const REFUSAL_LOG_INTERVAL: Duration = Duration::from_secs(10);
 const INDEX_LIMIT_MESSAGE: &str = "package_index_limit_exceeded: this package index is over 8 MiB. Install from a lockfile, or by tarball URL through the registry.";
 const CONNECTION_LIMIT: &str = "egress_connection_limit";
+/// How much of a request body may be discarded after the answer, and for how
+/// long. These bytes never leave the gateway, so they are not charged.
+const LINGER_BYTES: u64 = 8 * 1024 * 1024;
+const LINGER_TIME: Duration = Duration::from_secs(5);
+
+fn millis(elapsed: Duration) -> u64 {
+	elapsed.as_millis().min(u64::MAX as u128) as u64
+}
 
 fn failure(status: StatusCode, code: &'static str) -> Response<Body> {
 	Response::builder()
@@ -89,6 +107,17 @@ fn causes(error: &dyn std::error::Error) -> String {
 		source = next.source();
 	}
 	text
+}
+
+/// What a request carried, taken back out of an error's text. Something too short
+/// to hold a credential is left alone: an empty or one-letter path would
+/// replace every matching letter and hide the very cause being logged.
+fn without(text: String, carried: &str, placeholder: &str) -> String {
+	const SHORTEST: usize = 4;
+	if carried.len() < SHORTEST {
+		return text;
+	}
+	text.replace(carried, placeholder)
 }
 
 /// External URLs can contain credentials; never keep them in a log line.
@@ -134,6 +163,17 @@ impl Settling {
 	}
 }
 
+/// How settling one debit ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Settled {
+	Charged,
+	/// A decision. The bytes are committed (see [`Meter::charge`]).
+	Refused(Refusal),
+	/// The store stayed unavailable until the retry budget ran out, so the bytes
+	/// are not charged.
+	Abandoned,
+}
+
 /// Charges bytes that have already crossed the gateway. A refusal has committed
 /// them (see [`Meter::charge`]) and is returned; anything else has not, so it is
 /// tried again.
@@ -143,16 +183,16 @@ async fn charge_settling(
 	direction: Direction,
 	bytes: u64,
 	settling: &mut Settling,
-) -> Option<Refusal> {
+) -> Settled {
 	let bytes = bytes.min(usize::MAX as u64) as usize;
 	loop {
 		let cause = match tokio::time::timeout(SETTLE_ATTEMPT, meter.charge(direction, bytes)).await
 		{
-			Ok(Ok(())) => return None,
+			Ok(Ok(())) => return Settled::Charged,
 			Ok(Err(error)) => {
 				let refusal = Refusal::of(&error);
 				if !refusal.temporary() {
-					return Some(refusal);
+					return Settled::Refused(refusal);
 				}
 				error.to_string()
 			}
@@ -167,7 +207,7 @@ async fn charge_settling(
 				%cause,
 				"Egress debit abandoned; these bytes are not charged"
 			);
-			return None;
+			return Settled::Abandoned;
 		}
 		settle_failure("debit", "retried");
 		tracing::debug!(service = %label.service, %cause, "Egress debit failed; retrying");
@@ -178,18 +218,17 @@ async fn record_settling(
 	meter: &dyn Meter,
 	label: &Label,
 	status: u16,
-	elapsed: u64,
+	times: RequestTimes,
 	error: Option<&str>,
 	settling: &mut Settling,
 ) {
 	loop {
-		let cause = match tokio::time::timeout(SETTLE_ATTEMPT, meter.finish(status, elapsed, error))
-			.await
-		{
-			Ok(Ok(())) => return,
-			Ok(Err(error)) => error.to_string(),
-			Err(_) => "attempt timed out".to_owned(),
-		};
+		let cause =
+			match tokio::time::timeout(SETTLE_ATTEMPT, meter.finish(status, times, error)).await {
+				Ok(Ok(())) => return,
+				Ok(Err(error)) => error.to_string(),
+				Err(_) => "attempt timed out".to_owned(),
+			};
 		if !settling.wait().await {
 			settle_failure("record", "abandoned");
 			tracing::error!(
@@ -224,6 +263,14 @@ fn broker_failure(code: &str) -> (StatusCode, &'static str) {
 		"broker_rejected" => (StatusCode::BAD_GATEWAY, "broker_rejected"),
 		_ => (StatusCode::SERVICE_UNAVAILABLE, "broker_unavailable"),
 	}
+}
+/// Whether a broker-owned error is a failure to reach the service, or of the
+/// broker itself, rather than a decision about the Tenant's request.
+fn broker_reports_failure(code: &str) -> bool {
+	matches!(
+		code,
+		"upstream_unreachable" | "broker_rejected" | "broker_unavailable"
+	)
 }
 /// The request's path under the service base's directory, appended to the broker's
 /// `/v1/forward` base. The broker joins it to the signed prefix in turn.
@@ -334,6 +381,10 @@ struct Debits {
 	/// The upload's refusal. Reqwest reports a failed request body only as a
 	/// failed request, so the response path reads the real cause here.
 	refused: OnceLock<Refusal>,
+	/// Why the stream was cut off. The body stream owns [`Completion`], so the
+	/// bridge that drops the stream on a stop sets this first; the record then
+	/// names the stop instead of a client that went away. The first cause wins.
+	interrupted: OnceLock<&'static str>,
 }
 impl Debits {
 	fn new(meter: Arc<dyn Meter>, label: Label) -> Self {
@@ -346,6 +397,7 @@ impl Debits {
 			failed_received: AtomicU64::new(0),
 			handed: AtomicU64::new(0),
 			refused: OnceLock::new(),
+			interrupted: OnceLock::new(),
 		}
 	}
 
@@ -354,6 +406,16 @@ impl Debits {
 			Direction::Sent => &self.sent,
 			Direction::Received => &self.received,
 		}
+	}
+
+	/// Takes every byte of `direction` that is still owed, including what a
+	/// failed debit kept.
+	fn take(&self, direction: Direction) -> u64 {
+		let failed = match direction {
+			Direction::Sent => &self.failed_sent,
+			Direction::Received => &self.failed_received,
+		};
+		self.pending(direction).swap(0, Ordering::Relaxed) + failed.swap(0, Ordering::Relaxed)
 	}
 
 	fn keep_failed(&self, direction: Direction, bytes: u64) {
@@ -407,7 +469,7 @@ impl Debits {
 						service = %self.label.service,
 						method = %self.label.method,
 						cause = %error,
-						"Egress debit failed; stopping the stream"
+						"Egress debit failed; its bytes are kept to be charged again"
 					);
 				}
 				Err(refusal)
@@ -453,6 +515,20 @@ struct Completion {
 	/// The `Content-Length` the client was promised, if any.
 	expected: Option<u64>,
 	finished: bool,
+	admission_ms: u64,
+	/// How long [`Completion::settle`] took, once it has run.
+	settle_ms: u64,
+	monitor: tokio::task::JoinHandle<()>,
+}
+async fn stopped(receiver: &mut watch::Receiver<Option<Refusal>>) -> Refusal {
+	loop {
+		if let Some(refusal) = *receiver.borrow_and_update() {
+			return refusal;
+		}
+		if receiver.changed().await.is_err() {
+			return Refusal::UNAVAILABLE;
+		}
+	}
 }
 impl Completion {
 	async fn fail(
@@ -466,46 +542,76 @@ impl Completion {
 		failure(status, message)
 	}
 
+	fn interrupted(&mut self, code: &'static str) {
+		let _ = self.debits.interrupted.set(code);
+	}
 	/// Debits what both directions still hold. A stream that ended cleanly
 	/// must do so within the operation deadline; a failed one gets a short
-	/// grace so the bytes it did stream still count.
-	async fn settle(&self, error: Option<&str>) -> Option<Refusal> {
+	/// grace so the bytes it did stream still count. A decision is returned in
+	/// preference to a store that could not be asked.
+	async fn settle(&mut self, error: Option<&str>) -> Option<Refusal> {
+		let settling = tokio::time::Instant::now();
 		let deadline = match error {
 			None => self.deadline,
 			Some(_) => self.deadline.max(tokio::time::Instant::now() + FLUSH_GRACE),
 		};
 		let sent = self.debits.flush(Direction::Sent, deadline).await;
 		let received = self.debits.flush(Direction::Received, deadline).await;
-		sent.err().or(received.err())
+		self.settle_ms = millis(settling.elapsed());
+		let failures = [sent.err(), received.err()];
+		failures
+			.iter()
+			.flatten()
+			.find(|refusal| !refusal.temporary())
+			.or(failures.iter().flatten().next())
+			.copied()
 	}
 
+	/// Debits the remainder of a response that ended cleanly. Only a decision
+	/// stops a response that is already on its way: when the store cannot be
+	/// asked, the response ends and its bytes are charged, and its record
+	/// written, in the background (#711).
+	async fn settle_final(&mut self) -> Option<Refusal> {
+		let ended = tokio::time::Instant::now();
+		let duration_ms = millis(self.started.elapsed());
+		match self.settle(None).await {
+			Some(refusal) if refusal.temporary() => {
+				self.settle_later(ended, duration_ms, true);
+				None
+			}
+			refusal => refusal,
+		}
+	}
+
+	/// Writes the request record in a task of its own, so that a client that
+	/// disconnects cannot lose it. The response waits for the first attempt only
+	/// briefly: the store may be stalled.
 	async fn close(&mut self, error: Option<&str>) {
 		if self.finished {
 			return;
 		}
 		self.finished = true;
-		let elapsed = self.started.elapsed().as_millis().min(u64::MAX as u128) as u64;
-		let meter = self.debits.meter.clone();
-		if let Err(cause) = meter.finish(self.status, elapsed, error).await {
-			settle_failure("record", "retried");
-			tracing::debug!(%cause, "Egress record failed; retrying in the background");
-			// The client does not wait for a stalled store.
-			let label = self.debits.label.clone();
-			let status = self.status;
-			let error = error.map(str::to_owned);
-			tokio::spawn(async move {
-				let mut settling = Settling::new();
-				record_settling(
-					&*meter,
-					&label,
-					status,
-					elapsed,
-					error.as_deref(),
-					&mut settling,
-				)
-				.await;
-			});
-		}
+		let times = RequestTimes {
+			duration_ms: millis(self.started.elapsed()),
+			admission_ms: self.admission_ms,
+			settle_ms: self.settle_ms,
+		};
+		let debits = self.debits.clone();
+		let status = self.status;
+		let error = error.map(str::to_owned);
+		let writing = tokio::spawn(async move {
+			let mut settling = Settling::new();
+			record_settling(
+				&*debits.meter,
+				&debits.label,
+				status,
+				times,
+				error.as_deref(),
+				&mut settling,
+			)
+			.await;
+		});
+		let _ = tokio::time::timeout(RECORD_WAIT, writing).await;
 	}
 
 	/// Debits the remainder and completes the record. The stream's own failure
@@ -515,57 +621,98 @@ impl Completion {
 		if self.finished {
 			return None;
 		}
-		let refusal = self.settle(error).await;
+		let refusal = match error {
+			None => self.settle_final().await,
+			Some(_) => self.settle(error).await,
+		};
+		if self.finished {
+			// The final debit was left to the background.
+			return None;
+		}
 		self.close(error.or(refusal.map(|refusal| refusal.code)))
 			.await;
 		refusal
 	}
+
+	/// Hands what is left to a task of its own: the debit, retried while the
+	/// process lives, and then the record. `ended` is when the response ended
+	/// and `complete` whether its body reached its end; hyper stops polling a
+	/// body once it has written `Content-Length` bytes, so a complete response
+	/// with a known length is dropped rather than finished. Complete means
+	/// handed to Hyper: the client may still disconnect before it reads the
+	/// rest, and a refused final debit can no longer stop it.
+	fn settle_later(&mut self, ended: tokio::time::Instant, duration_ms: u64, complete: bool) {
+		self.finished = true;
+		let debits = self.debits.clone();
+		let status = self.status;
+		let admission_ms = self.admission_ms;
+		let interrupted_error = self
+			.debits
+			.interrupted
+			.get()
+			.copied()
+			.unwrap_or(STREAM_INTERRUPTED);
+		tokio::spawn(async move {
+			let mut settling = Settling::new();
+			let mut refused = None;
+			let mut abandoned = false;
+			for direction in [Direction::Sent, Direction::Received] {
+				let bytes = debits.take(direction);
+				if bytes > 0 {
+					match charge_settling(
+						&*debits.meter,
+						&debits.label,
+						direction,
+						bytes,
+						&mut settling,
+					)
+					.await
+					{
+						Settled::Charged => {}
+						Settled::Refused(refusal) => refused = refused.or(Some(refusal)),
+						Settled::Abandoned => abandoned = true,
+					}
+				}
+			}
+			// A body that did not reach its end stays interrupted; otherwise a
+			// decision wins over a debit that was given up.
+			let error = if !complete {
+				Some(interrupted_error)
+			} else if let Some(refusal) = refused {
+				Some(refusal.code)
+			} else if abandoned {
+				Some(DEBIT_ABANDONED)
+			} else {
+				None
+			};
+			let times = RequestTimes {
+				duration_ms,
+				admission_ms,
+				settle_ms: millis(ended.elapsed()),
+			};
+			record_settling(
+				&*debits.meter,
+				&debits.label,
+				status,
+				times,
+				error,
+				&mut settling,
+			)
+			.await;
+		});
+	}
 }
 impl Drop for Completion {
 	fn drop(&mut self) {
+		self.monitor.abort();
 		if !self.finished {
-			let debits = self.debits.clone();
-			let status = self.status;
-			let elapsed = self.started.elapsed().as_millis().min(u64::MAX as u128) as u64;
-			// Hyper stops polling a body once it has written `Content-Length`
-			// bytes, so a complete response with a known length ends here rather
-			// than at the end of its stream. Complete means handed to Hyper: the
-			// client may still disconnect before it reads them, and a refused
-			// final debit can no longer stop them.
-			let handed = debits.handed.load(Ordering::Relaxed);
+			let handed = self.debits.handed.load(Ordering::Relaxed);
 			let complete = self.expected.is_some_and(|expected| handed >= expected);
-			tokio::spawn(async move {
-				let mut settling = Settling::new();
-				let mut refused = None;
-				for direction in [Direction::Sent, Direction::Received] {
-					let bytes = debits.pending(direction).swap(0, Ordering::Relaxed);
-					if bytes > 0 {
-						let refusal = charge_settling(
-							&*debits.meter,
-							&debits.label,
-							direction,
-							bytes,
-							&mut settling,
-						)
-						.await;
-						refused = refused.or(refusal);
-					}
-				}
-				let error = if complete {
-					refused.map(|refusal| refusal.code)
-				} else {
-					Some("stream_interrupted")
-				};
-				record_settling(
-					&*debits.meter,
-					&debits.label,
-					status,
-					elapsed,
-					error,
-					&mut settling,
-				)
-				.await;
-			});
+			self.settle_later(
+				tokio::time::Instant::now(),
+				millis(self.started.elapsed()),
+				complete,
+			);
 		}
 	}
 }
@@ -653,6 +800,133 @@ impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for WriteDeadline<S
 	}
 }
 
+/// Marks a connection whose request carries a body the gateway may leave unread.
+/// `CONNECT` is excluded because an upgraded tunnel half-closes through the same
+/// socket and must keep reading what the other side sends.
+#[derive(Clone, Default)]
+struct UnreadBody(Arc<std::sync::atomic::AtomicBool>);
+impl UnreadBody {
+	fn note<B: hyper::body::Body>(&self, request: &Request<B>) {
+		self.0.store(
+			request.method() != hyper::Method::CONNECT && !request.body().is_end_stream(),
+			Ordering::Relaxed,
+		);
+	}
+}
+
+/// Closes a connection as RFC 9112 section 9.6 asks. Closing a socket with unread
+/// data resets it, which can destroy the answer on its way to the client, so the
+/// sending side closes first and what the client still sends is discarded up to
+/// a limit. A client past the limit may see a reset instead of the answer, and
+/// the limit is counted. Whether the reason survives depends on the request: one
+/// refused after admission is in its request record, while one refused before it
+/// exists, or for want of a connection slot, is only counted.
+struct LingeringClose<S> {
+	inner: S,
+	unread: UnreadBody,
+	bytes_left: u64,
+	linger: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+	closed: bool,
+	/// Told once the answer has been written and the sending side is closed.
+	answered: Option<tokio::sync::oneshot::Sender<()>>,
+}
+impl<S> LingeringClose<S> {
+	fn new(inner: S, unread: UnreadBody) -> Self {
+		Self {
+			inner,
+			unread,
+			bytes_left: LINGER_BYTES,
+			linger: None,
+			closed: false,
+			answered: None,
+		}
+	}
+
+	/// Reports through `answered` when the answer is out, so that a caller can
+	/// bound the answering apart from the discarding that follows it.
+	fn announcing(mut self, answered: tokio::sync::oneshot::Sender<()>) -> Self {
+		self.answered = Some(answered);
+		self
+	}
+}
+impl<S: tokio::io::AsyncRead + Unpin> LingeringClose<S> {
+	/// Discards until the client closes or a limit is reached.
+	fn poll_discard(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+		use std::future::Future;
+		use std::task::Poll;
+		let timer = self
+			.linger
+			.get_or_insert_with(|| Box::pin(tokio::time::sleep(LINGER_TIME)));
+		if timer.as_mut().poll(cx).is_ready() {
+			// With nothing discarded, closing resets nothing and no answer is at risk.
+			if self.bytes_left < LINGER_BYTES {
+				metrics::counter!("aidash_egress_linger_limit_total", "limit" => "time")
+					.increment(1);
+			}
+			return Poll::Ready(());
+		}
+		let mut scratch = [0; 16 * 1024];
+		loop {
+			let mut buffer = tokio::io::ReadBuf::new(&mut scratch);
+			match std::pin::Pin::new(&mut self.inner).poll_read(cx, &mut buffer) {
+				Poll::Pending => return Poll::Pending,
+				Poll::Ready(Err(_)) => return Poll::Ready(()),
+				Poll::Ready(Ok(())) if buffer.filled().is_empty() => return Poll::Ready(()),
+				Poll::Ready(Ok(())) => {
+					self.bytes_left = self.bytes_left.saturating_sub(buffer.filled().len() as u64);
+					if self.bytes_left == 0 {
+						metrics::counter!("aidash_egress_linger_limit_total", "limit" => "bytes")
+							.increment(1);
+						return Poll::Ready(());
+					}
+				}
+			}
+		}
+	}
+}
+impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for LingeringClose<S> {
+	fn poll_read(
+		mut self: std::pin::Pin<&mut Self>,
+		cx: &mut std::task::Context<'_>,
+		buf: &mut tokio::io::ReadBuf<'_>,
+	) -> std::task::Poll<std::io::Result<()>> {
+		std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+	}
+}
+impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite
+	for LingeringClose<S>
+{
+	fn poll_write(
+		mut self: std::pin::Pin<&mut Self>,
+		cx: &mut std::task::Context<'_>,
+		buf: &[u8],
+	) -> std::task::Poll<std::io::Result<usize>> {
+		std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+	}
+	fn poll_flush(
+		mut self: std::pin::Pin<&mut Self>,
+		cx: &mut std::task::Context<'_>,
+	) -> std::task::Poll<std::io::Result<()>> {
+		std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+	}
+	fn poll_shutdown(
+		mut self: std::pin::Pin<&mut Self>,
+		cx: &mut std::task::Context<'_>,
+	) -> std::task::Poll<std::io::Result<()>> {
+		if !self.closed {
+			std::task::ready!(std::pin::Pin::new(&mut self.inner).poll_shutdown(cx))?;
+			self.closed = true;
+			if let Some(answered) = self.answered.take() {
+				let _ = answered.send(());
+			}
+		}
+		if self.unread.0.load(Ordering::Relaxed) {
+			std::task::ready!(self.poll_discard(cx));
+		}
+		std::task::Poll::Ready(Ok(()))
+	}
+}
+
 pub async fn serve(
 	listener: TcpListener,
 	authority: Arc<dyn Authority>,
@@ -729,6 +1003,7 @@ async fn serve_with_clients(
 	let mut refused = RefusedConnections::default();
 	let mut connections = tokio::task::JoinSet::new();
 	let tunnels = Arc::new(proxy::TunnelManager::new(stopping.clone(), limits));
+	let mut failures = crate::accept::AcceptFailures::new("egress gateway");
 	loop {
 		if *stopping.borrow() || stopping.has_changed().is_err() {
 			connections.abort_all();
@@ -740,14 +1015,7 @@ async fn serve_with_clients(
 			_ = stopping.changed() => {},
 			Some(_) = connections.join_next(), if !connections.is_empty() => {},
 			accepted = listener.accept() => {
-				let (socket, _) = match accepted {
-					Ok(accepted) => accepted,
-					Err(error) => {
-						tracing::warn!(%error, "Egress accept failed; retrying");
-						tokio::select! { _ = tokio::time::sleep(Duration::from_secs(1)) => {}, _ = stopping.changed() => {} }
-						continue;
-					}
-				};
+				let Some((socket, _)) = failures.settle(accepted, &mut stopping).await else { continue; };
 				let Ok(permit) = slots.clone().try_acquire_owned() else {
 					let answering = refusals.clone().try_acquire_owned();
 					refused.note(answering.is_ok());
@@ -760,7 +1028,10 @@ async fn serve_with_clients(
 				connections.spawn(async move {
 					let permit = Arc::new(std::sync::Mutex::new(Some(permit)));
 					let connection_lease = Arc::new(std::sync::Mutex::new(None));
+					let unread = UnreadBody::default();
+					let noting = unread.clone();
 					let service = service_fn(move |request| {
+						noting.note(&request);
 						let authority=authority.clone(); let client=client.clone(); let public=public.clone(); let scopes=scopes.clone(); let permit=permit.clone(); let tunnels=tunnels.clone(); let connection_lease=connection_lease.clone();
 						async move {
 							let response = if request.method() == hyper::Method::CONNECT || request.uri().scheme().is_some() {
@@ -774,7 +1045,7 @@ async fn serve_with_clients(
 					});
 					let _ = hyper::server::conn::http1::Builder::new().timer(TokioTimer::new())
 						.header_read_timeout(IDLE).max_headers(64)
-						.serve_connection(TokioIo::new(WriteDeadline::new(socket, IDLE)), service).with_upgrades().await;
+						.serve_connection(TokioIo::new(LingeringClose::new(WriteDeadline::new(socket, IDLE), unread)), service).with_upgrades().await;
 				});
 			}
 		}
@@ -809,23 +1080,43 @@ impl RefusedConnections {
 }
 
 /// Reads the request head first: closing a socket with unread data resets it,
-/// which can destroy the answer on its way to the client.
+/// which can destroy the answer on its way to the client. Only the answering is
+/// bounded by `REFUSAL_WINDOW`; what the client still sends afterwards is
+/// discarded under the wrapper's own limits (#726), as for any refusal.
 async fn refuse_connection(socket: tokio::net::TcpStream) {
-	let service = service_fn(|_| async {
-		let mut response = failure(StatusCode::SERVICE_UNAVAILABLE, CONNECTION_LIMIT);
-		response.headers_mut().insert(
-			hyper::header::CONNECTION,
-			hyper::header::HeaderValue::from_static("close"),
-		);
-		Ok::<_, Infallible>(response)
+	let unread = UnreadBody::default();
+	let noting = unread.clone();
+	let service = service_fn(move |request| {
+		noting.note(&request);
+		async {
+			let mut response = failure(StatusCode::SERVICE_UNAVAILABLE, CONNECTION_LIMIT);
+			response.headers_mut().insert(
+				hyper::header::CONNECTION,
+				hyper::header::HeaderValue::from_static("close"),
+			);
+			Ok::<_, Infallible>(response)
+		}
 	});
+	let (answered, answering) = tokio::sync::oneshot::channel();
 	let serving = hyper::server::conn::http1::Builder::new()
 		.timer(TokioTimer::new())
 		.keep_alive(false)
 		.header_read_timeout(REFUSAL_WINDOW)
 		.max_headers(64)
-		.serve_connection(TokioIo::new(socket), service);
-	let _ = tokio::time::timeout(REFUSAL_WINDOW, serving).await;
+		.serve_connection(
+			TokioIo::new(LingeringClose::new(socket, unread).announcing(answered)),
+			service,
+		);
+	tokio::pin!(serving);
+	tokio::select! {
+		_ = &mut serving => return,
+		answered = tokio::time::timeout(REFUSAL_WINDOW, answering) => {
+			if answered.is_err() {
+				return;
+			}
+		}
+	}
+	let _ = serving.await;
 }
 
 fn target(admission: &Admission, path: &str, query: Option<&str>) -> Result<Url, BoxError> {
@@ -1061,6 +1352,7 @@ async fn forward(
 		"{:x}",
 		Sha256::digest(query.as_deref().unwrap_or("").as_bytes())
 	);
+	let admitting = tokio::time::Instant::now();
 	let admitted = if scoped {
 		match scopes {
 			Some(scopes) => {
@@ -1087,6 +1379,7 @@ async fn forward(
 			)
 			.await
 	};
+	let admission_ms = millis(admitting.elapsed());
 	let admission = match admitted {
 		Ok(value) => value,
 		Err(aidash_application::Error::Forbidden | aidash_application::Error::Unauthorized) => {
@@ -1100,7 +1393,7 @@ async fn forward(
 		Err(aidash_application::Error::Conflict(code))
 			if code == aidash_domain::egress::OPERATION_INACTIVE =>
 		{
-			return Refusal::INACTIVE.response();
+			return refuse(Refusal::INACTIVE.status, Refusal::INACTIVE.code);
 		}
 		Err(aidash_application::Error::Conflict(_)) => {
 			return refuse(Refusal::LIMIT.status, Refusal::LIMIT.code);
@@ -1120,10 +1413,11 @@ async fn forward(
 		// an error's text came from is not under this function's control, so what
 		// the request itself carried is taken back out.
 		Err(error) => {
-			let cause = error
-				.to_string()
-				.replace(token, "[token]")
-				.replace(audit_path, "[path]");
+			let cause = without(
+				without(error.to_string(), token, "[token]"),
+				audit_path,
+				"[path]",
+			);
 			tracing::error!(
 				service,
 				method = %request.method(),
@@ -1140,6 +1434,31 @@ async fn forward(
 		.to_std()
 		.unwrap_or_default();
 	let deadline = tokio::time::Instant::now() + remaining;
+	let (active_tx, mut active_rx) = watch::channel(None);
+	let meter = admission.meter.clone();
+	let monitor = tokio::spawn(async move {
+		let mut interval = tokio::time::interval(Duration::from_secs(4));
+		interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+		interval.tick().await;
+		let mut failures = 0;
+		loop {
+			interval.tick().await;
+			match tokio::time::timeout(Duration::from_secs(1), meter.check_active()).await {
+				Ok(Ok(())) => failures = 0,
+				Ok(Err(error)) if Refusal::of(&error) != Refusal::UNAVAILABLE => {
+					let _ = active_tx.send(Some(Refusal::of(&error)));
+					break;
+				}
+				_ => {
+					failures += 1;
+					if failures >= 3 {
+						let _ = active_tx.send(Some(Refusal::UNAVAILABLE));
+						break;
+					}
+				}
+			}
+		}
+	});
 	let mut completion = Completion {
 		debits: Arc::new(Debits::new(
 			admission.meter.clone(),
@@ -1153,6 +1472,9 @@ async fn forward(
 		status: 502,
 		expected: None,
 		finished: false,
+		monitor,
+		admission_ms,
+		settle_ms: 0,
 	};
 	if remaining.is_zero() {
 		return completion
@@ -1309,12 +1631,17 @@ async fn forward(
 		}
 	};
 	let body = body.map_err(|error: BoxError| error);
-	let response = match tokio::time::timeout_at(
+	let response = match tokio::select! {
+		refusal = stopped(&mut active_rx) => {
+			completion.status = refusal.status.as_u16();
+			completion.interrupted(refusal.code);
+			return refusal.response();
+		}
+		response = tokio::time::timeout_at(
 		deadline,
 		upstream.body(reqwest::Body::wrap_stream(body)).send(),
-	)
-	.await
-	{
+		) => response,
+	} {
 		Ok(Ok(response)) => response,
 		failed => {
 			// A refused upload debit fails the request; report the refusal
@@ -1348,6 +1675,9 @@ async fn forward(
 			.and_then(|value| value.to_str().ok())
 	{
 		let (status, code) = broker_failure(code);
+		if broker_reports_failure(code) {
+			upstream_failed(&completion.debits.label, code);
+		}
 		completion.status = status.as_u16();
 		completion.finish(Some(code)).await;
 		return failure(status, code);
@@ -1425,7 +1755,7 @@ async fn forward(
 	// Hyper does not poll bodies for these responses. Complete their audit now,
 	// rather than classifying a correctly empty response as an interruption.
 	if head || matches!(status, StatusCode::NO_CONTENT | StatusCode::NOT_MODIFIED) {
-		if let Some(refusal) = completion.settle(None).await {
+		if let Some(refusal) = completion.settle_final().await {
 			completion.status = refusal.status.as_u16();
 			completion.close(Some(refusal.code)).await;
 			return refusal.response();
@@ -1454,9 +1784,13 @@ async fn forward(
 	{
 		let mut buffer = Vec::new();
 		loop {
-			let next =
-				tokio::time::timeout_at(deadline, tokio::time::timeout(IDLE, downstream.next()))
-					.await;
+			let next = tokio::select! {
+				refusal = stopped(&mut active_rx) => {
+					completion.interrupted(refusal.code);
+					return refusal.response();
+				}
+				next = tokio::time::timeout_at(deadline, tokio::time::timeout(IDLE, downstream.next())) => next,
+			};
 			let bytes = match next {
 				Ok(Ok(Some(Ok(bytes)))) => bytes,
 				Ok(Ok(None)) => break,
@@ -1532,7 +1866,7 @@ async fn forward(
 			Direction::Received,
 			rewritten.len().saturating_sub(buffer.len()),
 		);
-		if let Some(refusal) = completion.settle(None).await {
+		if let Some(refusal) = completion.settle_final().await {
 			completion.status = refusal.status.as_u16();
 			completion.close(Some(refusal.code)).await;
 			return refusal.response();
@@ -1556,9 +1890,19 @@ async fn forward(
 		.and_then(|value| value.to_str().ok())
 		.and_then(|value| value.parse().ok());
 	let debits = completion.debits.clone();
+	let bridge_debits = completion.debits.clone();
+	let mut bridge_active = active_rx.clone();
 	let output = async_stream::try_stream! {
 		loop {
-			let next = match tokio::time::timeout_at(deadline,tokio::time::timeout(IDLE,downstream.next())).await {
+			let checked = tokio::select! {
+				refusal = stopped(&mut active_rx) => Err(refusal),
+				next = tokio::time::timeout_at(deadline,tokio::time::timeout(IDLE,downstream.next())) => Ok(next),
+			};
+			let next = match checked {
+				Ok(next) => next,
+				Err(refusal) => { completion.interrupted(refusal.code); Err(io_error(refusal.code))?; unreachable!() }
+			};
+			let next = match next {
 				Ok(Ok(next)) => next,
 				_ => { upstream_failed(&debits.label, "timed out"); completion.finish(Some("egress_timeout")).await; Err(io_error("egress_timeout"))?; unreachable!() }
 			};
@@ -1580,12 +1924,49 @@ async fn forward(
 			};
 			debits.count(Direction::Received, bytes.len());
 			yield Frame::data(bytes);
-			if let Err(refusal) = debits.flush_due(Direction::Received, deadline).await {
-				completion.finish(Some(refusal.code)).await; Err(io_error(refusal.code))?;
+			let debit = tokio::select! {
+				refusal = stopped(&mut active_rx) => Err((refusal, true)),
+				result = debits.flush_due(Direction::Received, deadline) => result.map_err(|refusal| (refusal, false)),
+			};
+			if let Err((refusal, interrupted)) = debit {
+				if interrupted { completion.interrupted(refusal.code); } else { completion.finish(Some(refusal.code)).await; }
+				Err(io_error(refusal.code))?;
 			}
 		}
 	};
-	let output = output.map_err(|error: BoxError| error);
+	// Drive the upstream independently of downstream backpressure. Otherwise a
+	// client that stops reading also prevents the stop check from dropping the
+	// upstream response. The single-frame channel bounds buffered output.
+	let (sender, receiver) = tokio::sync::mpsc::channel(1);
+	tokio::spawn(async move {
+		let interrupted = {
+			let mut output = Box::pin(output);
+			let stop = loop {
+				let frame = tokio::select! {
+					refusal = stopped(&mut bridge_active) => break Some(refusal),
+					frame = output.next() => frame,
+				};
+				let Some(frame) = frame else { break None };
+				tokio::select! {
+					refusal = stopped(&mut bridge_active) => break Some(refusal),
+					result = sender.send(frame) => if result.is_err() { break None },
+				}
+			};
+			// Dropping `output` below writes the request's record. The stream
+			// never saw this stop (the bridge won the race), so name it here or
+			// the record would blame a client that went away.
+			if let Some(refusal) = stop {
+				let _ = bridge_debits.interrupted.set(refusal.code);
+			}
+			stop
+		};
+		if let Some(refusal) = interrupted {
+			let _ = sender.send(Err(io_error(refusal.code))).await;
+		}
+	});
+	let output = futures_util::stream::unfold(receiver, |mut receiver| async move {
+		receiver.recv().await.map(|frame| (frame, receiver))
+	});
 	let mut result = Response::new(StreamBody::new(output).boxed_unsync());
 	*result.status_mut() = status;
 	*result.headers_mut() = headers;

@@ -449,6 +449,99 @@ async fn native_source_publication_freezes_the_complete_typed_provider_closure()
 	);
 }
 
+/// A published Source package that binds these Reference files.
+fn reference_source_package(references: &Value) -> Version {
+	use aidash_domain::registry::Package;
+	use sha2::{Digest, Sha256};
+	let manifest_source = serde_json::to_string(&Package {
+		entity: entry(
+			"project-docs",
+			"source",
+			json!({"schema_version":1,"source":{"adapter":"reference_attachments","references":references}}),
+		),
+		author: "fixture".into(),
+		permissions: vec![],
+		dependencies: vec![],
+		secrets: vec![],
+	})
+	.unwrap();
+	Version {
+		key: "docs-package".into(),
+		repository: "aidash://publisher".into(),
+		owner_tenant: "publisher".into(),
+		package_id: "project-docs".into(),
+		version: "1.0.0".into(),
+		kind: "source".into(),
+		publisher: "fixture".into(),
+		source: r("project-docs"),
+		digest: format!("sha256:{:x}", Sha256::digest(manifest_source.as_bytes())),
+		manifest_source,
+		dependencies: vec![],
+		lineage: BTreeSet::new(),
+	}
+}
+fn attachments(file: Uuid) -> Value {
+	json!([{"reference_id":file,"digest":"a".repeat(64),"path":"plan.md"}])
+}
+
+async fn install(
+	scope: &mut Fixture,
+	source: &Version,
+	config: Value,
+) -> Result<(Entry, Vec<EntityRef>, Vec<DependencyBinding>)> {
+	let validation = crate::marketplace::installations::tests::validation();
+	resolve(
+		scope,
+		&validation,
+		source,
+		&config,
+		&[],
+		&BTreeMap::new(),
+		"aidash://receiver",
+	)
+	.await
+}
+
+#[rstest]
+#[tokio::test]
+async fn installing_a_source_needs_the_right_to_read_every_file_it_binds() {
+	let file = Uuid::new_v4();
+	let source = reference_source_package(&attachments(file));
+	let mut scope = Fixture::default();
+
+	install(&mut scope, &source, json!({})).await.unwrap();
+	assert!(scope.calls.contains(&format!("reference.read:{file}")));
+
+	scope.denied = Some(format!("reference.read:{file}"));
+	assert!(matches!(
+		install(&mut scope, &source, json!({})).await,
+		Err(Error::Forbidden)
+	));
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_installer_cannot_swap_the_files_a_source_binds_through_configuration() {
+	let source = reference_source_package(&attachments(Uuid::new_v4()));
+	let mut scope = Fixture::default();
+
+	let swapped = install(
+		&mut scope,
+		&source,
+		json!({"source":{"adapter":"reference_attachments","references":attachments(Uuid::new_v4())}}),
+	)
+	.await;
+
+	assert!(matches!(swapped, Err(Error::Invalid(_))), "{swapped:?}");
+	assert!(
+		scope
+			.calls
+			.iter()
+			.all(|call| !call.starts_with("reference.read")),
+		"refused before any file is looked at"
+	);
+}
+
 #[rstest]
 fn native_provider_dependency_substitution_rewrites_every_role() {
 	let mut provider = crate::test_support::native_memory_entries()

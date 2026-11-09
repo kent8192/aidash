@@ -337,6 +337,7 @@ impl GenerationDispatchSettlement for NativeSettlement {
 			&self.runtime,
 			input.usage.admission_id,
 			input.usage.grant_id,
+			node,
 		)
 		.await?;
 		crate::authorization::peer::authority_request(
