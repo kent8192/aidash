@@ -121,6 +121,17 @@ async fn advance_step(
 	let Completion::Completed(result) = keepalive(work, leases, run, token, seconds).await? else {
 		return Ok(());
 	};
+	// A step that failed on a database outage stopped renewing its lease when it
+	// returned, and the lease may have expired meanwhile. Renew it first, waiting
+	// for the database, so the worker keeps its Run and records the failure itself
+	// instead of leaving it for a Lease Recovery (#786). The step has finished its
+	// authority, so no lock of its own holds this renewal up.
+	if result.as_ref().is_err_and(|error| leases.transient(error))
+		&& !renew(leases, run, token, seconds).await?
+	{
+		tracing::info!(run_id = %run, "worker step failed after another worker took its Run");
+		return Ok(());
+	}
 	scope.resume_visibility().await?;
 	metrics::counter!("aidash_worker_steps_total", "outcome" => if result.is_ok() { "success" } else { "error" }).increment(1);
 	if let Err(error) = result {

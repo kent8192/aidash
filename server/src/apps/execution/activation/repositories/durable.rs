@@ -329,6 +329,7 @@ pub(super) async fn recover(store: &Store, seconds: i32) -> Result<Option<(Run, 
 		None,
 		store.deployment.as_str(),
 		&mut cursor,
+		store.recovery_cursors.outage.holds_recoveries(seconds),
 	)
 	.await?
 	else {

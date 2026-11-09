@@ -167,6 +167,34 @@ impl Run {
 		Ok(())
 	}
 
+	/// How long ago this worker's lease on the Run expired, if it has expired and
+	/// still names the worker. Read before a renewal, only to report a reclaim.
+	pub(crate) async fn expired_lease(
+		tx: &mut dyn TransactionExecutor,
+		id: Uuid,
+		worker: Uuid,
+	) -> Result<Option<chrono::Duration>> {
+		let (sql, values) = Query::select()
+			.column(Alias::new("lease_until"))
+			.expr_as(Expr::current_timestamp(), Alias::new("now"))
+			.from(Alias::new(Self::table_name()))
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.and_where(Expr::col("lease_owner").eq(Expr::value(worker)))
+			.and_where(Expr::col("lease_until").lte(Expr::current_timestamp()))
+			.build(PostgresQueryBuilder);
+		let Some(row) = tx.fetch_optional(&sql, convert_values(values)).await? else {
+			return Ok(None);
+		};
+		let until: chrono::DateTime<chrono::Utc> =
+			row.get("lease_until").map_err(FrameworkError::from)?;
+		let now: chrono::DateTime<chrono::Utc> = row.get("now").map_err(FrameworkError::from)?;
+		Ok(Some(now - until))
+	}
+
+	/// Extends the lease for as long as it still names this worker, even after
+	/// it expired: a worker that kept running through a database outage gets its
+	/// own lease back, since nobody took the Run over (#786). A claim replaces the
+	/// owner under the row lock, so this never revives a lease another worker took.
 	pub(crate) async fn renew(
 		tx: &mut dyn TransactionExecutor,
 		id: Uuid,
@@ -181,7 +209,8 @@ impl Run {
 				Alias::new("lease_until"),
 				Expr::current_timestamp().add(duration),
 			)
-			.and_where(worker_lease(id, worker))
+			.and_where(Expr::col("id").eq(Expr::value(id)))
+			.and_where(Expr::col("lease_owner").eq(Expr::value(worker)))
 			.and_where(
 				crate::apps::execution::repositories::node_cancellations::run_open_condition(
 					Expr::col((Alias::new("runs"), Alias::new("id"))).into(),

@@ -248,6 +248,15 @@ pub async fn lease(
 				continue;
 			}
 		};
+		if m.lease_owner.is_some() && !cancelled && scope.holds_recoveries() {
+			// The database came back moments ago, so this lease most likely
+			// expired during the outage while its worker kept running. Taking the
+			// Run now would charge it a Lease Recovery its worker never caused;
+			// the worker renews it first, and a dead one's Run is taken once the
+			// hold ends (#786).
+			tracing::info!(run_id = %m.id, "left an expired lease for its owner after a database outage");
+			continue;
+		}
 		if m.lease_owner.is_some() {
 			// The count includes the recovery a lost Isolated Step charged when it
 			// started, so a count above the bound means this claim would be one
@@ -260,7 +269,7 @@ pub async fn lease(
 				}));
 				if let Some(owned) = scope.repair_lease(m, token, seconds).await? {
 					let reason = format!(
-						"The worker process stopped {LEASE_RECOVERY_LIMIT} times in a row while running this step, so Aidash stopped retrying it."
+						"This step was taken over from its worker {LEASE_RECOVERY_LIMIT} times in a row because the worker stopped, stalled or was cut off from the database, so Aidash stopped retrying it."
 					);
 					scope
 						.crash_loop(
@@ -353,6 +362,21 @@ pub async fn claim(repository: &dyn ActivationRepository, envelope: &Envelope) -
 		// Deferring to `now` would renotify this incapable worker in a tight loop.
 		skipped_for_capability(run.id, &unmet);
 		let retry = scope.now().await? + chrono::Duration::seconds(CAPABILITY_RETRY_SECONDS);
+		scope.defer(row.id, Some(retry)).await?;
+		scope.commit().await?;
+		return Ok(Handoff::Recorded);
+	}
+	if scope.holds_recoveries()
+		&& refreshed.metadata.control != RunControl::Cancelled
+		&& refreshed.metadata.lease_owner.is_some()
+		&& refreshed
+			.metadata
+			.lease_until
+			.is_some_and(|until| until <= now)
+	{
+		// `lease` left this expired lease for its owner after an outage. Come back
+		// once the hold is over instead of renotifying at once (#786).
+		let retry = now + chrono::Duration::seconds(i64::from(repository.lease_seconds()));
 		scope.defer(row.id, Some(retry)).await?;
 		scope.commit().await?;
 		return Ok(Handoff::Recorded);
