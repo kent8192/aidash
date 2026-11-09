@@ -141,6 +141,15 @@ impl AccessTransaction {
 		self.transaction.is_some()
 	}
 
+	/// The distribution lock this physical transaction holds, read when asked. A
+	/// suspended transaction holds none.
+	pub(crate) fn distribution_hold(&self) -> crate::database::native::distribution::Hold {
+		self.transaction
+			.as_ref()
+			.map(|transaction| transaction.distribution().clone())
+			.unwrap_or_default()
+	}
+
 	/// The native transaction, for a trait object that cannot use the wrapper's
 	/// `Deref` coercion directly.
 	pub(crate) fn native_mut(&mut self) -> &mut crate::database::native::Transaction {
@@ -657,7 +666,9 @@ impl Access {
 		Self::under_lease_on(lease, &lease.pool).await
 	}
 	pub(crate) async fn under_lease_on(lease: &Self, pool: &Pool) -> Result<Self> {
-		let tx = pool.begin(&lease.identity.tenancy()?).await?;
+		let mut tx = pool.begin(&lease.identity.tenancy()?).await?;
+		// The lease retains its distribution lock until this authority is done with it.
+		tx.inherit_distribution(lease.tx.distribution_hold());
 		Ok(Self {
 			marketplace_audit: None,
 			core_gc_complete: false,
@@ -1471,10 +1482,8 @@ impl NativeAccess {
 	pub(crate) fn remote_identity(&self) -> (&str, &str) {
 		(&self.access.identity.tenant, &self.access.identity.subject)
 	}
-	pub(crate) fn remote_transport(
-		&self,
-	) -> Option<crate::apps::federation::remote::services::wire::Wire> {
-		self.access.wire.clone()
+	pub(crate) fn reach(&self) -> crate::apps::federation::remote::services::wire::Reach {
+		self.access.reach()
 	}
 	pub(crate) fn cached_remote_read(&self, run: Uuid) -> Option<bool> {
 		self.access.cached_remote_read(run)
@@ -1491,6 +1500,15 @@ impl NativeAccess {
 }
 
 impl Access {
+	/// How this authority asks other Nodes: through its transport, inside the
+	/// distribution lock its transaction holds, so that a Node of this Deployment
+	/// reached in process shares that lock and does not queue for it again (#751).
+	pub(crate) fn reach(&self) -> crate::apps::federation::remote::services::wire::Reach {
+		crate::apps::federation::remote::services::wire::Reach(
+			self.wire.clone(),
+			self.tx.distribution_hold(),
+		)
+	}
 	pub(crate) fn cached_remote_read(&self, run: Uuid) -> Option<bool> {
 		self.remote_read_cache
 			.get(&(run, self.authority_context()))

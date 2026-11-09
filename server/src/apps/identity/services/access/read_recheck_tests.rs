@@ -819,3 +819,48 @@ async fn a_passed_walk_is_not_reused_under_another_authority(#[future] database:
 	assert!(!chain, "the chain's authority is asked afresh");
 	access.finish(Ok(())).await.unwrap();
 }
+
+/// An authority asks other Nodes inside the distribution lock its transaction
+/// holds, so a Node of this Deployment reached in process requests none of its
+/// own (#751). An authority under a lease holds what the lease holds, and none
+/// is claimed once a savepoint rollback may have released it.
+#[rstest]
+#[tokio::test]
+async fn an_authority_reaches_other_nodes_inside_the_distribution_lock_it_holds(
+	#[future] database: DatabaseFixture,
+) {
+	// Arrange
+	let fixture = fixture(database.await, 1).await;
+	let mut outer = fixture.access().await;
+	assert!(
+		!outer.reach().1.held(),
+		"nothing is held before a lock is taken"
+	);
+
+	// Act and assert: a shared lock taken by a Catalog admission is held.
+	crate::marketplace::lock_catalog(&mut outer.tx, false)
+		.await
+		.unwrap();
+	assert!(outer.reach().1.held());
+	let reach = outer.reach();
+	let inner = Access::under_lease(&outer).await.unwrap();
+	assert!(
+		inner.reach().1.held(),
+		"an authority under the lease holds the lease's lock"
+	);
+	inner.finish(Ok(())).await.unwrap();
+
+	// A savepoint rollback may release it, and the lock is claimed again when it is taken.
+	outer.tx.savepoint("probe").await.unwrap();
+	outer.tx.rollback_to_savepoint("probe").await.unwrap();
+	assert!(!outer.reach().1.held());
+	assert!(
+		!reach.1.held(),
+		"a hold read earlier follows the transaction, as the lock does"
+	);
+	crate::marketplace::lock_catalog(&mut outer.tx, false)
+		.await
+		.unwrap();
+	assert!(outer.reach().1.held());
+	outer.finish(Ok(())).await.unwrap();
+}

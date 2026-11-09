@@ -11,7 +11,10 @@
 //! authority (#751). Such a check stops after 10 seconds, so a saturated
 //! connection pool ends in "cannot confirm" and not in a hang. An authority that
 //! holds the Tenant's policy row exclusively asks nobody, because the peer's own
-//! shared lock would wait on it.
+//! shared lock would wait on it. One that holds the Deployment's distribution
+//! lock shares it with the peer it asks (`database::native::distribution`),
+//! because a shared request of the peer's own would queue behind a writer that
+//! waits for the lock its caller holds.
 use crate::{
 	Error, Result,
 	apps::federation::transactions::{
