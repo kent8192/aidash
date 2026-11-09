@@ -1993,6 +1993,7 @@ async fn a_node_that_did_not_answer_before_the_effect_is_retried_then_returned_t
 			"call",
 			DeliveredTool {
 				name: "task_delegate",
+				index: 0,
 				replay_safe: true,
 			},
 			(Err(unreachable()), None),
@@ -2019,6 +2020,7 @@ async fn a_node_that_did_not_answer_before_the_effect_is_retried_then_returned_t
 		"call",
 		DeliveredTool {
 			name: "task_delegate",
+			index: 0,
 			replay_safe: true,
 		},
 		(Err(unreachable()), None),
@@ -2044,6 +2046,7 @@ async fn a_node_that_did_not_answer_after_the_effect_passes_through_without_a_re
 		"call",
 		DeliveredTool {
 			name: "task_delegate",
+			index: 0,
 			replay_safe: true,
 		},
 		(
