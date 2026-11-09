@@ -1858,9 +1858,16 @@ impl WorkerAuthority {
 			return Err(Error::Forbidden);
 		}
 		if !aidash_domain::nodes::names_home(node, &run.home_node) {
-			let record = lease.task_read(task).await?;
+			// A missing task and one the Run may not see read the same, as for a local delegation.
+			let not_visible = || {
+				Error::from(aidash_application::authorization::worker_tasks::task_not_visible(task))
+			};
+			let record = lease.task_read(task).await.map_err(|error| match error {
+				Error::Forbidden => not_visible(),
+				error => error,
+			})?;
 			if record.workspace_id != run.workspace_id {
-				return Err(Error::Forbidden);
+				return Err(not_visible());
 			}
 			let identity = lease.identity.clone();
 			if lease.tx.is_active() {
