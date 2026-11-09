@@ -8,6 +8,9 @@ import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
 import { RemoteMemoryProvenance, RemoteRunManagement } from "./remote-memory";
+import { ApiError, apiFetch } from "../transport";
+import { DeclineCall } from "./decline-call";
+import { offeredDecline } from "./decline-call-model";
 import { RemoteExecutions } from "./remote-executions";
 import { ReferenceName } from "../record-view";
 import {
@@ -70,7 +73,7 @@ import {
 import { collaborationCopy } from "./copy";
 import { workspaceCopy } from "./workspace-copy";
 import { InferenceProgress } from "./inference-progress";
-import { resumableRun } from "./workspace-model";
+import { abandonable, resumableRun } from "./workspace-model";
 import { researchFailure } from "../research";
 import { isLocalRun } from "../node-selection";
 import {
@@ -352,7 +355,7 @@ export function OperationsDialog({
                   {data.access.kind === "subject" && (
                     <RemoteExecutions task={task.id} />
                   )}
-                  {["FAILED", "BLOCKED", "CANCELLED"].includes(task.status) && (
+                  {abandonable(task, taskRuns) && (
                     <form
                       className="grid min-w-0 gap-3 border-t border-border pt-4"
                       onSubmit={(event) => {
@@ -499,15 +502,22 @@ function RunPanel({
     attachments: string[];
     key: string;
   } | null>(null);
-  if (!run)
+  if (!run) {
+    const hiddenBy =
+      query.error instanceof ApiError && query.error.runReads
+        ? query.error.message
+        : undefined;
     return (
       <>
         <Hint role="status">
-          {query.isPending ? copy.processing : copy.unavailable}
+          {query.isPending ? copy.processing : (hiddenBy ?? copy.unavailable)}
         </Hint>
-        {data.access.kind === "subject" && <RemoteRunManagement id={id} />}
+        {data.access.kind === "subject" && (
+          <RemoteRunManagement id={id} resumeElsewhere={!hiddenBy} />
+        )}
       </>
     );
+  }
   const mediaInputRoutes = query.data?.pages[0].media_input_routes ?? [];
   const mediaAccept = runMediaAccept(mediaInputRoutes);
   // Sending attachments still requires an exact Node, even when an
@@ -527,6 +537,8 @@ function RunPanel({
   // reason, and never resumes it (ADR 0101).
   const administrator = data.access.kind === "deployment_administrator";
   const home = isLocalRun(run, data);
+  // The server offers the paused call only to someone who may decline it.
+  const declinable = offeredDecline(query.data?.pages[0], run.control);
   return (
     <>
       <header className="grid min-w-0 gap-1.5">
@@ -562,6 +574,26 @@ function RunPanel({
               >
                 {t("cancel")}
               </Button>
+              {declinable && (
+                <DeclineCall
+                  call={declinable}
+                  submit={submit}
+                  send={(content, idempotency_key) =>
+                    runMessage(id, {
+                      content,
+                      idempotency_key,
+                      attachment_ids: [],
+                    })
+                  }
+                  decline={(call) =>
+                    apiFetch(`/api/runs/${id}/declined-calls`, {
+                      method: "POST",
+                      headers: { "content-type": "application/json" },
+                      body: JSON.stringify({ call }),
+                    })
+                  }
+                />
+              )}
             </>
           )}
           {home && (

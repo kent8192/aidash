@@ -7,8 +7,12 @@
 //! - `demo_data`
 //! - `execution_authorization`
 //! - `interaction_authorization`
+//! - `other_node_reads`
 //! - `policy`
 //! - `resource_authorization`
+//! - `run_control`
+//! - `approval_governs_use`
+//! - `decision_counts`
 //! - `peer_graph`
 //! - `peer_graph_nodes`
 //! - `peer_graph_review`

@@ -152,3 +152,60 @@ async fn a_failed_completion_update_rolls_back() {
 		vec!["update", "rollback"]
 	);
 }
+
+/// A file transfer whose first step fails with the given error.
+struct Failing {
+	error: fn() -> Error,
+	recorded: Mutex<Vec<bool>>,
+}
+#[async_trait]
+impl TransferRepository for Failing {
+	fn limits(&self) -> Limits {
+		unreachable!("the transfer fails before it reads its limits")
+	}
+	async fn snapshot(&self, _: Uuid) -> Result<Record> {
+		Err((self.error)())
+	}
+	async fn begin_sender(&self, _: &Record) -> Result<Box<dyn TransferScope + '_>> {
+		unreachable!("the transfer fails at its snapshot")
+	}
+	async fn begin_receipt(&self, _: Uuid) -> Result<Box<dyn ReceiptScope + '_>> {
+		unreachable!("the transfer fails at its snapshot")
+	}
+	async fn request(&self, _: &str, _: &str, _: &str, _: &str, _: &Value) -> Result<Value> {
+		unreachable!("the transfer fails at its snapshot")
+	}
+	async fn jobs(&self) -> Result<Vec<Uuid>> {
+		Ok(vec![Uuid::new_v4()])
+	}
+	async fn record_failure(&self, _: Uuid, terminal: bool) -> Result<()> {
+		self.recorded.lock().unwrap().push(terminal);
+		Ok(())
+	}
+}
+
+#[tokio::test]
+async fn a_temporary_database_error_does_not_count_towards_a_transfers_failure_limit() {
+	// Arrange
+	let repository = Failing {
+		error: || Error::TemporaryDatabase(Box::new(std::io::Error::other("pool timed out"))),
+		recorded: Mutex::default(),
+	};
+	// Act
+	sweep(&repository).await.unwrap();
+	// Assert
+	assert!(repository.recorded.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn any_other_transfer_failure_still_counts() {
+	// Arrange
+	let repository = Failing {
+		error: || Error::External("peer failed".into()),
+		recorded: Mutex::default(),
+	};
+	// Act
+	sweep(&repository).await.unwrap();
+	// Assert
+	assert_eq!(*repository.recorded.lock().unwrap(), [false]);
+}

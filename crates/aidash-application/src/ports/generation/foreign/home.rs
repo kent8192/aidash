@@ -20,6 +20,11 @@ pub trait HomeGenerationScope: ForeignGenerationGuard {
 	fn snapshot_mut(&mut self) -> &mut Snapshot;
 	async fn inherit_task_origin(&mut self, id: Uuid) -> Result<()>;
 	async fn task(&mut self, id: Uuid) -> Result<Task>;
+	/// The Task row alone, without the Read Recheck of the Task's producers.
+	/// An exclusive session holds the policy row, which a producer's Node
+	/// would wait on, so it reads the Task this way after a shared session
+	/// has made the check (#751).
+	async fn task_row(&mut self, id: Uuid) -> Result<Task>;
 	async fn insert(&mut self, intent: &Intent) -> Result<()>;
 	/// Idempotency reads use the original transaction without an extra row lock.
 	async fn saved(&mut self, id: Uuid) -> Result<Record>;

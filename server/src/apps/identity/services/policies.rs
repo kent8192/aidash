@@ -403,7 +403,12 @@ impl PolicyAdministration {
 		let f = self.runtime.clone();
 		let principal = actor_principal(&actor);
 		let identity = tenant_subject(actor, &tenant)?;
-		let mut access = Access::begin_exclusive(&f.store, &identity).await?;
+		let mut access = Access::begin_change(
+			&f.store,
+			&identity,
+			&[aidash_application::authorization::catalog::approvals::CATALOG_APPROVE],
+		)
+		.await?;
 		let result = async {
 			let node = input.node.clone();
 			crate::apps::identity::repositories::nodes::get(
@@ -632,7 +637,9 @@ impl PolicyAdministration {
 		let f = self.runtime.clone();
 		let identity = tenant_subject(actor, &tenant)?;
 		let requester = identity.subject.clone();
-		let mut access = Access::begin_exclusive(&f.store, &identity).await?;
+		// A request changes no policy, and `requests::lock` serializes requests,
+		// so any member can make one without holding up the Tenant's work.
+		let mut access = Access::begin(&f.store, &identity).await?;
 		let result = async {
 			crate::apps::identity::repositories::nodes::get(
 				&mut **access.tx,
@@ -703,8 +710,9 @@ impl PolicyAdministration {
 	) -> Result<CatalogApprovalRequestView> {
 		let f = self.runtime.clone();
 		let identity = tenant_subject(actor, &tenant)?;
-		let mut access = Access::begin_exclusive(&f.store, &identity).await?;
+		let mut access = Access::begin(&f.store, &identity).await?;
 		let result = async {
+			requests::lock(&mut access.tx, &tenant).await?;
 			let mut request = requests::by_id(&mut access.tx, &tenant, id)
 				.await?
 				.ok_or_else(|| Error::NotFound("catalog approval request".into()))?;
@@ -739,8 +747,9 @@ impl PolicyAdministration {
 	) -> Result<CatalogApprovalRequestView> {
 		let f = self.runtime.clone();
 		let identity = tenant_subject(actor, &tenant)?;
-		let mut access = Access::begin_exclusive(&f.store, &identity).await?;
+		let mut access = Access::begin(&f.store, &identity).await?;
 		let result = async {
+			requests::lock(&mut access.tx, &tenant).await?;
 			let mut request = requests::by_id(&mut access.tx, &tenant, id)
 				.await?
 				.ok_or_else(|| Error::NotFound("catalog approval request".into()))?;
@@ -963,7 +972,12 @@ impl PolicyAdministration {
 	) -> Result<Vec<Binding>> {
 		let f = self.runtime.clone();
 		let identity = tenant_subject(actor, &tenant)?;
-		let mut access = Access::begin_exclusive(&f.store, &identity).await?;
+		let mut access = Access::begin_change(
+			&f.store,
+			&identity,
+			&[aidash_application::authorization::catalog::approvals::CATALOG_APPROVE],
+		)
+		.await?;
 		if let Err(error) = crate::apps::identity::repositories::nodes::get(
 			&mut **access.tx,
 			&tenant,

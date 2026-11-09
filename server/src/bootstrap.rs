@@ -102,7 +102,7 @@ pub async fn initialize_as(
 		&settings.research_providers,
 		&crate::config::settings::profile(),
 	)?;
-	let cache_salt = settings.cache_salt.keys()?;
+	let cache_salt = settings.cache_salt.node_keys(&settings.core.secret_key)?;
 	// Only availability and the current key version; never key material.
 	match &cache_salt {
 		Some(keys) => tracing::info!(
@@ -189,7 +189,8 @@ pub async fn initialize_as(
 		config,
 		client,
 		notify: Arc::new(Notify::new()),
-	};
+	}
+	.bind_in_process();
 	crate::apps::workspaces::repositories::attachment_backfill::run(&federation.store).await?;
 	// Persist removed restrictions even for inactive Identities before this
 	// policy can serve requests or start workers. Provider IO is unnecessary.
@@ -206,12 +207,12 @@ pub async fn initialize_as(
 	>::new(crate::sse::Service::new(
 		crate::sse::Settings::from_env()?,
 	)));
+	let http_settings = crate::http::Settings::from_env()?;
+	crate::database::authority_change::validate(http_settings.timeout)?;
 	context.set_singleton(reinhardt::di::KeyedFactoryOutput::<
 		reinhardt::di::SelfKey<crate::http::Protection>,
 		crate::http::Protection,
-	>::new(crate::http::Protection::new(
-		crate::http::Settings::from_env()?,
-	)));
+	>::new(crate::http::Protection::new(http_settings)));
 	Ok(federation)
 }
 
@@ -284,17 +285,20 @@ impl RuntimeTasks {
 				global_concurrent: egress.proxy_global_tunnels,
 				tenant_concurrent: egress.proxy_tenant_tunnels,
 			};
-			tasks.spawn_service(runtime_task(async move {
-				aidash_integrations::egress::serve_with_scopes(
-					listener,
-					authority,
-					Some(scopes),
-					limits,
-					stopping,
-				)
-				.await
-				.map_err(Into::into)
-			}));
+			tasks.spawn_service(
+				"egress gateway",
+				runtime_task(async move {
+					aidash_integrations::egress::serve_with_scopes(
+						listener,
+						authority,
+						Some(scopes),
+						limits,
+						stopping,
+					)
+					.await
+					.map_err(Into::into)
+				}),
+			);
 		}
 		if event_streams.is_some()
 			&& let Some(preview) = &federation.config.preview
@@ -309,23 +313,30 @@ impl RuntimeTasks {
 				runtime: Some(federation.clone()),
 			});
 			let stopping = receiver.clone();
-			tasks.spawn_service(runtime_task(async move {
-				aidash_integrations::preview::serve(listener, authority, stopping)
-					.await
-					.map_err(Into::into)
-			}));
+			tasks.spawn_service(
+				"preview gateway",
+				runtime_task(async move {
+					aidash_integrations::preview::serve(listener, authority, stopping)
+						.await
+						.map_err(Into::into)
+				}),
+			);
 		}
-		tasks.spawn_worker(federation.sandbox.clone().run(receiver.clone()));
-		tasks.spawn_service(runtime_task(
-			crate::apps::execution::services::metrics::run(coordinator.clone()),
-		));
+		tasks.spawn_worker("sandbox", federation.sandbox.clone().run(receiver.clone()));
+		tasks.spawn_service(
+			"metrics",
+			runtime_task(crate::apps::execution::services::metrics::run(
+				coordinator.clone(),
+			)),
+		);
 		if let Some(service) = event_streams.clone() {
 			let url = federation.config.nats_url.clone();
 			let node = federation.config.deployment.to_string();
 			let stopping = receiver.clone();
-			tasks.spawn_service(runtime_task(async move {
-				service.run(&url, &node, stopping).await
-			}));
+			tasks.spawn_service(
+				"event streams",
+				runtime_task(async move { service.run(&url, &node, stopping).await }),
+			);
 		}
 		// Acquire pools before detaching tasks. A startup error drops both JoinSets.
 		let coordinator_runtime = federation.for_recovery().await?;
@@ -333,220 +344,265 @@ impl RuntimeTasks {
 			transaction_recovery_coordinators(&coordinator_runtime).await?;
 		let participant_runtime = federation.for_recovery().await?;
 		let worker_runtime = federation.for_runtime_workers().await?;
-		tasks.spawn_service(aidash_runtime::transactions::run_coordinator(
-			active_recovery,
-			aborted_recovery,
-		));
-		tasks.spawn_service(aidash_runtime::transactions::run_participant(
-			transaction_participant(&participant_runtime),
-		));
-		tasks.spawn_service(aidash_runtime::generation::run(
-			Arc::new(generation_provisioning_repository(&worker_runtime)),
-			registry_validation_for(&worker_runtime.store),
-		));
-		tasks.spawn_service(runtime_task(crate::apps::execution::observation::run(
-			worker_runtime.clone(),
-		)));
-		tasks.spawn_service(runtime_task(crate::semantic::worker::run(
-			worker_runtime.clone(),
-		)));
+		tasks.spawn_service(
+			"transaction coordinator",
+			aidash_runtime::transactions::run_coordinator(active_recovery, aborted_recovery),
+		);
+		tasks.spawn_service(
+			"transaction participant",
+			aidash_runtime::transactions::run_participant(transaction_participant(
+				&participant_runtime,
+			)),
+		);
+		tasks.spawn_service(
+			"generation reconciliation",
+			aidash_runtime::generation::run(
+				Arc::new(generation_provisioning_repository(&worker_runtime)),
+				registry_validation_for(&worker_runtime.store),
+			),
+		);
+		tasks.spawn_service(
+			"observation",
+			runtime_task(crate::apps::execution::observation::run(
+				worker_runtime.clone(),
+			)),
+		);
+		tasks.spawn_service(
+			"semantic worker",
+			runtime_task(crate::semantic::worker::run(worker_runtime.clone())),
+		);
 		if event_streams.is_some() {
-			tasks.spawn_service(runtime_task(EventBus::run(federation.clone())));
+			tasks.spawn_service("event bus", runtime_task(EventBus::run(federation.clone())));
 		}
 		if let Some(provider_credentials) = federation.store.provider_credentials.clone() {
 			let mut stopping = receiver.clone();
-			tasks.spawn_service(runtime_task(async move {
-				let mut cursor = None;
-				loop {
-					if *stopping.borrow() {
-						return Ok(());
-					}
-					match provider_credentials.reconcile_page(cursor).await {
-						Ok(result) => {
-							cursor = result.next;
-							if result.failed != 0 {
-								tracing::warn!(
-									failed = result.failed,
-									"Provider Credential cleanup is pending"
-								);
-							}
+			tasks.spawn_service(
+				"provider credential reconciliation",
+				runtime_task(async move {
+					let mut cursor = None;
+					loop {
+						if *stopping.borrow() {
+							return Ok(());
 						}
-						Err(_) => tracing::warn!(
-							"Provider Credential reconciliation inventory unavailable"
-						),
+						match provider_credentials.reconcile_page(cursor).await {
+							Ok(result) => {
+								cursor = result.next;
+								if result.failed != 0 {
+									tracing::warn!(
+										failed = result.failed,
+										"Provider Credential cleanup is pending"
+									);
+								}
+							}
+							Err(_) => tracing::warn!(
+								"Provider Credential reconciliation inventory unavailable"
+							),
+						}
+						tokio::select! { _=stopping.changed()=>{}, _=tokio::time::sleep(Duration::from_secs(60))=>{} }
 					}
-					tokio::select! { _=stopping.changed()=>{}, _=tokio::time::sleep(Duration::from_secs(60))=>{} }
-				}
-			}));
+				}),
+			);
 		}
 		if !federation.config.marketplace.connections.is_empty() {
-			tasks.spawn_service(runtime_task(
-				crate::apps::registry::services::marketplace_recalls::run(
+			tasks.spawn_service(
+				"marketplace recalls",
+				runtime_task(crate::apps::registry::services::marketplace_recalls::run(
 					federation.clone(),
 					receiver.clone(),
-				),
-			));
+				)),
+			);
 		}
 		for service in build::current()
 			.extension
 			.services(&federation, receiver.clone())
 		{
-			tasks.spawn_service(runtime_task(service));
+			tasks.spawn_service("extension", runtime_task(service));
 		}
 		if let Some(tenant_secrets) = federation.store.tenant_secrets.clone() {
 			let mut stopping = receiver.clone();
-			tasks.spawn_service(runtime_task(async move {
-				let mut cursor = None;
-				loop {
-					if *stopping.borrow() {
-						return Ok(());
-					}
-					match tenant_secrets.reconcile_page(cursor).await {
-						Ok(result) => {
-							cursor = result.next;
-							if result.failed != 0 {
-								tracing::warn!(
-									failed = result.failed,
-									"Tenant Secret cleanup is pending"
-								);
+			tasks.spawn_service(
+				"tenant secret reconciliation",
+				runtime_task(async move {
+					let mut cursor = None;
+					loop {
+						if *stopping.borrow() {
+							return Ok(());
+						}
+						match tenant_secrets.reconcile_page(cursor).await {
+							Ok(result) => {
+								cursor = result.next;
+								if result.failed != 0 {
+									tracing::warn!(
+										failed = result.failed,
+										"Tenant Secret cleanup is pending"
+									);
+								}
+							}
+							Err(_) => {
+								tracing::warn!("Tenant Secret reconciliation inventory unavailable")
 							}
 						}
-						Err(_) => {
-							tracing::warn!("Tenant Secret reconciliation inventory unavailable")
-						}
+						tokio::select! { _=stopping.changed()=>{}, _=tokio::time::sleep(Duration::from_secs(60))=>{} }
 					}
-					tokio::select! { _=stopping.changed()=>{}, _=tokio::time::sleep(Duration::from_secs(60))=>{} }
-				}
-			}));
+				}),
+			);
 		}
 		let activation = crate::activation::Runtime::new(
 			worker_runtime.clone(),
 			crate::activation::Settings::from_env()?,
 			worker_count > 0,
 		);
-		tasks.spawn_service(runtime_task(activation.clone().run(receiver.clone())));
+		tasks.spawn_service(
+			"activation",
+			runtime_task(activation.clone().run(receiver.clone())),
+		);
 		if std::env::var_os("AIDASH_CAPABILITY_PROFILE").is_some() {
 			let operations = federation.for_runtime_workers().await?;
 			let stopping = receiver.clone();
-			tasks.spawn_service(runtime_task(async move {
-				crate::capabilities::operations::run(operations.store, stopping).await
-			}));
+			tasks.spawn_service(
+				"capability operations",
+				runtime_task(async move {
+					crate::capabilities::operations::run(operations.store, stopping).await
+				}),
+			);
 			let transfers = federation.for_runtime_workers().await?;
 			let stopping = receiver.clone();
-			tasks.spawn_service(runtime_task(async move {
-				crate::capabilities::transfer::run(transfers, stopping).await
-			}));
+			tasks.spawn_service(
+				"capability transfer",
+				runtime_task(async move {
+					crate::capabilities::transfer::run(transfers, stopping).await
+				}),
+			);
 		}
 		if federation.config.dashboard_session().is_some() {
-			tasks.spawn_service(runtime_task(crate::dashboard_auth::refresh_active(
-				federation.clone(),
-				receiver.clone(),
-			)));
-		} else {
-			tasks.spawn_service(runtime_task(
-				crate::dashboard_auth::enforce_display_retention(
+			tasks.spawn_service(
+				"dashboard session refresh",
+				runtime_task(crate::dashboard_auth::refresh_active(
 					federation.clone(),
 					receiver.clone(),
-				),
-			));
+				)),
+			);
+		} else {
+			tasks.spawn_service(
+				"dashboard display retention",
+				runtime_task(crate::dashboard_auth::enforce_display_retention(
+					federation.clone(),
+					receiver.clone(),
+				)),
+			);
 		}
 		let retention = federation.store.clone();
 		let research_retention = federation.store.research_retention;
 		let audit_retention_days = federation.config.tenancy.audit_retention_days;
 		let serving = event_streams.is_some();
-		tasks.spawn_service(runtime_task(async move {
+		tasks.spawn_service(
+			"retention",
 			// Inference progress expires minutes after its outcome, so attempts
 			// orphaned on unscheduled Runs are closed first; hourly workbench,
 			// Research evidence and Tenant purges keep their cadence on the same loop.
-			let mut ticks = 0_u32;
-			loop {
-				if ticks.is_multiple_of(60) {
-					// Deployment Scope: every Tenant's snapshots, under each
-					// Tenant's own periods.
-					if let Err(error) =
-						crate::apps::execution::repositories::research::retention::sweep(
-							&retention,
-							&research_retention,
-						)
-						.await
-					{
-						tracing::warn!(%error, "research evidence retention sweep failed");
-					}
-					// Provider results under the Research account terms (ADR 0058).
-					if let Err(error) =
-						crate::apps::execution::services::research::sweep_account_terms(
-							&retention,
-							crate::apps::execution::services::research::providers().account_terms(),
-						)
-						.await
-					{
-						tracing::warn!(%error, "research account terms sweep failed");
-					}
-					// Deleted Tenants past their grace period, and the audit
-					// history that outlived an earlier purge (ADR 0061).
-					if let Err(error) = crate::apps::identity::services::tenant_purge::sweep(
-						&retention,
-						audit_retention_days,
-					)
-					.await
-					{
-						tracing::warn!(%error, "Tenant purge sweep failed");
-					}
-					if let Err(error) = crate::apps::identity::services::node_purge::sweep(
-						&retention,
-						audit_retention_days,
-					)
-					.await
-					{
-						tracing::warn!(%error, "Node purge sweep failed");
-					}
-					if let Err(error) = crate::workbench::purge_expired(&retention.pool).await {
-						tracing::warn!(%error, "agent test retention cleanup failed");
-					}
-					if let Err(error) =
-						crate::workbench::purge_incident_evidence(&retention.pool).await
-					{
-						tracing::warn!(%error, "incident evidence retention cleanup failed");
-					}
-				}
-				for _ in 0..16 {
-					match retention.close_orphaned_inference().await {
-						Ok(closed) if closed > 0 => continue,
-						Ok(_) => break,
-						Err(error) => {
-							tracing::warn!(%error, "orphaned inference attempt closure failed");
-							break;
+			runtime_task(watched_loop::run(
+				"retention",
+				Duration::from_secs(60),
+				move |ticks| {
+					let retention = retention.clone();
+					async move {
+						if ticks.is_multiple_of(60) {
+							// Deployment Scope: every Tenant's snapshots, under each
+							// Tenant's own periods.
+							if let Err(error) =
+								crate::apps::execution::repositories::research::retention::sweep(
+									&retention,
+									&research_retention,
+								)
+								.await
+							{
+								tracing::warn!(%error, "research evidence retention sweep failed");
+							}
+							// Provider results under the Research account terms (ADR 0058).
+							if let Err(error) =
+								crate::apps::execution::services::research::sweep_account_terms(
+									&retention,
+									crate::apps::execution::services::research::providers()
+										.account_terms(),
+								)
+								.await
+							{
+								tracing::warn!(%error, "research account terms sweep failed");
+							}
+							// Deleted Tenants past their grace period, and the audit
+							// history that outlived an earlier purge (ADR 0061).
+							if let Err(error) =
+								crate::apps::identity::services::tenant_purge::sweep(
+									&retention,
+									audit_retention_days,
+								)
+								.await
+							{
+								tracing::warn!(%error, "Tenant purge sweep failed");
+							}
+							if let Err(error) = crate::apps::identity::services::node_purge::sweep(
+								&retention,
+								audit_retention_days,
+							)
+							.await
+							{
+								tracing::warn!(%error, "Node purge sweep failed");
+							}
+							if let Err(error) =
+								crate::workbench::purge_expired(&retention.pool).await
+							{
+								tracing::warn!(%error, "agent test retention cleanup failed");
+							}
+							if let Err(error) =
+								crate::workbench::purge_incident_evidence(&retention.pool).await
+							{
+								tracing::warn!(%error, "incident evidence retention cleanup failed");
+							}
+						}
+						for _ in 0..16 {
+							match retention.close_orphaned_inference().await {
+								Ok(closed) if closed > 0 => continue,
+								Ok(_) => break,
+								Err(error) => {
+									tracing::warn!(%error, "orphaned inference attempt closure failed");
+									break;
+								}
+							}
+						}
+						for _ in 0..16 {
+							match retention.prune_inference_progress().await {
+								Ok(pruned) if pruned > 0 => continue,
+								Ok(_) => break,
+								Err(error) => {
+									tracing::warn!(%error, "inference progress retention cleanup failed");
+									break;
+								}
+							}
+						}
+						if serving
+							&& let Err(error) =
+								crate::apps::execution::repositories::live_previews::sweep(
+									&retention,
+								)
+								.await
+						{
+							tracing::warn!(%error, "Live preview sweep failed");
 						}
 					}
-				}
-				for _ in 0..16 {
-					match retention.prune_inference_progress().await {
-						Ok(pruned) if pruned > 0 => continue,
-						Ok(_) => break,
-						Err(error) => {
-							tracing::warn!(%error, "inference progress retention cleanup failed");
-							break;
-						}
-					}
-				}
-				if serving
-					&& let Err(error) =
-						crate::apps::execution::repositories::live_previews::sweep(&retention).await
-				{
-					tracing::warn!(%error, "Live preview sweep failed");
-				}
-				ticks = ticks.wrapping_add(1);
-				tokio::time::sleep(Duration::from_secs(60)).await;
-			}
-		}));
+				},
+			)),
+		);
 		if worker_count > 0 {
 			let harness = Harness {
 				federation: worker_runtime.clone(),
 			};
 			let receiver = receiver.clone();
-			tasks.spawn_service(runtime_task(async move {
-				harness.deliver_terminal_messages_until(receiver).await
-			}));
+			tasks.spawn_service(
+				"terminal message delivery",
+				runtime_task(
+					async move { harness.deliver_terminal_messages_until(receiver).await },
+				),
+			);
 		}
 		for _ in 0..worker_count {
 			let harness = Harness {
@@ -554,9 +610,10 @@ impl RuntimeTasks {
 			};
 			let receiver = receiver.clone();
 			let activation = activation.clone();
-			tasks.spawn_worker(runtime_task(async move {
-				activation.worker(harness, receiver).await
-			}));
+			tasks.spawn_worker(
+				"activation worker",
+				runtime_task(async move { activation.worker(harness, receiver).await }),
+			);
 		}
 		let sandbox = federation.sandbox.clone();
 		let mut shutdown = coordinator.subscribe();
@@ -630,6 +687,7 @@ pub fn model_catalog(client: reqwest::Client) -> Arc<dyn aidash_application::por
 
 mod compatibility;
 mod listener;
+mod watched_loop;
 pub use compatibility::{migrate, preview_gateway, require_migrated, serve};
 
 /// Legacy-only Keyless inference: no Cache Salt Keys, so any salted request is
@@ -902,6 +960,7 @@ pub(crate) fn channel_scope<'a>(
 		lease,
 		federation: None,
 		run_id: None,
+		agent: None,
 	}
 }
 
@@ -1025,7 +1084,7 @@ pub(crate) fn dependency_scope(
 pub(crate) fn dependency_transport(
 	access: &crate::authorization::access::Access,
 ) -> crate::apps::federation::remote::services::wire::Reach {
-	crate::apps::federation::remote::services::wire::Reach(access.wire.clone())
+	access.reach()
 }
 
 pub(crate) fn foreign_run_read_scope(
@@ -1483,7 +1542,7 @@ pub(crate) fn semantic_disclosure_scope<'a, 'scope>(
 pub(crate) fn native_registry_transport(
 	access: &crate::authorization::access::NativeAccess,
 ) -> crate::apps::federation::remote::services::wire::Reach {
-	crate::apps::federation::remote::services::wire::Reach(access.remote_transport())
+	access.reach()
 }
 pub(crate) fn registry_verification_scope<'a>(
 	access: &'a mut crate::authorization::access::Access,
@@ -2528,6 +2587,7 @@ pub(crate) fn worker_step(
 		recovery: recovery_store(&federation.store),
 		_active: crate::http::ActiveExecution::begin(),
 		visibility,
+		tenant: None,
 	})
 }
 

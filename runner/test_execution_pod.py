@@ -145,6 +145,31 @@ class FullDiskRegressionTest(unittest.TestCase):
         self.assertEqual(volume['emptyDir']['medium'], 'Memory')
         self.assertGreater(int(volume['emptyDir']['sizeLimit']), 0)
 
+    def test_claim_excludes_a_late_supervisor(self):
+        import tempfile
+        from pathlib import Path
+        from sandbox_v2 import claim_operation
+        operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertTrue(claim_operation(operation, directory))
+            self.assertFalse(claim_operation(operation, directory))
+            self.assertEqual([p.name for p in Path(directory).iterdir()], [operation + '.started'])
+
+    def test_late_supervise_after_claim_leaves_no_running_record(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        import sandbox_v2
+        operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        with tempfile.TemporaryDirectory() as directory:
+            sandbox_v2.claim_operation(operation, directory)
+            with patch.object(sandbox_v2, 'OPERATION_DIRECTORY', directory), \
+                 patch.dict('os.environ', {'AIDASH_POD_UID': 'uid'}):
+                with self.assertRaises(FileExistsError):
+                    sandbox_v2.supervise_command(operation, 'run', '.', 'true', 5, False,
+                                                 expected_pod_uid='uid')
+            self.assertEqual([path.name for path in Path(directory).iterdir()], [operation + '.started'])
+
     def test_completed_operation_bookkeeping_is_released(self):
         import tempfile
         from pathlib import Path
@@ -155,8 +180,13 @@ class FullDiskRegressionTest(unittest.TestCase):
             for suffix in ('.started', '.json', '.running'):
                 (root / (operation + suffix)).write_text('record')
             (root / 'unrelated').write_text('keep')
-            forget_operation(operation, root)
-            self.assertEqual([path.name for path in root.iterdir()], ['unrelated'])
+            output = root / 'output'
+            output.mkdir()
+            for suffix in ('.stdout', '.stderr'):
+                (output / (operation + suffix)).write_text('output')
+            forget_operation(operation, root, output)
+            self.assertEqual(sorted(path.name for path in root.iterdir()), ['output', 'unrelated'])
+            self.assertEqual(list(output.iterdir()), [])
 
     def test_reset_releases_old_root_before_copying_new_image(self):
         import tempfile
@@ -529,6 +559,33 @@ class ExecutionPodHttpTest(unittest.TestCase):
             server.server_close()
             thread.join()
 
+    def test_pod_updating_is_retryable(self):
+        import http.client
+        import json
+        import threading
+        from http.server import ThreadingHTTPServer
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from control import Handler
+        from execution_pod import ExecutionPodError
+        pods = SimpleNamespace(ensure=Mock(side_effect=ExecutionPodError('pod_updating', 'retry shortly')))
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        server.runner = SimpleNamespace(token='x' * 32, execution_pods=pods)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            conn = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=2)
+            conn.request('POST', '/v2/pods/ensure', json.dumps({'scratch_space_id': 's'}),
+                         {'Authorization': 'Bearer ' + server.runner.token, 'Content-Type': 'application/json'})
+            response = conn.getresponse()
+            self.assertEqual(response.status, 503)
+            self.assertEqual(json.loads(response.read())['code'], 'pod_updating')
+            conn.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
     def test_startup_failure_contains_typed_reason(self):
         import json
         import tempfile
@@ -582,6 +639,155 @@ class ExecutionRequestTest(unittest.TestCase):
 
 
 class SupervisorTest(unittest.TestCase):
+    def test_supervisor_saves_and_forwards_both_streams(self):
+        import os
+        import sys
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock, patch
+        from sandbox_v2 import run_supervised
+        libc = Mock()
+        libc.prctl.return_value = 0
+        original_write = os.write
+        forwarded = {1: bytearray(), 2: bytearray()}
+        def capture(fd, data):
+            if fd in forwarded:
+                forwarded[fd].extend(data)
+                return len(data)
+            return original_write(fd, data)
+        with tempfile.TemporaryDirectory() as directory, patch('sandbox_v2.ctypes.CDLL', return_value=libc), \
+             patch('os.write', side_effect=capture):
+            result = run_supervised([sys.executable, '-c', 'import os; os.write(1,b"out"); os.write(2,b"err")'],
+                                    timeout=2, output_directory=directory, operation_id='op', output_limit=100)
+            self.assertEqual(result['status'], 'completed')
+            self.assertFalse(result['output_incomplete'])
+            self.assertFalse(result['forward_incomplete'])
+            self.assertEqual(bytes(forwarded[1]), b'out')
+            self.assertEqual(bytes(forwarded[2]), b'err')
+            self.assertEqual((Path(directory) / 'op.stdout').read_bytes(), b'out')
+            self.assertEqual((Path(directory) / 'op.stderr').read_bytes(), b'err')
+
+    def test_saved_output_is_bounded_and_forward_failure_does_not_stop_child(self):
+        import os
+        import sys
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock, patch
+        from sandbox_v2 import run_supervised
+        operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        libc = Mock()
+        libc.prctl.return_value = 0
+        real_write = os.write
+        def write(fd, data):
+            if fd in (1, 2):
+                raise BrokenPipeError()
+            return real_write(fd, data)
+        with tempfile.TemporaryDirectory() as directory, patch('sandbox_v2.ctypes.CDLL', return_value=libc), \
+             patch('os.write', side_effect=write):
+            result = run_supervised([sys.executable, '-c', 'import os; os.write(1,b"abcdefgh")'],
+                                    timeout=2, output_directory=directory, operation_id=operation, output_limit=4)
+            self.assertEqual(result['status'], 'completed')
+            self.assertTrue(result['output_truncated'])
+            self.assertTrue(result['forward_incomplete'])
+            self.assertEqual((Path(directory) / (operation + '.stdout')).read_bytes(), b'abcd')
+
+    def test_save_failure_keeps_draining_and_forwarding(self):
+        import errno
+        import os
+        import sys
+        import tempfile
+        from unittest.mock import Mock, patch
+        from sandbox_v2 import run_supervised
+        libc = Mock()
+        libc.prctl.return_value = 0
+        original_open, original_write = os.open, os.write
+        forwarded = bytearray()
+        def failing_open(path, flags, *args, **kwargs):
+            if str(path).endswith('.stdout'):
+                raise OSError(errno.ENOSPC, 'full')
+            return original_open(path, flags, *args, **kwargs)
+        def capture(fd, data):
+            if fd in (1, 2):
+                forwarded.extend(data)
+                return len(data)
+            return original_write(fd, data)
+        with tempfile.TemporaryDirectory() as directory, patch('sandbox_v2.ctypes.CDLL', return_value=libc), \
+             patch('os.open', side_effect=failing_open), patch('os.write', side_effect=capture):
+            result = run_supervised([sys.executable, '-c', 'import os; os.write(1,b"x"*200000)'],
+                                    timeout=2, output_directory=directory, operation_id='op', output_limit=100)
+            self.assertEqual(result['status'], 'completed')
+            self.assertTrue(result['output_incomplete'])
+            self.assertEqual(len(forwarded), 200000)
+
+    def test_reader_join_is_bounded_when_descendant_holds_pipe(self):
+        import builtins
+        import os
+        import signal
+        import sys
+        import tempfile
+        import time
+        from pathlib import Path
+        from unittest.mock import Mock, patch
+        from sandbox_v2 import run_supervised
+        libc = Mock()
+        libc.prctl.return_value = 0
+        original_open = builtins.open
+        original_waitpid = os.waitpid
+        def waitpid(pid, flags):
+            return (0, 0) if pid == -1 else original_waitpid(pid, flags)
+        def unavailable_children(path, *args, **kwargs):
+            if str(path).startswith('/proc/self/task/') and str(path).endswith('/children'):
+                raise FileNotFoundError(path)
+            return original_open(path, *args, **kwargs)
+        with tempfile.TemporaryDirectory() as directory, patch('sandbox_v2.ctypes.CDLL', return_value=libc), \
+             patch('builtins.open', side_effect=unavailable_children), \
+             patch('sandbox_v2.FORWARD_GRACE_SECONDS', .1), patch('os.waitpid', side_effect=waitpid):
+            pidfile = Path(directory) / 'pid'
+            script = ('import subprocess,sys; p=subprocess.Popen([sys.executable,"-c",'
+                      '"import time; time.sleep(30)"]); open(sys.argv[1],"w").write(str(p.pid))')
+            started = time.monotonic()
+            try:
+                result = run_supervised([sys.executable, '-c', script, str(pidfile)], timeout=.2,
+                                        output_directory=directory, operation_id='op', output_limit=100)
+                self.assertLess(time.monotonic() - started, 3)
+                self.assertTrue(result['output_incomplete'])
+            finally:
+                if pidfile.exists():
+                    try:
+                        pid = int(pidfile.read_text())
+                        os.kill(pid, signal.SIGKILL)
+                        try:
+                            os.waitpid(pid, 0)
+                        except ChildProcessError:
+                            pass
+                    except ProcessLookupError:
+                        pass
+
+    def test_slow_forward_does_not_truncate_saved_output_after_child_exits(self):
+        import select
+        import sys
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock, patch
+        import sandbox_v2
+        libc = Mock()
+        libc.prctl.return_value = 0
+        original_select = select.select
+        def slow_forward(reads, writes, errors, timeout=None):
+            if writes:
+                __import__('time').sleep(.01)
+                return ([], [], [])
+            return original_select(reads, writes, errors, timeout)
+        with tempfile.TemporaryDirectory() as directory, patch.object(sandbox_v2.ctypes, 'CDLL', return_value=libc), \
+             patch.object(sandbox_v2, 'FORWARD_GRACE_SECONDS', .15, create=True), \
+             patch('select.select', side_effect=slow_forward):
+            result = sandbox_v2.run_supervised([sys.executable, '-c', 'import os,time; os.write(1,b"a"*1000); time.sleep(.1); os.write(1,b"b"*1000)'],
+                timeout=4, output_directory=directory, operation_id='op', output_limit=100000)
+            self.assertEqual(result['status'], 'completed')
+            self.assertTrue(result['forward_incomplete'])
+            self.assertFalse(result['output_incomplete'])
+            self.assertEqual((Path(directory) / 'op.stdout').read_bytes(), b'a' * 1000 + b'b' * 1000)
+
     @unittest.skipUnless(__import__('sys').platform.startswith('linux'), 'Linux proc and pidfd required')
     def test_timeout_stops_descendant_that_created_a_new_session(self):
         import os
@@ -652,6 +858,348 @@ class CommandTransportTest(unittest.TestCase):
 
 
 class ReconnectedCommandRegressionTest(unittest.TestCase):
+    def test_late_result_cannot_be_overwritten_by_the_transport_worker(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        with tempfile.TemporaryDirectory() as directory:
+            backend = Mock(root=Path(directory), command=['kubectl'], environment={}, config={})
+            controller = ExecutionPodController(backend, {}, admitted=True)
+            record = {'operation_id':operation, 'scratch_space_id':'s', 'run_id':'r', 'pod':'pod',
+                      'pod_uid':'uid', 'docker_enabled':False, 'background':False, 'timeout_seconds':5,
+                      'cwd':'.', 'code':'true', 'status':'queued'}
+            controller._command_path(operation).write_text(json.dumps(record))
+            def result_arrived(*_):
+                controller._update_command(operation, status='interrupted', outcome='unknown')
+                controller._update_command(operation, allow_late=True, status='completed', outcome='known', exit_code=0)
+                return None
+            controller._await_normal_result = Mock(side_effect=result_arrived)
+            controller._stop_matching_pod = Mock()
+            transport = {'exit_code':1, 'transport_timed_out':False,
+                         'output':{'stdout':'', 'stderr':'', 'truncated':False}}
+            with patch('execution_pod.drain_process', return_value=transport):
+                controller._execute_command(operation)
+            self.assertEqual(controller._read_command(operation)['status'], 'completed')
+            controller._stop_matching_pod.assert_not_called()
+
+    def test_lost_transport_leaves_unreachable_pod_running(self):
+        import json
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        with tempfile.TemporaryDirectory() as directory:
+            backend = Mock(root=Path(directory), command=['kubectl'], environment={}, config={})
+            controller = ExecutionPodController(backend, {}, admitted=True)
+            record = {'operation_id':operation, 'scratch_space_id':'s', 'run_id':'r', 'pod':'pod',
+                      'pod_uid':'uid', 'docker_enabled':False, 'background':False, 'timeout_seconds':5,
+                      'cwd':'.', 'code':'true', 'status':'queued'}
+            controller._command_path(operation).write_text(json.dumps(record))
+            controller._await_normal_result = Mock(return_value=None)
+            controller._get = Mock(side_effect=subprocess.TimeoutExpired('kubectl', 45))
+            controller._stop_matching_pod = Mock()
+            transport = {'exit_code':1, 'transport_timed_out':True,
+                         'output':{'stdout':'', 'stderr':'', 'truncated':False}}
+            with patch('execution_pod.drain_process', return_value=transport):
+                controller._execute_command(operation)
+            self.assertEqual(controller._read_command(operation)['status'], 'interrupted')
+            self.assertEqual(controller._read_command(operation)['outcome'], 'unknown')
+            controller._stop_matching_pod.assert_not_called()
+            from types import SimpleNamespace
+            controller._get = Mock(return_value={'metadata':{'uid':'uid'}})
+            backend.kube = Mock(side_effect=lambda args, **kwargs: SimpleNamespace(
+                returncode=1 if 'result' in args else 0, stdout=b''))
+            controller.command_result(operation)
+            self.assertTrue(any('stop' in call.args[0] for call in backend.kube.call_args_list))
+            self.assertFalse(controller._read_command(operation)['stop_pending'])
+            controller._stop_matching_pod.assert_not_called()
+
+    def test_reachable_pod_is_stopped_only_after_command_stop_fails(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController, STOP_RETRY_SECONDS
+        with tempfile.TemporaryDirectory() as directory:
+            backend = Mock(root=Path(directory))
+            controller = ExecutionPodController(backend, {}, admitted=True)
+            record = {'operation_id':'e6ded09d-f783-4ce8-98e9-dbfca68884f1',
+                      'scratch_space_id':'s', 'pod':'pod', 'pod_uid':'uid',
+                      'status':'interrupted', 'stop_pending':True, 'terminal_at':1}
+            controller._command_path(record['operation_id']).write_text(json.dumps(record))
+            controller._get = Mock(return_value={'metadata':{'uid':'uid'}})
+            controller.command_result = Mock(return_value={'status':'interrupted'})
+            controller._stop_matching_pod = Mock()
+            backend.kube = Mock(side_effect=RuntimeError('stop rejected'))
+            with patch('time.time', return_value=100):
+                controller._stop_untracked_command(record)
+            controller._stop_matching_pod.assert_not_called()
+            with patch('time.time', return_value=100 + STOP_RETRY_SECONDS):
+                controller._stop_untracked_command(record)
+            controller._stop_matching_pod.assert_called_once_with('s', 'uid')
+
+    def test_outage_during_stop_does_not_fence_the_whole_space(self):
+        import json
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            backend = Mock(root=Path(directory))
+            controller = ExecutionPodController(backend, {}, admitted=True)
+            record = {'operation_id':'e6ded09d-f783-4ce8-98e9-dbfca68884f1',
+                      'scratch_space_id':'s', 'pod':'pod', 'pod_uid':'uid',
+                      'status':'interrupted', 'stop_pending':True, 'terminal_at':1}
+            controller._command_path(record['operation_id']).write_text(json.dumps(record))
+            controller._get = Mock(side_effect=[{'metadata':{'uid':'uid'}}, subprocess.TimeoutExpired('kubectl', 45)])
+            controller.command_result = Mock(return_value={'status':'interrupted'})
+            controller._stop_matching_pod = Mock()
+            controller._mark_space_unconfirmed = Mock()
+            backend.kube = Mock(side_effect=RuntimeError('transport failed'))
+            controller._stop_untracked_command(record)
+            controller._stop_matching_pod.assert_not_called()
+            controller._mark_space_unconfirmed.assert_not_called()
+
+    def test_concurrent_polls_send_only_one_stop_request(self):
+        import json
+        import tempfile
+        import threading
+        import time
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            backend = Mock(root=Path(directory))
+            controller = ExecutionPodController(backend, {}, admitted=True)
+            record = {'operation_id':'e6ded09d-f783-4ce8-98e9-dbfca68884f1', 'run_id':'r',
+                      'scratch_space_id':'s', 'pod':'pod', 'pod_uid':'uid',
+                      'status':'interrupted', 'stop_pending':True, 'terminal_at':time.time()}
+            controller._command_path(record['operation_id']).write_text(json.dumps(record))
+            controller._get = Mock(return_value={'metadata':{'uid':'uid'}})
+            entered, release = threading.Event(), threading.Event()
+            def stop(*args, **kwargs):
+                entered.set()
+                self.assertTrue(release.wait(2))
+            backend.kube = Mock(side_effect=stop)
+            first = threading.Thread(target=controller._stop_untracked_command, args=(record,))
+            second = threading.Thread(target=controller._stop_untracked_command, args=(record,))
+            first.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                second.start()
+            finally:
+                release.set()
+                first.join(2)
+                second.join(2)
+            self.assertFalse(first.is_alive() or second.is_alive())
+            backend.kube.assert_called_once()
+            self.assertFalse(controller._read_command(record['operation_id'])['stop_pending'])
+
+    def test_result_wait_survives_a_45_second_kubernetes_timeout(self):
+        import json
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodController
+        operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        with tempfile.TemporaryDirectory() as directory:
+            clock = [0.0]
+            class Backend:
+                root = Path(directory)
+                calls = 0
+                def kube(self, args, **kwargs):
+                    self.calls += 1
+                    if self.calls == 1:
+                        clock[0] += 45
+                        raise subprocess.TimeoutExpired('kubectl', 45)
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(
+                        {'operation_id':operation, 'run_id':'r', 'status':'completed'}).encode())
+            controller = ExecutionPodController(Backend(), {}, admitted=True)
+            record = {'operation_id':operation, 'run_id':'r', 'status':'running', 'pod':'pod', 'pod_uid':'uid'}
+            controller._command_path(operation).write_text(json.dumps(record))
+            with patch('time.monotonic', side_effect=lambda: clock[0]), patch('time.sleep'):
+                result = controller._await_normal_result(record, 100)
+            self.assertEqual(result['status'], 'completed')
+            self.assertEqual(controller.backend.calls, 2)
+
+    def test_background_wait_does_not_expire_when_result_is_temporarily_missing(self):
+        import json
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodController
+        operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        with tempfile.TemporaryDirectory() as directory:
+            clock = [0.0]
+            class Backend:
+                root = Path(directory)
+                outage = True
+                def kube(self, args, **kwargs):
+                    if args[0] == 'get':
+                        return SimpleNamespace(stdout=b'{"metadata":{"uid":"uid"},"status":{"phase":"Running"}}')
+                    if 'running' in args:
+                        return SimpleNamespace(returncode=0, stdout=b'{"running":false}')
+                    if self.outage:
+                        self.outage = False
+                        clock[0] += 45
+                        raise subprocess.TimeoutExpired('kubectl', 45)
+                    if clock[0] < 65:
+                        return SimpleNamespace(returncode=1, stdout=b'')
+                    return SimpleNamespace(returncode=0, stdout=b'{"status":"completed"}')
+            controller = ExecutionPodController(Backend(), {}, admitted=True)
+            record = {'operation_id':operation, 'run_id':'r', 'status':'running', 'pod':'pod', 'pod_uid':'uid'}
+            controller._command_path(operation).write_text(json.dumps(record))
+            with patch('time.monotonic', side_effect=lambda: clock[0]), \
+                 patch('time.sleep', side_effect=lambda _: clock.__setitem__(0, clock[0] + 10)):
+                result = controller._await_normal_result(record, None)
+            self.assertEqual(result['status'], 'completed')
+            self.assertGreaterEqual(clock[0], 65)
+
+    def test_background_missing_result_expires_and_terminal_pod_stops_wait(self):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        with tempfile.TemporaryDirectory() as directory:
+            backend = Mock(root=Path(directory))
+            backend.kube.side_effect = lambda args, **kwargs: SimpleNamespace(
+                returncode=0 if 'running' in args else 1, stdout=b'{"running":false}')
+            controller = ExecutionPodController(backend, {}, admitted=True)
+            record = {'operation_id':operation, 'status':'running', 'pod':'pod', 'pod_uid':'uid'}
+            controller._command_path(operation).write_text(__import__('json').dumps(record))
+            clock = [0.0]
+            controller._get = Mock(return_value={'metadata':{'uid':'uid'}, 'status':{'phase':'Running'}})
+            def advance(_):
+                clock[0] += 10
+                if clock[0] > 50:
+                    raise AssertionError('missing background result never timed out')
+            with patch('time.monotonic', side_effect=lambda: clock[0]), \
+                 patch('time.sleep', side_effect=advance):
+                self.assertIsNone(controller._await_normal_result(record, None))
+            self.assertGreaterEqual(clock[0], 30)
+            for phase in ('Failed', 'Succeeded'):
+                controller._get.return_value['status']['phase'] = phase
+                with patch('time.sleep', side_effect=AssertionError('terminal Pod must not wait')):
+                    self.assertIsNone(controller._await_normal_result(record, None))
+            for phase in ('Pending', 'Unknown'):
+                controller._get.return_value['status']['phase'] = phase
+                calls = [0]
+                def later_result(args, calls=calls, **kwargs):
+                    if 'result' in args:
+                        calls[0] += 1
+                        return SimpleNamespace(returncode=1 if calls[0] == 1 else 0,
+                                               stdout=b'{"status":"completed"}')
+                    return SimpleNamespace(returncode=0, stdout=b'{"running":true}')
+                backend.kube.side_effect = later_result
+                with patch('time.sleep'):
+                    self.assertEqual(controller._await_normal_result(record, None)['status'], 'completed')
+
+    def test_unconfirmed_stop_waits_before_normal_delete_and_requires_node(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController, ExecutionPodError, STOP_RETRY_SECONDS
+        from control import scratch_resource_name
+        with tempfile.TemporaryDirectory() as directory:
+            backend = Mock(root=Path(directory))
+            controller = ExecutionPodController(backend, {'namespace':'fixture'}, admitted=True)
+            controller.touch_space('s', now=1)
+            path = Path(directory) / 'execution-v2-spaces' / (scratch_resource_name('s') + '.json')
+            state = json.loads(path.read_text())
+            state['guard'] = {'pod_uid': 'uid', 'cluster_node': 'node', 'node_uid': 'node-uid', 'terminated': False}
+            path.write_text(json.dumps(state))
+            controller._terminate_recorded_pod = Mock(side_effect=ExecutionPodError('termination_unconfirmed', 'guard unavailable'))
+            with patch('time.time', return_value=100):
+                with self.assertRaises(ExecutionPodError):
+                    controller.stop('s')
+            backend.kube.assert_not_called()
+            controller._get = Mock(return_value=None)
+            with patch('time.time', return_value=100 + STOP_RETRY_SECONDS):
+                with self.assertRaises(ExecutionPodError):
+                    controller.stop('s')
+            backend.kube.assert_not_called()
+            controller._get = Mock(side_effect=lambda kind, name: {'metadata':{'name':name, 'uid':'node-uid'}} if kind == 'node' else None)
+            with patch('time.time', return_value=100 + STOP_RETRY_SECONDS):
+                with self.assertRaises(ExecutionPodError):
+                    controller.stop('s')
+            backend.kube.assert_not_called()
+            controller._get = Mock(side_effect=lambda kind, name: {'metadata': {'uid':'replacement'}} if kind == 'node'
+                                   else {'metadata': {'uid':'uid'}, 'spec': {'nodeName':'node'}})
+            with patch('time.time', return_value=100 + STOP_RETRY_SECONDS):
+                with self.assertRaises(ExecutionPodError):
+                    controller.stop('s')
+            backend.kube.assert_not_called()
+            pod_reads = [0]
+            def present_node_and_pod(kind, name):
+                if kind == 'node':
+                    return {'metadata': {'name': name, 'uid': 'node-uid'}}
+                pod_reads[0] += 1
+                return {'metadata': {'uid':'uid'}, 'spec': {'nodeName':'node'}} if pod_reads[0] == 1 else None
+            controller._get = Mock(side_effect=present_node_and_pod)
+            with patch('time.time', return_value=100 + STOP_RETRY_SECONDS):
+                self.assertTrue(controller.stop('s')['stopped'])
+            self.assertEqual(controller._terminate_recorded_pod.call_count, 1)
+            args = backend.kube.call_args_list[0].args[0]
+            self.assertEqual(args[0], 'delete')
+            self.assertNotIn('--force', args)
+            self.assertEqual(json.loads(backend.kube.call_args_list[0].args[1])['preconditions']['uid'], 'uid')
+            self.assertFalse(json.loads(path.read_text())['termination_unconfirmed'])
+
+    def test_guard_preserves_node_identity_for_the_same_pod(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController, ExecutionPodError
+        from control import scratch_resource_name
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {'helper_image': 'helper'}, admitted=True)
+            controller.touch_space('s', now=1)
+            name = scratch_resource_name('s')
+            pod = {'metadata': {'name': name, 'uid': 'pod-uid'}, 'spec': {'nodeName': 'node'}}
+            controller._get = Mock(return_value={'metadata': {'uid': 'first-node'}})
+            controller._record_guard(pod, 'execution', 'container', 1)
+            controller._get.return_value = {'metadata': {'uid': 'replacement-node'}}
+            with self.assertRaises(ExecutionPodError):
+                controller._record_guard(pod, 'execution', 'container', 1)
+
+    def test_interrupted_command_adopts_a_late_result_without_replay(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from execution_pod import ExecutionPodController
+        operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        with tempfile.TemporaryDirectory() as directory:
+            class Backend:
+                root = Path(directory)
+                def kube(self, args, **kwargs):
+                    if args[0] == 'get':
+                        return SimpleNamespace(stdout=b'{"metadata":{"uid":"uid"},"status":{"phase":"Running"}}')
+                    if 'output' in args:
+                        return SimpleNamespace(returncode=0, stdout=b'{"data":"","next_offset":0,"eof":true}')
+                    return SimpleNamespace(returncode=0, stdout=json.dumps(
+                        {'operation_id': operation, 'run_id': 'r', 'status': 'completed', 'exit_code': 7}).encode())
+            controller = ExecutionPodController(Backend(), {}, admitted=True)
+            controller._command_path(operation).write_text(json.dumps({'operation_id': operation,
+                'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid',
+                'status': 'interrupted', 'outcome': 'unknown', 'terminal_at': __import__('time').time()}))
+            result = controller.command_result(operation)
+            self.assertEqual(result['status'], 'completed')
+            self.assertEqual(result['exit_code'], 7)
+
     def test_lost_stream_waits_for_supervisor_result_without_stopping_pod(self):
         import json
         import tempfile
@@ -680,11 +1228,757 @@ class ReconnectedCommandRegressionTest(unittest.TestCase):
                 'timeout_seconds': 5, 'cwd': '.', 'code': 'true', 'status': 'queued'}))
             transport = {'exit_code': 1, 'transport_timed_out': False,
                          'output': {'stdout': '', 'stderr': '', 'truncated': False}}
-            with patch('execution_pod.drain_process', return_value=transport), patch('time.sleep'):
+            with patch('execution_pod.drain_process', return_value=transport), patch('time.sleep'), \
+                 patch('execution_pod.OUTPUT_RETRY_SECONDS', 0):
                 controller._execute_command(operation)
             self.assertEqual(controller.command_result(operation)['exit_code'], 127)
             self.assertEqual(controller.backend.attempts, 2)
 
+
+class RestartResumeTest(unittest.TestCase):
+    operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+
+    def test_resume_result_reads_saved_output_and_forgets(self):
+        import base64
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        op = self.operation
+        with tempfile.TemporaryDirectory() as directory:
+            calls = []
+            def kube(args, **kwargs):
+                calls.append(args)
+                if 'claim' in args:
+                    body = {'created': False}
+                elif 'result' in args:
+                    body = {'operation_id': op, 'run_id': 'r', 'status': 'completed', 'exit_code': 7}
+                elif 'output' in args:
+                    stream = args[-3]
+                    data = b'hello' if stream == 'stdout' else b'err'
+                    body = {'data': base64.b64encode(data).decode(), 'next_offset': len(data), 'eof': True}
+                else:
+                    body = {}
+                return SimpleNamespace(returncode=0, stdout=json.dumps(body).encode())
+            backend = SimpleNamespace(root=Path(directory), kube=kube)
+            controller = ExecutionPodController(backend, {}, admitted=False)
+            controller._get = Mock(return_value={'metadata': {'uid': 'uid'}, 'status': {'phase': 'Running'}})
+            controller._command_path(op).write_text(json.dumps({'operation_id': op, 'scratch_space_id': 's',
+                'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid', 'status': 'running', 'background': True}))
+            controller._resume_command(op)
+            result = controller.command_result(op)
+            self.assertEqual((result['status'], result['exit_code']), ('completed', 7))
+            self.assertEqual(base64.b64decode(result['stdout']), b'hello')
+            self.assertEqual(base64.b64decode(result['stderr']), b'err')
+            self.assertTrue(any('forget' in args for args in calls))
+
+    def test_resume_keeps_available_output_if_other_stream_is_missing(self):
+        import base64
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        op = self.operation
+        def kube(args, **kwargs):
+            if 'claim' in args:
+                body = {'created': False}
+            elif 'result' in args:
+                body = {'operation_id': op, 'run_id': 'r', 'status': 'completed', 'exit_code': 0}
+            elif 'output' in args and args[-3] == 'stdout':
+                body = {'data': base64.b64encode(b'kept').decode(), 'next_offset': 4, 'eof': True}
+            elif 'output' in args:
+                return SimpleNamespace(returncode=1, stdout=b'')
+            else:
+                body = {}
+            return SimpleNamespace(returncode=0, stdout=json.dumps(body).encode())
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=False)
+            controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
+            controller._command_path(op).write_text(json.dumps({'operation_id': op, 'scratch_space_id': 's',
+                'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid', 'status': 'running', 'background': True}))
+            with patch('execution_pod.OUTPUT_RETRY_SECONDS', 0):
+                controller._resume_command(op)
+            result = controller.command_result(op)
+            self.assertEqual(base64.b64decode(result['stdout']), b'kept')
+            self.assertTrue(result['truncated'])
+            self.assertIn('output', result['message'].lower())
+
+    def test_resume_gone_replaced_or_claimed_never_stops_pod(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        for pod, expected in [(None, ('interrupted', 'unknown')),
+                              ({'metadata': {'uid': 'new'}}, ('interrupted', 'unknown')),
+                              ({'metadata': {'uid': 'uid'}}, ('cancelled', 'not_started'))]:
+            with self.subTest(pod=pod), tempfile.TemporaryDirectory() as directory:
+                backend = SimpleNamespace(root=Path(directory), kube=Mock(return_value=SimpleNamespace(
+                    returncode=0, stdout=b'{"created":true}')))
+                controller = ExecutionPodController(backend, {}, admitted=False)
+                controller._get = Mock(return_value=pod)
+                controller._command_path(self.operation).write_text(json.dumps({'operation_id': self.operation,
+                    'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid',
+                    'status': 'running', 'background': True}))
+                controller._resume_command(self.operation)
+                result = controller._read_command(self.operation)
+                self.assertEqual((result['status'], result['outcome']), expected)
+                self.assertFalse(any('stop' in args.args[0] for args in backend.kube.call_args_list))
+
+    def test_successful_claim_cancels_without_another_pod_lookup(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            backend = SimpleNamespace(root=Path(directory), kube=Mock(return_value=SimpleNamespace(
+                returncode=0, stdout=b'{"created":true}')))
+            controller = ExecutionPodController(backend, {}, admitted=False)
+            controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
+            controller._command_path(self.operation).write_text(json.dumps({'operation_id': self.operation,
+                'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid',
+                'status': 'running', 'background': True}))
+            controller._resume_command(self.operation)
+            result = controller._read_command(self.operation)
+            self.assertEqual((result['status'], result['outcome']), ('cancelled', 'not_started'))
+            controller._get.assert_called_once()
+
+    def test_resume_retries_transient_failure_and_publishes_while_running(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        op = self.operation
+        with tempfile.TemporaryDirectory() as directory:
+            backend = SimpleNamespace(root=Path(directory), kube=Mock(return_value=SimpleNamespace(
+                returncode=0, stdout=b'{"created":false}')))
+            controller = ExecutionPodController(backend, {}, admitted=False)
+            controller._get = Mock(side_effect=[RuntimeError('offline'), {'metadata': {'uid': 'uid'}}])
+            controller._command_path(op).write_text(json.dumps({'operation_id': op, 'scratch_space_id': 's',
+                'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid', 'status': 'running', 'background': True}))
+            def await_result(record, deadline, *, publish_saved):
+                self.assertTrue(publish_saved)
+                self.assertEqual(controller._read_command(op)['status'], 'running')
+                return {'operation_id': op, 'run_id': 'r', 'status': 'completed', 'exit_code': 0}
+            controller._await_normal_result = await_result
+            controller._saved_output = Mock(side_effect=RuntimeError('disk full'))
+            with patch('time.sleep'):
+                controller._resume_command(op)
+            result = controller.command_result(op)
+            self.assertEqual(result['status'], 'completed')
+            self.assertTrue(result['truncated'])
+            self.assertIn('output', result['message'].lower())
+            self.assertEqual(controller._get.call_count, 2)
+
+    def test_running_resume_publishes_saved_output_until_result(self):
+        import json
+        import tempfile
+        import threading
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        ready, release = threading.Event(), threading.Event()
+        with tempfile.TemporaryDirectory() as directory:
+            def kube(args, **kwargs):
+                if 'claim' in args:
+                    return SimpleNamespace(returncode=0, stdout=b'{"created":false}')
+                if 'result' in args:
+                    ready.set()
+                    release.wait(3)
+                    return SimpleNamespace(returncode=0, stdout=json.dumps({'operation_id': self.operation,
+                        'run_id': 'r', 'status': 'completed', 'exit_code': 0}).encode())
+                return SimpleNamespace(returncode=0, stdout=b'{}')
+            controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=False)
+            controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
+            controller._preview_saved_output = Mock(return_value={'stdout': 'eA==', 'stderr': '', 'truncated': False})
+            controller._saved_output = Mock(return_value={'stdout': 'eA==', 'stderr': '', 'truncated': False})
+            controller._command_path(self.operation).write_text(json.dumps({'operation_id': self.operation,
+                'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid',
+                'status': 'running', 'background': True}))
+            worker = threading.Thread(target=controller._resume_command, args=(self.operation,))
+            worker.start()
+            try:
+                self.assertTrue(ready.wait(2))
+                result = controller.command_result(self.operation)
+                self.assertEqual(result['status'], 'running')
+                self.assertEqual(result['stdout'], 'eA==')
+                self.assertIn('output_fetched_at', result)
+            finally:
+                release.set()
+                worker.join(3)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(controller.command_result(self.operation)['status'], 'completed')
+
+    def test_resume_preview_failure_does_not_end_watch(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            results = [SimpleNamespace(returncode=1, stdout=b''),
+                       SimpleNamespace(returncode=0, stdout=b'{"running":true}'),
+                       SimpleNamespace(returncode=0, stdout=json.dumps({'status': 'completed'}).encode())]
+            backend = SimpleNamespace(root=Path(directory), kube=Mock(side_effect=results))
+            controller = ExecutionPodController(backend, {}, admitted=False)
+            controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
+            controller._preview_saved_output = Mock(side_effect=RuntimeError('output unavailable'))
+            record = {'operation_id': self.operation, 'status': 'running', 'pod': 'pod', 'pod_uid': 'uid'}
+            controller._command_path(self.operation).write_text(json.dumps(record))
+            with patch('time.sleep'):
+                self.assertEqual(controller._await_normal_result(record, None, publish_saved=True)['status'], 'completed')
+
+    def test_interrupted_foreground_docker_is_cancelled_via_helper(self):
+        import json
+        import tempfile
+        import time
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            kube = Mock(side_effect=lambda args, **kwargs: SimpleNamespace(
+                returncode=0, stdout=b'{"created":false}' if 'claim' in args else b'{"running":true}'))
+            controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=False)
+            controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
+            controller._command_path(self.operation).write_text(json.dumps({'operation_id': self.operation,
+                'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid', 'background': False,
+                'docker_enabled': True, 'status': 'interrupted', 'terminal_at': time.time()}))
+            controller.cancel_run('s', 'r')
+            self.assertIn('stop', kube.call_args.args[0])
+
+    def test_docker_interrupted_never_adopts_forged_result_and_can_stop(self):
+        import json
+        import tempfile
+        import time
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            kube = Mock(side_effect=lambda args, **kwargs: SimpleNamespace(
+                returncode=0, stdout=b'{"created":false}' if 'claim' in args else b'{"running":true}'))
+            controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=False)
+            controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
+            controller._command_path(self.operation).write_text(json.dumps({'operation_id': self.operation,
+                'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid', 'background': True,
+                'docker_enabled': True, 'status': 'interrupted', 'terminal_at': time.time()}))
+            self.assertEqual(controller.command_result(self.operation)['status'], 'interrupted')
+            kube.assert_not_called()
+            self.assertEqual(controller.stop_background(self.operation)['status'], 'stopping')
+            self.assertIn('stop', kube.call_args.args[0])
+
+class LeadReviewRegressionTest(unittest.TestCase):
+    op = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+
+    def test_stream_failure_uses_saved_output(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        for exit_code, forward_lost in [(1, False), (0, True)]:
+            with self.subTest(exit_code=exit_code), tempfile.TemporaryDirectory() as directory:
+                backend = SimpleNamespace(root=Path(directory), command=['kubectl'], environment={}, kube=Mock())
+                controller = ExecutionPodController(backend, {}, admitted=True)
+                controller._command_path(self.op).write_text(json.dumps({'operation_id': self.op,
+                    'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid',
+                    'docker_enabled': False, 'background': False, 'timeout_seconds': 5, 'cwd': '.',
+                    'code': 'true', 'status': 'queued'}))
+                controller._await_normal_result = Mock(return_value={'operation_id': self.op, 'run_id': 'r',
+                    'status': 'completed', 'exit_code': 0, 'forward_incomplete': forward_lost})
+                controller._saved_output = Mock(return_value={'stdout': 'c2F2ZWQ=', 'stderr': '', 'truncated': False})
+                transport = {'exit_code': exit_code, 'transport_timed_out': False,
+                             'output': {'stdout': 'cGFydA==', 'stderr': '', 'truncated': False}}
+                with patch('execution_pod.drain_process', return_value=transport):
+                    controller._execute_command(self.op)
+                result = controller.command_result(self.op)
+                self.assertEqual(result['stdout'], 'c2F2ZWQ=')
+                self.assertFalse(result['truncated'])
+
+    def test_failed_saved_output_read_keeps_truncated_live_stream(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            backend = SimpleNamespace(root=Path(directory), command=['kubectl'], environment={}, kube=Mock())
+            controller = ExecutionPodController(backend, {}, admitted=True)
+            controller._command_path(self.op).write_text(json.dumps({'operation_id': self.op,
+                'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid', 'docker_enabled': False,
+                'background': False, 'timeout_seconds': 5, 'cwd': '.', 'code': 'true', 'status': 'queued'}))
+            controller._await_normal_result = Mock(return_value={'operation_id': self.op, 'run_id': 'r',
+                'status': 'completed', 'exit_code': 0, 'forward_incomplete': True})
+            controller._saved_output = Mock(side_effect=RuntimeError('offline'))
+            transport = {'exit_code': 0, 'transport_timed_out': False,
+                         'output': {'stdout': 'cGFydA==', 'stderr': '', 'truncated': False}}
+            with patch('execution_pod.drain_process', return_value=transport):
+                controller._execute_command(self.op)
+            result = controller.command_result(self.op)
+            self.assertEqual(result['stdout'], 'cGFydA==')
+            self.assertTrue(result['truncated'])
+
+    def test_supervisor_and_transport_use_the_same_output_limit(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        class ChangingConfig(dict):
+            def __init__(self):
+                super().__init__()
+                self.reads = 0
+            def get(self, key, default=None):
+                if key == 'output_bytes':
+                    self.reads += 1
+                    return 64 if self.reads == 1 else 128
+                return super().get(key, default)
+        with tempfile.TemporaryDirectory() as directory:
+            backend = SimpleNamespace(root=Path(directory), command=['kubectl'], environment={}, kube=Mock())
+            controller = ExecutionPodController(backend, ChangingConfig(), admitted=True)
+            controller._command_path(self.op).write_text(json.dumps({'operation_id': self.op,
+                'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid', 'docker_enabled': False,
+                'background': False, 'timeout_seconds': 5, 'cwd': '.', 'code': 'true', 'status': 'queued'}))
+            controller._await_normal_result = Mock(return_value={'operation_id': self.op, 'run_id': 'r',
+                'status': 'completed', 'exit_code': 0})
+            def drain(argv, environment, limit, *args, **kwargs):
+                self.assertEqual(int(argv[-1]), limit)
+                return {'exit_code': 0, 'transport_timed_out': False,
+                        'output': {'stdout': '', 'stderr': '', 'truncated': False}}
+            with patch('execution_pod.drain_process', side_effect=drain):
+                controller._execute_command(self.op)
+            self.assertEqual(controller.command_result(self.op)['status'], 'completed')
+
+    def test_expired_resume_still_checks_result(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        calls = []
+        def kube(args, **kwargs):
+            calls.append(args)
+            if 'claim' in args:
+                body = {'created': False}
+            elif 'result' in args:
+                body = {'operation_id': self.op, 'run_id': 'r', 'status': 'completed', 'exit_code': 0}
+            elif 'output' in args:
+                body = {'data': '', 'next_offset': 0, 'eof': True}
+            else:
+                body = {}
+            return SimpleNamespace(returncode=0, stdout=json.dumps(body).encode())
+        with tempfile.TemporaryDirectory() as directory:
+            backend = SimpleNamespace(root=Path(directory), kube=kube)
+            controller = ExecutionPodController(backend, {}, admitted=False)
+            controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
+            controller._command_path(self.op).write_text(json.dumps({'operation_id': self.op,
+                'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid',
+                'status': 'running', 'background': False, 'running_at': 1, 'timeout_seconds': 5}))
+            controller._resume_command(self.op)
+            self.assertEqual(controller.command_result(self.op)['status'], 'completed')
+            self.assertTrue(any('result' in call for call in calls))
+
+    def test_terminal_pod_does_not_retry_claim(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        for phase in ('Failed', 'Succeeded'):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
+                kube = Mock()
+                controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=False)
+                controller._get = Mock(return_value={'metadata': {'uid': 'uid'}, 'status': {'phase': phase}})
+                controller._command_path(self.op).write_text(json.dumps({'operation_id': self.op,
+                    'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid',
+                    'status': 'running', 'background': True}))
+                controller._resume_command(self.op)
+                self.assertEqual(controller._read_command(self.op)['status'], 'interrupted')
+                kube.assert_not_called()
+
+    def test_docker_late_poll_retries_pending_stop_without_reading_result(self):
+        import json
+        import tempfile
+        import time
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            backend = Mock(root=Path(directory))
+            controller = ExecutionPodController(backend, {}, admitted=False)
+            controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
+            controller._stop_untracked_command = Mock()
+            controller._command_path(self.op).write_text(json.dumps({'operation_id': self.op, 'run_id': 'r',
+                'pod': 'pod', 'pod_uid': 'uid', 'status': 'interrupted', 'terminal_at': time.time(),
+                'docker_enabled': True, 'stop_pending': True}))
+            controller.command_result(self.op)
+            controller._stop_untracked_command.assert_called_once()
+            backend.kube.assert_not_called()
+
+    def test_interrupted_docker_stop_ignores_gone_pod_or_finished_process(self):
+        import itertools
+        import json
+        import tempfile
+        import time
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        for pod in (None, {'metadata': {'uid': 'new'}}, {'metadata': {'uid': 'uid'}}):
+            with self.subTest(pod=pod), tempfile.TemporaryDirectory() as directory:
+                kube = Mock(side_effect=lambda args, **kwargs: SimpleNamespace(
+                    returncode=0, stdout=b'{"created":false}' if 'claim' in args else b'{"running":false}'))
+                controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=False)
+                controller._get = Mock(return_value=pod)
+                controller._command_path(self.op).write_text(json.dumps({'operation_id': self.op,
+                    'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid', 'background': True, 'docker_enabled': True,
+                    'status': 'interrupted', 'terminal_at': time.time()}))
+                with patch('time.sleep'):
+                    with patch('time.monotonic', side_effect=itertools.count(step=.5).__next__):
+                        self.assertEqual(controller.stop_background(self.op)['status'], 'interrupted')
+                self.assertFalse(any('stop' in call.args[0] for call in kube.call_args_list))
+
+    def test_interrupted_docker_waits_out_the_window_once_and_still_looks_afterwards(self):
+        import itertools
+        import json
+        import tempfile
+        import time
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            running = [False]
+            def answer(args, **kwargs):
+                if 'claim' in args:
+                    return SimpleNamespace(returncode=0, stdout=b'{"created":false}')
+                return SimpleNamespace(returncode=0, stdout=json.dumps({'running': running[0]}).encode())
+            kube = Mock(side_effect=answer)
+            controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=False)
+            controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
+            controller._command_path(self.op).write_text(json.dumps({'operation_id': self.op,
+                'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid', 'background': True, 'docker_enabled': True,
+                'status': 'interrupted', 'terminal_at': time.time()}))
+            with patch('time.sleep') as sleep:
+                with patch('time.monotonic', side_effect=itertools.count(step=.5).__next__):
+                    controller.stop_background(self.op)
+                    self.assertTrue(sleep.called)
+                    sleep.reset_mock()
+                    self.assertEqual(controller.stop_background(self.op)['status'], 'interrupted')
+                    self.assertFalse(sleep.called)
+                    self.assertFalse(any('stop' in call.args[0] for call in kube.call_args_list))
+                    # A supervisor that published after the window still gets its stop.
+                    running[0] = True
+                    self.assertEqual(controller.stop_background(self.op)['status'], 'stopping')
+            self.assertTrue(any('stop' in call.args[0] for call in kube.call_args_list))
+
+    def test_interrupted_docker_retries_stop_and_cancel_continues_after_error(self):
+        import json
+        import tempfile
+        import time
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController, ExecutionPodError
+        with tempfile.TemporaryDirectory() as directory:
+            attempts = []
+            def kube(args, **kwargs):
+                if 'claim' in args:
+                    return SimpleNamespace(returncode=0, stdout=b'{"created":false}')
+                if 'running' in args:
+                    return SimpleNamespace(returncode=0, stdout=b'{"running":true}')
+                attempts.append(args[-1])
+                if len(attempts) == 1:
+                    raise RuntimeError('temporary')
+                return SimpleNamespace(returncode=0, stdout=b'')
+            controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=False)
+            controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
+            controller._command_path(self.op).write_text(json.dumps({'operation_id': self.op, 'scratch_space_id': 's',
+                'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid', 'background': False, 'docker_enabled': True,
+                'status': 'interrupted', 'terminal_at': time.time()}))
+            with patch('time.sleep'):
+                self.assertEqual(controller._stop_command(self.op)['status'], 'stopping')
+            self.assertEqual(len(attempts), 2)
+            other = 'e6ded09d-f783-4ce8-98e9-dbfca68884f2'
+            controller._command_path(other).write_text(json.dumps({'operation_id': other, 'scratch_space_id': 's',
+                'run_id': 'r', 'background': False, 'status': 'running'}))
+            def stop(op):
+                if op == self.op:
+                    raise RuntimeError('cannot stop')
+            controller._stop_command = Mock(side_effect=stop)
+            with self.assertRaises(ExecutionPodError):
+                controller.cancel_run('s', 'r')
+            self.assertEqual({call.args[0] for call in controller._stop_command.call_args_list}, {self.op, other})
+
+    def test_final_output_retries_transient_read_with_longer_timeout(self):
+        import base64
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodController
+        failures = [True]
+        def kube(args, **kwargs):
+            self.assertEqual(kwargs['timeout'], 15)
+            if failures:
+                failures.pop()
+                raise TimeoutError('temporary')
+            data = b'ok' if args[-3] == 'stdout' else b''
+            return SimpleNamespace(returncode=0, stdout=json.dumps({'data': base64.b64encode(data).decode(),
+                'next_offset': len(data), 'eof': True}).encode())
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=False)
+            with patch('time.sleep'):
+                result = controller._saved_output({'operation_id': self.op, 'pod': 'pod'}, {}, tolerate_missing=True)
+            self.assertEqual(base64.b64decode(result['stdout']), b'ok')
+            self.assertFalse(result['truncated'])
+            failures.append(True)
+            with patch('time.sleep'):
+                result = controller._saved_output({'operation_id': self.op, 'pod': 'pod'}, {})
+            self.assertEqual(base64.b64decode(result['stdout']), b'ok')
+            self.assertFalse(result['truncated'])
+
+    def test_partial_output_survives_missing_saved_stream_and_lost_pod(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            backend = SimpleNamespace(root=Path(directory), kube=Mock(return_value=SimpleNamespace(returncode=1, stdout=b'')))
+            controller = ExecutionPodController(backend, {}, admitted=False)
+            record = {'operation_id': self.op, 'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod',
+                      'pod_uid': 'uid', 'status': 'running', 'background': True, 'stdout': 'b2xk', 'stderr': ''}
+            controller._command_path(self.op).write_text(json.dumps(record))
+            controller.live_output[self.op] = {'stdout': 'cHJldmlldw==', 'stderr': '', 'truncated': False}
+            with patch('execution_pod.OUTPUT_RETRY_SECONDS', 0):
+                output = controller._saved_output(record, {}, tolerate_missing=True)
+            self.assertEqual(output['stdout'], 'cHJldmlldw==')
+            self.assertTrue(output['truncated'])
+            controller._get = Mock(return_value=None)
+            controller._saved_output = Mock(side_effect=RuntimeError('offline'))
+            with patch('time.sleep'):
+                controller._await_normal_result(record, None, publish_saved=True)
+            self.assertEqual(controller._read_command(self.op)['stdout'], 'cHJldmlldw==')
+
+    def test_preview_reads_only_new_bytes(self):
+        import base64
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from execution_pod import ExecutionPodController, BoundedOutput
+        values = {'stdout': b'first', 'stderr': b''}
+        offsets = []
+        def kube(args, **kwargs):
+            stream, offset = args[-3], int(args[-2])
+            offsets.append((stream, offset))
+            data = values[stream][offset:]
+            return SimpleNamespace(returncode=0, stdout=json.dumps({'data': base64.b64encode(data).decode(),
+                'next_offset': offset + len(data), 'eof': True}).encode())
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=False)
+            state = {'output': BoundedOutput(100), 'offsets': {'stdout': 0, 'stderr': 0}}
+            record = {'operation_id': self.op, 'pod': 'pod'}
+            controller._preview_saved_output(record, state)
+            values['stdout'] += b' more'
+            result = controller._preview_saved_output(record, state)
+            self.assertEqual(base64.b64decode(result['stdout']), b'first more')
+            self.assertIn(('stdout', 5), offsets)
+
+    def test_saved_output_retry_is_bounded_and_preserves_previous_bytes(self):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodController
+        clock = [0.0]
+        attempts = []
+        def kube(args, **kwargs):
+            attempts.append(kwargs['timeout'])
+            raise TimeoutError('offline')
+        def advance(seconds):
+            clock[0] += seconds
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=False)
+            record = {'operation_id': self.op, 'pod': 'pod', 'stdout': 'cGFydA=='}
+            with patch('time.monotonic', side_effect=lambda: clock[0]), patch('time.sleep', side_effect=advance):
+                outcome = {}
+                result = controller._saved_output(record, outcome, tolerate_missing=True)
+            self.assertEqual(clock[0], 60)
+            self.assertEqual(result['stdout'], 'cGFydA==')
+            self.assertTrue(result['truncated'])
+            self.assertTrue(outcome['output_incomplete'])
+            self.assertTrue(all(value <= 15 for value in attempts))
+
+    def test_resumed_polling_uses_separate_foreground_and_background_intervals(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        for background, expected in ((False, 2), (True, 5)):
+            with self.subTest(background=background), tempfile.TemporaryDirectory() as directory:
+                backend = SimpleNamespace(root=Path(directory), kube=Mock(side_effect=[
+                    SimpleNamespace(returncode=1, stdout=b''),
+                    SimpleNamespace(returncode=0, stdout=b'{"running":true}'),
+                    SimpleNamespace(returncode=0, stdout=b'{"status":"completed"}')]))
+                controller = ExecutionPodController(backend, {}, admitted=False)
+                controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
+                controller._preview_saved_output = Mock(side_effect=RuntimeError('unavailable'))
+                record = {'operation_id': self.op, 'pod': 'pod', 'pod_uid': 'uid', 'status': 'running',
+                          'background': background}
+                controller._command_path(self.op).write_text(json.dumps(record))
+                with patch('time.sleep') as sleep:
+                    controller._await_normal_result(record, None, publish_saved=True)
+                sleep.assert_called_once_with(expected)
+
+    def test_late_result_keeps_prior_output_when_saved_files_are_missing(self):
+        import json
+        import tempfile
+        import time
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        def kube(args, **kwargs):
+            if 'result' in args:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({'operation_id': self.op, 'run_id': 'r',
+                    'status': 'completed', 'exit_code': 0}).encode())
+            return SimpleNamespace(returncode=1, stdout=b'')
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=False)
+            controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
+            controller._command_path(self.op).write_text(json.dumps({'operation_id': self.op, 'run_id': 'r',
+                'pod': 'pod', 'pod_uid': 'uid', 'status': 'interrupted', 'terminal_at': time.time(),
+                'stdout': 'cGFydA==', 'stderr': ''}))
+            with patch('execution_pod.OUTPUT_RETRY_SECONDS', 0):
+                result = controller.command_result(self.op)
+            self.assertEqual(result['stdout'], 'cGFydA==')
+            self.assertTrue(result['truncated'])
+            self.assertEqual(result['outcome'], 'known')
+
+    def test_docker_stop_failure_is_retried_until_deadline(self):
+        import json
+        import tempfile
+        import time
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController, ExecutionPodError
+        clock, stops = [0.0], []
+        def kube(args, **kwargs):
+            if 'claim' in args:
+                return SimpleNamespace(returncode=0, stdout=b'{"created":false}')
+            if 'running' in args:
+                return SimpleNamespace(returncode=0, stdout=b'{"running":true}')
+            stops.append(1)
+            raise RuntimeError('offline')
+        def tick(seconds):
+            clock[0] += seconds
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=False)
+            controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
+            controller._command_path(self.op).write_text(json.dumps({'operation_id': self.op, 'run_id': 'r',
+                'pod': 'pod', 'pod_uid': 'uid', 'background': True, 'docker_enabled': True,
+                'status': 'interrupted', 'terminal_at': time.time()}))
+            with patch('time.monotonic', side_effect=lambda: clock[0]), patch('time.sleep', side_effect=tick):
+                with self.assertRaises(ExecutionPodError) as error:
+                    controller.stop_background(self.op)
+            self.assertEqual(error.exception.code, 'stop_failed')
+            self.assertGreater(len(stops), 1)
+            self.assertGreaterEqual(clock[0], 10)
+
+    def test_normal_completion_does_not_acquire_known_outcome(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+            record = {'operation_id': self.op, 'status': 'running', 'pod': 'pod'}
+            controller._command_path(self.op).write_text(json.dumps(record))
+            controller._finish_command(record, {'status': 'completed', 'exit_code': 0},
+                                       {'stdout': '', 'stderr': '', 'truncated': False})
+            self.assertNotIn('outcome', controller._read_command(self.op))
+
+    def test_late_python_result_never_deletes_pod_when_stop_fails(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+            record = {'operation_id': self.op, 'status': 'interrupted', 'pod': 'pod', 'pod_uid': 'uid',
+                      'scratch_space_id': 's', 'kind': 'python_cell', 'session_operation_id': 'session'}
+            controller._command_path(self.op).write_text(json.dumps(record))
+            controller._stop_python_interpreter = Mock(side_effect=RuntimeError('offline'))
+            controller._stop_matching_pod = Mock()
+            controller._finish_command(record, {'status': 'stopped'}, {'stdout': '', 'stderr': '',
+                                       'truncated': False}, allow_late=True)
+            controller._stop_matching_pod.assert_not_called()
+            self.assertEqual(controller._read_command(self.op)['status'], 'stopped')
+
+    def test_unconfigured_helper_image_does_not_retire_pod(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=False)
+            controller.touch_space('s', now=1)
+            controller._get = Mock(return_value={'spec': {'containers': [{'name': 'execution', 'image': 'old'}]}})
+            controller.stop = Mock()
+            controller.stop_idle(now=2)
+            controller.stop.assert_not_called()
+
+    def test_recovery_ignores_corrupt_and_purged_spaces(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock, patch
+        from control import scratch_resource_name
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spaces = root / 'execution-v2-spaces'
+            spaces.mkdir()
+            (spaces / 'bad.json').write_text('{')
+            purged = spaces / (scratch_resource_name('purged') + '.json')
+            purged.write_text(json.dumps({'scratch_space_id': 'purged', 'purged': True}))
+            partial = spaces / (scratch_resource_name('partial') + '.json')
+            partial.write_text(json.dumps({'scratch_space_id': 'partial', 'epoch': 1}))
+            controller = ExecutionPodController(Mock(root=root), {}, admitted=False)
+            operation = controller._command_path(self.op)
+            operation.write_text(json.dumps({'operation_id': self.op, 'status': 'queued'}))
+            (operation.parent / 'bad.json').write_text('{')
+            with patch('time.time', return_value=2000):
+                controller.recover_commands()
+            self.assertEqual(controller._read_command(self.op)['status'], 'cancelled')
+            self.assertEqual(json.loads(partial.read_text())['last_command_at'], 2000)
+            self.assertNotIn('last_command_at', json.loads(purged.read_text()))
 
 class DockerFramingRegressionTest(unittest.TestCase):
     def test_framed_result_survives_bounded_output_and_preserves_exit_code(self):
@@ -713,45 +2007,58 @@ class PodBindingTest(unittest.TestCase):
 
 
 class CommandJournalTest(unittest.TestCase):
-    def test_recovery_marks_running_unknown_and_never_replays_it(self):
+    def test_recovery_schedules_running_without_stopping_pod(self):
         import json
         import tempfile
+        import threading
         from pathlib import Path
-        from types import SimpleNamespace
+        from unittest.mock import Mock
         from execution_pod import ExecutionPodController
-        from control import scratch_resource_name
-
-        class Backend:
-            def __init__(self, root):
-                self.root = Path(root)
-                self.calls = []
-            def kube(self, args, data=None, **_kwargs):
-                self.calls.append(args)
-                if args[0] == 'get':
-                    return SimpleNamespace(stdout=json.dumps({'metadata': {'uid': 'pod-uid'}}).encode())
-                return SimpleNamespace(stdout=b'')
-            def terminate_execution_pod(self, guard):
-                return {'termination_confirmed': True}
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / 'execution-v2'
-            root.mkdir()
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=False)
             operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
-            record = {'operation_id': operation, 'scratch_space_id': 'scratch', 'run_id': 'run',
-                      'status': 'running', 'background': True, 'pod_uid': 'pod-uid'}
-            (root / (operation + '.json')).write_text(json.dumps(record))
-            spaces = Path(directory) / 'execution-v2-spaces'
-            spaces.mkdir()
-            name = scratch_resource_name('scratch')
-            (spaces / (name + '.json')).write_text(json.dumps({'scratch_space_id': 'scratch',
-                'last_command_at': 1, 'guard': {'pod_uid': 'pod-uid', 'terminated': False}}))
-            backend = Backend(directory)
-            controller = ExecutionPodController(backend, {}, admitted=False)
+            path = controller._command_path(operation)
+            path.write_text(json.dumps({'operation_id': operation, 'scratch_space_id': 's', 'run_id': 'r',
+                                        'pod_uid': 'uid', 'status': 'running', 'background': False}))
+            started, release = threading.Event(), threading.Event()
+            def resume(_operation):
+                started.set()
+                release.wait(3)
+            controller._resume_command = resume
             controller.recover_commands()
-            result = json.loads((root / (operation + '.json')).read_text())
-            self.assertEqual(result['status'], 'interrupted')
-            self.assertEqual(result['outcome'], 'unknown')
-            self.assertEqual(len(backend.calls), 3)
-            self.assertEqual(backend.calls[2][:2], ['delete', 'pod'])
+            try:
+                self.assertTrue(started.wait(2))
+                self.assertEqual(json.loads(path.read_text())['status'], 'running')
+                self.assertEqual(controller.foreground_jobs['s'], 1)
+                controller.backend.kube.assert_not_called()
+            finally:
+                release.set()
+                controller.queues['s'].close()
+
+    def test_python_session_resumes_on_its_own_lane_when_admission_fails(self):
+        import json
+        import tempfile
+        import threading
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=False)
+            operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+            controller._command_path(operation).write_text(json.dumps({'operation_id': operation,
+                'scratch_space_id': 's', 'run_id': 'r', 'status': 'running', 'background': True,
+                'kind': 'python_session'}))
+            started, release = threading.Event(), threading.Event()
+            controller._resume_command = lambda _: (started.set(), release.wait(3))
+            controller.recover_commands()
+            try:
+                self.assertTrue(started.wait(2))
+                self.assertIn(operation, controller.futures)
+                self.assertEqual(controller._read_command(operation)['status'], 'running')
+                self.assertEqual(controller.foreground_jobs.get('s', 0), 0)
+            finally:
+                release.set()
+                controller.queues['s'].close()
 
     def test_stopping_background_retries_until_supervisor_is_ready(self):
         import json
@@ -904,6 +2211,8 @@ class AdmissionLifecycleRegressionTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'unavailable'):
                 controller.stop('s')
             self.assertIsNone(controller._admitted_uid('s'))
+            with self.assertRaisesRegex(RuntimeError, 'termination'):
+                controller._require_space_termination_confirmed('s')
 
     def test_reset_does_not_hold_controller_lock_while_ensuring(self):
         import threading
@@ -1100,24 +2409,39 @@ class ConcurrentOperationOwnershipRegressionTest(unittest.TestCase):
 
 
 class RecoveryRegressionTest(unittest.TestCase):
-    def test_recovery_retires_commands_even_when_guard_is_unavailable(self):
+    def test_restart_refreshes_idle_clocks_even_without_commands(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock, patch
+        from control import scratch_resource_name
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=False)
+            controller.touch_space('s', now=1)
+            with patch('time.time', return_value=3000):
+                controller.recover_commands()
+            path = Path(directory) / 'execution-v2-spaces' / (scratch_resource_name('s') + '.json')
+            self.assertEqual(json.loads(path.read_text())['last_command_at'], 3000)
+
+    def test_recovery_cancels_queued_and_interrupts_docker(self):
         import json
         import tempfile
         from pathlib import Path
         from unittest.mock import Mock
         from execution_pod import ExecutionPodController
         with tempfile.TemporaryDirectory() as directory:
-            backend = Mock(root=Path(directory))
-            controller = ExecutionPodController(backend, {}, admitted=True)
-            operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
-            path = controller._command_path(operation)
-            path.write_text(json.dumps({'operation_id': operation, 'scratch_space_id': 's',
-                                        'pod_uid': 'uid', 'status': 'running'}))
-            controller._stop_matching_pod = Mock(side_effect=RuntimeError('node gone'))
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=False)
+            for operation, status, docker in [('e6ded09d-f783-4ce8-98e9-dbfca68884f1', 'queued', False),
+                                              ('e6ded09d-f783-4ce8-98e9-dbfca68884f2', 'running', True)]:
+                controller._command_path(operation).write_text(json.dumps({'operation_id': operation,
+                    'scratch_space_id': 's', 'run_id': 'r', 'status': status, 'docker_enabled': docker}))
             controller.recover_commands()
-            self.assertEqual(json.loads(path.read_text())['status'], 'interrupted')
-            with self.assertRaisesRegex(RuntimeError, 'termination'):
-                controller._require_space_termination_confirmed('s')
+            queued = controller._read_command('e6ded09d-f783-4ce8-98e9-dbfca68884f1')
+            docker = controller._read_command('e6ded09d-f783-4ce8-98e9-dbfca68884f2')
+            self.assertEqual((queued['status'], queued['outcome']), ('cancelled', 'not_started'))
+            self.assertEqual((docker['status'], docker['outcome']), ('interrupted', 'unknown'))
+            controller.backend.kube.assert_not_called()
 
     def test_idle_monitor_retries_unconfirmed_spaces_independently(self):
         import tempfile
@@ -1293,6 +2617,80 @@ class IdlePodTest(unittest.TestCase):
             self.assertEqual(len(backend.deleted), 1)
 
 
+class HelperUpdateTest(unittest.TestCase):
+    def test_ensure_and_submit_refuse_old_helper_image(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController, ExecutionPodError
+        settings = {'scratch_space_id': 's', 'image': 'image@sha256:' + 'a' * 64, 'cpu': 2,
+                    'memory_bytes': 2 << 30, 'capacity_bytes': 2 << 30, 'docker_enabled': False}
+        config = {'runtime_class': 'gvisor', 'helper_image': 'helper@sha256:' + 'b' * 64, 'namespace': 'sandbox'}
+        pod = {'metadata': {'uid': 'uid'}, 'status': {'phase': 'Running'},
+               'spec': {'containers': [{'name': 'execution', 'image': 'old'}]}}
+        claim = {'spec': {'resources': {'requests': {'storage': str(2 << 30)}}}}
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), config, admitted=True)
+            controller._get = Mock(side_effect=lambda kind, name: claim if kind == 'pvc' else pod)
+            with self.assertRaises(ExecutionPodError) as error:
+                controller.ensure(settings)
+            self.assertEqual(error.exception.code, 'pod_updating')
+            with self.assertRaises(ExecutionPodError) as error:
+                controller.submit_command({'operation_id': 'e6ded09d-f783-4ce8-98e9-dbfca68884f1',
+                                           'scratch_space_id': 's', 'run_id': 'r', 'code': 'true'})
+            self.assertEqual(error.exception.code, 'pod_updating')
+
+    def test_update_waits_for_foreground_then_stops_even_with_viewer(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {'helper_image': 'new'}, admitted=True)
+            controller.touch_space('s', now=100)
+            controller.viewer_heartbeat('s', 'viewer', now=101)
+            controller.recover_commands()
+            controller._get = Mock(return_value={'spec': {'containers': [{'name': 'execution', 'image': 'old'}]}})
+            controller.stop = Mock()
+            controller.foreground_jobs['s'] = 1
+            controller.stop_idle(now=102)
+            controller.stop.assert_not_called()
+            controller.foreground_jobs['s'] = 0
+            controller.stop_idle(now=103)
+            controller.stop.assert_called_once_with('s')
+
+    def test_failed_update_stop_is_retried(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {'helper_image': 'new'}, admitted=True)
+            controller.touch_space('s')
+            controller.recover_commands()
+            controller._get = Mock(return_value={'spec': {'containers': [{'name': 'execution', 'image': 'old'}]}})
+            controller.stop = Mock(side_effect=[RuntimeError('guard unavailable'), {'stopped': True}])
+            controller.stop_idle()
+            controller.stop_idle()
+            self.assertEqual(controller.stop.call_count, 2)
+
+    def test_active_space_needs_one_pod_lookup_per_restart(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {'helper_image': 'new'}, admitted=True)
+            controller.touch_space('s')
+            controller.recover_commands()
+            controller._get = Mock(return_value={'spec': {'containers': [{'name': 'execution', 'image': 'new'}]}})
+            controller.stop = Mock()
+            controller.stop_idle()
+            controller.stop_idle()
+            controller.stop_idle()
+            controller._get.assert_called_once()
+            controller.stop.assert_not_called()
+
 class PythonSessionTest(unittest.TestCase):
     def test_cells_share_state_within_one_run(self):
         import os
@@ -1303,8 +2701,9 @@ class PythonSessionTest(unittest.TestCase):
         from pathlib import Path
         from python_session import send_cell
         with tempfile.TemporaryDirectory() as directory:
-            socket_path = str(Path(directory) / 'session.sock')
-            server = subprocess.Popen([sys.executable, '-I', 'python_session.py', 'serve', socket_path],
+            socket_path = os.path.relpath(Path(directory) / 'session.sock')
+            server_path = os.path.relpath(Path(directory) / 'session.sock', Path(__file__).parent)
+            server = subprocess.Popen([sys.executable, '-I', 'python_session.py', 'serve', server_path],
                                       cwd=Path(__file__).parent, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             try:
                 deadline = time.monotonic() + 3
@@ -1330,9 +2729,9 @@ class PythonSessionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'child').mkdir()
-            socket_path = str(root / 'session.sock')
+            socket_path = os.path.relpath(root / 'session.sock')
             server = subprocess.Popen([sys.executable, '-I', str(Path(__file__).resolve().parent / 'python_session.py'),
-                                       'serve', socket_path], cwd=root, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                                       'serve', 'session.sock'], cwd=root, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             try:
                 deadline = time.monotonic() + 3
                 while not os.path.exists(socket_path) and time.monotonic() < deadline:
@@ -1355,8 +2754,9 @@ class PythonSessionTest(unittest.TestCase):
         from pathlib import Path
         from python_session import send_cell
         with tempfile.TemporaryDirectory() as directory:
-            socket_path = str(Path(directory) / 'session.sock')
-            server = subprocess.Popen([sys.executable, '-I', 'python_session.py', 'serve', socket_path],
+            socket_path = os.path.relpath(Path(directory) / 'session.sock')
+            server_path = os.path.relpath(Path(directory) / 'session.sock', Path(__file__).parent)
+            server = subprocess.Popen([sys.executable, '-I', 'python_session.py', 'serve', server_path],
                                       cwd=Path(__file__).parent, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             try:
                 deadline = time.monotonic() + 3
@@ -1382,8 +2782,9 @@ class PythonSessionTest(unittest.TestCase):
         from pathlib import Path
         from python_session import send_cell
         with tempfile.TemporaryDirectory() as directory:
-            socket_path = str(Path(directory) / 'session.sock')
-            server = subprocess.Popen([sys.executable, '-I', 'python_session.py', 'serve', socket_path],
+            socket_path = os.path.relpath(Path(directory) / 'session.sock')
+            server_path = os.path.relpath(Path(directory) / 'session.sock', Path(__file__).parent)
+            server = subprocess.Popen([sys.executable, '-I', 'python_session.py', 'serve', server_path],
                                       cwd=Path(__file__).parent, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             try:
                 deadline = time.monotonic() + 3
@@ -1398,13 +2799,14 @@ class PythonSessionTest(unittest.TestCase):
                 server.stderr.close()
 
     def test_cell_waits_for_interpreter_startup(self):
+        import os
         import subprocess
         import sys
         import tempfile
         from pathlib import Path
         from python_session import send_cell
         with tempfile.TemporaryDirectory() as directory:
-            path = str(Path(directory) / 'delayed.sock')
+            path = os.path.relpath(Path(directory) / 'delayed.sock')
             script = ('import time,sys; time.sleep(.2); '
                       'sys.path.insert(0,sys.argv[1]); from python_session import serve; serve(sys.argv[2])')
             server = subprocess.Popen([sys.executable, '-I', '-c', script, str(Path(__file__).parent), path],
@@ -1419,6 +2821,95 @@ class PythonSessionTest(unittest.TestCase):
 
 
 class PythonSessionMappingTest(unittest.TestCase):
+    def test_unknown_interrupted_session_is_not_restarted(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController, ExecutionPodError
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+            operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+            controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id':operation}))
+            controller._command_path(operation).write_text(json.dumps({'operation_id':operation, 'status':'interrupted', 'pod_uid': 'uid'}))
+            controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
+            controller.command_result = Mock(return_value={'status':'interrupted'})
+            controller.submit_command = Mock()
+            with self.assertRaises(ExecutionPodError) as error:
+                controller.start_python('s', 'r')
+            self.assertEqual(error.exception.code, 'session_interrupted')
+            controller.submit_command.assert_not_called()
+
+    def test_replaced_pod_starts_session_and_marks_cell(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {'output_bytes': 8388608}, admitted=True)
+            operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+            controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id': operation}))
+            controller._command_path(operation).write_text(json.dumps({'operation_id': operation,
+                'status': 'interrupted', 'pod_uid': 'old'}))
+            controller._get = Mock(return_value={'metadata': {'uid': 'new'}})
+            controller.submit_command = Mock(return_value={'status': 'queued'})
+            result = controller.python_cell({'operation_id': 'e6ded09d-f783-4ce8-98e9-dbfca68884f2',
+                'scratch_space_id': 's', 'run_id': 'r', 'code': '1'})
+            self.assertEqual(result['status'], 'queued')
+            self.assertTrue(controller.submit_command.call_args.kwargs['session_replaced'])
+
+    def test_replacement_notice_is_returned_once_not_persisted(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+            op = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+            path = controller._python_session_path('s', 'r')
+            path.write_text(json.dumps({'operation_id': op}))
+            controller._command_path(op).write_text(json.dumps({'operation_id': op, 'status': 'interrupted', 'pod_uid': 'old'}))
+            controller._get = Mock(return_value={'metadata': {'uid': 'new'}})
+            controller.submit_command = Mock(return_value={'status': 'queued'})
+            first = controller.start_python('s', 'r')
+            self.assertTrue(first['session_replaced'])
+            self.assertNotIn('session_replaced', json.loads(path.read_text()))
+            controller._read_command = Mock(return_value={'status': 'running', 'pod_uid': 'new'})
+            self.assertNotIn('session_replaced', controller.start_python('s', 'r'))
+
+    def test_retried_cell_keeps_its_replacement_notice(self):
+        import hashlib
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        request = {'operation_id': 'e6ded09d-f783-4ce8-98e9-dbfca68884f1',
+                   'scratch_space_id': 's', 'run_id': 'r', 'code': '1'}
+        digest = hashlib.sha256(json.dumps(request, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+            controller._command_path(request['operation_id']).write_text(json.dumps({'operation_id': request['operation_id'],
+                'client_digest': digest, 'status': 'running', 'session_replaced': True}))
+            self.assertTrue(controller.python_cell(request)['session_replaced'])
+
+    def test_stopped_session_on_replaced_pod_is_not_reported_as_lost(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+            op = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+            controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id': op}))
+            controller._command_path(op).write_text(json.dumps({'operation_id': op, 'status': 'stopped', 'pod_uid': 'old'}))
+            controller._get = Mock(return_value={'metadata': {'uid': 'new'}})
+            controller.submit_command = Mock(return_value={'status': 'queued'})
+            self.assertFalse(controller.start_python('s', 'r').get('session_replaced', False))
+
     def test_session_is_reused_per_run_and_separate_across_runs(self):
         import tempfile
         from pathlib import Path
@@ -1449,11 +2940,15 @@ class BootstrapReadinessRegressionTest(unittest.TestCase):
             marker = str(Path(directory) / 'ready')
             tracker = str(Path(directory) / 'tracker')
             Path(tracker).write_text('stale')
+            output = Path(directory) / 'output'
+            output.mkdir()
+            (output / 'old.stdout').write_text('old')
             def mount(_docker):
                 self.assertFalse(sandbox_v2.bootstrap_ready())
                 self.assertTrue(Path(tracker).exists())
             with patch.object(sandbox_v2, 'BOOTSTRAP_READY_PATH', marker, create=True), \
                  patch.object(sandbox_v2, 'BOOTSTRAP_TRACKER_PATH', tracker, create=True), \
+                 patch.object(sandbox_v2, 'OUTPUT_DIRECTORY', str(Path(directory) / 'output')), \
                  patch.dict('os.environ', {'AIDASH_POD_UID': 'pod-uid', 'AIDASH_PROCESS_LIMIT': '128'}), \
                  patch('resource.setrlimit'), patch.object(sandbox_v2, 'mount_rootfs', side_effect=mount), \
                  patch('signal.pause', side_effect=InterruptedError):
@@ -1461,8 +2956,32 @@ class BootstrapReadinessRegressionTest(unittest.TestCase):
                     sandbox_v2.bootstrap()
                 self.assertTrue(sandbox_v2.bootstrap_ready())
                 self.assertFalse(Path(tracker).exists())
+                self.assertEqual(list(output.iterdir()), [])
                 with patch.dict('os.environ', {'AIDASH_POD_UID': 'other'}):
                     self.assertFalse(sandbox_v2.bootstrap_ready())
+
+    def test_bootstrap_continues_when_output_directory_cannot_be_created(self):
+        import errno
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        import sandbox_v2
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'output'
+            original_mkdir = Path.mkdir
+            def mkdir(path, *args, **kwargs):
+                if path == output:
+                    raise OSError(errno.ENOSPC, 'full')
+                return original_mkdir(path, *args, **kwargs)
+            with patch.object(sandbox_v2, 'BOOTSTRAP_READY_PATH', str(Path(directory) / 'ready')), \
+                 patch.object(sandbox_v2, 'BOOTSTRAP_TRACKER_PATH', str(Path(directory) / 'tracker')), \
+                 patch.object(sandbox_v2, 'OUTPUT_DIRECTORY', str(output)), \
+                 patch.dict('os.environ', {'AIDASH_POD_UID': 'uid', 'AIDASH_PROCESS_LIMIT': '128'}), \
+                 patch('resource.setrlimit'), patch.object(sandbox_v2, 'mount_rootfs'), \
+                 patch.object(Path, 'mkdir', mkdir), patch('signal.pause', side_effect=InterruptedError):
+                with self.assertRaises(InterruptedError):
+                    sandbox_v2.bootstrap()
+                self.assertTrue(sandbox_v2.bootstrap_ready())
 
     def test_execution_container_readiness_uses_bootstrap_handshake(self):
         from execution_pod import execution_manifests, helper_command
@@ -2133,3 +3652,483 @@ class ReviewRegressionTest(unittest.TestCase):
                 controller._execute_command(operation)
             result = controller.command_result(operation)
             self.assertEqual((result['status'], result['exit_code'], result['stdout']), ('completed', 127, 'b2s='))
+
+
+class NormalDeleteProofTest(unittest.TestCase):
+    """A normal delete that completed must stay provable after its reply is lost (#713 decision 5)."""
+
+    def _fixture(self, directory):
+        import json
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController, ExecutionPodError
+        from control import scratch_resource_name
+        world = {'pod': {'metadata': {'uid': 'uid'}, 'spec': {'nodeName': 'node'}}, 'node_uid': 'node-uid',
+                 'pod_lookup_fails': False, 'node_lookup_fails': False, 'delete_raises': None,
+                 'delete_applies': True, 'wait_fails': False, 'after_delete': {}}
+        deletes = []
+        def get(kind, name):
+            if kind == 'node':
+                if world['node_lookup_fails']:
+                    raise TimeoutError('node lookup timed out')
+                return {'metadata': {'name': name, 'uid': world['node_uid']}} if world['node_uid'] else None
+            if world['pod_lookup_fails']:
+                raise TimeoutError('pod lookup timed out')
+            return world['pod']
+        def kube(args, *rest, **kwargs):
+            if args[0] == 'delete':
+                deletes.append(json.loads(rest[0]))
+                if world['delete_applies']:
+                    world['pod'] = None
+                world.update(world['after_delete'])
+                if world['delete_raises'] is not None:
+                    raise world['delete_raises']
+            if args[0] == 'wait' and world['wait_fails']:
+                raise TimeoutError('wait timed out')
+            return SimpleNamespace(returncode=0, stdout=b'')
+        controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube),
+                                            {'namespace': 'fixture'}, admitted=True)
+        controller.touch_space('s', now=1)
+        path = Path(directory) / 'execution-v2-spaces' / (scratch_resource_name('s') + '.json')
+        state = json.loads(path.read_text())
+        state['guard'] = {'pod_uid': 'uid', 'cluster_node': 'node', 'node_uid': 'node-uid', 'terminated': False}
+        path.write_text(json.dumps(state))
+        controller._terminate_recorded_pod = Mock(side_effect=ExecutionPodError('termination_unconfirmed', 'guard unavailable'))
+        controller._get = get
+        return controller, world, deletes, path
+
+    def test_completed_delete_whose_proof_was_lost_counts_as_stopped(self):
+        import json
+        import subprocess
+        import tempfile
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodError, STOP_RETRY_SECONDS
+        # What goes wrong once the delete has been applied, or whose outcome the API server left open.
+        losses = {
+            'reply lost': {'delete_raises': TimeoutError('delete reply lost')},
+            'kubectl timed out': {'delete_raises': subprocess.TimeoutExpired('kubectl', 70)},
+            'connection dropped': {'delete_raises': RuntimeError('Unable to connect to the server: EOF')},
+            'server timeout': {'delete_raises': RuntimeError(
+                'Error from server (ServerTimeout): the server was unable to return a response in the time allotted')},
+            'wait and pod lookup time out': {'wait_fails': True, 'pod_lookup_fails': True},
+            'node lookup times out afterwards': {'node_lookup_fails': True},
+        }
+        for label, loss in losses.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as directory:
+                controller, world, deletes, path = self._fixture(directory)
+                with patch('time.time', return_value=100):
+                    with self.assertRaises(ExecutionPodError):
+                        controller.stop('s')
+                world['after_delete'] = loss
+                with patch('time.time', return_value=100 + STOP_RETRY_SECONDS):
+                    with self.assertRaises((ExecutionPodError, RuntimeError, OSError, subprocess.TimeoutExpired)):
+                        controller.stop('s')
+                self.assertEqual(len(deletes), 1)
+                world.update(delete_raises=None, pod_lookup_fails=False, node_lookup_fails=False, wait_fails=False)
+                with patch('time.time', return_value=100 + STOP_RETRY_SECONDS + 1):
+                    self.assertTrue(controller.stop('s')['stopped'])
+                self.assertEqual(len(deletes), 1)
+                state = json.loads(path.read_text())
+                self.assertFalse(state['termination_unconfirmed'])
+                self.assertNotIn('stop_requested_at', state)
+                self.assertEqual(state['terminated_pods'], ['uid'])
+                self.assertTrue(state['guard']['terminated'])
+
+    def test_lost_proof_is_not_accepted_once_the_node_left_the_cluster(self):
+        import tempfile
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodError, STOP_RETRY_SECONDS
+        for node_uid in (None, 'replacement-node'):
+            with self.subTest(node_uid=node_uid), tempfile.TemporaryDirectory() as directory:
+                controller, world, deletes, path = self._fixture(directory)
+                with patch('time.time', return_value=100):
+                    with self.assertRaises(ExecutionPodError):
+                        controller.stop('s')
+                world.update(delete_raises=TimeoutError('delete reply lost'))
+                with patch('time.time', return_value=100 + STOP_RETRY_SECONDS):
+                    with self.assertRaises((ExecutionPodError, RuntimeError, OSError)):
+                        controller.stop('s')
+                world.update(delete_raises=None, node_uid=node_uid)
+                with patch('time.time', return_value=100 + STOP_RETRY_SECONDS + 1):
+                    with self.assertRaises(ExecutionPodError) as error:
+                        controller.stop('s')
+                self.assertEqual(error.exception.code, 'termination_unconfirmed')
+                self.assertEqual(len(deletes), 1)
+
+    def test_a_missing_pod_is_no_proof_when_no_delete_was_issued_for_it(self):
+        import tempfile
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodError, STOP_RETRY_SECONDS
+        with tempfile.TemporaryDirectory() as directory:
+            controller, world, deletes, path = self._fixture(directory)
+            with patch('time.time', return_value=100):
+                with self.assertRaises(ExecutionPodError):
+                    controller.stop('s')
+            world['pod'] = None
+            with patch('time.time', return_value=100 + STOP_RETRY_SECONDS):
+                with self.assertRaises(ExecutionPodError):
+                    controller.stop('s')
+            self.assertEqual(deletes, [])
+
+
+    def test_a_refused_delete_leaves_no_proof_for_a_pod_that_disappears_later(self):
+        import tempfile
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodError, STOP_RETRY_SECONDS
+        refusals = (
+            'Error from server (Forbidden): pods "x" is forbidden: User cannot delete resource "pods"',
+            'Error from server (Conflict): Precondition failed: UID in precondition: uid, UID in object meta: other',
+            'Error from server (Invalid): Pod "x" is invalid',
+            'Error from server (Unauthorized): Unauthorized',
+            'Error from server (NotFound): pods "x" not found',
+        )
+        for message in refusals:
+            with self.subTest(message), tempfile.TemporaryDirectory() as directory:
+                controller, world, deletes, path = self._fixture(directory)
+                with patch('time.time', return_value=100):
+                    with self.assertRaises(ExecutionPodError):
+                        controller.stop('s')
+                world.update(delete_raises=RuntimeError(message), delete_applies=False)
+                with patch('time.time', return_value=100 + STOP_RETRY_SECONDS):
+                    with self.assertRaises(RuntimeError):
+                        controller.stop('s')
+                self.assertEqual(len(deletes), 1)
+                # The Pod then vanishes some other way while its node is still registered.
+                world.update(delete_raises=None, pod=None)
+                with patch('time.time', return_value=100 + STOP_RETRY_SECONDS + 1):
+                    with self.assertRaises(ExecutionPodError) as error:
+                        controller.stop('s')
+                self.assertEqual(error.exception.code, 'termination_unconfirmed')
+                self.assertEqual(len(deletes), 1)
+
+    def test_a_refused_retry_does_not_erase_an_earlier_delete_of_unknown_outcome(self):
+        import tempfile
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodError, STOP_RETRY_SECONDS
+        with tempfile.TemporaryDirectory() as directory:
+            controller, world, deletes, path = self._fixture(directory)
+            with patch('time.time', return_value=100):
+                with self.assertRaises(ExecutionPodError):
+                    controller.stop('s')
+            # The first delete may have been applied: its Pod is still terminating and its reply was lost.
+            world.update(delete_raises=TimeoutError('delete reply lost'), delete_applies=False)
+            with patch('time.time', return_value=100 + STOP_RETRY_SECONDS):
+                with self.assertRaises(TimeoutError):
+                    controller.stop('s')
+            world.update(delete_raises=RuntimeError('Error from server (Forbidden): forbidden'))
+            with patch('time.time', return_value=100 + STOP_RETRY_SECONDS + 1):
+                with self.assertRaises(RuntimeError):
+                    controller.stop('s')
+            world.update(delete_raises=None, pod=None)
+            with patch('time.time', return_value=100 + STOP_RETRY_SECONDS + 2):
+                self.assertTrue(controller.stop('s')['stopped'])
+            self.assertEqual(len(deletes), 2)
+
+
+class PythonInterpreterStopTest(unittest.TestCase):
+    """A cell's interpreter stop ends on the Pod's own result, never on a slow watcher or a guess."""
+    cell = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+    session = 'e6ded09d-f783-4ce8-98e9-dbfca68884f2'
+
+    def _run(self, *, session_result, stop_fails=False, result_after=0, during=None, after=None):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        clock = [0.0]
+        calls = []
+        reads = [0]
+        outcome = SimpleNamespace(clock=clock, calls=calls)
+        def kube(args, *rest, **kwargs):
+            calls.append(args)
+            if 'stop' in args and stop_fails:
+                raise RuntimeError('exec failed')
+            if 'output' in args:
+                return SimpleNamespace(returncode=1, stdout=b'')
+            if 'result' in args:
+                reads[0] += 1
+                if session_result is None or clock[0] < result_after:
+                    if during:
+                        during(outcome.controller, reads[0])
+                    return SimpleNamespace(returncode=1, stdout=b'')
+                return SimpleNamespace(returncode=0, stdout=json.dumps(dict(
+                    session_result, operation_id=self.session, run_id='r')).encode())
+            return SimpleNamespace(returncode=0, stdout=b'')
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=True)
+            outcome.controller = controller
+            controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
+            controller._stop_matching_pod = Mock()
+            controller.submit_command = Mock(return_value={'status': 'queued'})
+            cell = {'operation_id': self.cell, 'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod',
+                    'pod_uid': 'uid', 'docker_enabled': False, 'background': False, 'status': 'running',
+                    'kind': 'python_cell', 'session_operation_id': self.session}
+            controller._command_path(self.cell).write_text(json.dumps(cell))
+            controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id': self.session}))
+            # The session stays `running` in the journal: after a Runner restart its watcher polls only every 5 s
+            # and then reads saved output, which fails here.
+            controller._command_path(self.session).write_text(json.dumps({'operation_id': self.session,
+                'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid', 'docker_enabled': False,
+                'background': True, 'status': 'running', 'kind': 'python_session'}))
+            def tick(seconds):
+                clock[0] += seconds
+            with patch('time.monotonic', side_effect=lambda: clock[0]), patch('time.sleep', side_effect=tick):
+                controller._finish_command(cell, {'status': 'timed_out'},
+                                           {'stdout': '', 'stderr': '', 'truncated': False})
+                if after:
+                    after(controller)
+            outcome.cell_status = controller._read_command(self.cell)['status']
+            return outcome
+
+    def test_stopped_interpreter_is_read_from_its_result_not_from_the_watcher(self):
+        run = self._run(session_result={'status': 'stopped'})
+        run.controller._stop_matching_pod.assert_not_called()
+        self.assertEqual(run.cell_status, 'timed_out')
+        self.assertTrue(any('stop' in args for args in run.calls))
+
+    def test_supervisor_still_draining_after_the_old_ten_second_wait_keeps_the_pod(self):
+        run = self._run(session_result={'status': 'stopped'}, result_after=35)
+        run.controller._stop_matching_pod.assert_not_called()
+        self.assertEqual(run.cell_status, 'timed_out')
+        self.assertGreaterEqual(run.clock[0], 35)
+
+    def test_accepted_stop_without_a_terminal_result_deletes_the_pod_at_the_limit(self):
+        from execution_pod import PYTHON_STOP_SECONDS
+        run = self._run(session_result=None)
+        run.controller._stop_matching_pod.assert_called_once_with('s', 'uid')
+        self.assertGreaterEqual(run.clock[0], PYTHON_STOP_SECONDS)
+
+    def test_the_limit_covers_what_the_supervisor_does_after_a_stop(self):
+        import sandbox_v2
+        from execution_pod import PYTHON_STOP_SECONDS
+        # run_supervised: up to 5 s to kill and reap, FORWARD_GRACE_SECONDS for the readers, up to 30 s
+        # more to drain them, and 0.5 s per reader to give up.
+        self.assertGreater(PYTHON_STOP_SECONDS, 5 + sandbox_v2.FORWARD_GRACE_SECONDS + 30 + 2 * .5)
+
+    def test_supervisor_reporting_unconfirmed_termination_deletes_the_pod(self):
+        run = self._run(session_result={'status': 'termination_unconfirmed'})
+        run.controller._stop_matching_pod.assert_called_once_with('s', 'uid')
+
+    def test_stop_request_that_cannot_be_delivered_deletes_the_pod(self):
+        run = self._run(session_result=None, stop_fails=True)
+        run.controller._stop_matching_pod.assert_called_once_with('s', 'uid')
+
+    def test_session_being_stopped_is_not_handed_to_a_new_cell(self):
+        from execution_pod import ExecutionPodError
+        attempts = []
+        def during(controller, read):
+            if read == 1:
+                try:
+                    attempts.append(controller.start_python('s', 'r'))
+                except ExecutionPodError as error:
+                    attempts.append(error.code)
+        def after(controller):
+            # The stop is confirmed by the Pod while the session watcher still has the journal at `running`.
+            self.assertEqual(controller._read_command(self.session)['status'], 'running')
+            attempts.append(controller.start_python('s', 'r'))
+        run = self._run(session_result={'status': 'stopped'}, result_after=3, during=during, after=after)
+        run.controller._stop_matching_pod.assert_not_called()
+        self.assertEqual(attempts[0], 'session_interrupted')
+        self.assertEqual(run.controller.submit_command.call_count, 1)
+        self.assertNotEqual(attempts[1]['operation_id'], self.session)
+        self.assertFalse(attempts[1].get('session_replaced', False))
+
+
+class SavedOutputBudgetTest(unittest.TestCase):
+    op = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+
+    def test_the_retry_budget_restarts_after_every_chunk_that_was_read(self):
+        import base64
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodController, OUTPUT_RETRY_SECONDS
+        clock = [0.0]
+        chunk, chunks = 10, 40
+        def kube(args, *rest, **kwargs):
+            # Every exec takes 2 s and fails when it is given less time than that.
+            clock[0] += 2
+            if kwargs['timeout'] < 2:
+                raise TimeoutError('exec timed out')
+            offset = int(args[-2])
+            data = b'x' * chunk
+            return SimpleNamespace(returncode=0, stdout=json.dumps({'data': base64.b64encode(data).decode(),
+                'next_offset': offset + chunk, 'eof': offset + chunk >= chunk * chunks}).encode())
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=False)
+            outcome = {}
+            with patch('time.monotonic', side_effect=lambda: clock[0]), patch('time.sleep'):
+                result = controller._saved_output({'operation_id': self.op, 'pod': 'pod'}, outcome, tolerate_missing=True)
+            # 80 reads at 2 s take far longer than the whole retry budget.
+            self.assertGreater(clock[0], OUTPUT_RETRY_SECONDS)
+            self.assertNotIn('output_incomplete', outcome)
+            self.assertFalse(result['truncated'])
+            self.assertEqual(len(base64.b64decode(result['stdout'])), chunk * chunks)
+            self.assertEqual(len(base64.b64decode(result['stderr'])), chunk * chunks)
+
+    def test_unusable_saved_output_is_read_once_without_retrying(self):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from execution_pod import ExecutionPodController
+        clock, attempts = [0.0], []
+        def kube(args, *rest, **kwargs):
+            attempts.append(args[-3])
+            raise TimeoutError('offline')
+        def advance(seconds):
+            clock[0] += seconds
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=False)
+            outcome = {'output_incomplete': True}
+            with patch('time.monotonic', side_effect=lambda: clock[0]), patch('time.sleep', side_effect=advance):
+                result = controller._saved_output({'operation_id': self.op, 'pod': 'pod', 'stdout': 'cGFydA=='},
+                                                  outcome, tolerate_missing=True)
+            self.assertEqual(attempts, ['stdout', 'stderr'])
+            self.assertEqual(clock[0], 0)
+            self.assertEqual(result['stdout'], 'cGFydA==')
+            self.assertTrue(result['truncated'])
+
+
+class DockerLateStartFenceTest(unittest.TestCase):
+    op = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+
+    def _clock(self):
+        from unittest.mock import patch
+        from contextlib import ExitStack
+        self.now = [0.0]
+        stack = ExitStack()
+        stack.enter_context(patch('time.monotonic', side_effect=lambda: self.now[0]))
+        stack.enter_context(patch('time.sleep', side_effect=lambda seconds: self.now.__setitem__(0, self.now[0] + seconds)))
+        return stack
+
+    def _fixture(self, directory, *, running, started):
+        import json
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        from sandbox_v2 import claim_operation
+        claims = Path(directory) / 'claims'
+        if started:
+            claim_operation(self.op, claims)
+        calls = []
+        polls = []
+        def kube(args, *rest, **kwargs):
+            calls.append(args)
+            if 'claim' in args:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({'created': claim_operation(self.op, claims)}).encode())
+            if 'running' in args:
+                polls.append(1)
+                state = running(len(polls)) if callable(running) else running
+                return SimpleNamespace(returncode=0, stdout=json.dumps({'running': state}).encode())
+            return SimpleNamespace(returncode=0, stdout=b'')
+        controller = ExecutionPodController(SimpleNamespace(root=Path(directory), kube=kube), {}, admitted=False)
+        controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
+        controller._command_path(self.op).write_text(json.dumps({'operation_id': self.op, 'scratch_space_id': 's',
+            'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid', 'background': False, 'docker_enabled': True,
+            'status': 'interrupted', 'outcome': 'unknown', 'terminal_at': 1}))
+        return controller, calls, claims
+
+    def test_a_supervisor_that_has_not_published_its_marker_is_fenced_out(self):
+        import tempfile
+        from sandbox_v2 import claim_operation
+        with tempfile.TemporaryDirectory() as directory:
+            controller, calls, claims = self._fixture(directory, running=False, started=False)
+            result = controller._stop_command(self.op)
+            self.assertEqual((result['status'], result['outcome']), ('interrupted', 'unknown'))
+            self.assertFalse(any('stop' in args for args in calls))
+            self.assertFalse(claim_operation(self.op, claims), 'a late supervisor could still start the command')
+
+    def test_a_started_supervisor_that_stays_absent_for_the_whole_window_has_finished(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            controller, calls, _ = self._fixture(directory, running=False, started=True)
+            with self._clock():
+                self.assertEqual(controller._stop_command(self.op)['status'], 'interrupted')
+            self.assertGreaterEqual(self.now[0], 10)
+            self.assertFalse(any('stop' in args for args in calls))
+            # Result files of a Docker command are never evidence that it finished.
+            self.assertFalse(any('result' in args for args in calls))
+
+    def test_a_started_supervisor_that_publishes_its_marker_late_is_still_stopped(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            controller, calls, _ = self._fixture(directory, running=lambda poll: poll >= 4, started=True)
+            with self._clock():
+                result = controller._stop_command(self.op)
+            self.assertEqual(result['status'], 'stopping')
+            self.assertLess(self.now[0], 10)
+            self.assertTrue(any('stop' in args for args in calls))
+
+    def test_a_running_supervisor_is_still_stopped(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            controller, calls, _ = self._fixture(directory, running=True, started=True)
+            self.assertEqual(controller._stop_command(self.op)['status'], 'stopping')
+            self.assertTrue(any('stop' in args for args in calls))
+
+    def test_an_unreadable_claim_is_not_taken_for_a_finished_command(self):
+        import tempfile
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            controller, calls, _ = self._fixture(directory, running=False, started=False)
+            controller.backend.kube = lambda args, *rest, **kwargs: SimpleNamespace(
+                returncode=1 if 'claim' in args else 0, stdout=b'{"running":false}')
+            with self.assertRaisesRegex(RuntimeError, 'Could not fence'):
+                controller._stop_command(self.op)
+
+
+class DockerForwardedOutputTest(unittest.TestCase):
+    op = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+
+    def test_incomplete_forwarding_marks_docker_output_truncated_without_reading_saved_files(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        for forward_incomplete in (True, False):
+            with self.subTest(forward_incomplete=forward_incomplete), tempfile.TemporaryDirectory() as directory:
+                backend = SimpleNamespace(root=Path(directory), command=['kubectl'], environment={},
+                                          kube=Mock(side_effect=AssertionError('Docker saved files are untrusted')))
+                controller = ExecutionPodController(backend, {}, admitted=True)
+                controller._command_path(self.op).write_text(json.dumps({'operation_id': self.op,
+                    'scratch_space_id': 's', 'run_id': 'r', 'pod': 'pod', 'pod_uid': 'uid', 'docker_enabled': True,
+                    'background': False, 'timeout_seconds': 5, 'cwd': '.', 'code': 'true', 'status': 'queued'}))
+                transport = {'exit_code': 0, 'transport_timed_out': False,
+                             'framed_result': {'operation_id': self.op, 'run_id': 'r', 'status': 'completed',
+                                               'exit_code': 0, 'forward_incomplete': forward_incomplete},
+                             'output': {'stdout': 'cGFydA==', 'stderr': '', 'truncated': False}}
+                with patch('execution_pod.drain_process', return_value=transport):
+                    controller._execute_command(self.op)
+                result = controller.command_result(self.op)
+                self.assertEqual((result['status'], result['stdout']), ('completed', 'cGFydA=='))
+                self.assertEqual(result['truncated'], forward_incomplete)
+
+
+class PythonSessionRefusalTest(unittest.TestCase):
+    """A session is refused only while the Pod it ran in still exists (#722 decision 9)."""
+    operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+
+    def test_a_pod_that_no_longer_exists_does_not_block_a_new_session(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        for age in (0, 30 * 86400):
+            with self.subTest(age=age), tempfile.TemporaryDirectory() as directory:
+                controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+                controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id': self.operation}))
+                controller._command_path(self.operation).write_text(json.dumps({'operation_id': self.operation,
+                    'status': 'interrupted', 'pod_uid': 'old', 'terminal_at': 1_000_000 - age}))
+                controller._get = Mock(return_value=None)
+                controller.submit_command = Mock(return_value={'status': 'queued'})
+                self.assertTrue(controller.start_python('s', 'r')['session_replaced'])

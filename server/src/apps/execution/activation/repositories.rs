@@ -168,7 +168,7 @@ impl ClaimScope for scheduling::Scope<Box<dyn TransactionExecutor>> {
 				if e.database_error()
 					.is_some_and(|d| d.code() == Some("55P03"))
 				{
-					aidash_application::Error::TransactionPending
+					aidash_application::Error::RunLockContended
 				} else {
 					error(e.into())
 				}

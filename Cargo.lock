@@ -194,6 +194,7 @@ dependencies = [
  "hyper-util",
  "image",
  "jsonwebtoken 11.1.0",
+ "libc",
  "metrics",
  "metrics-exporter-prometheus",
  "object_store",

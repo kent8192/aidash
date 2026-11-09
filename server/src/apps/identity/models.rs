@@ -15,6 +15,7 @@ mod authorization_credentials;
 pub use authorization_credentials::AuthorizationCredential;
 mod authorization_decisions;
 pub use authorization_decisions::AuthorizationDecision;
+pub(crate) use authorization_decisions::{DecisionOwner, DecisionRow};
 mod authorization_execution;
 pub use authorization_execution::AuthorizationExecution;
 mod authorization_revisions;

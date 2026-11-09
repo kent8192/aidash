@@ -1,4 +1,5 @@
 use super::*;
+use crate::ports::federation::dependencies::Check;
 use aidash_domain::{
 	RecoveryState, Run, RunControl, RunState, StateVersion, ThinkingState, context::Context,
 	federation::route::Route, policy::Resource, registry::Entry,
@@ -7,7 +8,7 @@ use async_trait::async_trait;
 use rstest::{fixture, rstest};
 use serde_json::Value;
 use std::{
-	collections::{BTreeMap, VecDeque},
+	collections::{BTreeMap, BTreeSet, VecDeque},
 	sync::Mutex,
 	time::Instant,
 };
@@ -40,6 +41,8 @@ struct Scope {
 	started: Instant,
 	elapsed: Duration,
 	latency: Duration,
+	/// Time that asking a peer takes, charged when its route is resolved.
+	latency_on_peer: Duration,
 	frontier: Vec<Reference>,
 	edges: BTreeMap<Uuid, Vec<Reference>>,
 	decision: bool,
@@ -48,6 +51,9 @@ struct Scope {
 	admission: Option<Run>,
 	bound: Option<Uuid>,
 	entry: Entry,
+	marked: BTreeSet<String>,
+	/// Every Node a walk reported meeting as unavailable, in order, repeats included.
+	met: Vec<String>,
 }
 #[async_trait]
 impl DependencyScope for Scope {
@@ -120,10 +126,9 @@ impl DependencyScope for Scope {
 			None => Ok(true),
 		}
 	}
-	async fn catalog_entry(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
+	async fn readable_entry(&mut self, reference: &EntityRef) -> Result<Entry> {
 		assert_eq!(reference.id, "agent");
 		assert_eq!(reference.version, "1.0.0");
-		assert_eq!(action, "registry.read");
 		self.calls.push("catalog".into());
 		match self.fault {
 			Some(fault) => Err(fault.error()),
@@ -132,22 +137,34 @@ impl DependencyScope for Scope {
 	}
 	async fn route(&mut self, node: &str) -> Result<Option<Route>> {
 		self.calls.push(format!("peer:{node}"));
+		self.elapsed += self.latency_on_peer;
 		Ok(self.peer.clone())
+	}
+	fn unavailable(&self, node: &str) -> bool {
+		self.marked.contains(node)
+	}
+	fn mark_unavailable(&mut self, node: &str) {
+		self.marked.insert(node.into());
+		self.met.push(node.into());
 	}
 }
 struct Transport {
 	calls: Mutex<Vec<(String, Value, Duration)>>,
-	replies: Mutex<VecDeque<Option<Checked>>>,
+	replies: Mutex<VecDeque<Check>>,
 }
 #[async_trait]
 impl DependencyTransport for Transport {
-	async fn check(&self, peer: &Route, input: &Input, remaining: Duration) -> Option<Checked> {
+	async fn check(&self, peer: &Route, input: &Input, remaining: Duration) -> Check {
 		self.calls.lock().unwrap().push((
 			peer.target.deployment.to_string(),
 			serde_json::to_value(input).unwrap(),
 			remaining,
 		));
-		self.replies.lock().unwrap().pop_front().unwrap_or(None)
+		self.replies
+			.lock()
+			.unwrap()
+			.pop_front()
+			.unwrap_or(Check::Unavailable)
 	}
 }
 fn grant(node: &str, id: u128) -> Reference {
@@ -160,9 +177,9 @@ fn grant(node: &str, id: u128) -> Reference {
 }
 #[fixture]
 fn scope() -> Scope {
-	Scope { calls:vec![],started:Instant::now(),elapsed:Duration::ZERO,latency:Duration::ZERO,frontier:vec![],edges:BTreeMap::new(),decision:true,fault:None,admission:None,bound:None,
+	Scope { calls:vec![],started:Instant::now(),elapsed:Duration::ZERO,latency:Duration::ZERO,latency_on_peer:Duration::ZERO,frontier:vec![],edges:BTreeMap::new(),decision:true,fault:None,admission:None,bound:None,
         entry:serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{},"config":{"model":{"id":"model","version":"1.0.0"}}})).unwrap(),
-        peer:Some(crate::test_support::foreign_route("aidash://foreign")),
+        peer:Some(crate::test_support::foreign_route("aidash://foreign")),marked:BTreeSet::new(),met:Vec::new(),
     }
 }
 #[fixture]
@@ -185,10 +202,14 @@ async fn cycles_are_checked_once_but_each_nodes_authority_is_checked(
 	scope
 		.edges
 		.insert(Uuid::from_u128(1), vec![foreign.clone(), local.clone()]);
-	transport.replies.lock().unwrap().push_back(Some(Checked {
-		visible: true,
-		pending: vec![local.clone(), foreign.clone()],
-	}));
+	transport
+		.replies
+		.lock()
+		.unwrap()
+		.push_back(Check::Confirmed(Checked {
+			visible: true,
+			pending: vec![local.clone(), foreign.clone()],
+		}));
 	// Act
 	assert!(
 		verify_all(&mut scope, &transport, vec![local])
@@ -249,7 +270,55 @@ async fn deadline_expiration_prevents_the_next_authority_call(
 			.await
 			.unwrap()
 	);
-	assert_eq!(scope.calls, vec![format!("grant:{}", Uuid::from_u128(1))]);
+	assert_eq!(
+		scope.calls,
+		vec![
+			format!("grant:{}", Uuid::from_u128(1)),
+			"decide:federation.discover:aidash://foreign".into(),
+			"peer:aidash://foreign".into()
+		]
+	);
+	assert!(transport.calls.lock().unwrap().is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn the_deadline_names_no_node_to_a_reader_who_may_not_discover_it(
+	mut scope: Scope,
+	transport: Transport,
+) {
+	scope.latency = Duration::from_secs(20);
+	scope.decision = false;
+	scope
+		.edges
+		.insert(Uuid::from_u128(1), vec![grant("aidash://foreign", 2)]);
+	assert!(
+		!verify_all(&mut scope, &transport, vec![grant("aidash://local", 1)])
+			.await
+			.unwrap()
+	);
+	assert!(scope.marked.is_empty());
+	assert!(transport.calls.lock().unwrap().is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_mark_does_not_stand_in_for_this_readers_discover_right(
+	mut scope: Scope,
+	transport: Transport,
+) {
+	// The mark may come from another identity of the same authority.
+	scope.marked.insert("aidash://foreign".into());
+	scope.decision = false;
+	assert!(
+		!verify_all(&mut scope, &transport, vec![grant("aidash://foreign", 1)])
+			.await
+			.unwrap()
+	);
+	assert_eq!(
+		scope.calls,
+		vec!["decide:federation.discover:aidash://foreign"]
+	);
 	assert!(transport.calls.lock().unwrap().is_empty());
 }
 
@@ -285,10 +354,14 @@ async fn rejected_or_oversized_peer_frontiers_prevent_followup_calls(
 	#[case] visible: bool,
 	#[case] count: usize,
 ) {
-	transport.replies.lock().unwrap().push_back(Some(Checked {
-		visible,
-		pending: vec![grant("aidash://local", 1); count],
-	}));
+	transport
+		.replies
+		.lock()
+		.unwrap()
+		.push_back(Check::Confirmed(Checked {
+			visible,
+			pending: vec![grant("aidash://local", 1); count],
+		}));
 	assert!(
 		!verify_all(&mut scope, &transport, vec![grant("aidash://foreign", 1)])
 			.await
@@ -308,6 +381,150 @@ async fn unavailable_peer_transport_denies_visibility(mut scope: Scope, transpor
 	);
 	assert_eq!(scope.calls.len(), 2);
 	assert_eq!(transport.calls.lock().unwrap().len(), 1);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_node_that_did_not_answer_is_marked_and_not_asked_again(
+	mut scope: Scope,
+	transport: Transport,
+) {
+	// Arrange: the first reference gets no answer.
+	transport
+		.replies
+		.lock()
+		.unwrap()
+		.push_back(Check::Unavailable);
+	// Act
+	let first = verify_all(&mut scope, &transport, vec![grant("aidash://foreign", 1)])
+		.await
+		.unwrap();
+	let calls_after_first = scope.calls.len();
+	let second = verify_all(&mut scope, &transport, vec![grant("aidash://foreign", 2)])
+		.await
+		.unwrap();
+	// Assert: both are unconfirmed, the Node is marked, and the second walk
+	// only checked this reader's right to discover it, then did not ask.
+	assert!(!first && !second);
+	assert!(scope.marked.contains("aidash://foreign"));
+	assert_eq!(transport.calls.lock().unwrap().len(), 1);
+	// Each walk met the Node, the second without asking it, so the call that made
+	// the second walk can tell that its refusal is that Node's silence.
+	assert_eq!(scope.met, ["aidash://foreign", "aidash://foreign"]);
+	assert_eq!(
+		scope.calls[calls_after_first..],
+		["decide:federation.discover:aidash://foreign"]
+	);
+}
+
+#[rstest]
+#[case::refused(Check::Refused)]
+#[case::not_asked(Check::NotAsked)]
+#[tokio::test]
+async fn a_refusal_or_a_node_nobody_asked_is_not_marked(
+	mut scope: Scope,
+	transport: Transport,
+	#[case] reply: Check,
+) {
+	transport.replies.lock().unwrap().push_back(reply);
+	assert!(
+		!verify_all(&mut scope, &transport, vec![grant("aidash://foreign", 1)])
+			.await
+			.unwrap()
+	);
+	assert!(scope.marked.is_empty());
+	// A refusal is asked about again: nothing remembers it.
+	transport.replies.lock().unwrap().push_back(Check::Refused);
+	assert!(
+		!verify_all(&mut scope, &transport, vec![grant("aidash://foreign", 2)])
+			.await
+			.unwrap()
+	);
+	assert_eq!(transport.calls.lock().unwrap().len(), 2);
+}
+
+#[rstest]
+#[tokio::test]
+async fn the_deadline_names_the_node_whose_reference_was_left_unchecked(
+	mut scope: Scope,
+	transport: Transport,
+) {
+	// Arrange: the local grant uses the whole budget and discloses a reference
+	// on another Node, then a local one.
+	scope.latency = Duration::from_secs(20);
+	scope.edges.insert(
+		Uuid::from_u128(1),
+		vec![grant("aidash://local", 3), grant("aidash://foreign", 2)],
+	);
+	// Act
+	assert!(
+		!verify_all(&mut scope, &transport, vec![grant("aidash://local", 1)])
+			.await
+			.unwrap()
+	);
+	// Assert: the reference popped first is the foreign one.
+	assert!(scope.marked.contains("aidash://foreign"));
+	assert!(transport.calls.lock().unwrap().is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn the_deadline_on_this_node_marks_the_last_node_asked(
+	mut scope: Scope,
+	transport: Transport,
+) {
+	// The slow answer from the foreign Node used the time; the next reference
+	// is on this Node, so the Node that was slow is the one to name.
+	transport
+		.replies
+		.lock()
+		.unwrap()
+		.push_back(Check::Confirmed(Checked {
+			visible: true,
+			pending: vec![grant("aidash://local", 3)],
+		}));
+	scope.latency_on_peer = Duration::from_secs(20);
+	assert!(
+		!verify_all(&mut scope, &transport, vec![grant("aidash://foreign", 1)])
+			.await
+			.unwrap()
+	);
+	assert!(scope.marked.contains("aidash://foreign"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn the_deadline_on_this_node_with_no_node_asked_marks_nothing(
+	mut scope: Scope,
+	transport: Transport,
+) {
+	scope.latency = Duration::from_secs(20);
+	scope.edges.insert(
+		Uuid::from_u128(1),
+		vec![grant("aidash://local", 3), grant("aidash://local", 4)],
+	);
+	assert!(
+		!verify_all(&mut scope, &transport, vec![grant("aidash://local", 1)])
+			.await
+			.unwrap()
+	);
+	assert!(scope.marked.is_empty());
+}
+
+#[rstest]
+#[tokio::test]
+async fn the_deadline_names_no_node_that_has_no_route(mut scope: Scope, transport: Transport) {
+	scope.latency = Duration::from_secs(20);
+	scope.peer = None;
+	scope
+		.edges
+		.insert(Uuid::from_u128(1), vec![grant("aidash://foreign", 2)]);
+	assert!(
+		!verify_all(&mut scope, &transport, vec![grant("aidash://local", 1)])
+			.await
+			.unwrap()
+	);
+	assert!(scope.marked.is_empty());
 }
 
 #[rstest]
@@ -357,11 +574,11 @@ async fn another_nodes_local_reference_never_reads_this_database(mut scope: Scop
 }
 
 #[rstest]
-#[case("agent", true, true, 3)]
+#[case("agent", true, true, 2)]
 #[case("model", true, false, 2)]
 #[case("agent", false, false, 2)]
 #[tokio::test]
-async fn registry_dependency_keeps_kind_digest_and_execution_authority_gates(
+async fn registry_dependency_keeps_kind_and_digest_gates_without_asking_for_execution(
 	mut scope: Scope,
 	#[case] kind: &str,
 	#[case] digest_matches: bool,
@@ -383,9 +600,12 @@ async fn registry_dependency_keeps_kind_digest_and_execution_authority_gates(
 	assert_eq!(check_local(&mut scope, &reference).await.unwrap(), visible);
 	assert_eq!(scope.calls.len(), calls);
 	assert_eq!(scope.calls[0], "decide:federation.discover:aidash://local");
-	if visible {
-		assert_eq!(scope.calls[2], "decide:agent.execute:agent");
-	}
+	assert!(
+		!scope
+			.calls
+			.iter()
+			.any(|call| call.contains("agent.execute"))
+	);
 }
 
 #[rstest]
@@ -455,4 +675,32 @@ async fn admission_must_exist_and_match_its_bound_grant_before_visibility(
 		present && bound
 	);
 	assert_eq!(scope.calls.len(), calls);
+}
+
+#[rstest]
+#[case::bad_request(400, true)]
+#[case::unauthorized(401, true)]
+#[case::forbidden(403, true)]
+#[case::missing(404, true)]
+#[case::conflict(409, true)]
+#[case::gone(410, true)]
+#[case::unprocessable(422, true)]
+#[case::request_timeout(408, false)]
+#[case::too_early(425, false)]
+#[case::too_many_requests(429, false)]
+#[case::server_error(500, false)]
+#[case::unavailable(503, false)]
+#[case::gateway_timeout(504, false)]
+#[case::redirect(302, false)]
+#[case::no_content(204, false)]
+fn a_peer_that_answered_refuses_and_one_that_could_not_is_unavailable(
+	#[case] status: u16,
+	#[case] refused: bool,
+) {
+	assert_eq!(crate::ports::federation::refuses(status), refused);
+	assert_eq!(
+		matches!(Check::of_status(status), Check::Refused),
+		refused,
+		"{status}"
+	);
 }

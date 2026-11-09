@@ -169,6 +169,12 @@ impl HttpTransport {
 	}
 }
 
+/// A peer that did not answer: the verdict stays unknown (#751). The Node and
+/// the cause are logged here, where the cause is known.
+pub(crate) fn unavailable(route: &Route, cause: &dyn std::fmt::Display) {
+	tracing::warn!(node = %route.target, %cause, "a Node did not answer a check");
+}
+
 /// The three claims that differ between a Node's token and a viewer's.
 struct Party {
 	sub: String,

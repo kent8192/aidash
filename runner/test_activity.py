@@ -149,6 +149,19 @@ class ActivityTest(unittest.TestCase):
         self.runner.recover()
         self.assertEqual((restarted.unsettled, restarted.last_completed), (live.unsettled, live.last_completed))
 
+    def test_restart_resumes_unconfirmed_stop_and_output_collection_as_busy(self):
+        stopping = record('cancelling', termination_confirmed=False)
+        harvesting = record('finishing', termination_confirmed=True)
+        for value in (stopping, harvesting):
+            self.write(value)
+        self.runner.recover()
+        self.assertEqual(self.activity()[0], 2)
+        self.assertCountEqual([call.args[0] for call in self.runner.start.call_args_list],
+                              [stopping['operation_id'], harvesting['operation_id']])
+        self.runner.update(stopping['operation_id'], status='uncertain', termination_confirmed=True)
+        self.runner.update(harvesting['operation_id'], status='completed', termination_confirmed=True)
+        self.assertEqual(self.activity()[0], 0)
+
     def test_aggregate_matches_the_full_scan_for_any_sequence_of_states(self):
         generator = random.Random(183)
         statuses = ['awaiting_files', 'accepted', 'starting', 'running', 'finishing', 'cancelling', 'completed',
