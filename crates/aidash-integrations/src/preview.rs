@@ -143,11 +143,10 @@ fn refused(refusal: Refusal) -> Response<Body> {
 }
 
 /// Moves the connection to the slot of the preview a request was admitted to.
-fn admit(slots: &Slots, connection: &Connection, host: &str) -> Result<(), Response<Body>> {
-	slots.admit(connection, host).map_err(|refusal| {
-		slots.note(refusal, "answered");
-		refused(refusal)
-	})
+fn admit(slots: &Slots, connection: &Connection, host: &str) -> Result<(), Refusal> {
+	slots
+		.admit(connection, host)
+		.inspect_err(|refusal| slots.note(*refusal, "answered"))
 }
 
 /// Applies the confinement headers every Preview response carries.
@@ -560,7 +559,7 @@ async fn file_view(
 	cookie: &str,
 	method: &hyper::Method,
 	path: &str,
-	admit: impl FnOnce() -> Result<(), Response<Body>>,
+	admit: impl FnOnce() -> Result<(), Refusal>,
 ) -> Response<Body> {
 	let head = method == hyper::Method::HEAD;
 	if method != hyper::Method::GET && !head {
@@ -568,8 +567,8 @@ async fn file_view(
 	}
 	match authority.view(host, cookie, path).await {
 		Ok(page) => {
-			if let Err(response) = admit() {
-				return response;
+			if let Err(refusal) = admit() {
+				return refused(refusal);
 			}
 			let Ok(policy) = content_security_policy(&page.frame_ancestor) else {
 				return plain(StatusCode::INTERNAL_SERVER_ERROR, "preview unavailable");
@@ -640,8 +639,8 @@ async fn respond(
 	};
 	match authority.live(&host, cookie, true).await {
 		Ok(Some(proxy)) => {
-			if let Err(response) = admit(slots, connection, &host) {
-				return response;
+			if let Err(refusal) = admit(slots, connection, &host) {
+				return refused(refusal);
 			}
 			live(
 				&client, &authority, connection, &host, cookie, proxy, request,
