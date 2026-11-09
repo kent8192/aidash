@@ -389,6 +389,7 @@ impl From<ShellRequest> for Shell {
 			idempotency_key: v.idempotency_key,
 			command: v.command,
 			timeout_seconds: v.timeout_seconds,
+			wait_seconds: None,
 			expected_revision: v.expected_revision,
 		}
 	}

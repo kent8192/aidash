@@ -16,6 +16,7 @@ pub struct Install {
 	/// The working area revision: take it from the previous result's `revision`; a new area starts at 1.
 	pub expected_revision: i64,
 	pub wheels: Vec<Wheel>,
+	/// Seconds the install may run once it starts. It is then stopped, and its changes under /work are saved. Raise it if an install ran out of time.
 	pub timeout_seconds: Option<u64>,
 }
 

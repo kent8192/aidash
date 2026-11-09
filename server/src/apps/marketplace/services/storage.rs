@@ -33,12 +33,20 @@ pub(super) async fn deployment_administrator_commit(
 
 /// One distribution lock orders audience/consent changes, absent-row creation,
 /// publication and installation mappings. Credential/policy locks precede it;
-/// catalog locks follow it. No network/provider work occurs inside this lease.
+/// catalog locks follow it. No network/provider work occurs inside this lease
+/// except the in-process Read dependency checks of other Nodes of this Deployment
+/// (#751), which share the lock of the reader they serve and request none.
 /// This deliberately favors a simple verifiable lock order over write throughput.
 pub(crate) async fn lock(
 	tx: &mut crate::database::native::Transaction,
 	exclusive: bool,
 ) -> Result<()> {
+	// A peer serving a caller that holds this lock is covered by it. Its own shared
+	// request would queue behind a writer that waits for that caller, and the caller
+	// waits for the peer until the check's limit (#751).
+	if !exclusive && crate::database::native::distribution::caller_holds() {
+		return Ok(());
+	}
 	crate::database::native::query(
 		&Query::select()
 			.expr(Expr::cust(if exclusive {
@@ -50,6 +58,7 @@ pub(crate) async fn lock(
 	)
 	.execute(&mut **tx)
 	.await?;
+	tx.distribution().take();
 	Ok(())
 }
 pub(crate) async fn writer(tx: &mut crate::database::native::Transaction) -> Result<()> {

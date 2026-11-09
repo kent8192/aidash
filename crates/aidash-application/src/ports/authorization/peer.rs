@@ -144,6 +144,13 @@ pub trait PeerAdmissionRepository: PeerAdmissionRecords {
 		grant: Uuid,
 	) -> Result<aidash_domain::federation::execution::admission::Activation>;
 	async fn control(&self, id: Uuid, action: &RemoteExecutionControl) -> Result<RunInspection>;
+	/// Decline the call the Run is paused on and let it go on, as the Run's Home. `Conflict`
+	/// when the Run is no longer paused on that call.
+	async fn decline_call(
+		&self,
+		id: Uuid,
+		call: &str,
+	) -> Result<(RunInspection, aidash_domain::run_state::PausedCall)>;
 	fn messages(&self, run: &Run) -> Box<dyn AdmissionMessages + '_>;
 	async fn message_limit(&self, run: &Run) -> Result<usize>;
 	async fn message_recorded(&self, id: Uuid, key: &str, content: &str) -> bool;

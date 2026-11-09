@@ -219,6 +219,13 @@ impl HomeGenerationScope for Scope {
 	async fn task(&mut self, id: Uuid) -> Result<Task> {
 		self.access.task_read(id).await.map_err(Into::into)
 	}
+	async fn task_row(&mut self, id: Uuid) -> Result<Task> {
+		use aidash_application::ports::authorization::visibility::resources::ResourceAccessScope as _;
+		crate::bootstrap::run_visibility_scope(&mut self.access)
+			.task_any(id)
+			.await?
+			.ok_or(aidash_application::Error::Forbidden)
+	}
 	async fn insert(&mut self, intent: &Intent) -> Result<()> {
 		let access = &mut self.access;
 		let identity = &access.identity;

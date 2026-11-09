@@ -521,6 +521,7 @@ fn decides(error: &aidash_application::Error) -> bool {
 		Error::Conflict(code) => {
 			code == aidash_domain::egress::LIMIT_EXCEEDED
 				|| code == aidash_domain::egress::OPERATION_EXPIRED
+				|| code == aidash_domain::egress::OPERATION_INACTIVE
 		}
 		_ => false,
 	}
@@ -577,6 +578,9 @@ impl ScopedMeter {
 }
 #[async_trait]
 impl Meter for ScopedMeter {
+	async fn check_active(&self) -> aidash_application::Result<()> {
+		self.inner.check_active().await
+	}
 	async fn charge(&self, direction: Direction, bytes: usize) -> aidash_application::Result<()> {
 		let bytes = bytes as u64;
 		// Held to the end, so that charges in one direction never read each

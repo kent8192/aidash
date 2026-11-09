@@ -32,7 +32,11 @@ pub async fn apply(
 	if scope.current_run(area).await? != Some(run.id) {
 		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
 	}
-	let current = serde_json::from_value::<Vec<FileEntry>>(area.manifest.clone())?;
+	// Reference files are not this tool's to change, and an Agent may write the same path.
+	let (reference_files, current): (Vec<_>, Vec<_>) =
+		serde_json::from_value::<Vec<FileEntry>>(area.manifest.clone())?
+			.into_iter()
+			.partition(|file| file.is_reference_file());
 	let mut manifest: BTreeMap<_, _> = current.into_iter().map(|f| (f.path.clone(), f)).collect();
 	let paths: BTreeSet<_> = edits.iter().map(|e| e.path.clone()).collect();
 	if paths != input.preconditions.keys().cloned().collect() {
@@ -119,7 +123,12 @@ pub async fn apply(
 	// Each object and its ownership intent is fsynced before the single PG
 	// publication. A crash before commit exposes the old manifest; after commit
 	// it exposes all new bytes. No live path is renamed or overwritten.
-	area.manifest = json!(manifest.values().collect::<Vec<_>>());
+	area.manifest = json!(
+		manifest
+			.values()
+			.chain(&reference_files)
+			.collect::<Vec<_>>()
+	);
 	files::publish(scope, area).await?;
 	let result = json!({"operation_id":id,"status":"completed","generation":area.generation,"revision":area.revision,"changed_paths":paths,"preimages":preimages.iter().map(|f|f.file_id).collect::<Vec<_>>(),"digest":digest});
 	scope.cache(input.idempotency_key, &digest, &result).await?;

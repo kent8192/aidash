@@ -372,23 +372,33 @@ impl CatalogScope for NativeCatalog<'_> {
 		direct_user: &str,
 	) -> aidash_application::Result<bool> {
 		let node = self.0.catalog_node().await?;
-		let restriction: Option<Value> = crate::database::native::query_scalar(
-			&Query::select()
-				.column(Alias::new("restriction"))
-				.from(Alias::new("authorization_catalog"))
-				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::cust("$1")))
-				.and_where(Expr::col(Alias::new("entry_id")).eq(Expr::cust("$2")))
-				.and_where(Expr::col(Alias::new("entry_version")).eq(Expr::cust("$3")))
-				.and_where(Expr::col(Alias::new("node")).eq(Expr::cust("$4")))
-				.and_where(Expr::col(Alias::new("enabled")))
-				.to_string(PostgresQueryBuilder),
-		)
-		.bind(&self.0.identity.tenant)
-		.bind(&reference.id)
-		.bind(&reference.version)
-		.bind(node.as_str())
-		.scalar_optional(&mut **self.0.tx)
-		.await?;
+		// Each user is still judged below. What one walk remembers is the restriction.
+		let restriction = match self.0.read_lookups.restriction(node.as_str(), reference) {
+			Some(restriction) => restriction,
+			None => {
+				let restriction: Option<Value> = crate::database::native::query_scalar(
+					&Query::select()
+						.column(Alias::new("restriction"))
+						.from(Alias::new("authorization_catalog"))
+						.and_where(Expr::col(Alias::new("tenant")).eq(Expr::cust("$1")))
+						.and_where(Expr::col(Alias::new("entry_id")).eq(Expr::cust("$2")))
+						.and_where(Expr::col(Alias::new("entry_version")).eq(Expr::cust("$3")))
+						.and_where(Expr::col(Alias::new("node")).eq(Expr::cust("$4")))
+						.and_where(Expr::col(Alias::new("enabled")))
+						.to_string(PostgresQueryBuilder),
+				)
+				.bind(&self.0.identity.tenant)
+				.bind(&reference.id)
+				.bind(&reference.version)
+				.bind(node.as_str())
+				.scalar_optional(&mut **self.0.tx)
+				.await?;
+				self.0
+					.read_lookups
+					.remember_restriction(node.as_str(), reference, &restriction);
+				restriction
+			}
+		};
 		let Some(restriction) = restriction.filter(|value| !value.is_null()) else {
 			return Ok(true);
 		};

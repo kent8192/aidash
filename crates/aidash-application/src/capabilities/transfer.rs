@@ -83,7 +83,7 @@ pub async fn prepare(
 		.any(|c| {
 			matches!(
 				c["kind"].as_str(),
-				Some("reference" | "reference_text" | "received_scope")
+				Some("reference" | "reference_bound" | "reference_text" | "received_scope")
 			)
 		}) {
 		return Err(Error::Forbidden);
@@ -441,6 +441,10 @@ pub async fn drive(repository: &dyn TransferRepository, id: Uuid) -> Result<()> 
 pub async fn sweep(repository: &dyn TransferRepository) -> Result<()> {
 	for id in repository.jobs().await? {
 		if let Err(error) = Box::pin(drive(repository, id)).await {
+			if matches!(error, Error::TemporaryDatabase(_)) {
+				tracing::warn!(%id,%error,"file transfer waits for the database");
+				continue;
+			}
 			let terminal = matches!(
 				error,
 				Error::Forbidden | Error::Unauthorized | Error::NotFound(_)

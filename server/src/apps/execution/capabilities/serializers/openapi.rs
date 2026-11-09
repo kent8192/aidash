@@ -353,6 +353,17 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		views::management::reference_upload,
 	)?;
 	contracts
+		.response::<_, crate::apps::execution::capabilities::serializers::references::BatchResult>(
+			document,
+			views::management::reference_batch,
+			200,
+			"application/json",
+		)?;
+	contracts.request::<_, crate::apps::execution::capabilities::serializers::references::Batch>(
+		document,
+		views::management::reference_batch,
+	)?;
+	contracts
 		.response::<_, crate::apps::execution::capabilities::serializers::references::Reference>(
 			document,
 			views::management::reference_chunk,

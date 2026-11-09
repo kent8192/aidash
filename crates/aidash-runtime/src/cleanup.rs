@@ -1,4 +1,5 @@
 //! File lifecycle maintenance drains its owned batch before shutdown.
+use crate::background::Passes;
 use aidash_application::{
 	Result, capabilities::cleanup, ports::capabilities::cleanup::CleanupRepository,
 };
@@ -10,11 +11,10 @@ pub async fn run(
 	mut stopping: watch::Receiver<bool>,
 ) -> Result<()> {
 	let mut cursor = Uuid::nil();
-	loop {
-		if *stopping.borrow() {
-			return Ok(());
-		}
-		cleanup::sweep(repository, &mut cursor).await?;
-		tokio::select! {_=stopping.changed()=>{},_=tokio::time::sleep(Duration::from_secs(1))=>{}}
+	let mut passes = Passes::new("capabilities.cleanup", Duration::from_secs(1));
+	while !*stopping.borrow() {
+		passes.run(cleanup::sweep(repository, &mut cursor)).await;
+		passes.pause(&mut stopping).await;
 	}
+	Ok(())
 }

@@ -4,6 +4,10 @@ use aidash_domain::{
 	identity::catalog::{CatalogRestriction, RestrictionChange},
 	registry::{EntityRef, Entry, Search},
 };
+/// The admission key of a read check that decided `registry.read` without a Catalog Approval.
+/// It is separate from the `registry.read` admission of [`entry`] so that a read-only result
+/// never counts as an approval; [`admit`] may reuse it to decide `registry.read` once (#769).
+pub const READ_CHECK: &str = "registry.read:read-check";
 pub async fn entry(
 	scope: &mut dyn CatalogScope,
 	reference: &EntityRef,
@@ -29,12 +33,23 @@ pub async fn closure_entry(
 	admit(scope, reference, action, None, users).await
 }
 
+/// `Forbidden`, with a note that Catalog Approval refused `action`.
+fn catalog_refusal(action: &str) -> Error {
+	super::refusal_note::set(super::refusal_note::Note::new(
+		aidash_domain::tool::RefusalCheck::Catalog,
+		Some(action),
+	));
+	Error::Forbidden
+}
+
 /// The refusal of a Tenant policy denial met while admitting a Catalog entry for `tool`'s call.
 pub fn policy_refusal(tool: &str, action: &str) -> Error {
 	Error::AuthorityRefused(Box::new(aidash_domain::tool::AuthorityRefusal {
 		tool: tool.to_owned(),
 		check: aidash_domain::tool::RefusalCheck::Policy,
 		action: Some(action.to_owned()),
+		subject: None,
+		call: None,
 	}))
 }
 
@@ -49,6 +64,30 @@ pub async fn tool_entry(
 	admit(scope, reference, action, Some(tool), &[]).await
 }
 
+/// Why a Run may not go on using `reference`, one of its Binding's definitions. `entry` is
+/// its raw definition, approved or not; the version is named only to a holder of
+/// `registry.read` on it. A definition that is still approved is not named at all.
+pub async fn use_block(
+	scope: &mut dyn CatalogScope,
+	reference: &EntityRef,
+	entry: Option<&Entry>,
+) -> Result<aidash_domain::run_state::RunReadsBlock> {
+	use aidash_domain::run_state::RunReadsBlock;
+	if scope.document(reference).await?.is_some() {
+		return Ok(RunReadsBlock::DefinitionNotUsable);
+	}
+	let readable = match entry {
+		Some(entry) => {
+			let resource = scope.resource(entry);
+			scope.decide(&resource, "registry.read").await?
+		}
+		None => false,
+	};
+	Ok(RunReadsBlock::DefinitionNotApproved {
+		definition: readable.then(|| reference.clone()),
+	})
+}
+
 async fn admit(
 	scope: &mut dyn CatalogScope,
 	reference: &EntityRef,
@@ -60,7 +99,7 @@ async fn admit(
 		&& !scope.approved(reference)
 		&& !crate::registry::system::builtin_reference(reference)
 	{
-		return Err(Error::Forbidden);
+		return Err(catalog_refusal(action));
 	}
 	// A cache hit already holds the distribution lock taken by its first
 	// admission in this transaction; a new admission takes it before reading
@@ -81,7 +120,7 @@ async fn admit(
 		if !scope.permits_restriction(reference, direct_user).await? {
 			// A restriction narrows the Tenant policy; refuse exactly as an
 			// unapproved version does, without disclosing the restriction.
-			return Err(Error::Forbidden);
+			return Err(catalog_refusal(action));
 		}
 	}
 	// The distribution, catalog and policy locks taken by the first admission keep it
@@ -90,23 +129,45 @@ async fn admit(
 		scope.remember(reference);
 		return Ok(entry);
 	}
-	let document = scope.document(reference).await?.ok_or(Error::Forbidden)?;
+	let entry = current_definition(scope, reference, action, tool).await?;
+	scope.remember(reference);
+	scope.admit(reference, action, &entry);
+	Ok(entry)
+}
+
+/// The approved definition, when current policy allows `action` on it.
+async fn current_definition(
+	scope: &mut dyn CatalogScope,
+	reference: &EntityRef,
+	action: &str,
+	tool: Option<&str>,
+) -> Result<Entry> {
+	let document = scope
+		.document(reference)
+		.await?
+		.ok_or_else(|| catalog_refusal(action))?;
 	let entry: Entry = serde_json::from_value(document)?;
 	if let Some(projection) = &entry.installation
 		&& (projection.contract != 1 || projection.tenant != scope.tenant())
 	{
-		return Err(Error::Forbidden);
+		return Err(catalog_refusal(action));
 	}
 	let resource = scope.resource(&entry);
-	scope
-		.require(&resource, action)
-		.await
-		.map_err(|error| match error {
-			Error::Forbidden => tool.map_or(Error::Forbidden, |tool| policy_refusal(tool, action)),
-			error => error,
-		})?;
-	scope.remember(reference);
-	scope.admit(reference, action, &entry);
+	// A read check already decided `registry.read` for this reference under this authority in
+	// this transaction: the approval and its document are still read above, the policy
+	// decision is not repeated.
+	let decided = action == "registry.read" && scope.admitted(reference, READ_CHECK).is_some();
+	if !decided {
+		scope
+			.require(&resource, action)
+			.await
+			.map_err(|error| match error {
+				Error::Forbidden => {
+					tool.map_or(Error::Forbidden, |tool| policy_refusal(tool, action))
+				}
+				error => error,
+			})?;
+	}
 	Ok(entry)
 }
 pub async fn list(scope: &mut dyn CatalogScope, search: &Search) -> Result<Vec<Entry>> {
@@ -322,7 +383,6 @@ pub async fn set_catalog_with_restriction(
 mod mutation_tests;
 
 pub mod approvals;
-pub mod retained;
 pub mod review;
 pub mod withdrawal;
 

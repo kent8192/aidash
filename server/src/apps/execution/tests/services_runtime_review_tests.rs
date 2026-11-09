@@ -91,5 +91,6 @@ async fn interruption_store(
 		plan_connections_enabled: false,
 		provider_key_material_reader: None,
 		capability_issuer: None,
+		in_process: Default::default(),
 	}
 }
