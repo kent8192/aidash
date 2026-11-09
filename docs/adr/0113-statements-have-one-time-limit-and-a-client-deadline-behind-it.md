@@ -27,5 +27,5 @@ These run with neither limit, because their length comes from the design:
 ## Consequences
 
 - A new default method on either Reinhardt trait bypasses the wrapper without a compile error, so check `server/src/database/limits.rs` on each Reinhardt update.
-- Enterprise auth and marketplace set the same limit and keepalives but have no client deadline, because they do not use the wrapper. Marketplace has no `after_release` limit either, because Reinhardt builds its pool from a URL.
+- Enterprise auth and marketplace set the same limit and keepalives but have no client deadline, because they do not use the wrapper. Both limit `after_release` to 5 s.
 - A connection lost during `COMMIT` leaves the outcome unknown, as any lost connection does.
