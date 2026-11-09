@@ -117,7 +117,21 @@ pub(in crate::apps::execution) async fn record(
 	)
 	.fetch_all(&mut *tx)
 	.await?;
+	// Lock every end before the first control event takes the event lock.
+	for raw in &runs {
+		crate::apps::execution::repositories::subnodes::lock_for_end(tx, raw.metadata.id).await?;
+	}
 	for raw in runs {
+		// An earlier creator's cascade may already have cancelled this Run.
+		let raw: RawRun = crate::database::query_as(
+			&Query::select()
+				.column(reinhardt::query::ColumnRef::Asterisk)
+				.from(Alias::new("runs"))
+				.and_where(Expr::col("id").eq(Expr::value(raw.metadata.id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(&mut *tx)
+		.await?;
 		if !raw.metadata.phase.is_terminal() && raw.metadata.control != RunControl::Cancelled {
 			f.store
 				.control_in_executor(tx, raw.metadata.id, RunControlAction::Cancel)

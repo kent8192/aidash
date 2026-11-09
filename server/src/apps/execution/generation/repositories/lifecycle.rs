@@ -203,6 +203,14 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 			crate::database::native::query_scalar(&query.to_string(PostgresQueryBuilder))
 				.scalar_all(&mut **self.transaction)
 				.await?;
+		// Every end must take its Subnode locks before any control appends an event.
+		for &id in &ids {
+			crate::apps::execution::repositories::subnodes::lock_for_end(
+				&mut **self.transaction,
+				id,
+			)
+			.await?;
+		}
 		for id in ids {
 			self.runtime
 				.store
