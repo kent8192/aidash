@@ -17,12 +17,16 @@ impl Access {
 		.map_err(Into::into)
 	}
 	pub(crate) async fn task_read(&mut self, id: Uuid) -> Result<Task> {
-		aidash_application::authorization::visibility::resources::task_read(
+		let mark = self.call_mark();
+		let result = aidash_application::authorization::visibility::resources::task_read(
 			&mut crate::bootstrap::run_visibility_scope(self),
 			id,
 		)
 		.await
-		.map_err(Into::into)
+		.map_err(Into::into);
+		// A refusal reached while a Node did not answer is that Node's silence (#751),
+		// when this read's own walk met the Node and not an earlier call of the authority.
+		result.map_err(|error| self.named_since(mark, error))
 	}
 	pub(crate) async fn task_visible(&mut self, task: &Task) -> Result<bool> {
 		aidash_application::authorization::visibility::resources::task_visible(
@@ -266,7 +270,12 @@ impl Access {
 				result = self.verify_dependencies(pending).await;
 			}
 		}
+		// A `false` reached while a Node did not answer may be that Node's
+		// silence; it is kept like an abandoned check, not as a verdict (#751).
+		let unconfirmed = matches!(result, Ok(false)) && !self.unavailable_peers.is_empty();
 		match result {
+			Ok(_) if unconfirmed && outermost => self.read_verdicts.abandon(),
+			Ok(_) if unconfirmed => {}
 			Ok(verdict) => self.read_verdicts.record(key, verdict, outermost),
 			Err(_) if outermost => self.read_verdicts.abandon(),
 			Err(_) => {}

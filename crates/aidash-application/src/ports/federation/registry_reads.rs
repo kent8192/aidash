@@ -13,7 +13,11 @@ pub type RegistryJournalRow = (String, String, String, String, Value);
 pub enum Verification {
 	Verified,
 	Rejected,
+	/// The peer did not answer: a timeout, `5xx`, a transport error, an
+	/// unreadable answer or a pending transaction.
 	Unavailable,
+	/// Nobody was asked: a same-Deployment route with no in-process runtime.
+	NotAsked,
 }
 #[async_trait]
 pub trait RegistryTransport: Send + Sync {
@@ -25,7 +29,9 @@ pub trait RegistryReadScope: Send {
 	fn cached(&self, run: Uuid) -> Option<bool>;
 	fn remember(&mut self, run: Uuid, visible: bool);
 	fn frontier(&mut self) -> Option<&mut Vec<Dependency>>;
+	/// Whether a Node already failed to answer within this authority (#751).
 	fn unavailable(&self, node: &str) -> bool;
+	/// As for the dependency walk: called each time a walk meets such a Node.
 	fn mark_unavailable(&mut self, node: &str);
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource;
 	fn catalog_resource(&self, entry: &Entry) -> Resource;

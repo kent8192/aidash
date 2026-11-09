@@ -2,13 +2,14 @@
 //! Deployment, or over HTTP with a Federation token to another Deployment
 //! (ADR 0064). Every transport port is served by the same two paths.
 use super::local;
+use crate::database::native::distribution::{self, Hold};
 use crate::federation::Federation;
 use aidash_application::{
 	Result,
 	ports::federation::{
 		PeerReply, PeerTransport,
 		authority::{Reply, Transport},
-		dependencies::DependencyTransport,
+		dependencies::{Check, DependencyTransport},
 		registry_reads::{RegistryTransport, Verification},
 	},
 };
@@ -25,8 +26,8 @@ use std::time::Duration;
 #[derive(Clone)]
 pub(crate) struct Wire {
 	pub http: HttpTransport,
-	/// Present when the caller holds the runtime; a caller holding only a
-	/// Store has no way into this process's handlers.
+	/// The runtime whose handlers answer a Node of this Deployment. `None`
+	/// reaches no other Node: such an exchange is not asked (#751).
 	pub runtime: Option<Federation>,
 }
 
@@ -38,10 +39,24 @@ impl Wire {
 		}
 	}
 
-	/// The transport of a caller that holds a Store: exchange inside this
-	/// Deployment is refused as unavailable, because only the runtime reaches
-	/// the receiving handlers.
+	/// The transport of a caller that holds a Store. A server binds its
+	/// in-process handlers to the Store (`Federation::bind_in_process`), so the
+	/// caller reaches the other Nodes of this Deployment by default. In a
+	/// process that never built a `Federation` it reaches none, and such an
+	/// exchange is reported as not asked.
 	pub(crate) fn of_store(store: &crate::store::Store) -> Self {
+		Self {
+			runtime: store
+				.in_process
+				.get()
+				.map(|bound| bound.federation(store.clone())),
+			..Self::without_peers(store)
+		}
+	}
+
+	/// The transport of a caller that must not ask another Node, such as one
+	/// holding an exclusive lock the peer's own read would wait on.
+	pub(crate) fn without_peers(store: &crate::store::Store) -> Self {
 		Self {
 			http: HttpTransport {
 				endpoints: Endpoints::new(store.keyless.clone())
@@ -121,38 +136,78 @@ impl RegistryTransport for Wire {
 		if !route.local() {
 			return self.http.verify(route, references).await;
 		}
+		if self.runtime.is_none() {
+			tracing::debug!(node = %route.target, "a Node of this Deployment was not asked");
+			return Verification::NotAsked;
+		}
 		let body = json!({"references":references});
-		match self
-			.local(route, "POST", "/scoped/registry/verify", Some(&body))
-			.await
-		{
-			Ok(outcome) if outcome.status == 200 && outcome.body == json!(true) => {
-				Verification::Verified
+		let answered = tokio::time::timeout(
+			Duration::from_secs(10),
+			self.local(route, "POST", "/scoped/registry/verify", Some(&body)),
+		)
+		.await;
+		match answered {
+			Ok(Ok(outcome)) if outcome.status == 200 => match outcome.body {
+				Value::Bool(true) => Verification::Verified,
+				Value::Bool(false) => Verification::Rejected,
+				_ => unavailable(route, &"an unreadable answer"),
+			},
+			Ok(Ok(outcome)) if aidash_application::ports::federation::refuses(outcome.status) => {
+				Verification::Rejected
 			}
-			Ok(outcome) if outcome.status == 200 => Verification::Rejected,
-			_ => Verification::Unavailable,
+			Ok(Ok(outcome)) => unavailable(route, &format!("HTTP {}", outcome.status)),
+			Ok(Err(error)) => unavailable(route, &error),
+			Err(_) => unavailable(route, &"the request timed out"),
 		}
 	}
 }
 
+/// A peer of this Deployment that did not answer, with the Node and cause logged.
+fn unavailable(route: &Route, cause: &dyn std::fmt::Display) -> Verification {
+	tracing::warn!(node = %route.target, %cause, "a Node did not answer a check");
+	Verification::Unavailable
+}
+
 #[async_trait]
 impl DependencyTransport for Wire {
-	async fn check(&self, route: &Route, input: &Input, remaining: Duration) -> Option<Checked> {
+	async fn check(&self, route: &Route, input: &Input, remaining: Duration) -> Check {
 		if !route.local() {
 			return self.http.check(route, input, remaining).await;
 		}
+		if self.runtime.is_none() {
+			tracing::debug!(node = %route.target, "a Node of this Deployment was not asked");
+			return Check::NotAsked;
+		}
 		let body = json!({"reference":input.reference});
-		let outcome = tokio::time::timeout(
+		let answered = tokio::time::timeout(
 			remaining.min(Duration::from_secs(10)),
 			self.local(route, "POST", "/scoped/dependencies/verify", Some(&body)),
 		)
-		.await
-		.ok()?
-		.ok()?;
-		if outcome.status != 200 {
-			return None;
-		}
-		serde_json::from_value(outcome.body).ok()
+		.await;
+		let cause: &dyn std::fmt::Display = match &answered {
+			Ok(Ok(outcome)) if outcome.status == 200 => {
+				match serde_json::from_value::<Checked>(outcome.body.clone()) {
+					Ok(checked) => return Check::Confirmed(checked),
+					Err(_) => &"an unreadable answer",
+				}
+			}
+			Ok(Ok(outcome)) => {
+				let check = Check::of_status(outcome.status);
+				if matches!(check, Check::Refused) {
+					return check;
+				}
+				tracing::warn!(
+					node = %route.target,
+					cause = %format_args!("HTTP {}", outcome.status),
+					"a Node did not answer a check"
+				);
+				return check;
+			}
+			Ok(Err(error)) => error,
+			Err(_) => &"the request timed out",
+		};
+		tracing::warn!(node = %route.target, %cause, "a Node did not answer a check");
+		Check::Unavailable
 	}
 }
 
@@ -188,22 +243,37 @@ impl Wire {
 }
 
 /// The transport of an authority that may hold none: a transaction lent to a
-/// disclosure check reaches no other Node, so its remote proofs are unavailable.
-pub(crate) struct Reach(pub Option<Wire>);
+/// disclosure check reaches no other Node, so it asks nobody and reports that
+/// it did not ask. The second field is the distribution lock the authority's
+/// transaction holds: a Node of this Deployment it asks in process runs inside
+/// that transaction's lock and requests none of its own (#751).
+pub(crate) struct Reach(pub Option<Wire>, pub Hold);
 
 #[async_trait]
 impl RegistryTransport for Reach {
 	async fn verify(&self, route: &Route, references: &[Reference]) -> Verification {
 		match &self.0 {
-			Some(wire) => wire.verify(route, references).await,
-			None => Verification::Unavailable,
+			Some(wire) => distribution::serving(&self.1, wire.verify(route, references)).await,
+			None => {
+				tracing::debug!(node = %route.target, "no transport; the Node was not asked");
+				Verification::NotAsked
+			}
 		}
 	}
 }
 
 #[async_trait]
 impl DependencyTransport for Reach {
-	async fn check(&self, route: &Route, input: &Input, remaining: Duration) -> Option<Checked> {
-		self.0.as_ref()?.check(route, input, remaining).await
+	async fn check(&self, route: &Route, input: &Input, remaining: Duration) -> Check {
+		match &self.0 {
+			Some(wire) => distribution::serving(&self.1, wire.check(route, input, remaining)).await,
+			None => {
+				tracing::debug!(node = %route.target, "no transport; the Node was not asked");
+				Check::NotAsked
+			}
+		}
 	}
 }
+
+#[cfg(test)]
+mod tests;

@@ -56,15 +56,26 @@ pub(crate) fn node_sender(tenant: &str) -> Result<aidash_domain::federation::rou
 	})
 }
 
-/// The Sender for a cross-Node generation or semantic operation, found from
-/// the grant and admission it names: this Deployment's Tenant of that work.
+/// The Sender for a cross-Node generation or semantic operation to `peer`,
+/// found from the grant and admission it names: this Deployment's Tenant of
+/// that work.
 pub(crate) async fn usage_sender(
 	f: &Federation,
 	admission: uuid::Uuid,
 	grant: uuid::Uuid,
+	peer: &str,
 ) -> Result<aidash_domain::federation::route::Sender> {
 	let scope = f.store.remote_tenancy(admission, grant).await?;
-	let node = f.store.remote_node(&scope, admission, grant).await?;
+	// A Node of this Deployment that is the peer is the other end of the
+	// exchange, never the sender.
+	let peer = aidash_domain::nodes::NodeAddress::parse(peer)
+		.ok()
+		.filter(|peer| peer.deployment == f.config.deployment)
+		.map(|peer| peer.node);
+	let node = f
+		.store
+		.remote_node(&scope, admission, grant, peer.as_ref())
+		.await?;
 	Ok(aidash_domain::federation::route::Sender {
 		node: Some(node),
 		..scope_sender(&scope)?

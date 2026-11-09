@@ -189,7 +189,8 @@ pub async fn initialize_as(
 		config,
 		client,
 		notify: Arc::new(Notify::new()),
-	};
+	}
+	.bind_in_process();
 	crate::apps::workspaces::repositories::attachment_backfill::run(&federation.store).await?;
 	// Persist removed restrictions even for inactive Identities before this
 	// policy can serve requests or start workers. Provider IO is unnecessary.
@@ -1083,7 +1084,7 @@ pub(crate) fn dependency_scope(
 pub(crate) fn dependency_transport(
 	access: &crate::authorization::access::Access,
 ) -> crate::apps::federation::remote::services::wire::Reach {
-	crate::apps::federation::remote::services::wire::Reach(access.wire.clone())
+	access.reach()
 }
 
 pub(crate) fn foreign_run_read_scope(
@@ -1541,7 +1542,7 @@ pub(crate) fn semantic_disclosure_scope<'a, 'scope>(
 pub(crate) fn native_registry_transport(
 	access: &crate::authorization::access::NativeAccess,
 ) -> crate::apps::federation::remote::services::wire::Reach {
-	crate::apps::federation::remote::services::wire::Reach(access.remote_transport())
+	access.reach()
 }
 pub(crate) fn registry_verification_scope<'a>(
 	access: &'a mut crate::authorization::access::Access,

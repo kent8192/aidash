@@ -32519,6 +32519,12 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "node_retry": {
+                "description": "Retries of the current step after another Node did not answer a check\n(#751). A retry asks again, so it is reset once the step saves anything else.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
               "remote_task_fingerprint": {
                 "description": "Fingerprint of remote terminal child Tasks observed before inference.",
                 "type": ["string", "null"]
@@ -36617,6 +36623,12 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "node_retry": {
+                "description": "Retries of the current step after another Node did not answer a check\n(#751). A retry asks again, so it is reset once the step saves anything else.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
               "remote_task_fingerprint": {
                 "description": "Fingerprint of remote terminal child Tasks observed before inference.",
                 "type": ["string", "null"]
@@ -40317,6 +40329,12 @@
               },
               "lease_recoveries": {
                 "description": "Consecutive Lease Recoveries of the current step.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "node_retry": {
+                "description": "Retries of the current step after another Node did not answer a check\n(#751). A retry asks again, so it is reset once the step saves anything else.",
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
@@ -55848,6 +55866,12 @@
               },
               "lease_recoveries": {
                 "description": "Consecutive Lease Recoveries of the current step.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "node_retry": {
+                "description": "Retries of the current step after another Node did not answer a check\n(#751). A retry asks again, so it is reset once the step saves anything else.",
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"

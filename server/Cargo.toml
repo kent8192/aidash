@@ -364,6 +364,10 @@ name = "multimodal_run"
 path = "src/apps/execution/tests/multimodal_run.rs"
 
 [[test]]
+name = "other_node_reads"
+path = "src/apps/identity/tests/other_node_reads.rs"
+
+[[test]]
 name = "peer_graph"
 path = "src/apps/identity/tests/peer_graph.rs"
 

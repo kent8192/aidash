@@ -108,4 +108,10 @@ impl DependencyScope for NativeDependencies<'_> {
 	) -> Result<Option<aidash_domain::federation::route::Route>> {
 		self.0.route_to(node).await.map_err(Into::into)
 	}
+	fn unavailable(&self, node: &str) -> bool {
+		self.0.peer_unavailable(node)
+	}
+	fn mark_unavailable(&mut self, node: &str) {
+		self.0.mark_peer_unavailable(node);
+	}
 }

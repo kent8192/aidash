@@ -1005,7 +1005,8 @@ fn federation(
 			},
 			client: peer_client,
 			notify: Arc::new(tokio::sync::Notify::new()),
-		};
+		}
+		.bind_in_process();
 		let mut runtime = store_fixture.runtime;
 		runtime.federation = federation;
 		runtime

@@ -460,6 +460,11 @@ pub struct RecoveryState {
 	/// Routes again; it is reset once the step saves anything else (ADR 0066).
 	#[serde(default, skip_serializing_if = "is_zero")]
 	pub decider_retry: u32,
+	/// Retries of the current step after another Node did not answer a check
+	/// (#751). A retry asks again, so it is reset once the step saves anything
+	/// else.
+	#[serde(default, skip_serializing_if = "is_zero")]
+	pub node_retry: u32,
 	/// Steps that ran with Degraded context (ADR 0059). Kept across resumes.
 	#[serde(
 		default,

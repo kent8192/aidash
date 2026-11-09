@@ -238,7 +238,9 @@ impl PublicationScope for Scope {
 			self.tx.lend(),
 			&store.pool,
 			store.deployment.as_str(),
-			Some(crate::apps::federation::remote::services::wire::Wire::of_store(store)),
+			// `flush_audit` below holds the global audit lock through commit, so no
+			// peer is asked meanwhile (#751).
+			Some(crate::apps::federation::remote::services::wire::Wire::without_peers(store)),
 			identity,
 			snapshot,
 		);

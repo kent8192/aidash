@@ -449,6 +449,21 @@ impl Workspaces {
 		access.finish(result).await
 	}
 
+	/// [`Self::can_emit`] for a caller that answers one person's request: a
+	/// refusal reached while a Node did not answer is that Node's silence, so
+	/// it is `NodeUnreachable` and not `false` (#751). The event stream keeps
+	/// [`Self::can_emit`], which drops the frame.
+	pub async fn can_emit_naming_silence(&self, event: &Event) -> Result<bool> {
+		let mut access = Access::begin(&self.store, &self.identity).await?;
+		let result = aidash_application::authorization::stream::can_emit(
+			&mut crate::bootstrap::run_visibility_scope(&mut access),
+			event,
+		)
+		.await
+		.map_err(Into::into);
+		access.finish_deciding(result).await
+	}
+
 	pub async fn can_emit(&self, event: &Event) -> Result<bool> {
 		let mut access = Access::begin(&self.store, &self.identity).await?;
 		let result = aidash_application::authorization::stream::can_emit(

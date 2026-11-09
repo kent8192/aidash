@@ -119,6 +119,10 @@ pub struct Store {
 	/// Decides whether new work may begin. The build installs it; Community's
 	/// admits everything.
 	pub admission: std::sync::Arc<dyn aidash_application::usage::Admission>,
+	/// What a running server binds so that a caller holding only this Store
+	/// reaches the other Nodes of its Deployment (#751). Empty in a process
+	/// that never built a `Federation`. Shared by every clone of this Store.
+	pub(crate) in_process: std::sync::Arc<std::sync::OnceLock<crate::federation::InProcess>>,
 }
 
 /// Worker slots are capped at four. Each holds an outer authority transaction
@@ -399,11 +403,16 @@ impl Store {
 	/// The Node that acts for the operation `remote_tenancy` found: the Node a
 	/// remote Run executes at, the Node a remote grant was issued from, or the
 	/// Node of a local Run.
+	/// The Node a cross-Node operation of this admission and grant is sent from.
+	/// In one Deployment the Home's grant and the receiver's Run live in the same
+	/// database, so a row naming `peer` itself is the other end of the exchange
+	/// and not the sender (#751).
 	pub(crate) async fn remote_node(
 		&self,
 		scope: &TenancyScope,
 		admission: Uuid,
 		grant: Uuid,
+		peer: Option<&aidash_domain::nodes::NodeName>,
 	) -> Result<aidash_domain::nodes::NodeName> {
 		let name: Option<String> = self
 			.pool
@@ -422,7 +431,10 @@ impl Store {
 					)
 					.scalar_optional(&mut **tx)
 					.await?;
-					if node.is_some() {
+					if node
+						.as_deref()
+						.is_some_and(|node| peer.is_none_or(|peer| peer.as_str() != node))
+					{
 						return Ok(node);
 					}
 				}
@@ -526,6 +538,7 @@ impl Store {
 			provider_key_material_reader: None,
 			capability_issuer: None,
 			capabilities: crate::capabilities::Runtime::from_env()?,
+			in_process: Default::default(),
 		}
 		.with_memory_recovery(memory_recovery))
 	}
@@ -672,6 +685,7 @@ impl Store {
 			provider_key_material_reader: self.provider_key_material_reader.clone(),
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
+			in_process: self.in_process.clone(),
 		})
 	}
 
@@ -731,6 +745,7 @@ impl Store {
 			provider_key_material_reader: self.provider_key_material_reader.clone(),
 			capability_issuer: self.capability_issuer.clone(),
 			capabilities: self.capabilities.clone(),
+			in_process: self.in_process.clone(),
 		})
 	}
 	pub async fn event(

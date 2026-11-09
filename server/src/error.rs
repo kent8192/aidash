@@ -91,6 +91,9 @@ pub enum Error {
 		message: String,
 		retry_after: Option<std::time::Duration>,
 	},
+	/// Another Node did not answer a check this call depends on (#751).
+	#[error("Node {node} could not be reached to confirm this. Try again.")]
+	NodeUnreachable { node: String, after_effect: bool },
 	#[error("{message}")]
 	ToolRetry {
 		message: String,
@@ -165,7 +168,9 @@ impl Error {
 			),
 			Self::StaleInference => (StatusCode::CONFLICT, self.to_string()),
 			Self::Context(_) => (StatusCode::CONFLICT, self.to_string()),
-			Self::DeciderOutage => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
+			Self::DeciderOutage | Self::NodeUnreachable { .. } => {
+				(StatusCode::SERVICE_UNAVAILABLE, self.to_string())
+			}
 			Self::ContextOverflow => (
 				StatusCode::BAD_REQUEST,
 				"the request exceeded the model context window".into(),
@@ -239,10 +244,14 @@ impl Error {
 				)
 			}
 		};
+		let envelope = match &self {
+			Self::NodeUnreachable { node, .. } => {
+				json!({"error": message, "code": "node_unreachable", "node": node})
+			}
+			_ => json!({"error": message}),
+		};
 		let mut response = HttpResponse::new(status)
-			.with_body(
-				serde_json::to_vec(&json!({"error": message})).expect("error envelope serializes"),
-			)
+			.with_body(serde_json::to_vec(&envelope).expect("error envelope serializes"))
 			.with_header("Content-Type", "application/json");
 		if let Self::RemoteExecutionRefused(reason) = &self
 			&& let Some(code) = serde_json::to_value(reason)
@@ -394,6 +403,9 @@ impl From<aidash_application::Error> for Error {
 				message,
 				retry_after,
 			},
+			ApplicationError::NodeUnreachable { node, after_effect } => {
+				Self::NodeUnreachable { node, after_effect }
+			}
 			ApplicationError::ToolServiceStatus { status, .. } => {
 				Self::External(format!("tool service returned HTTP {status}"))
 			}
@@ -493,6 +505,9 @@ impl From<Error> for aidash_application::Error {
 				message,
 				retry_after,
 			},
+			Error::NodeUnreachable { node, after_effect } => {
+				Self::NodeUnreachable { node, after_effect }
+			}
 			Error::ToolRetry {
 				message,
 				count,

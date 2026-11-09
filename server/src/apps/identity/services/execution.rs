@@ -15,7 +15,8 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 /// The Run's own authority was gone when its tool call had already had its effect. The harness
-/// fills in the tool and leaves the invocation `STARTED`.
+/// fills in the tool and leaves the invocation `STARTED`. A Node that did not answer is not
+/// retried either ([`after_effect`]).
 fn authority_gone_after_effect(error: Error) -> Error {
 	match error {
 		Error::Forbidden | Error::Unauthorized => {
@@ -26,7 +27,7 @@ fn authority_gone_after_effect(error: Error) -> Error {
 				subject: None,
 			}))
 		}
-		error => error,
+		error => after_effect(error),
 	}
 }
 
@@ -50,10 +51,22 @@ async fn restore_outer<T>(
 }
 
 async fn memory_run_check(access: &mut Access, run: &crate::domain::RunMetadata) -> Result<()> {
+	let mark = access.call_mark();
 	match access.run_invalidity(run).await? {
 		None => Ok(()),
-		Some(crate::semantic::remote::Failure::Authority) => Err(Error::Forbidden),
-		Some(reason) => Err(Error::RemoteSemantic(reason)),
+		Some(reason) => Err(access.memory_failure_since(mark, reason)),
+	}
+}
+
+/// A Node that did not answer a recheck run after a tool took effect (#751):
+/// running the tool again could repeat the effect, so the Run is not retried.
+fn after_effect(error: Error) -> Error {
+	match error {
+		Error::NodeUnreachable { node, .. } => Error::NodeUnreachable {
+			node,
+			after_effect: true,
+		},
+		error => error,
 	}
 }
 
@@ -121,13 +134,15 @@ pub(in crate::apps::identity) async fn refresh_access_for_run(
 	store: &Store,
 	run: &Run,
 ) -> Result<()> {
-	aidash_application::authorization::execution::refresh_worker(
+	let mark = access.call_mark();
+	let result = aidash_application::authorization::execution::refresh_worker(
 		&mut crate::bootstrap::execution_grant_scope(access),
 		store.deployment.as_str(),
 		&run.metadata(),
 	)
 	.await
-	.map_err(Into::into)
+	.map_err(Into::into);
+	result.map_err(|error| access.named_since(mark, error))
 }
 
 pub(crate) async fn inherit_task_origin(access: &mut Access, task: Uuid) -> Result<bool> {
@@ -2006,13 +2021,15 @@ pub(in crate::apps::identity) async fn authorize_guard(
 	access: &mut Access,
 	read_context: bool,
 ) -> Result<AgentConfig> {
-	aidash_application::authorization::execution::guard::authorize(
+	let mark = access.call_mark();
+	let result = aidash_application::authorization::execution::guard::authorize(
 		&mut crate::bootstrap::run_guard_scope(f, access),
 		run,
 		read_context,
 	)
 	.await
-	.map_err(Into::into)
+	.map_err(Into::into);
+	result.map_err(|error| access.named_since(mark, error))
 }
 
 struct SnapshotAuthority {

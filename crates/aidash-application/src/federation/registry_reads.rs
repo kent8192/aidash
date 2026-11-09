@@ -71,11 +71,15 @@ async fn check(
 		return Ok(pending.len() <= LIMIT);
 	}
 	for (node, references) in nodes {
-		if scope.unavailable(&node) {
-			return Ok(false);
-		}
 		let resource = scope.resource("node", &node, json!({"remote_node":node}));
 		if !scope.decide(&resource, "federation.discover").await? {
+			return Ok(false);
+		}
+		// After the decision: a mark may come from another identity of the
+		// same authority, and this reader's own right comes first.
+		if scope.unavailable(&node) {
+			// Not asked again, but this walk met it: its caller is told so (#751).
+			scope.mark_unavailable(&node);
 			return Ok(false);
 		}
 		let Some(route) = scope.route(&node).await? else {
@@ -84,7 +88,7 @@ async fn check(
 		for batch in references.chunks(128) {
 			match transport.verify(&route, batch).await {
 				Verification::Verified => {}
-				Verification::Rejected => return Ok(false),
+				Verification::Rejected | Verification::NotAsked => return Ok(false),
 				Verification::Unavailable => {
 					scope.mark_unavailable(&node);
 					return Ok(false);
