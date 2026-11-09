@@ -53,6 +53,8 @@ pub trait HomeScope: Send + Sized {
 	async fn call_declined(&mut self, workspace: Uuid, event: Value) -> Result<()>;
 	async fn binding(&mut self, grant: Uuid) -> Result<Option<HomeBinding>>;
 	async fn grants(&mut self, task: Uuid) -> Result<Vec<Grant>>;
+	/// Grants of other requesters, considered only for a content-free decline offer.
+	async fn holder_grants(&mut self, task: Uuid) -> Result<Vec<Grant>>;
 	async fn delegation_grants(&mut self, task: &Task, node: &str) -> Result<Vec<Grant>>;
 	async fn insert_binding(
 		&mut self,

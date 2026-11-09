@@ -148,6 +148,51 @@ impl World {
 	}
 }
 
+#[rstest::rstest]
+#[tokio::test]
+async fn workspace_condition_gives_the_screen_and_decline_route_the_same_decision(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let w = world(fixture).await;
+	let erin = w.add_administrator("erin").await;
+	w.drop_working_area().await;
+	w.pause(true).await;
+	w.edit_policy(|bundle| {
+		bundle["policies"].as_array_mut().unwrap().push(json!({
+			"id":"workspace-owner-denial", "effect":"deny", "subjects":{"ids":["erin"]},
+			"actions":["run.decline_call"], "resources":{"kinds":["run"]},
+			"condition":{"op":"eq", "left":{"source":"resource","path":"/owner"},
+				"right":{"source":"literal","value":"alice"}}
+		}));
+	})
+	.await;
+	let (status, page) = w.get(&erin).await;
+	assert_eq!(status, 200, "{page}");
+	assert!(page.get("declinable_call").is_none(), "{page}");
+	let (status, management) = w.management(&erin).await;
+	assert_eq!(status, 200, "{management}");
+	assert!(management.get("declinable_call").is_none(), "{management}");
+	let (status, body) = w.decline(&erin, &w.key()).await;
+	assert_eq!(status, 403, "{body}");
+	w.edit_policy(|bundle| {
+		bundle["policies"]
+			.as_array_mut()
+			.unwrap()
+			.retain(|p| p["id"] != "workspace-owner-denial");
+	})
+	.await;
+	let (status, page) = w.get(&erin).await;
+	assert_eq!(status, 200, "{page}");
+	assert!(page["declinable_call"].is_object(), "{page}");
+	let (status, management) = w.management(&erin).await;
+	assert_eq!(status, 200, "{management}");
+	assert!(management["declinable_call"].is_object(), "{management}");
+	let (status, body) = w.decline(&erin, &w.key()).await;
+	assert_eq!(status, 200, "{body}");
+}
+
 const EPOCH: i64 = 5;
 
 impl World {
@@ -592,6 +637,13 @@ async fn an_administrator_declines_a_run_with_a_working_area_though_they_cannot_
 ) {
 	let w = world(fixture).await;
 	let erin = w.add_administrator("erin").await;
+	w.edit_policy(|bundle| {
+		bundle["policies"].as_array_mut().unwrap().push(json!({
+			"id":"erin-no-control", "effect":"deny", "subjects":{"ids":["erin"]},
+			"actions":["run.control"], "resources":{"kinds":["run"]}
+		}));
+	})
+	.await;
 	let bob = w.add_member_denied_decline("bob").await;
 	w.pause(true).await;
 	let before = w.other_credential().await;
@@ -605,6 +657,7 @@ async fn an_administrator_declines_a_run_with_a_working_area_though_they_cannot_
 	// may decline it, and to no one else.
 	let (status, management) = w.management(&erin).await;
 	assert_eq!(status, 200, "{management}");
+	assert_eq!(management["may_control"], false);
 	assert_eq!(
 		management["declinable_call"],
 		json!({"call": w.key(), "tool": "task_delegate", "kind": "policy"})
@@ -613,6 +666,17 @@ async fn an_administrator_declines_a_run_with_a_working_area_though_they_cannot_
 		!management.to_string().contains("task.delegate"),
 		"{management}"
 	);
+	let (status, body) = w.control(&erin, "cancel").await;
+	assert_eq!(status, 403, "{body}");
+	let (status, body) = common::request(
+		&w.app,
+		&erin,
+		"POST",
+		&format!("/api/runs/{}/management", w.run),
+		json!({"action":"cancel"}),
+	)
+	.await;
+	assert_eq!(status, 403, "{body}");
 	let (status, management) = w.management(&bob).await;
 	assert_eq!(status, 200, "{management}");
 	assert!(management.get("declinable_call").is_none(), "{management}");

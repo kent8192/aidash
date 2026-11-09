@@ -198,6 +198,9 @@ impl HomeScope for SourceSession {
 			})
 			.collect())
 	}
+	async fn holder_grants(&mut self, _: Uuid) -> Result<Vec<Grant>> {
+		Ok(vec![])
+	}
 	async fn delegation_grants(&mut self, _: &Task, _: &str) -> Result<Vec<Grant>> {
 		Ok(vec![grant(false)])
 	}

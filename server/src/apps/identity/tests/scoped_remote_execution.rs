@@ -3984,6 +3984,10 @@ async fn a_home_member_who_is_not_the_requester_needs_run_decline_call(
 	}));
 	common::replace_policy(&p.a.store, "acme", bundle).await;
 	let mia = common::subject_credential(&p.a.store, "acme", "mia").await;
+	let path = format!("/api/tasks/{}/remote-executions", p.task);
+	let (status, states) = request(&p.aa, &mia, "GET", &path, json!({})).await;
+	assert_eq!(status, 200, "{states}");
+	assert_eq!(states, json!([]));
 
 	let (status, body) =
 		request(&p.aa, &mia, "POST", &p.decline_path(), json!({"call": key})).await;
@@ -3994,7 +3998,27 @@ async fn a_home_member_who_is_not_the_requester_needs_run_decline_call(
 	// Without the denial the same request is allowed for someone who is not the requester.
 	let mut bundle = p.source_policy.clone();
 	bundle["subjects"]["mia"] = json!({"kind":"user"});
+	bundle["policies"].as_array_mut().unwrap().push(json!({
+		"id":"mia-no-control-or-delegation","effect":"deny","subjects":{"ids":["mia"]},
+		"actions":["run.control", "task.delegate"],"resources":{"kinds":["*"]}
+	}));
 	common::replace_policy(&p.a.store, "acme", bundle).await;
+	let (status, states) = request(&p.aa, &mia, "GET", &path, json!({})).await;
+	assert_eq!(status, 200, "{states}");
+	assert_eq!(states.as_array().unwrap().len(), 1, "{states}");
+	assert_eq!(states[0]["view"], "holder");
+	assert_eq!(states[0]["grant"]["id"], p.grant.to_string());
+	assert_eq!(states[0]["execution"]["control"], "PAUSED");
+	assert_eq!(states[0]["execution"]["declinable_call"]["call"], key);
+	assert_eq!(states[0].as_object().unwrap().len(), 3, "{states}");
+	assert_eq!(states[0]["grant"].as_object().unwrap().len(), 3, "{states}");
+	assert_eq!(
+		states[0]["execution"].as_object().unwrap().len(),
+		2,
+		"{states}"
+	);
+	assert!(states[0].get("human_requests").is_none(), "{states}");
+	assert!(states[0].get("semantic").is_none(), "{states}");
 	let (status, declined) =
 		request(&p.aa, &mia, "POST", &p.decline_path(), json!({"call": key})).await;
 	assert_eq!(status, 200, "{declined}");

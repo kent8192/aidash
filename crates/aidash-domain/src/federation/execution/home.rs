@@ -60,6 +60,7 @@ pub struct Status {
 	pub execution: Option<Activation>,
 	pub unavailable: bool,
 	pub semantic: crate::semantic::remote::status::Status,
+	pub requester: bool,
 }
 impl HomeBinding {
 	pub fn matches(&self, admission: Uuid, task: Uuid, initial_task: &Value) -> bool {

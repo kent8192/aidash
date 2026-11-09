@@ -15,6 +15,8 @@ use uuid::Uuid;
 #[derive(Serialize, schemars::JsonSchema)]
 pub struct RunManagement {
 	pub id: Uuid,
+	/// Whether this caller may change the Run's control state.
+	pub may_control: bool,
 	pub phase: RunPhase,
 	pub control: RunControl,
 	/// The kind of actor that last changed `control`.
@@ -39,6 +41,7 @@ impl From<RunInspection> for RunManagement {
 		let recoverable = run.control != RunControl::Cancelled && !run.phase.is_terminal();
 		Self {
 			id: run.id,
+			may_control: true,
 			phase: run.phase,
 			control: run.control,
 			control_source: run.control_source,
@@ -147,7 +150,11 @@ fn administrator_only() -> Error {
 	)
 }
 
-pub(crate) async fn authorized(access: &mut Access, id: Uuid, node: &str) -> Result<RunInspection> {
+async fn readable(
+	access: &mut Access,
+	id: Uuid,
+	node: &str,
+) -> Result<(RunInspection, aidash_domain::policy::Resource)> {
 	let raw: crate::domain::run_state::RawRun = {
 		let query_bind_1 = id;
 		aidash_server::database::query_as(
@@ -199,12 +206,13 @@ pub(crate) async fn authorized(access: &mut Access, id: Uuid, node: &str) -> Res
 		)
 	};
 	access.require(&workspace, "workspace.read").await?;
-	access
-		.require(
-			&access.resource("run", id, workspace.attributes),
-			"run.control",
-		)
-		.await?;
+	let resource = access.resource("run", id, workspace.attributes);
+	Ok((run, resource))
+}
+
+pub(crate) async fn authorized(access: &mut Access, id: Uuid, node: &str) -> Result<RunInspection> {
+	let (run, resource) = readable(access, id, node).await?;
+	access.require(&resource, "run.control").await?;
 	Ok(run)
 }
 
@@ -216,24 +224,34 @@ pub(crate) async fn get(f: Federation, actor: Actor, id: Uuid) -> Result<RunMana
 	};
 	let mut access = Access::begin(&f.store, &identity).await?;
 	let result = async {
-		let mut run = authorized(&mut access, id, f.config.deployment.as_str()).await?;
+		let (mut run, resource) = readable(&mut access, id, f.config.deployment.as_str()).await?;
+		let may_control = access.decide(&resource, "run.control").await?;
+		let may_decline = if run.is_local(f.config.deployment.as_str()) {
+			crate::apps::identity::repositories::execution::details::may_decline_run(
+				&mut access,
+				&run,
+			)
+			.await?
+		} else {
+			false
+		};
+		if !may_control && !may_decline {
+			return Err(Error::Forbidden);
+		}
 		// Offered only to someone who may decline it, decided without writing a denial.
 		let offered = run.declinable_call.take();
 		let declinable_call = match offered {
 			Some(offered)
 				if run.control == RunControl::Paused
 					&& run.is_local(f.config.deployment.as_str())
-					&& crate::apps::identity::repositories::execution::details::may_decline_run(
-						&mut access,
-						&run,
-					)
-					.await? =>
+					&& may_decline =>
 			{
 				Some(offered)
 			}
 			_ => None,
 		};
 		let mut result: RunManagement = run.into();
+		result.may_control = may_control;
 		result.declinable_call = declinable_call;
 		result.memory_cleanup =
 			crate::apps::knowledge::repositories::receiver_caches::status(&mut access.tx, id)
