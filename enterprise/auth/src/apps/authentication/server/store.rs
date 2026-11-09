@@ -29,7 +29,8 @@ pub(crate) fn unavailable(_: impl std::fmt::Display) -> Error {
 	Error::External("authentication persistence unavailable".into())
 }
 fn database_failure(error: impl Into<reinhardt::core::exception::Error>) -> Error {
-	aidash_server::Error::from(error.into()).into()
+	let error: reinhardt::core::exception::Error = error.into();
+	aidash_server::Error::from(error).into()
 }
 pub(crate) fn encode(value: &impl Serialize) -> Result<serde_json::Value> {
 	Ok(serde_json::to_value(value)?)
