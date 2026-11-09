@@ -8,7 +8,7 @@ use aidash_domain::{
 	federation::{
 		Delegation,
 		execution::{
-			PrepareInput,
+			PrepareInput, Refusal,
 			admission::{
 				Activation, Admission, Message, MessageReceipt, RemoteExecutionControl,
 				RemoteExecutionControlState,
@@ -327,6 +327,30 @@ fn after_effect(by_tool: bool, what: &str) -> Error {
 		Error::Forbidden
 	}
 }
+/// What the model hears when this Node, not the target, refuses a step after the target admitted.
+const UNRECORDED: &str =
+	"the target Node admitted the task, but this Node could not record the admission";
+/// The error of a step that follows the target Node's admission, as the model should hear it.
+/// The management endpoint gets every error unchanged. For the tool, a refusal or a failed
+/// request becomes [`after_effect`], since the effect has happened and pausing would resume into
+/// a second admission. An ask stays an Authority Pause, as ADR 0109 decided for another Node.
+/// Everything else keeps its meaning: a `Conflict` is an internal fault that still fails the Run,
+/// and a pending transaction or a database error has its own retry path.
+fn refused_after_effect(by_tool: bool, what: &str, error: Error) -> Error {
+	if !by_tool {
+		return error;
+	}
+	match error {
+		Error::RemoteExecutionRefused(Refusal::PolicyAsk | Refusal::NodeUseAsk) => error,
+		Error::RemoteExecutionRefused(reason) => {
+			after_effect(by_tool, &format!("{what}: {reason}"))
+		}
+		Error::Forbidden | Error::Unauthorized | Error::NotFound(_) | Error::External(_) => {
+			after_effect(by_tool, what)
+		}
+		error => error,
+	}
+}
 pub async fn activate<R: HomeRepository>(
 	repository: &R,
 	task: Uuid,
@@ -350,16 +374,22 @@ async fn activate_as<R: HomeRepository>(
 			&json!({"grant_id":id}),
 		)
 		.await?;
-	if admission.grant_id != id
-		|| admission.source_node != repository.node_address(grant.workspace_id).await?
-		|| admission.task_id != task
-	{
+	// From here on the target Node has acted, so the tool hears a refusal of any later step as a
+	// partial effect.
+	let source = repository
+		.node_address(grant.workspace_id)
+		.await
+		.map_err(|error| refused_after_effect(by_tool, UNRECORDED, error))?;
+	if admission.grant_id != id || admission.source_node != source || admission.task_id != task {
 		return Err(after_effect(
 			by_tool,
 			"the target Node admitted the task, but its admission did not match this request",
 		));
 	}
-	let (mut scope, description) = repository.description(&grant.node_id, id).await?;
+	let (mut scope, description) = repository
+		.description(&grant.node_id, id)
+		.await
+		.map_err(|error| refused_after_effect(by_tool, UNRECORDED, error))?;
 	let result = async {
 		scope
 			.insert_binding(id, task, &admission, &description)
@@ -374,7 +404,9 @@ async fn activate_as<R: HomeRepository>(
 		Ok(())
 	}
 	.await;
-	finish(scope, result).await?;
+	finish(scope, result)
+		.await
+		.map_err(|error| refused_after_effect(by_tool, UNRECORDED, error))?;
 	let activation: Activation = repository
 		.request(
 			grant.workspace_id,
@@ -382,7 +414,14 @@ async fn activate_as<R: HomeRepository>(
 			&format!("/scoped/execution/admissions/{}/activate", admission.id),
 			&json!({"grant_id":id}),
 		)
-		.await?;
+		.await
+		.map_err(|error| {
+			refused_after_effect(
+				by_tool,
+				"the target Node admitted the task, but did not activate it",
+				error,
+			)
+		})?;
 	if activation.run_id != admission.id
 		|| activation.admission_id != admission.id
 		|| activation.grant_id != id
@@ -419,7 +458,11 @@ pub async fn delegate<R: HomeRepository>(
 	subject(repository)?;
 	let mut scope = repository.begin().await?;
 	let result = async {
-		let task = scope.task_read(task).await?;
+		// A missing task and one the caller may not see read the same.
+		let task = scope.task_read(task).await.map_err(|error| match error {
+			Error::Forbidden => super::worker_tasks::task_not_visible(task),
+			error => error,
+		})?;
 		let resource = scope.task_resource(&task).await?;
 		scope.require(&resource, "task.delegate").await?;
 		let grants = scope.delegation_grants(&task, node).await?;

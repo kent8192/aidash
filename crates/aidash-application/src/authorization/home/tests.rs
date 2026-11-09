@@ -1,7 +1,7 @@
 use super::*;
 use aidash_domain::{
 	federation::execution::{
-		Description, Inspection, Prepared,
+		Description, Inspection, Prepared, Refusal,
 		admission::{RemoteExecutionControlState, RemoteExecutionPhase},
 		home::HomeBinding,
 	},
@@ -24,6 +24,10 @@ struct State {
 	denied: Option<&'static str>,
 	replies: Vec<Value>,
 	rpc_fails: bool,
+	/// The next request whose path ends with the suffix answers this error.
+	rpc_error: Option<(&'static str, Error)>,
+	/// The Home refuses to read the admitted description.
+	description_denied: bool,
 	binding_changed: bool,
 	grants: usize,
 	semantic: bool,
@@ -157,6 +161,9 @@ impl HomeRepository for Repository {
 	}
 	async fn description(&self, _: &str, _: Uuid) -> Result<(Scope, Description)> {
 		self.call("description");
+		if self.state.lock().unwrap().description_denied {
+			return Err(Error::Forbidden);
+		}
 		Ok((self.scope(), description()))
 	}
 	async fn request<T: DeserializeOwned + Send>(
@@ -185,6 +192,13 @@ impl HomeRepository for Repository {
 			let mut state = self.state.lock().unwrap();
 			if state.rpc_fails {
 				return Err(Error::External("receiver unavailable".into()));
+			}
+			if state
+				.rpc_error
+				.as_ref()
+				.is_some_and(|(suffix, _)| path.ends_with(suffix))
+			{
+				return Err(state.rpc_error.take().expect("an error was just matched").1);
 			}
 			if !state.replies.is_empty() {
 				state.replies.remove(0)
@@ -251,6 +265,9 @@ impl HomeScope for Scope {
 	}
 	async fn task_read(&mut self, _: Uuid) -> Result<Task> {
 		self.repository.call("task.read");
+		if self.repository.state.lock().unwrap().denied == Some("task.read") {
+			return Err(Error::Forbidden);
+		}
 		Ok(task())
 	}
 	async fn control_task(&mut self, _: Uuid) -> Result<Option<Task>> {
@@ -506,6 +523,143 @@ async fn changed_initial_task_binding_blocks_receiver_activation() {
 		"rollback_with_denial_audit"
 	);
 }
+/// The path of the receiver's activation of the admission built by `Repository::request`.
+const ACTIVATE: &str = "/activate";
+
+#[rstest]
+#[case::not_found(Error::NotFound("the target Node did not find it".into()))]
+#[case::denied(Error::Forbidden)]
+#[case::unauthorized(Error::Unauthorized)]
+#[case::refused(Error::RemoteExecutionRefused(
+	aidash_domain::federation::execution::Refusal::Policy
+))]
+#[case::unreachable(Error::External("remote execution authority unavailable".into()))]
+#[tokio::test]
+async fn a_refused_activation_after_admission_tells_the_tool_the_delegation_may_have_partly_happened(
+	#[case] error: Error,
+) {
+	// Arrange: the target Node admitted the task and Home bound it, then activation is refused.
+	let repository = Repository::default();
+	repository.state.lock().unwrap().rpc_error = Some((ACTIVATE, error));
+	// Act
+	let result = activate_as(&repository, task().id, Uuid::from_u128(4), true).await;
+	// Assert
+	assert!(
+		matches!(&result, Err(Error::Refused(message))
+			if message.contains("may have partly happened") && message.contains("Do not repeat")),
+		"{result:?}"
+	);
+	assert!(repository.calls().contains(&"insert_binding".into()));
+}
+
+#[rstest]
+#[case::policy(Refusal::PolicyAsk)]
+#[case::node_use(Refusal::NodeUseAsk)]
+#[tokio::test]
+async fn an_ask_after_admission_stays_an_authority_pause_for_the_tool(#[case] ask: Refusal) {
+	// Arrange: a person on the target Node can lift an ask, so ADR 0109 keeps it a pause.
+	let repository = Repository::default();
+	repository.state.lock().unwrap().rpc_error =
+		Some((ACTIVATE, Error::RemoteExecutionRefused(ask)));
+	// Act
+	let result = activate_as(&repository, task().id, Uuid::from_u128(4), true).await;
+	// Assert
+	assert!(
+		matches!(&result, Err(Error::RemoteExecutionRefused(reason)) if *reason == ask),
+		"{result:?}"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_denial_after_admission_names_the_targets_reason_to_the_tool() {
+	let repository = Repository::default();
+	repository.state.lock().unwrap().rpc_error = Some((
+		ACTIVATE,
+		Error::RemoteExecutionRefused(Refusal::CatalogApproval),
+	));
+	let result = activate_as(&repository, task().id, Uuid::from_u128(4), true).await;
+	assert!(
+		matches!(&result, Err(Error::Refused(message))
+			if message.contains("no Catalog Approval") && message.contains("may have partly happened")),
+		"{result:?}"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_pending_transaction_after_admission_keeps_its_retry_path() {
+	let repository = Repository::default();
+	repository.state.lock().unwrap().rpc_error = Some((ACTIVATE, Error::TransactionPending));
+	let result = activate_as(&repository, task().id, Uuid::from_u128(4), true).await;
+	assert!(
+		matches!(result, Err(Error::TransactionPending)),
+		"{result:?}"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_denied_description_after_admission_tells_the_tool_the_delegation_may_have_partly_happened()
+ {
+	let repository = Repository::default();
+	repository.state.lock().unwrap().description_denied = true;
+	let result = activate_as(&repository, task().id, Uuid::from_u128(4), true).await;
+	assert!(
+		matches!(&result, Err(Error::Refused(message)) if message.contains("may have partly happened")),
+		"{result:?}"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_conflict_after_admission_still_fails_the_tools_run() {
+	// Arrange: Home's own record of the admission changed, which is an internal fault.
+	let repository = Repository::default();
+	repository.state.lock().unwrap().binding_changed = true;
+	// Act
+	let result = activate_as(&repository, task().id, Uuid::from_u128(4), true).await;
+	// Assert
+	assert!(
+		matches!(&result, Err(Error::Conflict(text)) if text == "remote execution identity changed"),
+		"{result:?}"
+	);
+}
+
+#[rstest]
+#[case::not_found(Error::NotFound("the target Node did not find it".into()))]
+#[case::denied(Error::Forbidden)]
+#[tokio::test]
+async fn the_management_endpoint_keeps_the_error_of_a_refused_activation(#[case] error: Error) {
+	// Arrange
+	let repository = Repository::default();
+	let expected = format!("{error:?}");
+	repository.state.lock().unwrap().rpc_error = Some((ACTIVATE, error));
+	// Act
+	let result = activate(&repository, task().id, Uuid::from_u128(4)).await;
+	// Assert: a person is told what the target Node said, with no claim about a partial effect.
+	assert_eq!(format!("{:?}", result.unwrap_err()), expected);
+}
+
+#[rstest]
+#[tokio::test]
+async fn delegating_a_task_the_caller_cannot_read_says_it_is_not_found_or_not_visible() {
+	// Arrange
+	let repository = Repository::default();
+	repository.state.lock().unwrap().denied = Some("task.read");
+	let agent = EntityRef {
+		id: "agent".into(),
+		version: "1".into(),
+	};
+	// Act
+	let result = delegate(&repository, task().id, "aidash://receiver", &agent).await;
+	// Assert
+	assert!(
+		matches!(&result, Err(Error::Refused(message)) if message.contains("was not found or is not visible")),
+		"{result:?}"
+	);
+}
+
 #[rstest]
 #[case("grant_id")]
 #[case("source_node")]
