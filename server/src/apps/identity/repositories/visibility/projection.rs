@@ -309,23 +309,29 @@ pub(crate) async fn state_events(reads: &mut Reads<'_>, node: Option<&str>) -> R
 	while scanned < aidash_application::authorization::projection::EVENT_SCAN_LIMIT {
 		let size =
 			(aidash_application::authorization::projection::EVENT_SCAN_LIMIT - scanned).min(100);
-		let rows: Vec<Event> = aidash_server::database::query_as(
-			&Query::select()
-				.column(ColumnRef::Asterisk)
-				.from(Alias::new("events"))
-				.cond_where(event_scope(true, &tenant, &[]).add(tenant_workspaces.clone()))
-				.and_where(
-					Expr::col(Alias::new("kind"))
-						.not_like(Expr::value(format!("{MARKER_PREFIX}%"))),
-				)
-				.and_where(Expr::col(Alias::new("sequence")).lt(Expr::value(cursor)))
-				.order_by(Alias::new("sequence"), Order::Desc)
-				.limit(size as u64)
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_all(&mut **reads.access.tx)
-		.await
-		.map_err(aidash_application::Error::from)?;
+		let mut query = Query::select();
+		query
+			.column(ColumnRef::Asterisk)
+			.from(Alias::new("events"))
+			.cond_where(event_scope(true, &tenant, &[]).add(tenant_workspaces.clone()))
+			.and_where(
+				Expr::col(Alias::new("kind")).not_like(Expr::value(format!("{MARKER_PREFIX}%"))),
+			)
+			.and_where(Expr::col(Alias::new("sequence")).lt(Expr::value(cursor)))
+			.order_by(Alias::new("sequence"), Order::Desc)
+			.limit(size as u64);
+		if let Some(node) = node {
+			query.cond_where(
+				Condition::any()
+					.add(Expr::col(Alias::new("node")).is_null())
+					.add(Expr::col(Alias::new("node")).eq(Expr::value(node.to_owned()))),
+			);
+		}
+		let rows: Vec<Event> =
+			aidash_server::database::query_as(&query.to_string(PostgresQueryBuilder))
+				.fetch_all(&mut **reads.access.tx)
+				.await
+				.map_err(aidash_application::Error::from)?;
 		let exhausted = rows.len() < size;
 		scanned += rows.len();
 		for row in rows {

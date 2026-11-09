@@ -298,6 +298,13 @@ async fn state_node_scope_empty_cursors_and_administrator_collections(
 			.all(|row| row["node"] == node)
 	);
 	assert!(
+		scoped["events"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.all(|row| row["node"].is_null() || row["node"] == node)
+	);
+	assert!(
 		scoped["workspaces"]
 			.as_array()
 			.unwrap()
