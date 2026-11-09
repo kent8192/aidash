@@ -24,7 +24,7 @@ use crate::{
 };
 use aidash_application::{
 	egress::{Authority, Direction},
-	tenancy::TEST_FIXTURE,
+	tenancy::{TEST_FIXTURE, TenancyScope},
 };
 use chrono::Utc;
 use reinhardt::{
@@ -1034,13 +1034,21 @@ async fn live_preview_credentials(
 		(&pod, "pod", Some("api.example.test")),
 		(&page, "page", None),
 	] {
-		let unsettled: (i32, Option<String>) =
-			sqlx::query_as("SELECT status, error FROM egress_requests WHERE id = $1")
-				.bind(admission.request)
-				.fetch_one(f.store.pool.fixture_driver())
-				.await
-				.unwrap();
-		assert_eq!(unsettled, (0, None));
+		let mut tx = f
+			.store
+			.pool
+			.begin(&TenancyScope::tenant(&identity.tenant).unwrap())
+			.await
+			.unwrap();
+		let unsettled = RequestRecord::objects()
+			.filter(RequestRecord::field_id().eq(admission.request))
+			.all_with_executor(&mut *tx)
+			.await
+			.unwrap()
+			.pop()
+			.unwrap();
+		assert_eq!((unsettled.status, unsettled.error.as_deref()), (0, None));
+		tx.commit().await.unwrap();
 		admission.meter.finish(200, times(1), None).await.unwrap();
 		let (recorded, secret_host): (String, Option<String>) =
 			sqlx::query_as("SELECT via, secret_host FROM egress_requests WHERE id = $1")

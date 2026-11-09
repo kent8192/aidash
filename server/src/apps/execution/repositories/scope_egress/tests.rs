@@ -3,6 +3,27 @@ use crate::apps::execution::test_database::{DatabaseFixture, database};
 use crate::egress_tests::{settings, tenant_roots};
 use aidash_domain::egress::{AllowedHosts, AnomalyRule, DailyBudget};
 
+async fn received_bytes(store: &Store, id: &ScopeId, day: NaiveDate, service: &str) -> i64 {
+	let mut tx = store
+		.pool
+		.begin(&TenancyScope::tenant(&id.tenant).unwrap())
+		.await
+		.unwrap();
+	let row = ScopeDaily::objects()
+		.filter(ScopeDaily::field_scope_id().eq(id.scratch_space))
+		.filter(ScopeDaily::field_tenant().eq(id.tenant.clone()))
+		.filter(ScopeDaily::field_node().eq(id.node.clone()))
+		.filter(ScopeDaily::field_day().eq(day.to_string()))
+		.filter(ScopeDaily::field_service().eq(service.to_owned()))
+		.all_with_executor(&mut *tx)
+		.await
+		.unwrap()
+		.pop()
+		.unwrap();
+	tx.commit().await.unwrap();
+	row.received_bytes
+}
+
 struct Authority(ScopeSettings);
 struct AuditMeter;
 #[async_trait]
@@ -255,26 +276,12 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 			.to_string()
 			.contains("egress_budget_exhausted")
 	);
-	let recorded: i64 = sqlx::query_scalar(
-		"SELECT received_bytes FROM egress_scope_daily WHERE scope_id = $1 AND service = 'maps'",
-	)
-	.bind(scope.id.scratch_space)
-	.fetch_one(federation.store.pool.fixture_driver())
-	.await
-	.unwrap();
+	let recorded = received_bytes(&federation.store, &scope.id, day, "maps").await;
 	assert_eq!(
 		recorded, 6,
 		"already forwarded bytes remain charged after an over-limit debit"
 	);
-	let total = async || -> i64 {
-		sqlx::query_scalar(
-			"SELECT received_bytes FROM egress_scope_daily WHERE scope_id = $1 AND service = ''",
-		)
-		.bind(scope.id.scratch_space)
-		.fetch_one(federation.store.pool.fixture_driver())
-		.await
-		.unwrap()
-	};
+	let total = async || received_bytes(&federation.store, &scope.id, day, "").await;
 	let audit = Arc::new(FlakyAuditMeter::default());
 	let failed_audit =
 		ScopedMeter::new(durable.clone(), scope.clone(), "maps", None, audit.clone());
@@ -411,13 +418,7 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 			.to_string()
 			.contains("egress_suspended")
 	);
-	let recorded: i64 = sqlx::query_scalar(
-		"SELECT received_bytes FROM egress_scope_daily WHERE scope_id = $1 AND service = ''",
-	)
-	.bind(suspended.id.scratch_space)
-	.fetch_one(federation.store.pool.fixture_driver())
-	.await
-	.unwrap();
+	let recorded = received_bytes(&federation.store, &suspended.id, day, "").await;
 	assert_eq!(
 		(recorded, audit.committed()),
 		(1, 1),
