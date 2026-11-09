@@ -313,6 +313,10 @@ impl Refusal {
 		status: StatusCode::FORBIDDEN,
 		code: aidash_domain::egress::OPERATION_EXPIRED,
 	};
+	const INACTIVE: Self = Self {
+		status: StatusCode::FORBIDDEN,
+		code: aidash_domain::egress::OPERATION_INACTIVE,
+	};
 	const FORBIDDEN: Self = Self {
 		status: StatusCode::FORBIDDEN,
 		code: "egress_forbidden",
@@ -328,6 +332,9 @@ impl Refusal {
 			Error::Conflict(code) if code == aidash_domain::egress::LIMIT_EXCEEDED => Self::LIMIT,
 			Error::Conflict(code) if code == aidash_domain::egress::OPERATION_EXPIRED => {
 				Self::EXPIRED
+			}
+			Error::Conflict(code) if code == aidash_domain::egress::OPERATION_INACTIVE => {
+				Self::INACTIVE
 			}
 			Error::Refused(code) if code == "egress_budget_exhausted" => Self {
 				status: StatusCode::TOO_MANY_REQUESTS,
@@ -1330,6 +1337,11 @@ async fn forward(
 			if code == aidash_domain::egress::OPERATION_EXPIRED =>
 		{
 			return refuse(Refusal::EXPIRED.status, Refusal::EXPIRED.code);
+		}
+		Err(aidash_application::Error::Conflict(code))
+			if code == aidash_domain::egress::OPERATION_INACTIVE =>
+		{
+			return Refusal::INACTIVE.response();
 		}
 		Err(aidash_application::Error::Conflict(_)) => {
 			return refuse(Refusal::LIMIT.status, Refusal::LIMIT.code);

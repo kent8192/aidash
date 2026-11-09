@@ -165,7 +165,7 @@ class AllocationUsageTest(unittest.TestCase):
         self.assertEqual(self.runner.allocation_receipts()['receipts'], [])
 
     def test_python_setup_stops_when_allocation_never_matches_pod(self):
-        self.record.update(status='starting', request={'usage_tenant': 'acme', 'kind': 'python'})
+        self.record.update(status='starting', startup_at=__import__('time').time(), request={'usage_tenant': 'acme', 'kind': 'python'})
         save(self.runner.path(self.operation), self.record)
         self.runner.observe_allocation(self.record, self.pod)
         pod = copy.deepcopy(self.pod)
@@ -175,10 +175,8 @@ class AllocationUsageTest(unittest.TestCase):
         pod['status']['containerStatuses'][0]['containerID'] = 'containerd://abc'
         self.runner.pod = Mock(side_effect=[pod] * 6 + [AssertionError('unbounded provider reads')])
         self.runner.guard = Mock()
-        self.runner.reconcile_python(self.operation)
-        record = self.runner.get(self.operation)
-        self.assertEqual(record['status'], 'uncertain')
-        self.assertEqual(record['error'], 'allocation observation did not stabilize')
+        with self.assertRaisesRegex(RuntimeError, 'allocation observation did not stabilize'):
+            self.runner._reconcile_python_once(self.operation)
         self.assertEqual(self.runner.pod.call_count, 6)
         self.runner.guard.assert_not_called()
 
@@ -315,7 +313,7 @@ class AllocationUsageTest(unittest.TestCase):
         self.record.update(status='running', digest='command', container_id='a'*64,
                            cancel_requested=False, executed=True, started_at=1790000000,
                            stdout='', displays=[], files=[], truncated=False,
-                           request={'usage_tenant':'acme', 'kind':'shell', 'files':[]})
+                           request={'usage_tenant':'acme', 'kind':'shell', 'files':[], 'seconds':60})
         save(self.runner.path(self.operation), self.record)
         self.pod['status']['containerStatuses'][0]['state'] = {
             'terminated':{'finishedAt':'2026-10-02T00:02:00Z', 'exitCode':0}}
@@ -327,7 +325,11 @@ class AllocationUsageTest(unittest.TestCase):
                 return {'termination_confirmed':True}
             raise RuntimeError('guard harvest failed')
         self.runner.guard = failed_guard
-        self.runner.reconcile(self.operation)
+        clock = [1790000010.0]
+        with patch('control.STOP_WATCH_SECONDS', 2), \
+             patch('time.time', side_effect=lambda: clock[0]), \
+             patch('time.sleep', side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)):
+            self.runner.reconcile(self.operation)
         saved = self.runner.get(self.operation)
         self.assertEqual(saved['status'], 'uncertain')
         self.assertIs(saved['termination_confirmed'], True)
@@ -614,6 +616,36 @@ class AllocationUsageTest(unittest.TestCase):
         self.finish()
         self.runner.close_allocation(self.record)
         self.assertTrue(any(call.args[0][0] == 'patch' for call in self.runner.kube.call_args_list))
+
+    def test_overdue_unconfirmed_delete_releases_finalizer_after_stop_receipt(self):
+        self.record.update(status='running', executed=True, cancel_requested=False, running_at=1,
+                           request={'usage_tenant':'acme', 'kind':'shell', 'files':[], 'seconds':60})
+        save(self.runner.path(self.operation), self.record)
+        self.pod['metadata']['finalizers'] = ['aidash.dev/allocation-receipt']
+        self.runner.observe_allocation(self.record, self.pod)
+        calls = []
+        def kube(arguments, data=None, **_):
+            calls.append(arguments)
+            if arguments[0] == 'get':
+                return Mock(stdout=json.dumps(self.pod).encode())
+            if arguments[0] == 'delete':
+                self.pod['metadata']['deletionTimestamp'] = '2026-10-02T00:02:00Z'
+                for item in self.pod['status']['containerStatuses']:
+                    item['state'] = {'terminated':{'finishedAt':'2026-10-02T00:02:01Z'}}
+            if arguments[0] == 'patch':
+                self.pod['metadata']['finalizers'] = json.loads(arguments[-1])[-1]['value']
+                if not self.pod['metadata']['finalizers']:
+                    self.pod = None
+            return Mock(stdout=b'')
+        self.runner.kube = kube
+        self.runner._reconcile_shell_once = Mock(side_effect=[RuntimeError('unreachable'), KeyboardInterrupt()])
+        with patch('time.time', return_value=4000), patch('time.sleep'):
+            with self.assertRaises(KeyboardInterrupt):
+                self.runner.reconcile(self.operation)
+        self.assertEqual(self.runner.get(self.operation)['status'], 'cancelling')
+        self.assertTrue(any(call[0] == 'delete' and '--force' not in call for call in calls))
+        self.runner.allocation_housekeeping()
+        self.assertIsNone(self.pod, 'the finalizer must not leave the Pod terminating')
 
     def test_stopped_serve_hands_its_allocation_to_finalizer_cleanup(self):
         self.record.update(container_id='a'*64, serve={'status':'running', 'pod_host':'10.0.0.9'},

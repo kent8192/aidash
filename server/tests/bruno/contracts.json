@@ -7425,6 +7425,10 @@
                 "format": "uuid",
                 "type": "string"
               },
+              "deadline_expired": {
+                "description": "True when the command was still running at its time limit. Absent otherwise.",
+                "type": ["boolean", "null"]
+              },
               "displays": {
                 "items": {
                   "$ref": "#/components/schemas/FileEntry"
@@ -7470,6 +7474,11 @@
               },
               "output": {
                 "type": "string"
+              },
+              "output_stale_seconds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
               },
               "policy_revision": {
                 "format": "int64",
@@ -7652,6 +7661,10 @@
                 "format": "uuid",
                 "type": "string"
               },
+              "deadline_expired": {
+                "description": "True when the command was still running at its time limit. Absent otherwise.",
+                "type": ["boolean", "null"]
+              },
               "displays": {
                 "items": {
                   "$ref": "#/components/schemas/FileEntry"
@@ -7697,6 +7710,11 @@
               },
               "output": {
                 "type": "string"
+              },
+              "output_stale_seconds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
               },
               "policy_revision": {
                 "format": "int64",
@@ -7825,6 +7843,10 @@
                 "format": "uuid",
                 "type": "string"
               },
+              "deadline_expired": {
+                "description": "True when the command was still running at its time limit. Absent otherwise.",
+                "type": ["boolean", "null"]
+              },
               "displays": {
                 "items": {
                   "$ref": "#/components/schemas/FileEntry"
@@ -7870,6 +7892,11 @@
               },
               "output": {
                 "type": "string"
+              },
+              "output_stale_seconds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": ["integer", "null"]
               },
               "policy_revision": {
                 "format": "int64",

@@ -10,6 +10,15 @@ use std::sync::{
 use tokio::sync::Notify;
 use uuid::Uuid;
 
+#[test]
+fn inactive_operation_is_forbidden_with_its_own_code() {
+	let refusal = Refusal::of(&aidash_application::Error::Conflict(
+		aidash_domain::egress::OPERATION_INACTIVE.into(),
+	));
+	assert_eq!(refusal.status, StatusCode::FORBIDDEN);
+	assert_eq!(refusal.code, "operation_inactive");
+}
+
 #[derive(Default)]
 struct Audit {
 	sent: AtomicU64,
