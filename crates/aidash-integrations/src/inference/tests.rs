@@ -1392,6 +1392,45 @@ mod cache_salt {
 		assert!(messages[4]["content"].is_string(), "the volatile message");
 	}
 
+	/// Only Native has a previous-step position to mark. An Ordered Agent's
+	/// provider activity is spliced in after `system`, and those messages were
+	/// never breakpoints, so marking one would pay a write nothing reads.
+	#[tokio::test]
+	async fn an_ordered_request_on_a_gpt_route_marks_no_previous_step() {
+		// Arrange
+		let mut upstream = Upstream::start().await;
+		let provider = upstream.route(Some(keys()), "openai/gpt-6.1-terra", Some("explicit"));
+		let activity = |text: &str| json!({"kind":"assistant","text":text,"provider_activity":[{"type":"datetime_call"}]});
+		let marked = ModelRequest {
+			context: ModelContext::Ordered(OrderedContext {
+				stable:
+					json!({"identity":"fixture","history":[activity("first"), activity("second")]})
+						.to_string(),
+				volatile: r#"{"workspace":{}}"#.into(),
+			}),
+			cache_breakpoints: true,
+			..ordered(scope("tenant-a", 1))
+		};
+		// Act
+		provider
+			.infer(marked, &aidash_application::ports::NoProgress)
+			.await
+			.unwrap();
+		// Assert: system and the Stable Prefix part only, not the spliced turns.
+		let bodies = upstream.bodies();
+		let body = &bodies[0];
+		assert_eq!(body["prompt_cache_options"], json!({"mode":"explicit"}));
+		let messages = body["messages"].as_array().unwrap();
+		let roles: Vec<&str> = messages
+			.iter()
+			.map(|m| m["role"].as_str().unwrap())
+			.collect();
+		assert_eq!(roles, ["system", "assistant", "assistant", "user"]);
+		assert!(messages[1]["content"].is_string());
+		assert!(messages[2]["content"].is_string());
+		assert_eq!(body.to_string().matches("cache_control").count(), 2);
+	}
+
 	#[rstest::rstest]
 	#[case::unmarked_step_on_an_explicit_route("openai/gpt-6.1-terra", Some("explicit"), true)]
 	#[case::caching_declared_off("openai/gpt-5.6-sol", Some("none"), true)]

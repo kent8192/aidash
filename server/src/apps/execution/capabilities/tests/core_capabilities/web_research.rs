@@ -5,6 +5,7 @@ use super::*;
 use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::run_state::ApprovalRef;
 use aidash_server::{
+	authorization::services::execution::StepAuthority,
 	domain::{Run, RunPhase, RunState, WaitingState},
 	harness::Harness,
 };
@@ -478,6 +479,82 @@ async fn a_web_disclosure_is_not_opened_once_the_subnode_ended(
 	assert_eq!(disclosures, 0, "no approval may be opened: {approvals}");
 	assert_eq!(r.attempts(run.id).await, 0, "nothing is reserved or sent");
 	crate::late_subnode::assert_waited_at_the_subnode_check(waiting);
+	crate::late_subnode::assert_cancelled(
+		&crate::late_subnode::run_to_its_end(&r.c.f, run.id).await,
+	);
+	r.close().await;
+}
+
+/// An approved Web disclosure is not consumed once the Run's Subnode ended: the
+/// consume is refused, the approval stays approved and nothing is sent, and the
+/// Run ends as cancelled. The authority is begun while the Subnode is active, as
+/// a step does, so the consume stands in for one that was reserved before the
+/// end (#759).
+#[rstest::rstest]
+#[tokio::test]
+async fn an_approved_web_disclosure_is_not_consumed_once_the_subnode_ended(
+	#[future] research_fixture: Research,
+) {
+	// Arrange: the search waits for approval and a person approves it, but the
+	// worker has not yet resumed the call.
+	let mut r = research_fixture.await;
+	let run = r.delegate().await;
+	r.require_disclosure_approval().await;
+	let approval = r.until_waiting(run.id).await;
+	let (status, approvals) = request(
+		&r.c.app,
+		&r.c.token,
+		"GET",
+		"/api/capabilities/approvals",
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 200, "{approvals}");
+	let card = approvals["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["id"] == json!(approval))
+		.unwrap_or_else(|| panic!("{approvals}"));
+	let (status, decided) = request(
+		&r.c.app,
+		&r.c.token,
+		"POST",
+		&format!("/api/capabilities/approvals/{approval}/decide"),
+		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":card["revision"]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{decided}");
+	assert_eq!(decided["state"], "approved");
+	let tool = format!(
+		"{}/tools/{}@{}",
+		r.c.f.config.deployment,
+		r.search_tool["id"].as_str().unwrap(),
+		r.search_tool["version"].as_str().unwrap()
+	);
+	let subnode = crate::late_subnode::seed_subnode(&r.c.f, run.id, &[tool]).await;
+	let step = r.c.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	let authority = StepAuthority::begin(&r.c.f, &step).await.unwrap();
+	let end = crate::late_subnode::EndFirst::begin(&r.c.f, subnode, run.id).await;
+	end.commit().await;
+
+	// Act: the reserved attempt consumes the approval after the end.
+	let consumed = authority
+		.consume_web_disclosure(&r.c.f.store, &step, approval)
+		.await;
+
+	// Assert
+	let state: String = sqlx::query_scalar("SELECT state FROM core_records WHERE id = $1")
+		.bind(approval)
+		.fetch_one(r.c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert!(
+		matches!(consumed, Err(aidash_server::Error::Forbidden)),
+		"a consume after the end must be refused: {consumed:?}, approval {state}"
+	);
+	assert_eq!(state, "approved", "the approval must not be consumed");
+	assert_eq!(r.attempts(run.id).await, 0, "nothing is reserved or sent");
 	crate::late_subnode::assert_cancelled(
 		&crate::late_subnode::run_to_its_end(&r.c.f, run.id).await,
 	);

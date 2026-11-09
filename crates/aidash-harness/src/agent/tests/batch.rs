@@ -438,8 +438,8 @@ impl ExecutionStore for Bench {
 	async fn unfinished_owned_tasks(&self, _: &Run) -> Result<u64> {
 		Ok(0)
 	}
-	async fn workspace_events(&self, _: &Run, _: i64) -> Result<Vec<WorkspaceEvent>> {
-		Ok(vec![])
+	async fn workspace_events(&self, _: &Run, _: i64) -> Result<WorkspaceEvents> {
+		Ok(WorkspaceEvents::default())
 	}
 	async fn save_run(&self, run: &Run, token: Uuid, event: &str) -> Result<()> {
 		assert_eq!(token, self.0.token);
