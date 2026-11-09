@@ -105,15 +105,17 @@ async fn live_preview_http_returns_unavailable_when_the_pool_times_out(
 	}
 	let error = pool.acquire().await.err().unwrap();
 	assert!(matches!(error, sqlx::Error::PoolTimedOut));
-	let (status, body) = request(
+	let authorization = format!("Bearer {}", c.token);
+	let response = common::http_response(
 		&c.app,
-		&c.token,
 		"GET",
 		&format!("/api/runs/{}/live-preview", run.id),
-		Value::Null,
+		&[("authorization", &authorization)],
+		b"",
 	)
 	.await;
-	assert_eq!(status, 503, "{body}");
+	assert_eq!(response.status_code(), 503);
+	assert_eq!(response.headers()[http::header::RETRY_AFTER], "1");
 	drop(held);
 }
 
