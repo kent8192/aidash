@@ -356,6 +356,20 @@ async fn revocation_scrubs_every_stored_copy_and_keeps_an_audit_record(
 		before_digest
 	);
 	assert!(after_journal.iter().any(|entry| matches!(&entry.event, aidash_domain::context::ContextEvent::Tool { result, .. } if aidash_domain::context::ContextEvent::is_revoked_result(result))));
+	let exported = aidash_application::ports::journal_export::JournalSource::export(
+		&r.c.f.store,
+		&TEST_FIXTURE,
+		run.id,
+		run.id,
+		Some((1, head)),
+	)
+	.await
+	.unwrap();
+	assert!(exported.iter().any(|line| {
+		line.result
+			.as_ref()
+			.is_some_and(aidash_domain::context::ContextEvent::is_revoked_result)
+	}));
 	let stored = r.c.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert!(stored.context.research_revoked);
 	assert!(stored.context.events().any(|event| matches!(

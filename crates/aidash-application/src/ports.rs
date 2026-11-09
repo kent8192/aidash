@@ -180,6 +180,7 @@ pub trait ExecutionRecoveryStore: Send + Sync {
 }
 
 pub mod execution;
+pub mod journal_export;
 
 pub mod events;
 
