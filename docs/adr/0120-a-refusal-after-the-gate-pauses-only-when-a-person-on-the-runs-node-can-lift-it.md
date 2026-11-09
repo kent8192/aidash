@@ -27,7 +27,7 @@ Checks record why they refused in a note scoped to the tool call, and the harnes
 ## Consequences
 
 - The note does not survive a spawned task. A refusal raised there becomes a Rejected Call.
-- A denial the code deliberately ignored can leave a note behind. If a later plain `Forbidden` ends the same call, the call pauses once under that name, and on resume it gets a fresh note and the right answer.
+- A denial the code deliberately ignored can leave a note behind. If a later plain `Forbidden` ends the same call, the call pauses under the ignored denial's name. Resuming runs the call again, which ignores the same denial and pauses again, so a tool that swallows a denial must not end in a plain `Forbidden`.
 - A plain `NotFound` never reads the note, so a Run does not pause on a genuine "file unavailable" after an ignored denial.
 - A leftover `Forbidden` does not know where it came from, so its log line names only the Run, the tool and the call.
 - A person cannot yet decline a paused call and let the Run go on. That is #763.
@@ -42,4 +42,4 @@ Checks record why they refused in a note scoped to the tool call, and the harnes
 - `invocations.status` gains `REFUSED` in two migrations: `0120` for the database CHECK and `0121` for the ORM state, because a migration is either database-only or state-only.
 - `Access::require` sets no note when the refusal comes from the Subnode read-only rule. No change of policy lifts that rule, so the call reaches the model as a Rejected Call (#755).
 - A step that is not a tool call, or a tool call whose refusal nothing named, is reported as `<stage>: <check>`. The stage is the tool being called when its name is a plain identifier, else the Run's phase (`model call`, `compaction`, `worker start`, `resume`); a refusal inside compaction, whether the pruning decision or the summary, is named `compaction`. A refusal with no note reads `<stage>: an authority check refused this step`.
-- A failure after a cross-Node admission or activation (`task_delegate` to another Node) is a Rejected Call that says the delegation may have partly happened, because pausing would resume into a second admission. A `Conflict` there still fails the Run.
+- A refusal or failed request after a cross-Node admission (`task_delegate` to another Node) is a Rejected Call that says the delegation may have partly happened, because pausing would resume into a second admission. That covers a denial or a 404 from the activation, an unreachable Node, and a refusal by this Node while it records the admission. An ask from the target Node still pauses, as ADR 0109 decided. A `Conflict` there still fails the Run, and a pending transaction or a database error keeps its own retry path.
