@@ -212,6 +212,7 @@ async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
 			.unwrap()
 	};
 	let mut measurements = Vec::new();
+	let mut decision_breakdowns = Vec::new();
 	for batch in [59, 60] {
 		for _ in 0..batch {
 			let (status, workspace) = common::request(
@@ -224,6 +225,16 @@ async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
 			.await;
 			assert_eq!(status, 200, "{workspace}");
 			let workspace = workspace["id"].as_str().unwrap();
+			if !measurements.is_empty() {
+				// Add older history while keeping the current windows identical.
+				sqlx::query(
+					"UPDATE workspaces SET created_at = created_at - interval '1 year' WHERE id = $1",
+				)
+				.bind(Uuid::parse_str(workspace).unwrap())
+				.execute(f.store.pool.fixture_driver())
+				.await
+				.unwrap();
+			}
 			let (status, task) = common::request(
 				&app,
 				&token,
@@ -256,7 +267,16 @@ async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
 			.execute(f.store.pool.fixture_driver())
 			.await
 			.unwrap();
+		// Registry admission has its own caches and is outside this change. Warm
+		// them for both measurements so the first read is not a cold start.
+		let (status, warm) = common::request(&app, &token, "GET", "/api/state", Value::Null).await;
+		assert_eq!(status, 200, "{warm}");
 		let before = count().await;
+		let sequence: i64 =
+			sqlx::query_scalar("SELECT COALESCE(MAX(sequence), 0) FROM authorization_decisions")
+				.fetch_one(f.store.pool.fixture_driver())
+				.await
+				.unwrap();
 		let (status, state) = common::request(&app, &token, "GET", "/api/state", Value::Null).await;
 		assert_eq!(status, 200, "{state}");
 
@@ -291,6 +311,8 @@ async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
 			"old run is still inside the window"
 		);
 		let after = count().await;
+		decision_breakdowns.push(sqlx::query_as::<_, (String, i64)>("SELECT action, COUNT(*) FROM authorization_decisions WHERE sequence > $1 GROUP BY action ORDER BY action")
+			.bind(sequence).fetch_all(f.store.pool.fixture_driver()).await.unwrap());
 		assert!(state["next_cursors"]["workspaces"].is_string());
 		assert!(state["next_cursors"]["runs"].is_string());
 		measurements.push(after - before);
@@ -317,7 +339,7 @@ async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
 	}
 	assert_eq!(
 		measurements[0], measurements[1],
-		"decision counts: {measurements:?}"
+		"decision counts: {measurements:?}; by action: {decision_breakdowns:?}"
 	);
 	common::cleanup(f, &url, &schema).await;
 }
