@@ -102,8 +102,9 @@ def termination_time(terminated, started_at, observed):
 
 
 def cell_timed_out(record):
-    """Whether a Python cell ran into its limit. The node watchdog stops it there
-    without saying why, so a stop at or past the limit counts as one."""
+    """Use the guard's stop evidence, or bound observation by the Pod's finish time."""
+    if isinstance(record.get('cell_deadline_expired'), bool):
+        return record['cell_deadline_expired']
     stopped_at, running_at = record.get('cell_stopped_at', record.get('stop_confirmed_at')), record.get('running_at')
     return stopped_at is not None and running_at is not None and stopped_at >= running_at + record['request']['seconds']
 
@@ -1152,12 +1153,15 @@ class Runner(AllocationJournal):
                 break
             result = self.guard(record, "cell_status", operation_id=operation)
             if result["status"] == "stopped" and result.get("termination_confirmed"):
-                pod = self.pod(pod_operation)
-                if not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']:
-                    raise SandboxGone()
-                execution = next((s.get('state', {}).get('terminated') for s in pod.get('status', {}).get('containerStatuses', []) if s.get('name') == 'execution'), None)
-                if execution is not None:
-                    self.update(operation, cell_stopped_at=termination_time(execution, record.get('running_at'), time.time()))
+                if isinstance(result.get('deadline_expired'), bool):
+                    self.update(operation, cell_deadline_expired=result['deadline_expired'])
+                else:
+                    pod = self.pod(pod_operation)
+                    if not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']:
+                        raise SandboxGone()
+                    execution = next((s.get('state', {}).get('terminated') for s in pod.get('status', {}).get('containerStatuses', []) if s.get('name') == 'execution'), None)
+                    if execution is not None:
+                        self.update(operation, cell_stopped_at=termination_time(execution, record.get('running_at'), time.time()))
                 memory_live = False
                 result = dict(status="failed", exit_code=137, stdout=current.get("stdout", ""),
                               truncated=True, error={"code":"SESSION_LOST", "message":"Interpreter stopped during the cell; code was not replayed."})

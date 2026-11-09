@@ -936,6 +936,16 @@ class VerificationTest(unittest.TestCase):
             self.assertTrue(record['writer_frozen'])
             self.assertNotIn('terminate', [call.args[1] for call in runner.guard.call_args_list])
 
+    def test_guard_reports_stop_cause_seen_after_outage(self):
+        for expired in (False, True):
+            with self.subTest(expired=expired), tempfile.TemporaryDirectory() as root:
+                runner, operation, record, _ = self.watched_cell(
+                    root, {'cell_status': {'status': 'stopped', 'termination_confirmed': True,
+                                           'deadline_expired': expired}}, running_at=1)
+                self.after_outage(runner, operation)
+                self.assertEqual(record['deadline_expired'], expired)
+                self.assertEqual(record['error']['code'], 'SESSION_LOST')
+
     def test_a_python_cell_still_running_past_its_limit_is_stopped_and_timed_out(self):
         with tempfile.TemporaryDirectory() as root:
             runner, operation, record, _ = self.watched_cell(root, {'cell_status': {'status': 'running'}}, running_at=1)
