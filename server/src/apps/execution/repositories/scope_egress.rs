@@ -2,8 +2,8 @@
 use std::sync::Arc;
 
 use aidash_application::egress::{
-	Admission, ConnectionRecord, Direction, EgressScopes, Meter, RequestTimes, ScopeAuthority,
-	ScopeSettings,
+	Admission, ConnectionRecord, DebitRefusal, Direction, EgressScopes, Meter, RequestTimes,
+	ScopeAuthority, ScopeSettings,
 };
 use aidash_application::tenancy::TenancyScope;
 use aidash_domain::egress::ScopeId;
@@ -510,23 +510,6 @@ impl EgressScopes for DurableScopes {
 		result.map_err(application_error)
 	}
 }
-/// A decision about the request, as opposed to a store that could not be asked.
-/// The gateway charges the whole amount again after anything else (see
-/// [`Meter::charge`]), so only a decision may leave bytes committed.
-fn decides(error: &aidash_application::Error) -> bool {
-	use aidash_application::Error;
-	match error {
-		Error::Forbidden | Error::Unauthorized | Error::AuthorityRefused(_) => true,
-		Error::Refused(code) => code == "egress_budget_exhausted" || code == "egress_suspended",
-		Error::Conflict(code) => {
-			code == aidash_domain::egress::LIMIT_EXCEEDED
-				|| code == aidash_domain::egress::OPERATION_EXPIRED
-				|| code == aidash_domain::egress::OPERATION_INACTIVE
-		}
-		_ => false,
-	}
-}
-
 /// What one side of a debit has taken ahead of a charge both sides have
 /// acknowledged.
 #[derive(Default)]
@@ -619,7 +602,7 @@ impl Meter for ScopedMeter {
 				.map_err(application_error);
 			match result {
 				Ok(()) => ahead.scope.bytes += owed,
-				Err(error) if decides(&error) => {
+				Err(error) if DebitRefusal::of(&error).is_some() => {
 					ahead.scope.bytes += owed;
 					ahead.scope.stop = Some(error);
 				}
@@ -629,7 +612,7 @@ impl Meter for ScopedMeter {
 		if let Some(owed) = still_owed(&ahead.audit) {
 			match self.inner.charge(direction, owed as usize).await {
 				Ok(()) => ahead.audit.bytes += owed,
-				Err(error) if decides(&error) => {
+				Err(error) if DebitRefusal::of(&error).is_some() => {
 					ahead.audit.bytes += owed;
 					ahead.audit.stop = Some(error);
 				}

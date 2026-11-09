@@ -10,11 +10,21 @@ fn only_a_decision_about_the_operation_commits_its_bytes() {
 		Error::Forbidden,
 		Error::Unauthorized,
 		Error::TenantDeleted,
+		Error::AuthorityRefused(Box::new(aidash_domain::tool::AuthorityRefusal {
+			tool: "fixture".into(),
+			check: aidash_domain::tool::RefusalCheck::Policy,
+			action: None,
+			subject: None,
+			call: None,
+		})),
+		Error::Refused("egress_budget_exhausted".into()),
+		Error::Refused("egress_suspended".into()),
 		Error::Conflict(aidash_domain::egress::OPERATION_EXPIRED.into()),
 		Error::Conflict(aidash_domain::egress::OPERATION_INACTIVE.into()),
 		Error::Conflict(aidash_domain::egress::LIMIT_EXCEEDED.into()),
 	] {
-		assert!(stops_stream(&decision), "{decision}");
+		let decision = aidash_application::Error::from(decision);
+		assert!(DebitRefusal::of(&decision).is_some(), "{decision}");
 	}
 	for failure in [
 		Error::Database(sqlx::Error::PoolTimedOut),
@@ -22,6 +32,7 @@ fn only_a_decision_about_the_operation_commits_its_bytes() {
 		Error::NotFound("run".into()),
 		Error::Conflict("something_else".into()),
 	] {
-		assert!(!stops_stream(&failure), "{failure}");
+		let failure = aidash_application::Error::from(failure);
+		assert!(DebitRefusal::of(&failure).is_none(), "{failure}");
 	}
 }

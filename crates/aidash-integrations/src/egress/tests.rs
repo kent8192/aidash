@@ -11,12 +11,64 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 #[test]
-fn inactive_operation_is_forbidden_with_its_own_code() {
-	let refusal = Refusal::of(&aidash_application::Error::Conflict(
-		aidash_domain::egress::OPERATION_INACTIVE.into(),
-	));
-	assert_eq!(refusal.status, StatusCode::FORBIDDEN);
-	assert_eq!(refusal.code, "operation_inactive");
+fn debit_refusals_use_their_public_codes_and_store_failures_are_temporary() {
+	use aidash_application::Error;
+	let authority = aidash_domain::tool::AuthorityRefusal {
+		tool: "fixture".into(),
+		check: aidash_domain::tool::RefusalCheck::Policy,
+		action: None,
+		subject: None,
+		call: None,
+	};
+	for (error, status, code) in [
+		(
+			Error::Conflict(aidash_domain::egress::LIMIT_EXCEEDED.into()),
+			StatusCode::TOO_MANY_REQUESTS,
+			aidash_domain::egress::LIMIT_EXCEEDED,
+		),
+		(
+			Error::Conflict(aidash_domain::egress::OPERATION_EXPIRED.into()),
+			StatusCode::FORBIDDEN,
+			aidash_domain::egress::OPERATION_EXPIRED,
+		),
+		(
+			Error::Conflict(aidash_domain::egress::OPERATION_INACTIVE.into()),
+			StatusCode::FORBIDDEN,
+			aidash_domain::egress::OPERATION_INACTIVE,
+		),
+		(
+			Error::Refused("egress_budget_exhausted".into()),
+			StatusCode::TOO_MANY_REQUESTS,
+			"egress_budget_exhausted",
+		),
+		(
+			Error::Refused("egress_suspended".into()),
+			StatusCode::FORBIDDEN,
+			"egress_suspended",
+		),
+		(Error::Forbidden, StatusCode::FORBIDDEN, "egress_forbidden"),
+		(
+			Error::Unauthorized,
+			StatusCode::FORBIDDEN,
+			"egress_forbidden",
+		),
+		(
+			Error::AuthorityRefused(Box::new(authority)),
+			StatusCode::FORBIDDEN,
+			"egress_forbidden",
+		),
+	] {
+		let refusal = Refusal::of(&error);
+		assert_eq!((refusal.status, refusal.code), (status, code));
+		assert!(!refusal.temporary());
+	}
+	for error in [
+		Error::External("unavailable".into()),
+		Error::Conflict("other".into()),
+		Error::Refused("other".into()),
+	] {
+		assert!(Refusal::of(&error).temporary(), "{error}");
+	}
 }
 
 #[derive(Default)]

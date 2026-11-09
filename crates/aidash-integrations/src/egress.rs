@@ -330,25 +330,21 @@ impl Refusal {
 	};
 
 	fn of(error: &aidash_application::Error) -> Self {
-		use aidash_application::Error;
-		match error {
-			Error::Conflict(code) if code == aidash_domain::egress::LIMIT_EXCEEDED => Self::LIMIT,
-			Error::Conflict(code) if code == aidash_domain::egress::OPERATION_EXPIRED => {
-				Self::EXPIRED
-			}
-			Error::Conflict(code) if code == aidash_domain::egress::OPERATION_INACTIVE => {
-				Self::INACTIVE
-			}
-			Error::Refused(code) if code == "egress_budget_exhausted" => Self {
+		use aidash_application::egress::DebitRefusal;
+		match DebitRefusal::of(error) {
+			Some(DebitRefusal::Limit) => Self::LIMIT,
+			Some(DebitRefusal::Expired) => Self::EXPIRED,
+			Some(DebitRefusal::Inactive) => Self::INACTIVE,
+			Some(DebitRefusal::ScopeBudget) => Self {
 				status: StatusCode::TOO_MANY_REQUESTS,
 				code: "egress_budget_exhausted",
 			},
-			Error::Refused(code) if code == "egress_suspended" => Self {
+			Some(DebitRefusal::Suspended) => Self {
 				status: StatusCode::FORBIDDEN,
 				code: "egress_suspended",
 			},
-			Error::Forbidden | Error::Unauthorized | Error::AuthorityRefused(_) => Self::FORBIDDEN,
-			_ => Self::UNAVAILABLE,
+			Some(DebitRefusal::Forbidden) => Self::FORBIDDEN,
+			None => Self::UNAVAILABLE,
 		}
 	}
 
