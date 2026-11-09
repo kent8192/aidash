@@ -3580,3 +3580,41 @@ test("pending requests continue within the selected node", async ({ page }) => {
     .click();
   await expect(page).toHaveURL(/channel=older-workspace/);
 });
+
+test("an empty pending-request page can continue", async ({ page }) => {
+  await setup(page, { locale: "en-US" });
+  const data = fixture();
+  await page.route("**/api/state**", (route) =>
+    route.fulfill({
+      json: {
+        ...data,
+        human_requests: [],
+        access: { kind: "subject", tenant: "acme", subject: "alice" },
+        next_cursors: { ...data.next_cursors, human_requests: "hidden-page" },
+      },
+    }),
+  );
+  await page.route("**/api/human-requests?**", (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          {
+            ...data.human_requests[0],
+            prompt: "Request beyond hidden candidates",
+          },
+        ],
+        next_cursor: null,
+      },
+    }),
+  );
+  await page.goto("/collaboration?channel=workspace-one");
+  await page.getByRole("button", { name: /Decisions 0/ }).click();
+  await page.getByRole("button", { name: "Show more" }).click();
+  await expect(
+    page
+      .getByRole("button", {
+        name: /Information requested.*Request beyond hidden candidates/,
+      })
+      .last(),
+  ).toBeVisible();
+});
