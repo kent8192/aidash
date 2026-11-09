@@ -354,6 +354,8 @@ def update_entry(store, identity, generation, **fields):
     def update(state):
         entry = state["environments"].get(identity)
         if entry and entry["generation"] == generation:
+            if fields.get("status") == "ready":
+                entry.pop("failed_deployment_at", None)
             if fields.get("status") in {"ready", "failed"}:
                 if entry.get("status") != fields["status"]:
                     entry["outcome_version"] = entry.get("outcome_version", 0) + 1
@@ -1022,8 +1024,12 @@ def reconcile_locked(config, store, terraform, managed):
                 state, _ = store.read("lifecycle/state.json")
                 entry = state["environments"][identity]
                 current_entry(store, identity, entry["generation"])
-                if kube.seal(terraform.cluster(), identity):
-                    presealed.add(identity)
+                parked = not previous.get("published") and (
+                    entry.get("failed_deployment_at") is not None or entry.get("desired") == "stopped" and entry.get("force")
+                )
+                if kube.seal(terraform.cluster(), identity, force=parked):
+                    if not parked:
+                        presealed.add(identity)
                 else:
                     update_entry(store, identity, entry["generation"], status="waiting_for_active_work")
                     blocked = True
@@ -1255,9 +1261,11 @@ def reconcile_locked(config, store, terraform, managed):
                 # reload() restarts the writers. Re-establish the seal before
                 # taking a backup rather than trusting the earlier drain.
                 reloaded = True
-            if entry.get(
-                "failed_deployment_generation"
-            ) == generation and not entry.get("start_pending"):
+            failed_or_waiting = (
+                entry.get("failed_deployment_generation") == generation
+                or (entry.get("failed_deployment_at") is not None and not release)
+            )
+            if failed_or_waiting and not entry.get("start_pending"):
                 if (
                     identity != "production" and previous and previous["running"]
                     and not previous["published"] and failed_stop_due(entry, time.time())
@@ -1280,6 +1288,8 @@ def reconcile_locked(config, store, terraform, managed):
                         gcip_quiesced=False,
                     )
                     continue
+                if entry.get("failed_deployment_generation") != generation and not release:
+                    update_entry(store, identity, generation, status="awaiting_build")
                 restore_presealed_running_host(terraform, store, identity, presealed, managed)
                 continue
             changed = deployment_changed(entry, previous, output)

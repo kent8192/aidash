@@ -255,13 +255,20 @@ def immutable_write(store, key, value):
             raise Refused("Immutable deployment evidence already differs") from error
 
 
+def outcome_matches(entry, generation, status):
+    return entry.get("generation") == generation and (entry.get("status") == status or (
+        status == "failed" and entry.get("status") == "stopped"
+        and entry.get("failed_deployment_generation") == generation
+    ))
+
+
 def publish_result(config, store, identity, generation, output, status):
     """Queue once from controller state, never from an application's reported status."""
     if not config.get("notification_bucket") and not config.get("release_flow_enabled"):
         return
     state, _ = store.read("lifecycle/state.json")
     entry = state["environments"][identity]
-    if entry["generation"] != generation or entry.get("status") != status or status not in {"ready", "failed"}:
+    if status not in {"ready", "failed"} or not outcome_matches(entry, generation, status):
         raise Refused("Only the current verified deployment outcome may be published")
     key = f"{identity}:{entry['incarnation']}:{generation}:{entry['sha']}:{status}:{entry.get('outcome_version', 0)}"
     event_id = hashlib.sha256(key.encode()).hexdigest()
@@ -269,7 +276,7 @@ def publish_result(config, store, identity, generation, output, status):
     # Persist the timestamp before external writes so retries produce identical receipts.
     def remember(current):
         target = current["environments"].get(identity, {})
-        if target.get("generation") != generation or target.get("status") != status:
+        if not outcome_matches(target, generation, status):
             raise Refused("Deployment outcome was superseded before publication")
         target.setdefault("outcome_at", timestamp)
         target.setdefault("outcome_run_id", str(os.environ["GITHUB_RUN_ID"]))
@@ -332,18 +339,19 @@ def flush_outcomes(config, store):
     state, _ = store.read("lifecycle/state.json")
     failures = []
     for identity, entry in (state or {}).get("environments", {}).items():
+        status = "failed" if outcome_matches(entry, entry.get("generation"), "failed") else entry.get("status")
         stage_pending = identity == "develop" and config.get("release_flow_enabled") and entry.get("staging_publication_pending")
-        if entry.get("status") not in {"ready", "failed"} or entry.get("outcome_published") == entry.get("status") and not stage_pending or not entry.get("outcome_at"):
+        if status not in {"ready", "failed"} or entry.get("outcome_published") == status and not stage_pending or not entry.get("outcome_at"):
             continue
         if (identity == "develop" or identity.startswith("pr-")) and not entry.get("hostname_token"):
             # A retained legacy host predates receipts and has no private hostname
             # to report; its next verified deployment issues a token and publishes.
             continue
         try:
-            publish_result(config, store, identity, entry["generation"], None, entry["status"])
-            def ack(current, identity=identity, generation=entry["generation"], status=entry["status"]):
+            publish_result(config, store, identity, entry["generation"], None, status)
+            def ack(current, identity=identity, generation=entry["generation"], status=status):
                 target = current["environments"].get(identity, {})
-                if target.get("generation") == generation and target.get("status") == status:
+                if outcome_matches(target, generation, status):
                     target["outcome_published"] = status
                     target.pop("staging_publication_pending", None)
                 return current, None

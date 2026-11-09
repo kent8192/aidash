@@ -127,7 +127,8 @@ def transition(state, request, incarnation, now, hostname_token="", production=F
             raise Refused("Invalid controller-generated hostname token")
         entry["hostname_token"] = hostname_token
     entry.pop("outcome_at", None)
-    entry.pop("failed_deployment_at", None)
+    if action != "update":
+        entry.pop("failed_deployment_at", None)
     entry.pop("outcome_run_id", None)
     entry.pop("outcome_trusted_sha", None)
     entry.pop("outcome_published", None)

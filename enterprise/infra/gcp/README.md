@@ -430,7 +430,9 @@ runs. No idle timer resumes a stopped Environment.
 - **Deployment/migration/readiness failure:** data is retained and DNS withdrawn;
   no destructive rollback or database downgrade is attempted. A nonproduction
   Environment left unpublished stops one hour after the failure, which leaves time
-  to inspect it with `kubectl`. This acts like an explicit `force=true` stop because
+  to inspect it with `kubectl`. An update whose build has not arrived keeps this
+  stop scheduled, with the hour measured from the latest request or keepalive.
+  A pending failed receipt is retried after the stop. This acts like an explicit `force=true` stop because
   its Runner usually cannot report activity, so any work still running is interrupted
   and surfaces as uncertain. Repair the cause and use explicit `resume` (with
   `force=true` if admission observation is broken); on staging, the next successful
