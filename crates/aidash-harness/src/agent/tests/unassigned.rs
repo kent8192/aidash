@@ -376,6 +376,44 @@ async fn early_abandonment_is_named_in_the_final_answer(mut fixture: Fixture) {
 
 #[rstest]
 #[tokio::test]
+async fn a_task_handed_over_before_abandonment_is_not_named_as_abandoned(mut fixture: Fixture) {
+	set_children(
+		&fixture,
+		children(
+			3,
+			false,
+			vec![
+				task(1, true, false),
+				task(2, true, false),
+				task(3, true, true),
+			],
+		),
+	);
+	answer(&mut fixture.run, "First answer.");
+	advance_sources(&mut fixture).await.unwrap();
+	fixture.run = last_write(&fixture).1;
+	// The Home observes Task 2 handed over after the summary was read.
+	fixture
+		.backend
+		.0
+		.abandon_skipped
+		.lock()
+		.unwrap()
+		.push(Uuid::from_u128(2));
+	answer(&mut fixture.run, "Second answer.");
+	advance_sources(&mut fixture).await.unwrap();
+	fixture.run = last_write(&fixture).1;
+	set_children(&fixture, children(0, false, vec![]));
+	answer(&mut fixture.run, "Finished.");
+	advance_sources(&mut fixture).await.unwrap();
+	let artifacts = fixture.backend.0.artifacts.lock().unwrap();
+	let text = artifacts.last().unwrap().as_str().unwrap();
+	assert!(text.contains("Task 1"), "{text}");
+	assert!(!text.contains("Task 2"), "{text}");
+}
+
+#[rstest]
+#[tokio::test]
 async fn a_conflict_from_complete_reaches_the_same_decision(mut fixture: Fixture) {
 	// The check saw nothing pending; a child was created before the commit.
 	answer(&mut fixture.run, "All done.");

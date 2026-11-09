@@ -202,10 +202,10 @@ let created_by_grant: bool = { let query_bind_1 = grant; let query_bind_2 = chil
 					(json!(value), None)
 				}
 				Effect::AbandonUnassigned { ids } => {
-					store
+					let abandoned = store
 						.abandon_unassigned_for_in(&mut self.access.tx, task.id, owner, ids)
 						.await?;
-					(json!({"abandoned":true}), None)
+					(json!({"abandoned":abandoned}), None)
 				}
 				Effect::Artifact {
 					artifact,

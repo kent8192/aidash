@@ -836,7 +836,7 @@ impl ExecutionHome for Bench {
 	) -> Result<Task> {
 		unexpected("ExecutionHome.complete")
 	}
-	async fn abandon_unassigned(&self, _parent: Uuid, _ids: &[Uuid]) -> Result<()> {
+	async fn abandon_unassigned(&self, _parent: Uuid, _ids: &[Uuid]) -> Result<Vec<Uuid>> {
 		unexpected("ExecutionHome.abandon_unassigned")
 	}
 	async fn report(&self, key: &str, kind: &str, _data: Value) -> Result<()> {

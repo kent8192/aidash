@@ -611,8 +611,8 @@ impl<'a> Executor<'a> {
 				}
 			}
 			let ids: Vec<Uuid> = tasks.iter().map(|task| task.id).collect();
-			home.abandon_unassigned(run.task_id, &ids).await?;
-			for task in tasks {
+			let abandoned = home.abandon_unassigned(run.task_id, &ids).await?;
+			for task in tasks.iter().filter(|task| abandoned.contains(&task.id)) {
 				if !run
 					.recovery
 					.early_abandoned_tasks

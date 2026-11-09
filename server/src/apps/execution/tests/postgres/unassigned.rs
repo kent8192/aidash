@@ -303,16 +303,28 @@ async fn abandoning_without_completing_leaves_a_handed_over_dependent_alone(
 	let agent = seed(&f.registry).await;
 	let (workspace, parent) = workspace_with_parent(&f, &agent).await;
 	let root = run_child(&f, workspace, &parent, "Root").await;
+	let handed_over = run_child(&f, workspace, &parent, "Handed over").await;
+	bind_remote(&f, &handed_over, true, false).await;
 	let mut dependent = new_task();
 	dependent.parent_id = Some(parent.id);
 	dependent.dependencies = vec![root.id];
 	let dependent = run_child_with(&f, workspace, &parent, dependent).await;
 	force_claimed(&f, &dependent).await;
 
-	store
-		.abandon_unassigned(&ACME, parent.id, &owner_of(&parent), &[root.id])
+	let abandoned = store
+		.abandon_unassigned(
+			&ACME,
+			parent.id,
+			&owner_of(&parent),
+			&[root.id, handed_over.id],
+		)
 		.await
 		.unwrap();
+	assert_eq!(serde_json::to_value(abandoned).unwrap(), json!([root.id]));
+	assert_eq!(
+		store.task(&ACME, handed_over.id).await.unwrap().status,
+		TaskStatus::Open
+	);
 	assert_eq!(
 		store.task(&ACME, root.id).await.unwrap().status,
 		TaskStatus::Abandoned
