@@ -1043,6 +1043,173 @@ async fn the_commit_fence_persists_the_completion_basis(
 	cleanup(f, &url, &schema).await;
 }
 
+/// A completion that is already durable has chosen its outcome, including the
+/// Unassigned Tasks it abandons. A node cancellation settles exactly that
+/// (#772): without the saved list the completion would fail on the unresolved
+/// child and the cancel would retry forever.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_cancelled_finalizing_run_settles_its_saved_abandonment(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let (status, created) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/conversations",
+		json!({"title":"Unassigned child","goal":"Reply","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{created}");
+	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
+	assert!(
+		Harness {
+			federation: f.clone()
+		}
+		.worker_once()
+		.await
+		.unwrap()
+	);
+	// A subtask one of the parent's Runs created and nobody was given.
+	let child = f
+		.store
+		.create_task(
+			&TEST_FIXTURE,
+			run.workspace_id,
+			&aidash_server::domain::NewTask {
+				title: "Nobody's".into(),
+				description: "Never delegated".into(),
+				requirements: json!({}),
+				dependencies: vec![],
+				parent_id: Some(run.task_id),
+			},
+			"alice",
+			None,
+		)
+		.await
+		.unwrap();
+	sqlx::query("INSERT INTO authorization_task_origins (task_id, tenant, source_run_id, root_subject, subject_chain) VALUES ($1, 'acme', $2, 'alice', ARRAY['alice','fixture-agent'])")
+		.bind(child.id)
+		.bind(run.id)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let abandoning = vec![aidash_domain::unassigned::UnassignedTask {
+		id: child.id,
+		title: child.title.clone(),
+		abandonable: true,
+		handed_over: false,
+	}];
+	let worker = Uuid::new_v4();
+	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
+	leased.state = aidash_server::domain::RunState::ToolCall(Box::new(common::tool_call(json!({
+		"included_input_seq":0,
+		"response":{"text":"Done.","tool_calls":[],"input_tokens":1,"output_tokens":1,"usage_complete":true},
+		"cursor":0
+	}))));
+	f.store
+		.save_run(&TEST_FIXTURE, &leased, worker, "model.completed")
+		.await
+		.unwrap();
+	let mut leased = f.store.lease_run(worker, 30).await.unwrap().unwrap();
+	leased.state.tool_mut().unwrap().abandoning = abandoning.clone();
+	assert!(
+		f.store
+			.begin_final_completion(&TEST_FIXTURE, &leased, worker)
+			.await
+			.unwrap()
+	);
+	let saved = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	assert_eq!(saved.state.tool().unwrap().abandoning, abandoning);
+
+	// The Node is deleted and restored: its Runs are cancelled and the saved
+	// completion is settled.
+	use reinhardt::query::{
+		Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
+	};
+	let node = common::default_node(&f.store, "acme").await;
+	let sibling = common::second_node_in(f.store.pool.fixture_driver(), "acme").await;
+	for (path, body) in [
+		(
+			format!("/api/tenants/acme/nodes/{sibling}/default"),
+			Value::Null,
+		),
+		(
+			format!("/api/tenants/acme/nodes/{}/deletion", node.node),
+			json!({"confirmation":node.node}),
+		),
+		(
+			format!("/api/tenants/acme/nodes/{}/restore", node.node),
+			Value::Null,
+		),
+	] {
+		let (status, body) = common::administer_node(&f, "acme", &path, body).await;
+		assert_eq!(status, 200, "{body}");
+	}
+	sqlx::query(
+		&Query::update()
+			.table(Alias::new("node_cancellation_jobs"))
+			.value_expr(Alias::new("retry_at"), Expr::current_timestamp())
+			.and_where(Expr::col("node").eq(node.node.as_str()))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	for _ in 0..3 {
+		aidash_server::generation::provision::reconcile(&f)
+			.await
+			.unwrap();
+	}
+	assert_eq!(
+		f.store
+			.run(&TEST_FIXTURE, run.id)
+			.await
+			.unwrap()
+			.phase()
+			.as_str(),
+		"COMPLETED"
+	);
+	assert_eq!(
+		f.store
+			.task(&TEST_FIXTURE, run.task_id)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
+		"COMPLETED"
+	);
+	assert_eq!(
+		f.store
+			.task(&TEST_FIXTURE, child.id)
+			.await
+			.unwrap()
+			.status
+			.as_str(),
+		"ABANDONED"
+	);
+	let sentence = aidash_domain::unassigned::answer_with_abandoned("Done.", &abandoning);
+	let snapshot = f
+		.store
+		.snapshot(&TEST_FIXTURE, run.workspace_id)
+		.await
+		.unwrap();
+	assert_eq!(
+		snapshot
+			.artifacts
+			.iter()
+			.filter(|artifact| artifact.content == json!(sentence))
+			.count(),
+		1
+	);
+	cleanup(f, &url, &schema).await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn a_new_input_discards_pending_tool_calls_without_spending_the_last_inference_step(

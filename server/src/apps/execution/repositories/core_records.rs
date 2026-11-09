@@ -119,6 +119,73 @@ pub(crate) async fn get(access: &mut Access, id: Uuid, kind: &str) -> Result<Rec
 	}
 	.ok_or_else(|| Error::NotFound("resource unavailable".into()))
 }
+/// Reads many records at once. Shared, so concurrent Runs of one Agent never
+/// queue on the Reference files they all read.
+pub(crate) async fn get_many(access: &mut Access, ids: &[Uuid], kind: &str) -> Result<Vec<Record>> {
+	if ids.is_empty() {
+		return Ok(Vec::new());
+	}
+	crate::database::native::query_as(
+		&sessions::select("core_records")
+			.and_where(
+				Expr::col(Alias::new("id"))
+					.is_in(ids.iter().map(|id| SimpleExpr::from(Expr::value(*id)))),
+			)
+			.and_where(
+				Expr::col(Alias::new("tenant")).eq(Expr::value(access.identity.tenant.clone())),
+			)
+			.and_where(Expr::col(Alias::new("kind")).eq(Expr::value(kind)))
+			.lock(LockType::Share)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(&mut **access.tx)
+	.await
+}
+/// Of these Reference records, the ids that can no longer be used: revoked,
+/// expired or gone (ADR 0114). One `get_many` however many ids, so it adds its
+/// shared lock and nothing more.
+pub(crate) async fn unusable_references(
+	access: &mut Access,
+	ids: &[Uuid],
+) -> Result<std::collections::BTreeSet<Uuid>> {
+	let usable = get_many(access, ids, "reference")
+		.await?
+		.into_iter()
+		.filter(|record| !matches!(record.state.as_str(), "revoked" | "expired"))
+		.map(|record| record.id)
+		.collect::<std::collections::BTreeSet<_>>();
+	Ok(ids
+		.iter()
+		.copied()
+		.filter(|id| !usable.contains(id))
+		.collect())
+}
+/// This subject's usable reference with exactly this content, if any.
+pub(crate) async fn existing_reference(
+	access: &mut Access,
+	digest: &str,
+) -> Result<Option<Record>> {
+	crate::database::native::query_as(
+		&sessions::select("core_records")
+			.and_where(
+				Expr::col(Alias::new("tenant")).eq(Expr::value(access.identity.tenant.clone())),
+			)
+			.and_where(
+				Expr::col(Alias::new("owner")).eq(Expr::value(access.identity.subject.clone())),
+			)
+			.and_where(Expr::col(Alias::new("kind")).eq(Expr::value("reference")))
+			.and_where(Expr::col(Alias::new("state")).is_in(["ready", "extracting"]))
+			.and_where(SimpleExpr::CustomWithExpr(
+				"data->'input'->>'digest' = (?)".to_owned(),
+				vec![Expr::value(digest.to_owned()).into()],
+			))
+			.order_by(Alias::new("id"), reinhardt::query::Order::Asc)
+			.limit(1)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_optional(&mut **access.tx)
+	.await
+}
 pub(crate) async fn insert(
 	access: &mut Access,
 	id: Uuid,

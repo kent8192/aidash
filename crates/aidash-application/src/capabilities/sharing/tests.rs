@@ -84,3 +84,17 @@ fn the_complete_snapshot_must_fit_the_total_budget() {
 		matches!(select_files(&[a.clone(),b.clone()],&[select(&a),select(&b)],&l),Err(Error::Invalid(code)) if code=="SHARE_BYTE_LIMIT")
 	);
 }
+#[rstest::rstest]
+fn a_reference_file_cannot_be_shared_to_another_agent() {
+	let mut reference = file();
+	reference.scope = FileScope::References;
+	reference.provenance = json!({"kind":"reference","id":Uuid::new_v4()});
+	assert!(matches!(
+		select_files(
+			std::slice::from_ref(&reference),
+			&[select(&reference)],
+			&limits()
+		),
+		Err(Error::NotFound(_))
+	));
+}

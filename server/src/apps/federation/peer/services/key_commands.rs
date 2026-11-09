@@ -44,6 +44,8 @@ impl CapabilityCommand for Command {
                 .arg(clap::Arg::new("file").long("file").value_name("PATH").conflicts_with("kms").required_unless_present("kms"))
                 .arg(clap::Arg::new("kms").long("kms").value_name("VERSION").conflicts_with("file").required_unless_present("file"))
                 .arg(clap::Arg::new("expected-current").long("expected-current").value_name("KEY_ID").required(true)
+                    // Base64url: about one key ID in 64 starts with a hyphen.
+                    .allow_hyphen_values(true)
                     .help("Current key ID from status; refuse a changed identity")))
 	}
 	fn requirements(&self, _: &clap::ArgMatches) -> Vec<CapabilityRequirement> {

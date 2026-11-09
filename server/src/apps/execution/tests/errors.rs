@@ -11,7 +11,8 @@ fn database_error() -> DatabaseError {
 #[rstest]
 #[case("55P03", 503, Some("x-aidash-transaction-pending"), true)]
 #[case("A3301", 409, Some("x-aidash-run-message-pending"), true)]
-#[case("40001", 500, None, true)]
+#[case("40001", 503, None, true)]
+#[case("57014", 503, None, true)]
 #[case("23514", 500, None, false)]
 fn native_database_errors_preserve_retry_signals_without_exposing_diagnostics(
 	database_error: DatabaseError,
@@ -211,5 +212,86 @@ fn tool_retry_survives_native_worker_error_conversion() {
 	assert!(
 		matches!(crate::apps::execution::repositories::worker::classify_failure(&native),
 		aidash_application::recovery::ExecutionFailure::ToolRetry { count: 3, retry_after: Some(delay), .. } if delay == std::time::Duration::from_secs(11))
+	);
+}
+
+#[test]
+fn a_refused_authority_change_says_so_and_when_to_try_again() {
+	let response = Error::PolicyBusy { retry_after: 30 }.http_response();
+	assert_eq!(response.status.as_u16(), 503);
+	assert_eq!(response.headers["retry-after"], "30");
+	assert_eq!(response.headers["x-aidash-policy-busy"], "30");
+	assert!(
+		!response
+			.headers
+			.contains_key("x-aidash-transaction-pending")
+	);
+	let body: Value = serde_json::from_slice(&response.body).unwrap();
+	assert_eq!(body["error"], "POLICY_BUSY");
+}
+
+/// #728: a temporary failure used to end the Run for good.
+#[rstest]
+#[case("40001")]
+#[case("40P01")]
+#[case("55P03")]
+#[case("57014")]
+#[case("57P01")]
+#[case("08006")]
+fn a_temporary_database_error_defers_the_run(database_error: DatabaseError, #[case] code: &str) {
+	// Arrange
+	let error = Error::Framework(database_error.with_code(code).into());
+	// Act
+	let failure = crate::apps::execution::repositories::worker::classify_failure(&error);
+	// Assert
+	assert!(matches!(
+		failure,
+		aidash_application::recovery::ExecutionFailure::DatabaseUnavailable
+	));
+}
+
+#[rstest]
+fn a_permanent_database_error_still_fails_the_run(database_error: DatabaseError) {
+	// Arrange
+	let error = Error::Framework(database_error.with_code("23514").into());
+	// Act
+	let failure = crate::apps::execution::repositories::worker::classify_failure(&error);
+	// Assert
+	assert!(matches!(
+		failure,
+		aidash_application::recovery::ExecutionFailure::Other(_)
+	));
+}
+
+/// #728: a real pool timeout, from a database nothing listens on, through the
+/// same conversions a sweep and a Run step take.
+#[rstest]
+#[tokio::test]
+async fn a_real_pool_timeout_is_a_temporary_database_error() {
+	// Arrange
+	let driver = sqlx::postgres::PgPoolOptions::new()
+		.acquire_timeout(std::time::Duration::from_millis(100))
+		.connect_lazy("postgres://nobody@127.0.0.1:1/nothing")
+		.unwrap();
+	let pool = crate::database::native::Pool::from(driver);
+	let scope = aidash_application::tenancy::TenancyScope::Deployment(
+		aidash_application::tenancy::DeploymentScopeReason::SemanticMaintenance,
+	);
+	// Act
+	let error = pool.begin(&scope).await.err().unwrap();
+	// Assert
+	assert!(error.is_transient_database(), "{error}");
+	assert!(matches!(
+		crate::apps::execution::repositories::worker::classify_failure(&error),
+		aidash_application::recovery::ExecutionFailure::DatabaseUnavailable
+	));
+	let application = aidash_application::Error::from(error);
+	assert!(matches!(
+		application,
+		aidash_application::Error::TemporaryDatabase(_)
+	));
+	assert_eq!(
+		Error::from(application).http_response().status.as_u16(),
+		503
 	);
 }

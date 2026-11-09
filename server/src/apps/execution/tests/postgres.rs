@@ -608,6 +608,109 @@ async fn lease_fencing_and_uncertain_effect_reconciliation(
 	cleanup(store, &url, &schema).await;
 }
 
+async fn invocation_status(store: &Store, key: &str) -> (String, Option<serde_json::Value>) {
+	let status = sqlx::query_scalar::<_, String>(
+		&Query::select()
+			.column(Alias::new("status"))
+			.from(Alias::new("invocations"))
+			.and_where(Expr::col(Alias::new("idempotency_key")).eq(Expr::value(key)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let result = sqlx::query_scalar::<_, Option<serde_json::Value>>(
+		&Query::select()
+			.column(Alias::new("result"))
+			.from(Alias::new("invocations"))
+			.and_where(Expr::col(Alias::new("idempotency_key")).eq(Expr::value(key)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	(status, result)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_refused_invocation_is_accepted_and_resume_starts_it_again(
+	#[future(awt)]
+	#[from(store)]
+	_store_fixture: StoreFixture,
+) {
+	// Arrange
+	let (store, url, schema) = _store_fixture.parts();
+	let registry = Registry::new(store.pool.clone(), &store.deployment).unwrap();
+	let agent = seed(&registry).await;
+	let w = store
+		.create_workspace(&ACME, "alice", "Refusals", "Resume refused calls")
+		.await
+		.unwrap();
+	let task = store
+		.create_task(&ACME, w.id, &new_task(), "human", None)
+		.await
+		.unwrap();
+	common::local_run(&store, &ACME, &task, &agent).await;
+	let token = Uuid::new_v4();
+	let mut leased = store.lease_run(token, 30).await.unwrap().unwrap();
+	leased.state = aidash_domain::run_state::RunState::Thinking(Default::default());
+	let refusal = aidash_domain::tool::AuthorityRefusal {
+		tool: "task_delegate".into(),
+		check: aidash_domain::tool::RefusalCheck::Policy,
+		action: Some("task.delegate".into()),
+		subject: None,
+		call: None,
+	};
+	for (key, replay_safe) in [("replay-safe", true), ("unsafe", false)] {
+		store
+			.invocation_start(&ACME, &leased, token, key, "tool", &json!({}), replay_safe)
+			.await
+			.unwrap();
+		// Act: the call is refused, which the CHECK constraint must accept.
+		store
+			.invocation_refused(&ACME, &leased, token, key, &refusal)
+			.await
+			.unwrap();
+		let (status, result) = invocation_status(&store, key).await;
+		// Assert
+		assert_eq!(status, "REFUSED");
+		assert_eq!(
+			result.unwrap()["error"]["message"],
+			"task_delegate: task.delegate was denied"
+		);
+		// Act: resuming starts the same key again.
+		let resumed = store
+			.invocation_start(&ACME, &leased, token, key, "tool", &json!({}), replay_safe)
+			.await
+			.unwrap();
+		// Assert: reopened, never made uncertain for a person to reconcile.
+		assert_eq!(resumed.status, "STARTED", "{key}");
+		assert_eq!(
+			invocation_status(&store, key).await,
+			("STARTED".into(), None)
+		);
+	}
+	// A finished call is never refused afterwards.
+	store
+		.invocation_start(&ACME, &leased, token, "done", "tool", &json!({}), true)
+		.await
+		.unwrap();
+	store
+		.invocation_finish(&ACME, &leased, token, "done", &json!({"ok":true}))
+		.await
+		.unwrap();
+	store
+		.invocation_refused(&ACME, &leased, token, "done", &refusal)
+		.await
+		.unwrap();
+	assert_eq!(
+		invocation_status(&store, "done").await,
+		("COMPLETED".into(), Some(json!({"ok":true})))
+	);
+	cleanup(store, &url, &schema).await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn registry_versions_and_authenticated_api(
@@ -903,7 +1006,8 @@ fn federation(
 			},
 			client: peer_client,
 			notify: Arc::new(tokio::sync::Notify::new()),
-		};
+		}
+		.bind_in_process();
 		let mut runtime = store_fixture.runtime;
 		runtime.federation = federation;
 		runtime
@@ -1366,6 +1470,101 @@ async fn integration_failures_reach_the_agent_without_replay_or_schema_escape(
 	cleanup(store, &database_url, &schema).await;
 }
 
+/// #728: a statement the database cancels fails no Run. It waits and resumes.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_run_that_hits_a_statement_timeout_waits_and_completes(
+	#[from(store)] _store_fixture: StoreFuture,
+	#[from(federation)]
+	#[with(_store_fixture.clone())]
+	_federation: common::RuntimeFuture,
+	#[from(upstream_fixtures::hits)] _source_hits: Arc<std::sync::atomic::AtomicUsize>,
+	#[from(rejected_sources_router)]
+	#[with(_source_hits.clone())]
+	_router: Arc<Router>,
+	#[future(awt)]
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
+) {
+	use aidash_server::harness::Harness;
+
+	let (store, database_url, schema) = _store_fixture.clone().await.parts();
+	let endpoint = server.url.clone();
+	let federation = _federation.await.federation;
+	federation
+		.store
+		.keyless
+		.permit_origin_of(&endpoint)
+		.unwrap();
+	federation.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("model", "web-model", json!({"provider":"openrouter","model_id":"fixture","endpoint":format!("{endpoint}/v1"),"context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}))).await.unwrap();
+	federation
+		.registry
+		.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), { let mut tool = entry(
+			"tool",
+			"web-fetch",
+			json!({"registry_deployment":federation.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"plugin_0","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{endpoint}/evidence"),"replay":"read_only"}}),
+		); tool.schema = json!({"type":"object","properties":{"url":{"type":"string","pattern":"^http://127\\.0\\.0\\.1:"}},"required":["url"],"additionalProperties":false}); tool })
+		.await
+		.unwrap();
+	let agent = federation.registry.register(&aidash_domain::tenancy::TenantName::new("acme").unwrap(), entry("agent", "web-research", json!({"model":{"id":"web-model","version":"1.0.0"},"instructions":"Use available public evidence","schema_version":1,"bindings":[{"kind":"tool","target":{"registry_deployment":federation.config.deployment,"id":"web-fetch","version":"1.0.0"},"alias":"plugin_0","narrow":{}}],"remove_default":[]}))).await.unwrap();
+	let workspace = store
+		.create_workspace(&ACME, "alice", "Waits", "Use available evidence")
+		.await
+		.unwrap();
+	// The first artifact of this test fails the way a fired statement limit does.
+	let owner = common::owner_pool(store.pool.fixture_driver()).await;
+	for ddl in [
+		"CREATE SEQUENCE statement_timeouts",
+		"CREATE FUNCTION fail_once() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS $$ BEGIN \
+		 IF nextval('statement_timeouts') = 1 THEN \
+		 RAISE EXCEPTION USING ERRCODE = '57014', MESSAGE = 'canceling statement due to statement timeout'; \
+		 END IF; RETURN NEW; END $$",
+		"CREATE TRIGGER fail_once BEFORE INSERT ON artifacts FOR EACH ROW EXECUTE FUNCTION fail_once()",
+	] {
+		sqlx::query(ddl).execute(&owner).await.unwrap();
+	}
+	let task = running_task(&federation, &agent, workspace.id, None).await;
+	let harness = Harness { federation };
+	// Act: the retry is due a second after the failure.
+	for _ in 0..80 {
+		let progress = harness.worker_once().await.unwrap();
+		if store.task(&ACME, task.id).await.unwrap().status
+			== aidash_server::domain::TaskStatus::Completed
+		{
+			break;
+		}
+		if !progress {
+			tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+		}
+	}
+	// Assert
+	let run = store.runs(&ACME).await.unwrap().remove(0);
+	assert_eq!(
+		run.phase().as_str(),
+		"COMPLETED",
+		"error={:?}, pending={}",
+		run.error,
+		json!(run.state)["data"]
+	);
+	assert!(
+		store
+			.events(&ACME, 0, Some(workspace.id), 100)
+			.await
+			.unwrap()
+			.iter()
+			.any(|event| event.kind == "run.retrying"),
+		"the Run waited instead of failing"
+	);
+	assert_eq!(
+		store.snapshot(&ACME, workspace.id).await.unwrap().artifacts[0].content,
+		json!("Used alternate evidence")
+	);
+	owner.close().await;
+	drop(server);
+	cleanup(store, &database_url, &schema).await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn child_creation_and_parent_completion_are_serialized(
@@ -1625,6 +1824,16 @@ async fn unavailable_tools_are_results_and_child_gating_advances_step(
 		.create_task(&ACME, workspace.id, &input, "human", None)
 		.await
 		.unwrap();
+	// A child somebody is running holds the parent. (An open child nobody has
+	// started is an Unassigned Task: the model is told about it instead.)
+	sqlx::query(
+		"UPDATE tasks SET status = 'RUNNING', owner = 'human', revision = revision + 1 WHERE id = $1",
+	)
+	.bind(child.id)
+	.execute(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let child = store.task(&ACME, child.id).await.unwrap();
 	final_response(&store, parent.id).await;
 	harness.worker_once().await.unwrap();
 	let waiting = store.run(&ACME, run.id).await.unwrap();
@@ -2211,6 +2420,8 @@ fn request_id(run: &Run) -> Uuid {
 
 #[path = "postgres/typed_state.rs"]
 mod typed_state;
+#[path = "postgres/unassigned.rs"]
+mod unassigned;
 
 #[rstest::fixture]
 fn successful_tool_retry_resets_the_next_invocation_budget_router() -> Arc<Router> {

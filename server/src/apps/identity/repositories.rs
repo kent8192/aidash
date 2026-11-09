@@ -82,6 +82,15 @@ impl AuthorizationTransaction for PolicyTransaction {
 		actor: &str,
 	) -> Result<i64> {
 		let document = serde_json::to_value(bundle).map_err(crate::Error::from)?;
+		// Nothing has locked the policy yet, so this replacement waits for its
+		// row as an Authority Change. A first policy has no running work to wait for.
+		if expected_revision != 0 {
+			match AuthorizationBundle::lock_frozen(self.0.as_mut(), tenant, true).await {
+				// `replace` answers a missing policy as it always has.
+				Ok(_) | Err(crate::Error::NotFound(_)) => {}
+				Err(error) => return Err(error.into()),
+			}
+		}
 		Ok(AuthorizationBundle::replace(
 			self.0.as_mut(),
 			tenant,

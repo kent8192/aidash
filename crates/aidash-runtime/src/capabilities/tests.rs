@@ -1,8 +1,9 @@
 use super::*;
 use aidash_application::{
 	Error,
-	ports::capabilities::reconciliation::{
-		OperationReconciliationRepository, OperationReconciliationScope,
+	ports::capabilities::{
+		read_recheck::{Outcome, Target},
+		reconciliation::{OperationReconciliationRepository, OperationReconciliationScope},
 	},
 };
 use aidash_domain::capabilities::operations::{processing::Receipt, reconciliation::Snapshot};
@@ -21,6 +22,7 @@ struct Repository {
 	entered: Notify,
 	release: Notify,
 	block: bool,
+	fail: bool,
 }
 #[async_trait]
 impl OperationReconciliationRepository for Repository {
@@ -49,6 +51,9 @@ impl OperationProcessingRepository for Repository {
 		self.entered.notify_one();
 		if self.block {
 			self.release.notified().await;
+		}
+		if self.fail {
+			return Err(Error::External("Database error: Pool timed out".into()));
 		}
 		Ok(vec![])
 	}
@@ -109,6 +114,28 @@ async fn successful_batches_retain_the_three_hundred_millisecond_cadence() {
 	stop.send_replace(true);
 	task.await.unwrap().unwrap();
 }
+/// #728: this returned the error, which stopped the whole process.
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn a_sweep_that_fails_with_a_pool_timeout_does_not_end_the_loop() {
+	// Arrange
+	let repository = Arc::new(Repository {
+		fail: true,
+		..Default::default()
+	});
+	let (stop, receiver) = watch::channel(false);
+	let running = repository.clone();
+	let task = tokio::spawn(async move { execution_loop(&*running, receiver).await });
+	// Act: each failed pass is followed by another.
+	for _ in 0..4 {
+		repository.entered.notified().await;
+	}
+	// Assert: it stops when asked, with no error.
+	assert!(!task.is_finished());
+	stop.send_replace(true);
+	task.await.unwrap().unwrap();
+	assert!(repository.ticks.load(Ordering::SeqCst) >= 4);
+}
 struct Guard(Arc<AtomicUsize>);
 impl Drop for Guard {
 	fn drop(&mut self) {
@@ -163,10 +190,76 @@ async fn a_fatal_background_job_drops_all_other_owned_job_futures() {
 	};
 	let (_stop, receiver) = watch::channel(false);
 	assert!(
-		matches!(run(&repository,&jobs,receiver).await,Err(Error::External(message)) if message=="network failed")
+		matches!(run(&repository,&repository,&jobs,receiver).await,Err(Error::External(message)) if message=="network failed")
 	);
 	assert_eq!(jobs.started.load(Ordering::SeqCst), 4);
 	assert_eq!(active.load(Ordering::SeqCst), 0);
+}
+
+/// A slow check must not delay another Tenant's commands.
+struct StuckRechecks;
+#[async_trait]
+impl ReadRecheckRepository for StuckRechecks {
+	async fn targets(&self) -> Result<Vec<Target>> {
+		std::future::pending().await
+	}
+	async fn check(&self, _: Target) -> Result<Outcome> {
+		Err(Error::Forbidden)
+	}
+	async fn stop_refused(&self, _: Target) -> Result<()> {
+		Err(Error::Forbidden)
+	}
+	async fn stop_unconfirmed(&self, _: Uuid) -> Result<()> {
+		Err(Error::Forbidden)
+	}
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stuck_read_recheck_does_not_delay_the_operation_sweep() {
+	// Arrange
+	let repository = Repository::default();
+	let (stop, receiver) = watch::channel(false);
+
+	// Act
+	let sweep = async {
+		tokio::try_join!(
+			Box::pin(execution_loop(&repository, receiver.clone())),
+			async {
+				tokio::select! {
+					result = read_recheck_loop(&StuckRechecks, receiver.clone()) => result,
+					() = async {
+						while repository.ticks.load(Ordering::SeqCst) < 3 {
+							tokio::time::sleep(Duration::from_millis(100)).await;
+						}
+						stop.send(true).unwrap();
+					} => Ok(()),
+				}
+			},
+		)
+	};
+	tokio::time::timeout(Duration::from_secs(60), sweep)
+		.await
+		.expect("the sweep keeps its own pace")
+		.unwrap();
+
+	// Assert
+	assert!(repository.ticks.load(Ordering::SeqCst) >= 3);
+}
+
+#[async_trait]
+impl ReadRecheckRepository for Repository {
+	async fn targets(&self) -> Result<Vec<Target>> {
+		Ok(vec![])
+	}
+	async fn check(&self, _: Target) -> Result<Outcome> {
+		Err(Error::Forbidden)
+	}
+	async fn stop_refused(&self, _: Target) -> Result<()> {
+		Err(Error::Forbidden)
+	}
+	async fn stop_unconfirmed(&self, _: Uuid) -> Result<()> {
+		Err(Error::Forbidden)
+	}
 }
 
 #[async_trait]

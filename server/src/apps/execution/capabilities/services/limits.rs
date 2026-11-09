@@ -11,10 +11,11 @@ impl Default for ContentLimits {
 			read_bytes: 16 << 10,
 			skill_files: 64,
 			skill_bytes: 256_000,
-			reference_files: 8,
+			reference_files: aidash_domain::capabilities::references::MAX_REFERENCE_FILES,
 			reference_bytes: 10 << 20,
 			reference_pages: 200,
-			reference_text_bytes: 64 << 10,
+			reference_text_bytes: 32 << 20,
+			reference_file_text_bytes: 1 << 20,
 			share_files: 64,
 			share_file_bytes: 100 << 20,
 			share_bytes: 256 << 20,
@@ -35,6 +36,7 @@ impl ContentLimits {
 			}) && self.search_bytes >= 4096
 			&& self.read_bytes >= 4
 			&& self.reference_text_bytes >= 4
+			&& self.reference_file_text_bytes >= 4
 	}
 }
 

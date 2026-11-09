@@ -90,10 +90,10 @@ async fn validate_references(
 		if original.size > limits.bytes {
 			return Err(Error::Invalid("REFERENCE_SET_LIMIT".into()));
 		}
-		let extracted: Option<aidash_domain::capabilities::operations::MountedFile> =
-			serde_json::from_value(reference.data["extraction"].clone())?;
 		text_bytes = text_bytes
-			.checked_add(extracted.as_ref().map_or(0, |f| f.size))
+			.checked_add(
+				aidash_domain::capabilities::references::lifecycle::text_bytes(&reference.data),
+			)
 			.ok_or_else(|| Error::Invalid("REFERENCE_SET_LIMIT".into()))?;
 	}
 	if text_bytes > limits.text_bytes as u64 {

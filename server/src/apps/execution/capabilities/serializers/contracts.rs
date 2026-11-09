@@ -21,7 +21,8 @@ pub enum SearchMode {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
 pub struct FileSearch {
-	#[validate(length(min = 1, max = 1024))]
+	/// May be empty in `path` mode, which then lists every path in the scope.
+	#[validate(length(max = 1024))]
 	pub query: String,
 	pub mode: SearchMode,
 	pub scope: FileScope,
@@ -179,11 +180,23 @@ pub struct RuntimeResult {
 	pub session_id: Option<Uuid>,
 	pub displays: Vec<FileEntry>,
 	pub exit_code: Option<i64>,
+	#[serde(default, skip_serializing_if = "String::is_empty")]
 	pub output: String,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub output_unchanged: bool,
 	pub next_offset: Option<usize>,
+	/// When a running command will be stopped. Absent before it starts and after it ends.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub operation_deadline: Option<chrono::DateTime<chrono::Utc>>,
 	pub truncated: bool,
 	pub effects_may_have_occurred: bool,
 	pub error: Option<super::errors::CapabilityError>,
+	/// Seconds since the output shown was last fetched from the running command. It keeps growing when the view is stalled, which does not mean the command is. Absent when no output was fetched.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub output_stale_seconds: Option<u64>,
+	/// True when the command was still running at its time limit. Absent otherwise.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub deadline_expired: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
@@ -391,7 +404,10 @@ pub struct Shell {
 	pub idempotency_key: Uuid,
 	#[validate(length(min = 1, max = 64000))]
 	pub command: String,
+	/// Seconds the command may run once it starts. It is then stopped, and its changes under /work are saved.
 	pub timeout_seconds: Option<u64>,
+	/// How long the Run waits for completion; zero returns immediately.
+	pub wait_seconds: Option<u64>,
 	#[validate(range(min = 0))]
 	/// The working area revision: take it from the previous result's `revision`; a new area starts at 1.
 	pub expected_revision: i64,
@@ -428,6 +444,8 @@ pub struct Patch {
 pub struct OperationInput {
 	pub operation_id: Uuid,
 	pub offset: Option<usize>,
+	/// How long the Run waits for completion; zero returns immediately.
+	pub wait_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, reinhardt::Validate)]
@@ -445,11 +463,23 @@ pub struct OperationResult {
 	pub session_id: Option<Uuid>,
 	pub displays: Vec<FileEntry>,
 	pub exit_code: Option<i64>,
+	#[serde(default, skip_serializing_if = "String::is_empty")]
 	pub output: String,
+	#[serde(default, skip_serializing_if = "std::ops::Not::not")]
+	pub output_unchanged: bool,
 	pub next_offset: Option<usize>,
+	/// When a running command will be stopped. Absent before it starts and after it ends.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub operation_deadline: Option<chrono::DateTime<chrono::Utc>>,
 	pub truncated: bool,
 	pub effects_may_have_occurred: bool,
 	pub error: Option<super::errors::CapabilityError>,
+	/// Seconds since the output shown was last fetched from the running command. It keeps growing when the view is stalled, which does not mean the command is. Absent when no output was fetched.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub output_stale_seconds: Option<u64>,
+	/// True when the command was still running at its time limit. Absent otherwise.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub deadline_expired: Option<bool>,
 }
 
 use uuid::Uuid;

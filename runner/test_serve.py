@@ -39,6 +39,7 @@ def pod(uid="uid", ready=True, ip="10.0.0.7"):
 class ServeAcceptTest(unittest.TestCase):
     def runner(self, root, config=None):
         runner = object.__new__(Runner)
+        runner.proven = True
         runner.root = Path(root)
         runner.config = {"maximum_seconds": 600, "preview_maximum_seconds": 7200,
                          "preview_port": 3000, "working_bytes": 1 << 20, "limits": {},

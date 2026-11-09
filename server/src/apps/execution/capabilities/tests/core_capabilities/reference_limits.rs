@@ -11,7 +11,7 @@ fn bounded_reference_fixture(
 	async move {
 		let mut c = runtime_fixture.await;
 		let mut profile = (*c.f.store.capabilities.0).clone();
-		profile.limits.reference_text_bytes = 64;
+		profile.limits.reference_text_bytes = 50;
 		c.f.store.capabilities = Runtime::new(profile).unwrap();
 		c.app.context.set_singleton(c.f.clone());
 		c
@@ -28,8 +28,8 @@ async fn reference_configuration_enforces_aggregate_and_lowered_limits_without_r
 	let (mut c, worker) = Box::pin(bounded_reference_fixture).await;
 	let stop = worker.stop.clone();
 	let mut bindings = vec![];
-	for index in 0..3 {
-		let bytes = "東京".repeat(if index == 2 { 20 } else { 5 }).into_bytes();
+	for index in 0..2 {
+		let bytes = "東京".repeat(5).into_bytes();
 		let digest = aidash_server::capabilities::objects::digest(&bytes);
 		let (status, upload) = request(&c.app,&c.token,"POST","/api/references/uploads",json!({"idempotency_key":Uuid::new_v4(),"name":format!("fixture-{index}.txt"),"media_type":"text/plain","size":bytes.len(),"digest":digest})).await;
 		assert_eq!(status, 200, "{upload}");
@@ -70,14 +70,9 @@ async fn reference_configuration_enforces_aggregate_and_lowered_limits_without_r
 			assert!(tokio::time::Instant::now() < deadline, "{ready}");
 			tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 		};
-		assert_eq!(
-			ready["extraction_state"],
-			if index == 2 { "text_limit" } else { "ready" }
-		);
-		assert!(ready["extraction"]["size"].as_u64().unwrap() <= 64);
-		if index < 2 {
-			bindings.push(json!({"reference_id":upload["reference_id"],"digest":digest}));
-		}
+		assert_eq!(ready["extraction_state"], "ready");
+		assert!(ready["extraction"].is_null());
+		bindings.push(json!({"reference_id":upload["reference_id"],"digest":digest,"path":format!("fixture-{index}.txt")}));
 	}
 	let before =
 		c.f.registry
@@ -165,7 +160,7 @@ fn extraction_case(#[default("blank")] kind: &str) -> ExtractionCase {
 		),
 		"malformed" => (b"%PDF-1.7\nnot a PDF".to_vec(), "malformed"),
 		"unsupported" => (vec![0, 255, 0, 128], "unsupported"),
-		"text" => ("東京資料\n".repeat(10000).into_bytes(), "text_limit"),
+		"text" => ("東京資料\n".repeat(10000).into_bytes(), "ready"),
 		_ => unreachable!(),
 	};
 	ExtractionCase { bytes, expected }
@@ -229,8 +224,10 @@ async fn isolated_extraction_reports_limits_without_losing_authorized_original(
 		tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 	};
 	assert_eq!(ready["extraction_state"], expected, "{kind}: {ready}");
-	if expected == "text_limit" {
-		assert!(ready["extraction"]["size"].as_u64().unwrap() <= 65536);
+	if expected == "non_extractable" {
+		// Every page is marked, so an Agent sees why it has nothing to read.
+		assert_eq!(ready["pages_without_text"], json!([1]), "{ready}");
+		assert!(!ready["extraction"].is_null());
 	} else {
 		assert!(ready["extraction"].is_null());
 	}

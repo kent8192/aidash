@@ -51,6 +51,7 @@ impl From<InvocationRecord> for Invocation {
 				InvocationStatus::Started => "STARTED",
 				InvocationStatus::Completed => "COMPLETED",
 				InvocationStatus::Uncertain => "UNCERTAIN",
+				InvocationStatus::Refused => "REFUSED",
 			}
 			.into(),
 			result: record.result.map(|value| value.into_inner()),

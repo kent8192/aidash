@@ -1,5 +1,5 @@
 #[path = "run_fixtures.rs"]
-mod run_fixtures;
+pub(super) mod run_fixtures;
 use super::Store;
 use crate::apps::execution::models::{
 	Run as Record,

@@ -89,7 +89,9 @@ pub async fn retain(
 		};
 	let limits = scope.limits()?;
 	let (working_bytes, retained_limit) = quota(&limits);
-	let current = manifest.iter().map(|file| file.size).sum::<u64>();
+	let current = aidash_domain::capabilities::operations::counted_files(&manifest)
+		.map(|file| file.size)
+		.sum::<u64>();
 	let retained = retained_bytes(&holds, &manifest, now);
 	if !area_permits_retention(current, retained, working_bytes) {
 		return Err(Error::Conflict(
@@ -144,7 +146,9 @@ pub async fn retain_revision(
 	}
 	let limits = scope.limits()?;
 	let (working_bytes, retained_limit) = quota(&limits);
-	let current = manifest.iter().map(|file| file.size).sum::<u64>();
+	let current = aidash_domain::capabilities::operations::counted_files(&manifest)
+		.map(|file| file.size)
+		.sum::<u64>();
 	let retained = retained_bytes(&holds, &manifest, now);
 	if !area_permits_retention(current, retained, working_bytes) {
 		return Err(Error::Conflict(

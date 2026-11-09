@@ -333,7 +333,10 @@ async fn conversation_member_recalls_empty_bank_after_reading_coordinator(
 	);
 	if revoke_run {
 		assert_eq!(settled.control, aidash_domain::RunControl::Paused);
-		assert_eq!(settled.error.as_deref(), Some("execution authority denied"));
+		assert_eq!(
+			settled.error.as_deref(),
+			Some("memory_recall: an authority check refused this step")
+		);
 		return;
 	}
 	assert_eq!(

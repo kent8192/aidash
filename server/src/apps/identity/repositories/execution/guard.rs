@@ -4,7 +4,10 @@ use crate::{
 	apps::identity::services::{access::Access, catalog},
 	federation::Federation,
 };
-use aidash_application::{Result, ports::authorization::guard::RunGuardScope};
+use aidash_application::{
+	Result,
+	ports::authorization::guard::{RunGuardScope, UseRecheckScope},
+};
 use aidash_domain::{
 	RunMetadata, Task,
 	policy::{PolicyBundle, Resource},
@@ -20,11 +23,86 @@ pub(crate) struct RunGuard<'a> {
 	pub(crate) federation: &'a Federation,
 	pub(crate) access: &'a mut Access,
 }
+/// The Use Recheck over one `Access`, for a caller that holds no `Federation`: a resume, or a
+/// Run's action that asks whether the Run may still use what it was admitted with.
+pub(crate) struct UseGuard<'a> {
+	pub(crate) access: &'a mut Access,
+}
+#[async_trait]
+impl UseRecheckScope for UseGuard<'_> {
+	fn node_id(&self) -> &str {
+		&self.access.node_id
+	}
+	async fn catalog(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
+		catalog::entry(self.access, reference, action)
+			.await
+			.map_err(Into::into)
+	}
+	async fn reference_embedding_available(&mut self, reference: &EntityRef) -> Result<bool> {
+		crate::apps::registry::services::knowledge::embedding_available(self.access, reference)
+			.await
+			.map(|entry| entry.is_some())
+			.map_err(Into::into)
+	}
+	async fn closure_catalog(
+		&mut self,
+		reference: &EntityRef,
+		action: &str,
+		users: &[EntityRef],
+	) -> Result<Entry> {
+		catalog::closure_entry(self.access, reference, action, users)
+			.await
+			.map_err(Into::into)
+	}
+	async fn metadata(&mut self, reference: &EntityRef) -> Result<Entry> {
+		catalog::metadata(self.access, reference)
+			.await
+			.map_err(Into::into)
+	}
+	async fn binding_snapshot(
+		&mut self,
+		run: &RunMetadata,
+	) -> Result<aidash_domain::registry::bindings::BindingSnapshot> {
+		stored_snapshot(self.access, run).await?.ok_or_else(|| {
+			aidash_application::Error::Invalid("Run has no admitted Binding snapshot".into())
+		})
+	}
+}
+
+/// The Binding snapshot a Run executing here was admitted with, if it has one. A damaged
+/// context has none: its Run's next boundary is failure delivery, which reads no context, and
+/// a resume must not fail on it.
+async fn stored_snapshot(
+	access: &mut Access,
+	run: &RunMetadata,
+) -> Result<Option<aidash_domain::registry::bindings::BindingSnapshot>> {
+	crate::apps::execution::models::Run::binding_snapshot_in(&mut **access.tx, run.id)
+		.await
+		.map_err(Into::into)
+}
+
+/// The first definition a Run may no longer use, or none (the Use Recheck). A Run without a
+/// readable Binding snapshot, such as one left to deliver its failure, is checked for its own
+/// Agent only, as its next boundary checks it. A Run of another Home executing here is checked
+/// too, as the read walk checked it before; `local_only` leaves it out for a person's resume,
+/// which controls only the Runs of this Home.
+pub(crate) async fn use_block(
+	access: &mut Access,
+	run: &RunMetadata,
+	local_only: bool,
+) -> Result<Option<EntityRef>> {
+	use aidash_application::authorization::execution::guard::recheck;
+	if local_only && !run.is_local(&access.node_id) {
+		return Ok(None);
+	}
+	let binding = stored_snapshot(access, run).await?.is_some();
+	Ok(recheck(&mut UseGuard { access }, run, binding)
+		.await?
+		.blocked())
+}
+
 #[async_trait]
 impl RunGuardScope for RunGuard<'_> {
-	fn node_id(&self) -> &str {
-		self.federation.config.deployment.as_str()
-	}
 	fn bundle(&self) -> &PolicyBundle {
 		&self.access.snapshot.bundle
 	}
@@ -66,32 +144,6 @@ impl RunGuardScope for RunGuard<'_> {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn catalog(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
-		catalog::entry(self.access, reference, action)
-			.await
-			.map_err(Into::into)
-	}
-	async fn reference_embedding_available(&mut self, reference: &EntityRef) -> Result<bool> {
-		crate::apps::registry::services::knowledge::embedding_available(self.access, reference)
-			.await
-			.map(|entry| entry.is_some())
-			.map_err(Into::into)
-	}
-	async fn closure_catalog(
-		&mut self,
-		reference: &EntityRef,
-		action: &str,
-		users: &[EntityRef],
-	) -> Result<Entry> {
-		catalog::closure_entry(self.access, reference, action, users)
-			.await
-			.map_err(Into::into)
-	}
-	async fn metadata(&mut self, reference: &EntityRef) -> Result<Entry> {
-		catalog::metadata(self.access, reference)
-			.await
-			.map_err(Into::into)
-	}
 	async fn task_read(&mut self, task: Uuid) -> Result<Task> {
 		self.access.task_read(task).await.map_err(Into::into)
 	}
@@ -119,6 +171,43 @@ impl RunGuardScope for RunGuard<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn context_authority(&mut self, run: &RunMetadata) -> Result<()> {
+		crate::capabilities::sessions::context_authority(self.access, run)
+			.await
+			.map_err(Into::into)
+	}
+}
+#[async_trait]
+impl UseRecheckScope for RunGuard<'_> {
+	fn node_id(&self) -> &str {
+		self.federation.config.deployment.as_str()
+	}
+	async fn catalog(&mut self, reference: &EntityRef, action: &str) -> Result<Entry> {
+		catalog::entry(self.access, reference, action)
+			.await
+			.map_err(Into::into)
+	}
+	async fn reference_embedding_available(&mut self, reference: &EntityRef) -> Result<bool> {
+		crate::apps::registry::services::knowledge::embedding_available(self.access, reference)
+			.await
+			.map(|entry| entry.is_some())
+			.map_err(Into::into)
+	}
+	async fn closure_catalog(
+		&mut self,
+		reference: &EntityRef,
+		action: &str,
+		users: &[EntityRef],
+	) -> Result<Entry> {
+		catalog::closure_entry(self.access, reference, action, users)
+			.await
+			.map_err(Into::into)
+	}
+	async fn metadata(&mut self, reference: &EntityRef) -> Result<Entry> {
+		catalog::metadata(self.access, reference)
+			.await
+			.map_err(Into::into)
+	}
 	async fn binding_snapshot(
 		&mut self,
 		run: &RunMetadata,
@@ -132,11 +221,5 @@ impl RunGuardScope for RunGuard<'_> {
 			.ok_or_else(|| {
 				aidash_application::Error::Invalid("Run has no admitted Binding snapshot".into())
 			})
-	}
-
-	async fn context_authority(&mut self, run: &RunMetadata) -> Result<()> {
-		crate::capabilities::sessions::context_authority(self.access, run)
-			.await
-			.map_err(Into::into)
 	}
 }

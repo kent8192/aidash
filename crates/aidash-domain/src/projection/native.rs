@@ -164,7 +164,8 @@ pub const HARNESS_REQUIREMENTS: &str = "harness_requirements";
 /// Model Turn answers them. A citation correction or a Completion Gate repair
 /// asks for a corrected answer, so only a turn without calls answers it;
 /// tool-call turns that gather the missing evidence or repair the files keep it
-/// current.
+/// current. The notice of Unassigned Tasks is kept the same way: delegating one
+/// of two listed Tasks must not hide the warning about the other.
 pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 	let projected = crate::context::source::project(context, pinned);
 	let mut pinned = projected.snapshot;
@@ -230,6 +231,7 @@ pub fn native_context(context: &Context, pinned: &Value) -> NativeContext {
 						marker,
 						ContextEvent::CitationCorrectionRequired { .. }
 							| ContextEvent::CompletionRepairRequired { .. }
+							| ContextEvent::UnassignedTasksTold { .. }
 					)
 			});
 		}
@@ -424,6 +426,7 @@ fn single<'a>(
 		ContextEvent::RunMessageReadRequired { .. }
 		| ContextEvent::RunMessageSummaryRequired { .. }
 		| ContextEvent::CitationCorrectionRequired { .. }
+		| ContextEvent::UnassignedTasksTold { .. }
 		| ContextEvent::CompletionRepairRequired { .. } => markers.push(&entry.event),
 		// Only reached for an Assistant event without a turn, which cannot happen.
 		ContextEvent::Assistant { .. } => {}

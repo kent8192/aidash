@@ -210,7 +210,12 @@ async fn observations_do_not_recursively_embed_the_invocation_journal(
 		.await
 		.unwrap();
 	assert!(children.has_pending && children.has_failed);
-	assert!(serde_json::to_vec(&children).unwrap().len() < 128);
+	// The summary names each Unassigned child by id and title (#772), but
+	// never carries a description, so it grows only by a short entry per child.
+	assert_eq!(children.unassigned.len(), 69);
+	let encoded = serde_json::to_string(&children).unwrap();
+	assert!(!encoded.contains("large child description"));
+	assert!(encoded.len() < 128 + children.unassigned.len() * 160);
 	let old_event = f
 		.store
 		.emit(

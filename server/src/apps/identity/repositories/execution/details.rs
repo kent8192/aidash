@@ -51,8 +51,7 @@ impl Held<'_> {
 #[async_trait]
 impl RunDetailsRepository for Details<'_> {
 	async fn begin(&self) -> Result<Box<dyn RunDetailsScope + '_>> {
-		let mut access = Access::begin(&self.federation.store, self.identity).await?;
-		access.wire = Some(crate::bootstrap::peer_transport(self.federation));
+		let access = Access::begin(&self.federation.store, self.identity).await?;
 		Ok(Box::new(Scope {
 			federation: self.federation,
 			access: Held::Own(Box::new(access)),
@@ -69,18 +68,57 @@ pub(crate) async fn visible_within(
 	run: Uuid,
 ) -> Result<RunInspection> {
 	let context = access.context.clone();
-	let wire = access
-		.wire
-		.replace(crate::bootstrap::peer_transport(federation));
 	let mut scope = Scope {
 		federation,
 		access: Held::Borrowed(&mut *access),
 	};
 	let result = aidash_application::authorization::run_details::visible_in(&mut scope, run).await;
 	scope.access.get().context = context;
-	scope.access.get().wire = wire;
 	result
 }
+/// Whether the caller may decline the call the Run is paused on: the Run's person under
+/// `run.control`, anyone else under `run.decline_call`. Decided without writing a denial.
+pub(crate) async fn may_decline_run(
+	access: &mut Access,
+	run: &RunInspection,
+) -> NativeResult<bool> {
+	let grant: Option<super::Grant> = {
+		let query_bind_1 = run.id;
+		crate::database::native::query_as(
+			&Query::select()
+				.column(Asterisk)
+				.from(Alias::new("authorization_execution"))
+				.and_where(
+					reinhardt::query::SimpleExpr::from(Expr::col(Alias::new("run_id"))).eq(
+						SimpleExpr::CustomWithExpr(
+							"(?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						),
+					),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_optional(&mut **access.tx)
+		.await?
+	};
+	let Some(grant) = grant else {
+		return Ok(false);
+	};
+	let own =
+		grant.tenant == access.identity.tenant && grant.root_subject == access.identity.subject;
+	let resource = access.resource("run", run.id, serde_json::json!({}));
+	access
+		.decide(
+			&resource,
+			if own {
+				"run.control"
+			} else {
+				"run.decline_call"
+			},
+		)
+		.await
+}
+
 #[async_trait]
 impl RunDetailsScope for Scope<'_> {
 	fn node_id(&self) -> &str {
@@ -126,6 +164,21 @@ impl RunDetailsScope for Scope<'_> {
 	}
 	async fn run_visible(&mut self, run: &RunInspection) -> Result<bool> {
 		self.access.get().run_visible(run).await.map_err(Into::into)
+	}
+	async fn run_reads_block(
+		&mut self,
+		run: &RunInspection,
+	) -> Result<Option<aidash_domain::run_state::RunReadsBlock>> {
+		self.access
+			.get()
+			.run_reads_block(run)
+			.await
+			.map_err(Into::into)
+	}
+	async fn may_decline(&mut self, run: &RunInspection) -> Result<bool> {
+		may_decline_run(self.access.get(), run)
+			.await
+			.map_err(Into::into)
 	}
 	async fn egress_requests(
 		&mut self,
