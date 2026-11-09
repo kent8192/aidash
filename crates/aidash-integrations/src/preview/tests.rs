@@ -398,3 +398,101 @@ async fn websocket_traffic_refreshes_activity_but_an_idle_connection_does_not() 
 	);
 	tokio::time::resume();
 }
+
+/// Starts a gateway with the given slots over the `Fake` file view authority.
+async fn gateway_with(slots: Slots) -> (std::net::SocketAddr, watch::Sender<bool>) {
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let address = listener.local_addr().unwrap();
+	let (stop, stopping) = watch::channel(false);
+	let authority = Arc::new(Fake {
+		page: Some(page("text/html", None)),
+		revoked: false,
+		served: Mutex::new(Vec::new()),
+	});
+	tokio::spawn(serve_with_slots(
+		listener,
+		authority,
+		Arc::new(slots),
+		stopping,
+	));
+	(address, stop)
+}
+
+/// Sends one GET and reads its head and body.
+async fn get(stream: &mut TcpStream, host: &str) -> (String, String) {
+	stream
+		.write_all(
+			format!(
+				"GET / HTTP/1.1\r\nHost: {host}\r\nCookie: __Host-aidash-preview=viewer\r\n\r\n"
+			)
+			.as_bytes(),
+		)
+		.await
+		.unwrap();
+	let head = tokio::time::timeout(Duration::from_secs(5), read_head(stream))
+		.await
+		.unwrap()
+		.to_ascii_lowercase();
+	let length = head
+		.lines()
+		.find_map(|line| line.strip_prefix("content-length:"))
+		.map_or(0, |value| value.trim().parse::<usize>().unwrap());
+	let mut body = vec![0; length];
+	stream.read_exact(&mut body).await.unwrap();
+	(head, String::from_utf8(body).unwrap())
+}
+
+#[tokio::test]
+async fn silent_connections_fill_only_the_unidentified_slots() {
+	let (address, _stop) = gateway_with(Slots::with_sizes(2, 8, 4)).await;
+	let mut viewer = TcpStream::connect(address).await.unwrap();
+	let (head, _) = get(&mut viewer, "a.preview.test").await;
+	assert!(head.starts_with("http/1.1 200"), "{head}");
+	// Two connections that never send a head take every unidentified slot.
+	let _silent = [
+		TcpStream::connect(address).await.unwrap(),
+		TcpStream::connect(address).await.unwrap(),
+	];
+	let mut late = TcpStream::connect(address).await.unwrap();
+	let (head, body) = get(&mut late, "b.preview.test").await;
+	assert!(head.starts_with("http/1.1 503"), "{head}");
+	assert!(head.contains("retry-after: 5"), "{head}");
+	assert!(head.contains("connection: close"), "{head}");
+	assert_eq!(body, "preview_gateway_busy");
+	// The viewer admitted before the flood is still served.
+	let (head, _) = get(&mut viewer, "a.preview.test").await;
+	assert!(head.starts_with("http/1.1 200"), "{head}");
+}
+
+#[tokio::test]
+async fn a_full_preview_refuses_its_next_viewer_and_closes() {
+	let (address, _stop) = gateway_with(Slots::with_sizes(8, 8, 1)).await;
+	let mut first = TcpStream::connect(address).await.unwrap();
+	let (head, _) = get(&mut first, "a.preview.test").await;
+	assert!(head.starts_with("http/1.1 200"), "{head}");
+	let mut second = TcpStream::connect(address).await.unwrap();
+	let (head, body) = get(&mut second, "a.preview.test").await;
+	assert!(head.starts_with("http/1.1 503"), "{head}");
+	assert_eq!(body, "preview_connection_limit");
+	let mut rest = Vec::new();
+	tokio::time::timeout(Duration::from_secs(5), second.read_to_end(&mut rest))
+		.await
+		.unwrap()
+		.unwrap();
+	assert!(rest.is_empty());
+	// Another preview still has room.
+	let mut other = TcpStream::connect(address).await.unwrap();
+	let (head, _) = get(&mut other, "b.preview.test").await;
+	assert!(head.starts_with("http/1.1 200"), "{head}");
+}
+
+#[tokio::test]
+async fn a_connection_naming_another_preview_is_misdirected() {
+	let (address, _stop) = gateway_with(Slots::with_sizes(8, 8, 4)).await;
+	let mut viewer = TcpStream::connect(address).await.unwrap();
+	let (head, _) = get(&mut viewer, "a.preview.test").await;
+	assert!(head.starts_with("http/1.1 200"), "{head}");
+	let (head, body) = get(&mut viewer, "b.preview.test").await;
+	assert!(head.starts_with("http/1.1 421"), "{head}");
+	assert_eq!(body, "preview_misdirected");
+}
