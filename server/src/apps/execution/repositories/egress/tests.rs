@@ -759,9 +759,10 @@ async fn native_gateway_serializes_cumulative_limits_and_refuses_revoked_binding
 		.control(&scope, run.id, aidash_domain::RunControlAction::Cancel)
 		.await
 		.unwrap();
+	// A stopped Run's operation is inactive; the preview's session has ended.
 	assert!(matches!(
 		first.meter.check_active().await,
-		Err(aidash_application::Error::Conflict(code)) if code == aidash_domain::egress::OPERATION_EXPIRED
+		Err(aidash_application::Error::Conflict(code)) if code == aidash_domain::egress::OPERATION_INACTIVE
 	));
 	assert!(matches!(
 		preview_meter.check_active().await,
