@@ -238,6 +238,14 @@ pub async fn invoke(
 			match (selection.workspace_id, selection.area_id) {
 				(Some(workspace), Some(target)) => {
 					area = scope.subnode_area(run, workspace, target).await?;
+					// A member's Reference set is read only inside the member's own Run,
+					// whose Agent version binds it; a copy the member made is readable (ADR 0114).
+					if files(&area)?
+						.iter()
+						.any(|file| file.file_id == selection.file_id && file.is_reference_file())
+					{
+						return Err(Error::NotFound("file unavailable".into()));
+					}
 				}
 				(None, None) => {}
 				_ => {

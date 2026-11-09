@@ -98,3 +98,34 @@ fn a_reference_file_cannot_be_shared_to_another_agent() {
 		Err(Error::NotFound(_))
 	));
 }
+#[rstest::rstest]
+fn a_copy_of_a_reference_file_as_made_cannot_be_shared() {
+	let mut reference = file();
+	reference.scope = FileScope::References;
+	reference.provenance = json!({"kind":"reference","id":Uuid::new_v4()});
+	let mut copy = reference.clone();
+	copy.file_id = Uuid::new_v4();
+	copy.scope = FileScope::Working;
+	copy.path = "copy.txt".into();
+	let mut again = file();
+	again.path = "again.txt".into();
+	again.provenance = json!({"kind":"operation","operation_id":"cp"});
+	let mut edited = again.clone();
+	edited.file_id = Uuid::new_v4();
+	edited.path = "edited.txt".into();
+	edited.digest = "edited".into();
+	let mounted = [reference, copy.clone(), again.clone(), edited.clone()];
+
+	for refused in [&copy, &again] {
+		assert!(
+			matches!(
+				select_files(&mounted, &[select(refused)], &limits()),
+				Err(Error::NotFound(_))
+			),
+			"{} left the Run",
+			refused.path
+		);
+	}
+	let (selected, _) = select_files(&mounted, &[select(&edited)], &limits()).unwrap();
+	assert_eq!(selected[0].file_id, edited.file_id);
+}

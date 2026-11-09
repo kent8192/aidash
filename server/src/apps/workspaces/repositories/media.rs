@@ -417,9 +417,10 @@ impl aidash_application::ports::execution::media::SelectedMediaScope for Selecte
 		let area = crate::bootstrap::file_scope(Some(self.store), access, Some(self.run))
 			.subnode_area(&self.run.metadata(), workspace, area)
 			.await?;
+		// A member's Reference set stays inside the member's own Run (ADR 0114).
 		let file = serde_json::from_value::<Vec<FileEntry>>(area.manifest)?
 			.into_iter()
-			.find(|file| file.file_id == id)
+			.find(|file| file.file_id == id && !file.is_reference_file())
 			.ok_or_else(|| aidash_application::Error::NotFound("file unavailable".into()))?;
 		let selected = SelectedFile {
 			file_id: file.file_id,
