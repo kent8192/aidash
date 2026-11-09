@@ -97,7 +97,7 @@ impl DurableScopes {
 			.begin(&TenancyScope::tenant(&current.id.tenant)?)
 			.await?;
 		let state = locked_state(&mut tx, &current.id).await?;
-		if state.suspended {
+		if state.suspended && !forwarded {
 			return Err(Error::Conflict("egress_suspended".into()));
 		}
 		let mut total = daily(&mut tx, &current.id, day, "").await?;
@@ -128,6 +128,9 @@ impl DurableScopes {
 				.map_err(reinhardt::core::exception::Error::from)?;
 		}
 		tx.commit().await?;
+		if state.suspended {
+			return Err(Error::Conflict("egress_suspended".into()));
+		}
 		if exhausted {
 			return Err(Error::Conflict("egress_budget_exhausted".into()));
 		}

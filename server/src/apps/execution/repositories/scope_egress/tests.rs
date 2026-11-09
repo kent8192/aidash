@@ -340,6 +340,15 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 			.to_string()
 			.contains("egress_suspended")
 	);
+	assert!(
+		durable
+			.debit(&scope, Direction::Received, 1, day)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("egress_suspended")
+	);
+	assert_eq!(total().await, 9, "new tunnel bytes remain refused");
 	assert!(durable.check_active(&scope, "credential").await.is_err());
 	let events: i64 = sqlx::query_scalar(
 		"SELECT count(*) FROM egress_scope_events WHERE scope_id = $1 AND kind = 'suspended'",
@@ -365,6 +374,55 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 				.contains("egress_budget_exhausted")
 		);
 	}
+	// A separate scope retains room in its budget when its anomaly rule suspends it.
+	let mut suspended = scope.clone();
+	suspended.id.scratch_space = Uuid::new_v4();
+	let suspended_durable = DurableScopes::new(
+		federation.store.clone(),
+		Arc::new(Authority(suspended.clone())),
+	);
+	suspended_durable.resolve("credential").await.unwrap();
+	suspended_durable
+		.admit_connection(&suspended)
+		.await
+		.unwrap();
+	assert!(
+		suspended_durable
+			.admit_connection(&suspended)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("egress_suspended")
+	);
+	let audit = Arc::new(FlakyAuditMeter::default());
+	audit.calls.store(1, std::sync::atomic::Ordering::Relaxed);
+	let meter = ScopedMeter::new(
+		suspended_durable,
+		suspended.clone(),
+		"maps",
+		None,
+		audit.clone(),
+	);
+	assert!(
+		meter
+			.charge(Direction::Received, 1)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("egress_suspended")
+	);
+	let recorded: i64 = sqlx::query_scalar(
+		"SELECT received_bytes FROM egress_scope_daily WHERE scope_id = $1 AND service = ''",
+	)
+	.bind(suspended.id.scratch_space)
+	.fetch_one(federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		(recorded, audit.committed()),
+		(1, 1),
+		"both meters retain forwarded bytes after suspension"
+	);
 }
 
 #[test]
