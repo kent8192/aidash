@@ -31,6 +31,7 @@ struct Audit {
 	charges: AtomicU64,
 	requests: Mutex<Vec<(String, String, String)>>,
 	finished_records: Mutex<Vec<(u16, Option<String>)>>,
+	finished_received: Mutex<Vec<u64>>,
 	times: Mutex<Vec<RequestTimes>>,
 	finished: Notify,
 }
@@ -84,6 +85,10 @@ impl Meter for Audit {
 	}
 	async fn finish(&self, status: u16, times: RequestTimes, error: Option<&str>) -> Result<()> {
 		self.times.lock().unwrap().push(times);
+		self.finished_received
+			.lock()
+			.unwrap()
+			.push(self.received.load(Ordering::Relaxed));
 		self.finished_records
 			.lock()
 			.unwrap()
@@ -2676,6 +2681,49 @@ enum Registry {
 	NotJson,
 	TooLarge,
 	Breaks,
+	Packages,
+}
+
+const TARBALL: &[u8] = b"\x1f\x8b\x00\xfftypescript-tarball\x00\x80";
+static RELEASE_TARBALL: Notify = Notify::const_new();
+fn package_registry_response(path: &str) -> Response<Body> {
+	let (status, content_type, body): (StatusCode, &str, Body) = match path {
+		"/typescript" => (
+			StatusCode::OK,
+			"application/json",
+			Full::new(Bytes::from_static(br#"{"dist":{"tarball":"https://registry.npmjs.org/typescript/-/typescript-5.0.0.tgz"}}"#)).map_err(|never| match never {}).boxed_unsync(),
+		),
+		"/typescript/-/typescript-5.0.0.tgz" => (
+			StatusCode::OK,
+			"application/octet-stream",
+			StreamBody::new(async_stream::stream! {
+				yield Ok::<_, BoxError>(Frame::data(Bytes::from_static(&TARBALL[..8])));
+				RELEASE_TARBALL.notified().await;
+				yield Ok(Frame::data(Bytes::from_static(&TARBALL[8..])));
+			}).boxed_unsync(),
+		),
+		_ => (StatusCode::NOT_FOUND, "application/octet-stream", Full::new(Bytes::new()).map_err(|never| match never {}).boxed_unsync()),
+	};
+	Response::builder()
+		.status(status)
+		.header("content-type", content_type)
+		.body(body)
+		.unwrap()
+}
+
+async fn assert_streamed_tarball(mut response: reqwest::Response) {
+	assert_eq!(response.status(), StatusCode::OK);
+	let first = tokio::time::timeout(Duration::from_secs(5), response.chunk())
+		.await
+		.expect("the gateway streams before the registry completes")
+		.unwrap()
+		.unwrap();
+	let mut bytes = first.to_vec();
+	RELEASE_TARBALL.notify_one();
+	while let Some(chunk) = response.chunk().await.unwrap() {
+		bytes.extend_from_slice(&chunk);
+	}
+	assert_eq!(bytes, TARBALL);
 }
 async fn tunnel_to_registry(
 	registry: &'static Registry,
@@ -2730,30 +2778,40 @@ async fn tunnel_to_registry(
 				let Ok(tls) = acceptor.accept(socket).await else {
 					return;
 				};
-				let service = hyper::service::service_fn(move |_| async move {
-					let body: Body = match registry {
-						Registry::NotJson => Full::new(Bytes::from_static(b"not json"))
-							.map_err(|never| match never {})
+				let service = hyper::service::service_fn(
+					move |request: hyper::Request<hyper::body::Incoming>| async move {
+						if matches!(registry, Registry::Packages) {
+							return Ok::<_, std::convert::Infallible>(package_registry_response(
+								request.uri().path(),
+							));
+						}
+						let body: Body = match registry {
+							Registry::NotJson => Full::new(Bytes::from_static(b"not json"))
+								.map_err(|never| match never {})
+								.boxed_unsync(),
+							Registry::TooLarge => {
+								Full::new(Bytes::from(vec![b' '; INDEX_BYTES + 1]))
+									.map_err(|never| match never {})
+									.boxed_unsync()
+							}
+							// The pause lets the head and the first chunk reach the
+							// gateway before the stream fails.
+							Registry::Breaks => StreamBody::new(async_stream::stream! {
+								yield Ok(Frame::data(Bytes::from_static(b"{\"name\":")));
+								tokio::time::sleep(Duration::from_millis(200)).await;
+								yield Err(io_error("registry_broke"));
+							})
 							.boxed_unsync(),
-						Registry::TooLarge => Full::new(Bytes::from(vec![b' '; INDEX_BYTES + 1]))
-							.map_err(|never| match never {})
-							.boxed_unsync(),
-						// The pause lets the head and the first chunk reach the
-						// gateway before the stream fails.
-						Registry::Breaks => StreamBody::new(async_stream::stream! {
-							yield Ok(Frame::data(Bytes::from_static(b"{\"name\":")));
-							tokio::time::sleep(Duration::from_millis(200)).await;
-							yield Err(io_error("registry_broke"));
-						})
-						.boxed_unsync(),
-					};
-					Ok::<_, std::convert::Infallible>(
-						Response::builder()
-							.header("content-type", "application/json")
-							.body(body)
-							.unwrap(),
-					)
-				});
+							Registry::Packages => unreachable!(),
+						};
+						Ok::<_, std::convert::Infallible>(
+							Response::builder()
+								.header("content-type", "application/json")
+								.body(body)
+								.unwrap(),
+						)
+					},
+				);
 				let _ = hyper::server::conn::http1::Builder::new()
 					.serve_connection(hyper_util::rt::TokioIo::new(tls), service)
 					.await;
@@ -2767,6 +2825,85 @@ async fn tunnel_to_registry(
 		.build()
 		.unwrap();
 	(client, task)
+}
+
+#[tokio::test]
+async fn npm_tarballs_stream_through_both_registry_and_rewritten_asset_paths() {
+	let (client, tunnel) = tunnel_to_registry(&Registry::Packages).await;
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let origin = format!("http://{}", listener.local_addr().unwrap());
+	let audit = Arc::new(Audit::default());
+	let authority = Arc::new(ShapedAuthority {
+		origin: origin.clone(),
+		audit: audit.clone(),
+		service: "core.npm",
+		base: "https://registry.npmjs.org/".into(),
+		methods: vec!["GET".into(), "HEAD".into()],
+		shape: Box::new(|_| {}),
+	});
+	let (stop, receiver) = watch::channel(false);
+	let gateway = tokio::spawn(async move {
+		serve_with_clients(
+			listener,
+			authority,
+			None,
+			ProxyLimits::default(),
+			receiver,
+			client.clone(),
+			client,
+		)
+		.await
+		.unwrap()
+	});
+	let http = reqwest::Client::builder().no_proxy().build().unwrap();
+	let plain = format!("{origin}/v1/operation-token/core.npm/typescript/-/typescript-5.0.0.tgz");
+	let response = http.get(&plain).send().await.unwrap();
+	assert_streamed_tarball(response).await;
+	tokio::time::timeout(Duration::from_secs(5), audit.finished.notified())
+		.await
+		.unwrap();
+	assert_eq!(audit.received.load(Ordering::Relaxed), TARBALL.len() as u64);
+	assert_eq!(*audit.finished_records.lock().unwrap(), vec![(200, None)]);
+	assert_eq!(
+		*audit.finished_received.lock().unwrap(),
+		vec![TARBALL.len() as u64]
+	);
+
+	let response = http
+		.get(format!("{origin}/v1/operation-token/core.npm/typescript"))
+		.send()
+		.await
+		.unwrap();
+	assert_eq!(response.status(), StatusCode::OK);
+	let index: serde_json::Value = response.json().await.unwrap();
+	let rewritten = index["dist"]["tarball"].as_str().unwrap();
+	assert!(rewritten.starts_with(&format!("{origin}/v1/operation-token/core.npm/__asset/")));
+	tokio::time::timeout(Duration::from_secs(5), audit.finished.notified())
+		.await
+		.unwrap();
+	let before = audit.received.load(Ordering::Relaxed);
+	assert_eq!(
+		*audit.finished_records.lock().unwrap(),
+		vec![(200, None), (200, None)]
+	);
+	let response = http.get(rewritten).send().await.unwrap();
+	assert_streamed_tarball(response).await;
+	tokio::time::timeout(Duration::from_secs(5), audit.finished.notified())
+		.await
+		.unwrap();
+	assert_eq!(
+		audit.received.load(Ordering::Relaxed) - before,
+		TARBALL.len() as u64
+	);
+	assert_eq!(
+		*audit.finished_records.lock().unwrap(),
+		vec![(200, None), (200, None), (200, None)]
+	);
+	assert_eq!(
+		audit.finished_received.lock().unwrap()[2] - before,
+		TARBALL.len() as u64
+	);
+	shutdown(vec![gateway, tunnel], stop).await;
 }
 
 #[tokio::test]
