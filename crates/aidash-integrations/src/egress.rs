@@ -353,10 +353,6 @@ impl Refusal {
 		}
 	}
 
-	fn response(self) -> Response<Body> {
-		failure(self.status, self.code)
-	}
-
 	/// Not a decision about this request: the store could not be asked.
 	fn temporary(self) -> bool {
 		self.code == aidash_domain::egress::UNAVAILABLE
@@ -1633,9 +1629,7 @@ async fn forward(
 	let body = body.map_err(|error: BoxError| error);
 	let response = match tokio::select! {
 		refusal = stopped(&mut active_rx) => {
-			completion.status = refusal.status.as_u16();
-			completion.interrupted(refusal.code);
-			return refusal.response();
+			return completion.fail(refusal.status, refusal.code, refusal.code).await;
 		}
 		response = tokio::time::timeout_at(
 		deadline,
@@ -1647,9 +1641,9 @@ async fn forward(
 			// A refused upload debit fails the request; report the refusal
 			// rather than an unreachable upstream.
 			if let Some(refusal) = completion.debits.refused.get().copied() {
-				completion.status = refusal.status.as_u16();
-				completion.finish(Some(refusal.code)).await;
-				return refusal.response();
+				return completion
+					.fail(refusal.status, refusal.code, refusal.code)
+					.await;
 			}
 			let cause = match failed {
 				Ok(Err(error)) => upstream_cause(error),
@@ -1678,9 +1672,7 @@ async fn forward(
 		if broker_reports_failure(code) {
 			upstream_failed(&completion.debits.label, code);
 		}
-		completion.status = status.as_u16();
-		completion.finish(Some(code)).await;
-		return failure(status, code);
+		return completion.fail(status, code, code).await;
 	}
 	let mut headers = response.headers().clone();
 	let connection = headers
@@ -1756,9 +1748,9 @@ async fn forward(
 	// rather than classifying a correctly empty response as an interruption.
 	if head || matches!(status, StatusCode::NO_CONTENT | StatusCode::NOT_MODIFIED) {
 		if let Some(refusal) = completion.settle_final().await {
-			completion.status = refusal.status.as_u16();
-			completion.close(Some(refusal.code)).await;
-			return refusal.response();
+			return completion
+				.fail(refusal.status, refusal.code, refusal.code)
+				.await;
 		}
 		completion.close(None).await;
 		let mut result = Response::new(
@@ -1786,8 +1778,7 @@ async fn forward(
 		loop {
 			let next = tokio::select! {
 				refusal = stopped(&mut active_rx) => {
-					completion.interrupted(refusal.code);
-					return refusal.response();
+					return completion.fail(refusal.status, refusal.code, refusal.code).await;
 				}
 				next = tokio::time::timeout_at(deadline, tokio::time::timeout(IDLE, downstream.next())) => next,
 			};
@@ -1815,9 +1806,9 @@ async fn forward(
 				.flush_due(Direction::Received, deadline)
 				.await
 			{
-				completion.status = refusal.status.as_u16();
-				completion.finish(Some(refusal.code)).await;
-				return refusal.response();
+				return completion
+					.fail(refusal.status, refusal.code, refusal.code)
+					.await;
 			}
 			if buffer.len().saturating_add(bytes.len()) > INDEX_BYTES {
 				let mut response = completion
@@ -1867,9 +1858,9 @@ async fn forward(
 			rewritten.len().saturating_sub(buffer.len()),
 		);
 		if let Some(refusal) = completion.settle_final().await {
-			completion.status = refusal.status.as_u16();
-			completion.close(Some(refusal.code)).await;
-			return refusal.response();
+			return completion
+				.fail(refusal.status, refusal.code, refusal.code)
+				.await;
 		}
 		completion.close(None).await;
 		headers.remove("content-length");
