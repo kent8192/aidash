@@ -161,7 +161,20 @@ production until wave 2 of #697 has run it on a live gVisor cluster:
 - Full-disk recovery, the guest process ceiling and admission are covered by
   unit tests against mocks and have not been exercised on a real PVC and gVisor.
 - Images that need more than the fixed startup deadline to pull and copy fail.
-  There is no progress-based extension.
+  There is no progress-based extension (F12).
+- Change tracking scans the system tree, with the associated cost and fragility
+  (F20). Changes made while no command is tracked have no change-log entry (F31).
+- Loader-related image environment variables blanked during initialization cannot
+  be restored to guest commands (F24).
+- `/v1/activity` does not report v2 work (F27).
+- Enabling v2 labels a created sandbox namespace privileged, removing the API
+  server's restricted admission check for v1 Pods. Their specs remain hard-coded;
+  the label is rendered only with `createNamespaces: true` (F33).
+
+Phase 4 of #697 must resolve the Docker-mode trust boundary and init loader
+issues (F7, F8, F10), including the Docker user probe failure, before Docker
+mode is used. Full-disk and admission evidence on a real cloud disk is required
+before production enables Execution Pods.
 
 ## Reproduce the runtime gate
 
