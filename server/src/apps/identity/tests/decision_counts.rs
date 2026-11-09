@@ -194,8 +194,17 @@ async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
 		.await
 		.unwrap();
 	let request_id = Uuid::new_v4();
-	sqlx::query("INSERT INTO human_requests (id, tenant, workspace_id, run_id, kind, prompt, request_key, created_at) VALUES ($1, 'acme', $2, $3, 'QUESTION', 'Still waiting?', 'old-request', now())")
+	sqlx::query("INSERT INTO human_requests (id, tenant, workspace_id, run_id, kind, prompt, request_key, created_at) VALUES ($1, 'acme', $2, $3, 'QUESTION', 'Still waiting?', 'old-request', now() - interval '30 days')")
         .bind(request_id).bind(workspace).bind(run_id).execute(f.store.pool.fixture_driver()).await.unwrap();
+	let deadline = chrono::Utc::now() + chrono::Duration::days(2);
+	let waiting = aidash_domain::RunState::Waiting(Box::new(aidash_domain::WaitingState::Human {
+		request_id,
+		answer_by: Some(deadline),
+		resume: aidash_domain::ResumeState::Ready(aidash_domain::ReadyState {}),
+	}));
+	let pending = aidash_domain::run_state::encode(&waiting, &Default::default()).unwrap();
+	sqlx::query("UPDATE runs SET phase = 'WAITING', pending = $1, created_at = now() - interval '30 days', updated_at = now() - interval '30 days' WHERE id = $2")
+		.bind(pending).bind(run_id).execute(f.store.pool.fixture_driver()).await.unwrap();
 	let count = || async {
 		sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM authorization_decisions")
 			.fetch_one(f.store.pool.fixture_driver())
@@ -245,6 +254,20 @@ async fn state_decisions_stay_bounded_when_workspaces_and_runs_double(
 				.iter()
 				.any(|row| row["id"] == request_id.to_string()),
 			"old pending request missing: {state}"
+		);
+		let old_request = state["human_requests"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|row| row["id"] == request_id.to_string())
+			.unwrap();
+		assert_eq!(
+			old_request["answer_by"]
+				.as_str()
+				.unwrap()
+				.parse::<chrono::DateTime<chrono::Utc>>()
+				.unwrap(),
+			deadline
 		);
 		assert!(
 			!state["runs"]
