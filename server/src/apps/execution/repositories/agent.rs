@@ -387,6 +387,18 @@ impl ExecutionStore for RunStore {
 			.await
 			.map_err(Into::into)
 	}
+	async fn invocation_refused(
+		&self,
+		run: &Run,
+		token: Uuid,
+		key: &str,
+		refusal: &aidash_domain::tool::AuthorityRefusal,
+	) -> Result<()> {
+		self.store
+			.invocation_refused(&self.scope, run, token, key, refusal)
+			.await
+			.map_err(Into::into)
+	}
 	async fn invocation_answer_lost(&self, run: &Run, token: Uuid, key: &str) -> Result<()> {
 		self.store
 			.invocation_answer_lost(&self.scope, run, token, key)

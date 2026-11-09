@@ -549,7 +549,7 @@ impl Home {
 				error
 			}
 		})?;
-		crate::authorization::peer::authority_request(
+		crate::authorization::peer::authority_request_keeping_not_found(
 			&self.federation,
 			&sender,
 			&self.run.home_node,
@@ -1017,6 +1017,7 @@ impl Home {
 						tool: "task_delegate".into(),
 						check: aidash_domain::tool::RefusalCheck::Policy,
 						action: Some("federation.execute".into()),
+						subject: None,
 					})),
 					Error::RemoteExecutionRefused(
 						aidash_domain::federation::execution::Refusal::NodeUseAsk,
@@ -1024,6 +1025,7 @@ impl Home {
 						tool: "task_delegate".into(),
 						check: aidash_domain::tool::RefusalCheck::Policy,
 						action: Some("node.use".into()),
+						subject: None,
 					})),
 					Error::RemoteExecutionRefused(reason) => Error::Invalid(reason.to_string()),
 					Error::External(message)

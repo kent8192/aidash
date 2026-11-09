@@ -1,6 +1,7 @@
 //! Live admission and terminal outcomes are shared by background and explicit delivery.
 use aidash_application::{
-	Error, Result, ports::execution::terminal::*, recovery::AuthorityFailure,
+	Error, Result, authorization::refusal_note, ports::execution::terminal::*,
+	recovery::AuthorityFailure,
 };
 use aidash_domain::{RunControl, TaskStatus};
 
@@ -40,6 +41,7 @@ pub async fn settle(scope: &mut dyn FailureScope, result: Result<TaskStatus>) ->
 		_ => None,
 	};
 	if let Some(failure) = failure {
+		let failure = failure.named("failure delivery", refusal_note::take());
 		scope.pause_authority(&failure).await?;
 		return Ok(());
 	}

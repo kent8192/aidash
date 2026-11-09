@@ -287,6 +287,17 @@ pub trait ExecutionStore: Send + Sync {
 			"tool delivery journal unavailable".into(),
 		))
 	}
+	/// Record that an authority check refused a replay-safe call and paused the Run, under the
+	/// worker lease. Only a `STARTED` row changes. Starting the key again reopens it.
+	async fn invocation_refused(
+		&self,
+		_run: &Run,
+		_token: Uuid,
+		_key: &str,
+		_refusal: &aidash_domain::tool::AuthorityRefusal,
+	) -> Result<()> {
+		Ok(())
+	}
 	/// Record an answer lost after sending, before releasing the worker lease.
 	async fn invocation_answer_lost(&self, _run: &Run, _token: Uuid, _key: &str) -> Result<()> {
 		Err(crate::Error::Invalid(

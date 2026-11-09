@@ -2153,7 +2153,7 @@ async fn run_with_pending_call(
 			)
 			.value_expr(
 				reinhardt::query::Alias::new("error"),
-				reinhardt::query::Expr::cust("'execution authority denied'"),
+				reinhardt::query::Expr::cust("'task_delegate: task.delegate was denied'"),
 			);
 	}
 	sqlx::query(&update.to_string(reinhardt::query::PostgresQueryBuilder))
@@ -2364,6 +2364,63 @@ async fn a_policy_denied_delegation_pauses_the_run_naming_the_tool_and_the_check
 			"action": "task.delegate",
 		})
 	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_tenant_deletion_during_a_tool_call_still_pauses_the_run(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	// Arrange: the Tenant is deleted after the model asked for a call.
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let run = run_with_pending_call(
+		&f,
+		&app,
+		&token,
+		task,
+		&harness,
+		aidash_server::provider::ToolCall {
+			id: "deleted".into(),
+			name: "task_delegate".into(),
+			arguments: json!({"task_id":task,"node_id":f.config.deployment,"agent":{"id":"research","version":"1.0.0"}}),
+		},
+		false,
+	)
+	.await;
+	sqlx::query(
+		"INSERT INTO tenant_deletions (id, tenant, deleted_at, deleted_by_kind, purge_after, purge_failures) \
+		 VALUES (gen_random_uuid(), 'acme', now(), 'deployment_administrator', now() + interval '30 days', 0)",
+	)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	// Act
+	harness.worker_once().await.unwrap();
+	// Assert: a pause, never a Rejected Call for the model.
+	let paused = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	assert_eq!(
+		paused.control.as_str(),
+		"PAUSED",
+		"error={:?}",
+		paused.error
+	);
+	assert!(
+		paused
+			.error
+			.as_deref()
+			.is_some_and(|error| error.ends_with(": the Tenant is being deleted")),
+		"{:?}",
+		paused.error
+	);
+	assert_eq!(json!(paused.state)["data"]["cursor"], 0);
 	cleanup(f, &url, &schema).await;
 }
 
@@ -7273,7 +7330,224 @@ impl SubnodeRig {
 	}
 }
 
-/// Exercise the real worker, storage, admission and human cancellation boundaries.
+/// #754 decision 6 for a local delegation: the Subnode's task is in another Workspace, so the
+/// creator hears "not found or is not visible" and its Run goes on. A delegation of the creator's
+/// own task after `subnode_task` is no longer refused (#755, see `subnode_read_boundary`).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_task_delegate_of_the_subnodes_task_reaches_the_model_as_not_visible(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	// Arrange: the creating Run made a Subnode and a task in the Subnode's Workspace.
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::new(&f, &fixture.application, &["subnode-leader"], true).await;
+	let created = rig.inject("subnode_create", json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0"],"allowance":{"tools":SUBNODE_TOOLS,"secrets":[]},"title":"Investigation"}), "create-subnode").await;
+	let subnode = created["subnode_id"].as_str().unwrap().to_owned();
+	let task = rig
+		.inject(
+			"subnode_task",
+			json!({"subnode_id":subnode,"title":"Investigate","request":"Find evidence"}),
+			"subnode-task",
+		)
+		.await;
+	let child_task = task["task_id"].as_str().unwrap().to_owned();
+	// Fence the leader's Run so the worker selects the creator.
+	let leader = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.task_id.to_string() == child_task)
+		.expect("leader Run admitted");
+	rig.set_run_control(leader.id, "PAUSED").await;
+	// Act: the creator delegates a task that is not in its own Workspace.
+	assert!(
+		rig.script(
+			rig.creator_run,
+			"task_delegate",
+			json!({"task_id":child_task,"node_id":f.config.deployment,"agent":{"id":"research","version":"1.0.0"}}),
+			"delegate-subnode-task",
+		)
+		.await
+	);
+	// Assert: the model hears it, and the Run goes on instead of pausing.
+	let run = f.store.run(&TEST_FIXTURE, rig.creator_run).await.unwrap();
+	assert_eq!(
+		run.control,
+		aidash_domain::RunControl::Active,
+		"{:?}",
+		run.error
+	);
+	let Some(delegated) = rig
+		.result_of(rig.creator_run, "delegate-subnode-task")
+		.await
+	else {
+		panic!(
+			"a Rejected Call records a result; phase={:?} state={} error={:?}",
+			run.phase(),
+			json!(run.state),
+			run.error
+		);
+	};
+	assert!(
+		delegated["error"]
+			.as_str()
+			.is_some_and(|error| error.contains("was not found or is not visible to this Run")),
+		"{delegated}"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+/// #754 decision 6 for a delegation to another Node: a task in another Workspace reads "not found
+/// or is not visible", and the Run goes on. The check fails before any peer is called. (A task
+/// that does not exist at all is refused earlier, at the tool gate.)
+#[rstest::rstest]
+#[tokio::test]
+async fn a_cross_node_task_delegate_of_a_task_the_run_cannot_see_reaches_the_model_as_not_visible(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	// Arrange: the creating Run made a Subnode and a task in the Subnode's Workspace.
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::new(&f, &fixture.application, &["subnode-leader"], true).await;
+	let elsewhere =
+		aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "elsewhere");
+	let created = rig.inject("subnode_create", json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0"],"allowance":{"tools":SUBNODE_TOOLS,"secrets":[]},"title":"Investigation"}), "create-subnode").await;
+	let task = rig
+		.inject(
+			"subnode_task",
+			json!({"subnode_id":created["subnode_id"],"title":"Investigate","request":"Find evidence"}),
+			"subnode-task",
+		)
+		.await;
+	let child_task = task["task_id"].as_str().unwrap().to_owned();
+	let leader = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.task_id.to_string() == child_task)
+		.expect("leader Run admitted");
+	rig.set_run_control(leader.id, "PAUSED").await;
+	// Act: the creator delegates a task in another Workspace to another Node.
+	let call = "delegate-other-workspace";
+	assert!(
+		rig.script(
+			rig.creator_run,
+			"task_delegate",
+			json!({"task_id":child_task,"node_id":elsewhere.to_string(),"agent":{"id":"research","version":"1.0.0"}}),
+			call,
+		)
+		.await
+	);
+	// Assert
+	let run = f.store.run(&TEST_FIXTURE, rig.creator_run).await.unwrap();
+	assert_eq!(
+		run.control,
+		aidash_domain::RunControl::Active,
+		"{:?}",
+		run.error
+	);
+	let result = rig
+		.result_of(rig.creator_run, call)
+		.await
+		.unwrap_or_else(|| panic!("a Rejected Call records a result; error {:?}", run.error));
+	assert!(
+		result["error"]
+			.as_str()
+			.is_some_and(|error| error.contains("was not found or is not visible to this Run")),
+		"{result}"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+/// #754 decision 7: a `subnode_task` whose earlier attempt left a task under another authority is
+/// the call's own doing, so the model hears it instead of the Run failing.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_subnode_task_retried_under_a_changed_authority_reaches_the_model_as_a_rejected_call(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	// Arrange: the first attempt committed its task and delegation but lost its receipt, and the
+	// Run's authority chain has since changed.
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::new(&f, &fixture.application, &["subnode-leader"], true).await;
+	let created = rig.inject("subnode_create", json!({"leader":"subnode-leader@1.0.0","members":["subnode-leader@1.0.0"],"allowance":{"tools":SUBNODE_TOOLS,"secrets":[]},"title":"Investigation"}), "create-subnode").await;
+	let arguments =
+		json!({"subnode_id":created["subnode_id"],"title":"Investigate","request":"Find evidence"});
+	let task = rig
+		.inject("subnode_task", arguments.clone(), "subnode-task")
+		.await;
+	let child_task = Uuid::parse_str(task["task_id"].as_str().unwrap()).unwrap();
+	let leader = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.task_id == child_task)
+		.expect("leader Run admitted");
+	rig.set_run_control(leader.id, "PAUSED").await;
+	let call_key = format!("{}:{}:0", rig.creator_run, rig.epoch.get());
+	let pool = f.store.pool.fixture_driver();
+	sqlx::query("DELETE FROM subnode_operation_receipts WHERE run_id = $1 AND call_key = $2")
+		.bind(rig.creator_run)
+		.bind(&call_key)
+		.execute(pool)
+		.await
+		.unwrap();
+	sqlx::query("DELETE FROM invocations WHERE idempotency_key = $1")
+		.bind(&call_key)
+		.execute(pool)
+		.await
+		.unwrap();
+	let changed = sqlx::query(
+		"UPDATE authorization_execution SET subject_chain = array_append(subject_chain, 'someone-else') WHERE task_id = $1",
+	)
+	.bind(child_task)
+	.execute(pool)
+	.await
+	.unwrap();
+	assert_eq!(changed.rows_affected(), 1, "the delegation left its grant");
+	// Act: the same call runs again under the same key.
+	rig.epoch.set(rig.epoch.get() - 1);
+	assert!(
+		rig.script(
+			rig.creator_run,
+			"subnode_task",
+			arguments,
+			"subnode-task-again"
+		)
+		.await
+	);
+	// Assert
+	let run = f.store.run(&TEST_FIXTURE, rig.creator_run).await.unwrap();
+	assert_eq!(
+		run.control,
+		aidash_domain::RunControl::Active,
+		"{:?}",
+		run.error
+	);
+	let result = rig
+		.result_of(rig.creator_run, "subnode-task-again")
+		.await
+		.unwrap_or_else(|| panic!("a Rejected Call records a result; error {:?}", run.error));
+	assert!(
+		result["error"]
+			.as_str()
+			.is_some_and(|error| error.contains("already delegated under a different authority")),
+		"{result}"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority_chain(
@@ -7647,7 +7921,10 @@ async fn subnode_creation_is_refused_without_an_explicit_grant(
 	);
 	let run = f.store.run(&TEST_FIXTURE, rig.creator_run).await.unwrap();
 	assert_eq!(run.control, aidash_domain::RunControl::Paused);
-	assert_eq!(run.error.as_deref(), Some("execution authority denied"));
+	assert_eq!(
+		run.error.as_deref(),
+		Some("subnode_create: subnode.create was denied")
+	);
 	assert_eq!(subnode_rows(&f).await, 0, "no Subnode may be created");
 	cleanup(f, &url, &schema).await;
 }
@@ -7781,7 +8058,10 @@ async fn subnode_member_cannot_read_the_creating_runs_workspace(
 		);
 		let run = f.store.run(&TEST_FIXTURE, member).await.unwrap();
 		assert_eq!(run.control, aidash_domain::RunControl::Paused, "{call_id}");
-		assert_eq!(run.error.as_deref(), Some("execution authority denied"));
+		assert_eq!(
+			run.error.as_deref(),
+			Some("workspace_read: an authority check refused this step")
+		);
 		rig.set_run_control(member, "ACTIVE").await;
 	};
 	denied(

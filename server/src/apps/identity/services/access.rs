@@ -7,6 +7,8 @@ use super::{
 use crate::apps::identity::models::{AuthorizationDecision, DecisionOwner, DecisionRow};
 use crate::database::native::Pool;
 use crate::{Error, Result, store::Store};
+use aidash_application::authorization::refusal_note;
+use aidash_domain::tool::RefusalCheck;
 use reinhardt::db::backends::TransactionExecutor;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
@@ -273,6 +275,9 @@ pub(crate) struct Access {
 	pub identity: SubjectIdentity,
 	pub snapshot: Snapshot,
 	pub subjects: Vec<String>,
+	/// The subject an execution admission appended to the chain, which is the Agent a task is
+	/// delegated to. Its refusals are named in the refusal note; the Run's own chain never is.
+	pub(crate) delegated_subject: Option<String>,
 	pub durable_audit: bool,
 	pub audit: bool,
 	pub context: Value,
@@ -541,6 +546,7 @@ impl Access {
 			identity: identity.clone(),
 			snapshot,
 			subjects: vec![identity.subject.clone()],
+			delegated_subject: None,
 			durable_audit: false,
 			audit: true,
 			context: json!({}),
@@ -677,6 +683,7 @@ impl Access {
 			identity: lease.identity.clone(),
 			snapshot: lease.snapshot.clone(),
 			subjects: lease.subjects.clone(),
+			delegated_subject: None,
 			durable_audit: false,
 			audit: true,
 			context: lease.context.clone(),
@@ -759,6 +766,7 @@ impl Access {
 		self.recheck_owner = None;
 		self.dependency_frontier = None;
 		self.subjects = vec![self.identity.subject.clone()];
+		self.delegated_subject = None;
 		self.durable_audit = true;
 		self.audit = true;
 		self.context = json!({});
@@ -954,6 +962,13 @@ impl Access {
 	}
 
 	pub async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
+		self.decide_with_cause(resource, action)
+			.await
+			.map(|verdict| verdict == Verdict::Allowed)
+	}
+	/// [`Self::decide`], and whether a refusal comes from the Subnode read-only rule rather than
+	/// from the Tenant's policy. The rule is structural: no change of policy lifts it.
+	async fn decide_with_cause(&mut self, resource: &Resource, action: &str) -> Result<Verdict> {
 		// Within one authority, a repeated allow needs no second evaluation. A
 		// denial is evaluated and recorded every time. So is a write a Subnode can
 		// fence: the fence closes between two identical checks.
@@ -966,7 +981,7 @@ impl Access {
 				.decision_serial
 				.saturating_add(self.subjects.len() as u64);
 			self.last_policy_explicit_deny = false;
-			return Ok(true);
+			return Ok(Verdict::Allowed);
 		}
 		for subject in &self.subjects {
 			// Unknown subjects reach evaluation so their denial is audited.
@@ -992,7 +1007,7 @@ impl Access {
 					workspace,
 				)
 			}) {
-				return Ok(false);
+				return Ok(Verdict::SubnodeReadOnly);
 			}
 		}
 		if self.read_run.is_none() && subnode_workspace_write(action) {
@@ -1015,7 +1030,11 @@ impl Access {
 		if allowed && let Some(key) = repeat {
 			self.read_lookups.allowed.insert(key);
 		}
-		Ok(allowed)
+		Ok(if allowed {
+			Verdict::Allowed
+		} else {
+			Verdict::Denied
+		})
 	}
 
 	/// Everything an evaluation depends on besides the policy revision's bundle.
@@ -1182,11 +1201,31 @@ impl Access {
 	}
 
 	pub async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
-		if self.decide(resource, action).await? {
-			Ok(())
-		} else {
-			Err(Error::Forbidden)
+		match self.decide_with_cause(resource, action).await? {
+			Verdict::Allowed => {
+				// The last check wins: an allow supersedes an earlier policy refusal.
+				refusal_note::clear_policy();
+				Ok(())
+			}
+			// A structural refusal is no policy denial: it reaches the model as a Rejected Call.
+			Verdict::SubnodeReadOnly => Err(Error::Forbidden),
+			Verdict::Denied => {
+				self.note_denial(resource, action);
+				Err(Error::Forbidden)
+			}
 		}
+	}
+
+	/// Leave the call's refusal note for a denial. `decide` does not, because a task that is
+	/// not visible reads as a Rejected Call, not an Authority Pause.
+	fn note_denial(&self, resource: &Resource, action: &str) {
+		let subject = self.delegated_subject.as_ref().filter(|delegated| {
+			let input = self.evaluation(delegated, resource, action);
+			!self.snapshot.bundle.evaluate(&input).allowed
+		});
+		refusal_note::set(
+			refusal_note::Note::new(RefusalCheck::Policy, Some(action)).subject(subject.cloned()),
+		);
 	}
 
 	pub async fn finish<T>(mut self, result: Result<T>) -> Result<T> {
@@ -1227,12 +1266,19 @@ impl Access {
 			if let Some(tx) = tx {
 				tx.rollback().await?;
 			}
-			if matches!(
-				result,
-				Err(Error::Forbidden
-					| Error::AuthorityRefused(_)
-					| Error::RemoteExecutionRefused(_))
-			) {
+			// A denied decision survives whatever error the caller ends with, so a refusal that
+			// reached the caller as another error can still be explained afterwards.
+			let denied = self
+				.pending_decisions
+				.iter()
+				.any(|row| !row.decision.allowed);
+			if denied
+				|| matches!(
+					result,
+					Err(Error::Forbidden
+						| Error::AuthorityRefused(_)
+						| Error::RemoteExecutionRefused(_))
+				) {
 				// Denials survive rollback with the evaluated policy revision.
 				let mut audit: Box<dyn TransactionExecutor> = self
 					.pool
@@ -1254,6 +1300,16 @@ impl Access {
 	}
 }
 
+/// The outcome of one authorization check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Verdict {
+	Allowed,
+	/// The Tenant's policy denied it.
+	Denied,
+	/// The Subnode read-only rule refused it, which no policy lifts.
+	SubnodeReadOnly,
+}
+
 pub(crate) struct NativeAccess {
 	access: Access,
 }
@@ -1273,11 +1329,7 @@ impl std::ops::DerefMut for NativeAccess {
 
 impl NativeAccess {
 	pub(crate) async fn require(&mut self, resource: &Resource, action: &str) -> Result<()> {
-		if self.decide(resource, action).await? {
-			Ok(())
-		} else {
-			Err(Error::Forbidden)
-		}
+		self.access.require(resource, action).await
 	}
 
 	pub fn set_context(&mut self, context: Value) {

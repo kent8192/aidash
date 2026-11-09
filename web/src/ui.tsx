@@ -122,6 +122,7 @@ const statusTones: Record<string, StatusTone> = {
   INFORMATION_REQUEST: "warning",
   MCP_ELICITATION: "warning",
   UNCERTAIN: "warning",
+  REFUSED: "warning",
   PENDING_APPROVAL: "warning",
   PENDING: "warning",
   RELEASING: "warning",

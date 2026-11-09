@@ -130,6 +130,7 @@ fn access() -> Access {
 		identity,
 		snapshot,
 		subjects: vec!["alice".into()],
+		delegated_subject: None,
 		durable_audit: false,
 		audit: false,
 		context: json!({}),
@@ -193,6 +194,56 @@ async fn publisher_checks_use_local_worker_facts_and_restore_the_reader_environm
 			.bundle
 			.evaluate(&access.evaluation("alice", &resource, "memory.read"))
 			.allowed
+	);
+}
+
+#[rstest::rstest]
+#[case::delegated_agent_is_denied(Some("agent-x"), Some("agent-x"))]
+#[case::no_delegated_agent(None, None)]
+#[tokio::test]
+async fn a_denial_leaves_a_note_that_names_only_the_agent_delegated_to(
+	mut access: Access,
+	#[case] delegated: Option<&str>,
+	#[case] named: Option<&str>,
+) {
+	// Arrange: the chain ends in an Agent the policy does not know, so it is denied.
+	access.subjects = vec!["alice".into(), "agent-x".into()];
+	access.delegated_subject = delegated.map(str::to_owned);
+	let resource = access.resource("memory", "bank", json!({}));
+	// Act
+	let (result, note) = refusal_note::scoped(access.require(&resource, "memory.read")).await;
+	// Assert
+	assert!(matches!(result, Err(Error::Forbidden)));
+	assert_eq!(
+		note,
+		Some(
+			refusal_note::Note::new(RefusalCheck::Policy, Some("memory.read"))
+				.subject(named.map(str::to_owned))
+		)
+	);
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn an_allowed_check_supersedes_an_earlier_policy_refusal_but_not_another_kind(
+	mut access: Access,
+) {
+	let resource = access.resource("memory", "bank", json!({}));
+	let denied = access.resource("secret", "vault", json!({}));
+	let (_, note) = refusal_note::scoped(async {
+		assert!(access.require(&denied, "secret.use").await.is_err());
+		access.require(&resource, "memory.read").await.unwrap();
+	})
+	.await;
+	assert_eq!(note, None, "the last check wins");
+	let (_, note) = refusal_note::scoped(async {
+		refusal_note::set(refusal_note::Note::new(RefusalCheck::TenantDeletion, None));
+		access.require(&resource, "memory.read").await.unwrap();
+	})
+	.await;
+	assert_eq!(
+		note,
+		Some(refusal_note::Note::new(RefusalCheck::TenantDeletion, None))
 	);
 }
 
