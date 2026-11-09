@@ -293,7 +293,10 @@ pub(super) async fn erase(
 		.await?;
 		// A busy candidate belongs to the ordinary sweep; do not spin while
 		// retaining the Node purge's fencing locks.
-		return Ok(!reclaimed);
+		return Ok(!matches!(
+			reclaimed,
+			crate::apps::execution::repositories::reclamation::BlobReclamation::Reclaimed
+		));
 	}
 	release_references(&mut **tx, owners, &batch).await?;
 	for id in batch {

@@ -548,7 +548,8 @@ revision-bound confirmation and removes only that area's managed copies and
 preimages. It preserves originals, published artifacts and independently owned
 received copies. A live writer must be proven stopped before cleanup. Partial
 deletion remains `cleanup_failed`; use **Reconcile cleanup** to retry the same
-intent. Deleted threads leave retained files accessible to current authorized
+intent. If another operation holds a blob lock, deletion stays `deleting` and
+the cleanup worker retries it on a later sweep. Deleted threads leave retained files accessible to current authorized
 owners through settings; restoration creates a new thread binding, not old
 messages or old authority.
 Choosing **Keep** for an existing recovery snapshot converts it to retained

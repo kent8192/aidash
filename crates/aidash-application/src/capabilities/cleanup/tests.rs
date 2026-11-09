@@ -65,11 +65,11 @@ impl ErasureScope for Scope {
 	async fn digest(&mut self, _: &str, id: Uuid) -> Result<Option<String>> {
 		Ok(Some(id.to_string()))
 	}
-	async fn reclaim_blob(&mut self, _: &str, _: &str) -> Result<()> {
+	async fn reclaim_blob(&mut self, _: &str, _: &str) -> Result<bool> {
 		if self.state.lock().unwrap().fail_reclaim {
 			return Err(Error::External("blob deletion failed".into()));
 		}
-		Ok(())
+		Ok(true)
 	}
 	async fn erase(&mut self, _: &str, id: Uuid) -> Result<()> {
 		self.erased.push(id);

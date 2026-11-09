@@ -408,13 +408,20 @@ async fn reclaim_unreferenced_blobs(store: &Store) -> NativeResult<()> {
 	}
 	Ok(())
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BlobReclamation {
+	Reclaimed,
+	Retained,
+	Busy,
+}
+
 /// Reclaim an already unreferenced committed blob under the publication lock.
 pub(crate) async fn reclaim_blob(
 	store: &Store,
 	tx: &mut crate::database::native::Transaction,
 	tenant: &str,
 	digest: &str,
-) -> NativeResult<bool> {
+) -> NativeResult<BlobReclamation> {
 	let lock = format!("core-blob:{tenant}:{digest}");
 	let acquired: bool = crate::database::native::query_scalar(
 		&Query::select()
@@ -427,7 +434,7 @@ pub(crate) async fn reclaim_blob(
 	.scalar_one(&mut **tx)
 	.await?;
 	if !acquired {
-		return Ok(false);
+		return Ok(BlobReclamation::Busy);
 	}
 	// A new logical reference takes a foreign-key key-share lock on this row.
 	// Lock it before checking references and deleting bytes so that publication
@@ -444,7 +451,24 @@ pub(crate) async fn reclaim_blob(
 	)
 	.scalar_optional(&mut **tx)
 	.await?;
-	let Some(size) = size else { return Ok(false) };
+	let Some(size) = size else {
+		// SKIP LOCKED also returns no row when another transaction owns it.
+		let exists: Option<i64> = crate::database::native::query_scalar(
+			&Query::select()
+				.column(Alias::new("size"))
+				.from(Alias::new("core_blobs"))
+				.and_where(Expr::col(Alias::new("tenant")).eq(Expr::value(tenant)))
+				.and_where(Expr::col(Alias::new("digest")).eq(Expr::value(digest)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **tx)
+		.await?;
+		return Ok(if exists.is_some() {
+			BlobReclamation::Busy
+		} else {
+			BlobReclamation::Retained
+		});
+	};
 	let mut referenced = false;
 	for table in ["core_objects", "core_blob_references", "core_blob_uploads"] {
 		let id: Option<Uuid> = crate::database::native::query_scalar(
@@ -492,9 +516,9 @@ pub(crate) async fn reclaim_blob(
 		)
 		.execute(&mut **tx)
 		.await?;
-		return Ok(true);
+		return Ok(BlobReclamation::Reclaimed);
 	}
-	Ok(false)
+	Ok(BlobReclamation::Retained)
 }
 
 #[async_trait]

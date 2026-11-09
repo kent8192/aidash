@@ -74,7 +74,8 @@ pub trait ErasureScope: Send {
 	async fn locked(&mut self, snapshot: &Record) -> Result<(Area, Record)>;
 	async fn objects(&mut self, area: &Area) -> Result<Vec<Uuid>>;
 	async fn digest(&mut self, tenant: &str, id: Uuid) -> Result<Option<String>>;
-	async fn reclaim_blob(&mut self, tenant: &str, digest: &str) -> Result<()>;
+	/// Returns false when reclamation is busy and must be retried.
+	async fn reclaim_blob(&mut self, tenant: &str, digest: &str) -> Result<bool>;
 	async fn erase(&mut self, tenant: &str, id: Uuid) -> Result<()>;
 	async fn update_area(&mut self, area: &Area) -> Result<()>;
 	async fn update_record(&mut self, record: &mut Record) -> Result<()>;
