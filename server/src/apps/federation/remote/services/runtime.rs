@@ -910,7 +910,12 @@ impl Home {
 		// split fence-consumption operation to race on that peer.
 		self.transition(next).await
 	}
-	pub async fn complete(&self, key: &str, artifact: &ArtifactInput) -> Result<Task> {
+	pub async fn complete(
+		&self,
+		key: &str,
+		artifact: &ArtifactInput,
+		abandon: &[Uuid],
+	) -> Result<Task> {
 		let scope = self.tenancy().await?;
 		if self.local() {
 			self.federation
@@ -923,15 +928,40 @@ impl Home {
 					artifact,
 					crate::store::Publication::by(self.run.id, self.authority.is_some()),
 					None,
+					abandon,
 				)
 				.await
 		} else {
 			let through_seq = self.included_input_seq;
-			self.command(
-				"run_message_complete",
-				json!({"run_id":self.run.id,"through_seq":through_seq,"key":key,"artifact":artifact}),
-			)
-			.await
+			let mut data = json!({"run_id":self.run.id,"through_seq":through_seq,"key":key,"artifact":artifact});
+			// Absent when empty, so an ordinary completion keeps its shape.
+			if !abandon.is_empty() {
+				data["abandon"] = json!(abandon);
+			}
+			self.command("run_message_complete", data).await
+		}
+	}
+	/// Abandon Unassigned children of the Run's Task without completing it.
+	pub async fn abandon_unassigned(&self, parent: Uuid, ids: &[Uuid]) -> Result<()> {
+		if parent != self.run.task_id {
+			return Err(Error::Forbidden);
+		}
+		let scope = self.tenancy().await?;
+		if self.local() {
+			self.federation
+				.store
+				.abandon_unassigned(&scope, parent, &self.owner(), ids)
+				.await
+		} else {
+			// The same ids replay as the same command.
+			let key = format!(
+				"{}:abandon:{}",
+				self.run.id,
+				aidash_domain::registry::rules::digest(&json!(ids))
+			);
+			self.command::<Value>("run_abandon_unassigned", json!({"key":key,"abandon":ids}))
+				.await?;
+			Ok(())
 		}
 	}
 	pub async fn artifact(&self, key: &str, artifact: &ArtifactInput) -> Result<Artifact> {

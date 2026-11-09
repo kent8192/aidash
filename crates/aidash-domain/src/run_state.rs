@@ -124,6 +124,10 @@ pub struct ToolCallState {
 	pub request_window: usize,
 	pub request_tokens: usize,
 	pub finalizing: bool,
+	/// The Unassigned Tasks this completion abandons. Saved with `finalizing`
+	/// because the outcome is chosen by then: a cancel settles exactly it (#772).
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub abandoning: Vec<crate::unassigned::UnassignedTask>,
 	pub media_inferred_seq_before_response: i64,
 	pub observed_input_seq_before_response: i64,
 	pub inferred_selected_media: Vec<ModelMedia>,

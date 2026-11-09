@@ -39,6 +39,8 @@ pub enum PersistedCapability {
 	ConnectionWait,
 	/// A Run can suspend on a durable operation or workspace event.
 	EventWait,
+	/// A saved completion names the Unassigned Tasks it abandons (#772).
+	UnassignedAbandonment,
 }
 impl PersistedCapability {
 	pub const ALL: &'static [Self] = &[
@@ -48,6 +50,7 @@ impl PersistedCapability {
 		Self::McpSentRound,
 		Self::ConnectionWait,
 		Self::EventWait,
+		Self::UnassignedAbandonment,
 	];
 
 	/// What this build can load. A worker only leases Runs whose state needs a subset.
@@ -62,6 +65,7 @@ impl PersistedCapability {
 			Self::McpSentRound => "mcp_sent_round",
 			Self::ConnectionWait => "connection_wait",
 			Self::EventWait => "event_wait",
+			Self::UnassignedAbandonment => "unassigned_abandonment",
 		}
 	}
 }
@@ -89,6 +93,9 @@ impl ToolCallState {
 				self.wait_result
 					.as_ref()
 					.map(|_| PersistedCapability::EventWait),
+			)
+			.chain(
+				(!self.abandoning.is_empty()).then_some(PersistedCapability::UnassignedAbandonment),
 			)
 			.chain(
 				self.mcp

@@ -545,6 +545,22 @@ async fn activate_as<R: HomeRepository>(
 			"the target Node activated the task, but its activation did not match this request",
 		));
 	}
+	// Only a matching response says the Run started. An error or an uncertain
+	// outcome above leaves the binding unmarked: if the Run did start, its
+	// claim moves the Task out of OPEN (#772).
+	//
+	// The receiver has already started the Run, so a failure to record it must
+	// not report the activation as failed: that claim moves the Task out of OPEN
+	// anyway, and only a binding without the mark could be read as unstarted.
+	let marked = async {
+		let mut scope = repository.begin().await?;
+		let result = scope.mark_activated(id).await;
+		finish(scope, result).await
+	}
+	.await;
+	if let Err(error) = marked {
+		tracing::warn!(task = %task, grant = %id, %error, "activation was not recorded on the binding");
+	}
 	Ok(activation)
 }
 pub async fn activation_binding<R: HomeRepository>(

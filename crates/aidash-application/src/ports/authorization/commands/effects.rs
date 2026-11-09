@@ -37,6 +37,13 @@ pub enum Effect<'a> {
 	Artifact {
 		artifact: &'a ArtifactInput,
 		complete_through: Option<i64>,
+		/// Unassigned children abandoned in the transaction that completes
+		/// the Task (#772). Empty unless `complete_through` is set.
+		abandon: &'a [Uuid],
+	},
+	/// Abandon Unassigned children now, without completing the Task.
+	AbandonUnassigned {
+		ids: &'a [Uuid],
 	},
 	CreateTask {
 		task: &'a NewTask,

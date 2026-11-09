@@ -190,7 +190,7 @@
   "ABANDONED": "破棄",
   "abandonTask": "タスクを破棄",
   "abandonReason": "破棄する理由",
-  "abandonHelp": "この結果を使用しない判断を記録します。親タスクの確認要求に回答すると続行できます。",
+  "abandonHelp": "このタスクの結果を使用しない判断を記録します。親タスクに確認要求がある場合は、回答すると続行できます。",
   "administratorNoTenantContent": "Deployment Administrator はテナントの内容を表示できません。",
   "administratorSwitchToMapping": "テナントの内容を見るには、そのテナントのマッピングに切り替えてください。",
   "administratorOpenSwitcher": "マッピングを切り替える",

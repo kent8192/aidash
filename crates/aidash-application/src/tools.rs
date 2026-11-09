@@ -680,7 +680,7 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			name: "task_create",
 			contract: aidash_domain::tool::builtin_contract("task_create")
 				.expect("declared builtin"),
-			description: "Decompose a goal or task. Create a subtask in this workspace; returns its ID. Delegate it next.",
+			description: "Decompose a goal or task. Create a subtask in this workspace; returns its ID. Delegate it next. A subtask nobody is given is abandoned when this Run finishes.",
 			schema: json!({"type":"object","required":["title","description"],"properties":{"title":string,"description":string,"requirements":{"type":"object"},"dependencies":{"type":"array","items":string},"parent_id":string},"additionalProperties":false}),
 		},
 		Builtin {

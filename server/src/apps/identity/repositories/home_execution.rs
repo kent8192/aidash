@@ -538,6 +538,32 @@ impl HomeScope for Scope {
 		.await;
 		result.map_err(Into::into)
 	}
+	async fn mark_activated(&mut self, id: Uuid) -> Result<()> {
+		let result: NativeResult<()> = async {
+			let access = &mut *self.access;
+			{
+				let query_bind_1 = id;
+				crate::database::native::query(
+					&Query::update()
+						.table(Alias::new("authorization_remote_execution"))
+						.value_expr(
+							Alias::new("activated_at"),
+							Expr::cust("COALESCE(activated_at, CURRENT_TIMESTAMP)"),
+						)
+						.and_where(SimpleExpr::CustomWithExpr(
+							"(grant_id=?)".to_owned(),
+							vec![Expr::value(query_bind_1.to_owned()).into()],
+						))
+						.to_string(PostgresQueryBuilder),
+				)
+				.execute(&mut **access.tx)
+				.await?
+			};
+			Ok(())
+		}
+		.await;
+		result.map_err(Into::into)
+	}
 	async fn receipt(&mut self, id: Uuid) -> Result<Option<Value>> {
 		let result: NativeResult<Option<Value>> = async {
 			let access = &mut *self.access;

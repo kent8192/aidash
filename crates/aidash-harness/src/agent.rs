@@ -26,7 +26,7 @@ use aidash_domain::{
 		AuthorityRefusal, Continuation, DO_NOT_REPEAT, RefusalCheck, RefusedCall, ResultFitting,
 		ToolIdentity, ToolUseMode,
 	},
-	*,
+	unassigned, *,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -550,6 +550,102 @@ impl<'a> Executor<'a> {
 		{
 			tracing::warn!(run_id = %run.id, %attempt, %error, "inference outcome was not recorded; a later attempt closes it");
 		}
+	}
+	/// Hold a final answer back because children are pending: wait for them,
+	/// ask a person, tell the model, or abandon Tasks nobody will run and
+	/// wait. The caller has judged that the Run cannot finish yet.
+	#[allow(clippy::too_many_arguments)] // One decision needs the whole step's context.
+	async fn hold_for_children(
+		&self,
+		home: &dyn ExecutionHome,
+		guard: Option<&dyn ExecutionAuthority>,
+		store: &dyn ExecutionStore,
+		run: &mut Run,
+		token: Uuid,
+		agent: &ExecutionAgent,
+		decision: unassigned::ChildrenDecision,
+		answer: Answer<'_>,
+	) -> Result<()> {
+		use unassigned::ChildrenDecision as Decision;
+		if let Decision::Tell(tasks) = &decision {
+			// The notice is the model's whole next input: the answer is not
+			// published and no Model Turn is opened, as for a citation correction.
+			let mut context = run.context.clone();
+			context.push(ContextEvent::UnassignedTasksTold {
+				tasks: tasks
+					.iter()
+					.map(|task| context::ToldTask {
+						id: task.id,
+						title: task.title.clone(),
+					})
+					.collect(),
+				instruction: unassigned::TOLD_INSTRUCTION.into(),
+			});
+			run.context = context;
+			run.step += 1;
+			run.state = RunState::Thinking(ThinkingState::default());
+			store
+				.save_run(run, token, "run.unassigned_tasks_told")
+				.await?;
+			return Ok(());
+		}
+		if let Decision::AbandonAndWait(tasks) = &decision {
+			// A handed-over child depends on these, so the parent cannot
+			// complete: abandon them now. That child then fails at its next
+			// dependency check, which wakes the parent.
+			// A Run on another Node cannot name a Task but its own, so the Home
+			// checks `task.abandon` for its chain when it receives the command.
+			if let Some(guard) = guard.filter(|_| home.local()) {
+				for task in tasks {
+					guard.action("task.abandon", "task", task.id).await?;
+				}
+			}
+			let ids: Vec<Uuid> = tasks.iter().map(|task| task.id).collect();
+			home.abandon_unassigned(run.task_id, &ids).await?;
+		}
+		if !answer.delivered {
+			record_model_turn(run, agent.projection_version, answer.text, answer.calls)?;
+			if !answer.text.is_empty() {
+				self.publish_model_text(home, guard, run, token, answer.text)
+					.await?;
+			}
+		}
+		match &decision {
+			Decision::AskAboutFailed | Decision::AskAboutUnassigned(_) => {
+				if let Some(guard) = guard {
+					guard.action("human.request", "run", run.id).await?;
+				}
+				let response_epoch = run.state.tool()?.response_epoch;
+				let (prompt, key) = match &decision {
+					Decision::AskAboutUnassigned(tasks) => (
+						unassigned::request_prompt(tasks),
+						format!("{}:{}:unassigned", run.id, response_epoch),
+					),
+					_ => (
+						"A subtask needs intervention. You can explicitly abandon failed, blocked or cancelled subtasks in their task details, providing a reason. Then answer this request to continue with the remaining results, or cancel this parent.".to_owned(),
+						format!("{}:{}:subtasks", run.id, response_epoch),
+					),
+				};
+				let h = home
+					.human_request(run, "INFORMATION_REQUEST", &prompt, &key)
+					.await?;
+				run.state = RunState::Waiting(Box::new(WaitingState::Human {
+					request_id: h.id,
+					answer_by: None,
+					resume: ResumeState::Thinking(ThinkingState::default()),
+				}));
+			}
+			_ => {
+				run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
+					wake_at: chrono::Utc::now() + children_ceiling(store, home, run).await?,
+					cursor: run.recovery.workspace_event_cursor.unwrap_or(0),
+					resume: ResumeState::Thinking(ThinkingState::default()),
+				}));
+			}
+		}
+		run.step += 1;
+		store.save_run(run, token, "run.waiting").await?;
+		Ok(())
 	}
 	async fn publish_model_text(
 		&self,
@@ -2382,6 +2478,7 @@ connection: None,
 					request_window: budget.window,
 					request_tokens,
 					finalizing: false,
+					abandoning: Vec::new(),
 					media_inferred_seq_before_response,
 					observed_input_seq_before_response,
 					inferred_selected_media: if run_message_catchup || media.defer_selected {
@@ -2689,44 +2786,41 @@ connection: None,
 							return Ok(());
 						}
 						let children = home.child_summary(run.task_id).await?;
-						if children.has_pending {
-							// Not the final answer: gated like text beside calls.
-							let withheld =
-								self.cites_invalid_evidence(run, &tools, &result.text).await?;
-							record_model_turn(
-								run,
-								agent.projection_version,
-								if withheld { "" } else { &result.text },
-								&result.tool_calls,
-							)?;
-							if !withheld {
-								self.publish_model_text(home.as_ref(), guard, run, token, &result.text)
+						let no_step_left = run.step.saturating_add(1) >= agent.max_steps;
+						let decision = unassigned::decide_children(
+							&children,
+							&told_tasks(run),
+							no_step_left,
+						);
+						// Tasks to abandon as the parent completes; the final answer
+						// below carries them to `complete`.
+						let abandoning = match decision {
+							unassigned::ChildrenDecision::Finish => Vec::new(),
+							unassigned::ChildrenDecision::FinishAbandoning(tasks) => tasks,
+							held => {
+								// Not the final answer: gated like text beside calls.
+								let withheld = self
+									.cites_invalid_evidence(run, &tools, &result.text)
 									.await?;
+								let answer = Answer {
+									text: if withheld { "" } else { &result.text },
+									calls: &result.tool_calls,
+									delivered: false,
+								};
+								self.hold_for_children(
+									home.as_ref(),
+									guard,
+									store,
+									run,
+									token,
+									&agent,
+									held,
+									answer,
+								)
+								.await?;
+								return Ok(());
 							}
-							let failed = children.has_failed;
-							if failed {
-								if let Some(guard) = guard {
-									guard.action("human.request", "run", run.id).await?;
-								}
-								let response_epoch = run.state.tool()?.response_epoch;
-								let h=home.human_request(run,"INFORMATION_REQUEST","A subtask needs intervention. You can explicitly abandon failed, blocked or cancelled subtasks in their task details, providing a reason. Then answer this request to continue with the remaining results, or cancel this parent.",&format!("{}:{}:subtasks",run.id,response_epoch)).await?;
-								run.state = RunState::Waiting(Box::new(WaitingState::Human {
-									request_id: h.id,
-									answer_by: None,
-									resume: ResumeState::Thinking(ThinkingState::default()),
-								}));
-							} else {
-								run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
-									wake_at: chrono::Utc::now() + children_ceiling(store, home.as_ref(), run).await?,
-									cursor: run.recovery.workspace_event_cursor.unwrap_or(0),
-									resume: ResumeState::Thinking(ThinkingState::default()),
-								}));
-							}
-							run.step += 1;
-
-							store.save_run(run, token, "run.waiting").await?;
-							return Ok(());
-						}
+						};
 						// A final answer citing unknown evidence is corrected once, then
 						// withheld.
 						if let Some((found, unknown)) =
@@ -2772,17 +2866,30 @@ connection: None,
 						{
 							return Ok(());
 						}
+						// What people and coordinating Agents read says what was
+						// abandoned. The Model Turn keeps the model's own words.
+						let published = unassigned::answer_with_abandoned(&result.text, &abandoning);
 						let artifact = ArtifactInput {
 							kind: "text".into(),
 							name: result_artifact_name(&home.task().await?.title),
-							content: json!(result.text),
+							content: json!(published),
 						};
 						if let Some(guard) = guard {
 							guard
 								.action("artifact.create", "artifact", run.task_id)
 								.await?;
 							guard.action("task.complete", "task", run.task_id).await?;
+							// A Run on another Node cannot name a Task but its own;
+							// its Home checks `task.abandon` for the chain instead.
+							if home.local() {
+								for task in &abandoning {
+									guard.action("task.abandon", "task", task.id).await?;
+								}
+							}
 						}
+						// The completion's outcome is saved with it: a cancel after this
+						// point settles exactly these abandonments.
+						run.state.tool_mut()?.abandoning = abandoning.clone();
 						if !store.begin_final_completion(run, token).await? {
 							run.context.completion.basis = None;
 							run.state = RunState::Thinking(ThinkingState::default());
@@ -2798,25 +2905,47 @@ connection: None,
 							&result.text,
 							&result.tool_calls,
 						)?;
-						self.publish_model_text(home.as_ref(), guard, run, token, &result.text)
+						self.publish_model_text(home.as_ref(), guard, run, token, &published)
 							.await?;
+						let abandon_ids: Vec<Uuid> = abandoning.iter().map(|task| task.id).collect();
 						if let Err(error) = home
-							.complete(&format!("{}:complete", run.id), &artifact)
+							.complete(&format!("{}:complete", run.id), &artifact, &abandon_ids)
 							.await
 						{
-							if matches!(error, Error::Conflict(_) | Error::Domain(aidash_domain::Error::Conflict(_)))
-								&& home.child_summary(run.task_id).await?.has_pending
-							{
-								run.step += 1;
-								run.context.completion.basis = None;
-
-								run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
-									wake_at: chrono::Utc::now() + children_ceiling(store, home.as_ref(), run).await?,
-									cursor: run.recovery.workspace_event_cursor.unwrap_or(0),
-									resume: ResumeState::Thinking(ThinkingState::default()),
-								}));
-								store.save_run(run, token, "run.waiting").await?;
-								return Ok(());
+							if matches!(error, Error::Conflict(_) | Error::Domain(aidash_domain::Error::Conflict(_))) {
+								// A child created or handed over since the check: the
+								// same rules apply to what is there now.
+								let children = home.child_summary(run.task_id).await?;
+								let decision = unassigned::decide_children(
+									&children,
+									&told_tasks(run),
+									run.step.saturating_add(1) >= agent.max_steps,
+								);
+								if !matches!(
+									decision,
+									unassigned::ChildrenDecision::Finish
+										| unassigned::ChildrenDecision::FinishAbandoning(_)
+								) {
+									run.context.completion.basis = None;
+									// The answer was published above and is in the Model Turn.
+									let answer = Answer {
+										text: &result.text,
+										calls: &result.tool_calls,
+										delivered: true,
+									};
+									self.hold_for_children(
+										home.as_ref(),
+										guard,
+										store,
+										run,
+										token,
+										&agent,
+										decision,
+										answer,
+									)
+									.await?;
+									return Ok(());
+								}
 							}
 							return Err(error);
 						}
@@ -3284,7 +3413,11 @@ connection: None,
 				}
 				if let FrameworkResult::Wait(seconds) = framework && !resumed_operation {
 					let seconds = if call.arguments.get("seconds").is_none() {
-						let pending = if home.local() { store.unfinished_owned_tasks(run).await? > 0 } else { home.child_summary(run.task_id).await?.has_pending };
+						// An Unassigned Task is not unfinished work: nobody is on it.
+						let pending = if home.local() { store.unfinished_owned_tasks(run).await? > 0 } else {
+							let children = home.child_summary(run.task_id).await?;
+							children.open_tasks > children.unassigned.len() as u64
+						};
 						if pending { 3600 } else { 300 }
 					} else { seconds.clamp(1, 3600) };
 					run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
@@ -3487,16 +3620,47 @@ connection: None,
 							store.save_run(run, token, "run.waiting_for_workspace").await?;
 							return Ok(());
 						}
+						// One read of the children serves the ceiling check and the wake result.
+						let mut children = remote.clone();
+						// The ceiling of the internal wait: the model answered while children
+						// were running and nothing has changed since. If they can still
+						// change, wait again without a model call or a step.
+						if matches!(resume, ResumeState::Thinking(_)) && !input && events.is_empty() && !remote_changed {
+							if children.is_none() { children = Some(home.child_summary(run.task_id).await?); }
+							if let Some(summary) = &children
+								&& matches!(
+									unassigned::decide_children(summary, &told_tasks(run), false),
+									unassigned::ChildrenDecision::Wait
+								)
+							{
+								if let Some(summary) = &remote { run.recovery.remote_task_fingerprint = Some(summary.fingerprint()); }
+								run.state = RunState::Waiting(Box::new(WaitingState::Workspace {
+									wake_at: chrono::Utc::now() + children_ceiling(store, home.as_ref(), run).await?,
+									cursor,
+									resume,
+								}));
+								store.save_run(run, token, "run.waiting_for_workspace").await?;
+								return Ok(());
+							}
+						}
 						if let Some(last) = events.last() { run.recovery.workspace_event_cursor = Some(last.generation); }
 						let mut changes = if home.local() { events.iter().map(|event| json!({"task_id":event.task_id,"status":event.status})).collect::<Vec<_>>() } else { Vec::new() };
 						if remote_changed { changes.push(json!({"kind":"terminal_tasks_changed"})); }
 						if let Some(summary) = &remote { run.recovery.remote_task_fingerprint = Some(summary.fingerprint()); }
 						let reason = if input { "input" } else if !events.is_empty() || remote_changed { "workspace_event" } else { "ceiling" };
-						let open_tasks = if let Some(summary) = &remote { summary.open_tasks } else { store.unfinished_owned_tasks(run).await? };
+						// Open work somebody is on: the local count leaves out Unassigned Tasks, so the remote one does too.
+						let open_tasks = if let Some(summary) = &remote { summary.open_tasks.saturating_sub(summary.unassigned.len() as u64) } else { store.unfinished_owned_tasks(run).await? };
+						let unassigned_tasks = if matches!(resume, ResumeState::ToolCall(_)) {
+							if children.is_none() { children = Some(home.child_summary(run.task_id).await?); }
+							children.as_ref().map(|summary| summary.unassigned.iter().take(unassigned::LIST_LIMIT).map(|task| json!({"id":task.id,"title":task.title})).collect::<Vec<_>>()).unwrap_or_default()
+						} else { Vec::new() };
 						// A remote Home reports no per-Task changes, so none were left out.
 						let dropped = if home.local() { dropped } else { 0 };
 						if let ResumeState::ToolCall(state) = &mut resume {
-							state.wait_result = Some(json!({"reason":reason,"changes":changes,"dropped_changes":dropped,"open_tasks":open_tasks}));
+							let mut result = json!({"reason":reason,"changes":changes,"dropped_changes":dropped,"open_tasks":open_tasks});
+							// Tasks nobody will run, so the model can hand them over or let them go.
+							if !unassigned_tasks.is_empty() { result["unassigned_tasks"] = json!(unassigned_tasks); }
+							state.wait_result = Some(result);
 						}
 						resume.into_state()
 					}
@@ -3666,6 +3830,28 @@ fn record_provider_turn(run: &mut Run, version: ProjectionVersion) -> Result<()>
 	}
 	let calls = response.tool_calls.clone();
 	record_model_turn(run, version, "", &calls)
+}
+
+/// The answer a Run holds back while its children are pending.
+struct Answer<'a> {
+	text: &'a str,
+	calls: &'a [aidash_domain::provider::ToolCall],
+	/// Already in the Model Turn and published: the completion conflicted.
+	delivered: bool,
+}
+
+/// The Tasks the model has been told about, from the Context.
+fn told_tasks(run: &Run) -> std::collections::BTreeSet<Uuid> {
+	run.context
+		.events()
+		.filter_map(|event| match event {
+			ContextEvent::UnassignedTasksTold { tasks, .. } => {
+				Some(tasks.iter().map(|task| task.id))
+			}
+			_ => None,
+		})
+		.flatten()
+		.collect()
 }
 
 /// Open the Model Turn of a response, with the text it may keep and its
