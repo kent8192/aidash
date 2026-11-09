@@ -83,8 +83,7 @@ pub(crate) fn forward() -> String {
 	settings
 		.columns(["scratch_space_id", "tenant"].map(a))
 		.expr(Expr::value(
-			serde_json::to_value(aidash_domain::scratch::ScratchSettings::default())
-				.expect("default settings serialize"),
+			crate::apps::workspaces::services::migration_backfill::legacy_settings(),
 		))
 		.from(a("workspaces"));
 	let insert_settings = Query::insert()

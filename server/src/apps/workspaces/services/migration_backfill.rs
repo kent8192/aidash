@@ -2,6 +2,45 @@
 use reinhardt::query::{
 	Alias, Expr, JoinType, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
 };
+/// The settings these backfills gave each Scratch Space when migrations 0021 and
+/// 0024 were written. Applied migrations must not change, so this stays fixed
+/// when `ScratchSettings::default()` does (#729 later added five default hosts).
+pub fn legacy_settings() -> serde_json::Value {
+	serde_json::json!({
+		"allowed_hosts": {
+			"hosts": [
+				"archive.ubuntu.com",
+				"auth.docker.io",
+				"crates.io",
+				"deb.debian.org",
+				"files.pythonhosted.org",
+				"ghcr.io",
+				"github.com",
+				"index.crates.io",
+				"objects.githubusercontent.com",
+				"proxy.golang.org",
+				"pypi.org",
+				"quay.io",
+				"registry-1.docker.io",
+				"registry.npmjs.org",
+				"security.ubuntu.com",
+				"static.crates.io",
+				"sum.golang.org"
+			],
+			"kind": "hosts"
+		},
+		"capacity_bytes": 107374182400u64,
+		"cpu_millis": 4000,
+		"daily_received_bytes": 107374182400u64,
+		"daily_sent_bytes": 107374182400u64,
+		"docker_enabled": false,
+		"execution_image": null,
+		"external_services": [],
+		"idle_expiry_days": 14,
+		"memory_bytes": 17179869184u64
+	})
+}
+
 pub(crate) fn forward() -> String {
 	let ids = Query::update()
 		.table(Alias::new("conversations"))
@@ -52,10 +91,7 @@ pub(crate) fn forward() -> String {
 	let mut settings = Query::select();
 	settings
 		.columns(["scratch_space_id", "tenant"].map(Alias::new))
-		.expr(Expr::value(
-			serde_json::to_value(aidash_domain::scratch::ScratchSettings::default())
-				.expect("default settings serialize"),
-		))
+		.expr(Expr::value(legacy_settings()))
 		.from(Alias::new("conversations"));
 	let insert_settings = Query::insert()
 		.into_table(Alias::new("scratch_space_settings"))
