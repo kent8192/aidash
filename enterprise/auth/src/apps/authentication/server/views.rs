@@ -1253,6 +1253,9 @@ fn failure(error: Error) -> Response {
 	let temporary_database = matches!(
 		&error,
 		Error::Application(aidash_application::Error::TemporaryDatabase(_))
+			| Error::Accounts(aidash_application::accounts::Error::Store(
+				aidash_application::Error::TemporaryDatabase(_)
+			))
 	);
 	let (status, code) = match error {
 		Error::Accounts(aidash_application::accounts::Error::Rule(
@@ -1312,6 +1315,14 @@ mod database_failure_tests {
 			.unwrap();
 		let error = aidash_server::Error::from(pool.acquire().await.err().unwrap());
 		let response = failure(Error::Application(error.into()));
+		assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+		assert_eq!(response.headers[header::RETRY_AFTER], "1");
+		let nested = aidash_application::Error::TemporaryDatabase(Box::new(std::io::Error::other(
+			"database unavailable",
+		)));
+		let response = failure(Error::Accounts(aidash_application::accounts::Error::Store(
+			nested,
+		)));
 		assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
 		assert_eq!(response.headers[header::RETRY_AFTER], "1");
 	}
