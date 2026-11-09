@@ -3590,6 +3590,19 @@ class V2NetworkPolicyTest(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         controller._verify_ingress_pod(pod, 'canary')
 
+    def test_ingress_listener_fails_closed_if_it_cannot_block_tracing(self):
+        import subprocess
+        import sys
+        from pathlib import Path
+        helper = Path(__file__).with_name('sandbox_v2.py')
+        code = ('import ctypes,runpy,sys;from unittest.mock import Mock;'
+                'ctypes.CDLL=Mock(return_value=Mock(prctl=Mock(return_value=-1)));'
+                'sys.platform="linux";sys.argv=[sys.argv[1],"ingress-listen"];'
+                'runpy.run_path(sys.argv[0],run_name="__main__")')
+        result = subprocess.run([sys.executable, '-I', '-c', code, str(helper)],
+                                stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+
     def test_negative_probe_requires_reachable_positive_controls(self):
         from execution_pod import verify_positive_controls
         controls = {'peer': True, 'node': True, 'metadata': True, 'internet': True, 'gateway': True}

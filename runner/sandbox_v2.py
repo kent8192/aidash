@@ -687,6 +687,9 @@ if __name__ == '__main__':
         import select
         import socket
         import time
+        # A re-admitted Pod can contain user processes with the same UID.
+        if sys.platform.startswith('linux') and ctypes.CDLL(None, use_errno=True).prctl(_PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
+            raise OSError(ctypes.get_errno(), 'prctl')
         with socket.socket() as server:
             server.bind(('0.0.0.0', 0))
             server.listen(4)
