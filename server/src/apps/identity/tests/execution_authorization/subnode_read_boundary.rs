@@ -648,7 +648,7 @@ async fn parent_depends_on_a_task_its_child_created_after_discovering_other_agen
 }
 
 /// A member that discovered agents writes to the Run that created its Subnode, and
-/// an approval for what it discovered is then withdrawn or not (#793). Returns what
+/// a policy for what it discovered is then withdrawn or not (#793). Returns what
 /// carol, a person in the creator's Workspace, and the creator's next call see.
 async fn member_message_after(rig: &SubnodeRig, withdraw: bool) -> (bool, bool, bool) {
 	const TEXT: &str = "Investigation complete";
@@ -674,26 +674,20 @@ async fn member_message_after(rig: &SubnodeRig, withdraw: bool) -> (bool, bool, 
 		.workspace_id;
 	let mut policy = rig.policy.clone();
 	policy["subjects"]["carol"] = json!({"kind":"user"});
-	policy["policies"].as_array_mut().unwrap().push(json!({
-		"id":"alice-approves",
-		"effect":"allow",
-		"subjects":{"ids":["alice"]},
-		"actions":["catalog.approve"],
-		"resources":{"kinds":["*"]},
-	}));
 	set_policy(&rig.f, &rig.app, &policy).await;
 	let credential = common::issued_credential(&rig.f.store, "acme", "carol").await;
 	let carol = credential["token"].as_str().unwrap();
 	if withdraw {
-		let (status, body) = request(
-			&rig.app,
-			&rig.token,
-			"POST",
-			"/api/authorization/acme/catalog",
-			json!({"node":rig.node.node.as_str(),"entry":{"id":"delegate-target","version":"1.0.0"},"expected_revision":1,"enabled":false}),
-		)
-		.await;
-		assert_eq!(status, 200, "withdraw: {body}");
+		// Withdraw the read: nobody may read what the member discovered. A Catalog Approval
+		// does not govern a read (#769), so this is a policy decision.
+		policy["policies"].as_array_mut().unwrap().push(json!({
+			"id":"hide-discovered",
+			"effect":"deny",
+			"subjects":{"any":true},
+			"actions":["registry.read"],
+			"resources":{"kinds":["agent"],"ids":["delegate-target"]},
+		}));
+		set_policy(&rig.f, &rig.app, &policy).await;
 	}
 	let (status, history) = request(
 		&rig.app,
@@ -735,7 +729,7 @@ async fn member_message_after(rig: &SubnodeRig, withdraw: bool) -> (bool, bool, 
 
 #[rstest::rstest]
 #[tokio::test]
-async fn member_message_stays_visible_while_what_the_member_read_is_approved(
+async fn member_message_stays_visible_while_what_the_member_read_stays_readable(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
