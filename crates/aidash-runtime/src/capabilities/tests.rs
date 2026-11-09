@@ -14,7 +14,7 @@ use std::sync::{
 	Arc,
 	atomic::{AtomicUsize, Ordering},
 };
-use tokio::sync::{Barrier, Notify};
+use tokio::sync::Notify;
 use uuid::Uuid;
 #[derive(Default)]
 struct Repository {
@@ -136,66 +136,6 @@ async fn a_sweep_that_fails_with_a_pool_timeout_does_not_end_the_loop() {
 	task.await.unwrap().unwrap();
 	assert!(repository.ticks.load(Ordering::SeqCst) >= 4);
 }
-struct Guard(Arc<AtomicUsize>);
-impl Drop for Guard {
-	fn drop(&mut self) {
-		self.0.fetch_sub(1, Ordering::SeqCst);
-	}
-}
-struct Jobs {
-	barrier: Barrier,
-	active: Arc<AtomicUsize>,
-	started: AtomicUsize,
-}
-impl Jobs {
-	async fn job(&self, failure: bool) -> Result<()> {
-		self.active.fetch_add(1, Ordering::SeqCst);
-		self.started.fetch_add(1, Ordering::SeqCst);
-		let _guard = Guard(self.active.clone());
-		self.barrier.wait().await;
-		if failure {
-			Err(Error::External("network failed".into()))
-		} else {
-			std::future::pending().await
-		}
-	}
-}
-#[async_trait]
-impl CapabilityBackgroundJobs for Jobs {
-	async fn network(&self, _: watch::Receiver<bool>) -> Result<()> {
-		self.job(true).await
-	}
-	async fn references(&self, _: watch::Receiver<bool>) -> Result<()> {
-		self.job(false).await
-	}
-	async fn cleanup(&self, _: watch::Receiver<bool>) -> Result<()> {
-		self.job(false).await
-	}
-	async fn reclamation(&self, _: watch::Receiver<bool>) -> Result<()> {
-		self.job(false).await
-	}
-}
-#[rstest]
-#[tokio::test]
-async fn a_fatal_background_job_drops_all_other_owned_job_futures() {
-	let repository = Repository {
-		block: true,
-		..Default::default()
-	};
-	let active = Arc::new(AtomicUsize::new(0));
-	let jobs = Jobs {
-		barrier: Barrier::new(4),
-		active: active.clone(),
-		started: AtomicUsize::new(0),
-	};
-	let (_stop, receiver) = watch::channel(false);
-	assert!(
-		matches!(run(&repository,&repository,&jobs,receiver).await,Err(Error::External(message)) if message=="network failed")
-	);
-	assert_eq!(jobs.started.load(Ordering::SeqCst), 4);
-	assert_eq!(active.load(Ordering::SeqCst), 0);
-}
-
 /// A slow check must not delay another Tenant's commands.
 struct StuckRechecks;
 #[async_trait]

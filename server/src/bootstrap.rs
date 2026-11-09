@@ -458,13 +458,37 @@ impl RuntimeTasks {
 		);
 		if std::env::var_os("AIDASH_CAPABILITY_PROFILE").is_some() {
 			let operations = federation.for_runtime_workers().await?;
-			let stopping = receiver.clone();
-			tasks.spawn_service(
-				"capability operations",
-				runtime_task(async move {
-					crate::capabilities::operations::run(operations.store, stopping).await
-				}),
-			);
+			for name in [
+				"capabilities.execution",
+				"capabilities.read_recheck",
+				"capabilities.network",
+				"capabilities.references",
+				"capabilities.cleanup",
+				"capabilities.reclamation",
+			] {
+				let store = operations.store.clone();
+				let stopping = receiver.clone();
+				tasks.spawn_service(name, async move {
+					use aidash_application::ports::capabilities::processing::CapabilityBackgroundJobs as _;
+					let repository = operation_processing_repository(&store);
+					let jobs = capability_background_jobs(&store);
+					match name {
+						"capabilities.execution" => {
+							aidash_runtime::capabilities::execution_loop(&repository, stopping)
+								.await
+						}
+						"capabilities.read_recheck" => {
+							aidash_runtime::capabilities::read_recheck_loop(&repository, stopping)
+								.await
+						}
+						"capabilities.network" => jobs.network(stopping).await,
+						"capabilities.references" => jobs.references(stopping).await,
+						"capabilities.cleanup" => jobs.cleanup(stopping).await,
+						"capabilities.reclamation" => jobs.reclamation(stopping).await,
+						_ => unreachable!(),
+					}
+				});
+			}
 			let transfers = federation.for_runtime_workers().await?;
 			let stopping = receiver.clone();
 			tasks.spawn_service(

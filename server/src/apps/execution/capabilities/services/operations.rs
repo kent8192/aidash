@@ -129,18 +129,6 @@ pub(crate) async fn remote(
 		.map_err(Into::into)
 }
 
-pub async fn run(store: Store, stopping: tokio::sync::watch::Receiver<bool>) -> Result<()> {
-	let repository = crate::bootstrap::operation_processing_repository(&store);
-	aidash_runtime::capabilities::run(
-		&repository,
-		&repository,
-		&crate::bootstrap::capability_background_jobs(&store),
-		stopping,
-	)
-	.await
-	.map_err(Into::into)
-}
-
 #[cfg(test)]
 #[path = "../tests/services_operations_tests.rs"]
 mod tests;
