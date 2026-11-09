@@ -1,5 +1,6 @@
 # Statements have one time limit and a client deadline behind it
 
+Amended by ADR 0123 (2026-11-09): temporary database failures in vector lookups wait without consuming a Run attempt.
 Decided on 2026-11-05 in the #728 grilling. Server and worker connections set `statement_timeout`, 5 minutes by default, and nothing else that limits a session. A wrapper around Reinhardt's `DatabaseBackend` and `TransactionExecutor` adds a client-side deadline 30 s later, which fires only when the server does not answer. A statement that hits either limit is a temporary database error: the Run waits and resumes, and it counts towards no failure limit.
 
 The two limits answer different failures. A live server enforces `statement_timeout`, including time spent waiting for locks. A server that vanished cannot, and SQLx sets no TCP keepalive, so without the deadline a query can wait for that reply for ever.
