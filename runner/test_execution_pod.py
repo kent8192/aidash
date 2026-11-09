@@ -498,11 +498,14 @@ class ExecutionPodControllerTest(unittest.TestCase):
         from execution_pod import ExecutionPodController
         token = 'aidash-scope-v1.secret-token'
         class Backend:
-            def __init__(self, root): self.root = Path(root)
+            def __init__(self, root):
+                self.root = Path(root)
             def kube(self, args, data=None, **kwargs):
-                if args[0] == 'get': return SimpleNamespace(stdout=b'')
+                if args[0] == 'get':
+                    return SimpleNamespace(stdout=b'')
                 obj = json.loads(data)
-                if obj['kind'] == 'Pod': raise RuntimeError('API echoed ' + token)
+                if obj['kind'] == 'Pod':
+                    raise RuntimeError('API echoed ' + token)
                 return SimpleNamespace(stdout=b'')
         settings = {'scratch_space_id': 's', 'image': 'image@sha256:' + 'a' * 64,
                     'cpu': 2, 'memory_bytes': 2 << 30, 'capacity_bytes': 2 << 30,
