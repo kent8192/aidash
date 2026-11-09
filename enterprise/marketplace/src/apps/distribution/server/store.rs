@@ -62,7 +62,18 @@ impl Store {
 	// without installing a global/default connection.
 	#[allow(clippy::disallowed_methods)]
 	pub async fn connect(url: &str) -> Result<Self> {
-		let pool = released_within_limit(sqlx::postgres::PgPoolOptions::new())
+		// Keep the limits used by Reinhardt's connect_postgres pool.
+		let max_connections = std::env::var("DATABASE_POOL_MAX_CONNECTIONS")
+			.ok()
+			.and_then(|value| value.parse::<u32>().ok())
+			.unwrap_or(20);
+		let options = sqlx::postgres::PgPoolOptions::new()
+			.max_connections(max_connections)
+			.min_connections(1)
+			.acquire_timeout(std::time::Duration::from_secs(10))
+			.idle_timeout(Some(std::time::Duration::from_secs(10)))
+			.max_lifetime(Some(std::time::Duration::from_secs(30 * 60)));
+		let pool = released_within_limit(options)
 			.connect(&with_connection_limits(url)?)
 			.await
 			.map_err(|_| Error::Unavailable)?;
