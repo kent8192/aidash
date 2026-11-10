@@ -3690,6 +3690,14 @@ test("task dependency picker can load older tasks on demand", async ({
     page.getByRole("option", { name: "Older prerequisite" }).first(),
   ).toBeAttached();
   expect(reads).toBe(1);
+  const dependencies = page.locator('select[name="dependencies"]');
+  await dependencies.selectOption("old-task");
+  const refreshed = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/state",
+  );
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await refreshed;
+  await expect(dependencies).toHaveValues(["old-task"]);
 });
 
 test("returning focus refreshes the current state", async ({ page }) => {
