@@ -192,8 +192,88 @@ async fn revocation_scrubs_every_stored_copy_and_keeps_an_audit_record(
 			.head;
 	assert!(head > 0);
 	let before_journal = executor.context_journal(run.id, 1, head).await.unwrap();
-	let before_digest = aidash_domain::context::summary::entries_digest(&before_journal);
+	let before_export = aidash_application::ports::journal_export::JournalSource::snapshot(
+		&r.c.f.store,
+		&TEST_FIXTURE,
+		run.id,
+		run.id,
+		Some((1, head)),
+	)
+	.await
+	.unwrap();
+	assert!(!before_export.dependencies.is_empty());
+	let derived_key = format!("journal-query-derived:{}", run.id);
+	let derived = json!({"contract":aidash_domain::context::research::JOURNAL_QUERY_CONTRACT,"research_derived":true,
+		"dependencies":before_export.dependencies,"stdout":"copied research passage"});
 	use reinhardt::query::{PostgresQueryBuilder, Query};
+	let derived_insert = Query::insert()
+		.into_table(Alias::new("invocations"))
+		.columns(
+			[
+				"idempotency_key",
+				"run_id",
+				"tool",
+				"input",
+				"status",
+				"replay_safe",
+				"tenant",
+				"result",
+			]
+			.map(Alias::new),
+		)
+		.from_subquery(
+			Query::select()
+				.expr(Expr::value(derived_key.clone()))
+				.expr(Expr::value(run.id))
+				.expr(Expr::value("journal_query"))
+				.expr(Expr::value(json!({"code":"journal()"})))
+				.expr(Expr::value("COMPLETED"))
+				.expr(Expr::value(true))
+				.expr(Expr::value("acme"))
+				.expr(Expr::value(derived))
+				.to_owned(),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&derived_insert)
+		.execute(r.c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let unrelated_key = format!("journal-query-unrelated:{}", run.id);
+	let unrelated = json!({"contract":aidash_domain::context::research::JOURNAL_QUERY_CONTRACT,
+		"dependencies":{"sources":[],"documents":[]},"stdout":"unrelated text"});
+	let unrelated_insert = Query::insert()
+		.into_table(Alias::new("invocations"))
+		.columns(
+			[
+				"idempotency_key",
+				"run_id",
+				"tool",
+				"input",
+				"status",
+				"replay_safe",
+				"tenant",
+				"result",
+			]
+			.map(Alias::new),
+		)
+		.from_subquery(
+			Query::select()
+				.expr(Expr::value(unrelated_key.clone()))
+				.expr(Expr::value(run.id))
+				.expr(Expr::value("journal_query"))
+				.expr(Expr::value(json!({"code":"print(1)"})))
+				.expr(Expr::value("COMPLETED"))
+				.expr(Expr::value(true))
+				.expr(Expr::value("acme"))
+				.expr(Expr::value(unrelated.clone()))
+				.to_owned(),
+		)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&unrelated_insert)
+		.execute(r.c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let before_digest = aidash_domain::context::summary::entries_digest(&before_journal);
 	let retained_sql = Query::select()
 		.expr(Func::count(Expr::asterisk().into()))
 		.from(Alias::new("research_journal_results"))
@@ -274,6 +354,33 @@ async fn revocation_scrubs_every_stored_copy_and_keeps_an_audit_record(
 	assert_eq!(record["run_id"], json!(run.id));
 	assert_eq!(record["tenant"], "acme");
 	assert_eq!(record["revoked_by"], "subject:acme/alice");
+	let derived_result: Value = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("result"))
+			.from(Alias::new("invocations"))
+			.and_where(Expr::col("idempotency_key").eq(Expr::value(derived_key)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(r.c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(derived_result["error"]["code"], "evidence_revoked");
+	let kept: Value = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("result"))
+			.from(Alias::new("invocations"))
+			.and_where(Expr::col("idempotency_key").eq(Expr::value(unrelated_key)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(r.c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(kept, unrelated);
+	assert!(
+		!derived_result
+			.to_string()
+			.contains("copied research passage")
+	);
 	assert_eq!(record["removed"]["snapshots"], 1);
 	assert_eq!(record["removed"]["fragments"], 1);
 	assert_eq!(record["removed"]["sources"], 1);
@@ -356,6 +463,40 @@ async fn revocation_scrubs_every_stored_copy_and_keeps_an_audit_record(
 		before_digest
 	);
 	assert!(after_journal.iter().any(|entry| matches!(&entry.event, aidash_domain::context::ContextEvent::Tool { result, .. } if aidash_domain::context::ContextEvent::is_revoked_result(result))));
+	let exported = aidash_application::ports::journal_export::JournalSource::export(
+		&r.c.f.store,
+		&TEST_FIXTURE,
+		run.id,
+		run.id,
+		Some((1, head)),
+	)
+	.await
+	.unwrap();
+	let after_export = aidash_application::ports::journal_export::JournalSource::snapshot(
+		&r.c.f.store,
+		&TEST_FIXTURE,
+		run.id,
+		run.id,
+		Some((1, head)),
+	)
+	.await
+	.unwrap();
+	assert_ne!(before_export.generation, after_export.generation);
+	assert!(exported.iter().any(|line| {
+		line.result
+			.as_ref()
+			.is_some_and(aidash_domain::context::ContextEvent::is_revoked_result)
+	}));
+	for line in exported.iter().filter(|line| {
+		line.result
+			.as_ref()
+			.is_some_and(aidash_domain::context::ContextEvent::is_revoked_result)
+	}) {
+		assert_eq!(
+			line.call.as_ref().unwrap()["arguments"],
+			aidash_domain::context::ContextEvent::revoked_arguments()
+		);
+	}
 	let stored = r.c.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert!(stored.context.research_revoked);
 	assert!(stored.context.events().any(|event| matches!(

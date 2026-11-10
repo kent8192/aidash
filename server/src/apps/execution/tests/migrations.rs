@@ -76,6 +76,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0061_provider_tools"),
 	("registry", "0062_provider_warning_tools"),
 	("registry", "0063_reference_set_limit"),
+	("registry", "0064_journal_tools"),
 	("registry", "0060_subnode_provider"),
 	("registry", "0055_remove_structured_harness_contracts"),
 	("registry", "0056_attachment_tools"),

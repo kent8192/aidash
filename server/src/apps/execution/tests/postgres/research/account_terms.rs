@@ -164,6 +164,7 @@ async fn expired_provider_results_become_tombstones_that_still_verify_citations(
 		serde_json::from_value(found["data"]["sources"][0]["source_id"].clone()).unwrap();
 	// The Harness records the search's tool result only after the sweep.
 	let token = run.lease_owner.unwrap();
+	store.renew_lease(&ACME, run.id, token, 300).await.unwrap();
 	store
 		.invocation_start(
 			&ACME,
@@ -181,6 +182,26 @@ async fn expired_provider_results_become_tombstones_that_still_verify_citations(
 		.await
 		.unwrap();
 	let document: Uuid = serde_json::from_value(read["data"]["document_id"].clone()).unwrap();
+	let journal_result = json!({"contract":aidash_domain::context::research::JOURNAL_QUERY_CONTRACT,"research_derived":true,
+		"dependencies":{"sources":[],"documents":[document]},"stdout":"derived provider content"});
+	for key in ["journal-before", "journal-late"] {
+		store
+			.invocation_start(
+				&ACME,
+				&run,
+				token,
+				key,
+				"journal_query",
+				&json!({"code":"journal()"}),
+				true,
+			)
+			.await
+			.unwrap();
+	}
+	store
+		.invocation_finish(&ACME, &run, token, "journal-before", &journal_result)
+		.await
+		.unwrap();
 	store
 		.invocation_start(
 			&ACME,
@@ -252,6 +273,22 @@ async fn expired_provider_results_become_tombstones_that_still_verify_citations(
 			.unwrap();
 	}
 	let purged = swept().await.unwrap();
+	let saved: Value = sqlx::query_scalar(
+		&Query::select()
+			.column(Alias::new("result"))
+			.from(Alias::new("invocations"))
+			.and_where(Expr::col("idempotency_key").eq("journal-before"))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_one(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(saved["error"]["code"], "result_expired");
+	let late = store
+		.invocation_finish(&ACME, &run, token, "journal-late", &journal_result)
+		.await
+		.unwrap();
+	assert_eq!(late["error"]["code"], "result_expired");
 
 	// Assert: both Provider results are tombstones, marked by their reason.
 	assert_eq!(purged, 2);
