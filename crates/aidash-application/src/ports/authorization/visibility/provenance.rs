@@ -1,5 +1,11 @@
 //! Provenance readers retain row scope and the current authority across the whole graph.
-use crate::{Result, ports::authorization::visibility::resources::ResourceVisibilityScope};
+use crate::{
+	Result,
+	ports::{
+		authorization::visibility::resources::ResourceVisibilityScope,
+		federation::registry_reads::RemoteReads,
+	},
+};
 use aidash_domain::{
 	Artifact, Conversation, Message, RunMetadata, Task, generation::requests::Request,
 	registry::EntityRef, semantic::Failure,
@@ -22,7 +28,7 @@ pub trait ReadProvenanceScope: ResourceVisibilityScope {
 	/// Whether the reader may read the definition `run` read: `registry.read` alone. A Catalog
 	/// Approval decides use, never who may read what a Run produced (#769).
 	async fn catalog_read(&mut self, run: Uuid, reference: &EntityRef) -> Result<()>;
-	async fn remote_reads(&mut self, run: Uuid) -> Result<bool>;
+	async fn remote_reads(&mut self, run: Uuid) -> Result<RemoteReads>;
 	async fn semantic_reads(&mut self, run: Uuid) -> Result<bool>;
 	async fn semantic_invalidity(
 		&mut self,

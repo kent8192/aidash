@@ -1045,3 +1045,147 @@ async fn a_read_does_not_wait_for_a_writer_holding_the_distribution_lock(
 	);
 	world.close().await;
 }
+
+/// A deny on `registry.read` for `sibling-agent`, written as for any definition of the Tenant.
+fn alice_may_not_read_sibling_agent() -> Value {
+	json!({"id":"no-definition","effect":"deny","subjects":{"ids":["alice"]},
+		"actions":["registry.read"],"resources":{"kinds":["agent"],"ids":["sibling-agent"]}})
+}
+
+/// A deny on `registry.read` for Agents found on the Node `node`.
+fn alice_may_not_read_agents_found_on(id: &str, node: &str) -> Value {
+	json!({"id":id,"effect":"deny","subjects":{"ids":["alice"]},
+		"actions":["registry.read"],"resources":{"kinds":["agent"]},
+		"condition":{"op":"eq","left":{"source":"resource","path":"/remote_node"},
+			"right":{"source":"literal","value":node}}})
+}
+
+/// An Agent found on another Node of the Tenant is the Tenant's own definition,
+/// so a deny on `registry.read` that names it hides the Run as for a local one
+/// (#856, decisions 1 and 3).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_denied_registry_read_hides_a_run_that_found_the_agent_on_another_node(
+	#[future(awt)] provider: Provider,
+) {
+	*provider.script.delegate.lock().unwrap() = false;
+	let world = world(provider).await;
+	let coordinator = world.run_coordinator(WITHOUT_DELEGATION).await;
+	let run = format!("/api/runs/{}", coordinator.id);
+	let (status, body) = world.get(&run).await;
+	assert_eq!(status, 200, "{body}");
+
+	add_policies(&world, &[], vec![alice_may_not_read_sibling_agent()]).await;
+	let (status, body) = world.get(&run).await;
+	assert_eq!(status, 403, "{body}");
+	assert_eq!(body["run_reads"], json!({"kind":"definition_not_readable"}));
+	assert!(!body.to_string().contains("sibling-agent"), "{body}");
+	world.close().await;
+}
+
+/// `remote_node` still singles out the Node an Agent was found on (#856, decision 2).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_remote_node_condition_hides_only_what_was_found_on_that_node(
+	#[future(awt)] provider: Provider,
+) {
+	*provider.script.delegate.lock().unwrap() = false;
+	let world = world(provider).await;
+	let coordinator = world.run_coordinator(WITHOUT_DELEGATION).await;
+	let run = format!("/api/runs/{}", coordinator.id);
+
+	let elsewhere = world
+		.f
+		.config
+		.deployment
+		.node(NodeName::parse("quiet-heron-x2b7k9qa").unwrap())
+		.to_string();
+	add_policies(
+		&world,
+		&[],
+		vec![alice_may_not_read_agents_found_on("elsewhere", &elsewhere)],
+	)
+	.await;
+	let (status, body) = world.get(&run).await;
+	assert_eq!(status, 200, "{body}");
+
+	add_policies(
+		&world,
+		&[],
+		vec![alice_may_not_read_agents_found_on(
+			"sibling",
+			&world.sibling.to_string(),
+		)],
+	)
+	.await;
+	let (status, body) = world.get(&run).await;
+	assert_eq!(status, 403, "{body}");
+	assert_eq!(body["run_reads"], json!({"kind":"definition_not_readable"}));
+	world.close().await;
+}
+
+/// Discovery names the Agent the same way, so the deny keeps it out of what a
+/// person discovers (#856, decision 4).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_denied_registry_read_leaves_the_agent_out_of_discovery(
+	#[future(awt)] provider: Provider,
+) {
+	let world = world(provider).await;
+	let discover = || async {
+		let (status, body) = request(
+			&world.app,
+			&world.token,
+			"POST",
+			"/api/discover",
+			json!({"capability":"sibling.discovery"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+		body["agents"]
+			.as_array()
+			.unwrap_or_else(|| panic!("a list of Agents: {body}"))
+			.iter()
+			.any(|agent| agent["entity"]["id"] == "sibling-agent")
+	};
+	assert!(discover().await, "the second Node offers sibling-agent");
+	add_policies(&world, &[], vec![alice_may_not_read_sibling_agent()]).await;
+	assert!(!discover().await, "the deny keeps sibling-agent out");
+	world.close().await;
+}
+
+/// A running Run that found the Agent stops at its next worker boundary once
+/// its owner may no longer read it (#856).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_denied_registry_read_stops_a_running_run_that_found_the_agent(
+	#[future(awt)] provider: Provider,
+) {
+	*provider.script.delegate.lock().unwrap() = false;
+	let world = world(provider).await;
+	// The discovery is saved once the next request is made.
+	world.run_coordinator(2).await;
+	add_policies(&world, &[], vec![alice_may_not_read_sibling_agent()]).await;
+	let worker = Harness {
+		federation: world.f.clone(),
+	};
+	let stopped = tokio::time::timeout(Duration::from_secs(120), async {
+		loop {
+			worker.worker_once().await.unwrap();
+			let run = world.coordinator().await;
+			assert!(
+				world.script.stage.load(std::sync::atomic::Ordering::SeqCst) < WITHOUT_DELEGATION,
+				"the coordinator went on: {:?}",
+				run.phase()
+			);
+			if run.error.is_some() || matches!(run.phase().as_str(), "FAILED" | "CANCELLED") {
+				return run;
+			}
+			tokio::time::sleep(Duration::from_millis(20)).await;
+		}
+	})
+	.await
+	.expect("the coordinator stops");
+	assert_ne!(stopped.phase().as_str(), "COMPLETED", "{:?}", stopped.error);
+	world.close().await;
+}
