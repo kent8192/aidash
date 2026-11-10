@@ -392,7 +392,10 @@ export function Channel({
     0,
     scopedRuns.length,
     ...terminal,
-    ...(liveRuns.data ?? []).map((run) => ({ run, node: data.node.id })),
+    ...(liveRuns.isError ? [] : (liveRuns.data ?? [])).map((run) => ({
+      run,
+      node: data.node.id,
+    })),
   );
   const scopedRequests = requests.filter(
     ({ request }) =>
