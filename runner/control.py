@@ -1973,9 +1973,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not 0 <= size <= 256:
                     raise Rejected(413, "session stop request limit")
                 body = json.loads(self.rfile.read(size)) if size else None
-                if body is not None and (not isinstance(body, dict) or set(body) != {"instance"} or not isinstance(body["instance"], str)):
+                if body is not None and (not isinstance(body, dict) or set(body) not in (set(), {"instance"}) or ("instance" in body and not isinstance(body["instance"], str))):
                     raise Rejected(400, "invalid session stop request")
-                return runner.stop_session(session_match[1], body["instance"] if body else None)
+                return runner.stop_session(session_match[1], body.get("instance") if body else None)
         if self.command == "GET" and path == "/v1/health":
             return {"protocol": "aidash-runner/1", "runtime_class": runner.config["runtime_class"],
                     "image": runner.config["image"], "maximum_seconds": runner.config["maximum_seconds"],
