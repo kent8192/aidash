@@ -105,7 +105,11 @@ pub trait Meter: Send + Sync {
 	/// budget is exhausted, `Conflict(OPERATION_EXPIRED)` when the operation or
 	/// session expired, `Conflict(OPERATION_INACTIVE)` when the operation ended,
 	/// and `Forbidden` when its authority was revoked.
-	/// Scoped meters can also refuse for their budget or suspension. All such
+	/// Scoped meters can also refuse for their budget or suspension. When their
+	/// Scratch Space's live authority refuses, they still add the bytes to its
+	/// daily totals and return `Forbidden`, which outranks their other
+	/// refusals; a scope whose state is gone keeps them only in the request
+	/// record. All such
 	/// decisions are classified by [`DebitRefusal`]. Any other error means
 	/// the bytes were not committed, and the caller charges them again.
 	async fn charge(&self, direction: Direction, bytes: usize) -> Result<()>;
