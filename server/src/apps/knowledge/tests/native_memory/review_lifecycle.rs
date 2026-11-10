@@ -4,6 +4,165 @@ use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::database::native;
 
 #[rstest]
+#[tokio::test]
+async fn keyword_only_bank_can_write_and_recall_without_a_workspace_index(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	let database = database.await;
+	let (store, registry, workspace) = setup(&database, bounds).await;
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let mut provider = registry.get(&tenant, "p", "1.0.0").await.unwrap();
+	provider.id = "keyword-only".into();
+	provider.config["policy"]["embedding"] = serde_json::Value::Null;
+	registry.register(&tenant, provider).await.unwrap();
+	let actor = administrator(&store).await;
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	for table in ["semantic_collections", "semantic_indexes"] {
+		native::query(
+			&Query::delete()
+				.from_table(Alias::new(table))
+				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	}
+	tx.commit().await.unwrap();
+	let bank = Bank {
+		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+			.to_string(),
+		tenant: "acme".into(),
+		workspace,
+		participant: None,
+	};
+	let provider = reference("keyword-only");
+	memory::operate(
+		&store,
+		&actor,
+		memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider: provider.clone(),
+			bank: bank.clone(),
+			action: memory::Action::ConfigureBank {
+				expected_revision: 0,
+			},
+		},
+	)
+	.await
+	.unwrap();
+	let id = Uuid::now_v7();
+	memory::mutate(
+		&store,
+		&actor,
+		Mutation {
+			operation_id: Uuid::now_v7(),
+			provider: provider.clone(),
+			bank: bank.clone(),
+			changes: vec![Change::Add {
+				id,
+				content: content("Mercury mission launch details"),
+			}],
+		},
+	)
+	.await
+	.unwrap();
+	let result = memory::operate(
+		&store,
+		&actor,
+		memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider,
+			bank,
+			action: memory::Action::Recall {
+				query: RecallQuery {
+					text: "Mercury".into(),
+					time: None,
+					kinds: vec![],
+					max_tokens: 8192,
+				},
+			},
+		},
+	)
+	.await
+	.unwrap();
+	let memory::Outcome::Recall(Recall::Ready { units }) = result else {
+		panic!("keyword recall must return the admitted Unit")
+	};
+	assert_eq!(
+		units.iter().map(|unit| unit.id).collect::<Vec<_>>(),
+		vec![id]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn keyword_only_upgrade_refuses_a_nonempty_indexed_bank(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	let database = database.await;
+	let (store, registry, workspace) = setup(&database, bounds).await;
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let mut provider = registry.get(&tenant, "p", "1.0.0").await.unwrap();
+	provider.id = "keyword-only".into();
+	provider.config["policy"]["embedding"] = serde_json::Value::Null;
+	registry.register(&tenant, provider).await.unwrap();
+	let actor = administrator(&store).await;
+	let bank = Bank {
+		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+			.to_string(),
+		tenant: "acme".into(),
+		workspace,
+		participant: None,
+	};
+	memory::operate(
+		&store,
+		&actor,
+		memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider: reference("p"),
+			bank: bank.clone(),
+			action: memory::Action::ConfigureBank {
+				expected_revision: 0,
+			},
+		},
+	)
+	.await
+	.unwrap();
+	memory::mutate(
+		&store,
+		&actor,
+		mutation(
+			&bank,
+			Change::Add {
+				id: Uuid::now_v7(),
+				content: content("Indexed before the policy change"),
+			},
+		),
+	)
+	.await
+	.unwrap();
+	let result = memory::operate(
+		&store,
+		&actor,
+		memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider: reference("keyword-only"),
+			bank,
+			action: memory::Action::ConfigureBank {
+				expected_revision: 1,
+			},
+		},
+	)
+	.await;
+	assert!(
+		matches!(result, Err(aidash_server::Error::Conflict(message)) if message.contains("clear the bank"))
+	);
+}
+
+#[rstest]
 #[case(false)]
 #[case(true)]
 #[tokio::test]

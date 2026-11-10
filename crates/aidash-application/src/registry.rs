@@ -136,14 +136,22 @@ pub async fn validate_references(
 		"memory" => {
 			let config: aidash_domain::memory::ProviderConfig =
 				serde_json::from_value(entry.config.clone())?;
-			vec![
-				(config.policy.extraction, "model"),
-				(config.policy.derivation, "model"),
-				(config.policy.reflection, "model"),
-				(config.policy.embedding, "embedding"),
-				(config.policy.reranker, "reranker"),
-				(config.policy.tokenizer, "tokenizer"),
-			]
+			let mut references = Vec::new();
+			for role in [
+				config.policy.extraction,
+				config.policy.derivation,
+				config.policy.reflection,
+			] {
+				if let aidash_domain::memory::RoleModel::Entry(reference) = role {
+					references.push((reference, "model"));
+				}
+			}
+			if let Some(reference) = config.policy.embedding {
+				references.push((reference, "embedding"));
+			}
+			references.push((config.policy.reranker, "reranker"));
+			references.push((config.policy.tokenizer, "tokenizer"));
+			references
 		}
 		"source" => {
 			let config: aidash_domain::memory::SourceConfig =

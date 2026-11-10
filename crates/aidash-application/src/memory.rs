@@ -98,7 +98,7 @@ impl Engine<'_> {
 		let output = self
 			.models
 			.extract(
-				&self.policy.extraction,
+				&self.models.resolve_model(&self.policy.extraction)?,
 				text,
 				evidence,
 				mode,
@@ -247,26 +247,37 @@ impl Engine<'_> {
 				allowance: budget.allowance()?,
 			});
 		}
-		let semantic = scope
-			.semantic(
-				&trigger.bank,
-				&self.policy.embedding,
-				&trigger.content.text,
-				&known.keys().copied().collect::<Vec<_>>(),
-				self.policy.bounds.max_candidates,
-				budget.allowance()?,
-			)
-			.await?;
-		budget.charge(semantic.usage)?;
-		if semantic.output.len() > self.policy.bounds.max_candidates
-			|| semantic.output.iter().any(|id| !known.contains_key(id))
+		let semantic = if let Some(embedding) = &self.policy.embedding {
+			let output = scope
+				.semantic(
+					&trigger.bank,
+					embedding,
+					&trigger.content.text,
+					&known.keys().copied().collect::<Vec<_>>(),
+					self.policy.bounds.max_candidates,
+					budget.allowance()?,
+				)
+				.await?;
+			budget.charge(output.usage)?;
+			output.output
+		} else {
+			scope
+				.keyword(
+					&trigger.bank,
+					&trigger.content.text,
+					&known.keys().copied().collect::<Vec<_>>(),
+					self.policy.bounds.max_candidates,
+				)
+				.await?
+		};
+		if semantic.len() > self.policy.bounds.max_candidates
+			|| semantic.iter().any(|id| !known.contains_key(id))
 		{
 			return Err(Error::Invalid(
 				"consolidation retrieval escaped its authorized candidates".into(),
 			));
 		}
 		let candidates: Vec<_> = semantic
-			.output
 			.iter()
 			.collect::<BTreeSet<_>>()
 			.into_iter()
@@ -282,7 +293,7 @@ impl Engine<'_> {
 		let selection = self
 			.models
 			.consolidate(
-				&self.policy.derivation,
+				&self.models.resolve_model(&self.policy.derivation)?,
 				&mandatory,
 				&candidates,
 				&self.policy.bounds,
@@ -383,7 +394,7 @@ impl Engine<'_> {
 		let result = self
 			.models
 			.derive(
-				&self.policy.derivation,
+				&self.models.resolve_model(&self.policy.derivation)?,
 				kind,
 				mental_model,
 				sources,
@@ -499,27 +510,35 @@ impl Engine<'_> {
 		}
 		let ids: Vec<_> = allowed.iter().copied().collect();
 		let limit = self.policy.bounds.max_candidates;
-		let semantic = scope
-			.semantic(
-				bank,
-				&self.policy.embedding,
-				&query.text,
-				&ids,
-				limit,
-				budget.allowance()?,
-			)
-			.await?;
-		budget.charge(semantic.usage)?;
-		let semantic = semantic.output;
+		let semantic = if let Some(embedding) = &self.policy.embedding {
+			let output = scope
+				.semantic(
+					bank,
+					embedding,
+					&query.text,
+					&ids,
+					limit,
+					budget.allowance()?,
+				)
+				.await?;
+			budget.charge(output.usage)?;
+			output.output
+		} else {
+			Vec::new()
+		};
 		let keyword = scope.keyword(bank, &query.text, &ids, limit).await?;
 		if semantic.len() > limit || keyword.len() > limit {
 			return Err(Error::Invalid(
 				"memory search exceeded candidate limit".into(),
 			));
 		}
-		let graph =
-			recall::graph_with_edges(&units, &semantic, &snapshot.graph, &self.policy.bounds);
 		let temporal = recall::temporal(&units, query.time.as_ref(), limit);
+		let mut graph_seeds = semantic.clone();
+		if self.policy.embedding.is_none() {
+			graph_seeds.extend(keyword.iter().chain(&temporal).copied());
+		}
+		let graph =
+			recall::graph_with_edges(&units, &graph_seeds, &snapshot.graph, &self.policy.bounds);
 		let retention = if self.policy.decay.is_some() {
 			scope.retention_scores(bank, &units).await?
 		} else {
@@ -697,7 +716,7 @@ impl Engine<'_> {
 			let output = self
 				.models
 				.reflect(
-					&self.policy.reflection,
+					&self.models.resolve_model(&self.policy.reflection)?,
 					&query.text,
 					&context,
 					&self.policy.bounds,

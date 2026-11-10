@@ -475,10 +475,10 @@ impl Bounds {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
-	pub extraction: EntityRef,
-	pub derivation: EntityRef,
-	pub reflection: EntityRef,
-	pub embedding: EntityRef,
+	pub extraction: RoleModel,
+	pub derivation: RoleModel,
+	pub reflection: RoleModel,
+	pub embedding: Option<EntityRef>,
 	pub reranker: EntityRef,
 	pub tokenizer: EntityRef,
 	/// Explicit cosine cutoff for derived graph edges, in millionths (1..=1_000_000).
@@ -592,6 +592,21 @@ impl Rate {
 	}
 }
 impl Policy {
+	/// Registry dependencies; AgentModel is supplied by the Run itself.
+	pub fn role_references(&self) -> Vec<(&EntityRef, &'static str)> {
+		let mut references = Vec::new();
+		for role in [&self.extraction, &self.derivation, &self.reflection] {
+			if let RoleModel::Entry(reference) = role {
+				references.push((reference, "model"));
+			}
+		}
+		if let Some(reference) = &self.embedding {
+			references.push((reference, "embedding"));
+		}
+		references.push((&self.reranker, "reranker"));
+		references.push((&self.tokenizer, "tokenizer"));
+		references
+	}
 	pub fn validate(&self) -> Result<()> {
 		self.bounds.validate()?;
 		if !(1..=1_000_000).contains(&self.semantic_link_min_similarity_millionths) {
@@ -620,14 +635,14 @@ impl Policy {
 				"invalid memory decay or dormancy bounds".into(),
 			));
 		}
-		for role in [
-			&self.extraction,
-			&self.derivation,
-			&self.reflection,
-			&self.embedding,
-			&self.reranker,
-			&self.tokenizer,
-		] {
+		for role in [&self.extraction, &self.derivation, &self.reflection] {
+			role.validate()?;
+		}
+		for role in self
+			.embedding
+			.iter()
+			.chain([&self.reranker, &self.tokenizer])
+		{
 			if role.id.trim().is_empty() || role.version.trim().is_empty() {
 				return Err(Error::Invalid(
 					"every memory role needs a versioned Registry reference".into(),

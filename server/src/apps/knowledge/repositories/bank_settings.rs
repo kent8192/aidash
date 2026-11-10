@@ -1,4 +1,6 @@
 //! A bank pins its Registry policy; callers cannot substitute larger read/storage caps.
+//! A keyword-only policy needs no Workspace index. Switching a nonempty indexed
+//! bank to keyword-only is refused until its old projections have been retired.
 use super::{access::Lease, native_memory::bank_id};
 use crate::{Error, Result, database::native};
 use aidash_domain::{memory::Bank, registry::EntityRef};
@@ -74,31 +76,30 @@ pub(crate) async fn set(
 	// Mutation receipts and model operations remain durable after body retention.
 	// Rejection rolls back both settings and any participant update in this lease.
 	let policy = crate::semantic::native_memory::policy(lease, &bank.tenant, provider).await?;
-	let index =
-		crate::semantic::models::SemanticIndexe::locked(&mut **lease.tx(), bank.workspace, false)
-			.await?
-			.ok_or_else(|| {
-				Error::Conflict("memory banks require an enabled Workspace index".into())
-			})?;
-	let embedding = crate::semantic::native_memory::definition(
-		lease,
-		&bank.tenant,
-		&policy.embedding,
-		"embedding",
-	)
-	.await?;
-	let embedding: aidash_domain::semantic::EmbeddingConfig =
-		serde_json::from_value(embedding.config)?;
-	let configuration = index.configuration()?;
-	if !configuration.enabled {
-		return Err(Error::Conflict(
-			"memory banks require an enabled Workspace index".into(),
-		));
-	}
-	if configuration.embedding != embedding {
-		return Err(Error::Conflict(
-			"memory bank embedding differs from its Workspace index".into(),
-		));
+	if let Some(role) = &policy.embedding {
+		let index = crate::semantic::models::SemanticIndexe::locked(
+			&mut **lease.tx(),
+			bank.workspace,
+			false,
+		)
+		.await?
+		.ok_or_else(|| Error::Conflict("memory banks require an enabled Workspace index".into()))?;
+		let embedding =
+			crate::semantic::native_memory::definition(lease, &bank.tenant, role, "embedding")
+				.await?;
+		let embedding: aidash_domain::semantic::EmbeddingConfig =
+			serde_json::from_value(embedding.config)?;
+		let configuration = index.configuration()?;
+		if !configuration.enabled {
+			return Err(Error::Conflict(
+				"memory banks require an enabled Workspace index".into(),
+			));
+		}
+		if configuration.embedding != embedding {
+			return Err(Error::Conflict(
+				"memory bank embedding differs from its Workspace index".into(),
+			));
+		}
 	}
 	let pending: i64 = native::query_scalar(
 		&Query::select()
@@ -190,6 +191,13 @@ pub(crate) async fn set(
 	if let Some(current) = current.as_ref() {
 		let previous =
 			crate::semantic::native_memory::policy(lease, &bank.tenant, &current.provider).await?;
+		// Existing projections belong to the old embedding generation. They must
+		// be retired before a keyword-only policy can take over the bank.
+		if previous.embedding.is_some() && policy.embedding.is_none() && !unit_ids.is_empty() {
+			return Err(Error::Conflict(
+				"clear the bank before removing its indexed embedding".into(),
+			));
+		}
 		if policy.bounds.max_graph_visits < previous.bounds.max_graph_visits {
 			let rows = native::query(
 				&Query::select()

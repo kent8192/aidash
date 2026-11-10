@@ -7,10 +7,10 @@ fn policy() -> Policy {
 		version: "1.0.0".into(),
 	};
 	Policy {
-		extraction: model.clone(),
-		derivation: model.clone(),
-		reflection: model.clone(),
-		embedding: model.clone(),
+		extraction: RoleModel::Entry(model.clone()),
+		derivation: RoleModel::Entry(model.clone()),
+		reflection: RoleModel::Entry(model.clone()),
+		embedding: Some(model.clone()),
 		reranker: model.clone(),
 		tokenizer: model,
 		semantic_link_min_similarity_millionths: 700_000,
@@ -103,6 +103,7 @@ fn unit() -> Unit {
 struct Scope {
 	inclusive_reads: usize,
 	retention_test: bool,
+	semantic_forbidden: bool,
 	stale: bool,
 	foreign: bool,
 	delivered: bool,
@@ -187,6 +188,9 @@ impl MemoryScope for Scope {
 		_: usize,
 		_: Allowance,
 	) -> Result<Produced<Vec<Uuid>>> {
+		if self.semantic_forbidden {
+			return Err(Error::Forbidden);
+		}
 		Ok(Produced {
 			output: if self.retention_test {
 				vec![Uuid::from_u128(1), Uuid::from_u128(2)]
@@ -367,7 +371,7 @@ async fn local_rrf_leaves_calls_for_embedding_and_reflection() {
 				p.reranker.id = "local-rrf".into();
 			}
 			let engine = Engine {
-				provider: &p.extraction,
+				provider: &p.reranker,
 				policy: &p,
 				models: &models,
 			};
@@ -376,6 +380,7 @@ async fn local_rrf_leaves_calls_for_embedding_and_reflection() {
 				foreign: false,
 				delivered: false,
 				retention_test: false,
+				semantic_forbidden: false,
 				inclusive_reads: 0,
 			};
 			let result = if reflection {
@@ -407,7 +412,7 @@ async fn a_local_reranker_cannot_report_unreserved_model_usage() {
 		followup: None,
 	};
 	let engine = Engine {
-		provider: &p.extraction,
+		provider: &p.reranker,
 		policy: &p,
 		models: &models,
 	};
@@ -416,6 +421,7 @@ async fn a_local_reranker_cannot_report_unreserved_model_usage() {
 		foreign: false,
 		delivered: false,
 		retention_test: false,
+		semantic_forbidden: false,
 		inclusive_reads: 0,
 	};
 	assert!(
@@ -439,7 +445,7 @@ async fn semantic_consolidation_shares_its_synthesis_budget_and_rechecks_sources
 		followup: None,
 	};
 	let engine = Engine {
-		provider: &p.extraction,
+		provider: &p.reranker,
 		policy: &p,
 		models: &models,
 	};
@@ -448,6 +454,7 @@ async fn semantic_consolidation_shares_its_synthesis_budget_and_rechecks_sources
 		foreign: false,
 		delivered: false,
 		retention_test: false,
+		semantic_forbidden: false,
 		inclusive_reads: 0,
 	};
 	let result = engine
@@ -486,7 +493,7 @@ async fn semantic_consolidation_shares_its_synthesis_budget_and_rechecks_sources
 	);
 	p.bounds.max_model_calls = 2;
 	let exhausted = Engine {
-		provider: &p.extraction,
+		provider: &p.reranker,
 		policy: &p,
 		models: &models,
 	};
@@ -503,7 +510,7 @@ async fn recall_refuses_foreign_candidates_and_stale_delivery() {
 		followup: None,
 	};
 	let engine = Engine {
-		provider: &p.extraction,
+		provider: &p.reranker,
 		policy: &p,
 		models: &models,
 	};
@@ -512,6 +519,7 @@ async fn recall_refuses_foreign_candidates_and_stale_delivery() {
 		foreign: true,
 		delivered: false,
 		retention_test: false,
+		semantic_forbidden: false,
 		inclusive_reads: 0,
 	};
 	assert!(
@@ -539,7 +547,7 @@ async fn recall_counts_the_complete_envelope_and_distinguishes_no_space() {
 		followup: None,
 	};
 	let engine = Engine {
-		provider: &p.extraction,
+		provider: &p.reranker,
 		policy: &p,
 		models: &models,
 	};
@@ -548,6 +556,7 @@ async fn recall_counts_the_complete_envelope_and_distinguishes_no_space() {
 		foreign: false,
 		delivered: false,
 		retention_test: false,
+		semantic_forbidden: false,
 		inclusive_reads: 0,
 	};
 	assert_eq!(
@@ -566,6 +575,37 @@ async fn recall_counts_the_complete_envelope_and_distinguishes_no_space() {
 	));
 }
 #[tokio::test]
+async fn recall_without_embedding_uses_keyword_without_calling_semantic_search() {
+	let mut p = policy();
+	p.embedding = None;
+	let models = Models {
+		invented: false,
+		followup: None,
+	};
+	let engine = Engine {
+		provider: &p.reranker,
+		policy: &p,
+		models: &models,
+	};
+	let mut scope = Scope {
+		stale: false,
+		foreign: false,
+		delivered: false,
+		retention_test: true,
+		semantic_forbidden: true,
+		inclusive_reads: 0,
+	};
+	assert!(matches!(
+		engine
+			.recall(&mut scope, &unit().bank, &query(4096))
+			.await
+			.unwrap(),
+		Recall::Ready { .. }
+	));
+	assert!(scope.delivered);
+}
+
+#[tokio::test]
 async fn reflection_rejects_invented_citations() {
 	let p = policy();
 	let models = Models {
@@ -573,7 +613,7 @@ async fn reflection_rejects_invented_citations() {
 		followup: None,
 	};
 	let engine = Engine {
-		provider: &p.extraction,
+		provider: &p.reranker,
 		policy: &p,
 		models: &models,
 	};
@@ -582,6 +622,7 @@ async fn reflection_rejects_invented_citations() {
 		foreign: false,
 		delivered: false,
 		retention_test: false,
+		semantic_forbidden: false,
 		inclusive_reads: 0,
 	};
 	assert!(
@@ -601,7 +642,7 @@ async fn maintenance_cannot_claim_verification_from_synthesis() {
 	draft.evidence = vec![source.evidence()];
 	let mutation = Mutation {
 		operation_id: Uuid::from_u128(20),
-		provider: p.extraction.clone(),
+		provider: p.reranker.clone(),
 		bank: source.bank.clone(),
 		changes: vec![Change::Add {
 			id: Uuid::from_u128(21),
@@ -614,7 +655,7 @@ async fn maintenance_cannot_claim_verification_from_synthesis() {
 			followup: None,
 		};
 		let engine = Engine {
-			provider: &p.extraction,
+			provider: &p.reranker,
 			policy: &p,
 			models: &models,
 		};
@@ -623,6 +664,7 @@ async fn maintenance_cannot_claim_verification_from_synthesis() {
 			foreign: false,
 			delivered: false,
 			retention_test: false,
+			semantic_forbidden: false,
 			inclusive_reads: 0,
 		};
 		let result = engine
@@ -658,7 +700,7 @@ async fn reflection_followup_cannot_expand_the_callers_context_budget() {
 		followup: Some(query(4096)),
 	};
 	let engine = Engine {
-		provider: &p.extraction,
+		provider: &p.reranker,
 		policy: &p,
 		models: &models,
 	};
@@ -667,6 +709,7 @@ async fn reflection_followup_cannot_expand_the_callers_context_budget() {
 		foreign: false,
 		delivered: false,
 		retention_test: false,
+		semantic_forbidden: false,
 		inclusive_reads: 0,
 	};
 	assert!(
@@ -704,6 +747,7 @@ async fn model_reranker_ties_follow_retention_and_disabled_decay_keeps_id_order(
 			foreign: false,
 			delivered: false,
 			retention_test: true,
+			semantic_forbidden: false,
 			inclusive_reads: 0,
 		};
 		let Recall::Ready { units } = engine
@@ -739,6 +783,7 @@ async fn inclusive_recall_uses_one_atomic_snapshot_instead_of_two_retention_read
 	};
 	let mut scope = Scope {
 		retention_test: false,
+		semantic_forbidden: false,
 		inclusive_reads: 0,
 		stale: false,
 		foreign: false,
@@ -918,6 +963,52 @@ fn numbered(id: u128, text: &str) -> Unit {
 	unit.content.text = text.into();
 	unit
 }
+
+#[tokio::test]
+async fn recall_without_embedding_follows_links_from_temporal_hits() {
+	let mut p = policy();
+	p.embedding = None;
+	let at = chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+		.unwrap()
+		.with_timezone(&chrono::Utc);
+	let window = TimeRange { start: at, end: at };
+	let mut first = numbered(1, "A dated event");
+	let second = numbered(2, "Linked event");
+	first.content.occurred = Some(window.clone());
+	first.content.links.push(Link {
+		target: second.id,
+		revision: second.revision,
+		kind: LinkKind::Causes,
+		weight: 1.0,
+	});
+	let models = ScoredModels(BTreeMap::from([(first.id, 1.0), (second.id, 1.0)]), false);
+	let engine = Engine {
+		provider: &p.reranker,
+		policy: &p,
+		models: &models,
+	};
+	let mut scope = DiverseScope {
+		units: vec![first, second],
+		vectors: BTreeMap::new(),
+		vector_reads: 0,
+		delivered: vec![],
+	};
+	let mut request = query(4096);
+	request.time = Some(window);
+	let Recall::Ready { units } = engine
+		.recall(&mut scope, &unit().bank, &request)
+		.await
+		.unwrap()
+	else {
+		panic!("expected temporal and linked Units")
+	};
+	let ids: BTreeSet<_> = units.iter().map(|unit| unit.id).collect();
+	assert_eq!(
+		ids,
+		BTreeSet::from([Uuid::from_u128(1), Uuid::from_u128(2)])
+	);
+}
+
 /// Run recall over `units` and return the delivered Unit numbers in delivery order.
 async fn recalled(
 	lambda: Option<u32>,
@@ -946,7 +1037,7 @@ async fn recalled_priced(
 		exact,
 	);
 	let engine = Engine {
-		provider: &p.extraction,
+		provider: &p.reranker,
 		policy: &p,
 		models: &models,
 	};

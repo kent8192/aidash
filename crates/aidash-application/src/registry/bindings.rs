@@ -823,8 +823,11 @@ fn validate_memory_sources(
 	let mut embedding = None;
 	for reference in providers {
 		let provider: ProviderConfig = serde_json::from_value(lookup(&reference)?.config.clone())?;
+		let Some(role) = provider.policy.embedding.as_ref() else {
+			continue;
+		};
 		let configuration: aidash_domain::semantic::EmbeddingConfig =
-			serde_json::from_value(lookup(&provider.policy.embedding)?.config.clone())?;
+			serde_json::from_value(lookup(role)?.config.clone())?;
 		if embedding
 			.as_ref()
 			.is_some_and(|previous| previous != &configuration)

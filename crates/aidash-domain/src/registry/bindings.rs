@@ -160,18 +160,20 @@ pub fn definition_references(
 				declaration.validate()?;
 				result.extend(declaration.references());
 			}
-			result.extend(
-				[
-					(provider.policy.extraction, "model"),
-					(provider.policy.derivation, "model"),
-					(provider.policy.reflection, "model"),
-					(provider.policy.embedding, "embedding"),
-					(provider.policy.reranker, "reranker"),
-					(provider.policy.tokenizer, "tokenizer"),
-				]
-				.into_iter()
-				.map(|(r, k)| (local(&r), k.into())),
-			);
+			for role in [
+				provider.policy.extraction,
+				provider.policy.derivation,
+				provider.policy.reflection,
+			] {
+				if let crate::memory::RoleModel::Entry(reference) = role {
+					result.push((local(&reference), "model".into()));
+				}
+			}
+			if let Some(reference) = provider.policy.embedding {
+				result.push((local(&reference), "embedding".into()));
+			}
+			result.push((local(&provider.policy.reranker), "reranker".into()));
+			result.push((local(&provider.policy.tokenizer), "tokenizer".into()));
 		}
 		"source" => {
 			let source: crate::memory::SourceConfig = serde_json::from_value(entry.config.clone())?;

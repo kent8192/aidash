@@ -209,11 +209,6 @@ impl SemanticConfigurationSession for Configuration {
 				break;
 			}
 			for row in rows {
-				if !proposed.enabled {
-					return Err(aidash_application::Error::Conflict(
-						"Workspace index must remain enabled for pinned memory banks".into(),
-					));
-				}
 				after = row.try_get("bank_id")?;
 				let reference = (
 					row.try_get::<String>("tenant")?,
@@ -232,7 +227,14 @@ impl SemanticConfigurationSession for Configuration {
 				.await?;
 				let config: aidash_domain::memory::ProviderConfig =
 					serde_json::from_value(provider.config)?;
-				let role = &config.policy.embedding;
+				let Some(role) = &config.policy.embedding else {
+					continue;
+				};
+				if !proposed.enabled {
+					return Err(aidash_application::Error::Conflict(
+						"Workspace index must remain enabled for pinned memory banks".into(),
+					));
+				}
 				let embedding = crate::apps::registry::models::Definition::read_of(
 					self.tx()?,
 					&reference.0,

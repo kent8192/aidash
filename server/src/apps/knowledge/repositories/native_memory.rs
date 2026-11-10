@@ -656,6 +656,33 @@ pub(crate) async fn project(
 ) -> Result<()> {
 	use crate::apps::knowledge::services::core;
 	use aidash_domain::semantic::{Source, mutations::Entry};
+	let policy_provider = match provider {
+		Some(provider) => Some(provider.clone()),
+		None => super::bank_settings::get(lease, &unit.bank)
+			.await?
+			.map(|settings| settings.provider),
+	};
+	if let Some(provider) = &policy_provider {
+		// Fencing can update a dependent bank whose provider the initiating
+		// subject cannot read. This internal projection decision needs only the
+		// pinned definition; it must not grant or disclose that definition.
+		let entry = crate::apps::registry::models::Definition::read_of(
+			&mut **lease.tx(),
+			&unit.bank.tenant,
+			&provider.id,
+			&provider.version,
+		)
+		.await?;
+		if entry.kind != "memory" {
+			return Err(Error::Invalid(
+				"memory provider definition changed kind".into(),
+			));
+		}
+		let config: ProviderConfig = serde_json::from_value(entry.config)?;
+		if config.policy.embedding.is_none() {
+			return Ok(());
+		}
+	}
 	let Some(index) = crate::apps::knowledge::models::SemanticIndexe::locked(
 		&mut **lease.tx(),
 		unit.bank.workspace,

@@ -154,14 +154,7 @@ pub(crate) async fn bind(
 		let policy = memory::policy(lease, &bank.tenant, &provider).await?;
 		let definition = memory::definition(lease, &bank.tenant, &provider, "memory").await?;
 		let mut roles = Vec::new();
-		for (reference, kind) in [
-			(&policy.extraction, "model"),
-			(&policy.derivation, "model"),
-			(&policy.reflection, "model"),
-			(&policy.embedding, "embedding"),
-			(&policy.reranker, "reranker"),
-			(&policy.tokenizer, "tokenizer"),
-		] {
+		for (reference, kind) in policy.role_references() {
 			let entry = memory::definition(lease, &bank.tenant, reference, kind).await?;
 			if kind == "reranker"
 				&& let RerankerConfig::Model { model } =

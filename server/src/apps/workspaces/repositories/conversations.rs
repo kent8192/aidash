@@ -335,8 +335,10 @@ async fn memory_embedding_of(
 		return Ok(None);
 	};
 	let policy = native_memory::policy(&mut lease, tenant, &provider).await?;
-	let embedding =
-		native_memory::definition(&mut lease, tenant, &policy.embedding, "embedding").await?;
+	let Some(role) = &policy.embedding else {
+		return Ok(None);
+	};
+	let embedding = native_memory::definition(&mut lease, tenant, role, "embedding").await?;
 	Ok(Some(MemoryEmbedding {
 		provider,
 		embedding: serde_json::from_value(embedding.config)?,

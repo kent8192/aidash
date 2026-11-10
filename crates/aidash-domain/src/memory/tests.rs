@@ -3,6 +3,20 @@ use crate::memory::recall::{Rankings, fuse, graph, temporal};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
+fn policy_accepts_agent_roles_without_embedding() {
+	let mut value: serde_json::Value = serde_json::from_str(include_str!(
+		"../../../../tests/fixtures/native_memory_policy_baseline.json"
+	))
+	.unwrap();
+	for role in ["extraction", "derivation", "reflection"] {
+		value[role] = serde_json::json!("agent_model");
+	}
+	value["embedding"] = serde_json::Value::Null;
+	let policy: Policy = serde_json::from_value(value).unwrap();
+	assert!(policy.validate().is_ok());
+}
+
+#[test]
 fn role_model_accepts_agent_model_or_a_pinned_entry() {
 	let own: RoleModel = serde_json::from_str("\"agent_model\"").unwrap();
 	assert!(own.validate().is_ok());

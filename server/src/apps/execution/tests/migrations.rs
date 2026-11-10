@@ -76,6 +76,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0061_provider_tools"),
 	("registry", "0062_provider_warning_tools"),
 	("registry", "0063_reference_set_limit"),
+	("registry", "0064_optional_memory_roles"),
 	("registry", "0060_subnode_provider"),
 	("registry", "0055_remove_structured_harness_contracts"),
 	("registry", "0056_attachment_tools"),
@@ -4669,6 +4670,94 @@ async fn node_purge_registration_recovery_ownership_roundtrips_without_a_catalog
 			Some("23503")
 		);
 	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn memory_role_migration_accepts_agent_model_and_optional_embedding(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	let source =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
+	let migrations = source.all_migrations().await.unwrap();
+	DatabaseMigrationExecutor::new(fixture.connection.clone())
+		.with_migration_history(migrations.clone())
+		.apply_migrations(&migrations)
+		.await
+		.unwrap();
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let mut policy: serde_json::Value = serde_json::from_str(include_str!(
+		"../../../../../tests/fixtures/native_memory_policy_baseline.json"
+	))
+	.unwrap();
+	policy["reranker"] = json!({"id":"fixture-reranker","version":"1.0.0"});
+	policy["tokenizer"] = json!({"id":"fixture-tokenizer","version":"1.0.0"});
+	for role in ["extraction", "derivation", "reflection"] {
+		policy[role] = json!("agent_model");
+	}
+	policy["embedding"] = serde_json::Value::Null;
+	let config = json!({"engine":"hindsight_rust", "policy":policy});
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_native_context_is_valid",
+			vec![config.clone(), json!("memory")]
+		)
+		.await
+	);
+	fixture.tenant_root("acme").await;
+	let mut tx = aidash_server::database::scope::begin_fixture_deployment(&pool)
+		.await
+		.unwrap();
+	for (id, kind, definition) in [
+		("fixture-reranker", "reranker", json!({"provider":"rrf"})),
+		(
+			"fixture-tokenizer",
+			"tokenizer",
+			json!({"provider":"utf8_upper_bound"}),
+		),
+		("fixture-memory", "memory", config.clone()),
+	] {
+		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":"Fixture"},"description":{"en":"Fixture"},"config":definition});
+		let insert = Query::insert()
+			.into_table(Alias::new("registry"))
+			.columns(["tenant", "id", "version", "kind", "metadata"].map(Alias::new))
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value("acme"))
+					.expr(Expr::value(id))
+					.expr(Expr::value("1.0.0"))
+					.expr(Expr::value(kind))
+					.expr(Expr::value(entry))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder);
+		sqlx::query(&insert).execute(&mut *tx).await.unwrap();
+	}
+	let select = Query::select()
+		.column(Alias::new("role"))
+		.from(Alias::new("registry_memory_role_refs"))
+		.and_where(Expr::col("tenant").eq("acme"))
+		.and_where(Expr::col("source_id").eq("fixture-memory"))
+		.order_by(Alias::new("role"), reinhardt::query::Order::Asc)
+		.to_string(PostgresQueryBuilder);
+	let roles: Vec<String> = sqlx::query_scalar(&select)
+		.fetch_all(&mut *tx)
+		.await
+		.unwrap();
+	assert_eq!(roles, ["reranker", "tokenizer"]);
+	tx.rollback().await.unwrap();
+	let mut invalid = config;
+	invalid["policy"]["extraction"] = json!("unknown");
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_native_context_is_valid",
+			vec![invalid, json!("memory")]
+		)
+		.await
+	);
 }
 
 #[rstest]

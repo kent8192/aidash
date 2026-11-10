@@ -93,14 +93,21 @@ pub fn rewrite(entry: &mut Entry, bindings: &[DependencyBinding], node: &str) ->
 		"memory" if entry.config.get("schema_version").is_none() => {
 			let mut c: crate::memory::ProviderConfig =
 				serde_json::from_value(entry.config.clone())?;
-			for reference in [
+			for role in [
 				&mut c.policy.extraction,
 				&mut c.policy.derivation,
 				&mut c.policy.reflection,
-				&mut c.policy.embedding,
-				&mut c.policy.reranker,
-				&mut c.policy.tokenizer,
 			] {
+				if let crate::memory::RoleModel::Entry(reference) = role {
+					bind(reference, bindings);
+				}
+			}
+			for reference in c
+				.policy
+				.embedding
+				.iter_mut()
+				.chain([&mut c.policy.reranker, &mut c.policy.tokenizer])
+			{
 				bind(reference, bindings);
 			}
 			entry.config = serde_json::to_value(c)?;

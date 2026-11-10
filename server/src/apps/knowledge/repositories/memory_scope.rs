@@ -66,15 +66,14 @@ impl Scope<'_, '_> {
 			mode,
 		)
 		.await?;
-		let embedding: EmbeddingConfig = serde_json::from_value(
-			self.models
-				.role(&self.models.policy.embedding, "embedding")?
-				.config
-				.clone(),
-		)?;
-		let graph =
+		let graph = if let Some(role) = &self.models.policy.embedding {
+			let embedding: EmbeddingConfig =
+				serde_json::from_value(self.models.role(role, "embedding")?.config.clone())?;
 			super::memory_graph::current(self.lease, &units, &self.models.policy, &embedding)
-				.await?;
+				.await?
+		} else {
+			Vec::new()
+		};
 		Ok(Snapshot {
 			units,
 			graph,
@@ -90,7 +89,7 @@ impl Scope<'_, '_> {
 		limit: usize,
 		allowance: Allowance,
 	) -> Result<Produced<Vec<Uuid>>> {
-		if model != &self.models.policy.embedding {
+		if Some(model) != self.models.policy.embedding.as_ref() {
 			return Err(Error::Conflict("memory embedding role changed".into()));
 		}
 		let index = crate::semantic::models::SemanticIndexe::locked(
@@ -251,19 +250,18 @@ impl MemoryScope for Scope<'_, '_> {
 			self.models.policy.bounds.max_graph_visits,
 		)
 		.await?;
-		let embedding: EmbeddingConfig = serde_json::from_value(
-			self.models
-				.role(&self.models.policy.embedding, "embedding")?
-				.config
-				.clone(),
-		)?;
 		units.extend(dormant);
 		// Each inclusive partition has its own source bound. Validate graph
 		// scalar work against the actual combined authorized snapshot.
 		let mut graph_policy = self.models.policy.clone();
 		graph_policy.bounds.max_units = graph_policy.bounds.max_units.max(units.len());
-		let graph =
-			super::memory_graph::current(self.lease, &units, &graph_policy, &embedding).await?;
+		let graph = if let Some(role) = &self.models.policy.embedding {
+			let embedding: EmbeddingConfig =
+				serde_json::from_value(self.models.role(role, "embedding")?.config.clone())?;
+			super::memory_graph::current(self.lease, &units, &graph_policy, &embedding).await?
+		} else {
+			Vec::new()
+		};
 		Ok(Snapshot {
 			units,
 			graph,
@@ -296,12 +294,11 @@ impl MemoryScope for Scope<'_, '_> {
 		if bank != &self.models.bank || units.iter().any(|unit| unit.bank != *bank) {
 			return Err(aidash_application::Error::Forbidden);
 		}
-		let embedding: EmbeddingConfig = serde_json::from_value(
-			self.models
-				.role(&self.models.policy.embedding, "embedding")?
-				.config
-				.clone(),
-		)?;
+		let Some(role) = &self.models.policy.embedding else {
+			return Ok(Default::default());
+		};
+		let embedding: EmbeddingConfig =
+			serde_json::from_value(self.models.role(role, "embedding")?.config.clone())?;
 		super::memory_graph::current_vectors(self.lease, units, &embedding)
 			.await
 			.map_err(Into::into)

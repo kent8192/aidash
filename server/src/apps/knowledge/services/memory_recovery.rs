@@ -474,14 +474,7 @@ async fn validate_writer(store: &Store, unit: &Unit, policy: &Policy) -> Result<
 			.ok_or(Error::Forbidden)?;
 		// Exact provider roles and generated origin allowance are rechecked
 		// before any rebuild can invoke a model. No reservation is refunded.
-		for (reference, kind) in [
-			(&policy.extraction, "model"),
-			(&policy.derivation, "model"),
-			(&policy.reflection, "model"),
-			(&policy.embedding, "embedding"),
-			(&policy.reranker, "reranker"),
-			(&policy.tokenizer, "tokenizer"),
-		] {
+		for (reference, kind) in policy.role_references() {
 			native_memory::definition(
 				&mut Lease::Inherited(&mut access),
 				&unit.bank.tenant,
