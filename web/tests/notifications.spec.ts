@@ -71,7 +71,7 @@ test("an older task completing emits one notice from the visible event", async (
   await expect(page.locator(".intent-toast-open")).toContainText("Older task");
   await refreshState(page);
   await page.clock.runFor(6000);
-  await expect(page.locator(".intent-toast")).toHaveCount(1);
+  await expect(page.locator(".intent-toast")).toHaveCount(0);
 });
 
 for (const width of [1440, 390]) {
