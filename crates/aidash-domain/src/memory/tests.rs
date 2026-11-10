@@ -3,6 +3,15 @@ use crate::memory::recall::{Rankings, fuse, graph, temporal};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
+fn tenant_memory_scope_widens_only_for_the_same_agent_and_tenant() {
+	assert!(SharingScope::Workspace.permits(true, true, false));
+	assert!(!SharingScope::Workspace.permits(true, false, true));
+	assert!(SharingScope::TenantAgent.permits(true, false, true));
+	assert!(!SharingScope::TenantAgent.permits(true, false, false));
+	assert!(!SharingScope::TenantAgent.permits(false, true, true));
+}
+
+#[test]
 fn policy_accepts_agent_roles_without_embedding() {
 	let mut value: serde_json::Value = serde_json::from_str(include_str!(
 		"../../../../tests/fixtures/native_memory_policy_baseline.json"

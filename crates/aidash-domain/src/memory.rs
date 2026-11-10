@@ -15,6 +15,20 @@ pub mod impact;
 pub mod recall;
 pub mod recovery;
 
+/// Where built-in memory may be recalled across Runs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SharingScope {
+	#[default]
+	Workspace,
+	TenantAgent,
+}
+impl SharingScope {
+	pub fn permits(self, same_tenant: bool, same_workspace: bool, same_agent: bool) -> bool {
+		same_tenant && (same_workspace || self == Self::TenantAgent && same_agent)
+	}
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
@@ -160,10 +174,13 @@ impl Kind {
 }
 
 /// Verification is separate from admission and model confidence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Verification {
+	#[default]
 	Unverified,
+	/// Automatically recorded with provenance, without an assertion of truth.
+	Recorded,
 	Supported,
 	Contradicted,
 }
@@ -287,6 +304,7 @@ pub struct Content {
 	pub text: String,
 	pub kind: Kind,
 	pub learning: Learning,
+	#[serde(default)]
 	pub verification: Verification,
 	pub occurred: Option<TimeRange>,
 	pub entities: Vec<Entity>,
@@ -376,8 +394,10 @@ impl Content {
 			}
 		}
 		if self.kind.derived()
-			&& (self.verification != Verification::Unverified
-				|| self.evidence.is_empty()
+			&& (!matches!(
+				self.verification,
+				Verification::Unverified | Verification::Recorded
+			) || self.evidence.is_empty()
 				|| self
 					.evidence
 					.iter()
