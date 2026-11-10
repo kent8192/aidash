@@ -545,19 +545,10 @@ impl ExecutionStore for RunStore {
 		if !builtin || ranges.is_empty() {
 			return Ok(());
 		}
-		let queue = Arc::new(
-			crate::apps::knowledge::repositories::engine_jobs::offloads::OffloadQueue {
-				store: self.store.clone(),
-			},
-		);
-		// The extraction runs detached; the step does not wait for it.
-		drop(
-			crate::apps::knowledge::repositories::engine_jobs::offloads::schedule(
-				queue,
-				run.id,
-				ranges.to_vec(),
-			),
-		);
+		self.offloaded
+			.lock()
+			.unwrap_or_else(|error| error.into_inner())
+			.extend_from_slice(ranges);
 		Ok(())
 	}
 	async fn begin_compaction(
@@ -1189,6 +1180,15 @@ impl<'a> Environment<'a> {
 			step_run: run.clone(),
 			run_store: federation.store.for_run(scope),
 		}
+	}
+	pub(crate) fn take_offloaded(&self) -> Vec<aidash_application::context::offload::JournalRange> {
+		std::mem::take(
+			&mut *self
+				.run_store
+				.offloaded
+				.lock()
+				.unwrap_or_else(|error| error.into_inner()),
+		)
 	}
 	fn native_home(&self) -> Home {
 		Home::new(self.federation.clone(), self.step_run.clone()).with_authority(
