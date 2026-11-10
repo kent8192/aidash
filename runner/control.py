@@ -787,7 +787,7 @@ class Runner(AllocationJournal):
                     }.items()], "resources": {"requests": {"cpu": "100m", "memory": "64Mi"},
                                               "limits": {"cpu": str(cpu), "memory": str(memory)}},
                     "volumeMounts": mounts}
-        worker_mounts = [{"name": name, "mountPath": path, "readOnly": name in ("references", "received", "request")}
+        worker_mounts = [{"name": name, "mountPath": path, "readOnly": name in ("references", "received", "request") or (name == "work" and record["request"]["kind"] == "journal")}
                          for name, path in (("work", "/work"), ("references", "/references"),
                                             ("received", "/received"), ("request", "/request"), ("temp", "/tmp"))]
         collector_mounts = [{"name": m["name"], "mountPath": m["mountPath"]} for m in worker_mounts if m["name"] != "temp"]
