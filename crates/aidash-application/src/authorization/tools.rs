@@ -108,6 +108,8 @@ fn allowed_in_subnode(
 	contract: &ToolContract,
 	allowance: &aidash_domain::subnodes::Allowance,
 ) -> Result<bool> {
+	let journal = matches!(&contract.identity, ToolIdentity::Builtin(name)
+		if ["builtin:journal_query", "builtin:journal_search", "builtin:journal_read"].contains(&name.as_str()));
 	let (name, secret) = match &contract.identity {
 		ToolIdentity::Builtin(name) => (
 			name.strip_prefix("builtin:").unwrap_or(name).to_owned(),
@@ -155,11 +157,10 @@ fn allowed_in_subnode(
 		}
 		ToolIdentity::AgentPlugin(_) => return Ok(false),
 	};
-	Ok(
-		(aidash_domain::subnodes::COORDINATION_TOOLS.contains(&name.as_str())
-			|| allowance.tools.contains(&name))
-			&& secret.is_none_or(|secret| allowance.secrets.contains(&secret)),
-	)
+	Ok((journal
+		|| aidash_domain::subnodes::COORDINATION_TOOLS.contains(&name.as_str())
+		|| allowance.tools.contains(&name))
+		&& secret.is_none_or(|secret| allowance.secrets.contains(&secret)))
 }
 
 pub async fn authorize(

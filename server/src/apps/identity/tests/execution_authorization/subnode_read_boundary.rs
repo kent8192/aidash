@@ -269,6 +269,255 @@ async fn subnode_task_persists_journal_handover_and_records_creator_read(
 	cleanup(f, &url, &schema).await;
 }
 
+#[rstest::rstest]
+#[tokio::test]
+async fn subnode_member_can_export_only_the_handed_creator_range(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	use aidash_application::ports::journal_export::JournalSource;
+	let (f, url, schema) = fixture.runtime.parts();
+	let mut rig = SubnodeRig::from_conversation(&f, &fixture.application).await;
+	rig.read_own_task(rig.creator_run).await;
+	let created = rig
+		.call(
+			rig.creator_run,
+			"subnode_create",
+			json!({
+				"leader":"subnode-leader@1.0.0", "members":["subnode-leader@1.0.0", "subnode-second@1.0.0"],
+				"allowance":{"tools":SUBNODE_TOOLS,"secrets":[]}
+			}),
+			"create-range-subnode",
+		)
+		.await;
+	let seq: i64 = sqlx::query_scalar("SELECT MIN(seq) FROM run_context_events WHERE run_id = $1")
+		.bind(rig.creator_run)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let given = rig
+		.call(
+			rig.creator_run,
+			"subnode_task",
+			json!({
+				"subnode_id":created["subnode_id"], "title":"Search", "request":"Find evidence",
+				"journal_range":{"from_seq":seq,"through_seq":seq}
+			}),
+			"give-range",
+		)
+		.await;
+	let task: Uuid = given["task_id"].as_str().unwrap().parse().unwrap();
+	let member = rig.run_of_task(task).await;
+	let mut policy = rig.policy.clone();
+	let member_subject =
+		aidash_domain::agent_subject(&rig.node.to_string(), "subnode-leader", "1.0.0");
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-member-creator-run", "effect":"deny", "subjects":{"ids":[member_subject]},
+		"actions":["run.read"], "resources":{"kinds":["run"],"ids":[rig.creator_run]}
+	}));
+	set_policy(&f, &fixture.application, &policy).await;
+	let seq = seq as u64;
+	let lines = f
+		.store
+		.export(&TEST_FIXTURE, member, rig.creator_run, Some((seq, seq)))
+		.await
+		.unwrap();
+	assert_eq!(lines.len(), 1);
+	assert_eq!(lines[0].seq, seq);
+	let from_tool = rig
+		.call(
+			member,
+			"journal_read",
+			json!({
+				"run_id":rig.creator_run,"from_seq":seq,"through_seq":seq
+			}),
+			"member-journal-read",
+		)
+		.await;
+	let delivered: Value =
+		serde_json::from_str(from_tool["text"].as_str().unwrap().trim()).unwrap();
+	assert_eq!(delivered["seq"], seq);
+	// Exercise Journal Query with a Runner protocol peer and inspect its upload.
+	use base64::{Engine as _, engine::general_purpose::STANDARD};
+	let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+	let recorded = requests.clone();
+	let mut profile = (*rig.f.store.capabilities.0).clone();
+	let health = json!({"protocol":"aidash-runner/1","verified":true,"python_verified":true,
+		"image":"fixture@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"runtime_class":"fixture","instance":"runner-one","probe":{"resources":{
+		"cpu":profile.cpu,"memory_bytes":profile.memory_bytes,"swap_bytes":0,"processes":profile.processes,
+		"working_bytes":profile.working_bytes,"temporary_bytes":profile.temporary_bytes}}});
+	let router = reinhardt::ServerRouter::new().handler("/{*rest}", upstream_fixtures::any_handler(move |request: reinhardt::Request| {
+		let path = request.uri.path().to_owned();
+		let body = request.json::<Value>().unwrap_or(Value::Null);
+		let mut calls = recorded.lock().unwrap();
+		calls.push(json!({"path":path,"body":body}));
+		let response = if path == "/v1/health" { health.clone() }
+		else if path == "/v1/operations" { json!({"status":"awaiting_files"}) }
+		else if path.contains("/inputs/") { json!({"received":true}) }
+		else if path.ends_with("/start") {
+			let upload = calls.iter().rev().find(|call| call["path"].as_str().is_some_and(|p| p.contains("/inputs/"))).unwrap();
+			let bytes = STANDARD.decode(upload["body"]["data"].as_str().unwrap()).unwrap();
+			json!({"status":"completed","writer_frozen":true,"stdout":STANDARD.encode(bytes),"truncated":false})
+		} else if path.ends_with("/ack") { json!({"acknowledged":true}) }
+		else if path.ends_with("/stop") { json!({"termination_confirmed":true}) }
+		else if path.starts_with("/v1/sessions/") { json!({"live":true}) }
+		else { panic!("unexpected Runner request: {path}") };
+		async move { reinhardt::Response::ok().with_json(&response).unwrap() }
+	}));
+	let runner = upstream_fixtures::upstream(std::sync::Arc::new(router)).await;
+	profile.admission = true;
+	profile.runner = Some(
+		serde_json::from_value(
+			json!({"endpoint":runner.url,"token_env":"AIDASH_COMMAND_CLEANUP_TEST_TOKEN",
+		"image":"fixture@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"runtime_class":"fixture","namespace":"fixture"}),
+		)
+		.unwrap(),
+	);
+	rig.f.store.capabilities = aidash_server::capabilities::Runtime::new(profile).unwrap();
+	let queried = rig
+		.call(
+			member,
+			"journal_query",
+			json!({"run_id":rig.creator_run,"code":"journal()",
+		"journal_range":{"from_seq":seq,"through_seq":seq}}),
+			"member-journal-query",
+		)
+		.await;
+	let line: Value = serde_json::from_str(queried["stdout"].as_str().unwrap().trim()).unwrap();
+	assert_eq!(line["seq"], seq);
+	let child_task = rig.create_task(member, "handed-child", &[]).await;
+	let child = rig.delegate(member, child_task, "subnode-second").await;
+	let child_lines = f
+		.store
+		.export(&TEST_FIXTURE, child, rig.creator_run, Some((seq, seq)))
+		.await
+		.unwrap();
+	assert_eq!(child_lines[0].seq, seq);
+	assert!(
+		f.store
+			.export(&TEST_FIXTURE, member, rig.creator_run, None)
+			.await
+			.is_err()
+	);
+	assert!(
+		f.store
+			.export(&TEST_FIXTURE, member, rig.creator_run, Some((seq, seq + 1)))
+			.await
+			.is_err()
+	);
+	assert!(
+		JournalSource::snapshot(
+			&f.store,
+			&TEST_FIXTURE,
+			member,
+			rig.creator_run,
+			Some((seq, seq + 1))
+		)
+		.await
+		.is_err()
+	);
+	assert!(
+		f.store
+			.export(&TEST_FIXTURE, member, Uuid::new_v4(), Some((seq, seq)))
+			.await
+			.is_err()
+	);
+	assert!(
+		f.store
+			.export(&TEST_FIXTURE, member, member, None)
+			.await
+			.is_ok()
+	);
+	let no_range = rig
+		.call(
+			rig.creator_run,
+			"subnode_task",
+			json!({
+				"subnode_id":created["subnode_id"], "title":"Other", "request":"Do other work"
+			}),
+			"other-task",
+		)
+		.await;
+	let other_task: Uuid = no_range["task_id"].as_str().unwrap().parse().unwrap();
+	let other = rig.run_of_task(other_task).await;
+	assert!(
+		f.store
+			.export(&TEST_FIXTURE, other, rig.creator_run, Some((seq, seq)))
+			.await
+			.is_err()
+	);
+	assert!(
+		f.store
+			.export(&TEST_FIXTURE, member, other, Some((seq, seq)))
+			.await
+			.is_err()
+	);
+	// A stored Research result is resolved afresh after its Run is revoked.
+	let payload = json!({"contract":"aidash.research.result/1","operation":"search","data":{"text":"private evidence"}});
+	let digest = aidash_domain::registry::rules::digest(&payload);
+	let reference = json!({"contract":"aidash.research.reference/1","invocation":"research-fixture","digest":digest,"operation":"search","sources":[],"documents":[]});
+	let event = aidash_domain::context::ContextEvent::tool(
+		aidash_domain::provider::ToolCall {
+			id: "research-fixture".into(),
+			name: "research_search".into(),
+			arguments: json!({"query":"private query"}),
+		},
+		reference.clone(),
+	);
+	let event = serde_json::to_value(event).unwrap();
+	sqlx::query("UPDATE run_context_events SET event=$1, digest=$2 WHERE run_id=$3 AND seq=$4")
+		.bind(&event)
+		.bind(aidash_domain::registry::rules::digest(&event))
+		.bind(rig.creator_run)
+		.bind(seq as i64)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	sqlx::query("INSERT INTO research_journal_results (id, tenant, run_id, invocation_key, digest, reference, bytes, created_at) VALUES ($1,'acme',$2,'research-fixture',$3,$4,$5,now())")
+		.bind(Uuid::new_v4()).bind(rig.creator_run).bind(&digest).bind(&reference).bind(payload.to_string().into_bytes())
+		.execute(f.store.pool.fixture_driver()).await.unwrap();
+	let before = JournalSource::snapshot(
+		&f.store,
+		&TEST_FIXTURE,
+		member,
+		rig.creator_run,
+		Some((seq, seq)),
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		before.lines[0].result.as_ref().unwrap()["data"]["text"],
+		"private evidence"
+	);
+	sqlx::query("INSERT INTO research_revocations (run_id, tenant, revoked_by, reason, revoked_at, removed) VALUES ($1,'acme',$2,'test revocation',now(),$3)")
+		.bind(rig.creator_run)
+		.bind(json!({"kind":"subject","tenant":"acme","subject":"alice"}))
+		.bind(json!({"sources":0,"snapshots":0,"fragments":0,"attempts":0,"invocations":0,"snapshot_digests":[]}))
+		.execute(f.store.pool.fixture_driver()).await.unwrap();
+	let after = JournalSource::snapshot(
+		&f.store,
+		&TEST_FIXTURE,
+		member,
+		rig.creator_run,
+		Some((seq, seq)),
+	)
+	.await
+	.unwrap();
+	assert!(aidash_domain::context::ContextEvent::is_revoked_result(
+		after.lines[0].result.as_ref().unwrap()
+	));
+	assert_ne!(before.generation, after.generation);
+	assert!(
+		!serde_json::to_string(&after.lines)
+			.unwrap()
+			.contains("private")
+	);
+	cleanup(f, &url, &schema).await;
+}
+
 /// #755: `subnode_task` records a read in the Subnode's Workspace, and the next
 /// delegation checks that read under an authority that names only the creator's
 /// Workspace.

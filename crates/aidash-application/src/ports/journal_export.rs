@@ -14,6 +14,32 @@ pub struct JournalSnapshot {
 	pub dependencies: aidash_domain::context::research::JournalDependencies,
 }
 
+/// Build a snapshot from the complete set of lines the reader is authorized to inspect.
+pub fn snapshot_from_lines(lines: Vec<JournalLine>, range: Option<(u64, u64)>) -> JournalSnapshot {
+	let withdrawn: Vec<_> = lines
+		.iter()
+		.filter_map(|line| {
+			let result = line.result.as_ref()?;
+			let unavailable = result["contract"] == "aidash.research.unavailable/1";
+			(ContextEvent::is_revoked_result(result)
+				|| ContextEvent::is_expired_result(result)
+				|| unavailable)
+				.then(|| (line.seq, result["contract"].clone()))
+		})
+		.collect();
+	let generation = aidash_domain::registry::rules::digest(&serde_json::json!(withdrawn));
+	let lines = lines
+		.into_iter()
+		.filter(|line| range.is_none_or(|(from, through)| (from..=through).contains(&line.seq)))
+		.collect::<Vec<_>>();
+	let dependencies = aidash_domain::context::research::JournalDependencies::from_lines(&lines);
+	JournalSnapshot {
+		lines,
+		generation,
+		dependencies,
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -116,28 +142,6 @@ pub trait JournalSource: Send + Sync {
 			return Err(Error::Invalid("invalid journal range".into()));
 		}
 		let lines = self.export(scope, reader_run, target_run, None).await?;
-		let withdrawn: Vec<_> = lines
-			.iter()
-			.filter_map(|line| {
-				let result = line.result.as_ref()?;
-				let unavailable = result["contract"] == "aidash.research.unavailable/1";
-				(ContextEvent::is_revoked_result(result)
-					|| ContextEvent::is_expired_result(result)
-					|| unavailable)
-					.then(|| (line.seq, result["contract"].clone()))
-			})
-			.collect();
-		let generation = aidash_domain::registry::rules::digest(&serde_json::json!(withdrawn));
-		let lines = lines
-			.into_iter()
-			.filter(|line| range.is_none_or(|(from, through)| (from..=through).contains(&line.seq)))
-			.collect::<Vec<_>>();
-		let dependencies =
-			aidash_domain::context::research::JournalDependencies::from_lines(&lines);
-		Ok(JournalSnapshot {
-			lines,
-			generation,
-			dependencies,
-		})
+		Ok(snapshot_from_lines(lines, range))
 	}
 }

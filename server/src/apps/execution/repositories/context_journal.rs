@@ -15,8 +15,131 @@ use reinhardt::query::{
 };
 use uuid::Uuid;
 
+/// A Subnode Run's cross-Run access is limited to the range handed to its
+/// originating Task, including work delegated by its members.
+async fn handed_grant(
+	store: &Store,
+	scope: &TenancyScope,
+	access: &mut crate::apps::identity::services::access::Access,
+	reader: &Run,
+) -> Result<Option<(Uuid, Option<aidash_domain::subnodes::JournalRange>)>> {
+	let row = native::query(
+		&Query::select()
+			.columns(["id", "creator_run_id", "state"].map(Alias::new))
+			.from(Alias::new("subnodes"))
+			.and_where(Expr::col("workspace_id").eq(Expr::value(reader.workspace_id)))
+			.lock(LockType::Share)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_optional(&mut **access.tx.native_mut())
+	.await?;
+	let Some(row) = row else {
+		return Ok(None);
+	};
+	let subnode: Uuid = row.try_get("id")?;
+	let creator: Uuid = row.try_get("creator_run_id")?;
+	let state: String = row.try_get("state")?;
+	if state != "active" {
+		return Ok(Some((creator, None)));
+	}
+	let members: i64 = native::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("COUNT(*)"))
+			.from(Alias::new("subnode_members"))
+			.and_where(Expr::col("subnode_id").eq(Expr::value(subnode)))
+			.and_where(Expr::col("agent_id").eq(Expr::value(&reader.agent_id)))
+			.and_where(Expr::col("agent_version").eq(Expr::value(&reader.agent_version)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(&mut **access.tx.native_mut())
+	.await?;
+	if members != 1 {
+		return Ok(Some((creator, None)));
+	}
+	let mut task = reader.task_id;
+	let mut visited = std::collections::BTreeSet::new();
+	while visited.insert(task) {
+		let row = native::query(
+			&Query::select()
+				.column(Alias::new("journal_range"))
+				.from(Alias::new("tasks"))
+				.and_where(Expr::col("id").eq(Expr::value(task)))
+				.and_where(Expr::col("workspace_id").eq(Expr::value(reader.workspace_id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_optional(&mut **access.tx.native_mut())
+		.await?;
+		let Some(row) = row else {
+			return Ok(Some((creator, None)));
+		};
+		let saved: Option<serde_json::Value> = row.try_get("journal_range")?;
+		let source: Option<Uuid> = native::query_scalar(
+			&Query::select()
+				.column(Alias::new("source_run_id"))
+				.from(Alias::new("authorization_task_origins"))
+				.and_where(Expr::col("task_id").eq(Expr::value(task)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_optional(&mut **access.tx.native_mut())
+		.await?;
+		let Some(source) = source else {
+			return Ok(Some((creator, None)));
+		};
+		if source == creator {
+			let grant: Option<aidash_domain::subnodes::JournalRange> =
+				saved.map(serde_json::from_value).transpose()?;
+			return Ok(Some((creator, grant)));
+		}
+		let parent = store.run(scope, source).await?;
+		if parent.workspace_id != reader.workspace_id {
+			return Ok(Some((creator, None)));
+		}
+		task = parent.task_id;
+	}
+	Ok(Some((creator, None)))
+}
+
+pub(crate) async fn handed_to_run(
+	store: &Store,
+	scope: &TenancyScope,
+	run: &Run,
+) -> Result<Option<(Uuid, aidash_domain::subnodes::JournalRange)>> {
+	let mut access =
+		crate::apps::identity::services::execution::access_for_run(store, &run.metadata(), true)
+			.await?
+			.ok_or(Error::Forbidden)?;
+	let result = handed_grant(store, scope, &mut access, run)
+		.await
+		.map(|grant| grant.and_then(|(creator, range)| range.map(|range| (creator, range))));
+	access.finish(result).await
+}
+
 #[async_trait::async_trait]
 impl aidash_application::ports::journal_export::JournalSource for Store {
+	async fn snapshot(
+		&self,
+		scope: &TenancyScope,
+		reader_run: Uuid,
+		target_run: Uuid,
+		range: Option<(u64, u64)>,
+	) -> aidash_application::Result<aidash_application::ports::journal_export::JournalSnapshot> {
+		use aidash_application::ports::journal_export::snapshot_from_lines;
+		if range.is_some_and(|(from, through)| from > through || through > i64::MAX as u64) {
+			return Err(aidash_application::Error::Invalid(
+				"invalid journal range".into(),
+			));
+		}
+		let lines = match self.export(scope, reader_run, target_run, None).await {
+			Ok(lines) => lines,
+			Err(aidash_application::Error::Forbidden)
+				if reader_run != target_run && range.is_some() =>
+			{
+				self.export(scope, reader_run, target_run, range).await?
+			}
+			Err(error) => return Err(error),
+		};
+		Ok(snapshot_from_lines(lines, range))
+	}
 	async fn export(
 		&self,
 		scope: &TenancyScope,
@@ -40,6 +163,23 @@ impl aidash_application::ports::journal_export::JournalSource for Store {
 		.ok_or(aidash_application::Error::Forbidden)?;
 		let result: Result<Vec<_>> = async {
 			if reader_run != target_run {
+				if let Some((creator, grant)) =
+					handed_grant(self, scope, &mut access, &reader).await?
+				{
+					let granted = creator == target_run
+						&& grant.zip(range).is_some_and(|(grant, (from, through))| {
+							from >= grant.from_seq && through <= grant.through_seq
+						});
+					if !granted {
+						return Err(Error::Forbidden);
+					}
+					return Ok(self
+						.context_journal(scope, target_run, from, through)
+						.await?
+						.iter()
+						.map(Into::into)
+						.collect());
+				}
 				let target = self.run(scope, target_run).await?;
 				if !access.run_visible(target.metadata()).await? {
 					return Err(Error::Forbidden);
