@@ -23,6 +23,92 @@ async fn registry_reads(f: &aidash_server::federation::Federation) -> Vec<(Strin
 
 #[rstest::rstest]
 #[tokio::test]
+async fn workspace_live_runs_continue_to_an_older_paused_run(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, task) = common::bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let workspace: Uuid = sqlx::query_scalar("SELECT workspace_id FROM tasks WHERE id = $1")
+		.bind(task)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let (status, body) = common::request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let old: Uuid = sqlx::query_scalar("SELECT id FROM runs WHERE task_id = $1")
+		.bind(task)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	sqlx::query(
+		"UPDATE runs SET control = 'PAUSED', updated_at = now() - interval '30 days' WHERE id = $1",
+	)
+	.bind(old)
+	.execute(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	for _ in 0..50 {
+		let (status, task) = common::request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/workspaces/{workspace}/tasks"),
+			json!({"title":"New task", "description":"New run"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{task}");
+		let (status, run) = common::request(
+			&app,
+			&token,
+			"POST",
+			&format!("/api/tasks/{}/claim", task["id"].as_str().unwrap()),
+			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+		)
+		.await;
+		assert_eq!(status, 200, "{run}");
+	}
+	let (status, first) = common::request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/workspaces/{workspace}/runs?live=true"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{first}");
+	assert_eq!(first["items"].as_array().unwrap().len(), 50);
+	let cursor = first["next_cursor"].as_str().unwrap();
+	let (status, second) = common::request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/workspaces/{workspace}/runs?live=true&cursor={cursor}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{second}");
+	assert!(
+		second["items"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|run| run["id"] == old.to_string() && run["control"] == "PAUSED")
+	);
+	common::cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn a_walk_over_two_runs_with_one_binding_decides_each_definition_once(
 	#[future(awt)]
 	#[from(common::native_application)]

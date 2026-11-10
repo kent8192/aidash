@@ -18,6 +18,7 @@ import {
   Plus,
 } from "lucide-react";
 import { workspaceGet } from "../generated/aidash";
+import { authenticatedFetch } from "../transport";
 import type {
   Artifact,
   Discovery,
@@ -360,8 +361,38 @@ export function Channel({
     ? []
     : (query.data?.tasks ??
       data.tasks.filter((task) => task.workspace_id === workspace.id));
+  const liveRuns = useQuery({
+    queryKey: ["workspace-live-runs", workspace.id],
+    queryFn: async ({ signal }) => {
+      const items: Run[] = [];
+      let cursor: string | null = null;
+      do {
+        const params = new URLSearchParams({ live: "true" });
+        if (cursor) params.set("cursor", cursor);
+        const response = await authenticatedFetch(
+          `/api/workspaces/${workspace.id}/runs?${params}`,
+          { signal },
+        );
+        if (!response.ok) throw new Error("Unable to load live runs");
+        const page: { items: Run[]; next_cursor: string | null } =
+          await response.json();
+        items.push(...page.items);
+        cursor = page.next_cursor;
+      } while (cursor);
+      return items;
+    },
+    refetchInterval: 2000,
+    retry: false,
+  });
   const scopedRuns = runs.filter(
     ({ run }) => run.workspace_id === workspace.id && isLocalRun(run, data),
+  );
+  const terminal = scopedRuns.filter(({ run }) => terminalRun(run));
+  scopedRuns.splice(
+    0,
+    scopedRuns.length,
+    ...terminal,
+    ...(liveRuns.data ?? []).map((run) => ({ run, node: data.node.id })),
   );
   const scopedRequests = requests.filter(
     ({ request }) =>

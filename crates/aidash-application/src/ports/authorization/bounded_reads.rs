@@ -15,6 +15,17 @@ pub enum HumanState {
 
 #[async_trait]
 pub trait Scope: Send {
+	async fn require_workspace(&mut self, _id: Uuid) -> Result<()> {
+		unreachable!()
+	}
+	async fn workspace_runs(
+		&mut self,
+		_id: Uuid,
+		_live: bool,
+		_cursor: Option<Uuid>,
+	) -> Result<Vec<RawRun>> {
+		unreachable!()
+	}
 	async fn require_task(&mut self, id: Uuid) -> Result<()>;
 	async fn require_run(&mut self, id: Uuid) -> Result<RunInspection>;
 	async fn visible_run(&mut self, id: Uuid) -> Result<Option<RunInspection>>;

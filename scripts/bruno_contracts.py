@@ -158,6 +158,10 @@ TENANT_ROUTES = {
 # action at all.
 DENIED_SUBJECT = {"Authorization": "Bearer {{denied_token}}"}
 SUBJECT_READS = {
+    "GET /api/workspaces/{id}/runs": [
+        ("Subject lists the readable Workspace's live Runs", 200, SUBJECT,
+         "/api/workspaces/{{workspace_id}}/runs?live=true", 'expect(res.getBody().items).to.be.an("array");'),
+    ],
     "GET /api/tasks/{id}/runs": [
         ("Subject lists the readable Task's Runs", 200, SUBJECT,
          "/api/tasks/{{task_id}}/runs", 'expect(res.getBody().items).to.be.an("array");'),
@@ -908,7 +912,7 @@ def render():
         admitted = route["name"] in ADMIN_ADMITTED
         # The caller for scenarios that must reach an extractor or a handler.
         actor = DEPLOYMENT_ADMINISTRATOR if admitted else SUBJECT
-        if route["name"] in {"task-runs", "human-requests", "workspace-list"}:
+        if route["name"] in {"task-runs", "workspace-runs", "human-requests", "workspace-list"}:
             add(endpoint, "Deployment Administrator cannot read Tenant data", 403,
                 headers=DEPLOYMENT_ADMINISTRATOR)
         if route["name"] == "tenants-personal":
@@ -1490,6 +1494,7 @@ def render():
         # replace a subject or browser-bound graph grant.
         denied_reads = {
             "task-runs",
+            "workspace-runs",
             "memory-participant-current",
             "remote-semantic-home-provenance",
             "remote-semantic-run-provenance",

@@ -59,6 +59,68 @@ impl Reads<'_> {
 
 #[async_trait]
 impl Scope for Reads<'_> {
+	async fn require_workspace(&mut self, id: Uuid) -> Result<()> {
+		self.access
+			.require_workspace(id, "workspace.read")
+			.await
+			.map_err(Into::into)
+	}
+	async fn workspace_runs(
+		&mut self,
+		workspace: Uuid,
+		live: bool,
+		cursor: Option<Uuid>,
+	) -> Result<Vec<RawRun>> {
+		let mut q = Query::select();
+		q.column(Asterisk)
+			.from(Alias::new("runs"))
+			.and_where(
+				Expr::col(Alias::new("tenant"))
+					.eq(Expr::value(self.access.identity.tenant.clone())),
+			)
+			.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+			.order_by(Alias::new("updated_at"), Order::Desc)
+			.order_by(Alias::new("id"), Order::Desc)
+			.limit(PAGE_SIZE as u64);
+		if live {
+			q.and_where(Expr::col(Alias::new("phase")).is_not_in([
+				"COMPLETED",
+				"FAILED",
+				"CANCELLED",
+			]));
+		}
+		if let Some(id) = cursor {
+			let mut position = Query::select();
+			position
+				.column(Alias::new("updated_at"))
+				.from(Alias::new("runs"))
+				.and_where(
+					Expr::col(Alias::new("tenant"))
+						.eq(Expr::value(self.access.identity.tenant.clone())),
+				)
+				.and_where(Expr::col(Alias::new("workspace_id")).eq(Expr::value(workspace)))
+				.and_where(Expr::col(Alias::new("id")).eq(Expr::value(id)));
+			let at: DateTime<Utc> =
+				crate::database::native::query_scalar(&position.to_string(PostgresQueryBuilder))
+					.scalar_optional(&mut **self.access.tx)
+					.await
+					.map_err(Error::from)?
+					.ok_or_else(|| Error::Invalid("invalid cursor".into()))?;
+			q.cond_where(
+				Condition::any()
+					.add(Expr::col(Alias::new("updated_at")).lt(Expr::value(at)))
+					.add(
+						Condition::all()
+							.add(Expr::col(Alias::new("updated_at")).eq(Expr::value(at)))
+							.add(Expr::col(Alias::new("id")).lt(Expr::value(id))),
+					),
+			);
+		}
+		aidash_server::database::query_as(&q.to_string(PostgresQueryBuilder))
+			.fetch_all(&mut **self.access.tx)
+			.await
+			.map_err(Into::into)
+	}
 	async fn require_task(&mut self, id: Uuid) -> Result<()> {
 		let task = self.access.task_read(id).await.map_err(Error::from)?;
 		self.access

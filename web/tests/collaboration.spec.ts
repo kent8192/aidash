@@ -2199,6 +2199,35 @@ test("channel controls scope run changes and persist approval responses", async 
   expect(errors).toEqual([]);
 });
 
+test("channel can resume a paused run outside the state window", async ({
+  page,
+}) => {
+  await setup(page, { subject: true });
+  const data = fixture();
+  await page.route("**/api/state**", (route) =>
+    route.fulfill({
+      json: {
+        ...data,
+        runs: [],
+        access: { kind: "subject", tenant: "acme", subject: "alice" },
+        next_cursors: { ...data.next_cursors, runs: "older" },
+      },
+    }),
+  );
+  await page.route("**/api/workspaces/workspace-one/runs?**", (route) =>
+    route.fulfill({
+      json: {
+        items: [{ ...data.runs[0], control: "PAUSED" }],
+        next_cursor: null,
+      },
+    }),
+  );
+  await page.goto("/collaboration?channel=workspace-one");
+  await expect(
+    page.getByRole("button", { name: "Resume runs in this channel" }),
+  ).toBeEnabled();
+});
+
 test("search, notifications, thread navigation and persisted theme work", async ({
   page,
 }) => {

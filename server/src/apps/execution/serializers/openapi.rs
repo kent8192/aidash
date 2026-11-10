@@ -48,6 +48,17 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	contracts
 		.query::<_, super::management::RunListQuery>(document, views::management::task_runs)?;
 	contracts.path(document, views::management::task_runs, &["Uuid"])?;
+	contracts.response::<_, aidash_application::authorization::bounded_reads::RunPage>(
+		document,
+		views::management::workspace_runs,
+		200,
+		"application/json",
+	)?;
+	contracts.query::<_, super::management::WorkspaceRunListQuery>(
+		document,
+		views::management::workspace_runs,
+	)?;
+	contracts.path(document, views::management::workspace_runs, &["Uuid"])?;
 	contracts.response::<_, aidash_application::authorization::bounded_reads::HumanPage>(
 		document,
 		views::management::human_requests,

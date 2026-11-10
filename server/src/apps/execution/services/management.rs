@@ -54,6 +54,39 @@ pub async fn provide(
 	}
 }
 impl HarnessManagement {
+	pub(crate) async fn workspace_runs(
+		&self,
+		actor: Actor,
+		id: Uuid,
+		q: crate::apps::execution::serializers::management::WorkspaceRunListQuery,
+	) -> Result<aidash_application::authorization::bounded_reads::RunPage> {
+		let Actor::Subject(identity) = actor else {
+			return Err(Error::Forbidden);
+		};
+		let cursor = q
+			.cursor
+			.as_deref()
+			.map(Uuid::parse_str)
+			.transpose()
+			.map_err(|_| Error::Invalid("invalid cursor".into()))?;
+		let mut access =
+			crate::authorization::access::Access::begin(&self.runtime.store, &identity).await?;
+		let result = aidash_application::authorization::bounded_reads::workspace_runs(
+			&mut crate::apps::identity::repositories::visibility::bounded_reads::Reads {
+				federation: &self.runtime,
+				access: &mut access,
+				task_workspace: None,
+				selected_run: None,
+				node: None,
+			},
+			id,
+			q.live,
+			cursor,
+		)
+		.await
+		.map_err(Into::into);
+		access.finish(result).await
+	}
 	pub(crate) async fn task_runs(
 		&self,
 		actor: Actor,

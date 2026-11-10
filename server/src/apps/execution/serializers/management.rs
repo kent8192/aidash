@@ -13,6 +13,14 @@ pub(crate) struct RunListQuery {
 
 #[derive(Default, Deserialize, JsonSchema, reinhardt::Validate)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct WorkspaceRunListQuery {
+	#[serde(default)]
+	pub(crate) live: bool,
+	pub(crate) cursor: Option<String>,
+}
+
+#[derive(Default, Deserialize, JsonSchema, reinhardt::Validate)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct HumanListQuery {
 	pub(crate) node: Option<String>,
 	pub(crate) run: Option<Uuid>,

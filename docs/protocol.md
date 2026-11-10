@@ -463,10 +463,11 @@ to an empty final page. Returned Workspaces include the Workspace window and the
 Workspaces of all returned items. `GET /api/workspaces?node=<name>&cursor=<cursor>`
 continues the Workspace window and returns `{items, next_cursor}`. Deployment
 Administrators receive empty state collections and null cursors.
-`GET /api/tasks/{id}/runs` and `GET /api/human-requests` return `{items, next_cursor}`
+`GET /api/tasks/{id}/runs`, `GET /api/workspaces/{id}/runs` and `GET /api/human-requests` return `{items, next_cursor}`
 in newest-first order, with up to 50 candidates per page. Supply the opaque `cursor` to
 continue; visibility filtering can leave a page short or empty even when it has
 a next cursor. A full candidate page can also lead to an empty final page.
+The Workspace Run list orders by last update and accepts `live=true` to omit terminal Runs; it requires `workspace.read` and checks each Run's visibility.
 Human Requests accept `run`, `node`, and `state=pending|answered|all`;
 the default is `pending`. An unanswered request's `answer_by` comes from the
 owning Run's waiting state. Run creation times for records predating the

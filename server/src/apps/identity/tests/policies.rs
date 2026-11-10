@@ -174,6 +174,18 @@ async fn subject_credentials_enforce_workspace_isolation_and_live_revocation(
 	let id = workspace["id"].as_str().unwrap();
 	let path = format!("/api/workspaces/{id}");
 	assert_eq!(
+		scoped_request(
+			&app,
+			other,
+			"GET",
+			&format!("{path}/runs?live=true"),
+			Value::Null
+		)
+		.await
+		.0,
+		403
+	);
+	assert_eq!(
 		scoped_request(&app, token, "GET", &path, Value::Null)
 			.await
 			.0,

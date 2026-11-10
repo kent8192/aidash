@@ -21,6 +21,25 @@ pub struct HumanPage {
 	pub next_cursor: Option<String>,
 }
 
+pub async fn workspace_runs(
+	scope: &mut dyn Scope,
+	workspace: Uuid,
+	live: bool,
+	cursor: Option<Uuid>,
+) -> Result<RunPage> {
+	scope.require_workspace(workspace).await?;
+	let rows = scope.workspace_runs(workspace, live, cursor).await?;
+	let next_cursor =
+		(rows.len() == PAGE_SIZE).then(|| rows.last().unwrap().metadata.id.to_string());
+	let mut items = Vec::new();
+	for row in rows {
+		if let Some(run) = scope.visible_run(row.metadata.id).await? {
+			items.push(run);
+		}
+	}
+	Ok(RunPage { items, next_cursor })
+}
+
 /// Pages contain at most 50 candidate rows. Denied rows are skipped, so a
 /// short or empty page can still have a cursor to the next candidate page.
 pub async fn runs(scope: &mut dyn Scope, task: Uuid, cursor: Option<Uuid>) -> Result<RunPage> {
