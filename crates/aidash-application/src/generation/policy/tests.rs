@@ -48,7 +48,6 @@ fn policy(id: &str, revision: i64, spec: Spec) -> Policy {
 		generated_count: 2,
 		allocated_tokens: 10000,
 		allocated_embedding_calls: 4,
-		allocated_summary_calls: 0,
 	}
 }
 

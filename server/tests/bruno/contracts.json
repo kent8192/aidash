@@ -1125,22 +1125,11 @@
             "oneOf": [
               {
                 "additionalProperties": false,
-                "description": "No Home semantic retrieval; it may still disclose a Summary Stage pin.",
+                "description": "No Home semantic retrieval.",
                 "properties": {
                   "mode": {
                     "enum": ["disabled"],
                     "type": "string"
-                  },
-                  "summarizer": {
-                    "anyOf": [
-                      {
-                        "$ref": "#/components/schemas/RemoteSemanticProvider"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ],
-                    "description": "Home-disclosed Summary Stage model pin, as for `RequiredHome`."
                   }
                 },
                 "required": ["mode"],
@@ -1185,17 +1174,6 @@
                         "type": "null"
                       }
                     ]
-                  },
-                  "summarizer": {
-                    "anyOf": [
-                      {
-                        "$ref": "#/components/schemas/RemoteSemanticProvider"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ],
-                    "description": "Home-disclosed Summary Stage model pin; absent means no Summary\nStage may run for this remote execution."
                   },
                   "version": {
                     "format": "uint32",
@@ -2781,22 +2759,11 @@
             "oneOf": [
               {
                 "additionalProperties": false,
-                "description": "No Home semantic retrieval; it may still disclose a Summary Stage pin.",
+                "description": "No Home semantic retrieval.",
                 "properties": {
                   "mode": {
                     "enum": ["disabled"],
                     "type": "string"
-                  },
-                  "summarizer": {
-                    "anyOf": [
-                      {
-                        "$ref": "#/components/schemas/RemoteSemanticProvider"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ],
-                    "description": "Home-disclosed Summary Stage model pin, as for `RequiredHome`."
                   }
                 },
                 "required": ["mode"],
@@ -2841,17 +2808,6 @@
                         "type": "null"
                       }
                     ]
-                  },
-                  "summarizer": {
-                    "anyOf": [
-                      {
-                        "$ref": "#/components/schemas/RemoteSemanticProvider"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ],
-                    "description": "Home-disclosed Summary Stage model pin; absent means no Summary\nStage may run for this remote execution."
                   },
                   "version": {
                     "format": "uint32",
@@ -6174,22 +6130,11 @@
             "oneOf": [
               {
                 "additionalProperties": false,
-                "description": "No Home semantic retrieval; it may still disclose a Summary Stage pin.",
+                "description": "No Home semantic retrieval.",
                 "properties": {
                   "mode": {
                     "enum": ["disabled"],
                     "type": "string"
-                  },
-                  "summarizer": {
-                    "anyOf": [
-                      {
-                        "$ref": "#/components/schemas/RemoteSemanticProvider"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ],
-                    "description": "Home-disclosed Summary Stage model pin, as for `RequiredHome`."
                   }
                 },
                 "required": ["mode"],
@@ -6234,17 +6179,6 @@
                         "type": "null"
                       }
                     ]
-                  },
-                  "summarizer": {
-                    "anyOf": [
-                      {
-                        "$ref": "#/components/schemas/RemoteSemanticProvider"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ],
-                    "description": "Home-disclosed Summary Stage model pin; absent means no Summary\nStage may run for this remote execution."
                   },
                   "version": {
                     "format": "uint32",
@@ -6558,22 +6492,11 @@
             "oneOf": [
               {
                 "additionalProperties": false,
-                "description": "No Home semantic retrieval; it may still disclose a Summary Stage pin.",
+                "description": "No Home semantic retrieval.",
                 "properties": {
                   "mode": {
                     "enum": ["disabled"],
                     "type": "string"
-                  },
-                  "summarizer": {
-                    "anyOf": [
-                      {
-                        "$ref": "#/components/schemas/RemoteSemanticProvider"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ],
-                    "description": "Home-disclosed Summary Stage model pin, as for `RequiredHome`."
                   }
                 },
                 "required": ["mode"],
@@ -6618,17 +6541,6 @@
                         "type": "null"
                       }
                     ]
-                  },
-                  "summarizer": {
-                    "anyOf": [
-                      {
-                        "$ref": "#/components/schemas/RemoteSemanticProvider"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ],
-                    "description": "Home-disclosed Summary Stage model pin; absent means no Summary\nStage may run for this remote execution."
                   },
                   "version": {
                     "format": "uint32",
@@ -13811,10 +13723,6 @@
                 "format": "int64",
                 "type": "integer"
               },
-              "allocated_summary_calls": {
-                "format": "int64",
-                "type": "integer"
-              },
               "allocated_tokens": {
                 "format": "int64",
                 "type": "integer"
@@ -13844,8 +13752,7 @@
               "spec",
               "generated_count",
               "allocated_tokens",
-              "allocated_embedding_calls",
-              "allocated_summary_calls"
+              "allocated_embedding_calls"
             ],
             "type": "object"
           },
@@ -13892,17 +13799,6 @@
                   "$ref": "#/components/schemas/RemoteSemanticProvider"
                 },
                 "type": "array"
-              },
-              "summary": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/GenerationRemoteAllowance"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "Summary Stage model the remote origin approves for generated Agents."
               }
             },
             "type": "object"
@@ -13942,16 +13838,6 @@
                   }
                 ]
               },
-              "summary": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/GenerationSummary"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
               "template": {
                 "$ref": "#/components/schemas/Entry"
               }
@@ -13963,25 +13849,6 @@
               "limits",
               "approval_required"
             ],
-            "type": "object"
-          },
-          "GenerationSummary": {
-            "additionalProperties": false,
-            "description": "Separately approved Summary Stage model for generated Agents. Every\nancestor must approve the same exact model version.",
-            "properties": {
-              "call_budget": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "calls_per_agent": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "provider": {
-                "$ref": "#/components/schemas/EntityRef"
-              }
-            },
-            "required": ["provider", "calls_per_agent", "call_budget"],
             "type": "object"
           },
           "MarketplaceProjection": {
@@ -14485,10 +14352,6 @@
                 "format": "int64",
                 "type": "integer"
               },
-              "allocated_summary_calls": {
-                "format": "int64",
-                "type": "integer"
-              },
               "allocated_tokens": {
                 "format": "int64",
                 "type": "integer"
@@ -14518,8 +14381,7 @@
               "spec",
               "generated_count",
               "allocated_tokens",
-              "allocated_embedding_calls",
-              "allocated_summary_calls"
+              "allocated_embedding_calls"
             ],
             "type": "object"
           },
@@ -14566,17 +14428,6 @@
                   "$ref": "#/components/schemas/RemoteSemanticProvider"
                 },
                 "type": "array"
-              },
-              "summary": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/GenerationRemoteAllowance"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "Summary Stage model the remote origin approves for generated Agents."
               }
             },
             "type": "object"
@@ -14616,16 +14467,6 @@
                   }
                 ]
               },
-              "summary": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/GenerationSummary"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
               "template": {
                 "$ref": "#/components/schemas/Entry"
               }
@@ -14637,25 +14478,6 @@
               "limits",
               "approval_required"
             ],
-            "type": "object"
-          },
-          "GenerationSummary": {
-            "additionalProperties": false,
-            "description": "Separately approved Summary Stage model for generated Agents. Every\nancestor must approve the same exact model version.",
-            "properties": {
-              "call_budget": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "calls_per_agent": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "provider": {
-                "$ref": "#/components/schemas/EntityRef"
-              }
-            },
-            "required": ["provider", "calls_per_agent", "call_budget"],
             "type": "object"
           },
           "MarketplaceProjection": {
@@ -16490,14 +16312,6 @@
                 "format": "int64",
                 "type": "integer"
               },
-              "summary_call_limit": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "summary_calls": {
-                "format": "int64",
-                "type": "integer"
-              },
               "token_limit": {
                 "format": "int64",
                 "type": "integer"
@@ -16512,9 +16326,7 @@
               "used_tokens",
               "inference_attempts",
               "embedding_calls",
-              "embedding_call_limit",
-              "summary_calls",
-              "summary_call_limit"
+              "embedding_call_limit"
             ],
             "type": "object"
           }
@@ -16872,17 +16684,6 @@
                   "$ref": "#/components/schemas/RemoteSemanticProvider"
                 },
                 "type": "array"
-              },
-              "summary": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/GenerationRemoteAllowance"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "Summary Stage model the remote origin approves for generated Agents."
               }
             },
             "type": "object"
@@ -16922,16 +16723,6 @@
                   }
                 ]
               },
-              "summary": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/GenerationSummary"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
               "template": {
                 "$ref": "#/components/schemas/Entry"
               }
@@ -16943,25 +16734,6 @@
               "limits",
               "approval_required"
             ],
-            "type": "object"
-          },
-          "GenerationSummary": {
-            "additionalProperties": false,
-            "description": "Separately approved Summary Stage model for generated Agents. Every\nancestor must approve the same exact model version.",
-            "properties": {
-              "call_budget": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "calls_per_agent": {
-                "format": "int64",
-                "type": "integer"
-              },
-              "provider": {
-                "$ref": "#/components/schemas/EntityRef"
-              }
-            },
-            "required": ["provider", "calls_per_agent", "call_budget"],
             "type": "object"
           },
           "MarketplaceProjection": {
@@ -24547,22 +24319,11 @@
             "oneOf": [
               {
                 "additionalProperties": false,
-                "description": "No Home semantic retrieval; it may still disclose a Summary Stage pin.",
+                "description": "No Home semantic retrieval.",
                 "properties": {
                   "mode": {
                     "enum": ["disabled"],
                     "type": "string"
-                  },
-                  "summarizer": {
-                    "anyOf": [
-                      {
-                        "$ref": "#/components/schemas/RemoteSemanticProvider"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ],
-                    "description": "Home-disclosed Summary Stage model pin, as for `RequiredHome`."
                   }
                 },
                 "required": ["mode"],
@@ -24607,17 +24368,6 @@
                         "type": "null"
                       }
                     ]
-                  },
-                  "summarizer": {
-                    "anyOf": [
-                      {
-                        "$ref": "#/components/schemas/RemoteSemanticProvider"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ],
-                    "description": "Home-disclosed Summary Stage model pin; absent means no Summary\nStage may run for this remote execution."
                   },
                   "version": {
                     "format": "uint32",

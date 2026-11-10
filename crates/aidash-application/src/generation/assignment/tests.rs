@@ -95,7 +95,6 @@ impl Scope {
 				generated_count: 0,
 				allocated_tokens: 0,
 				allocated_embedding_calls: 0,
-				allocated_summary_calls: 0,
 			},
 			chain: vec!["alice".into()],
 			bundle: serde_json::from_value(json!({"tenant":"tenant"})).unwrap(),

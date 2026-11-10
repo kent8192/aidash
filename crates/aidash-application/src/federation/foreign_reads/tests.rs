@@ -263,7 +263,7 @@ fn scope(run: RunMetadata) -> Scope {
 			semantic_memory: 0,
 		},
 		expires_at: now + chrono::Duration::minutes(10),
-		semantic: Binding::Disabled { summarizer: None },
+		semantic: Binding::Disabled {},
 	};
 	let bundle: PolicyBundle = serde_json::from_value(json!({"tenant":"acme","subjects":{
         "root":{"kind":"user"},"aidash://local/brave-otter-k3m9q2xa/agents/a@1.0.0":{"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")}}}))
@@ -581,7 +581,6 @@ async fn required_home_semantics_recheck_the_source_workspace_permission(
 			digest: "definition".into(),
 			configuration_digest: "configuration".into(),
 		}),
-		summarizer: None,
 	};
 	scope.source_denied = Some("semantic.use");
 	assert!(!visible(&mut scope, &run).await.unwrap());

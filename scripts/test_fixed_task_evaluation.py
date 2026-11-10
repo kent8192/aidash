@@ -1828,7 +1828,7 @@ class LiveGuardTest(unittest.TestCase):
         self.assertEqual(observed, [self.ENV["AIDASH_EVALUATION_SUBJECT_TOKEN"]])
 
     def test_live_stops_dispatch_at_the_ceiling_and_records_every_attempt(self):
-        # One Run's worst case is 24 steps * 6 attempts * (1000 * max(1, 1) + 100 * 5) = 216000 nanocredits.
+        # Reserve 24 steps and eight possible Summary calls, with six attempts each.
         for phase in ("FAILED", "COMPLETED"):
             with self.subTest(phase):
                 call, _ = self.live_node(phase=phase)
@@ -1839,7 +1839,7 @@ class LiveGuardTest(unittest.TestCase):
                 self.assertEqual(len(spend["attempts"]), 1)
                 self.assertEqual(spend["attempts"][0]["provider_work"][0]["input_tokens"], 10)
                 # Even a completed Run keeps its whole reservation: its usage is not readable over HTTP.
-                self.assertEqual(spend["committed_nanocredits"], 216000)
+                self.assertEqual(spend["committed_nanocredits"], 288000)
                 self.assertEqual(spend["uncertain_attempts"], 1)
                 self.assertIn("exceed the ceiling", spend["refusal"])
                 self.assertEqual(result["runs"][0]["evidence"]["content_class"], "restricted-live")
@@ -1957,7 +1957,7 @@ class LiveGuardTest(unittest.TestCase):
             signal.raise_signal(signal.SIGINT)
             return run_result(*args)
         with mock.patch.object(evaluation, "run_result", side_effect=interrupted):
-            status, result = self.run_live(call, ceiling="500000")
+            status, result = self.run_live(call, ceiling="700000")
         self.assertEqual(status, 130)
         self.assertIsNotNone(result, "the record of paid work must be written")
         self.assertEqual(len(result["runs"]), 2, "every observed Run is graded despite the interrupt")
@@ -1995,7 +1995,7 @@ class LiveGuardTest(unittest.TestCase):
             if path == "/api/runs/run-1":
                 value["run"]["context"]["compactions"] = 1
             return status, value
-        status, result = self.run_live(compacting, ceiling="500000")
+        status, result = self.run_live(compacting, ceiling="700000")
         self.assertEqual(len(result["runs"]), 2)
         self.assertEqual(len(result["skipped_runs"]), 0)
         self.assertEqual(result["runs"][0]["compactions"], 1)
@@ -2129,7 +2129,7 @@ class LiveGuardTest(unittest.TestCase):
             if path == "/api/runs/run-1":
                 value["run"]["context"]["compactions"] = 1
             return status, value
-        status, result = self.run_live(failing_then_compacted, ceiling="500000")
+        status, result = self.run_live(failing_then_compacted, ceiling="700000")
         self.assertEqual(status, 0)
         self.assertEqual(result["runs"][0]["outcome"], "infrastructure_failure")
         self.assertEqual(result["runs"][0]["compactions"], 1)
@@ -2277,7 +2277,7 @@ class LiveGuardTest(unittest.TestCase):
         price = {"input_nanocredits_per_token": 4, "cache_write_nanocredits_per_token": 5,
                  "output_nanocredits_per_token": 20}
         self.assertEqual(runner.run_worst_case(item, value, model, price),
-                         24 * runner.PROVIDER_ATTEMPTS_PER_STEP * (1000 * 5 + 100 * 20))
+                         (24 + 8) * runner.PROVIDER_ATTEMPTS_PER_STEP * (1000 * 5 + 100 * 20))
         self.assertEqual(runner.PROVIDER_ATTEMPTS_PER_STEP, 6, "one attempt plus five harness retries")
 
     def test_ledger_holds_the_approval_expiry_on_the_monotonic_clock(self):

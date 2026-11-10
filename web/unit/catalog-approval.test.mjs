@@ -56,12 +56,12 @@ test("dependencies follow the definitions each kind names", () => {
         model: ref("model"),
         context_policy: {
           version: "context-recovery/1",
-          summary: { model: ref("summarizer") },
+          summary: { max_tokens: 1024 },
         },
         bindings: [{ kind: "tool", target: ref("search") }, null],
       },
     }),
-    [ref("model"), ref("summarizer"), ref("search")],
+    [ref("model"), ref("search")],
   );
   assert.deepEqual(
     dependencies({

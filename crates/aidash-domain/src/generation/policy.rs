@@ -31,17 +31,6 @@ pub struct Limits {
 	pub lifetime_seconds: i64,
 }
 
-/// Separately approved Summary Stage model for generated Agents. Every
-/// ancestor must approve the same exact model version.
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[schemars(rename = "GenerationSummary")]
-#[serde(deny_unknown_fields)]
-pub struct Summary {
-	pub provider: EntityRef,
-	pub calls_per_agent: i64,
-	pub call_budget: i64,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[schemars(rename = "GenerationEmbedding")]
 #[serde(deny_unknown_fields)]
@@ -64,8 +53,6 @@ pub struct Spec {
 	pub approval_required: bool,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub embedding: Option<Embedding>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub summary: Option<Summary>,
 }
 
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -78,7 +65,6 @@ pub struct Policy {
 	pub generated_count: i64,
 	pub allocated_tokens: i64,
 	pub allocated_embedding_calls: i64,
-	pub allocated_summary_calls: i64,
 }
 
 impl Spec {
@@ -96,25 +82,9 @@ impl Spec {
 	}
 }
 
-impl Spec {
-	pub fn summary_limits(&self) -> Option<(i64, i64)> {
-		self.summary
-			.as_ref()
-			.map(|c| (c.calls_per_agent, c.call_budget))
-			.or_else(|| {
-				self.remote
-					.as_ref()?
-					.summary
-					.as_ref()
-					.map(|c| (c.calls_per_agent, c.call_budget))
-			})
-	}
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Allowances {
 	pub embedding_calls: i64,
-	pub summary_calls: i64,
 }
 impl Policy {
 	pub fn reservation(
@@ -125,13 +95,8 @@ impl Policy {
 	) -> crate::Result<Allowances> {
 		let limits = &self.spec.limits;
 		let embedding_calls = self.spec.embedding_limits().map_or(0, |(calls, _)| calls);
-		let summary_calls = self.spec.summary_limits().map_or(0, |(calls, _)| calls);
 		if self.spec.embedding_limits().is_some_and(|(calls, budget)| {
 			self.allocated_embedding_calls
-				.checked_add(calls)
-				.is_none_or(|n| n > budget)
-		}) || self.spec.summary_limits().is_some_and(|(calls, budget)| {
-			self.allocated_summary_calls
 				.checked_add(calls)
 				.is_none_or(|n| n > budget)
 		}) || self.generated_count >= limits.max_agents
@@ -144,15 +109,11 @@ impl Policy {
 				.is_none_or(|n| n > limits.token_budget)
 		{
 			return Err(crate::Error::Conflict(
-				"generation count, concurrency, depth, token, embedding or summary budget exceeded"
-					.into(),
+				"generation count, concurrency, depth, token or embedding budget exceeded".into(),
 			));
 		}
 
-		Ok(Allowances {
-			embedding_calls,
-			summary_calls,
-		})
+		Ok(Allowances { embedding_calls })
 	}
 }
 
@@ -162,7 +123,7 @@ mod removed_compaction_tests {
 
 	#[test]
 	fn compaction_is_not_an_admissible_generation_setting() {
-		let input = serde_json::json!({
+		let mut input = serde_json::json!({
 			"enabled":true,
 			"template":{"id":"agent","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{}},
 			"permissions":{},
@@ -170,6 +131,23 @@ mod removed_compaction_tests {
 			"approval_required":false,
 			"compaction":{"provider":{"id":"judge","version":"1.0.0"},"calls_per_agent":1,"call_budget":1}
 		});
-		assert!(serde_json::from_value::<Spec>(input).is_err());
+		assert!(serde_json::from_value::<Spec>(input.clone()).is_err());
+		input.as_object_mut().unwrap().remove("compaction");
+		assert!(serde_json::from_value::<Spec>(input).is_ok());
+	}
+
+	#[test]
+	fn separate_summary_model_is_not_an_admissible_generation_setting() {
+		let mut input = serde_json::json!({
+			"enabled":true,
+			"template":{"id":"agent","version":"1.0.0","kind":"agent","name":{},"description":{},"config":{}},
+			"permissions":{},
+			"limits":{"max_agents":1,"max_concurrent":1,"max_depth":1,"token_budget":1000,"tokens_per_agent":1000,"lifetime_seconds":60},
+			"approval_required":false,
+			"summary":{"provider":{"id":"model","version":"1.0.0"},"calls_per_agent":1,"call_budget":1}
+		});
+		assert!(serde_json::from_value::<Spec>(input.clone()).is_err());
+		input.as_object_mut().unwrap().remove("summary");
+		assert!(serde_json::from_value::<Spec>(input).is_ok());
 	}
 }

@@ -77,6 +77,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0062_provider_warning_tools"),
 	("registry", "0063_reference_set_limit"),
 	("registry", "0064_agent_default_removals"),
+	("registry", "0065_native_context_recovery"),
 	("registry", "0060_subnode_provider"),
 	("registry", "0055_remove_structured_harness_contracts"),
 	("registry", "0056_attachment_tools"),
@@ -124,6 +125,8 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0124_remove_compaction_decision_storage_state"),
 	("execution", "0125_remove_generated_compaction"),
 	("execution", "0126_remove_generated_compaction_state"),
+	("execution", "0127_remove_generated_summary"),
+	("execution", "0128_remove_generated_summary_state"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -146,6 +149,8 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0124_remove_compaction_decision_storage_state"),
 	("execution", "0125_remove_generated_compaction"),
 	("execution", "0126_remove_generated_compaction_state"),
+	("execution", "0127_remove_generated_summary"),
+	("execution", "0128_remove_generated_summary_state"),
 ];
 
 async fn history_size() -> usize {
@@ -200,7 +205,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		109
+		110
 	);
 	let tables = migrations
 		.iter()
@@ -455,14 +460,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0127_policy_probe")
+		.get_migration("execution", "0129_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0126_remove_generated_compaction_state".to_owned()
+			"0128_remove_generated_summary_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -518,6 +523,8 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0124_remove_compaction_decision_storage_state"),
 			("execution", "0125_remove_generated_compaction"),
 			("execution", "0126_remove_generated_compaction_state"),
+			("execution", "0127_remove_generated_summary"),
+			("execution", "0128_remove_generated_summary_state"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -1944,7 +1951,7 @@ async fn compaction_storage_cutover_preserves_approval_tables_and_reverses(
 		("generation_budgets", "compaction_call_limit", false),
 		("generation_policies", "allocated_compaction_calls", false),
 		("generation_budgets", "embedding_calls", true),
-		("generation_budgets", "summary_calls", true),
+		("generation_budgets", "summary_calls", false),
 	] {
 		let actual: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2)",
@@ -2020,6 +2027,45 @@ async fn compaction_storage_cutover_preserves_approval_tables_and_reverses(
 
 #[rstest]
 #[tokio::test]
+async fn generated_summary_storage_cutover_reverses(#[future] fresh_database: MigrationFixture) {
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let present: Option<String> =
+		sqlx::query_scalar("SELECT to_regclass('public.generation_summary_usage')::text")
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+	assert!(present.is_none());
+	let source =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
+	let database = source
+		.get_migration("execution", "0127_remove_generated_summary")
+		.await
+		.unwrap();
+	let state = source
+		.get_migration("execution", "0128_remove_generated_summary_state")
+		.await
+		.unwrap();
+	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone())
+		.with_migration_history(source.all_migrations().await.unwrap());
+	executor
+		.rollback_migrations(&[database, state])
+		.await
+		.unwrap();
+	let protected: bool = sqlx::query_scalar("SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE oid = to_regclass('public.generation_summary_usage')").fetch_one(&pool).await.unwrap();
+	assert!(protected);
+	let default: Option<String> = sqlx::query_scalar("SELECT column_default FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'generation_summary_usage' AND column_name = 'created_at'").fetch_one(&pool).await.unwrap();
+	assert!(default.is_some());
+	assert!(
+		constraint_definition(&pool, "generation_summary_usage_run_id_fkey")
+			.await
+			.contains("FOREIGN KEY (tenant, run_id)")
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn agent_default_removals_agree_with_rust(#[future] fresh_database: MigrationFixture) {
 	let fixture = fresh_database.await;
 	fixture.migrate().await;
@@ -2049,6 +2095,34 @@ async fn agent_default_removals_agree_with_rust(#[future] fresh_database: Migrat
 			expected,
 			"SQL: {config}"
 		);
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn native_context_policy_sql_matches_rust(#[future] fresh_database: MigrationFixture) {
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	for policy in [
+		json!({"version":"context-recovery/1"}),
+		json!({"version":"context-recovery/1","offload_target":0.7,"protected_tail_fraction":0.25,"reread_immunity_steps":3,"reread_summary_threshold":3,"summary":{"max_tokens":512}}),
+		json!({"version":"context-recovery/1","offload_target":0.99}),
+		json!({"version":"context-recovery/1","reread_summary_threshold":1}),
+		json!({"version":"context-recovery/1","summary":{"model":{"id":"model","version":"1.0.0"}}}),
+	] {
+		let config = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","context_policy":policy});
+		let rust = serde_json::from_value::<aidash_domain::registry::bindings::AgentBindings>(
+			config.clone(),
+		)
+		.is_ok_and(|value| value.validate().is_ok());
+		let sql = contract_accepts(
+			&pool,
+			"aidash_agent_bindings_is_valid",
+			vec![config.clone()],
+		)
+		.await;
+		assert_eq!(rust, sql, "{config}");
 	}
 }
 

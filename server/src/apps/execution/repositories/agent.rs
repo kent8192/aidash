@@ -914,33 +914,6 @@ impl ExecutionAuthority for Authority<'_> {
 			})
 			.map_err(Into::into)
 	}
-	async fn reserve_summary(
-		&self,
-		token: Uuid,
-		summarizer: &aidash_domain::context::summary::SummaryProvider,
-		window: usize,
-		output: u32,
-		request: &ModelRequest,
-	) -> Result<Option<Box<dyn InferenceReservation>>> {
-		self.guard
-			.reserve_summary(self.federation, token, summarizer, window, output, request)
-			.await
-			.map(|value| {
-				value.map(|reservation| {
-					Box::new(Reservation(reservation)) as Box<dyn InferenceReservation>
-				})
-			})
-			.map_err(Into::into)
-	}
-	async fn recheck_summary(
-		&self,
-		summarizer: &aidash_domain::context::summary::SummaryProvider,
-	) -> Result<()> {
-		self.guard
-			.recheck_summary(self.federation, summarizer)
-			.await
-			.map_err(Into::into)
-	}
 	async fn suspend(&self) -> Result<()> {
 		self.guard.suspend().await.map_err(Into::into)
 	}

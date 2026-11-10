@@ -322,21 +322,16 @@ async fn a_dependency_withdrawn_in_the_same_request_is_unapproved() {
 
 #[rstest]
 #[tokio::test]
-async fn an_agents_context_summarizer_is_a_dependency() {
-	// Arrange
-	let mut summarizing = agent("model", &[]);
-	summarizing.config["context_policy"] = json!({"version":"context-recovery/1",
-		"summary":{"model":{"id":"summarizer","version":"1.0.0"}}});
-	let mut fixture = Fixture::new(vec![summarizing, model()]);
+async fn context_recovery_needs_no_separate_model_approval() {
+	let mut agent = agent("model", &[]);
+	agent.config["context_policy"] = json!({"version":"context-recovery/1", "summary":{}});
+	let mut fixture = Fixture::new(vec![agent, model()]);
 	fixture.approved.insert(("model".into(), "1.0.0".into()));
-	// Act
-	let result = approve(&mut fixture, &[approval("agent", true)]).await;
-	// Assert
 	assert!(
-		matches!(&result, Err(Error::Invalid(message)) if message == "CATALOG_DEPENDENCY_UNAPPROVED: summarizer@1.0.0"),
-		"{result:?}"
+		approve(&mut fixture, &[approval("agent", true)])
+			.await
+			.is_ok()
 	);
-	assert!(fixture.writes.is_empty());
 }
 
 #[rstest]

@@ -188,7 +188,6 @@ pub const TABLES: &[Table] = &[
 	),
 	table("execution", "generation_remote_usage", TenantOwned),
 	table("execution", "generation_requests", TenantOwned),
-	table("execution", "generation_summary_usage", TenantOwned),
 	table("execution", "generation_usage", TenantOwned),
 	table("execution", "human_requests", TenantOwned),
 	// inbound event deduplication

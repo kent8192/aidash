@@ -219,8 +219,12 @@ async fn an_overflow_after_a_scaled_estimate_demotes_the_run(
 #[rstest]
 #[tokio::test]
 async fn a_paused_overflow_keeps_the_demotion_for_the_resumed_step(mut fixture: Fixture) {
-	// Arrange: without a Context Policy, an overflow pauses the Run at once.
+	// Arrange: explicitly disabling overflow retries pauses the Run at once.
 	calibrated(&mut fixture, warm(4));
+	Arc::get_mut(&mut fixture.backend.0).unwrap().context_policy = Some(
+		serde_json::from_value(json!({"version":"context-recovery/1","overflow_retries":0}))
+			.unwrap(),
+	);
 	*fixture.backend.0.overflows.lock().unwrap() = 1;
 	fixture.run.state = RunState::Thinking(ThinkingState::default());
 	// Act

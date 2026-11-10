@@ -347,7 +347,7 @@ async fn authorized_source_leaf_records_only_the_exact_admission_dependency() {
 async fn required_home_disclosure_recheck_restores_admitted_provider_attributes() {
 	let provider = |id: &str| json!({"node_id":"aidash://home","entry":{"id":id,"version":"1"},"digest":"digest","configuration_digest":"config"});
 	let mut reader = Reader::new();
-	reader.grant.as_mut().unwrap().semantic = json!({"mode":"required_home","home_lineage":[],"execution_lineage":[],"version":1,"index_revision":1,"index_digest":"index","embedding":provider("embedding"),"summarizer":provider("summarizer")});
+	reader.grant.as_mut().unwrap().semantic = json!({"mode":"required_home","home_lineage":[],"execution_lineage":[],"version":1,"index_revision":1,"index_digest":"index","embedding":provider("embedding")});
 	assert!(
 		use_case::visible(
 			&mut reader,
@@ -364,10 +364,8 @@ async fn required_home_disclosure_recheck_restores_admitted_provider_attributes(
 		.iter()
 		.find(|(action, ..)| action == "semantic.disclose")
 		.unwrap();
-	assert_eq!(
-		workspace.attributes["summarizer"],
-		json!({"id":"summarizer","version":"1"})
-	);
+	assert!(workspace.attributes.get("inference_model").is_some());
+	assert!(workspace.attributes.get("summarizer").is_none());
 }
 #[rstest]
 #[tokio::test]

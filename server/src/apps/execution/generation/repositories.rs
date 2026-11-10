@@ -25,8 +25,6 @@ pub(crate) mod inference;
 
 pub(crate) mod embedding;
 
-pub(crate) mod summary;
-
 pub(crate) mod protocol;
 
 pub(crate) mod foreign;

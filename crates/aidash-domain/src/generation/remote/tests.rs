@@ -2,6 +2,12 @@ use super::*;
 use crate::registry::EntityRef;
 use rstest::{fixture, rstest};
 
+#[test]
+fn remote_generation_rejects_the_removed_summary_allowance() {
+	assert!(serde_json::from_value::<Approvals>(serde_json::json!({"summary": {}})).is_err());
+	assert!(serde_json::from_value::<Purpose>(serde_json::json!("summary")).is_err());
+}
+
 #[fixture]
 fn provider() -> Provider {
 	Provider {

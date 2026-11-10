@@ -105,8 +105,6 @@ pub struct Usage {
 	pub inference_attempts: i64,
 	pub embedding_calls: i64,
 	pub embedding_call_limit: i64,
-	pub summary_calls: i64,
-	pub summary_call_limit: i64,
 }
 
 /// The attributes of a generation request's resource, which policy conditions

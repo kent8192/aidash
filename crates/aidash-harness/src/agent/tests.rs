@@ -170,7 +170,6 @@ struct State {
 	/// that contain this message.
 	revoked_message: Option<Uuid>,
 	/// The summary reservation holds a charge that a blocked call must release.
-	summary_reservation: bool,
 	/// The summarizer's configured `max_output_tokens`.
 	summarizer_output_tokens: u32,
 	summary_estimate_diagnostics: Option<Value>,
@@ -345,9 +344,9 @@ impl Backend {
 		self.0.task.lock().unwrap().clone()
 	}
 	fn entry(&self, id: &str) -> Entry {
-		// The summarizer has a larger window so it can read absorbed history.
-		let (kind, window, output) = if id == "summarizer" {
-			("model", 1_000_000, self.0.summarizer_output_tokens)
+		// Summary and ordinary inference share the Agent's model.
+		let (kind, window, output) = if id == "model" {
+			("model", 128_000, self.0.summarizer_output_tokens)
 		} else {
 			("agent", 128_000, 4096)
 		};
@@ -1149,6 +1148,7 @@ impl ExecutionAuthority for Backend {
 		if self.0.deny_inference
 			|| (self.0.revoke_inference_after_response
 				&& self.calls().contains(&"provider.response"))
+			|| (self.0.revoke_summarizer && self.calls().contains(&"summarizer.infer"))
 		{
 			Err(Error::Forbidden)
 		} else {
@@ -1276,35 +1276,6 @@ impl ExecutionAuthority for Backend {
 		assert!(token == self.0.token || matches!(request.context, ModelContext::Sampling(_)));
 		self.record("reservation.admit");
 		Ok(Some(Box::new(self.clone())))
-	}
-	async fn reserve_summary(
-		&self,
-		token: Uuid,
-		summarizer: &aidash_domain::context::summary::SummaryProvider,
-		window: usize,
-		output: u32,
-		request: &ModelRequest,
-	) -> Result<Option<Box<dyn InferenceReservation>>> {
-		let _ = (summarizer, window, output, request);
-		assert_eq!(token, self.0.token);
-		self.record("authority.summary_reserve");
-		Ok(self
-			.0
-			.summary_reservation
-			.then(|| Box::new(self.clone()) as Box<dyn InferenceReservation>))
-	}
-	async fn recheck_summary(
-		&self,
-		summarizer: &aidash_domain::context::summary::SummaryProvider,
-	) -> Result<()> {
-		assert_eq!(summarizer.model.id, "summarizer");
-		self.record("authority.summary_recheck");
-		if self.0.revoke_summarizer {
-			return Err(Error::Context(
-				aidash_domain::context::recovery::Failure::SummaryUnavailable,
-			));
-		}
-		Ok(())
 	}
 
 	async fn suspend(&self) -> Result<()> {
@@ -1886,7 +1857,6 @@ fn fixture() -> Fixture {
 		stale_summary_dependencies: false,
 		summary_checks_before_revocation: None,
 		revoked_message: None,
-		summary_reservation: false,
 		terminal: None,
 		summarizer_output_tokens: 4096,
 		summary_estimate_diagnostics: None,
@@ -2923,7 +2893,7 @@ async fn advance_sources(fixture: &mut Fixture) -> Result<()> {
 fn recovery_policy(summary: bool) -> aidash_domain::context::policy::ContextPolicy {
 	let mut policy = json!({"version":"context-recovery/1"});
 	if summary {
-		policy["summary"] = json!({"model":{"id":"summarizer","version":"1.0.0"}});
+		policy["summary"] = json!({});
 	}
 	serde_json::from_value(policy).unwrap()
 }
@@ -2942,7 +2912,7 @@ fn thinking_with_history(fixture: &mut Fixture, old: usize) {
 				name: "read".into(),
 				arguments: json!({"path":format!("old-{i}")}),
 			},
-			json!("x".repeat(4000)),
+			json!("x".repeat(1000)),
 		));
 	}
 	for i in 0..6 {
@@ -2957,6 +2927,9 @@ fn thinking_with_history(fixture: &mut Fixture, old: usize) {
 	}
 	// Everything above already reached an accepted inference.
 	fixture.run.context.journal.inferred_through = fixture.run.context.journal.head;
+	if old > 0 {
+		fixture.run.context.offload_reads.summary_pending = true;
+	}
 }
 
 fn events(fixture: &Fixture) -> Vec<String> {
@@ -3038,18 +3011,12 @@ async fn provider_overflow_releases_its_reservation_before_the_reduced_retry(mut
 
 #[rstest]
 #[tokio::test]
-async fn legacy_versions_and_unrelated_rejections_never_compact_and_retry(mut fixture: Fixture) {
+async fn default_policy_retries_overflow_but_not_unrelated_rejections(mut fixture: Fixture) {
 	*fixture.backend.0.overflows.lock().unwrap() = 1;
 	fixture.run.state = RunState::Thinking(ThinkingState::default());
-	assert!(matches!(
-		advance_sources(&mut fixture).await,
-		Err(Error::Context(
-			aidash_domain::context::recovery::Failure::OverflowRetriesExhausted
-		))
-	));
-	assert!(fixture.run.context.recovery.is_initial());
-	// A prune-only Agent keeps the provider's default transforms.
-	assert!(!fixture.backend.0.requests.lock().unwrap()[0].disable_provider_transforms);
+	advance_sources(&mut fixture).await.unwrap();
+	assert_eq!(fixture.run.context.recovery.overflow_attempts, 1);
+	assert!(fixture.backend.0.requests.lock().unwrap()[0].disable_provider_transforms);
 
 	let mut rejected = fixture_with(|state| {
 		state.context_policy = Some(recovery_policy(false));
@@ -3069,10 +3036,8 @@ async fn legacy_versions_and_unrelated_rejections_never_compact_and_retry(mut fi
 async fn summary_stage_reduces_history_and_keeps_the_journal(mut fixture: Fixture) {
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.context_policy = Some(recovery_policy(true));
-	*state.summary_text.lock().unwrap() = Some(
-		json!({"goal":"Fixture task","constraints":[{"id":"c1","text":"Never deploy on Fridays"}],"decisions":[],"unresolved":[{"id":"u1","text":"finish reading"}],"resolved":[],"artifacts":[],"verification":[]})
-			.to_string(),
-	);
+	*state.summary_text.lock().unwrap() =
+		Some(json!({"retained":[],"labels":[],"prose":"Continue the task."}).to_string());
 	thinking_with_history(&mut fixture, 40);
 	let originals = fixture.run.context.history.clone();
 
@@ -3082,7 +3047,7 @@ async fn summary_stage_reduces_history_and_keeps_the_journal(mut fixture: Fixtur
 	let summary = fixture.run.context.execution_summary.as_ref().unwrap();
 	assert_eq!(
 		(summary.source.from_seq, summary.source.through_seq),
-		(2, 41)
+		(1, 41)
 	);
 	assert_eq!(fixture.run.context.history.len(), 7);
 	assert!(matches!(
@@ -3130,7 +3095,7 @@ async fn summary_stage_reduces_history_and_keeps_the_journal(mut fixture: Fixtur
 	let ModelContext::Legacy(context) = &request.context else {
 		panic!("expected a Legacy request");
 	};
-	assert_eq!(context["summary"]["constraints"][0]["id"], "c1");
+	assert_eq!(context["summary"]["goal"], "Fixture task");
 	assert!(!context.to_string().contains("old-0"));
 }
 
@@ -3165,39 +3130,18 @@ async fn invalid_summary_leaves_the_saved_context_unchanged(mut fixture: Fixture
 
 #[rstest]
 #[tokio::test]
-async fn summary_stage_is_unavailable_without_a_policy_model(mut fixture: Fixture) {
+async fn default_policy_uses_the_agents_model_for_summary(mut fixture: Fixture) {
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
-	state.context_policy = Some(recovery_policy(false));
+	state.context_policy = None;
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
 	thinking_with_history(&mut fixture, 40);
-	assert!(matches!(
-		advance_sources(&mut fixture).await,
-		Err(Error::Context(
-			aidash_domain::context::recovery::Failure::ContextUnreducible
-		))
-	));
-	assert!(
-		fixture
-			.backend
-			.0
-			.compaction_attempts
-			.lock()
-			.unwrap()
-			.is_empty()
-	);
-	assert!(
-		!fixture
-			.backend
-			.0
-			.calls
-			.lock()
-			.unwrap()
-			.contains(&"summarizer.infer")
-	);
+	advance_sources(&mut fixture).await.unwrap();
+	let summary = fixture.run.context.execution_summary.as_ref().unwrap();
+	assert_eq!(summary.provider.model.id, "model");
 }
 
 fn valid_summary() -> String {
-	json!({"goal":"Fixture task","constraints":[{"id":"c1","text":"Never deploy on Fridays"}],"decisions":[],"unresolved":[{"id":"u1","text":"finish reading"}],"resolved":[],"artifacts":[],"verification":[]})
-		.to_string()
+	json!({"retained":[],"labels":[],"prose":"Continue the task."}).to_string()
 }
 
 fn calls(fixture: &Fixture) -> Vec<&'static str> {
@@ -3216,9 +3160,7 @@ async fn a_summarizer_revoked_during_its_call_is_never_adopted(mut fixture: Fixt
 	let before = fixture.run.context.history.clone();
 	assert!(matches!(
 		advance_sources(&mut fixture).await,
-		Err(Error::Context(
-			aidash_domain::context::recovery::Failure::SummaryUnavailable
-		))
+		Err(Error::AuthorityRefused(ref refusal)) if refusal.tool == "compaction"
 	));
 	assert_eq!(fixture.run.context.history, before);
 	assert!(fixture.run.context.execution_summary.is_none());
@@ -3229,11 +3171,17 @@ async fn a_summarizer_revoked_during_its_call_is_never_adopted(mut fixture: Fixt
 	);
 	let calls = calls(&fixture);
 	let position = |name| calls.iter().position(|call| *call == name).unwrap();
-	assert!(position("summarizer.infer") < position("authority.summary_recheck"));
+	assert!(
+		position("summarizer.infer")
+			< calls
+				.iter()
+				.rposition(|call| *call == "authority.inference")
+				.unwrap()
+	);
 	assert_eq!(
 		calls
 			.iter()
-			.filter(|call| **call == "authority.summary_reserve")
+			.filter(|call| **call == "reservation.admit")
 			.count(),
 		1,
 		"the recheck charges no second call"
@@ -3508,7 +3456,7 @@ async fn a_source_revoked_before_the_summarizer_call_is_never_disclosed(mut fixt
 
 	let calls = calls(&fixture);
 	assert!(!calls.contains(&"summarizer.infer"), "{calls:?}");
-	assert!(!calls.contains(&"authority.summary_reserve"), "{calls:?}");
+	assert!(!calls.contains(&"reservation.admit"), "{calls:?}");
 	assert!(fixture.run.context.execution_summary.is_none());
 	assert_eq!(fixture.run.context.history, before);
 	let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
@@ -3521,7 +3469,6 @@ async fn a_source_revoked_before_the_summarizer_call_is_never_disclosed(mut fixt
 async fn a_source_revoked_while_the_reservation_holds_releases_it(mut fixture: Fixture) {
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.scoped = true;
-	state.summary_reservation = true;
 	state.context_policy = Some(recovery_policy(true));
 	*state.summary_text.lock().unwrap() = Some(valid_summary());
 	// The check before the reservation passes; the source is revoked while
@@ -3539,7 +3486,7 @@ async fn a_source_revoked_while_the_reservation_holds_releases_it(mut fixture: F
 	assert!(!calls.contains(&"summarizer.infer"), "{calls:?}");
 	assert!(!calls.contains(&"reservation.settle"), "{calls:?}");
 	let position = |name| calls.iter().position(|call| *call == name).unwrap();
-	assert!(position("authority.summary_reserve") < position("reservation.abort"));
+	assert!(position("reservation.admit") < position("reservation.abort"));
 	assert_eq!(fixture.run.context.history, before);
 	let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
 	assert_eq!(attempts.len(), 1);
@@ -3564,7 +3511,7 @@ async fn a_trusted_local_summary_rechecks_its_sources_after_the_call(mut fixture
 	));
 
 	let calls = calls(&fixture);
-	assert!(!calls.contains(&"authority.summary_reserve"), "{calls:?}");
+	assert!(!calls.contains(&"reservation.admit"), "{calls:?}");
 	let summarized = calls.iter().position(|call| *call == "summarizer.infer");
 	let last_check = calls
 		.iter()
@@ -3595,6 +3542,11 @@ async fn a_carried_source_revoked_while_the_summarizer_runs_is_never_readopted(
 	summary.dependencies.message_ids.insert(carried);
 	let first = summary.digest.clone();
 	thinking_with_history(&mut fixture, 40);
+	fixture
+		.backend
+		.journal_context(&fixture.run, fixture.backend.0.token)
+		.await
+		.unwrap();
 	// The checks before and after the second
 	// reservation pass; `carried` is revoked while the summarizer call is in
 	// flight.
@@ -3654,12 +3606,7 @@ async fn imported_history_is_journaled_whole_before_summary(mut fixture: Fixture
 		)
 		.unwrap(),
 	);
-	assert!(matches!(
-		advance_sources(&mut fixture).await,
-		Err(Error::Context(
-			context::recovery::Failure::ContextUnreducible
-		))
-	));
+	advance_sources(&mut fixture).await.unwrap();
 	assert!(!events(&fixture).contains(&"run.sources_observed".to_owned()));
 	assert_eq!(fixture.run.context.history, originals);
 	let journal = fixture
@@ -4173,7 +4120,13 @@ async fn legacy_thinking_request_matches_byte_baseline(
 			.collect::<Vec<_>>(),
 		sorted
 	);
-	assert_eq!(serde_json::to_string(request).unwrap(), baseline.trim());
+	assert!(request.disable_provider_transforms);
+	let mut baseline_request = request.clone();
+	baseline_request.disable_provider_transforms = false;
+	assert_eq!(
+		serde_json::to_string(&baseline_request).unwrap(),
+		baseline.trim()
+	);
 }
 
 #[rstest]
@@ -4784,6 +4737,25 @@ fn last_write(fixture: &Fixture) -> (String, Run) {
 		.last()
 		.unwrap()
 		.clone()
+}
+
+fn original_tool_result(fixture: &Fixture, saved: &Run) -> Value {
+	let entry = saved.context.history.last().expect("tool result");
+	let ContextEvent::Tool { result, .. } = &entry.event else {
+		panic!("expected tool result")
+	};
+	if !aidash_application::context::offload::is_marker(result) {
+		return result.clone();
+	}
+	let journal = fixture.backend.0.journal.lock().unwrap();
+	let original = journal
+		.iter()
+		.find(|(id, original)| *id == saved.id && original.seq == entry.seq)
+		.expect("offloaded original in journal");
+	let ContextEvent::Tool { result, .. } = &original.1.event else {
+		panic!("expected journal tool result")
+	};
+	result.clone()
 }
 
 #[rstest]
@@ -5630,9 +5602,9 @@ async fn capability_descriptions_are_recorded_whole_or_deferred(
 	} else {
 		assert!(matches!(
 			saved.context.events().last(),
-			Some(ContextEvent::Tool { call, result, .. })
-				if call == &request && result == &description
+			Some(ContextEvent::Tool { call, .. }) if call == &request
 		));
+		assert_eq!(original_tool_result(&fixture, &saved), description);
 	}
 }
 
@@ -5686,12 +5658,13 @@ async fn capability_search_pages_fit_the_remaining_request_budget(
 		return;
 	}
 	assert_eq!(event, "run.tool_recorded");
-	let Some(ContextEvent::Tool { call, result, .. }) = saved.context.events().last() else {
+	let Some(ContextEvent::Tool { call, .. }) = saved.context.events().last() else {
 		panic!("expected a tool result");
 	};
 	assert_eq!(call, &request);
+	let result = original_tool_result(&fixture, &saved);
 	if expected == Some(16) {
-		assert_eq!(result, &page);
+		assert_eq!(result, page);
 		return;
 	}
 	// The page keeps its leading results and resumes at the first dropped one.
@@ -5740,9 +5713,10 @@ async fn skill_asset_reads_fit_the_remaining_request_budget(mut fixture: Fixture
 	// Assert: the page is cut to the headroom and continues from the cut.
 	let (event, saved) = last_write(&fixture);
 	assert_eq!(event, "run.tool_recorded");
-	let Some(ContextEvent::Tool { call, result, .. }) = saved.context.events().last() else {
+	let Some(ContextEvent::Tool { call, .. }) = saved.context.events().last() else {
 		panic!("expected a tool result");
 	};
+	let result = original_tool_result(&fixture, &saved);
 	let page = result["content"].as_str().unwrap().len();
 	assert!(page > 0 && page < content.len(), "{page}");
 	assert_eq!(result["next_offset"], page);
@@ -5835,12 +5809,15 @@ fn count(fixture: &Fixture, call: &str) -> usize {
 async fn legacy_request_bytes_and_digest_match_the_base_projection(mut canonical: Fixture) {
 	assert!(advance_sources(&mut canonical).await.is_err());
 	let requests = canonical.backend.0.requests.lock().unwrap();
+	assert!(requests[0].disable_provider_transforms);
+	let mut baseline_request = requests[0].clone();
+	baseline_request.disable_provider_transforms = false;
 	assert_eq!(
-		requests[0].input_body().to_string(),
+		baseline_request.input_body().to_string(),
 		include_str!("fixtures/legacy_request.json").trim_end()
 	);
 	assert_eq!(
-		requests[0].inference_digest(),
+		baseline_request.inference_digest(),
 		include_str!("fixtures/legacy_inference_digest.txt").trim_end()
 	);
 }
@@ -6768,4 +6745,49 @@ async fn an_agent_without_reference_files_hears_nothing_about_them() {
 	let _ = advance_sources(&mut fixture).await;
 	let requests = fixture.backend.0.requests.lock().unwrap();
 	assert!(!requests[0].instructions.contains("Reference files"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn intake_keeps_parallel_results_in_the_journal_before_offloading(mut fixture: Fixture) {
+	fixture.run.state = RunState::ToolCall(Box::new(ToolCallState {
+		request_window: 1000,
+		request_tokens: 50_000,
+		..Default::default()
+	}));
+	let calls = ["first", "second"];
+	fixture.run.context.push(ContextEvent::Assistant {
+		provider_activity: vec![],
+		epoch: 1,
+		text: String::new(),
+		calls: calls.iter().map(|id| (*id).to_owned()).collect(),
+	});
+	for id in calls {
+		fixture.run.context.push(ContextEvent::tool(
+			ToolCall {
+				id: id.into(),
+				name: "read".into(),
+				arguments: json!({}),
+			},
+			json!("large".repeat(3000)),
+		));
+	}
+	let original = fixture.run.context.history.clone();
+	let token = fixture.backend.0.token;
+	Executor::new(&fixture.backend)
+		.save_tool_result(&mut fixture.run, token, 1000, 1)
+		.await
+		.unwrap();
+	let saved = fixture
+		.backend
+		.context_journal(fixture.run.id, 1, 3)
+		.await
+		.unwrap();
+	assert_eq!(saved, original);
+	assert!(fixture.run.state.tool().unwrap().request_tokens < 50_000);
+	for entry in &fixture.run.context.history[1..] {
+		assert!(
+			matches!(&entry.event, ContextEvent::Tool { result, .. } if aidash_application::context::offload::is_marker(result))
+		);
+	}
 }

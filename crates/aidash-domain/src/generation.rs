@@ -12,5 +12,3 @@ pub mod dispatch;
 pub mod inference;
 
 pub mod embedding;
-
-pub mod summary;

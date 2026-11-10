@@ -152,7 +152,6 @@ pub fn ownership(name: &str) -> Result<Ownership> {
 		| "decision_attempts"
 		| "decision_evidence"
 		| "generation_usage"
-		| "generation_summary_usage"
 		| "human_requests"
 		| "inference_attempts"
 		| "inference_usage"

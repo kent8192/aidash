@@ -1008,8 +1008,6 @@ pub mod cancellation;
 
 pub mod admission;
 
-pub mod summary;
-
 pub mod headroom;
 
 pub mod batch;

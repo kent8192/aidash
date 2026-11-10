@@ -61,7 +61,6 @@ fn receipt() -> Value {
 				digest: "digest".into(),
 				configuration_digest: "configuration".into()
 			}),
-			summarizer: None
 		},
 		retrieved_at: DateTime::from_timestamp(1000, 0).unwrap(),
 		query_truncated: false,
@@ -256,7 +255,7 @@ async fn disabled_summary_does_not_touch_the_journal() {
 	let status = load(
 		&repository,
 		Uuid::from_u128(22),
-		&Binding::Disabled { summarizer: None },
+		&Binding::Disabled {},
 		Some(Failure::Authority),
 	)
 	.await

@@ -65,8 +65,6 @@ impl Record for Usage {
 			inference_attempts: row.try_get("inference_attempts")?,
 			embedding_calls: row.try_get("embedding_calls")?,
 			embedding_call_limit: row.try_get("embedding_call_limit")?,
-			summary_calls: row.try_get("summary_calls")?,
-			summary_call_limit: row.try_get("summary_call_limit")?,
 		})
 	}
 }

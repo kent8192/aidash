@@ -196,7 +196,6 @@ fn binding() -> Binding {
 			digest: "provider".into(),
 			configuration_digest: "configuration".into(),
 		}),
-		summarizer: None,
 	}
 }
 fn description() -> Description {
@@ -607,7 +606,7 @@ impl SemanticSearchRepository for Repository {
 			description.semantic = native.binding.clone();
 		}
 		if self.denied == Some("disabled") {
-			description.semantic = Binding::Disabled { summarizer: None };
+			description.semantic = Binding::Disabled {};
 		}
 		Ok((
 			Scope {

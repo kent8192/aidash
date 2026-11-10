@@ -72,7 +72,6 @@ export function dependencies(entry: {
     entry.kind === "agent"
       ? [
           config.model,
-          field(field(config.context_policy, "summary"), "model"),
           ...list(config.bindings).map((binding) => field(binding, "target")),
         ]
       : entry.kind === "bundle"

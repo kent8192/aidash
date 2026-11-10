@@ -87,6 +87,9 @@ pub struct Context {
 	pub history: Vec<HistoryEntry>,
 	#[serde(default)]
 	pub journal: JournalCursor,
+	/// Read-back immunity and repeat counts for offloaded Journal ranges.
+	#[serde(default, skip_serializing_if = "offload::ReadGuard::is_empty")]
+	pub offload_reads: offload::ReadGuard,
 	#[serde(default, skip_serializing_if = "recovery::RecoveryState::is_initial")]
 	pub recovery: recovery::RecoveryState,
 	/// Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one.
@@ -152,6 +155,8 @@ struct StoredContext {
 	history: Vec<StoredHistory>,
 	#[serde(default)]
 	journal: Option<JournalCursor>,
+	#[serde(default)]
+	offload_reads: offload::ReadGuard,
 	#[serde(default)]
 	recovery: recovery::RecoveryState,
 	#[serde(default)]
@@ -252,6 +257,7 @@ impl<'de> Deserialize<'de> for Context {
 			media_inferred_seq: stored.media_inferred_seq,
 			history,
 			journal,
+			offload_reads: stored.offload_reads,
 			recovery: stored.recovery,
 			estimate: stored.estimate,
 			usage: stored.usage,
@@ -966,8 +972,7 @@ pub struct ToldTask {
 }
 
 /// What an elided result tells the model in place of the content it removed.
-pub const ELIDED_NOTE: &str = "removed from the context to fit the window; call the tool again only if this \
-	result is still needed";
+pub const ELIDED_NOTE: &str = "The original result remains in the Context Journal. Use Journal Query or its range-read fallback to inspect it.";
 
 impl ContextEvent {
 	pub fn tool(call: crate::provider::ToolCall, result: Value) -> Self {
@@ -1059,6 +1064,7 @@ impl std::fmt::Display for Context {
 use serde::{Deserialize, Serialize};
 
 pub mod observation;
+pub mod offload;
 
 pub mod sources;
 

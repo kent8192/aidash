@@ -10,7 +10,6 @@ Use `POST /api/generation/{tenant}/policies/{id}` with `expected_revision` (zero
 - `permissions`: existing role/group IDs and generated subject attributes.
 - `limits`: `max_agents`, `max_concurrent`, `max_depth`, `token_budget`, `tokens_per_agent` and `lifetime_seconds`.
 - Optional `embedding`: an approved embedding `provider` reference, `calls_per_agent` and total `call_budget`. Omitting it forbids embedding calls under that generated authority.
-- Optional `summary`: an approved `model` `provider` reference for the Context Recovery Summary Stage, `calls_per_agent` and total `call_budget`. Omitting it forbids Summary Stage calls under that generated authority.
 
 All referenced components must already be approved in that tenant's catalog. The model must be selected explicitly; generation does not route between models. Policies and immutable revisions are stored alongside their actor and quota counters. A request pins its definition and permission specification to the policy revision; later changes affect new requests. Disabling the policy prevents further activation and generated execution at the next authority boundary. An unchanged policy can still be disabled after one of its components is revoked; re-enabling or changing its definition requires all current approvals again.
 
@@ -59,36 +58,11 @@ Successful, complete, positive and bounded provider usage refunds unused reserva
 
 Generated chains do not require a compaction Decider or a compaction call allowance (ADR 0125).
 
-## Approved Summary Stage model
+## Summary Stage
 
-An Agent whose `context_policy` (`context-recovery/1`) names `summary.model` pins that
-exact model version in its admitted Binding snapshot; a reference to a non-`model`
-entry fails admission. On an ordinary Run, each Summary Stage request requires the
-current tenant catalog approval of that exact version, `registry.read` and
-`model.infer`, and an unchanged definition digest. Its tokens are reserved like
-agent inference.
-
-Inside a generated chain, every generated ancestor must also approve the same
-exact model:
-
-```json
-{
-  "summary": {
-    "provider": { "id": "approved-summarizer", "version": "1.0.0" },
-    "calls_per_agent": 4,
-    "call_budget": 40
-  }
-}
-```
-
-Allocation and release follow the generation policy limits. Before network I/O, the worker
-atomically commits one summary call and one `generation_summary_usage` attempt
-(provider/version, definition digest, run and request bytes) for every ancestor;
-the model tokens are charged to the shared token budget. Failed, uncertain and
-crashed attempts stay charged. A missing or different approval, an exhausted
-allowance or a denied catalog check pauses the Run with `SummaryUnavailable`; no
-other provider or environment credential is ever substituted. `remote.summary`
-uses the `remote.embedding` shape for summarizers owned by another Node.
+The Summary Stage uses the Agent's own pinned model and ordinary inference
+allowances (ADR 0125). It does not require a separate summarizer Binding or
+Catalog Approval. The Run's Context Policy bounds Summary calls and output.
 
 ## Approved embeddings
 
@@ -158,7 +132,7 @@ Each policy can additionally approve providers owned by another Node through `re
 
 Digests are `sha256:` plus the SHA-256 of the recursively key-sorted, compact UTF-8
 JSON of the complete stored Registry definition and its `config`, respectively.
-Read the stored definition, including default fields. `remote.summary` uses the same provider/call-limit shape as `remote.embedding`. Local provider approvals continue to use `embedding` and the policy's model references. For a generated A ancestor with a generated B executor, A approves B's inference, while B approves A's embedding. The generation policy editor exposes
+Read the stored definition, including default fields. Local provider approvals continue to use `embedding` and the policy's model references. For a generated A ancestor with a generated B executor, A approves B's inference, while B approves A's embedding. The generation policy editor exposes
 these complete descriptors and preserves them on subsequent edits.
 
 Every owner validates and durably reserves its own shared token balance and separate

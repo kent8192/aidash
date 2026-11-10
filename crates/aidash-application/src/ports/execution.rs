@@ -367,6 +367,15 @@ pub trait ExecutionStore: Send + Sync {
 	/// by the lease and without saving the Run. A projection imported from a
 	/// pre-journal Run is journaled whole here before any lossy compaction.
 	async fn journal_context(&self, run: &Run, token: Uuid) -> Result<()>;
+	/// Hook for memory extraction after an offloaded projection is saved. The
+	/// ranges refer to originals in this Run's Context Journal.
+	async fn results_offloaded(
+		&self,
+		_run: &Run,
+		_ranges: &[crate::context::offload::JournalRange],
+	) -> Result<()> {
+		Ok(())
+	}
 	/// Record a Compaction Attempt before provider I/O, fenced by the lease.
 	/// Unsettled earlier attempts of the Run become `abandoned` in the same
 	/// transaction. Returns `Error::Context(SummaryUnavailable)` once the Run
@@ -638,26 +647,6 @@ pub trait ExecutionAuthority: Send + Sync {
 		output: u32,
 		request: &ModelRequest,
 	) -> Result<Option<Box<dyn InferenceReservation>>>;
-	/// Authorize one Summary Stage request for the exact pinned summarizer and
-	/// charge its allowance before I/O: catalog approval, remote RequiredHome
-	/// summarizer pin and disclosure, and every generated ancestor's summary
-	/// allowance. Returns `Error::Context(SummaryUnavailable)` when any approval
-	/// is missing; it never substitutes another provider.
-	async fn reserve_summary(
-		&self,
-		token: Uuid,
-		summarizer: &aidash_domain::context::summary::SummaryProvider,
-		window: usize,
-		output: u32,
-		request: &ModelRequest,
-	) -> Result<Option<Box<dyn InferenceReservation>>>;
-	/// Repeat `reserve_summary`'s approval checks for the exact summarizer,
-	/// without charging another call, after authority is resumed and before a
-	/// Summary Stage candidate is adopted.
-	async fn recheck_summary(
-		&self,
-		summarizer: &aidash_domain::context::summary::SummaryProvider,
-	) -> Result<()>;
 	async fn suspend(&self) -> Result<()>;
 	/// While suspended for inference, briefly reacquire the authority boundary,
 	/// authorize inference again, and release it. Failure means the Run may no
@@ -836,8 +825,6 @@ pub mod cancellation;
 pub mod completion;
 
 pub mod admission;
-
-pub mod summary;
 
 pub mod terminal;
 pub mod worker;

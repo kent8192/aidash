@@ -18,10 +18,6 @@ pub struct GenerationBudget {
 	pub embedding_call_limit: i64,
 	#[field(default = 0)]
 	pub embedding_calls: i64,
-	#[field(default = 0)]
-	pub summary_call_limit: i64,
-	#[field(default = 0)]
-	pub summary_calls: i64,
 }
 
 impl GenerationBudget {}

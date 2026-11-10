@@ -949,22 +949,6 @@ impl ExecutionAuthority for Bench {
 	async fn resume(&self) -> Result<()> {
 		unexpected("ExecutionAuthority.resume")
 	}
-	async fn reserve_summary(
-		&self,
-		_token: Uuid,
-		_summarizer: &aidash_domain::context::summary::SummaryProvider,
-		_window: usize,
-		_output: u32,
-		_request: &ModelRequest,
-	) -> Result<Option<Box<dyn InferenceReservation>>> {
-		unexpected("ExecutionAuthority.reserve_summary")
-	}
-	async fn recheck_summary(
-		&self,
-		_summarizer: &aidash_domain::context::summary::SummaryProvider,
-	) -> Result<()> {
-		unexpected("ExecutionAuthority.recheck_summary")
-	}
 }
 
 #[async_trait]

@@ -23,9 +23,6 @@ pub struct Allowance {
 pub struct Approvals {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub embedding: Option<Allowance>,
-	/// Summary Stage model the remote origin approves for generated Agents.
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub summary: Option<Allowance>,
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub inference: Vec<Provider>,
 	/// Home-owned native memory model roles. The ancestor's total token budget
@@ -75,7 +72,6 @@ pub enum Purpose {
 	Embedding,
 	Inference,
 	Memory,
-	Summary,
 }
 
 fn valid_digest(s: &str) -> bool {
@@ -90,7 +86,7 @@ impl Approvals {
 				"too many remote inference approvals".into(),
 			));
 		}
-		for allowance in self.embedding.iter().chain(self.summary.iter()) {
+		for allowance in self.embedding.iter() {
 			if !(1..=1_000_000).contains(&allowance.call_budget)
 				|| !(1..=allowance.call_budget).contains(&allowance.calls_per_agent)
 			{
@@ -104,7 +100,6 @@ impl Approvals {
 			.iter()
 			.chain(self.memory.iter())
 			.chain(self.embedding.iter().map(|a| &a.provider))
-			.chain(self.summary.iter().map(|a| &a.provider))
 		{
 			crate::nodes::validate_node_ref(&provider.node_id)?;
 			crate::nonempty(&provider.entry.id, "remote provider")?;
@@ -129,7 +124,6 @@ impl Purpose {
 			Self::Embedding => "embedding",
 			Self::Inference => "inference",
 			Self::Memory => "memory",
-			Self::Summary => "summary",
 		}
 	}
 	pub fn action(self) -> &'static str {
@@ -137,8 +131,6 @@ impl Purpose {
 			Self::Embedding => "embedding.invoke",
 			Self::Inference => "model.infer",
 			Self::Memory => "memory.invoke",
-			// The summarizer is a model; its use is ordinary model inference.
-			Self::Summary => "model.infer",
 		}
 	}
 }

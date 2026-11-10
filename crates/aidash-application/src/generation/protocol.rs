@@ -12,7 +12,6 @@ use crate::{
 };
 use aidash_domain::{
 	Run,
-	context::recovery::Failure as ContextFailure,
 	federation::execution::Description,
 	generation::{
 		dispatch::{FinalizeInput, Input, StepBoundary},
@@ -69,39 +68,6 @@ fn exact_provider(description: &Description, usage: &Usage) -> Result<()> {
 				|| usage.dispatcher_node
 					!= aidash_domain::nodes::deployment_of(&description.source_node)
 			{
-				return Err(Error::Forbidden);
-			}
-		}
-		Purpose::Summary => {
-			let provider = description
-				.semantic
-				.summarizer()
-				.ok_or(Error::Context(ContextFailure::SummaryUnavailable))?;
-			if provider != &usage.provider
-				|| usage.dispatcher_node
-					!= aidash_domain::nodes::deployment_of(&description.target_node)
-			{
-				return Err(Error::Forbidden);
-			}
-			let definition = description
-				.inspection
-				.definitions
-				.iter()
-				.find(|d| d.kind == "model" && d.entry == usage.provider.entry)
-				.ok_or(Error::Forbidden)?;
-			let config: aidash_domain::model::ModelConfig =
-				serde_json::from_value(definition.metadata.config.clone())?;
-			let agent: aidash_domain::registry::AgentConfig =
-				serde_json::from_value(description.inspection.agent.config.clone())?;
-			let policy =
-				aidash_domain::context::policy::Effective::of(agent.context_policy.as_ref())
-					.summary
-					.ok_or(Error::Context(ContextFailure::SummaryUnavailable))?;
-			// Home cannot derive the Run's current window, which may cap the
-			// summary output further. Charge the approved maximum: one full
-			// summarizer request with the policy's output bound.
-			let output = policy.max_tokens.min(config.output_token_limit());
-			if usage.reserved_tokens != (config.context_window + output as usize) as i64 {
 				return Err(Error::Forbidden);
 			}
 		}
@@ -331,11 +297,6 @@ pub async fn admit(
 				),
 			}
 		}
-		Purpose::Summary => description
-			.semantic
-			.summarizer()
-			.cloned()
-			.ok_or(Error::Context(ContextFailure::SummaryUnavailable))?,
 		Purpose::Embedding | Purpose::Memory => return Err(Error::Forbidden),
 	};
 	// A step without a READY retrieval of its own reuses an earlier one

@@ -88,9 +88,6 @@ pub fn definition_references(
 			if let Some(embedding) = &config.reference_embedding {
 				result.push((local(embedding), "embedding".into()));
 			}
-			if let Some(summary) = config.context_summary() {
-				result.push((local(&summary.model), "model".into()));
-			}
 			for normalized in entry.normalized_bindings(&identity.registry_deployment)? {
 				let kind = match normalized.binding.kind {
 					BindingKind::Tool => "tool",
@@ -393,11 +390,6 @@ impl AgentBindings {
 	}
 	fn has_memory_binding(&self) -> bool {
 		self.bindings.iter().any(|b| b.kind == BindingKind::Memory)
-	}
-	pub fn context_summary(&self) -> Option<&crate::context::policy::SummaryPolicy> {
-		match self.context_policy.as_ref()? {
-			crate::context::policy::ContextPolicy::RecoveryV1 { summary, .. } => summary.as_ref(),
-		}
 	}
 	pub fn normalize(&self, node: &str) -> Result<Vec<NormalizedBinding>> {
 		self.normalize_mode(node, 0)

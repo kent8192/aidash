@@ -171,7 +171,7 @@ impl Journal for RunJournal<'_> {
 /// arguments: only the journaled original tells whether it was research.
 fn cut(event: &ContextEvent) -> bool {
 	matches!(event, ContextEvent::Tool { result, .. }
-		if crate::context::truncated_result(result) || ContextEvent::is_elided_result(result))
+		if crate::context::truncated_result(result) || ContextEvent::is_elided_result(result) || crate::context::offload::is_marker(result))
 }
 
 /// Whether a projection not yet revoked may hold research content: a research

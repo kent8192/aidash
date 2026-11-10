@@ -821,37 +821,25 @@ async fn complete_snapshot_retains_delegation_dependencies_and_rejects_wrong_kin
 }
 
 #[tokio::test]
-async fn context_policy_summarizer_is_pinned_in_the_snapshot_and_must_be_a_model() {
+async fn context_recovery_uses_the_agents_pinned_model() {
 	let mut catalog = Catalog::new();
 	let mut config = agent_config();
-	config.context_policy = Some(
-		serde_json::from_value(json!({
-			"version":"context-recovery/1",
-			"summary":{"model":reference("summarizer").local()}
-		}))
-		.unwrap(),
-	);
-	catalog.insert(entry("summarizer", "model", json!({})));
+	config.context_policy =
+		Some(serde_json::from_value(json!({"version":"context-recovery/1","summary":{}})).unwrap());
 	let graph = snapshot(&mut catalog, &config, false).await.unwrap();
 	graph.validate().unwrap();
-	let pinned = graph
-		.definitions
-		.iter()
-		.find(|d| d.identity == reference("summarizer"))
-		.expect("the summarizer is part of the admitted Binding closure");
-	assert_eq!(pinned.definition.kind, "model");
-	// A Run resolves the summarizer only from its admitted closure.
-	let mut incomplete = graph.clone();
-	incomplete
-		.definitions
-		.retain(|d| d.identity != reference("summarizer"));
-	assert!(incomplete.validate().is_err());
-	catalog
-		.entries
-		.get_mut(&reference("summarizer"))
-		.unwrap()
-		.kind = "skill".into();
-	assert!(snapshot(&mut catalog, &config, false).await.is_err());
+	assert!(
+		graph
+			.definitions
+			.iter()
+			.any(|item| item.identity.id == config.model.id && item.definition.kind == "model")
+	);
+	assert!(
+		!graph
+			.definitions
+			.iter()
+			.any(|item| item.identity.id == "summarizer")
+	);
 }
 
 #[tokio::test]

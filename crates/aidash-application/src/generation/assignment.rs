@@ -318,13 +318,6 @@ pub async fn create_in(
 				.embedding
 				.iter()
 				.map(|c| (c.provider.clone(), "embedding.invoke")),
-		)
-		.chain(
-			policy
-				.spec
-				.summary
-				.iter()
-				.map(|c| (c.provider.clone(), "model.infer")),
 		) {
 		scope.catalog_entry(&reference, "registry.read").await?;
 		scope.catalog_entry(&reference, action).await?;

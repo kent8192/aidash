@@ -103,7 +103,7 @@ fn deadline(termination: &Termination) -> DateTime<Utc> {
 /// A result compaction cut to a string: only the journaled original tells
 /// which Provider result it carried.
 fn cut(event: &ContextEvent) -> bool {
-	matches!(event, ContextEvent::Tool { result, .. } if crate::context::truncated_result(result))
+	matches!(event, ContextEvent::Tool { result, .. } if crate::context::truncated_result(result) || crate::context::offload::is_marker(result))
 }
 
 /// Keep a Run's expired Provider results out of its projection (ADR 0058).

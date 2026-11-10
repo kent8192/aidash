@@ -5,7 +5,7 @@ use crate::{
 };
 use aidash_domain::{
 	generation::{
-		policy::{Embedding, Summary},
+		policy::Embedding,
 		remote::{Allowance, Approvals, Attempt, ReservationBinding},
 	},
 	policy::Resource,
@@ -76,11 +76,7 @@ fn world(usage: Usage) -> World {
 		calls_per_agent: 2,
 		call_budget: 4,
 	});
-	spec.summary = Some(Summary {
-		provider: usage.provider.entry.clone(),
-		calls_per_agent: 2,
-		call_budget: 4,
-	});
+
 	let allowance = Allowance {
 		provider: usage.provider.clone(),
 		calls_per_agent: 2,
@@ -90,7 +86,6 @@ fn world(usage: Usage) -> World {
 		memory: vec![],
 		inference: vec![usage.provider.clone()],
 		embedding: Some(allowance.clone()),
-		summary: Some(allowance),
 	});
 	let document = json!({"id":"model","version":"1.0.0","kind":"model","name":{"en":"Model"},"description":{"en":""},"config":{"model":"fixture-model"}});
 	World(Arc::new(Mutex::new(State {
@@ -418,7 +413,6 @@ async fn prepared_lineage_does_not_grant_provider_usage(
 #[rstest]
 #[case(Purpose::Inference)]
 #[case(Purpose::Embedding)]
-#[case(Purpose::Summary)]
 #[tokio::test]
 async fn all_ancestors_are_authorized_before_atomic_debits_and_exact_replay(
 	world: World,
@@ -469,7 +463,6 @@ async fn all_ancestors_are_authorized_before_atomic_debits_and_exact_replay(
 #[rstest]
 #[case(Purpose::Inference)]
 #[case(Purpose::Embedding)]
-#[case(Purpose::Summary)]
 #[tokio::test]
 async fn local_providers_require_exact_catalog_use_then_read(
 	world: World,

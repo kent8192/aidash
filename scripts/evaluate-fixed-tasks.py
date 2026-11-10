@@ -802,11 +802,6 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
             auxiliary_entries[allowance["reference"]] = api.get(f"/api/registry/{identifier}/{version}", subject)["config"]
     evaluation.verify_auxiliary_configs(auxiliary, auxiliary_entries, credential["provider"])
     evaluation.require_enforceable_auxiliary_bound(auxiliary)
-    missing = sorted({p["task"]["id"] for p in planned_runs if p["task"].get("requires_compaction")
-                      and (not auxiliary["decider"] or p["task"].get("requires_summary") and not auxiliary["summary"])})
-    if missing:
-        raise evaluation.GuardRefusal(f"tasks {missing} require approved bounded Decider/Summary allowances; "
-                                      "declare their exact references, configuration digests and all-call cost caps")
     evaluation.check_matched_live_models(corpus, planned_runs, mapping, models, execution_estimator=execution_estimator)
     if code_oracle:
         try:

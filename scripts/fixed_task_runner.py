@@ -604,12 +604,6 @@ def register_variants(experiment, corpus, planned_runs, model_refs, fixture_url,
         auxiliary = planned.get("auxiliary")
         if remove_all_defaults:
             config["remove_default"] = minimal_defaults(config)
-        if task.get("requires_summary") and auxiliary and auxiliary.get("summary"):
-            identifier, _, version = auxiliary["summary"]["reference"].partition("@")
-            config.setdefault("context_policy", {"version": "context-recovery/1"})["summary"] = {
-                # A reasoning or verbose summary model may need more than the default; at most 4096.
-                "model": {"id": identifier, "version": version}, "max_tokens": task.get("summary_max_tokens", 1024),
-                "call_budget": auxiliary["summary"]["max_calls_per_run"]}
         identifier = agent_id(experiment.prefix, planned)
         try:
             agent = experiment.register("agent", identifier, config)
@@ -740,8 +734,10 @@ def run_worst_case(task, corpus, model_config, price, auxiliary=None):
     per_attempt = (model_config["context_window"] * prompt_rate
                    + model_config["max_output_tokens"] * price["output_nanocredits_per_token"])
     main = steps * PROVIDER_ATTEMPTS_PER_STEP * per_attempt
-    # Every enabled auxiliary call is reserved even if pruning or Summary never becomes necessary.
-    return main + (auxiliary or {}).get("worst_case_nanocredits", 0)
+    # Every Agent may spend its default eight Summary calls on its own model.
+    # Reserve them even when the Run never needs the Summary Stage.
+    summary = 8 * PROVIDER_ATTEMPTS_PER_STEP * per_attempt
+    return main + summary + (auxiliary or {}).get("worst_case_nanocredits", 0)
 
 
 def observed_provider_work(api, token, workspace, run_id):
