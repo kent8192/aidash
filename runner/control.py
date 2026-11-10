@@ -1970,7 +1970,7 @@ class Handler(BaseHTTPRequestHandler):
                 return runner.session(session_match[1])
             if self.command == "POST" and session_match[2]:
                 size = int(self.headers.get("Content-Length", "0"))
-                if size > 256:
+                if not 0 <= size <= 256:
                     raise Rejected(413, "session stop request limit")
                 body = json.loads(self.rfile.read(size)) if size else None
                 if body is not None and (not isinstance(body, dict) or set(body) != {"instance"} or not isinstance(body["instance"], str)):

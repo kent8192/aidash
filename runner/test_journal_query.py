@@ -95,6 +95,10 @@ class JournalSessionTest(unittest.TestCase):
             handler.rfile = io.BytesIO(data)
             with self.assertRaises(Rejected):
                 handler.handle_request()
+            data = b'{"instance":"new-runner"}'
+            handler.headers["Content-Length"] = str(len(data))
+            handler.rfile = io.BytesIO(data)
+            self.assertTrue(handler.handle_request()["termination_confirmed"])
 
     def test_reset_requires_positive_termination_confirmation(self):
         fixture = test_serve.ServeAcceptTest()
