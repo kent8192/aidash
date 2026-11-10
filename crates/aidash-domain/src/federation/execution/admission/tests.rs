@@ -28,7 +28,7 @@ fn binding() -> (Record, ExecutionPrincipal, Description) {
 		task,
 		inspection,
 		expires_at: Utc::now(),
-		semantic: crate::semantic::remote::Binding::Disabled { summarizer: None },
+		semantic: crate::semantic::remote::Binding::Disabled {},
 	};
 	let identity = ExecutionPrincipal {
 		tenant: "receiver-tenant".into(),

@@ -10,10 +10,66 @@ use aidash_domain::{
 	},
 };
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, IntoIden, LockType, Order, PostgresQueryBuilder, Query,
-	QueryStatementBuilder, SimpleExpr, UpdateStatement,
+	Alias, Expr, ExprTrait, LockType, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	UpdateStatement,
 };
 use uuid::Uuid;
+
+#[async_trait::async_trait]
+impl aidash_application::ports::journal_export::JournalSource for Store {
+	async fn export(
+		&self,
+		scope: &TenancyScope,
+		reader_run: Uuid,
+		target_run: Uuid,
+		range: Option<(u64, u64)>,
+	) -> aidash_application::Result<Vec<aidash_domain::context::journal_export::JournalLine>> {
+		let (from, through) = range.unwrap_or((0, i64::MAX as u64));
+		if from > through || through > i64::MAX as u64 {
+			return Err(aidash_application::Error::Invalid(
+				"invalid journal range".into(),
+			));
+		}
+		let reader = self.run(scope, reader_run).await?;
+		let mut access = crate::apps::identity::services::execution::access_for_run(
+			self,
+			&reader.metadata(),
+			true,
+		)
+		.await?
+		.ok_or(aidash_application::Error::Forbidden)?;
+		let result: Result<Vec<_>> = async {
+			if reader_run != target_run {
+				let target = self.run(scope, target_run).await?;
+				if !access.run_visible(target.metadata()).await? {
+					return Err(Error::Forbidden);
+				}
+				let mut tx = access
+					.journal_pool()
+					.begin(&access.tenancy()?)
+					.await?
+					.into_executor()
+					.await?;
+				crate::apps::identity::models::AuthorizationRunRead::record_sources(
+					tx.as_mut(),
+					reader_run,
+					target.workspace_id,
+					&[("run".into(), target_run)],
+				)
+				.await?;
+				tx.commit().await?;
+			}
+			Ok(self
+				.context_journal(scope, target_run, from, through)
+				.await?
+				.iter()
+				.map(Into::into)
+				.collect())
+		}
+		.await;
+		access.finish(result).await.map_err(Into::into)
+	}
+}
 
 pub(crate) const EVENTS: &str = "run_context_events";
 const ATTEMPTS: &str = "context_compaction_attempts";
@@ -146,25 +202,6 @@ async fn fence(tx: &mut native::Transaction, run: Uuid, worker: Uuid) -> Result<
 
 /// The worker's lease on the Run is live by the clock now. `fence` compares
 /// with `CURRENT_TIMESTAMP`, which stays at the transaction's start.
-async fn lease_held_now(tx: &mut native::Transaction, run: Uuid, worker: Uuid) -> Result<()> {
-	let leased: Option<Uuid> = native::query_scalar(
-		&Query::select()
-			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
-			.and_where(Expr::col("id").eq(Expr::value(run)))
-			.and_where(Expr::col("lease_owner").eq(Expr::value(worker)))
-			.and_where(Expr::col("lease_until").gt(SimpleExpr::FunctionCall(
-				"clock_timestamp".into_iden(),
-				vec![],
-			)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_optional(&mut **tx)
-	.await?;
-	leased
-		.map(|_| ())
-		.ok_or_else(|| Error::Conflict("worker lease lost".into()))
-}
 
 /// Settle `attempt` only while it is open; returns whether it was.
 async fn settle(
@@ -361,8 +398,6 @@ impl Store {
 	}
 
 	/// Save the adopted projection and mark its attempt adopted atomically. A
-	/// staged Decider decision whose pruning the summary completed is recorded
-	/// in the same transaction (ADR 0056).
 	pub async fn adopt_compaction(
 		&self,
 		scope: &TenancyScope,
@@ -370,10 +405,6 @@ impl Store {
 		worker: Uuid,
 		attempt: Uuid,
 		settlement: &Settlement,
-		staged: Option<(
-			&super::decisions::RunDecisionJournal<'_>,
-			&aidash_application::decision::StagedDecision,
-		)>,
 	) -> Result<()> {
 		if settlement.outcome != Outcome::Adopted {
 			return Err(Error::Invalid(
@@ -397,24 +428,9 @@ impl Store {
 		.await?;
 		let through = through
 			.ok_or_else(|| Error::Conflict("compaction attempt is no longer open".into()))?;
-		let decision = match staged {
-			Some((journal, staged)) => {
-				let prepared = journal
-					.prepare_staged_in(&mut tx, staged, &run.context)
-					.await?;
-				// Preparing may outlast the lease; the fence above saw only
-				// the transaction's start.
-				lease_held_now(&mut tx, run.id, worker).await?;
-				Some((journal, prepared))
-			}
-			None => None,
-		};
 		let (_, closed) = self
 			.save_run_in(&mut tx, run, worker, "context.compacted")
 			.await?;
-		if let Some((journal, prepared)) = decision {
-			journal.insert_staged_in(&mut tx, prepared).await?;
-		}
 		if signed(head(&mut tx, run.id).await?)? < through {
 			return Err(Error::Conflict(
 				"context journal lacks the compacted source range".into(),

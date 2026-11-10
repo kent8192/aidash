@@ -4680,6 +4680,8 @@ impl Store {
 		}
 		// A research result whose Provider result account terms expired
 		// meanwhile is stored as its tombstone (ADR 0058).
+		let journal_query =
+			result["contract"] == aidash_domain::context::research::JOURNAL_QUERY_CONTRACT;
 		let expired = crate::apps::execution::models::research::ResearchAttempt::expired_result(
 			tx.as_mut(),
 			run.id,
@@ -4709,6 +4711,9 @@ impl Store {
 		}
 		tx.commit().await?;
 		// The caller carries on with what was stored, never the expired copy.
+		if journal_query && let Err(error) = super::journal_query::acknowledge(self, run).await {
+			tracing::warn!(%error, run = %run.id, "Journal Query receipt remains pending");
+		}
 		Ok(result.clone())
 	}
 	/// Durable before provider I/O. Like other worker writes, a lost lease

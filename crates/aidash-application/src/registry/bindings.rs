@@ -67,7 +67,7 @@ pub async fn normalize_agent(
 	}
 	let config: AgentBindings = serde_json::from_value(entry.config.clone())
 		.map_err(|error| Error::Invalid(format!("invalid Agent config: {error}")))?;
-	let mut replacement = None;
+	let mut hooks = BTreeSet::new();
 	for binding in config
 		.bindings
 		.iter()
@@ -90,23 +90,16 @@ pub async fn normalize_agent(
 		let decider: aidash_domain::decision::DeciderConfig =
 			serde_json::from_value(definition.config)?;
 		decider.validate()?;
-		if decider.hook == aidash_domain::decision::Hook::Compaction
-			&& replacement.replace(binding.target.clone()).is_some()
-		{
+		if !hooks.insert(decider.hook) {
 			return Err(Error::Invalid(
 				"an Agent must bind at most one Decider per hook".into(),
 			));
 		}
 	}
-	if let Some(saved) = &entry.binding_normalization {
-		if saved.compaction_override != replacement {
-			return Err(Error::Invalid(
-				"Agent normalization differs from its exact Decider definitions".into(),
-			));
-		}
+	if entry.binding_normalization.is_some() {
 		entry.normalized_bindings(node)?;
 	} else {
-		entry.normalize_agent_with_compaction(node, replacement.as_ref())?;
+		entry.normalize_agent(node)?;
 	}
 	Ok(())
 }
@@ -403,13 +396,8 @@ pub async fn resolve(
 			let config: aidash_domain::decision::DeciderConfig =
 				serde_json::from_value(entry.config.clone())?;
 			config.validate()?;
-			if origin == BindingOrigin::Default
-				&& (target != defaults::compaction_reference(&agent.registry_deployment)
-					|| config.hook != aidash_domain::decision::Hook::Compaction)
-			{
-				return Err(Error::Invalid(
-					"only the built-in compaction Decider may be default-bound".into(),
-				));
+			if origin != BindingOrigin::Explicit {
+				return Err(Error::Invalid("Deciders must be explicitly bound".into()));
 			}
 			if !decision_hooks.insert(config.hook) {
 				return Err(Error::Invalid(

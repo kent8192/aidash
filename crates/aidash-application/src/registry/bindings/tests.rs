@@ -47,7 +47,6 @@ impl Catalog {
 			plugins: BTreeMap::new(),
 		};
 		result.insert(entry("model", "model", json!({})));
-		result.insert(crate::registry::system::compaction_decider().unwrap());
 		result.insert(
 			aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap(),
 		);
@@ -307,7 +306,7 @@ async fn defaults_are_exact_and_a_saved_snapshot_is_immutable() {
 	assert_eq!(serde_json::to_value(&saved).unwrap(), encoded);
 	assert_eq!(
 		saved.bindings.len(),
-		REQUIRED_TOOLS.len() + DEFAULT_TOOLS.len() + 2
+		REQUIRED_TOOLS.len() + DEFAULT_TOOLS.len() + 1
 	);
 	assert_eq!(saved.definitions.len(), saved.bindings.len() + 2);
 	let recovered: BindingSnapshot = serde_json::from_value(encoded).unwrap();
@@ -816,37 +815,25 @@ async fn complete_snapshot_retains_delegation_dependencies_and_rejects_wrong_kin
 }
 
 #[tokio::test]
-async fn context_policy_summarizer_is_pinned_in_the_snapshot_and_must_be_a_model() {
+async fn context_recovery_uses_the_agents_pinned_model() {
 	let mut catalog = Catalog::new();
 	let mut config = agent_config();
-	config.context_policy = Some(
-		serde_json::from_value(json!({
-			"version":"context-recovery/1",
-			"summary":{"model":reference("summarizer").local()}
-		}))
-		.unwrap(),
-	);
-	catalog.insert(entry("summarizer", "model", json!({})));
+	config.context_policy =
+		Some(serde_json::from_value(json!({"version":"context-recovery/1","summary":{}})).unwrap());
 	let graph = snapshot(&mut catalog, &config, false).await.unwrap();
 	graph.validate().unwrap();
-	let pinned = graph
-		.definitions
-		.iter()
-		.find(|d| d.identity == reference("summarizer"))
-		.expect("the summarizer is part of the admitted Binding closure");
-	assert_eq!(pinned.definition.kind, "model");
-	// A Run resolves the summarizer only from its admitted closure.
-	let mut incomplete = graph.clone();
-	incomplete
-		.definitions
-		.retain(|d| d.identity != reference("summarizer"));
-	assert!(incomplete.validate().is_err());
-	catalog
-		.entries
-		.get_mut(&reference("summarizer"))
-		.unwrap()
-		.kind = "skill".into();
-	assert!(snapshot(&mut catalog, &config, false).await.is_err());
+	assert!(
+		graph
+			.definitions
+			.iter()
+			.any(|item| item.identity.id == config.model.id && item.definition.kind == "model")
+	);
+	assert!(
+		!graph
+			.definitions
+			.iter()
+			.any(|item| item.identity.id == "summarizer")
+	);
 }
 
 #[tokio::test]
@@ -1934,12 +1921,10 @@ fn native_memory_binding_preserves_removed_read_operations() {
 }
 
 fn decider_config() -> Value {
-	json!({"hook":"compaction","answer_type":"noul","description":"Preserve needed history",
-        "provider_credential":"openrouter",
-        "routes":[{"provider_contract":"typesafe.jev/1","model":"typesafe/jev-1.13","threshold":"3fe0000000000000"}],
-        "builder":"aidash.compaction/3","option_source":"history_event/1",
-        "rule":"compaction.keep/1","mode":"enforce",
-        "max_calls_per_run":20})
+	let mut entry = crate::registry::system::approval_decider().unwrap();
+	entry.config["routes"] = json!([{"provider_contract":"typesafe.jev/1","model":"typesafe/jev-1.13","threshold":"3fe0000000000000"}]);
+	entry.config["max_calls_per_run"] = json!(20);
+	entry.config
 }
 fn decider_binding(id: &str) -> Binding {
 	serde_json::from_value(json!({"kind":"decider","target":reference(id),"narrow":{"decision":{"threshold":"3fd0000000000000","preserve_recent":8}}})).unwrap()
@@ -1977,7 +1962,7 @@ async fn explicit_decider_snapshot_pins_provider_builder_model_and_narrowing() {
 		assert!(corrupt.validate().is_err());
 	}
 	let bound = recovered
-		.decider(aidash_domain::decision::Hook::Compaction)
+		.decider(aidash_domain::decision::Hook::Approval)
 		.unwrap();
 	assert_eq!(bound.pin.identity, reference("decider"));
 	assert_eq!(
@@ -1994,7 +1979,7 @@ async fn explicit_decider_snapshot_pins_provider_builder_model_and_narrowing() {
 		.config["routes"][0]["model"] = json!("typesafe/jev-1.14");
 	assert_eq!(
 		saved
-			.decider(aidash_domain::decision::Hook::Compaction)
+			.decider(aidash_domain::decision::Hook::Approval)
 			.unwrap()
 			.config
 			.routes[0]
@@ -2049,7 +2034,7 @@ async fn duplicate_decider_hooks_and_unavailable_node_implementations_fail_admis
 	let saved = snapshot(&mut catalog, &config, true).await.unwrap();
 	assert_eq!(
 		saved
-			.decider(aidash_domain::decision::Hook::Compaction)
+			.decider(aidash_domain::decision::Hook::Approval)
 			.unwrap()
 			.pin
 			.identity
@@ -2452,132 +2437,6 @@ async fn remote_home_receipt_obligation_rejects_on_demand_despite_false_declarat
 			.to_string()
 			.contains("required-Home semantic contribution"),
 		"{error}"
-	);
-}
-
-#[tokio::test]
-async fn ordinary_compaction_default_is_pinned_removed_or_replaced_by_exact_hook() {
-	use aidash_domain::decision::Hook;
-	let mut catalog = Catalog::new();
-	let ordinary = snapshot(&mut catalog, &agent_config(), false)
-		.await
-		.unwrap();
-	let (bound, definition) = ordinary.bound_decider(Hook::Compaction).unwrap().unwrap();
-	assert_eq!(bound.pin.identity, defaults::compaction_reference(NODE));
-	assert_eq!(
-		definition,
-		crate::registry::system::compaction_decider().unwrap()
-	);
-	assert_eq!(
-		ordinary
-			.bindings
-			.iter()
-			.find(|binding| binding.identity == bound.pin.identity)
-			.unwrap()
-			.origin,
-		BindingOrigin::Default
-	);
-
-	let mut removed = agent_config();
-	removed.remove_default.push(COMPACTION_DEFAULT.into());
-	let opted_out = snapshot(&mut catalog, &removed, false).await.unwrap();
-	assert!(opted_out.bound_decider(Hook::Compaction).unwrap().is_none());
-	assert!(
-		!opted_out
-			.definitions
-			.iter()
-			.any(|definition| definition.identity == bound.pin.identity)
-	);
-
-	let mut approval = crate::registry::system::approval_decider().unwrap();
-	approval.id = "judge".into();
-	catalog.insert(approval);
-	let mut config = agent_config();
-	config.bindings.push(Binding {
-		kind: BindingKind::Decider,
-		target: reference("judge"),
-		alias: None,
-		narrow: Default::default(),
-		members: vec![],
-		exposure: None,
-	});
-	let with_approval = snapshot(&mut catalog, &config, false).await.unwrap();
-	assert!(
-		with_approval
-			.bound_decider(Hook::Compaction)
-			.unwrap()
-			.is_some()
-	);
-	assert!(
-		with_approval
-			.bound_decider(Hook::Approval)
-			.unwrap()
-			.is_some()
-	);
-
-	let mut replacement = crate::registry::system::compaction_decider().unwrap();
-	replacement.id = "tenant.compaction".into();
-	catalog.insert(replacement);
-	config.bindings.push(Binding {
-		kind: BindingKind::Decider,
-		target: reference("tenant.compaction"),
-		alias: None,
-		narrow: Default::default(),
-		members: vec![],
-		exposure: None,
-	});
-	let replaced = snapshot(&mut catalog, &config, false).await.unwrap();
-	assert_eq!(
-		replaced
-			.bound_decider(Hook::Compaction)
-			.unwrap()
-			.unwrap()
-			.0
-			.pin
-			.identity,
-		reference("tenant.compaction")
-	);
-	assert!(
-		!replaced
-			.definitions
-			.iter()
-			.any(|definition| definition.identity == bound.pin.identity)
-	);
-	let root = replaced
-		.definitions
-		.iter()
-		.find(|definition| definition.identity == replaced.agent)
-		.unwrap();
-	assert_eq!(
-		root.definition
-			.binding_normalization
-			.as_ref()
-			.unwrap()
-			.compaction_override,
-		Some(reference("tenant.compaction"))
-	);
-
-	// A fabricated hook claim cannot hide the default in a durable snapshot.
-	let mut forged = with_approval;
-	let root = forged
-		.definitions
-		.iter_mut()
-		.find(|definition| definition.identity == forged.agent)
-		.unwrap();
-	root.definition
-		.normalize_agent_with_compaction(NODE, Some(&reference("judge")))
-		.unwrap();
-	root.digest =
-		aidash_domain::registry::rules::digest(&serde_json::to_value(&root.definition).unwrap());
-	// Match the fabricated closure so only its false hook claim can reject it.
-	forged
-		.bindings
-		.retain(|binding| binding.identity != bound.pin.identity);
-	forged
-		.definitions
-		.retain(|definition| definition.identity != bound.pin.identity);
-	assert!(
-		matches!(forged.validate(), Err(aidash_domain::Error::Invalid(message)) if message == "compaction replacement differs from its exact Decider hook")
 	);
 }
 

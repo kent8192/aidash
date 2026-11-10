@@ -460,11 +460,6 @@ export function RemoteMemoryProvenance({ url }: { url: string }) {
                         `${allowance.embedding_calls} / ${allowance.embedding_call_limit}`,
                         true,
                       ],
-                      [
-                        t("generationCompactionCalls"),
-                        `${allowance.compaction_calls} / ${allowance.compaction_call_limit}`,
-                        true,
-                      ],
                     ]}
                   />
                 </div>

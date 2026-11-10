@@ -2,8 +2,28 @@
 use super::*;
 use aidash_application::ports::memory::offloads::{BackgroundExtraction, JournalRange};
 use async_trait::async_trait;
+use std::sync::Arc;
 
-#[allow(dead_code, reason = "Stream 1 connects the compaction range source")]
+/// Queue a persisted batch outside the foreground Run step.
+pub(crate) fn schedule(
+	queue: Arc<dyn BackgroundExtraction>,
+	run: Uuid,
+	ranges: Vec<aidash_application::context::offload::JournalRange>,
+) -> tokio::task::JoinHandle<()> {
+	tokio::spawn(async move {
+		for range in ranges {
+			let proof = JournalRange {
+				run,
+				from: range.from_seq,
+				through: range.through_seq,
+			};
+			if let Err(error) = queue.enqueue(proof).await {
+				tracing::warn!(run_id = %run, from_seq = range.from_seq, through_seq = range.through_seq, %error, "background memory extraction enqueue failed");
+			}
+		}
+	})
+}
+
 pub(crate) struct OffloadQueue {
 	pub(crate) store: Store,
 }
@@ -87,5 +107,57 @@ impl BackgroundExtraction for OffloadQueue {
 		}
 		.await;
 		result.map_err(Into::into)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use std::sync::Mutex;
+
+	#[derive(Default)]
+	struct Queue(Mutex<Vec<JournalRange>>);
+	#[async_trait]
+	impl BackgroundExtraction for Queue {
+		async fn enqueue(&self, range: JournalRange) -> aidash_application::Result<()> {
+			self.0.lock().unwrap().push(range);
+			if range.from == 1 {
+				Err(aidash_application::Error::Forbidden)
+			} else {
+				Ok(())
+			}
+		}
+	}
+
+	#[tokio::test]
+	async fn persisted_offload_batch_is_enqueued_and_failures_do_not_stop_later_ranges() {
+		let queue = Arc::new(Queue::default());
+		let run = Uuid::now_v7();
+		let ranges = vec![
+			aidash_application::context::offload::JournalRange {
+				from_seq: 1,
+				through_seq: 2,
+			},
+			aidash_application::context::offload::JournalRange {
+				from_seq: 5,
+				through_seq: 7,
+			},
+		];
+		schedule(queue.clone(), run, ranges).await.unwrap();
+		assert_eq!(
+			*queue.0.lock().unwrap(),
+			vec![
+				JournalRange {
+					run,
+					from: 1,
+					through: 2
+				},
+				JournalRange {
+					run,
+					from: 5,
+					through: 7
+				}
+			]
+		);
 	}
 }

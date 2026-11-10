@@ -524,6 +524,39 @@ impl ExecutionStore for RunStore {
 			.await
 			.map_err(Into::into)
 	}
+	async fn results_offloaded(
+		&self,
+		run: &Run,
+		ranges: &[aidash_application::context::offload::JournalRange],
+	) -> Result<()> {
+		use aidash_domain::registry::bindings::memory_defaults;
+		let builtin = run
+			.context
+			.binding_snapshot
+			.as_ref()
+			.is_some_and(|snapshot| {
+				snapshot.bindings.iter().any(|binding| {
+					binding.excluded_reason.is_none()
+						&& binding.definition.kind == "memory"
+						&& binding.definition.id == memory_defaults::MEMORY_ID
+						&& binding.definition.version == memory_defaults::VERSION
+				})
+			});
+		if !builtin || ranges.is_empty() {
+			return Ok(());
+		}
+		let queue = Arc::new(
+			crate::apps::knowledge::repositories::engine_jobs::offloads::OffloadQueue {
+				store: self.store.clone(),
+			},
+		);
+		let _ = crate::apps::knowledge::repositories::engine_jobs::offloads::schedule(
+			queue,
+			run.id,
+			ranges.to_vec(),
+		);
+		Ok(())
+	}
 	async fn begin_compaction(
 		&self,
 		run: &Run,
@@ -552,63 +585,11 @@ impl ExecutionStore for RunStore {
 		token: Uuid,
 		attempt: Uuid,
 		settlement: &aidash_domain::context::recovery::Settlement,
-		staged: Option<&aidash_application::decision::StagedDecision>,
 	) -> Result<()> {
-		let journal = match staged {
-			Some(staged) => Some(staged_journal(&self.store, run, staged)?),
-			None => None,
-		};
-		Store::adopt_compaction(
-			&self.store,
-			&self.scope,
-			run,
-			token,
-			attempt,
-			settlement,
-			journal.as_ref().zip(staged),
-		)
-		.await
-		.map_err(Into::into)
+		Store::adopt_compaction(&self.store, &self.scope, run, token, attempt, settlement)
+			.await
+			.map_err(Into::into)
 	}
-}
-
-/// The Decision Journal that records `staged` with the summary adopted for
-/// `run`. A Run whose Binding names the Decider rechecks that Binding; a
-/// generated or RequiredHome Run keeps the Decider its chain agreed on.
-fn staged_journal<'a>(
-	store: &'a Store,
-	run: &Run,
-	staged: &aidash_application::decision::StagedDecision,
-) -> Result<crate::apps::execution::repositories::decisions::RunDecisionJournal<'a>> {
-	use crate::apps::execution::repositories::decisions::{
-		AdmittedAllowance, ChainAllowance, RunDecisionJournal,
-	};
-	// Recording the decision charges nothing, so no call limit applies here.
-	let allowance = aidash_domain::decision::policy::ExecutionAllowance {
-		decider: staged.evidence.decider.clone(),
-		max_calls_per_run: u64::MAX,
-	};
-	// Only a Binding that pins the very Decider which staged the decision
-	// rechecks it; a chain decision under a different Agent Decider keeps
-	// the chain's allowance.
-	let admitted = run
-		.context
-		.binding_snapshot
-		.as_deref()
-		.map(|snapshot| snapshot.bound_decider(aidash_domain::decision::Hook::Compaction))
-		.transpose()?
-		.flatten()
-		.is_some_and(|(bound, _)| bound.allowance().decider == staged.evidence.decider);
-	Ok(if admitted {
-		RunDecisionJournal::new(store, run.clone(), allowance, AdmittedAllowance)?
-	} else {
-		RunDecisionJournal::new(
-			store,
-			run.clone(),
-			allowance.clone(),
-			ChainAllowance(allowance),
-		)?
-	})
 }
 
 #[async_trait]
@@ -965,36 +946,6 @@ impl ExecutionAuthority for Authority<'_> {
 				})
 			})
 			.map_err(Into::into)
-	}
-	async fn reserve_summary(
-		&self,
-		token: Uuid,
-		summarizer: &aidash_domain::context::summary::SummaryProvider,
-		window: usize,
-		output: u32,
-		request: &ModelRequest,
-	) -> Result<Option<Box<dyn InferenceReservation>>> {
-		self.guard
-			.reserve_summary(self.federation, token, summarizer, window, output, request)
-			.await
-			.map(|value| {
-				value.map(|reservation| {
-					Box::new(Reservation(reservation)) as Box<dyn InferenceReservation>
-				})
-			})
-			.map_err(Into::into)
-	}
-	async fn recheck_summary(
-		&self,
-		summarizer: &aidash_domain::context::summary::SummaryProvider,
-	) -> Result<()> {
-		self.guard
-			.recheck_summary(self.federation, summarizer)
-			.await
-			.map_err(Into::into)
-	}
-	async fn recheck_decider(&self, decider: &aidash_domain::decision::DeciderPin) -> Result<()> {
-		crate::apps::execution::repositories::decisions::require_approved(self.guard, decider).await
 	}
 	async fn suspend(&self) -> Result<()> {
 		self.guard.suspend().await.map_err(Into::into)
@@ -1507,86 +1458,6 @@ impl ExecutionEnvironment for Environment<'_> {
 		use aidash_application::ports::tools::PluginSessions;
 		self.federation.store.plugin_sessions.close(run).await;
 	}
-	async fn compaction_decider(
-		&self,
-		run: &Run,
-		_token: Uuid,
-	) -> Result<Option<aidash_application::ports::decision::DecisionPorts<'_>>> {
-		use crate::apps::execution::repositories::decisions::{
-			AdmittedAllowance, ChainAllowance, ChainOwners, RunDecisionJournal,
-		};
-		use aidash_application::generation::compaction::Chain;
-		// Only a worker holding the Run's authority may call a Decider.
-		let Some(authority) = &self.authority else {
-			return Ok(None);
-		};
-		let store = &self.federation.store;
-		match authority.guard.chain_decider(self.federation).await? {
-			// A generated chain or RequiredHome execution uses only the Decider
-			// its chain agreed on, never the Agent's own Binding (ADR 0042).
-			Chain::Generated(None) => Ok(None),
-			Chain::Generated(Some(definition)) => {
-				let definition = *definition;
-				let config: aidash_domain::decision::DeciderConfig =
-					serde_json::from_value(definition.config.clone())?;
-				let decider = aidash_domain::decision::BoundDecider {
-					pin: aidash_domain::decision::DeciderPin {
-						identity: aidash_domain::registry::bindings::QualifiedRef {
-							registry_deployment: self.node_id().to_owned(),
-							id: definition.id.clone(),
-							version: definition.version.clone(),
-						},
-						definition_digest: aidash_domain::registry::rules::digest(
-							&serde_json::to_value(&definition)?,
-						),
-						configuration_digest: config.digest()?,
-						provider_implementation:
-							aidash_application::registry::validation::decision_implementation_id(),
-					},
-					config,
-					restrictions: Default::default(),
-				};
-				let journal = RunDecisionJournal::new(
-					store,
-					run.clone(),
-					decider.allowance(),
-					ChainAllowance(decider.allowance()),
-				)?
-				.with_owners(ChainOwners {
-					guard: authority.guard,
-					federation: self.federation,
-					decider: aidash_domain::registry::EntityRef {
-						id: definition.id.clone(),
-						version: definition.version.clone(),
-					},
-					config: decider.config.clone(),
-					open: Default::default(),
-				});
-				self.decision_ports(authority, run, decider, definition, Box::new(journal))
-					.await
-					.map(Some)
-			}
-			Chain::Ordinary => {
-				let Some(snapshot) = run.context.binding_snapshot.as_deref() else {
-					return Ok(None);
-				};
-				let Some((decider, definition)) =
-					snapshot.bound_decider(aidash_domain::decision::Hook::Compaction)?
-				else {
-					return Ok(None);
-				};
-				let journal = RunDecisionJournal::new(
-					store,
-					run.clone(),
-					decider.allowance(),
-					AdmittedAllowance,
-				)?;
-				self.decision_ports(authority, run, decider, definition, Box::new(journal))
-					.await
-					.map(Some)
-			}
-		}
-	}
 	async fn approval_decider(
 		&self,
 		run: &Run,
@@ -1920,6 +1791,45 @@ impl aidash_application::ports::bindings::BindingResolver for Environment<'_> {
 		}
 		.tools(run)
 		.await?;
+		// Journal retrieval is intrinsic, but becomes available only after the
+		// offloader has removed something from this Run's projection.
+		tools.retain(|_, tool| {
+			let contract = tool.contract();
+			let journal = match &contract.identity {
+				aidash_domain::tool::ToolIdentity::Builtin(id) => {
+					["journal_query", "journal_search", "journal_read"]
+						.iter()
+						.any(|name| id == &format!("builtin:{name}"))
+				}
+				aidash_domain::tool::ToolIdentity::Descriptor(id) => run
+					.context
+					.binding_snapshot
+					.as_ref()
+					.is_some_and(|snapshot| {
+						snapshot.bindings.iter().any(|binding| {
+							&binding.identity == id
+								&& serde_json::from_value::<
+									aidash_domain::tool::providers::ToolDescriptor,
+								>(binding.definition.config.clone())
+								.is_ok_and(|descriptor| descriptor.provider == "core.journal@1")
+						})
+					}),
+				_ => false,
+			};
+			!journal
+		});
+		if aidash_domain::context::journal_query::offloaded_any(&run.context) {
+			for name in aidash_application::registry::system::journal_tools(
+				self.federation.store.capabilities.0.runner.is_some(),
+			) {
+				if tools.contains_key(*name) {
+					return Err(aidash_application::Error::Conflict(format!(
+						"Journal tool alias is already bound: {name}"
+					)));
+				}
+				tools.insert((*name).to_owned(), providers.coordination_tool(name)?);
+			}
+		}
 		if self
 			.authority
 			.as_ref()

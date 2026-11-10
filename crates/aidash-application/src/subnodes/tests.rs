@@ -215,7 +215,8 @@ async fn creator_agent_needs_an_explicit_grant_but_the_root_does_not() {
 }
 
 #[tokio::test]
-async fn creation_refuses_nested_remote_over_limit_and_uncovered_member() {
+async fn creation_refuses_nested_remote_over_limit_and_uncovered_members_but_admits_the_creator_agent()
+ {
 	let mut scope = scope();
 	scope.grant();
 	scope.nested = true;
@@ -247,8 +248,12 @@ async fn creation_refuses_nested_remote_over_limit_and_uncovered_member() {
 		id: run().agent_id,
 		version: "2".into(),
 	});
+	let created = create(&mut scope, &run(), "key", &request).await.unwrap();
 	assert!(
-		matches!(create(&mut scope, &run(), "key", &request).await, Err(Error::Refused(message)) if message.contains("creating agent"))
+		created
+			.members
+			.iter()
+			.any(|member| member.agent_id == run().agent_id)
 	);
 }
 
@@ -536,4 +541,13 @@ async fn an_end_locks_subnodes_then_runs_before_it_marks_anything_ended() {
 	let mut locking = Logged::default();
 	lock_end(&mut locking, run().id).await.unwrap();
 	assert_eq!(locking.calls, ["subnodes", "runs"]);
+}
+
+#[tokio::test]
+async fn creator_agent_can_be_added_as_member() {
+	let mut scope = Management::new();
+	let id = scope.subnode.id;
+	let creator = scope.subnode.creator_agent.clone();
+	add_member(&mut scope, &run(), id, &creator).await.unwrap();
+	assert_eq!(scope.effects, ["add"]);
 }

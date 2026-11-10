@@ -106,9 +106,7 @@ pub(crate) async fn metadata(access: &mut Access, reference: &EntityRef) -> Resu
 		&reference.version,
 	)
 	.await?;
-	if !aidash_domain::registry::bindings::defaults::is_compaction_decider(&entry)
-		&& !aidash_domain::registry::bindings::sources::is_selection_decider(&entry)
-	{
+	if !aidash_domain::registry::bindings::sources::is_selection_decider(&entry) {
 		return Err(crate::Error::Forbidden);
 	}
 	if let Some(projection) = &entry.installation
@@ -129,16 +127,6 @@ pub(crate) async fn metadata(access: &mut Access, reference: &EntityRef) -> Resu
 		access.tx.admit(read_check, entry.clone());
 	}
 	crate::marketplace::check_pinned(access, &entry).await?;
-	if aidash_domain::registry::bindings::defaults::is_compaction_decider(&entry) {
-		// A child Run admitted under this lease starts only with its own
-		// compaction Decider approved (#540). The inherited-lease fence admits
-		// a definition only when the parent's closure names it; this one is a
-		// closure member although its approval is checked when needed. The
-		// current approval is still read by the child's own start check.
-		access
-			.approved_catalog
-			.insert((reference.id.clone(), reference.version.clone()));
-	}
 	Ok(entry)
 }
 

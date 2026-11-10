@@ -791,7 +791,8 @@ the single Knowledge head, and no schema or model state is overwritten.
 
 `registry/0063_reference_set_limit` raises the most Reference files one Source can bind from 8 to 256 in the PostgreSQL context validator. The function body uses SQL assets because Reinhardt has no typed operation for replacing PostgreSQL functions. Reversal refuses while a Source or a Run snapshot holds more than 8.
 
-`registry/0064_optional_memory_roles` permits an Agent model role and an absent embedding in native memory definitions. Its PostgreSQL validation and reference trigger use SQL assets because Reinhardt cannot express function bodies. Reversal refuses while definitions use the new forms.
+`registry/0064_journal_tools` admits the built-in Journal descriptors while preserving the existing descriptor validation. PostgreSQL function DDL requires SQL assets. Reversal refuses while Journal definitions remain.
+`registry/0067_optional_memory_roles` permits an Agent model role and an absent embedding in native memory definitions. Its PostgreSQL validation and reference trigger use SQL assets because Reinhardt cannot express function bodies. Reversal refuses while definitions use the new forms.
 
 ## Run control provenance and Safety Stops (#485, ADR 0101)
 
@@ -926,3 +927,9 @@ validator with the six `core.subnodes@1` operations (#660). Its reversible
 cannot express PL/pgSQL function definitions. Rolling back restores the
 previous descriptor contract; existing Subnode descriptors then cannot be
 rewritten until the migration is reapplied.
+
+`registry/0065_agent_default_removals` admits `connection_request` as a removable default and rejects the removed `compaction` default. Its SQL replaces a PostgreSQL validation function that Reinhardt cannot express; reversal refuses definitions or Runs that rely on the new removal.
+
+`execution/0123_remove_compaction_decision_storage` removes the compaction-only decision state and outcome tables; `0124_remove_compaction_decision_storage_state` updates the model state. Decision Attempts and approval Evidence remain.
+
+`execution/0125_remove_generated_compaction` removes generated-chain Decider usage and its obsolete counters; `0126_remove_generated_compaction_state` updates the model state. Embedding and Summary allowances remain.

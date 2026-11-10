@@ -54,6 +54,22 @@ pub struct SummaryContent {
 	pub verification: Vec<VerificationRef>,
 }
 
+/// Model-authored labels and prose. Evidence and the goal are copied by code.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SummaryDraft {
+	retained: Vec<String>,
+	labels: Vec<CallLabel>,
+	prose: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CallLabel {
+	call_id: String,
+	label: String,
+}
+
 /// Exact Context Journal range folded into the summary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -176,6 +192,135 @@ impl Rejection {
 }
 
 impl SummaryContent {
+	/// Stable identifiers the model must retain when merging a prior summary.
+	pub fn retained_ids(previous: Option<&ExecutionSummary>) -> Vec<String> {
+		let Some(previous) = previous else {
+			return vec![];
+		};
+		let content = &previous.content;
+		content
+			.constraints
+			.iter()
+			.map(|item| format!("constraint:{}", item.id))
+			.chain(
+				content
+					.unresolved
+					.iter()
+					.map(|item| format!("unresolved:{}", item.id)),
+			)
+			.chain(
+				content
+					.resolved
+					.iter()
+					.map(|item| format!("resolved:{}", item.id)),
+			)
+			.chain((0..content.decisions.len()).map(|i| format!("decision:{i}")))
+			.chain((0..content.artifacts.len()).map(|i| format!("artifact:{i}")))
+			.chain((0..content.verification.len()).map(|i| format!("verification:{i}")))
+			.collect()
+	}
+
+	/// Construct the summary from source events, accepting model prose and
+	/// per-call labels only. Unsupported labels are ignored; omitting an earlier
+	/// item rejects the merge so no accumulated state is silently lost.
+	pub fn from_draft(
+		text: &str,
+		goal: &str,
+		previous: Option<&ExecutionSummary>,
+		absorbed: &[HistoryEntry],
+		max_tokens: u32,
+	) -> Result<Self, Rejection> {
+		let draft: SummaryDraft =
+			serde_json::from_str(text.trim()).map_err(|_| Rejection::Malformed)?;
+		for id in Self::retained_ids(previous) {
+			if !draft.retained.contains(&id) {
+				return Err(Rejection::DroppedItem(id));
+			}
+		}
+		let mut content = previous
+			.map(|item| item.content.clone())
+			.unwrap_or_else(|| Self {
+				goal: goal.to_owned(),
+				constraints: vec![],
+				decisions: vec![],
+				unresolved: vec![],
+				resolved: vec![],
+				artifacts: vec![],
+				verification: vec![],
+			});
+		if content.goal.trim().is_empty() {
+			return Err(Rejection::EmptyGoal);
+		}
+		if !draft.prose.trim().is_empty() {
+			content.decisions.push(draft.prose);
+		}
+		let mut large_results: Option<(u64, u64)> = None;
+		for entry in absorbed {
+			match &entry.event {
+				ContextEvent::Human {
+					request, response, ..
+				} => {
+					let response = match response {
+						Value::String(text) => text.clone(),
+						other => other.to_string(),
+					};
+					for (kind, text) in [("request", request.clone()), ("response", response)] {
+						if text.trim().is_empty() {
+							continue;
+						}
+						content.constraints.push(SummaryItem {
+							id: format!("journal-{}-{kind}", entry.seq),
+							text,
+						});
+					}
+				}
+				ContextEvent::Tool { call, result } => {
+					if let Some(label) = draft.labels.iter().find(|item| {
+						item.call_id == call.id
+							&& !item.label.trim().is_empty()
+							&& item.label.len() <= 256
+					}) {
+						content
+							.decisions
+							.push(format!("{}: {}", call.id, label.label));
+					}
+					let outcome = ["exit_code", "status", "error"]
+						.iter()
+						.find_map(|key| result.get(*key))
+						.unwrap_or(result);
+					let text = match outcome {
+						Value::String(value) => value.clone(),
+						_ => outcome.to_string(),
+					};
+					if !text.is_empty() && text.len() <= 128 {
+						if failed_result(result) {
+							content
+								.decisions
+								.push(format!("{} outcome: {}", call.id, text));
+						} else {
+							content.verification.push(VerificationRef {
+								reference: call.id.clone(),
+								outcome: text,
+							});
+						}
+					} else {
+						large_results = Some(match large_results {
+							Some((first, _)) => (first, entry.seq),
+							None => (entry.seq, entry.seq),
+						});
+					}
+				}
+				_ => {}
+			}
+		}
+		if let Some((first, last)) = large_results {
+			content.decisions.push(format!(
+				"Full tool results remain in Context Journal sequences {first} through {last}."
+			));
+		}
+		let encoded = serde_json::to_string(&content).map_err(|_| Rejection::Malformed)?;
+		Self::parse(&encoded, previous, absorbed, max_tokens)
+	}
 	/// Parse provider text and enforce the merge contract against the previous
 	/// summary and the `absorbed` history. Size reduction of the complete
 	/// request is checked by the caller.
@@ -262,7 +407,10 @@ impl SummaryContent {
 					verification.reference.clone(),
 				));
 			};
-			if failed_result(result) || !holds(result, &verification.outcome) {
+			if failed_result(result)
+				|| (!holds(result, &verification.outcome)
+					&& result.to_string() != verification.outcome)
+			{
 				return Err(Rejection::UnprovenOutcome(verification.reference.clone()));
 			}
 		}
@@ -348,18 +496,13 @@ impl SummaryContent {
 
 	/// OpenRouter structured-output request for the content schema.
 	pub fn response_format() -> Value {
-		let item = json!({"type":"object","additionalProperties":false,"required":["id","text"],"properties":{"id":{"type":"string"},"text":{"type":"string"}}});
 		json!({"type":"json_schema","json_schema":{"name":"execution_summary","strict":true,"schema":{
 			"type":"object","additionalProperties":false,
-			"required":["goal","constraints","decisions","unresolved","resolved","artifacts","verification"],
+			"required":["retained","labels","prose"],
 			"properties":{
-				"goal":{"type":"string"},
-				"constraints":{"type":"array","items":item},
-				"decisions":{"type":"array","items":{"type":"string"}},
-				"unresolved":{"type":"array","items":item},
-				"resolved":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","resolved_by"],"properties":{"id":{"type":"string"},"resolved_by":{"type":"string"}}}},
-				"artifacts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["reference","revision"],"properties":{"reference":{"type":"string"},"revision":{"type":"string"}}}},
-				"verification":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["reference","outcome"],"properties":{"reference":{"type":"string"},"outcome":{"type":"string"}}}}
+				"retained":{"type":"array","items":{"type":"string"}},
+				"labels":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["call_id","label"],"properties":{"call_id":{"type":"string"},"label":{"type":"string"}}}},
+				"prose":{"type":"string"}
 			}
 		}}})
 	}

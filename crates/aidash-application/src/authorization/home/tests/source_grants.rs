@@ -386,7 +386,7 @@ impl GrantScope for SourceSession {
 		_: &Request,
 	) -> Result<Binding> {
 		self.repository.call("semantic_binding");
-		Ok(Binding::Disabled { summarizer: None })
+		Ok(Binding::Disabled {})
 	}
 	async fn insert_grant(&mut self, _: &PrepareInput, _: &Task, _: &Value) -> Result<u64> {
 		panic!("rejected preparation must not persist")
@@ -420,7 +420,7 @@ fn input() -> PrepareInput {
 			version: "1.0.0".into(),
 		},
 		ttl_seconds: 3600,
-		semantic: Request::Disabled { summarizer: None },
+		semantic: Request::Disabled {},
 	}
 }
 #[rstest]

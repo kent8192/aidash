@@ -227,9 +227,7 @@ impl GenerationLifecycleScope for Scope {
 		Ok((
 			70,
 			aidash_domain::generation::policy::Allowances {
-				compaction_calls: 8,
 				embedding_calls: 13,
-				summary_calls: 5,
 			},
 		))
 	}
@@ -240,15 +238,7 @@ impl GenerationLifecycleScope for Scope {
 		unused_calls: &aidash_domain::generation::policy::Allowances,
 	) -> Result<()> {
 		self.point("release").await?;
-		assert_eq!(
-			(
-				unused,
-				unused_calls.compaction_calls,
-				unused_calls.embedding_calls,
-				unused_calls.summary_calls
-			),
-			(70, 8, 13, 5)
-		);
+		assert_eq!((unused, unused_calls.embedding_calls), (70, 13));
 		self.effects.push("quota.release".into());
 		Ok(())
 	}

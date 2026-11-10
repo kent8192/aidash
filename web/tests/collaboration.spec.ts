@@ -671,8 +671,6 @@ for (const locale of ["en-US", "ja-JP"] as const) {
                     token_limit: 800000,
                     embedding_calls: 2,
                     embedding_call_limit: 10,
-                    compaction_calls: 1,
-                    compaction_call_limit: 4,
                   },
                 ],
                 sources: [

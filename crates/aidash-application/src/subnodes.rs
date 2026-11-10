@@ -72,9 +72,6 @@ pub async fn create(
 	}
 	let mut member_ids = BTreeSet::new();
 	for member in &input.members {
-		if member.id == run.agent_id {
-			return Err(refused(subnodes::Refusal::CreatorMember));
-		}
 		if !member_ids.insert(&member.id) {
 			return Err(refused(subnodes::Refusal::DuplicateMember(
 				member.id.clone(),
@@ -138,9 +135,6 @@ pub async fn add_member(
 ) -> Result<()> {
 	let subnode = active(scope, id).await?;
 	participant(&subnode, run)?;
-	if subnode.creator_agent.id == agent.id {
-		return Err(refused(subnodes::Refusal::CreatorMember));
-	}
 	if subnode
 		.members
 		.iter()

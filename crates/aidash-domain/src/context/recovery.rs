@@ -22,13 +22,11 @@ pub enum Failure {
 		"Mandatory context cannot fit the model window; reduce instructions, tools or pinned context"
 	)]
 	ContextUnreducible,
-	#[error("The compaction Decider has no Catalog Approval for its exact version on this Node")]
+	#[error("The Decider is not approved")]
 	DeciderUnapproved,
-	#[error("The compaction Decider reached its call limit for this Run")]
+	#[error("The Decider call allowance is exhausted")]
 	DeciderCallsExhausted,
-	#[error(
-		"The compaction Decider is unavailable: no OpenRouter connection, a provider failure, or more context than it accepts"
-	)]
+	#[error("The Decider is unavailable")]
 	DeciderUnavailable,
 	#[error("The context Summary Stage is unavailable or not approved for this Run")]
 	SummaryUnavailable,

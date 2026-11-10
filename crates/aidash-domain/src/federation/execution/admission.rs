@@ -77,8 +77,6 @@ pub struct InspectInput {
 	pub task_id: Option<Uuid>,
 	pub agent: EntityRef,
 	pub requirements: Search,
-	#[serde(default)]
-	pub decider: Option<EntityRef>,
 }
 #[derive(Clone)]
 pub struct Record {
