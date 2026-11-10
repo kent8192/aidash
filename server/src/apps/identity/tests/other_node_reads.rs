@@ -244,7 +244,7 @@ async fn world(provider: Provider) -> World {
 
 impl World {
 	async fn get(&self, path: &str) -> (u16, Value) {
-		request(&self.app, &self.token, "GET", path, Value::Null).await
+		common::get(&self.app, &self.token, path).await
 	}
 
 	/// Alice claims her Task with `research`, whose Run follows the script. The
@@ -252,10 +252,9 @@ impl World {
 	/// which is when what it did before has been saved. A Run with an open
 	/// child Task does not complete, so completion is not awaited.
 	async fn run_coordinator(&self, requests: usize) -> Run {
-		let (status, claimed) = request(
+		let (status, claimed) = common::post(
 			&self.app,
 			&self.token,
-			"POST",
 			&format!("/api/tasks/{}/claim", self.task),
 			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
 		)
@@ -352,12 +351,10 @@ fn listed(tasks: &Value, task: Uuid) -> bool {
 
 /// Adds `subjects` and `policies` to the Tenant's policy bundle.
 async fn add_policies(world: &World, subjects: &[&str], policies: Vec<Value>) {
-	let (status, current) = request(
+	let (status, current) = common::get(
 		&world.app,
 		&world.f.config.api_token,
-		"GET",
 		"/api/authorization/acme",
-		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "{current}");
@@ -366,10 +363,9 @@ async fn add_policies(world: &World, subjects: &[&str], policies: Vec<Value>) {
 		bundle["subjects"][*subject] = json!({"kind":"user"});
 	}
 	bundle["policies"].as_array_mut().unwrap().extend(policies);
-	let (status, body) = request(
+	let (status, body) = common::post(
 		&world.app,
 		&world.f.config.api_token,
-		"POST",
 		"/api/authorization/acme",
 		json!({"expected_revision":current["revision"],"bundle":bundle}),
 	)
@@ -505,10 +501,9 @@ async fn a_person_delegates_a_task_whose_producer_discovered_the_agent(
 	let world = world(provider).await;
 	world.run_coordinator(WITHOUT_DELEGATION).await;
 	let child = world.handed_over().await;
-	let (status, body) = request(
+	let (status, body) = common::post(
 		&world.app,
 		&world.token,
-		"POST",
 		&format!("/api/tasks/{}/delegate", child.id),
 		json!({"node_id":world.sibling.to_string(),"agent":{"id":"sibling-agent","version":"1.0.0"}}),
 	)
@@ -630,7 +625,7 @@ async fn a_silent_node_of_the_tenant_leaves_the_read_decided_here(
 	let (status, tasks) = world.get("/api/tasks").await;
 	assert_eq!(status, 200, "{tasks}");
 	assert!(listed(&tasks, child.id), "{tasks}");
-	let (status, body) = request(&world.app, &bob, "GET", &single, Value::Null).await;
+	let (status, body) = common::get(&world.app, &bob, &single).await;
 	assert_eq!(status, 403, "{body}");
 	assert_ne!(body["code"], "node_unreachable", "{body}");
 	restore_pool(&mut world, original).await;
@@ -774,7 +769,7 @@ async fn opening_a_run_stream_while_a_node_is_silent_opens_and_a_refusal_stays(
 	assert_eq!(response.status, 200);
 	drop(response);
 	for credential in [&bob, &carol] {
-		let (status, body) = request(&world.app, credential, "GET", &path, Value::Null).await;
+		let (status, body) = common::get(&world.app, credential, &path).await;
 		assert_eq!(status, 403, "{body}");
 		assert_ne!(body["code"], "node_unreachable", "{body}");
 	}
@@ -800,33 +795,20 @@ async fn restore_pool(world: &mut World, pool: aidash_server::database::native::
 /// the second Node.
 async fn queued_generation(world: &World) -> Uuid {
 	let child = world.handed_over().await;
-	let (_, mut template) = request(
-		&world.app,
-		&world.token,
-		"GET",
-		"/api/registry/research/1.0.0",
-		Value::Null,
-	)
-	.await;
+	let (_, mut template) =
+		common::get(&world.app, &world.token, "/api/registry/research/1.0.0").await;
 	template["id"] = json!("research-template");
 	template["capabilities"] = json!(["special.research"]);
 	let spec = json!({"enabled":true,"template":template,"permissions":{"roles":[],"groups":[],"attributes":{"team":"research"}},"approval_required":true,"limits":{"max_agents":4,"max_concurrent":2,"max_depth":2,"token_budget":800000,"tokens_per_agent":200000,"lifetime_seconds":3600}});
-	let (status, body) = request(
+	let (status, body) = common::post(
 		&world.app,
 		&world.token,
-		"POST",
 		"/api/generation/acme/policies/research",
 		json!({"expected_revision":0,"spec":spec}),
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let (status, assigned) = request(
-		&world.app,
-		&world.token,
-		"POST",
-		&format!("/api/generation/acme/tasks/{}/assign", child.id),
-		json!({"policy_id":"research","reason":"specialist for a Task another Node's Agent was found for"}),
-	)
+	let (status, assigned) = common::post(&world.app, &world.token, &format!("/api/generation/acme/tasks/{}/assign", child.id), json!({"policy_id":"research","reason":"specialist for a Task another Node's Agent was found for"}))
 	.await;
 	assert_eq!(status, 200, "{assigned}");
 	let id: Uuid = assigned["generation"]["id"]
@@ -834,10 +816,9 @@ async fn queued_generation(world: &World) -> Uuid {
 		.unwrap()
 		.parse()
 		.unwrap();
-	let (status, approved) = request(
+	let (status, approved) = common::post(
 		&world.app,
 		&world.token,
-		"POST",
 		&format!("/api/generation/acme/requests/{id}/control"),
 		json!({"action":"approve","reason":"reviewed definition"}),
 	)
@@ -880,10 +861,10 @@ async fn a_queued_generation_request_activates_while_a_node_is_silent(
 	restore_pool(&mut world, original).await;
 
 	let stop = json!({"action":"stop","reason":"changed my mind"});
-	let (status, body) = request(&world.app, &carol, "POST", &control, stop.clone()).await;
+	let (status, body) = common::post(&world.app, &carol, &control, stop.clone()).await;
 	assert_eq!(status, 403, "{body}");
 	assert_ne!(body["code"], "node_unreachable", "{body}");
-	let (status, body) = request(&world.app, &world.token, "POST", &control, stop).await;
+	let (status, body) = common::post(&world.app, &world.token, &control, stop).await;
 	assert_eq!(status, 200, "{body}");
 	world.close().await;
 }
@@ -898,12 +879,10 @@ async fn a_real_refusal_at_activation_still_fails_the_request(#[future(awt)] pro
 	let world = world(provider).await;
 	world.run_coordinator(WITHOUT_DELEGATION).await;
 	let job = queued_generation(&world).await;
-	let (status, current) = request(
+	let (status, current) = common::get(
 		&world.app,
 		&world.f.config.api_token,
-		"GET",
 		"/api/authorization/acme",
-		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "{current}");
@@ -912,10 +891,9 @@ async fn a_real_refusal_at_activation_still_fails_the_request(#[future(awt)] pro
 		"id":"alice-reads-no-workspace","effect":"deny","subjects":{"ids":["alice"]},
 		"actions":["workspace.read"],"resources":{"kinds":["*"]}
 	}));
-	let (status, body) = request(
+	let (status, body) = common::post(
 		&world.app,
 		&world.f.config.api_token,
-		"POST",
 		"/api/authorization/acme",
 		json!({"expected_revision":current["revision"],"bundle":bundle}),
 	)
@@ -1008,7 +986,7 @@ async fn resuming_while_a_node_is_silent_resumes(#[future(awt)] provider: Provid
 }
 
 async fn world_post(world: &World, path: &str, body: Value) -> (u16, Value) {
-	request(&world.app, &world.token, "POST", path, body).await
+	common::post(&world.app, &world.token, path, body).await
 }
 
 /// #751 made the Node a reader asked run inside the reader's shared hold of the

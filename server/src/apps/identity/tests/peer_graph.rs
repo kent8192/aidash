@@ -111,49 +111,35 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		"First line.\n{}\nEnd of the current Goal.",
 		"Authorized context. ".repeat(30)
 	);
-	let (status, created) = request(
+	let (status, created) = common::post(
 		&app,
 		&subject_token,
-		"POST",
 		"/api/workspaces",
 		json!({"title":"Long Goal Workspace","goal":long_goal}),
 	)
 	.await;
 	assert_eq!(status, 200, "{created}");
 	let source = common::register_source(&f, &app, SOURCE, "acme").await;
-	let (status, visible_peers) = request(
-		&app,
-		&subject_token,
-		"GET",
-		"/api/federation/graph/peers",
-		Value::Null,
-	)
-	.await;
+	let (status, visible_peers) =
+		common::get(&app, &subject_token, "/api/federation/graph/peers").await;
 	assert_eq!(status, 200, "{visible_peers}");
 	assert_eq!(visible_peers, json!([{"node_id":source.address()}]));
 	assert_eq!(
-		request(
-			&app,
-			&f.config.api_token,
-			"GET",
-			"/api/federation/graph/peers",
-			Value::Null
-		)
-		.await
-		.0,
+		common::get(&app, &f.config.api_token, "/api/federation/graph/peers")
+			.await
+			.0,
 		403
 	);
 	// A Deployment Administrator has no Subject, so it expands no remote Node.
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/federation/graph",
 			json!({
 				"node_id":source.address(),"scope_workspace":null,"mode":"mesh",
 				"kinds":["workspace","goal"],"relations":[],"hours":0,"limit":80,"cursor":null,
-			}),
+			})
 		)
 		.await
 		.0,
@@ -236,10 +222,9 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	let mut other_policy = common::policy(f.config.deployment.as_str());
 	other_policy["tenant"] = json!("other");
 	common::tenant_root(&f, "other").await;
-	let (status, written) = request(
+	let (status, written) = common::post(
 		&app,
 		&f.config.api_token,
-		"POST",
 		"/api/authorization/other",
 		json!({"expected_revision":0,"bundle":other_policy}),
 	)
@@ -578,10 +563,9 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		"condition":{"op":"eq","left":{"source":"environment","path":"/source_scope"},
 			"right":{"source":"literal","value":"remote"}},
 	}));
-	let (status, written) = request(
+	let (status, written) = common::post(
 		&app,
 		&f.config.api_token,
-		"POST",
 		"/api/authorization/acme",
 		json!({"expected_revision":1,"bundle":policy}),
 	)
@@ -607,10 +591,9 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		"id":"deny-graph","effect":"deny","subjects":{"ids":["alice"]},
 		"actions":["federation.graph.read"],"resources":{"kinds":["node"]},
 	}));
-	let (status, written) = request(
+	let (status, written) = common::post(
 		&app,
 		&f.config.api_token,
-		"POST",
 		"/api/authorization/acme",
 		json!({"expected_revision":2,"bundle":policy}),
 	)
@@ -627,10 +610,9 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 		.unwrap()
 		.retain(|rule| rule["id"] != "deny-graph");
 	policy["subjects"]["alice"]["enabled"] = json!(false);
-	let (status, written) = request(
+	let (status, written) = common::post(
 		&app,
 		&f.config.api_token,
-		"POST",
 		"/api/authorization/acme",
 		json!({"expected_revision":3,"bundle":policy}),
 	)
@@ -638,10 +620,9 @@ async fn scoped_graph_sends_only_authorized_projection_and_full_goal(
 	assert_eq!(status, 200, "{written}");
 	assert_eq!(graph(&app, &source, viewer, None, 80).await.0, 403);
 	policy["subjects"]["alice"]["enabled"] = json!(true);
-	let (status, written) = request(
+	let (status, written) = common::post(
 		&app,
 		&f.config.api_token,
-		"POST",
 		"/api/authorization/acme",
 		json!({"expected_revision":4,"bundle":policy}),
 	)
@@ -762,10 +743,9 @@ async fn sparse_goal_pages_advance_and_activity_reaches_older_page_events(
 		]
 	});
 	common::tenant_root(&f, "sparse").await;
-	let (status, written) = request(
+	let (status, written) = common::post(
 		&app,
 		&f.config.api_token,
-		"POST",
 		"/api/authorization/sparse",
 		json!({"expected_revision":0,"bundle":policy}),
 	)

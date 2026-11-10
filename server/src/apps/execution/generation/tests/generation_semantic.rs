@@ -163,15 +163,13 @@ impl Fixture {
 		persisted.unwrap()
 	}
 	async fn usage(&self) -> Value {
-		let (status, value) = request(
+		let (status, value) = common::get(
 			&self.app,
 			&self.token,
-			"GET",
 			&format!(
 				"/api/generation/acme/requests/{}/usage",
 				self.job["id"].as_str().unwrap()
 			),
-			Value::Null,
 		)
 		.await;
 		assert_eq!(status, 200, "{value}");
@@ -245,20 +243,17 @@ async fn generated_embeddings_are_pinned_reserved_and_limited_with_reported_usag
 	semantic_fixture_1: Fixture,
 ) {
 	let fixture = semantic_fixture_1;
-	let (_, policies) = request(
+	let (_, policies) = common::get(
 		&fixture.app,
 		&fixture.token,
-		"GET",
 		"/api/generation/acme/policies",
-		Value::Null,
 	)
 	.await;
 	let mut spec = policies[0]["spec"].clone();
 	spec["embedding"] = Value::Null;
-	let (status, value) = request(
+	let (status, value) = common::post(
 		&fixture.app,
 		&fixture.token,
-		"POST",
 		"/api/generation/acme/policies/semantic",
 		json!({"expected_revision":1,"spec":spec}),
 	)
@@ -277,12 +272,10 @@ async fn generated_embeddings_are_pinned_reserved_and_limited_with_reported_usag
 	aidash_server::generation::provision::reconcile(&fixture.f)
 		.await
 		.unwrap();
-	let (_, policies) = request(
+	let (_, policies) = common::get(
 		&fixture.app,
 		&fixture.token,
-		"GET",
 		"/api/generation/acme/policies",
-		Value::Null,
 	)
 	.await;
 	assert_eq!(policies[0]["allocated_embedding_calls"], 2);
@@ -390,10 +383,9 @@ async fn generated_embedding_catalog_policy_and_provider_changes_cannot_increase
 	} else {
 		let mut spec = fixture.index["spec"].clone();
 		spec["embedding"]["model_version"] = json!("2");
-		let (status, index) = request(
+		let (status, index) = common::post(
 			&fixture.app,
 			&fixture.token,
-			"POST",
 			&format!("/api/workspaces/{}/semantic/index", fixture.workspace),
 			json!({"expected_revision":1,"spec":spec}),
 		)
@@ -403,12 +395,10 @@ async fn generated_embedding_catalog_policy_and_provider_changes_cannot_increase
 			index["error"],
 			"Workspace index embedding differs from a pinned memory bank policy"
 		);
-		let (_, unchanged) = request(
+		let (_, unchanged) = common::get(
 			&fixture.app,
 			&fixture.token,
-			"GET",
 			&format!("/api/workspaces/{}/semantic/index", fixture.workspace),
-			Value::Null,
 		)
 		.await;
 		assert_eq!(unchanged["revision"], fixture.index["revision"]);
@@ -751,21 +741,18 @@ async fn nested_embeddings_intersect_pinned_providers_and_charge_each_ancestor(
 		.await
 		.unwrap();
 	if case == "unapproved" {
-		let (_, policies) = request(
+		let (_, policies) = common::get(
 			&fixture.app,
 			&fixture.token,
-			"GET",
 			"/api/generation/acme/policies",
-			Value::Null,
 		)
 		.await;
 		let mut spec = policies[0]["spec"].clone();
 		spec["embedding"] = Value::Null;
 		assert_eq!(
-			request(
+			common::post(
 				&fixture.app,
 				&fixture.token,
-				"POST",
 				"/api/generation/acme/policies/semantic",
 				json!({"expected_revision":1,"spec":spec})
 			)
@@ -774,7 +761,7 @@ async fn nested_embeddings_intersect_pinned_providers_and_charge_each_ancestor(
 			200
 		);
 	}
-	let (status, task) = request(&fixture.app, &fixture.token, "POST", &format!("/api/workspaces/{}/tasks", fixture.workspace), json!({"title":"Child specialist","description":"Inherited embedding budget","requirements":{"capability":"semantic.research"}})).await;
+	let (status, task) = common::post(&fixture.app, &fixture.token, &format!("/api/workspaces/{}/tasks", fixture.workspace), json!({"title":"Child specialist","description":"Inherited embedding budget","requirements":{"capability":"semantic.research"}})).await;
 	assert_eq!(status, 200);
 	let task: Uuid = task["id"].as_str().unwrap().parse().unwrap();
 	// This is the trusted origin produced by task_create, whose worker
@@ -841,10 +828,9 @@ async fn nested_embeddings_intersect_pinned_providers_and_charge_each_ancestor(
 		.await
 	}
 	.unwrap();
-	let (status, child) = request(
+	let (status, child) = common::post(
 		&fixture.app,
 		&fixture.token,
-		"POST",
 		&format!("/api/generation/acme/tasks/{task}/assign"),
 		json!({"policy_id":"semantic","reason":"nested work"}),
 	)
@@ -1186,9 +1172,7 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 		)
 		.await
 		.unwrap();
-	let (status, task) = request(&fixture.app, &fixture.token, "POST",
-			&format!("/api/workspaces/{}/tasks", fixture.workspace),
-			json!({"title":"Nested memory author / 入れ子の記憶作成者","description":"Keep origin lineage","requirements":{"capability":"semantic.research"}})).await;
+	let (status, task) = common::post(&fixture.app, &fixture.token, &format!("/api/workspaces/{}/tasks", fixture.workspace), json!({"title":"Nested memory author / 入れ子の記憶作成者","description":"Keep origin lineage","requirements":{"capability":"semantic.research"}})).await;
 	assert_eq!(status, 200, "{task}");
 	let task: Uuid = task["id"].as_str().unwrap().parse().unwrap();
 	let chain = [
@@ -1237,10 +1221,9 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 	.execute(fixture.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
-	let (status, child) = request(
+	let (status, child) = common::post(
 		&fixture.app,
 		&fixture.token,
-		"POST",
 		&format!("/api/generation/acme/tasks/{task}/assign"),
 		json!({"policy_id":"semantic","reason":"nested memory"}),
 	)
@@ -1316,10 +1299,9 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 		.unwrap();
 		let operation = Uuid::now_v7();
 		let destination = Uuid::now_v7();
-		let (status, result) = request(
+		let (status, result) = common::post(
 			&fixture.app,
 			&fixture.token,
-			"POST",
 			&format!("/api/workspaces/{}/memory/operate", fixture.workspace),
 			serde_json::to_value(memory::Operation {
 				operation_id: operation,
@@ -1432,10 +1414,9 @@ async fn native_shared_synthesis_preserves_published_origins_and_unions_nested_b
 			sources: published.iter().map(Unit::evidence).collect(),
 		},
 	};
-	let (status, result) = request(
+	let (status, result) = common::post(
 		&fixture.app,
 		&fixture.token,
-		"POST",
 		&format!("/api/workspaces/{}/memory/operate", fixture.workspace),
 		serde_json::to_value(input).unwrap(),
 	)
@@ -1683,13 +1664,7 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 	.scalar_one(fixture.f.store.pool.in_scope(&TEST_FIXTURE))
 	.await
 	.unwrap();
-	let (code, response) = request(
-		&fixture.app,
-		&fixture.token,
-		"POST",
-		&format!("/api/workspaces/{}/memory/operate", fixture.workspace),
-		json!({"operation_id":Uuid::now_v7(),"provider":metadata["provider"],"bank":metadata["bank"],"action":{"action":"reindex","expected_index_revision":fixture.index["revision"]}}),
-	)
+	let (code, response) = common::post(&fixture.app, &fixture.token, &format!("/api/workspaces/{}/memory/operate", fixture.workspace), json!({"operation_id":Uuid::now_v7(),"provider":metadata["provider"],"bank":metadata["bank"],"action":{"action":"reindex","expected_index_revision":fixture.index["revision"]}}))
 	.await;
 	assert_eq!(code, 200, "{response}");
 	fixture.response_mode.store(1, Ordering::SeqCst);
@@ -1903,10 +1878,9 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 	)
 	.await
 	.unwrap();
-	let (status, deleted) = request(
+	let (status, deleted) = common::post(
 		&fixture.app,
 		&fixture.token,
-		"POST",
 		&format!("/api/workspaces/{}/memory/units/mutate", fixture.workspace),
 		json!({"operation_id":Uuid::now_v7(),"provider":provider,"bank":bank_identity,
 			"changes":[{"operation":"delete","id":other.id,"expected_revision":other.revision}]}),
@@ -1918,10 +1892,9 @@ async fn completed_learning_origin_remains_live_through_failed_index_retry(
 	let mut derived = source.content.clone();
 	derived.kind = aidash_domain::memory::Kind::Observation;
 	derived.evidence = vec![source.evidence()];
-	let (code, response) = request(
+	let (code, response) = common::post(
 		&fixture.app,
 		&fixture.token,
-		"POST",
 		&format!("/api/workspaces/{}/memory/operate", fixture.workspace),
 		json!({"operation_id":operation_id,"provider":provider,"bank":bank_identity,
             "action":{"action":"derive","kind":"observation","sources":[source.evidence()],
@@ -2138,28 +2111,16 @@ mod semantic_fixture_composition {
 		async move {let application=application.await;let (f,url,schema)=application.runtime.parts();let app=application.application;let server=server.await;let endpoint=server.url.clone();let memory_recovery_directory=recovery_directory;
 		let (_, token, original_task) = common::bootstrap_with_context(&f, &app, &endpoint, true).await;
 		let workspace = f.store.task(&TEST_FIXTURE, original_task).await.unwrap().workspace_id;
-		let (_, mut template) = request(
-			&app,
-			&token,
-			"GET",
-			"/api/registry/research/1.0.0",
-			Value::Null,
-		)
+		let (_, mut template) = common::get(&app, &token, "/api/registry/research/1.0.0")
 		.await;
 		template.as_object_mut().unwrap().remove("binding_normalization");
 		template["id"] = json!("semantic-template");
 		template["capabilities"] = json!(["semantic.research"]);
 		{
-			let (status, response) = request(&app, &token, "POST", "/api/registry", json!({"id":"embedding","version":"1.0.0","kind":"embedding","name":{"en":"Approved embedding"},"description":{"en":"Local embedding fixture"},"config":{"provider":"openai","endpoint":format!("{endpoint}/v1"),"model":"fixture-embedding","model_version":"1","dimensions":3}})).await;
+			let (status, response) = common::post(&app, &token, "/api/registry", json!({"id":"embedding","version":"1.0.0","kind":"embedding","name":{"en":"Approved embedding"},"description":{"en":"Local embedding fixture"},"config":{"provider":"openai","endpoint":format!("{endpoint}/v1"),"model":"fixture-embedding","model_version":"1","dimensions":3}})).await;
 			assert_eq!(status, 200, "{response}");
 			assert_eq!(
-				request(
-					&app,
-					&token,
-					"POST",
-					"/api/authorization/acme/catalog",
-					json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"embedding","version":"1.0.0"},"expected_revision":0,"enabled":true})
-				)
+				common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"embedding","version":"1.0.0"},"expected_revision":0,"enabled":true}))
 				.await
 				.0,
 				200
@@ -2189,16 +2150,10 @@ mod semantic_fixture_composition {
 				json!({"scope":"workspace","memory":{"id":"memory","version":"1.0.0"},"max_tokens":4096}),
 			),
 		] {
-			let (status, response) = request(&app, &token, "POST", "/api/registry", json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id,"ja":id},"description":{"en":"Native memory fixture"},"config":config})).await;
+			let (status, response) = common::post(&app, &token, "/api/registry", json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id,"ja":id},"description":{"en":"Native memory fixture"},"config":config})).await;
 			assert_eq!(status, 200, "{response}");
 			assert_eq!(
-				request(
-					&app,
-					&token,
-					"POST",
-					"/api/authorization/acme/catalog",
-					json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true})
-				)
+				common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":id,"version":"1.0.0"},"expected_revision":0,"enabled":true}))
 				.await
 				.0,
 				200
@@ -2209,25 +2164,19 @@ mod semantic_fixture_composition {
 			template["config"]["bindings"].as_array_mut().unwrap().push(json!({"kind":"source","target":{"registry_deployment":f.config.deployment,"id":"shared-memory","version":"1.0.0"},"narrow":{}}));
 		}
 		let spec = json!({"enabled":true,"template":template,"permissions":{"roles":[],"groups":[],"attributes":{}},"approval_required":false,"limits":{"max_agents":2,"max_concurrent":2,"max_depth":2,"token_budget":1000000,"tokens_per_agent":400000,"lifetime_seconds":3600},"embedding":allowance.map(|calls| json!({"provider":{"id":"embedding","version":"1.0.0"},"calls_per_agent":calls,"call_budget":calls*2}))});
-		let (status, response) = request(
-			&app,
-			&token,
-			"POST",
-			"/api/generation/acme/policies/semantic",
-			json!({"expected_revision":0,"spec":spec}),
-		)
+		let (status, response) = common::post(&app, &token, "/api/generation/acme/policies/semantic", json!({"expected_revision":0,"spec":spec}))
 		.await;
 		assert_eq!(status, 200, "{response}");
-		let (status, index) = request(&app,&token,"POST",&format!("/api/workspaces/{workspace}/semantic/index"),json!({"expected_revision":0,"spec":{"embedding":{"provider":"openai","endpoint":format!("{endpoint}/v1"),"model":"fixture-embedding","model_version":"1","dimensions":3},"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":true,"max_sources":64,"max_results":10,"max_result_tokens":4096,"max_input_bytes":8192}})).await;
+		let (status, index) = common::post(&app, &token, &format!("/api/workspaces/{workspace}/semantic/index"), json!({"expected_revision":0,"spec":{"embedding":{"provider":"openai","endpoint":format!("{endpoint}/v1"),"model":"fixture-embedding","model_version":"1","dimensions":3},"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":true,"max_sources":64,"max_results":10,"max_result_tokens":4096,"max_input_bytes":8192}})).await;
 		assert_eq!(status, 200, "{index}");
 
 		if maintenance {
-			assert_eq!(request(&app,&token,"POST",&format!("/api/workspaces/{workspace}/semantic/entries"),json!({"key":"reference","expected_revision":0,"source":{"kind":"memory","text":"A car carries passengers."},"metadata":{}})).await.0,200);
+			assert_eq!(common::post(&app, &token, &format!("/api/workspaces/{workspace}/semantic/entries"), json!({"key":"reference","expected_revision":0,"source":{"kind":"memory","text":"A car carries passengers."},"metadata":{}})).await.0,200);
 		} else {
 			let bank = json!({"home":aidash_domain::nodes::NodeAddress::derived(f.store.deployment.as_str(),"acme").to_string(),"tenant":"acme","workspace":workspace,"participant":null});
-			let (status,response)=request(&app,&token,"POST",&format!("/api/workspaces/{workspace}/memory/operate"),json!({"operation_id":Uuid::now_v7(),"provider":{"id":"memory","version":"1.0.0"},"bank":bank,"action":{"action":"configure_bank","expected_revision":0}})).await;
+			let (status,response)=common::post(&app, &token, &format!("/api/workspaces/{workspace}/memory/operate"), json!({"operation_id":Uuid::now_v7(),"provider":{"id":"memory","version":"1.0.0"},"bank":bank,"action":{"action":"configure_bank","expected_revision":0}})).await;
 			assert_eq!(status, 200, "{response}");
-			let (status,response)=request(&app,&token,"POST",&format!("/api/workspaces/{workspace}/memory/units/mutate"),json!({"operation_id":Uuid::now_v7(),"provider":{"id":"memory","version":"1.0.0"},"bank":bank,"changes":[{"operation":"add","id":Uuid::now_v7(),"content":{"text":"A car carries passengers.","kind":"world","learning":"fact","verification":"unverified","occurred":null,"entities":[],"evidence":[],"links":[]}}]})).await;
+			let (status,response)=common::post(&app, &token, &format!("/api/workspaces/{workspace}/memory/units/mutate"), json!({"operation_id":Uuid::now_v7(),"provider":{"id":"memory","version":"1.0.0"},"bank":bank,"changes":[{"operation":"add","id":Uuid::now_v7(),"content":{"text":"A car carries passengers.","kind":"world","learning":"fact","verification":"unverified","occurred":null,"entities":[],"evidence":[],"links":[]}}]})).await;
 			assert_eq!(status, 200, "{response}");
 		}
 
@@ -2255,16 +2204,10 @@ mod semantic_fixture_composition {
 			1,
 			"initial index status: {projections:?}"
 		);
-		let (status, task) = request(&app,&token,"POST",&format!("/api/workspaces/{workspace}/tasks"),json!({"title":"Vehicle research","description":"Use related memory","requirements":{"capability":"semantic.research"}})).await;
+		let (status, task) = common::post(&app, &token, &format!("/api/workspaces/{workspace}/tasks"), json!({"title":"Vehicle research","description":"Use related memory","requirements":{"capability":"semantic.research"}})).await;
 		assert_eq!(status, 200, "{task}");
 		let task = Uuid::parse_str(task["id"].as_str().unwrap()).unwrap();
-		let (status, assignment) = request(
-			&app,
-			&token,
-			"POST",
-			&format!("/api/generation/acme/tasks/{task}/assign"),
-			json!({"policy_id":"semantic","reason":"missing specialist"}),
-		)
+		let (status, assignment) = common::post(&app, &token, &format!("/api/generation/acme/tasks/{task}/assign"), json!({"policy_id":"semantic","reason":"missing specialist"}))
 		.await;
 		assert_eq!(status, 200, "{assignment}");
 		assert_eq!(assignment["kind"], "generated");

@@ -125,21 +125,13 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 
 impl World {
 	async fn get(&self, token: &str, run: Uuid) -> (u16, Value) {
-		common::request(
-			&self.app,
-			token,
-			"GET",
-			&format!("/api/runs/{run}"),
-			Value::Null,
-		)
-		.await
+		common::get(&self.app, token, &format!("/api/runs/{run}")).await
 	}
 
 	async fn control(&self, token: &str, run: Uuid, action: &str) -> (u16, Value) {
-		common::request(
+		common::post(
 			&self.app,
 			token,
-			"POST",
 			&format!("/api/runs/{run}/control"),
 			json!({"action":action}),
 		)
@@ -321,10 +313,9 @@ async fn narrowing_a_restriction_does_not_hide_outputs_but_still_refuses_a_start
 	.into_iter()
 	.find(|binding| binding.entry_id == OLD && binding.entry_version == "1.0.0")
 	.unwrap();
-	let (status, body) = common::request(
+	let (status, body) = common::post(
 		&w.app,
 		&alice,
-		"POST",
 		"/api/authorization/acme/catalog",
 		json!({"node":node.node,"entry":{"id":OLD,"version":"1.0.0"},"enabled":true,
 			"expected_revision":current.revision,"restriction":{"subjects":["carol"],"groups":[]}}),
@@ -360,10 +351,9 @@ async fn narrowing_a_restriction_does_not_hide_outputs_but_still_refuses_a_start
 			)
 			.await
 			.unwrap();
-	let (status, body) = common::request(
+	let (status, body) = common::post(
 		&w.app,
 		&alice,
-		"POST",
 		&format!("/api/tasks/{}/claim", task.id),
 		json!({"revision":task.revision,"agent":{"id":OLD,"version":"1.0.0"}}),
 	)
@@ -384,21 +374,14 @@ async fn a_worker_pauses_a_run_whose_binding_names_a_withdrawn_version_and_resum
 	let node = aidash_domain::nodes::NodeName::derived("acme");
 	let approval = |enabled: bool, revision: i64| json!({"node":node,"entry":{"id":"model","version":"1.0.0"},"enabled":enabled,"expected_revision":revision});
 	let set = async |body: Value| {
-		common::request(
-			&app,
-			&token,
-			"POST",
-			"/api/authorization/acme/catalog",
-			body,
-		)
-		.await
-		.0
+		common::post(&app, &token, "/api/authorization/acme/catalog", body)
+			.await
+			.0
 	};
 	assert_eq!(
-		common::request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/tasks/{task}/claim"),
 			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
 		)
@@ -430,10 +413,9 @@ async fn a_worker_pauses_a_run_whose_binding_names_a_withdrawn_version_and_resum
 	assert_eq!(blocked().await, 1);
 
 	// Resume says why and leaves the Run paused, so nothing wakes only to pause again.
-	let (status, body) = common::request(
+	let (status, body) = common::post(
 		&app,
 		&token,
-		"POST",
 		&format!("/api/runs/{}/control", run.id),
 		json!({"action":"resume"}),
 	)
@@ -456,10 +438,9 @@ async fn a_worker_pauses_a_run_whose_binding_names_a_withdrawn_version_and_resum
 
 	// Approved again, it resumes and the next boundary does not block it a second time.
 	assert_eq!(set(approval(true, 2)).await, 200);
-	let (status, body) = common::request(
+	let (status, body) = common::post(
 		&app,
 		&token,
-		"POST",
 		&format!("/api/runs/{}/control", run.id),
 		json!({"action":"resume"}),
 	)
@@ -520,10 +501,9 @@ impl World {
 		.into_iter()
 		.find(|binding| binding.entry_id == id && binding.entry_version == version)
 		.unwrap();
-		let (status, body) = common::request(
+		let (status, body) = common::post(
 			&self.app,
 			&self.alice,
-			"POST",
 			"/api/authorization/acme/catalog",
 			json!({"node":node.node,"entry":{"id":id,"version":version},"enabled":true,
 				"expected_revision":current.revision,"restriction":{"subjects":subjects,"groups":[]}}),
@@ -700,19 +680,17 @@ async fn the_use_recheck_follows_the_node_the_run_executes_on(
 	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
 	let agent = f.registry.get(&tenant, "research", "1.0.0").await.unwrap();
 	common::approve_agent_on(&f, "acme", &agent, &second).await;
-	let (status, workspace) = common::request(
+	let (status, workspace) = common::post(
 		&app,
 		&token,
-		"POST",
 		"/api/workspaces",
 		json!({"node":second.node,"title":"Second Node","goal":"Run elsewhere"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{workspace}");
-	let (status, task) = common::request(
+	let (status, task) = common::post(
 		&app,
 		&token,
-		"POST",
 		&format!(
 			"/api/workspaces/{}/tasks",
 			workspace["id"].as_str().unwrap()
@@ -721,10 +699,9 @@ async fn the_use_recheck_follows_the_node_the_run_executes_on(
 	)
 	.await;
 	assert_eq!(status, 200, "{task}");
-	let (status, body) = common::request(
+	let (status, body) = common::post(
 		&app,
 		&token,
-		"POST",
 		&format!("/api/tasks/{}/claim", task["id"].as_str().unwrap()),
 		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
 	)
@@ -732,30 +709,22 @@ async fn the_use_recheck_follows_the_node_the_run_executes_on(
 	assert_eq!(status, 200, "{body}");
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0).id;
 	let set = async |node: &aidash_domain::nodes::NodeName, enabled: bool, revision: i64| {
-		common::request(
-			&app,
-			&token,
-			"POST",
-			"/api/authorization/acme/catalog",
-			json!({"node":node,"entry":{"id":"research","version":"1.0.0"},"enabled":enabled,"expected_revision":revision}),
-		)
+		common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":node,"entry":{"id":"research","version":"1.0.0"},"enabled":enabled,"expected_revision":revision}))
 		.await
 		.0
 	};
 	let resume = async || {
-		let (status, paused) = common::request(
+		let (status, paused) = common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/runs/{run}/control"),
 			json!({"action":"pause"}),
 		)
 		.await;
 		assert_eq!(status, 200, "{paused}");
-		common::request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/runs/{run}/control"),
 			json!({"action":"resume"}),
 		)
@@ -825,10 +794,9 @@ async fn a_run_that_read_from_a_run_of_the_withdrawn_version_is_not_paused_at_it
 		.unwrap();
 	let first = f.store.task(&TEST_FIXTURE, first).await.unwrap();
 	let workspace = first.workspace_id;
-	let (status, second) = common::request(
+	let (status, second) = common::post(
 		&app,
 		&token,
-		"POST",
 		&format!("/api/workspaces/{workspace}/tasks"),
 		json!({"title":"Reader","description":"Reads the first Run"}),
 	)
@@ -854,13 +822,7 @@ async fn a_run_that_read_from_a_run_of_the_withdrawn_version_is_not_paused_at_it
 	.execute(f.store.pool.fixture_driver())
 	.await
 	.unwrap();
-	let (status, body) = common::request(
-		&app,
-		&token,
-		"POST",
-		"/api/authorization/acme/catalog",
-		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.0"},"enabled":false,"expected_revision":1}),
-	)
+	let (status, body) = common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.0"},"enabled":false,"expected_revision":1}))
 	.await;
 	assert_eq!(status, 200, "{body}");
 
