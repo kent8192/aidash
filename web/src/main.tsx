@@ -957,23 +957,18 @@ function Dashboard({
               item.request.id === target.id && item.request.response === null,
           )
         : undefined;
-    const task =
+    let task =
       target.kind === "task"
         ? everything?.tasks.find((task) => task.id === target.id)
         : undefined;
     let owner = everything?.workspaces.find(
       (workspace) => workspace.id === target.workspace,
     );
-    if (!item && !task) return;
-    if (!owner && item) {
+    if (target.kind === "human" && !item) return;
+    if ((!owner && item) || (target.kind === "task" && !task)) {
       const generation = nodeGeneration.current;
       try {
-        const response = await authenticatedFetch(
-          `/api/workspaces/${encodeURIComponent(target.workspace)}`,
-        );
-        const snapshot = (await response.json()) as {
-          workspace: TenantState["workspaces"][number];
-        };
+        const snapshot = await workspaceGet(target.workspace);
         if (
           nodeGeneration.current !== generation ||
           client.getQueryState(["state", remembered.selected?.name])
@@ -981,6 +976,11 @@ function Dashboard({
         )
           return;
         owner = snapshot.workspace;
+        if (target.kind === "task") {
+          task = snapshot.tasks.find((value) => value.id === target.id);
+          if (!task) return;
+          client.setQueryData(["workspace", target.workspace], snapshot);
+        }
         client.setQueryData<TenantState>(
           ["state", remembered.selected?.name],
           (old) =>

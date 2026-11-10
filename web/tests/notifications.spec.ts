@@ -75,6 +75,54 @@ test("an older task completing emits one notice from the visible event", async (
   await expect(page.locator(".intent-toast")).toHaveCount(0);
 });
 
+test("a notice opens an older task through its workspace snapshot", async ({
+  page,
+}) => {
+  await page.clock.install();
+  await setup(page, { subject: true, locale: "en-US" });
+  await page.goto("/collaboration?channel=workspace-one");
+  const data = await stateAfterLoad(page);
+  const workspace = {
+    ...data.workspaces[0],
+    id: "older-workspace",
+    title: "Older workspace",
+  };
+  const task = {
+    ...data.tasks[0],
+    id: "old-task",
+    title: "Older task",
+    workspace_id: workspace.id,
+    status: "COMPLETED" as const,
+    revision: 42,
+  };
+  await page.route("**/api/workspaces/older-workspace", (route) =>
+    route.fulfill({
+      json: {
+        workspace,
+        tasks: [task],
+        artifacts: [],
+        events: [],
+        messages: [],
+      },
+    }),
+  );
+  data.events.push({
+    id: "completion-event",
+    sequence: 123456,
+    kind: "task.completed",
+    workspace_id: workspace.id,
+    node: workspace.node,
+    created_at: new Date().toISOString(),
+    data: { task },
+  });
+  await nextToast(page);
+  await page.locator(".intent-toast-open").click();
+  await expect(page).toHaveURL(/channel=older-workspace/);
+  await expect(
+    page.getByRole("dialog").getByRole("heading", { name: "Older task" }),
+  ).toBeVisible();
+});
+
 for (const width of [1440, 390]) {
   test(`quiet baseline and actionable approval toast at ${width}px`, async ({
     page,
