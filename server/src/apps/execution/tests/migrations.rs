@@ -2089,6 +2089,45 @@ async fn generated_summary_storage_cutover_reverses(#[future] fresh_database: Mi
 
 #[rstest]
 #[tokio::test]
+async fn registry_upgrade_keeps_existing_compaction_decider(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture
+		.migrate_excluding(&[
+			("registry", "0065_agent_default_removals"),
+			("registry", "0066_native_context_recovery"),
+			("registry", "0067_optional_memory_roles"),
+		])
+		.await;
+	fixture.tenant_root("acme").await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let entries: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+		"../../../../../tests/fixtures/builtin_seed_develop_7abdf5.json"
+	))
+	.unwrap();
+	let decider = entries
+		.into_iter()
+		.find(|entry| entry["id"] == "aidash.compaction-decider")
+		.unwrap();
+	let mut tx = aidash_server::database::scope::begin_fixture_deployment(&pool)
+		.await
+		.unwrap();
+	sqlx::query("INSERT INTO registry (tenant,id,version,kind,metadata) VALUES ('acme','aidash.compaction-decider','1.0.0','decider',$1)")
+		.bind(&decider).execute(&mut *tx).await.unwrap();
+	tx.commit().await.unwrap();
+	fixture.migrate().await;
+	let mut tx = aidash_server::database::scope::begin_fixture_deployment(&pool)
+		.await
+		.unwrap();
+	let stored: serde_json::Value = sqlx::query_scalar("SELECT metadata FROM registry WHERE tenant='acme' AND id='aidash.compaction-decider' AND version='1.0.0'")
+		.fetch_one(&mut *tx).await.unwrap();
+	assert_eq!(stored, decider);
+	tx.commit().await.unwrap();
+}
+
+#[rstest]
+#[tokio::test]
 async fn agent_default_removals_agree_with_rust(#[future] fresh_database: MigrationFixture) {
 	let fixture = fresh_database.await;
 	fixture.migrate().await;

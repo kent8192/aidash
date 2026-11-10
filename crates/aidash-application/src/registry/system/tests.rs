@@ -15,6 +15,59 @@ use std::{collections::BTreeMap, sync::Arc};
 
 const NODE: &str = "aidash://local";
 
+fn develop_seed() -> Vec<Entry> {
+	serde_json::from_str(include_str!(
+		"../../../../../tests/fixtures/builtin_seed_develop_7abdf5.json"
+	))
+	.unwrap()
+}
+
+#[test]
+fn compare_develop_builtin_declarations() {
+	let validation = DefinitionValidation::new(Arc::new(Contracts));
+	let current = entries(&validation, NODE).unwrap();
+	let legacy = legacy_journal_entries(&validation, NODE).unwrap();
+	let mut seen = std::collections::BTreeSet::new();
+	let mut changed = vec![];
+	for old in develop_seed().iter().filter(|entry| entry.kind == "tool") {
+		if !seen.insert(old.id.clone()) {
+			continue;
+		}
+		let now = current
+			.iter()
+			.find(|entry| entry.id == old.id)
+			.expect("develop operation missing");
+		if now.description != old.description
+			|| now.schema != old.schema
+			|| now.config != old.config
+		{
+			println!(
+				"{}@{}: description={} schema={} config={}",
+				old.id,
+				old.version,
+				now.description != old.description,
+				now.schema != old.schema,
+				now.config != old.config
+			);
+			assert_ne!(
+				now.version, old.version,
+				"{} changed without a version bump",
+				old.id
+			);
+			assert_eq!(
+				legacy
+					.iter()
+					.find(|entry| entry.id == old.id && entry.version == old.version),
+				Some(old)
+			);
+			changed.push(old.id.clone());
+		} else {
+			assert_eq!(now, old);
+		}
+	}
+	assert_eq!(changed, ["aidash.memory_mutate", "aidash.subnode_task"]);
+}
+
 #[test]
 fn workspace_attachment_tools_keep_original_declarations_immutable() {
 	let validation = DefinitionValidation::new(Arc::new(Contracts));
@@ -224,6 +277,33 @@ fn the_approval_decider_is_a_valid_immutable_deployment_definition() {
 #[derive(Default)]
 struct Writer {
 	entries: BTreeMap<(String, String), Entry>,
+}
+
+#[tokio::test]
+async fn seeding_a_develop_registry_preserves_every_existing_declaration() {
+	let validation = DefinitionValidation::new(Arc::new(Contracts));
+	let mut writer = Writer::default();
+	let original = develop_seed();
+	for entry in &original {
+		writer.insert_definition(entry).await.unwrap();
+	}
+	seed(&mut writer, &validation, NODE).await.unwrap();
+	for entry in original {
+		assert_eq!(
+			writer.definition(&entry.id, &entry.version).await.unwrap(),
+			entry
+		);
+		if entry.kind == "tool" {
+			let reference = EntityRef {
+				id: entry.id.clone(),
+				version: entry.version.clone(),
+			};
+			assert_eq!(
+				pinned_declaration(&validation, NODE, &reference).unwrap(),
+				Some(entry)
+			);
+		}
+	}
 }
 #[async_trait::async_trait]
 impl DefinitionLookup for Writer {

@@ -58,7 +58,11 @@ impl Catalog {
 			result.core(operation);
 			if matches!(
 				operation,
-				"workspace_read" | "workspace_observe" | "workspace_message"
+				"workspace_read"
+					| "workspace_observe"
+					| "workspace_message"
+					| "memory_mutate"
+					| "subnode_task"
 			) {
 				result.insert(entry(
 					&format!("aidash.{operation}"),
@@ -177,6 +181,54 @@ async fn snapshot(
 }
 
 #[tokio::test]
+async fn develop_normalization_keeps_legacy_tool_versions() {
+	let mut config = agent_config();
+	config
+		.bindings
+		.push(aidash_domain::registry::bindings::Binding::tool(reference(
+			"aidash.subnode_task",
+		)));
+	let mut agent = agent_entry(&config);
+	agent.normalize_agent(NODE).unwrap();
+	for binding in &mut agent.binding_normalization.as_mut().unwrap().bindings {
+		if matches!(
+			binding.binding.target.id.as_str(),
+			"aidash.memory_mutate" | "aidash.subnode_task"
+		) {
+			binding.binding.target.version = "1.0.0".into();
+		}
+	}
+	let original = agent.binding_normalization.clone();
+	let resolved = resolve(
+		&mut Catalog::new(),
+		&providers(),
+		reference("agent"),
+		&agent,
+		false,
+	)
+	.await
+	.unwrap();
+	assert_eq!(
+		resolved
+			.definitions
+			.iter()
+			.find(|definition| definition.identity == resolved.agent)
+			.unwrap()
+			.definition
+			.binding_normalization,
+		original
+	);
+	for id in ["aidash.memory_mutate", "aidash.subnode_task"] {
+		assert!(
+			resolved
+				.bindings
+				.iter()
+				.any(|binding| binding.identity.id == id && binding.identity.version == "1.0.0")
+		);
+	}
+}
+
+#[tokio::test]
 async fn previously_normalized_agent_resolves_without_rewriting_its_builtin_bindings() {
 	let mut agent = agent_entry(&agent_config());
 	agent.normalize_agent(NODE).unwrap();
@@ -191,7 +243,11 @@ async fn previously_normalized_agent_resolves_without_rewriting_its_builtin_bind
 	for binding in &mut saved.bindings {
 		if matches!(
 			binding.binding.target.id.as_str(),
-			"aidash.workspace_read" | "aidash.workspace_observe" | "aidash.workspace_message"
+			"aidash.workspace_read"
+				| "aidash.workspace_observe"
+				| "aidash.workspace_message"
+				| "aidash.memory_mutate"
+				| "aidash.subnode_task"
 		) {
 			binding.binding.target.version = "1.0.0".into();
 		}
