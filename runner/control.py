@@ -266,7 +266,7 @@ class Runner(AllocationJournal):
                     continue
                 if (record.get('status') != 'uncertain' or not record.get('termination_confirmed')
                         or record.get('output_harvested') or record.get('acknowledged')
-                        or record.get('request', {}).get('kind') not in ('shell', 'verify', 'python')):
+                        or record.get('request', {}).get('kind') not in ('shell', 'verify', 'python', 'journal')):
                     continue
                 operation = record['operation_id']
                 with self.lock:
@@ -515,6 +515,8 @@ class Runner(AllocationJournal):
         if not admission_probe and (not isinstance(request.get("usage_tenant"), str) or not request["usage_tenant"] or len(request["usage_tenant"].encode()) > 255):
             raise Rejected(400, "native allocation usage context required")
         operation, area = identity(request["operation_id"]), identity(request["area_id"])
+        if kind == "journal" and 'egress' in request:
+            raise Rejected(400, "Journal Query cannot use egress")
         if 'egress' in request:
             lease = request['egress']
             settings = self.config.get('egress') or {}
@@ -529,7 +531,7 @@ class Runner(AllocationJournal):
         # "verify" runs like "shell" but never exports /work: a Completion Gate
         # Check must not change the Working Area it verifies. "serve" is a
         # long-lived Live preview whose writes are never published (ADR 0070).
-        if kind not in ("shell", "verify", "python", "serve") or not isinstance(request["code"], str):
+        if kind not in ("shell", "verify", "python", "journal", "serve") or not isinstance(request["code"], str):
             raise Rejected(400, "invalid command kind")
         if len(request["code"].encode()) > self.config.get("limits", {}).get("command_bytes", 65536) or len(request["files"]) > 4096:
             raise Rejected(400, "command or file limit")
@@ -548,15 +550,20 @@ class Runner(AllocationJournal):
             if allowed is not None and port != allowed:
                 raise Rejected(400, "preview port not allowed")
         session = None
-        if request["kind"] == "python":
+        if request["kind"] in ("python", "journal"):
             if not self.config.get("node_guard"):
                 raise Rejected(409, "PYTHON_RUNTIME_UNAVAILABLE")
             sid = identity(request.get("session_id"))
             session_path = self.root / ("session-" + sid + ".json")
             if session_path.exists():
                 session = json.loads(session_path.read_bytes())
-                if session["area_id"] != area or session["status"] != "frozen" or session["manifest"] != self.file_identity(request["files"]):
+                fixed_files = [file for file in request["files"] if file.get("scope") != "journal"]
+                if (session["area_id"] != area or session["status"] != "frozen"
+                        or session.get("kind", "python") != kind
+                        or session["manifest"] != self.file_identity(fixed_files)):
                     raise Rejected(409, "SESSION_RESET: incompatible live environment")
+        if kind == "journal" and (len(request["files"]) != 1 or request["files"][0].get("scope") != "journal" or request["files"][0].get("path") != "journal.jsonl"):
+            raise Rejected(400, "Journal Query requires one journal input")
         size = 0
         mounted = 0
         identities = set()
@@ -564,7 +571,7 @@ class Runner(AllocationJournal):
             if set(file) != {"file_id", "path", "scope", "size", "digest"}:
                 raise Rejected(400, "invalid file contract")
             identity(file["file_id"])
-            if (file["file_id"] in identities or file["scope"] not in ("working", "references", "received")
+            if (file["file_id"] in identities or file["scope"] not in (("journal",) if kind == "journal" else ("working", "references", "received"))
                     or not isinstance(file["size"], int) or file["size"] < 0
                     or not re.fullmatch(r"[0-9a-f]{64}", file["digest"])):
                 raise Rejected(400, "invalid input manifest")
@@ -613,7 +620,7 @@ class Runner(AllocationJournal):
                         raise Rejected(409, "AREA_BUSY: previous writer has not been confirmed stopped")
             record = {"operation_id": operation, "area_id": area, "epoch": request["epoch"],
                       "image": self.config['image'],
-                      "digest": request["digest"], "wire_digest": wire_digest, "status": "awaiting_files" if request["files"] and not session else "accepted",
+                      "digest": request["digest"], "wire_digest": wire_digest, "status": "awaiting_files" if request["files"] and (not session or kind == "journal") else "accepted",
                       "request": request, "created_at": time.time(), "cancel_requested": False,
                       "termination_confirmed": False, "stdout": "", "truncated": False,
                       "files": [], "error": None, "executed": False}
@@ -623,7 +630,7 @@ class Runner(AllocationJournal):
             # Only verify_isolation sets this; no request field can claim it.
             if admission_probe:
                 record["admission_probe"] = True
-            if request["kind"] == "python":
+            if request["kind"] in ("python", "journal"):
                 record["session_id"] = sid
                 if session:
                     record["pod_operation"] = session["pod_operation"]
@@ -635,7 +642,7 @@ class Runner(AllocationJournal):
             self.aggregate.track(operation, record)
             if kind != "serve":
                 save(area_path, {"epoch": request["epoch"], "operation_id": operation})
-            if not request["files"] or session:
+            if not request["files"] or (session and kind != "journal"):
                 self.start(operation)
             return self.public(record)
 
@@ -745,11 +752,11 @@ class Runner(AllocationJournal):
         with self.lock:
             if operation not in self.active:
                 record = self.get(operation)
-                if record['request']['kind'] == 'python' and record.get('pod_uid'):
+                if record['request']['kind'] in ('python', 'journal') and record.get('pod_uid'):
                     self.begin_allocation_work(record)
                 self.active.add(operation)
                 kind = record["request"]["kind"]
-                target = {"python": self.reconcile_python, "serve": self.reconcile_serve}.get(kind, self.reconcile)
+                target = {"python": self.reconcile_python, "journal": self.reconcile_python, "serve": self.reconcile_serve}.get(kind, self.reconcile)
                 threading.Thread(target=target, args=(operation,), daemon=True).start()
 
     def pod_name(self, operation):
@@ -790,6 +797,8 @@ class Runner(AllocationJournal):
         worker_mounts = [{"name": name, "mountPath": path, "readOnly": name in ("references", "received", "request") or (name == "work" and record["request"]["kind"] == "journal")}
                          for name, path in (("work", "/work"), ("references", "/references"),
                                             ("received", "/received"), ("request", "/request"), ("temp", "/tmp"))]
+        if record["request"]["kind"] == "journal":
+            worker_mounts.append({"name": "journal", "mountPath": "/journal", "readOnly": True})
         collector_mounts = [{"name": m["name"], "mountPath": m["mountPath"]} for m in worker_mounts if m["name"] != "temp"]
         collector_mounts.append({"name": "control-temp", "mountPath": "/tmp"})
         worker = container("execution", ["python", "-I", "/opt/aidash/sandbox.py"], profile["cpu"], profile["memory_bytes"], worker_mounts)
@@ -797,7 +806,7 @@ class Runner(AllocationJournal):
                                    "timeoutSeconds": 1, "failureThreshold": 1, "terminationGracePeriodSeconds": 1}
         worker["startupProbe"] = {"httpGet": {"path": "/health", "port": 7070}, "periodSeconds": 1,
                                   "timeoutSeconds": 1, "failureThreshold": 120}
-        if record["request"]["kind"] == "python":
+        if record["request"]["kind"] in ("python", "journal"):
             worker.pop("livenessProbe")
             worker.pop("startupProbe")
         if record["request"]["kind"] == "serve":
@@ -814,6 +823,8 @@ class Runner(AllocationJournal):
             ("work", self.writable_bytes(record)), ("references", profile["working_bytes"]),
             ("received", profile["working_bytes"]), ("request", 1048576),
             ("temp", profile["temporary_bytes"]), ("control-temp", profile["output_bytes"] * 4 + 1048576))]
+        if record["request"]["kind"] == "journal":
+            volumes.append({"name": "journal", "emptyDir": {"medium": "Memory", "sizeLimit": str(2 * profile["working_bytes"])}})
         return {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": self.pod_name(record["operation_id"]),
                 "finalizers": [] if record.get("admission_probe") else [FINALIZER],
                 "labels": {"aidash-sandbox": "true", "aidash-area": record["area_id"]}, "annotations": {"aidash/digest": record["wire_digest"],
@@ -1040,6 +1051,23 @@ class Runner(AllocationJournal):
             with self.lock:
                 self.active.discard(operation)
 
+    def refresh_journal(self, record, pod_operation):
+        if self.guard(record, "status").get("status") != "paused":
+            raise RuntimeError("Journal kernel is not frozen")
+        operation = record["operation_id"]
+        file = record["request"]["files"][0]
+        with (self.root / (operation + ".inputs") / file["file_id"]).open("rb") as source:
+            offset = 0
+            while True:
+                data = source.read(4194304)
+                if not data and offset:
+                    break
+                self.exec_collector(pod_operation, ["journal-stage", operation, str(offset)], data)
+                offset += len(data)
+                if not data:
+                    break
+        self.exec_collector(pod_operation, ["journal-commit", operation, str(file["size"]), file["digest"]])
+
     def _reconcile_python_once(self, operation):
         record = self.get(operation)
         pod_operation = record.get("pod_operation", operation)
@@ -1132,6 +1160,10 @@ class Runner(AllocationJournal):
             elif prepared["digest"] != record["request"]["digest"]:
                 raise StartupIdentityMismatch("Python input identity changed")
             record = self.update(operation, hydrated=True)
+        elif record["request"]["kind"] == "journal" and not record.get("journal_refreshed"):
+            # Only the dedicated Journal mount may change while this heap is frozen.
+            self.refresh_journal(record, pod_operation)
+            record = self.update(operation, journal_refreshed=True)
         record = self.update(operation, executed=True, status=record.get('status') if record.get('status') == 'cancelling' else 'running',
                              running_at=record.get('running_at') or time.time())
         if not record.get('cancel_requested'):
@@ -1203,9 +1235,9 @@ class Runner(AllocationJournal):
         if 'refused' in exported:
             if memory_live:
                 self.guard(record, 'terminate')
-            session = dict(session_id=record['session_id'], area_id=record['area_id'], operation_id=operation,
+            session = dict(session_id=record['session_id'], area_id=record['area_id'], operation_id=operation, kind=record['request']['kind'],
                            pod_operation=pod_operation, pod_uid=record['pod_uid'], container_id=cid,
-                           status='stopped', last_used=time.time(), manifest=self.file_identity(record['request']['files']))
+                           status='stopped', last_used=time.time(), manifest=self.file_identity([f for f in record['request']['files'] if f['scope'] != 'journal']))
             save(self.root / ('session-' + record['session_id'] + '.json'), session)
             self.refuse_export(operation, exported['refused'], pod_operation, writer_frozen=False,
                                stdout=result.get('stdout', ''), truncated=result.get('truncated', False),
@@ -1230,9 +1262,9 @@ class Runner(AllocationJournal):
             if digest.hexdigest() != file["digest"]:
                 raise RuntimeError("Python file integrity")
         sync_directory(directory)
-        manifest = [f for f in record["request"]["files"] if f["scope"] != "working"]
+        manifest = [f for f in record["request"]["files"] if f["scope"] not in ("working", "journal")]
         manifest += [dict(f, scope="working") for f in exported["files"]]
-        session = dict(session_id=record["session_id"], area_id=record["area_id"], operation_id=operation,
+        session = dict(session_id=record["session_id"], area_id=record["area_id"], operation_id=operation, kind=record["request"]["kind"],
                        pod_operation=pod_operation, pod_uid=record["pod_uid"], container_id=cid,
                        status="frozen" if memory_live else "stopped", last_used=time.time(), manifest=self.file_identity(manifest))
         save(self.root / ("session-" + record["session_id"] + ".json"), session)
@@ -1444,11 +1476,11 @@ class Runner(AllocationJournal):
         if 'refused' in exported:
             if not refuse:
                 raise StoppedExportRefused(exported['refused'])
-            captured = ({'stdout':record.get('stdout', '')} if record['request']['kind'] == 'python' else self.guard(record, 'logs'))
+            captured = ({'stdout':record.get('stdout', '')} if record['request']['kind'] in ('python', 'journal') else self.guard(record, 'logs'))
             self.refuse_export(operation, exported['refused'], operation, stdout=captured['stdout'], truncated=True, output_harvested=True,
-                               deadline_expired=record['request']['kind'] == 'python' and cell_timed_out(record))
+                               deadline_expired=record['request']['kind'] in ('python', 'journal') and cell_timed_out(record))
             return
-        captured = ({'stdout':record.get('stdout', '')} if record['request']['kind'] == 'python' else self.guard(record, 'logs'))
+        captured = ({'stdout':record.get('stdout', '')} if record['request']['kind'] in ('python', 'journal') else self.guard(record, 'logs'))
         directory = self.root / (operation + '.files')
         directory.mkdir(exist_ok=True, mode=0o700)
         for file in exported['files']:
@@ -1472,7 +1504,7 @@ class Runner(AllocationJournal):
     def collector_holds_output(self, record):
         # A finished execution container leaves no runsc state for the guard to
         # read, while its collector still serves /work, so reading stays possible.
-        if record['request']['kind'] == 'python':
+        if record['request']['kind'] in ('python', 'journal'):
             return False
         try:
             pod = self.pod(record['operation_id'])

@@ -29,7 +29,9 @@ environment = {key: value for key, value in os.environ.items() if key in {
     "UV_PYTHON_DOWNLOADS", "UV_PYTHON"
 }}
 environment.update(egress_environment(request.get("egress")))
-if request["kind"] == "python":
+if request["kind"] in ("python", "journal"):
+    if request["kind"] == "journal":
+        environment["AIDASH_JOURNAL"] = "1"
     os.execve("/usr/local/bin/python", ["python", "-I", "/opt/aidash/kernel.py"], environment)
 process = subprocess.Popen(["/bin/sh", "-c", request["code"]], start_new_session=True, env=environment)
 result = process.wait()
