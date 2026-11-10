@@ -51,6 +51,7 @@ struct BatchStep<'a> {
 	calls: &'a [aidash_domain::provider::ToolCall],
 	cursor: usize,
 	end: usize,
+	policy: &'a context::policy::Effective,
 }
 
 mod connections;
@@ -308,6 +309,7 @@ impl<'a> Executor<'a> {
 			calls,
 			cursor,
 			mut end,
+			policy,
 		} = step;
 		let store = self.environment.store();
 		let resumed = run.state.tool()?.batch_end.is_some();
@@ -552,6 +554,16 @@ impl<'a> Executor<'a> {
 			record_message_read_for(&mut context.message_read_coverage, &contract, &event);
 			let growth = context::tool_event_growth(&context, &event);
 			context.push_invocation(event, &keys[offset]);
+			let result_seq = context.journal.head;
+			aidash_application::context::offload::note_journal_result(
+				&mut context,
+				&contract,
+				&call.arguments,
+				&output,
+				result_seq,
+				u32::try_from(run.step).unwrap_or_default(),
+				policy,
+			);
 			let progress = run.state.tool_mut()?;
 			progress.request_tokens = progress.request_tokens.saturating_add(growth);
 			home.report(
@@ -2799,12 +2811,17 @@ connection: None,
 					};
 					if agent.projection_version == ProjectionVersion::Native {
 						// A Model Turn keeps every call it ran (ADR 0015).
+						let mut offloaded = false;
 						for entry in &mut context.history {
 							if summarized(&entry.event)
 								&& let ContextEvent::Tool { result, .. } = &mut entry.event
 							{
 								*result = aidash_application::context::offload::marker(entry.seq);
+								offloaded = true;
 							}
+						}
+						if offloaded {
+							context.offloaded.get_or_insert_default();
 						}
 					} else {
 						context.history.retain(|entry| !summarized(&entry.event));
@@ -3092,6 +3109,7 @@ connection: None,
 					None => None,
 				};
 				if let Some(end) = batch_end {
+					let policy = context::policy::Effective::of(agent.context_policy.as_ref());
 					let step = BatchStep {
 						home: home.as_ref(),
 						guard,
@@ -3099,6 +3117,7 @@ connection: None,
 						calls: &result.tool_calls,
 						cursor,
 						end,
+						policy: &policy,
 					};
 					if self.execute_batch(run, token, step).await? {
 						return Ok(());
@@ -3556,6 +3575,12 @@ connection: None,
 				record_message_read_for(&mut context.message_read_coverage, &contract, &event);
 				let growth = context::tool_event_growth(&context, &event);
 				context.push_invocation(event, &key);
+				let result_seq = context.journal.head;
+				aidash_application::context::offload::note_journal_result(
+					&mut context, &contract, &call.arguments, &output, result_seq,
+					u32::try_from(run.step).unwrap_or_default(),
+					&context::policy::Effective::of(agent.context_policy.as_ref()),
+				);
 				run.state.tool_mut()?.request_tokens =
 					run.state.tool()?.request_tokens.saturating_add(growth);
 				run.context = context.clone();

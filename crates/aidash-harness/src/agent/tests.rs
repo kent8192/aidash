@@ -6784,10 +6784,52 @@ async fn intake_keeps_parallel_results_in_the_journal_before_offloading(mut fixt
 		.await
 		.unwrap();
 	assert_eq!(saved, original);
+	assert!(aidash_domain::context::journal_query::offloaded_any(
+		&fixture.run.context
+	));
 	assert!(fixture.run.state.tool().unwrap().request_tokens < 50_000);
 	for entry in &fixture.run.context.history[1..] {
 		assert!(
 			matches!(&entry.event, ContextEvent::Tool { result, .. } if aidash_application::context::offload::is_marker(result))
 		);
 	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn delivered_aliased_journal_read_is_recorded_before_intake(mut fixture: Fixture) {
+	let read = Scripted::new(
+		ToolSpec {
+			name: "read_alias".into(),
+			description: "read journal".into(),
+			parameters: json!({"type":"object"}),
+		},
+		"journal_read",
+	);
+	*read.outputs.lock().unwrap() = [json!({"text":"original journal data"})].into();
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.custom
+		.insert("read_alias".into(), read);
+	respond(
+		&mut fixture.run,
+		vec![call(
+			"call-0",
+			"read_alias",
+			json!({"from_seq":2,"through_seq":4}),
+		)],
+	);
+	fixture.run.state.tool_mut().unwrap().request_window = 100_000;
+	advance_sources(&mut fixture).await.unwrap();
+	let context = &fixture.run.context;
+	let read = context
+		.offload_reads
+		.ranges
+		.last()
+		.expect("delivered journal read");
+	assert_eq!((read.from_seq, read.through_seq), (2, 4));
+	assert_eq!(read.result_seq, context.history.last().unwrap().seq);
+	assert!(context.offload_reads.protects(read.result_seq, 0));
+	let restored: Context = serde_json::from_value(serde_json::to_value(context).unwrap()).unwrap();
+	assert_eq!(restored.offload_reads.ranges.len(), 1);
 }

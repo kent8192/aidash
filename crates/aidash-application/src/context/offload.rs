@@ -40,6 +40,69 @@ pub fn note_journal_read(
 	)
 }
 
+/// Track a delivered Journal tool result. Only a pinned Journal builtin or
+/// descriptor may register a read; model aliases and other tools cannot spoof it.
+pub fn note_journal_result(
+	context: &mut Context,
+	contract: &aidash_domain::tool::ToolContract,
+	input: &Value,
+	result: &Value,
+	result_seq: u64,
+	step: u32,
+	policy: &aidash_domain::context::policy::Effective,
+) {
+	use aidash_domain::tool::{ToolIdentity, providers::ToolDescriptor};
+	let operation = match &contract.identity {
+		ToolIdentity::Builtin(id) => id.strip_prefix("builtin:").map(str::to_owned),
+		ToolIdentity::Descriptor(id) => context.binding_snapshot.as_ref().and_then(|snapshot| {
+			snapshot
+				.bindings
+				.iter()
+				.find(|binding| &binding.identity == id)
+				.and_then(|binding| {
+					serde_json::from_value::<ToolDescriptor>(binding.definition.config.clone()).ok()
+				})
+				.filter(|descriptor| descriptor.provider == "core.journal@1")
+				.map(|descriptor| descriptor.operation)
+		}),
+		_ => None,
+	};
+	let range = match operation.as_deref() {
+		Some("journal_query")
+			if result["contract"] == "aidash.journal.query/1"
+				&& result["stdout"].is_string()
+				&& (result.get("error").is_none()
+					|| result["stdout"].as_str().is_some_and(|s| !s.is_empty())) =>
+		{
+			input.get("journal_range").unwrap_or(&Value::Null)
+		}
+		Some("journal_read") if result["text"].is_string() => input,
+		Some("journal_search") if result["results"].is_array() => input,
+		_ => return,
+	};
+	let from_seq = range
+		.get("from_seq")
+		.and_then(Value::as_u64)
+		.unwrap_or(0)
+		.max(1);
+	let through_seq = range
+		.get("through_seq")
+		.and_then(Value::as_u64)
+		.unwrap_or(i64::MAX as u64);
+	if from_seq <= through_seq && through_seq <= i64::MAX as u64 {
+		note_journal_read(
+			context,
+			JournalRange {
+				from_seq,
+				through_seq,
+			},
+			result_seq,
+			step,
+			policy,
+		);
+	}
+}
+
 /// Marker content is tool data. It never suggests invoking the original tool.
 const MARKER_READ: &str =
 	"Use Journal Query or its search and range-read fallback to read this result.";
@@ -87,6 +150,7 @@ fn replace(context: &mut Context, index: usize, batch: &mut OffloadBatch) -> boo
 	// The Journal owns the original Research reference. A projection marker
 	// must not serialize as a newly content-addressed Research variant.
 	entry.research = None;
+	context.offloaded.get_or_insert_default();
 	batch.ranges.push(JournalRange {
 		from_seq: entry.seq,
 		through_seq: entry.seq,
@@ -218,6 +282,9 @@ mod tests {
 	#[test]
 	fn intake_offloads_large_result_even_in_latest_turn() {
 		let mut context = Context::default();
+		assert!(!aidash_domain::context::journal_query::offloaded_any(
+			&context
+		));
 		turn(&mut context, "large", 12_000);
 		let range = intake(&mut context, 1000, 1, 0);
 		assert_eq!(
@@ -229,6 +296,88 @@ mod tests {
 		);
 		assert!(
 			matches!(&context.history[1].event, ContextEvent::Tool { call, result } if call.id == "large" && is_marker(result))
+		);
+		let restored: Context =
+			serde_json::from_value(serde_json::to_value(context).unwrap()).unwrap();
+		assert!(aidash_domain::context::journal_query::offloaded_any(
+			&restored
+		));
+	}
+
+	#[test]
+	fn completed_journal_results_share_immunity_and_escalation() {
+		let mut context = Context::default();
+		let policy = aidash_domain::context::policy::Effective::of(None);
+		let input = json!({"from_seq":3,"through_seq":5});
+		for (name, arguments, result) in [
+			(
+				"journal_read",
+				input.clone(),
+				json!({"text":"x".repeat(10_000)}),
+			),
+			(
+				"journal_search",
+				input.clone(),
+				json!({"results":[{"seq":3}]}),
+			),
+			(
+				"journal_query",
+				json!({"journal_range":input}),
+				json!({"contract":"aidash.journal.query/1","stdout":"found"}),
+			),
+		] {
+			context.push(ContextEvent::tool(call(name), result.clone()));
+			let seq = context.journal.head;
+			let contract = aidash_domain::tool::builtin_contract(name).unwrap();
+			note_journal_result(
+				&mut context,
+				&contract,
+				&arguments,
+				&result,
+				seq,
+				10,
+				&policy,
+			);
+		}
+		assert_eq!(context.offload_reads.ranges.len(), 3);
+		assert!(context.offload_reads.summary_pending && context.offload_reads.notice_pending);
+		assert!(intake(&mut context, 1000, 1, 13).ranges.is_empty());
+		assert_eq!(intake(&mut context, 1000, 1, 14).ranges.len(), 1);
+		let restored: Context =
+			serde_json::from_value(serde_json::to_value(context).unwrap()).unwrap();
+		assert_eq!(restored.offload_reads.ranges[2].reads, 3);
+	}
+
+	#[test]
+	fn failed_or_spoofed_journal_results_do_not_record_reads() {
+		let mut context = Context::default();
+		let policy = aidash_domain::context::policy::Effective::of(None);
+		let input = json!({"from_seq":1,"through_seq":2});
+		for (name, result) in [
+			("journal_read", json!({"error":"refused"})),
+			("journal_query", json!({"session_reset":true})),
+			("file_read", json!({"text":"spoofed"})),
+		] {
+			let contract = aidash_domain::tool::builtin_contract(name).unwrap();
+			note_journal_result(&mut context, &contract, &input, &result, 1, 0, &policy);
+		}
+		assert!(context.offload_reads.is_empty());
+		let contract = aidash_domain::tool::builtin_contract("journal_query").unwrap();
+		note_journal_result(
+			&mut context,
+			&contract,
+			&json!({"code":"journal()"}),
+			&json!({"contract":"aidash.journal.query/1","stdout":"ok"}),
+			1,
+			0,
+			&policy,
+		);
+		assert_eq!(
+			(
+				context.offload_reads.ranges[0].from_seq,
+				context.offload_reads.ranges[0].through_seq
+			),
+			(1, i64::MAX as u64)
 		);
 	}
 
