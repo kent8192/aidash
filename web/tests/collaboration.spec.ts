@@ -2223,6 +2223,9 @@ test("channel can resume a paused run outside the state window", async ({
     }),
   );
   await page.goto("/collaboration?channel=workspace-one");
+  await page
+    .getByRole("button", { name: "Show channel status", exact: true })
+    .click();
   await expect(
     page.getByRole("button", { name: "Resume runs in this channel" }),
   ).toBeEnabled();
