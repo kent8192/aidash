@@ -185,8 +185,7 @@ class Campaign:
         agent = self.experiment.register("agent", identifier, {
             "schema_version": 1, "model": self.model, "instructions": self.corpus["instructions"],
             "bindings": bindings,
-            # Supply is measured without context pruning, so no compaction Decider is involved. Every
-            # Agent is offered the memory builtins by default; the control must not see them (a call
+            # Every Agent is offered the memory builtins by default; the control must not see them (a call
             # without a memory binding is an authority pause), and no arm writes memory. `memory_reflect`
             # is removed from every arm: it retrieves through `memory_recall` plus extra inference, which
             # would supplement or replace the automatic and on-demand supply this benchmark isolates.

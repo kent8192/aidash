@@ -70,8 +70,6 @@ async fn approved(
 	if usage.provider.node_id == node {
 		let expected = match usage.purpose {
 			Purpose::Embedding => spec.embedding.map(|value| value.provider),
-			Purpose::Compaction => spec.compaction.map(|value| value.provider),
-			Purpose::Summary => spec.summary.map(|value| value.provider),
 			Purpose::Inference => {
 				Some(serde_json::from_value::<AgentConfig>(spec.template.config)?.model)
 			}
@@ -98,14 +96,6 @@ async fn approved(
 		let permitted = match usage.purpose {
 			Purpose::Embedding => approvals
 				.embedding
-				.as_ref()
-				.is_some_and(|value| value.provider == usage.provider),
-			Purpose::Compaction => approvals
-				.compaction
-				.as_ref()
-				.is_some_and(|value| value.provider == usage.provider),
-			Purpose::Summary => approvals
-				.summary
 				.as_ref()
 				.is_some_and(|value| value.provider == usage.provider),
 			Purpose::Inference => approvals.inference.contains(&usage.provider),

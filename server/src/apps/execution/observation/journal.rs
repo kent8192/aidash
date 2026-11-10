@@ -6,10 +6,7 @@ use aidash_application::{
 	ports::decision::*,
 	tenancy::TenancyScope,
 };
-use aidash_domain::{
-	context::Context,
-	decision::{observation::*, *},
-};
+use aidash_domain::decision::{observation::*, *};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reinhardt::{
@@ -522,21 +519,7 @@ impl DecisionJournal for Journal {
 		Ok(())
 	}
 
-	async fn commit(
-		&self,
-		_: &Evidence,
-		_: Option<&Context>,
-		_: Option<&RetainedState>,
-	) -> aidash_application::Result<()> {
-		Err(aidash_application::Error::Forbidden)
-	}
 	async fn commit_approval(&self, _: &ApprovalEvidence) -> aidash_application::Result<()> {
-		Err(aidash_application::Error::Forbidden)
-	}
-	async fn expire_states(&self, _: DateTime<Utc>) -> aidash_application::Result<usize> {
-		Ok(0)
-	}
-	async fn append_outcome(&self, _: &OutcomeLink) -> aidash_application::Result<()> {
 		Err(aidash_application::Error::Forbidden)
 	}
 }

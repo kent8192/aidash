@@ -10,8 +10,8 @@ use aidash_domain::{
 	},
 };
 use reinhardt::query::{
-	Alias, Expr, ExprTrait, IntoIden, LockType, Order, PostgresQueryBuilder, Query,
-	QueryStatementBuilder, SimpleExpr, UpdateStatement,
+	Alias, Expr, ExprTrait, LockType, Order, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	UpdateStatement,
 };
 use uuid::Uuid;
 
@@ -342,25 +342,6 @@ async fn fence(tx: &mut native::Transaction, run: Uuid, worker: Uuid) -> Result<
 
 /// The worker's lease on the Run is live by the clock now. `fence` compares
 /// with `CURRENT_TIMESTAMP`, which stays at the transaction's start.
-async fn lease_held_now(tx: &mut native::Transaction, run: Uuid, worker: Uuid) -> Result<()> {
-	let leased: Option<Uuid> = native::query_scalar(
-		&Query::select()
-			.column(Alias::new("id"))
-			.from(Alias::new("runs"))
-			.and_where(Expr::col("id").eq(Expr::value(run)))
-			.and_where(Expr::col("lease_owner").eq(Expr::value(worker)))
-			.and_where(Expr::col("lease_until").gt(SimpleExpr::FunctionCall(
-				"clock_timestamp".into_iden(),
-				vec![],
-			)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_optional(&mut **tx)
-	.await?;
-	leased
-		.map(|_| ())
-		.ok_or_else(|| Error::Conflict("worker lease lost".into()))
-}
 
 /// Settle `attempt` only while it is open; returns whether it was.
 async fn settle(
@@ -557,8 +538,6 @@ impl Store {
 	}
 
 	/// Save the adopted projection and mark its attempt adopted atomically. A
-	/// staged Decider decision whose pruning the summary completed is recorded
-	/// in the same transaction (ADR 0056).
 	pub async fn adopt_compaction(
 		&self,
 		scope: &TenancyScope,
@@ -566,10 +545,6 @@ impl Store {
 		worker: Uuid,
 		attempt: Uuid,
 		settlement: &Settlement,
-		staged: Option<(
-			&super::decisions::RunDecisionJournal<'_>,
-			&aidash_application::decision::StagedDecision,
-		)>,
 	) -> Result<()> {
 		if settlement.outcome != Outcome::Adopted {
 			return Err(Error::Invalid(
@@ -593,24 +568,9 @@ impl Store {
 		.await?;
 		let through = through
 			.ok_or_else(|| Error::Conflict("compaction attempt is no longer open".into()))?;
-		let decision = match staged {
-			Some((journal, staged)) => {
-				let prepared = journal
-					.prepare_staged_in(&mut tx, staged, &run.context)
-					.await?;
-				// Preparing may outlast the lease; the fence above saw only
-				// the transaction's start.
-				lease_held_now(&mut tx, run.id, worker).await?;
-				Some((journal, prepared))
-			}
-			None => None,
-		};
 		let (_, closed) = self
 			.save_run_in(&mut tx, run, worker, "context.compacted")
 			.await?;
-		if let Some((journal, prepared)) = decision {
-			journal.insert_staged_in(&mut tx, prepared).await?;
-		}
 		if signed(head(&mut tx, run.id).await?)? < through {
 			return Err(Error::Conflict(
 				"context journal lacks the compacted source range".into(),

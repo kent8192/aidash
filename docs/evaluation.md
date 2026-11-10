@@ -231,21 +231,12 @@ shorten it. The refusal is recorded in
 dispatched are listed in `skipped_runs` with the reason, so none is silently
 dropped.
 
-`external_compaction: "disabled"` declares no reserved Summary calls. For a
-Summary diagnostic, the bounded declaration pins the Summary model (the Agent's own model) and reserves
-every allowed call at the declared per-call amount. The amount is a reservation,
-not a provider-enforced monetary cap: live dispatch requires the approver to
-accept it explicitly. An applied compaction is recorded and does not stop the
-campaign. The compaction Decider is not part of this contract.
-
-```json
-"external_compaction": {
-  "mode": "bounded",
-  "cost_enforcement": "declared-reservation-accepted",
-  "summary": {"reference": "MODEL_ID@VERSION", "config_sha256": "<sha256>",
-              "max_calls_per_run": 8, "max_nanocredits_per_call": 19814400}
-}
-```
+`external_compaction: "disabled"` selects evaluation without an external
+compaction Decider. Context recovery can still modify the projection and its
+compaction count is recorded without stopping the campaign. Bounded historical
+contracts that name a compaction Decider cannot be used with ADR 0125.
+Summary requests remain subject to the evaluator's declared reservation and
+call limits.
 
 Run admission pins the Tenant's binding inside the claim, and the claim API
 takes no expected credential. The evaluator therefore reads the binding just
@@ -607,6 +598,6 @@ utility; this branch measures only the first deterministically.
   exists.
 - The memory matrix's retrieval-quality rows need the live tier and an
   approved embedding model.
-- The live tier reserves Summary calls only at their declared per-call amounts,
-  which no provider enforces, and only when the approval accepts that reservation.
-- The deterministic tier skips the dedicated recovery diagnostics.
+- The live tier refuses legacy compaction Decider approvals. Its auxiliary
+  reservations are declared amounts, not provider-enforced monetary caps.
+- The deterministic tier does not measure context recovery quality.

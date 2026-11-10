@@ -399,7 +399,6 @@ async fn adoption_requires_an_open_attempt_and_its_journaled_range(
 			worker,
 			Uuid::new_v4(),
 			&adopted(),
-			None,
 		)
 		.await,
 		Err(aidash_application::Error::Conflict(_))
@@ -416,7 +415,6 @@ async fn adoption_requires_an_open_attempt_and_its_journaled_range(
 			worker,
 			beyond.id,
 			&adopted(),
-			None,
 		)
 		.await,
 		Err(aidash_application::Error::Conflict(_))
@@ -467,7 +465,6 @@ async fn adoption_requires_an_open_attempt_and_its_journaled_range(
 			worker,
 			insufficient.id,
 			&adopted(),
-			None,
 		)
 		.await,
 		Err(aidash_application::Error::Conflict(_))
@@ -483,7 +480,6 @@ async fn adoption_requires_an_open_attempt_and_its_journaled_range(
 		worker,
 		accepted.id,
 		&adopted(),
-		None,
 	)
 	.await
 	.unwrap();
@@ -523,7 +519,6 @@ async fn adoption_requires_an_open_attempt_and_its_journaled_range(
 			worker,
 			accepted.id,
 			&adopted(),
-			None,
 		)
 		.await,
 		Err(aidash_application::Error::Conflict(_))

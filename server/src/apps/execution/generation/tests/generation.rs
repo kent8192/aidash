@@ -563,7 +563,7 @@ async fn generated_agent_completes_with_pinned_definition_and_refunds_unused_all
 	assert_eq!(status, 200);
 	assert_eq!(
 		usage,
-		json!({"token_limit":200000,"used_tokens":140,"inference_attempts":1,"compaction_call_limit":0,"compaction_calls":0,"embedding_call_limit":0,"embedding_calls":0,"summary_call_limit":0,"summary_calls":0})
+		json!({"token_limit":200000,"used_tokens":140,"inference_attempts":1,"embedding_call_limit":0,"embedding_calls":0})
 	);
 	assert_eq!(jobs[0]["id"], job["id"]);
 	assert_eq!(
@@ -1556,17 +1556,16 @@ async fn matching_ordinary_agent_is_reused_without_generation_or_quota(
 		"run",
 		"memory"
 	]);
-	// Ordinary admission reads the required Source and Decider metadata, and
-	// holds the compaction Decider's Catalog Approval (`decision.invoke`, #540),
-	// without granting permission to execute another task.
+	// Ordinary admission reads the required Source metadata without granting
+	// permission to execute another task.
 	bundle["policies"].as_array_mut().unwrap().push(json!({
 		"id":"required-binding-metadata",
 		"effect":"allow",
 		"subjects":{"any":true},
-		"actions":["registry.read","decision.invoke"],
+		"actions":["registry.read"],
 		"resources":{
-			"kinds":["source","decider"],
-			"ids":["aidash.workspace-observation","aidash.compaction-decider"]
+			"kinds":["source"],
+			"ids":["aidash.workspace-observation"]
 		}
 	}));
 	bundle["policies"].as_array_mut().unwrap().push(json!({"id":"task-owner","effect":"allow","subjects":{"any":true},"actions":["task.read","task.execute","task.delegate"],"resources":{"kinds":["task"]},"condition":{"op":"eq","left":{"source":"resource","path":"/created_by"},"right":{"source":"literal","value":"alice"}}}));
@@ -2974,5 +2973,71 @@ async fn deployment_administrators_cannot_read_write_or_control_agent_generation
 	)
 	.await;
 	assert_eq!(status, 403, "{response}");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn generated_agent_budget_includes_the_models_full_output_limit(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let mut spec = definition(&app, &token).await;
+	spec["approval_required"] = json!(false);
+	spec["limits"]["token_budget"] = json!(2_000_000);
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/generation/acme/policies/research",
+		json!({"expected_revision":0,"spec":spec}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let model = json!({
+		"id":"large-output-model","version":"1.0.0","kind":"model",
+		"name":{"en":"Large output model"},"description":{"en":"Budget fixture"},
+		"capabilities":[],"languages":["en"],"tags":[],"skills":[],
+		"schema":{"type":"object"},
+		"config":{"provider":"openrouter","model_id":"google/gemini-3.8-flash",
+			"endpoint":"https://openrouter.ai/api/v1","context_window":1048576,"max_output_tokens":65536,
+			"modalities":["text"],"cost":{}}
+	});
+	let (status, body) = request(&app, &token, "POST", "/api/registry", model).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"large-output-model","version":"1.0.0"},"expected_revision":0,"enabled":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	spec["template"]["config"]["model"] = json!({"id":"large-output-model","version":"1.0.0"});
+	spec["limits"]["tokens_per_agent"] = json!(1_114_111);
+	let (status, _) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/generation/acme/policies/research",
+		json!({"expected_revision":1,"spec":spec}),
+	)
+	.await;
+	assert_ne!(status, 200);
+	spec["limits"]["tokens_per_agent"] = json!(1_114_112);
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/generation/acme/policies/research",
+		json!({"expected_revision":1,"spec":spec}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
 	cleanup(f, &url, &schema).await;
 }

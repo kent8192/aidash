@@ -63,13 +63,7 @@ pub async fn activate_in(
 	for (reference, action) in snapshot
 		.definitions
 		.iter()
-		.filter(|d| {
-			d.identity != snapshot.agent
-				&& !aidash_domain::registry::bindings::defaults::is_implicit_compaction(
-					&snapshot,
-					&d.identity,
-				)
-		})
+		.filter(|d| d.identity != snapshot.agent)
 		.map(|d| {
 			(
 				d.identity.local(),
@@ -77,19 +71,9 @@ pub async fn activate_in(
 			)
 		})
 		.chain(
-			spec.compaction
-				.iter()
-				.map(|c| (c.provider.clone(), "decision.invoke")),
-		)
-		.chain(
 			spec.embedding
 				.iter()
 				.map(|c| (c.provider.clone(), "embedding.invoke")),
-		)
-		.chain(
-			spec.summary
-				.iter()
-				.map(|c| (c.provider.clone(), "model.infer")),
 		) {
 		scope.catalog_entry(&reference, "registry.read").await?;
 		scope.catalog_entry(&reference, action).await?;

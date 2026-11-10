@@ -11,8 +11,6 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const BINDING_SCHEMA: u8 = 1;
-pub mod defaults;
-pub use defaults::{COMPACTION_DECIDER_ID, COMPACTION_DECIDER_VERSION, COMPACTION_DEFAULT};
 mod snapshot;
 pub mod source_defaults;
 pub mod sources;
@@ -89,9 +87,6 @@ pub fn definition_references(
 			result.push((local(&config.model), "model".into()));
 			if let Some(embedding) = &config.reference_embedding {
 				result.push((local(embedding), "embedding".into()));
-			}
-			if let Some(summary) = config.context_summary() {
-				result.push((local(&summary.model), "model".into()));
 			}
 			for normalized in entry.normalized_bindings(&identity.registry_deployment)? {
 				let kind = match normalized.binding.kind {
@@ -282,7 +277,7 @@ impl AgentBindings {
 			|| self
 				.remove_default
 				.iter()
-				.any(|name| name != COMPACTION_DEFAULT && !defaults.contains(&name.as_str()))
+				.any(|name| !defaults.contains(&name.as_str()))
 			|| self.remove_default.iter().collect::<BTreeSet<_>>().len()
 				!= self.remove_default.len()
 		{
@@ -396,35 +391,13 @@ impl AgentBindings {
 	fn has_memory_binding(&self) -> bool {
 		self.bindings.iter().any(|b| b.kind == BindingKind::Memory)
 	}
-	pub fn context_summary(&self) -> Option<&crate::context::policy::SummaryPolicy> {
-		match self.context_policy.as_ref()? {
-			crate::context::policy::ContextPolicy::RecoveryV1 { summary, .. } => summary.as_ref(),
-		}
-	}
 	pub fn normalize(&self, node: &str) -> Result<Vec<NormalizedBinding>> {
-		self.normalize_with_compaction(node, None)
+		self.normalize_mode(node, 0)
 	}
-	pub fn normalize_with_compaction(
-		&self,
-		node: &str,
-		compaction_override: Option<&QualifiedRef>,
-	) -> Result<Vec<NormalizedBinding>> {
-		self.normalize_mode(node, compaction_override, 0)
+	fn normalize_version(&self, node: &str, legacy: bool) -> Result<Vec<NormalizedBinding>> {
+		self.normalize_mode(node, if legacy { 1 } else { 0 })
 	}
-	fn normalize_version(
-		&self,
-		node: &str,
-		compaction_override: Option<&QualifiedRef>,
-		legacy: bool,
-	) -> Result<Vec<NormalizedBinding>> {
-		self.normalize_mode(node, compaction_override, if legacy { 1 } else { 0 })
-	}
-	fn normalize_mode(
-		&self,
-		node: &str,
-		compaction_override: Option<&QualifiedRef>,
-		mode: u8,
-	) -> Result<Vec<NormalizedBinding>> {
+	fn normalize_mode(&self, node: &str, mode: u8) -> Result<Vec<NormalizedBinding>> {
 		self.validate()?;
 		if mode != 0
 			&& self.remove_default.iter().any(|name| {
@@ -499,7 +472,6 @@ impl AgentBindings {
 			}
 		}
 		source_defaults::add_workspace_observation(node, &mut result)?;
-		defaults::add_compaction(self, node, compaction_override, &mut result)?;
 		if result.len() > MAX_BINDINGS {
 			return Err(Error::Invalid(
 				"expanded Bindings exceed 128 entries".into(),
@@ -515,23 +487,10 @@ impl AgentBindings {
 pub struct AgentNormalization {
 	pub schema_version: u8,
 	pub registry_deployment: String,
-	/// Exact explicit compaction replacement, resolved by trusted registration.
-	pub compaction_override: Option<QualifiedRef>,
 	pub bindings: Vec<NormalizedBinding>,
 }
 impl Entry {
 	pub fn normalize_agent(&mut self, node: &str) -> Result<()> {
-		let replacement = self
-			.binding_normalization
-			.as_ref()
-			.and_then(|saved| saved.compaction_override.clone());
-		self.normalize_agent_with_compaction(node, replacement.as_ref())
-	}
-	pub fn normalize_agent_with_compaction(
-		&mut self,
-		node: &str,
-		replacement: Option<&QualifiedRef>,
-	) -> Result<()> {
 		if self.kind != "agent" {
 			if self.binding_normalization.is_some() {
 				return Err(Error::Invalid(
@@ -544,32 +503,27 @@ impl Entry {
 		self.binding_normalization = Some(AgentNormalization {
 			schema_version: BINDING_SCHEMA,
 			registry_deployment: node.into(),
-			compaction_override: replacement.cloned(),
-			bindings: config.normalize_with_compaction(node, replacement)?,
+			bindings: config.normalize(node)?,
 		});
 		Ok(())
 	}
 	pub fn normalized_bindings(&self, node: &str) -> Result<Vec<NormalizedBinding>> {
 		let config: AgentBindings = serde_json::from_value(self.config.clone())?;
-		let replacement = self
-			.binding_normalization
-			.as_ref()
-			.and_then(|saved| saved.compaction_override.as_ref());
 		if let Some(saved) = &self.binding_normalization {
 			if saved.schema_version != BINDING_SCHEMA || saved.registry_deployment != node {
 				return Err(Error::Invalid(
 					"Agent normalization differs from its immutable definition".into(),
 				));
 			}
-			let current = config.normalize_with_compaction(node, replacement);
-			let legacy = config.normalize_version(node, replacement, true);
+			let current = config.normalize(node);
+			let legacy = config.normalize_version(node, true);
 			if !current.is_ok_and(|expected| saved.bindings == expected)
 				&& !legacy.is_ok_and(|expected| saved.bindings == expected)
 				&& !config
-					.normalize_mode(node, replacement, 2)
+					.normalize_mode(node, 2)
 					.is_ok_and(|expected| saved.bindings == expected)
 				&& !config
-					.normalize_mode(node, replacement, 3)
+					.normalize_mode(node, 3)
 					.is_ok_and(|expected| saved.bindings == expected)
 			{
 				return Err(Error::Invalid(
@@ -578,7 +532,7 @@ impl Entry {
 			}
 			return Ok(saved.bindings.clone());
 		}
-		config.normalize_with_compaction(node, replacement)
+		config.normalize(node)
 	}
 
 	/// Whether this Agent version pins the builtin Tool that can select Thread Attachments.

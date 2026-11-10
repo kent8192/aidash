@@ -248,8 +248,7 @@ impl GenerationSettlementScope for NativeSettlementScope<'_> {
 		if release_call && let Some((_, limit)) = counter(purpose) {
 			let allocation = match limit {
 				"embedding_call_limit" => "allocated_embedding_calls",
-				"summary_call_limit" => "allocated_summary_calls",
-				_ => "allocated_compaction_calls",
+				_ => unreachable!("only embedding has call allowances"),
 			};
 			q.value_expr(
 				Alias::new(allocation),
@@ -341,8 +340,6 @@ impl GenerationSettlementScope for NativeSettlementScope<'_> {
 pub(crate) fn counter(purpose: Purpose) -> Option<(&'static str, &'static str)> {
 	match purpose {
 		Purpose::Embedding => Some(("embedding_calls", "embedding_call_limit")),
-		Purpose::Compaction => Some(("compaction_calls", "compaction_call_limit")),
-		Purpose::Summary => Some(("summary_calls", "summary_call_limit")),
 		Purpose::Inference | Purpose::Memory => None,
 	}
 }

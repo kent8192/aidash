@@ -1758,16 +1758,18 @@ def auxiliary_allowance(approval):
     """
     value = approval.get("external_compaction")
     if value == "disabled":
-        return {"summary": None, "worst_case_nanocredits": 0}
+        return {"decider": None, "summary": None, "worst_case_nanocredits": 0}
     prefix = "disclosure approval external_compaction"
-    if not isinstance(value, dict) or set(value) - {"cost_enforcement"} != {"mode", "summary"} or \
+    if not isinstance(value, dict) or set(value) - {"cost_enforcement"} != {"mode", "decider", "summary"} or \
             value.get("mode") != "bounded":
-        raise GuardRefusal(prefix + ' must be "disabled" or an exact bounded summary contract')
+        raise GuardRefusal(prefix + ' must be "disabled" or an exact bounded decider/summary contract')
+    if value["decider"] is not None:
+        raise GuardRefusal("compaction Deciders were removed; use native context recovery")
     enforcement = value.get("cost_enforcement")
     if enforcement is not None and enforcement != DECLARED_RESERVATION_ACCEPTED:
         raise GuardRefusal(prefix + f' cost_enforcement must be "{DECLARED_RESERVATION_ACCEPTED}" when present')
     total = 0
-    for kind in ("summary",):
+    for kind in ("decider", "summary"):
         item = value[kind]
         if item is None:
             continue
@@ -1784,9 +1786,9 @@ def auxiliary_allowance(approval):
             if not positive_int(item[field]):
                 raise GuardRefusal(prefix + f" {kind} {field} must be a positive integer")
         total += item["max_calls_per_run"] * item["max_nanocredits_per_call"]
-    if value["summary"] is None:
-        raise GuardRefusal(prefix + " bounded mode requires a Summary allowance")
-    return {"summary": value["summary"], "worst_case_nanocredits": total,
+    if value["decider"] is None:
+        raise GuardRefusal(prefix + " bounded legacy compaction configuration is no longer supported")
+    return {"decider": value["decider"], "summary": value["summary"], "worst_case_nanocredits": total,
             "cost_enforcement": enforcement}
 
 

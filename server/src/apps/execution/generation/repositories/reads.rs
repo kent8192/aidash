@@ -234,27 +234,11 @@ fn usage_query() -> String {
 		))))
 		.expr(SimpleExpr::from(Expr::col((
 			Alias::new("b"),
-			Alias::new("compaction_call_limit"),
-		))))
-		.expr(SimpleExpr::from(Expr::col((
-			Alias::new("b"),
-			Alias::new("compaction_calls"),
-		))))
-		.expr(SimpleExpr::from(Expr::col((
-			Alias::new("b"),
 			Alias::new("embedding_calls"),
 		))))
 		.expr(SimpleExpr::from(Expr::col((
 			Alias::new("b"),
 			Alias::new("embedding_call_limit"),
-		))))
-		.expr(SimpleExpr::from(Expr::col((
-			Alias::new("b"),
-			Alias::new("summary_calls"),
-		))))
-		.expr(SimpleExpr::from(Expr::col((
-			Alias::new("b"),
-			Alias::new("summary_call_limit"),
 		))))
 		.expr_as(
 			Expr::cust("(SELECT COUNT(*) FROM generation_usage AS u WHERE u.request_id = r.id) + (SELECT COUNT(*) FROM generation_remote_usage AS u WHERE u.request_id = r.id AND u.purpose='inference' AND u.state<>'RELEASED')"),

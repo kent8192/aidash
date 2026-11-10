@@ -57,7 +57,8 @@ DETERMINISTIC_LIMITATIONS = [
     "not model quality.",
     "Token counts, cost and prompt-cache hits are synthetic fixture values (one token per byte, fixture prices, "
     "a simulated prefix cache); they test accounting and request shape, not provider prices.",
-    "The scripted Agents measure deterministic context delivery, not live model quality.",
+    "Long-context tasks can pause with `context_unreducible` at the window; "
+    "this tier does not measure recovery quality.",
     "Summary recovery (#113) and the other feature-not-available comparisons are reported, not measured.",
 ]
 LIVE_LIMITATIONS = [
@@ -73,10 +74,8 @@ LIVE_LIMITATIONS = [
     "for information only.",
     "Code-execution oracles require an explicitly approved pinned Docker image and run only in disposable "
     "resource-bounded containers with no network, host environment or parent process visibility.",
-    "Summary work is dispatched only when the approval accepts its declared per-call amount as a "
-    "reservation (external_compaction.cost_enforcement). The Node enforces only the call counts; a declared "
-    "reservation is not a provider cap or a reported charge, and Summary costs have no HTTP read "
-    "endpoint, so every such Run stays charged at its full auxiliary reservation.",
+    "Summary work requires an approved per-call reservation; the Node enforces call counts but the "
+    "reservation is not a provider cap or reported charge. Runs remain charged at the full reservation.",
 ]
 
 
@@ -803,12 +802,6 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
             auxiliary_entries[allowance["reference"]] = api.get(f"/api/registry/{identifier}/{version}", subject)["config"]
     evaluation.verify_auxiliary_configs(auxiliary, auxiliary_entries, credential["provider"])
     evaluation.require_enforceable_auxiliary_bound(auxiliary)
-    missing = sorted({p["task"]["id"] for p in planned_runs
-                      if p["task"].get("requires_summary") and not auxiliary["summary"]})
-    if missing:
-        raise evaluation.GuardRefusal(f"tasks {missing} require approved bounded Summary allowances; "
-                                      "declare their exact references, configuration digests and all-call cost caps")
-    evaluation.check_summary_models(auxiliary, planned_runs, mapping)
     evaluation.check_matched_live_models(corpus, planned_runs, mapping, models, execution_estimator=execution_estimator)
     if code_oracle:
         try:

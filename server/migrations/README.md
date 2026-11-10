@@ -919,3 +919,9 @@ validator with the six `core.subnodes@1` operations (#660). Its reversible
 cannot express PL/pgSQL function definitions. Rolling back restores the
 previous descriptor contract; existing Subnode descriptors then cannot be
 rewritten until the migration is reapplied.
+
+`registry/0065_agent_default_removals` admits `connection_request` as a removable default and rejects the removed `compaction` default. Its SQL replaces a PostgreSQL validation function that Reinhardt cannot express; reversal refuses definitions or Runs that rely on the new removal.
+
+`execution/0123_remove_compaction_decision_storage` removes the compaction-only decision state and outcome tables; `0124_remove_compaction_decision_storage_state` updates the model state. Decision Attempts and approval Evidence remain.
+
+`execution/0125_remove_generated_compaction` removes generated-chain Decider usage and its obsolete counters; `0126_remove_generated_compaction_state` updates the model state. Embedding and Summary allowances remain.

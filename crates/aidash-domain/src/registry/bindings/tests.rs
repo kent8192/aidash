@@ -61,6 +61,13 @@ fn legacy_and_mixed_schemas_are_rejected() {
 	);
 }
 #[test]
+fn obsolete_compaction_default_is_rejected() {
+	let mut definition = agent();
+	definition.remove_default.push("compaction".into());
+	assert!(definition.validate().is_err());
+}
+
+#[test]
 fn normalization_records_trusted_origins_and_keeps_required_tools() {
 	let mut agent = agent();
 	agent.bindings.push(Binding::tool(QualifiedRef::builtin(
@@ -96,14 +103,11 @@ fn normalization_records_trusted_origins_and_keeps_required_tools() {
 #[test]
 fn existing_agent_normalization_keeps_its_original_system_bindings() {
 	let config = agent();
-	let old = config
-		.normalize_version("aidash://node-a", None, true)
-		.unwrap();
+	let old = config.normalize_version("aidash://node-a", true).unwrap();
 	let mut entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"config":config})).unwrap();
 	entry.binding_normalization = Some(AgentNormalization {
 		schema_version: BINDING_SCHEMA,
 		registry_deployment: "aidash://node-a".into(),
-		compaction_override: None,
 		bindings: old.clone(),
 	});
 	assert_eq!(entry.normalized_bindings("aidash://node-a").unwrap(), old);
@@ -127,12 +131,11 @@ fn existing_agent_normalization_keeps_its_original_system_bindings() {
 fn historical_agent_normalization_remains_valid_and_tampering_is_rejected() {
 	let node = "aidash://node-a";
 	let config = agent();
-	let old = config.normalize_version(node, None, true).unwrap();
+	let old = config.normalize_version(node, true).unwrap();
 	let mut entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"schema":{},"config":config})).unwrap();
 	entry.binding_normalization = Some(AgentNormalization {
 		schema_version: BINDING_SCHEMA,
 		registry_deployment: node.into(),
-		compaction_override: None,
 		bindings: old.clone(),
 	});
 	assert!(!entry.supports_thread_attachment_selection(node).unwrap());

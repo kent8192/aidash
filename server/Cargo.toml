@@ -248,10 +248,6 @@ name = "generation"
 path = "src/apps/execution/generation/tests/generation.rs"
 
 [[test]]
-name = "generation_compaction"
-path = "src/apps/execution/generation/tests/generation_compaction.rs"
-
-[[test]]
 name = "generation_semantic"
 path = "src/apps/execution/generation/tests/generation_semantic.rs"
 

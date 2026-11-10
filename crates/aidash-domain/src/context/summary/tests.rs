@@ -638,3 +638,54 @@ fn absorbed_ranges_skip_entries_pruned_between_merges() {
 		.is_err()
 	);
 }
+
+#[test]
+fn draft_copies_source_words_and_outcomes_and_drops_unknown_labels() {
+	let human = HistoryEntry::new(
+		1,
+		ContextEvent::Human {
+			request: "Never deploy on Friday".into(),
+			request_kind: "instruction".into(),
+			response: json!("agreed"),
+		},
+	);
+	let result = tool_with(2, json!({}), json!({"status":"tests passed"}));
+	let draft = json!({"retained":[],"labels":[{"call_id":"call_2","label":"verified"},{"call_id":"unknown","label":"invented"}],"prose":"The parser was checked."}).to_string();
+	let content =
+		SummaryContent::from_draft(&draft, "Ship the parser", None, &[human, result], 4096)
+			.unwrap();
+	assert_eq!(content.goal, "Ship the parser");
+	assert!(content.constraints.iter().any(|item| item.text == "agreed"));
+	assert!(
+		content
+			.constraints
+			.iter()
+			.any(|item| item.text == "Never deploy on Friday")
+	);
+	assert!(
+		content
+			.verification
+			.iter()
+			.any(|item| item.reference == "call_2" && item.outcome == "tests passed")
+	);
+	assert!(
+		!content
+			.decisions
+			.iter()
+			.any(|item| item.contains("invented"))
+	);
+}
+
+#[test]
+fn draft_rejects_a_missing_previous_item() {
+	let first = adopted(
+		&content(&[("c1", "never touch main")], &[], &[]),
+		None,
+		&[tool(2)],
+	);
+	let draft = json!({"retained":[],"labels":[],"prose":""}).to_string();
+	assert!(matches!(
+		SummaryContent::from_draft(&draft, "ignored", Some(&first), &[tool(3)], 4096),
+		Err(Rejection::DroppedItem(_))
+	));
+}

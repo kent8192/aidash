@@ -51,6 +51,7 @@ struct BatchStep<'a> {
 	calls: &'a [aidash_domain::provider::ToolCall],
 	cursor: usize,
 	end: usize,
+	policy: &'a context::policy::Effective,
 }
 
 mod connections;
@@ -203,6 +204,62 @@ impl<'a> Executor<'a> {
 	pub fn new(environment: &'a dyn ExecutionEnvironment) -> Self {
 		Self { environment }
 	}
+	/// Journal original tool results before saving their offloaded projection.
+	async fn save_tool_result(
+		&self,
+		run: &mut Run,
+		token: Uuid,
+		window: usize,
+		first: u64,
+	) -> Result<()> {
+		let mut context = run.context.clone();
+		let batch = aidash_application::context::offload::intake(
+			&mut context,
+			window,
+			first,
+			u32::try_from(run.step).unwrap_or_default(),
+		);
+		let store = self.environment.store();
+		if !batch.ranges.is_empty() {
+			store.journal_context(run, token).await?;
+			// The preliminary Tool Batch budget already charged the full result.
+			// Credit only a conservative byte delta; final preflight still checks
+			// the complete request with its actual provider framing.
+			let estimate = run.context.estimate.current().quota();
+			let mut credit = 0usize;
+			for range in &batch.ranges {
+				let old = run
+					.context
+					.history
+					.iter()
+					.find(|entry| entry.seq == range.from_seq);
+				let new = context
+					.history
+					.iter()
+					.find(|entry| entry.seq == range.from_seq);
+				if let (Some(old), Some(new)) = (old, new) {
+					let before = serde_json::to_vec(&old.event)?.len();
+					let after = serde_json::to_vec(&new.event)?.len();
+					credit = credit.saturating_add(
+						estimate
+							.tokens_for_bytes(before.saturating_sub(after))
+							.saturating_sub(1),
+					);
+				}
+			}
+			if let Ok(tool) = run.state.tool_mut() {
+				tool.request_tokens = tool.request_tokens.saturating_sub(credit);
+			}
+			context.compactions = context.compactions.saturating_add(1);
+			run.context = context;
+		}
+		store.save_run(run, token, "run.tool_recorded").await?;
+		if !batch.ranges.is_empty() {
+			aidash_application::context::record_stage("offload", "applied");
+			store.results_offloaded(run, &batch.ranges).await?;
+		}
+		Ok(())
+	}
 	async fn tool_error(
 		&self,
 		run: &mut Run,
@@ -211,6 +268,8 @@ impl<'a> Executor<'a> {
 		cursor: usize,
 		message: String,
 	) -> Result<()> {
+		let window = run.state.tool()?.request_window;
+		let first = run.context.journal.head.saturating_add(1);
 		let mut context = run.context.clone();
 		let event = ContextEvent::tool(call.clone(), json!({"error":message}));
 		let growth = context::tool_event_growth(&context, &event);
@@ -219,10 +278,7 @@ impl<'a> Executor<'a> {
 			run.state.tool()?.request_tokens.saturating_add(growth);
 		run.context = context.clone();
 		run.state.tool_mut()?.advance(cursor + 1);
-		self.environment
-			.store()
-			.save_run(run, token, "run.tool_recorded")
-			.await?;
+		self.save_tool_result(run, token, window, first).await?;
 		Ok(())
 	}
 	async fn tool_invocation_error(
@@ -253,6 +309,7 @@ impl<'a> Executor<'a> {
 			calls,
 			cursor,
 			mut end,
+			policy,
 		} = step;
 		let store = self.environment.store();
 		let resumed = run.state.tool()?.batch_end.is_some();
@@ -473,6 +530,8 @@ impl<'a> Executor<'a> {
 		if let Some(error) = failure {
 			return Err(error);
 		}
+		let window = run.state.tool()?.request_window;
+		let first = run.context.journal.head.saturating_add(1);
 		let mut context = run.context.clone();
 		capture_declared_coverage(&mut context, tools, false);
 		for (offset, output) in outputs.into_iter().enumerate() {
@@ -495,6 +554,17 @@ impl<'a> Executor<'a> {
 			record_message_read_for(&mut context.message_read_coverage, &contract, &event);
 			let growth = context::tool_event_growth(&context, &event);
 			context.push_invocation(event, &keys[offset]);
+			let result_seq = context.journal.head;
+			aidash_application::context::offload::note_journal_result(
+				&mut context,
+				run.id,
+				&contract,
+				&call.arguments,
+				&output,
+				result_seq,
+				u32::try_from(run.step).unwrap_or_default(),
+				policy,
+			);
 			let progress = run.state.tool_mut()?;
 			progress.request_tokens = progress.request_tokens.saturating_add(growth);
 			home.report(
@@ -515,7 +585,7 @@ impl<'a> Executor<'a> {
 		progress.workspace_observation_plan = None;
 		progress.advance(end);
 		progress.batch_end = None;
-		store.save_run(run, token, "run.tool_recorded").await?;
+		self.save_tool_result(run, token, window, first).await?;
 		Ok(true)
 	}
 	/// Record a non-accepted outcome of an Inference Attempt.
@@ -765,10 +835,10 @@ impl<'a> Executor<'a> {
 		visibility: &mut dyn ExecutionVisibility,
 		home: &dyn ExecutionHome,
 		fitting: &aidash_application::context::Fitting<'_>,
+		model_ref: &aidash_domain::registry::EntityRef,
 		harness_contract: aidash_domain::harness_contract::HarnessContract,
 		mut plan: aidash_application::context::SummaryPlan,
 		tools: &Tools,
-		staged: Option<&aidash_application::decision::StagedDecision>,
 	) -> Result<()> {
 		use aidash_application::context::{
 			record_stage, record_tokens, summary_candidate, summary_request,
@@ -795,14 +865,11 @@ impl<'a> Executor<'a> {
 			plan.absorbed
 				.retain(|entry| summarizable(&entry.event, tools));
 		}
-		let (Some(first), Some(last)) = (plan.absorbed.first(), plan.absorbed.last()) else {
-			return Err(Error::Context(ContextFailure::ContextUnreducible));
-		};
-		// Only the summarizer pinned in the Run's admission closure may run.
+		// Use the Agent's model pinned in the Run's admission closure.
 		let entry = match self
 			.environment
 			.catalog()
-			.get_for_run(run, &summary.model.id, &summary.model.version)
+			.get_for_run(run, &model_ref.id, &model_ref.version)
 			.await
 		{
 			Ok(entry) if entry.kind == "model" => entry,
@@ -810,28 +877,54 @@ impl<'a> Executor<'a> {
 			Err(error) => return Err(error),
 		};
 		let summarizer = context::summary::SummaryProvider {
-			model: summary.model.clone(),
+			model: model_ref.clone(),
 			definition_digest: aidash_domain::registry::rules::digest(&serde_json::to_value(
 				&entry,
 			)?),
 		};
 		let model_cfg: ModelConfig = serde_json::from_value(entry.config)?;
 		let summary_window = model_cfg.context_window;
-		// The policy bound never exceeds what the pinned summarizer may emit.
-		// The reservation charges that bound before the window cap, which a
-		// remote Home can derive from the pinned definitions and verify.
-		let reserved_output = summary.max_tokens.min(model_cfg.output_token_limit());
-		let max_tokens = max_tokens.min(reserved_output);
+		// Charge the normal inference reservation so a remote Home can verify
+		// the bound from the pinned model, while keeping the summary output cap.
+		let reserved_output = model_cfg.output_token_limit();
+		let max_tokens = max_tokens.min(summary.max_tokens).min(reserved_output);
 		let provider = self
 			.environment
 			.provider(model_cfg.clone())
 			.map_err(|_| unavailable())?;
-		let request = summary_request(&plan, fitting.pinned, max_tokens);
-		if request.ensure_fits(summary_window).is_err() {
-			// The summarizer cannot read the absorbed history; never split it silently.
-			record_stage("summary", "invalid");
-			return Err(Error::Context(ContextFailure::SummaryInvalid));
-		}
+		let request = loop {
+			if let Some(last) = plan.absorbed.last() {
+				plan.people.retain(|entry| entry.seq <= last.seq);
+			}
+			let request = summary_request(&plan, fitting.pinned, max_tokens);
+			if request.ensure_fits(summary_window).is_ok() {
+				break request;
+			}
+			if fitting.native() {
+				let turns = aidash_domain::projection::native::model_turns(&plan.absorbed);
+				let Some(last) = turns.iter().flatten().max().copied() else {
+					return Err(Error::Context(ContextFailure::ContextUnreducible));
+				};
+				let before = plan.absorbed.len();
+				let mut index = 0;
+				plan.absorbed.retain(|_| {
+					let keep = turns[index] != Some(last);
+					index += 1;
+					keep
+				});
+				if plan.absorbed.len() == before {
+					return Err(Error::Context(ContextFailure::ContextUnreducible));
+				}
+			} else {
+				plan.absorbed.pop();
+			}
+			if plan.absorbed.is_empty() {
+				return Err(Error::Context(ContextFailure::ContextUnreducible));
+			}
+		};
+		let (Some(first), Some(last)) = (plan.absorbed.first(), plan.absorbed.last()) else {
+			return Err(Error::Context(ContextFailure::ContextUnreducible));
+		};
 		// The candidate carries the previous summary's sources as well.
 		let mut dependencies = summary_dependencies(&plan.absorbed, tools);
 		if let Some(previous) = plan.pruned.execution_summary.as_deref() {
@@ -849,9 +942,12 @@ impl<'a> Executor<'a> {
 			policy_version: fitting.policy.version.into(),
 			provider: format!(
 				"{}@{}#{}",
-				summary.model.id, summary.model.version, summarizer.definition_digest
+				model_ref.id, model_ref.version, summarizer.definition_digest
 			),
-			source_from_seq: first.seq,
+			source_from_seq: plan
+				.people
+				.first()
+				.map_or(first.seq, |entry| entry.seq.min(first.seq)),
 			source_through_seq: last.seq,
 			base_revision: run.revision,
 			observed_input_seq: run.observed_input_seq,
@@ -896,13 +992,7 @@ impl<'a> Executor<'a> {
 		}
 		let reservation = match guard {
 			Some(guard) => match guard
-				.reserve_summary(
-					token,
-					&summarizer,
-					summary_window,
-					reserved_output,
-					&request,
-				)
+				.reserve_inference(token, summary_window, reserved_output, &request)
 				.await
 			{
 				Ok(reservation) => reservation,
@@ -949,8 +1039,8 @@ impl<'a> Executor<'a> {
 					attempt: attempt.id,
 					lease: token,
 					response_epoch: response_epoch(run.revision, run.step),
-					model_id: summary.model.id.clone(),
-					model_version: summary.model.version.clone(),
+					model_id: model_ref.id.clone(),
+					model_version: model_ref.version.clone(),
 					projection_version: request.context.projection_version().number(),
 					harness_contract: harness_contract.number(),
 					upstream_model: model_cfg.model_id.clone(),
@@ -1032,17 +1122,10 @@ impl<'a> Executor<'a> {
 			}
 		};
 		// Authority was released during I/O: recheck the Run's ordinary inference
-		// authority and the exact summarizer when a guard holds them, and every
-		// summarized source for every Run, before any candidate is adopted.
+		// authority and every summarized source before any candidate is adopted.
 		let current = async {
 			if let Some(guard) = guard {
 				guard.inference().await?;
-				guard.recheck_summary(&summarizer).await?;
-				// The Decider's approval may have been withdrawn while the
-				// summary ran; a staged decision is adopted only under it.
-				if let Some(staged) = staged {
-					guard.recheck_decider(&staged.evidence.decider).await?;
-				}
 			}
 			summary_dependencies_current(self.environment, guard, home, run, &dependencies).await
 		}
@@ -1068,7 +1151,7 @@ impl<'a> Executor<'a> {
 					.map(|summary| summary.digest.clone());
 				let previous = std::mem::replace(&mut run.context, candidate);
 				if let Err(error) = store
-					.adopt_compaction(run, token, attempt.id, &adopted, staged)
+					.adopt_compaction(run, token, attempt.id, &adopted)
 					.await
 				{
 					run.context = previous;
@@ -1106,7 +1189,7 @@ impl<'a> Executor<'a> {
 		}
 	}
 	/// A revoked source must not survive inside summary text. The restored
-	/// originals are saved, but the step pauses for authority before Jev, the
+	/// originals are saved, but the step pauses for authority before the
 	/// summarizer or the model can receive them. Later steps pause the same way
 	/// until every source of the revoked summary is readable again.
 	async fn pause_if_summary_revoked(
@@ -2129,45 +2212,57 @@ impl<'a> Executor<'a> {
 				}
                 self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
                 // History imported from a pre-journal Run may never have been
-                // saved; journal it whole before pruning or a summary drops any.
+                // saved; journal it whole before a summary absorbs any.
                 if run.context.journal.imported_through > run.context.journal.inferred_through {
                     store.journal_context(run, token).await?;
                 }
+                let current_step = u32::try_from(run.step).unwrap_or_default();
+                if context.offload_reads.notice_pending {
+                    pinned.as_object_mut().expect("request snapshot").insert("journal_read_notice".into(), json!("The same Journal range has been read repeatedly and is being considered for the Summary Stage."));
+                }
                 let fitting = aidash_application::context::Fitting { budget: &budget, pinned: &pinned, policy: &policy };
-                // Every Run prunes only through its own compaction Decider; one
-                // without a Decider may let the Summary Stage reduce it alone.
-                let decider = if fitting.fits(&context) { None } else { self.environment.compaction_decider(run, token).await? };
-                let compaction = compact_decided_execution(&mut context, run, token, self.environment.node_id(), decider.as_ref(), &fitting).await.map_err(at_stage("compaction")).map_err(|error| remote_budget(guard, error))?;
-                let plan = match compaction {
-                    aidash_application::context::Compaction::Fits => None,
-                    // The decision saved the pruned context and released the
-                    // lease, which ends the step; the next step rechecks the
-                    // summary sources under its own lease.
-                    aidash_application::context::Compaction::Saved => {
-                        run.context = context;
+                context::observation::normalize_history(&mut context.history);
+                match aidash_application::context::compact(&context, &fitting, current_step)
+                    .map_err(at_stage("compaction"))
+                    .map_err(|error| remote_budget(guard, error))? {
+                    aidash_application::context::Compaction::Fits => {
+                        self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
+                    }
+                    aidash_application::context::Compaction::Offloaded { context: candidate, batch } => {
+                        store.journal_context(run, token).await?;
+                        run.context = *candidate;
+                        store.save_run(run, token, "context.offloaded").await?;
+						aidash_application::context::record_stage("offload", "applied");
+                        store.results_offloaded(run, &batch.ranges).await?;
                         return Ok(());
                     }
-                    aidash_application::context::Compaction::NeedsSummary(plan) => Some(plan),
-                };
-                // Pruning may release authority for Jev I/O, and a local Run's
-                // sources may change during it too; a source revoked meanwhile
-                // must reach neither the summarizer nor the model.
-                match plan {
-                    None => self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?,
-                    Some(mut plan) => {
-                        let staged = plan.staged.take();
-                        let summarized = async {
-                            self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
-                            Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, agent.harness_contract, *plan, &tools, staged.as_deref())).await
-                        }.await;
-                        // A pruning no summary completed changes nothing (ADR 0056).
-                        if summarized.is_err() && let (Some(staged), Some(ports)) = (&staged, &decider) {
-                            let gate = aidash_application::decision::DecisionGate { authority: ports.authority.as_ref(), journal: ports.journal.as_ref(), provider: ports.provider.as_ref() };
-                            if let Err(error) = gate.reject_staged(staged).await {
-                                tracing::warn!(run = %run.id, %error, "staged compaction decision was not recorded as rejected");
+                    aidash_application::context::Compaction::NeedsSummary(mut plan, batch) => {
+                        self.pause_if_summary_revoked(run, token, guard, home.as_ref(), &mut context).await?;
+                        if !batch.ranges.is_empty() {
+                            store.journal_context(run, token).await?;
+                            run.context = plan.pruned.clone();
+                            store.save_run(run, token, "context.offloaded").await?;
+							aidash_application::context::record_stage("offload", "applied");
+                            store.results_offloaded(run, &batch.ranges).await?;
+							return Ok(());
+                        }
+                        // Summaries derive their evidence from the Journal, never
+                        // from the markers in the model-visible projection.
+                        for entry in &mut plan.absorbed {
+                            if matches!(&entry.event, ContextEvent::Tool { result, .. } if aidash_application::context::offload::is_marker(result)) {
+                                let original = store.context_journal(run.id, entry.seq, entry.seq).await?;
+                                *entry = original.into_iter().find(|item| item.seq == entry.seq)
+                                    .ok_or_else(|| Error::Conflict("offloaded Journal result is missing".into()))?;
                             }
                         }
-                        return summarized.map_err(at_stage("compaction")).map_err(|error| remote_budget(guard, error));
+                        for entry in &mut plan.people {
+                            let original = store.context_journal(run.id, entry.seq, entry.seq).await?;
+                            *entry = original.into_iter().find(|item| item.seq == entry.seq && matches!(item.event, ContextEvent::Human { .. }))
+                                .ok_or_else(|| Error::Conflict("human Journal event is missing".into()))?;
+                        }
+                        return Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, &agent.model, agent.harness_contract, *plan, &tools)).await
+                            .map_err(at_stage("compaction"))
+                            .map_err(|error| remote_budget(guard, error));
                     }
                 }
 
@@ -2199,7 +2294,7 @@ impl<'a> Executor<'a> {
 					&& !media.defer_human
 					&& !media.defer_selected;
 				request.routing_run = Some(run.id);
-				request.disable_provider_transforms = !policy.is_legacy();
+				request.disable_provider_transforms = true;
 				request
 					.ensure_fits(window)
 					.map_err(|_| unreducible(guard))?;
@@ -2463,6 +2558,7 @@ impl<'a> Executor<'a> {
 				// Everything in this request reached an accepted inference, so the
 				// Summary Stage may later absorb it without hiding unread content.
 				context.journal.inferred_through = context.journal.head;
+				context.offload_reads.notice_pending = false;
 				context.recovery.inference_accepted();
 				if let Some(seq) = media.through_seq {
 					context.media_inferred_seq = context.media_inferred_seq.max(seq);
@@ -2748,12 +2844,17 @@ connection: None,
 					};
 					if agent.projection_version == ProjectionVersion::Native {
 						// A Model Turn keeps every call it ran (ADR 0015).
+						let mut offloaded = false;
 						for entry in &mut context.history {
 							if summarized(&entry.event)
-								&& let ContextEvent::Tool { call, result } = &mut entry.event
+								&& let ContextEvent::Tool { result, .. } = &mut entry.event
 							{
-								*result = ContextEvent::elided_result(&call.id);
+								*result = aidash_application::context::offload::marker(entry.seq, result);
+								offloaded = true;
 							}
+						}
+						if offloaded {
+							context.offloaded.get_or_insert_default();
 						}
 					} else {
 						context.history.retain(|entry| !summarized(&entry.event));
@@ -3041,6 +3142,7 @@ connection: None,
 					None => None,
 				};
 				if let Some(end) = batch_end {
+					let policy = context::policy::Effective::of(agent.context_policy.as_ref());
 					let step = BatchStep {
 						home: home.as_ref(),
 						guard,
@@ -3048,6 +3150,7 @@ connection: None,
 						calls: &result.tool_calls,
 						cursor,
 						end,
+						policy: &policy,
 					};
 					if self.execute_batch(run, token, step).await? {
 						return Ok(());
@@ -3499,10 +3602,18 @@ connection: None,
 						.exposure
 						.stage(serde_json::from_value::<exposure::ExposureUpdate>(update.clone())?);
 				}
+				let window = run.state.tool()?.request_window;
+				let first = context.journal.head.saturating_add(1);
 				let event = ContextEvent::tool(call.clone(), output.clone());
 				record_message_read_for(&mut context.message_read_coverage, &contract, &event);
 				let growth = context::tool_event_growth(&context, &event);
 				context.push_invocation(event, &key);
+				let result_seq = context.journal.head;
+				aidash_application::context::offload::note_journal_result(
+					&mut context, run.id, &contract, &call.arguments, &output, result_seq,
+					u32::try_from(run.step).unwrap_or_default(),
+					&context::policy::Effective::of(agent.context_policy.as_ref()),
+				);
 				run.state.tool_mut()?.request_tokens =
 					run.state.tool()?.request_tokens.saturating_add(growth);
 				run.context = context.clone();
@@ -3537,7 +3648,7 @@ connection: None,
 					json!({"run_id":run.id,"call":call,"result":context.history.last().expect("just appended tool result").durable_event()["result"]}),
 				)
 				.await?;
-				store.save_run(run, token, "run.tool_recorded").await?;
+				self.save_tool_result(run, token, window, first).await?;
 				Ok(())
 			})
 			.await?,
@@ -4418,61 +4529,6 @@ async fn degrade_context(
 		store.degrade_sources(run, token).await?;
 	}
 	Ok(())
-}
-
-/// Prune through the Run's compaction Decider, or without one let the Summary
-/// Stage reduce the context alone. The context changes only when it fits.
-async fn compact_decided_execution(
-	context: &mut Context,
-	run: &Run,
-	token: Uuid,
-	node: &str,
-	decider: Option<&aidash_application::ports::decision::DecisionPorts<'_>>,
-	fitting: &aidash_application::context::Fitting<'_>,
-) -> Result<aidash_application::context::Compaction> {
-	use aidash_application::context::{Compaction, Decision, compact_decided};
-	use aidash_application::decision::{
-		DecisionGate, Evaluation, compaction_disclosure, compaction_input_digest,
-	};
-	// Compaction replaces history only; the Exposure set is carried unchanged.
-	let mut candidate = context.clone();
-	context::observation::normalize_history(&mut candidate.history);
-	let compaction = match decider {
-		None => compact_decided(&mut candidate, None, fitting).await?,
-		Some(ports) => {
-			let boundary = aidash_domain::decision::Boundary {
-				node: node.to_owned(),
-				run: run.id,
-				step: run.step,
-				run_revision: run.revision,
-				input_revision: run.observed_input_seq,
-				worker: token,
-				input_digest: compaction_input_digest(&candidate, fitting.budget, fitting.pinned)?,
-				cycle: run.recovery.decision_cycle,
-				retry: run.recovery.decider_retry,
-			};
-			let disclosure = compaction_disclosure(&candidate, fitting.pinned);
-			let decision = Decision {
-				gate: DecisionGate {
-					authority: ports.authority.as_ref(),
-					journal: ports.journal.as_ref(),
-					provider: ports.provider.as_ref(),
-				},
-				evaluation: Evaluation {
-					boundary: &boundary,
-					decider: &ports.decider,
-					definition: &ports.definition,
-					disclosure: &disclosure,
-					now: ports.journal.now(),
-				},
-			};
-			compact_decided(&mut candidate, Some(&decision), fitting).await?
-		}
-	};
-	if matches!(compaction, Compaction::Fits | Compaction::Saved) {
-		*context = candidate;
-	}
-	Ok(compaction)
 }
 
 /// Local Runs recheck summary sources under worker authority without

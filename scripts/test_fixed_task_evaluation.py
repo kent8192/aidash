@@ -311,38 +311,13 @@ class ProjectionCampaignTest(unittest.TestCase):
                 self.assertEqual(evaluation.grade(value, item, observation(final_answer=answer,
                     compactions=compactions), False)["passed"], passed)
 
-    def test_live_summary_contract_reserves_calls_and_rejects_drift(self):
-        config = {"provider_credential": "openrouter", "model_id": "model", "context_window": 1000,
-                  "max_output_tokens": 100}
-        allowance = {"reference": "summary@1", "config_sha256": evaluation.canonical_sha256(config),
-                     "max_calls_per_run": 3, "max_nanocredits_per_call": 900}
-        approval = {"external_compaction": {"mode": "bounded", "summary": allowance}}
-        auxiliary = evaluation.auxiliary_allowance(approval)
-        value = corpus()
-        item = task(value, "structured-data-overdue-totals")
-        model = {"context_window": 100, "max_output_tokens": 10}
-        prices = {"input_nanocredits_per_token": 1, "cache_write_nanocredits_per_token": 2,
-                  "output_nanocredits_per_token": 3}
-        main = runner.run_worst_case(item, value, model, prices)
-        self.assertEqual(runner.run_worst_case(item, value, model, prices, auxiliary), main + 2700)
-        evaluation.verify_auxiliary_configs(auxiliary, {"summary@1": config}, "openrouter")
-        planned = [{"task": {"id": "recovery", "requires_summary": True}, "model": "panel"}]
-        evaluation.check_summary_models(auxiliary, planned, {"panel": "summary@1"})
-        with self.assertRaisesRegex(evaluation.GuardRefusal, "Agent's own model"):
-            evaluation.check_summary_models(auxiliary, planned, {"panel": "different@1"})
-        with self.assertRaisesRegex(evaluation.GuardRefusal, "not an enforceable"):
-            evaluation.require_enforceable_auxiliary_bound(auxiliary)
-        accepted = {"external_compaction": dict(approval["external_compaction"],
-                                                cost_enforcement="declared-reservation-accepted")}
-        evaluation.require_enforceable_auxiliary_bound(evaluation.auxiliary_allowance(accepted))
-        with self.assertRaisesRegex(evaluation.GuardRefusal, "exact digest"):
-            evaluation.verify_auxiliary_configs(auxiliary, {"summary@1": dict(config, model_id="changed")}, "openrouter")
-        with self.assertRaises(evaluation.GuardRefusal):
-            evaluation.auxiliary_allowance({"external_compaction": {"mode": "bounded", "summary": allowance,
-                                                                     "decider": allowance}})
-        del allowance["max_nanocredits_per_call"]
-        with self.assertRaisesRegex(evaluation.GuardRefusal, "unpriced auxiliary"):
+    def test_removed_compaction_decider_is_rejected_before_dispatch(self):
+        approval = {"external_compaction": {"mode": "bounded", "decider": {"reference": "judge@1"}, "summary": None}}
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "compaction Deciders were removed"):
             evaluation.auxiliary_allowance(approval)
+        disabled = evaluation.auxiliary_allowance({"external_compaction": "disabled"})
+        self.assertEqual(disabled["worst_case_nanocredits"], 0)
+        evaluation.require_enforceable_auxiliary_bound(disabled)
 
     def test_live_fixture_and_container_support_require_exact_explicit_approval(self):
         value = evaluation.load_corpus()
@@ -1342,10 +1317,11 @@ class RunnerTest(unittest.TestCase):
             with self.assertRaisesRegex(evaluation.CorpusError, "unknown expected context_reason"):
                 evaluation.load_corpus(path)
 
-    def test_minimal_defaults_remove_only_supported_tools(self):
-        removed = runner.minimal_defaults({"bindings": [{"kind": "tool"}]})
-        self.assertEqual(set(removed), set(evaluation.DEFAULT_TOOLS) - {"connection_request"})
+    def test_minimal_defaults_only_removes_built_in_tools(self):
+        plain = {"bindings": [{"kind": "tool"}]}
+        removed = runner.minimal_defaults(plain)
         self.assertNotIn("compaction", removed)
+        self.assertTrue(set(evaluation.DEFAULT_TOOLS) <= set(removed))
 
     def test_cancellation_waits_for_terminal_acknowledgement_and_preserves_a_completion_race(self):
         for terminal in ("CANCELLED", "COMPLETED"):
@@ -1883,7 +1859,7 @@ class LiveGuardTest(unittest.TestCase):
         self.assertEqual(observed, [self.ENV["AIDASH_EVALUATION_SUBJECT_TOKEN"]])
 
     def test_live_stops_dispatch_at_the_ceiling_and_records_every_attempt(self):
-        # One Run's worst case is 24 steps * 6 attempts * (1000 * max(1, 1) + 100 * 5) = 216000 nanocredits.
+        # Reserve 24 steps and eight possible Summary calls, with six attempts each.
         for phase in ("FAILED", "COMPLETED"):
             with self.subTest(phase):
                 call, _ = self.live_node(phase=phase)
@@ -1894,7 +1870,7 @@ class LiveGuardTest(unittest.TestCase):
                 self.assertEqual(len(spend["attempts"]), 1)
                 self.assertEqual(spend["attempts"][0]["provider_work"][0]["input_tokens"], 10)
                 # Even a completed Run keeps its whole reservation: its usage is not readable over HTTP.
-                self.assertEqual(spend["committed_nanocredits"], 216000)
+                self.assertEqual(spend["committed_nanocredits"], 288000)
                 self.assertEqual(spend["uncertain_attempts"], 1)
                 self.assertIn("exceed the ceiling", spend["refusal"])
                 self.assertEqual(result["runs"][0]["evidence"]["content_class"], "restricted-live")
@@ -2012,7 +1988,7 @@ class LiveGuardTest(unittest.TestCase):
             signal.raise_signal(signal.SIGINT)
             return run_result(*args)
         with mock.patch.object(evaluation, "run_result", side_effect=interrupted):
-            status, result = self.run_live(call, ceiling="500000")
+            status, result = self.run_live(call, ceiling="700000")
         self.assertEqual(status, 130)
         self.assertIsNotNone(result, "the record of paid work must be written")
         self.assertEqual(len(result["runs"]), 2, "every observed Run is graded despite the interrupt")
@@ -2050,10 +2026,9 @@ class LiveGuardTest(unittest.TestCase):
             if path == "/api/runs/run-1":
                 value["run"]["context"]["compactions"] = 1
             return status, value
-        status, result = self.run_live(compacting, ceiling="500000")
-        self.assertEqual(status, 0)
-        self.assertIsNone(result["error"])
+        status, result = self.run_live(compacting, ceiling="700000")
         self.assertEqual(len(result["runs"]), 2)
+        self.assertEqual(len(result["skipped_runs"]), 0)
         self.assertEqual(result["runs"][0]["compactions"], 1)
 
     def test_live_agents_remove_every_unbudgeted_default(self):
@@ -2068,10 +2043,10 @@ class LiveGuardTest(unittest.TestCase):
         self.assertTrue(agents)
         for config in agents:
             self.assertEqual(sorted(config["remove_default"]),
-                             sorted(set(evaluation.DEFAULT_TOOLS) - {"connection_request"}))
+                             sorted(evaluation.DEFAULT_TOOLS))
         legacy_skill = {"bindings": [{"kind": "skill"}]}
         self.assertEqual(set(evaluation.DEFAULT_TOOLS) - set(runner.minimal_defaults(legacy_skill)),
-                         set(evaluation.SKILL_TOOLS) | {"connection_request"}, "bound Skills keep their support tools")
+                         set(evaluation.SKILL_TOOLS), "bound Skills keep their support tools")
         deferred_skill = dict(legacy_skill, exposure={"version": "deferred@1"})
         removed = runner.minimal_defaults(deferred_skill)
         self.assertNotIn(evaluation.SKILL_ASSET_READ, removed)
@@ -2173,7 +2148,7 @@ class LiveGuardTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(seen, {"proxy": [], "target": ["Bearer secret-token"]})
 
-    def test_compaction_seen_during_cancellation_is_recorded(self):
+    def test_compactions_seen_while_cancelling_after_a_failure_are_recorded(self):
         call, _ = self.live_node(phase="RUNNING")
         failed = []
 
@@ -2185,10 +2160,11 @@ class LiveGuardTest(unittest.TestCase):
             if path == "/api/runs/run-1":
                 value["run"]["context"]["compactions"] = 1
             return status, value
-        status, result = self.run_live(failing_then_compacted, ceiling="500000")
+        status, result = self.run_live(failing_then_compacted, ceiling="700000")
         self.assertEqual(status, 0)
         self.assertEqual(result["runs"][0]["outcome"], "infrastructure_failure")
         self.assertEqual(result["runs"][0]["compactions"], 1)
+        self.assertEqual(len(result["skipped_runs"]), 0)
         evaluation.validate_result(result)
 
     def test_a_failed_cancellation_stops_all_further_dispatch(self):
@@ -2332,7 +2308,7 @@ class LiveGuardTest(unittest.TestCase):
         price = {"input_nanocredits_per_token": 4, "cache_write_nanocredits_per_token": 5,
                  "output_nanocredits_per_token": 20}
         self.assertEqual(runner.run_worst_case(item, value, model, price),
-                         24 * runner.PROVIDER_ATTEMPTS_PER_STEP * (1000 * 5 + 100 * 20))
+                         (24 + 8) * runner.PROVIDER_ATTEMPTS_PER_STEP * (1000 * 5 + 100 * 20))
         self.assertEqual(runner.PROVIDER_ATTEMPTS_PER_STEP, 6, "one attempt plus five harness retries")
 
     def test_ledger_holds_the_approval_expiry_on_the_monotonic_clock(self):

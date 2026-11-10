@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # One token per byte. Reported prompt tokens then never fall below Aidash's byte
 # estimate, so a calibrated estimator (ADR 0017, capped at bytes) behaves exactly
-# like the conservative one and compaction decisions stay identical across
+# like the conservative one and fitting remains identical across
 # repeats and arms however many Usage Records accumulate.
 CHARS_PER_TOKEN = 1
 # Synthetic nanocredits per token, Anthropic-shaped: cache reads are cheaper and

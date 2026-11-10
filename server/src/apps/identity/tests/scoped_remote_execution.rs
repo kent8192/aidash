@@ -75,9 +75,6 @@ struct ModelScript {
 	entered: Arc<Notify>,
 	release: Arc<Notify>,
 	reservations: Arc<Mutex<Option<ReservationCheck>>>,
-	compactions: Arc<Mutex<Vec<Value>>>,
-	compaction_status: Arc<AtomicUsize>,
-	compaction_reservations: Arc<Mutex<Option<ReservationCheck>>>,
 	force_memory_mutate: Arc<AtomicBool>,
 	selected_attachment: Arc<Mutex<Option<String>>>,
 	/// Tool-call responses after the first, for Runs that need several inferences.
@@ -174,7 +171,6 @@ struct Pair {
 	generation: Option<(Value, Value)>,
 	_memory_recovery_directories: Vec<Arc<tempfile::TempDir>>,
 	tenant_embedding: Option<tenant_openrouter::TenantOpenRouter>,
-	receiver_openrouter: tenant_openrouter::TenantOpenRouter,
 }
 struct SemanticFixture {
 	requests: Arc<Mutex<Vec<Value>>>,
@@ -364,7 +360,6 @@ mod scoped_pair_composition {
 		#[default(false)] semantic: bool,
 		#[default(false)] generated: bool,
 		#[default(false)] approval: bool,
-		#[default(false)] decider: bool,
 		#[default(false)] native: bool,
 		#[default((false, false, 32))] large_native: (bool, bool, usize),
 		#[default(false)] ordered: bool,
@@ -399,7 +394,7 @@ mod scoped_pair_composition {
 		let source = _aa;
 		let receiver = _ba;
 		let (mut a, au, aschema) = source.runtime.parts();
-		let (mut b, bu, bschema) = receiver.runtime.parts();
+		let (b, bu, bschema) = receiver.runtime.parts();
 		let owners = vec![source.runtime, receiver.runtime];
 		let aa = source.application;
 		// The Home performs required-Home embeddings with its Tenant's Provider
@@ -410,10 +405,6 @@ mod scoped_pair_composition {
 			embedding
 		});
 		let ba = receiver.application;
-		// The receiver's approved compaction Decider calls Jev with its Tenant's OpenRouter
-		// Provider Credential (ADR 0041); the fake issuer routes to the model fixture.
-		let receiver_openrouter = tenant_openrouter::install(&mut b);
-		ba.context.set_singleton(b.clone());
 		let memory_recovery_directories = if native {
 			vec![source_directory, receiver_directory]
 		} else {
@@ -424,7 +415,7 @@ mod scoped_pair_composition {
 		let endpoint = model_server.url.clone();
 		let (mut source_policy, token, mut task) =
 			common::bootstrap_with_context(&a, &aa, &endpoint, semantic).await;
-		let (receiver_policy, receiver_token, _) =
+		let (receiver_policy, _receiver_token, _) =
 			common::bootstrap_with_context(&b, &ba, &endpoint, semantic).await;
 		// Work from another Deployment runs under the strictest Data Protection
 		// Level, which no Tenant Keyless endpoint meets (ADR 0104), so each
@@ -432,30 +423,6 @@ mod scoped_pair_composition {
 		for f in [&a, &b] {
 			f.store.keyless.declare_hosted_origin_of(&endpoint).unwrap();
 		}
-		receiver_openrouter.connect("acme").await;
-		*receiver_openrouter.endpoint.lock().unwrap() = endpoint.clone();
-		let decider_definition = json!({"id":"remote-decider","version":"1.0.0","kind":"decider","name":{"en":"Approved remote Decider"},"description":{"en":"Local fixture"},"config":{"hook":"compaction","answer_type":"noul","description":"Keep needed history","provider_credential":"openrouter","routes":[{"provider_contract":"typesafe.jev/1","model":"typesafe/jev-1.13","threshold":"3fe0000000000000","state_budget":{"default_request_bytes":32000,"default_state_bytes":24000,"long_context_request_bytes":400000,"long_context_state_bytes":380000,"input_stages":[null,200,60]}}],"builder":"aidash.compaction/3","option_source":"history_event/1","rule":"compaction.keep/1","mode":"enforce","max_calls_per_run":20}});
-		let (status, body) = request(
-			&ba,
-			&receiver_token,
-			"POST",
-			"/api/registry",
-			decider_definition,
-		)
-		.await;
-		assert_eq!(status, 200, "{body}");
-		assert_eq!(
-			request(
-				&ba,
-				&receiver_token,
-				"POST",
-				"/api/authorization/acme/catalog",
-				json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"remote-decider","version":"1.0.0"},"expected_revision":0,"enabled":true})
-			)
-			.await
-			.0,
-			200
-		);
 		source_policy["subjects"]
 			[aidash_domain::agent_subject(&node_of(&b), "research", "1.0.0")] =
 			json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
@@ -583,9 +550,6 @@ mod scoped_pair_composition {
 		if let Some(native) = &native {
 			mode["native"] = native["selection"].clone();
 		}
-		if decider {
-			mode["decider"] = json!({"id":"remote-decider","version":"1.0.0"});
-		}
 		let admission = if approval {
 			Uuid::nil()
 		} else {
@@ -652,7 +616,6 @@ mod scoped_pair_composition {
 			generation,
 			_memory_recovery_directories: memory_recovery_directories,
 			tenant_embedding,
-			receiver_openrouter,
 		}
 	}
 }
@@ -885,7 +848,7 @@ async fn remote_selected_thread_attachment_reaches_next_inference(
 	#[case] revoke: bool,
 	#[future(awt)]
 	// Select the media Agent and activate its admission.
-	#[with(false, false, false, false, false, (false, false, 32), false, false, true, true)]
+	#[with(false, false, false, false, (false, false, 32), false, false, true, true)]
 	scoped_pair: Pair,
 ) {
 	use base64::Engine as _;
@@ -1632,7 +1595,7 @@ async fn foreign_run_events_keep_the_executing_node(#[future(awt)] scoped_pair: 
 #[rstest::rstest]
 #[tokio::test]
 async fn required_home_search_embeds_with_the_home_tenants_provider_credential(
-	#[with(true, false, false, false, false, (false, false, 32), false, true)]
+	#[with(true, false, false, false, (false, false, 32), false, true)]
 	#[future(awt)]
 	scoped_pair: Pair,
 ) {
@@ -1891,7 +1854,7 @@ async fn model_saw(p: &Pair, request: usize, text: &str) -> bool {
 #[rstest::rstest]
 #[tokio::test]
 async fn remote_ordered_run_retrieves_again_after_the_home_corpus_changes(
-	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[with(true, false, false, false, (false, false, 32), true)]
 	#[future(awt)]
 	scoped_pair: Pair,
 ) {
@@ -2049,7 +2012,7 @@ async fn home_corpus_digests(p: &Pair) -> Vec<Option<String>> {
 #[rstest::rstest]
 #[tokio::test]
 async fn remote_ordered_run_reuses_one_retrieval_across_steps(
-	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[with(true, false, false, false, (false, false, 32), true)]
 	#[future(awt)]
 	scoped_pair: Pair,
 ) {
@@ -2079,7 +2042,7 @@ async fn remote_ordered_run_reuses_one_retrieval_across_steps(
 #[rstest::rstest]
 #[tokio::test]
 async fn remote_ordered_run_retrieves_again_when_the_home_corpus_changed(
-	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[with(true, false, false, false, (false, false, 32), true)]
 	#[future(awt)]
 	scoped_pair: Pair,
 ) {
@@ -2117,7 +2080,7 @@ async fn remote_ordered_run_retrieves_again_when_the_home_corpus_changed(
 #[tokio::test]
 async fn remote_ordered_run_keeps_reusing_its_retrieval_through_a_home_embedding_outage(
 	#[case] pending_entry: bool,
-	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[with(true, false, false, false, (false, false, 32), true)]
 	#[future(awt)]
 	scoped_pair: Pair,
 ) {
@@ -2243,7 +2206,7 @@ async fn remote_ordered_run_keeps_reusing_its_retrieval_through_a_home_embedding
 async fn remote_ordered_reuse_stops_after_revocation_or_a_consumed_source_edit(
 	#[case] fault: &str,
 	#[case] reason: Option<&str>,
-	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[with(true, false, false, false, (false, false, 32), true)]
 	#[future(awt)]
 	scoped_pair: Pair,
 ) {
@@ -2291,7 +2254,7 @@ async fn remote_ordered_reuse_stops_after_revocation_or_a_consumed_source_edit(
 async fn the_home_refuses_a_foreign_reused_operation(
 	#[case] column: &str,
 	#[case] value: &str,
-	#[with(true, false, false, false, false, (false, false, 32), true)]
+	#[with(true, false, false, false, (false, false, 32), true)]
 	#[future(awt)]
 	scoped_pair: Pair,
 ) {
@@ -4508,22 +4471,13 @@ async fn prepare_generated_pair(
 		None
 	};
 	let model_descriptor = descriptor(b.config.deployment.as_str(), &model);
-	let (_, decider) = request(
-		ba,
-		&common::tenant_token(&b.store, "acme").await,
-		"GET",
-		"/api/registry/remote-decider/1.0.0",
-		Value::Null,
-	)
-	.await;
-	let decider_descriptor = descriptor(b.config.deployment.as_str(), &decider);
 	let common = json!({"enabled":true,"permissions":{"roles":[],"groups":[],"attributes":{}},"approval_required":false,"limits":{"max_agents":4,"max_concurrent":4,"max_depth":4,"token_budget":4000000,"tokens_per_agent":800000,"lifetime_seconds":3600}});
 	let mut parent_spec = common.clone();
 	parent_spec["template"] = parent_template;
 	if semantic {
 		parent_spec["embedding"] = json!({"provider":{"id":"home-embedding","version":"1.0.0"},"calls_per_agent":10,"call_budget":40});
 	}
-	parent_spec["remote"] = json!({"inference":[model_descriptor],"compaction":{"provider":decider_descriptor,"calls_per_agent":2,"call_budget":8},"memory":if native {vec![embedding_descriptor.clone().unwrap()]} else {vec![]}});
+	parent_spec["remote"] = json!({"inference":[model_descriptor],"memory":if native {vec![embedding_descriptor.clone().unwrap()]} else {vec![]}});
 	let (status, body) = request(
 		aa,
 		&common::tenant_token(&a.store, "acme").await,
@@ -4631,7 +4585,6 @@ async fn prepare_generated_pair(
 	let mut child_spec = common;
 	child_spec["approval_required"] = json!(approval);
 	child_spec["template"] = child_template;
-	child_spec["compaction"] = json!({"provider":{"id":"remote-decider","version":"1.0.0"},"calls_per_agent":2,"call_budget":8});
 	if let Some(embedding_descriptor) = embedding_descriptor {
 		child_spec["remote"] = json!({"embedding":{"provider":embedding_descriptor,"calls_per_agent":10,"call_budget":40},"memory":if native {vec![embedding_descriptor.clone()]} else {vec![]}});
 	}
@@ -4912,16 +4865,9 @@ async fn foreign_preparation_termination_releases_unused_allocations_once(
 	}
 	.unwrap();
 	assert_eq!(state, (expected.into(), true, None));
-	let budgets: (i64, i64, i64) = sqlx::query_as(
+	let budgets: (i64, i64) = sqlx::query_as(
 		&Query::select()
-			.columns(
-				[
-					"allocated_tokens",
-					"allocated_embedding_calls",
-					"allocated_compaction_calls",
-				]
-				.map(Alias::new),
-			)
+			.columns(["allocated_tokens", "allocated_embedding_calls"].map(Alias::new))
 			.from(Alias::new("generation_policies"))
 			.and_where(Expr::cust("tenant='acme' AND id='remote-child'"))
 			.to_string(PostgresQueryBuilder),
@@ -4931,7 +4877,7 @@ async fn foreign_preparation_termination_releases_unused_allocations_once(
 	.unwrap();
 	assert_eq!(
 		budgets,
-		(0, 0, 0),
+		(0, 0),
 		"only unused allocations are released, exactly once"
 	);
 	let (status, _) = request(
@@ -6375,381 +6321,6 @@ async fn generated_home_lineage_is_rechecked_when_semantic_memory_is_disabled(
 	p.close().await;
 }
 
-async fn seed_remote_history(p: &Pair) {
-	let mut history = vec![
-		json!({"kind":"tool","call":{"id":"first","name":"read","arguments":{}},"result":"keep first"}),
-		json!({"kind":"tool","call":{"id":"obsolete","name":"read","arguments":{}},"result":"old".repeat(50000)}),
-	];
-	for i in 0..6 {
-		history.push(json!({"kind":"tool","call":{"id":format!("recent-{i}"),"name":"read","arguments":{}},"result":"recent"}));
-	}
-	{
-		let query_bind_1 = p.admission;
-		let mut context = serde_json::to_value(p.run().await.context).unwrap();
-		context["history"] = json!(history);
-		// Bare events are a pre-journal projection; drop the cursor so it is imported.
-		context.as_object_mut().unwrap().remove("journal");
-		let query_bind_2 = context;
-		let query_bind_3 = common::pending(aidash_server::domain::RunState::Thinking(
-			aidash_server::domain::ThinkingState::default(),
-		));
-		sqlx::query(
-			&Query::update()
-				.table(Alias::new("runs"))
-				.value(Alias::new("phase"), "THINKING")
-				.value_expr(
-					Alias::new("context"),
-					SimpleExpr::CustomWithExpr(
-						"(?)".to_owned(),
-						vec![Expr::value(query_bind_2.to_owned()).into()],
-					),
-				)
-				.value_expr(
-					Alias::new("pending"),
-					SimpleExpr::CustomWithExpr(
-						"(?)".to_owned(),
-						vec![Expr::value(query_bind_3.to_owned()).into()],
-					),
-				)
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(id=?)".to_owned(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(p.b.store.pool.fixture_driver())
-		.await
-	}
-	.unwrap();
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn remote_compaction_rejects_a_peer_claimed_small_reservation(
-	#[future(awt)]
-	#[with(true, true, false, true)]
-	scoped_pair: Pair,
-) {
-	let p = scoped_pair;
-	seed_remote_history(&p).await;
-	p.step().await;
-	assert_eq!(p.model.compactions.lock().await.len(), 1);
-	let (mut usage, boundary): (Value, Value) = sqlx::query_as(
-		&Query::select()
-			.columns(["usage", "boundary"].map(Alias::new))
-			.from(Alias::new("generation_remote_dispatches"))
-			.and_where(Expr::cust("usage->>'purpose'='compaction'"))
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_one(p.b.store.pool.fixture_driver())
-	.await
-	.unwrap();
-	let attempt = Uuid::new_v4();
-	usage["attempt_id"] = json!(attempt);
-	usage["operation_id"] = json!(attempt);
-	usage["reserved_tokens"] = json!(1025);
-	// An authenticated execution peer controls its own dispatch journal. Home
-	// must reject the claimed amount even when that peer's fence agrees with it.
-	{
-		let query_bind_1 = attempt;
-		let query_bind_2 = &usage;
-		let query_bind_3 = aidash_server::registry::digest(&usage);
-		let query_bind_4 = node_of(&p.a);
-		let query_bind_5 = &boundary;
-		sqlx::query(
-			&Query::insert()
-				.into_table(Alias::new("generation_remote_dispatches"))
-				.columns(
-					[
-						"attempt_id",
-						"usage",
-						"digest",
-						"peer_node",
-						"boundary",
-						"tenant",
-					]
-					.map(Alias::new),
-				)
-				.from_subquery(
-					Query::select()
-						.expr(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_1.to_owned()).into()],
-						))
-						.expr(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_2.to_owned()).into()],
-						))
-						.expr(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_3.to_owned()).into()],
-						))
-						.expr(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_4.to_owned()).into()],
-						))
-						.expr(SimpleExpr::CustomWithExpr(
-							"(?)".to_owned(),
-							vec![Expr::value(query_bind_5.to_owned()).into()],
-						))
-						.expr(Expr::value("acme"))
-						.to_owned(),
-				)
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(p.b.store.pool.fixture_driver())
-		.await
-	}
-	.unwrap();
-	{
-		let query_bind_1 = p.admission;
-		let query_bind_2 = boundary["step"].as_i64().unwrap() as i32;
-		sqlx::query(
-			&Query::update()
-				.table(Alias::new("runs"))
-				.value_expr(
-					Alias::new("step"),
-					SimpleExpr::CustomWithExpr(
-						"(?)".to_owned(),
-						vec![Expr::value(query_bind_2.to_owned()).into()],
-					),
-				)
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(id=?)".to_owned(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(p.b.store.pool.fixture_driver())
-		.await
-	}
-	.unwrap();
-	let before: i64 = sqlx::query_scalar(
-		&Query::select()
-			.column(Alias::new("used_tokens"))
-			.from(Alias::new("generation_budgets"))
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_one(p.a.store.pool.fixture_driver())
-	.await
-	.unwrap();
-	let response = common::peering::signed(
-		&p.a.client,
-		&p.a.config.endpoint,
-		"/scoped/usage/reserve",
-		(&p.b, &common::default_node(&p.b.store, "acme").await),
-		&common::default_node(&p.a.store, "acme").await,
-		"",
-		&json!({"usage":usage,"boundary":boundary}),
-	)
-	.await
-	.send()
-	.await
-	.unwrap();
-	let status = response.status();
-	let body = response.text().await.unwrap();
-	assert_eq!(status, 403, "{body}");
-	let after: i64 = sqlx::query_scalar(
-		&Query::select()
-			.column(Alias::new("used_tokens"))
-			.from(Alias::new("generation_budgets"))
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_one(p.a.store.pool.fixture_driver())
-	.await
-	.unwrap();
-	assert_eq!(after, before);
-	let count: i64 = {
-		let query_bind_1 = attempt;
-		sqlx::query_scalar(
-			&Query::select()
-				.expr(Expr::cust("COUNT(*)"))
-				.from(Alias::new("generation_remote_usage"))
-				.and_where(SimpleExpr::CustomWithExpr(
-					"(attempt_id=?)".to_owned(),
-					vec![Expr::value(query_bind_1.to_owned()).into()],
-				))
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_one(p.a.store.pool.fixture_driver())
-		.await
-	}
-	.unwrap();
-	assert_eq!(count, 0, "a forged amount must not debit the Home ancestor");
-	p.close().await;
-}
-
-#[rstest::rstest]
-// Home allowance and authority failures keep their semantic reason; a Decider
-// that cannot run pauses the Run with its context reason (ADR 0042). An
-// unavailable Route or an invalid answer schedules an outage retry instead,
-// and the Run pauses only after the fifth (ADR 0066).
-#[case("approved", 0, None)]
-#[case("unnecessary", 0, None)]
-#[case("ancestor_limit", 0, Some(("semantic_reason", json!("allowance"))))]
-#[case("catalog_revoked", 0, Some(("semantic_reason", json!("authority"))))]
-#[case("outage", 503, Some(("decider_retry", json!(1))))]
-#[case("bad_answers", 1, Some(("decider_retry", json!(1))))]
-#[case("credential_rejected", 401, Some(("context_reason", json!("decider_unavailable"))))]
-#[case("unbound", 0, Some(("context_reason", json!("decider_unavailable"))))]
-#[tokio::test]
-async fn remote_compaction_uses_exact_approval_and_origin_owned_allowances(
-	#[future(awt)]
-	#[with(true, true, false, true)]
-	scoped_pair: Pair,
-	#[case] scenario: &str,
-	#[case] status: usize,
-	#[case] reason: Option<(&str, Value)>,
-) {
-	let p = scoped_pair;
-	if scenario != "unnecessary" {
-		seed_remote_history(&p).await;
-	}
-	p.model.compaction_status.store(status, Ordering::Release);
-	*p.model.compaction_reservations.lock().await = Some(ReservationCheck {
-		pools: vec![
-			p.a.store.pool.fixture_driver().clone(),
-			p.b.store.pool.fixture_driver().clone(),
-		],
-		dispatcher: p.b.store.pool.fixture_driver().clone(),
-		grant: p.grant,
-		admission: p.admission,
-		purpose: "compaction",
-	});
-	if scenario == "ancestor_limit" {
-		sqlx::query(
-			&Query::update()
-				.table(Alias::new("generation_budgets"))
-				.value(Alias::new("compaction_call_limit"), 0)
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(p.a.store.pool.fixture_driver())
-		.await
-		.unwrap();
-	}
-	if scenario == "catalog_revoked" {
-		assert_eq!(
-			request(
-				&p.ba,
-				&p.receiver_token,
-				"POST",
-				"/api/authorization/acme/catalog",
-				json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"remote-decider","version":"1.0.0"},"expected_revision":1,"enabled":false})
-			)
-			.await
-			.0,
-			200
-		);
-	}
-	if scenario == "unbound" {
-		// Without a usable OpenRouter binding the receiver stops before any
-		// allowance is reserved or Jev is called (ADR 0041).
-		p.receiver_openrouter.unbind("acme").await;
-	}
-	for _ in 0..4 {
-		p.step().await;
-		let run = p.run().await;
-		if !p.requests.lock().await.is_empty()
-			|| run.control.as_str() == "PAUSED"
-			|| run.recovery.retry.is_some()
-		{
-			break;
-		}
-	}
-	let run = p.run().await;
-	if let Some((field, reason)) = reason {
-		let recovery = serde_json::to_value(&run.recovery).unwrap();
-		assert_eq!(recovery[field], reason, "{run:?}");
-		let retrying = field == "decider_retry";
-		assert_eq!(run.control.as_str() == "PAUSED", !retrying, "{run:?}");
-		assert!(!retrying || run.recovery.retry.is_some(), "{run:?}");
-		assert_ne!(run.phase().as_str(), "FAILED");
-		assert!(p.requests.lock().await.is_empty());
-		assert!(
-			!run.error
-				.as_deref()
-				.unwrap_or_default()
-				.contains("private decider response")
-		);
-	} else {
-		assert_eq!(p.requests.lock().await.len(), 1, "{run:?}");
-	}
-	let count = usize::from(matches!(
-		scenario,
-		"approved" | "outage" | "bad_answers" | "credential_rejected"
-	));
-	let calls = p.model.compactions.lock().await;
-	assert_eq!(calls.len(), count);
-	if let Some(call) = calls.first() {
-		assert_eq!(call["model"], "typesafe/jev-1.13");
-		assert_eq!(call["provider"], json!({"zdr": true}));
-		// The Decider classifies the Run's own history; pinned context such as
-		// Home memory is never part of its state (ADR 0042).
-		assert!(
-			call["state"]["history"]
-				.as_array()
-				.is_some_and(|history| history.iter().any(|entry| entry["result_chars"] == 150000)),
-			"the Run's history must reach the exact decider"
-		);
-		assert!(!call.to_string().contains("ochre falcon"));
-	}
-	drop(calls);
-	for node in [&p.a, &p.b] {
-		let (used, limit): (i64, i64) = sqlx::query_as(
-			&Query::select()
-				.columns(["compaction_calls", "compaction_call_limit"].map(Alias::new))
-				.from(Alias::new("generation_budgets"))
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_one(node.store.pool.fixture_driver())
-		.await
-		.unwrap();
-		assert_eq!(
-			used, count as i64,
-			"{}: {used}/{limit}",
-			node.config.deployment
-		);
-		if count > 0 {
-			let amount: i64 = sqlx::query_scalar(
-				&Query::select()
-					.column(Alias::new("reserved_tokens"))
-					.from(Alias::new("generation_remote_usage"))
-					.and_where(Expr::cust("purpose='compaction'"))
-					.to_string(PostgresQueryBuilder),
-			)
-			.fetch_one(node.store.pool.fixture_driver())
-			.await
-			.unwrap();
-			assert_eq!(
-				amount, 401024,
-				"every owner must reserve the approved request maximum"
-			);
-		}
-	}
-	p.close().await;
-}
-
-#[rstest::rstest]
-#[tokio::test]
-async fn remote_compaction_without_explicit_recipient_pauses_without_environment_fallback(
-	#[future(awt)]
-	#[with(true, true)]
-	scoped_pair: Pair,
-) {
-	let p = scoped_pair;
-	seed_remote_history(&p).await;
-	p.step().await;
-	let run = p.run().await;
-	assert_eq!(run.control.as_str(), "PAUSED", "{run:?}");
-	assert_eq!(
-		serde_json::to_value(run.recovery.semantic_reason).unwrap(),
-		"context_budget"
-	);
-	assert!(p.model.compactions.lock().await.is_empty());
-	assert!(p.requests.lock().await.is_empty());
-	p.close().await;
-}
-
 /// A real receiver `runworker` launch. Startup and Run progress are bounded
 /// separately so a failure names its milestone and distinguishes an exited
 /// process from a live worker whose Run stopped progressing.
@@ -7472,23 +7043,14 @@ fn model_script(
 	#[from(signal_state)] entered: Arc<Notify>,
 	#[from(signal_state)] release: Arc<Notify>,
 	#[from(reservation_state)] reservations: Arc<Mutex<Option<ReservationCheck>>>,
-	#[from(compaction_model_state)] _state: CompactionModelState,
 	#[from(bool_state)] force_memory_mutate: Arc<AtomicBool>,
 ) -> ModelScript {
-	let CompactionModelState {
-		compactions,
-		compaction_status,
-		compaction_reservations,
-	} = _state;
 	ModelScript {
 		requests,
 		hold,
 		entered,
 		release,
 		reservations,
-		compactions,
-		compaction_status,
-		compaction_reservations,
 		force_memory_mutate,
 		selected_attachment: Arc::new(Mutex::new(None)),
 		extra_tool_rounds: Arc::new(AtomicUsize::new(0)),
@@ -7512,23 +7074,7 @@ fn model_router(model_script: ModelScript) -> Arc<Router> {
         } else if count==1 && script.force_memory_mutate.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":"forbidden-write","type":"function","function":{"name":"memory_mutate","arguments":"{\"data\":{\"forbidden\":true}}"}}]})} else if count<=1+script.extra_tool_rounds.load(Ordering::Acquire) {json!({"role":"assistant","content":null,"tool_calls":[{"id":if count==1 {"note".to_owned()} else {format!("note-{count}")},"type":"function","function":{"name":"workspace_message","arguments":"{\"content\":\"Scoped remote progress\"}"}}]})} else {json!({"role":"assistant","content":"Scoped remote result"})};
         reinhardt::Response::ok().with_json(&json!({"choices":[{"index":0,"finish_reason":if message.get("tool_calls").is_some(){"tool_calls"}else{"stop"},"message":message}],"usage":{"prompt_tokens":1,"completion_tokens":1}})).unwrap()
     }}}))
-.route("/endpoints/zdr", http::Method::GET, reply(|_request: reinhardt::Request| async {
-        reinhardt::Response::ok().with_json(&json!({"data":[{"model_id":"typesafe/jev-1.13","tag":"typesafe/jev"}]})).unwrap()
-    }))
-.route("/systemone", http::Method::POST, reply({let script=model_script.clone();move |request:reinhardt::Request| {let script=script.clone();let input=request.json::<Value>().unwrap();async move {
-		if let Some(check)=script.compaction_reservations.lock().await.clone() {check.before_http().await;}
-		script.compactions.lock().await.push(input.clone());
-		match script.compaction_status.load(Ordering::Acquire) {
-			503 => reinhardt::Response::new(http::StatusCode::SERVICE_UNAVAILABLE).with_body("private decider response").with_header("Content-Type", "text/plain; charset=utf-8"),
-			401 => reinhardt::Response::new(http::StatusCode::UNAUTHORIZED).with_body("private decider response").with_header("Content-Type", "text/plain; charset=utf-8"),
-			// OpenRouter names the dated snapshot that served the pinned release.
-			1 => reinhardt::Response::ok().with_json(&json!({"model":format!("{}-20260917",input["model"].as_str().unwrap()),"answers":{}})).unwrap(),
-			_ => {
-				let answers:serde_json::Map<_,_>=input["questions"].as_object().unwrap().keys().map(|name|(name.clone(),json!({"noul":0.0}))).collect();
-				reinhardt::Response::ok().with_json(&json!({"model":format!("{}-20260917",input["model"].as_str().unwrap()),"answers":answers})).unwrap()
-			}
-		}
-	}}})).into_server_router();
+.into_server_router();
 	Arc::new(model_app)
 }
 #[rstest::fixture]
@@ -7633,25 +7179,6 @@ fn embedding_provider(
 		}
 	}
 	.boxed()
-}
-
-#[derive(Clone)]
-struct CompactionModelState {
-	compactions: Arc<Mutex<Vec<Value>>>,
-	compaction_status: Arc<AtomicUsize>,
-	compaction_reservations: Arc<Mutex<Option<ReservationCheck>>>,
-}
-#[rstest::fixture]
-fn compaction_model_state(
-	#[from(values_state)] compactions: Arc<Mutex<Vec<Value>>>,
-	#[from(count_state)] compaction_status: Arc<AtomicUsize>,
-	#[from(reservation_state)] compaction_reservations: Arc<Mutex<Option<ReservationCheck>>>,
-) -> CompactionModelState {
-	CompactionModelState {
-		compactions,
-		compaction_status,
-		compaction_reservations,
-	}
 }
 
 #[derive(Clone)]
@@ -8289,7 +7816,7 @@ async fn node_deletion_or_explicit_cancel_prevents_late_activation(
 	#[case] deletion: bool,
 	#[future(awt)]
 	// Prepare the admission without activating a receiver Run.
-	#[with(false,false,false,false,false,(false,false,32),false,false,false,false)]
+	#[with(false, false, false, false, (false,false,32), false, false, false, false)]
 	scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
@@ -9641,7 +9168,7 @@ async fn node_deletion_retries_delegated_stop_until_receiver_and_home_settle(
 #[tokio::test]
 async fn node_deletion_fences_source_preparation_before_maintenance(
 	#[future(awt)]
-	#[with(false,false,false,false,false,(false,false,32),false,false,false)]
+	#[with(false, false, false, false, (false,false,32), false, false, false)]
 	scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
