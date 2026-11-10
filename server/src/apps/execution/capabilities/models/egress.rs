@@ -157,6 +157,14 @@ pub struct ScopeConnection {
 	pub duration_ms: i64,
 	#[field(field_type = "text")]
 	pub outcome: String,
+	/// The code the client received. Null for a connection that completed or
+	/// is still open, and for rows older than #845.
+	#[field(field_type = "text", null = true)]
+	pub error: Option<String>,
+	/// How long the connection waited for a Host connection limit. Null until
+	/// the wait is over, and for rows older than #845.
+	#[field(null = true)]
+	pub wait_ms: Option<i64>,
 	#[field]
 	pub created_at: DateTime<Utc>,
 }

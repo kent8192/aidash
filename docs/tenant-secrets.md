@@ -367,11 +367,21 @@ authenticated connection attempts in one minute, including invalid targets and
 hosts denied by the allowlist; an operator must lift the suspension. Hosts longer than 253 bytes are rejected. The
 authority must emit an operator notification when it suspends a scope.
 
-Each gateway instance defaults to 64 simultaneous tunnels per scope, 32 per
-Tenant and 1,024 overall. The Tenant and global limits can be configured in the
-capability profile; the Tenant limit must be positive and lower than the global
-limit. Capacity exhaustion returns `egress_tunnel_limit`,
-`egress_tenant_tunnel_limit` or `egress_global_tunnel_limit`. DNS resolution and a stalled client write each have a 30-second
+Each gateway instance has a Host connection limit of 32 open connections per
+scope, 64 per Tenant and 1,024 overall. The Tenant and global limits can be
+configured in the capability profile; the Tenant limit must be at least the
+scope limit and lower than the global limit. A connection over a limit waits up
+to 10 seconds for another to close, first come first served, and as many
+connections may wait as the limit allows to be open; beyond that, or after the
+wait, it receives 429 with `egress_tunnel_limit`, `egress_tenant_tunnel_limit`
+or `egress_global_tunnel_limit`. A `CONNECT` gives its listener slot back before
+it waits, so one Tenant's waiting connections never keep another Tenant's from
+being accepted. A connection that waited is checked against its scope once more
+before it is forwarded. A connection's record keeps the code its client received
+in `error` and the time it waited in `wait_ms`; the waits and refusals are also
+counted in `aidash_egress_host_connection_wait_seconds{limit}` and
+`aidash_egress_host_connection_limit_refused_total{limit}`, where `limit` is
+`space`, `tenant` or `deployment`. DNS resolution and a stalled client write each have a 30-second
 deadline. Idle tunnels close after five minutes and all tunnels close after 24
 hours. The gateway reauthenticates the credential and reloads scope and host
 policy every five seconds, including while idle. Revocation or a narrowed host

@@ -111,16 +111,53 @@ impl FailureReport {
 	}
 }
 
+/// The longest a Host connection waits for a Host connection limit before it is
+/// refused (#845). Package managers open bursts of short connections, so most
+/// waits end as soon as one of them closes.
+const LIMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// One semaphore per Scratch Space and per Tenant, each made on first use and
+/// dropped once nothing holds or waits on it, so waiting is first come, first
+/// served. A Space's semaphore keeps the limit it was made with until then.
 #[derive(Default)]
 struct CapacityCounts {
+	scopes: std::collections::HashMap<aidash_domain::egress::ScopeId, Arc<tokio::sync::Semaphore>>,
+	tenants: std::collections::HashMap<String, Arc<tokio::sync::Semaphore>>,
+	waiting: Waiting,
+}
+/// Connections waiting for a limit. At most as many may wait as the limit
+/// itself, so one Tenant has at most twice its limit open or waiting.
+#[derive(Default)]
+struct Waiting {
 	scopes: std::collections::HashMap<aidash_domain::egress::ScopeId, usize>,
 	tenants: std::collections::HashMap<String, usize>,
+	global: usize,
+}
+impl CapacityCounts {
+	/// Forget a semaphore that nothing holds or waits on any longer.
+	fn prune(&mut self, scope: &aidash_domain::egress::ScopeId) {
+		if self
+			.scopes
+			.get(scope)
+			.is_some_and(|semaphore| Arc::strong_count(semaphore) == 1)
+		{
+			self.scopes.remove(scope);
+		}
+		if self
+			.tenants
+			.get(&scope.tenant)
+			.is_some_and(|semaphore| Arc::strong_count(semaphore) == 1)
+		{
+			self.tenants.remove(&scope.tenant);
+		}
+	}
 }
 type ScopeCounts = Arc<std::sync::Mutex<CapacityCounts>>;
 
 /// Scope tunnel capacity is separate from the HTTP listener's request pool.
 pub(super) struct TunnelManager {
 	global: Arc<tokio::sync::Semaphore>,
+	global_limit: usize,
 	tenant_limit: usize,
 	counts: ScopeCounts,
 	tasks: std::sync::Mutex<tokio::task::JoinSet<()>>,
@@ -132,24 +169,62 @@ struct TunnelLease {
 	manager: Arc<TunnelManager>,
 }
 pub(super) struct TunnelPermit {
-	_global: tokio::sync::OwnedSemaphorePermit,
+	permits: Vec<tokio::sync::OwnedSemaphorePermit>,
 	counts: ScopeCounts,
 	scope: aidash_domain::egress::ScopeId,
 }
 impl Drop for TunnelPermit {
 	fn drop(&mut self) {
-		let mut counts = self.counts.lock().unwrap();
-		let n = counts.scopes.get_mut(&self.scope).unwrap();
-		*n -= 1;
-		if *n == 0 {
-			counts.scopes.remove(&self.scope);
-		}
-		let n = counts.tenants.get_mut(&self.scope.tenant).unwrap();
-		*n -= 1;
-		if *n == 0 {
-			counts.tenants.remove(&self.scope.tenant);
-		}
+		self.permits.clear();
+		self.counts.lock().unwrap().prune(&self.scope);
 	}
+}
+/// A connection's place among the waiters, given up however its wait ends.
+struct WaitTurn {
+	counts: ScopeCounts,
+	scope: aidash_domain::egress::ScopeId,
+	semaphores: Vec<Arc<tokio::sync::Semaphore>>,
+}
+impl Drop for WaitTurn {
+	fn drop(&mut self) {
+		self.semaphores.clear();
+		let mut counts = self.counts.lock().unwrap();
+		let waiting = &mut counts.waiting;
+		if let Some(n) = waiting.scopes.get_mut(&self.scope) {
+			*n -= 1;
+			if *n == 0 {
+				waiting.scopes.remove(&self.scope);
+			}
+		}
+		if let Some(n) = waiting.tenants.get_mut(&self.scope.tenant) {
+			*n -= 1;
+			if *n == 0 {
+				waiting.tenants.remove(&self.scope.tenant);
+			}
+		}
+		waiting.global -= 1;
+		counts.prune(&self.scope);
+	}
+}
+/// The limits in the order a connection takes them, with the code and metric
+/// label of each.
+const LIMITS: [(&str, &str); 3] = [
+	("egress_tunnel_limit", "space"),
+	("egress_tenant_tunnel_limit", "tenant"),
+	("egress_global_tunnel_limit", "deployment"),
+];
+fn limit_label(code: &str) -> &'static str {
+	LIMITS
+		.iter()
+		.find(|(limit, _)| *limit == code)
+		.map_or("unknown", |(_, label)| label)
+}
+/// A connection over a limit, after waiting for it or because too many already
+/// wait. The client receives the code; the record names it too.
+fn limit_refused(code: &'static str) -> &'static str {
+	metrics::counter!("aidash_egress_host_connection_limit_refused_total", "limit" => limit_label(code))
+		.increment(1);
+	code
 }
 impl TunnelManager {
 	pub(super) fn new(
@@ -158,6 +233,7 @@ impl TunnelManager {
 	) -> Self {
 		Self {
 			global: Arc::new(tokio::sync::Semaphore::new(limits.global_concurrent)),
+			global_limit: limits.global_concurrent,
 			tenant_limit: limits.tenant_concurrent,
 			counts: Arc::new(std::sync::Mutex::new(CapacityCounts::default())),
 			tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
@@ -165,26 +241,132 @@ impl TunnelManager {
 			failures: Arc::default(),
 		}
 	}
-	fn acquire(&self, scope: &ScopeSettings) -> Result<TunnelPermit, &'static str> {
+	/// The semaphores of a connection's three limits, in the order it takes them.
+	fn semaphores(
+		&self,
+		counts: &mut CapacityCounts,
+		scope: &ScopeSettings,
+	) -> [Arc<tokio::sync::Semaphore>; 3] {
+		let space = counts
+			.scopes
+			.entry(scope.id.clone())
+			.or_insert_with(|| {
+				Arc::new(tokio::sync::Semaphore::new(scope.tunnel_limits.concurrent))
+			})
+			.clone();
+		let tenant = counts
+			.tenants
+			.entry(scope.id.tenant.clone())
+			.or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(self.tenant_limit)))
+			.clone();
+		[space, tenant, self.global.clone()]
+	}
+	/// Take all three limits at once or none, without waiting.
+	fn try_acquire(&self, scope: &ScopeSettings) -> Result<TunnelPermit, &'static str> {
 		let mut counts = self.counts.lock().unwrap();
-		if counts.scopes.get(&scope.id).copied().unwrap_or(0) >= scope.tunnel_limits.concurrent {
-			return Err("egress_tunnel_limit");
+		let semaphores = self.semaphores(&mut counts, scope);
+		let mut permits = Vec::with_capacity(3);
+		for (semaphore, (code, _)) in semaphores.iter().zip(LIMITS) {
+			match semaphore.clone().try_acquire_owned() {
+				Ok(permit) => permits.push(permit),
+				Err(_) => {
+					drop(permits);
+					drop(semaphores);
+					counts.prune(&scope.id);
+					return Err(code);
+				}
+			}
 		}
-		if counts.tenants.get(&scope.id.tenant).copied().unwrap_or(0) >= self.tenant_limit {
-			return Err("egress_tenant_tunnel_limit");
-		}
-		let global = self
-			.global
-			.clone()
-			.try_acquire_owned()
-			.map_err(|_| "egress_global_tunnel_limit")?;
-		*counts.scopes.entry(scope.id.clone()).or_default() += 1;
-		*counts.tenants.entry(scope.id.tenant.clone()).or_default() += 1;
 		Ok(TunnelPermit {
-			_global: global,
+			permits,
 			counts: self.counts.clone(),
 			scope: scope.id.clone(),
 		})
+	}
+	/// Take the three limits, waiting up to `LIMIT_WAIT` for a full one, and
+	/// say how long the connection waited. A limit of zero never frees up, and
+	/// a stopping gateway takes no new connections, so neither waits.
+	async fn acquire(
+		&self,
+		scope: &ScopeSettings,
+		wait: std::time::Duration,
+	) -> Result<(TunnelPermit, std::time::Duration), &'static str> {
+		let code = match self.try_acquire(scope) {
+			Ok(permit) => return Ok((permit, std::time::Duration::ZERO)),
+			Err(code) => code,
+		};
+		if scope.tunnel_limits.concurrent == 0 || is_stopping(&self.stopping) {
+			return Err(limit_refused(code));
+		}
+		let mut turn = {
+			let mut counts = self.counts.lock().unwrap();
+			let full = if counts.waiting.scopes.get(&scope.id).copied().unwrap_or(0)
+				>= scope.tunnel_limits.concurrent
+			{
+				Some(LIMITS[0].0)
+			} else if counts
+				.waiting
+				.tenants
+				.get(&scope.id.tenant)
+				.copied()
+				.unwrap_or(0)
+				>= self.tenant_limit
+			{
+				Some(LIMITS[1].0)
+			} else if counts.waiting.global >= self.global_limit {
+				Some(LIMITS[2].0)
+			} else {
+				None
+			};
+			if let Some(code) = full {
+				counts.prune(&scope.id);
+				return Err(limit_refused(code));
+			}
+			*counts.waiting.scopes.entry(scope.id.clone()).or_default() += 1;
+			*counts
+				.waiting
+				.tenants
+				.entry(scope.id.tenant.clone())
+				.or_default() += 1;
+			counts.waiting.global += 1;
+			let semaphores = self.semaphores(&mut counts, scope).to_vec();
+			WaitTurn {
+				counts: self.counts.clone(),
+				scope: scope.id.clone(),
+				semaphores,
+			}
+		};
+		let started = tokio::time::Instant::now();
+		let deadline = started + wait;
+		let mut stopping = self.stopping.clone();
+		let mut permits = Vec::with_capacity(3);
+		for (semaphore, (code, label)) in turn.semaphores.iter().zip(LIMITS) {
+			let waited = tokio::time::Instant::now();
+			let permit = tokio::select! {
+				permit = tokio::time::timeout_at(deadline, semaphore.clone().acquire_owned()) => permit,
+				_ = async { while stopping.changed().await.is_ok() && !*stopping.borrow() {} } => return Err(limit_refused(code)),
+			};
+			let Ok(Ok(permit)) = permit else {
+				return Err(limit_refused(code));
+			};
+			let waited = waited.elapsed();
+			if !waited.is_zero() {
+				metrics::histogram!("aidash_egress_host_connection_wait_seconds", "limit" => label)
+					.record(waited.as_secs_f64());
+			}
+			permits.push(permit);
+		}
+		let scope_id = turn.scope.clone();
+		turn.semaphores.clear();
+		drop(turn);
+		Ok((
+			TunnelPermit {
+				permits,
+				counts: self.counts.clone(),
+				scope: scope_id,
+			},
+			started.elapsed(),
+		))
 	}
 	pub(super) async fn drain(&self) {
 		loop {
@@ -583,6 +765,9 @@ struct Audit {
 	sent: Arc<AtomicU64>,
 	received: Arc<AtomicU64>,
 	outcome: &'static str,
+	/// The code the client received, when the gateway answered with one.
+	error: Option<&'static str>,
+	wait_ms: Option<u64>,
 	finished: bool,
 	started_record: bool,
 }
@@ -666,7 +851,18 @@ impl Audit {
 			received_bytes: self.received.load(Ordering::Relaxed),
 			duration_ms: self.started.elapsed().as_millis().min(u64::MAX as u128) as u64,
 			outcome: self.outcome.to_owned(),
+			error: self.error.map(str::to_owned),
+			wait_ms: self.wait_ms,
 		}
+	}
+	/// Answer the client with an error code and keep it in the record.
+	fn fail(
+		&mut self,
+		status: hyper::StatusCode,
+		code: &'static str,
+	) -> hyper::Response<super::Body> {
+		self.error = Some(code);
+		super::failure(status, code)
 	}
 	fn report(&self) -> FailureReport {
 		FailureReport {
@@ -791,6 +987,52 @@ fn refusal(error: &aidash_application::Error) -> (hyper::StatusCode, &'static st
 	}
 }
 
+fn millis(duration: std::time::Duration) -> u64 {
+	duration.as_millis().min(u64::MAX as u128) as u64
+}
+
+/// A connection that waited for a limit was admitted up to 10 s ago, so its
+/// Scratch Space is checked once more before anything leaves for the host. A
+/// Space that stopped meanwhile usually took its Pod, and so the waiting
+/// connection, with it; this catches a connection that outlived the stop.
+async fn still_active(
+	scopes: &dyn EgressScopes,
+	scope: &ScopeSettings,
+	token: &str,
+	host: &str,
+) -> Result<(), (hyper::StatusCode, &'static str)> {
+	use aidash_application::Error;
+	use hyper::StatusCode;
+	match tokio::time::timeout(
+		std::time::Duration::from_secs(5),
+		scopes.check_active(scope, token),
+	)
+	.await
+	{
+		Ok(Ok(current))
+			if current
+				.allowed_hosts
+				.permits(host, current.operator_allows_all) =>
+		{
+			Ok(())
+		}
+		Ok(Ok(_)) => Err((StatusCode::FORBIDDEN, "egress_host_revoked")),
+		Ok(Err(Error::Refused(code))) if code == "egress_suspended" => {
+			Err((StatusCode::FORBIDDEN, "egress_suspended"))
+		}
+		Ok(Err(Error::Refused(code))) if code == "egress_budget_exhausted" => {
+			Err((StatusCode::TOO_MANY_REQUESTS, "egress_budget_exhausted"))
+		}
+		Ok(Err(Error::Forbidden | Error::Unauthorized)) => {
+			Err((StatusCode::FORBIDDEN, "egress_credential_revoked"))
+		}
+		_ => Err((
+			StatusCode::SERVICE_UNAVAILABLE,
+			"egress_authority_unavailable",
+		)),
+	}
+}
+
 pub(super) async fn forward(
 	request: hyper::Request<hyper::body::Incoming>,
 	scopes: Arc<dyn EgressScopes>,
@@ -849,6 +1091,8 @@ pub(super) async fn forward(
 		sent: Arc::new(AtomicU64::new(0)),
 		received: Arc::new(AtomicU64::new(0)),
 		outcome: "refused",
+		error: None,
+		wait_ms: None,
 		finished: false,
 		started_record: false,
 	};
@@ -859,39 +1103,55 @@ pub(super) async fn forward(
 			|| (!connect && url.scheme() == "http" && port == 80));
 	if !valid_target {
 		audit.outcome = INVALID_TARGET;
+		audit.error = Some(INVALID_TARGET);
 	}
 	if !audit.start().await {
 		return super::refuse(StatusCode::SERVICE_UNAVAILABLE, "egress_audit_unavailable");
 	}
 	if !valid_target {
-		return super::failure(StatusCode::BAD_REQUEST, INVALID_TARGET);
+		return audit.fail(StatusCode::BAD_REQUEST, INVALID_TARGET);
 	}
 
 	if !scope
 		.allowed_hosts
 		.permits(&host, scope.operator_allows_all)
 	{
-		return super::failure(StatusCode::FORBIDDEN, "egress_host_forbidden");
+		return audit.fail(StatusCode::FORBIDDEN, "egress_host_forbidden");
 	}
-	let permit = match manager.acquire(&scope) {
-		Ok(permit) => Arc::new(permit),
-		Err(code) => return super::failure(StatusCode::TOO_MANY_REQUESTS, code),
-	};
-	// A plain HTTP connection remains charged until Hyper finishes flushing it.
+	// The listener's slots are shared by every Tenant and taken before anyone is
+	// known, so an admitted CONNECT gives its slot back before it may wait for a
+	// limit; the waiter caps bound it from here (#845). A plain HTTP connection
+	// remains charged until Hyper finishes flushing it.
 	if connect {
 		drop(listener_permit.lock().unwrap().take());
-	} else {
+	}
+	let permit = match manager.acquire(&scope, LIMIT_WAIT).await {
+		Ok((permit, waited)) => {
+			audit.wait_ms = Some(millis(waited));
+			if !waited.is_zero()
+				&& let Err((status, code)) = still_active(&*scopes, &scope, &token, &host).await
+			{
+				return audit.fail(status, code);
+			}
+			Arc::new(permit)
+		}
+		Err(code) => {
+			audit.wait_ms = Some(millis(audit.started.elapsed()));
+			return audit.fail(StatusCode::TOO_MANY_REQUESTS, code);
+		}
+	};
+	if !connect {
 		*connection_lease.lock().unwrap() = Some(permit.clone());
 	}
 	let addresses = match public_addresses(&host, port).await {
 		Ok(addresses) => addresses,
 		Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
-			return super::failure(StatusCode::FORBIDDEN, "egress_destination_forbidden");
+			return audit.fail(StatusCode::FORBIDDEN, "egress_destination_forbidden");
 		}
 		Err(error) => {
 			audit.report().upstream("dns", error);
 			audit.outcome = "dns_error";
-			return super::failure(StatusCode::BAD_GATEWAY, "egress_dns_failed");
+			return audit.fail(StatusCode::BAD_GATEWAY, "egress_dns_failed");
 		}
 	};
 	if connect {
@@ -900,7 +1160,7 @@ pub(super) async fn forward(
 			Err(error) => {
 				audit.report().upstream("connect", error);
 				audit.outcome = "connect_error";
-				return super::failure(StatusCode::BAD_GATEWAY, "egress_connect_failed");
+				return audit.fail(StatusCode::BAD_GATEWAY, "egress_connect_failed");
 			}
 		};
 		return connect_tunnel(
@@ -1055,7 +1315,7 @@ async fn forward_http(
 		Err(error) => {
 			audit.report().upstream("connect", error);
 			audit.outcome = "connect_error";
-			return super::failure(StatusCode::BAD_GATEWAY, "egress_connect_failed");
+			return audit.fail(StatusCode::BAD_GATEWAY, "egress_connect_failed");
 		}
 	};
 	audit.outcome = "interrupted";
@@ -1236,16 +1496,16 @@ mod tests {
 		let manager = super::TunnelManager::new(receiver, super::super::ProxyLimits::default());
 		let mut one = test_settings();
 		one.tunnel_limits.concurrent = 0;
-		assert!(manager.acquire(&one).is_err());
+		assert!(manager.try_acquire(&one).is_err());
 		assert!(manager.counts.lock().unwrap().scopes.is_empty());
 		one.tunnel_limits.concurrent = 1;
 		let mut two = test_settings();
 		two.tunnel_limits.concurrent = 1;
-		let held = manager.acquire(&one).unwrap();
-		assert!(manager.acquire(&one).is_err());
-		assert!(manager.acquire(&two).is_ok());
+		let held = manager.try_acquire(&one).unwrap();
+		assert!(manager.try_acquire(&one).is_err());
+		assert!(manager.try_acquire(&two).is_ok());
 		drop(held);
-		assert!(manager.acquire(&one).is_ok());
+		assert!(manager.try_acquire(&one).is_ok());
 	}
 
 	#[test]
@@ -1254,13 +1514,24 @@ mod tests {
 		let manager = super::TunnelManager::new(receiver, super::super::ProxyLimits::default());
 		let first = test_settings();
 		let second = test_settings();
-		let held: Vec<_> = (0..32).map(|_| manager.acquire(&first).unwrap()).collect();
-		assert!(manager.acquire(&second).is_err());
+		let third = test_settings();
+		let held: Vec<_> = (0..32)
+			.flat_map(|_| {
+				[
+					manager.try_acquire(&first).unwrap(),
+					manager.try_acquire(&second).unwrap(),
+				]
+			})
+			.collect();
+		assert_eq!(
+			manager.try_acquire(&third).err(),
+			Some("egress_tenant_tunnel_limit")
+		);
 		let mut other_tenant = test_settings();
 		other_tenant.id.tenant = "other".into();
-		assert!(manager.acquire(&other_tenant).is_ok());
+		assert!(manager.try_acquire(&other_tenant).is_ok());
 		drop(held);
-		assert!(manager.acquire(&second).is_ok());
+		assert!(manager.try_acquire(&third).is_ok());
 	}
 
 	#[test]
@@ -1278,16 +1549,160 @@ mod tests {
 		two.id.tenant = "two".into();
 		let mut three = test_settings();
 		three.id.tenant = "three".into();
-		let _one = manager.acquire(&one).unwrap();
+		let _one = manager.try_acquire(&one).unwrap();
 		assert_eq!(
-			manager.acquire(&one).err().unwrap(),
+			manager.try_acquire(&one).err().unwrap(),
 			"egress_tenant_tunnel_limit"
 		);
-		let _two = manager.acquire(&two).unwrap();
+		let _two = manager.try_acquire(&two).unwrap();
 		assert_eq!(
-			manager.acquire(&three).err().unwrap(),
+			manager.try_acquire(&three).err().unwrap(),
 			"egress_global_tunnel_limit"
 		);
+	}
+
+	fn limited(concurrent: usize) -> ScopeSettings {
+		let mut settings = test_settings();
+		settings.tunnel_limits.concurrent = concurrent;
+		settings
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn a_connection_over_a_limit_waits_for_one_to_close() {
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let manager = Arc::new(super::TunnelManager::new(
+			receiver,
+			super::super::ProxyLimits::default(),
+		));
+		let one = limited(1);
+		let held = manager.try_acquire(&one).unwrap();
+		let waiting = tokio::spawn({
+			let manager = manager.clone();
+			let one = one.clone();
+			async move {
+				manager
+					.acquire(&one, super::LIMIT_WAIT)
+					.await
+					.map(|(_, waited)| waited)
+			}
+		});
+		tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+		assert!(!waiting.is_finished());
+		drop(held);
+		let waited = waiting.await.unwrap().unwrap();
+		assert_eq!(waited, std::time::Duration::from_secs(2));
+		assert!(manager.counts.lock().unwrap().scopes.is_empty());
+		assert_eq!(manager.counts.lock().unwrap().waiting.global, 0);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn a_wait_that_runs_out_names_the_limit_still_full() {
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let manager = super::TunnelManager::new(
+			receiver,
+			super::super::ProxyLimits {
+				global_concurrent: 4,
+				tenant_concurrent: 1,
+			},
+		);
+		let first = test_settings();
+		let second = test_settings();
+		let _held = manager.try_acquire(&first).unwrap();
+		let started = tokio::time::Instant::now();
+		let refused = manager.acquire(&second, super::LIMIT_WAIT).await.err();
+		assert_eq!(refused, Some("egress_tenant_tunnel_limit"));
+		assert_eq!(started.elapsed(), super::LIMIT_WAIT);
+		let counts = manager.counts.lock().unwrap();
+		assert!(
+			!counts.scopes.contains_key(&second.id),
+			"a refused wait leaves nothing behind"
+		);
+		assert!(counts.waiting.tenants.is_empty());
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn no_more_connections_wait_than_the_limit_allows_open() {
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let manager = Arc::new(super::TunnelManager::new(
+			receiver,
+			super::super::ProxyLimits::default(),
+		));
+		let one = limited(1);
+		let _held = manager.try_acquire(&one).unwrap();
+		let _waiting = tokio::spawn({
+			let manager = manager.clone();
+			let one = one.clone();
+			async move { manager.acquire(&one, super::LIMIT_WAIT).await.is_ok() }
+		});
+		tokio::task::yield_now().await;
+		let started = tokio::time::Instant::now();
+		assert_eq!(
+			manager.acquire(&one, super::LIMIT_WAIT).await.err(),
+			Some("egress_tunnel_limit")
+		);
+		assert_eq!(started.elapsed(), std::time::Duration::ZERO);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn waiting_connections_are_admitted_in_arrival_order() {
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let manager = Arc::new(super::TunnelManager::new(
+			receiver,
+			super::super::ProxyLimits::default(),
+		));
+		let two = limited(2);
+		let held = manager.try_acquire(&two).unwrap();
+		let _other = manager.try_acquire(&two).unwrap();
+		let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+		let mut waiters = Vec::new();
+		for n in 0..2 {
+			let manager = manager.clone();
+			let two = two.clone();
+			let order = order.clone();
+			waiters.push(tokio::spawn(async move {
+				let permit = manager.acquire(&two, super::LIMIT_WAIT).await;
+				order.lock().unwrap().push(n);
+				permit.map(|(permit, _)| permit)
+			}));
+			tokio::task::yield_now().await;
+		}
+		drop(held);
+		tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+		assert_eq!(*order.lock().unwrap(), vec![0]);
+		assert!(!waiters[1].is_finished());
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn a_stopping_gateway_ends_every_wait_at_once() {
+		let (stop, receiver) = tokio::sync::watch::channel(false);
+		let manager = Arc::new(super::TunnelManager::new(
+			receiver,
+			super::super::ProxyLimits::default(),
+		));
+		let one = limited(1);
+		let _held = manager.try_acquire(&one).unwrap();
+		let waiting = tokio::spawn({
+			let manager = manager.clone();
+			let one = one.clone();
+			async move { manager.acquire(&one, super::LIMIT_WAIT).await.err() }
+		});
+		tokio::task::yield_now().await;
+		let started = tokio::time::Instant::now();
+		stop.send(true).unwrap();
+		assert_eq!(waiting.await.unwrap(), Some("egress_tunnel_limit"));
+		assert_eq!(started.elapsed(), std::time::Duration::ZERO);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn a_limit_of_zero_refuses_without_waiting() {
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let manager = super::TunnelManager::new(receiver, super::super::ProxyLimits::default());
+		let started = tokio::time::Instant::now();
+		assert_eq!(
+			manager.acquire(&limited(0), super::LIMIT_WAIT).await.err(),
+			Some("egress_tunnel_limit")
+		);
+		assert_eq!(started.elapsed(), std::time::Duration::ZERO);
 	}
 
 	#[tokio::test(start_paused = true)]
@@ -1767,7 +2182,7 @@ mod tests {
 		let server = tokio::spawn(super::super::serve_with_scopes(
 			listener,
 			Arc::new(DenyLegacy),
-			Some(scopes),
+			Some(scopes.clone()),
 			super::super::ProxyLimits::default(),
 			receiver,
 		));
@@ -1777,6 +2192,20 @@ mod tests {
 		client.read_to_end(&mut response).await.unwrap();
 		assert!(response.starts_with(b"HTTP/1.1 429"));
 		assert!(String::from_utf8_lossy(&response).contains("egress_tunnel_limit"));
+		tokio::time::timeout(std::time::Duration::from_secs(3), async {
+			while scopes
+				.records()
+				.first()
+				.is_none_or(|record| record.outcome != "refused")
+			{
+				tokio::task::yield_now().await;
+			}
+		})
+		.await
+		.unwrap();
+		let record = &scopes.records()[0];
+		assert_eq!(record.error.as_deref(), Some("egress_tunnel_limit"));
+		assert!(record.wait_ms.is_some());
 		stop.send(true).unwrap();
 		server.await.unwrap().unwrap();
 	}
@@ -1863,6 +2292,11 @@ mod tests {
 		let records = scopes.records();
 		assert_eq!(records[0].host, "127.0.0.1");
 		assert_eq!(records[0].outcome, "refused");
+		assert_eq!(
+			records[0].error.as_deref(),
+			Some("egress_destination_forbidden")
+		);
+		assert_eq!(records[0].wait_ms, Some(0));
 		stop.send(true).unwrap();
 		gateway.await.unwrap().unwrap();
 	}
@@ -2083,10 +2517,12 @@ mod tests {
 						sent: Arc::new(super::AtomicU64::new(0)),
 						received: Arc::new(super::AtomicU64::new(0)),
 						outcome: "refused",
+						error: None,
+						wait_ms: None,
 						finished: false,
 						started_record: false,
 					};
-					let permit = Arc::new(manager.acquire(&settings).unwrap());
+					let permit = Arc::new(manager.try_acquire(&settings).unwrap());
 					let result = super::forward_http(
 						request,
 						url::Url::parse("http://test.invalid/private?secret=value").unwrap(),
@@ -2187,10 +2623,12 @@ mod tests {
 						sent: Arc::new(super::AtomicU64::new(0)),
 						received: Arc::new(super::AtomicU64::new(0)),
 						outcome: "refused",
+						error: None,
+						wait_ms: None,
 						finished: false,
 						started_record: false,
 					};
-					let permit = Arc::new(manager.acquire(&settings).unwrap());
+					let permit = Arc::new(manager.try_acquire(&settings).unwrap());
 					Ok::<_, Infallible>(
 						super::forward_http(
 							request,
@@ -2296,10 +2734,12 @@ mod tests {
 						sent: Arc::new(super::AtomicU64::new(0)),
 						received: Arc::new(super::AtomicU64::new(0)),
 						outcome: "refused",
+						error: None,
+						wait_ms: None,
 						finished: false,
 						started_record: false,
 					};
-					let permit = Arc::new(manager.acquire(&settings).unwrap());
+					let permit = Arc::new(manager.try_acquire(&settings).unwrap());
 					let upstream = tokio::net::TcpStream::connect(upstream_address)
 						.await
 						.unwrap();
@@ -2424,13 +2864,15 @@ mod tests {
 						sent: Arc::new(super::AtomicU64::new(0)),
 						received: Arc::new(super::AtomicU64::new(0)),
 						outcome: "refused",
+						error: None,
+						wait_ms: None,
 						finished: false,
 						started_record: false,
 					};
 					let upstream = tokio::net::TcpStream::connect(upstream_address)
 						.await
 						.unwrap();
-					let permit = Arc::new(manager.acquire(&settings).unwrap());
+					let permit = Arc::new(manager.try_acquire(&settings).unwrap());
 					Ok::<_, Infallible>(
 						super::connect_tunnel(
 							request,
@@ -2620,6 +3062,8 @@ mod tests {
 			sent: Arc::new(super::AtomicU64::new(0)),
 			received: Arc::new(super::AtomicU64::new(0)),
 			outcome: "refused",
+			error: None,
+			wait_ms: None,
 			finished: false,
 			started_record: false,
 		}
@@ -2648,7 +3092,7 @@ mod tests {
 				let addresses = addresses.clone();
 				async move {
 					let audit = audit_for(&manager, scopes.clone(), &settings);
-					let permit = Arc::new(manager.acquire(&settings).unwrap());
+					let permit = Arc::new(manager.try_acquire(&settings).unwrap());
 					let result = super::forward_http(
 						request,
 						url::Url::parse(&format!("http://{HOST}/private-path")).unwrap(),
@@ -2799,7 +3243,7 @@ mod tests {
 					let scopes: Arc<dyn EgressScopes> = scopes;
 					let mut audit = audit_for(&manager, scopes.clone(), &settings);
 					audit.started_record = true;
-					let permit = Arc::new(manager.acquire(&settings).unwrap());
+					let permit = Arc::new(manager.try_acquire(&settings).unwrap());
 					let upstream = tokio::net::TcpStream::connect(upstream_address)
 						.await
 						.unwrap();
@@ -3209,6 +3653,8 @@ mod tests {
 			received_bytes: 0,
 			duration_ms: 0,
 			outcome: "completed".into(),
+			error: None,
+			wait_ms: None,
 		}
 	}
 

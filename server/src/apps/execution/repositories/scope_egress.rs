@@ -467,6 +467,14 @@ impl EgressScopes for DurableScopes {
 				.received_bytes(i64::try_from(record.received_bytes).map_err(|_| Error::Forbidden)?)
 				.duration_ms(i64::try_from(record.duration_ms).map_err(|_| Error::Forbidden)?)
 				.outcome(record.outcome)
+				.error(record.error)
+				.wait_ms(
+					record
+						.wait_ms
+						.map(i64::try_from)
+						.transpose()
+						.map_err(|_| Error::Forbidden)?,
+				)
 				.created_at(
 					existing
 						.as_ref()

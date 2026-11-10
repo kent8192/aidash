@@ -923,7 +923,8 @@ pub async fn serve(
 	serve_with_scopes(listener, authority, None, ProxyLimits::default(), stopping).await
 }
 
-/// Per-instance proxy capacity. Tenant capacity must be lower than global capacity.
+/// Per-instance proxy capacity. Tenant capacity must be at least one Scratch
+/// Space's and lower than global capacity.
 #[derive(Clone, Copy, Debug)]
 pub struct ProxyLimits {
 	pub global_concurrent: usize,
@@ -933,7 +934,7 @@ impl Default for ProxyLimits {
 	fn default() -> Self {
 		Self {
 			global_concurrent: 1024,
-			tenant_concurrent: 32,
+			tenant_concurrent: 64,
 		}
 	}
 }
@@ -946,7 +947,7 @@ pub async fn serve_with_scopes(
 	limits: ProxyLimits,
 	mut stopping: watch::Receiver<bool>,
 ) -> crate::Result<()> {
-	if limits.tenant_concurrent == 0
+	if limits.tenant_concurrent < aidash_application::egress::TunnelLimits::default().concurrent
 		|| limits.tenant_concurrent >= limits.global_concurrent
 		|| limits.global_concurrent > tokio::sync::Semaphore::MAX_PERMITS
 	{

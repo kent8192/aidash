@@ -183,6 +183,8 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 		received_bytes: 0,
 		duration_ms: 0,
 		outcome: "interrupted".into(),
+		error: None,
+		wait_ms: None,
 	};
 	durable.record(connection.clone()).await.unwrap();
 	connection.sent_bytes = 7;
@@ -200,6 +202,29 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 		..connection.clone()
 	};
 	durable.record(invalid_target).await.unwrap();
+	let over_limit = ConnectionRecord {
+		id: Uuid::new_v4(),
+		outcome: "refused".into(),
+		error: Some("egress_tenant_tunnel_limit".into()),
+		wait_ms: Some(10_000),
+		..connection.clone()
+	};
+	durable.record(over_limit.clone()).await.unwrap();
+	let cause: (String, Option<String>, Option<i64>) = sqlx::query_as(
+		"SELECT outcome, error, wait_ms FROM egress_scope_connections WHERE id = $1",
+	)
+	.bind(over_limit.id)
+	.fetch_one(federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		cause,
+		(
+			"refused".into(),
+			Some("egress_tenant_tunnel_limit".into()),
+			Some(10_000)
+		)
+	);
 	let mut other = federation
 		.store
 		.pool
@@ -660,27 +685,32 @@ async fn a_real_listener_records_host_connections_in_the_database(
 	stop.send(true).unwrap();
 	gateway.await.unwrap().unwrap();
 
-	let records: Vec<(String, i32, String)> = sqlx::query_as(
-		"SELECT host, port, outcome FROM egress_scope_connections WHERE scope_id = $1 ORDER BY created_at",
+	let records: Vec<(String, i32, String, Option<String>)> = sqlx::query_as(
+		"SELECT host, port, outcome, error FROM egress_scope_connections WHERE scope_id = $1 ORDER BY created_at",
 	)
 	.bind(space)
 	.fetch_all(federation.store.pool.fixture_driver())
 	.await
 	.unwrap();
+	let invalid = |port| {
+		(
+			"registry.npmjs.org".to_owned(),
+			port,
+			"invalid_proxy_target".to_owned(),
+			Some("invalid_proxy_target".to_owned()),
+		)
+	};
 	assert_eq!(
 		records,
 		vec![
-			("not-allowed.example".to_owned(), 443, "refused".to_owned()),
 			(
-				"registry.npmjs.org".to_owned(),
-				22,
-				"invalid_proxy_target".to_owned()
+				"not-allowed.example".to_owned(),
+				443,
+				"refused".to_owned(),
+				Some("egress_host_forbidden".to_owned())
 			),
-			(
-				"registry.npmjs.org".to_owned(),
-				0,
-				"invalid_proxy_target".to_owned()
-			),
+			invalid(22),
+			invalid(0),
 		]
 	);
 }

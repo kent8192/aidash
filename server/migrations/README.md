@@ -767,6 +767,14 @@ operations (#752). A record holds them once its outcome settles, so a record tha
 never settled and a record older than this migration leave them null. The typed
 operations update the ORM snapshot, so no state-only checkpoint is needed.
 
+`execution/0123_scope_connection_causes` (after
+`execution/0122_invocation_refused_state`) adds the nullable `error` and
+`wait_ms` of `egress_scope_connections` with typed column operations (#845). A
+Host connection that did not complete records the code its client received, and
+every settled record holds how long it waited for a Host connection limit. Rows
+older than this migration leave both null. The typed operations update the ORM
+snapshot, so no state-only checkpoint is needed.
+
 ## Home ledger recovery eligibility (#434)
 
 `knowledge/0036_memory_recovery_eligibility` (after

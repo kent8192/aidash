@@ -96,6 +96,8 @@ pub fn credentials_match(expected: &str, provided: &str) -> bool {
 /// Limits for one gateway instance and scope tunnel.
 #[derive(Clone, Copy, Debug)]
 pub struct TunnelLimits {
+	/// Host connections one Scratch Space may have open at once. No setting
+	/// changes it, so a Tenant's own limit is checked against this default.
 	pub concurrent: usize,
 	pub idle_timeout: std::time::Duration,
 	pub max_lifetime: std::time::Duration,
@@ -103,7 +105,7 @@ pub struct TunnelLimits {
 impl Default for TunnelLimits {
 	fn default() -> Self {
 		Self {
-			concurrent: 64,
+			concurrent: 32,
 			idle_timeout: std::time::Duration::from_secs(300),
 			max_lifetime: std::time::Duration::from_secs(86400),
 		}
@@ -133,6 +135,10 @@ pub struct ConnectionRecord {
 	pub received_bytes: u64,
 	pub duration_ms: u64,
 	pub outcome: String,
+	/// The code the client received, for a connection that did not complete.
+	pub error: Option<String>,
+	/// How long it waited for a Host connection limit; `None` until known.
+	pub wait_ms: Option<u64>,
 }
 
 /// Supplies live Scratch Space authority to the durable egress adapter.
