@@ -2756,12 +2756,16 @@ impl Store {
 		max_input_tokens: usize,
 	) -> Result<()> {
 		let deployment = self.deployment.as_str();
+		let result_key = format!(
+			"{}{creator}:{key}",
+			aidash_domain::run_input::SUBNODE_RESULT_PREFIX
+		);
 		InputRecord::admit_from_run(
 			tx,
 			deployment,
 			creator,
 			member.id,
-			(&member.executor_subject(deployment), content, key),
+			(&member.executor_subject(deployment), content, &result_key),
 			max_input_tokens,
 		)
 		.await

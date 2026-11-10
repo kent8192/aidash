@@ -32,6 +32,8 @@ pub enum Source {
 	/// One exact Registry-declared context candidate, always data.
 	ContextSource,
 	RunMessageSummary,
+	/// A result returned by a Subnode member.
+	SubnodeResult,
 	ExecutionSummary,
 	Tool,
 	ModelMediaObservation,
@@ -70,6 +72,15 @@ impl Envelope {
 			trust: Trust::Data,
 			content,
 		}
+	}
+
+	pub fn subnode_result(sender: &str, seq: i64, content: Value) -> Self {
+		Self::data(
+			Source::SubnodeResult,
+			json!({"sender":sender}),
+			u64::try_from(seq).ok(),
+			content,
+		)
 	}
 
 	/// Canonical text of the envelope: typed field order, sorted JSON maps.

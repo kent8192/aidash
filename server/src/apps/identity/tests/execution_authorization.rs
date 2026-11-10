@@ -7695,6 +7695,7 @@ async fn subnode_creation_task_and_creator_cancellation_share_the_real_authority
 		.unwrap_or_else(|| panic!("member message: {inputs:?}"));
 	let member = child.executor_subject(f.config.deployment.as_str());
 	assert_eq!(input.sender, member);
+	assert_eq!(serde_json::to_value(input).unwrap()["is_data"], true);
 	// The creating Run's Workspace names the Agent and keeps the member's Run.
 	let home = f
 		.store

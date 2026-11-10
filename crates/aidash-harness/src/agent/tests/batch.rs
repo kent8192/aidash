@@ -289,6 +289,7 @@ impl Bench {
 				idempotency_key: format!("human:{seq}"),
 				message_id: None,
 				reference_only: false,
+				is_data: false,
 			});
 	}
 	fn refuse(&self, call: &str) {

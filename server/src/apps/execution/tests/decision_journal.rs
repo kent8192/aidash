@@ -1533,6 +1533,7 @@ async fn judge_call(
 		idempotency_key: "k1".into(),
 		message_id: None,
 		reference_only: false,
+		is_data: false,
 	}];
 	let definition = approval_definition(mode);
 	let boundary = Boundary {

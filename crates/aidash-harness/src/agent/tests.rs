@@ -342,6 +342,7 @@ impl Backend {
 			idempotency_key: id.to_string(),
 			message_id: Some(id),
 			reference_only: false,
+			is_data: false,
 		});
 	}
 	fn task_value(&self) -> Task {
@@ -4189,6 +4190,7 @@ fn run_message(fixture: &mut Fixture) {
 		idempotency_key: "input-2".into(),
 		message_id: Some(id),
 		reference_only: false,
+		is_data: false,
 	}]);
 	state.messages = vec![Message {
 		id,
@@ -4299,6 +4301,131 @@ async fn structured3_advertises_subnode_workspace_reads(mut fixture: Fixture) {
 /// The step state a Legacy request carries.
 fn step_state(request: &ModelRequest) -> Value {
 	serde_json::to_value(request).unwrap()["context"]["current"].clone()
+}
+
+#[rstest]
+#[case(ProjectionVersion::Legacy)]
+#[case(ProjectionVersion::Ordered)]
+#[case(ProjectionVersion::Native)]
+#[tokio::test]
+async fn subnode_results_reach_the_model_inside_a_data_envelope(
+	mut fixture: Fixture,
+	#[case] projection: ProjectionVersion,
+) {
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	run_message(&mut fixture);
+	let backend = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	backend.projection = projection;
+	let input = backend.inputs.get_mut().unwrap().first_mut().unwrap();
+	let mut value = serde_json::to_value(&*input).unwrap();
+	value["is_data"] = json!(true);
+	*input = serde_json::from_value(value).unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let state = match &requests[0].context {
+		ModelContext::Legacy(value) => value["current"].clone(),
+		ModelContext::Ordered(value) => serde_json::from_str(&value.volatile).unwrap(),
+		ModelContext::Native(value) => serde_json::from_str(&value.volatile).unwrap(),
+		_ => panic!("unexpected projection"),
+	};
+	assert_eq!(state["run_messages"][0]["trust"], "data");
+	assert_eq!(state["run_messages"][0]["source"], "subnode_result");
+	assert_eq!(
+		state["run_messages"][0]["content"]["content"],
+		"Also include the rollback steps."
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn summarized_subnode_results_remain_data_references(mut fixture: Fixture) {
+	run_message_catch_up(&mut fixture);
+	let backend = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	let input = backend.inputs.get_mut().unwrap().first_mut().unwrap();
+	let mut value = serde_json::to_value(&*input).unwrap();
+	value["is_data"] = json!(true);
+	*input = serde_json::from_value(value).unwrap();
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	advance_sources(&mut fixture).await.unwrap();
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let state = step_state(requests.last().unwrap());
+	assert_eq!(state["run_messages"][0]["trust"], "data");
+	assert_eq!(
+		state["run_messages"][0]["content"]["requires_workspace_read"],
+		false
+	);
+	assert!(
+		!state
+			.to_string()
+			.contains("Also include the rollback steps.")
+	);
+	drop(requests);
+	fixture.run.context.run_message_summary_seq = 2;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	advance_sources(&mut fixture).await.unwrap();
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let state = step_state(requests.last().unwrap());
+	assert_eq!(state["subnode_results"]["items"][0]["trust"], "data");
+	assert_eq!(
+		state["subnode_results"]["items"][0]["content"]["record"]["id"],
+		json!(Uuid::from_u128(0x20))
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn subnode_results_taken_in_by_media_remain_data_references(mut fixture: Fixture) {
+	run_message(&mut fixture);
+	let backend = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	let input = backend.inputs.get_mut().unwrap().first_mut().unwrap();
+	let mut value = serde_json::to_value(&*input).unwrap();
+	value["is_data"] = json!(true);
+	*input = serde_json::from_value(value).unwrap();
+	fixture.run.state = RunState::Thinking(ThinkingState {
+		media_intake_through_seq: Some(2),
+		..ThinkingState::default()
+	});
+	advance_sources(&mut fixture).await.unwrap();
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let state = step_state(requests.last().unwrap());
+	assert_eq!(state["subnode_results"]["items"][0]["trust"], "data");
+	assert_eq!(
+		state["subnode_results"]["items"][0]["content"]["record"]["id"],
+		json!(Uuid::from_u128(0x20))
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn old_subnode_result_references_are_bounded_and_remain_discoverable(mut fixture: Fixture) {
+	let backend = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	*backend.inputs.get_mut().unwrap() = (1..=500)
+		.map(|seq| RunInput {
+			seq,
+			sender: "member".into(),
+			content: "result".into(),
+			idempotency_key: format!("result-{seq}"),
+			message_id: Some(Uuid::from_u128(seq as u128)),
+			reference_only: false,
+			is_data: true,
+		})
+		.collect();
+	fixture.run.context.run_message_summary_seq = 500;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	advance_sources(&mut fixture).await.unwrap();
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let state = step_state(requests.last().unwrap());
+	let results = &state["subnode_results"];
+	assert_eq!(results["older_available"], true);
+	let items = results["items"].as_array().unwrap();
+	assert!(!items.is_empty() && items.len() < 500);
+	assert_eq!(items.last().unwrap()["content"]["seq"], 500);
+	assert!(
+		results["instruction"]
+			.as_str()
+			.unwrap()
+			.contains("workspace_observe")
+	);
 }
 
 #[rstest]
@@ -6407,6 +6534,7 @@ async fn catch_up_requests(mut fixture: Fixture) -> (ModelRequest, ModelRequest)
 		idempotency_key: "input-2".into(),
 		message_id: Some(Uuid::from_u128(0x22)),
 		reference_only: false,
+		is_data: false,
 	}];
 	// An earlier summarized page puts the next accepted input into catch-up.
 	fixture.run.context.run_message_summary_seq = 1;
