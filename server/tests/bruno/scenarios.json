@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 403,
+  "endpoint_count": 405,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -17746,6 +17746,75 @@
         "Rejected input preserves committed workspace state",
         "Exact HTTP 401",
         "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1606 tenant-memory-scope - Anonymous request is rejected",
+      "file": "contracts/1606-tenant-memory-scope.bru",
+      "endpoint": "GET /api/tenants/{tenant}/memory-scope",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1607 tenant-memory-scope - Malformed bearer syntax is rejected",
+      "file": "contracts/1607-tenant-memory-scope.bru",
+      "endpoint": "GET /api/tenants/{tenant}/memory-scope",
+      "scenario": "Malformed bearer syntax is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1608 tenant-memory-scope - Deployment Administrator has no Tenant authority",
+      "file": "contracts/1608-tenant-memory-scope.bru",
+      "endpoint": "GET /api/tenants/{tenant}/memory-scope",
+      "scenario": "Deployment Administrator has no Tenant authority",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1609 tenant-memory-scope-update - Anonymous request is rejected",
+      "file": "contracts/1609-tenant-memory-scope-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/memory-scope",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1610 tenant-memory-scope-update - Wrong JSON media type is rejected",
+      "file": "contracts/1610-tenant-memory-scope-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/memory-scope",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1611 tenant-memory-scope-update - Malformed JSON cannot reach the use case",
+      "file": "contracts/1611-tenant-memory-scope-update.bru",
+      "endpoint": "PUT /api/tenants/{tenant}/memory-scope",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     }
   ]
