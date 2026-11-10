@@ -136,6 +136,32 @@ pub fn legacy_workspace_entries(
 	Ok(entries)
 }
 
+/// The declarations deployed before Journal ranges were added to these tools.
+pub fn legacy_journal_entries(validation: &DefinitionValidation, node: &str) -> Result<Vec<Entry>> {
+	let mut old = entries(validation, node)?
+		.into_iter()
+		.filter(|entry| {
+			matches!(
+				entry.id.as_str(),
+				"aidash.memory_mutate" | "aidash.subnode_task"
+			)
+		})
+		.collect::<Vec<_>>();
+	for entry in &mut old {
+		entry.version = "1.0.0".into();
+		entry.schema = match entry.id.as_str() {
+			"aidash.memory_mutate" => {
+				serde_json::from_str(include_str!("system/legacy/memory_mutate_1_0_0.json"))?
+			}
+			"aidash.subnode_task" => {
+				json!({"type":"object","required":["subnode_id","title","request"],"properties":{"subnode_id":{"type":"string"},"title":{"type":"string"},"request":{"type":"string"}},"additionalProperties":false})
+			}
+			_ => unreachable!(),
+		};
+	}
+	Ok(old)
+}
+
 /// Every definition the Node declares to every Tenant's Registry: the built-in
 /// tools and the approval Decider. Unlike a tool, the Decider needs a Tenant's
 /// Catalog Approval before anything may use it.
@@ -145,6 +171,19 @@ pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec
 	declared.push(aidash_domain::registry::bindings::source_defaults::workspace_observation()?);
 	declared.extend(aidash_domain::registry::bindings::memory_defaults::definitions()?);
 	Ok(declared)
+}
+
+/// Resolve a pinned system definition, including versions no longer listed.
+pub fn pinned_declaration(
+	validation: &DefinitionValidation,
+	node: &str,
+	reference: &aidash_domain::registry::EntityRef,
+) -> Result<Option<Entry>> {
+	Ok(declarations(validation, node)?
+		.into_iter()
+		.chain(legacy_workspace_entries(validation, node)?)
+		.chain(legacy_journal_entries(validation, node)?)
+		.find(|entry| entry.id == reference.id && entry.version == reference.version))
 }
 
 /// The built-in approval Decider. Its Routes follow ADR 0042's addendum: Jev
@@ -228,6 +267,7 @@ pub async fn seed(
 	for entry in entries(validation, node)?
 		.into_iter()
 		.chain(legacy_workspace_entries(validation, node)?)
+		.chain(legacy_journal_entries(validation, node)?)
 		.chain(offered)
 		.chain(deciders)
 		.chain(aidash_domain::registry::bindings::memory_defaults::definitions()?)
@@ -284,7 +324,10 @@ pub fn builtin_reference(reference: &aidash_domain::registry::EntityRef) -> bool
 		return true;
 	}
 	(reference.version == "1.0.0"
-		|| (reference.id == "aidash.workspace_read" && reference.version == "1.1.0")
+		|| (matches!(
+			reference.id.as_str(),
+			"aidash.workspace_read" | "aidash.memory_mutate" | "aidash.subnode_task"
+		) && reference.version == "1.1.0")
 		|| (reference.version == "1.0.1"
 			&& matches!(
 				reference.id.as_str(),
