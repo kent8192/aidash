@@ -148,7 +148,12 @@ function frame(
       typeof value.title !== "string"
     )
       continue;
-    if (!["COMPLETED", "FAILED"].includes(value.status)) continue;
+    const windowed = data.tasks.find((task) => task.id === value.id);
+    if (
+      windowed &&
+      (typeof value.revision !== "number" || value.revision < windowed.revision)
+    )
+      continue;
     const scope = JSON.stringify([data.deployment.id, event.workspace_id]);
     if (!scopes.includes(scope)) scopes.push(scope);
     const key = JSON.stringify([data.deployment.id, "task", value.id]);
@@ -160,7 +165,12 @@ function frame(
       eventScope,
       eventSequence: event.sequence,
       signature: `${value.revision}:${value.status}`,
-      kind: value.status === "FAILED" ? "failed" : "completed",
+      kind:
+        value.status === "FAILED"
+          ? "failed"
+          : value.status === "COMPLETED"
+            ? "completed"
+            : null,
       detail: value.title.slice(0, 180),
       workspaceTitle:
         data.workspaces.find((workspace) => workspace.id === event.workspace_id)
@@ -173,11 +183,7 @@ function frame(
       },
     };
     if (prior < 0) entries.push(entry);
-    else if (
-      entries[prior].eventId ||
-      entries[prior].signature === entry.signature
-    )
-      entries[prior] = entry;
+    else entries[prior] = entry;
   }
   const requests = data.human_requests.map((request) => ({
     request,
