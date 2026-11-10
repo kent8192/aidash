@@ -26,6 +26,7 @@ class JournalManifestTest(unittest.TestCase):
         mounts = {item["mountPath"]: item for item in worker["volumeMounts"]}
         self.assertTrue(mounts["/work"]["readOnly"])
         self.assertTrue(mounts["/references"]["readOnly"])
+        self.assertTrue(mounts["/journal"]["readOnly"])
         self.assertFalse(mounts["/tmp"].get("readOnly", False))
         self.assertFalse(pod["hostNetwork"])
         self.assertEqual(pod["dnsConfig"]["nameservers"], ["127.0.0.1"])
