@@ -407,10 +407,16 @@ class Runner(AllocationJournal):
         return json.loads(self.kube(arguments, data).stdout)
 
     def ensure_network_policy(self):
+        journal = {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
+                   "metadata": {"name": "aidash-journal-deny", "namespace": self.config["namespace"]},
+                   "spec": {"podSelector": {"matchLabels": {"aidash-sandbox": "true", "aidash-journal": "true"}},
+                            "policyTypes": ["Ingress", "Egress"], "ingress": [], "egress": []}}
+        self.kube(["apply", "-f", "-"], json.dumps(journal).encode())
         policy = {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
                   "metadata": {"name": "aidash-deny", "namespace": self.config["namespace"]},
                   "spec": {"podSelector": {"matchLabels": {"aidash-sandbox": "true"},
-                                           "matchExpressions": [{"key": "aidash-v2", "operator": "DoesNotExist"}]},
+                                           "matchExpressions": [{"key": "aidash-v2", "operator": "DoesNotExist"},
+                                                                {"key": "aidash-journal", "operator": "DoesNotExist"}]},
                            "policyTypes": ["Ingress", "Egress"], "ingress": [], "egress": []}}
         settings = self.config.get('egress')
         if settings:
@@ -825,9 +831,12 @@ class Runner(AllocationJournal):
             ("temp", profile["temporary_bytes"]), ("control-temp", profile["output_bytes"] * 4 + 1048576))]
         if record["request"]["kind"] == "journal":
             volumes.append({"name": "journal", "emptyDir": {"medium": "Memory", "sizeLimit": str(2 * profile["working_bytes"])}})
+        labels = {"aidash-sandbox": "true", "aidash-area": record["area_id"]}
+        if record["request"]["kind"] == "journal":
+            labels["aidash-journal"] = "true"
         return {"apiVersion": "v1", "kind": "Pod", "metadata": {"name": self.pod_name(record["operation_id"]),
                 "finalizers": [] if record.get("admission_probe") else [FINALIZER],
-                "labels": {"aidash-sandbox": "true", "aidash-area": record["area_id"]}, "annotations": {"aidash/digest": record["wire_digest"],
+                "labels": labels, "annotations": {"aidash/digest": record["wire_digest"],
                 "aidash/epoch": str(record["epoch"]), "aidash/area": record["area_id"]}},
                 "spec": {"runtimeClassName": profile["runtime_class"], "restartPolicy": "Never",
                          "resources": {"limits": {"cpu":str(profile['cpu']), "memory":str(profile['memory_bytes'])}},

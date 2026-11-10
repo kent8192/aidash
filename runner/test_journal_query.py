@@ -22,6 +22,7 @@ class JournalManifestTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             manifest = fixture.runner(root).manifest(fixture.record("journal"))
         pod = manifest["spec"]
+        self.assertEqual(manifest["metadata"]["labels"]["aidash-journal"], "true")
         worker = pod["containers"][0]
         mounts = {item["mountPath"]: item for item in worker["volumeMounts"]}
         self.assertTrue(mounts["/work"]["readOnly"])
