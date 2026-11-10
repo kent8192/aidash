@@ -791,6 +791,8 @@ the single Knowledge head, and no schema or model state is overwritten.
 
 `registry/0063_reference_set_limit` raises the most Reference files one Source can bind from 8 to 256 in the PostgreSQL context validator. The function body uses SQL assets because Reinhardt has no typed operation for replacing PostgreSQL functions. Reversal refuses while a Source or a Run snapshot holds more than 8.
 
+`registry/0064_journal_tools` admits the built-in Journal descriptors while preserving the existing descriptor validation. PostgreSQL function DDL requires SQL assets. Reversal refuses while Journal definitions remain.
+
 ## Run control provenance and Safety Stops (#485, ADR 0101)
 
 `execution/0075_run_control_provenance` (after `execution/0074_federated_preview_authority`)
