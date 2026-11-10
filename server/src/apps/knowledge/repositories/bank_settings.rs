@@ -1,6 +1,31 @@
 //! A bank pins its Registry policy; callers cannot substitute larger read/storage caps.
 //! A keyword-only policy needs no Workspace index. Switching a nonempty indexed
 //! bank to keyword-only is refused until its old projections have been retired.
+//! The canonical built-in provider uses PostgreSQL keyword, temporal and link
+//! search without a semantic index or recovery ledger. Its ordinary database
+//! backup/restore has no independent anti-rollback fence; every read still checks
+//! current source authority. Explicit providers retain the recovery fence.
+//! The default bounds are 64 live Units, 32 candidates, 8 recall results,
+//! 8192 bytes per Unit, 16384 input bytes, 16 entities/evidence/links per Unit,
+//! 3 graph hops, 64 graph visits, and 8192 context tokens. A model operation
+//! has at most 4 calls, 16384 tokens, 1,000,000 microcurrency, 2 retries, and
+//! 30 seconds per call. Oldest eligible Units are evicted at the live cap;
+//! Units that the current Run cannot read are protected from its eviction, so
+//! admission fails if too few Units are eligible. Facts whose Journal ranges
+//! have expired are retained but cannot be recalled: the range is needed to
+//! recheck Research expiry and revocation as well as Run read authority.
+//! 4096 retained identities and 4096 model/receipt records remain separate
+//! finite limits. Unit ages are unlimited; candidates, history and model
+//! results retain 30 days, backups 7 days, with 8 history versions and purge
+//! batches of 128, due after 3600 seconds. A Journal range has at most 10,000
+//! entries. Tenant-wide initial recall examines at most 256 banks and returns
+//! at most 8 results in 1024 UTF-8-bounded tokens; a larger bank inventory is
+//! reported unavailable instead of being truncated. Tenant-wide tool recall
+//! uses the same bank and result limits; reflection remains Workspace-scoped.
+//! Cross-Workspace records must have exclusively Journal-range provenance
+//! from the same Agent, including every leaf of derived observations.
+//! These bounds are for the
+//! canonical built-in version; explicit providers retain their own policies.
 use super::{access::Lease, native_memory::bank_id};
 use crate::{Error, Result, database::native};
 use aidash_domain::{memory::Bank, registry::EntityRef};
@@ -39,6 +64,14 @@ pub(crate) async fn get(lease: &mut Lease<'_>, bank: &Bank) -> Result<Option<Set
 		})
 	})
 	.transpose()
+}
+
+pub(crate) async fn is_builtin(lease: &mut Lease<'_>, bank: &Bank) -> Result<bool> {
+	use aidash_domain::registry::bindings::memory_defaults;
+	Ok(get(lease, bank).await?.is_some_and(|settings| {
+		settings.provider.id == memory_defaults::MEMORY_ID
+			&& settings.provider.version == memory_defaults::VERSION
+	}))
 }
 pub(crate) async fn ensure(
 	lease: &mut Lease<'_>,

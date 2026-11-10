@@ -1247,6 +1247,112 @@ impl<'a> Environment<'a> {
 
 #[async_trait]
 impl ExecutionEnvironment for Environment<'_> {
+	async fn run_start_memory(&self, run: &Run, task: &Task) -> Result<Option<StartMemory>> {
+		let builtin = run
+			.context
+			.binding_snapshot
+			.as_ref()
+			.is_some_and(|snapshot| {
+				snapshot.bindings.iter().any(|binding| {
+					binding.excluded_reason.is_none()
+						&& binding.identity.id
+							== aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+						&& binding.identity.version
+							== aidash_domain::registry::bindings::memory_defaults::VERSION
+				})
+			});
+		if !builtin {
+			return Ok(None);
+		}
+		let mut text = format!("{}\n{}", task.title, task.description);
+		if text.len() > 8192 {
+			let mut end = 8192;
+			while !text.is_char_boundary(end) {
+				end -= 1;
+			}
+			text.truncate(end);
+		}
+		if text.trim().is_empty() {
+			return Ok(Some(StartMemory {
+				sources: vec![],
+				content: serde_json::json!({"status":"empty"}),
+			}));
+		}
+		let query = aidash_domain::memory::RecallQuery {
+			text,
+			time: None,
+			kinds: vec![],
+			max_tokens: 1024,
+		};
+		let outcome = if let Some(authority) = self
+			.authority
+			.as_ref()
+			.and_then(|authority| authority.guard.local_authority())
+		{
+			authority
+				.memory_start_recall(&self.federation.store, run, query)
+				.await
+		} else {
+			let mut lease = crate::semantic::service::Lease::within(
+				&self.federation.store,
+				&self.run_store.scope,
+			)
+			.await?;
+			let result = crate::semantic::native_memory::run_start_recall(
+				&self.federation.store,
+				&mut lease,
+				run,
+				query,
+			)
+			.await;
+			lease.finish(result).await
+		};
+		let outcome = outcome.map_err(aidash_application::Error::from)?;
+		let sources = match &outcome {
+			crate::semantic::native_memory::Outcome::Recall(
+				aidash_domain::memory::Recall::Ready { units },
+			) => units
+				.iter()
+				.map(aidash_domain::memory::Unit::evidence)
+				.collect(),
+			_ => vec![],
+		};
+		Ok(Some(StartMemory {
+			sources,
+			content: serde_json::to_value(outcome)?,
+		}))
+	}
+
+	async fn hydrate_start_memory(
+		&self,
+		run: &Run,
+		sources: &[aidash_domain::memory::Evidence],
+	) -> Result<Value> {
+		let result = if let Some(authority) = self
+			.authority
+			.as_ref()
+			.and_then(|authority| authority.guard.local_authority())
+		{
+			authority
+				.memory_hydrate(&self.federation.store, run, sources)
+				.await
+		} else {
+			let mut lease = crate::semantic::service::Lease::within(
+				&self.federation.store,
+				&self.run_store.scope,
+			)
+			.await?;
+			let result = crate::semantic::native_memory::run_hydrate(
+				&self.federation.store,
+				&mut lease,
+				run,
+				sources,
+			)
+			.await;
+			lease.finish(result).await
+		};
+		result.map_err(Into::into)
+	}
 	fn context_source_plan(&self, run: &Run) -> Result<Vec<PlannedContextSource>> {
 		self.native_context_source_plan(run)
 	}

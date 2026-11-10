@@ -12,6 +12,74 @@ use reinhardt::query::{
 };
 use serde_json::{Value, json};
 
+/// Load only the offloaded Journal range under the Run's live authority.
+pub(crate) async fn offloaded_range(
+	lease: &mut Lease<'_>,
+	bank: &Bank,
+	proof: &Evidence,
+	bounds: &Bounds,
+) -> Result<String> {
+	let Evidence::JournalRange {
+		run_id,
+		from_seq,
+		through_seq,
+	} = proof
+	else {
+		return Err(Error::Invalid(
+			"offload extraction requires a Journal range".into(),
+		));
+	};
+	units::current(
+		lease,
+		bank.workspace,
+		std::slice::from_ref(proof),
+		bounds.max_graph_visits,
+	)
+	.await?;
+	let from = i64::try_from(*from_seq)
+		.map_err(|_| Error::Invalid("Journal range exceeds storage bounds".into()))?;
+	let through = i64::try_from(*through_seq)
+		.map_err(|_| Error::Invalid("Journal range exceeds storage bounds".into()))?;
+	let events = native::query(
+		&Query::select()
+			.columns(["seq", "event"].map(Alias::new))
+			.from(Alias::new(
+				crate::apps::execution::repositories::context_journal::EVENTS,
+			))
+			.and_where(Expr::col("run_id").eq(Expr::value(*run_id)))
+			.and_where(Expr::col("seq").gte(Expr::value(from)))
+			.and_where(Expr::col("seq").lte(Expr::value(through)))
+			.order_by(Alias::new("seq"), Order::Asc)
+			.lock(LockType::Share)
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(&mut **lease.tx())
+	.await?;
+	let mut entries = Vec::with_capacity(events.len());
+	for row in events {
+		let seq: i64 = row.try_get("seq")?;
+		let event: Value = row.try_get("event")?;
+		entries.push(aidash_domain::context::HistoryEntry::new(
+			u64::try_from(seq).map_err(|_| Error::Invalid("negative Journal sequence".into()))?,
+			serde_json::from_value(event)?,
+		));
+	}
+	crate::apps::execution::repositories::research::resolve_entries(
+		lease.tx().as_mut(),
+		*run_id,
+		&mut entries,
+	)
+	.await?;
+	let values: Vec<_> = entries.into_iter().map(|entry| entry.event).collect();
+	let text = serde_json::to_string(&values)?;
+	if text.len() > bounds.max_input_bytes {
+		return Err(Error::Invalid(
+			"offloaded Journal range exceeds memory input bound".into(),
+		));
+	}
+	Ok(text)
+}
+
 pub(crate) async fn input(
 	lease: &mut Lease<'_>,
 	bank: &Bank,

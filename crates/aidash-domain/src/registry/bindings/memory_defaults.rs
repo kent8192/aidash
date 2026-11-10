@@ -107,8 +107,8 @@ pub fn definitions() -> Result<Vec<Entry>> {
 			max_retries: 2,
 			max_call_seconds: 30,
 		},
-		learn_from_runs: false,
-		maintain_observations: false,
+		learn_from_runs: true,
+		maintain_observations: true,
 		refresh_mental_models: false,
 	};
 	policy.validate()?;

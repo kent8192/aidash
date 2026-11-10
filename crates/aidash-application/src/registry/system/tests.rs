@@ -444,6 +444,20 @@ fn builtin_memory_definitions_pin_agent_roles_and_no_embedding() {
 	};
 	let definitions = memory_defaults::definitions().unwrap();
 	assert_eq!(definitions.len(), 3);
+	assert_eq!(
+		serde_json::from_value::<aidash_domain::memory::RerankerConfig>(
+			definitions[0].config.clone()
+		)
+		.unwrap(),
+		aidash_domain::memory::RerankerConfig::Rrf
+	);
+	assert_eq!(
+		serde_json::from_value::<aidash_domain::memory::TokenizerConfig>(
+			definitions[1].config.clone()
+		)
+		.unwrap(),
+		aidash_domain::memory::TokenizerConfig::Utf8UpperBound
+	);
 	for entry in &definitions {
 		assert!(is_builtin(entry));
 		assert!(builtin_reference(&EntityRef {
@@ -461,4 +475,6 @@ fn builtin_memory_definitions_pin_agent_roles_and_no_embedding() {
 	assert_eq!(provider.policy.reflection, RoleModel::AgentModel);
 	assert!(provider.policy.embedding.is_none());
 	assert_eq!(provider.policy.bounds.max_units, 64);
+	assert!(provider.policy.learn_from_runs);
+	assert!(provider.policy.maintain_observations);
 }

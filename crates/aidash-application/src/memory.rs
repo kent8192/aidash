@@ -186,26 +186,46 @@ impl Engine<'_> {
 		if !self.policy.learn_from_runs {
 			return Err(Error::Forbidden);
 		}
-		if !matches!(run, Evidence::Run { .. }) || !evidence.contains(run) {
+		let builtin = self.provider.id
+			== aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+			&& self.provider.version == aidash_domain::registry::bindings::memory_defaults::VERSION;
+		if !(if builtin {
+			matches!(run, Evidence::JournalRange { .. })
+		} else {
+			matches!(run, Evidence::Run { .. })
+		}) || !evidence.contains(run)
+		{
 			return Err(Error::Invalid(
-				"Run learning needs durable complete Run evidence".into(),
+				"Run learning needs matching durable Run or Journal evidence".into(),
 			));
 		}
 		scope
-			.authorize(bank, self.provider, "memory.candidate.propose")
+			.authorize(
+				bank,
+				self.provider,
+				if builtin {
+					"memory.write"
+				} else {
+					"memory.candidate.propose"
+				},
+			)
 			.await?;
 		scope.current(bank, evidence).await?;
 		let extracted = self
 			.extract(
 				text,
 				evidence,
-				extraction::Mode::RunCandidate,
+				if builtin {
+					extraction::Mode::OffloadedRange
+				} else {
+					extraction::Mode::RunCandidate
+				},
 				&mut Budget::new(&self.policy.bounds),
 			)
 			.await?;
 		if !extracted.causal.is_empty() {
 			return Err(Error::Invalid(
-				"Run candidates cannot bind causal links to unadmitted batch identities".into(),
+				"Run extraction cannot bind causal links to unadmitted batch identities".into(),
 			));
 		}
 		scope
@@ -403,7 +423,7 @@ impl Engine<'_> {
 			)
 			.await?;
 		budget.charge(result.usage)?;
-		let content = result.output;
+		let mut content = result.output;
 		content.validate(&self.policy.bounds)?;
 		if content.kind != kind
 			|| content.mental_model.as_ref() != mental_model
@@ -415,6 +435,11 @@ impl Engine<'_> {
 					!= evidence.iter().collect::<BTreeSet<_>>())
 		{
 			return Err(Error::Invalid("derived memory invented support".into()));
+		}
+		if self.provider.id == aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+			&& self.provider.version == aidash_domain::registry::bindings::memory_defaults::VERSION
+		{
+			content.verification = Verification::Recorded;
 		}
 		let mut publication = mutation.clone();
 		match &mut publication.changes[0] {

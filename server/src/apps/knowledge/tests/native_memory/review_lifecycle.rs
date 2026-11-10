@@ -3,6 +3,402 @@ use super::*;
 use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_server::database::native;
 
+async fn journal_proof(store: &Store, workspace: Uuid) -> Evidence {
+	let participant = memory::create_participant(
+		store,
+		&administrator(store).await,
+		workspace,
+		memory::CreateParticipant {
+			agent: reference("a"),
+		},
+	)
+	.await
+	.unwrap();
+	let (visibility, run) = super::policy_bounds::recorded_run(store, &participant.bank, &[]).await;
+	assert!(super::policy_bounds::run_visible(&visibility, store, run).await);
+	let event = json!({"source":"journal fixture"});
+	let digest = aidash_domain::registry::rules::digest(&event);
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	native::query(
+		&Query::insert()
+			.into_table(Alias::new("run_context_events"))
+			.columns(["run_id", "seq", "origin", "event", "digest", "tenant"].map(Alias::new))
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(run))
+					.expr(Expr::value(1_i64))
+					.expr(Expr::value("appended"))
+					.expr(Expr::value(event))
+					.expr(Expr::value(digest))
+					.expr(Expr::value("acme"))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+	Evidence::JournalRange {
+		run_id: run,
+		from_seq: 1,
+		through_seq: 1,
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn builtin_only_banks_do_not_prevent_initializing_a_recovery_ledger(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	let database = database.await;
+	let (store, _, workspace) = setup(&database, bounds).await;
+	let bank = Bank {
+		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+			.to_string(),
+		tenant: "acme".into(),
+		workspace,
+		participant: None,
+	};
+	memory::operate(
+		&store,
+		&administrator(&store).await,
+		memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider: reference("aidash.memory"),
+			bank,
+			action: memory::Action::ConfigureBank {
+				expected_revision: 0,
+			},
+		},
+	)
+	.await
+	.unwrap();
+	let without_ledger = Store::from_pool(
+		database.connection.clone().into_postgres().unwrap(),
+		store.deployment.clone(),
+	)
+	.await
+	.unwrap();
+	let directory = tempfile::tempdir().unwrap();
+	aidash_server::semantic::services::memory_recovery::initialize(
+		&without_ledger,
+		directory.path().to_owned(),
+	)
+	.await
+	.unwrap();
+}
+
+#[rstest]
+#[tokio::test]
+async fn journal_evidence_requires_current_run_read_authority(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	let database = database.await;
+	let (store, _, workspace) = setup(&database, bounds).await;
+	let participant = memory::create_participant(
+		&store,
+		&administrator(&store).await,
+		workspace,
+		memory::CreateParticipant {
+			agent: reference("a"),
+		},
+	)
+	.await
+	.unwrap();
+	let bank = participant.bank;
+	let (_, run) = super::policy_bounds::recorded_run(&store, &bank, &[]).await;
+	let event = json!({"source":"journal fixture"});
+	let digest = aidash_domain::registry::rules::digest(&event);
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	native::query(
+		&Query::insert()
+			.into_table(Alias::new("run_context_events"))
+			.columns(["run_id", "seq", "origin", "event", "digest", "tenant"].map(Alias::new))
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(run))
+					.expr(Expr::value(1_i64))
+					.expr(Expr::value("appended"))
+					.expr(Expr::value(event))
+					.expr(Expr::value(digest))
+					.expr(Expr::value("acme"))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+	let actor = administrator(&store).await;
+	let mut fact = content("Journal-supported fact");
+	fact.evidence = vec![Evidence::JournalRange {
+		run_id: run,
+		from_seq: 1,
+		through_seq: 1,
+	}];
+	let id = Uuid::now_v7();
+	memory::mutate(
+		&store,
+		&actor,
+		mutation(&bank, Change::Add { id, content: fact }),
+	)
+	.await
+	.unwrap();
+	let read = || memory::ReadBank {
+		provider: reference("p"),
+		bank: bank.clone(),
+	};
+	assert!(
+		memory::list(&store, &actor, read())
+			.await
+			.unwrap()
+			.iter()
+			.any(|unit| unit.id == id)
+	);
+	aidash_server::authorization::Authorization { pool: store.pool.clone() }.replace("acme", 2,
+		serde_json::from_value(json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[
+			{"id":"read","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},
+			{"id":"hide-runs","effect":"deny","subjects":{"any":true},"actions":["run.read"],"resources":{"kinds":["*"]}}
+		]})).unwrap(), "deployment_administrator").await.unwrap();
+	assert!(
+		memory::list(&store, &actor, read())
+			.await
+			.unwrap()
+			.is_empty()
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn builtin_evicts_oldest_units_when_the_live_cap_is_reached(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	let database = database.await;
+	let (store, _, workspace) = setup(&database, bounds).await;
+	let proof = journal_proof(&store, workspace).await;
+	let bank = Bank {
+		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+			.to_string(),
+		tenant: "acme".into(),
+		workspace,
+		participant: None,
+	};
+	let provider = reference("aidash.memory");
+	let actor = administrator(&store).await;
+	memory::operate(
+		&store,
+		&actor,
+		memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider: provider.clone(),
+			bank: bank.clone(),
+			action: memory::Action::ConfigureBank {
+				expected_revision: 0,
+			},
+		},
+	)
+	.await
+	.unwrap();
+	let ids: Vec<_> = (0..65).map(|_| Uuid::now_v7()).collect();
+	for chunk in ids[..64].chunks(32) {
+		memory::mutate(
+			&store,
+			&actor,
+			Mutation {
+				operation_id: Uuid::now_v7(),
+				provider: provider.clone(),
+				bank: bank.clone(),
+				changes: chunk
+					.iter()
+					.map(|id| {
+						let mut fact = content(&format!("Fact {id}"));
+						fact.evidence = vec![proof.clone()];
+						Change::Add {
+							id: *id,
+							content: fact,
+						}
+					})
+					.collect(),
+			},
+		)
+		.await
+		.unwrap();
+	}
+	let oldest: Uuid = native::query_scalar(
+		&Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("memory_units"))
+			.and_where(Expr::col("deleted").eq(false))
+			.order_by(Alias::new("updated_at"), reinhardt::query::Order::Asc)
+			.order_by(Alias::new("id"), reinhardt::query::Order::Asc)
+			.limit(1)
+			.to_string(PostgresQueryBuilder),
+	)
+	.scalar_one(store.pool.in_scope(&TEST_FIXTURE))
+	.await
+	.unwrap();
+	memory::mutate(
+		&store,
+		&actor,
+		Mutation {
+			operation_id: Uuid::now_v7(),
+			provider: provider.clone(),
+			bank: bank.clone(),
+			changes: vec![Change::Add {
+				id: ids[64],
+				content: {
+					let mut fact = content("newest fact");
+					fact.evidence = vec![proof];
+					fact
+				},
+			}],
+		},
+	)
+	.await
+	.unwrap();
+	let units = memory::list(
+		&store,
+		&actor,
+		memory::ReadBank {
+			provider: provider.clone(),
+			bank: bank.clone(),
+		},
+	)
+	.await
+	.unwrap();
+	assert_eq!(units.len(), 64);
+	assert!(units.iter().any(|unit| unit.id == ids[64]));
+	assert!(!units.iter().any(|unit| unit.id == oldest));
+	let recall = memory::operate(
+		&store,
+		&actor,
+		memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider,
+			bank,
+			action: memory::Action::Recall {
+				query: RecallQuery {
+					text: "newest".into(),
+					time: None,
+					kinds: vec![],
+					max_tokens: 8192,
+				},
+			},
+		},
+	)
+	.await
+	.unwrap();
+	let memory::Outcome::Recall(Recall::Ready { units }) = recall else {
+		panic!("expected recall at capacity")
+	};
+	assert!(units.iter().any(|unit| unit.id == ids[64]));
+}
+
+#[rstest]
+#[tokio::test]
+async fn builtin_keyword_bank_serves_without_a_recovery_ledger(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+) {
+	let database = database.await;
+	let (store, _, workspace) = setup(&database, bounds).await;
+	let proof = journal_proof(&store, workspace).await;
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	for table in ["semantic_collections", "semantic_indexes"] {
+		native::query(
+			&Query::delete()
+				.from_table(Alias::new(table))
+				.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	}
+	tx.commit().await.unwrap();
+	let bank = Bank {
+		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+			.to_string(),
+		tenant: "acme".into(),
+		workspace,
+		participant: None,
+	};
+	let provider = reference("aidash.memory");
+	let actor = administrator(&store).await;
+	// A fresh Store has no attached recovery ledger, as on the default deployment.
+	let without_ledger = Store::from_pool(
+		database.connection.clone().into_postgres().unwrap(),
+		store.deployment.clone(),
+	)
+	.await
+	.unwrap();
+	memory::operate(
+		&without_ledger,
+		&actor,
+		memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider: provider.clone(),
+			bank: bank.clone(),
+			action: memory::Action::ConfigureBank {
+				expected_revision: 0,
+			},
+		},
+	)
+	.await
+	.unwrap();
+	let id = Uuid::now_v7();
+	memory::mutate(
+		&without_ledger,
+		&actor,
+		Mutation {
+			operation_id: Uuid::now_v7(),
+			provider: provider.clone(),
+			bank: bank.clone(),
+			changes: vec![Change::Add {
+				id,
+				content: {
+					let mut fact = content("Mercury launch details");
+					fact.evidence = vec![proof];
+					fact
+				},
+			}],
+		},
+	)
+	.await
+	.unwrap();
+	let outcome = memory::operate(
+		&without_ledger,
+		&actor,
+		memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider,
+			bank,
+			action: memory::Action::Recall {
+				query: RecallQuery {
+					text: "Mercury".into(),
+					time: None,
+					kinds: vec![],
+					max_tokens: 8192,
+				},
+			},
+		},
+	)
+	.await
+	.unwrap();
+	let memory::Outcome::Recall(Recall::Ready { units }) = outcome else {
+		panic!("expected keyword recall")
+	};
+	assert_eq!(
+		units.iter().map(|unit| unit.id).collect::<Vec<_>>(),
+		vec![id]
+	);
+}
+
 #[rstest]
 #[tokio::test]
 async fn keyword_only_bank_can_write_and_recall_without_a_workspace_index(

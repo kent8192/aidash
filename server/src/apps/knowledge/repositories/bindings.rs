@@ -7,7 +7,8 @@ use aidash_domain::{
 	registry::{AgentConfig, EntityRef, Entry},
 };
 use reinhardt::query::{
-	Alias, ColumnRef, Expr, ExprTrait, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder,
+	Alias, ColumnRef, Expr, ExprTrait, LockType, OnConflict, PostgresQueryBuilder, Query,
+	QueryStatementBuilder,
 };
 use uuid::Uuid;
 
@@ -34,7 +35,60 @@ pub(crate) async fn claimed(
 	let Some(run) = run else {
 		return Ok(None);
 	};
+	// Built-in memory is optional at Run activation. Its first tool or
+	// background use admits it in that operation's own transaction.
+	let implicit_without_snapshot = run.context.binding_snapshot.is_none()
+		&& serde_json::from_value::<aidash_domain::registry::bindings::AgentBindings>(
+			agent.config.clone(),
+		)
+		.is_ok_and(|settings| {
+			!settings.bindings.iter().any(|binding| {
+				binding.kind == aidash_domain::registry::bindings::BindingKind::Memory
+			})
+		});
+	if uses_builtin(&run) || implicit_without_snapshot {
+		return Ok(None);
+	}
 	admit(store, lease, &run.metadata(), agent).await
+}
+
+fn uses_builtin(run: &aidash_domain::Run) -> bool {
+	run.context
+		.binding_snapshot
+		.as_ref()
+		.is_some_and(|snapshot| {
+			snapshot.bindings.iter().any(|binding| {
+				binding.excluded_reason.is_none()
+					&& binding.identity.id
+						== aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+					&& binding.identity.version
+						== aidash_domain::registry::bindings::memory_defaults::VERSION
+			})
+		})
+}
+
+pub(crate) async fn for_run(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	run: &aidash_domain::Run,
+) -> Result<Option<Binding>> {
+	if let Some(binding) = load(&mut **lease.tx(), &run.metadata()).await? {
+		return Ok(Some(binding));
+	}
+	if !uses_builtin(run) {
+		return Ok(None);
+	}
+	let snapshot = run
+		.context
+		.binding_snapshot
+		.as_ref()
+		.ok_or(Error::Forbidden)?;
+	let agent = snapshot
+		.definitions
+		.iter()
+		.find(|definition| definition.identity == snapshot.agent)
+		.ok_or(Error::Forbidden)?;
+	admit(store, lease, &run.metadata(), &agent.definition).await
 }
 
 pub(crate) async fn load(
@@ -67,12 +121,19 @@ pub(crate) async fn load(
 	.await?
 	.ok_or(Error::Forbidden)?;
 	let revision: i64 = row.try_get("participant_revision")?;
+	let provider = EntityRef {
+		id: row.try_get("provider_id")?,
+		version: row.try_get("provider_version")?,
+	};
+	let builtin = provider.id == aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+		&& provider.version == aidash_domain::registry::bindings::memory_defaults::VERSION;
 	if p.try_get::<bool>("deleted")?
 		|| p.try_get::<i64>("revision")? != revision
 		|| p.try_get::<Uuid>("workspace_id")? != run.workspace_id
 		|| p.try_get::<String>("home")? != run.home_node
-		|| p.try_get::<String>("agent_id")? != run.agent_id
-		|| p.try_get::<String>("agent_version")? != run.agent_version
+		|| (!builtin
+			&& (p.try_get::<String>("agent_id")? != run.agent_id
+				|| p.try_get::<String>("agent_version")? != run.agent_version))
 	{
 		return Err(Error::Conflict(
 			"Run logical participant changed; memory context requires recovery".into(),
@@ -90,10 +151,7 @@ pub(crate) async fn load(
 			id: run.agent_id.clone(),
 			version: run.agent_version.clone(),
 		},
-		provider: EntityRef {
-			id: row.try_get("provider_id")?,
-			version: row.try_get("provider_version")?,
-		},
+		provider,
 	}))
 }
 pub(crate) async fn admit(
@@ -117,6 +175,8 @@ pub(crate) async fn admit(
 	let Some(provider) = config.memory else {
 		return Ok(None);
 	};
+	let builtin = provider.id == aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+		&& provider.version == aidash_domain::registry::bindings::memory_defaults::VERSION;
 	if !run.is_local(store.deployment.as_str())
 		|| agent.id != run.agent_id
 		|| agent.version != run.agent_version
@@ -140,7 +200,7 @@ pub(crate) async fn admit(
 	)
 	.fetch_optional(&mut **lease.tx())
 	.await?;
-	let (participant, revision) = if let Some(assignment) = assigned {
+	let (participant, revision, reauthorize) = if let Some(assignment) = assigned {
 		let id: Uuid = assignment.try_get("participant_id")?;
 		let observed: i64 = assignment.try_get("participant_revision")?;
 		let bank = Bank {
@@ -168,48 +228,82 @@ pub(crate) async fn admit(
 				"assigned logical participant revision or Agent version changed".into(),
 			));
 		}
-		(id, observed)
+		(id, observed, false)
 	} else {
-		let id = Uuid::now_v7();
+		let id = if builtin {
+			crate::semantic::native_memory::request_id(
+				run.workspace_id,
+				"builtin-memory-workspace",
+			)?
+		} else {
+			Uuid::now_v7()
+		};
 		let principal = lease.saved()?["subject"]
 			.as_str()
 			.ok_or(Error::Forbidden)?
 			.to_owned();
-		native::query(
-			&Query::insert()
-				.into_table(Alias::new("memory_participants"))
-				.columns(
-					[
-						"id",
-						"home",
-						"tenant",
-						"workspace_id",
-						"principal",
-						"agent_id",
-						"agent_version",
-						"revision",
-						"deleted",
-					]
-					.map(Alias::new),
-				)
-				.from_subquery(
-					Query::select()
-						.expr(Expr::value(id))
-						.expr(Expr::value(run.home_node.as_str()))
-						.expr(Expr::value(&tenant))
-						.expr(Expr::value(run.workspace_id))
-						.expr(Expr::value(principal))
-						.expr(Expr::value(&agent.id))
-						.expr(Expr::value(&agent.version))
-						.expr(Expr::value(1_i64))
-						.expr(Expr::value(false))
-						.to_owned(),
-				)
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(&mut **lease.tx())
-		.await?;
-		(id, 1)
+		let mut insert = Query::insert();
+		insert
+			.into_table(Alias::new("memory_participants"))
+			.columns(
+				[
+					"id",
+					"home",
+					"tenant",
+					"workspace_id",
+					"principal",
+					"agent_id",
+					"agent_version",
+					"revision",
+					"deleted",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(id))
+					.expr(Expr::value(run.home_node.as_str()))
+					.expr(Expr::value(&tenant))
+					.expr(Expr::value(run.workspace_id))
+					.expr(Expr::value(principal))
+					.expr(Expr::value(&agent.id))
+					.expr(Expr::value(&agent.version))
+					.expr(Expr::value(1_i64))
+					.expr(Expr::value(false))
+					.to_owned(),
+			);
+		if builtin {
+			insert.on_conflict(OnConflict::column(Alias::new("id")).do_nothing().to_owned());
+		}
+		let created = native::query(&insert.to_string(PostgresQueryBuilder))
+			.execute(&mut **lease.tx())
+			.await?
+			.rows_affected()
+			!= 0;
+		if !created {
+			let prior = native::query(
+				&Query::select()
+					.column(ColumnRef::Asterisk)
+					.from(Alias::new("memory_participants"))
+					.and_where(Expr::col("id").eq(Expr::value(id)))
+					.lock(LockType::Share)
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_one(&mut **lease.tx())
+			.await?;
+			if prior.try_get::<bool>("deleted")?
+				|| prior.try_get::<String>("home")? != run.home_node
+				|| prior.try_get::<String>("tenant")? != tenant
+				|| prior.try_get::<Uuid>("workspace_id")? != run.workspace_id
+			{
+				return Err(Error::Conflict(
+					"built-in memory participant changed".into(),
+				));
+			}
+			(id, prior.try_get("revision")?, true)
+		} else {
+			(id, 1, false)
+		}
 	};
 	let binding = Binding {
 		bank: Bank {
@@ -227,6 +321,9 @@ pub(crate) async fn admit(
 	};
 	repository::bank_id(lease, &binding.bank, true).await?;
 	super::bank_settings::ensure(lease, &binding.bank, &binding.provider).await?;
+	if reauthorize {
+		units::authorize(lease, &binding.bank, "memory.participant.use").await?;
+	}
 	native::query(
 		&Query::insert()
 			.into_table(Alias::new("memory_run_bindings"))

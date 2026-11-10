@@ -140,11 +140,31 @@ pub async fn initialize(store: &Store, directory: PathBuf) -> Result<Store> {
 	let internal = bypass(store);
 	let mut lease = Lease::deployment(&internal, DeploymentScopeReason::MemoryRecovery).await?;
 	let result = async {
-		for table in ["memory_banks","memory_participants"] {
-			if native::query(&Query::select().column(Alias::new("id")).from(Alias::new(table))
-				.and_where(crate::database::scope::in_deployment("home", store.deployment.as_str())).limit(1).to_string(PostgresQueryBuilder))
-				.fetch_optional(&mut **lease.tx()).await?.is_some() {
-				return Err(Error::Conflict("a new recovery epoch requires empty new-format memory; restore the existing external ledger".into()));
+		use aidash_domain::registry::bindings::memory_defaults;
+		let builtin_bank = Query::select()
+			.expr(Expr::value(1))
+			.from_as(Alias::new("memory_banks"), Alias::new("builtin_bank"))
+			.inner_join(Alias::new("memory_bank_settings"), Expr::col(("memory_bank_settings", "bank_id")).equals(("builtin_bank", "id")))
+			.and_where(Expr::col(("builtin_bank", "participant_id")).equals(("p", "id")))
+			.and_where(Expr::col(("memory_bank_settings", "provider_id")).eq(memory_defaults::MEMORY_ID))
+			.and_where(Expr::col(("memory_bank_settings", "provider_version")).eq(memory_defaults::VERSION))
+			.to_owned();
+		let participants = Query::select().column(("p", "id"))
+			.from_as(Alias::new("memory_participants"), Alias::new("p"))
+			.and_where(crate::database::scope::in_deployment("p.home", store.deployment.as_str()))
+			.and_where(Expr::exists(builtin_bank).not()).limit(1).to_owned();
+		let banks = Query::select().column(("b", "id"))
+			.from_as(Alias::new("memory_banks"), Alias::new("b"))
+			.join(reinhardt::query::JoinType::LeftJoin, Alias::new("memory_bank_settings"), Expr::col(("memory_bank_settings", "bank_id")).equals(("b", "id")))
+			.and_where(crate::database::scope::in_deployment("b.home", store.deployment.as_str()))
+			.and_where(reinhardt::query::Condition::any()
+				.add(Expr::col(("memory_bank_settings", "bank_id")).is_null())
+				.add(Expr::col(("memory_bank_settings", "provider_id")).ne(memory_defaults::MEMORY_ID))
+				.add(Expr::col(("memory_bank_settings", "provider_version")).ne(memory_defaults::VERSION)))
+			.limit(1).to_owned();
+		for query in [participants, banks] {
+			if native::query(&query.to_string(PostgresQueryBuilder)).fetch_optional(&mut **lease.tx()).await?.is_some() {
+				return Err(Error::Conflict("a new recovery epoch requires empty protected memory; restore the existing external ledger".into()));
 			}
 		}
 		recovery.initialize(&[]).await
