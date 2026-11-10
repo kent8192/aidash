@@ -81,6 +81,11 @@ pub fn result_operation(result: &Value) -> Option<Operation> {
 	if let Some(reference) = crate::context::research::ResearchReference::parse(result) {
 		return Some(reference.operation);
 	}
+	if let Some(reference) =
+		crate::context::research::ResearchReference::from_result("journal", result)
+	{
+		return Some(reference.operation);
+	}
 	if result["contract"] != super::RESULT_CONTRACT {
 		return None;
 	}

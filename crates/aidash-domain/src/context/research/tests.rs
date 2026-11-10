@@ -32,6 +32,42 @@ fn durable_history_has_only_identity_digest_and_provenance() {
 }
 
 #[test]
+fn journal_results_retain_research_dependencies_and_are_purged_with_them() {
+	let original = delivered();
+	let line = super::super::journal_export::JournalLine::from(&original);
+	let dependencies = JournalDependencies::from_lines(&[line]);
+	let document = Uuid::parse_str("f93043b8-4965-4c40-b04d-685165324f2e").unwrap();
+	assert!(dependencies.documents.contains(&document));
+	let mut entry = HistoryEntry::new(
+		2,
+		ContextEvent::tool(
+			ToolCall {
+				id: "query".into(),
+				name: "journal_query".into(),
+				arguments: json!({"code":"journal()"}),
+			},
+			json!({"contract": JOURNAL_QUERY_CONTRACT, "research_derived":true, "dependencies": dependencies, "stdout":"exact provider passage"}),
+		),
+	);
+	let bytes = serde_json::to_vec(&entry).unwrap();
+	assert!(!String::from_utf8_lossy(&bytes).contains("exact provider passage"));
+	let reference = entry.research_reference().unwrap();
+	let expired = crate::research::expiry::ExpiredResults {
+		documents: [document].into(),
+		..Default::default()
+	};
+	assert!(reference.covered_by(&expired));
+	assert!(crate::research::expiry::expire(
+		std::slice::from_mut(&mut entry),
+		&expired,
+		&Default::default()
+	));
+	assert!(
+		matches!(&entry.event, ContextEvent::Tool { result, .. } if ContextEvent::is_expired_result(result))
+	);
+}
+
+#[test]
 fn ordinary_reference_contract_results_survive_context_save_and_replay() {
 	for result in [
 		json!({"contract": CONTRACT}),
