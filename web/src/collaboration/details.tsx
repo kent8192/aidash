@@ -31,6 +31,7 @@ import {
   humanAnswer,
   humanRequests,
   taskAbandon,
+  taskRuns as taskRunPage,
 } from "../generated/aidash";
 import type {
   Artifact,
@@ -167,6 +168,20 @@ export function OperationsDialog({
         (run) => run.task_id === task.id && isLocalRun(run, data),
       )
     : [];
+  const started = useQuery({
+    queryKey: ["task-has-runs", task?.id, task?.revision],
+    enabled: task?.status === "OPEN",
+    queryFn: async ({ signal }) => {
+      let cursor: string | null = null;
+      do {
+        const page = await taskRunPage(task!.id, { cursor }, { signal });
+        if (page.items.length) return true;
+        cursor = page.next_cursor;
+      } while (cursor);
+      return false;
+    },
+    retry: false,
+  });
   return (
     <Modal
       title={
@@ -377,7 +392,12 @@ export function OperationsDialog({
                   {data.access.kind === "subject" && (
                     <RemoteExecutions task={task.id} />
                   )}
-                  {!data.next_cursors.runs && abandonable(task, taskRuns) && (
+                  {abandonable(
+                    task,
+                    task.status === "OPEN" && started.data !== false
+                      ? [true]
+                      : [],
+                  ) && (
                     <form
                       className="grid min-w-0 gap-3 border-t border-border pt-4"
                       onSubmit={(event) => {

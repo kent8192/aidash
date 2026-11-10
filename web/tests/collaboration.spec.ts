@@ -3729,6 +3729,49 @@ test("task dependency picker can load older tasks on demand", async ({
   await expect(dependencies).toHaveValues(["old-task"]);
 });
 
+test("failed task can be abandoned even when older runs exist", async ({
+  page,
+}) => {
+  await setup(page, { subject: true, locale: "en-US" });
+  const data = fixture();
+  const task = { ...data.tasks[0], status: "FAILED" };
+  await page.route("**/api/state**", (route) =>
+    route.fulfill({
+      json: {
+        ...data,
+        tasks: [task],
+        access: { kind: "subject", tenant: "acme", subject: "alice" },
+        next_cursors: { ...data.next_cursors, runs: "older" },
+      },
+    }),
+  );
+  await page.route("**/api/workspaces/workspace-one", (route) =>
+    route.fulfill({
+      json: {
+        workspace: data.workspaces[0],
+        tasks: [task],
+        artifacts: [],
+        events: [],
+        messages: [],
+      },
+    }),
+  );
+  await page.goto("/collaboration?channel=workspace-one");
+  await page
+    .getByRole("button", { name: "Show channel status", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("tab", { name: "Tasks and results", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button")
+    .filter({ hasText: task.title })
+    .click();
+  await expect(page.getByRole("button", { name: /abandon/i })).toBeVisible();
+});
+
 test("returning focus refreshes the current state", async ({ page }) => {
   await setup(page, { locale: "en-US" });
   let reads = 0;
