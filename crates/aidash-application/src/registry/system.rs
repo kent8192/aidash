@@ -32,7 +32,16 @@ pub fn operations() -> impl Iterator<Item = &'static str> {
 }
 
 /// Journal retrieval is seeded for later exposure after offloading.
-pub const JOURNAL_TOOLS: &[&str] = &["journal_search", "journal_read"];
+pub const JOURNAL_TOOLS: &[&str] = &["journal_search", "journal_read", "journal_query"];
+
+/// Select the Run's Journal capabilities from the Deployment's Runner configuration.
+pub fn journal_tools(has_runner: bool) -> &'static [&'static str] {
+	if has_runner {
+		&["journal_query"]
+	} else {
+		&["journal_search", "journal_read"]
+	}
+}
 
 /// Explicitly bound Subnode operations, seeded after the legacy and Exposure tools.
 pub const SUBNODE_TOOLS: &[&str] = &[

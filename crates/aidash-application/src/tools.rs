@@ -91,14 +91,19 @@ async fn journal_read(ctx: &ToolContext<'_>, input: &Value) -> Result<Value> {
 		return Err(Error::Invalid("max_chars must not exceed 4000".into()));
 	}
 	let lines = ctx.operations.journal(range).await?;
+	let dependencies = aidash_domain::context::research::JournalDependencies::from_lines(&lines);
 	let content = aidash_domain::context::journal_export::to_jsonl(&lines);
 	let total = content.chars().count();
 	let start = usize::try_from(offset).unwrap_or(usize::MAX).min(total);
 	let text: String = content.chars().skip(start).take(maximum as usize).collect();
 	let end = start + text.chars().count();
-	Ok(
-		json!({"text":text,"offset":start,"total_chars":total,"next_offset":(end < total).then_some(end)}),
-	)
+	let mut result = json!({"text":text,"offset":start,"total_chars":total,"next_offset":(end < total).then_some(end)});
+	if !dependencies.is_empty() {
+		result["contract"] = json!(aidash_domain::context::research::JOURNAL_RETRIEVAL_CONTRACT);
+		result["research_derived"] = json!(true);
+		result["dependencies"] = json!(dependencies);
+	}
+	Ok(result)
 }
 
 async fn journal_search(ctx: &ToolContext<'_>, input: &Value) -> Result<Value> {
@@ -120,6 +125,7 @@ async fn journal_search(ctx: &ToolContext<'_>, input: &Value) -> Result<Value> {
 		.parse::<usize>()
 		.map_err(|_| Error::Invalid("invalid cursor".into()))?;
 	let lines = ctx.operations.journal(journal_range(input, false)?).await?;
+	let mut dependencies = aidash_domain::context::research::JournalDependencies::default();
 	let mut results = Vec::new();
 	let mut seen = 0usize;
 	let mut more = false;
@@ -135,6 +141,11 @@ async fn journal_search(ctx: &ToolContext<'_>, input: &Value) -> Result<Value> {
 				more = true;
 				break;
 			}
+			let matched = aidash_domain::context::research::JournalDependencies::from_lines(
+				std::slice::from_ref(line),
+			);
+			dependencies.sources.extend(matched.sources);
+			dependencies.documents.extend(matched.documents);
 			let mut folded_bytes = 0;
 			let prefix = text
 				.chars()
@@ -153,7 +164,13 @@ async fn journal_search(ctx: &ToolContext<'_>, input: &Value) -> Result<Value> {
 		}
 	}
 	let next = offset.saturating_add(results.len());
-	Ok(json!({"results":results,"next_cursor":more.then(|| next.to_string())}))
+	let mut result = json!({"results":results,"next_cursor":more.then(|| next.to_string())});
+	if !dependencies.is_empty() {
+		result["contract"] = json!(aidash_domain::context::research::JOURNAL_RETRIEVAL_CONTRACT);
+		result["research_derived"] = json!(true);
+		result["dependencies"] = json!(dependencies);
+	}
+	Ok(result)
 }
 pub fn plugin_specification(entry: &Entry, alias: &str) -> ToolSpec {
 	ToolSpec {
@@ -427,6 +444,19 @@ impl Builtin {
 			.validate(&input)
 			.map_err(|e| Error::Invalid(e.to_string()))?;
 		match self.name {
+			"journal_query" => {
+				ctx.operations
+					.journal_query(
+						required(&input, "code")?,
+						input
+							.get("journal_range")
+							.map(|value| journal_range(value, true))
+							.transpose()?
+							.flatten(),
+						key,
+					)
+					.await
+			}
 			"journal_read" => journal_read(ctx, &input).await,
 			"journal_search" => journal_search(ctx, &input).await,
 			"subnode_task"
@@ -741,6 +771,13 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 	let string = json!({"type":"string"});
 	let entity_ref = json!({"type":"object","required":["id","version"],"properties":{"id":string,"version":string},"additionalProperties":false});
 	let entries = vec![
+		Builtin {
+			name: "journal_query",
+			contract: aidash_domain::tool::builtin_contract("journal_query")
+				.expect("declared builtin"),
+			description: "Run Python against this Run's Context Journal. journal() reads the latest export; variables persist until the session resets.",
+			schema: json!({"type":"object","required":["code"],"properties":{"code":{"type":"string","minLength":1},"journal_range":{"type":"object","required":["from_seq","through_seq"],"properties":{"from_seq":{"type":"integer","minimum":0},"through_seq":{"type":"integer","minimum":0}},"additionalProperties":false}},"additionalProperties":false}),
+		},
 		Builtin {
 			name: "journal_search",
 			contract: aidash_domain::tool::builtin_contract("journal_search")

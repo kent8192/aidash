@@ -32,12 +32,21 @@ impl From<&HistoryEntry> for JournalLine {
 		let text = fields
 			.remove("text")
 			.and_then(|v| v.as_str().map(str::to_owned));
+		let result = fields.remove("result");
+		let mut call = fields.remove("call");
+		if result
+			.as_ref()
+			.is_some_and(super::ContextEvent::is_revoked_result)
+			&& let Some(call) = call.as_mut()
+		{
+			call["arguments"] = super::ContextEvent::revoked_arguments();
+		}
 		Self {
 			seq: entry.seq,
 			kind,
 			text,
-			call: fields.remove("call"),
-			result: fields.remove("result"),
+			call,
+			result,
 			details: fields,
 		}
 	}
@@ -93,5 +102,27 @@ mod tests {
 				json!({"seq":8,"kind":"assistant","epoch":2,"text":"answer","calls":[]})
 			]
 		);
+	}
+
+	#[test]
+	fn revoked_research_hides_call_arguments_but_expiry_keeps_them() {
+		let call = crate::provider::ToolCall {
+			id: "research-call".into(),
+			name: "research_fetch".into(),
+			arguments: json!({"url":"https://private.example/"}),
+		};
+		let revoked = JournalLine::from(&HistoryEntry::new(
+			1,
+			ContextEvent::tool(call.clone(), ContextEvent::revoked_result(&call.id)),
+		));
+		assert_eq!(
+			revoked.call.unwrap()["arguments"],
+			ContextEvent::revoked_arguments()
+		);
+		let expired = JournalLine::from(&HistoryEntry::new(
+			2,
+			ContextEvent::tool(call.clone(), ContextEvent::expired_result(&call.id)),
+		));
+		assert_eq!(expired.call.unwrap()["arguments"], call.arguments);
 	}
 }

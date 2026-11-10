@@ -26,6 +26,15 @@ impl Operations {
 }
 #[async_trait]
 impl ToolOperations for Operations {
+	async fn journal_query(
+		&self,
+		code: &str,
+		range: Option<(u64, u64)>,
+		key: &str,
+	) -> Result<Value> {
+		self.record("journal_query");
+		Ok(json!({"code":code,"range":range,"key":key}))
+	}
 	async fn journal(
 		&self,
 		range: Option<(u64, u64)>,
@@ -264,6 +273,59 @@ impl ToolOperations for Operations {
 			value: secrecy::SecretString::from("tenant-secret-value".to_owned()),
 		})
 	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn journal_query_forwards_the_requested_cell_and_bounded_range(fixture: Fixture) {
+	let ctx = ToolContext {
+		operations: &fixture.operations,
+		run: &fixture.run,
+	};
+	let query = builtins().remove("journal_query").unwrap();
+	let result = query
+		.invoke(
+			&ctx,
+			json!({"code":"journal()","journal_range":{"from_seq":4,"through_seq":9}}),
+			"cell-key",
+		)
+		.await
+		.unwrap();
+	assert_eq!(
+		result,
+		json!({"code":"journal()","range":[4,9],"key":"cell-key"})
+	);
+	assert!(
+		query
+			.invoke(
+				&ctx,
+				json!({"code":"journal()","journal_range":{"from_seq":9,"through_seq":4}}),
+				"bad"
+			)
+			.await
+			.is_err()
+	);
+	assert_eq!(
+		query.contract().behavior.effect,
+		aidash_domain::tool::ToolEffect::ReadOnly
+	);
+	assert_eq!(
+		query.contract().disclosure,
+		aidash_domain::tool::DisclosureBoundary::Local
+	);
+	assert!(!query.contract().behavior.tool_call_approval);
+}
+
+#[test]
+fn journal_tool_selection_uses_the_deployment_runner_configuration() {
+	assert_eq!(
+		crate::registry::system::journal_tools(true),
+		&["journal_query"]
+	);
+	assert_eq!(
+		crate::registry::system::journal_tools(false),
+		&["journal_search", "journal_read"]
+	);
 }
 
 #[rstest]

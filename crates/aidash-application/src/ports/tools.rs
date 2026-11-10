@@ -148,6 +148,15 @@ pub trait PluginInputs: Send + Sync {
 /// Memory and task operations must retain their policy locks and durable writes.
 #[async_trait]
 pub trait ToolOperations: Send + Sync {
+	/// Execute one cell in this Run's isolated Journal Query session.
+	async fn journal_query(
+		&self,
+		_code: &str,
+		_range: Option<(u64, u64)>,
+		_key: &str,
+	) -> Result<Value> {
+		Err(crate::Error::Forbidden)
+	}
 	/// Read this Run's resolved Journal, under its execution authority.
 	async fn journal(
 		&self,

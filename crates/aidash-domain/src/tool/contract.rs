@@ -478,13 +478,13 @@ pub fn builtin_contract(name: &str) -> Option<ToolContract> {
 		target,
 	};
 	match name {
-		"journal_read" | "journal_search" => {
+		"journal_read" | "journal_search" | "journal_query" => {
 			behavior.effect = ToolEffect::ReadOnly;
-			behavior.fitting = Some(if name == "journal_read" {
-				ResultFitting::JournalText
-			} else {
-				ResultFitting::JournalSearch
-			});
+			behavior.fitting = match name {
+				"journal_read" => Some(ResultFitting::JournalText),
+				"journal_search" => Some(ResultFitting::JournalSearch),
+				_ => None,
+			};
 			contract.disclosure = DisclosureBoundary::Local;
 		}
 		// A Remote-Grant-started creator needs to manage its receiving-Node
