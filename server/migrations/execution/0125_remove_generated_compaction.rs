@@ -126,7 +126,10 @@ pub(super) fn migration() -> Migration {
 				expression: "purpose IN ('embedding', 'inference', 'memory', 'summary')".into(),
 			},
 		})
-		.add_operation(Operation::DropTable {
-			name: "generation_compaction_usage".into(),
+		// Typed reversal treats the historical composite key as two individual
+		// primary keys; use DDL to recreate the original key on rollback.
+		.add_operation(Operation::RunSQL {
+			sql: include_str!("sql/forward/0125_drop_compaction_usage.sql").into(),
+			reverse_sql: Some(include_str!("sql/backward/0125_drop_compaction_usage.sql").into()),
 		})
 }
