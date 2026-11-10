@@ -201,6 +201,74 @@ async fn set_policy(
 	assert_eq!(status, 200, "policy: {body}");
 }
 
+#[rstest::rstest]
+#[tokio::test]
+async fn subnode_task_persists_journal_handover_and_records_creator_read(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::from_conversation(&f, &fixture.application).await;
+	rig.read_own_task(rig.creator_run).await;
+	let created = rig
+		.call(
+			rig.creator_run,
+			"subnode_create",
+			json!({
+				"leader":"subnode-leader@1.0.0", "members":["subnode-leader@1.0.0"],
+				"allowance":{"tools":SUBNODE_TOOLS,"secrets":[]}
+			}),
+			"create-range-subnode",
+		)
+		.await;
+	let seq: i64 = sqlx::query_scalar("SELECT MIN(seq) FROM run_context_events WHERE run_id = $1")
+		.bind(rig.creator_run)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert!(
+		rig.script(
+			rig.creator_run,
+			"subnode_task",
+			json!({
+				"subnode_id":created["subnode_id"], "title":"Outside", "request":"Find evidence",
+				"journal_range":{"from_seq":i64::MAX,"through_seq":i64::MAX}
+			}),
+			"outside-range"
+		)
+		.await
+	);
+	let rejected = rig
+		.result_of(rig.creator_run, "outside-range")
+		.await
+		.expect("range rejection reaches the model");
+	assert!(rejected.get("error").is_some(), "{rejected}");
+	let outside_tasks: i64 =
+		sqlx::query_scalar("SELECT COUNT(*) FROM tasks WHERE title = 'Outside'")
+			.fetch_one(f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(outside_tasks, 0);
+	let range = json!({"from_seq":seq,"through_seq":seq});
+	let given = rig.call(rig.creator_run, "subnode_task", json!({
+		"subnode_id":created["subnode_id"], "title":"Search", "request":"Find evidence", "journal_range":range
+	}), "give-range").await;
+	let task: Uuid = given["task_id"].as_str().unwrap().parse().unwrap();
+	let saved: Value = sqlx::query_scalar("SELECT journal_range FROM tasks WHERE id = $1")
+		.bind(task)
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(saved, range);
+	let recorded: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM authorization_run_reads WHERE run_id = $1 AND resource_kind = 'run' AND resource_id = $1)")
+		.bind(rig.creator_run).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
+	assert!(recorded);
+	let next = rig.create_task(rig.creator_run, "after-range", &[]).await;
+	rig.delegate(rig.creator_run, next, "delegate-target").await;
+	cleanup(f, &url, &schema).await;
+}
+
 /// #755: `subnode_task` records a read in the Subnode's Workspace, and the next
 /// delegation checks that read under an authority that names only the creator's
 /// Workspace.

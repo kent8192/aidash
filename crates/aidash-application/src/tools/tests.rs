@@ -317,6 +317,31 @@ async fn journal_query_forwards_the_requested_cell_and_bounded_range(fixture: Fi
 }
 
 #[test]
+fn subnode_task_accepts_a_journal_range_and_rejects_malformed_ranges() {
+	let task = builtins().remove("subnode_task").unwrap();
+	let validator = jsonschema::validator_for(&task.schema).unwrap();
+	let base = json!({"subnode_id":"00000000-0000-0000-0000-000000000001","title":"Search","request":"Find evidence","journal_range":{"from_seq":1,"through_seq":4}});
+	assert!(validator.is_valid(&base));
+	let mut malformed = base.clone();
+	malformed["journal_range"] = json!({"from_seq":1});
+	assert!(!validator.is_valid(&malformed));
+}
+
+#[rstest]
+#[tokio::test]
+async fn subnode_task_rejects_a_reversed_journal_range(fixture: Fixture) {
+	let ctx = ToolContext {
+		operations: &fixture.operations,
+		run: &fixture.run,
+	};
+	let task = builtins().remove("subnode_task").unwrap();
+	assert!(task.invoke(&ctx, json!({
+		"subnode_id":"00000000-0000-0000-0000-000000000001", "title":"Search", "request":"Find evidence",
+		"journal_range":{"from_seq":9,"through_seq":4}
+	}), "reversed").await.is_err());
+}
+
+#[test]
 fn journal_tool_selection_uses_the_deployment_runner_configuration() {
 	assert_eq!(
 		crate::registry::system::journal_tools(true),

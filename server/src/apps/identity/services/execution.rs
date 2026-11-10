@@ -1781,12 +1781,23 @@ impl WorkerAuthority {
 			return access.finish(Ok(previous)).await;
 		}
 		let result: Result<Value> = match command {
-			Command::Task { id, title, request } => {
-				subnodes::task(&mut scope, &run.metadata(), *id, key, title, request)
-					.await
-					.map(|task| json!({"task_id":task}))
-					.map_err(Into::into)
-			}
+			Command::Task {
+				id,
+				title,
+				request,
+				journal_range,
+			} => subnodes::task(
+				&mut scope,
+				&run.metadata(),
+				*id,
+				key,
+				title,
+				request,
+				*journal_range,
+			)
+			.await
+			.map(|task| json!({"task_id":task}))
+			.map_err(Into::into),
 			Command::Add { id, agent } => {
 				subnodes::add_member(&mut scope, &run.metadata(), *id, agent)
 					.await

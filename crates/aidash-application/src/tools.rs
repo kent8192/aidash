@@ -487,6 +487,17 @@ impl Builtin {
 						id: id()?,
 						title: required(&input, "title")?.into(),
 						request: required(&input, "request")?.into(),
+						journal_range: input
+							.get("journal_range")
+							.map(|value| {
+								let (from_seq, through_seq) =
+									journal_range(value, true)?.expect("required range");
+								Ok::<_, Error>(aidash_domain::subnodes::JournalRange {
+									from_seq,
+									through_seq,
+								})
+							})
+							.transpose()?,
 					},
 					"subnode_add_member" => Command::Add {
 						id: id()?,
@@ -797,7 +808,7 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			contract: aidash_domain::tool::builtin_contract("subnode_task")
 				.expect("declared builtin"),
 			description: "Give a task to a Subnode's leader.",
-			schema: json!({"type":"object","required":["subnode_id","title","request"],"properties":{"subnode_id":string,"title":string,"request":string},"additionalProperties":false}),
+			schema: json!({"type":"object","required":["subnode_id","title","request"],"properties":{"subnode_id":string,"title":string,"request":string,"journal_range":{"type":"object","required":["from_seq","through_seq"],"properties":{"from_seq":{"type":"integer","minimum":0},"through_seq":{"type":"integer","minimum":0}},"additionalProperties":false}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "subnode_add_member",

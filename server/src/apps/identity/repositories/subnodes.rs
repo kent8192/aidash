@@ -527,8 +527,38 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 		key: &str,
 		title: &str,
 		request: &str,
+		journal_range: Option<aidash_domain::subnodes::JournalRange>,
 	) -> Result<Uuid> {
 		use aidash_application::ports::authorization::worker_tasks::WorkerTaskScope;
+		if let Some(range) = journal_range {
+			if range.from_seq > range.through_seq || range.through_seq > i64::MAX as u64 {
+				return Err(aidash_application::Error::Invalid(
+					"invalid journal range".into(),
+				));
+			}
+			let count: i64 = crate::database::native::query_scalar(
+				&Query::select()
+					.expr(Expr::cust("COUNT(*)"))
+					.from(Alias::new("run_context_events"))
+					.and_where(Expr::col("run_id").eq(Expr::value(run.id)))
+					.and_where(
+						Expr::col("seq").is_in([range.from_seq as i64, range.through_seq as i64]),
+					)
+					.to_string(PostgresQueryBuilder),
+			)
+			.scalar_one(&mut **self.access.tx.native_mut())
+			.await?;
+			let expected = if range.from_seq == range.through_seq {
+				1
+			} else {
+				2
+			};
+			if count != expected {
+				return Err(aidash_application::Error::Invalid(
+					"journal range is outside the creating Run's Context Journal".into(),
+				));
+			}
+		}
 		// tasks_parent_workspace requires a same-Workspace parent. Provenance
 		// instead records the creator Run in authorization_task_origins.
 		let input = aidash_domain::NewTask {
@@ -558,6 +588,29 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 				Some(key),
 			)
 			.await?;
+		if let Some(range) = journal_range {
+			let (sql, values) = Query::update()
+				.table(Alias::new("tasks"))
+				.value_expr(
+					Alias::new("journal_range"),
+					Expr::value(serde_json::to_value(range)?),
+				)
+				.and_where(Expr::col("id").eq(Expr::value(task.id)))
+				.build(PostgresQueryBuilder);
+			self.access
+				.tx
+				.as_mut()
+				.execute(&sql, convert_values(values))
+				.await
+				.map_err(crate::Error::from)?;
+			crate::apps::identity::models::AuthorizationRunRead::record_sources(
+				self.access.tx.as_mut(),
+				run.id,
+				run.workspace_id,
+				&[("run".into(), run.id)],
+			)
+			.await?;
+		}
 		let mut scope = super::worker_tasks::WorkerTasks {
 			federation: self.federation,
 			access: &mut *self.access,
