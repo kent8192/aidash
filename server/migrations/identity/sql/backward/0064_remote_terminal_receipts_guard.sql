@@ -1,1 +1,0 @@
-DROP TRIGGER atomic_write_guard ON public.authorization_remote_terminal_receipts;

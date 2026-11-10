@@ -21,7 +21,6 @@ use native_database::{DatabaseFixture, database};
 use reinhardt::db::orm::execution::convert_values;
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, IntoIden, PostgresQueryBuilder, Query, QueryStatementBuilder,
-	SimpleExpr,
 };
 use rstest::rstest;
 use secrecy::{ExposeSecret, SecretString};
@@ -1448,131 +1447,6 @@ async fn admission_pins_local_tenant_id_and_reloads_state_without_environment_fa
 		.to_string()
 		.contains("Store is not configured")
 	);
-}
-
-#[rstest]
-#[tokio::test]
-async fn registry_migration_preserves_current_constraints_in_both_directions(
-	#[future] endpoint: EndpointFixture,
-) {
-	let f = endpoint.await;
-	// Constraint DDL needs the table owner; the server role holds only DML.
-	let mut tx = f.database.owner_connection.begin().await.unwrap();
-	async fn definition(
-		tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
-		name: &str,
-	) -> String {
-		let (sql, values) = Query::select()
-			.expr_as(
-				SimpleExpr::FunctionCall(
-					"pg_get_constraintdef".into_iden(),
-					vec![Expr::col("oid").into()],
-				),
-				Alias::new("definition"),
-			)
-			.from(Alias::new("pg_constraint"))
-			.and_where(Expr::col("conname").eq(Expr::value(name)))
-			.build(PostgresQueryBuilder);
-		tx.fetch_one(&sql, convert_values(values))
-			.await
-			.unwrap()
-			.get("definition")
-			.unwrap()
-	}
-	async fn apply_asset(
-		tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
-		connection: &reinhardt::db::backends::DatabaseConnection,
-		sql: &str,
-	) {
-		use reinhardt::db::migrations::{
-			Migration, MigrationDirection, Operation, PlannedStatement, ProjectState,
-			plan_migration_sql,
-		};
-		let migration = Migration::new("provider_constraint_proof", "registry")
-			.database_only(true)
-			.add_operation(Operation::RunSQL {
-				sql: sql.into(),
-				reverse_sql: None,
-			});
-		let plan = plan_migration_sql(
-			connection,
-			&migration,
-			&ProjectState::default(),
-			MigrationDirection::Forward,
-		)
-		.await
-		.unwrap();
-		for statement in plan.statements {
-			if let PlannedStatement::Sql(sql) = statement {
-				tx.execute(&sql, vec![]).await.unwrap();
-			}
-		}
-	}
-	let current = definition(tx.as_mut(), "registry_model_config").await;
-	// Unsupported JSONB CHECK DDL simulates a later migration's independent rule.
-	// The forward/backward assets must reconstruct the current catalog definition.
-	tx.execute(
-		"ALTER TABLE registry DROP CONSTRAINT registry_model_config",
-		vec![],
-	)
-	.await
-	.unwrap();
-	tx.execute(&format!("ALTER TABLE registry ADD CONSTRAINT registry_model_config CHECK (({current_expression}) AND ((metadata #>> '{{config,model_id}}') <> 'future-forbidden'))", current_expression = current.strip_prefix("CHECK (").unwrap().strip_suffix(')').unwrap()), vec![]).await.unwrap();
-	let expected = definition(tx.as_mut(), "registry_model_config").await;
-	let embedding = definition(tx.as_mut(), "registry_embedding_config").await;
-	let agent = definition(tx.as_mut(), "registry_agent_config").await;
-	apply_asset(
-		tx.as_mut(),
-		&f.database.owner_connection,
-		include_str!("../../../../migrations/registry/sql/backward/0016_provider_credentials.sql"),
-	)
-	.await;
-	let reversed = definition(tx.as_mut(), "registry_model_config").await;
-	assert_eq!(
-		reversed,
-		expected.replace("'provider_credential'::text, ", "")
-	);
-	assert!(reversed.contains("future-forbidden"));
-	apply_asset(
-		tx.as_mut(),
-		&f.database.owner_connection,
-		include_str!("../../../../migrations/registry/sql/forward/0016_provider_credentials.sql"),
-	)
-	.await;
-	assert_eq!(
-		definition(tx.as_mut(), "registry_model_config").await,
-		expected
-	);
-	assert_eq!(
-		definition(tx.as_mut(), "registry_embedding_config").await,
-		embedding
-	);
-	assert_eq!(
-		definition(tx.as_mut(), "registry_agent_config").await,
-		agent
-	);
-	let semantic = definition(tx.as_mut(), "semantic_indexes_revision").await;
-	apply_asset(
-		tx.as_mut(),
-		&f.database.owner_connection,
-		include_str!("../../../../migrations/knowledge/sql/backward/0028_provider_credentials.sql"),
-	)
-	.await;
-	assert_eq!(
-		definition(tx.as_mut(), "semantic_indexes_revision").await,
-		semantic.replace("'provider_credential'::text, ", "")
-	);
-	apply_asset(
-		tx.as_mut(),
-		&f.database.owner_connection,
-		include_str!("../../../../migrations/knowledge/sql/forward/0028_provider_credentials.sql"),
-	)
-	.await;
-	assert_eq!(
-		definition(tx.as_mut(), "semantic_indexes_revision").await,
-		semantic
-	);
-	tx.rollback().await.unwrap();
 }
 
 async fn postgres_store(

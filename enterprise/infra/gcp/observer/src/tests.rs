@@ -57,27 +57,38 @@ async fn run(
 /// Tenant. Each table's block starts at its `ENABLE` statement.
 fn policies(tables: &[&str]) -> String {
 	let assets = [
-		include_str!(
-			"../../../../../server/migrations/execution/sql/forward/0036_row_level_security.sql"
-		),
-		include_str!(
-			"../../../../../server/migrations/registry/sql/forward/0033_row_level_security.sql"
-		),
+		include_str!("../../../../../server/migrations/execution/sql/forward/0003_references.sql"),
+		include_str!("../../../../../server/migrations/registry/sql/forward/0003_references.sql"),
 	];
 	let mut selected = String::new();
-	for asset in assets {
-		for block in asset.split("ALTER TABLE public.").skip(1) {
-			let block = format!("ALTER TABLE public.{block}");
-			let table = block["ALTER TABLE public.".len()..]
-				.split_whitespace()
-				.next()
-				.unwrap();
-			if tables.contains(&table) {
-				selected.push_str(&block);
-			}
-		}
+	for table in tables {
+		let prefix = format!("CREATE POLICY tenant_isolation ON public.{table} ");
+		let policy = assets
+			.iter()
+			.flat_map(|asset| asset.lines())
+			.find(|line| line.starts_with(&prefix))
+			.expect("baseline must contain the observer table policy");
+		selected.push_str(&format!("ALTER TABLE public.{table} ENABLE ROW LEVEL SECURITY;\nALTER TABLE public.{table} FORCE ROW LEVEL SECURITY;\n{policy}\n"));
 	}
 	selected
+}
+
+fn scope_functions() -> String {
+	let asset =
+		include_str!("../../../../../server/migrations/identity/sql/forward/0002_tables.sql");
+	["aidash_deployment_scope()", "aidash_scope_tenant()"]
+		.into_iter()
+		.map(|name| {
+			let prefix = format!("CREATE FUNCTION public.{name}");
+			let start = asset
+				.find(&prefix)
+				.expect("baseline must contain the scope function");
+			let rest = &asset[start..];
+			let end = rest.find("\n$$;").expect("scope function must end");
+			&rest[..end + "\n$$;".len()]
+		})
+		.collect::<Vec<_>>()
+		.join("\n")
 }
 
 #[tokio::test]
@@ -166,11 +177,7 @@ async fn database_snapshot_covers_all_rows_and_fails_closed() -> Result<(), Erro
 		}
 		run(&database, &query).await?;
 	}
-	sqlx::raw_sql(include_str!(
-		"../../../../../server/migrations/identity/sql/forward/0028_tenancy_policy_functions.sql"
-	))
-	.execute(&admin)
-	.await?;
+	sqlx::raw_sql(&scope_functions()).execute(&admin).await?;
 	let policies = policies(&tenant_owned);
 	assert_eq!(
 		policies.matches("CREATE POLICY").count(),

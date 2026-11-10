@@ -945,65 +945,6 @@ fn tool_phase(steps: &[Step]) -> (Duration, usize) {
 	)
 }
 
-#[rstest::rstest]
-#[tokio::test]
-async fn tool_parallelism_rollback_refuses_unfinished_runs_pinning_shared_read_tools(
-	#[future(awt)]
-	#[from(common::runtime)]
-	runtime: RuntimeFixture,
-	#[future(awt)] scripted_model: ScriptedModel,
-) {
-	use reinhardt::db::{
-		backends::{DatabaseConnection, dialect::PostgresBackend},
-		migrations::{DatabaseMigrationExecutor, FilesystemSource, MigrationSource},
-	};
-	// Arrange: a sequential Agent stores no parallelism field, yet its admitted
-	// Run pins the shared-read file tools' provider contracts.
-	let b = Batching::new(runtime, scripted_model, 1, 1).await;
-	let run = b.delegate(b.task).await;
-	assert!(
-		run.context
-			.binding_snapshot
-			.as_ref()
-			.unwrap()
-			.bindings
-			.iter()
-			.any(|binding| binding.definition.config["operation"] == "file_read")
-	);
-	let migration = FilesystemSource::new(
-		std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"),
-	)
-	.all_migrations()
-	.await
-	.unwrap()
-	.into_iter()
-	.find(|m| m.app_label == "registry" && m.name == "0021_tool_parallelism")
-	.unwrap();
-	// The rollback guard reads the Runs of every Tenant, which row-level security
-	// shows only to a login that bypasses it.
-	let mut executor = DatabaseMigrationExecutor::new(DatabaseConnection::new(Arc::new(
-		PostgresBackend::new(common::admin_pool(b.f.store.pool.fixture_driver()).await),
-	)));
-	// Act / Assert: the unfinished Run refuses the rollback.
-	let error = executor
-		.rollback_migrations(std::slice::from_ref(&migration))
-		.await
-		.unwrap_err();
-	assert!(
-		error
-			.to_string()
-			.contains("unfinished Runs pin shared-read tool contracts"),
-		"{error}"
-	);
-	// Act / Assert: a finished Run never resolves its tools again.
-	complete(&b.f, run.id).await;
-	executor
-		.rollback_migrations(std::slice::from_ref(&migration))
-		.await
-		.unwrap();
-	b.close().await;
-}
-
 /// Prints latency only; it asserts nothing about speedup.
 #[rstest::rstest]
 #[tokio::test]

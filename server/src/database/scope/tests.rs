@@ -60,45 +60,15 @@ fn only_the_transaction_opener_writes_the_scope_settings() {
 		})
 		.collect::<Vec<_>>();
 	assert!(writers.is_empty(), "{writers:?}");
-	// These owner-only atomic migrations open their Deployment Scope before
-	// touching rows. No other SQL asset may change it later in a transaction.
-	let mut migration_openers = files
+	// The empty-database baseline has no historical scoped backfills.
+	let migration_openers = files
 		.iter()
-		.filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
 		.filter(|path| {
-			std::fs::read_to_string(path)
-				.unwrap()
-				.contains("SET LOCAL aidash.scope")
-		})
-		.map(|path| {
-			path.strip_prefix(root)
-				.unwrap()
-				.to_string_lossy()
-				.into_owned()
+			path.extension().is_some_and(|extension| extension == "sql")
+				&& std::fs::read_to_string(path)
+					.unwrap()
+					.contains("SET LOCAL aidash.scope")
 		})
 		.collect::<Vec<_>>();
-	migration_openers.sort();
-	assert_eq!(
-		migration_openers,
-		[
-			"migrations/execution/sql/backward/0113_content_object_references_triggers.sql",
-			"migrations/execution/sql/forward/0089_remove_agent_cluster.sql",
-			"migrations/execution/sql/forward/0090_run_created_at.sql",
-			"migrations/execution/sql/forward/0113_content_object_references_legacy.sql",
-			"migrations/identity/sql/forward/0067_scratch_member_policy.sql",
-			"migrations/registry/sql/forward/0054_remove_agent_cluster.sql",
-			"migrations/registry/sql/forward/0055_remove_structured_harness_contracts.sql",
-			"migrations/workspaces/sql/forward/0021_conversation_scratch_space.sql",
-			"migrations/workspaces/sql/forward/0024_workspace_scratch_space.sql",
-		]
-	);
-	for path in migration_openers {
-		let text = std::fs::read_to_string(root.join(path)).unwrap();
-		assert_eq!(text.matches("SET LOCAL aidash.scope").count(), 1);
-		let first = text
-			.lines()
-			.find(|line| !line.trim().is_empty() && !line.trim_start().starts_with("--"))
-			.unwrap();
-		assert_eq!(first, "SET LOCAL aidash.scope = 'deployment';");
-	}
+	assert!(migration_openers.is_empty(), "{migration_openers:?}");
 }

@@ -45,5 +45,3 @@ pub(crate) mod manual_keys;
 pub mod oauth_clients;
 
 pub mod oauth_connections;
-
-pub(crate) mod scratch_policy_backfill;

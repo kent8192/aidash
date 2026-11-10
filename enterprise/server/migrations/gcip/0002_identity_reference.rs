@@ -5,7 +5,7 @@ use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0002_identity_reference", "gcip")
 		.add_dependency("gcip", "0001_admissions")
-		.add_dependency("identity", "0003_keys_indexes")
+		.add_dependency("identity", "0003_references")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::AddConstraintDefinition {

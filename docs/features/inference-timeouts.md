@@ -104,9 +104,8 @@ chunks do, even though their content is dropped. Omitting it, or setting it to
 fails the inference attempt and follows the same retry path as a transport
 timeout. `request_timeout_secs` still bounds the complete streamed request.
 
-Both settings can be installation overrides. The registry migration
-`registry/0020_model_streaming_config` (after `registry/0019_deferred_exposure`)
-adds them to the current `registry_model_config` allowlist read from the catalog,
+Both settings can be installation overrides. The Registry baseline includes
+them in the `registry_model_config` allowlist,
 keeping earlier keys such as `provider_credential`, `projection_versions` and
 `cache_mode`. The separate `registry_model_streaming` check validates their
 types, and the installation-override guard read from the catalog accepts them

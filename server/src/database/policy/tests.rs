@@ -26,39 +26,14 @@ async fn every_policy_migration_runs_the_rendered_template() {
 	assert!(policies > 0);
 }
 
-/// Migration directions that wrote Tenant-owned rows before #264 enforced
-/// their tables' policies. They run while no policy exists: forward before the
-/// policy migration, and backward after its reversal.
-const BEFORE_POLICIES: &[&str] = &[
-	"identity.0020_tenancy_schema forward",
-	"identity.0020_tenancy_schema backward",
-];
-
-/// Migration directions that write Tenant-owned rows under their policies
-/// after opening Deployment Scope with `SET LOCAL aidash.scope`, because the
-/// native migration executor has no scope API.
-const IN_DEPLOYMENT_SCOPE: &[&str] = &[
-	"execution.0089_remove_agent_cluster forward",
-	"execution.0090_run_created_at forward",
-	"execution.0113_content_object_references backward",
-	"execution.0113_content_object_references forward",
-	"identity.0067_scratch_member_policy forward",
-	"registry.0054_remove_agent_cluster forward",
-	"workspaces.0021_conversation_scratch_space forward",
-	"workspaces.0024_workspace_scratch_space forward",
-];
-
+/// The fresh baseline seeds no Tenant-owned rows.
 #[rstest::rstest]
 #[tokio::test]
 async fn no_migration_writes_tenant_owned_rows_under_their_policy() {
 	// Arrange
 	let migrations = migrations().await;
-	// Act + Assert: the scan finds the known writers, and only them.
-	assert_no_migration_writes_tenant_owned_rows(
-		&migrations,
-		&tenant_owned(TABLES),
-		&[BEFORE_POLICIES, IN_DEPLOYMENT_SCOPE].concat(),
-	);
+	// Act + Assert: the scan finds no Tenant-owned writes.
+	assert_no_migration_writes_tenant_owned_rows(&migrations, &tenant_owned(TABLES), &[]);
 }
 
 #[rstest::rstest]
@@ -69,8 +44,7 @@ async fn function_bodies_are_removed_but_do_blocks_are_kept() {
 	let functions = migrations
 		.iter()
 		.find(|migration| {
-			(migration.app_label.as_str(), migration.name.as_str())
-				== ("identity", "0028_tenancy_policy_functions")
+			(migration.app_label.as_str(), migration.name.as_str()) == ("identity", "0002_tables")
 		})
 		.unwrap();
 	let sql = statements(functions)

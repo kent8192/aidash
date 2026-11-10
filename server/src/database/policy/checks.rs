@@ -51,6 +51,49 @@ pub fn assert_policy_migrations_run_the_rendered_template(
 	migrations: &[Migration],
 	owned: &BTreeSet<&str>,
 ) -> usize {
+	// Dump-derived Community baselines group policy, enable and FORCE
+	// statements by PostgreSQL object instead of the original template asset.
+	if migrations
+		.iter()
+		.any(|m| m.app_label == "operations" && m.name == "0000_environment")
+		&& migrations.iter().any(|m| m.name == "0003_references")
+	{
+		let sql = migrations
+			.iter()
+			.flat_map(statements)
+			.map(|(sql, _)| sql)
+			.collect::<Vec<_>>()
+			.join("\n");
+		let enabled = enabled(&sql).into_iter().collect::<BTreeSet<_>>();
+		let forced =
+			Regex::new(r"(?m)^ALTER TABLE ONLY public\.([a-z0-9_]+) FORCE ROW LEVEL SECURITY;$")
+				.unwrap()
+				.captures_iter(&sql)
+				.map(|c| c[1].to_owned())
+				.collect::<BTreeSet<_>>();
+		let policy =
+			Regex::new(r"(?m)^CREATE POLICY ([a-z0-9_]+) ON public\.([a-z0-9_]+) (.*);$").unwrap();
+		let expression = "((( SELECT public.aidash_deployment_scope() AS aidash_deployment_scope) OR (tenant = ( SELECT public.aidash_scope_tenant() AS aidash_scope_tenant))))";
+		let expected_body = format!("USING {expression} WITH CHECK {expression}");
+		let mut covered = BTreeSet::new();
+		for capture in policy.captures_iter(&sql) {
+			assert_eq!(&capture[1], "tenant_isolation", "{}", &capture[2]);
+			assert_eq!(&capture[3], expected_body, "{}", &capture[2]);
+			assert!(
+				covered.insert(capture[2].to_owned()),
+				"duplicate policy: {}",
+				&capture[2]
+			);
+		}
+		let expected = owned
+			.iter()
+			.map(|table| (*table).to_owned())
+			.collect::<BTreeSet<_>>();
+		assert_eq!(enabled, expected, "enabled RLS");
+		assert_eq!(forced, expected, "forced RLS");
+		assert_eq!(covered, expected, "Tenant policy");
+		return covered.len();
+	}
 	let mut covered = BTreeSet::new();
 	let mut policies = 0;
 	// A schema migration can carry its table's policy asset as well. Inspect
@@ -69,18 +112,7 @@ pub fn assert_policy_migrations_run_the_rendered_template(
 			assert_eq!(sql, forward, "{label}");
 			assert_eq!(reverse_sql, Some(backward.as_str()), "{label} reversed");
 			for table in tables {
-				if !covered.insert(table.to_owned()) {
-					// This migration drops and recreates these undeployed object
-					// tables, so their policies have to be installed again.
-					assert!(
-						label == "execution.0113_content_object_references"
-							&& matches!(
-								table,
-								"core_objects" | "core_quotas" | "core_retention_files"
-							),
-						"{table} is enabled twice"
-					);
-				}
+				assert!(covered.insert(table.to_owned()), "{table} is enabled twice");
 			}
 		}
 	}

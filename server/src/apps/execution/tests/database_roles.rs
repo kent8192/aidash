@@ -387,7 +387,7 @@ async fn a_failed_migrate_still_leaves_the_ledger_read_only(#[future] database: 
 use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0008_failing_probe", "marketplace")
-		.add_dependency("marketplace", "0007_model_state")
+		.add_dependency("marketplace", "0003_references")
 		.add_operation(Operation::RunSQL {
 			sql: "SELECT 1 FROM failing_probe_missing_table".to_string(),
 			reverse_sql: None,

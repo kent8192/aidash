@@ -287,7 +287,7 @@ fn refuse_fake_baseline_rollback(
 		.any(|record| keys.contains(&(record.app.clone(), record.name.clone())))
 	{
 		return Err(Error::Invalid(
-			"Aidash baseline reversal cannot be faked; apply its backward operations".into(),
+			"Aidash baseline reversal cannot be faked; recreate the database".into(),
 		));
 	}
 	Ok(())

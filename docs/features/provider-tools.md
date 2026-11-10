@@ -71,12 +71,9 @@ the Run-linked Usage Records remain the cost ledger. No separate tool Request
 Estimate or duplicate cost charge is manufactured. URLs, snippets and Fusion
 results never create Research Sources, Evidence fragments or Source citations.
 
-Registry migration `0061_provider_tools` extends the installed Tool descriptor and
-Agent Binding validation functions while preserving the earlier contracts and
-their function identities. PostgreSQL function bodies require DDL through
-Reinhardt's `RunSQL`; no application data is rewritten. Downgrade is refused while
-immutable definitions or retained Run snapshots require Provider tools. Execution
-migration `0097_provider_tool_usage` stores reported tool counts as nullable JSONB.
+The Registry baseline validates Provider tool descriptors and Agent Bindings
+through PostgreSQL functions. Execution stores reported tool counts as nullable
+JSONB.
 
 ## OpenRouter references
 
@@ -175,12 +172,9 @@ to the Run's signed shell container.
 | `files`                                | API-key-wide workspace access, indefinite storage and no configurable per-call file count, size or path limits; mandatory Binding bounds cannot be guaranteed.                                        |
 | `image_generation`                     | The documented tool has no enforceable image-count parameter; size/options depend on the chosen image model. A bounded image contract is needed before adding it. The outer broker remains text-only. |
 
-Registry migration `0062_provider_warning_tools` extends the previous closed union
-without replacing old validation contracts. Identity migration
-`0054_provider_warning_acknowledgment` adds the nullable exact disclosure to
-approval history; execution migration `0098_provider_container` adds the nullable
-Run pin. Existing approvals and Runs acquire neither acknowledgment nor container
-implicitly.
+The Registry baseline includes the warning-tier tools in its closed union.
+Identity approval history stores the nullable exact disclosure, and Execution
+stores the nullable Run container pin.
 
 Additional official references, checked 2026-10-28:
 

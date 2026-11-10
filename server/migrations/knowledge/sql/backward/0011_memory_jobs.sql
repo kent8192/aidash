@@ -1,4 +1,0 @@
-DROP TRIGGER memory_model_operations_atomic ON memory_model_operations;
-DROP TRIGGER memory_model_attempts_atomic ON memory_model_attempts;
-DROP TRIGGER memory_publications_atomic ON memory_publications;
-DROP TRIGGER memory_task_participants_atomic ON memory_task_participants;

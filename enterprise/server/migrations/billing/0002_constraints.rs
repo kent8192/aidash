@@ -6,7 +6,7 @@ use reinhardt::db::migrations::prelude::*;
 pub(super) fn migration() -> Migration {
 	Migration::new("0002_constraints", "billing")
 		.add_dependency("billing", "0001_tables")
-		.add_dependency("identity", "0031_tenant_deletions_state")
+		.add_dependency("identity", "0003_references")
 		.database_only(true)
 		.atomic(true)
 		.add_operation(Operation::AddConstraintDefinition {

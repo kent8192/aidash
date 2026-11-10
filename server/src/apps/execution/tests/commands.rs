@@ -336,31 +336,8 @@ async fn migration_seed_command_detects_drift_and_regenerates_only_owned_assets(
 	// Arrange: command selection must not deserialize unrelated invalid settings.
 	std::fs::write(temp_dir.path().join("base.toml"), "invalid TOML!").unwrap();
 	let root = temp_dir.path().join("migrations");
-	let mut paths = ["federation", "marketplace"]
-		.into_iter()
-		.flat_map(|app| {
-			["forward", "backward"]
-				.into_iter()
-				.map(move |direction| format!("{app}/sql/{direction}/0005_seed.sql"))
-		})
-		.collect::<Vec<_>>();
-	for migration in [
-		"0021_conversation_scratch_space",
-		"0024_workspace_scratch_space",
-	] {
-		paths.extend(
-			["forward", "backward"]
-				.map(|direction| format!("workspaces/sql/{direction}/{migration}.sql")),
-		);
-	}
-	paths.extend(
-		["forward", "backward"]
-			.map(|direction| format!("identity/sql/{direction}/0067_scratch_member_policy.sql")),
-	);
-	paths.extend([
-		"execution/sql/forward/0090_run_created_at.sql".to_owned(),
-		"execution/sql/backward/0090_run_created_at.sql".to_owned(),
-	]);
+	let paths = ["federation/sql/forward/baseline_seed.sql"];
+
 	for path in &paths {
 		let path = root.join(path);
 		std::fs::create_dir_all(path.parent().unwrap()).unwrap();

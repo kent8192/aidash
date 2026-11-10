@@ -280,9 +280,7 @@ once its revision is no longer readable.
   and the pinned `max_graph_visits` for derived content. `complete` is `false`
   when a bound stopped a scan; because hidden records also consume the scan,
   the flag is the only signal they can affect. Run reads are found through a
-  lookup index that leads with the Unit
-  (`knowledge/0029_memory_run_read_lookup`), so the scan bound also bounds the
-  work.
+  lookup index that leads with the Unit, so the scan bound also bounds the work.
 - A Unit of another Bank answers exactly like an unknown ID (`null`, no Runs,
   no derived Units), so the view cannot probe identities outside the Bank
   (`impact_answers_a_foreign_unit_like_an_unknown_id`).
