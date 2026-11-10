@@ -70,6 +70,21 @@ class JournalRefreshTest(unittest.TestCase):
 
 
 class JournalSessionTest(unittest.TestCase):
+    def test_reset_requires_positive_termination_confirmation(self):
+        fixture = test_serve.ServeAcceptTest()
+        with tempfile.TemporaryDirectory() as directory:
+            runner = fixture.runner(directory, {"node_guard": ["guard"]})
+            sid, operation = str(uuid.uuid4()), str(uuid.uuid4())
+            path = Path(directory) / ("session-" + sid + ".json")
+            save(path, {"session_id": sid, "operation_id": operation, "status": "frozen"})
+            runner.get = Mock(return_value={"operation_id": operation})
+            runner.guard = Mock(return_value={"termination_confirmed": False})
+            runner.close_allocation = Mock()
+            with self.assertRaises(RuntimeError):
+                runner.stop_session(sid)
+            self.assertEqual(__import__("json").loads(path.read_text())["status"], "frozen")
+            runner.close_allocation.assert_not_called()
+
     def test_refresh_rejects_a_running_kernel_then_installs_verified_bytes_when_frozen(self):
         fixture = test_serve.ServeAcceptTest()
         with tempfile.TemporaryDirectory() as directory:
