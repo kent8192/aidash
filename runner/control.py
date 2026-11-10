@@ -974,7 +974,9 @@ class Runner(AllocationJournal):
         return {"status": session["status"] if live else "reset", "session_id": sid, "live": live,
                 "reason": None if live else "interpreter_lost_or_idle", "last_used": session.get("last_used")}
 
-    def stop_session(self, sid):
+    def stop_session(self, sid, expected_instance=None):
+        if expected_instance is not None and expected_instance != self.instance:
+            raise Rejected(409, "Python session runner instance changed")
         path = self.root / ("session-" + identity(sid) + ".json")
         if not path.exists():
             return {"status": "absent", "termination_confirmed": True}
@@ -1967,7 +1969,13 @@ class Handler(BaseHTTPRequestHandler):
             if self.command == "GET" and not session_match[2]:
                 return runner.session(session_match[1])
             if self.command == "POST" and session_match[2]:
-                return runner.stop_session(session_match[1])
+                size = int(self.headers.get("Content-Length", "0"))
+                if size > 256:
+                    raise Rejected(413, "session stop request limit")
+                body = json.loads(self.rfile.read(size)) if size else None
+                if body is not None and (not isinstance(body, dict) or set(body) != {"instance"} or not isinstance(body["instance"], str)):
+                    raise Rejected(400, "invalid session stop request")
+                return runner.stop_session(session_match[1], body["instance"] if body else None)
         if self.command == "GET" and path == "/v1/health":
             return {"protocol": "aidash-runner/1", "runtime_class": runner.config["runtime_class"],
                     "image": runner.config["image"], "maximum_seconds": runner.config["maximum_seconds"],

@@ -5,6 +5,8 @@ import hashlib
 import copy
 import os
 import uuid
+import io
+from types import SimpleNamespace
 from unittest.mock import Mock
 from pathlib import Path
 from unittest.mock import patch
@@ -13,7 +15,7 @@ import test_serve
 os.environ.setdefault("AIDASH_OUTPUT_BYTES", "1024")
 import collector
 import journal_access
-from control import Rejected, save
+from control import Handler, Rejected, save
 
 
 class JournalManifestTest(unittest.TestCase):
@@ -71,6 +73,29 @@ class JournalRefreshTest(unittest.TestCase):
 
 
 class JournalSessionTest(unittest.TestCase):
+    def test_session_absence_on_a_different_runner_does_not_prove_termination(self):
+        fixture = test_serve.ServeAcceptTest()
+        with tempfile.TemporaryDirectory() as directory:
+            runner = fixture.runner(directory)
+            runner.instance = "new-runner"
+            with self.assertRaises(Rejected):
+                runner.stop_session(str(uuid.uuid4()), "old-runner")
+
+    def test_session_stop_http_checks_the_runner_instance(self):
+        fixture = test_serve.ServeAcceptTest()
+        with tempfile.TemporaryDirectory() as directory:
+            runner = fixture.runner(directory)
+            runner.instance, runner.token = "new-runner", "token"
+            handler = object.__new__(Handler)
+            handler.server = SimpleNamespace(runner=runner)
+            handler.command = "POST"
+            handler.path = "/v1/sessions/" + str(uuid.uuid4()) + "/stop"
+            data = b'{"instance":"old-runner"}'
+            handler.headers = {"Authorization": "Bearer token", "Content-Length": str(len(data))}
+            handler.rfile = io.BytesIO(data)
+            with self.assertRaises(Rejected):
+                handler.handle_request()
+
     def test_reset_requires_positive_termination_confirmation(self):
         fixture = test_serve.ServeAcceptTest()
         with tempfile.TemporaryDirectory() as directory:
