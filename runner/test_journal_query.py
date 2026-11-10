@@ -133,6 +133,7 @@ class JournalSessionTest(unittest.TestCase):
         fixture = test_serve.ServeAcceptTest()
         with tempfile.TemporaryDirectory() as directory:
             runner = fixture.runner(directory, {"node_guard": ["guard"]})
+            runner.instance = "runner-one"
             runner.kube_json = Mock(return_value={"items": []})
             runner.start = Mock()
             runner.begin_allocation_work = Mock()
@@ -146,7 +147,12 @@ class JournalSessionTest(unittest.TestCase):
                     "size": 3, "digest": hashlib.sha256(b"new").hexdigest()}
             request = {"operation_id": str(uuid.uuid4()), "area_id": run, "epoch": 2,
                        "digest": "fixture", "usage_tenant": "acme", "kind": "journal",
-                       "code": "journal()", "seconds": 10, "files": [file], "session_id": sid}
+                       "code": "journal()", "seconds": 10, "files": [file], "session_id": sid,
+                       "runner_instance": "runner-one"}
+            wrong_instance = copy.deepcopy(request)
+            wrong_instance['runner_instance'] = 'runner-replaced'
+            with self.assertRaises(Rejected):
+                runner.accept(wrong_instance)
             wrong_kind = copy.deepcopy(request)
             wrong_kind['kind'] = 'python'
             with self.assertRaises(Rejected):

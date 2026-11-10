@@ -515,12 +515,14 @@ class Runner(AllocationJournal):
         if not self.proven and not admission_probe:
             raise Rejected(503, "runner isolation is not proven; new work is refused")
         kind = request.get("kind")
-        optional = {"session_id", "egress", "usage_tenant"} | ({"port"} if kind == "serve" else set())
+        optional = {"session_id", "egress", "usage_tenant"} | ({"port"} if kind == "serve" else set()) | ({"runner_instance"} if kind == "journal" else set())
         if set(request) - optional != {"operation_id", "area_id", "epoch", "digest", "kind", "code", "seconds", "files"}:
             raise Rejected(400, "invalid runner contract")
         if not admission_probe and (not isinstance(request.get("usage_tenant"), str) or not request["usage_tenant"] or len(request["usage_tenant"].encode()) > 255):
             raise Rejected(400, "native allocation usage context required")
         operation, area = identity(request["operation_id"]), identity(request["area_id"])
+        if kind == "journal" and request.get("runner_instance") != self.instance:
+            raise Rejected(409, "Journal Query runner instance changed")
         if kind == "journal" and 'egress' in request:
             raise Rejected(400, "Journal Query cannot use egress")
         if 'egress' in request:
