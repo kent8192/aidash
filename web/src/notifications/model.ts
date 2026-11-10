@@ -80,6 +80,7 @@ export class NoticeStore {
       const before = this.previous.get(entry.key);
       const input = item.kind === "approval" || item.kind === "input";
       const newInput = input && !this.announcedInputs.has(entry.key);
+      const taskStatusRevision = JSON.stringify([item.id, entry.signature]);
       // First snapshots, newly granted workspaces and new remote nodes are quiet.
       // A newly loaded terminal task is history, not proof of a new completion.
       if (
@@ -87,7 +88,8 @@ export class NoticeStore {
           (entry.eventScope && this.scopes.has(entry.eventScope))) &&
         (newInput ||
           (!input &&
-            (!entry.eventId || !this.seenTaskStatuses.has(item.id)) &&
+            (!entry.eventId ||
+              !this.seenTaskStatuses.has(taskStatusRevision)) &&
             ((before && before.kind !== item.kind) ||
               (!before &&
                 entry.eventId &&
@@ -97,7 +99,7 @@ export class NoticeStore {
                     entry.eventSequence >
                       (this.eventWatermarks.get(entry.eventScope) ??
                         Infinity))) &&
-                !this.seenTaskStatuses.has(item.id)))))
+                !this.seenTaskStatuses.has(taskStatusRevision)))))
       ) {
         fresh.push(item);
       }
@@ -107,7 +109,8 @@ export class NoticeStore {
       if (entry.eventId) {
         this.seenEvents.add(entry.eventId);
         const item = notice(entry);
-        if (item) this.seenTaskStatuses.add(item.id);
+        if (item)
+          this.seenTaskStatuses.add(JSON.stringify([item.id, entry.signature]));
       }
     if (frame.eventWatermark) {
       const { scope, sequence } = frame.eventWatermark;
