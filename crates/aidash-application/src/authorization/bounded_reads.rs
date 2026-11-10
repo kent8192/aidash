@@ -109,6 +109,17 @@ mod tests {
 	}
 	#[async_trait]
 	impl Scope for Hidden {
+		async fn require_workspace(&mut self, _: Uuid) -> Result<()> {
+			unreachable!()
+		}
+		async fn workspace_runs(
+			&mut self,
+			_: Uuid,
+			_: bool,
+			_: Option<Uuid>,
+		) -> Result<Vec<RawRun>> {
+			unreachable!()
+		}
 		async fn require_task(&mut self, _: Uuid) -> Result<()> {
 			Ok(())
 		}
@@ -183,6 +194,17 @@ mod tests {
 	}
 	#[async_trait]
 	impl Scope for Requests {
+		async fn require_workspace(&mut self, _: Uuid) -> Result<()> {
+			unreachable!()
+		}
+		async fn workspace_runs(
+			&mut self,
+			_: Uuid,
+			_: bool,
+			_: Option<Uuid>,
+		) -> Result<Vec<RawRun>> {
+			unreachable!()
+		}
 		async fn require_task(&mut self, _: Uuid) -> Result<()> {
 			unreachable!()
 		}
