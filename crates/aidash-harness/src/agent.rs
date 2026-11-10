@@ -839,6 +839,7 @@ impl<'a> Executor<'a> {
 		harness_contract: aidash_domain::harness_contract::HarnessContract,
 		mut plan: aidash_application::context::SummaryPlan,
 		tools: &Tools,
+		retry_truncated: bool,
 	) -> Result<()> {
 		use aidash_application::context::{
 			record_stage, record_tokens, summary_candidate, summary_request,
@@ -888,9 +889,11 @@ impl<'a> Executor<'a> {
 		// the bound from the pinned model, while keeping the summary output cap.
 		let reserved_output = model_cfg.output_token_limit();
 		let max_tokens = max_tokens.min(summary.max_tokens).min(reserved_output);
+		let mut summary_model = model_cfg.clone();
+		summary_model.reasoning_effort = Some(aidash_domain::model::ReasoningEffort::None);
 		let provider = self
 			.environment
-			.provider(model_cfg.clone())
+			.provider(summary_model)
 			.map_err(|_| unavailable())?;
 		let request = loop {
 			if let Some(last) = plan.absorbed.last() {
@@ -1106,6 +1109,42 @@ impl<'a> Executor<'a> {
 					)
 					.await?;
 				record_stage("summary", "invalid");
+				if retry_truncated
+					&& matches!(error, Error::Context(ContextFailure::OutputTruncated))
+				{
+					let keep = if fitting.native() {
+						let turns = aidash_domain::projection::native::model_turns(&plan.absorbed);
+						let count = turns.iter().flatten().max().map_or(0, |last| last + 1);
+						let retained = count / 2;
+						if retained == 0 {
+							0
+						} else {
+							turns
+								.iter()
+								.position(|turn| turn.is_some_and(|turn| turn >= retained))
+								.unwrap_or(plan.absorbed.len())
+						}
+					} else {
+						plan.absorbed.len() / 2
+					};
+					if keep > 0 && keep < plan.absorbed.len() {
+						plan.absorbed.truncate(keep);
+						return Box::pin(self.summarize(
+							run,
+							token,
+							guard,
+							visibility,
+							home,
+							fitting,
+							model_ref,
+							harness_contract,
+							plan,
+							tools,
+							false,
+						))
+						.await;
+					}
+				}
 				return Err(Error::Context(ContextFailure::SummaryInvalid));
 			}
 			Err(error) => {
@@ -2291,7 +2330,7 @@ impl<'a> Executor<'a> {
                             *entry = original.into_iter().find(|item| item.seq == entry.seq && matches!(item.event, ContextEvent::Human { .. }))
                                 .ok_or_else(|| Error::Conflict("human Journal event is missing".into()))?;
                         }
-                        return Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, &agent.model, agent.harness_contract, *plan, &tools)).await
+                        return Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, &agent.model, agent.harness_contract, *plan, &tools, true)).await
                             .map_err(at_stage("compaction"))
                             .map_err(|error| remote_budget(guard, error));
                     }

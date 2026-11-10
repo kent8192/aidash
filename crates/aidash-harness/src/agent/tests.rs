@@ -159,6 +159,9 @@ struct State {
 	/// Ordinary inference requests answered with a provider Context Overflow.
 	overflows: Mutex<u32>,
 	summary_text: Mutex<Option<String>>,
+	summary_truncations: Mutex<u32>,
+	model_reasoning: bool,
+	provider_configs: Mutex<Vec<ModelConfig>>,
 	/// The summarizer is approved at reservation but revoked during its call.
 	revoke_summarizer: bool,
 	/// A source an adopted Execution Summary depends on is no longer readable.
@@ -355,6 +358,9 @@ impl Backend {
 		let mut config = json!({
 			"provider":"openrouter","model_id":"fixture","endpoint":"http://fixture.invalid/v1","context_window":window,"max_output_tokens":output,"modalities":["text"],"cost":{}
 		});
+		if id == "model" && self.0.model_reasoning {
+			config["reasoning_effort"] = json!("medium");
+		}
 		if self.0.plan_connection && id != "summarizer" {
 			config["plan_connection"] = json!("chatgpt");
 		}
@@ -1620,7 +1626,8 @@ impl ExecutionEnvironment for Backend {
 			completion: self.0.completion.clone(),
 		})
 	}
-	fn provider(&self, _model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
+	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
+		self.0.provider_configs.lock().unwrap().push(model);
 		Ok(Arc::new(self.clone()))
 	}
 	async fn approval_decider(
@@ -1687,6 +1694,18 @@ impl ModelProvider for Backend {
 			assert!(request.tools.is_empty());
 			self.record("summarizer.infer");
 			self.0.requests.lock().unwrap().push(request);
+			let mut truncations = self.0.summary_truncations.lock().unwrap();
+			if *truncations > 0 {
+				*truncations -= 1;
+				return Err(Error::TerminalResponse(
+					aidash_domain::context::recovery::Failure::OutputTruncated,
+					Box::new(ModelResponse {
+						usage_complete: true,
+						..Default::default()
+					}),
+				));
+			}
+			drop(truncations);
 			let text = self
 				.0
 				.summary_text
@@ -1878,6 +1897,9 @@ fn fixture() -> Fixture {
 		context_policy: None,
 		overflows: Mutex::new(0),
 		summary_text: Mutex::new(None),
+		summary_truncations: Mutex::new(0),
+		model_reasoning: false,
+		provider_configs: Mutex::new(vec![]),
 		revoke_summarizer: false,
 		stale_summary_dependencies: false,
 		summary_checks_before_revocation: None,
@@ -3686,6 +3708,7 @@ async fn summary_output_is_capped_at_the_summarizer_limit(mut fixture: Fixture) 
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
 	state.context_policy = Some(recovery_policy(true));
 	state.summarizer_output_tokens = 1024;
+	state.model_reasoning = true;
 	*state.summary_text.lock().unwrap() = Some(valid_summary());
 	thinking_with_history(&mut fixture, 40);
 	advance_sources(&mut fixture).await.unwrap();
@@ -3697,6 +3720,102 @@ async fn summary_output_is_capped_at_the_summarizer_limit(mut fixture: Fixture) 
 		.unwrap();
 	// The policy default (4096) is clamped to the pinned summarizer's limit.
 	assert_eq!(summary.max_output_tokens, 1024);
+	let configs = fixture.backend.0.provider_configs.lock().unwrap();
+	let config = configs.last().unwrap();
+	assert_eq!(
+		serde_json::to_value(config.reasoning_effort).unwrap(),
+		json!("none")
+	);
+	assert_eq!(config.model_id, "fixture");
+	drop(configs);
+	drop(requests);
+	advance_sources(&mut fixture).await.unwrap();
+	let configs = fixture.backend.0.provider_configs.lock().unwrap();
+	assert_eq!(
+		serde_json::to_value(configs.last().unwrap().reasoning_effort).unwrap(),
+		json!("medium")
+	);
+}
+
+#[rstest]
+#[case::retry_succeeds(1, true)]
+#[case::retry_also_truncated(2, false)]
+#[tokio::test]
+async fn truncated_summary_retries_once_with_a_smaller_range(
+	mut fixture: Fixture,
+	#[case] truncations: u32,
+	#[case] succeeds: bool,
+) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(true));
+	state.scoped = true;
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	*state.summary_truncations.lock().unwrap() = truncations;
+	thinking_with_history(&mut fixture, 40);
+	let result = advance_sources(&mut fixture).await;
+	assert_eq!(result.is_ok(), succeeds, "{result:?}");
+	let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
+	assert_eq!(attempts.len(), 2);
+	assert_eq!(attempts[0].1, Some(Outcome::Invalid));
+	assert_eq!(
+		attempts[1].1,
+		Some(if succeeds {
+			Outcome::Adopted
+		} else {
+			Outcome::Invalid
+		})
+	);
+	assert!(attempts[1].0.source_through_seq < attempts[0].0.source_through_seq);
+	assert_eq!(fixture.run.context.execution_summary.is_some(), succeeds);
+	let calls = calls(&fixture);
+	assert_eq!(
+		calls
+			.iter()
+			.filter(|call| **call == "reservation.admit")
+			.count(),
+		2
+	);
+	assert_eq!(
+		calls
+			.iter()
+			.filter(|call| **call == "reservation.settle")
+			.count(),
+		2
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn truncated_native_summary_retries_with_whole_model_turns(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(true));
+	state.projection = ProjectionVersion::Native;
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	*state.summary_truncations.lock().unwrap() = 1;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	for i in 0..20 {
+		let id = format!("call-{i}");
+		fixture.run.context.push(ContextEvent::Assistant {
+			provider_activity: vec![],
+			epoch: i,
+			text: "working".into(),
+			calls: vec![id.clone()],
+		});
+		fixture.run.context.push(ContextEvent::tool(
+			call(&id, "read", json!({})),
+			json!("data"),
+		));
+	}
+	fixture.run.context.journal.inferred_through = fixture.run.context.journal.head;
+	fixture.run.context.offload_reads.summary_pending = true;
+	advance_sources(&mut fixture).await.unwrap();
+	let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
+	assert_eq!(attempts.len(), 2);
+	let first = attempts[0].0.source_through_seq;
+	let second = attempts[1].0.source_through_seq;
+	assert_eq!(second * 2, first);
+	assert_eq!(second % 2, 0, "a call and its result must stay together");
+	assert_eq!(attempts[1].1, Some(Outcome::Adopted));
 }
 
 fn fixture_with(configure: impl FnOnce(&mut State)) -> Fixture {
