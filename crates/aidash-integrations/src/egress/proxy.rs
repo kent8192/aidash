@@ -768,6 +768,9 @@ struct Audit {
 	/// The code the client received, when the gateway answered with one.
 	error: Option<&'static str>,
 	wait_ms: Option<u64>,
+	/// Set while the connection waits for a limit, so that a client that gives
+	/// up meanwhile leaves a record of how long it waited.
+	waiting_since: Option<std::time::Instant>,
 	finished: bool,
 	started_record: bool,
 }
@@ -852,7 +855,9 @@ impl Audit {
 			duration_ms: self.started.elapsed().as_millis().min(u64::MAX as u128) as u64,
 			outcome: self.outcome.to_owned(),
 			error: self.error.map(str::to_owned),
-			wait_ms: self.wait_ms,
+			wait_ms: self
+				.wait_ms
+				.or_else(|| self.waiting_since.map(|since| millis(since.elapsed()))),
 		}
 	}
 	/// Answer the client with an error code and keep it in the record.
@@ -1093,6 +1098,7 @@ pub(super) async fn forward(
 		outcome: "refused",
 		error: None,
 		wait_ms: None,
+		waiting_since: None,
 		finished: false,
 		started_record: false,
 	};
@@ -1125,8 +1131,13 @@ pub(super) async fn forward(
 	if connect {
 		drop(listener_permit.lock().unwrap().take());
 	}
+	// Until the wait ends, the record says the client went away: that is what
+	// it means if this future is dropped while it waits.
+	audit.error = Some(CLIENT_CLOSED);
+	audit.waiting_since = Some(std::time::Instant::now());
 	let permit = match manager.acquire(&scope, LIMIT_WAIT).await {
 		Ok((permit, waited)) => {
+			audit.error = None;
 			audit.wait_ms = Some(millis(waited));
 			if !waited.is_zero()
 				&& let Err((status, code)) = still_active(&*scopes, &scope, &token, &host).await
@@ -2519,6 +2530,7 @@ mod tests {
 						outcome: "refused",
 						error: None,
 						wait_ms: None,
+						waiting_since: None,
 						finished: false,
 						started_record: false,
 					};
@@ -2625,6 +2637,7 @@ mod tests {
 						outcome: "refused",
 						error: None,
 						wait_ms: None,
+						waiting_since: None,
 						finished: false,
 						started_record: false,
 					};
@@ -2736,6 +2749,7 @@ mod tests {
 						outcome: "refused",
 						error: None,
 						wait_ms: None,
+						waiting_since: None,
 						finished: false,
 						started_record: false,
 					};
@@ -2866,6 +2880,7 @@ mod tests {
 						outcome: "refused",
 						error: None,
 						wait_ms: None,
+						waiting_since: None,
 						finished: false,
 						started_record: false,
 					};
@@ -3064,6 +3079,7 @@ mod tests {
 			outcome: "refused",
 			error: None,
 			wait_ms: None,
+			waiting_since: None,
 			finished: false,
 			started_record: false,
 		}
