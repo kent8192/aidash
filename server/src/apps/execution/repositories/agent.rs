@@ -550,10 +550,13 @@ impl ExecutionStore for RunStore {
 				store: self.store.clone(),
 			},
 		);
-		let _ = crate::apps::knowledge::repositories::engine_jobs::offloads::schedule(
-			queue,
-			run.id,
-			ranges.to_vec(),
+		// The extraction runs detached; the step does not wait for it.
+		drop(
+			crate::apps::knowledge::repositories::engine_jobs::offloads::schedule(
+				queue,
+				run.id,
+				ranges.to_vec(),
+			),
 		);
 		Ok(())
 	}

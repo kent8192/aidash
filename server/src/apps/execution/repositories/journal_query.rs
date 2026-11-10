@@ -55,7 +55,7 @@ async fn lock_active(access: &mut Access, run: Uuid) -> Result<()> {
 	)
 	.scalar_optional(&mut **access.tx)
 	.await?;
-	if !phase.is_some_and(|phase| !matches!(phase.as_str(), "COMPLETED" | "FAILED" | "CANCELLED")) {
+	if phase.is_none_or(|phase| matches!(phase.as_str(), "COMPLETED" | "FAILED" | "CANCELLED")) {
 		return Err(Error::Conflict("RUN_NOT_ACTIVE".into()));
 	}
 	Ok(())
@@ -305,16 +305,14 @@ pub(crate) async fn execute(
 	if scope.record.data["key"] != key
 		&& scope.record.data["pending"] != true
 		&& scope.record.data["fresh"] != true
+		&& let Some(session) = scope.record.data["session_id"].as_str()
+		&& !scope.record.data["operation_id"].is_null()
 	{
-		if let Some(session) = scope.record.data["session_id"].as_str() {
-			if !scope.record.data["operation_id"].is_null() {
-				let live = transport
-					.request("GET", &format!("/v1/sessions/{session}"), None)
-					.await?;
-				if live["live"] != true {
-					scope.record.data["fingerprint"] = json!("interpreter_lost_or_idle");
-				}
-			}
+		let live = transport
+			.request("GET", &format!("/v1/sessions/{session}"), None)
+			.await?;
+		if live["live"] != true {
+			scope.record.data["fingerprint"] = json!("interpreter_lost_or_idle");
 		}
 	}
 	let session = match journal_query::open_session(&mut scope, &authority).await? {

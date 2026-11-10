@@ -728,7 +728,7 @@ impl<'a> RunDecisionJournal<'a> {
 		Ok(answered)
 	}
 
-	/// Checks that need no transaction: the boundary and pin, the evidence's	/// Record one approval decision (ADR 0077). Its identity commits to the
+	/// Record one approval decision (ADR 0077). Its identity commits to the
 	/// approval, the Decider, the Route and the state, so judging again after a
 	/// crash, under another worker, reproduces it: evidence already recorded under
 	/// that identity is kept, whatever worker judged it.

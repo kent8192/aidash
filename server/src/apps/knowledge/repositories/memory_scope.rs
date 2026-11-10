@@ -52,44 +52,6 @@ fn automatic_changes(
 	Ok(changes)
 }
 
-#[cfg(test)]
-mod automatic_tests {
-	use super::*;
-	#[test]
-	fn offloaded_facts_are_recorded_directly_with_stable_provenance() {
-		let run = Uuid::now_v7();
-		let source = Evidence::JournalRange {
-			run_id: run,
-			from_seq: 2,
-			through_seq: 4,
-		};
-		let fact = Content {
-			mental_model: None,
-			text: "A fact".into(),
-			kind: Kind::World,
-			learning: Learning::Fact,
-			verification: Verification::Unverified,
-			occurred: None,
-			entities: vec![],
-			evidence: vec![source.clone()],
-			links: vec![],
-		};
-		let operation = Uuid::now_v7();
-		let first = automatic_changes(operation, &source, std::slice::from_ref(&fact)).unwrap();
-		assert_eq!(
-			first,
-			automatic_changes(operation, &source, std::slice::from_ref(&fact)).unwrap()
-		);
-		let Change::Add { content, .. } = &first[0] else {
-			panic!("expected direct admission")
-		};
-		assert_eq!(content.verification, Verification::Recorded);
-		assert_eq!(content.evidence, vec![source.clone()]);
-		let mut unsupported = fact;
-		unsupported.evidence.clear();
-		assert!(automatic_changes(operation, &source, &[unsupported]).is_err());
-	}
-}
 impl Scope<'_, '_> {
 	async fn stamp(&mut self, bank: &Bank) -> Result<String> {
 		let bank_id = repository::bank_id(self.lease, bank, false)
@@ -596,5 +558,44 @@ impl MemoryScope for Scope<'_, '_> {
 		}
 		self.delivered.extend(selected);
 		Ok(())
+	}
+}
+
+#[cfg(test)]
+mod automatic_tests {
+	use super::*;
+	#[test]
+	fn offloaded_facts_are_recorded_directly_with_stable_provenance() {
+		let run = Uuid::now_v7();
+		let source = Evidence::JournalRange {
+			run_id: run,
+			from_seq: 2,
+			through_seq: 4,
+		};
+		let fact = Content {
+			mental_model: None,
+			text: "A fact".into(),
+			kind: Kind::World,
+			learning: Learning::Fact,
+			verification: Verification::Unverified,
+			occurred: None,
+			entities: vec![],
+			evidence: vec![source.clone()],
+			links: vec![],
+		};
+		let operation = Uuid::now_v7();
+		let first = automatic_changes(operation, &source, std::slice::from_ref(&fact)).unwrap();
+		assert_eq!(
+			first,
+			automatic_changes(operation, &source, std::slice::from_ref(&fact)).unwrap()
+		);
+		let Change::Add { content, .. } = &first[0] else {
+			panic!("expected direct admission")
+		};
+		assert_eq!(content.verification, Verification::Recorded);
+		assert_eq!(content.evidence, vec![source.clone()]);
+		let mut unsupported = fact;
+		unsupported.evidence.clear();
+		assert!(automatic_changes(operation, &source, &[unsupported]).is_err());
 	}
 }

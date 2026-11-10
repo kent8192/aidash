@@ -56,7 +56,7 @@ impl ToolOperations for Operations {
 			aidash_domain::context::journal_export::JournalLine::from(&HistoryEntry::new(
 				seq,
 				ContextEvent::ModelMediaObservation {
-					text: text.into(),
+					text,
 					through_seq: None,
 					truncated: false,
 				},

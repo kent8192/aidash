@@ -3738,25 +3738,25 @@ async fn summary_output_exceeds_step_limit_but_respects_provider_limit(
 	thinking_with_history(&mut fixture, 40);
 	advance_sources(&mut fixture).await.unwrap();
 	assert_eq!(events(&fixture).last().unwrap(), "context.compacted");
-	let requests = fixture.backend.0.requests.lock().unwrap();
-	let summary = requests
-		.iter()
-		.find(|request| request.response_format.is_some())
-		.unwrap();
-	assert_eq!(summary.max_output_tokens, expected);
-	assert_eq!(
-		fixture.backend.0.reservations.lock().unwrap()[0],
-		(62_000, expected)
-	);
-	let configs = fixture.backend.0.provider_configs.lock().unwrap();
-	let config = configs.last().unwrap();
-	assert_eq!(
-		serde_json::to_value(config.reasoning_effort).unwrap(),
-		json!("none")
-	);
-	assert_eq!(config.model_id, "fixture");
-	drop(configs);
-	drop(requests);
+	{
+		let requests = fixture.backend.0.requests.lock().unwrap();
+		let summary = requests
+			.iter()
+			.find(|request| request.response_format.is_some())
+			.unwrap();
+		assert_eq!(summary.max_output_tokens, expected);
+		assert_eq!(
+			fixture.backend.0.reservations.lock().unwrap()[0],
+			(62_000, expected)
+		);
+		let configs = fixture.backend.0.provider_configs.lock().unwrap();
+		let config = configs.last().unwrap();
+		assert_eq!(
+			serde_json::to_value(config.reasoning_effort).unwrap(),
+			json!("none")
+		);
+		assert_eq!(config.model_id, "fixture");
+	}
 	advance_sources(&mut fixture).await.unwrap();
 	let configs = fixture.backend.0.provider_configs.lock().unwrap();
 	assert_eq!(
@@ -4409,19 +4409,20 @@ async fn summarized_subnode_results_remain_data_references(mut fixture: Fixture)
 	*input = serde_json::from_value(value).unwrap();
 	fixture.run.state = RunState::Thinking(ThinkingState::default());
 	advance_sources(&mut fixture).await.unwrap();
-	let requests = fixture.backend.0.requests.lock().unwrap();
-	let state = step_state(requests.last().unwrap());
-	assert_eq!(state["run_messages"][0]["trust"], "data");
-	assert_eq!(
-		state["run_messages"][0]["content"]["requires_workspace_read"],
-		false
-	);
-	assert!(
-		!state
-			.to_string()
-			.contains("Also include the rollback steps.")
-	);
-	drop(requests);
+	{
+		let requests = fixture.backend.0.requests.lock().unwrap();
+		let state = step_state(requests.last().unwrap());
+		assert_eq!(state["run_messages"][0]["trust"], "data");
+		assert_eq!(
+			state["run_messages"][0]["content"]["requires_workspace_read"],
+			false
+		);
+		assert!(
+			!state
+				.to_string()
+				.contains("Also include the rollback steps.")
+		);
+	}
 	fixture.run.context.run_message_summary_seq = 2;
 	fixture.run.state = RunState::Thinking(ThinkingState::default());
 	advance_sources(&mut fixture).await.unwrap();

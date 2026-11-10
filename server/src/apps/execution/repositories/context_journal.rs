@@ -340,9 +340,6 @@ async fn fence(tx: &mut native::Transaction, run: Uuid, worker: Uuid) -> Result<
 		.ok_or_else(|| Error::Conflict("worker lease lost".into()))
 }
 
-/// The worker's lease on the Run is live by the clock now. `fence` compares
-/// with `CURRENT_TIMESTAMP`, which stays at the transaction's start.
-
 /// Settle `attempt` only while it is open; returns whether it was.
 async fn settle(
 	tx: &mut native::Transaction,
