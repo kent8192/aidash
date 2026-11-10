@@ -1814,6 +1814,45 @@ impl aidash_application::ports::bindings::BindingResolver for Environment<'_> {
 		}
 		.tools(run)
 		.await?;
+		// Journal retrieval is intrinsic, but becomes available only after the
+		// offloader has removed something from this Run's projection.
+		tools.retain(|_, tool| {
+			let contract = tool.contract();
+			let journal = match &contract.identity {
+				aidash_domain::tool::ToolIdentity::Builtin(id) => {
+					["journal_query", "journal_search", "journal_read"]
+						.iter()
+						.any(|name| id == &format!("builtin:{name}"))
+				}
+				aidash_domain::tool::ToolIdentity::Descriptor(id) => run
+					.context
+					.binding_snapshot
+					.as_ref()
+					.is_some_and(|snapshot| {
+						snapshot.bindings.iter().any(|binding| {
+							&binding.identity == id
+								&& serde_json::from_value::<
+									aidash_domain::tool::providers::ToolDescriptor,
+								>(binding.definition.config.clone())
+								.is_ok_and(|descriptor| descriptor.provider == "core.journal@1")
+						})
+					}),
+				_ => false,
+			};
+			!journal
+		});
+		if aidash_domain::context::journal_query::offloaded_any(&run.context) {
+			for name in aidash_application::registry::system::journal_tools(
+				self.federation.store.capabilities.0.runner.is_some(),
+			) {
+				if tools.contains_key(*name) {
+					return Err(aidash_application::Error::Conflict(format!(
+						"Journal tool alias is already bound: {name}"
+					)));
+				}
+				tools.insert((*name).to_owned(), providers.coordination_tool(name)?);
+			}
+		}
 		if self
 			.authority
 			.as_ref()
