@@ -1028,14 +1028,18 @@ impl ForeignAgentSnapshot {
 		Ok(result)
 	}
 	pub fn validate(&self) -> Result<()> {
+		let builtins = memory_defaults::definitions()?;
 		if self.definitions.iter().any(|definition| {
 			definition.identity.registry_deployment != self.agent.registry_deployment
 				|| definition.definition.installation.is_some()
 				|| matches!(
 					definition.definition.kind.as_str(),
 					"memory" | "source" | "skill"
-				) && !source_defaults::workspace_observation()
-					.is_ok_and(|source| source == definition.definition)
+				) && !builtins
+					.iter()
+					.any(|builtin| builtin == &definition.definition)
+					&& !source_defaults::workspace_observation()
+						.is_ok_and(|source| source == definition.definition)
 				|| definition.definition.kind == "agent"
 					&& serde_json::from_value::<AgentBindings>(definition.definition.config.clone())
 						.is_ok_and(|agent| !agent.agent_plugins.is_empty())
