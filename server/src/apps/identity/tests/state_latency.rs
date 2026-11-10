@@ -11,7 +11,10 @@
 //! are compact JSON values after parsing and reserializing the response.
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
 use serde_json::{Value, json};
-use std::time::{Duration, Instant};
+use std::{
+	collections::BTreeMap,
+	time::{Duration, Instant},
+};
 use uuid::Uuid;
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
@@ -22,6 +25,78 @@ const WORKSPACES: i64 = 665;
 const RUNS: i64 = 670;
 const WARM_UP: usize = 5;
 const TIMED: usize = 30;
+
+// Group object keys across Runs (and, recursively, their array elements). The
+// byte counts are value-only compact JSON, so children exclude keys and framing.
+fn breakdown(path: &str, values: &[&Value], depth: usize) {
+	if depth > 10 {
+		return;
+	}
+	let mut groups: BTreeMap<&str, Vec<&Value>> = BTreeMap::new();
+	let mut objects = Vec::new();
+	for value in values {
+		match value {
+			Value::Object(_) => objects.push(*value),
+			Value::Array(items) => {
+				println!(
+					"RUN_ARRAY {path} items={} bytes={}",
+					items.len(),
+					serde_json::to_vec(value).unwrap().len()
+				);
+				objects.extend(items.iter());
+			}
+			_ => {}
+		}
+	}
+	for object in objects {
+		if let Value::Object(fields) = object {
+			for (key, value) in fields {
+				groups.entry(key).or_default().push(value);
+			}
+		}
+	}
+	let mut totals: Vec<_> = groups
+		.into_iter()
+		.map(|(key, items)| {
+			let bytes: usize = items
+				.iter()
+				.map(|value| serde_json::to_vec(value).unwrap().len())
+				.sum();
+			(key, bytes, items)
+		})
+		.collect();
+	totals.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+	for (key, bytes, items) in &totals {
+		println!(
+			"RUN_FIELD {path}.{key} bytes={bytes} occurrences={}",
+			items.len()
+		);
+	}
+	for (key, bytes, items) in totals.into_iter().take(3) {
+		if bytes >= 1_000 {
+			breakdown(&format!("{path}.{key}"), &items, depth + 1);
+		}
+	}
+}
+
+fn report_runs(state: &Value) {
+	let runs = state["runs"].as_array().expect("runs array");
+	assert_eq!(runs.len(), 50);
+	let mut sizes: Vec<_> = runs
+		.iter()
+		.map(|run| (serde_json::to_vec(run).unwrap().len(), run))
+		.collect();
+	sizes.sort_by_key(|(bytes, _)| *bytes);
+	let median = (sizes[24].0 + sizes[25].0) as f64 / 2.0;
+	println!(
+		"RUN_SIZES n={} min={} median={median} max={}",
+		sizes.len(),
+		sizes[0].0,
+		sizes[49].0
+	);
+	breakdown("runs", &runs.iter().collect::<Vec<_>>(), 0);
+	breakdown("largest_run", &[sizes[49].1], 0);
+}
 
 fn percentile(sorted: &[Duration], p: f64) -> Duration {
 	// Nearest-rank percentile.
@@ -200,6 +275,7 @@ async fn state_latency_with_665_workspaces_and_670_runs(
 		);
 	}
 	println!("BODY_BYTES {}", serde_json::to_vec(&state).unwrap().len());
+	report_runs(&state);
 	assert!(
 		!statements.is_empty(),
 		"SQL statement recorder saw no statements"
