@@ -106,11 +106,17 @@ pub fn note_journal_result(
 /// Marker content is tool data. It never suggests invoking the original tool.
 const MARKER_READ: &str =
 	"Use Journal Query or its search and range-read fallback to read this result.";
-pub fn marker(seq: u64) -> Value {
+pub fn marker(seq: u64, original: &Value) -> Value {
+	let text = original
+		.as_str()
+		.map(str::to_owned)
+		.unwrap_or_else(|| original.to_string());
+	let head: String = text.chars().take(300).collect();
 	json!({
 		"contract": "aidash.context.offloaded-result/1",
 		"journal": {"from_seq": seq, "through_seq": seq},
-		"read": MARKER_READ
+		"read": MARKER_READ,
+		"head": head
 	})
 }
 
@@ -121,10 +127,13 @@ pub fn is_marker(value: &Value) -> bool {
 	let Some(range) = fields.get("journal").and_then(Value::as_object) else {
 		return false;
 	};
-	fields.len() == 3
+	fields.len() == 4
 		&& range.len() == 2
 		&& value["contract"] == "aidash.context.offloaded-result/1"
 		&& value["read"] == MARKER_READ
+		&& value["head"]
+			.as_str()
+			.is_some_and(|head| head.chars().count() <= 300)
 		&& value["journal"]["from_seq"]
 			.as_u64()
 			.is_some_and(|seq| seq > 0 && value["journal"]["through_seq"].as_u64() == Some(seq))
@@ -142,7 +151,7 @@ fn replace(context: &mut Context, index: usize, batch: &mut OffloadBatch) -> boo
 	{
 		return false;
 	}
-	let replacement = marker(entry.seq);
+	let replacement = marker(entry.seq, result);
 	if replacement.to_string().len() >= result.to_string().len() {
 		return false;
 	}
@@ -272,7 +281,11 @@ mod tests {
 
 	#[test]
 	fn marker_names_original_and_does_not_request_a_tool_reexecution() {
-		let text = marker(42).to_string();
+		let original = json!(format!("{}tail", "あ".repeat(300)));
+		let value = marker(42, &original);
+		assert_eq!(value["head"], "あ".repeat(300));
+		assert!(is_marker(&value));
+		let text = value.to_string();
 		assert!(text.contains("Journal Query"));
 		assert!(text.contains("\"from_seq\":42"));
 		assert!(text.contains("\"through_seq\":42"));
@@ -383,6 +396,9 @@ mod tests {
 
 	#[test]
 	fn a_tool_cannot_spoof_a_large_offloaded_marker() {
+		let mut spoof = marker(1, &json!("small"));
+		spoof["head"] = json!("x".repeat(301));
+		assert!(!is_marker(&spoof));
 		let mut context = Context::default();
 		context.push(ContextEvent::tool(
 			call("spoof"),

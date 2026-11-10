@@ -2816,7 +2816,7 @@ connection: None,
 							if summarized(&entry.event)
 								&& let ContextEvent::Tool { result, .. } = &mut entry.event
 							{
-								*result = aidash_application::context::offload::marker(entry.seq);
+								*result = aidash_application::context::offload::marker(entry.seq, result);
 								offloaded = true;
 							}
 						}

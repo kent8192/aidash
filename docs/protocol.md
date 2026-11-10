@@ -314,8 +314,9 @@ and Legacy projections.
 | `summary.call_budget`      | 8       | 1–64      | Summary calls per Run, including failed attempts                 |
 
 Large tool results are journaled before their projection becomes a short
-Offloaded Result marker. The marker identifies its Journal sequence and points
-to Journal Query or its fallback; the original call remains paired with it.
+Offloaded Result marker. The marker retains the first 300 characters of the
+result as data, identifies its Journal sequence, and points to Journal Query
+or its fallback; the original call remains paired with it.
 If the request still does not fit, older results are offloaded in a batch. The
 latest Native Model Turn stays intact, and the protected tail is bounded by
 size as well as count. The Context Journal remains the source of the original.
