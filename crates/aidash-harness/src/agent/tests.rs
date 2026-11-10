@@ -103,6 +103,7 @@ fn fixture_source_plan(resident: bool, registry: bool, direct: bool) -> Vec<Plan
 #[derive(Clone)]
 struct Backend(Arc<State>);
 struct State {
+	start_memory: Option<Value>,
 	extra_context_sources: Vec<(ContextSourcePhase, String, Value)>,
 	conversation_memory: bool,
 	source_receipts: bool,
@@ -1341,6 +1342,28 @@ impl ExecutionAuthority for Backend {
 
 #[async_trait]
 impl ExecutionEnvironment for Backend {
+	async fn run_start_memory(&self, run: &Run, _task: &Task) -> Result<Option<StartMemory>> {
+		let Some(content) = &self.0.start_memory else {
+			return Ok(None);
+		};
+		self.record("memory.start");
+		Ok(Some(StartMemory {
+			sources: vec![aidash_domain::memory::Evidence::JournalRange {
+				run_id: run.id,
+				from_seq: 1,
+				through_seq: 1,
+			}],
+			content: content.clone(),
+		}))
+	}
+	async fn hydrate_start_memory(
+		&self,
+		_run: &Run,
+		_sources: &[aidash_domain::memory::Evidence],
+	) -> Result<Value> {
+		self.record("memory.hydrate");
+		self.0.start_memory.clone().ok_or(Error::Forbidden)
+	}
 	fn context_source_plan(&self, run: &Run) -> Result<Vec<PlannedContextSource>> {
 		let mut plan = fixture_source_plan(
 			deferred_exposure(run)?.is_some(),
@@ -1841,6 +1864,7 @@ fn fixture() -> Fixture {
 		updated_at: now,
 	};
 	let backend = Backend(Arc::new(State {
+		start_memory: None,
 		extra_context_sources: vec![],
 		conversation_memory: false,
 		source_receipts: false,
@@ -2593,6 +2617,41 @@ async fn late_run_input_prevents_final_completion_and_output_publication(mut fix
 		"run.message_received"
 	);
 }
+#[rstest]
+#[tokio::test]
+async fn initial_memory_is_searched_once_and_rehydrated_as_data(mut fixture: Fixture) {
+	Arc::get_mut(&mut fixture.backend.0).unwrap().start_memory =
+		Some(json!({"fact":"initial memory"}));
+	for _ in 0..3 {
+		Executor::new(&fixture.backend)
+			.advance(
+				&mut fixture.run,
+				fixture.backend.0.token,
+				&mut fixture.backend.clone(),
+			)
+			.await
+			.unwrap();
+	}
+	let calls = fixture.backend.0.calls.lock().unwrap();
+	assert_eq!(
+		calls.iter().filter(|&&call| call == "memory.start").count(),
+		1
+	);
+	assert!(calls.contains(&"memory.hydrate"));
+	drop(calls);
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	assert!(
+		serde_json::to_string(&requests[0])
+			.unwrap()
+			.contains("initial memory")
+	);
+	assert!(
+		!serde_json::to_string(&fixture.run.context)
+			.unwrap()
+			.contains("initial memory")
+	);
+}
+
 #[rstest]
 #[tokio::test]
 async fn ready_inference_and_completion_use_the_same_durable_executor(mut fixture: Fixture) {

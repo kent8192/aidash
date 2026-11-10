@@ -1364,6 +1364,23 @@ impl<'a> Executor<'a> {
 				home.claim(&task, &entry).await?;
 				home.transition(aidash_domain::TaskStatus::Running).await?;
 				self.record_start_content(run, &agent).await?;
+				if !run.context.history.iter().any(|entry| {
+					matches!(entry.event, context::ContextEvent::MemoryRecall { .. })
+				}) {
+					match self.environment.run_start_memory(run, &task).await {
+						Ok(Some(memory)) => run.context.push(context::ContextEvent::MemoryRecall {
+							sources: memory.sources,
+							unavailable: false,
+							content: Some(memory.content),
+						}),
+						Ok(None) => {}
+						Err(_) => run.context.push(context::ContextEvent::MemoryRecall {
+							sources: vec![],
+							unavailable: true,
+							content: None,
+						}),
+					}
+				}
 				self.pin_plugin_tools(run, token, guard, visibility).await?;
 				run.state = RunState::Thinking(ThinkingState::default());
 				store.save_run(run, token, "run.started").await?;
@@ -1618,6 +1635,20 @@ impl<'a> Executor<'a> {
 				)
 				.await?;
 				let mut context = run.context.clone();
+				for entry in &mut context.history {
+					if let context::ContextEvent::MemoryRecall {
+						sources, unavailable, content,
+					} = &mut entry.event {
+						*content = Some(if *unavailable {
+							json!({"status":"unavailable"})
+						} else if sources.is_empty() {
+							json!({"status":"empty"})
+						} else {
+							self.environment.hydrate_start_memory(run, sources).await
+								.unwrap_or_else(|_| json!({"status":"unavailable"}))
+						});
+					}
+				}
 				capture_declared_coverage(&mut context, &tools, false);
 				copy_source_records(&run.context, &mut context);
 				let input_seq = inputs
