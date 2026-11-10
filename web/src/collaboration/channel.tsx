@@ -17,8 +17,7 @@ import {
   Play,
   Plus,
 } from "lucide-react";
-import { workspaceGet } from "../generated/aidash";
-import { authenticatedFetch } from "../transport";
+import { workspaceGet, workspaceRuns } from "../generated/aidash";
 import type {
   Artifact,
   Discovery,
@@ -367,15 +366,11 @@ export function Channel({
       const items: Run[] = [];
       let cursor: string | null = null;
       do {
-        const params = new URLSearchParams({ live: "true" });
-        if (cursor) params.set("cursor", cursor);
-        const response = await authenticatedFetch(
-          `/api/workspaces/${workspace.id}/runs?${params}`,
+        const page = await workspaceRuns(
+          workspace.id,
+          { live: true, cursor: cursor ?? undefined },
           { signal },
         );
-        if (!response.ok) throw new Error("Unable to load live runs");
-        const page: { items: Run[]; next_cursor: string | null } =
-          await response.json();
         items.push(...page.items);
         cursor = page.next_cursor;
       } while (cursor);
