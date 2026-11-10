@@ -100,6 +100,8 @@ function frame(
   const scopes = data.workspaces.map((workspace) =>
     JSON.stringify([data.deployment.id, workspace.id]),
   );
+  const eventScope = JSON.stringify([data.deployment.id, "task-events"]);
+  scopes.push(eventScope);
   scopes.push(
     ...data.human_requests.map((request) =>
       JSON.stringify([data.deployment.id, request.workspace_id]),
@@ -155,6 +157,8 @@ function frame(
       key,
       scope,
       eventId: event.id,
+      eventScope,
+      eventSequence: event.sequence,
       signature: `${value.revision}:${value.status}`,
       kind: value.status === "FAILED" ? "failed" : "completed",
       detail: value.title.slice(0, 180),
@@ -225,7 +229,14 @@ function frame(
         },
       });
   }
-  return { scopes, entries };
+  return {
+    scopes,
+    entries,
+    eventWatermark: {
+      scope: eventScope,
+      sequence: Math.max(0, ...data.events.map((event) => event.sequence)),
+    },
+  };
 }
 const NotificationContext = createContext<{
   store: NoticeStore;

@@ -54,6 +54,7 @@ test("an older task completing emits one notice from the visible event", async (
     ...data.tasks[0],
     id: "old-task",
     title: "Older task",
+    workspace_id: "older-workspace",
     status: "COMPLETED",
     revision: 42,
   };

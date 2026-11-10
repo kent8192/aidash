@@ -8,6 +8,8 @@ export type NoticeTarget = {
 };
 export type NoticeEntry = {
   eventId?: string;
+  eventScope?: string;
+  eventSequence?: number;
   key: string;
   scope: string;
   signature: string;
@@ -17,7 +19,11 @@ export type NoticeEntry = {
   target: NoticeTarget;
 };
 export type Notice = NoticeEntry & { kind: NoticeKind; id: string };
-export type NoticeFrame = { scopes: string[]; entries: NoticeEntry[] };
+export type NoticeFrame = {
+  scopes: string[];
+  entries: NoticeEntry[];
+  eventWatermark?: { scope: string; sequence: number };
+};
 export const NOTICE_INTERVAL = 30_000;
 export const NOTICE_BATCH_DELAY = 1500;
 export const NOTICE_HISTORY_LIMIT = 50;
@@ -35,6 +41,7 @@ function notice(entry: NoticeEntry): Notice | undefined {
 export class NoticeStore {
   private seenEvents = new Set<string>();
   private seenTaskStatuses = new Set<string>();
+  private eventWatermarks = new Map<string, number>();
   private scopes = new Set<string>();
   private previous = new Map<string, NoticeEntry>();
   private current = new Map<string, Notice>();
@@ -76,7 +83,8 @@ export class NoticeStore {
       // First snapshots, newly granted workspaces and new remote nodes are quiet.
       // A newly loaded terminal task is history, not proof of a new completion.
       if (
-        this.scopes.has(entry.scope) &&
+        (this.scopes.has(entry.scope) ||
+          (entry.eventScope && this.scopes.has(entry.eventScope))) &&
         (newInput ||
           (!input &&
             (!entry.eventId || !this.seenTaskStatuses.has(item.id)) &&
@@ -84,6 +92,11 @@ export class NoticeStore {
               (!before &&
                 entry.eventId &&
                 !this.seenEvents.has(entry.eventId) &&
+                (entry.eventSequence === undefined ||
+                  (entry.eventScope !== undefined &&
+                    entry.eventSequence >
+                      (this.eventWatermarks.get(entry.eventScope) ??
+                        Infinity))) &&
                 !this.seenTaskStatuses.has(item.id)))))
       ) {
         fresh.push(item);
@@ -96,6 +109,13 @@ export class NoticeStore {
         const item = notice(entry);
         if (item) this.seenTaskStatuses.add(item.id);
       }
+    if (frame.eventWatermark) {
+      const { scope, sequence } = frame.eventWatermark;
+      this.eventWatermarks.set(
+        scope,
+        Math.max(sequence, this.eventWatermarks.get(scope) ?? 0),
+      );
+    }
     this.scopes = scopes;
     this.previous = entries;
     this.current = current;
