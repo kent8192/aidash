@@ -14,7 +14,7 @@ mod common;
 
 use aidash_server::{federation::Federation, harness::Harness, semantic};
 
-use common::{cleanup, request};
+use common::cleanup;
 use reinhardt::query::ExprTrait as _;
 use serde_json::{Value, json};
 use std::sync::{

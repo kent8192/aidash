@@ -3,7 +3,7 @@
 mod common;
 
 use aidash_application::tenancy::TEST_FIXTURE;
-use common::{bootstrap, cleanup, request};
+use common::{bootstrap, cleanup};
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 use serde_json::{Value, json};
 

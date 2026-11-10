@@ -13,7 +13,7 @@ use aidash_server::{
 	harness::Harness,
 };
 
-use common::{bootstrap, cleanup, request};
+use common::{bootstrap, cleanup};
 use serde_json::{Value, json};
 use std::sync::{
 	Arc,

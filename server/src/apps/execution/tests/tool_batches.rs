@@ -16,7 +16,7 @@ use aidash_server::{
 	store::{Invocation, Store},
 };
 use common::{
-	RuntimeFixture, TestApplication, request,
+	RuntimeFixture, TestApplication,
 	upstream_fixtures::{self, reply},
 };
 use reinhardt::ServerRouter as Router;
