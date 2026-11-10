@@ -9,8 +9,11 @@ on:
         description: "Retry mail rejected permanently after repairing its protected configuration"
         type: boolean
         default: false
+  # The workflow_run trigger already sends mail right after a deployment run.
+  # The schedule only picks up missed receipts and retries, so it stays sparse
+  # to keep this job from crowding PR CI out of the shared runner queue.
   schedule:
-    - cron: "1-56/5 * * * *"
+    - cron: "6-51/15 * * * *"
 
 permissions:
   contents: read
@@ -21,7 +24,10 @@ permissions:
 # are never exposed to the lifecycle workflow or a PR build/runtime.
 jobs:
   intake:
-    if: github.repository == 'kent8192/aidash' && vars.GCP_DEPLOYMENT_NOTIFICATIONS_ENABLED == 'true'
+    # A GCP run that skipped every job wrote no receipt, so it needs no runner.
+    if: >-
+      github.repository == 'kent8192/aidash' && vars.GCP_DEPLOYMENT_NOTIFICATIONS_ENABLED == 'true' &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'skipped')
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     permissions:
