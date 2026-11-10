@@ -22,6 +22,13 @@ pub const COORDINATION_TOOLS: &[&str] = &[
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SubnodeId(pub Uuid);
 
+/// Inclusive sequence range in the creating Run's Context Journal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JournalRange {
+	pub from_seq: u64,
+	pub through_seq: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Member {
 	pub agent_id: String,

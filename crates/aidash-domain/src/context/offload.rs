@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadRecord {
+	/// None identifies the Run whose context contains this guard.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub target_run: Option<uuid::Uuid>,
 	pub from_seq: u64,
 	pub through_seq: u64,
 	pub result_seq: u64,
@@ -41,18 +44,46 @@ impl ReadGuard {
 		immunity: u32,
 		threshold: u32,
 	) -> bool {
+		self.record_for(
+			None,
+			from_seq,
+			through_seq,
+			result_seq,
+			step,
+			immunity,
+			threshold,
+		)
+	}
+
+	/// Record a read of a particular Run using the same durable guard.
+	#[allow(clippy::too_many_arguments)]
+	pub fn record_for(
+		&mut self,
+		target_run: Option<uuid::Uuid>,
+		from_seq: u64,
+		through_seq: u64,
+		result_seq: u64,
+		step: u32,
+		immunity: u32,
+		threshold: u32,
+	) -> bool {
 		if from_seq == 0 || through_seq < from_seq || result_seq == 0 {
 			return false;
 		}
 		let reads = self
 			.ranges
 			.iter()
-			.filter(|item| item.from_seq == from_seq && item.through_seq == through_seq)
+			.filter(|item| {
+				item.target_run == target_run
+					&& item.from_seq == from_seq
+					&& item.through_seq == through_seq
+			})
 			.map(|item| item.reads)
 			.max()
 			.unwrap_or_default()
 			.saturating_add(1);
 		self.ranges.push(ReadRecord {
+			target_run,
 			from_seq,
 			through_seq,
 			result_seq,
@@ -76,6 +107,17 @@ impl ReadGuard {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	#[test]
+	fn previously_persisted_read_records_default_to_own_run() {
+		let guard: ReadGuard = serde_json::from_value(serde_json::json!({
+			"ranges": [{"from_seq": 3, "through_seq": 5, "result_seq": 10,
+				"protect_through_step": 22, "reads": 1}]
+		}))
+		.unwrap();
+		assert_eq!(guard.ranges[0].target_run, None);
+		assert!(guard.protects(10, 22));
+	}
+
 	#[test]
 	fn repeated_range_is_protected_then_requests_summary() {
 		let mut guard = ReadGuard::default();

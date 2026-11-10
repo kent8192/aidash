@@ -79,6 +79,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0064_journal_tools"),
 	("registry", "0065_agent_default_removals"),
 	("registry", "0066_native_context_recovery"),
+	("registry", "0067_optional_memory_roles"),
 	("registry", "0060_subnode_provider"),
 	("registry", "0055_remove_structured_harness_contracts"),
 	("registry", "0056_attachment_tools"),
@@ -192,9 +193,15 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	let federation = graph.get_leaf_nodes_for_app("federation");
 	assert_eq!(federation.len(), 1);
 	assert_eq!(federation[0].name, "0021_node_preview_origin_merge");
+	let registry = graph.get_leaf_nodes_for_app("registry");
+	assert_eq!(registry.len(), 1);
+	assert_eq!(registry[0].name, "0067_optional_memory_roles");
+	let execution = graph.get_leaf_nodes_for_app("execution");
+	assert_eq!(execution.len(), 1);
+	assert_eq!(execution[0].name, "0128_remove_generated_summary_state");
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0050_recovery_lifetime_merge");
+	assert_eq!(knowledge[0].name, "0053_memory_journal_proofs");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -696,14 +703,14 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0027_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0028_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"workspaces".to_owned(),
-			"0026_scratch_binding_indexes".to_owned()
+			"0027_task_journal_range".to_owned()
 		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
@@ -994,7 +1001,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		109
+		110
 	);
 }
 
@@ -1253,6 +1260,21 @@ async fn image_policy_migrations_reverse_safely(#[future] fresh_database: Migrat
 		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	let proof = source
+		.get_migration("knowledge", "0053_memory_journal_proofs")
+		.await
+		.unwrap();
+	executor.rollback_migrations(&[proof]).await.unwrap();
+	let scope = source
+		.get_migration("knowledge", "0052_memory_sharing_scope")
+		.await
+		.unwrap();
+	executor.rollback_migrations(&[scope]).await.unwrap();
+	let memory = source
+		.get_migration("knowledge", "0051_recorded_memory")
+		.await
+		.unwrap();
+	executor.rollback_migrations(&[memory]).await.unwrap();
 	// Act: undo the knowledge template migration through the real executor.
 	let migration = source
 		.get_migration("knowledge", "0050_recovery_lifetime_merge")
@@ -4897,6 +4919,94 @@ async fn node_purge_registration_recovery_ownership_roundtrips_without_a_catalog
 
 #[rstest]
 #[tokio::test]
+async fn memory_role_migration_accepts_agent_model_and_optional_embedding(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	let source =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
+	let migrations = source.all_migrations().await.unwrap();
+	DatabaseMigrationExecutor::new(fixture.connection.clone())
+		.with_migration_history(migrations.clone())
+		.apply_migrations(&migrations)
+		.await
+		.unwrap();
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	let mut policy: serde_json::Value = serde_json::from_str(include_str!(
+		"../../../../../tests/fixtures/native_memory_policy_baseline.json"
+	))
+	.unwrap();
+	policy["reranker"] = json!({"id":"fixture-reranker","version":"1.0.0"});
+	policy["tokenizer"] = json!({"id":"fixture-tokenizer","version":"1.0.0"});
+	for role in ["extraction", "derivation", "reflection"] {
+		policy[role] = json!("agent_model");
+	}
+	policy["embedding"] = serde_json::Value::Null;
+	let config = json!({"engine":"hindsight_rust", "policy":policy});
+	assert!(
+		contract_accepts(
+			&pool,
+			"aidash_native_context_is_valid",
+			vec![config.clone(), json!("memory")]
+		)
+		.await
+	);
+	fixture.tenant_root("acme").await;
+	let mut tx = aidash_server::database::scope::begin_fixture_deployment(&pool)
+		.await
+		.unwrap();
+	for (id, kind, definition) in [
+		("fixture-reranker", "reranker", json!({"provider":"rrf"})),
+		(
+			"fixture-tokenizer",
+			"tokenizer",
+			json!({"provider":"utf8_upper_bound"}),
+		),
+		("fixture-memory", "memory", config.clone()),
+	] {
+		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":"Fixture"},"description":{"en":"Fixture"},"config":definition});
+		let insert = Query::insert()
+			.into_table(Alias::new("registry"))
+			.columns(["tenant", "id", "version", "kind", "metadata"].map(Alias::new))
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value("acme"))
+					.expr(Expr::value(id))
+					.expr(Expr::value("1.0.0"))
+					.expr(Expr::value(kind))
+					.expr(Expr::value(entry))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder);
+		sqlx::query(&insert).execute(&mut *tx).await.unwrap();
+	}
+	let select = Query::select()
+		.column(Alias::new("role"))
+		.from(Alias::new("registry_memory_role_refs"))
+		.and_where(Expr::col("tenant").eq("acme"))
+		.and_where(Expr::col("source_id").eq("fixture-memory"))
+		.order_by(Alias::new("role"), reinhardt::query::Order::Asc)
+		.to_string(PostgresQueryBuilder);
+	let roles: Vec<String> = sqlx::query_scalar(&select)
+		.fetch_all(&mut *tx)
+		.await
+		.unwrap();
+	assert_eq!(roles, ["reranker", "tokenizer"]);
+	tx.rollback().await.unwrap();
+	let mut invalid = config;
+	invalid["policy"]["extraction"] = json!("unknown");
+	assert!(
+		!contract_accepts(
+			&pool,
+			"aidash_native_context_is_valid",
+			vec![invalid, json!("memory")]
+		)
+		.await
+	);
+}
+
+#[rstest]
+#[tokio::test]
 async fn context_sources_migration_accepts_exact_native_policies_and_rejects_mismatched_operations(
 	#[future] fresh_database: MigrationFixture,
 ) {
@@ -4965,6 +5075,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0024_workspace_scratch_space"),
 			("workspaces", "0025_scratch_workspace_model_state"),
 			("workspaces", "0026_scratch_binding_indexes"),
+			("workspaces", "0027_task_journal_range"),
 		])
 		.await;
 	fixture.tenant_root("scratch-upgrade").await;
@@ -5021,6 +5132,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0024_workspace_scratch_space"),
 			("workspaces", "0025_scratch_workspace_model_state"),
 			("workspaces", "0026_scratch_binding_indexes"),
+			("workspaces", "0027_task_journal_range"),
 		])
 		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -5085,6 +5197,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("workspaces", "0024_workspace_scratch_space"),
 			("workspaces", "0025_scratch_workspace_model_state"),
 			("workspaces", "0026_scratch_binding_indexes"),
+			("workspaces", "0027_task_journal_range"),
 		])
 		.await;
 	fixture.tenant_root("scratch-workspace-upgrade").await;

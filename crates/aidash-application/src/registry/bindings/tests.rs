@@ -50,6 +50,10 @@ impl Catalog {
 		result.insert(
 			aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap(),
 		);
+		for definition in aidash_domain::registry::bindings::memory_defaults::definitions().unwrap()
+		{
+			result.insert(definition);
+		}
 		for operation in crate::registry::system::operations() {
 			result.core(operation);
 			if matches!(
@@ -450,7 +454,7 @@ async fn alias_collisions_are_checked_after_expansion() {
 	assert!(snapshot(&mut catalog, &config, false).await.is_err());
 }
 #[test]
-fn memory_builtins_are_excluded_without_a_memory_provider() {
+fn memory_builtins_use_the_default_provider_without_an_explicit_provider() {
 	use crate::test_support::{agent, binding, entry, native_memory_entries, resolve, try_resolve};
 	let node = "aidash://node-a";
 	let memory_tools = |saved: &BindingSnapshot| -> Vec<Option<String>> {
@@ -475,16 +479,10 @@ fn memory_builtins_are_excluded_without_a_memory_provider() {
 	let mut entries = crate::test_support::builtin_entries(node);
 	let saved = resolve(node, &agent("agent"), false, entries.clone());
 	let reasons = memory_tools(&saved);
-	assert_eq!(reasons.len(), 3);
-	assert!(
-		reasons
-			.iter()
-			.all(|reason| reason.as_deref() == Some("memory tools need a memory provider"))
-	);
-	assert!(saved.operation("memory_recall").is_err());
+	assert_eq!(reasons, vec![None; 3]);
+	saved.operation("memory_recall").unwrap();
 
-	// A native memory source is a `memory` Binding without a provider: it only
-	// feeds automatic context, so the tools stay excluded (#617).
+	// Native memory sources are not providers; they coexist with the default.
 	for adapter in ["semantic_memory", "conversation_memory"] {
 		let mut entries = entries.clone();
 		entries.push(entry(
@@ -495,26 +493,22 @@ fn memory_builtins_are_excluded_without_a_memory_provider() {
 		let mut root = agent("agent");
 		root.config["bindings"] = serde_json::json!([binding("memory", node, adapter)]);
 		let saved = resolve(node, &root, false, entries.clone());
-		assert_eq!(
-			memory_tools(&saved),
-			vec![Some("memory tools need a memory provider".into()); 3],
-			"{adapter}"
-		);
-		assert!(saved.operation("memory_recall").is_err(), "{adapter}");
+		assert_eq!(memory_tools(&saved), vec![None; 3], "{adapter}");
+		saved.operation("memory_recall").unwrap();
 		let settings = aidash_domain::registry::AgentConfig::from_snapshot(&saved).unwrap();
-		assert!(settings.memory.is_none(), "{adapter}");
+		assert_eq!(settings.memory.unwrap().id, "aidash.memory", "{adapter}");
 
-		// An explicit memory tool cannot be bound without a provider either.
+		// Explicitly binding the tool still uses the default provider.
 		root.config["bindings"] = serde_json::json!([
 			binding("memory", node, adapter),
 			binding("tool", node, "aidash.memory_recall"),
 		]);
 		assert!(
-			try_resolve(node, &root, false, entries.clone()).is_err(),
+			try_resolve(node, &root, false, entries.clone()).is_ok(),
 			"{adapter}"
 		);
 
-		// Nor can a context source declaration that names one.
+		// A source declaration may name the now-available memory tools.
 		let mut declared = entries;
 		let source = declared.last_mut().unwrap();
 		let mut native: aidash_domain::registry::bindings::sources::NativeContext =
@@ -527,7 +521,7 @@ fn memory_builtins_are_excluded_without_a_memory_provider() {
 		source.config = serde_json::to_value(native).unwrap();
 		root.config["bindings"] = serde_json::json!([binding("memory", node, adapter)]);
 		assert!(
-			try_resolve(node, &root, false, declared).is_err(),
+			try_resolve(node, &root, false, declared).is_ok(),
 			"{adapter}"
 		);
 	}

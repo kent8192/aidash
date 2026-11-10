@@ -680,6 +680,12 @@ pub use super::context_source::{
 	ContextSourceTarget, PlannedContextSource,
 };
 
+/// References and transient data from the Run's one initial memory search.
+pub struct StartMemory {
+	pub sources: Vec<aidash_domain::memory::Evidence>,
+	pub content: Value,
+}
+
 /// Composition supplies concrete adapters without exposing their framework types.
 /// A native authority owns its policy scope for the complete step, suspends only
 /// around inference, and rechecks before provider output is accepted.
@@ -694,6 +700,18 @@ pub trait ExecutionEnvironment: Send + Sync {
 	fn authority(&self) -> Option<&dyn ExecutionAuthority>;
 	fn home(&self, run: &Run) -> Box<dyn ExecutionHome>;
 	fn agent(&self, entry: &Entry) -> Result<ExecutionAgent>;
+	/// One bounded data recall at Run start; explicit memory providers opt out.
+	async fn run_start_memory(&self, _run: &Run, _task: &Task) -> Result<Option<StartMemory>> {
+		Ok(None)
+	}
+	/// Recheck and hydrate only the exact Units recalled at Run start.
+	async fn hydrate_start_memory(
+		&self,
+		_run: &Run,
+		_sources: &[aidash_domain::memory::Evidence],
+	) -> Result<Value> {
+		Err(crate::Error::Forbidden)
+	}
 	/// The process's Tool Parallelism ceiling. `None` keeps every call sequential.
 	fn tool_slots(&self) -> Option<&ToolSlots> {
 		None

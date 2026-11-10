@@ -156,11 +156,12 @@ pub(crate) async fn mutate_origin(
 			}
 			if !unit.deleted {
 				units::unexpired(lease, &unit).await?;
-				units::current(
+				units::current_for_run(
 					lease,
 					bank.workspace,
 					&unit.content.evidence,
 					bounds.max_graph_visits,
+					origin,
 				)
 				.await?;
 			}
@@ -288,17 +289,40 @@ pub(crate) async fn mutate_origin(
 				unit
 			}
 		};
+		if mutation.provider.id == aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+			&& mutation.provider.version
+				== aidash_domain::registry::bindings::memory_defaults::VERSION
+			&& unit.content.verification == Verification::Unverified
+		{
+			unit.content.verification = Verification::Recorded;
+		}
+		if mutation.provider.id == aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+			&& mutation.provider.version
+				== aidash_domain::registry::bindings::memory_defaults::VERSION
+			&& !unit.deleted
+			&& !unit.content.kind.derived()
+			&& !unit
+				.content
+				.evidence
+				.iter()
+				.any(|source| matches!(source, Evidence::JournalRange { .. }))
+		{
+			return Err(Error::Invalid(
+				"built-in memory facts require Journal provenance".into(),
+			));
+		}
 		if let Some(range) = unit.content.occurred.as_mut() {
 			range.start = range.start.trunc_subsecs(6);
 			range.end = range.end.trunc_subsecs(6);
 		}
 		if !unit.deleted {
 			units::unexpired(lease, &unit).await?;
-			units::current(
+			units::current_for_run(
 				lease,
 				unit.bank.workspace,
 				&unit.content.evidence,
 				bounds.max_graph_visits,
+				origin,
 			)
 			.await?;
 			for link in &unit.content.links {
@@ -364,9 +388,75 @@ pub(crate) async fn mutate_origin(
 		super::purge::history(lease, &unit, &policy.retention).await?;
 		result.push(unit);
 	}
-	// Capacity applies to the atomic final state, including batched replacements.
+	// The built-in bank evicts least recently updated units atomically. Explicit
+	// providers retain their configured rejection behavior.
 	if retained > bounds.max_units {
-		return Err(Error::Conflict("memory bank storage limit reached".into()));
+		use aidash_domain::registry::bindings::memory_defaults;
+		if mutation.provider.id != memory_defaults::MEMORY_ID
+			|| mutation.provider.version != memory_defaults::VERSION
+		{
+			return Err(Error::Conflict("memory bank storage limit reached".into()));
+		}
+		let protected: BTreeSet<_> = mutation.changes.iter().map(Change::id).collect();
+		let needed = retained - bounds.max_units;
+		let rows = native::query(
+			&Query::select()
+				.columns(["id", "revision"].map(Alias::new))
+				.from(Alias::new("memory_units"))
+				.and_where(Expr::col("bank_id").eq(Expr::value(bank_id)))
+				.and_where(Expr::col("deleted").eq(false))
+				.order_by(Alias::new("updated_at"), Order::Asc)
+				.order_by(Alias::new("id"), Order::Asc)
+				.limit(retained as u64)
+				.lock(LockType::Update)
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_all(&mut **lease.tx())
+		.await?;
+		let mut changes = Vec::with_capacity(needed);
+		for row in rows {
+			let id: Uuid = row.try_get("id")?;
+			if !protected.contains(&id) {
+				let unit = units::load(lease, id, false)
+					.await?
+					.ok_or(Error::Forbidden)?;
+				match units::current_for_run(
+					lease,
+					mutation.bank.workspace,
+					&unit.content.evidence,
+					bounds.max_graph_visits,
+					origin,
+				)
+				.await
+				{
+					Ok(()) | Err(Error::Conflict(_)) => {}
+					Err(Error::Forbidden) => continue,
+					Err(error) => return Err(error),
+				}
+				changes.push(Change::Delete {
+					id,
+					expected_revision: row.try_get("revision")?,
+				});
+				if changes.len() == needed {
+					break;
+				}
+			}
+		}
+		if changes.len() != needed {
+			return Err(Error::Conflict(
+				"memory bank cannot evict protected units".into(),
+			));
+		}
+		let eviction = Mutation {
+			operation_id: crate::semantic::native_memory::request_id(
+				mutation.operation_id,
+				"builtin-eviction",
+			)?,
+			provider: mutation.provider.clone(),
+			bank: mutation.bank.clone(),
+			changes,
+		};
+		Box::pin(mutate_origin(lease, &eviction, bounds, origin)).await?;
 	}
 	// Admission must leave every source correctable within its pinned impact cap.
 	for unit in result.iter().filter(|unit| !unit.deleted) {
@@ -384,11 +474,12 @@ pub(crate) async fn mutate_origin(
 	.await?;
 	for unit in &result {
 		if !unit.deleted {
-			units::current(
+			units::current_for_run(
 				lease,
 				unit.bank.workspace,
 				&unit.content.evidence,
 				bounds.max_graph_visits,
+				origin,
 			)
 			.await?;
 		}
@@ -513,7 +604,9 @@ async fn save_origin(
 	provider: Option<&aidash_domain::registry::EntityRef>,
 	origin: Option<Uuid>,
 ) -> Result<()> {
-	lease.tx().observe_memory(unit)?;
+	if !super::bank_settings::is_builtin(lease, &unit.bank).await? {
+		lease.tx().observe_memory(unit)?;
+	}
 	let mut columns = ["id", "bank_id", "revision"].map(Alias::new).to_vec();
 	columns.extend(content_columns());
 	columns.extend(["learned_at", "updated_at", "deleted", "stale", "tenant"].map(Alias::new));
@@ -593,8 +686,26 @@ pub(crate) async fn refresh_dependencies(
 	.execute(&mut **lease.tx())
 	.await?;
 	if !unit.deleted {
+		let mut dependencies = BTreeSet::new();
 		for evidence in unit.content.evidence.iter().collect::<BTreeSet<_>>() {
 			let (kind, id, revision) = match evidence {
+				// The Run is the revocation root; the range itself is immutable,
+				// so its dependency uses a stable sentinel rather than Run CAS.
+				Evidence::JournalRange {
+					run_id,
+					from_seq,
+					through_seq,
+				} => {
+					super::journal_proofs::record(
+						lease,
+						&unit.bank.tenant,
+						*run_id,
+						*from_seq,
+						*through_seq,
+					)
+					.await?;
+					("run", *run_id, 1)
+				}
 				Evidence::Publication { id, revision } => {
 					let (source, revision) = if unit.stale {
 						super::publications::retained_source(lease, *id).await?
@@ -608,6 +719,9 @@ pub(crate) async fn refresh_dependencies(
 				Evidence::Artifact { id, revision, .. } => ("artifact", *id, *revision),
 				Evidence::Run { id, revision, .. } => ("run", *id, *revision),
 			};
+			if !dependencies.insert((kind, id, revision)) {
+				continue;
+			}
 			native::query(
 				&Query::insert()
 					.into_table(Alias::new("memory_dependencies"))
@@ -655,6 +769,33 @@ pub(crate) async fn project(
 ) -> Result<()> {
 	use crate::apps::knowledge::services::core;
 	use aidash_domain::semantic::{Source, mutations::Entry};
+	let policy_provider = match provider {
+		Some(provider) => Some(provider.clone()),
+		None => super::bank_settings::get(lease, &unit.bank)
+			.await?
+			.map(|settings| settings.provider),
+	};
+	if let Some(provider) = &policy_provider {
+		// Fencing can update a dependent bank whose provider the initiating
+		// subject cannot read. This internal projection decision needs only the
+		// pinned definition; it must not grant or disclose that definition.
+		let entry = crate::apps::registry::models::Definition::read_of(
+			&mut **lease.tx(),
+			&unit.bank.tenant,
+			&provider.id,
+			&provider.version,
+		)
+		.await?;
+		if entry.kind != "memory" {
+			return Err(Error::Invalid(
+				"memory provider definition changed kind".into(),
+			));
+		}
+		let config: ProviderConfig = serde_json::from_value(entry.config)?;
+		if config.policy.embedding.is_none() {
+			return Ok(());
+		}
+	}
 	let Some(index) = crate::apps::knowledge::models::SemanticIndexe::locked(
 		&mut **lease.tx(),
 		unit.bank.workspace,

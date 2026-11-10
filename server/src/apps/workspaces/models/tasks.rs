@@ -32,6 +32,8 @@ pub struct Task {
 	pub status: TaskStatus,
 	#[field]
 	pub requirements: Json<Value>,
+	#[field(null = true)]
+	pub journal_range: Option<Json<Value>>,
 	#[field(field_type = "text", null = true)]
 	pub owner: Option<String>,
 	#[field(field_type = "text")]

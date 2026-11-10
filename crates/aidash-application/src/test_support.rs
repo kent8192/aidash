@@ -114,6 +114,12 @@ impl BindingCatalog for Catalog {
 				aidash_domain::registry::bindings::source_defaults::workspace_observation()?,
 			);
 		}
+		if let Some(entry) = aidash_domain::registry::bindings::memory_defaults::definitions()?
+			.into_iter()
+			.find(|entry| entry.id == reference.id && entry.version == reference.version)
+		{
+			return Ok(entry);
+		}
 		if let Some(operation) = reference.id.strip_prefix("aidash.") {
 			let mut definition = entry(
 				&reference.id,
@@ -247,6 +253,7 @@ pub(crate) fn builtin_entries(node: &str) -> Vec<Entry> {
 	entries.push(current);
 	entries
 		.push(aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap());
+	entries.extend(aidash_domain::registry::bindings::memory_defaults::definitions().unwrap());
 	entries
 }
 pub(crate) fn binding(kind: &str, node: &str, id: &str) -> serde_json::Value {

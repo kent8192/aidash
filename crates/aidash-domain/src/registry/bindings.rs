@@ -11,6 +11,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const BINDING_SCHEMA: u8 = 1;
+pub mod memory_defaults;
 mod snapshot;
 pub mod source_defaults;
 pub mod sources;
@@ -155,18 +156,20 @@ pub fn definition_references(
 				declaration.validate()?;
 				result.extend(declaration.references());
 			}
-			result.extend(
-				[
-					(provider.policy.extraction, "model"),
-					(provider.policy.derivation, "model"),
-					(provider.policy.reflection, "model"),
-					(provider.policy.embedding, "embedding"),
-					(provider.policy.reranker, "reranker"),
-					(provider.policy.tokenizer, "tokenizer"),
-				]
-				.into_iter()
-				.map(|(r, k)| (local(&r), k.into())),
-			);
+			for role in [
+				provider.policy.extraction,
+				provider.policy.derivation,
+				provider.policy.reflection,
+			] {
+				if let crate::memory::RoleModel::Entry(reference) = role {
+					result.push((local(&reference), "model".into()));
+				}
+			}
+			if let Some(reference) = provider.policy.embedding {
+				result.push((local(&reference), "embedding".into()));
+			}
+			result.push((local(&provider.policy.reranker), "reranker".into()));
+			result.push((local(&provider.policy.tokenizer), "tokenizer".into()));
 		}
 		"source" => {
 			let source: crate::memory::SourceConfig = serde_json::from_value(entry.config.clone())?;
@@ -323,18 +326,6 @@ impl AgentBindings {
 				return Err(Error::Invalid("duplicate Binding target".into()));
 			}
 		}
-		if !self.has_memory_binding()
-			&& self.bindings.iter().any(|b| {
-				b.kind == BindingKind::Tool
-					&& b.target
-						.id
-						.strip_prefix("aidash.")
-						.is_some_and(|operation| MEMORY_TOOLS.contains(&operation))
-			}) {
-			return Err(Error::Invalid(
-				"memory tools require a memory provider".into(),
-			));
-		}
 		if self.bindings.iter().any(|b| b.kind == BindingKind::Skill)
 			&& self
 				.remove_default
@@ -472,6 +463,9 @@ impl AgentBindings {
 			}
 		}
 		source_defaults::add_workspace_observation(node, &mut result)?;
+		if !self.has_memory_binding() {
+			result.push(memory_defaults::binding(node));
+		}
 		if result.len() > MAX_BINDINGS {
 			return Err(Error::Invalid(
 				"expanded Bindings exceed 128 entries".into(),

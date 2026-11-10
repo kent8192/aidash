@@ -792,6 +792,7 @@ the single Knowledge head, and no schema or model state is overwritten.
 `registry/0063_reference_set_limit` raises the most Reference files one Source can bind from 8 to 256 in the PostgreSQL context validator. The function body uses SQL assets because Reinhardt has no typed operation for replacing PostgreSQL functions. Reversal refuses while a Source or a Run snapshot holds more than 8.
 
 `registry/0064_journal_tools` admits the built-in Journal descriptors while preserving the existing descriptor validation. PostgreSQL function DDL requires SQL assets. Reversal refuses while Journal definitions remain.
+`registry/0067_optional_memory_roles` permits an Agent model role and an absent embedding in native memory definitions. Its PostgreSQL validation and reference trigger use SQL assets because Reinhardt cannot express function bodies. Reversal refuses while definitions use the new forms.
 
 ## Run control provenance and Safety Stops (#485, ADR 0101)
 
@@ -893,6 +894,13 @@ recovery eligibility and attempt evidence with remote-read source lifetimes.
 Each is an empty state-only migration that joins its listed histories. The
 renumbered Node chains also follow the provider and semantic image histories,
 leaving one leaf each for Identity, Execution and Knowledge.
+
+`knowledge/0051_recorded_memory` permits automatically recorded facts and
+observations without marking them as awaiting human verification.
+`knowledge/0052_memory_sharing_scope` stores the Tenant Administrator's
+revisioned Workspace or Tenant-Agent choice and enforces Tenant row isolation.
+`knowledge/0053_memory_journal_proofs` retains Research identities from
+admitted Journal ranges independently of their content, with Tenant isolation.
 
 `execution/0108_node_preview_merge` joins `execution/0107_node_plugin_merge`
 with the Live preview, Safety Stop, Lease Recovery and Harness Contract history

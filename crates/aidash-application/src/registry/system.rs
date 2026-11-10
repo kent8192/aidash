@@ -143,6 +143,7 @@ pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec
 	let mut declared = entries(validation, node)?;
 	declared.push(approval_decider()?);
 	declared.push(aidash_domain::registry::bindings::source_defaults::workspace_observation()?);
+	declared.extend(aidash_domain::registry::bindings::memory_defaults::definitions()?);
 	Ok(declared)
 }
 
@@ -229,6 +230,7 @@ pub async fn seed(
 		.chain(legacy_workspace_entries(validation, node)?)
 		.chain(offered)
 		.chain(deciders)
+		.chain(aidash_domain::registry::bindings::memory_defaults::definitions()?)
 		.chain([aidash_domain::registry::bindings::source_defaults::workspace_observation()?])
 		.chain(external_services())
 	{
@@ -251,6 +253,11 @@ pub async fn seed(
 }
 
 pub fn is_builtin(entry: &Entry) -> bool {
+	if aidash_domain::registry::bindings::memory_defaults::definitions()
+		.is_ok_and(|entries| entries.contains(entry))
+	{
+		return true;
+	}
 	if entry.kind == "source" {
 		return aidash_domain::registry::bindings::source_defaults::workspace_observation()
 			.is_ok_and(|canonical| &canonical == entry);
@@ -265,6 +272,17 @@ pub fn is_builtin(entry: &Entry) -> bool {
 }
 
 pub fn builtin_reference(reference: &aidash_domain::registry::EntityRef) -> bool {
+	use aidash_domain::registry::bindings::memory_defaults;
+	if reference.version == memory_defaults::VERSION
+		&& [
+			memory_defaults::MEMORY_ID,
+			memory_defaults::RERANKER_ID,
+			memory_defaults::TOKENIZER_ID,
+		]
+		.contains(&reference.id.as_str())
+	{
+		return true;
+	}
 	(reference.version == "1.0.0"
 		|| (reference.id == "aidash.workspace_read" && reference.version == "1.1.0")
 		|| (reference.version == "1.0.1"

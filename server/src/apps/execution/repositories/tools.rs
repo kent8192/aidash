@@ -80,20 +80,35 @@ impl ToolOperations for Operations {
 	async fn journal_query(
 		&self,
 		code: &str,
+		target_run: Option<Uuid>,
 		range: Option<(u64, u64)>,
 		key: &str,
 	) -> Result<Value> {
-		super::journal_query::execute(&self.0.store, &self.0.run, &self.0.scope, code, range, key)
-			.await
+		super::journal_query::execute(
+			&self.0.store,
+			&self.0.run,
+			&self.0.scope,
+			code,
+			target_run,
+			range,
+			key,
+		)
+		.await
 	}
 	async fn journal(
 		&self,
+		target_run: Option<Uuid>,
 		range: Option<(u64, u64)>,
 	) -> Result<Vec<aidash_domain::context::journal_export::JournalLine>> {
 		use aidash_application::ports::journal_export::JournalSource;
 		self.0
 			.store
-			.export(&self.0.scope, self.0.run.id, self.0.run.id, range)
+			.export(
+				&self.0.scope,
+				self.0.run.id,
+				target_run.unwrap_or(self.0.run.id),
+				range,
+			)
 			.await
 	}
 	async fn subnode_command(

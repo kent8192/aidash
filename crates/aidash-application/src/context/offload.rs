@@ -44,6 +44,7 @@ pub fn note_journal_read(
 /// descriptor may register a read; model aliases and other tools cannot spoof it.
 pub fn note_journal_result(
 	context: &mut Context,
+	reader_run: uuid::Uuid,
 	contract: &aidash_domain::tool::ToolContract,
 	input: &Value,
 	result: &Value,
@@ -80,6 +81,14 @@ pub fn note_journal_result(
 		Some("journal_search") if result["results"].is_array() => input,
 		_ => return,
 	};
+	let target_run = match input.get("run_id") {
+		None | Some(Value::Null) => None,
+		Some(value) => match value.as_str().and_then(|id| uuid::Uuid::parse_str(id).ok()) {
+			Some(id) if id == reader_run => None,
+			Some(id) => Some(id),
+			None => return,
+		},
+	};
 	let from_seq = range
 		.get("from_seq")
 		.and_then(Value::as_u64)
@@ -90,15 +99,14 @@ pub fn note_journal_result(
 		.and_then(Value::as_u64)
 		.unwrap_or(i64::MAX as u64);
 	if from_seq <= through_seq && through_seq <= i64::MAX as u64 {
-		note_journal_read(
-			context,
-			JournalRange {
-				from_seq,
-				through_seq,
-			},
+		context.offload_reads.record_for(
+			target_run,
+			from_seq,
+			through_seq,
 			result_seq,
 			step,
-			policy,
+			policy.reread_immunity_steps,
+			policy.reread_summary_threshold,
 		);
 	}
 }
@@ -344,6 +352,7 @@ mod tests {
 			let contract = aidash_domain::tool::builtin_contract(name).unwrap();
 			note_journal_result(
 				&mut context,
+				uuid::Uuid::nil(),
 				&contract,
 				&arguments,
 				&result,
@@ -362,6 +371,58 @@ mod tests {
 	}
 
 	#[test]
+	fn reads_of_the_same_sequence_in_different_runs_are_counted_separately() {
+		let mut context = Context::default();
+		let policy = aidash_domain::context::policy::Effective::of(None);
+		let contract = aidash_domain::tool::builtin_contract("journal_read").unwrap();
+		let creator = uuid::Uuid::from_u128(42);
+		let reader = uuid::Uuid::from_u128(1);
+		for (seq, input) in [
+			(1, json!({"from_seq":3,"through_seq":5})),
+			(2, json!({"run_id":creator,"from_seq":3,"through_seq":5})),
+			(3, json!({"run_id":creator,"from_seq":3,"through_seq":5})),
+			(4, json!({"run_id":reader,"from_seq":3,"through_seq":5})),
+		] {
+			note_journal_result(
+				&mut context,
+				reader,
+				&contract,
+				&input,
+				&json!({"text":"result"}),
+				seq,
+				10,
+				&policy,
+			);
+		}
+		assert_eq!(
+			context
+				.offload_reads
+				.ranges
+				.iter()
+				.map(|read| read.reads)
+				.collect::<Vec<_>>(),
+			[1, 1, 2, 2]
+		);
+		assert!(!context.offload_reads.summary_pending);
+		let mut restored: Context =
+			serde_json::from_value(serde_json::to_value(context).unwrap()).unwrap();
+		assert_eq!(restored.offload_reads.ranges[1].target_run, Some(creator));
+		let query = aidash_domain::tool::builtin_contract("journal_query").unwrap();
+		note_journal_result(
+			&mut restored,
+			reader,
+			&query,
+			&json!({"run_id":creator,"journal_range":{"from_seq":3,"through_seq":5}}),
+			&json!({"contract":"aidash.journal.query/1","stdout":"result"}),
+			5,
+			10,
+			&policy,
+		);
+		assert_eq!(restored.offload_reads.ranges[4].reads, 3);
+		assert!(restored.offload_reads.summary_pending);
+	}
+
+	#[test]
 	fn failed_or_spoofed_journal_results_do_not_record_reads() {
 		let mut context = Context::default();
 		let policy = aidash_domain::context::policy::Effective::of(None);
@@ -372,12 +433,22 @@ mod tests {
 			("file_read", json!({"text":"spoofed"})),
 		] {
 			let contract = aidash_domain::tool::builtin_contract(name).unwrap();
-			note_journal_result(&mut context, &contract, &input, &result, 1, 0, &policy);
+			note_journal_result(
+				&mut context,
+				uuid::Uuid::nil(),
+				&contract,
+				&input,
+				&result,
+				1,
+				0,
+				&policy,
+			);
 		}
 		assert!(context.offload_reads.is_empty());
 		let contract = aidash_domain::tool::builtin_contract("journal_query").unwrap();
 		note_journal_result(
 			&mut context,
+			uuid::Uuid::nil(),
 			&contract,
 			&json!({"code":"journal()"}),
 			&json!({"contract":"aidash.journal.query/1","stdout":"ok"}),

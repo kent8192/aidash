@@ -14,6 +14,7 @@ use uuid::Uuid;
 mod completion;
 mod consolidation;
 mod discovery;
+pub(crate) mod offloads;
 
 const MAINTENANCE: TenancyScope =
 	TenancyScope::Deployment(DeploymentScopeReason::SemanticMaintenance);
@@ -27,6 +28,11 @@ pub(crate) enum Input {
 	Learn {
 		run: Uuid,
 		revision: i64,
+	},
+	OffloadedRange {
+		run: Uuid,
+		from: u64,
+		through: u64,
 	},
 	Observation {
 		source: Evidence,
@@ -42,7 +48,7 @@ pub(crate) enum Input {
 impl Input {
 	fn origin_run(&self) -> Option<Uuid> {
 		match self {
-			Self::Learn { run, .. } => Some(*run),
+			Self::Learn { run, .. } | Self::OffloadedRange { run, .. } => Some(*run),
 			Self::Observation { origin_run, .. } | Self::MentalModel { origin_run, .. } => {
 				*origin_run
 			}
@@ -50,7 +56,7 @@ impl Input {
 	}
 	fn kind(&self) -> &'static str {
 		match self {
-			Self::Learn { .. } => "learn",
+			Self::Learn { .. } | Self::OffloadedRange { .. } => "learn",
 			Self::Observation { .. } => "observation",
 			Self::MentalModel { .. } => "mental_model",
 		}
@@ -674,6 +680,32 @@ async fn execute(
 			delivered: &mut Vec::new(),
 		};
 		match input {
+			Input::OffloadedRange { run, from, through } => {
+				if provider.id != aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+					|| provider.version
+						!= aidash_domain::registry::bindings::memory_defaults::VERSION
+					|| !policy.learn_from_runs
+				{
+					return Err(Error::Forbidden);
+				}
+				let proof = Evidence::JournalRange {
+					run_id: *run,
+					from_seq: *from,
+					through_seq: *through,
+				};
+				let text =
+					super::learning::offloaded_range(scope.lease, bank, &proof, &policy.bounds)
+						.await?;
+				engine
+					.learn(
+						&mut scope,
+						bank,
+						&proof,
+						&text,
+						std::slice::from_ref(&proof),
+					)
+					.await?;
+			}
 			Input::Learn { run, revision } => {
 				if !policy.learn_from_runs {
 					return Err(Error::Forbidden);

@@ -237,6 +237,7 @@ pub(crate) async fn execute(
 	run: &aidash_domain::Run,
 	tenancy: &aidash_application::tenancy::TenancyScope,
 	code: &str,
+	target_run: Option<Uuid>,
 	range: Option<(u64, u64)>,
 	key: &str,
 ) -> Result<Value> {
@@ -262,7 +263,9 @@ pub(crate) async fn execute(
 		true,
 	)
 	.await?;
-	let snapshot = JournalSource::snapshot(store, tenancy, run.id, run.id, range).await?;
+	let snapshot =
+		JournalSource::snapshot(store, tenancy, run.id, target_run.unwrap_or(run.id), range)
+			.await?;
 	let export = aidash_domain::context::journal_export::to_jsonl(&snapshot.lines).into_bytes();
 	if export.len() as u64 >= profile.working_bytes {
 		return Err(Error::Invalid("JOURNAL_EXPORT_LIMIT".into()));
@@ -287,6 +290,7 @@ pub(crate) async fn execute(
 		image: runner_profile.image.clone(),
 		runner_instance: health["instance"].as_str().ok_or(Error::Forbidden)?.into(),
 		configuration: aidash_domain::registry::rules::digest(&json!([
+			target_run.unwrap_or(run.id),
 			health["probe"]["resources"],
 			profile.operation_seconds,
 			profile.maximum_seconds,

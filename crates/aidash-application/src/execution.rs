@@ -35,6 +35,20 @@ pub struct RunMessagePage {
 	pub has_more: bool,
 }
 
+/// Keep a Subnode member's message explicitly below instruction authority.
+pub fn run_message_value(input: &aidash_domain::run_input::RunInput, value: Value) -> Value {
+	if input.is_data {
+		serde_json::to_value(aidash_domain::projection::native::Envelope::subnode_result(
+			&input.sender,
+			input.seq,
+			value,
+		))
+		.expect("serializable message envelope")
+	} else {
+		value
+	}
+}
+
 pub fn run_message_page(
 	inputs: &[aidash_domain::run_input::RunInput],
 	after_seq: i64,
@@ -53,9 +67,15 @@ pub fn run_message_page(
 		let id = input
 			.message_id
 			.ok_or_else(|| Error::External("run message home delivery is pending".into()))?;
-		let full = json!({"seq":input.seq,"sender":input.sender,"content":input.content});
+		let full = run_message_value(
+			input,
+			json!({"seq":input.seq,"sender":input.sender,"content":input.content}),
+		);
 		let full_size = full.to_string().len();
-		let reference = json!({"seq":input.seq,"sender":input.sender,"record":{"kind":"message","id":id},"requires_workspace_read":true});
+		let reference = run_message_value(
+			input,
+			json!({"seq":input.seq,"sender":input.sender,"record":{"kind":"message","id":id},"requires_workspace_read":true}),
+		);
 		let mut reference_only = references_only || input.reference_only;
 		let mut entry = if reference_only {
 			reference.clone()

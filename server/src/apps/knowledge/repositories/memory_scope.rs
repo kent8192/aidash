@@ -21,6 +21,75 @@ pub(crate) struct Scope<'a, 'scope> {
 	pub models: &'a Models,
 	pub delivered: &'a mut Vec<Unit>,
 }
+
+fn automatic_changes(
+	operation: Uuid,
+	source: &Evidence,
+	content: &[Content],
+) -> Result<Vec<Change>> {
+	if !matches!(source, Evidence::JournalRange { .. }) {
+		return Err(Error::Invalid(
+			"automatic memory needs a Journal range".into(),
+		));
+	}
+	let mut changes = Vec::with_capacity(content.len());
+	for (index, fact) in content.iter().enumerate() {
+		if fact.kind.derived() || !fact.evidence.contains(source) {
+			return Err(Error::Invalid(
+				"automatic memory needs source provenance".into(),
+			));
+		}
+		let mut fact = fact.clone();
+		fact.verification = Verification::Recorded;
+		changes.push(Change::Add {
+			id: crate::semantic::native_memory::request_id(
+				operation,
+				&format!("offload-fact:{index}"),
+			)?,
+			content: fact,
+		});
+	}
+	Ok(changes)
+}
+
+#[cfg(test)]
+mod automatic_tests {
+	use super::*;
+	#[test]
+	fn offloaded_facts_are_recorded_directly_with_stable_provenance() {
+		let run = Uuid::now_v7();
+		let source = Evidence::JournalRange {
+			run_id: run,
+			from_seq: 2,
+			through_seq: 4,
+		};
+		let fact = Content {
+			mental_model: None,
+			text: "A fact".into(),
+			kind: Kind::World,
+			learning: Learning::Fact,
+			verification: Verification::Unverified,
+			occurred: None,
+			entities: vec![],
+			evidence: vec![source.clone()],
+			links: vec![],
+		};
+		let operation = Uuid::now_v7();
+		let first = automatic_changes(operation, &source, std::slice::from_ref(&fact)).unwrap();
+		assert_eq!(
+			first,
+			automatic_changes(operation, &source, std::slice::from_ref(&fact)).unwrap()
+		);
+		let Change::Add { content, .. } = &first[0] else {
+			panic!("expected direct admission")
+		};
+		assert_eq!(content.verification, Verification::Recorded);
+		assert_eq!(content.evidence, vec![source.clone()]);
+		let mut unsupported = fact;
+		unsupported.evidence.clear();
+		assert!(automatic_changes(operation, &source, &[unsupported]).is_err());
+	}
+}
 impl Scope<'_, '_> {
 	async fn stamp(&mut self, bank: &Bank) -> Result<String> {
 		let bank_id = repository::bank_id(self.lease, bank, false)
@@ -58,7 +127,7 @@ impl Scope<'_, '_> {
 		limit: usize,
 		mode: repository::ListMode,
 	) -> aidash_application::Result<Snapshot> {
-		let units = repository::list_mode(
+		let mut units = repository::list_mode(
 			self.lease,
 			bank,
 			limit,
@@ -66,15 +135,72 @@ impl Scope<'_, '_> {
 			mode,
 		)
 		.await?;
-		let embedding: EmbeddingConfig = serde_json::from_value(
-			self.models
-				.role(&self.models.policy.embedding, "embedding")?
-				.config
-				.clone(),
-		)?;
-		let graph =
+		// Credentialless workers still have a Run identity. Do not let their
+		// unrestricted lease expose another active Run's memory.
+		if let Some(reader) = self.models.run {
+			let mut visible = Vec::new();
+			for unit in units {
+				match units::current_for_run(
+					self.lease,
+					bank.workspace,
+					&unit.content.evidence,
+					self.models.policy.bounds.max_graph_visits,
+					Some(reader),
+				)
+				.await
+				{
+					Ok(()) => visible.push(unit),
+					Err(Error::Forbidden | Error::Conflict(_)) => continue,
+					Err(error) => return Err(error.into()),
+				}
+			}
+			units = visible;
+		}
+		if self.models.provider.id == aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+			&& self.models.provider.version
+				== aidash_domain::registry::bindings::memory_defaults::VERSION
+			&& let Some(run_id) = self.models.run
+		{
+			let reader: aidash_domain::RunMetadata = crate::database::query_as(
+				&Query::select()
+					.column(reinhardt::query::ColumnRef::Asterisk)
+					.from(Alias::new("runs"))
+					.and_where(Expr::col("id").eq(Expr::value(run_id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_one(&mut **self.lease.tx())
+			.await?;
+			if reader.workspace_id != bank.workspace {
+				if super::sharing::get(&mut **self.lease.tx(), &bank.tenant)
+					.await?
+					.0 != SharingScope::TenantAgent
+				{
+					return Err(aidash_application::Error::Forbidden);
+				}
+				let mut allowed = Vec::new();
+				for unit in units {
+					if super::sharing::agent_unit(
+						self.lease,
+						&unit,
+						&reader.agent_id,
+						self.models.policy.bounds.max_graph_visits,
+					)
+					.await?
+					{
+						allowed.push(unit);
+					}
+				}
+				units = allowed;
+			}
+		}
+		let graph = if let Some(role) = &self.models.policy.embedding {
+			let embedding: EmbeddingConfig =
+				serde_json::from_value(self.models.role(role, "embedding")?.config.clone())?;
 			super::memory_graph::current(self.lease, &units, &self.models.policy, &embedding)
-				.await?;
+				.await?
+		} else {
+			Vec::new()
+		};
 		Ok(Snapshot {
 			units,
 			graph,
@@ -90,7 +216,7 @@ impl Scope<'_, '_> {
 		limit: usize,
 		allowance: Allowance,
 	) -> Result<Produced<Vec<Uuid>>> {
-		if model != &self.models.policy.embedding {
+		if Some(model) != self.models.policy.embedding.as_ref() {
 			return Err(Error::Conflict("memory embedding role changed".into()));
 		}
 		let index = crate::semantic::models::SemanticIndexe::locked(
@@ -251,19 +377,18 @@ impl MemoryScope for Scope<'_, '_> {
 			self.models.policy.bounds.max_graph_visits,
 		)
 		.await?;
-		let embedding: EmbeddingConfig = serde_json::from_value(
-			self.models
-				.role(&self.models.policy.embedding, "embedding")?
-				.config
-				.clone(),
-		)?;
 		units.extend(dormant);
 		// Each inclusive partition has its own source bound. Validate graph
 		// scalar work against the actual combined authorized snapshot.
 		let mut graph_policy = self.models.policy.clone();
 		graph_policy.bounds.max_units = graph_policy.bounds.max_units.max(units.len());
-		let graph =
-			super::memory_graph::current(self.lease, &units, &graph_policy, &embedding).await?;
+		let graph = if let Some(role) = &self.models.policy.embedding {
+			let embedding: EmbeddingConfig =
+				serde_json::from_value(self.models.role(role, "embedding")?.config.clone())?;
+			super::memory_graph::current(self.lease, &units, &graph_policy, &embedding).await?
+		} else {
+			Vec::new()
+		};
 		Ok(Snapshot {
 			units,
 			graph,
@@ -296,12 +421,11 @@ impl MemoryScope for Scope<'_, '_> {
 		if bank != &self.models.bank || units.iter().any(|unit| unit.bank != *bank) {
 			return Err(aidash_application::Error::Forbidden);
 		}
-		let embedding: EmbeddingConfig = serde_json::from_value(
-			self.models
-				.role(&self.models.policy.embedding, "embedding")?
-				.config
-				.clone(),
-		)?;
+		let Some(role) = &self.models.policy.embedding else {
+			return Ok(Default::default());
+		};
+		let embedding: EmbeddingConfig =
+			serde_json::from_value(self.models.role(role, "embedding")?.config.clone())?;
 		super::memory_graph::current_vectors(self.lease, units, &embedding)
 			.await
 			.map_err(Into::into)
@@ -327,11 +451,12 @@ impl MemoryScope for Scope<'_, '_> {
 		bank: &Bank,
 		evidence: &[Evidence],
 	) -> aidash_application::Result<()> {
-		units::current(
+		units::current_for_run(
 			self.lease,
 			bank.workspace,
 			evidence,
 			self.models.policy.bounds.max_graph_visits,
+			self.models.run,
 		)
 		.await
 		.map_err(Into::into)
@@ -352,6 +477,22 @@ impl MemoryScope for Scope<'_, '_> {
 		content: &[Content],
 		bounds: &Bounds,
 	) -> aidash_application::Result<Vec<Candidate>> {
+		use aidash_domain::registry::bindings::memory_defaults;
+		if self.models.provider.id == memory_defaults::MEMORY_ID
+			&& self.models.provider.version == memory_defaults::VERSION
+		{
+			let changes = automatic_changes(self.models.operation, run, content)?;
+			if !changes.is_empty() {
+				let mutation = Mutation {
+					operation_id: self.models.operation,
+					provider: self.models.provider.clone(),
+					bank: bank.clone(),
+					changes,
+				};
+				repository::mutate_origin(self.lease, &mutation, bounds, self.models.run).await?;
+			}
+			return Ok(Vec::new());
+		}
 		candidates::propose(self.lease, bank, run, content, bounds)
 			.await
 			.map_err(Into::into)
@@ -443,11 +584,12 @@ impl MemoryScope for Scope<'_, '_> {
 				));
 			}
 			units::unexpired(self.lease, &unit).await?;
-			units::current(
+			units::current_for_run(
 				self.lease,
 				bank.workspace,
 				&unit.content.evidence,
 				self.models.policy.bounds.max_graph_visits,
+				self.models.run,
 			)
 			.await?;
 			selected.push(unit);
