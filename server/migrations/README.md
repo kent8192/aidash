@@ -894,6 +894,11 @@ Each is an empty state-only migration that joins its listed histories. The
 renumbered Node chains also follow the provider and semantic image histories,
 leaving one leaf each for Identity, Execution and Knowledge.
 
+`knowledge/0051_recorded_memory` permits automatically recorded facts and
+observations without marking them as awaiting human verification.
+`knowledge/0052_memory_sharing_scope` stores the Tenant Administrator's
+revisioned Workspace or Tenant-Agent choice and enforces Tenant row isolation.
+
 `execution/0108_node_preview_merge` joins `execution/0107_node_plugin_merge`
 with the Live preview, Safety Stop, Lease Recovery and Harness Contract history
 ending in `execution/0083_harness_contract_state`.

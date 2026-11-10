@@ -180,7 +180,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	assert_eq!(federation[0].name, "0021_node_preview_origin_merge");
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0050_recovery_lifetime_merge");
+	assert_eq!(knowledge[0].name, "0052_memory_sharing_scope");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -1232,6 +1232,16 @@ async fn image_policy_migrations_reverse_safely(#[future] fresh_database: Migrat
 		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	let scope = source
+		.get_migration("knowledge", "0052_memory_sharing_scope")
+		.await
+		.unwrap();
+	executor.rollback_migrations(&[scope]).await.unwrap();
+	let memory = source
+		.get_migration("knowledge", "0051_recorded_memory")
+		.await
+		.unwrap();
+	executor.rollback_migrations(&[memory]).await.unwrap();
 	// Act: undo the knowledge template migration through the real executor.
 	let migration = source
 		.get_migration("knowledge", "0050_recovery_lifetime_merge")

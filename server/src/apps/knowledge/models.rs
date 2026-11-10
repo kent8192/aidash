@@ -3,7 +3,9 @@ pub(crate) mod cleanup;
 mod index_configuration;
 mod memory_decay;
 pub(crate) mod memory_records;
+mod memory_tenant_scope;
 pub(crate) mod memory_units;
+pub use memory_tenant_scope::MemoryTenantScope;
 mod read_dependencies;
 pub(crate) mod unit_origins;
 

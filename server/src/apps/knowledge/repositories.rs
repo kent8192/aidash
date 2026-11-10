@@ -28,6 +28,7 @@ pub(crate) mod remote_participants;
 #[cfg(test)]
 #[path = "tests/native_memory/retry_cycle.rs"]
 mod retry_cycle_tests;
+pub(crate) mod sharing;
 pub(crate) mod storage;
 pub(crate) mod units;
 #[cfg(test)]
