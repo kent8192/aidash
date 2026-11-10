@@ -63,6 +63,9 @@ async function setup(
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/events/stream") return route.abort();
+    // A revoked Workspace is refused, as the server does.
+    if (path === "/api/workspaces/product-lab" && !data.workspaces.length)
+      return route.fulfill({ status: 404, json: { error: "not found" } });
     const json =
       path === "/api/session"
         ? { access: data.access, node_id: data.deployment.id }
@@ -363,9 +366,12 @@ test("zoom and node positions survive snapshot refresh and revoked details disap
     .poll(async () => (await cytoscapeCamera(canvas)).zoom)
     .toBeGreaterThan(before.zoom);
   const camera = await cytoscapeCamera(canvas);
-  await page.waitForResponse((r) => r.url().includes("/api/state"));
+  const refreshed = page.waitForResponse((r) => r.url().includes("/api/state"));
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await refreshed;
   await expect.poll(() => cytoscapeCamera(canvas)).toEqual(camera);
   revoke();
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(page.locator(".mesh-inspector")).toHaveCount(0, {
     timeout: 8000,
   });

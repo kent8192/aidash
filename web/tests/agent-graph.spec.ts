@@ -308,6 +308,7 @@ test("removes graph and stale entity metadata after an authorized snapshot revok
     dialog.getByRole("region", { name: "Agent relationship graph" }),
   ).toBeVisible();
   revoke();
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(dialog.getByRole("status")).toHaveText(
     "This agent version is not available in the current authorized view.",
     { timeout: 15000 },

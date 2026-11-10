@@ -26,7 +26,13 @@ function addRequest(data: State, id: string, prompt: string) {
   });
 }
 
+// The dashboard re-reads state on window focus rather than on a short poll (#664).
+async function refreshState(page: Page) {
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+}
+
 async function nextToast(page: Page) {
+  await refreshState(page);
   await page.clock.runFor(5500);
   await expect
     .poll(async () => {
@@ -173,13 +179,20 @@ test("toasts are rate limited, deduplicated and cleared with queued updates on a
   await page.clock.runFor(500);
   await expect(page.locator(".intent-toast")).toHaveCount(0);
   addRequest(data, "second", "Second approval");
+  await refreshState(page);
   await page.clock.runFor(15_000);
   await expect(page.locator(".intent-toast")).toHaveCount(0);
-  await page.clock.runFor(20_000);
+  // The held toast shows once the interval passes, then closes after 8 s, so
+  // step the clock until it appears instead of jumping past it.
+  for (let step = 0; step < 40; step++) {
+    if (await page.locator(".intent-toast-open").count()) break;
+    await page.clock.runFor(500);
+  }
   await expect(page.locator(".intent-toast-open")).toContainText(
     "Second approval",
   );
   addRequest(data, "queued", "Queued approval");
+  await refreshState(page);
   await page.clock.runFor(5500);
   await page.getByLabel("Account settings", { exact: true }).click();
   await page
@@ -226,12 +239,15 @@ test("recent updates and throttled requests survive a temporary state outage", a
     .click();
   data.tasks[0] = { ...data.tasks[0], status: "COMPLETED", revision: 3 };
   addRequest(data, "queued", "Approval queued before the outage");
+  await refreshState(page);
   await page.clock.runFor(5500);
   await expect(page.locator(".intent-toast")).toHaveCount(0);
   unavailable = true;
+  await refreshState(page);
   await page.clock.runFor(8000);
   await expect(page.getByRole("alert")).toContainText("temporary state outage");
   unavailable = false;
+  await refreshState(page);
   await page.clock.runFor(5500);
   await expect(
     page.getByRole("textbox", { name: "Message", exact: true }),
