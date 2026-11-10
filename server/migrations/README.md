@@ -791,6 +791,8 @@ the single Knowledge head, and no schema or model state is overwritten.
 
 `registry/0063_reference_set_limit` raises the most Reference files one Source can bind from 8 to 256 in the PostgreSQL context validator. The function body uses SQL assets because Reinhardt has no typed operation for replacing PostgreSQL functions. Reversal refuses while a Source or a Run snapshot holds more than 8.
 
+`registry/0064_journal_tools` admits the built-in Journal descriptors while preserving the existing descriptor validation. PostgreSQL function DDL requires SQL assets. Reversal refuses while Journal definitions remain.
+
 ## Run control provenance and Safety Stops (#485, ADR 0101)
 
 `execution/0075_run_control_provenance` (after `execution/0074_federated_preview_authority`)
@@ -918,7 +920,7 @@ cannot express PL/pgSQL function definitions. Rolling back restores the
 previous descriptor contract; existing Subnode descriptors then cannot be
 rewritten until the migration is reapplied.
 
-`registry/0064_agent_default_removals` admits `connection_request` as a removable default and rejects the removed `compaction` default. Its SQL replaces a PostgreSQL validation function that Reinhardt cannot express; reversal refuses definitions or Runs that rely on the new removal.
+`registry/0065_agent_default_removals` admits `connection_request` as a removable default and rejects the removed `compaction` default. Its SQL replaces a PostgreSQL validation function that Reinhardt cannot express; reversal refuses definitions or Runs that rely on the new removal.
 
 `execution/0123_remove_compaction_decision_storage` removes the compaction-only decision state and outcome tables; `0124_remove_compaction_decision_storage_state` updates the model state. Decision Attempts and approval Evidence remain.
 

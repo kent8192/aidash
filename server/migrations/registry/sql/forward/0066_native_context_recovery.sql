@@ -1,7 +1,7 @@
 -- PostgreSQL cannot express validation function bodies as typed migration operations.
 DO $$ DECLARE original text; BEGIN
  original := pg_get_functiondef('public.aidash_agent_bindings_is_valid(jsonb)'::regprocedure);
- EXECUTE replace(original, 'FUNCTION public.aidash_agent_bindings_is_valid(', 'FUNCTION public.aidash_agent_before_native_recovery_0065(');
+ EXECUTE replace(original, 'FUNCTION public.aidash_agent_bindings_is_valid(', 'FUNCTION public.aidash_agent_before_native_recovery_0066(');
 END $$;
 CREATE OR REPLACE FUNCTION public.aidash_agent_bindings_is_valid(value jsonb) RETURNS boolean
 LANGUAGE plpgsql IMMUTABLE STRICT AS $$
@@ -28,6 +28,6 @@ BEGIN
   policy := policy - ARRAY['offload_target','protected_tail_fraction','reread_immunity_steps','reread_summary_threshold']::text[];
   value := jsonb_set(value, '{context_policy}', policy);
  END IF;
- RETURN public.aidash_agent_before_native_recovery_0065(value);
+ RETURN public.aidash_agent_before_native_recovery_0066(value);
 EXCEPTION WHEN OTHERS THEN RETURN false;
 END $$;

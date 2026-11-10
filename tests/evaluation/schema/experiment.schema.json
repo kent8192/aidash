@@ -103,8 +103,7 @@
         "compaction",
         "cache_salt",
         "provider_credential",
-        "disclosure_approval",
-        "jev_classifier"
+        "disclosure_approval"
       ],
       "properties": {
         "compaction": { "type": "string" },
@@ -119,7 +118,6 @@
         "cache_salt": { "type": "boolean" },
         "provider_credential": { "type": ["string", "null"] },
         "disclosure_approval": { "type": ["string", "null"] },
-        "jev_classifier": { "type": "string" },
         "builtin_policy": {
           "enum": ["historical-defaults/1", "minimal-task-support/1"]
         }

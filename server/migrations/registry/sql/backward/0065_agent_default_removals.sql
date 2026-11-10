@@ -2,11 +2,11 @@
 DO $$ BEGIN
  IF EXISTS (SELECT 1 FROM public.registry WHERE kind = 'agent'
   AND metadata #> '{config,remove_default}' ? 'connection_request') THEN
-  RAISE EXCEPTION 'registry 0064 cannot be reversed: definitions remove connection_request' USING ERRCODE = '55000';
+  RAISE EXCEPTION 'registry 0065 cannot be reversed: definitions remove connection_request' USING ERRCODE = '55000';
  END IF;
  IF to_regclass('public.runs') IS NOT NULL AND EXISTS (SELECT 1 FROM public.runs WHERE
   jsonb_path_exists(context, 'lax $.binding_snapshot.definitions[*].definition.config.remove_default[*] ? (@ == "connection_request")')) THEN
-  RAISE EXCEPTION 'registry 0064 cannot be reversed: Runs pin connection_request removal' USING ERRCODE = '55000';
+  RAISE EXCEPTION 'registry 0065 cannot be reversed: Runs pin connection_request removal' USING ERRCODE = '55000';
  END IF;
 END $$;
 -- PostgreSQL function bodies are DDL and have no typed migration operation.

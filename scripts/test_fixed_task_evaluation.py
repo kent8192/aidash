@@ -770,8 +770,7 @@ def full_result(value, runs_override=None, ceiling=None, tier="deterministic"):
                                                 "binary_sha256": None, "server_revision": None},
         {"kind": "scripted-fixture", "registrations": {}, "reported_identities": [], "route": None,
          "mutable_alias": False},
-        {"compaction": "x", "cache_salt": True, "provider_credential": None, "disclosure_approval": None,
-         "jev_classifier": "fixture"}, variants, 2,
+        {"compaction": "x", "cache_salt": True, "provider_credential": None, "disclosure_approval": None}, variants, 2,
         {"run_timeout_seconds": 1, "wall_seconds": 1, "max_output_tokens": 1, "spend_ceiling_nanocredits": ceiling},
         [], evaluator=evaluation.evaluator_identity())
     return cli.assemble(value, experiment, runs, evaluation.feature_availability(value),
@@ -965,6 +964,38 @@ class OfflineCalibrationTest(unittest.TestCase):
                 planned = {"task": item, "comparison": {"id": "projection"}, "arm": "baseline", "label": "legacy"}
                 result = evaluation.run_result(value, planned, 1, observed, "deterministic", True)
                 self.assertEqual(evaluation.calibrate(value, [result]), [])
+
+
+class RecoveryCorpusTest(unittest.TestCase):
+    def test_fixture_corrections_and_ledger(self):
+        value = evaluation.load_corpus(evaluation.EVALUATION / "corpus-context-recovery.toml")
+        fixture = fixture_module.Fixture({})
+        for identifier, alias, args in (("correction-mid-page", "reference_lookup", {"page": 2}),
+                                        ("relevance-visible-in-input", "document_lookup",
+                                         {"document": "procurement-budget-policy-update"})):
+            item = task(value, identifier)
+            status, result = fixture.tool(item, alias, args)
+            self.assertEqual(status, 200)
+            self.assertEqual(len(result["content"]), 3000)
+            self.assertTrue(result["content"][1500:].startswith("Correction:"))
+        item = task(value, "side-effect-ledger")
+        probe = fixture_module.Probe(item, "run")
+        for page in range(1, 21):
+            self.assertEqual(fixture.behave(probe, {}, "")["tool_calls"], [("reference_lookup", {"page": page})])
+            self.assertEqual(fixture.behave(probe, {}, "")["tool_calls"], [("record_note", {"page": page})])
+        answer = answer_json({"budget_usd": 300, "excluded_vendors": ["Northwind", "Contoso"]})
+        calls = [{"name": "record_note", "arguments": {"page": page}} for page in range(1, 21)]
+        self.assertTrue(evaluation.grade(value, item, observation(final_answer=answer, tool_calls=calls), False)["passed"])
+        calls.append(calls[0])
+        self.assertFalse(evaluation.grade(value, item, observation(final_answer=answer, tool_calls=calls), False)["passed"])
+
+    def test_document_fixture_reads_documents_in_order(self):
+        value = evaluation.load_corpus(evaluation.EVALUATION / "corpus-context-recovery.toml")
+        item = task(value, "relevance-visible-in-input")
+        fixture = fixture_module.Fixture({})
+        probe = fixture_module.Probe(item, "run")
+        for name in item["fixture_documents"]:
+            self.assertEqual(fixture.behave(probe, {}, "")["tool_calls"], [("document_lookup", {"document": name})])
 
 
 class FakeNode:

@@ -90,6 +90,12 @@ pub struct Context {
 	/// Read-back immunity and repeat counts for offloaded Journal ranges.
 	#[serde(default, skip_serializing_if = "offload::ReadGuard::is_empty")]
 	pub offload_reads: offload::ReadGuard,
+	/// Set by offloading once this Run has material outside its projection.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub offloaded: Option<journal_query::Offloaded>,
+	/// Durable read counts used by the offload loop guard.
+	#[serde(default, skip_serializing_if = "journal_query::ReadCounts::is_empty")]
+	pub journal_reads: journal_query::ReadCounts,
 	#[serde(default, skip_serializing_if = "recovery::RecoveryState::is_initial")]
 	pub recovery: recovery::RecoveryState,
 	/// Estimate Snapshots (ADR 0017); absent until a step pins a calibrated one.
@@ -157,6 +163,10 @@ struct StoredContext {
 	journal: Option<JournalCursor>,
 	#[serde(default)]
 	offload_reads: offload::ReadGuard,
+	#[serde(default)]
+	offloaded: Option<journal_query::Offloaded>,
+	#[serde(default)]
+	journal_reads: journal_query::ReadCounts,
 	#[serde(default)]
 	recovery: recovery::RecoveryState,
 	#[serde(default)]
@@ -258,6 +268,8 @@ impl<'de> Deserialize<'de> for Context {
 			history,
 			journal,
 			offload_reads: stored.offload_reads,
+			offloaded: stored.offloaded,
+			journal_reads: stored.journal_reads,
 			recovery: stored.recovery,
 			estimate: stored.estimate,
 			usage: stored.usage,
@@ -286,6 +298,9 @@ impl Context {
 
 	/// Append a tool result with its durable invocation identity.
 	pub fn push_invocation(&mut self, event: ContextEvent, invocation: &str) {
+		if let ContextEvent::Tool { call, result } = &event {
+			self.journal_reads.record_result(call, result);
+		}
 		self.journal.head += 1;
 		self.history
 			.push(HistoryEntry::new(self.journal.head, event).with_invocation(invocation));
@@ -1068,6 +1083,8 @@ pub mod offload;
 
 pub mod sources;
 
+pub mod journal_export;
+pub mod journal_query;
 pub mod policy;
 pub mod recovery;
 pub mod research;

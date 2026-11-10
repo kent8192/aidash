@@ -37,7 +37,7 @@ EVALUATION = ROOT / "tests/evaluation"
 ARCHIVED_CORPORA = {"fixed-task-corpus-v1": EVALUATION / "corpus-v1.toml",
                     "fixed-task-corpus-v2": EVALUATION / "corpus-v2.toml"}
 EVALUATOR_NAME = "aidash-fixed-task-evaluator"
-EVALUATOR_VERSION = "2.1.5"
+EVALUATOR_VERSION = "2.2.0"
 # Files whose bytes define the evaluator, relative to the repository root; their digest is in
 # every manifest. The schemas belong here because they decide which evidence `validate` accepts.
 EVALUATOR_FILES = ("scripts/fixed_task_evaluation.py", "scripts/fixed_task_fixture.py", "scripts/fixed_task_runner.py",
@@ -45,7 +45,7 @@ EVALUATOR_FILES = ("scripts/fixed_task_evaluation.py", "scripts/fixed_task_fixtu
                    "tests/evaluation/schema/experiment.schema.json", "tests/evaluation/schema/result.schema.json")
 OUTCOMES = ("success", "false_completion", "policy_compliant_escalation", "unresolved",
             "overflow_failure", "interrupted", "infrastructure_failure")
-# The approver accepts that only Decider/Summary call counts are enforced; each call's
+# The approver accepts that only Summary call counts are enforced; each call's
 # declared amount is reserved against the campaign ceiling, never proven as a cap.
 DECLARED_RESERVATION_ACCEPTED = "declared-reservation-accepted"
 LONG_CONTEXT = ("none", "pruning", "summary_recovery", "terminal_overflow")
@@ -1322,6 +1322,15 @@ def grade(corpus, task, observation, allow_code_execution, required_loads=()):
         passed, checks, detail = oracle_overdue(corpus, oracle, answer)
     elif kind in ("constraint-retention", "compaction-retention"):
         passed, checks, detail = oracle_constraints(oracle, answer)
+        if task.get("fixture_record_pages"):
+            calls = [call for call in observation.get("tool_calls", [])
+                     if call.get("name") == "record_note" and not call.get("dispatch_rejected")]
+            pages = [call["arguments"].get("page") if isinstance(call.get("arguments"), dict) else None
+                     for call in calls]
+            ok = pages == list(range(1, task["reference_pages"] + 1)) and all(not call.get("error") for call in calls)
+            checks.append({"check": "each-page-recorded-once", "passed": ok})
+            if not ok:
+                passed, detail = False, "the ledger did not record each page exactly once in order"
         if kind == "compaction-retention":
             adopted = observation.get("recovery_operations", [])
             operation = oracle["operation"]
@@ -1784,17 +1793,17 @@ def auxiliary_allowance(approval):
 
 
 def require_enforceable_auxiliary_bound(auxiliary):
-    """Refuse paid Decider work unless its approval accepts an unenforced per-call amount.
+    """Refuse paid Summary work unless its approval accepts an unenforced per-call amount.
 
-    No provider or broker caps one Decider or Summary call in money: the Node
+    No provider or broker caps one Summary call in money: the Node
     enforces only the call count (`max_calls_per_run`, the Context Policy's
     `call_budget`). An approver may accept the declared `max_nanocredits_per_call`
     as a reservation against the campaign ceiling instead, with
     `cost_enforcement: "declared-reservation-accepted"`; the manifest records it.
     """
-    if (auxiliary.get("decider") or auxiliary.get("summary")) and \
+    if auxiliary.get("summary") and \
             auxiliary.get("cost_enforcement") != DECLARED_RESERVATION_ACCEPTED:
-        raise GuardRefusal("bounded Decider/Summary live dispatch is unavailable: max_nanocredits_per_call is an "
+        raise GuardRefusal("bounded Summary live dispatch is unavailable: max_nanocredits_per_call is an "
                            "declared reservation, not an enforceable per-physical-request monetary limit "
                            "or receipt. Either an enforced provider/broker bound or an approval with "
                            f'external_compaction.cost_enforcement "{DECLARED_RESERVATION_ACCEPTED}" is required '
@@ -1816,6 +1825,17 @@ def verify_auxiliary_configs(auxiliary, entries, provider):
         if allowance["max_calls_per_run"] > 64:
             raise GuardRefusal("Summary call allowance exceeds the Context Policy maximum of 64")
 
+
+
+def check_summary_models(auxiliary, planned, mapping):
+    """Summary diagnostics must reserve the same model used by the Agent."""
+    allowance = auxiliary.get("summary")
+    if allowance is None:
+        return
+    mismatched = sorted({p["task"]["id"] for p in planned if p["task"].get("requires_summary")
+                         and mapping[p["model"]] != allowance["reference"]})
+    if mismatched:
+        raise GuardRefusal(f"tasks {mismatched} must reserve Summary on the Agent's own model")
 
 def live_task_support(approval, corpus, planned, fixture_endpoint):
     """Return approved tool/code support; existing default refusals stay in force."""

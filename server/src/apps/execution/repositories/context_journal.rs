@@ -15,6 +15,62 @@ use reinhardt::query::{
 };
 use uuid::Uuid;
 
+#[async_trait::async_trait]
+impl aidash_application::ports::journal_export::JournalSource for Store {
+	async fn export(
+		&self,
+		scope: &TenancyScope,
+		reader_run: Uuid,
+		target_run: Uuid,
+		range: Option<(u64, u64)>,
+	) -> aidash_application::Result<Vec<aidash_domain::context::journal_export::JournalLine>> {
+		let (from, through) = range.unwrap_or((0, i64::MAX as u64));
+		if from > through || through > i64::MAX as u64 {
+			return Err(aidash_application::Error::Invalid(
+				"invalid journal range".into(),
+			));
+		}
+		let reader = self.run(scope, reader_run).await?;
+		let mut access = crate::apps::identity::services::execution::access_for_run(
+			self,
+			&reader.metadata(),
+			true,
+		)
+		.await?
+		.ok_or(aidash_application::Error::Forbidden)?;
+		let result: Result<Vec<_>> = async {
+			if reader_run != target_run {
+				let target = self.run(scope, target_run).await?;
+				if !access.run_visible(target.metadata()).await? {
+					return Err(Error::Forbidden);
+				}
+				let mut tx = access
+					.journal_pool()
+					.begin(&access.tenancy()?)
+					.await?
+					.into_executor()
+					.await?;
+				crate::apps::identity::models::AuthorizationRunRead::record_sources(
+					tx.as_mut(),
+					reader_run,
+					target.workspace_id,
+					&[("run".into(), target_run)],
+				)
+				.await?;
+				tx.commit().await?;
+			}
+			Ok(self
+				.context_journal(scope, target_run, from, through)
+				.await?
+				.iter()
+				.map(Into::into)
+				.collect())
+		}
+		.await;
+		access.finish(result).await.map_err(Into::into)
+	}
+}
+
 pub(crate) const EVENTS: &str = "run_context_events";
 const ATTEMPTS: &str = "context_compaction_attempts";
 

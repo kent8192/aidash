@@ -663,8 +663,8 @@ def run_deterministic(args, binary_directory):
         error = (error + "; " if error else "") + drift
     model = {"kind": "scripted-fixture", "registrations": dict(model_refs),
              "reported_identities": sorted(model_ids.values()), "route": "local scripted fixture", "mutable_alias": False}
-    harness = {"compaction": "none: the scripted Agents remove the default compaction binding", "cache_salt": True,
-               "provider_credential": None, "disclosure_approval": None, "jev_classifier": "none",
+    harness = {"compaction": "server-configured; recovery diagnostics skipped", "cache_salt": True,
+               "provider_credential": None, "disclosure_approval": None,
                "builtin_policy": "historical-defaults/1" if corpus["version"] == "fixed-task-corpus-v1"
                                  else "minimal-task-support/1"}
     limits = {"run_timeout_seconds": args.run_timeout, "wall_seconds": max(1.0, time.monotonic() - started),
@@ -795,7 +795,7 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
                                                                  args.tool_endpoint)
     auxiliary = evaluation.auxiliary_allowance(approval)
     auxiliary_entries = {}
-    for kind in ("decider", "summary"):
+    for kind in ("summary",):
         allowance = auxiliary[kind]
         if allowance:
             identifier, _, version = allowance["reference"].partition("@")
@@ -887,10 +887,7 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
                    "source_provenance": "source-attestation" if source_attestation else "remote-unverified",
                    "source_attestation_sha256": evaluation.canonical_sha256(source_attestation) if source_attestation else None,
                    "provider_credential": args.provider_credential,
-                   "disclosure_approval": evaluation.canonical_sha256(approval),
-                   "jev_classifier": f"bounded approved Decider ({auxiliary['cost_enforcement']})"
-                                     if auxiliary["decider"] else
-                                     "excluded: the approval attests the Tenant approves no compaction Decider"}
+                   "disclosure_approval": evaluation.canonical_sha256(approval)}
         limits = {"run_timeout_seconds": args.run_timeout, "wall_seconds": args.max_wall_seconds,
                   "max_output_tokens": max(config["max_output_tokens"] for config in models.values()),
                   "spend_ceiling_nanocredits": args.max_spend_nanocredits}

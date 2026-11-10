@@ -703,6 +703,47 @@ async fn a_sweep_pass_that_only_repeats_adds_no_rows_for_a_running_command(
 	use aidash_application::ports::capabilities::reconciliation::OperationReconciliationRepository;
 	// Arrange: the command's Run is bound to its Working Area, as a started Run is.
 	let fixture = fixture(database.await, 1).await;
+	// The sweep also rechecks the Run's Agent under its current Catalog Approval.
+	let model = json!({
+		"id":"model", "version":"1.0.0", "kind":"model",
+		"name":{"en":"Model"}, "description":{"en":"Fixture"},
+		"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}
+	});
+	sqlx::query("INSERT INTO registry (tenant,id,version,kind,metadata) VALUES ('acme','model','1.0.0','model',$1)")
+		.bind(model)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	let entry: crate::registry::Entry = serde_json::from_value(json!({
+		"id":"fixture", "version":"1.0.0", "kind":"agent",
+		"name":{"en":"Fixture"}, "description":{"en":"Fixture"},
+		"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","bindings":[],"remove_default":[]}
+	})).unwrap();
+	sqlx::query(
+		"INSERT INTO registry (tenant,id,version,kind,metadata) VALUES ('acme',$1,$2,'agent',$3)",
+	)
+	.bind(&entry.id)
+	.bind(&entry.version)
+	.bind(serde_json::to_value(&entry).unwrap())
+	.execute(fixture.driver())
+	.await
+	.unwrap();
+	Authorization {
+		pool: fixture.store.pool.clone(),
+	}
+	.set_catalog(
+		"acme",
+		&aidash_domain::nodes::NodeName::derived("acme"),
+		&crate::registry::EntityRef {
+			id: entry.id,
+			version: entry.version,
+		},
+		0,
+		true,
+		"fixture",
+	)
+	.await
+	.unwrap();
 	let (operation, _) = running_targets(&fixture).await;
 	sqlx::query("INSERT INTO core_runs (run_id,tenant,area_id,sequence,initialized,generation) SELECT $1,'acme',id,1,true,generation FROM core_areas WHERE id=(SELECT area_id FROM core_operations WHERE id=$2)")
 		.bind(fixture.run)
@@ -719,9 +760,10 @@ async fn a_sweep_pass_that_only_repeats_adds_no_rows_for_a_running_command(
 		scope.load(operation, snapshot.run_id).await.unwrap();
 		scope.finish(Ok(())).await.unwrap();
 	};
+	let before = fixture.rows("true").await;
 	pass().await;
 	let written = fixture.rows("true").await;
-	assert!(written > 0, "the first pass records what it allowed");
+	assert!(written > before, "the first pass records what it allowed");
 
 	// Act
 	pass().await;

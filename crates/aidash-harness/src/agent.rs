@@ -4079,6 +4079,20 @@ async fn prepare_tool_result(
 				size.map(|chars| (chars, skill_read_result(&output, chars))),
 			)
 		}
+		ResultFitting::JournalText => {
+			let output = tool.invoke(run, call.arguments.clone(), "").await?;
+			let result = |chars| {
+				let mut value = skill_read_result(&output, chars);
+				if value["deferred"] == true {
+					value["message"] = json!(
+						"No request budget remains for this Journal read. Continue on a later turn."
+					);
+				}
+				value
+			};
+			let size = fit_tool_result(context, call, "max_chars", budget, 1, result);
+			("max_chars", size.map(|chars| (chars, result(chars))))
+		}
 		ResultFitting::SkillAsset => {
 			let output = tool.invoke(run, call.arguments.clone(), "").await?;
 			let returned = output["content"]
@@ -4108,14 +4122,21 @@ async fn prepare_tool_result(
 				PreparedResult::NoEnvelopeRoom
 			});
 		}
-		ResultFitting::CapabilitySearch => {
+		ResultFitting::CapabilitySearch | ResultFitting::JournalSearch => {
 			let output = tool.invoke(run, call.arguments.clone(), "").await?;
 			return Ok(
 				match fit_capability_search(context, call, &output, budget) {
-					Some(result) => PreparedResult::Fitted {
-						call: call.clone(),
-						result,
-					},
+					Some(mut result) => {
+						if fitting == ResultFitting::JournalSearch && result["deferred"] == true {
+							result["message"] = json!(
+								"No request budget remains for Journal search results. Continue on a later turn."
+							);
+						}
+						PreparedResult::Fitted {
+							call: call.clone(),
+							result,
+						}
+					}
 					None => PreparedResult::NoEnvelopeRoom,
 				},
 			);

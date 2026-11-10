@@ -431,7 +431,7 @@ async fn person_who_cannot_read_the_creators_records_stays_refused_on_the_subnod
 	cleanup(f, &url, &schema).await;
 }
 
-/// An approval for what the creator read is withdrawn after it gave the Subnode a
+/// Access to what the creator read is withdrawn after it gave the Subnode a
 /// Task. Members never checked that read, so they keep working, while the creator
 /// and people lose sight of the Task. Returns the Subnode and a member's Run.
 async fn withdraw_what_the_creator_read(rig: &SubnodeRig) -> (Value, Uuid) {
@@ -442,28 +442,19 @@ async fn withdraw_what_the_creator_read(rig: &SubnodeRig) -> (Value, Uuid) {
 	let (subnode, workspace, root, leader) = rig.subnode_with_task().await;
 	let mut policy = rig.policy.clone();
 	policy["subjects"]["carol"] = json!({"kind":"user"});
-	policy["policies"].as_array_mut().unwrap().push(json!({
-		"id":"alice-approves",
-		"effect":"allow",
-		"subjects":{"ids":["alice"]},
-		"actions":["catalog.approve"],
-		"resources":{"kinds":["*"]},
-	}));
 	set_policy(&rig.f, &rig.app, &policy).await;
 	let credential = common::issued_credential(&rig.f.store, "acme", "carol").await;
 	let carol = credential["token"].as_str().unwrap();
 	let runs = format!("/api/tasks/{root}/runs");
 	let (status, body) = request(&rig.app, carol, "GET", &runs, Value::Null).await;
 	assert_eq!(status, 200, "carol before the withdrawal: {body}");
-	let (status, body) = request(
-		&rig.app,
-		&rig.token,
-		"POST",
-		"/api/authorization/acme/catalog",
-		json!({"node":rig.node.node.as_str(),"entry":{"id":"delegate-target","version":"1.0.0"},"expected_revision":1,"enabled":false}),
-	)
-	.await;
-	assert_eq!(status, 200, "withdraw: {body}");
+	// Catalog Approval governs use, not read dependencies (#769). Deny the
+	// discovered definition instead to withdraw the creator's read.
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"hide-discovered-agent", "effect":"deny", "subjects":{"any":true},
+		"actions":["registry.read"], "resources":{"kinds":["agent"],"ids":["delegate-target"]},
+	}));
+	set_policy(&rig.f, &rig.app, &policy).await;
 	let (status, body) = request(&rig.app, carol, "GET", &runs, Value::Null).await;
 	assert_eq!(status, 403, "carol after the withdrawal: {body}");
 	rig.set_run_control(leader, "PAUSED").await;
