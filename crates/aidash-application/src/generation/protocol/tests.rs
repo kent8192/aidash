@@ -52,6 +52,41 @@ fn entry(id: &str, kind: &str, config: Value) -> Entry {
         "name":{"en":id},"description":{},"config":config}))
 	.unwrap()
 }
+
+#[rstest]
+#[case::ordinary(Purpose::Inference, None, true, 63024, true)]
+#[case::ordinary_over_budget(Purpose::Inference, None, true, 66096, false)]
+#[case::summary(Purpose::Summary, None, true, 66096, true)]
+#[case::summary_over_budget(Purpose::Summary, None, true, 66097, false)]
+#[case::summary_provider_cap(Purpose::Summary, Some(2048), true, 64048, true)]
+#[case::summary_above_provider_cap(Purpose::Summary, Some(2048), true, 64049, false)]
+#[case::summary_policy_cap(Purpose::Summary, None, false, 63024, false)]
+fn home_bounds_summary_reservations_with_the_pinned_policy(
+	world: World,
+	#[case] purpose: Purpose,
+	#[case] provider_limit: Option<u32>,
+	#[case] enabled: bool,
+	#[case] amount: i64,
+	#[case] accepted: bool,
+) {
+	let mut state = world.0.lock().unwrap();
+	state.description.inspection.agent.config["context_policy"] = if enabled {
+		json!({"version":"context-recovery/1","summary":{}})
+	} else {
+		json!({"version":"context-recovery/1","summary":{"max_tokens":512}})
+	};
+	let definition = &mut state.description.inspection.definitions[0];
+	definition.metadata.config["context_window"] = json!(62000);
+	if let Some(limit) = provider_limit {
+		definition.metadata.config["provider_max_output_tokens"] = json!(limit);
+	}
+	let config_digest = aidash_domain::registry::rules::digest(&definition.metadata.config);
+	let mut usage = state.input.usage.clone();
+	usage.provider.configuration_digest = config_digest;
+	usage.purpose = purpose;
+	usage.reserved_tokens = amount;
+	assert_eq!(exact_provider(&state.description, &usage).is_ok(), accepted);
+}
 fn reference(id: &str) -> EntityRef {
 	EntityRef {
 		id: id.into(),
@@ -392,7 +427,10 @@ impl GenerationProtocolAuthority for World {
 		self.point("semantic.verify").await
 	}
 	async fn verify_peer(&self, _: &str, input: &Input) -> Result<bool> {
-		assert_eq!(input.usage.purpose, Purpose::Inference);
+		assert!(matches!(
+			input.usage.purpose,
+			Purpose::Inference | Purpose::Summary
+		));
 		self.point("peer.verify").await?;
 		Ok(self.0.lock().unwrap().peer_verified)
 	}
@@ -621,6 +659,26 @@ async fn inference_reservation_verifies_the_peer_before_any_local_charge(world: 
 	);
 	let state = world.0.lock().unwrap();
 	assert_eq!((state.active, state.charges, state.commits), (0, 1, 1));
+}
+#[rstest]
+#[tokio::test]
+async fn summary_reservation_follows_the_inference_authority_path(world: World) {
+	let mut input = world.input();
+	input.usage.purpose = Purpose::Summary;
+	input.usage.reserved_tokens = 4096 + 512;
+	let receipts = reserve(&world, "aidash://executor", input).await.unwrap();
+	assert_eq!(receipts.len(), 1);
+	assert_eq!(
+		world.events(),
+		[
+			"grant",
+			"binding",
+			"peer.verify",
+			"local.reserve",
+			"lease.finish"
+		]
+	);
+	assert_eq!(world.0.lock().unwrap().charges, 1);
 }
 #[rstest]
 #[tokio::test]

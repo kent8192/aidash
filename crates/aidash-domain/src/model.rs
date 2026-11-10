@@ -47,10 +47,12 @@ pub struct ModelConfig {
 	#[serde(default)]
 	pub reasoning_effort: Option<ReasoningEffort>,
 	pub context_window: usize,
-	/// Maximum completion tokens reported by the selected provider model.
-	/// Missing values are accepted only while reading legacy model versions.
+	/// Output token budget for an ordinary Agent step.
 	#[serde(default)]
 	pub max_output_tokens: Option<u32>,
+	/// Provider's maximum completion size, when independently known.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub provider_max_output_tokens: Option<u32>,
 	pub modalities: Vec<String>,
 	/// Administrator-approved evidence for exact OpenRouter route tags. The
 	/// catalog and ZDR APIs are checked again before every media inference.
@@ -690,6 +692,7 @@ impl ModelConfig {
 	pub fn output_token_limit(&self) -> u32 {
 		self.max_output_tokens
 			.unwrap_or_else(|| (self.context_window / 8).clamp(256, 4096) as u32)
+			.min(self.provider_max_output_tokens.unwrap_or(u32::MAX))
 	}
 }
 

@@ -200,8 +200,12 @@ Recovery saves offloaded or summarized projections as it progresses. When no
 eligible reduction can fit, it prevents inference I/O and pauses the Run with
 the typed reason `context_unreducible`.
 New model registrations capture OpenRouter's advertised maximum completion
-tokens as `max_output_tokens`; model versions created before this field existed
-retain their previous output allowance until re-registered.
+tokens as `max_output_tokens` for ordinary steps; model versions created before
+this field existed retain their previous output allowance until re-registered.
+An optional `provider_max_output_tokens` declares the provider's independent
+completion ceiling. Summary output uses its own policy and one eighth of the
+window, capped by that ceiling when present; it does not inherit the ordinary
+step budget.
 
 A model definition that sets `request_estimator: calibrated` scales only the
 byte basis. The ratio is the nearest-rank 99th percentile of reported
@@ -310,7 +314,7 @@ and Legacy projections.
 | `reread_summary_threshold` | 3       | 2–100     | Repeated reads that request a Summary Stage and notify the Agent |
 | `overflow_retries`         | 2       | 0–4       | Retries after a proven provider Context Overflow                 |
 | `overflow_shrink`          | 0.75    | 0.5–0.9   | Factor applied to the effective window per retry                 |
-| `summary.max_tokens`       | 4,096   | 256–4,096 | Summary output limit, capped by the window and Agent model       |
+| `summary.max_tokens`       | 4,096   | 256–4,096 | Summary output limit, capped by the window and provider ceiling  |
 | `summary.call_budget`      | 8       | 1–64      | Summary calls per Run, including failed attempts                 |
 
 Large tool results are journaled before their projection becomes a short

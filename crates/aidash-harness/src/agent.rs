@@ -885,12 +885,12 @@ impl<'a> Executor<'a> {
 		};
 		let model_cfg: ModelConfig = serde_json::from_value(entry.config)?;
 		let summary_window = model_cfg.context_window;
-		// Charge the normal inference reservation so a remote Home can verify
-		// the bound from the pinned model, while keeping the summary output cap.
-		let reserved_output = model_cfg.output_token_limit();
-		let max_tokens = max_tokens.min(summary.max_tokens).min(reserved_output);
+		let max_tokens = max_tokens
+			.min(summary.max_tokens)
+			.min(model_cfg.provider_max_output_tokens.unwrap_or(u32::MAX));
 		let mut summary_model = model_cfg.clone();
 		summary_model.reasoning_effort = Some(aidash_domain::model::ReasoningEffort::None);
+		summary_model.max_output_tokens = Some(max_tokens);
 		let provider = self
 			.environment
 			.provider(summary_model)
@@ -995,7 +995,7 @@ impl<'a> Executor<'a> {
 		}
 		let reservation = match guard {
 			Some(guard) => match guard
-				.reserve_inference(token, summary_window, reserved_output, &request)
+				.reserve_inference(token, summary_window, max_tokens, &request)
 				.await
 			{
 				Ok(reservation) => reservation,

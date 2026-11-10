@@ -176,6 +176,9 @@ struct State {
 	/// The summary reservation holds a charge that a blocked call must release.
 	/// The summarizer's configured `max_output_tokens`.
 	summarizer_output_tokens: u32,
+	summarizer_provider_limit: Option<u32>,
+	summarizer_window: usize,
+	reservations: Mutex<Vec<(usize, u32)>>,
 	summary_estimate_diagnostics: Option<Value>,
 	/// Provider scripts consumed one per inference; an empty queue answers at once.
 	scripts: Mutex<VecDeque<Vec<Step>>>,
@@ -351,7 +354,11 @@ impl Backend {
 	fn entry(&self, id: &str) -> Entry {
 		// Summary and ordinary inference share the Agent's model.
 		let (kind, window, output) = if id == "model" {
-			("model", 128_000, self.0.summarizer_output_tokens)
+			(
+				"model",
+				self.0.summarizer_window,
+				self.0.summarizer_output_tokens,
+			)
 		} else {
 			("agent", 128_000, 4096)
 		};
@@ -360,6 +367,11 @@ impl Backend {
 		});
 		if id == "model" && self.0.model_reasoning {
 			config["reasoning_effort"] = json!("medium");
+		}
+		if id == "model"
+			&& let Some(limit) = self.0.summarizer_provider_limit
+		{
+			config["provider_max_output_tokens"] = json!(limit);
 		}
 		if self.0.plan_connection && id != "summarizer" {
 			config["plan_connection"] = json!("chatgpt");
@@ -1280,7 +1292,7 @@ impl ExecutionAuthority for Backend {
 		output: u32,
 		request: &ModelRequest,
 	) -> Result<Option<Box<dyn InferenceReservation>>> {
-		let _ = (window, output, request);
+		self.0.reservations.lock().unwrap().push((window, output));
 		assert!(token == self.0.token || matches!(request.context, ModelContext::Sampling(_)));
 		self.record("reservation.admit");
 		Ok(Some(Box::new(self.clone())))
@@ -1906,6 +1918,9 @@ fn fixture() -> Fixture {
 		revoked_message: None,
 		terminal: None,
 		summarizer_output_tokens: 4096,
+		summarizer_provider_limit: None,
+		summarizer_window: 128_000,
+		reservations: Mutex::new(vec![]),
 		summary_estimate_diagnostics: None,
 		scripts: Mutex::new(VecDeque::new()),
 		attempts: Mutex::new(vec![]),
@@ -3703,11 +3718,21 @@ async fn imported_history_is_journaled_whole_before_summary(mut fixture: Fixture
 }
 
 #[rstest]
+#[case::provider_limit_absent(None, 4096)]
+#[case::provider_limit_present(Some(2048), 2048)]
+#[case::provider_limit_below_step(Some(512), 512)]
 #[tokio::test]
-async fn summary_output_is_capped_at_the_summarizer_limit(mut fixture: Fixture) {
+async fn summary_output_exceeds_step_limit_but_respects_provider_limit(
+	mut fixture: Fixture,
+	#[case] provider_limit: Option<u32>,
+	#[case] expected: u32,
+) {
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = true;
 	state.context_policy = Some(recovery_policy(true));
 	state.summarizer_output_tokens = 1024;
+	state.summarizer_provider_limit = provider_limit;
+	state.summarizer_window = 62_000;
 	state.model_reasoning = true;
 	*state.summary_text.lock().unwrap() = Some(valid_summary());
 	thinking_with_history(&mut fixture, 40);
@@ -3718,8 +3743,11 @@ async fn summary_output_is_capped_at_the_summarizer_limit(mut fixture: Fixture) 
 		.iter()
 		.find(|request| request.response_format.is_some())
 		.unwrap();
-	// The policy default (4096) is clamped to the pinned summarizer's limit.
-	assert_eq!(summary.max_output_tokens, 1024);
+	assert_eq!(summary.max_output_tokens, expected);
+	assert_eq!(
+		fixture.backend.0.reservations.lock().unwrap()[0],
+		(62_000, expected)
+	);
 	let configs = fixture.backend.0.provider_configs.lock().unwrap();
 	let config = configs.last().unwrap();
 	assert_eq!(
