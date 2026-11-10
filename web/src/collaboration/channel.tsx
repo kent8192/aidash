@@ -387,10 +387,9 @@ export function Channel({
     0,
     scopedRuns.length,
     ...terminal,
-    ...(liveRuns.isError ? [] : (liveRuns.data ?? [])).map((run) => ({
-      run,
-      node: data.node.id,
-    })),
+    ...(liveRuns.isError ? [] : (liveRuns.data ?? []))
+      .filter((run) => isLocalRun(run, data))
+      .map((run) => ({ run, node: data.node.id })),
   );
   const scopedRequests = requests.filter(
     ({ request }) =>
