@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 404,
+  "endpoint_count": 405,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -17802,6 +17802,73 @@
       "required_checks": [
         "Exact HTTP 400",
         "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1611 workspace-runs - Anonymous request is rejected",
+      "file": "contracts/1611-workspace-runs.bru",
+      "endpoint": "GET /api/workspaces/{id}/runs",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1612 workspace-runs - Deployment Administrator cannot read Tenant data",
+      "file": "contracts/1612-workspace-runs.bru",
+      "endpoint": "GET /api/workspaces/{id}/runs",
+      "scenario": "Deployment Administrator cannot read Tenant data",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1613 workspace-runs - Typed resource IDs reject invalid UUIDs",
+      "file": "contracts/1613-workspace-runs.bru",
+      "endpoint": "GET /api/workspaces/{id}/runs",
+      "scenario": "Typed resource IDs reject invalid UUIDs",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1614 workspace-runs - Deployment Administrator has no Tenant authority",
+      "file": "contracts/1614-workspace-runs.bru",
+      "endpoint": "GET /api/workspaces/{id}/runs",
+      "scenario": "Deployment Administrator has no Tenant authority",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1615 workspace-runs - Paging rejects nonnumeric or malformed cursors",
+      "file": "contracts/1615-workspace-runs.bru",
+      "endpoint": "GET /api/workspaces/{id}/runs",
+      "scenario": "Paging rejects nonnumeric or malformed cursors",
+      "status": 400,
+      "required_checks": [
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1616 workspace-runs - Subject lists the readable Workspace's live Runs",
+      "file": "contracts/1616-workspace-runs.bru",
+      "endpoint": "GET /api/workspaces/{id}/runs",
+      "scenario": "Subject lists the readable Workspace's live Runs",
+      "status": 200,
+      "required_checks": [
+        "Exact HTTP 200",
+        "Documented response fields and types",
+        "Subject lists the readable Workspace's live Runs contract"
       ]
     }
   ]
