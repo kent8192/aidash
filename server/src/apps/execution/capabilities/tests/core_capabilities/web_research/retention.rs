@@ -192,6 +192,15 @@ async fn revocation_scrubs_every_stored_copy_and_keeps_an_audit_record(
 			.head;
 	assert!(head > 0);
 	let before_journal = executor.context_journal(run.id, 1, head).await.unwrap();
+	let before_export = aidash_application::ports::journal_export::JournalSource::snapshot(
+		&r.c.f.store,
+		&TEST_FIXTURE,
+		run.id,
+		run.id,
+		Some((1, head)),
+	)
+	.await
+	.unwrap();
 	let before_digest = aidash_domain::context::summary::entries_digest(&before_journal);
 	use reinhardt::query::{PostgresQueryBuilder, Query};
 	let retained_sql = Query::select()
@@ -365,6 +374,16 @@ async fn revocation_scrubs_every_stored_copy_and_keeps_an_audit_record(
 	)
 	.await
 	.unwrap();
+	let after_export = aidash_application::ports::journal_export::JournalSource::snapshot(
+		&r.c.f.store,
+		&TEST_FIXTURE,
+		run.id,
+		run.id,
+		Some((1, head)),
+	)
+	.await
+	.unwrap();
+	assert_ne!(before_export.generation, after_export.generation);
 	assert!(exported.iter().any(|line| {
 		line.result
 			.as_ref()
