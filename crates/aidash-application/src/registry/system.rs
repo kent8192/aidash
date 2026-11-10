@@ -28,7 +28,11 @@ pub fn operations() -> impl Iterator<Item = &'static str> {
 		.copied()
 		.chain([SKILL_ASSET_READ, TASK_ASSIGN])
 		.chain(SUBNODE_TOOLS.iter().copied())
+		.chain(JOURNAL_TOOLS.iter().copied())
 }
+
+/// Journal retrieval is seeded for later exposure after offloading.
+pub const JOURNAL_TOOLS: &[&str] = &["journal_search", "journal_read"];
 
 /// Explicitly bound Subnode operations, seeded after the legacy and Exposure tools.
 pub const SUBNODE_TOOLS: &[&str] = &[

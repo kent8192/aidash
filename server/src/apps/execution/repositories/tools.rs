@@ -77,6 +77,16 @@ pub(crate) fn run_model(run: &aidash_domain::Run) -> Result<aidash_domain::model
 }
 #[async_trait]
 impl ToolOperations for Operations {
+	async fn journal(
+		&self,
+		range: Option<(u64, u64)>,
+	) -> Result<Vec<aidash_domain::context::journal_export::JournalLine>> {
+		use aidash_application::ports::journal_export::JournalSource;
+		self.0
+			.store
+			.export(&self.0.scope, self.0.run.id, self.0.run.id, range)
+			.await
+	}
 	async fn subnode_command(
 		&self,
 		key: &str,
