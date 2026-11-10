@@ -691,7 +691,21 @@ pub(crate) async fn refresh_dependencies(
 			let (kind, id, revision) = match evidence {
 				// The Run is the revocation root; the range itself is immutable,
 				// so its dependency uses a stable sentinel rather than Run CAS.
-				Evidence::JournalRange { run_id, .. } => ("run", *run_id, 1),
+				Evidence::JournalRange {
+					run_id,
+					from_seq,
+					through_seq,
+				} => {
+					super::journal_proofs::record(
+						lease,
+						&unit.bank.tenant,
+						*run_id,
+						*from_seq,
+						*through_seq,
+					)
+					.await?;
+					("run", *run_id, 1)
+				}
 				Evidence::Publication { id, revision } => {
 					let (source, revision) = if unit.stale {
 						super::publications::retained_source(lease, *id).await?

@@ -253,7 +253,7 @@ async fn builtin_evicts_oldest_units_when_the_live_cap_is_reached(
 				id: ids[64],
 				content: {
 					let mut fact = content("newest fact");
-					fact.evidence = vec![proof];
+					fact.evidence = vec![proof.clone()];
 					fact
 				},
 			}],
@@ -363,7 +363,7 @@ async fn builtin_keyword_bank_serves_without_a_recovery_ledger(
 				id,
 				content: {
 					let mut fact = content("Mercury launch details");
-					fact.evidence = vec![proof];
+					fact.evidence = vec![proof.clone()];
 					fact
 				},
 			}],
@@ -371,6 +371,20 @@ async fn builtin_keyword_bank_serves_without_a_recovery_ledger(
 	)
 	.await
 	.unwrap();
+	let Evidence::JournalRange { run_id, .. } = proof else {
+		unreachable!()
+	};
+	let mut tx = without_ledger.pool.begin(&TEST_FIXTURE).await.unwrap();
+	native::query(
+		&Query::delete()
+			.from_table(Alias::new("run_context_events"))
+			.and_where(Expr::col("run_id").eq(Expr::value(run_id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
 	let outcome = memory::operate(
 		&without_ledger,
 		&actor,
@@ -1199,4 +1213,188 @@ async fn stale_manual_derivations_retire_without_age_expiry_provider(
 	server: reinhardt::test::fixtures::server::TestServerGuard,
 ) -> StaleManualDerivationsRetireWithoutAgeExpiryProvider {
 	StaleManualDerivationsRetireWithoutAgeExpiryProvider { server }
+}
+
+#[rstest]
+#[case("account_terms")]
+#[case("revocation")]
+#[tokio::test]
+async fn research_fact_is_hidden_after_journal_expiry_and_source_loss(
+	#[future] database: DatabaseFixture,
+	bounds: Bounds,
+	#[case] loss: &str,
+) {
+	let database = database.await;
+	let (store, _, workspace) = setup(&database, bounds).await;
+	let proof = journal_proof(&store, workspace).await;
+	let Evidence::JournalRange { run_id, .. } = proof.clone() else {
+		unreachable!()
+	};
+	let result = json!({});
+	let digest = aidash_domain::registry::rules::digest(&result);
+	let source = Uuid::now_v7();
+	let research_ref = json!({"contract":"aidash.research.reference/1", "invocation":"memory-research", "digest":digest, "operation":"search", "sources":[source], "documents":[]});
+	let event = json!({"kind":"tool", "call":{"id":"call", "name":"research", "arguments":{}}, "result":research_ref});
+	let event_digest = aidash_domain::registry::rules::digest(&event);
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	native::query(
+		&Query::update()
+			.table(Alias::new("run_context_events"))
+			.value(Alias::new("event"), event)
+			.value(Alias::new("digest"), event_digest)
+			.and_where(Expr::col("run_id").eq(Expr::value(run_id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	native::query(
+		&Query::insert()
+			.into_table(Alias::new("research_journal_results"))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"run_id",
+					"invocation_key",
+					"digest",
+					"reference",
+					"bytes",
+					"created_at",
+				]
+				.map(Alias::new),
+			)
+			.from_subquery(
+				Query::select()
+					.expr(Expr::value(Uuid::now_v7()))
+					.expr(Expr::value("acme"))
+					.expr(Expr::value(run_id))
+					.expr(Expr::value("memory-research"))
+					.expr(Expr::value(digest.clone()))
+					.expr(Expr::value(research_ref))
+					.expr(Expr::value(b"{}".to_vec()))
+					.expr(Expr::value(chrono::Utc::now()))
+					.to_owned(),
+			)
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+	let bank = Bank {
+		home: aidash_domain::nodes::NodeAddress::derived(store.deployment.as_str(), "acme")
+			.to_string(),
+		tenant: "acme".into(),
+		workspace,
+		participant: None,
+	};
+	let provider = reference("aidash.memory");
+	let actor = administrator(&store).await;
+	memory::operate(
+		&store,
+		&actor,
+		memory::Operation {
+			operation_id: Uuid::now_v7(),
+			provider: provider.clone(),
+			bank: bank.clone(),
+			action: memory::Action::ConfigureBank {
+				expected_revision: 0,
+			},
+		},
+	)
+	.await
+	.unwrap();
+	let id = Uuid::now_v7();
+	let mut fact = content("Research comet fact");
+	fact.evidence = vec![proof];
+	memory::mutate(
+		&store,
+		&actor,
+		Mutation {
+			operation_id: Uuid::now_v7(),
+			provider: provider.clone(),
+			bank: bank.clone(),
+			changes: vec![Change::Add { id, content: fact }],
+		},
+	)
+	.await
+	.unwrap();
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	native::query(
+		&Query::delete()
+			.from_table(Alias::new("run_context_events"))
+			.and_where(Expr::col("run_id").eq(Expr::value(run_id)))
+			.to_string(PostgresQueryBuilder),
+	)
+	.execute(&mut *tx)
+	.await
+	.unwrap();
+	tx.commit().await.unwrap();
+	let read = || memory::ReadBank {
+		provider: provider.clone(),
+		bank: bank.clone(),
+	};
+	assert!(
+		memory::list(&store, &actor, read())
+			.await
+			.unwrap()
+			.iter()
+			.any(|unit| unit.id == id)
+	);
+	let mut tx = store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	if loss == "account_terms" {
+		native::query(
+			&Query::update()
+				.table(Alias::new("research_journal_results"))
+				.value(Alias::new("bytes"), None::<Vec<u8>>)
+				.value(Alias::new("purge_reason"), "account_terms")
+				.and_where(Expr::col("run_id").eq(Expr::value(run_id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	} else {
+		let removed = aidash_domain::research::revocation::Removed::default();
+		native::query(
+			&Query::insert()
+				.into_table(Alias::new("research_revocations"))
+				.columns(
+					[
+						"run_id",
+						"tenant",
+						"revoked_by",
+						"reason",
+						"revoked_at",
+						"removed",
+					]
+					.map(Alias::new),
+				)
+				.from_subquery(
+					Query::select()
+						.expr(Expr::value(run_id))
+						.expr(Expr::value("acme"))
+						.expr(Expr::value(
+							json!({"kind":"subject","tenant":"acme","subject":"alice"}),
+						))
+						.expr(Expr::value("test"))
+						.expr(Expr::value(chrono::Utc::now()))
+						.expr(Expr::value(serde_json::to_value(removed).unwrap()))
+						.to_owned(),
+				)
+				.to_string(PostgresQueryBuilder),
+		)
+		.execute(&mut *tx)
+		.await
+		.unwrap();
+	}
+	tx.commit().await.unwrap();
+	assert!(
+		!memory::list(&store, &actor, read())
+			.await
+			.unwrap()
+			.iter()
+			.any(|unit| unit.id == id)
+	);
 }

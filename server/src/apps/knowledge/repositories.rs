@@ -14,6 +14,7 @@ use crate::apps::execution::test_database::DatabaseFixture;
 #[allow(dead_code)] // Shared fixture includes helpers used only by the integration binary.
 #[path = "tests/native_memory/fixture.rs"]
 mod fixture;
+pub(crate) mod journal_proofs;
 pub(crate) mod memory_impact;
 pub(crate) mod memory_reads;
 pub(crate) mod memory_receipts;

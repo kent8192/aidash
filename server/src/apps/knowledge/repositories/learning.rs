@@ -55,6 +55,13 @@ pub(crate) async fn offloaded_range(
 	)
 	.fetch_all(&mut **lease.tx())
 	.await?;
+	if through_seq
+		.checked_sub(*from_seq)
+		.and_then(|n| n.checked_add(1))
+		!= Some(events.len() as u64)
+	{
+		return Err(Error::Conflict("offloaded Journal range expired".into()));
+	}
 	let mut entries = Vec::with_capacity(events.len());
 	for row in events {
 		let seq: i64 = row.try_get("seq")?;

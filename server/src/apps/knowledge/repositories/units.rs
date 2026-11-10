@@ -355,6 +355,13 @@ pub(crate) fn current_in_reader<'a>(
 						.ok_or_else(|| {
 							Error::Invalid("Journal range exceeds evidence limit".into())
 						})?;
+					let retained =
+						super::journal_proofs::load(lease, run_id, from_seq, through_seq).await?;
+					if let Some(references) = &retained
+						&& !crate::apps::execution::repositories::research::retained_references_current(lease.tx().as_mut(), run_id, references).await?
+					{
+						return Err(Error::Conflict("memory research evidence expired or was revoked".into()));
+					}
 					let rows = native::query(
 						&Query::select()
 							.columns(["seq", "event", "digest"].map(Alias::new))
@@ -371,7 +378,13 @@ pub(crate) fn current_in_reader<'a>(
 					.fetch_all(&mut **lease.tx())
 					.await?;
 					if rows.len() as u64 != count {
-						return Err(Error::Conflict("memory Journal range removed".into()));
+						retained.ok_or_else(|| {
+							Error::Conflict(
+								"memory Journal range removed before provenance was recorded"
+									.into(),
+							)
+						})?;
+						continue;
 					}
 					let mut research = Vec::new();
 					for (offset, row) in rows.iter().enumerate() {

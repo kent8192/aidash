@@ -751,3 +751,47 @@ pub(crate) async fn resolve_entries(
 	}
 	Ok(())
 }
+
+/// Recheck retained Research identities without requiring the Context Journal.
+pub(crate) async fn retained_references_current(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	run: Uuid,
+	references: &[aidash_domain::context::research::ResearchReference],
+) -> crate::Result<bool> {
+	if references.is_empty() {
+		return Ok(true);
+	}
+	if revoked_under_lock(tx, run).await? {
+		return Ok(false);
+	}
+	let expired = account_terms::expired(tx, run).await?;
+	for reference in references {
+		if reference.covered_by(&expired)
+			|| ResearchAttempt::expired_tombstone(tx, run, &reference.invocation)
+				.await?
+				.is_some()
+		{
+			return Ok(false);
+		}
+		use reinhardt::query::{
+			Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
+		};
+		let row = crate::database::native::query(
+			&Query::select()
+				.column(Alias::new("purge_reason"))
+				.from(Alias::new("research_journal_results"))
+				.and_where(Expr::col("run_id").eq(Expr::value(run)))
+				.and_where(Expr::col("invocation_key").eq(reference.invocation.as_str()))
+				.and_where(Expr::col("digest").eq(reference.digest.as_str()))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_optional(&mut *tx)
+		.await?;
+		if let Some(row) = row
+			&& row.try_get::<Option<String>>("purge_reason")?.is_some()
+		{
+			return Ok(false);
+		}
+	}
+	Ok(true)
+}

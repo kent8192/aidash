@@ -898,6 +898,8 @@ leaving one leaf each for Identity, Execution and Knowledge.
 observations without marking them as awaiting human verification.
 `knowledge/0052_memory_sharing_scope` stores the Tenant Administrator's
 revisioned Workspace or Tenant-Agent choice and enforces Tenant row isolation.
+`knowledge/0053_memory_journal_proofs` retains Research identities from
+admitted Journal ranges independently of their content, with Tenant isolation.
 
 `execution/0108_node_preview_merge` joins `execution/0107_node_plugin_merge`
 with the Live preview, Safety Stop, Lease Recovery and Harness Contract history

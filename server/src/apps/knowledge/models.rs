@@ -2,9 +2,11 @@
 pub(crate) mod cleanup;
 mod index_configuration;
 mod memory_decay;
+mod memory_journal_proof;
 pub(crate) mod memory_records;
 mod memory_tenant_scope;
 pub(crate) mod memory_units;
+pub use memory_journal_proof::MemoryJournalProof;
 pub use memory_tenant_scope::MemoryTenantScope;
 mod read_dependencies;
 pub(crate) mod unit_origins;

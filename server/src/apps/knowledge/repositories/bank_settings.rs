@@ -11,9 +11,8 @@
 //! has at most 4 calls, 16384 tokens, 1,000,000 microcurrency, 2 retries, and
 //! 30 seconds per call. Oldest eligible Units are evicted at the live cap;
 //! Units that the current Run cannot read are protected from its eviction, so
-//! admission fails if too few Units are eligible. Facts whose Journal ranges
-//! have expired are retained but cannot be recalled: the range is needed to
-//! recheck Research expiry and revocation as well as Run read authority.
+//! admission fails if too few Units are eligible. Research identities are
+//! retained independently of Journal contents to enforce expiry and revocation.
 //! 4096 retained identities and 4096 model/receipt records remain separate
 //! finite limits. Unit ages are unlimited; candidates, history and model
 //! results retain 30 days, backups 7 days, with 8 history versions and purge
