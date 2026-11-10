@@ -76,6 +76,7 @@ pub(crate) struct Step {
 	pub(crate) visibility: ReadLease,
 	/// The Run's Tenant, known once the step is admitted.
 	pub(crate) tenant: Option<String>,
+	pub(crate) offloaded: Vec<aidash_application::context::offload::JournalRange>,
 }
 #[async_trait]
 impl WorkerStep for Step {
@@ -146,19 +147,36 @@ impl WorkerStep for Step {
 			store: &self.federation.store,
 			tenant: self.tenant.as_deref(),
 		};
-		aidash_harness::agent::Executor::new(&environment)
+		let result = aidash_harness::agent::Executor::new(&environment)
 			.advance(&mut self.run, token, &mut visibility)
-			.await
+			.await;
+		self.offloaded = environment.take_offloaded();
+		result
 	}
 	async fn finish_authority(&mut self, result: Result<()>) -> Result<()> {
-		if let Some(guard) = self.guard.take() {
+		let result = if let Some(guard) = self.guard.take() {
 			guard
 				.finish(result.map_err(NativeError::from))
 				.await
 				.map_err(Into::into)
 		} else {
 			result
+		};
+		if result.is_ok() && !self.offloaded.is_empty() {
+			let queue = std::sync::Arc::new(
+				crate::apps::knowledge::repositories::engine_jobs::offloads::OffloadQueue {
+					store: self.federation.store.clone(),
+				},
+			);
+			let _ = crate::apps::knowledge::repositories::engine_jobs::offloads::schedule(
+				queue,
+				self.run.id,
+				std::mem::take(&mut self.offloaded),
+			);
+		} else {
+			self.offloaded.clear();
 		}
+		result
 	}
 	async fn resume_visibility(&mut self) -> Result<()> {
 		self.visibility

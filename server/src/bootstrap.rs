@@ -2536,6 +2536,7 @@ pub(crate) fn worker_step(
 		_active: crate::http::ActiveExecution::begin(),
 		visibility,
 		tenant: None,
+		offloaded: Vec::new(),
 	})
 }
 
