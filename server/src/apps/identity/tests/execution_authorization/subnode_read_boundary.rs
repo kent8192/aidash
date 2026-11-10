@@ -455,6 +455,51 @@ async fn subnode_member_can_export_only_the_handed_creator_range(
 			.await
 			.is_err()
 	);
+	let uploads_before = requests
+		.lock()
+		.unwrap()
+		.iter()
+		.filter(|call| {
+			call["path"]
+				.as_str()
+				.is_some_and(|path| path.contains("/inputs/"))
+		})
+		.count();
+	sqlx::query("UPDATE runs SET control = CASE WHEN id = $1 THEN 'ACTIVE' ELSE 'PAUSED' END WHERE control IN ('ACTIVE', 'PAUSED')")
+		.bind(member).execute(f.store.pool.fixture_driver()).await.unwrap();
+	assert!(
+		rig.script(
+			member,
+			"journal_query",
+			json!({"run_id":rig.creator_run,"code":"journal()",
+		"journal_range":{"from_seq":seq,"through_seq":seq+1}}),
+			"outside-query"
+		)
+		.await
+	);
+	let result = rig.result_of(member, "outside-query").await;
+	let paused = f.store.run(&TEST_FIXTURE, member).await.unwrap().control
+		== aidash_domain::RunControl::Paused;
+	assert!(
+		paused
+			|| result
+				.as_ref()
+				.is_some_and(|result| result.get("error").is_some())
+	);
+	let uploads_after = requests
+		.lock()
+		.unwrap()
+		.iter()
+		.filter(|call| {
+			call["path"]
+				.as_str()
+				.is_some_and(|path| path.contains("/inputs/"))
+		})
+		.count();
+	assert_eq!(
+		uploads_after, uploads_before,
+		"an out-of-range query must not upload a Journal"
+	);
 	// A stored Research result is resolved afresh after its Run is revoked.
 	let payload = json!({"contract":"aidash.research.result/1","operation":"search","data":{"text":"private evidence"}});
 	let digest = aidash_domain::registry::rules::digest(&payload);
