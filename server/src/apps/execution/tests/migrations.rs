@@ -703,14 +703,14 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0027_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0028_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"workspaces".to_owned(),
-			"0026_scratch_binding_indexes".to_owned()
+			"0027_task_journal_range".to_owned()
 		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
@@ -1001,7 +1001,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		109
+		110
 	);
 }
 
@@ -5075,6 +5075,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0024_workspace_scratch_space"),
 			("workspaces", "0025_scratch_workspace_model_state"),
 			("workspaces", "0026_scratch_binding_indexes"),
+			("workspaces", "0027_task_journal_range"),
 		])
 		.await;
 	fixture.tenant_root("scratch-upgrade").await;
@@ -5131,6 +5132,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0024_workspace_scratch_space"),
 			("workspaces", "0025_scratch_workspace_model_state"),
 			("workspaces", "0026_scratch_binding_indexes"),
+			("workspaces", "0027_task_journal_range"),
 		])
 		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -5195,6 +5197,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("workspaces", "0024_workspace_scratch_space"),
 			("workspaces", "0025_scratch_workspace_model_state"),
 			("workspaces", "0026_scratch_binding_indexes"),
+			("workspaces", "0027_task_journal_range"),
 		])
 		.await;
 	fixture.tenant_root("scratch-workspace-upgrade").await;

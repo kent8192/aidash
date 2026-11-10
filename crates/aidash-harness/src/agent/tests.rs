@@ -159,6 +159,9 @@ struct State {
 	/// Ordinary inference requests answered with a provider Context Overflow.
 	overflows: Mutex<u32>,
 	summary_text: Mutex<Option<String>>,
+	summary_truncations: Mutex<u32>,
+	model_reasoning: bool,
+	provider_configs: Mutex<Vec<ModelConfig>>,
 	/// The summarizer is approved at reservation but revoked during its call.
 	revoke_summarizer: bool,
 	/// A source an adopted Execution Summary depends on is no longer readable.
@@ -173,6 +176,9 @@ struct State {
 	/// The summary reservation holds a charge that a blocked call must release.
 	/// The summarizer's configured `max_output_tokens`.
 	summarizer_output_tokens: u32,
+	summarizer_provider_limit: Option<u32>,
+	summarizer_window: usize,
+	reservations: Mutex<Vec<(usize, u32)>>,
 	summary_estimate_diagnostics: Option<Value>,
 	/// Provider scripts consumed one per inference; an empty queue answers at once.
 	scripts: Mutex<VecDeque<Vec<Step>>>,
@@ -339,6 +345,7 @@ impl Backend {
 			idempotency_key: id.to_string(),
 			message_id: Some(id),
 			reference_only: false,
+			is_data: false,
 		});
 	}
 	fn task_value(&self) -> Task {
@@ -347,13 +354,25 @@ impl Backend {
 	fn entry(&self, id: &str) -> Entry {
 		// Summary and ordinary inference share the Agent's model.
 		let (kind, window, output) = if id == "model" {
-			("model", 128_000, self.0.summarizer_output_tokens)
+			(
+				"model",
+				self.0.summarizer_window,
+				self.0.summarizer_output_tokens,
+			)
 		} else {
 			("agent", 128_000, 4096)
 		};
 		let mut config = json!({
 			"provider":"openrouter","model_id":"fixture","endpoint":"http://fixture.invalid/v1","context_window":window,"max_output_tokens":output,"modalities":["text"],"cost":{}
 		});
+		if id == "model" && self.0.model_reasoning {
+			config["reasoning_effort"] = json!("medium");
+		}
+		if id == "model"
+			&& let Some(limit) = self.0.summarizer_provider_limit
+		{
+			config["provider_max_output_tokens"] = json!(limit);
+		}
 		if self.0.plan_connection && id != "summarizer" {
 			config["plan_connection"] = json!("chatgpt");
 		}
@@ -1273,7 +1292,7 @@ impl ExecutionAuthority for Backend {
 		output: u32,
 		request: &ModelRequest,
 	) -> Result<Option<Box<dyn InferenceReservation>>> {
-		let _ = (window, output, request);
+		self.0.reservations.lock().unwrap().push((window, output));
 		assert!(token == self.0.token || matches!(request.context, ModelContext::Sampling(_)));
 		self.record("reservation.admit");
 		Ok(Some(Box::new(self.clone())))
@@ -1619,7 +1638,8 @@ impl ExecutionEnvironment for Backend {
 			completion: self.0.completion.clone(),
 		})
 	}
-	fn provider(&self, _model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
+	fn provider(&self, model: ModelConfig) -> Result<Arc<dyn ModelProvider>> {
+		self.0.provider_configs.lock().unwrap().push(model);
 		Ok(Arc::new(self.clone()))
 	}
 	async fn approval_decider(
@@ -1686,6 +1706,18 @@ impl ModelProvider for Backend {
 			assert!(request.tools.is_empty());
 			self.record("summarizer.infer");
 			self.0.requests.lock().unwrap().push(request);
+			let mut truncations = self.0.summary_truncations.lock().unwrap();
+			if *truncations > 0 {
+				*truncations -= 1;
+				return Err(Error::TerminalResponse(
+					aidash_domain::context::recovery::Failure::OutputTruncated,
+					Box::new(ModelResponse {
+						usage_complete: true,
+						..Default::default()
+					}),
+				));
+			}
+			drop(truncations);
 			let text = self
 				.0
 				.summary_text
@@ -1877,12 +1909,18 @@ fn fixture() -> Fixture {
 		context_policy: None,
 		overflows: Mutex::new(0),
 		summary_text: Mutex::new(None),
+		summary_truncations: Mutex::new(0),
+		model_reasoning: false,
+		provider_configs: Mutex::new(vec![]),
 		revoke_summarizer: false,
 		stale_summary_dependencies: false,
 		summary_checks_before_revocation: None,
 		revoked_message: None,
 		terminal: None,
 		summarizer_output_tokens: 4096,
+		summarizer_provider_limit: None,
+		summarizer_window: 128_000,
+		reservations: Mutex::new(vec![]),
 		summary_estimate_diagnostics: None,
 		scripts: Mutex::new(VecDeque::new()),
 		attempts: Mutex::new(vec![]),
@@ -3680,11 +3718,22 @@ async fn imported_history_is_journaled_whole_before_summary(mut fixture: Fixture
 }
 
 #[rstest]
+#[case::provider_limit_absent(None, 4096)]
+#[case::provider_limit_present(Some(2048), 2048)]
+#[case::provider_limit_below_step(Some(512), 512)]
 #[tokio::test]
-async fn summary_output_is_capped_at_the_summarizer_limit(mut fixture: Fixture) {
+async fn summary_output_exceeds_step_limit_but_respects_provider_limit(
+	mut fixture: Fixture,
+	#[case] provider_limit: Option<u32>,
+	#[case] expected: u32,
+) {
 	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.scoped = true;
 	state.context_policy = Some(recovery_policy(true));
 	state.summarizer_output_tokens = 1024;
+	state.summarizer_provider_limit = provider_limit;
+	state.summarizer_window = 62_000;
+	state.model_reasoning = true;
 	*state.summary_text.lock().unwrap() = Some(valid_summary());
 	thinking_with_history(&mut fixture, 40);
 	advance_sources(&mut fixture).await.unwrap();
@@ -3694,8 +3743,107 @@ async fn summary_output_is_capped_at_the_summarizer_limit(mut fixture: Fixture) 
 		.iter()
 		.find(|request| request.response_format.is_some())
 		.unwrap();
-	// The policy default (4096) is clamped to the pinned summarizer's limit.
-	assert_eq!(summary.max_output_tokens, 1024);
+	assert_eq!(summary.max_output_tokens, expected);
+	assert_eq!(
+		fixture.backend.0.reservations.lock().unwrap()[0],
+		(62_000, expected)
+	);
+	let configs = fixture.backend.0.provider_configs.lock().unwrap();
+	let config = configs.last().unwrap();
+	assert_eq!(
+		serde_json::to_value(config.reasoning_effort).unwrap(),
+		json!("none")
+	);
+	assert_eq!(config.model_id, "fixture");
+	drop(configs);
+	drop(requests);
+	advance_sources(&mut fixture).await.unwrap();
+	let configs = fixture.backend.0.provider_configs.lock().unwrap();
+	assert_eq!(
+		serde_json::to_value(configs.last().unwrap().reasoning_effort).unwrap(),
+		json!("medium")
+	);
+}
+
+#[rstest]
+#[case::retry_succeeds(1, true)]
+#[case::retry_also_truncated(2, false)]
+#[tokio::test]
+async fn truncated_summary_retries_once_with_a_smaller_range(
+	mut fixture: Fixture,
+	#[case] truncations: u32,
+	#[case] succeeds: bool,
+) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(true));
+	state.scoped = true;
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	*state.summary_truncations.lock().unwrap() = truncations;
+	thinking_with_history(&mut fixture, 40);
+	let result = advance_sources(&mut fixture).await;
+	assert_eq!(result.is_ok(), succeeds, "{result:?}");
+	let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
+	assert_eq!(attempts.len(), 2);
+	assert_eq!(attempts[0].1, Some(Outcome::Invalid));
+	assert_eq!(
+		attempts[1].1,
+		Some(if succeeds {
+			Outcome::Adopted
+		} else {
+			Outcome::Invalid
+		})
+	);
+	assert!(attempts[1].0.source_through_seq < attempts[0].0.source_through_seq);
+	assert_eq!(fixture.run.context.execution_summary.is_some(), succeeds);
+	let calls = calls(&fixture);
+	assert_eq!(
+		calls
+			.iter()
+			.filter(|call| **call == "reservation.admit")
+			.count(),
+		2
+	);
+	assert_eq!(
+		calls
+			.iter()
+			.filter(|call| **call == "reservation.settle")
+			.count(),
+		2
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn truncated_native_summary_retries_with_whole_model_turns(mut fixture: Fixture) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(true));
+	state.projection = ProjectionVersion::Native;
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	*state.summary_truncations.lock().unwrap() = 1;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	for i in 0..20 {
+		let id = format!("call-{i}");
+		fixture.run.context.push(ContextEvent::Assistant {
+			provider_activity: vec![],
+			epoch: i,
+			text: "working".into(),
+			calls: vec![id.clone()],
+		});
+		fixture.run.context.push(ContextEvent::tool(
+			call(&id, "read", json!({})),
+			json!("data"),
+		));
+	}
+	fixture.run.context.journal.inferred_through = fixture.run.context.journal.head;
+	fixture.run.context.offload_reads.summary_pending = true;
+	advance_sources(&mut fixture).await.unwrap();
+	let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
+	assert_eq!(attempts.len(), 2);
+	let first = attempts[0].0.source_through_seq;
+	let second = attempts[1].0.source_through_seq;
+	assert_eq!(second * 2, first);
+	assert_eq!(second % 2, 0, "a call and its result must stay together");
+	assert_eq!(attempts[1].1, Some(Outcome::Adopted));
 }
 
 fn fixture_with(configure: impl FnOnce(&mut State)) -> Fixture {
@@ -4098,6 +4246,7 @@ fn run_message(fixture: &mut Fixture) {
 		idempotency_key: "input-2".into(),
 		message_id: Some(id),
 		reference_only: false,
+		is_data: false,
 	}]);
 	state.messages = vec![Message {
 		id,
@@ -4214,6 +4363,131 @@ async fn structured3_advertises_subnode_workspace_reads(mut fixture: Fixture) {
 /// The step state a Legacy request carries.
 fn step_state(request: &ModelRequest) -> Value {
 	serde_json::to_value(request).unwrap()["context"]["current"].clone()
+}
+
+#[rstest]
+#[case(ProjectionVersion::Legacy)]
+#[case(ProjectionVersion::Ordered)]
+#[case(ProjectionVersion::Native)]
+#[tokio::test]
+async fn subnode_results_reach_the_model_inside_a_data_envelope(
+	mut fixture: Fixture,
+	#[case] projection: ProjectionVersion,
+) {
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	run_message(&mut fixture);
+	let backend = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	backend.projection = projection;
+	let input = backend.inputs.get_mut().unwrap().first_mut().unwrap();
+	let mut value = serde_json::to_value(&*input).unwrap();
+	value["is_data"] = json!(true);
+	*input = serde_json::from_value(value).unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let state = match &requests[0].context {
+		ModelContext::Legacy(value) => value["current"].clone(),
+		ModelContext::Ordered(value) => serde_json::from_str(&value.volatile).unwrap(),
+		ModelContext::Native(value) => serde_json::from_str(&value.volatile).unwrap(),
+		_ => panic!("unexpected projection"),
+	};
+	assert_eq!(state["run_messages"][0]["trust"], "data");
+	assert_eq!(state["run_messages"][0]["source"], "subnode_result");
+	assert_eq!(
+		state["run_messages"][0]["content"]["content"],
+		"Also include the rollback steps."
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn summarized_subnode_results_remain_data_references(mut fixture: Fixture) {
+	run_message_catch_up(&mut fixture);
+	let backend = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	let input = backend.inputs.get_mut().unwrap().first_mut().unwrap();
+	let mut value = serde_json::to_value(&*input).unwrap();
+	value["is_data"] = json!(true);
+	*input = serde_json::from_value(value).unwrap();
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	advance_sources(&mut fixture).await.unwrap();
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let state = step_state(requests.last().unwrap());
+	assert_eq!(state["run_messages"][0]["trust"], "data");
+	assert_eq!(
+		state["run_messages"][0]["content"]["requires_workspace_read"],
+		false
+	);
+	assert!(
+		!state
+			.to_string()
+			.contains("Also include the rollback steps.")
+	);
+	drop(requests);
+	fixture.run.context.run_message_summary_seq = 2;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	advance_sources(&mut fixture).await.unwrap();
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let state = step_state(requests.last().unwrap());
+	assert_eq!(state["subnode_results"]["items"][0]["trust"], "data");
+	assert_eq!(
+		state["subnode_results"]["items"][0]["content"]["record"]["id"],
+		json!(Uuid::from_u128(0x20))
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn subnode_results_taken_in_by_media_remain_data_references(mut fixture: Fixture) {
+	run_message(&mut fixture);
+	let backend = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	let input = backend.inputs.get_mut().unwrap().first_mut().unwrap();
+	let mut value = serde_json::to_value(&*input).unwrap();
+	value["is_data"] = json!(true);
+	*input = serde_json::from_value(value).unwrap();
+	fixture.run.state = RunState::Thinking(ThinkingState {
+		media_intake_through_seq: Some(2),
+		..ThinkingState::default()
+	});
+	advance_sources(&mut fixture).await.unwrap();
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let state = step_state(requests.last().unwrap());
+	assert_eq!(state["subnode_results"]["items"][0]["trust"], "data");
+	assert_eq!(
+		state["subnode_results"]["items"][0]["content"]["record"]["id"],
+		json!(Uuid::from_u128(0x20))
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn old_subnode_result_references_are_bounded_and_remain_discoverable(mut fixture: Fixture) {
+	let backend = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	*backend.inputs.get_mut().unwrap() = (1..=500)
+		.map(|seq| RunInput {
+			seq,
+			sender: "member".into(),
+			content: "result".into(),
+			idempotency_key: format!("result-{seq}"),
+			message_id: Some(Uuid::from_u128(seq as u128)),
+			reference_only: false,
+			is_data: true,
+		})
+		.collect();
+	fixture.run.context.run_message_summary_seq = 500;
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	advance_sources(&mut fixture).await.unwrap();
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let state = step_state(requests.last().unwrap());
+	let results = &state["subnode_results"];
+	assert_eq!(results["older_available"], true);
+	let items = results["items"].as_array().unwrap();
+	assert!(!items.is_empty() && items.len() < 500);
+	assert_eq!(items.last().unwrap()["content"]["seq"], 500);
+	assert!(
+		results["instruction"]
+			.as_str()
+			.unwrap()
+			.contains("workspace_observe")
+	);
 }
 
 #[rstest]
@@ -6282,6 +6556,7 @@ async fn catch_up_requests(mut fixture: Fixture) -> (ModelRequest, ModelRequest)
 		idempotency_key: "input-2".into(),
 		message_id: Some(Uuid::from_u128(0x22)),
 		reference_only: false,
+		is_data: false,
 	}];
 	// An earlier summarized page puts the next accepted input into catch-up.
 	fixture.run.context.run_message_summary_seq = 1;

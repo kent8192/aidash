@@ -340,6 +340,6 @@ impl GenerationSettlementScope for NativeSettlementScope<'_> {
 pub(crate) fn counter(purpose: Purpose) -> Option<(&'static str, &'static str)> {
 	match purpose {
 		Purpose::Embedding => Some(("embedding_calls", "embedding_call_limit")),
-		Purpose::Inference | Purpose::Memory => None,
+		Purpose::Inference | Purpose::Summary | Purpose::Memory => None,
 	}
 }

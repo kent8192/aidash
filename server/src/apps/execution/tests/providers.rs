@@ -35,6 +35,7 @@ fn config(
 		reasoning_effort: None,
 		context_window: 128000,
 		max_output_tokens: Some(65536),
+		provider_max_output_tokens: None,
 		modalities: vec!["text".into()],
 		media_routes: vec![],
 		cost: json!({}),

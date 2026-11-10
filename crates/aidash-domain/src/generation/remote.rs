@@ -71,6 +71,7 @@ pub struct Reserved {
 pub enum Purpose {
 	Embedding,
 	Inference,
+	Summary,
 	Memory,
 }
 
@@ -122,14 +123,14 @@ impl Purpose {
 	pub fn name(self) -> &'static str {
 		match self {
 			Self::Embedding => "embedding",
-			Self::Inference => "inference",
+			Self::Inference | Self::Summary => "inference",
 			Self::Memory => "memory",
 		}
 	}
 	pub fn action(self) -> &'static str {
 		match self {
 			Self::Embedding => "embedding.invoke",
-			Self::Inference => "model.infer",
+			Self::Inference | Self::Summary => "model.infer",
 			Self::Memory => "memory.invoke",
 		}
 	}

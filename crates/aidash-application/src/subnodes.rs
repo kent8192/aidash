@@ -176,12 +176,15 @@ pub async fn task(
 	key: &str,
 	title: &str,
 	request: &str,
+	journal_range: Option<subnodes::JournalRange>,
 ) -> Result<uuid::Uuid> {
 	let subnode = active(scope, id).await?;
 	creator(&subnode, run)?;
 	aidash_domain::nonempty(title, "title")?;
 	aidash_domain::nonempty(request, "request")?;
-	scope.task(&subnode, run, key, title, request).await
+	scope
+		.task(&subnode, run, key, title, request, journal_range)
+		.await
 }
 
 pub async fn dissolve(
@@ -267,6 +270,8 @@ pub enum Command {
 		id: subnodes::SubnodeId,
 		title: String,
 		request: String,
+		#[serde(default)]
+		journal_range: Option<subnodes::JournalRange>,
 	},
 	Add {
 		id: subnodes::SubnodeId,

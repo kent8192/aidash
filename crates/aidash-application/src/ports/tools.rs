@@ -152,6 +152,7 @@ pub trait ToolOperations: Send + Sync {
 	async fn journal_query(
 		&self,
 		_code: &str,
+		_target_run: Option<Uuid>,
 		_range: Option<(u64, u64)>,
 		_key: &str,
 	) -> Result<Value> {
@@ -160,6 +161,7 @@ pub trait ToolOperations: Send + Sync {
 	/// Read this Run's resolved Journal, under its execution authority.
 	async fn journal(
 		&self,
+		_target_run: Option<Uuid>,
 		_range: Option<(u64, u64)>,
 	) -> Result<Vec<aidash_domain::context::journal_export::JournalLine>> {
 		Err(crate::Error::Forbidden)

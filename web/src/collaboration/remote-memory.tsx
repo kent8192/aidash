@@ -418,10 +418,24 @@ export function RemoteMemoryProvenance({ url }: { url: string }) {
                     <ul className="grid min-w-0 gap-0.5 border-l border-border pl-2">
                       {unit.evidence.map((source, index) => (
                         <li key={index}>
-                          <code className="font-mono">
-                            {source.kind}: {source.id}
-                          </code>{" "}
-                          · r{source.revision}
+                          {"run_id" in source &&
+                          typeof source.run_id === "string" &&
+                          "from_seq" in source &&
+                          typeof source.from_seq === "number" &&
+                          "through_seq" in source &&
+                          typeof source.through_seq === "number" ? (
+                            <code className="font-mono">
+                              {source.kind}: {source.run_id} #{source.from_seq}–
+                              {source.through_seq}
+                            </code>
+                          ) : (
+                            <>
+                              <code className="font-mono">
+                                {source.kind}: {source.id}
+                              </code>{" "}
+                              · r{source.revision}
+                            </>
+                          )}
                         </li>
                       ))}
                     </ul>

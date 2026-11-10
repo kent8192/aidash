@@ -458,6 +458,27 @@ fn selection_requirements_use_the_remote_closure_without_a_home_catalog(#[case] 
 }
 
 #[rstest]
+#[tokio::test]
+async fn builtin_memory_does_not_require_a_remote_semantic_index() {
+	let mut scope = BindingScope::new();
+	let mut inspection = remote_inspection();
+	inspection.binding_snapshot = crate::test_support::snapshot("aidash://receiver", "agent");
+	let requirements = use_case::requirements(&inspection).unwrap();
+	assert!(!requirements.native_required);
+	let result = use_case::binding(
+		&mut scope,
+		&task(),
+		"aidash://receiver",
+		&inspection,
+		&Request::Disabled {},
+	)
+	.await
+	.unwrap();
+	assert!(matches!(result, Binding::Disabled {}));
+	assert!(scope.reads.is_empty());
+}
+
+#[rstest]
 #[case::keyless(false)]
 #[case::tenant(true)]
 #[tokio::test]

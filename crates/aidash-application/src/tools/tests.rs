@@ -29,14 +29,16 @@ impl ToolOperations for Operations {
 	async fn journal_query(
 		&self,
 		code: &str,
+		target_run: Option<Uuid>,
 		range: Option<(u64, u64)>,
 		key: &str,
 	) -> Result<Value> {
 		self.record("journal_query");
-		Ok(json!({"code":code,"range":range,"key":key}))
+		Ok(json!({"code":code,"run_id":target_run,"range":range,"key":key}))
 	}
 	async fn journal(
 		&self,
+		_: Option<Uuid>,
 		range: Option<(u64, u64)>,
 	) -> Result<Vec<aidash_domain::context::journal_export::JournalLine>> {
 		use aidash_domain::context::{ContextEvent, HistoryEntry};
@@ -362,14 +364,14 @@ async fn journal_query_forwards_the_requested_cell_and_bounded_range(fixture: Fi
 	let result = query
 		.invoke(
 			&ctx,
-			json!({"code":"journal()","journal_range":{"from_seq":4,"through_seq":9}}),
+			json!({"code":"journal()","run_id":"00000000-0000-0000-0000-000000000001","journal_range":{"from_seq":4,"through_seq":9}}),
 			"cell-key",
 		)
 		.await
 		.unwrap();
 	assert_eq!(
 		result,
-		json!({"code":"journal()","range":[4,9],"key":"cell-key"})
+		json!({"code":"journal()","run_id":"00000000-0000-0000-0000-000000000001","range":[4,9],"key":"cell-key"})
 	);
 	assert!(
 		query
@@ -390,6 +392,31 @@ async fn journal_query_forwards_the_requested_cell_and_bounded_range(fixture: Fi
 		aidash_domain::tool::DisclosureBoundary::Local
 	);
 	assert!(!query.contract().behavior.tool_call_approval);
+}
+
+#[test]
+fn subnode_task_accepts_a_journal_range_and_rejects_malformed_ranges() {
+	let task = builtins().remove("subnode_task").unwrap();
+	let validator = jsonschema::validator_for(&task.schema).unwrap();
+	let base = json!({"subnode_id":"00000000-0000-0000-0000-000000000001","title":"Search","request":"Find evidence","journal_range":{"from_seq":1,"through_seq":4}});
+	assert!(validator.is_valid(&base));
+	let mut malformed = base.clone();
+	malformed["journal_range"] = json!({"from_seq":1});
+	assert!(!validator.is_valid(&malformed));
+}
+
+#[rstest]
+#[tokio::test]
+async fn subnode_task_rejects_a_reversed_journal_range(fixture: Fixture) {
+	let ctx = ToolContext {
+		operations: &fixture.operations,
+		run: &fixture.run,
+	};
+	let task = builtins().remove("subnode_task").unwrap();
+	assert!(task.invoke(&ctx, json!({
+		"subnode_id":"00000000-0000-0000-0000-000000000001", "title":"Search", "request":"Find evidence",
+		"journal_range":{"from_seq":9,"through_seq":4}
+	}), "reversed").await.is_err());
 }
 
 #[test]

@@ -303,6 +303,8 @@ impl DefinitionValidation {
 					|| (local && m.max_output_tokens.is_none())
 					|| m.max_output_tokens
 						.is_some_and(|tokens| tokens == 0 || tokens as usize > m.context_window)
+					|| m.provider_max_output_tokens
+						.is_some_and(|tokens| tokens == 0 || tokens as usize > m.context_window)
 					|| !m.modalities.iter().any(|m| m == "text")
 				{
 					return Err(Error::Invalid(

@@ -16,8 +16,9 @@ pub fn requirements(
 	let agent = AgentConfig::from_snapshot(&inspection.binding_snapshot)?;
 	Ok(
 		aidash_domain::federation::execution::AgentMemoryRequirements {
-			native_required: agent.memory.is_some()
-				&& agent.allow_cross_conversation_memory != Some(false),
+			native_required: agent.memory.as_ref().is_some_and(|memory| {
+				memory.id != aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+			}) && agent.allow_cross_conversation_memory != Some(false),
 			memory_available: inspection.semantic_memory == VERSION
 				&& (agent.semantic_memory || agent.workspace_context),
 		},

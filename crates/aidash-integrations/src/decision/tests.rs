@@ -684,6 +684,7 @@ async fn an_approval_request_asks_the_block_questions_of_the_pending_call_on_eac
 			idempotency_key: "key".into(),
 			message_id: None,
 			reference_only: false,
+			is_data: false,
 		}],
 		"You are the reporting agent.",
 		&ToolCall {

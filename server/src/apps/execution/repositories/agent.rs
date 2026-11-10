@@ -1818,18 +1818,12 @@ impl aidash_application::ports::bindings::BindingResolver for Environment<'_> {
 			};
 			!journal
 		});
-		if aidash_domain::context::journal_query::offloaded_any(&run.context) {
-			for name in aidash_application::registry::system::journal_tools(
-				self.federation.store.capabilities.0.runner.is_some(),
-			) {
-				if tools.contains_key(*name) {
-					return Err(aidash_application::Error::Conflict(format!(
-						"Journal tool alias is already bound: {name}"
-					)));
-				}
-				tools.insert((*name).to_owned(), providers.coordination_tool(name)?);
-			}
-		}
+		let handed = super::context_journal::handed_to_run(
+			&self.federation.store,
+			&self.run_store.scope,
+			run,
+		)
+		.await?;
 		if self
 			.authority
 			.as_ref()
@@ -1870,6 +1864,19 @@ impl aidash_application::ports::bindings::BindingResolver for Environment<'_> {
 					}
 				}
 				tools.insert((*name).to_owned(), providers.coordination_tool(name)?);
+			}
+		}
+		if handed.is_some() || aidash_domain::context::journal_query::offloaded_any(&run.context) {
+			for name in aidash_application::registry::system::journal_tools(
+				self.federation.store.capabilities.0.runner.is_some(),
+			) {
+				if tools.contains_key(*name) {
+					return Err(aidash_application::Error::Conflict(format!(
+						"Journal tool alias is already bound: {name}"
+					)));
+				}
+				let note = handed.map(|(creator, range)| format!(" The creating Run handed this Task journal range {} through {}. Set run_id to {} and request only this range to inspect it. Omit run_id to inspect your own Journal.", range.from_seq, range.through_seq, creator));
+				tools.insert((*name).to_owned(), providers.intrinsic_tool(name, note)?);
 			}
 		}
 		Ok(tools)

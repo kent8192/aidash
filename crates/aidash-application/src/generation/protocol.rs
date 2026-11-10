@@ -71,7 +71,7 @@ fn exact_provider(description: &Description, usage: &Usage) -> Result<()> {
 				return Err(Error::Forbidden);
 			}
 		}
-		Purpose::Inference => {
+		Purpose::Inference | Purpose::Summary => {
 			let agent: aidash_domain::registry::AgentConfig =
 				serde_json::from_value(description.inspection.agent.config.clone())?;
 			let definition = description
@@ -91,9 +91,23 @@ fn exact_provider(description: &Description, usage: &Usage) -> Result<()> {
 			}
 			let config: aidash_domain::model::ModelConfig =
 				serde_json::from_value(definition.metadata.config.clone())?;
-			if usage.reserved_tokens
-				!= (config.context_window + config.output_token_limit() as usize) as i64
-			{
+			let valid = if usage.purpose == Purpose::Summary {
+				let policy =
+					aidash_domain::context::policy::Effective::of(agent.context_policy.as_ref());
+				let max = policy.summary_tokens(config.context_window).map(|tokens| {
+					tokens.min(config.provider_max_output_tokens.unwrap_or(u32::MAX))
+				});
+				let output = usage
+					.reserved_tokens
+					.checked_sub(config.context_window as i64);
+				output.is_some_and(|output| {
+					output > 0 && max.is_some_and(|max| output <= i64::from(max))
+				})
+			} else {
+				usage.reserved_tokens
+					== (config.context_window + config.output_token_limit() as usize) as i64
+			};
+			if !valid {
 				return Err(Error::Forbidden);
 			}
 		}
@@ -279,7 +293,7 @@ pub async fn admit(
 	let run = request.run;
 	let description = repository.description(run.id, &run.home_node).await?;
 	let provider = match request.purpose {
-		Purpose::Inference => {
+		Purpose::Inference | Purpose::Summary => {
 			let agent: aidash_domain::registry::AgentConfig =
 				serde_json::from_value(description.inspection.agent.config.clone())?;
 			let definition = description

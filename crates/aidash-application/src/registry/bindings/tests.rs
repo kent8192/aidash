@@ -306,9 +306,9 @@ async fn defaults_are_exact_and_a_saved_snapshot_is_immutable() {
 	assert_eq!(serde_json::to_value(&saved).unwrap(), encoded);
 	assert_eq!(
 		saved.bindings.len(),
-		REQUIRED_TOOLS.len() + DEFAULT_TOOLS.len() + 1
+		REQUIRED_TOOLS.len() + DEFAULT_TOOLS.len() + 2
 	);
-	assert_eq!(saved.definitions.len(), saved.bindings.len() + 2);
+	assert_eq!(saved.definitions.len(), saved.bindings.len() + 4);
 	let recovered: BindingSnapshot = serde_json::from_value(encoded).unwrap();
 	recovered.validate().unwrap();
 }
@@ -883,8 +883,20 @@ async fn native_context_is_explicit_and_skill_sources_cannot_omit_support() {
 		initial
 			.bindings
 			.iter()
-			.all(|b| b.definition.kind != "memory")
+			.any(|b| b.identity.id == aidash_domain::registry::bindings::memory_defaults::MEMORY_ID)
 	);
+	assert!(
+		initial
+			.bindings
+			.iter()
+			.all(|b| b.identity != reference("memory"))
+	);
+	let automatic = aidash_domain::registry::AgentConfig::automatic_context(&initial).unwrap();
+	assert_eq!(
+		automatic.memory.as_ref().unwrap().id,
+		aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+	);
+	assert!(!automatic.semantic_memory && !automatic.conversation_memory);
 	config.bindings.push(Binding {
 		kind: BindingKind::Memory,
 		target: reference("memory"),
@@ -1820,6 +1832,16 @@ async fn foreign_agent_transports_pin_receiver_closures_without_flattening_child
 #[tokio::test]
 async fn foreign_export_rejects_private_installed_and_cross_node_definitions() {
 	let saved = public_foreign_snapshot().await;
+	let mut altered_builtin = saved.clone();
+	let builtin = altered_builtin
+		.definitions
+		.iter_mut()
+		.find(|item| {
+			item.identity.id == aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+		})
+		.unwrap();
+	builtin.definition.config["engine"] = json!("other");
+	assert!(altered_builtin.validate().is_err());
 	for kind in ["memory", "source", "skill"] {
 		let mut changed = saved.clone();
 		changed.definitions.push(
