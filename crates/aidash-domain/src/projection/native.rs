@@ -26,6 +26,7 @@ pub enum Trust {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
+	MemoryRecall,
 	Identity,
 	Task,
 	ReferenceDocuments,
@@ -404,6 +405,16 @@ fn single<'a>(
 	markers: &mut Vec<&'a ContextEvent>,
 ) {
 	match &entry.event {
+		ContextEvent::MemoryRecall { content, .. } => history.push(NativeMessage::Data {
+			envelope: Envelope::data(
+				Source::MemoryRecall,
+				json!({}),
+				Some(entry.seq),
+				content
+					.clone()
+					.unwrap_or_else(|| json!({"status":"unavailable"})),
+			),
+		}),
 		ContextEvent::Human {
 			request,
 			request_kind,

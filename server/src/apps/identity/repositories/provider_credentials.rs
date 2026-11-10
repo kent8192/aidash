@@ -277,12 +277,16 @@ pub(crate) fn selected_providers(
 		}
 		let memory: aidash_domain::memory::ProviderConfig =
 			serde_json::from_value(entry.config.clone())?;
-		definitions.extend([
+		for role in [
 			memory.policy.extraction,
 			memory.policy.derivation,
 			memory.policy.reflection,
-			memory.policy.embedding,
-		]);
+		] {
+			if let aidash_domain::memory::RoleModel::Entry(reference) = role {
+				definitions.push(reference);
+			}
+		}
+		definitions.extend(memory.policy.embedding);
 		let reranker = definition(&memory.policy.reranker)?;
 		if let aidash_domain::memory::RerankerConfig::Model { model } =
 			serde_json::from_value(reranker.config.clone())?

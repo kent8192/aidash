@@ -7225,7 +7225,10 @@ impl SubnodeRig {
 						"workspace_search",
 					]
 				};
-				for name in narrow {
+				for name in narrow
+					.iter()
+					.chain(aidash_domain::registry::bindings::MEMORY_TOOLS)
+				{
 					if !defaults.contains(&json!(name)) {
 						defaults.push(json!(name));
 					}

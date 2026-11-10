@@ -149,26 +149,41 @@ async fn record_in(lease: &mut Lease<'_>, run: Uuid, selected: &[Unit]) -> Resul
 			"Run memory read journal exceeds its provenance bound".into(),
 		));
 	}
-	let mut evidence = Vec::with_capacity(reads.len());
+	let mut evidence = std::collections::BTreeMap::<Uuid, Vec<Evidence>>::new();
 	for read in reads {
 		let unit = units::load(lease, read.try_get("unit_id")?, false)
 			.await?
 			.ok_or(Error::Forbidden)?;
-		evidence.push(Evidence::Unit {
-			bank: unit.bank,
-			id: unit.id,
-			revision: read.try_get("revision")?,
-		});
+		evidence
+			.entry(unit.bank.workspace)
+			.or_default()
+			.push(Evidence::Unit {
+				bank: unit.bank,
+				id: unit.id,
+				revision: read.try_get("revision")?,
+			});
 	}
-	match units::current(lease, metadata.workspace_id, &evidence, journal_visits).await {
-		Err(Error::Invalid(message))
-			if message == "memory evidence traversal exceeds its bound" =>
+	let mut visits = 0;
+	for (workspace, sources) in evidence {
+		match units::current_in_reader(
+			lease,
+			workspace,
+			&sources,
+			journal_visits,
+			&mut visits,
+			Some(run),
+		)
+		.await
 		{
-			return Err(Error::Conflict(
-				"Run memory read journal exceeds its provenance bound".into(),
-			));
+			Err(Error::Invalid(message))
+				if message == "memory evidence traversal exceeds its bound" =>
+			{
+				return Err(Error::Conflict(
+					"Run memory read journal exceeds its provenance bound".into(),
+				));
+			}
+			result => result?,
 		}
-		result => result?,
 	}
 	Ok(())
 }
@@ -288,7 +303,28 @@ pub(crate) async fn invalidity(lease: &mut Lease<'_>, run_id: Uuid) -> Result<Op
 				return Ok(Some(Failure::Invalidated));
 			};
 			if unit.bank.workspace != run.workspace_id {
-				return Ok(Some(Failure::Authority));
+				let builtin = binding.provider.id
+					== aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+					&& binding.provider.version
+						== aidash_domain::registry::bindings::memory_defaults::VERSION;
+				if !builtin
+					|| unit.bank.tenant != binding.bank.tenant
+					|| super::sharing::get(&mut **lease.tx(), &unit.bank.tenant)
+						.await?
+						.0 != aidash_domain::memory::SharingScope::TenantAgent
+					|| !super::sharing::agent_unit(
+						lease,
+						&unit,
+						&run.agent_id,
+						policy.bounds.max_graph_visits,
+					)
+					.await?
+				{
+					return Ok(Some(Failure::Authority));
+				}
+				if let Err(error) = units::authorize(lease, &unit.bank, "memory.read").await {
+					return source(error);
+				}
 			}
 			if !unit.visible() || unit.revision != revision {
 				return Ok(Some(Failure::Invalidated));
@@ -297,15 +333,16 @@ pub(crate) async fn invalidity(lease: &mut Lease<'_>, run_id: Uuid) -> Result<Op
 				Ok(policy) => policy,
 				Err(error) => return source(error),
 			};
-			if let Err(error) = units::current(
+			if let Err(error) = units::current_for_run(
 				lease,
-				run.workspace_id,
+				unit.bank.workspace,
 				&[Evidence::Unit {
 					bank: unit.bank.clone(),
 					id: unit.id,
 					revision: unit.revision,
 				}],
 				policy.bounds.max_graph_visits,
+				Some(run_id),
 			)
 			.await
 			{

@@ -179,10 +179,15 @@ impl ToolOperations for Operations {
 	}
 	async fn memory_mutate(
 		&self,
-		_key: &str,
-		_changes: &[aidash_domain::memory::Change],
+		key: &str,
+		changes: &[aidash_domain::memory::Change],
 	) -> Result<Vec<aidash_domain::memory::Unit>> {
-		panic!("unexpected native mutation");
+		self.record("memory.mutate");
+		self.inputs
+			.lock()
+			.unwrap()
+			.push((key.into(), json!(changes)));
+		Ok(Vec::new())
 	}
 	async fn memory_recall(
 		&self,
@@ -190,7 +195,7 @@ impl ToolOperations for Operations {
 		_query: &aidash_domain::memory::RecallQuery,
 		_reflect: bool,
 	) -> Result<Value> {
-		panic!("unexpected native recall");
+		Err(Error::SemanticUnavailable)
 	}
 	async fn human_request(&self, kind: &str, prompt: &str, key: &str) -> Result<HumanRequest> {
 		self.record("human.request");
@@ -275,6 +280,77 @@ impl ToolOperations for Operations {
 			value: secrecy::SecretString::from("tenant-secret-value".to_owned()),
 		})
 	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn builtin_retention_records_a_fact_without_an_unreviewed_marker(mut fixture: Fixture) {
+	let node = "aidash://fixture";
+	let root = crate::test_support::agent("agent");
+	fixture.run.context.binding_snapshot = Some(Box::new(crate::test_support::resolve(
+		node,
+		&root,
+		false,
+		crate::test_support::builtin_entries(node),
+	)));
+	super::builtins()["memory_mutate"].invoke(&ToolContext { operations: &fixture.operations, run: &fixture.run }, json!({"changes":[{"operation":"add","id":Uuid::new_v4(),"content":{"text":"Recorded fact","kind":"world","learning":"fact","occurred":null,"entities":[],"evidence":[],"links":[]}}]}), "retain").await.unwrap();
+	assert_eq!(
+		fixture.operations.inputs.lock().unwrap()[0].1[0]["content"]["verification"],
+		"recorded"
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn builtin_memory_failures_are_tool_data_but_explicit_provider_errors_propagate(
+	mut fixture: Fixture,
+) {
+	let node = "aidash://fixture";
+	let root = crate::test_support::agent("agent");
+	let builtin = crate::test_support::resolve(
+		node,
+		&root,
+		false,
+		crate::test_support::builtin_entries(node),
+	);
+	fixture.run.context.binding_snapshot = Some(Box::new(builtin));
+	let tool = &super::builtins()["memory_recall"];
+	let query = json!({"text":"question","time":null,"kinds":[],"max_tokens":100});
+	let result = tool
+		.invoke(
+			&ToolContext {
+				operations: &fixture.operations,
+				run: &fixture.run,
+			},
+			query.clone(),
+			"recall",
+		)
+		.await
+		.unwrap();
+	assert_eq!(result["error"]["kind"], "memory_unavailable");
+	let mut explicit_root = root;
+	explicit_root.config["bindings"] =
+		json!([crate::test_support::binding("memory", node, "native")]);
+	let mut entries = crate::test_support::builtin_entries(node);
+	entries.extend(crate::test_support::native_memory_entries());
+	fixture.run.context.binding_snapshot = Some(Box::new(crate::test_support::resolve(
+		node,
+		&explicit_root,
+		false,
+		entries,
+	)));
+	assert!(matches!(
+		tool.invoke(
+			&ToolContext {
+				operations: &fixture.operations,
+				run: &fixture.run
+			},
+			query,
+			"recall"
+		)
+		.await,
+		Err(Error::SemanticUnavailable)
+	));
 }
 
 #[rstest]

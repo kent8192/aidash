@@ -11,6 +11,7 @@ use reinhardt::{
 	query::{Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder},
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -201,11 +202,13 @@ pub async fn operate(store: &Store, actor: &Actor, input: Operation) -> Result<O
 			super::super::repositories::candidates::human(&mut initialization)?;
 		}
 		repository::lock_workspace(&mut initialization, input.bank.workspace, true).await?;
-		scope(
+		scope_for_operation(
 			store,
 			&mut initialization,
 			&input.bank,
 			input.action.permission(),
+			&input.provider,
+			matches!(input.action, Action::ConfigureBank { .. }),
 		)
 		.await?;
 		if !matches!(input.action, Action::ConfigureBank { .. }) {
@@ -216,7 +219,15 @@ pub async fn operate(store: &Store, actor: &Actor, input: Operation) -> Result<O
 				.await?
 				.is_none()
 		{
-			scope(store, &mut initialization, &input.bank, "memory.configure").await?;
+			scope_for_operation(
+				store,
+				&mut initialization,
+				&input.bank,
+				"memory.configure",
+				&input.provider,
+				matches!(input.action, Action::ConfigureBank { .. }),
+			)
+			.await?;
 		}
 		policy(&mut initialization, &input.bank.tenant, &input.provider).await?;
 		repository::bank_id(&mut initialization, &input.bank, true).await?;
@@ -287,7 +298,15 @@ pub(crate) async fn operate_staged(
 	use super::super::repositories::{candidates, memory_scope::Scope, publications};
 	use aidash_application::ports::memory::MemoryScope;
 	repository::lock_workspace(lease, input.bank.workspace, input.action.writes()).await?;
-	scope(store, lease, &input.bank, input.action.permission()).await?;
+	scope_for_operation(
+		store,
+		lease,
+		&input.bank,
+		input.action.permission(),
+		&input.provider,
+		matches!(input.action, Action::ConfigureBank { .. }),
+	)
+	.await?;
 	if !matches!(
 		input.action,
 		Action::ConfigureBank { .. } | Action::Settings
@@ -571,7 +590,7 @@ pub(crate) async fn run_mutate(
 	// Before `lock_workspace`, so `subnodes` is locked before `workspaces`.
 	crate::apps::execution::repositories::subnodes::require_writable(lease.tx(), run.workspace_id)
 		.await?;
-	let binding = super::super::repositories::bindings::load(&mut **lease.tx(), &run.metadata())
+	let binding = super::super::repositories::bindings::for_run(store, lease, run)
 		.await?
 		.ok_or(Error::Forbidden)?;
 	let mutation = Mutation {
@@ -584,22 +603,38 @@ pub(crate) async fn run_mutate(
 	scope(store, lease, &mutation.bank, "memory.write").await?;
 	bank_provider(lease, &mutation.bank, &mutation.provider).await?;
 	let policy = policy(lease, &mutation.bank.tenant, &mutation.provider).await?;
-	// Model tools may only change unverified content. Check targets under the
+	// Model tools may only change content with their provider's non-attesting
+	// status. Check targets under the
 	// same Workspace mutation lock as CAS; supplied replacement content cannot
 	// downgrade an existing human verification or bypass it through deletion.
+	let model_status = if mutation.provider.id
+		== aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+		&& mutation.provider.version == aidash_domain::registry::bindings::memory_defaults::VERSION
+	{
+		Verification::Recorded
+	} else {
+		Verification::Unverified
+	};
 	for change in &mutation.changes {
 		if let Change::Add { content, .. } | Change::Correct { content, .. } = change
-			&& content.verification != Verification::Unverified
+			&& content.verification != model_status
 		{
 			return Err(Error::Forbidden);
+		}
+		if model_status == Verification::Recorded
+			&& let Change::Add { content, .. } | Change::Correct { content, .. } = change
+			&& !content.evidence.iter().any(
+				|source| matches!(source, Evidence::JournalRange { run_id, .. } if *run_id == run.id),
+			) {
+			return Err(Error::Invalid(
+				"built-in memory requires the current Run's Journal range".into(),
+			));
 		}
 		if let Change::Correct { id, .. } | Change::Delete { id, .. } = change {
 			let existing = units::load(lease, *id, false)
 				.await?
 				.ok_or(Error::Forbidden)?;
-			if existing.bank != mutation.bank
-				|| existing.content.verification != Verification::Unverified
-			{
+			if existing.bank != mutation.bank || existing.content.verification != model_status {
 				return Err(Error::Forbidden);
 			}
 		}
@@ -618,9 +653,18 @@ pub(crate) async fn run_recall(
 	if !run.is_local(store.deployment.as_str()) {
 		return Err(Error::Forbidden);
 	}
-	let binding = super::super::repositories::bindings::load(&mut **lease.tx(), &run.metadata())
+	let binding = super::super::repositories::bindings::for_run(store, lease, run)
 		.await?
 		.ok_or(Error::Forbidden)?;
+	if !reflect
+		&& binding.provider.id == aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+		&& binding.provider.version == aidash_domain::registry::bindings::memory_defaults::VERSION
+		&& super::super::repositories::sharing::get(&mut **lease.tx(), &binding.bank.tenant)
+			.await?
+			.0 == SharingScope::TenantAgent
+	{
+		return run_shared_recall(store, lease, run, query, key).await;
+	}
 	operate_in(
 		store,
 		lease,
@@ -637,6 +681,200 @@ pub(crate) async fn run_recall(
 		Some(run.id),
 	)
 	.await
+}
+
+/// Search once at Run start. Tenant widening considers only this Agent's
+/// provenance in other authorized Workspaces, and refuses an unbounded scan.
+pub(crate) async fn run_start_recall(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	run: &aidash_domain::Run,
+	query: RecallQuery,
+) -> Result<Outcome> {
+	run_shared_recall(store, lease, run, query, "start").await
+}
+
+async fn run_shared_recall(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	run: &aidash_domain::Run,
+	query: RecallQuery,
+	key: &str,
+) -> Result<Outcome> {
+	if !run.is_local(store.deployment.as_str()) {
+		return Err(Error::Forbidden);
+	}
+	let binding = super::super::repositories::bindings::for_run(store, lease, run)
+		.await?
+		.ok_or(Error::Forbidden)?;
+	let scope = super::super::repositories::sharing::get(&mut **lease.tx(), &binding.bank.tenant)
+		.await?
+		.0;
+	let mut banks = vec![binding.bank.clone()];
+	if scope == SharingScope::TenantAgent {
+		let rows = native::query(
+			&Query::select()
+				.columns(
+					["home", "tenant", "workspace_id", "participant_id"]
+						.map(|name| (Alias::new("b"), Alias::new(name))),
+				)
+				.from_as(Alias::new("memory_banks"), Alias::new("b"))
+				.inner_join(
+					Alias::new("memory_bank_settings"),
+					Expr::col(("memory_bank_settings", "bank_id")).equals(("b", "id")),
+				)
+				.and_where(Expr::col(("b", "tenant")).eq(binding.bank.tenant.as_str()))
+				.and_where(Expr::col(("b", "workspace_id")).ne(Expr::value(run.workspace_id)))
+				.and_where(
+					Expr::col(("memory_bank_settings", "provider_id"))
+						.eq(aidash_domain::registry::bindings::memory_defaults::MEMORY_ID),
+				)
+				.and_where(
+					Expr::col(("memory_bank_settings", "provider_version"))
+						.eq(aidash_domain::registry::bindings::memory_defaults::VERSION),
+				)
+				.order_by(
+					(Alias::new("b"), Alias::new("id")),
+					reinhardt::query::Order::Asc,
+				)
+				.limit(257)
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_all(&mut **lease.tx())
+		.await?;
+		if rows.len() > 256 {
+			return Err(Error::Invalid(
+				"Tenant memory exceeds the 256-bank recall bound".into(),
+			));
+		}
+		for row in rows {
+			banks.push(Bank {
+				home: row.try_get("home")?,
+				tenant: row.try_get("tenant")?,
+				workspace: row.try_get("workspace_id")?,
+				participant: row.try_get("participant_id")?,
+			});
+		}
+	}
+	let mut selected = Vec::new();
+	for bank in banks {
+		let foreign = bank.workspace != run.workspace_id;
+		let mut delivered = Vec::new();
+		let operation = Operation {
+			operation_id: request_id(
+				run.id,
+				&format!(
+					"builtin-recall:{key}:{}:{:?}",
+					bank.workspace, bank.participant
+				),
+			)?,
+			provider: binding.provider.clone(),
+			bank,
+			action: Action::Recall {
+				query: query.clone(),
+			},
+		};
+		let outcome =
+			match operate_staged(store, lease, operation, Some(run.id), &mut delivered).await {
+				Ok(value) => value,
+				Err(Error::Forbidden | Error::Conflict(_)) if foreign => continue,
+				Err(error) => return Err(error),
+			};
+		if let Outcome::Recall(Recall::Ready { units }) = outcome {
+			for unit in units {
+				if selected.len() >= 8 {
+					break;
+				}
+				let mut candidate = selected.clone();
+				candidate.push(unit.clone());
+				if serde_json::to_vec(&Outcome::Recall(Recall::Ready { units: candidate }))?.len()
+					<= query.max_tokens
+				{
+					selected.push(unit);
+				}
+			}
+		}
+	}
+	if !selected.is_empty() {
+		super::super::repositories::memory_reads::record(lease, run.id, &selected).await?;
+	}
+	Ok(Outcome::Recall(if selected.is_empty() {
+		Recall::Empty
+	} else {
+		Recall::Ready { units: selected }
+	}))
+}
+
+/// Hydrate exactly the Units selected at Run start, with current authority and
+/// provenance. The Run Journal contains only their identities and revisions.
+pub(crate) async fn run_hydrate(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	run: &aidash_domain::Run,
+	sources: &[Evidence],
+) -> Result<Value> {
+	let binding = super::super::repositories::bindings::for_run(store, lease, run)
+		.await?
+		.ok_or(Error::Forbidden)?;
+	scope(store, lease, &binding.bank, "memory.read").await?;
+	bank_provider(lease, &binding.bank, &binding.provider).await?;
+	let policy = policy(lease, &binding.bank.tenant, &binding.provider).await?;
+	if sources.len() > policy.bounds.max_results {
+		return Err(Error::Invalid(
+			"initial memory exceeds its result bound".into(),
+		));
+	}
+	let mut recalled = Vec::with_capacity(sources.len());
+	for source in sources {
+		let Evidence::Unit { bank, id, revision } = source else {
+			return Err(Error::Invalid(
+				"initial memory requires Unit references".into(),
+			));
+		};
+		let foreign = bank != &binding.bank;
+		if foreign {
+			if bank.tenant != binding.bank.tenant
+				|| bank.workspace == run.workspace_id
+				|| super::super::repositories::sharing::get(&mut **lease.tx(), &bank.tenant)
+					.await?
+					.0 != SharingScope::TenantAgent
+			{
+				return Err(Error::Forbidden);
+			}
+			scope(store, lease, bank, "memory.read").await?;
+			bank_provider(lease, bank, &binding.provider).await?;
+		}
+		let unit = units::load(lease, *id, false)
+			.await?
+			.ok_or(Error::Forbidden)?;
+		if unit.bank != *bank || unit.revision != *revision || !unit.visible() {
+			return Err(Error::Conflict("initial memory changed".into()));
+		}
+		if foreign
+			&& !super::super::repositories::sharing::agent_unit(
+				lease,
+				&unit,
+				&run.agent_id,
+				policy.bounds.max_graph_visits,
+			)
+			.await?
+		{
+			return Err(Error::Forbidden);
+		}
+		units::unexpired(lease, &unit).await?;
+		units::current_for_run(
+			lease,
+			bank.workspace,
+			&unit.content.evidence,
+			policy.bounds.max_graph_visits,
+			Some(run.id),
+		)
+		.await?;
+		recalled.push(unit);
+	}
+	Ok(serde_json::to_value(Outcome::Recall(Recall::Ready {
+		units: recalled,
+	}))?)
 }
 
 /// Role configuration comes from the immutable definition, never an installation overlay.
@@ -664,7 +902,9 @@ pub(crate) async fn definition(
 	if entry.kind != kind {
 		return Err(Error::Invalid(format!("memory role requires {kind}")));
 	}
-	if let Some(access) = lease.access() {
+	if !aidash_application::registry::system::is_builtin(&entry)
+		&& let Some(access) = lease.access()
+	{
 		let permitted =
 			crate::authorization::catalog::entry(access, reference, "registry.read").await?;
 		if permitted.config != entry.config {
@@ -690,6 +930,30 @@ pub(crate) async fn scope(
 	lease: &mut Lease<'_>,
 	bank: &Bank,
 	action: &str,
+) -> Result<()> {
+	scope_inner(store, lease, bank, action, false).await
+}
+
+async fn scope_for_operation(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	bank: &Bank,
+	action: &str,
+	provider: &EntityRef,
+	configure: bool,
+) -> Result<()> {
+	let initial_builtin = configure
+		&& provider.id == aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+		&& provider.version == aidash_domain::registry::bindings::memory_defaults::VERSION;
+	scope_inner(store, lease, bank, action, initial_builtin).await
+}
+
+async fn scope_inner(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	bank: &Bank,
+	action: &str,
+	initial_builtin: bool,
 ) -> Result<()> {
 	bank.validate()?;
 	if aidash_domain::nodes::deployment_of(&bank.home) != store.deployment {
@@ -723,14 +987,22 @@ pub(crate) async fn scope(
 	if bank.home != home {
 		return Err(Error::Forbidden);
 	}
-	units::authorize(lease, bank, action).await
+	if initial_builtin {
+		units::authorize_initial_builtin(lease, bank, action).await
+	} else {
+		units::authorize(lease, bank, action).await
+	}
 }
 pub(crate) async fn bank_provider(
 	lease: &mut Lease<'_>,
 	bank: &Bank,
 	provider: &EntityRef,
 ) -> Result<()> {
-	if let Some(id) = bank.participant {
+	let builtin = provider.id == aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+		&& provider.version == aidash_domain::registry::bindings::memory_defaults::VERSION;
+	if let Some(id) = bank.participant
+		&& !builtin
+	{
 		let row = native::query(
 			&Query::select()
 				.columns(["tenant", "agent_id", "agent_version"].map(Alias::new))

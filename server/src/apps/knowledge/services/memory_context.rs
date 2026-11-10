@@ -152,14 +152,7 @@ pub(crate) async fn retrieve(
 		let roles = json!({"extraction":policy.extraction,"derivation":policy.derivation,"reflection":policy.reflection,"embedding":policy.embedding,"reranker":policy.reranker,"tokenizer":policy.tokenizer});
 		let mut dependencies =
 			vec![memory::definition(lease, &bank.tenant, &provider, "memory").await?];
-		for (reference, kind) in [
-			(&policy.extraction, "model"),
-			(&policy.derivation, "model"),
-			(&policy.reflection, "model"),
-			(&policy.embedding, "embedding"),
-			(&policy.reranker, "reranker"),
-			(&policy.tokenizer, "tokenizer"),
-		] {
+		for (reference, kind) in policy.role_references() {
 			dependencies.push(memory::definition(lease, &bank.tenant, reference, kind).await?);
 		}
 		if let Some(access) = lease.access() {

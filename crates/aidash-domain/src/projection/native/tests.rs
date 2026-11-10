@@ -39,6 +39,37 @@ fn context(events: Vec<ContextEvent>) -> Context {
 }
 
 #[test]
+fn run_start_memory_is_projected_as_data() {
+	let context = context(vec![ContextEvent::MemoryRecall {
+		sources: vec![],
+		unavailable: false,
+		content: Some(json!({"facts":["prior fact"]})),
+	}]);
+	let projection = native_context(&context, &json!({}));
+	let encoded = serde_json::to_value(&projection).unwrap();
+	let text = encoded.to_string();
+	assert!(text.contains("prior fact"));
+	assert!(text.contains("memory_recall"));
+	assert!(text.contains("data"));
+	assert!(
+		!serde_json::to_string(&context)
+			.unwrap()
+			.contains("prior fact")
+	);
+	assert!(
+		context
+			.model_view(&json!({}))
+			.to_string()
+			.contains("prior fact")
+	);
+	assert!(
+		crate::context::ordered_context(&context, &json!({}))
+			.stable
+			.contains("prior fact")
+	);
+}
+
+#[test]
 fn reference_image_matches_remain_separate_from_workspace_matches() {
 	let pinned = json!({
 		"reference_documents": [{"name":"chart.png"}],

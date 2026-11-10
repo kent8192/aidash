@@ -70,6 +70,9 @@ pub(crate) async fn record(
 		runs.extend(run);
 		for proof in &unit.content.evidence {
 			match proof {
+				aidash_domain::memory::Evidence::JournalRange { run_id, .. } => {
+					runs.insert(*run_id);
+				}
 				aidash_domain::memory::Evidence::Run { id, .. } => {
 					runs.insert(*id);
 				}

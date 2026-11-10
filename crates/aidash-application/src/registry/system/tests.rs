@@ -165,16 +165,20 @@ fn every_tenant_is_declared_the_builtins_and_the_approval_decider() {
 
 	let declared = declarations(&validation, NODE).unwrap();
 
-	assert_eq!(declared.len(), builtins.len() + 2);
+	assert_eq!(declared.len(), builtins.len() + 5);
 	assert_eq!(declared[..builtins.len()], builtins);
 	assert_eq!(declared[builtins.len()], approval_decider().unwrap());
 	assert_eq!(
 		declared[builtins.len() + 1],
 		aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap()
 	);
+	assert_eq!(
+		&declared[builtins.len() + 2..],
+		aidash_domain::registry::bindings::memory_defaults::definitions().unwrap()
+	);
 	assert!(
 		builtins.iter().all(|entry| entry.id != APPROVAL_DECIDER_ID),
-		"only a built-in tool is admitted without a Catalog Approval"
+		"the approval Decider is separate from built-in tools"
 	);
 }
 
@@ -409,4 +413,47 @@ fn required_workspace_source_is_builtin_only_at_its_exact_canonical_definition()
 		id: source.id,
 		version: "2.0.0".into()
 	}));
+}
+
+#[test]
+fn builtin_memory_definitions_pin_agent_roles_and_no_embedding() {
+	use aidash_domain::{
+		memory::{ProviderConfig, RoleModel},
+		registry::bindings::memory_defaults,
+	};
+	let definitions = memory_defaults::definitions().unwrap();
+	assert_eq!(definitions.len(), 3);
+	assert_eq!(
+		serde_json::from_value::<aidash_domain::memory::RerankerConfig>(
+			definitions[0].config.clone()
+		)
+		.unwrap(),
+		aidash_domain::memory::RerankerConfig::Rrf
+	);
+	assert_eq!(
+		serde_json::from_value::<aidash_domain::memory::TokenizerConfig>(
+			definitions[1].config.clone()
+		)
+		.unwrap(),
+		aidash_domain::memory::TokenizerConfig::Utf8UpperBound
+	);
+	for entry in &definitions {
+		assert!(is_builtin(entry));
+		assert!(builtin_reference(&EntityRef {
+			id: entry.id.clone(),
+			version: entry.version.clone()
+		}));
+		let mut modified = entry.clone();
+		modified.config["unexpected"] = json!(true);
+		assert!(!is_builtin(&modified));
+	}
+	let provider: ProviderConfig =
+		serde_json::from_value(definitions.last().unwrap().config.clone()).unwrap();
+	assert_eq!(provider.policy.extraction, RoleModel::AgentModel);
+	assert_eq!(provider.policy.derivation, RoleModel::AgentModel);
+	assert_eq!(provider.policy.reflection, RoleModel::AgentModel);
+	assert!(provider.policy.embedding.is_none());
+	assert_eq!(provider.policy.bounds.max_units, 64);
+	assert!(provider.policy.learn_from_runs);
+	assert!(provider.policy.maintain_observations);
 }

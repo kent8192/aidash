@@ -19,7 +19,7 @@ ROUTE = re.compile(
 )
 NODE_PATH = "/api/tenants/{tenant}/nodes/{node}"
 REGISTRATION_KEYS = NODE_PATH + "/registration-keys"
-# Only reviewed dispatch metadata for the six source-defined additions.
+# Only reviewed dispatch metadata for source-defined additions.
 # These entries cannot include a route absent from the saved native inventory.
 ADDITIONS = {
     ("POST", NODE_PATH + "/default"): ("tenant-node-default", "nodes"),
@@ -28,6 +28,8 @@ ADDITIONS = {
     ("POST", NODE_PATH + "/purge"): ("tenant-node-purge", "nodes"),
     ("GET", REGISTRATION_KEYS): ("tenant-registration-keys", "manual_keys"),
     ("POST", REGISTRATION_KEYS): ("tenant-registration-keys-change", "manual_keys"),
+    ("GET", "/api/tenants/{tenant}/memory-scope"): ("tenant-memory-scope", "memory_scope"),
+    ("PUT", "/api/tenants/{tenant}/memory-scope"): ("tenant-memory-scope-update", "memory_scope"),
 }
 # An existing method/path whose stale catalog spelling predates both normal
 # native exports. This migration is exact; arbitrary name drift still fails.

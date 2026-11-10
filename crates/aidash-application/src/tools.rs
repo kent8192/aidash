@@ -37,6 +37,33 @@ pub struct ToolContext<'a> {
 	pub run: &'a Run,
 }
 
+fn builtin_memory(run: &Run) -> bool {
+	run.context
+		.binding_snapshot
+		.as_ref()
+		.is_some_and(|snapshot| {
+			snapshot.bindings.iter().any(|binding| {
+				binding.excluded_reason.is_none()
+					&& aidash_domain::registry::bindings::memory_defaults::definitions().is_ok_and(
+						|definitions| {
+							definitions
+								.iter()
+								.any(|entry| entry.kind == "memory" && entry == &binding.definition)
+						},
+					)
+			})
+		})
+}
+
+fn memory_tool_result(run: &Run, result: Result<Value>) -> Result<Value> {
+	match result {
+		Err(_) if builtin_memory(run) => Ok(
+			json!({"error": {"kind": "memory_unavailable", "message": "The memory operation failed."}}),
+		),
+		other => other,
+	}
+}
+
 fn journal_range(input: &Value, required: bool) -> Result<Option<(u64, u64)>> {
 	let from = input
 		.get("from_seq")
@@ -736,21 +763,35 @@ impl Builtin {
 				Ok(json!({"wait_seconds":input["seconds"].as_u64().unwrap_or(300).clamp(1,3600)}))
 			}
 			"memory_mutate" => {
-				let input: MemoryMutationInput = serde_json::from_value(input)?;
-				if input.changes.iter().any(|change| matches!(change,
-					aidash_domain::memory::Change::Add { content, .. } | aidash_domain::memory::Change::Correct { content, .. }
-					if content.verification != aidash_domain::memory::Verification::Unverified)) {
-					return Err(Error::Invalid("an agent cannot attest memory verification through a model tool".into()));
-				}
-				Ok(json!(
-					ctx.operations.memory_mutate(key, &input.changes).await?
-				))
+				let result = async {
+					let mut input: MemoryMutationInput = serde_json::from_value(input)?;
+					let builtin = builtin_memory(ctx.run);
+					if input.changes.iter().any(|change| matches!(change,
+						aidash_domain::memory::Change::Add { content, .. } | aidash_domain::memory::Change::Correct { content, .. }
+						if content.verification != aidash_domain::memory::Verification::Unverified
+							&& !(builtin && content.verification == aidash_domain::memory::Verification::Recorded))) {
+						return Err(Error::Invalid("an agent cannot attest memory verification through a model tool".into()));
+					}
+					if builtin {
+						for change in &mut input.changes {
+							if let aidash_domain::memory::Change::Add { content, .. } | aidash_domain::memory::Change::Correct { content, .. } = change {
+								content.verification = aidash_domain::memory::Verification::Recorded;
+							}
+						}
+					}
+					Ok(json!(ctx.operations.memory_mutate(key, &input.changes).await?))
+				}.await;
+				memory_tool_result(ctx.run, result)
 			}
 			"memory_recall" | "memory_reflect" => {
-				let query = serde_json::from_value(input)?;
-				ctx.operations
-					.memory_recall(key, &query, self.name == "memory_reflect")
-					.await
+				let result = async {
+					let query = serde_json::from_value(input)?;
+					ctx.operations
+						.memory_recall(key, &query, self.name == "memory_reflect")
+						.await
+				}
+				.await;
+				memory_tool_result(ctx.run, result)
 			}
 			"connection_request" => {
 				if !ctx.operations.connection_person().await? {

@@ -1481,6 +1481,55 @@ impl WorkerAuthority {
 		restore_outer(&mut outer, store, run, result).await
 	}
 
+	pub async fn memory_hydrate(
+		&self,
+		store: &Store,
+		run: &Run,
+		sources: &[aidash_domain::memory::Evidence],
+	) -> Result<serde_json::Value> {
+		let mut outer = self.access.write().await;
+		if outer.tx.is_active() {
+			outer.suspend().await?;
+		}
+		let result = async {
+			let mut access = access_for_run(store, &run.metadata(), true)
+				.await?
+				.ok_or(Error::Forbidden)?;
+			memory_run_check(&mut access, &run.metadata()).await?;
+			let mut lease = crate::semantic::service::Lease::Scoped(Box::new(access));
+			let result =
+				crate::semantic::native_memory::run_hydrate(store, &mut lease, run, sources).await;
+			lease.finish(result).await
+		}
+		.await;
+		restore_outer(&mut outer, store, run, result).await
+	}
+
+	pub async fn memory_start_recall(
+		&self,
+		store: &Store,
+		run: &Run,
+		query: aidash_domain::memory::RecallQuery,
+	) -> Result<crate::semantic::native_memory::Outcome> {
+		let mut outer = self.access.write().await;
+		if outer.tx.is_active() {
+			outer.suspend().await?;
+		}
+		let result = async {
+			let mut access = access_for_run(store, &run.metadata(), true)
+				.await?
+				.ok_or(Error::Forbidden)?;
+			memory_run_check(&mut access, &run.metadata()).await?;
+			let mut lease = crate::semantic::service::Lease::Scoped(Box::new(access));
+			let result =
+				crate::semantic::native_memory::run_start_recall(store, &mut lease, run, query)
+					.await;
+			lease.finish(result).await
+		}
+		.await;
+		restore_outer(&mut outer, store, run, result).await
+	}
+
 	pub async fn assign(
 		&self,
 		f: &Federation,
