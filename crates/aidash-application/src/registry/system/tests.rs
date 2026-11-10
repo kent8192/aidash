@@ -148,17 +148,21 @@ fn every_tenant_is_declared_the_builtins_and_the_approval_decider() {
 
 	let declared = declarations(&validation, NODE).unwrap();
 
-	assert_eq!(declared.len(), builtins.len() + 3);
+	assert_eq!(declared.len(), builtins.len() + 6);
 	assert_eq!(declared[..builtins.len()], builtins);
 	assert_eq!(declared[builtins.len()], approval_decider().unwrap());
 	assert_eq!(
 		declared[builtins.len() + 1],
 		aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap()
 	);
-	assert_eq!(declared.last(), Some(&compaction_decider().unwrap()));
+	assert_eq!(declared[builtins.len() + 2], compaction_decider().unwrap());
+	assert_eq!(
+		&declared[builtins.len() + 3..],
+		aidash_domain::registry::bindings::memory_defaults::definitions().unwrap()
+	);
 	assert!(
 		builtins.iter().all(|entry| entry.id != APPROVAL_DECIDER_ID),
-		"only a built-in tool is admitted without a Catalog Approval"
+		"the approval Decider is separate from built-in tools"
 	);
 }
 
@@ -430,4 +434,31 @@ fn required_workspace_source_is_builtin_only_at_its_exact_canonical_definition()
 		id: source.id,
 		version: "2.0.0".into()
 	}));
+}
+
+#[test]
+fn builtin_memory_definitions_pin_agent_roles_and_no_embedding() {
+	use aidash_domain::{
+		memory::{ProviderConfig, RoleModel},
+		registry::bindings::memory_defaults,
+	};
+	let definitions = memory_defaults::definitions().unwrap();
+	assert_eq!(definitions.len(), 3);
+	for entry in &definitions {
+		assert!(is_builtin(entry));
+		assert!(builtin_reference(&EntityRef {
+			id: entry.id.clone(),
+			version: entry.version.clone()
+		}));
+		let mut modified = entry.clone();
+		modified.config["unexpected"] = json!(true);
+		assert!(!is_builtin(&modified));
+	}
+	let provider: ProviderConfig =
+		serde_json::from_value(definitions.last().unwrap().config.clone()).unwrap();
+	assert_eq!(provider.policy.extraction, RoleModel::AgentModel);
+	assert_eq!(provider.policy.derivation, RoleModel::AgentModel);
+	assert_eq!(provider.policy.reflection, RoleModel::AgentModel);
+	assert!(provider.policy.embedding.is_none());
+	assert_eq!(provider.policy.bounds.max_units, 64);
 }

@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const BINDING_SCHEMA: u8 = 1;
 pub mod defaults;
+pub mod memory_defaults;
 pub use defaults::{COMPACTION_DECIDER_ID, COMPACTION_DECIDER_VERSION, COMPACTION_DEFAULT};
 mod snapshot;
 pub mod source_defaults;
@@ -330,18 +331,6 @@ impl AgentBindings {
 				return Err(Error::Invalid("duplicate Binding target".into()));
 			}
 		}
-		if !self.has_memory_binding()
-			&& self.bindings.iter().any(|b| {
-				b.kind == BindingKind::Tool
-					&& b.target
-						.id
-						.strip_prefix("aidash.")
-						.is_some_and(|operation| MEMORY_TOOLS.contains(&operation))
-			}) {
-			return Err(Error::Invalid(
-				"memory tools require a memory provider".into(),
-			));
-		}
 		if self.bindings.iter().any(|b| b.kind == BindingKind::Skill)
 			&& self
 				.remove_default
@@ -501,6 +490,9 @@ impl AgentBindings {
 			}
 		}
 		source_defaults::add_workspace_observation(node, &mut result)?;
+		if !self.has_memory_binding() {
+			result.push(memory_defaults::binding(node));
+		}
 		defaults::add_compaction(self, node, compaction_override, &mut result)?;
 		if result.len() > MAX_BINDINGS {
 			return Err(Error::Invalid(

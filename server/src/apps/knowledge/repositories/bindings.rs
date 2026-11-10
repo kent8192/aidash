@@ -298,5 +298,9 @@ pub(crate) async fn configuration(
 			settings.sources.push(binding.target.local());
 		}
 	}
+	if settings.memory.is_none() {
+		settings.memory =
+			Some(aidash_domain::registry::bindings::memory_defaults::reference(node).local());
+	}
 	Ok(settings)
 }

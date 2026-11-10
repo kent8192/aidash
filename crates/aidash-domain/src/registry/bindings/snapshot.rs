@@ -119,11 +119,23 @@ impl BindingSnapshot {
 			));
 		}
 
-		let normalized = definitions
+		let mut normalized = definitions
 			.get(&self.agent)
 			.ok_or_else(|| Error::Invalid("snapshot lacks Agent".into()))?
 			.definition
 			.normalized_bindings(&self.agent.registry_deployment)?;
+		if !normalized.iter().any(|binding| {
+			binding.binding.kind == BindingKind::Memory
+				&& definitions
+					.get(&binding.binding.target)
+					.is_some_and(|entry| {
+						super::memory_provider(&entry.definition.kind, &entry.definition.config)
+					})
+		}) {
+			normalized.push(super::memory_defaults::binding(
+				&self.agent.registry_deployment,
+			));
+		}
 		let overrides = NormalizedBinding::member_overrides(&normalized);
 		let mut pending = normalized
 			.into_iter()

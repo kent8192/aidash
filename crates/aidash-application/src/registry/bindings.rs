@@ -205,6 +205,16 @@ pub async fn resolve(
 		memory_provider |=
 			aidash_domain::registry::bindings::memory_provider(&entry.kind, &entry.config);
 	}
+	if !memory_provider {
+		pending.push(Pending {
+			normalized: aidash_domain::registry::bindings::memory_defaults::binding(
+				&agent.registry_deployment,
+			),
+			ancestry: BTreeSet::new(),
+			lifecycle: None,
+		});
+		memory_provider = true;
+	}
 	while let Some(Pending {
 		normalized,
 		mut ancestry,

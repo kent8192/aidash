@@ -271,6 +271,7 @@ pub(crate) fn builtin_entries(node: &str) -> Vec<Entry> {
 	entries
 		.push(aidash_domain::registry::bindings::source_defaults::workspace_observation().unwrap());
 	entries.push(crate::registry::system::compaction_decider().unwrap());
+	entries.extend(aidash_domain::registry::bindings::memory_defaults::definitions().unwrap());
 	entries
 }
 pub(crate) fn binding(kind: &str, node: &str, id: &str) -> serde_json::Value {

@@ -31,6 +31,41 @@ fn agent() -> AgentBindings {
 }
 
 #[test]
+fn built_in_memory_is_default_and_an_explicit_provider_takes_precedence() {
+	let node = "aidash://node-a";
+	let mut config = agent();
+	let defaults = config.normalize(node).unwrap();
+	let memories: Vec<_> = defaults
+		.iter()
+		.filter(|binding| binding.binding.kind == BindingKind::Memory)
+		.collect();
+	assert_eq!(memories.len(), 1);
+	assert_eq!(memories[0].binding.target.id, "aidash.memory");
+	assert_eq!(memories[0].binding.target.version, "1.0.0");
+	assert_eq!(memories[0].origin, BindingOrigin::Default);
+	config.bindings.push(Binding {
+		kind: BindingKind::Memory,
+		target: QualifiedRef {
+			registry_deployment: node.into(),
+			id: "custom-memory".into(),
+			version: "1.0.0".into(),
+		},
+		alias: None,
+		narrow: Narrowing::default(),
+		members: vec![],
+		exposure: None,
+	});
+	let bound = config.normalize(node).unwrap();
+	let memories: Vec<_> = bound
+		.iter()
+		.filter(|binding| binding.binding.kind == BindingKind::Memory)
+		.collect();
+	assert_eq!(memories.len(), 1);
+	assert_eq!(memories[0].binding.target.id, "custom-memory");
+	assert_eq!(memories[0].origin, BindingOrigin::Explicit);
+}
+
+#[test]
 fn agent_model_roles_do_not_add_registry_dependencies() {
 	let mut policy: Value = serde_json::from_str(include_str!(
 		"../../../../../tests/fixtures/native_memory_policy_baseline.json"
@@ -233,7 +268,7 @@ fn explicit_source_does_not_implicitly_grant_memory_read_or_write() {
 	);
 }
 #[test]
-fn memory_builtins_stay_default_bindings_and_explicit_ones_need_a_memory() {
+fn memory_builtins_stay_default_bindings_and_may_be_explicit() {
 	let memory_tools = |agent: &AgentBindings| -> Vec<BindingOrigin> {
 		agent
 			.normalize("aidash://node-a")
@@ -247,12 +282,12 @@ fn memory_builtins_stay_default_bindings_and_explicit_ones_need_a_memory() {
 			.map(|b| b.origin)
 			.collect()
 	};
-	// The snapshot records them so it can say why they are excluded.
+	// They are offered with the built-in provider by default.
 	let mut agent = agent();
 	assert_eq!(memory_tools(&agent), vec![BindingOrigin::Default; 3]);
 	let explicit = Binding::tool(QualifiedRef::builtin("aidash://node-a", "memory_recall"));
 	agent.bindings.push(explicit.clone());
-	assert!(agent.validate().is_err());
+	agent.validate().unwrap();
 	agent.bindings.push(Binding {
 		kind: BindingKind::Memory,
 		target: QualifiedRef {

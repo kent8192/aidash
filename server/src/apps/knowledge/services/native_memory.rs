@@ -664,7 +664,9 @@ pub(crate) async fn definition(
 	if entry.kind != kind {
 		return Err(Error::Invalid(format!("memory role requires {kind}")));
 	}
-	if let Some(access) = lease.access() {
+	if !aidash_application::registry::system::is_builtin(&entry)
+		&& let Some(access) = lease.access()
+	{
 		let permitted =
 			crate::authorization::catalog::entry(access, reference, "registry.read").await?;
 		if permitted.config != entry.config {
