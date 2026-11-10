@@ -978,9 +978,13 @@ class Runner(AllocationJournal):
             return {"status": "absent", "termination_confirmed": True}
         session = json.loads(path.read_bytes())
         record = self.get(session["operation_id"])
+        if session.get("termination_confirmed") is True:
+            self.close_allocation(record)
+            return {"status": "stopped", "termination_confirmed": True}
         if self.guard(record, "terminate").get("termination_confirmed") is not True:
             raise RuntimeError("Python termination not confirmed")
         session["status"] = "stopped"
+        session["termination_confirmed"] = True
         save(path, session)
         # Physical stop proof is distinct from provider timestamps. Keep the API
         # object until allocation housekeeping has durably captured those timestamps.
