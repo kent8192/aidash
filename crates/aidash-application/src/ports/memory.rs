@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub mod objects;
+pub mod offloads;
 
 /// Native adapters retain this ledger outside recoverable database snapshots.
 /// Only memory paths consult its serving gate; primary execution remains usable.
