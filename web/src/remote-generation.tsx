@@ -234,7 +234,6 @@ export function RemoteGenerationAssignForm({
           onSubmit={(event) => {
             event.preventDefault();
             const fields = new FormData(event.currentTarget);
-            const decider = String(fields.get("decider") ?? "").trim();
             setBusy(true);
             void submit(async () => {
               const input = grant.current
@@ -250,7 +249,6 @@ export function RemoteGenerationAssignForm({
                           ...(nativeMemoryRequest(fields)
                             ? { native: nativeMemoryRequest(fields) }
                             : {}),
-                          ...(decider ? { decider: reference(decider) } : {}),
                         }
                       : { mode: "disabled" },
                   };
@@ -341,20 +339,6 @@ export function RemoteGenerationAssignForm({
                   entries={entries}
                   generated
                 />
-                <Field
-                  label={
-                    ja
-                      ? "任意: 承認済みの圧縮 Decider"
-                      : "Optional: approved compaction Decider"
-                  }
-                >
-                  <Input
-                    name="decider"
-                    placeholder="decider-id@1.0.0"
-                    pattern=".+@[0-9]+\.[0-9]+\.[0-9]+.*"
-                    className="font-mono"
-                  />
-                </Field>
               </>
             )}
           </fieldset>

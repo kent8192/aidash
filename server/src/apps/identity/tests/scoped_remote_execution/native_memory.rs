@@ -26,7 +26,7 @@ async fn verify_dependencies(p: &Pair, deadline: std::time::Duration) -> reqwest
 #[tokio::test]
 async fn spent_home_memory_budget_pauses_the_remote_run_with_only_a_follow_up(
 	#[future(awt)]
-	#[with(true, false, false, false, true, (false, false, 32), true)]
+	#[with(true, false, false, true, (false, false, 32), true)]
 	scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
@@ -198,7 +198,7 @@ async fn first_native_context(p: &Pair) -> Value {
 #[tokio::test]
 async fn remote_native_provenance_at_exact_admitted_bound_keeps_the_grant_visible(
 	#[future(awt)]
-	#[with(true, false, false, false, true, (false, false, 2))]
+	#[with(true, false, false, true, (false, false, 2))]
 	scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
@@ -292,7 +292,7 @@ async fn remote_native_provenance_at_exact_admitted_bound_keeps_the_grant_visibl
 #[tokio::test]
 async fn native_receipt_finalization_failure_rolls_back_all_grant_dependencies(
 	#[future(awt)]
-	#[with(true, false, false, false, true)]
+	#[with(true, false, false, true)]
 	scoped_pair: Pair,
 ) {
 	use reinhardt::query::{TableConstraint, types::IntoIden};
@@ -411,7 +411,7 @@ async fn assert_receiver_native_cache_erased(p: &Pair) {
 #[tokio::test]
 async fn native_remote_context_cache_expiry_retries_physical_failure_after_adapter_recreation(
 	#[future(awt)]
-	#[with(true, false, false, false, true)]
+	#[with(true, false, false, true)]
 	scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
@@ -546,7 +546,7 @@ async fn native_remote_context_cache_expiry_retries_physical_failure_after_adapt
 #[tokio::test]
 async fn ordinary_native_remote_context_uses_home_units_and_deletion_stops_inference(
 	#[future(awt)]
-	#[with(true, false, false, false, true)]
+	#[with(true, false, false, true)]
 	scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
@@ -692,7 +692,7 @@ async fn ordinary_native_remote_context_uses_home_units_and_deletion_stops_infer
 #[tokio::test]
 async fn generated_native_remote_context_has_fresh_home_identity_and_committed_origin_usage(
 	#[future(awt)]
-	#[with(true, true, false, false, true)]
+	#[with(true, true, false, true)]
 	scoped_pair: Pair,
 ) {
 	let p = scoped_pair;
@@ -770,7 +770,7 @@ async fn generated_native_remote_context_has_fresh_home_identity_and_committed_o
 #[tokio::test]
 async fn native_remote_run_reads_use_the_pinned_provenance_limit_above_1024(
 	#[future(awt)]
-	#[with(true, false, false, false, true, (true, false, 32))]
+	#[with(true, false, false, true, (true, false, 32))]
 	scoped_pair: Pair,
 ) {
 	use aidash_domain::memory::{
@@ -879,7 +879,7 @@ async fn native_remote_run_reads_use_the_pinned_provenance_limit_above_1024(
 #[tokio::test]
 async fn native_remote_journal_validates_admitted_reads_above_1024_and_checks_later_pages(
 	#[future(awt)]
-	#[with(true, false, false, false, true, (false, true, 32))]
+	#[with(true, false, false, true, (false, true, 32))]
 	scoped_pair: Pair,
 ) {
 	use aidash_domain::memory::{Bank, Change, Content, Mutation, Unit};

@@ -196,8 +196,6 @@ impl ReadProvenanceScope for Reads<'_> {
 					}
 					if aidash_domain::registry::bindings::sources::is_selection_decider(
 						&definition.definition,
-					) || aidash_domain::registry::bindings::defaults::is_compaction_decider(
-						&definition.definition,
 					) {
 						// Dormant metadata remains a live policy dependency, without
 						// manufacturing a completed approval-gated Registry read.

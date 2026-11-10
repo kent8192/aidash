@@ -85,14 +85,14 @@ fn jev() -> DeciderRoute {
 }
 fn config() -> DeciderConfig {
 	DeciderConfig {
-		hook: Hook::Compaction,
+		hook: Hook::ContextSelection,
 		answer_type: AnswerType::Noul,
-		description: "Keep context".into(),
+		description: "Select context sources".into(),
 		provider_credential: "openrouter".into(),
 		routes: vec![DeciderRoute::jev("typesafe/jev-1.13")],
-		builder: BUILDER.into(),
-		option_source: OPTION_SOURCE.into(),
-		rule: RULE.into(),
+		builder: SOURCE_BUILDER.into(),
+		option_source: SOURCE_OPTION.into(),
+		rule: SOURCE_RULE.into(),
 		mode: Mode::Enforce,
 		max_calls_per_run: 20,
 		state_retention: Default::default(),

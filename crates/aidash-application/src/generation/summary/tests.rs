@@ -90,7 +90,7 @@ fn context() -> Context {
 
 struct Authority(World);
 #[async_trait]
-impl GenerationCompactionAuthority for Authority {
+impl GenerationSummaryAuthority for Authority {
 	async fn ancestors(&mut self, node: &str) -> Result<Vec<(Uuid, Value)>> {
 		assert_eq!(node, "aidash://origin");
 		let state = self.0.0.lock().unwrap();

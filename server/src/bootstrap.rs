@@ -742,7 +742,7 @@ pub fn deployment_observations(
 	)
 }
 
-/// Semantic transports share rotating credentials with inference and compaction.
+/// Semantic transports share rotating credentials with inference and Summary requests.
 pub fn semantic_transport(
 	store: &Store,
 ) -> crate::apps::knowledge::repositories::postgres_vector::Transport {
@@ -1293,20 +1293,11 @@ pub(crate) fn generation_embedding_repository(
 	}
 }
 
-pub(crate) fn generation_compaction_authority_scope(
+pub(crate) fn generation_summary_authority_scope(
 	access: &mut crate::authorization::access::Access,
-) -> impl aidash_application::ports::generation::compaction::GenerationCompactionAuthority + '_ {
-	crate::apps::execution::generation::repositories::compaction::NativeCompactionAuthority {
+) -> impl aidash_application::ports::generation::summary::GenerationSummaryAuthority + '_ {
+	crate::apps::execution::generation::repositories::summary::authority::NativeSummaryAuthority {
 		catalog: catalog_scope(access),
-	}
-}
-pub(crate) fn generation_compaction_repository(
-	store: &Store,
-	scope: aidash_application::tenancy::TenancyScope,
-) -> crate::apps::execution::generation::repositories::compaction::NativeCompactionRepository {
-	crate::apps::execution::generation::repositories::compaction::NativeCompactionRepository {
-		store: store.clone(),
-		scope,
 	}
 }
 pub(crate) fn generation_summary_repository(
@@ -1344,12 +1335,11 @@ pub(crate) fn generation_protocol_repository(
 	}
 }
 
-pub(crate) fn generation_remote_compaction_scope<'a>(
+pub(crate) fn generation_remote_summary_scope<'a>(
 	access: &'a mut crate::authorization::access::Access,
 	federation: &crate::federation::Federation,
-) -> crate::apps::execution::generation::repositories::compaction::remote::NativeRemoteCompaction<'a>
-{
-	crate::apps::execution::generation::repositories::compaction::remote::NativeRemoteCompaction {
+) -> crate::apps::execution::generation::repositories::summary::remote::NativeRemoteSummary<'a> {
+	crate::apps::execution::generation::repositories::summary::remote::NativeRemoteSummary {
 		catalog: catalog_scope(access),
 		federation: federation.clone(),
 	}

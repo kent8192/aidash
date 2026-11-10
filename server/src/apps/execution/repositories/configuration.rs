@@ -87,11 +87,7 @@ impl ConfigurationScope for Scope<'_> {
 		)
 		.await?;
 		for definition in &snapshot.definitions {
-			if definition.identity == snapshot.agent
-				|| aidash_domain::registry::bindings::defaults::is_implicit_compaction(
-					&snapshot,
-					&definition.identity,
-				) {
+			if definition.identity == snapshot.agent {
 				continue;
 			}
 			let current = crate::authorization::catalog::entry(

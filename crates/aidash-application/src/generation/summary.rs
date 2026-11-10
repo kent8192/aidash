@@ -3,13 +3,14 @@
 use crate::{
 	Error, Result,
 	authorization::catalog,
-	ports::generation::{
-		compaction::GenerationCompactionAuthority, summary::GenerationSummaryRepository,
-	},
+	ports::generation::summary::{GenerationSummaryAuthority, GenerationSummaryRepository},
 };
 use aidash_domain::{
 	context::{recovery::Failure, summary::SummaryProvider},
-	generation::{compaction::Context, policy::Spec, summary::Attempt},
+	generation::{
+		policy::Spec,
+		summary::{Attempt, Context},
+	},
 	registry::rules::digest,
 };
 use uuid::Uuid;
@@ -21,7 +22,7 @@ fn unavailable() -> Error {
 /// Return whether a generated chain was charged. Ordinary Runs have no
 /// generated ancestors and are authorized by catalog approval alone.
 pub async fn reserve(
-	scope: &mut dyn GenerationCompactionAuthority,
+	scope: &mut dyn GenerationSummaryAuthority,
 	repository: &dyn GenerationSummaryRepository,
 	context: &Context,
 	summarizer: &SummaryProvider,
@@ -53,7 +54,7 @@ pub async fn reserve(
 /// a summary produced while authority was suspended is adopted only if the
 /// exact summarizer is still approved. The in-flight call is already charged.
 pub async fn recheck(
-	scope: &mut dyn GenerationCompactionAuthority,
+	scope: &mut dyn GenerationSummaryAuthority,
 	node: &str,
 	context: &Context,
 	summarizer: &SummaryProvider,
@@ -66,7 +67,7 @@ pub async fn recheck(
 /// Generated ancestors that each approve this exact summarizer; empty for
 /// ordinary Runs.
 async fn approving_ancestors(
-	scope: &mut dyn GenerationCompactionAuthority,
+	scope: &mut dyn GenerationSummaryAuthority,
 	node: &str,
 	context: &Context,
 	summarizer: &SummaryProvider,

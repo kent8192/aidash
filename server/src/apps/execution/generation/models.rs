@@ -2,8 +2,6 @@
 
 mod generation_budgets;
 pub use generation_budgets::GenerationBudget;
-mod generation_compaction_usage;
-pub use generation_compaction_usage::GenerationCompactionUsage;
 mod generation_embedding_usage;
 pub use generation_embedding_usage::GenerationEmbeddingUsage;
 mod generation_history;

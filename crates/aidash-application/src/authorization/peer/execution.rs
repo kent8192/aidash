@@ -186,17 +186,6 @@ async fn inspect_in(
 			));
 		}
 	}
-	if let Some(decider) = &input.decider {
-		definition(
-			access,
-			decider,
-			"decider",
-			"decision.invoke",
-			&[],
-			&mut definitions,
-		)
-		.await?;
-	}
 	let source_subject = access.context()["source_subject"].clone();
 	Ok(Inspection {
 		binding_snapshot: snapshot,
@@ -209,7 +198,6 @@ async fn inspect_in(
 		agent: entry,
 		definitions: definitions.into_values().collect(),
 		semantic_memory: aidash_domain::semantic::remote::VERSION,
-		decider: input.decider.clone(),
 	})
 }
 

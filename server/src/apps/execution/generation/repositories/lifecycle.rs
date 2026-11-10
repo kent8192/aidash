@@ -31,17 +31,13 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 		job: &Request,
 	) -> aidash_application::Result<(i64, aidash_domain::generation::policy::Allowances)> {
 		let tx = &mut *self.transaction;
-		let (tokens, compaction_calls, embedding_calls, summary_calls): (i64, i64, i64, i64) = {
+		let (tokens, embedding_calls, summary_calls): (i64, i64, i64) = {
 			let query_bind_1 = job.id;
 			crate::database::native::query_as(
 				&reinhardt::query::Query::select()
 					.expr_as(
 						reinhardt::query::Expr::cust("token_limit - used_tokens"),
 						reinhardt::query::Alias::new("remaining_tokens"),
-					)
-					.expr_as(
-						reinhardt::query::Expr::cust("compaction_call_limit - compaction_calls"),
-						reinhardt::query::Alias::new("remaining_compaction_calls"),
 					)
 					.expr_as(
 						reinhardt::query::Expr::cust("embedding_call_limit - embedding_calls"),
@@ -61,7 +57,6 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 			)
 			.columns(&[
 				"remaining_tokens",
-				"remaining_compaction_calls",
 				"remaining_embedding_calls",
 				"remaining_summary_calls",
 			])
@@ -71,7 +66,6 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 		Ok((
 			tokens,
 			aidash_domain::generation::policy::Allowances {
-				compaction_calls,
 				embedding_calls,
 				summary_calls,
 			},
@@ -89,7 +83,6 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 		let query_bind_1 = &job.tenant;
 		let query_bind_2 = &job.policy_id;
 		let query_bind_3 = unused;
-		let query_bind_4 = unused_calls.compaction_calls;
 		let query_bind_5 = unused_calls.embedding_calls;
 		let query_bind_6 = unused_calls.summary_calls;
 		crate::database::native::query(
@@ -100,13 +93,6 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 					SimpleExpr::CustomWithExpr(
 						"(allocated_tokens - ?)".to_owned(),
 						vec![Expr::value(query_bind_3.to_owned()).into()],
-					),
-				)
-				.value_expr(
-					reinhardt::query::Alias::new("allocated_compaction_calls"),
-					SimpleExpr::CustomWithExpr(
-						"(allocated_compaction_calls - ?)".to_owned(),
-						vec![Expr::value(query_bind_4.to_owned()).into()],
 					),
 				)
 				.value_expr(

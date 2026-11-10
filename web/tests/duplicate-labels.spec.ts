@@ -11,7 +11,6 @@ test("same-name generation policies stay distinguishable without showing IDs", a
     revision: 1,
     generated_count: 0,
     allocated_tokens: 0,
-    allocated_compaction_calls: 0,
     allocated_embedding_calls: 0,
     spec: {
       enabled: true,

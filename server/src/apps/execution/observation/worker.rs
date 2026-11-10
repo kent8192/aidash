@@ -290,9 +290,6 @@ impl DecisionAuthority for Authority {
 			state_retention: Default::default(),
 		})
 	}
-	async fn read(&self, _: &Evidence, _: bool) -> aidash_application::Result<()> {
-		Err(aidash_application::Error::Forbidden)
-	}
 }
 async fn reconstruct(authority: &Authority) -> Result<(ObservationInput, Entry)> {
 	let frame = &authority.frame;

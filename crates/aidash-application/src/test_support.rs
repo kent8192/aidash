@@ -18,11 +18,6 @@ use async_trait::async_trait;
 use futures_util::FutureExt;
 use serde_json::json;
 
-/// An approval Decider configuration for tests.
-pub(crate) fn decider_config() -> serde_json::Value {
-	crate::registry::system::approval_decider().unwrap().config
-}
-
 pub(crate) fn entry(id: &str, kind: &str, config: serde_json::Value) -> Entry {
 	serde_json::from_value(json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"Fixture"},"schema":{"type":"object"},"config":config})).unwrap()
 }

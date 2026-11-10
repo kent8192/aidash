@@ -105,7 +105,6 @@ fn repository() -> Repository {
 		spec: serde_json::from_value(test_support::specification()).unwrap(),
 		generated_count: 0,
 		allocated_tokens: 0,
-		allocated_compaction_calls: 0,
 		allocated_embedding_calls: 0,
 		allocated_summary_calls: 0,
 	};

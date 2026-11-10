@@ -13,6 +13,4 @@ pub mod inference;
 
 pub mod embedding;
 
-pub mod compaction;
-
 pub mod summary;

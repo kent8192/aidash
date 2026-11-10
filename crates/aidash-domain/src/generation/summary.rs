@@ -10,3 +10,10 @@ pub struct Attempt {
 	pub definition_digest: String,
 	pub request_bytes: i64,
 }
+
+/// Run identity used to check generated-ancestor Summary authority.
+pub struct Context {
+	pub run: Uuid,
+	pub task: Uuid,
+	pub agent: EntityRef,
+}

@@ -88,7 +88,6 @@ pub fn validate(
 	if let Some(remote) = &spec.remote {
 		remote.validate()?;
 		if (spec.embedding.is_some() && remote.embedding.is_some())
-			|| (spec.compaction.is_some() && remote.compaction.is_some())
 			|| (spec.summary.is_some() && remote.summary.is_some())
 		{
 			return Err(Error::Invalid(
@@ -101,12 +100,6 @@ pub fn validate(
 		return Err(Error::Invalid(
 			"generation template must define an agent".into(),
 		));
-	}
-	if spec.compaction.as_ref().is_some_and(|c| {
-		!(1..=1_000_000).contains(&c.call_budget)
-			|| !(1..=c.call_budget).contains(&c.calls_per_agent)
-	}) {
-		return Err(Error::Invalid("invalid compaction call limits".into()));
 	}
 	if spec.embedding.as_ref().is_some_and(|c| {
 		!(1..=1_000_000).contains(&c.call_budget)
@@ -222,11 +215,6 @@ async fn write_in(
 			.iter()
 			.filter(|d| d.identity != snapshot.agent)
 			.map(|d| (d.identity.local(), d.definition.kind.as_str()))
-			.chain(
-				spec.compaction
-					.iter()
-					.map(|c| (c.provider.clone(), "decider")),
-			)
 			.chain(
 				spec.embedding
 					.iter()

@@ -371,18 +371,18 @@ async fn set_approval(
 }
 
 /// Registers an entry of the Tenant's Registry: a copy of the built-in approval
-/// Decider under `id`, or a compaction Decider when `hook` says so.
+/// Decider under `id`, or a context-selection Decider when `hook` says so.
 async fn register_decider(f: &Federation, id: &str, hook: &str) {
 	let mut entry = aidash_application::registry::system::approval_decider().unwrap();
 	entry.id = id.into();
 	entry.tags.clear();
-	if hook == "compaction" {
+	if hook == "context_selection" {
 		entry.config = json!({
-			"hook": "compaction", "answer_type": "noul", "description": "Keep needed history",
+			"hook": "context_selection", "answer_type": "noul", "description": "Select context sources",
 			"provider_credential": "openrouter",
 			"routes": [{"provider_contract": "typesafe.jev/1", "model": "typesafe/jev-1.14", "threshold": "3fe0000000000000"}],
-			"builder": "aidash.compaction/3", "option_source": "history_event/1",
-			"rule": "compaction.keep/1", "mode": "enforce", "max_calls_per_run": 20
+			"builder": "aidash.context-selection/1", "option_source": "source_candidate/1",
+			"rule": "context-source.keep/1", "mode": "enforce", "max_calls_per_run": 20
 		});
 	}
 	// A Decider that names a Provider Credential registers only where the Node
@@ -1555,7 +1555,7 @@ async fn only_tenant_update_changes_the_decider_and_it_must_be_an_approval_decid
 	let fixture = Fixture::new(application);
 	let people = people(&fixture).await;
 	register_decider(&fixture.f, "strict-approval", "approval").await;
-	register_decider(&fixture.f, "plain-compaction", "compaction").await;
+	register_decider(&fixture.f, "plain-selection", "context_selection").await;
 	let put = async |person: Person, context: &str, body: Value| {
 		send(&fixture, person, context, "PUT", DECIDER, body).await
 	};
@@ -1572,8 +1572,8 @@ async fn only_tenant_update_changes_the_decider_and_it_must_be_an_approval_decid
 	// Only a Decider of hook approval can be named.
 	for (target, why) in [
 		(
-			json!({"id": "plain-compaction", "version": "1.0.0"}),
-			"a compaction Decider",
+			json!({"id": "plain-selection", "version": "1.0.0"}),
+			"a context-selection Decider",
 		),
 		(
 			json!({"id": "gone", "version": "1.0.0"}),

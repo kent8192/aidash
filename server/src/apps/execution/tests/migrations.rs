@@ -76,6 +76,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0061_provider_tools"),
 	("registry", "0062_provider_warning_tools"),
 	("registry", "0063_reference_set_limit"),
+	("registry", "0064_agent_default_removals"),
 	("registry", "0060_subnode_provider"),
 	("registry", "0055_remove_structured_harness_contracts"),
 	("registry", "0056_attachment_tools"),
@@ -119,6 +120,10 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0120_event_waits"),
 	("execution", "0121_invocation_refused"),
 	("execution", "0122_invocation_refused_state"),
+	("execution", "0123_remove_compaction_decision_storage"),
+	("execution", "0124_remove_compaction_decision_storage_state"),
+	("execution", "0125_remove_generated_compaction"),
+	("execution", "0126_remove_generated_compaction_state"),
 	("marketplace", "0008_remove_compatibility_gate"),
 	("marketplace", "0009_remove_compatibility_gate_state"),
 	("marketplace", "0010_row_level_security"),
@@ -137,6 +142,10 @@ const CONTENT_STORE_CUTOVER_MIGRATIONS: &[(&str, &str)] = &[
 	("execution", "0120_event_waits"),
 	("execution", "0121_invocation_refused"),
 	("execution", "0122_invocation_refused_state"),
+	("execution", "0123_remove_compaction_decision_storage"),
+	("execution", "0124_remove_compaction_decision_storage_state"),
+	("execution", "0125_remove_generated_compaction"),
+	("execution", "0126_remove_generated_compaction_state"),
 ];
 
 async fn history_size() -> usize {
@@ -191,7 +200,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		107
+		109
 	);
 	let tables = migrations
 		.iter()
@@ -446,14 +455,14 @@ async fn generation_with_existing_sql_assets_preserves_history_and_dependency(
 	);
 	assert_eq!(std::fs::read(history).unwrap(), original);
 	let generated = FilesystemSource::new(fixture.directory.path().join("migrations"))
-		.get_migration("execution", "0123_policy_probe")
+		.get_migration("execution", "0127_policy_probe")
 		.await
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"execution".to_owned(),
-			"0122_invocation_refused_state".to_owned()
+			"0126_remove_generated_compaction_state".to_owned()
 		)]
 	);
 	assert!(generated.operations.is_empty());
@@ -505,6 +514,10 @@ async fn run_created_at_backfills_last_update_and_remains_fixed_on_later_updates
 			("execution", "0120_event_waits"),
 			("execution", "0121_invocation_refused"),
 			("execution", "0122_invocation_refused_state"),
+			("execution", "0123_remove_compaction_decision_storage"),
+			("execution", "0124_remove_compaction_decision_storage_state"),
+			("execution", "0125_remove_generated_compaction"),
+			("execution", "0126_remove_generated_compaction_state"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -880,7 +893,8 @@ impl MigrationFixture {
 			.stdout(log.try_clone().unwrap())
 			.stderr(log)
 			.kill_on_drop(true);
-		let result = tokio::time::timeout(Duration::from_secs(35), command.status()).await;
+		// A fresh history can wait for the shared build/test memory lease on busy hosts.
+		let result = tokio::time::timeout(Duration::from_secs(600), command.status()).await;
 		let output = std::fs::read_to_string(log_path).unwrap();
 		assert!(
 			result.is_ok(),
@@ -972,7 +986,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		107
+		109
 	);
 }
 
@@ -1901,6 +1915,141 @@ async fn constraint_definition(pool: &PgPool, name: &str) -> String {
 		.and_where(Expr::col("conname").eq(name))
 		.to_string(PostgresQueryBuilder);
 	sqlx::query_scalar(&query).fetch_one(pool).await.unwrap()
+}
+
+#[rstest]
+#[tokio::test]
+async fn compaction_storage_cutover_preserves_approval_tables_and_reverses(
+	#[future] fresh_database: MigrationFixture,
+) {
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	for (name, exists) in [
+		("decision_states", false),
+		("decision_outcomes", false),
+		("generation_compaction_usage", false),
+		("decision_attempts", true),
+		("decision_evidence", true),
+	] {
+		let actual: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
+			.bind(format!("public.{name}"))
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		assert_eq!(actual.is_some(), exists, "{name}");
+	}
+	for (table, column, exists) in [
+		("generation_budgets", "compaction_calls", false),
+		("generation_budgets", "compaction_call_limit", false),
+		("generation_policies", "allocated_compaction_calls", false),
+		("generation_budgets", "embedding_calls", true),
+		("generation_budgets", "summary_calls", true),
+	] {
+		let actual: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2)",
+        )
+        .bind(table)
+        .bind(column)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+		assert_eq!(actual, exists, "{table}.{column}");
+	}
+	let source =
+		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
+	let state = source
+		.get_migration("execution", "0124_remove_compaction_decision_storage_state")
+		.await
+		.unwrap();
+	let database = source
+		.get_migration("execution", "0123_remove_compaction_decision_storage")
+		.await
+		.unwrap();
+	let generated_state = source
+		.get_migration("execution", "0126_remove_generated_compaction_state")
+		.await
+		.unwrap();
+	let generated_database = source
+		.get_migration("execution", "0125_remove_generated_compaction")
+		.await
+		.unwrap();
+	let mut executor = DatabaseMigrationExecutor::new(fixture.connection.clone())
+		.with_migration_history(source.all_migrations().await.unwrap());
+	executor
+		.rollback_migrations(&[database, state, generated_database, generated_state])
+		.await
+		.unwrap();
+	for name in [
+		"decision_states",
+		"decision_outcomes",
+		"generation_compaction_usage",
+	] {
+		let actual: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
+			.bind(format!("public.{name}"))
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+		assert!(actual.is_some(), "{name}");
+		let protected: bool = sqlx::query_scalar(
+			"SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE oid = to_regclass($1)",
+		)
+		.bind(format!("public.{name}"))
+		.fetch_one(&pool)
+		.await
+		.unwrap();
+		assert!(protected, "{name} must restore row security");
+		let default: Option<String> = sqlx::query_scalar(
+			"SELECT column_default FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'created_at'",
+		)
+		.bind(name)
+		.fetch_one(&pool)
+		.await
+		.unwrap();
+		assert!(
+			default.is_some(),
+			"{name} must restore its creation timestamp default"
+		);
+	}
+	assert!(
+		constraint_definition(&pool, "decision_outcome_run")
+			.await
+			.contains("FOREIGN KEY (tenant, run_id)")
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn agent_default_removals_agree_with_rust(#[future] fresh_database: MigrationFixture) {
+	let fixture = fresh_database.await;
+	fixture.migrate().await;
+	let pool = fixture.connection.clone().into_postgres().unwrap();
+	for (removals, expected) in [
+		(json!(["connection_request"]), true),
+		(json!(["connection_request", "memory_recall"]), true),
+		(json!(["connection_request", "connection_request"]), false),
+		(json!(["compaction"]), false),
+		(json!(["unknown"]), false),
+	] {
+		let config = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","remove_default":removals});
+		let rust = serde_json::from_value::<aidash_domain::registry::bindings::AgentBindings>(
+			config.clone(),
+		)
+		.unwrap()
+		.validate()
+		.is_ok();
+		assert_eq!(rust, expected, "Rust: {config}");
+		assert_eq!(
+			contract_accepts(
+				&pool,
+				"aidash_agent_bindings_is_valid",
+				vec![config.clone()]
+			)
+			.await,
+			expected,
+			"SQL: {config}"
+		);
+	}
 }
 
 #[rstest]

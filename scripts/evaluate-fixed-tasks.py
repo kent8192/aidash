@@ -57,8 +57,8 @@ DETERMINISTIC_LIMITATIONS = [
     "not model quality.",
     "Token counts, cost and prompt-cache hits are synthetic fixture values (one token per byte, fixture prices, "
     "a simulated prefix cache); they test accounting and request shape, not provider prices.",
-    "The scripted Agents carry no compaction Decider (the evaluator never approves the built-in one), so "
-    "long-context tasks pause with `context_unreducible` at the window instead of measuring pruning.",
+    "Long-context tasks can pause with `context_unreducible` at the window; "
+    "this tier does not measure recovery quality.",
     "Summary recovery (#113) and the other feature-not-available comparisons are reported, not measured.",
 ]
 LIVE_LIMITATIONS = [
@@ -74,10 +74,8 @@ LIVE_LIMITATIONS = [
     "for information only.",
     "Code-execution oracles require an explicitly approved pinned Docker image and run only in disposable "
     "resource-bounded containers with no network, host environment or parent process visibility.",
-    "Decider/Summary work is dispatched only when the approval accepts its declared per-call amount as a "
-    "reservation (external_compaction.cost_enforcement). The Node enforces only the call counts; a declared "
-    "reservation is not a provider cap or a reported charge, and Decision Attempt costs have no HTTP read "
-    "endpoint, so every such Run stays charged at its full auxiliary reservation.",
+    "Summary work requires an approved per-call reservation; the Node enforces call counts but the "
+    "reservation is not a provider cap or reported charge. Runs remain charged at the full reservation.",
 ]
 
 

@@ -155,8 +155,6 @@ fn usage_value() -> Usage {
 		token_limit: 10000,
 		used_tokens: 2000,
 		inference_attempts: 3,
-		compaction_call_limit: 10,
-		compaction_calls: 2,
 		embedding_calls: 4,
 		embedding_call_limit: 20,
 		summary_calls: 0,

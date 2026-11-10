@@ -47,7 +47,6 @@ fn required_home(summarizer: Option<Provider>) -> Binding {
 			configuration_digest: format!("sha256:{}", "b".repeat(64)),
 		}),
 		native: None,
-		decider: None,
 		summarizer: summarizer.map(Box::new),
 	}
 }

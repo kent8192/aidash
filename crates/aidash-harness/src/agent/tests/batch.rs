@@ -2035,7 +2035,7 @@ async fn a_refusal_in_compaction_is_named_after_its_stage_and_the_check_it_noted
 	let (error, _) = refusal_note::scoped(async {
 		refusal_note::set(refusal_note::Note::new(
 			aidash_domain::tool::RefusalCheck::Catalog,
-			Some("decision.invoke"),
+			Some("model.infer"),
 		));
 		at_stage("compaction")(Error::Forbidden)
 	})
@@ -2045,7 +2045,7 @@ async fn a_refusal_in_compaction_is_named_after_its_stage_and_the_check_it_noted
 	};
 	assert_eq!(
 		refusal.to_string(),
-		"compaction: Catalog Approval refused decision.invoke"
+		"compaction: Catalog Approval refused model.infer"
 	);
 	// Without a note the check is Unnamed, and every other error passes through.
 	let (error, _) =

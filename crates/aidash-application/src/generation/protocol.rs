@@ -72,35 +72,6 @@ fn exact_provider(description: &Description, usage: &Usage) -> Result<()> {
 				return Err(Error::Forbidden);
 			}
 		}
-		Purpose::Compaction => {
-			let Binding::RequiredHome {
-				decider: Some(provider),
-				..
-			} = &description.semantic
-			else {
-				return Err(Error::RemoteSemantic(Failure::ContextBudget));
-			};
-			if provider.as_ref() != &usage.provider
-				|| usage.dispatcher_node
-					!= aidash_domain::nodes::deployment_of(&description.target_node)
-			{
-				return Err(Error::Forbidden);
-			}
-			let definition = description
-				.inspection
-				.definitions
-				.iter()
-				.find(|d| d.kind == "decider" && d.entry == usage.provider.entry)
-				.ok_or(Error::Forbidden)?;
-			let config: aidash_domain::decision::DeciderConfig =
-				serde_json::from_value(definition.metadata.config.clone())?;
-			// Home cannot verify the execution peer's Decision Attempt. Charge
-			// the Decider version's largest request instead of trusting its
-			// claimed byte count.
-			if usage.reserved_tokens != (config.max_request_bytes() + 1024) as i64 {
-				return Err(Error::Forbidden);
-			}
-		}
 		Purpose::Summary => {
 			let provider = description
 				.semantic
@@ -360,13 +331,6 @@ pub async fn admit(
 				),
 			}
 		}
-		Purpose::Compaction => match &description.semantic {
-			Binding::RequiredHome {
-				decider: Some(provider),
-				..
-			} => (**provider).clone(),
-			_ => return Err(Error::RemoteSemantic(Failure::ContextBudget)),
-		},
 		Purpose::Summary => description
 			.semantic
 			.summarizer()

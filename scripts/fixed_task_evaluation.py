@@ -66,8 +66,6 @@ DEFAULT_TOOLS = ("connection_request", "workspace_observe", "workspace_search", 
                  "file_read", "task_create", "task_delegate", "agent_discover", "artifact_publish",
                  "workspace_message", "attachment_copy", "memory_mutate", "memory_recall", "memory_reflect")
 SKILL_TOOLS = ("skill_list", "skill_load", "skill_read")
-# The built-in compaction Decider every ordinary Agent is bound to; `remove_default` names it like a tool.
-COMPACTION_DEFAULT = "compaction"
 # `Failure::label` (crates/aidash-domain/src/context/recovery.rs): why a Run's context pause was recorded.
 CONTEXT_REASONS = ("source_selection_unavailable", "source_selection_forbidden", "source_selection_unapproved",
                    "source_selection_calls_exhausted", "context_unreducible", "decider_unapproved",
@@ -1756,6 +1754,8 @@ def auxiliary_allowance(approval):
     if not isinstance(value, dict) or set(value) - {"cost_enforcement"} != {"mode", "decider", "summary"} or \
             value.get("mode") != "bounded":
         raise GuardRefusal(prefix + ' must be "disabled" or an exact bounded decider/summary contract')
+    if value["decider"] is not None:
+        raise GuardRefusal("compaction Deciders were removed; use native context recovery")
     enforcement = value.get("cost_enforcement")
     if enforcement is not None and enforcement != DECLARED_RESERVATION_ACCEPTED:
         raise GuardRefusal(prefix + f' cost_enforcement must be "{DECLARED_RESERVATION_ACCEPTED}" when present')
@@ -1778,7 +1778,7 @@ def auxiliary_allowance(approval):
                 raise GuardRefusal(prefix + f" {kind} {field} must be a positive integer")
         total += item["max_calls_per_run"] * item["max_nanocredits_per_call"]
     if value["decider"] is None:
-        raise GuardRefusal(prefix + " bounded mode requires an approved compaction Decider")
+        raise GuardRefusal(prefix + " bounded legacy compaction configuration is no longer supported")
     return {"decider": value["decider"], "summary": value["summary"], "worst_case_nanocredits": total,
             "cost_enforcement": enforcement}
 
@@ -1803,7 +1803,7 @@ def require_enforceable_auxiliary_bound(auxiliary):
 
 def verify_auxiliary_configs(auxiliary, entries, provider):
     """Verify independently fetched Registry configs before binding approved work."""
-    for kind in ("decider", "summary"):
+    for kind in ("summary",):
         allowance = auxiliary.get(kind)
         if allowance is None:
             continue
@@ -1812,17 +1812,9 @@ def verify_auxiliary_configs(auxiliary, entries, provider):
             raise GuardRefusal(f"{kind} Registry configuration differs from its approved exact digest")
         if config.get("credential_env") or config.get("provider_credential") != provider:
             raise GuardRefusal(f"{kind} must use the connected Tenant Provider Credential, without an environment key")
-        if kind == "decider":
-            if config.get("hook") != "compaction" or config.get("mode") != "enforce" or \
-                    not positive_int(config.get("max_calls_per_run")) or \
-                    config["max_calls_per_run"] != allowance["max_calls_per_run"]:
-                raise GuardRefusal("approved Decider must enforce compaction with exactly the approved Run call allowance")
-            if not isinstance(config.get("routes"), list) or len(config["routes"]) != 1:
-                raise GuardRefusal("approved Decider must pin one exact route; implicit fallback is refused")
-        else:
-            check_live_models({allowance["reference"]: config})
-            if allowance["max_calls_per_run"] > 64:
-                raise GuardRefusal("Summary call allowance exceeds the Context Policy maximum of 64")
+        check_live_models({allowance["reference"]: config})
+        if allowance["max_calls_per_run"] > 64:
+            raise GuardRefusal("Summary call allowance exceeds the Context Policy maximum of 64")
 
 
 def live_task_support(approval, corpus, planned, fixture_endpoint):

@@ -1146,8 +1146,7 @@ async fn the_decider_kind_replaces_compactors_and_embedding_configs_reject_undec
 ) {
 	let (f, url, schema) = fixture.parts();
 	let mut entry = serde_json::to_value(model()).unwrap();
-	// The compactor kind is gone (#108); compaction runs through a Decider,
-	// whose configuration the application validates.
+	// The compactor kind is gone; approval Deciders remain valid Registry entries.
 	entry["id"] = json!("compactor");
 	entry["kind"] = json!("compactor");
 	entry["config"] = json!({"provider_credential":"openrouter","model":"typesafe/jev-1.13"});
@@ -1157,14 +1156,14 @@ async fn the_decider_kind_replaces_compactors_and_embedding_configs_reject_undec
 	);
 	entry["id"] = json!("decider");
 	entry["kind"] = json!("decider");
-	entry["config"] = json!({
-		"hook":"compaction","answer_type":"noul","description":"Keep needed history",
-		"provider_credential":"openrouter",
-		"routes":[{"provider_contract":"typesafe.jev/1","model":"typesafe/jev-1.14","threshold":"3fe0000000000000"}],
-		"builder":"aidash.compaction/3",
-		"option_source":"history_event/1","rule":"compaction.keep/1",
-		"mode":"enforce","max_calls_per_run":20
-	});
+	entry["config"] = json!({"hook":"compaction"});
+	check_rejected(
+		insert_entry(f.store.pool.fixture_driver(), &entry).await,
+		"registry_no_compaction_decider",
+	);
+	entry["config"] = aidash_application::registry::system::approval_decider()
+		.unwrap()
+		.config;
 	insert_entry(f.store.pool.fixture_driver(), &entry)
 		.await
 		.unwrap();

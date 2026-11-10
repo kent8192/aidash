@@ -253,10 +253,6 @@ export function GenerationPage({ data }: { data: State }) {
                           value={`${policy.allocated_tokens.toLocaleString(locale)} / ${policy.spec.limits.token_budget.toLocaleString(locale)}`}
                         />
                         <Metric
-                          label={t("generationCompactionBudget")}
-                          value={`${policy.allocated_compaction_calls} / ${policy.spec.compaction?.call_budget ?? "-"}`}
-                        />
-                        <Metric
                           label={t("generationEmbeddingBudget")}
                           value={`${policy.allocated_embedding_calls} / ${policy.spec.embedding?.call_budget ?? "-"}`}
                         />
@@ -464,19 +460,11 @@ function PolicyEditor({
   });
   const [coordinator, setCoordinator] = useState(false);
   const [model, setModel] = useState(config?.model ? key(config.model) : "");
-  const [decider, setDecider] = useState(
-    initial?.compaction ? key(initial.compaction.provider) : "",
-  );
   const [embedding, setEmbedding] = useState(
     initial?.embedding ? key(initial.embedding.provider) : "",
   );
   const [error, setError] = useState("");
   const embeddings = entries.filter((entry) => entry.kind === "embedding");
-  const deciders = entries.filter(
-    (entry) =>
-      entry.kind === "decider" &&
-      (entry.config as { hook?: string }).hook === "compaction",
-  );
   const models = entries.filter((entry) => entry.kind === "model");
   const modelEntry = models.find((entry) => key(entry) === model);
   const window = Number(modelEntry?.config.context_window ?? 0);
@@ -547,13 +535,6 @@ function PolicyEditor({
         remote: remote as GenerationRemoteApprovals,
         enabled: form.has("enabled"),
         approval_required: form.has("approval"),
-        compaction: decider
-          ? {
-              provider: entityRef(decider),
-              calls_per_agent: Number(text("calls_per_agent")),
-              call_budget: Number(text("call_budget")),
-            }
-          : undefined,
         embedding: embedding
           ? {
               provider: entityRef(embedding),
@@ -762,62 +743,6 @@ function PolicyEditor({
       </Section>
       <Section
         level={3}
-        title={t("generationCompaction")}
-        description={t("generationCompactionHelp")}
-      >
-        <Field label={t("generationDecider")}>
-          <NativeSelect
-            name="decider"
-            value={decider}
-            onChange={(e) => setDecider(e.target.value)}
-          >
-            <option value="">{t("generationCompactionDisabled")}</option>
-            {deciders.map((entry) => (
-              <option key={key(entry)} value={key(entry)}>
-                {entityLabel(entry)}
-              </option>
-            ))}
-            {decider && !deciders.some((entry) => key(entry) === decider) && (
-              <option value={decider}>
-                {t("generationReferenceUnavailable")}
-              </option>
-            )}
-          </NativeSelect>
-        </Field>
-        <Hint>
-          {locale === "ja-JP"
-            ? "生成チェーンでは、この正確なバージョンだけを使用します。組み込み aidash.compaction-decider@1.0.0 は自動追加されません。Catalog Approval・現在の認証情報・祖先を含む呼び出し予算が必要です。"
-            : "Generated chains use only this exact version. The built-in aidash.compaction-decider@1.0.0 is not added automatically. Catalog Approval, current credentials and ancestor call budgets are required."}
-        </Hint>
-        {decider && (
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label={t("generationCompactionPerAgent")}>
-              <Input
-                type="number"
-                name="calls_per_agent"
-                required
-                min={1}
-                max={1000000}
-                className="font-mono tabular"
-                defaultValue={initial?.compaction?.calls_per_agent ?? 10}
-              />
-            </Field>
-            <Field label={t("generationCompactionBudget")}>
-              <Input
-                type="number"
-                name="call_budget"
-                required
-                min={1}
-                max={1000000}
-                className="font-mono tabular"
-                defaultValue={initial?.compaction?.call_budget ?? 100}
-              />
-            </Field>
-          </div>
-        )}
-      </Section>
-      <Section
-        level={3}
         title={t("generationEmbedding")}
         description={t("generationEmbeddingHelp")}
       >
@@ -925,8 +850,8 @@ function PolicyEditor({
         >
           <Hint>
             {locale === "ja-JP"
-              ? "所有 Node、定義のバージョンとダイジェストを固定します。embedding と compaction はそれぞれ呼び出し予算が必要です。空のオブジェクトは遠隔プロバイダーを許可しません。"
-              : "Pin each provider's owning node, version and digests. Embedding and compaction each require call allowances. An empty object grants no remote provider approval."}
+              ? "所有 Node、定義のバージョンとダイジェストを固定します。embedding には呼び出し予算が必要です。空のオブジェクトは遠隔プロバイダーを許可しません。"
+              : "Pin each provider's owning node, version and digests. Embedding requires a call allowance. An empty object grants no remote provider approval."}
           </Hint>
           <Field
             label={
@@ -996,20 +921,6 @@ function RequestDetail({
         ],
         [t("generationMaxConcurrent"), pinned.data.limits.max_concurrent],
         [t("generationMaxDepth"), pinned.data.limits.max_depth],
-        [
-          t("generationDecider"),
-          pinned.data.compaction
-            ? entryLabel(pinned.data.compaction.provider)
-            : t("generationCompactionDisabled"),
-        ],
-        ...(pinned.data.compaction
-          ? [
-              [
-                t("generationCompactionPerAgent"),
-                pinned.data.compaction.calls_per_agent,
-              ] as const,
-            ]
-          : []),
         [
           t("generationEmbedder"),
           pinned.data.embedding
@@ -1112,10 +1023,6 @@ function RequestDetail({
             <Metric
               label={t("generationInferenceAttempts")}
               value={usage.data.inference_attempts}
-            />
-            <Metric
-              label={t("generationCompactionCalls")}
-              value={`${usage.data.compaction_calls} / ${usage.data.compaction_call_limit}`}
             />
             <Metric
               label={t("generationEmbeddingCalls")}

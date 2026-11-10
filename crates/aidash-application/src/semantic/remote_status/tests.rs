@@ -61,7 +61,6 @@ fn receipt() -> Value {
 				digest: "digest".into(),
 				configuration_digest: "configuration".into()
 			}),
-			decider: None,
 			summarizer: None
 		},
 		retrieved_at: DateTime::from_timestamp(1000, 0).unwrap(),
@@ -175,8 +174,6 @@ impl StatusScope for Scope {
 			used_tokens: 7,
 			embedding_call_limit: 4,
 			embedding_calls: 2,
-			compaction_call_limit: 3,
-			compaction_calls: 1,
 		})
 	}
 	async fn run_visible(&mut self, _: Uuid) -> Result<bool> {
@@ -212,14 +209,9 @@ async fn counters_require_local_origin_same_tenant_and_current_request_visibilit
 	assert_eq!(
 		view.allowances
 			.iter()
-			.map(|a| (
-				a.request_id,
-				a.used_tokens,
-				a.embedding_calls,
-				a.compaction_calls
-			))
+			.map(|a| (a.request_id, a.used_tokens, a.embedding_calls))
 			.collect::<Vec<_>>(),
-		vec![(Uuid::from_u128(3), 7, 2, 1), (Uuid::from_u128(6), 7, 2, 1)]
+		vec![(Uuid::from_u128(3), 7, 2), (Uuid::from_u128(6), 7, 2)]
 	);
 }
 #[rstest]

@@ -23,8 +23,6 @@ pub struct Allowance {
 pub struct Approvals {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub embedding: Option<Allowance>,
-	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub compaction: Option<Allowance>,
 	/// Summary Stage model the remote origin approves for generated Agents.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub summary: Option<Allowance>,
@@ -76,7 +74,6 @@ pub struct Reserved {
 pub enum Purpose {
 	Embedding,
 	Inference,
-	Compaction,
 	Memory,
 	Summary,
 }
@@ -93,12 +90,7 @@ impl Approvals {
 				"too many remote inference approvals".into(),
 			));
 		}
-		for allowance in self
-			.embedding
-			.iter()
-			.chain(self.compaction.iter())
-			.chain(self.summary.iter())
-		{
+		for allowance in self.embedding.iter().chain(self.summary.iter()) {
 			if !(1..=1_000_000).contains(&allowance.call_budget)
 				|| !(1..=allowance.call_budget).contains(&allowance.calls_per_agent)
 			{
@@ -112,7 +104,6 @@ impl Approvals {
 			.iter()
 			.chain(self.memory.iter())
 			.chain(self.embedding.iter().map(|a| &a.provider))
-			.chain(self.compaction.iter().map(|a| &a.provider))
 			.chain(self.summary.iter().map(|a| &a.provider))
 		{
 			crate::nodes::validate_node_ref(&provider.node_id)?;
@@ -137,7 +128,6 @@ impl Purpose {
 		match self {
 			Self::Embedding => "embedding",
 			Self::Inference => "inference",
-			Self::Compaction => "compaction",
 			Self::Memory => "memory",
 			Self::Summary => "summary",
 		}
@@ -146,7 +136,6 @@ impl Purpose {
 		match self {
 			Self::Embedding => "embedding.invoke",
 			Self::Inference => "model.infer",
-			Self::Compaction => crate::decision::INVOKE,
 			Self::Memory => "memory.invoke",
 			// The summarizer is a model; its use is ordinary model inference.
 			Self::Summary => "model.infer",

@@ -55,8 +55,6 @@ pub struct Allowance {
 	pub used_tokens: i64,
 	pub embedding_call_limit: i64,
 	pub embedding_calls: i64,
-	pub compaction_call_limit: i64,
-	pub compaction_calls: i64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[schemars(rename = "RemoteSemanticStatus")]

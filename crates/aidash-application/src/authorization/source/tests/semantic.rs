@@ -169,7 +169,6 @@ fn request() -> Request {
 			id: "embedding".into(),
 			version: "1.0.0".into(),
 		},
-		decider: None,
 		summarizer: None,
 	}
 }
@@ -296,7 +295,6 @@ async fn disabled_binding_does_not_read_or_disclose_home_state() {
 }
 #[rstest]
 #[case("version")]
-#[case("decider")]
 #[case("disabled_agent_memory")]
 #[tokio::test]
 async fn unsupported_inspection_or_agent_memory_is_rejected_before_source_reads(
@@ -306,12 +304,6 @@ async fn unsupported_inspection_or_agent_memory_is_rejected_before_source_reads(
 	let mut inspection = remote_inspection();
 	match change {
 		"version" => inspection.semantic_memory += 1,
-		"decider" => {
-			inspection.decider = Some(EntityRef {
-				id: "decider".into(),
-				version: "1.0.0".into(),
-			})
-		}
 		"disabled_agent_memory" => {
 			inspection.binding_snapshot =
 				crate::test_support::snapshot("aidash://receiver", "agent");
@@ -436,7 +428,6 @@ async fn required_home_binding_pins_the_exact_index_document_and_provider_metada
 		index_revision,
 		index_digest: actual,
 		embedding,
-		decider,
 		..
 	} = result
 	else {
@@ -448,42 +439,8 @@ async fn required_home_binding_pins_the_exact_index_document_and_provider_metada
 	assert_eq!(embedding.node_id, "aidash://home");
 	assert_eq!(embedding.digest, provider_digest);
 	assert_eq!(embedding.configuration_digest, config_digest);
-	assert_eq!(decider, None);
 	assert_eq!(scope.reads, vec!["index", "entry", "lineage"]);
 }
-#[rstest]
-#[tokio::test]
-async fn decider_binding_requires_the_pinned_remote_definition() {
-	let mut scope = BindingScope::new();
-	let mut inspection = remote_inspection();
-	let decider = EntityRef {
-		id: "decider".into(),
-		version: "1.0.0".into(),
-	};
-	inspection.decider = Some(decider.clone());
-	let request = Request::RequiredHome {
-		native: None,
-		embedding: EntityRef {
-			id: "embedding".into(),
-			version: "1.0.0".into(),
-		},
-		decider: Some(decider),
-		summarizer: None,
-	};
-	assert!(matches!(
-		use_case::binding(
-			&mut scope,
-			&task(),
-			"aidash://receiver",
-			&inspection,
-			&request
-		)
-		.await,
-		Err(Error::RemoteSemantic(Failure::Configuration))
-	));
-	assert_eq!(scope.reads, vec!["index", "entry"]);
-}
-
 /// The Home discloses `summarizer` only when the executor's own inspected
 /// Agent pins that Summary Stage model. An executor whose Agent schema predates
 /// `context_policy` cannot resolve such an Agent, so it never receives the field.

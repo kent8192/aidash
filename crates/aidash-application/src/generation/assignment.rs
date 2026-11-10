@@ -315,13 +315,6 @@ pub async fn create_in(
 		.chain(
 			policy
 				.spec
-				.compaction
-				.iter()
-				.map(|c| (c.provider.clone(), "decision.invoke")),
-		)
-		.chain(
-			policy
-				.spec
 				.embedding
 				.iter()
 				.map(|c| (c.provider.clone(), "embedding.invoke")),

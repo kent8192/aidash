@@ -1,5 +1,5 @@
 //! The approval Decider's decision (ADR 0077). It judges one pending call of a
-//! Run, asking each Decider Route in order as compaction does. It ends in
+//! Run, asking each Decider Route in order. It ends in
 //! recorded evidence: a Route's verdict, or `Blocked(Unavailable)` when the
 //! Routes could not be asked. The one exception is a spent call allowance, which
 //! leaves the call to a person. It never fails the Run or pauses it for the

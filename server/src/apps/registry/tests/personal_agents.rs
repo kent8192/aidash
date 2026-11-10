@@ -92,7 +92,7 @@ async fn reference_image_replay_uses_saved_binary_without_another_provider_call(
 		)
 		.await
 		.unwrap();
-	let input = json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Image agent"},"description":{"en":"Fixture"},"config":{"model":{"id":"model","version":"1.0.0"},"schema_version":1,"instructions":"Use the reference images.","reference_embedding":{"id":"reference-image-test","version":"1.0.0"},"remove_default":["compaction"]}},"documents":[{"name":"chart.png","media_type":"image/png","data_base64":"iVBORw0KGgo="}]});
+	let input = json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Image agent"},"description":{"en":"Fixture"},"config":{"model":{"id":"model","version":"1.0.0"},"schema_version":1,"instructions":"Use the reference images.","reference_embedding":{"id":"reference-image-test","version":"1.0.0"},"remove_default":[]}},"documents":[{"name":"chart.png","media_type":"image/png","data_base64":"iVBORw0KGgo="}]});
 	let key = Uuid::new_v4();
 	let first = personal(&execution.subject, key, input.clone()).await;
 	assert_eq!(first.0, 200, "{first:?}");
@@ -185,7 +185,7 @@ async fn personal_agent_roundtrip(mut execution: ExecutionFixture, large_documen
 			.status_code(),
 		200
 	);
-	let mut input = json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Personal"},"description":{"en":"Skills first"},"config":{"model":{"id":"model","version":"1.0.0"},"schema_version":1,"bindings":[{"kind":"skill","target":{"registry_deployment":f.config.deployment,"id":"writing","version":"1.0.0"},"narrow":{}}],"remove_default":["compaction"]}},"documents":[{"name":"private.pdf","media_type":"application/pdf","text":"PRIVATE-REFERENCE-123"}]});
+	let mut input = json!({"entry":{"id":"","version":"1.0.0","kind":"agent","name":{"en":"Personal"},"description":{"en":"Skills first"},"config":{"model":{"id":"model","version":"1.0.0"},"schema_version":1,"bindings":[{"kind":"skill","target":{"registry_deployment":f.config.deployment,"id":"writing","version":"1.0.0"},"narrow":{}}],"remove_default":[]}},"documents":[{"name":"private.pdf","media_type":"application/pdf","text":"PRIVATE-REFERENCE-123"}]});
 	if large_documents {
 		let mut model = f.registry.get(&tenant, "model", "1.0.0").await.unwrap();
 		model.id = "small-model".into();

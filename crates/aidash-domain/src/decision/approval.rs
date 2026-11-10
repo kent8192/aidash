@@ -142,8 +142,7 @@ pub enum ApprovalOutcome {
 	Shadow,
 }
 
-/// One approval decision. Unlike compaction `Evidence` it has no candidates,
-/// branches or fit: the verdict is the whole result, and it holds no state
+/// One approval decision. The verdict is the whole result; it holds no state
 /// bytes, only their digest. A verdict from the Route asked is replayable from
 /// its answers and the effective threshold.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

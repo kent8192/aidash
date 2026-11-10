@@ -43,7 +43,6 @@ fn inspection(kind: &str) -> Inspection {
 			metadata,
 		}],
 		semantic_memory: 0,
-		decider: None,
 	}
 }
 fn task() -> Task {

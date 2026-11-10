@@ -261,7 +261,6 @@ fn scope(run: RunMetadata) -> Scope {
 				metadata: entry.clone(),
 			}],
 			semantic_memory: 0,
-			decider: None,
 		},
 		expires_at: now + chrono::Duration::minutes(10),
 		semantic: Binding::Disabled { summarizer: None },
@@ -582,7 +581,6 @@ async fn required_home_semantics_recheck_the_source_workspace_permission(
 			digest: "definition".into(),
 			configuration_digest: "configuration".into(),
 		}),
-		decider: None,
 		summarizer: None,
 	};
 	scope.source_denied = Some("semantic.use");

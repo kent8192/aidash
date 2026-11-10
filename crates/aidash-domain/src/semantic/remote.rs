@@ -38,10 +38,6 @@ pub enum Request {
 		/// and similarly named Registry entries never substitute for this mapping.
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		native: Option<Box<NativeRequest>>,
-		/// The compaction Decider version approved at the execution Node; the
-		/// executing Node calls it with its own Tenant's credential (ADR 0042).
-		#[serde(default, skip_serializing_if = "Option::is_none")]
-		decider: Option<EntityRef>,
 		/// Exact Summary Stage model pinned by the Agent's Context Policy.
 		/// Omitted for peers and Agents without a Summary Stage.
 		#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -92,12 +88,6 @@ impl Default for Request {
 	}
 }
 impl Request {
-	pub fn decider(&self) -> Option<&EntityRef> {
-		match self {
-			Self::Disabled { .. } => None,
-			Self::RequiredHome { decider, .. } => decider.as_ref(),
-		}
-	}
 	pub fn summarizer(&self) -> Option<&EntityRef> {
 		match self {
 			Self::Disabled { summarizer } | Self::RequiredHome { summarizer, .. } => {
@@ -139,9 +129,6 @@ pub enum Binding {
 		embedding: Box<Provider>,
 		#[serde(default, skip_serializing_if = "Option::is_none")]
 		native: Option<Box<NativeBinding>>,
-		/// Exact compaction Decider pin at the execution Node.
-		#[serde(default, skip_serializing_if = "Option::is_none")]
-		decider: Option<Box<Provider>>,
 		/// Home-disclosed Summary Stage model pin; absent means no Summary
 		/// Stage may run for this remote execution.
 		#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -166,7 +153,6 @@ impl Binding {
 			},
 			Self::RequiredHome {
 				embedding,
-				decider,
 				summarizer,
 				native,
 				..
@@ -175,7 +161,6 @@ impl Binding {
 				native: native
 					.as_ref()
 					.map(|binding| Box::new(binding.selection.clone())),
-				decider: decider.as_ref().map(|p| p.entry.clone()),
 				summarizer: summarizer.as_ref().map(|p| p.entry.clone()),
 			},
 		}
@@ -330,6 +315,15 @@ mod tests {
 		#[case] truncated: bool,
 	) {
 		assert_eq!(bounded_query("a日本", limit), (text.into(), truncated));
+	}
+	#[test]
+	fn required_home_rejects_removed_compaction_decider() {
+		let request = serde_json::json!({
+			"mode": "required_home",
+			"embedding": {"id":"embedding", "version":"1.0.0"},
+			"decider": {"id":"judge", "version":"1.0.0"}
+		});
+		assert!(serde_json::from_value::<Request>(request).is_err());
 	}
 	#[test]
 	fn disabled_is_the_only_implicit_mode() {

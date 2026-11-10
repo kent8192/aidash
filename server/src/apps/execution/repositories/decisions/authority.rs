@@ -1,5 +1,4 @@
-//! The native Decision Authority and current policy of a Run's compaction
-//! Decider (ADR 0042).
+//! The native Decision Authority and current policy of a Run's Decider.
 use super::CurrentAllowance;
 use crate::{Result, authorization::execution::Guard, database::native};
 use aidash_application::ports::decision::{Approval, DecisionAuthority};
@@ -7,32 +6,10 @@ use aidash_domain::{
 	Run,
 	context::recovery::Failure,
 	decision::{
-		Boundary, DeciderConfig, DeciderPin, Evidence, Hook, Restrictions, SourcePin,
-		policy::ExecutionAllowance,
+		Boundary, DeciderConfig, DeciderPin, Restrictions, SourcePin, policy::ExecutionAllowance,
 	},
 	registry::rules::digest,
 };
-
-/// The policy of a Run whose Agent version is immutable: the Decider its
-/// Binding snapshot admitted stays the one it may use. A revoked Catalog
-/// Approval is caught by the Decision Authority before every dispatch and
-/// before a decision is applied.
-pub(crate) struct AdmittedAllowance;
-#[async_trait::async_trait]
-impl CurrentAllowance for AdmittedAllowance {
-	async fn current(
-		&self,
-		_: &mut native::Transaction,
-		run: &Run,
-	) -> Result<Option<ExecutionAllowance>> {
-		let Some(snapshot) = run.context.binding_snapshot.as_deref() else {
-			return Ok(None);
-		};
-		Ok(snapshot
-			.bound_decider(Hook::Compaction)?
-			.map(|(bound, _)| bound.allowance()))
-	}
-}
 
 /// A Decider may run on this Node only under its Catalog Approval for the
 /// exact pinned version, which also allows the state retention that version
@@ -58,10 +35,6 @@ impl DecisionAuthority for CatalogAuthority<'_> {
 			restrictions: Restrictions::default(),
 			state_retention: self.config.state_retention.clone(),
 		})
-	}
-	/// Decision Evidence is not exposed through the public API (#108).
-	async fn read(&self, _: &Evidence, _: bool) -> aidash_application::Result<()> {
-		Err(aidash_application::Error::Forbidden)
 	}
 }
 
@@ -94,65 +67,5 @@ impl CurrentAllowance for ChainAllowance {
 		_: &Run,
 	) -> Result<Option<ExecutionAllowance>> {
 		Ok(Some(self.0.clone()))
-	}
-}
-
-/// Every generated ancestor, or the Home of a RequiredHome execution, is
-/// charged for each Decision Attempt before it is dispatched.
-pub(crate) struct ChainOwners<'a> {
-	pub guard: &'a Guard,
-	pub federation: &'a crate::federation::Federation,
-	pub decider: aidash_domain::registry::EntityRef,
-	pub config: DeciderConfig,
-	/// Home reservations kept open while their attempts are dispatched.
-	pub open: std::sync::Mutex<
-		std::collections::BTreeMap<uuid::Uuid, aidash_domain::generation::dispatch::Input>,
-	>,
-}
-#[async_trait::async_trait]
-impl super::DecisionOwners for ChainOwners<'_> {
-	async fn charge(
-		&self,
-		record: &aidash_application::ports::decision::DispatchRecord,
-	) -> Result<std::collections::BTreeMap<String, uuid::Uuid>> {
-		let (receipts, reservation) = self
-			.guard
-			.charge_decision(
-				self.federation,
-				&self.decider,
-				&self.config,
-				record.attempt,
-				&record.request_digest,
-				record.questions.len(),
-			)
-			.await?;
-		if let Some(reservation) = reservation {
-			self.open
-				.lock()
-				.expect("open reservations are never poisoned")
-				.insert(record.attempt, reservation);
-		}
-		Ok(receipts)
-	}
-	async fn settle(
-		&self,
-		record: &aidash_application::ports::decision::DispatchRecord,
-	) -> Result<()> {
-		// The reservation stays open until the Home confirms it, so a failed
-		// settlement is retried by the next `finish` of the same attempt.
-		let reservation = self
-			.open
-			.lock()
-			.expect("open reservations are never poisoned")
-			.get(&record.attempt)
-			.cloned();
-		if let Some(reservation) = reservation {
-			self.guard.settle_decision(&reservation).await?;
-			self.open
-				.lock()
-				.expect("open reservations are never poisoned")
-				.remove(&record.attempt);
-		}
-		Ok(())
 	}
 }

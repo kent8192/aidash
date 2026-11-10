@@ -216,7 +216,6 @@ fn receipts_reject_incomplete_or_rebound_reservations(usage: Usage, #[case] muta
 
 #[rstest]
 #[case(Purpose::Embedding, "embedding", "embedding.invoke")]
-#[case(Purpose::Compaction, "compaction", "decision.invoke")]
 #[case(Purpose::Inference, "inference", "model.infer")]
 fn purpose_preserves_wire_names_and_authorization_actions(
 	#[case] purpose: Purpose,
@@ -242,4 +241,11 @@ fn finalization_retains_closed_tagged_wire_states(#[case] wire: serde_json::Valu
 #[case(serde_json::json!({"state":"aborted","reported":1}))]
 fn finalization_rejects_unknown_or_mixed_states(#[case] wire: serde_json::Value) {
 	assert!(serde_json::from_value::<Finalization>(wire).is_err());
+}
+
+#[rstest]
+fn compaction_is_not_an_admissible_remote_generation_allowance(provider: Provider) {
+	let wire =
+		serde_json::json!({"compaction":{"provider":provider,"calls_per_agent":1,"call_budget":1}});
+	assert!(serde_json::from_value::<Approvals>(wire).is_err());
 }

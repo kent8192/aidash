@@ -25,7 +25,6 @@ fn binding() -> Binding {
 			digest: "provider-digest".into(),
 			configuration_digest: "configuration-digest".into(),
 		}),
-		decider: None,
 		summarizer: None,
 	}
 }

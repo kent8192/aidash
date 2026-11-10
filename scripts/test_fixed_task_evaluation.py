@@ -311,42 +311,13 @@ class ProjectionCampaignTest(unittest.TestCase):
                 self.assertEqual(evaluation.grade(value, item, observation(final_answer=answer,
                     compactions=compactions), False)["passed"], passed)
 
-    def test_live_auxiliary_contract_reserves_all_permitted_calls_and_rejects_digest_drift(self):
-        config = {"hook": "compaction", "mode": "enforce", "provider_credential": "openrouter",
-                  "max_calls_per_run": 3, "routes": [{"model": "decision/model", "hosts": ["one"]}]}
-        allowance = {"reference": "decider@1", "config_sha256": evaluation.canonical_sha256(config),
-                     "max_calls_per_run": 3, "max_nanocredits_per_call": 900}
-        approval = {"external_compaction": {"mode": "bounded", "decider": allowance, "summary": None}}
-        auxiliary = evaluation.auxiliary_allowance(approval)
-        value = corpus()
-        item = task(value, "structured-data-overdue-totals")
-        model = {"context_window": 100, "max_output_tokens": 10}
-        prices = {"input_nanocredits_per_token": 1, "cache_write_nanocredits_per_token": 2,
-                  "output_nanocredits_per_token": 3}
-        main = runner.run_worst_case(item, value, model, prices)
-        self.assertEqual(runner.run_worst_case(item, value, model, prices, auxiliary), main + 2700)
-        evaluation.verify_auxiliary_configs(auxiliary, {"decider@1": config}, "openrouter")
-        with self.assertRaisesRegex(evaluation.GuardRefusal, "not an enforceable"):
-            evaluation.require_enforceable_auxiliary_bound(auxiliary)
-        evaluation.require_enforceable_auxiliary_bound(evaluation.auxiliary_allowance({"external_compaction": "disabled"}))
-        accepted = {"external_compaction": dict(approval["external_compaction"],
-                                                cost_enforcement="declared-reservation-accepted")}
-        evaluation.require_enforceable_auxiliary_bound(evaluation.auxiliary_allowance(accepted))
-        self.assertEqual(runner.run_worst_case(item, value, model, prices, evaluation.auxiliary_allowance(accepted)),
-                         main + 2700)
-        with self.assertRaisesRegex(evaluation.GuardRefusal, "cost_enforcement must be"):
-            evaluation.auxiliary_allowance({"external_compaction": dict(approval["external_compaction"],
-                                                                        cost_enforcement="provider-capped")})
-        larger = dict(config, max_calls_per_run=5)
-        oversized = {**auxiliary, "decider": dict(auxiliary["decider"], config_sha256=evaluation.canonical_sha256(larger))}
-        with self.assertRaisesRegex(evaluation.GuardRefusal, "exactly the approved"):
-            evaluation.verify_auxiliary_configs(oversized, {"decider@1": larger}, "openrouter")
-        with self.assertRaisesRegex(evaluation.GuardRefusal, "exact digest"):
-            evaluation.verify_auxiliary_configs(auxiliary, {"decider@1": dict(config, max_calls_per_run=100)},
-                                                 "openrouter")
-        del allowance["max_nanocredits_per_call"]
-        with self.assertRaisesRegex(evaluation.GuardRefusal, "unpriced auxiliary"):
+    def test_removed_compaction_decider_is_rejected_before_dispatch(self):
+        approval = {"external_compaction": {"mode": "bounded", "decider": {"reference": "judge@1"}, "summary": None}}
+        with self.assertRaisesRegex(evaluation.GuardRefusal, "compaction Deciders were removed"):
             evaluation.auxiliary_allowance(approval)
+        disabled = evaluation.auxiliary_allowance({"external_compaction": "disabled"})
+        self.assertEqual(disabled["worst_case_nanocredits"], 0)
+        evaluation.require_enforceable_auxiliary_bound(disabled)
 
     def test_live_fixture_and_container_support_require_exact_explicit_approval(self):
         value = evaluation.load_corpus()
@@ -1315,16 +1286,11 @@ class RunnerTest(unittest.TestCase):
             with self.assertRaisesRegex(evaluation.CorpusError, "unknown expected context_reason"):
                 evaluation.load_corpus(path)
 
-    def test_agents_remove_the_default_compaction_unless_they_bind_a_decider(self):
+    def test_minimal_defaults_only_removes_built_in_tools(self):
         plain = {"bindings": [{"kind": "tool"}]}
-        self.assertIn(evaluation.COMPACTION_DEFAULT, runner.minimal_defaults(plain))
-        explicit = {"bindings": [{"kind": "tool"}, {"kind": "decider"}]}
-        removed = runner.minimal_defaults(explicit)
-        self.assertNotIn(evaluation.COMPACTION_DEFAULT, removed)
+        removed = runner.minimal_defaults(plain)
+        self.assertNotIn("compaction", removed)
         self.assertTrue(set(evaluation.DEFAULT_TOOLS) <= set(removed))
-        self.assertEqual(runner.with_compaction_removed(plain, ["file_read"]), ["file_read", "compaction"])
-        self.assertEqual(runner.with_compaction_removed(explicit, ["file_read"]), ["file_read"])
-        self.assertEqual(runner.with_compaction_removed(plain, ["compaction"]), ["compaction"])
 
     def test_cancellation_waits_for_terminal_acknowledgement_and_preserves_a_completion_race(self):
         for terminal in ("CANCELLED", "COMPLETED"):
@@ -2021,7 +1987,7 @@ class LiveGuardTest(unittest.TestCase):
                          ["structured-data-overdue-totals/projection/candidate/1"])
         evaluation.validate_result(result)
 
-    def test_an_applied_compaction_stops_dispatch(self):
+    def test_an_applied_compaction_does_not_stop_dispatch(self):
         call, _ = self.live_node()
 
         def compacting(method, path, body, token, timeout=None):
@@ -2030,11 +1996,9 @@ class LiveGuardTest(unittest.TestCase):
                 value["run"]["context"]["compactions"] = 1
             return status, value
         status, result = self.run_live(compacting, ceiling="500000")
-        self.assertEqual(status, 1)
-        self.assertIn("Jev compaction Decider answered", result["error"])
-        self.assertEqual(len(result["runs"]), 1)
-        self.assertEqual(len(result["skipped_runs"]), 1)
-        self.assertIn("approval attests", result["experiment"]["harness"]["jev_classifier"])
+        self.assertEqual(len(result["runs"]), 2)
+        self.assertEqual(len(result["skipped_runs"]), 0)
+        self.assertEqual(result["runs"][0]["compactions"], 1)
 
     def test_live_agents_remove_every_unbudgeted_default(self):
         call, _ = self.live_node()
@@ -2048,7 +2012,7 @@ class LiveGuardTest(unittest.TestCase):
         self.assertTrue(agents)
         for config in agents:
             self.assertEqual(sorted(config["remove_default"]),
-                             sorted([*evaluation.DEFAULT_TOOLS, evaluation.COMPACTION_DEFAULT]))
+                             sorted(evaluation.DEFAULT_TOOLS))
         legacy_skill = {"bindings": [{"kind": "skill"}]}
         self.assertEqual(set(evaluation.DEFAULT_TOOLS) - set(runner.minimal_defaults(legacy_skill)),
                          set(evaluation.SKILL_TOOLS), "bound Skills keep their support tools")
@@ -2153,7 +2117,7 @@ class LiveGuardTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(seen, {"proxy": [], "target": ["Bearer secret-token"]})
 
-    def test_compactions_seen_while_cancelling_after_a_failure_stop_dispatch(self):
+    def test_compactions_seen_while_cancelling_after_a_failure_are_recorded(self):
         call, _ = self.live_node(phase="RUNNING")
         failed = []
 
@@ -2166,11 +2130,10 @@ class LiveGuardTest(unittest.TestCase):
                 value["run"]["context"]["compactions"] = 1
             return status, value
         status, result = self.run_live(failing_then_compacted, ceiling="500000")
-        self.assertEqual(status, 1)
-        self.assertIn("Jev compaction Decider answered", result["error"])
-        self.assertEqual([run["outcome"] for run in result["runs"]], ["infrastructure_failure"])
+        self.assertEqual(status, 0)
+        self.assertEqual(result["runs"][0]["outcome"], "infrastructure_failure")
         self.assertEqual(result["runs"][0]["compactions"], 1)
-        self.assertEqual(len(result["skipped_runs"]), 1)
+        self.assertEqual(len(result["skipped_runs"]), 0)
         evaluation.validate_result(result)
 
     def test_a_failed_cancellation_stops_all_further_dispatch(self):

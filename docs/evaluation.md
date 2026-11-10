@@ -232,33 +232,12 @@ shorten it. The refusal is recorded in
 dispatched are listed in `skipped_runs` with the reason, so none is silently
 dropped.
 
-`external_compaction: "disabled"` attests that the evaluated Tenant approves
-no compaction Decider. A Run whose context records an applied compaction then
-violates the declared experiment: the manifest records the error and no further
-Run is dispatched. A bounded auxiliary-work declaration pins exact Decider and
-Summary configurations, call limits and per-call price bounds separately from
-main inference. A declaration alone cannot enforce a provider's monetary cost:
-the Node enforces only the call counts (`max_calls_per_run`, the Context
-Policy's `call_budget`). Live Decider and Summary execution is therefore refused
-unless the approval also sets `"cost_enforcement": "declared-reservation-accepted"`
-inside `external_compaction`. The approver then accepts the declared
-`max_nanocredits_per_call` as a reservation: each Run reserves every permitted
-auxiliary call at that amount against the hard ceiling, and the manifest's
-`harness.jev_classifier` records the acceptance. Pin the Decider to one Route;
-a Decider version with fallback Routes is refused. See the
-[comparison admission requirements](projection-comparison.md#live-admission-and-shared-limits).
-Never replace unknown Decider cost with zero or a reservation amount.
-
-```json
-"external_compaction": {
-  "mode": "bounded",
-  "cost_enforcement": "declared-reservation-accepted",
-  "decider": {"reference": "DECIDER_ID@VERSION", "config_sha256": "<sha256>",
-              "max_calls_per_run": 20, "max_nanocredits_per_call": 5000000},
-  "summary": {"reference": "MODEL_ID@VERSION", "config_sha256": "<sha256>",
-              "max_calls_per_run": 8, "max_nanocredits_per_call": 19814400}
-}
-```
+`external_compaction: "disabled"` selects evaluation without an external
+compaction Decider. Context recovery can still modify the projection and its
+compaction count is recorded without stopping the campaign. Bounded historical
+contracts that name a compaction Decider cannot be used with ADR 0125.
+Summary requests remain subject to the evaluator's declared reservation and
+call limits.
 
 Run admission pins the Tenant's binding inside the claim, and the claim API
 takes no expected credential. The evaluator therefore reads the binding just
@@ -563,10 +542,6 @@ utility; this branch measures only the first deterministically.
   exists.
 - The memory matrix's retrieval-quality rows need the live tier and an
   approved embedding model.
-- The live tier reserves Jev compaction and Summary calls only at their declared
-  per-call amounts, which no provider enforces, and only when the approval
-  accepts that. Without a bounded contract it relies on the evaluator's
-  attestation that the evaluated Tenant approves no compaction Decider and stops
-  dispatching when a Run shows an applied compaction.
-- The deterministic tier does not measure pruning: its Agents bind no
-  compaction Decider.
+- The live tier refuses legacy compaction Decider approvals. Its auxiliary
+  reservations are declared amounts, not provider-enforced monetary caps.
+- The deterministic tier does not measure context recovery quality.

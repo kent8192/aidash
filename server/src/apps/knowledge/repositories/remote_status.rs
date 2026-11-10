@@ -29,8 +29,6 @@ struct AllowanceRow {
 	pub used_tokens: i64,
 	pub embedding_call_limit: i64,
 	pub embedding_calls: i64,
-	pub compaction_call_limit: i64,
-	pub compaction_calls: i64,
 }
 crate::native_record!(AllowanceRow {
 	request_id,
@@ -38,8 +36,6 @@ crate::native_record!(AllowanceRow {
 	used_tokens,
 	embedding_call_limit,
 	embedding_calls,
-	compaction_call_limit,
-	compaction_calls
 });
 
 impl From<AllowanceRow> for Allowance {
@@ -50,8 +46,6 @@ impl From<AllowanceRow> for Allowance {
 			used_tokens: row.used_tokens,
 			embedding_call_limit: row.embedding_call_limit,
 			embedding_calls: row.embedding_calls,
-			compaction_call_limit: row.compaction_call_limit,
-			compaction_calls: row.compaction_calls,
 		}
 	}
 }

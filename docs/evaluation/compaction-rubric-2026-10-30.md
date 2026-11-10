@@ -1,5 +1,7 @@
 # Compaction rubric and question wording — 2026-10-30
 
+The scripts described here were removed with the compaction Decider (ADR 0125); this report is historical.
+
 **`aidash.compaction/3` replaces the rubric and both question sentences, and puts the rubric first in the
 state.** On held-out benchmark decisions, Jev's utility at the production threshold rises from 0.58 to 0.80,
 and Clef's from 0.63 to 0.92. Neither model drops a correction any more, and Jev no longer drops whole

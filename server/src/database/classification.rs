@@ -167,15 +167,12 @@ pub const TABLES: &[Table] = &[
 	table("execution", "approval_observation_population", TenantOwned),
 	table("execution", "decision_attempts", TenantOwned),
 	table("execution", "decision_evidence", TenantOwned),
-	table("execution", "decision_outcomes", TenantOwned),
-	table("execution", "decision_states", TenantOwned),
 	// One immutable trusted runner pin per Deployment; configuration, not Tenant data or audit.
 	table("execution", "runner_allocation_journals", DeploymentWide),
 	// per-model token statistics without Tenant content
 	table("execution", "estimate_calibration_samples", DeploymentWide),
 	table("execution", "events", TenantOwned),
 	table("execution", "generation_budgets", TenantOwned),
-	table("execution", "generation_compaction_usage", TenantOwned),
 	table("execution", "generation_embedding_usage", TenantOwned),
 	table("execution", "generation_history", TenantOwned),
 	table("execution", "generation_policies", TenantOwned),

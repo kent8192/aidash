@@ -234,14 +234,6 @@ fn usage_query() -> String {
 		))))
 		.expr(SimpleExpr::from(Expr::col((
 			Alias::new("b"),
-			Alias::new("compaction_call_limit"),
-		))))
-		.expr(SimpleExpr::from(Expr::col((
-			Alias::new("b"),
-			Alias::new("compaction_calls"),
-		))))
-		.expr(SimpleExpr::from(Expr::col((
-			Alias::new("b"),
 			Alias::new("embedding_calls"),
 		))))
 		.expr(SimpleExpr::from(Expr::col((

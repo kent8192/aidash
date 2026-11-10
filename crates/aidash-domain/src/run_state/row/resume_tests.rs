@@ -213,7 +213,7 @@ fn resuming_forgets_the_paused_call_and_keeps_declined_calls(mut raw: RawRun) {
 		result["recovery"]["declined_calls"],
 		json!([{"key":"run:1:1","kind":"catalog_approval"}])
 	);
-	// An authority pause is not a compaction decision, so resuming it starts no new one.
+	// An authority pause does not start a new Decider cycle.
 	assert!(result["recovery"].get("decision_cycle").is_none());
 }
 #[rstest]

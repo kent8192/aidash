@@ -89,7 +89,6 @@ fn scope() -> Scope {
 			agent,
 			definitions: vec![],
 			semantic_memory: 0,
-			decider: None,
 		},
 		expires_at: intent.expires_at,
 		semantic: Default::default(),

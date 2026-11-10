@@ -5,27 +5,20 @@
 //! Its boundary maps `run_revision` to `runs.revision` and `input_revision` to
 //! `runs.observed_input_seq`; both must still match whenever the journal reserves,
 //! recovers or commits. Each Decision Attempt counts against the Decider's
-//! per-Run call limit, and against the `DecisionOwners` of a generated chain or
-//! RequiredHome execution. A staged
-//! decision is recorded in the transaction that adopts its summary (ADR 0056).
+//! per-Run call limit.
 use crate::{Error, Result, database::native, store::Store};
-use aidash_application::decision::StagedDecision;
 use aidash_application::ports::decision::{
-	DecisionJournal, DispatchPermit, DispatchRecord, RecoveredAttempt, Reservation, RetainedState,
+	DecisionJournal, DispatchPermit, DispatchRecord, RecoveredAttempt, Reservation,
 };
-use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_domain::{
 	Run,
-	context::{Context, recovery::Failure},
+	context::recovery::Failure,
 	decision::{
 		ApprovalEvidence, AttemptEvidence, AttemptProviderReport, AttemptStatus, Boundary,
-		DeciderPin, Evidence, Mode, Outcome, OutcomeLink, Probability, Questions, Restrictions,
-		StateReference, StateRetentionWitness, approval_questions, policy::ExecutionAllowance,
-		pruning, validate_digest,
+		DeciderPin, Mode, Probability, Questions, Restrictions, approval_questions,
+		policy::ExecutionAllowance, validate_digest,
 	},
-	registry::rules,
 };
-use chrono::{DateTime, Utc};
 use reinhardt::query::{
 	Alias, Expr, ExprTrait, IntoIden, LockType, Order, PostgresQueryBuilder, Query,
 	QueryStatementBuilder, SimpleExpr,
@@ -36,14 +29,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 mod authority;
-pub(crate) use authority::{
-	AdmittedAllowance, CatalogAuthority, ChainAllowance, ChainOwners, require_approved,
-};
+pub(crate) use authority::{CatalogAuthority, ChainAllowance, require_approved};
 
 const ATTEMPTS: &str = "decision_attempts";
 const EVIDENCE: &str = "decision_evidence";
-const STATES: &str = "decision_states";
-const OUTCOMES: &str = "decision_outcomes";
 const PENDING: &str = "pending";
 const ATTEMPT_COLUMNS: [&str; 23] = [
 	"id",
@@ -196,18 +185,6 @@ fn same_decision(saved: &DispatchRecord, requested: &DispatchRecord) -> bool {
 	)
 }
 
-/// A summary removes the entries it absorbs from the projection it continues,
-/// so the adopted history keeps the pruned entries it did not absorb, in order.
-fn continues_from(
-	adopted: &[aidash_domain::context::HistoryEntry],
-	pruned: &[aidash_domain::context::HistoryEntry],
-) -> bool {
-	let mut remaining = pruned.iter();
-	adopted
-		.iter()
-		.all(|entry| remaining.any(|candidate| candidate == entry))
-}
-
 /// Lock the Run while `boundary.worker` holds its lease and its revisions match.
 /// `FOR NO KEY UPDATE` still orders every write of the Run, yet lets the owners
 /// charged during a reservation insert rows that reference it.
@@ -256,28 +233,6 @@ async fn lease_held_now(tx: &mut native::Transaction, boundary: &Boundary) -> Re
 	.ok_or_else(|| Error::Conflict("worker lease lost".into()))
 }
 
-/// An applied, staged or shadow decision is final and is never overwritten.
-async fn ensure_open(tx: &mut native::Transaction, run: Uuid, decision: Uuid) -> Result<()> {
-	let finished: Option<Uuid> = native::query_scalar(
-		&Query::select()
-			.column(Alias::new("id"))
-			.from(Alias::new(EVIDENCE))
-			.and_where(Expr::col("run_id").eq(Expr::value(run)))
-			.and_where(Expr::col("decision_id").eq(Expr::value(decision)))
-			.and_where(Expr::col("outcome").is_in(["applied", "staged", "shadow"]))
-			.limit(1)
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_optional(&mut **tx)
-	.await?;
-	match finished {
-		Some(_) => Err(Error::Conflict(
-			"decision already has its final evidence; reload the Run".into(),
-		)),
-		None => Ok(()),
-	}
-}
-
 /// The decision's charged attempts, locked until the transaction ends so a
 /// concurrent `finish_attempt` is ordered before or after this read.
 async fn attempts_of(
@@ -323,20 +278,6 @@ impl<T: CurrentAllowance + ?Sized> CurrentAllowance for &T {
 	}
 }
 
-/// The owners beside the Run itself that a Decision Attempt is charged to: every
-/// generated ancestor, or the Home of a RequiredHome execution.
-#[async_trait::async_trait]
-pub trait DecisionOwners: Send + Sync {
-	/// Charge one Decision Attempt and return each owner's receipt. A spent
-	/// budget is `decider_calls_exhausted`; nothing is dispatched after an error.
-	async fn charge(&self, record: &DispatchRecord) -> Result<BTreeMap<String, Uuid>>;
-	/// Release what `charge` kept open once the attempt's result is recorded;
-	/// the charge itself is kept.
-	async fn settle(&self, _record: &DispatchRecord) -> Result<()> {
-		Ok(())
-	}
-}
-
 /// What the evidence of one decision says about its charged attempts, whichever
 /// hook the decision served.
 struct Attested<'a> {
@@ -359,7 +300,6 @@ pub struct RunDecisionJournal<'a> {
 	run: Run,
 	allowance: ExecutionAllowance,
 	current: Box<dyn CurrentAllowance + 'a>,
-	owners: Option<Box<dyn DecisionOwners + 'a>>,
 }
 
 impl<'a> RunDecisionJournal<'a> {
@@ -378,14 +318,7 @@ impl<'a> RunDecisionJournal<'a> {
 			run,
 			allowance,
 			current: Box::new(current),
-			owners: None,
 		})
-	}
-
-	/// Charge `owners` too before each Decision Attempt is dispatched.
-	pub fn with_owners(mut self, owners: impl DecisionOwners + 'a) -> Self {
-		self.owners = Some(Box::new(owners));
-		self
 	}
 
 	/// The receipt owner for this Run's own call limit.
@@ -461,7 +394,6 @@ impl<'a> RunDecisionJournal<'a> {
 		self.check_boundary(boundary)?;
 		let mut tx = self.begin().await?;
 		fence(&mut tx, boundary).await?;
-		ensure_open(&mut tx, self.run.id, decision).await?;
 		let attempts = attempts_of(&mut tx, self.run.id, decision)
 			.await?
 			.iter()
@@ -475,7 +407,6 @@ impl<'a> RunDecisionJournal<'a> {
 		self.check_record(record)?;
 		let mut tx = self.begin().await?;
 		fence(&mut tx, &record.boundary).await?;
-		ensure_open(&mut tx, self.run.id, record.decision).await?;
 		let decision_attempts = attempts_of(&mut tx, self.run.id, record.decision).await?;
 		let requested: BTreeSet<_> = record.questions.iter().collect();
 		for row in &decision_attempts {
@@ -535,12 +466,7 @@ impl<'a> RunDecisionJournal<'a> {
 		if self.allowance.remaining(&current, consumed)? == 0 {
 			return Err(Error::Context(Failure::DeciderCallsExhausted));
 		}
-		let mut owner_receipts = BTreeMap::from([(self.owner(), Uuid::new_v4())]);
-		// Every other owner is charged before the attempt is recorded; a spent
-		// or withdrawn owner leaves nothing to dispatch.
-		if let Some(owners) = &self.owners {
-			owner_receipts.extend(owners.charge(record).await?);
-		}
+		let owner_receipts = BTreeMap::from([(self.owner(), Uuid::new_v4())]);
 		native::query(
 			&Query::insert()
 				.into_table(Alias::new(ATTEMPTS))
@@ -667,10 +593,6 @@ impl<'a> RunDecisionJournal<'a> {
 				));
 			}
 			tx.commit().await?;
-			// A settlement that failed after the status committed is retried.
-			if let Some(owners) = &self.owners {
-				owners.settle(record).await?;
-			}
 			return Ok(());
 		}
 		native::query(
@@ -690,61 +612,6 @@ impl<'a> RunDecisionJournal<'a> {
 		.execute(&mut *tx)
 		.await?;
 		tx.commit().await?;
-		// The other owners' reservations close once the result is kept.
-		if let Some(owners) = &self.owners {
-			owners.settle(record).await?;
-		}
-		Ok(())
-	}
-
-	/// The evidence must name exactly the attempts this Run charged for the
-	/// decision, each with its durable status and charged inputs, and carry
-	/// exactly the answers those attempts durably recorded.
-	async fn check_attempts(
-		&self,
-		tx: &mut native::Transaction,
-		evidence: &Evidence,
-	) -> Result<()> {
-		let answered = self
-			.charged_answers(
-				tx,
-				&Attested {
-					decision: evidence.id,
-					boundary: &evidence.boundary,
-					decider: &evidence.decider,
-					binding_restrictions: &evidence.binding_restrictions,
-					restrictions: &evidence.restrictions,
-					state_digest: &evidence.state_digest,
-					mode: evidence.mode,
-					questions: &evidence.questions,
-					attempts: &evidence.attempts,
-				},
-			)
-			.await?;
-		// The decision UUID commits to its inputs and the admitted Binding
-		// restrictions the evidence keeps, so evidence that names other sources
-		// or another window under it is not this decision, attempts or not.
-		if aidash_application::decision::decision_identity(
-			&evidence.boundary,
-			&evidence.decider,
-			&evidence.binding_restrictions,
-			&evidence.state_digest,
-			&evidence.sources,
-			evidence.fit.window,
-			evidence.route,
-		) != evidence.id
-		{
-			return Err(Error::Invalid(
-				"decision evidence differs from its decision identity".into(),
-			));
-		}
-		// Charged plans never overlap, so the union is exact; an answer no
-		// answered attempt recorded is never evidence of a provider call.
-		if evidence.answers != answered {
-			return Err(Error::Invalid(
-				"decision evidence differs from its charged attempts".into(),
-			));
-		}
 		Ok(())
 	}
 
@@ -861,256 +728,7 @@ impl<'a> RunDecisionJournal<'a> {
 		Ok(answered)
 	}
 
-	/// Checks that need no transaction: the boundary and pin, the evidence's
-	/// own invariants and its retained-state witness.
-	fn check_evidence(&self, evidence: &Evidence, state: Option<&RetainedState>) -> Result<()> {
-		self.check_boundary(&evidence.boundary)?;
-		if evidence.decider != self.allowance.decider {
-			return Err(Error::Invalid(
-				"decision evidence names another Decider than the Run's admitted pin".into(),
-			));
-		}
-		// A rejection after an early failure has nothing to replay, but it still
-		// keeps every invariant a rejection has at any stage.
-		if evidence.outcome == Outcome::Rejected {
-			evidence.validate_rejection()?;
-		} else {
-			evidence.replay()?;
-		}
-		// A rejection skips replay, yet later recovery and outcomes still link
-		// to its stable decision identity and state commitment.
-		if evidence.id.is_nil() {
-			return Err(Error::Invalid(
-				"decision evidence lacks its decision identity".into(),
-			));
-		}
-		validate_digest(&evidence.state_digest)?;
-		match (state, &evidence.state, &evidence.state_retention) {
-			(
-				Some(state),
-				StateReference::Retained {
-					id,
-					digest,
-					expires_at,
-				},
-				StateRetentionWitness::Enabled {
-					id: witness,
-					expires_at: deadline,
-				},
-			) if state.id == *id
-				&& state.id == *witness
-				&& state.digest == *digest
-				&& state.digest == evidence.state_digest
-				&& rules::digest(&state.state) == state.digest
-				&& state.expires_at == *expires_at
-				&& state.expires_at == *deadline => {}
-			(
-				None,
-				StateReference::Expired {
-					id,
-					digest,
-					expired_at,
-				},
-				StateRetentionWitness::Enabled {
-					id: witness,
-					expires_at: deadline,
-				},
-			) if !id.is_nil()
-				&& id == witness
-				&& *digest == evidence.state_digest
-				&& expired_at == deadline
-				&& *expired_at <= self.now() => {}
-			(None, StateReference::Disabled, StateRetentionWitness::Disabled) => {}
-			_ => {
-				return Err(Error::Invalid(
-					"retained decision state differs from its evidence".into(),
-				));
-			}
-		}
-		Ok(())
-	}
-
-	/// State whose deadline passed keeps only its expired marker.
-	fn expire_elapsed(&self, retained: &mut Option<&RetainedState>, stored: &mut Evidence) {
-		if let Some(state) = retained.take_if(|state| state.expires_at <= self.now()) {
-			stored.state = StateReference::Expired {
-				id: state.id,
-				digest: state.digest.clone(),
-				expired_at: state.expires_at,
-			};
-		}
-	}
-
-	/// Inside the fenced commit transaction: the decision is still open, the
-	/// evidence names exactly its charged attempts, and an effect on the Run
-	/// or retained state needs the admitted pin to be current. Evidence
-	/// without either effect is still recorded after a revocation.
-	async fn prepare_in<'s>(
-		&self,
-		tx: &mut native::Transaction,
-		evidence: &Evidence,
-		changes_run: bool,
-		state: Option<&'s RetainedState>,
-	) -> Result<(Evidence, Option<&'s RetainedState>)> {
-		ensure_open(tx, self.run.id, evidence.id).await?;
-		self.check_attempts(tx, evidence).await?;
-		let mut stored = evidence.clone();
-		let mut retained = state;
-		self.expire_elapsed(&mut retained, &mut stored);
-		if (changes_run || retained.is_some())
-			&& self
-				.current
-				.current(tx, &self.run)
-				.await?
-				.is_none_or(|current| current.decider != self.allowance.decider)
-		{
-			return Err(Error::Forbidden);
-		}
-		Ok((stored, retained))
-	}
-
-	/// Write the evidence and any retained state. The expiry is decided again
-	/// right before the write, because the policy lookup and the Run save can
-	/// outlast the deadline.
-	async fn insert_in(
-		&self,
-		tx: &mut native::Transaction,
-		mut stored: Evidence,
-		mut retained: Option<&RetainedState>,
-	) -> Result<()> {
-		self.expire_elapsed(&mut retained, &mut stored);
-		let evidence_id = Uuid::new_v4();
-		native::query(
-			&Query::insert()
-				.into_table(Alias::new(EVIDENCE))
-				.columns(
-					[
-						"id",
-						"decision_id",
-						"run_id",
-						"outcome",
-						"reason",
-						"evidence",
-						"tenant",
-					]
-					.map(Alias::new),
-				)
-				.values_expr(vec![
-					Expr::value(evidence_id).into(),
-					Expr::value(stored.id).into(),
-					Expr::value(self.run.id).into(),
-					Expr::value(label(&stored.outcome)?).into(),
-					Expr::value(label(&stored.reason)?).into(),
-					Expr::value(serde_json::to_value(&stored)?).into(),
-					crate::database::scope::tenant_of("runs", "id", self.run.id),
-				])
-				.expect("one value per column")
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(&mut **tx)
-		.await?;
-		if let Some(state) = retained {
-			native::query(
-				&Query::insert()
-					.into_table(Alias::new(STATES))
-					.columns(
-						[
-							"id",
-							"evidence_id",
-							"run_id",
-							"digest",
-							"expires_at",
-							"state",
-							"tenant",
-						]
-						.map(Alias::new),
-					)
-					.values_expr(vec![
-						Expr::value(state.id).into(),
-						Expr::value(evidence_id).into(),
-						Expr::value(self.run.id).into(),
-						Expr::value(state.digest.as_str()).into(),
-						Expr::value(state.expires_at).into(),
-						Expr::value(state.state.clone()).into(),
-						crate::database::scope::tenant_of("runs", "id", self.run.id),
-					])
-					.expect("one value per column")
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut **tx)
-			.await?;
-			// State that expired during the awaits above would be kept under a
-			// retained marker; refuse it, and a retry records the expired marker.
-			let live: bool = native::query_scalar(
-				&Query::select()
-					.expr(SimpleExpr::CustomWithExpr(
-						"(CAST(? AS timestamptz) > clock_timestamp())".to_owned(),
-						vec![Expr::value(state.expires_at).into()],
-					))
-					.to_string(PostgresQueryBuilder),
-			)
-			.scalar_one(&mut **tx)
-			.await?;
-			if !live {
-				return Err(Error::Conflict(
-					"retained decision state expired while it was written".into(),
-				));
-			}
-		}
-		Ok(())
-	}
-
-	async fn commit_evidence(
-		&self,
-		evidence: &Evidence,
-		context: Option<&Context>,
-		state: Option<&RetainedState>,
-	) -> Result<()> {
-		if evidence.outcome == Outcome::Staged {
-			return Err(Error::Invalid(
-				"a staged decision is recorded with the summary that completes it".into(),
-			));
-		}
-		if context.is_some() != (evidence.outcome == Outcome::Applied) {
-			return Err(Error::Invalid(
-				"only an applied decision replaces the Run's context".into(),
-			));
-		}
-		self.check_evidence(evidence, state)?;
-		// The saved projection must be the one the evidence attests to.
-		if let Some(context) = context
-			&& Some(pruning::projection_digest(&context.history)?) != evidence.projection_digest
-		{
-			return Err(Error::Invalid(
-				"applied context differs from its decision evidence".into(),
-			));
-		}
-		let mut tx = self.begin().await?;
-		fence(&mut tx, &evidence.boundary).await?;
-		let (stored, retained) = self
-			.prepare_in(&mut tx, evidence, context.is_some(), state)
-			.await?;
-		// The checks above can outlast the lease that `fence` saw. Saving an
-		// applied context ends the step and releases the lease, so this is
-		// the last point at which the worker must still hold it.
-		lease_held_now(&mut tx, &evidence.boundary).await?;
-		let mut closed = Vec::new();
-		if let Some(context) = context {
-			let mut run = self.run.clone();
-			run.context = context.clone();
-			let (_, interrupted) = self
-				.store
-				.save_run_in(&mut tx, &run, evidence.boundary.worker, "context.compacted")
-				.await?;
-			closed = interrupted;
-		}
-		self.insert_in(&mut tx, stored, retained).await?;
-		tx.commit().await?;
-		super::inference::record_interruptions(&closed);
-		Ok(())
-	}
-
-	/// Record one approval decision (ADR 0077). Its identity commits to the
+	/// Checks that need no transaction: the boundary and pin, the evidence's	/// Record one approval decision (ADR 0077). Its identity commits to the
 	/// approval, the Decider, the Route and the state, so judging again after a
 	/// crash, under another worker, reproduces it: evidence already recorded under
 	/// that identity is kept, whatever worker judged it.
@@ -1186,180 +804,6 @@ impl<'a> RunDecisionJournal<'a> {
 		.await?;
 		tx.commit().await
 	}
-
-	/// The first half of recording a staged decision inside the transaction
-	/// that adopts the summary completing its pruning (ADR 0056): the evidence
-	/// names the pruned projection, and `adopted` continues from it.
-	pub(crate) async fn prepare_staged_in<'s>(
-		&self,
-		tx: &mut native::Transaction,
-		staged: &'s StagedDecision,
-		adopted: &Context,
-	) -> Result<(Evidence, Option<&'s RetainedState>)> {
-		let evidence = &staged.evidence;
-		if evidence.outcome != Outcome::Staged {
-			return Err(Error::Invalid(
-				"only a staged decision is recorded with a summary".into(),
-			));
-		}
-		self.check_evidence(evidence, staged.state.as_ref())?;
-		let pruned = &staged.pruned.history;
-		if Some(pruning::projection_digest(pruned)?) != evidence.projection_digest
-			|| !continues_from(&adopted.history, pruned)
-		{
-			return Err(Error::Invalid(
-				"the adopted summary does not continue from the staged pruning".into(),
-			));
-		}
-		fence(tx, &evidence.boundary).await?;
-		self.prepare_in(tx, evidence, true, staged.state.as_ref())
-			.await
-	}
-
-	/// The second half, after the adopted projection is saved.
-	pub(crate) async fn insert_staged_in(
-		&self,
-		tx: &mut native::Transaction,
-		(stored, retained): (Evidence, Option<&RetainedState>),
-	) -> Result<()> {
-		self.insert_in(tx, stored, retained).await
-	}
-
-	async fn append(&self, outcome: &OutcomeLink) -> Result<()> {
-		let bounded = |value: &str| (1..=256).contains(&value.chars().count());
-		if !bounded(&outcome.observed_status)
-			|| outcome
-				.next_inference
-				.as_deref()
-				.is_some_and(|v| !bounded(v))
-		{
-			return Err(Error::Invalid("decision outcome is out of bounds".into()));
-		}
-		let mut tx = self.begin().await?;
-		let decided: Option<Uuid> = native::query_scalar(
-			&Query::select()
-				.column(Alias::new("id"))
-				.from(Alias::new(EVIDENCE))
-				.and_where(Expr::col("run_id").eq(Expr::value(self.run.id)))
-				.and_where(Expr::col("decision_id").eq(Expr::value(outcome.decision)))
-				.limit(1)
-				.to_string(PostgresQueryBuilder),
-		)
-		.scalar_optional(&mut *tx)
-		.await?;
-		if decided.is_none() {
-			return Err(Error::NotFound(
-				"decision has no evidence in this Run".into(),
-			));
-		}
-		native::query(
-			&Query::insert()
-				.into_table(Alias::new(OUTCOMES))
-				.columns(
-					[
-						"id",
-						"decision_id",
-						"run_id",
-						"next_inference",
-						"observed_status",
-						"tenant",
-					]
-					.map(Alias::new),
-				)
-				.values_expr(vec![
-					Expr::value(Uuid::new_v4()).into(),
-					Expr::value(outcome.decision).into(),
-					Expr::value(self.run.id).into(),
-					Expr::value(outcome.next_inference.clone()).into(),
-					Expr::value(outcome.observed_status.as_str()).into(),
-					crate::database::scope::tenant_of("runs", "id", self.run.id),
-				])
-				.expect("one value per column")
-				.to_string(PostgresQueryBuilder),
-		)
-		.execute(&mut *tx)
-		.await?;
-		tx.commit().await
-	}
-}
-
-impl Store {
-	/// Delete retained classification state whose deadline is at or before `now`,
-	/// leaving the matching expired marker in its evidence in the same transaction.
-	pub async fn expire_decision_states(&self, now: DateTime<Utc>) -> Result<usize> {
-		// Retention cleanup is Deployment-wide; it is not limited to one Run.
-		let mut tx = self
-			.pool
-			.begin(&TenancyScope::Deployment(DeploymentScopeReason::Retention))
-			.await?;
-		let due = native::query(
-			&Query::select()
-				.columns(["id", "evidence_id", "run_id", "digest"].map(Alias::new))
-				.from(Alias::new(STATES))
-				.and_where(Expr::col("expires_at").lte(Expr::value(now)))
-				.lock(LockType::Update)
-				.to_string(PostgresQueryBuilder),
-		)
-		.fetch_all(&mut *tx)
-		.await?;
-		for row in &due {
-			let id: Uuid = row.try_get("id")?;
-			let evidence_id: Uuid = row.try_get("evidence_id")?;
-			let run: Uuid = row.try_get("run_id")?;
-			let digest: String = row.try_get("digest")?;
-			let saved: Value = native::query_scalar(
-				&Query::select()
-					.column(Alias::new("evidence"))
-					.from(Alias::new(EVIDENCE))
-					.and_where(Expr::col("id").eq(Expr::value(evidence_id)))
-					.and_where(Expr::col("run_id").eq(Expr::value(run)))
-					.lock(LockType::Update)
-					.to_string(PostgresQueryBuilder),
-			)
-			.scalar_one(&mut *tx)
-			.await?;
-			let mut evidence: Evidence = serde_json::from_value(saved)?;
-			// The column keeps PostgreSQL's microsecond precision, while the
-			// evidence keeps the exact deadline its retention witness names.
-			let expires_at = match &evidence.state {
-				StateReference::Retained {
-					id: retained,
-					digest: retained_digest,
-					expires_at,
-				} if *retained == id && *retained_digest == digest => *expires_at,
-				_ => {
-					return Err(Error::Invalid(
-						"retained decision state differs from its evidence".into(),
-					));
-				}
-			};
-			evidence.state = StateReference::Expired {
-				id,
-				digest,
-				expired_at: expires_at,
-			};
-			native::query(
-				&Query::update()
-					.table(Alias::new(EVIDENCE))
-					.value(Alias::new("evidence"), serde_json::to_value(&evidence)?)
-					.and_where(Expr::col("id").eq(Expr::value(evidence_id)))
-					.and_where(Expr::col("run_id").eq(Expr::value(run)))
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut *tx)
-			.await?;
-			native::query(
-				&Query::delete()
-					.from_table(Alias::new(STATES))
-					.and_where(Expr::col("id").eq(Expr::value(id)))
-					.to_string(PostgresQueryBuilder),
-			)
-			.execute(&mut *tx)
-			.await?;
-		}
-		tx.commit().await?;
-		Ok(due.len())
-	}
 }
 
 #[async_trait::async_trait]
@@ -1395,22 +839,7 @@ impl DecisionJournal for RunDecisionJournal<'_> {
 			.finish(permit, answers, status, provider_report)
 			.await?)
 	}
-	async fn commit(
-		&self,
-		evidence: &Evidence,
-		context: Option<&Context>,
-		state: Option<&RetainedState>,
-	) -> aidash_application::Result<()> {
-		Ok(self.commit_evidence(evidence, context, state).await?)
-	}
 	async fn commit_approval(&self, evidence: &ApprovalEvidence) -> aidash_application::Result<()> {
 		Ok(self.commit_approval_evidence(evidence).await?)
-	}
-	/// Retention cleanup is Deployment-wide; it is not limited to this Run.
-	async fn expire_states(&self, now: DateTime<Utc>) -> aidash_application::Result<usize> {
-		Ok(self.store.expire_decision_states(now).await?)
-	}
-	async fn append_outcome(&self, outcome: &OutcomeLink) -> aidash_application::Result<()> {
-		Ok(self.append(outcome).await?)
 	}
 }

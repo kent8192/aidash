@@ -122,11 +122,6 @@ const deciderContracts: Record<
   string,
   { builder: string; option_source: string; rule: string }
 > = {
-  compaction: {
-    builder: "aidash.compaction/3",
-    option_source: "history_event/1",
-    rule: "compaction.keep/1",
-  },
   approval_observation: {
     builder: "aidash.approval-observation/1",
     option_source: "pending_action/1",
@@ -466,7 +461,7 @@ export function EntityForm({
   const [core, setCore] = useState(emptyCore);
   const [pluginConfig, setPluginConfig] = useState<Record<string, unknown>>({});
   const [coordinator, setCoordinator] = useState(false);
-  const [deciderHook, setDeciderHook] = useState("compaction");
+  const [deciderHook, setDeciderHook] = useState("approval_observation");
   const [readingDocuments, setReadingDocuments] = useState(false);
   return (
     <form
@@ -568,10 +563,9 @@ export function EntityForm({
                             provider_contract: "typesafe.jev/1",
                             model: s("model_id"),
                             hosts: [],
-                            threshold:
-                              deciderHook === "compaction"
-                                ? "3fe0000000000000"
-                                : probabilityBits(Number(s("route_threshold"))),
+                            threshold: probabilityBits(
+                              Number(s("route_threshold")),
+                            ),
                           },
                           ...(d.has("clef_route") ? [CLEF_ROUTE] : []),
                         ],
@@ -582,10 +576,8 @@ export function EntityForm({
                             : s("decider_mode"),
                         max_calls_per_run: Number(s("max_calls_per_run")),
                         state_retention: {
-                          enabled:
-                            deciderHook === "compaction" &&
-                            d.has("retain_state"),
-                          days: Number(s("retention_days")),
+                          enabled: false,
+                          days: 7,
                         },
                       }
                     : (memoryConfiguration(kind, d) ?? JSON.parse(s("config")));
@@ -949,20 +941,15 @@ export function EntityForm({
         ) : kind === "decider" ? (
           <>
             <Hint>
-              {deciderHook === "compaction"
-                ? t("deciderHelp")
-                : ja
-                  ? "Jev の正確なリリースを選び、この不変バージョンを Node の Tenant Catalog で承認してください。Tenant の OpenRouter 接続を使います。Shadow は観測や提案を記録し、保護された操作やリクエストを変更しません。"
-                  : "Select an exact Jev release and approve this immutable version in the Node's Tenant Catalog. It uses the Tenant's OpenRouter connection. Shadow records observations or proposals without changing the protected action or request."}
+              {ja
+                ? "Jev の正確なリリースを選び、この不変バージョンを Node の Tenant Catalog で承認してください。Tenant の OpenRouter 接続を使います。Shadow は観測や提案を記録し、保護された操作やリクエストを変更しません。"
+                : "Select an exact Jev release and approve this immutable version in the Node's Tenant Catalog. It uses the Tenant's OpenRouter connection. Shadow records observations or proposals without changing the protected action or request."}
             </Hint>
             <Field label={ja ? "判断の用途" : "Decision hook"}>
               <NativeSelect
                 value={deciderHook}
                 onChange={(event) => setDeciderHook(event.target.value)}
               >
-                <option value="compaction">
-                  {ja ? "履歴の圧縮" : "History compaction"}
-                </option>
                 <option value="approval_observation">
                   {ja
                     ? "独立した Shadow 承認の観測"
@@ -980,21 +967,17 @@ export function EntityForm({
                 ? "契約と質問は用途ごとにバージョンで固定されます。しきい値を変更するには新しい不変バージョンと Catalog Approval が必要です。承認の観測は Auto の強制判断を変更しません。"
                 : "Each hook pins its versioned contract and questions. A threshold change requires a new immutable version and Catalog Approval. Observation does not change Auto enforcement."}
             </Hint>
-            {deciderHook !== "compaction" && (
-              <Field
-                label={ja ? "Jev Route のしきい値" : "Jev Route threshold"}
-              >
-                <Input
-                  name="route_threshold"
-                  type="number"
-                  min={0.000001}
-                  max={0.5}
-                  step="any"
-                  required
-                  defaultValue={0.5}
-                />
-              </Field>
-            )}
+            <Field label={ja ? "Jev Route のしきい値" : "Jev Route threshold"}>
+              <Input
+                name="route_threshold"
+                type="number"
+                min={0.000001}
+                max={0.5}
+                step="any"
+                required
+                defaultValue={0.5}
+              />
+            </Field>
             <Field label={t("model")}>
               <Input
                 name="model_id"
@@ -1030,28 +1013,10 @@ export function EntityForm({
                   defaultValue={20}
                 />
               </Field>
-              <Field label={t("deciderRetentionDays")}>
-                <Input
-                  name="retention_days"
-                  type="number"
-                  required
-                  min={1}
-                  max={30}
-                  defaultValue={7}
-                />
-              </Field>
             </div>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" name="clef_route" />
               {t("deciderClefRoute")}
-            </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                name="retain_state"
-                disabled={deciderHook !== "compaction"}
-              />
-              {t("deciderRetainState")}
             </label>
           </>
         ) : ["reranker", "tokenizer"].includes(kind) ? (
@@ -1141,7 +1106,6 @@ export function AssignForm({
               agent: { id: a.entity.id, version: a.entity.version },
             });
           }
-          const decider = String(d.get("decider") ?? "").trim();
           const input = request.current
             ? JSON.parse(request.current.binding)
             : {
@@ -1155,7 +1119,6 @@ export function AssignForm({
                       ...(nativeMemoryRequest(d)
                         ? { native: nativeMemoryRequest(d) }
                         : {}),
-                      ...(decider ? { decider: ref(decider) } : {}),
                     }
                   : { mode: "disabled" },
               };
@@ -1268,17 +1231,6 @@ export function AssignForm({
                         </option>
                       ))}
                   </NativeSelect>
-                </label>
-                <label className="grid gap-1.5 text-xs font-medium text-muted-foreground">
-                  {ja
-                    ? "任意: 実行 Node で承認済みの圧縮 Decider"
-                    : "Optional: compaction Decider approved at the execution node"}
-                  <Input
-                    name="decider"
-                    placeholder="decider-id@1.0.0"
-                    pattern=".+@[0-9]+\.[0-9]+\.[0-9]+.*"
-                    className="font-mono text-xs"
-                  />
                 </label>
                 <Hint>
                   {ja

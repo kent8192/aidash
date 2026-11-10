@@ -139,9 +139,9 @@ pub fn declarations(validation: &DefinitionValidation, node: &str) -> Result<Vec
 /// sending a Run's state to each of them. It enforces, keeps no state and may
 /// send 200 Decision Attempts per Run, about one per judged call.
 ///
-/// The thresholds are not calibrated for this hook. `scripts/evaluate-decider-routes.py`
-/// measured compaction only, so both Routes block at 0.3 until an evaluation on
-/// approval fixtures chooses them; a changed threshold is a new version.
+/// The thresholds are not calibrated for this hook. Both Routes block at 0.3
+/// until an evaluation on approval fixtures chooses them; a changed threshold
+/// is a new version.
 pub fn approval_decider() -> Result<Entry> {
 	let config = DeciderConfig {
 		hook: Hook::Approval,

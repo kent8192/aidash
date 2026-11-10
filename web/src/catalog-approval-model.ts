@@ -125,17 +125,10 @@ export function unapprovedClosure(
 }
 
 const UNAPPROVED = "CATALOG_DEPENDENCY_UNAPPROVED:";
-const COMPACTION_UNAPPROVED = "COMPACTION_DECIDER_UNAPPROVED:";
 
 /** The dependency a refused approval names, or `null` for any other error. */
 export function unapprovedDependency(message: string): EntityRef | null {
   return namedRef(message, UNAPPROVED);
-}
-
-/** The compaction Decider a refused Run start names (ADR 0102), or `null`
- *  for any other error. */
-export function unapprovedCompactionDecider(message: string): EntityRef | null {
-  return namedRef(message, COMPACTION_UNAPPROVED);
 }
 
 function namedRef(message: string, prefix: string): EntityRef | null {

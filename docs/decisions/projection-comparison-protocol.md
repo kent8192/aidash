@@ -1,5 +1,7 @@
 # Matched Projection Version comparison protocol
 
+The compaction Decider portions of this historical protocol are superseded by ADR 0125.
+
 Design record for [Issue #181](https://github.com/kent8192/aidash/issues/181).
 The twelve decisions below were accepted in two design rounds on 2026-10-23.
 The final section distinguishes engineering choices from those decisions and
