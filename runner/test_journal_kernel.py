@@ -43,6 +43,24 @@ class JournalKernelTest(unittest.TestCase):
             replacement.write_text('{"seq":2}\n')
             replacement.replace(journal)
             self.assertEqual(execute("print(saved, journal()[0]['seq'])").strip(), '17 2')
+
+            # A withdrawal requires a new heap: a variable holding the old
+            # export must not survive into the next cell.
+            self.assertEqual(execute("withdrawn = journal()").strip(), '')
+            client.stop_channels()
+            process.terminate()
+            process.wait(timeout=10)
+            process.stderr.close()
+            journal.write_text('{"seq":3,"result":"revoked"}\n')
+            process = subprocess.Popen([sys.executable, '-I', '/opt/aidash/kernel.py'],
+                                       env={**os.environ, 'AIDASH_JOURNAL': '1'},
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            client = BlockingKernelClient(connection_file='/request/kernel.json')
+            client.load_connection_file()
+            client.start_channels()
+            client.wait_for_ready(timeout=30)
+            self.assertEqual(execute("print('withdrawn' in globals(), journal()[0]['result'])").strip(),
+                             'False revoked')
         finally:
             client.stop_channels()
             process.terminate()
