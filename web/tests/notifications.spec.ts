@@ -43,6 +43,37 @@ async function nextToast(page: Page) {
   await expect(page.locator(".intent-toast-open")).toBeVisible();
 }
 
+test("an older task completing emits one notice from the visible event", async ({
+  page,
+}) => {
+  await page.clock.install();
+  await setup(page, { subject: true, locale: "en-US" });
+  await page.goto("/collaboration?channel=workspace-one");
+  const data = await stateAfterLoad(page);
+  const old = {
+    ...data.tasks[0],
+    id: "old-task",
+    title: "Older task",
+    status: "COMPLETED",
+    revision: 42,
+  };
+  data.tasks = data.tasks.filter((task) => task.id !== old.id);
+  data.events.push({
+    id: "completion-event",
+    sequence: 123456,
+    kind: "task.completed",
+    workspace_id: old.workspace_id,
+    node: data.workspaces[0].node,
+    created_at: new Date().toISOString(),
+    data: { task: old },
+  });
+  await nextToast(page);
+  await expect(page.locator(".intent-toast-open")).toContainText("Older task");
+  await refreshState(page);
+  await page.clock.runFor(6000);
+  await expect(page.locator(".intent-toast")).toHaveCount(1);
+});
+
 for (const width of [1440, 390]) {
   test(`quiet baseline and actionable approval toast at ${width}px`, async ({
     page,

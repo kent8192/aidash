@@ -7,6 +7,7 @@ export type NoticeTarget = {
   workspace: string;
 };
 export type NoticeEntry = {
+  eventId?: string;
   key: string;
   scope: string;
   signature: string;
@@ -32,6 +33,7 @@ function notice(entry: NoticeEntry): Notice | undefined {
 }
 
 export class NoticeStore {
+  private seenEvents = new Set<string>();
   private scopes = new Set<string>();
   private previous = new Map<string, NoticeEntry>();
   private current = new Map<string, Notice>();
@@ -74,12 +76,19 @@ export class NoticeStore {
       // A newly loaded terminal task is history, not proof of a new completion.
       if (
         this.scopes.has(entry.scope) &&
-        (newInput || (!input && before && before.kind !== item.kind))
+        (newInput ||
+          (!input &&
+            ((before && before.kind !== item.kind) ||
+              (!before &&
+                entry.eventId &&
+                !this.seenEvents.has(entry.eventId)))))
       ) {
         fresh.push(item);
       }
       if (input) this.announcedInputs.set(entry.key, entry.scope);
     }
+    for (const entry of frame.entries)
+      if (entry.eventId) this.seenEvents.add(entry.eventId);
     this.scopes = scopes;
     this.previous = entries;
     this.current = current;

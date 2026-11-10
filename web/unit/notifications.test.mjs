@@ -33,6 +33,18 @@ test("initial pending requests remain reachable without announcing history", () 
   assert.deepEqual(store.takeBatch(100), []);
   assert.equal(store.getSnapshot().recent.length, 0);
 });
+test("a newly observed completion event for an older task announces only once", () => {
+  const store = new NoticeStore();
+  const completed = { ...entry("old-task", "completed"), eventId: "event-1" };
+  store.observe(frame([]));
+  store.observe(frame([completed]));
+  assert.equal(store.takeBatch(0).length, 1);
+  store.observe(frame([completed]));
+  assert.equal(store.takeBatch(NOTICE_INTERVAL).length, 0);
+  const initial = new NoticeStore();
+  initial.observe(frame([completed]));
+  assert.equal(initial.takeBatch(0).length, 0);
+});
 test("new inputs deduplicate across polls, missing rows and reconnects", () => {
   const store = new NoticeStore();
   store.observe(frame([]));

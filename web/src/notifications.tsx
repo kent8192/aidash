@@ -126,6 +126,55 @@ function frame(
       workspace: task.workspace_id,
     },
   }));
+  for (const event of [...data.events].sort(
+    (a, b) => a.sequence - b.sequence,
+  )) {
+    if (
+      !event.workspace_id ||
+      !["task.updated", "task.completed"].includes(event.kind)
+    )
+      continue;
+    const payload = event.data;
+    if (!payload || typeof payload !== "object") continue;
+    const object = payload as Record<string, unknown>;
+    const value = (
+      object.task && typeof object.task === "object" ? object.task : object
+    ) as Record<string, unknown>;
+    if (
+      typeof value.id !== "string" ||
+      typeof value.status !== "string" ||
+      typeof value.title !== "string"
+    )
+      continue;
+    if (!["COMPLETED", "FAILED"].includes(value.status)) continue;
+    const scope = JSON.stringify([data.deployment.id, event.workspace_id]);
+    if (!scopes.includes(scope)) scopes.push(scope);
+    const key = JSON.stringify([data.deployment.id, "task", value.id]);
+    const prior = entries.findIndex((entry) => entry.key === key);
+    const entry: NoticeEntry = {
+      key,
+      scope,
+      eventId: event.id,
+      signature: `${value.revision}:${value.status}`,
+      kind: value.status === "FAILED" ? "failed" : "completed",
+      detail: value.title.slice(0, 180),
+      workspaceTitle:
+        data.workspaces.find((workspace) => workspace.id === event.workspace_id)
+          ?.title ?? "",
+      target: {
+        kind: "task",
+        id: value.id,
+        node: data.deployment.id,
+        workspace: event.workspace_id,
+      },
+    };
+    if (prior < 0) entries.push(entry);
+    else if (
+      entries[prior].eventId ||
+      entries[prior].signature === entry.signature
+    )
+      entries[prior] = entry;
+  }
   const requests = data.human_requests.map((request) => ({
     request,
     node: data.deployment.id,
