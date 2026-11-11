@@ -233,3 +233,61 @@ fn agent_plugin_settings_can_narrow_but_not_add_tools_or_read_only_declarations(
 			.contains(&"agent plugin settings".to_owned())
 	);
 }
+
+#[test]
+fn restored_default_capabilities_and_allow_flags_change_consent() {
+	let old = entry(
+		"agent",
+		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"first","remove_default":["file_read","task_create"]}),
+	);
+	let mut new = old.clone();
+	new.config["remove_default"] = json!([]);
+	let changes = compare(&old, &new).unwrap();
+	assert!(changes.contains(&"core capabilities".to_owned()));
+	assert!(changes.contains(&"allow flags".to_owned()));
+	assert!(changes.contains(&"remove default".to_owned()));
+	let narrowing = compare(&new, &old).unwrap();
+	assert!(!narrowing.contains(&"core capabilities".to_owned()));
+	assert!(!narrowing.contains(&"allow flags".to_owned()));
+	assert!(narrowing.contains(&"remove default".to_owned()));
+}
+
+#[test]
+fn source_is_the_highest_lower_carrying_enabled_semver() {
+	let candidates = [
+		CarryCandidate {
+			version: "2.1.0",
+			enabled: true,
+			carry_over: true,
+		},
+		CarryCandidate {
+			version: "2.0.0",
+			enabled: true,
+			carry_over: true,
+		},
+		CarryCandidate {
+			version: "2.0.1-alpha",
+			enabled: true,
+			carry_over: false,
+		},
+		CarryCandidate {
+			version: "2.0.1-rc.1",
+			enabled: false,
+			carry_over: true,
+		},
+		CarryCandidate {
+			version: "1.9.0",
+			enabled: true,
+			carry_over: true,
+		},
+	];
+	assert_eq!(source_version("2.0.1", &candidates).unwrap(), Some("2.0.0"));
+	assert_eq!(source_version("1.0.0", &candidates).unwrap(), None);
+	let build = [CarryCandidate {
+		version: "2.0.1+first",
+		enabled: true,
+		carry_over: true,
+	}];
+	assert_eq!(source_version("2.0.1+second", &build).unwrap(), None);
+	assert!(source_version("invalid", &candidates).is_err());
+}

@@ -67,6 +67,17 @@ impl CatalogRestriction {
 	}
 }
 
+/// Where an approver's Catalog Approval applies on this Deployment.
+#[derive(
+	Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalScope {
+	#[default]
+	Node,
+	Deployment,
+}
+
 /// A requested change to a Catalog Approval's restriction. An approval that
 /// does not name one keeps the stored restriction, so re-enabling an approval
 /// never silently widens it.

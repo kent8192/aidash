@@ -225,5 +225,37 @@ pub fn compare(old: &Entry, new: &Entry) -> Result<Vec<String>> {
 	Ok(changes)
 }
 
+/// A candidate approval on one Node. Disabled or non-carrying rows cannot be sources.
+pub struct CarryCandidate<'a> {
+	pub version: &'a str,
+	pub enabled: bool,
+	pub carry_over: bool,
+}
+
+/// Pick the highest eligible SemVer strictly below the registered version.
+pub fn source_version<'a>(
+	target: &str,
+	candidates: &[CarryCandidate<'a>],
+) -> Result<Option<&'a str>> {
+	let target = semver::Version::parse(target)
+		.map_err(|_| Error::Invalid("invalid target version".into()))?;
+	let mut best = None;
+	for candidate in candidates
+		.iter()
+		.filter(|candidate| candidate.enabled && candidate.carry_over)
+	{
+		let version = semver::Version::parse(candidate.version)
+			.map_err(|_| Error::Invalid("invalid approval source version".into()))?;
+		if version.cmp_precedence(&target).is_lt()
+			&& best.as_ref().is_none_or(|(previous, original)| {
+				version.cmp_precedence(previous).is_gt()
+					|| (version.cmp_precedence(previous).is_eq() && candidate.version > *original)
+			}) {
+			best = Some((version, candidate.version));
+		}
+	}
+	Ok(best.map(|(_, original)| original))
+}
+
 #[cfg(test)]
 mod tests;
