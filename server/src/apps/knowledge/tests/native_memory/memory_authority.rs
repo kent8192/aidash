@@ -101,6 +101,7 @@ async fn conversation_member_recalls_empty_bank_after_reading_coordinator(
 		sandbox: Default::default(),
 		registry,
 		config: Config {
+			smtp: None,
 			tenancy: aidash_domain::identity::tenancy::TenancyRules::of(
 				aidash_domain::offering::Offering::SelfHosted,
 			),

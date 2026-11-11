@@ -29,6 +29,9 @@ pub struct DashboardIdentity {
 	pub last_valid_at: Option<DateTime<Utc>>,
 	#[field(null = true)]
 	pub disabled_at: Option<DateTime<Utc>>,
+	/// Whether this person receives Catalog Approval Request mail.
+	#[field(default = true)]
+	pub approval_request_mail: bool,
 	/// The latest sign-in that offered Display Attributes, bounding their retention.
 	#[field(null = true)]
 	pub display_observed_at: Option<DateTime<Utc>>,

@@ -1122,6 +1122,7 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 			store,
 			registry,
 			config: Config {
+				smtp: None,
 				scratch_policy: Default::default(),
 				deployment: aidash_domain::nodes::DeploymentId::parse("aidash://execution-test")
 					.unwrap(),
