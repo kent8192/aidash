@@ -2705,13 +2705,35 @@ async fn source_deleted_during_remote_model_request_rejects_the_response(
 	let worker = Harness {
 		federation: p.b.clone(),
 	};
-	let running = tokio::spawn(async move { worker.worker_once().await });
-	tokio::time::timeout(
-		std::time::Duration::from_secs(20),
-		p.model.entered.notified(),
-	)
-	.await
-	.unwrap();
+	let mut running = tokio::spawn(async move { worker.worker_once().await });
+	let stalled = {
+		let started = std::time::Instant::now();
+		let entered = p.model.entered.notified();
+		tokio::pin!(entered);
+		loop {
+			tokio::select! {
+				() = &mut entered => break None,
+				result = &mut running => panic!("worker ended before reaching the held model: {result:?}"),
+				() = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+					let idle = p.peers.idle(started);
+					if idle >= Pair::STEP_STALL {
+						break Some(format!("no peer response for {idle:.1?}"));
+					}
+					if started.elapsed() >= Pair::STEP_CEILING {
+						break Some(format!("still running after {:.1?}", started.elapsed()));
+					}
+				}
+			}
+		}
+	};
+	if let Some(reason) = stalled {
+		// Release the model if it arrives during cleanup and let an in-flight
+		// peer request finish, just as Pair::step does on a stalled worker.
+		p.model.hold.store(false, Ordering::Release);
+		p.model.release.notify_one();
+		let _ = tokio::time::timeout(Pair::IN_FLIGHT_GRACE, &mut running).await;
+		panic!("worker did not reach the held model ({reason})");
+	}
 	let workspace =
 		p.a.store
 			.task(&TEST_FIXTURE, p.task)
@@ -2728,7 +2750,7 @@ async fn source_deleted_during_remote_model_request_rejects_the_response(
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	p.model.release.notify_waiters();
+	p.model.release.notify_one();
 	running.await.unwrap().unwrap();
 	assert_eq!(
 		p.run().await.control.as_str(),
