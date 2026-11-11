@@ -9028,7 +9028,7 @@ async fn deployment_approval_rejects_another_nodes_stale_revision(
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({
-			"node":node,"entry":{"id":"research","version":"1.0.0"},"enabled":true,
+			"node":node,"entry":{"id":"model","version":"1.0.0"},"enabled":true,
 			"expected_revision":1,"carry_over":false,"scope":"node"
 		}),
 	)
@@ -9043,7 +9043,7 @@ async fn deployment_approval_rejects_another_nodes_stale_revision(
 	.await;
 	assert_eq!(status, 201, "{sibling}");
 	let other = sibling["name"].as_str().unwrap();
-	let decide_other = |revision| json!({"node":other,"entry":{"id":"research","version":"1.0.0"},"enabled":true,"expected_revision":revision,"carry_over":false,"scope":"node"});
+	let decide_other = |revision| json!({"node":other,"entry":{"id":"model","version":"1.0.0"},"enabled":true,"expected_revision":revision,"carry_over":false,"scope":"node"});
 	let (status, body) = request(
 		&app,
 		&token,
@@ -9057,7 +9057,7 @@ async fn deployment_approval_rejects_another_nodes_stale_revision(
 		&app,
 		&token,
 		"GET",
-		&format!("/api/authorization/acme/catalog/review?node={node}&entry=research@1.0.0"),
+		&format!("/api/authorization/acme/catalog/review?node={node}&entry=model@1.0.0"),
 		Value::Null,
 	)
 	.await;
@@ -9066,7 +9066,7 @@ async fn deployment_approval_rejects_another_nodes_stale_revision(
 		.as_array()
 		.unwrap()
 		.iter()
-		.find(|item| item["reference"]["id"] == "research")
+		.find(|item| item["reference"]["id"] == "model")
 		.unwrap()["expected_node_revisions"]
 		.clone();
 	assert_eq!(revisions[other], 1);
@@ -9085,7 +9085,7 @@ async fn deployment_approval_rejects_another_nodes_stale_revision(
 		"POST",
 		"/api/authorization/acme/catalog",
 		json!({
-			"node":node,"entry":{"id":"research","version":"1.0.0"},"enabled":true,
+			"node":node,"entry":{"id":"model","version":"1.0.0"},"enabled":true,
 			"expected_revision":2,"carry_over":true,"scope":"deployment","expected_node_revisions":revisions
 		}),
 	)
