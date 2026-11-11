@@ -1,7 +1,12 @@
 /** User-facing notices are derived from authorized snapshots, never raw broker frames. */
-export type NoticeKind = "approval" | "input" | "completed" | "failed";
+export type NoticeKind =
+  | "approval"
+  | "input"
+  | "completed"
+  | "failed"
+  | "joined";
 export type NoticeTarget = {
-  kind: "human" | "task" | "approval";
+  kind: "human" | "task" | "approval" | "administration";
   node: string;
   id: string;
   workspace: string;
@@ -74,22 +79,35 @@ export class NoticeStore {
       // A newly loaded terminal task is history, not proof of a new completion.
       if (
         this.scopes.has(entry.scope) &&
-        (newInput || (!input && before && before.kind !== item.kind))
+        (newInput ||
+          (!input &&
+            ((before && before.kind !== item.kind) ||
+              (!before && item.target.kind === "administration"))))
       ) {
         fresh.push(item);
       }
       if (input) this.announcedInputs.set(entry.key, entry.scope);
     }
+    const initialAdministration = [...current.values()].filter(
+      (item) =>
+        item.target.kind === "administration" && !this.scopes.has(item.scope),
+    );
+    for (const item of initialAdministration) this.unread.add(item.id);
     this.scopes = scopes;
     this.previous = entries;
     this.current = current;
     this.announcedInputs = new Map(
       [...this.announcedInputs].filter(([, scope]) => scopes.has(scope)),
     );
-    this.recent = [...[...fresh].reverse(), ...this.recent]
+    this.recent = [
+      ...[...fresh].reverse(),
+      ...initialAdministration,
+      ...this.recent,
+    ]
       .filter(
         (item, index, all) =>
-          item.target.kind === "task" &&
+          (item.target.kind === "task" ||
+            item.target.kind === "administration") &&
           current.has(item.id) &&
           all.findIndex((other) => other.id === item.id) === index,
       )

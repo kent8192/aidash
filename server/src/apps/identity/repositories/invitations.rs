@@ -14,8 +14,10 @@ use aidash_domain::identity::tenant_administration::{
 };
 use aidash_domain::policy::PolicyBundle;
 use chrono::{DateTime, Duration, Utc};
+use hmac::{Hmac, Mac};
 use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::orm::{AtomicTransaction, Json, Model};
+use sha2::Sha256;
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
@@ -57,6 +59,8 @@ pub(crate) async fn issue(
 	groups: BTreeSet<String>,
 	lifetime: Duration,
 	issuer: &AdministrationActor,
+	join_directly: bool,
+	issued_by_token: Option<&str>,
 ) -> Result<Issued> {
 	// Serializes this Tenant's issues, so concurrent ones at the limit cannot
 	// all pass the count below.
@@ -85,6 +89,13 @@ pub(crate) async fn issue(
 		.expires_at(now + lifetime)
 		.issued_by_kind(kind.to_owned())
 		.issued_by_identity(identity)
+		.issued_by_mapping(
+			issuer
+				.tenant_administrator()
+				.map(|administrator| administrator.mapping_id),
+		)
+		.issued_by_token_hash(issued_by_token.map(|token| bearer_fingerprint(&secret, token)))
+		.join_directly(join_directly)
 		.revoked_at(None)
 		.redeemed_at(None)
 		.redeemed_by(None)
@@ -188,6 +199,7 @@ pub(crate) async fn revoke(
 		));
 	}
 	invitation.revoked_at = Some(database_time(tx).await?);
+	invitation.issued_by_token_hash = None;
 	TenantInvitation::objects()
 		.update_with_conn(tx, &invitation)
 		.await?;
@@ -242,6 +254,7 @@ pub(crate) async fn redeem(
 	tx: &mut AtomicTransaction,
 	mut invitation: TenantInvitation,
 	session: &HttpSession,
+	registration_id: Uuid,
 ) -> Result<DashboardRegistrationRequest> {
 	let identity = session.identity_id;
 	// An approval maps the identity under this row lock, so taking it before
@@ -270,9 +283,11 @@ pub(crate) async fn redeem(
 		identity,
 		&invitation.tenant,
 		Some(invitation.id),
+		registration_id,
 	)
 	.await?;
 	invitation.redeemed_at = Some(registration.created_at);
+	invitation.issued_by_token_hash = None;
 	invitation.redeemed_by = Some(identity);
 	invitation.registration_id = Some(registration.id);
 	TenantInvitation::objects()
@@ -296,6 +311,25 @@ pub(crate) async fn redeem(
 	)
 	.await?;
 	Ok(registration)
+}
+
+/// Bind the Deployment bearer to a link without storing a database-only
+/// verifier for that bearer: the random link secret is not persisted.
+fn bearer_mac(secret: &str, token: &str) -> Hmac<Sha256> {
+	let mut mac =
+		Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts every key length");
+	mac.update(b"aidash-invitation-issuer-v1\0");
+	mac.update(token.as_bytes());
+	mac
+}
+
+fn bearer_fingerprint(secret: &str, token: &str) -> Vec<u8> {
+	bearer_mac(secret, token).finalize().into_bytes().to_vec()
+}
+
+/// Verify the persisted tag in constant time against the current bearer.
+pub(crate) fn bearer_matches(secret: &str, token: &str, tag: &[u8]) -> bool {
+	bearer_mac(secret, token).verify_slice(tag).is_ok()
 }
 
 /// The groups `invitation` proposed, for pre-filling its approval.

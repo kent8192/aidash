@@ -1106,3 +1106,141 @@ async fn a_deployment_administrator_holds_no_tenant_content_or_settings_authorit
 	assert!(!body.to_string().contains("Confidential"), "{body}");
 	t.finish().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn invitation_issuer_without_registration_approval_must_choose_pending(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let (status, body) = t
+		.replace(|bundle| {
+			bundle["policies"].as_array_mut().unwrap().push(json!({
+				"id":"member-invites", "effect":"allow", "subjects":{"ids":["bob"]},
+				"actions":["invitation.create"], "resources":{"kinds":["invitation"]}
+			}));
+		})
+		.await;
+	assert_eq!(status, 200, "{body}");
+	let path = format!("/api/tenants/{}/invitations", t.tenant);
+	let (status, body) =
+		t.d.as_person(&t.bob, "POST", &path, Some(&t.bob_context), json!({}))
+			.await;
+	assert_eq!(status, 403, "{body}");
+	let (status, body) =
+		t.d.as_person(
+			&t.bob,
+			"POST",
+			&path,
+			Some(&t.bob_context),
+			json!({"join_directly":false}),
+		)
+		.await;
+	assert_eq!(status, 201, "{body}");
+	t.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn invitation_waits_when_tenant_issuer_loses_approval_authority(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let holder = t.d.person("waiting-tenant-holder").await;
+	let path = format!("/api/tenants/{}/invitations", t.tenant);
+	let (status, invitation) =
+		t.d.as_person(&t.alice, "POST", &path, Some(&t.alice_context), json!({}))
+			.await;
+	assert_eq!(status, 201, "{invitation}");
+	let (status, body) = t
+		.replace(|bundle| {
+			// Bob remains an administrator when Alice loses approval authority.
+			bundle["subjects"]["bob"]["groups"] = json!(["administrators"]);
+			bundle["policies"].as_array_mut().unwrap().push(json!({
+				"id":"no-registration-approval", "effect":"deny", "subjects":{"ids":["owner"]},
+				"actions":["registration.approve"], "resources":{"kinds":["registration"]}
+			}));
+		})
+		.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, registration) =
+		t.d.as_person(
+			&holder,
+			"POST",
+			"/auth/invitations/redeem",
+			None,
+			json!({"tenant":t.tenant,"secret":invitation["secret"]}),
+		)
+		.await;
+	assert_eq!(status, 200, "{registration}");
+	assert_eq!(registration["status"], "pending");
+	assert!(t.d.context_or_none(&holder, &t.tenant).await.is_none());
+	let (status, pending) =
+		t.d.as_person(
+			&t.alice,
+			"GET",
+			&format!("/api/tenants/{}/registrations", t.tenant),
+			Some(&t.alice_context),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{pending}");
+	assert_eq!(pending[0]["id"], registration["id"]);
+	assert_eq!(pending[0]["proposed_groups"], json!(["members"]));
+	let notices: i64 = sqlx::query_scalar("SELECT count(*) FROM dashboard_administration_history WHERE action = 'invitation.direct_join' AND invitation_id = $1")
+		.bind(Uuid::parse_str(invitation["id"].as_str().unwrap()).unwrap())
+		.fetch_one(t.d.federation.store.pool.fixture_driver()).await.unwrap();
+	assert_eq!(notices, 0);
+	t.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn invitation_uses_another_current_mapping_of_its_issuer(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let holder = t.d.person("alternate-issuer-holder").await;
+	let path = format!("/api/tenants/{}/invitations", t.tenant);
+	let (status, invitation) =
+		t.d.as_person(&t.alice, "POST", &path, Some(&t.alice_context), json!({}))
+			.await;
+	assert_eq!(status, 201, "{invitation}");
+	let (status, body) = t
+		.replace(|bundle| {
+			bundle["subjects"]["alternate-owner"] = bundle["subjects"]["owner"].clone();
+		})
+		.await;
+	assert_eq!(status, 200, "{body}");
+
+	// Give the same External Identity a second Mapping, then retire the one
+	// used when the link was issued. Its other Mapping still may approve.
+	let original = Uuid::parse_str(Team::mapping(&t.alice_context)).unwrap();
+	let credential = Uuid::new_v4();
+	let mapping = Uuid::new_v4();
+	let pool = t.d.federation.store.pool.fixture_driver();
+	sqlx::query("INSERT INTO authorization_credentials (id, tenant, subject, token_hash, created_at, expires_at, revoked_at, issued_by, mapping_id) SELECT $1, tenant, 'alternate-owner', $2, created_at, expires_at, NULL, issued_by, NULL FROM authorization_credentials WHERE id = (SELECT credential_id FROM dashboard_mappings WHERE id = $3)")
+		.bind(credential).bind(Sha256::digest(Uuid::new_v4().as_bytes()).to_vec()).bind(original).execute(pool).await.unwrap();
+	sqlx::query("INSERT INTO dashboard_mappings (id, identity_id, tenant, subject, credential_id, enabled, revision) SELECT $1, identity_id, tenant, 'alternate-owner', $2, true, 1 FROM dashboard_mappings WHERE id = $3")
+		.bind(mapping).bind(credential).bind(original).execute(pool).await.unwrap();
+	sqlx::query("UPDATE dashboard_mappings SET enabled = false WHERE id = $1")
+		.bind(original)
+		.execute(pool)
+		.await
+		.unwrap();
+	let (status, registration) =
+		t.d.as_person(
+			&holder,
+			"POST",
+			"/auth/invitations/redeem",
+			None,
+			json!({"tenant":t.tenant,"secret":invitation["secret"]}),
+		)
+		.await;
+	assert_eq!(status, 200, "{registration}");
+	assert_eq!(registration["status"], "approved");
+	let recorded: i64 = sqlx::query_scalar("SELECT count(*) FROM dashboard_administration_history WHERE action = 'registration.approve' AND registration_id = $1 AND actor_identity_id = $2 AND actor_mapping_id = $3")
+		.bind(Uuid::parse_str(registration["id"].as_str().unwrap()).unwrap()).bind(t.alice.identity).bind(mapping).fetch_one(pool).await.unwrap();
+	assert_eq!(recorded, 1);
+	t.finish().await;
+}

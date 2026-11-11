@@ -57030,5 +57030,63 @@
     },
     "source": "server/src/apps/identity/views/peer_execution.rs",
     "uuid_parameters": ["id"]
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "tenant-invitation-approvals",
+    "path": "/api/tenants/{tenant}/invitation-approvals",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "InvitationApprovalNotice": {
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "identity": {
+                "$ref": "#/components/schemas/TenantIdentity"
+              },
+              "occurred_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "subject": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "identity", "subject", "occurred_at"],
+            "type": "object"
+          },
+          "TenantIdentity": {
+            "description": "Display Attributes recognize the person; they never decide authority.",
+            "properties": {
+              "display_name": {
+                "type": ["string", "null"]
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "verified_email": {
+                "type": ["string", "null"]
+              }
+            },
+            "required": ["id", "verified_email", "display_name"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "items": {
+            "$ref": "#/components/schemas/InvitationApprovalNotice"
+          },
+          "type": "array"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/tenant_administration.rs",
+    "uuid_parameters": []
   }
 ]

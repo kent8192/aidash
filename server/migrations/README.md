@@ -917,3 +917,5 @@ validator with the six `core.subnodes@1` operations (#660). Its reversible
 cannot express PL/pgSQL function definitions. Rolling back restores the
 previous descriptor contract; existing Subnode descriptors then cannot be
 rewritten until the migration is reapplied.
+
+`identity/0073_invitation_direct_join` stores the issuer Mapping or bearer fingerprint and direct-join choice on Invitations and records approved groups in administration history. Existing Invitations retain the pending-request behavior. `identity/0074_invitation_notification_index` indexes the Tenant and action with the event time for the bounded notification feed.

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 403,
+  "endpoint_count": 404,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -17745,6 +17745,39 @@
       "required_checks": [
         "Rejected input preserves committed workspace state",
         "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1606 tenant-invitation-approvals - Anonymous request is rejected",
+      "file": "contracts/1606-tenant-invitation-approvals.bru",
+      "endpoint": "GET /api/tenants/{tenant}/invitation-approvals",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1607 tenant-invitation-approvals - Deployment Administrator bearer is never a Tenant Administrator",
+      "file": "contracts/1607-tenant-invitation-approvals.bru",
+      "endpoint": "GET /api/tenants/{tenant}/invitation-approvals",
+      "scenario": "Deployment Administrator bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1608 tenant-invitation-approvals - Subject Credential bearer is never a Tenant Administrator",
+      "file": "contracts/1608-tenant-invitation-approvals.bru",
+      "endpoint": "GET /api/tenants/{tenant}/invitation-approvals",
+      "scenario": "Subject Credential bearer is never a Tenant Administrator",
+      "status": 403,
+      "required_checks": [
+        "Exact HTTP 403",
         "Stable authorization error envelope"
       ]
     }

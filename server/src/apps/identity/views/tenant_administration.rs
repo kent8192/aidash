@@ -28,6 +28,20 @@ pub async fn overview(
 }
 
 #[get(
+	"/api/tenants/{tenant}/invitation-approvals",
+	name = "tenant-invitation-approvals",
+	auth = "protected"
+)]
+pub async fn invitation_approvals(
+	#[inject] service: Depends<TenantAdministrations>,
+	#[inject] actor: Actor,
+	#[inject] origin: Option<BrowserOrigin>,
+	Path(tenant): Path<String>,
+) -> ViewResult<Response> {
+	response(service.invitation_approvals(actor, origin, tenant).await)
+}
+
+#[get(
 	"/api/tenants/{tenant}/subnode-limits",
 	name = "tenant-subnode-limits",
 	auth = "protected"

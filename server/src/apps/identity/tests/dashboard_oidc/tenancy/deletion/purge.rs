@@ -126,7 +126,7 @@ async fn purge_deletes_the_tenants_rows_and_leaves_other_tenants_and_audit_histo
 			"POST",
 			&format!("/api/tenants/{tenant}/invitations"),
 			Some(&context),
-			json!({}),
+			json!({"join_directly":false}),
 		)
 		.await;
 	assert_eq!(status, 201, "{invitation}");

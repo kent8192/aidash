@@ -295,3 +295,41 @@ test("connection notifications carry the complete resource and consent scopes in
     null,
   );
 });
+
+test("an invitation approval is announced to an administrator once", () => {
+  const store = new NoticeStore();
+  const scope = "tenant:team";
+  store.observe(frame([], [scope]));
+  const approval = {
+    ...entry("invitation-1", "completed", scope),
+    target: {
+      kind: "administration",
+      node: "home",
+      id: "invitation-1",
+      workspace: "",
+    },
+  };
+  store.observe(frame([approval], [scope]));
+  assert.equal(store.takeBatch(0).length, 1);
+  assert.equal(store.getSnapshot().recent.length, 1);
+  store.observe(frame([approval], [scope]));
+  assert.deepEqual(store.takeBatch(NOTICE_INTERVAL), []);
+});
+
+test("an existing invitation approval remains visible after a notification center loads", () => {
+  const store = new NoticeStore();
+  const scope = "tenant:team";
+  const approval = {
+    ...entry("old-invitation", "joined", scope),
+    target: {
+      kind: "administration",
+      node: "home",
+      id: "old-invitation",
+      workspace: "",
+    },
+  };
+  store.observe(frame([approval], [scope]));
+  assert.equal(store.getSnapshot().recent.length, 1);
+  assert.equal(store.getSnapshot().unread, true);
+  assert.deepEqual(store.takeBatch(0), []);
+});

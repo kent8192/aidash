@@ -3,30 +3,33 @@
 //! administration that does not reach into Tenant content. Opening a link
 //! spends nothing; requesting to join with it does.
 use crate::apps::identity::models::{
-	AdministrationActor, AuthorizationBundle, DashboardIdentity, Tenant, TenantAdministrator,
+	AdministrationActor, AuthorizationBundle, DashboardDeploymentAdministratorGrant,
+	DashboardIdentity, DashboardMapping, DashboardRegistrationRequest, Tenant, TenantAdministrator,
 	TenantInvitation, database_time,
 };
 use crate::apps::identity::oidc::{
-	BrowserOrigin, csrf_allowed, required_config, session_from_headers,
+	BrowserOrigin, csrf_allowed, digest, random_secret, required_config, session_from_headers,
 };
 use crate::apps::identity::repositories::invitations;
 use crate::apps::identity::serializers::invitations::{
 	InvitationLink, InvitationPreview, InvitationRequest, InvitationView, IssuedInvitation,
 };
-use crate::apps::identity::serializers::oidc::Registration;
-use crate::authorization::identity::Actor;
+use crate::apps::identity::serializers::oidc::{Approval, Registration};
+use crate::authorization::identity::{Actor, SubjectIdentity};
 use crate::federation::Federation;
 use crate::http::validate;
 use crate::{Error, Result};
 use aidash_application::tenancy::TenancyScope;
 use aidash_domain::identity::tenancy::invitation;
 use aidash_domain::identity::tenant_administration::{
-	COLLECTION, INVITATION_CREATE, INVITATION_READ, INVITATION_REVOKE,
+	COLLECTION, INVITATION_CREATE, INVITATION_READ, INVITATION_REVOKE, REGISTRATION_APPROVE,
 };
 use http::{HeaderMap, Method};
+use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::orm::{AtomicTransaction, Model};
 use reinhardt::injectable;
 use serde_json::json;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -42,7 +45,7 @@ pub async fn provide(#[inject] runtime: Federation) -> Invitations {
 
 /// Who administers a Tenant's Invitations.
 enum Issuer {
-	DeploymentAdministrator(Option<Uuid>),
+	DeploymentAdministrator(Option<BrowserOrigin>),
 	TenantAdministrator(Arc<TenantAdministrator>),
 }
 
@@ -52,9 +55,9 @@ impl Issuer {
 			Self::DeploymentAdministrator(None) => {
 				AdministrationActor::DeploymentAdministratorBearer
 			}
-			Self::DeploymentAdministrator(Some(identity)) => {
+			Self::DeploymentAdministrator(Some(origin)) => {
 				AdministrationActor::DeploymentAdministrator {
-					identity: *identity,
+					identity: origin.identity_id,
 				}
 			}
 			Self::TenantAdministrator(administrator) => {
@@ -63,7 +66,7 @@ impl Issuer {
 		}
 	}
 
-	/// Locks the Tenant's policy and checks `action` for a Tenant Administrator.
+	/// Locks the policy and checks the issuer's current authority.
 	async fn authorize(
 		&self,
 		tx: &mut AtomicTransaction,
@@ -72,11 +75,17 @@ impl Issuer {
 		id: &str,
 	) -> Result<crate::authorization::Snapshot> {
 		match self {
-			Self::DeploymentAdministrator(_) => {
+			Self::DeploymentAdministrator(origin) => {
 				if !Tenant::exists(tx, tenant).await? {
 					return Err(Error::NotFound("tenant".into()));
 				}
-				AuthorizationBundle::lock_snapshot(tx, tenant, false).await
+				let snapshot = AuthorizationBundle::lock_snapshot(tx, tenant, false).await?;
+				if action == INVITATION_CREATE
+					&& let Some(origin) = origin
+				{
+					origin.require_deployment_administrator(tx, true).await?;
+				}
+				Ok(snapshot)
 			}
 			Self::TenantAdministrator(administrator) => {
 				let snapshot = administrator.lock(tx, false).await?;
@@ -89,6 +98,13 @@ impl Issuer {
 	}
 }
 
+struct JoinDecision<'a> {
+	registration: Uuid,
+	identity: Uuid,
+	subject: &'a str,
+	groups: &'a BTreeSet<String>,
+}
+
 impl Invitations {
 	async fn issuer(
 		&self,
@@ -98,9 +114,7 @@ impl Invitations {
 	) -> Result<Issuer> {
 		aidash_domain::policy::identifier(tenant)?;
 		match (actor, origin) {
-			(Actor::DeploymentAdministrator, origin) => Ok(Issuer::DeploymentAdministrator(
-				origin.map(|origin| origin.identity_id),
-			)),
+			(Actor::DeploymentAdministrator, origin) => Ok(Issuer::DeploymentAdministrator(origin)),
 			(Actor::Subject(identity), Some(origin)) => {
 				let mapping = origin.mapping_id.ok_or(Error::Forbidden)?;
 				if identity.tenant != tenant {
@@ -161,8 +175,29 @@ impl Invitations {
 				let snapshot = issuer
 					.authorize(tx, &tenant, INVITATION_CREATE, COLLECTION)
 					.await?;
+				if input.join_directly
+					&& let Issuer::TenantAdministrator(administrator) = &issuer
+				{
+					administrator
+						.require(tx, &snapshot, REGISTRATION_APPROVE, COLLECTION, json!({}))
+						.await?;
+				}
 				let groups = invitations::proposed_groups(&snapshot.bundle, input.groups.clone())?;
-				invitations::issue(tx, &tenant, groups, lifetime, &issuer.actor()).await
+				invitations::issue(
+					tx,
+					&tenant,
+					groups,
+					lifetime,
+					&issuer.actor(),
+					input.join_directly,
+					match &issuer {
+						Issuer::DeploymentAdministrator(None) if input.join_directly => {
+							Some(self.runtime.config.api_token.as_str())
+						}
+						_ => None,
+					},
+				)
+				.await
 			})
 			.await;
 		let issued = self.finish(&issuer, result).await?;
@@ -283,6 +318,146 @@ impl Invitations {
 			.await
 	}
 
+	/// Reconstruct and lock the saved issuer's current authority, not its old session.
+	async fn invitation_approver(
+		&self,
+		tx: &mut AtomicTransaction,
+		invitation: &TenantInvitation,
+		secret: &str,
+		exclusive: bool,
+		decision: &JoinDecision<'_>,
+	) -> Result<Option<(AdministrationActor, crate::authorization::Snapshot)>> {
+		let tenant = &invitation.tenant;
+		if invitation.issued_by_kind == "deployment_administrator" {
+			// A revoked grant cannot approve and need not contend for a policy
+			// change lock. A positive read is checked again under the grant lock.
+			if let Some(identity) = invitation.issued_by_identity
+				&& !DashboardDeploymentAdministratorGrant::enabled_for_identity(tx, identity)
+					.await?
+			{
+				return Ok(None);
+			}
+			if invitation.issued_by_identity.is_none()
+				&& invitation
+					.issued_by_token_hash
+					.as_deref()
+					.is_none_or(|tag| {
+						!invitations::bearer_matches(secret, &self.runtime.config.api_token, tag)
+					}) {
+				return Ok(None);
+			}
+			let snapshot = AuthorizationBundle::lock_snapshot(tx, tenant, true).await?;
+			let actor = match invitation.issued_by_identity {
+				None => AdministrationActor::DeploymentAdministratorBearer,
+				Some(identity) => {
+					let Some(person) = lock_deployment_grant(tx, identity).await? else {
+						return Ok(None);
+					};
+					let policy = self.runtime.config.dashboard_policy();
+					if policy
+						.as_ref()
+						.is_none_or(|p| p.require_identity(&person.issuer).is_err())
+						|| crate::authorization::identity::validate_local_status(
+							policy.as_ref(),
+							Some((
+								person.issuer.clone(),
+								person.last_valid_at,
+								person.disabled_at,
+							)),
+						)
+						.is_err()
+					{
+						return Ok(None);
+					}
+					if let Some(authority) = policy.as_ref().and_then(|p| p.authority.as_ref())
+						&& authority.validate_origin(identity).await.is_err()
+					{
+						return Ok(None);
+					}
+					AdministrationActor::DeploymentAdministrator { identity }
+				}
+			};
+			return Ok(Some((actor, snapshot)));
+		}
+		if invitation.issued_by_kind != "tenant_administrator" {
+			return Ok(None);
+		}
+		let Some(identity) = invitation.issued_by_identity else {
+			return Ok(None);
+		};
+		let mappings = DashboardMapping::objects()
+			.filter(DashboardMapping::field_identity_id().eq(identity))
+			.filter(DashboardMapping::field_tenant().eq(tenant.clone()))
+			.filter(DashboardMapping::field_enabled().eq(true))
+			.order_by(&["id"])
+			.all_with_db(tx)
+			.await?;
+		// Lock Mappings in ID order even if links were issued from different
+		// Mappings; only the same External Identity can supply authority.
+		let mut candidates = Vec::new();
+		for mapping in mappings {
+			let mapping_id = mapping.id;
+			let credential_id = mapping.credential_id();
+			let subject = SubjectIdentity {
+				http_session: None,
+				credential_id,
+				tenant: tenant.clone(),
+				subject: mapping.subject,
+			};
+			let administrator = match TenantAdministrator::new(
+				subject,
+				identity,
+				mapping_id,
+				self.runtime.config.deployment.to_string(),
+				self.runtime.config.dashboard_policy(),
+			) {
+				Ok(administrator) => Arc::new(administrator),
+				Err(Error::Forbidden | Error::Unauthorized) => continue,
+				Err(error) => return Err(error),
+			};
+			let snapshot = match administrator
+				.lock_change(tx, exclusive, REGISTRATION_APPROVE)
+				.await
+			{
+				Ok(snapshot) => snapshot,
+				Err(Error::Forbidden | Error::Unauthorized) => continue,
+				Err(error) => return Err(error),
+			};
+			// A credential can also exist without a Mapping. Recheck this exact
+			// Mapping under the share lock held by lock_change, even if it
+			// disappeared before that lock was acquired.
+			let current = DashboardMapping::objects()
+				.filter(DashboardMapping::field_id().eq(mapping_id))
+				.filter(DashboardMapping::field_identity_id().eq(identity))
+				.filter(DashboardMapping::field_credential_id().eq(credential_id))
+				.filter(DashboardMapping::field_tenant().eq(tenant.clone()))
+				.filter(
+					DashboardMapping::field_subject().eq(administrator.identity.subject.clone()),
+				)
+				.filter(DashboardMapping::field_enabled().eq(true))
+				.all_with_db(tx)
+				.await?;
+			if current.is_empty() {
+				continue;
+			}
+			candidates.push((administrator, snapshot));
+		}
+		// Take all issuer locks before the authorization audit cursor.
+		candidates.sort_by_key(|(administrator, _)| {
+			(
+				Some(administrator.mapping_id) != invitation.issued_by_mapping,
+				administrator.mapping_id,
+			)
+		});
+		for (administrator, snapshot) in candidates {
+			if administrator.allowed(tx, &snapshot, REGISTRATION_APPROVE, &decision.registration.to_string(),
+				json!({"identity_id": decision.identity, "subject": decision.subject, "groups": decision.groups})).await? {
+				return Ok(Some((AdministrationActor::TenantAdministrator(administrator), snapshot)));
+			}
+		}
+		Ok(None)
+	}
+
 	/// Spends the link on a Registration Request addressed to its Tenant.
 	pub(crate) async fn redeem(
 		&self,
@@ -291,19 +466,161 @@ impl Invitations {
 	) -> Result<Registration> {
 		validate(&input)?;
 		let holder = self.holder(&headers).await?;
+		// Admission may use another database connection. Evaluate it before the
+		// write transaction, as the ordinary approval route does, but only apply
+		// its verdict if the issuer still authorizes a direct join.
+		let (needs_admission, issuer_subjects) = self
+			.runtime
+			.store
+			.pool
+			.atomic(&link_scope(&input.tenant)?, async |tx| {
+				let Some(row) =
+					invitations::usable(tx, &input.tenant, &input.secret, false).await?
+				else {
+					return Ok((false, Vec::new()));
+				};
+				if !row.join_directly || row.issued_by_kind != "tenant_administrator" {
+					return Ok((false, Vec::new()));
+				}
+				let subjects = if let Some(identity) = row.issued_by_identity {
+					DashboardMapping::objects()
+						.filter(DashboardMapping::field_identity_id().eq(identity))
+						.filter(DashboardMapping::field_tenant().eq(input.tenant.clone()))
+						.filter(DashboardMapping::field_enabled().eq(true))
+						.all_with_db(tx)
+						.await?
+						.into_iter()
+						.map(|mapping| mapping.subject)
+						.collect()
+				} else {
+					Vec::new()
+				};
+				Ok((true, subjects))
+			})
+			.await?;
+		// Like the ordinary approval path, avoid raising an authority-change
+		// flag for an issuer no policy can allow. The locked check detects a
+		// policy that began allowing the action after this read.
+		let exclusive = if issuer_subjects.is_empty() {
+			false
+		} else {
+			let snapshot = crate::authorization::Authorization {
+				pool: self.runtime.store.pool.clone(),
+			}
+			.snapshot(&input.tenant)
+			.await?;
+			issuer_subjects
+				.iter()
+				.any(|subject| snapshot.bundle.may_allow(subject, REGISTRATION_APPROVE))
+		};
+		let admission: Option<Result<()>> = if needs_admission {
+			Some(
+				aidash_application::usage::require(
+					self.runtime.store.admission.as_ref(),
+					&input.tenant,
+					aidash_application::usage::Work::Member,
+				)
+				.await
+				.map_err(Into::into),
+			)
+		} else {
+			None
+		};
 		let registration = self
 			.runtime
 			.store
 			.pool
 			.atomic(&link_scope(&input.tenant)?, async |tx| {
+				// Read the immutable issuer first. Approval takes policy and issuer
+				// authority locks before the Invitation, holder identity and request,
+				// matching the ordinary approval path and avoiding inverted locks.
+				let preview = invitations::usable(tx, &input.tenant, &input.secret, false)
+					.await?
+					.ok_or_else(invalid_link)?;
+				let identity = holder.session.identity_id;
+				let registration_id = Uuid::new_v4();
+				let groups = invitations::proposed(&preview);
+				// A fresh subject prevents a returning member from regaining old
+				// roles or non-assignable groups the Invitation did not offer.
+				let subject = format!("user-{registration_id}");
+				let decision = JoinDecision {
+					registration: registration_id,
+					identity,
+					subject: &subject,
+					groups: &groups,
+				};
+				let approver = if preview.join_directly {
+					self.invitation_approver(tx, &preview, &input.secret, exclusive, &decision)
+						.await?
+				} else {
+					None
+				};
 				let invitation = invitations::usable(tx, &input.tenant, &input.secret, true)
 					.await?
 					.ok_or_else(invalid_link)?;
-				invitations::redeem(tx, invitation, &holder.session).await
+				let mut registration =
+					invitations::redeem(tx, invitation, &holder.session, registration_id).await?;
+				if let Some((actor, snapshot)) = approver {
+					if actor.tenant_administrator().is_some() {
+						admission
+							.ok_or_else(|| Error::Conflict("Invitation changed; retry".into()))??;
+					}
+					DashboardRegistrationRequest::approve_in(
+						tx,
+						registration.id,
+						Approval {
+							tenant: input.tenant.clone(),
+							subject,
+							groups: Some(groups.clone()),
+						},
+						groups,
+						&actor,
+						digest(&random_secret()),
+						self.runtime.config.dashboard_policy(),
+						true,
+						Some(snapshot),
+					)
+					.await?;
+					registration = DashboardRegistrationRequest::objects()
+						.filter(DashboardRegistrationRequest::field_id().eq(registration.id))
+						.all_with_db(tx)
+						.await?
+						.pop()
+						.ok_or_else(invalid_link)?;
+				}
+				Ok(registration)
 			})
 			.await?;
 		Ok(registration.contract())
 	}
+}
+
+/// Grant mutations lock the identity before the grant; use that order here too.
+async fn lock_deployment_grant(
+	tx: &mut AtomicTransaction,
+	identity: Uuid,
+) -> Result<Option<DashboardIdentity>> {
+	let Some(person) = DashboardIdentity::objects()
+		.filter(DashboardIdentity::field_id().eq(identity))
+		.select_for_update()
+		.all_with_executor(tx)
+		.await
+		.map_err(FrameworkError::from)?
+		.pop()
+	else {
+		return Ok(None);
+	};
+	let grant = DashboardDeploymentAdministratorGrant::objects()
+		.filter(DashboardDeploymentAdministratorGrant::field_identity_id().eq(identity))
+		.filter(DashboardDeploymentAdministratorGrant::field_enabled().eq(true))
+		.select_for_update()
+		.all_with_executor(tx)
+		.await
+		.map_err(FrameworkError::from)?;
+	if grant.is_empty() || person.disabled_at.is_some() {
+		return Ok(None);
+	}
+	Ok(Some(person))
 }
 
 /// One answer for every unusable link, so it reveals nothing about why.
