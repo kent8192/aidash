@@ -61,6 +61,8 @@ fn reference(id: &str) -> EntityRef {
 }
 fn approval(id: &str, enabled: bool) -> Approval {
 	Approval {
+		carry_over: false,
+		scope: aidash_domain::identity::catalog::ApprovalScope::Node,
 		provider_warning_acknowledged: false,
 		entry: reference(id),
 		enabled,
@@ -556,4 +558,28 @@ async fn an_agent_without_the_default_has_no_compaction_dependency() {
 	let dependencies = dependencies(&entry, "aidash://node-a").unwrap();
 	// Assert
 	assert!(!dependencies.contains(&reference("aidash.compaction-decider")));
+}
+
+#[test]
+fn approval_defaults_to_carrying_across_the_deployment() {
+	let input: Approval = serde_json::from_value(
+		json!({"entry":{"id":"model","version":"1.0.0"},"enabled":true,"expected_revision":0}),
+	)
+	.unwrap();
+	assert!(input.carry_over);
+	assert_eq!(
+		input.scope,
+		aidash_domain::identity::catalog::ApprovalScope::Deployment
+	);
+}
+
+#[tokio::test]
+async fn deployment_scope_is_rejected_without_atomic_node_orchestration() {
+	let mut fixture = Fixture::new(vec![model()]);
+	let mut item = approval("model", true);
+	item.scope = aidash_domain::identity::catalog::ApprovalScope::Deployment;
+	assert!(
+		matches!(approve(&mut fixture, &[item]).await, Err(Error::Invalid(message)) if message == "CATALOG_DEPLOYMENT_SCOPE_UNAVAILABLE")
+	);
+	assert!(fixture.writes.is_empty());
 }

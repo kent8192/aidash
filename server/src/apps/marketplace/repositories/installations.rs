@@ -179,9 +179,18 @@ impl StagingScope for NativeDefinitions<'_, &Store> {
 		installation: &Installation,
 		revision: &Revision,
 	) -> aidash_application::Result<()> {
-		persist_revision(&mut self.access.tx, installation, revision)
-			.await
-			.map_err(Into::into)
+		persist_revision(&mut self.access.tx, installation, revision).await?;
+		aidash_application::authorization::catalog::carry_over::carry(
+			&mut crate::apps::identity::repositories::catalog_carry::TenantCarry {
+				tenant: &self.access.identity.tenant,
+				tx: &mut self.access.tx,
+				snapshot: &mut self.access.snapshot,
+				deployment: &self.events.deployment,
+			},
+			&revision.entry,
+		)
+		.await?;
+		Ok(())
 	}
 	async fn insert_documents(
 		&mut self,

@@ -107,6 +107,10 @@ pub struct ApprovalReview {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewApproval {
+	#[serde(default = "approvals::default_carry_over")]
+	pub carry_over: bool,
+	#[serde(default = "approvals::default_scope")]
+	pub scope: aidash_domain::identity::catalog::ApprovalScope,
 	pub reference: EntityRef,
 	#[serde(default)]
 	pub provider_warning_acknowledged: bool,
@@ -121,6 +125,12 @@ pub struct ReviewApproval {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewActivation {
+	#[serde(default = "approvals::default_carry_over")]
+	pub carry_over: bool,
+	#[serde(default = "approvals::default_scope")]
+	pub scope: aidash_domain::identity::catalog::ApprovalScope,
+	#[serde(default)]
+	pub provider_warning_acknowledged: bool,
 	pub installation: String,
 	pub revision: i64,
 	/// The immutable revision digest (`Revision.digest`, no `sha256:` prefix).
@@ -571,6 +581,8 @@ pub fn plan(review: &ApprovalReview, submission: &ApprovalReviewSubmission) -> R
 			return Err(Error::Invalid("APPROVAL_REVIEW_DUPLICATE".into()));
 		}
 		approvals.push(Approval {
+			carry_over: item.carry_over,
+			scope: item.scope,
 			entry: item.reference.clone(),
 			provider_warning_acknowledged: item.provider_warning_acknowledged,
 			enabled: true,

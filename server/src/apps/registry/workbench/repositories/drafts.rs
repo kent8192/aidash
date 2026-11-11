@@ -120,7 +120,10 @@ impl DraftAuthority for Scope {
 		authority::principal(&self.actor)
 	}
 	async fn lock_identity(&mut self) -> Result<()> {
-		self.authority().lock_identity().await
+		if let Actor::Subject(identity) = &self.actor {
+			identity.lock_with_mode(&mut self.tx, true).await?;
+		}
+		Ok(())
 	}
 	async fn share(&mut self, draft: Uuid, subject: &str) -> Result<Option<(bool, String)>> {
 		self.authority().share(draft, subject).await
@@ -223,7 +226,29 @@ impl DraftScope for Scope {
 #[async_trait]
 impl DefinitionWriter for Scope {
 	async fn insert_definition(&mut self, entry: &Entry) -> Result<bool> {
-		NativeScope(&mut self.tx).insert_definition(entry).await
+		let inserted = NativeScope(&mut self.tx).insert_definition(entry).await?;
+		if inserted {
+			let Actor::Subject(identity) = &self.actor else {
+				return Err(aidash_application::Error::Forbidden);
+			};
+			let mut snapshot =
+				crate::apps::identity::models::AuthorizationBundle::lock_for_maintenance(
+					&mut *self.tx,
+					&identity.tenant,
+				)
+				.await?;
+			aidash_application::authorization::catalog::carry_over::carry(
+				&mut crate::apps::identity::repositories::catalog_carry::TenantCarry {
+					tx: &mut self.tx,
+					snapshot: &mut snapshot,
+					tenant: &identity.tenant,
+					deployment: &self.runtime.config.deployment,
+				},
+				entry,
+			)
+			.await?;
+		}
+		Ok(inserted)
 	}
 }
 #[async_trait]

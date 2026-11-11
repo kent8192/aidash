@@ -30,13 +30,15 @@ fn control_service(f: Federation) -> Authorization {
 
 use crate::apps::identity::serializers::policies::{
 	AuthorizationPage, AuthorizationUpdate, CatalogApprovalRequestPage, CatalogApprovalRequestView,
-	CatalogImpactQuery, CatalogInput, CatalogRequestDecline, CatalogRequestInput,
-	CatalogRequestNextAction, CatalogRequestPage, CatalogRequestReview, CatalogReviewQuery,
-	CatalogReviewResult, CredentialInput, CredentialPage, CredentialRevocation, PolicyReplacement,
+	CatalogImpactQuery, CatalogInput, CatalogMailPreference, CatalogPendingCount,
+	CatalogRequestDecline, CatalogRequestInput, CatalogRequestNextAction, CatalogRequestPage,
+	CatalogRequestReview, CatalogReviewQuery, CatalogReviewResult, CredentialInput, CredentialPage,
+	CredentialRevocation, PolicyReplacement,
 };
 use aidash_application::authorization::catalog::review::{
 	ApprovalReview, ApprovalReviewSubmission, ReviewItem,
 };
+use aidash_application::ports::catalog::CatalogMutation;
 use aidash_domain::identity::catalog_request::{
 	CATALOG_REQUEST_CREATE, CATALOG_REQUEST_DECLINE, CATALOG_REQUEST_FULFIL,
 	CATALOG_REQUEST_WITHDRAW, CatalogApprovalRequest as ApprovalRequest,
@@ -121,6 +123,158 @@ async fn request_review_for(
 		validation: crate::bootstrap::registry_validation_for(store),
 	};
 	Ok(aidash_application::authorization::catalog::review::review(&mut scope, root).await?)
+}
+
+/// Apply a selected approval on every Node in its scope under one policy lease.
+async fn approve_scoped(
+	access: &mut Access,
+	deployment: &aidash_domain::nodes::DeploymentId,
+	source: &aidash_domain::nodes::NodeName,
+	approvals: &[aidash_application::authorization::catalog::approvals::Approval],
+	satisfied: &std::collections::BTreeSet<(String, String)>,
+	satisfied_other_nodes: &std::collections::BTreeSet<(String, String)>,
+	extra_subjects: &std::collections::BTreeSet<String>,
+) -> Result<Vec<Binding>> {
+	use aidash_domain::identity::catalog::ApprovalScope;
+	let tenant = access.identity.tenant.clone();
+	let all_nodes = approvals
+		.iter()
+		.any(|item| item.enabled && item.scope == ApprovalScope::Deployment);
+	let nodes = if all_nodes {
+		crate::apps::identity::repositories::nodes::lock_tenant(&mut **access.tx, &tenant).await?;
+		crate::apps::identity::repositories::nodes::list_live(&mut **access.tx, &tenant)
+			.await?
+			.into_iter()
+			.map(|node| node.name)
+			.collect::<Vec<_>>()
+	} else {
+		vec![]
+	};
+	access.set_node(source.clone());
+	let source_address = deployment.node(source.clone());
+	let source_bindings =
+		aidash_application::authorization::catalog::approvals::approve_with_satisfied(
+			&mut TenantCatalog {
+				access,
+				node: source_address.clone(),
+				deployment_scope_orchestrated: all_nodes,
+			},
+			approvals,
+			satisfied,
+			extra_subjects,
+		)
+		.await?;
+	for node in nodes.into_iter().filter(|node| node != source) {
+		let address = deployment.node(node.clone());
+		let old_prefix = format!("{source_address}/agents/");
+		let new_prefix = format!("{address}/agents/");
+		let translate = |subject: &String| {
+			subject
+				.strip_prefix(&old_prefix)
+				.map_or_else(|| subject.clone(), |rest| format!("{new_prefix}{rest}"))
+		};
+		let mut selected = Vec::new();
+		for item in approvals
+			.iter()
+			.filter(|item| item.enabled && item.scope == ApprovalScope::Deployment)
+		{
+			let mut item = item.clone();
+			let rows = AuthorizationCatalog::objects()
+				.filter(AuthorizationCatalog::field_tenant().eq(tenant.clone()))
+				.filter(AuthorizationCatalog::field_node().eq(node.as_str().to_owned()))
+				.filter(AuthorizationCatalog::field_entry_key().eq(item.entry.id.clone()))
+				.filter(AuthorizationCatalog::field_entry_version().eq(item.entry.version.clone()))
+				.all_with_executor(&mut **access.tx)
+				.await
+				.map_err(FrameworkError::from)?;
+			item.expected_revision = rows.first().map_or(0, |row| row.revision);
+			if let Some(restriction) = &mut item.restriction {
+				restriction.subjects = restriction.subjects.iter().map(&translate).collect();
+			}
+			selected.push(item);
+		}
+		let subjects = extra_subjects.iter().map(&translate).collect();
+		access.set_node(node);
+		aidash_application::authorization::catalog::approvals::approve_with_satisfied(
+			&mut TenantCatalog {
+				access,
+				node: address,
+				deployment_scope_orchestrated: true,
+			},
+			&selected,
+			satisfied_other_nodes,
+			&subjects,
+		)
+		.await?;
+	}
+	access.set_node(source.clone());
+	Ok(source_bindings)
+}
+
+/// Resolve real people with active Mappings and verify their current review authority.
+async fn request_mail_recipients(
+	f: &crate::federation::Federation,
+	tenant: &str,
+	node: &aidash_domain::nodes::NodeName,
+	root: &crate::registry::EntityRef,
+	digest: &str,
+) -> Result<std::collections::BTreeSet<String>> {
+	use crate::apps::identity::models::{DashboardIdentity, DashboardMapping};
+	let scope = aidash_application::tenancy::TenancyScope::tenant(tenant)?;
+	let candidates = f
+		.store
+		.pool
+		.scoped(&scope, async |tx| {
+			let mappings = DashboardMapping::objects()
+				.filter(DashboardMapping::field_tenant().eq(tenant.to_owned()))
+				.filter(DashboardMapping::field_enabled().eq(true))
+				.all_with_executor(&mut **tx)
+				.await
+				.map_err(FrameworkError::from)?;
+			let mut candidates = Vec::new();
+			for mapping in mappings {
+				if let Some(person) = DashboardIdentity::objects()
+					.filter(DashboardIdentity::field_id().eq(mapping.identity_id()))
+					.all_with_executor(&mut **tx)
+					.await
+					.map_err(FrameworkError::from)?
+					.pop() && person.disabled_at.is_none()
+					&& person.approval_request_mail
+					&& let Some(email) = person.verified_email
+				{
+					candidates.push((mapping.subject.clone(), mapping.credential_id(), email));
+				}
+			}
+			Ok::<_, Error>(candidates)
+		})
+		.await?;
+	let mut recipients = std::collections::BTreeSet::new();
+	for (subject, credential_id, email) in candidates {
+		let identity = SubjectIdentity {
+			http_session: None,
+			credential_id,
+			tenant: tenant.to_owned(),
+			subject,
+		};
+		let mut access = match Access::begin_proof(&f.store, &identity).await {
+			Ok(access) => access,
+			Err(_) => continue,
+		};
+		let eligible =
+			match request_review_for(&mut access, &f.store, &f.config.deployment, node, root).await
+			{
+				Ok(review) => {
+					review.closure_digest == digest
+						&& !review.ready && review.items.iter().any(ReviewItem::awaits_approver)
+				}
+				Err(_) => false,
+			};
+		access.finish(Ok(())).await?;
+		if eligible {
+			recipients.insert(email);
+		}
+	}
+	Ok(recipients)
 }
 
 fn request_review_summary(review: &ApprovalReview) -> CatalogRequestReview {
@@ -521,17 +675,35 @@ impl PolicyAdministration {
 					}
 				}
 			}
+			// A local Deployment-wide approval may depend on an installation in this
+			// submission only if that installation is also approved on every Node.
+			let deployment_activations = plan
+				.installations
+				.iter()
+				.filter(|activation| {
+					activation.scope == aidash_domain::identity::catalog::ApprovalScope::Deployment
+				})
+				.filter_map(|activation| {
+					current.items.iter().find(|item| {
+						item.installation.as_ref().is_some_and(|installed| {
+							installed.installation == activation.installation
+								&& installed.revision == activation.revision
+						})
+					})
+				})
+				.map(|item| (item.reference.id.clone(), item.reference.version.clone()))
+				.collect();
 			// An activation-only submission has no local approval to decide.
 			let bindings = if plan.approvals.is_empty() {
 				vec![]
 			} else {
-				aidash_application::authorization::catalog::approvals::approve_with_satisfied(
-					&mut TenantCatalog {
-						access: &mut access,
-						node: node_address.clone(),
-					},
+				approve_scoped(
+					&mut access,
+					&f.config.deployment,
+					&node,
 					&plan.approvals,
 					&plan.satisfied_by_activation,
+					&deployment_activations,
 					&extra_subjects,
 				)
 				.await?
@@ -596,6 +768,61 @@ impl PolicyAdministration {
 					&mut access,
 					&node_address,
 					&entries,
+				)
+				.await?;
+				let mut scoped = Vec::new();
+				for activation in &plan.installations {
+					let item = current
+						.items
+						.iter()
+						.find(|item| {
+							item.installation.as_ref().is_some_and(|installed| {
+								installed.installation == activation.installation
+									&& installed.revision == activation.revision
+							})
+						})
+						.ok_or_else(|| {
+							Error::Conflict("reviewed installation disappeared".into())
+						})?;
+					let row = AuthorizationCatalog::objects()
+						.filter(AuthorizationCatalog::field_tenant().eq(tenant.clone()))
+						.filter(AuthorizationCatalog::field_node().eq(node.as_str().to_owned()))
+						.filter(
+							AuthorizationCatalog::field_entry_key().eq(item.reference.id.clone()),
+						)
+						.filter(
+							AuthorizationCatalog::field_entry_version()
+								.eq(item.reference.version.clone()),
+						)
+						.all_with_executor(&mut **access.tx)
+						.await
+						.map_err(FrameworkError::from)?
+						.pop()
+						.ok_or_else(|| Error::Conflict("activated approval disappeared".into()))?;
+					scoped.push(
+						aidash_application::authorization::catalog::approvals::Approval {
+							entry: item.reference.clone(),
+							enabled: true,
+							expected_revision: row.revision,
+							carry_over: activation.carry_over,
+							scope: activation.scope,
+							provider_warning_acknowledged: activation.provider_warning_acknowledged,
+							groups: None,
+							restriction: row
+								.restriction
+								.map(|value| serde_json::from_value(value.0))
+								.transpose()?,
+						},
+					);
+				}
+				approve_scoped(
+					&mut access,
+					&f.config.deployment,
+					&node,
+					&scoped,
+					&plan.satisfied_by_activation,
+					&deployment_activations,
+					&extra_subjects,
 				)
 				.await?;
 			}
@@ -669,7 +896,7 @@ impl PolicyAdministration {
 			.await?
 			{
 				if existing.closure_digest == current.closure_digest {
-					return Ok(request_view(&existing, Some(&current)));
+					return Ok((request_view(&existing, Some(&current)), false));
 				}
 				let now = database_time(&mut *access.tx).await?;
 				existing.stale(now)?;
@@ -695,10 +922,49 @@ impl PolicyAdministration {
 				&request.requester,
 			)
 			.await?;
-			Ok(request_view(&request, Some(&current)))
+			Ok((request_view(&request, Some(&current)), true))
 		}
 		.await;
-		access.finish(result).await
+		let (view, created) = access.finish(result).await?;
+		if created && f.config.smtp.is_some() {
+			use aidash_application::ports::catalog_mail::{
+				CatalogRequestMailer, CatalogRequestNotice,
+			};
+			let recipients =
+				request_mail_recipients(&f, &tenant, &view.node, &view.root, &view.closure_digest)
+					.await;
+			match recipients {
+				Ok(recipients) => {
+					if let Ok(mut link) = reqwest::Url::parse(&f.config.dashboard_origin) {
+						link.set_path("/settings");
+						link.query_pairs_mut()
+							.append_pair("view", "registry")
+							.append_pair("tenant", &tenant)
+							.append_pair("node", view.node.as_str())
+							.append_pair("request", &view.id.to_string());
+						let notice = CatalogRequestNotice {
+							definition: view.root.clone(),
+							node: view.node.clone(),
+							reason: view.reason.clone(),
+							review_link: link.to_string(),
+						};
+						let mailer = crate::apps::identity::services::catalog_mail::CatalogMailer::configured(f.config.smtp.as_ref());
+						for recipient in recipients {
+							if let Err(error) = mailer.send(&recipient, &notice).await {
+								tracing::warn!(%error, "catalog request mail delivery failed");
+							}
+						}
+					} else {
+						tracing::warn!("catalog request mail has an invalid dashboard origin");
+					}
+				}
+
+				Err(error) => {
+					tracing::warn!(%error, "catalog request mail recipient lookup failed")
+				}
+			}
+		}
+		Ok(view)
 	}
 
 	/// Withdraw one's own open request.
@@ -943,13 +1209,139 @@ impl PolicyAdministration {
 		access.finish(result).await
 	}
 
+	/// Count all eligible pending requests across the Tenant's Nodes.
+	pub(crate) async fn pending_request_count(
+		&self,
+		actor: Actor,
+		tenant: String,
+	) -> Result<CatalogPendingCount> {
+		let f = self.runtime.clone();
+		let identity = tenant_subject(actor, &tenant)?;
+		let mut access = Access::begin(&f.store, &identity).await?;
+		let result = async {
+			const BATCH: u64 = 256;
+			let live_nodes =
+				crate::apps::identity::repositories::nodes::list_live(&mut **access.tx, &tenant)
+					.await?
+					.into_iter()
+					.map(|node| node.name)
+					.collect::<std::collections::BTreeSet<_>>();
+			let mut offset = 0;
+			let mut count = 0;
+			let mut reviews =
+				std::collections::BTreeMap::<(String, String, String), ApprovalReview>::new();
+			loop {
+				let rows =
+					requests::open_page(&mut access.tx, &tenant, None, offset, BATCH).await?;
+				let len = rows.len() as u64;
+				for request in rows {
+					if !live_nodes.contains(&request.node) {
+						continue;
+					}
+					let key = (
+						request.node.as_str().to_owned(),
+						request.root.id.clone(),
+						request.root.version.clone(),
+					);
+					let review = if let Some(review) = reviews.get(&key) {
+						review.clone()
+					} else {
+						let review = match request_review_for(
+							&mut access,
+							&f.store,
+							&f.config.deployment,
+							&request.node,
+							&request.root,
+						)
+						.await
+						{
+							Ok(review) => review,
+							Err(Error::Forbidden | Error::NotFound(_) | Error::Invalid(_)) => {
+								continue;
+							}
+							Err(error) => return Err(error),
+						};
+						reviews.insert(key, review.clone());
+						review
+					};
+					if request.closure_digest == review.closure_digest
+						&& !review.ready && review.items.iter().any(ReviewItem::awaits_approver)
+					{
+						count += 1;
+					}
+				}
+				offset += len;
+				if len < BATCH {
+					break;
+				}
+			}
+			Ok(CatalogPendingCount { count })
+		}
+		.await;
+		access.finish(result).await
+	}
+
+	pub(crate) async fn catalog_mail_preference(
+		&self,
+		actor: Actor,
+		tenant: String,
+		change: Option<CatalogMailPreference>,
+	) -> Result<CatalogMailPreference> {
+		let f = self.runtime.clone();
+		let identity = tenant_subject(actor, &tenant)?;
+		let person = identity
+			.http_session
+			.as_ref()
+			.ok_or(Error::Forbidden)?
+			.identity_id;
+		let mut access = Access::begin(&f.store, &identity).await?;
+		let result = async {
+			use crate::apps::identity::models::DashboardIdentity;
+			let mut person = DashboardIdentity::objects()
+				.filter(DashboardIdentity::field_id().eq(person))
+				.all_with_executor(&mut **access.tx)
+				.await
+				.map_err(FrameworkError::from)?
+				.pop()
+				.ok_or(Error::Forbidden)?;
+			if let Some(change) = change {
+				person.approval_request_mail = change.enabled;
+				use reinhardt::query::{
+					Alias, Expr, ExprTrait, PostgresQueryBuilder, Query, QueryStatementBuilder,
+				};
+				let query = Query::update()
+					.table(Alias::new("dashboard_identities"))
+					.value(Alias::new("approval_request_mail"), change.enabled)
+					.and_where(Expr::col(Alias::new("id")).eq(person.id.to_string()))
+					.to_string(PostgresQueryBuilder);
+				crate::database::native::query(&query)
+					.execute(&mut **access.tx)
+					.await?;
+			}
+			Ok(CatalogMailPreference {
+				enabled: person.approval_request_mail,
+			})
+		}
+		.await;
+		access.finish(result).await
+	}
+
 	pub(crate) async fn set_catalog(
 		&self,
 		actor: Actor,
 		tenant: String,
 		input: CatalogInput,
 	) -> Result<Binding> {
+		let withdraw_carried = input.withdraw_carried;
+		let stop_carrying = input.stop_carrying;
+		if input.enabled && (withdraw_carried || stop_carrying) {
+			return Err(Error::Invalid(
+				"withdrawal options require a withdrawal".into(),
+			));
+		}
 		let approval = aidash_application::authorization::catalog::approvals::Approval {
+			carry_over: input.carry_over,
+			scope: input.scope,
 			entry: input.entry,
 			enabled: input.enabled,
 			expected_revision: input.expected_revision,
@@ -958,7 +1350,14 @@ impl PolicyAdministration {
 			restriction: input.restriction,
 		};
 		Ok(self
-			.approve(actor, tenant, input.node, vec![approval])
+			.approve_with_withdrawal(
+				actor,
+				tenant,
+				input.node,
+				vec![approval],
+				withdraw_carried,
+				stop_carrying,
+			)
 			.await?
 			.remove(0))
 	}
@@ -969,6 +1368,19 @@ impl PolicyAdministration {
 		tenant: String,
 		node: aidash_domain::nodes::NodeName,
 		approvals: Vec<aidash_application::authorization::catalog::approvals::Approval>,
+	) -> Result<Vec<Binding>> {
+		self.approve_with_withdrawal(actor, tenant, node, approvals, false, false)
+			.await
+	}
+
+	async fn approve_with_withdrawal(
+		&self,
+		actor: Actor,
+		tenant: String,
+		node: aidash_domain::nodes::NodeName,
+		mut approvals: Vec<aidash_application::authorization::catalog::approvals::Approval>,
+		withdraw_carried: bool,
+		stop_carrying: bool,
 	) -> Result<Vec<Binding>> {
 		let f = self.runtime.clone();
 		let identity = tenant_subject(actor, &tenant)?;
@@ -988,14 +1400,97 @@ impl PolicyAdministration {
 			return access.finish(Err(error)).await;
 		}
 		let result = async {
-			let bindings = aidash_application::authorization::catalog::approvals::approve(
-				&mut TenantCatalog {
+			if withdraw_carried {
+				let root = approvals
+					.first()
+					.cloned()
+					.ok_or_else(|| Error::Invalid("missing withdrawal".into()))?;
+				let rows = AuthorizationCatalog::objects()
+					.filter(AuthorizationCatalog::field_tenant().eq(tenant.clone()))
+					.filter(AuthorizationCatalog::field_node().eq(node.as_str().to_owned()))
+					.filter(AuthorizationCatalog::field_entry_key().eq(root.entry.id.clone()))
+					.all_with_executor(&mut **access.tx)
+					.await
+					.map_err(FrameworkError::from)?;
+				let mut versions = std::collections::BTreeSet::from([root.entry.version.clone()]);
+				loop {
+					let before = versions.len();
+					for row in &rows {
+						if row
+							.carried_from_version
+							.as_ref()
+							.is_some_and(|source| versions.contains(source))
+						{
+							versions.insert(row.entry_version.clone());
+						}
+					}
+					if before == versions.len() {
+						break;
+					}
+				}
+				for row in rows.into_iter().filter(|row| {
+					row.enabled
+						&& row.entry_version != root.entry.version
+						&& versions.contains(&row.entry_version)
+				}) {
+					approvals.push(
+						aidash_application::authorization::catalog::approvals::Approval {
+							entry: crate::registry::EntityRef {
+								id: row.entry_key,
+								version: row.entry_version,
+							},
+							enabled: false,
+							expected_revision: row.revision,
+							carry_over: false,
+							scope: aidash_domain::identity::catalog::ApprovalScope::Node,
+							provider_warning_acknowledged: false,
+							groups: None,
+							restriction: None,
+						},
+					);
+				}
+			}
+			let mut bindings = Vec::new();
+			if withdraw_carried {
+				for chunk in approvals.chunks(128) {
+					bindings.extend(
+						approve_scoped(
+							&mut access,
+							&f.config.deployment,
+							&node,
+							chunk,
+							&std::collections::BTreeSet::new(),
+							&std::collections::BTreeSet::new(),
+							&std::collections::BTreeSet::new(),
+						)
+						.await?,
+					);
+				}
+			} else {
+				bindings = approve_scoped(
+					&mut access,
+					&f.config.deployment,
+					&node,
+					&approvals,
+					&std::collections::BTreeSet::new(),
+					&std::collections::BTreeSet::new(),
+					&std::collections::BTreeSet::new(),
+				)
+				.await?;
+			}
+
+			if stop_carrying {
+				let binding = bindings
+					.first()
+					.ok_or_else(|| Error::Invalid("missing withdrawal".into()))?;
+				TenantCatalog {
 					access: &mut access,
 					node: f.config.deployment.node(node.clone()),
-				},
-				&approvals,
-			)
-			.await?;
+					deployment_scope_orchestrated: false,
+				}
+				.stop_carrying(binding)
+				.await?;
+			}
 			refresh_requests_on_node(
 				&mut access,
 				&f.store,

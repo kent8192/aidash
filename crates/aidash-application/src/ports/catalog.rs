@@ -72,6 +72,29 @@ pub trait CatalogMutation: Send {
 		actor: &str,
 		provider_warning_acknowledgment: Option<&str>,
 	) -> Result<()>;
+	/// Store the approver's carry choice beside the approval and its history.
+	async fn carry_options(
+		&mut self,
+		_binding: &aidash_domain::identity::catalog::Binding,
+		carry_over: bool,
+		scope: aidash_domain::identity::catalog::ApprovalScope,
+	) -> Result<()> {
+		if carry_over || scope != aidash_domain::identity::catalog::ApprovalScope::Node {
+			return Err(crate::Error::Invalid(
+				"CATALOG_CARRY_OVER_UNSUPPORTED".into(),
+			));
+		}
+		Ok(())
+	}
+	/// Disable future carry on this revision without changing its lineage.
+	async fn stop_carrying(
+		&mut self,
+		_binding: &aidash_domain::identity::catalog::Binding,
+	) -> Result<()> {
+		Err(crate::Error::Invalid(
+			"CATALOG_STOP_CARRY_UNSUPPORTED".into(),
+		))
+	}
 }
 
 /// A Tenant subject's Catalog Approvals and the agent subjects they create
@@ -83,6 +106,11 @@ pub trait CatalogApprovalScope: CatalogMutation {
 	fn node(&self) -> &aidash_domain::nodes::NodeAddress;
 	/// The history label of the approving subject.
 	fn actor(&self) -> &str;
+	/// The server has locked the Node inventory and will apply every scoped row.
+	fn deployment_scope_orchestrated(&self) -> bool {
+		false
+	}
+
 	/// Any version in the Tenant's Registry, approved or not.
 	async fn definition(&mut self, reference: &EntityRef) -> Result<Entry>;
 	/// Whether the Tenant currently approves this exact version.

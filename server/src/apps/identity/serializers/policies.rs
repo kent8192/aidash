@@ -7,6 +7,14 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub(crate) struct CatalogInput {
 	#[serde(default)]
+	pub(crate) withdraw_carried: bool,
+	#[serde(default)]
+	pub(crate) stop_carrying: bool,
+	#[serde(default = "aidash_application::authorization::catalog::approvals::default_carry_over")]
+	pub(crate) carry_over: bool,
+	#[serde(default = "aidash_application::authorization::catalog::approvals::default_scope")]
+	pub(crate) scope: aidash_domain::identity::catalog::ApprovalScope,
+	#[serde(default)]
 	pub provider_warning_acknowledged: bool,
 	/// The Node the approval applies to.
 	pub(crate) node: aidash_domain::nodes::NodeName,
@@ -117,6 +125,18 @@ pub(crate) struct CatalogApprovalRequestPage {
 	pub(crate) requests: Vec<CatalogApprovalRequestView>,
 	pub(crate) next_offset: Option<u64>,
 }
+/// Number of open Catalog Approval Requests the caller may act on.
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct CatalogPendingCount {
+	pub(crate) count: u64,
+}
+/// The signed-in person's Catalog Approval Request email preference.
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CatalogMailPreference {
+	pub(crate) enabled: bool,
+}
+
 /// Approvals of one dependency closure, decided together.
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

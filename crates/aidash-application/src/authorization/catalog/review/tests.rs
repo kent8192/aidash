@@ -442,6 +442,8 @@ fn submission(review: &ApprovalReview, ids: &[&str]) -> ApprovalReviewSubmission
 					.find(|item| item.reference.id == *id)
 					.unwrap();
 				ReviewApproval {
+					carry_over: false,
+					scope: aidash_domain::identity::catalog::ApprovalScope::Node,
 					provider_warning_acknowledged: false,
 					reference: item.reference.clone(),
 					digest: item.digest.clone().unwrap(),
@@ -570,6 +572,9 @@ async fn an_installation_plan_uses_the_review_node_and_restriction() {
 	let review = review(&mut fixture, &reference("writer")).await.unwrap();
 	let mut submission = submission(&review, &[]);
 	submission.installations.push(ReviewActivation {
+		carry_over: true,
+		scope: aidash_domain::identity::catalog::ApprovalScope::Deployment,
+		provider_warning_acknowledged: false,
 		installation: "package".into(),
 		revision: 2,
 		digest: "revision-digest".into(),
@@ -632,6 +637,9 @@ async fn widening_the_active_revision_skips_activation_while_a_newer_one_is_stag
 	// Act: widen it together with an unrelated local approval of the root.
 	let mut submission = submission(&review, &["writer"]);
 	submission.installations.push(ReviewActivation {
+		carry_over: true,
+		scope: aidash_domain::identity::catalog::ApprovalScope::Deployment,
+		provider_warning_acknowledged: false,
 		installation: "package".into(),
 		revision: 1,
 		digest: "revision-digest".into(),

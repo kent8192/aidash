@@ -5,7 +5,7 @@
 use crate::{Error, Result, ports::catalog::CatalogApprovalScope};
 use aidash_domain::{
 	identity::{
-		catalog::{Binding, CatalogRestriction, RestrictionChange},
+		catalog::{ApprovalScope, Binding, CatalogRestriction, RestrictionChange},
 		tenant_administration as rules,
 	},
 	policy::SubjectKind,
@@ -20,10 +20,21 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const CATALOG_APPROVE: &str = "catalog.approve";
 const MAX_APPROVALS: usize = 128;
 
+pub fn default_carry_over() -> bool {
+	true
+}
+pub fn default_scope() -> ApprovalScope {
+	ApprovalScope::Deployment
+}
+
 /// One decision on one exact version in the Tenant's Registry.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Approval {
+	#[serde(default = "default_carry_over")]
+	pub carry_over: bool,
+	#[serde(default = "default_scope")]
+	pub scope: ApprovalScope,
 	pub entry: EntityRef,
 	pub enabled: bool,
 	pub expected_revision: i64,
@@ -90,6 +101,15 @@ pub async fn approve_with_satisfied(
 	satisfied: &BTreeSet<(String, String)>,
 	extra_subjects: &BTreeSet<String>,
 ) -> Result<Vec<Binding>> {
+	if !scope.deployment_scope_orchestrated()
+		&& approvals
+			.iter()
+			.any(|item| item.enabled && item.scope == ApprovalScope::Deployment)
+	{
+		return Err(Error::Invalid(
+			"CATALOG_DEPLOYMENT_SCOPE_UNAVAILABLE".into(),
+		));
+	}
 	if approvals.is_empty() || approvals.len() > MAX_APPROVALS {
 		return Err(Error::Invalid("CATALOG_APPROVALS_BOUNDS".into()));
 	}
@@ -101,7 +121,11 @@ pub async fn approve_with_satisfied(
 			return Err(Error::Invalid("CATALOG_APPROVAL_DUPLICATE".into()));
 		}
 		let entry = scope.definition(&approval.entry).await?;
-		if !aidash_domain::marketplace::installations::catalog_update_allowed(&entry) {
+		// A reviewed Marketplace activation can apply its selected carry options
+		// after the activation has been validated in the same transaction.
+		if !aidash_domain::marketplace::installations::catalog_update_allowed(&entry)
+			&& !satisfied.contains(&key)
+		{
 			return Err(Error::Forbidden);
 		}
 		scope.require(&entry, CATALOG_APPROVE).await?;
@@ -222,6 +246,13 @@ pub async fn approve_with_satisfied(
 			)
 			.await?,
 		);
+	}
+	for (binding, approval) in bindings.iter().zip(approvals) {
+		if approval.enabled {
+			scope
+				.carry_options(binding, approval.carry_over, approval.scope)
+				.await?;
+		}
 	}
 	let mut changed = false;
 	for approval in approvals.iter().filter(|approval| approval.enabled) {

@@ -103,8 +103,24 @@ impl Registry {
 			.await?;
 		for tenant in tenants {
 			self.pool
-				.atomic(&scope(&tenant), async |tx| {
-					seed_tenant(tx, self.deployment.as_str(), &tenant).await
+				.scoped(&scope(&tenant), async |tx| {
+					let mut snapshot =
+						crate::apps::identity::models::AuthorizationBundle::lock_for_maintenance(
+							&mut **tx,
+							tenant.as_str(),
+						)
+						.await?;
+					Ok(aidash_application::registry::system::seed(
+						&mut CarryingSeed {
+							tx,
+							snapshot: &mut snapshot,
+							tenant: tenant.as_str(),
+							deployment: &self.deployment,
+						},
+						&crate::bootstrap::registry_validation(),
+						self.deployment.as_str(),
+					)
+					.await?)
 				})
 				.await?;
 		}
@@ -216,6 +232,41 @@ impl Registry {
 				.await?)
 			})
 			.await
+	}
+}
+
+/// Startup holds the Tenant's maintenance lock while seeding and carrying.
+struct CarryingSeed<'a> {
+	tx: &'a mut crate::database::native::Transaction,
+	snapshot: &'a mut aidash_application::authorization::Snapshot,
+	tenant: &'a str,
+	deployment: &'a aidash_domain::nodes::DeploymentId,
+}
+
+#[async_trait]
+impl DefinitionLookup for CarryingSeed<'_> {
+	async fn definition(&mut self, id: &str, version: &str) -> aidash_application::Result<Entry> {
+		sql::SqlScope(self.tx).definition(id, version).await
+	}
+}
+
+#[async_trait]
+impl DefinitionWriter for CarryingSeed<'_> {
+	async fn insert_definition(&mut self, entry: &Entry) -> aidash_application::Result<bool> {
+		let inserted = sql::SqlScope(self.tx).insert_definition(entry).await?;
+		if inserted {
+			aidash_application::authorization::catalog::carry_over::carry(
+				&mut crate::apps::identity::repositories::catalog_carry::TenantCarry {
+					tx: self.tx,
+					snapshot: self.snapshot,
+					tenant: self.tenant,
+					deployment: self.deployment,
+				},
+				entry,
+			)
+			.await?;
+		}
+		Ok(inserted)
 	}
 }
 

@@ -10,6 +10,44 @@ pub use aidash_domain::registry::{AgentConfig, AgentPage};
 
 pub use aidash_domain::registry::{ClusterConfig, Package};
 
+/// The registered definition and the result of carrying each Node's approval.
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct RegistryCreateResult {
+	#[serde(flatten)]
+	pub entry: Entry,
+	pub carry_results: Vec<RegistrationCarryResult>,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct RegistrationCarryResult {
+	pub node: String,
+	pub source_version: Option<String>,
+	pub changed: Vec<String>,
+	pub unapproved_dependencies: Vec<EntityRef>,
+	pub carried: bool,
+}
+
+impl RegistryCreateResult {
+	pub(crate) fn new(
+		entry: Entry,
+		results: Vec<aidash_application::authorization::catalog::carry_over::CarryResult>,
+	) -> Self {
+		Self {
+			entry,
+			carry_results: results
+				.into_iter()
+				.map(|item| RegistrationCarryResult {
+					node: item.node.node.as_str().to_owned(),
+					source_version: item.source_version,
+					changed: item.changed,
+					unapproved_dependencies: item.unapproved_dependencies,
+					carried: item.carried,
+				})
+				.collect(),
+		}
+	}
+}
+
 /// One version in the Tenant's Registry with its approval state and history.
 /// Discovery and execution see only approved versions; this view sees every
 /// version the caller may read.
@@ -36,6 +74,10 @@ pub struct AgentSubject {
 }
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct VersionApproval {
+	pub carry_over: bool,
+	pub scope: String,
+	pub carried_from_version: Option<String>,
+	pub carried_from_approver: Option<String>,
 	pub enabled: bool,
 	pub revision: i64,
 	/// Who may use the version on this Node; absent means everyone the
@@ -44,6 +86,10 @@ pub struct VersionApproval {
 }
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct ApprovalRecord {
+	pub carry_over: bool,
+	pub scope: String,
+	pub carried_from_version: Option<String>,
+	pub carried_from_approver: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub provider_warning_acknowledgment: Option<String>,
 	pub revision: i64,

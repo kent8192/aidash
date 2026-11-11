@@ -25,6 +25,8 @@ use uuid::Uuid;
 pub(crate) struct TenantRegistration<'a> {
 	pub(crate) access: &'a mut Access,
 	pub(crate) store: &'a crate::store::Store,
+	pub(crate) carry_results:
+		Vec<aidash_application::authorization::catalog::carry_over::CarryResult>,
 }
 
 impl TenantRegistration<'_> {
@@ -95,7 +97,23 @@ impl DefinitionLookup for TenantRegistration<'_> {
 #[async_trait]
 impl DefinitionWriter for TenantRegistration<'_> {
 	async fn insert_definition(&mut self, entry: &Entry) -> Result<bool> {
-		SqlScope(&mut self.access.tx).insert_definition(entry).await
+		let inserted = SqlScope(&mut self.access.tx)
+			.insert_definition(entry)
+			.await?;
+		if inserted {
+			let results = aidash_application::authorization::catalog::carry_over::carry(
+				&mut crate::apps::identity::repositories::catalog_carry::TenantCarry {
+					tenant: &self.access.identity.tenant,
+					tx: &mut self.access.tx,
+					snapshot: &mut self.access.snapshot,
+					deployment: &self.store.deployment,
+				},
+				entry,
+			)
+			.await?;
+			self.carry_results.extend(results);
+		}
+		Ok(inserted)
 	}
 }
 

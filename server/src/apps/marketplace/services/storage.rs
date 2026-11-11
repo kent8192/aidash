@@ -89,6 +89,20 @@ pub(super) async fn begin(
 	Ok(access)
 }
 
+/// Installing a version can also carry an approval and change Agent subjects.
+pub(super) async fn begin_install(
+	store: &crate::store::Store,
+	identity: &crate::authorization::identity::SubjectIdentity,
+) -> Result<Access> {
+	let mut access = Access::begin_change(store, identity, &["marketplace.install"]).await?;
+	access.marketplace_audit = Some(
+		serde_json::json!({"request_id":Uuid::new_v4(),"tenant":identity.tenant,"actor":identity.subject,"credential_id":identity.credential_id,"policy_revision":access.snapshot.revision,"authority":{}}),
+	);
+	lock(&mut access.tx, true).await?;
+	writer(&mut access.tx).await?;
+	Ok(access)
+}
+
 /// Locks already protect revocation. Time-based expiry is checked again at the
 /// actual handoff without reacquiring locks behind a waiting exclusive revoker.
 pub(super) async fn credential_current(access: &mut Access) -> Result<()> {

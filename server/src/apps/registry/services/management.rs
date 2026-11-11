@@ -74,7 +74,7 @@ impl RegistryManagement {
 		actor: Actor,
 		headers: HeaderMap,
 		entry: Entry,
-	) -> Result<Entry> {
+	) -> Result<crate::apps::registry::serializers::contracts::RegistryCreateResult> {
 		let f = self.runtime.clone();
 		let Actor::Subject(identity) = actor else {
 			return Err(Error::Forbidden);
@@ -89,12 +89,14 @@ impl RegistryManagement {
 					.ok_or_else(|| Error::Invalid("Idempotency-Key must be a UUID".into()))
 			})
 			.transpose()?;
-		let mut access = Access::begin(&f.store, &identity).await?;
+		let mut access = Access::begin_change(&f.store, &identity, &["registry.create"]).await?;
+		let mut scope = TenantRegistration {
+			access: &mut access,
+			store: &f.store,
+			carry_results: Vec::new(),
+		};
 		let result = aidash_application::registry::register(
-			&mut TenantRegistration {
-				access: &mut access,
-				store: &f.store,
-			},
+			&mut scope,
 			&f.registry.validation(),
 			entry,
 			key,
@@ -102,6 +104,12 @@ impl RegistryManagement {
 			f.config.deployment.as_str(),
 		)
 		.await
+		.map(|entry| {
+			crate::apps::registry::serializers::contracts::RegistryCreateResult::new(
+				entry,
+				scope.carry_results,
+			)
+		})
 		.map_err(Into::into);
 		access.finish(result).await
 	}

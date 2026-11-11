@@ -6483,6 +6483,18 @@ async fn catalog_request_decline_and_withdraw_respect_authority_and_pending_visi
 	.await;
 	assert_eq!(status, 200, "{bob_pending}");
 	assert!(bob_pending["requests"].as_array().unwrap().is_empty());
+	for (token, expected) in [(&alice[..], 1), (bob, 0)] {
+		let (status, count) = request(
+			&app,
+			token,
+			"GET",
+			"/api/authorization/acme/catalog/requests/pending/count",
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{count}");
+		assert_eq!(count["count"], expected);
+	}
 
 	// The requester cannot decline or withdraw someone else's request, and
 	// an approver declines with a reason.
@@ -7064,6 +7076,23 @@ async fn catalog_request_pending_paginates_past_a_scan_batch(
 		.await
 		.unwrap();
 	}
+	let (status, sibling) = common::administer_node(
+		&f,
+		"acme",
+		"/api/tenants/acme/nodes",
+		json!({"label":"Sibling"}),
+	)
+	.await;
+	assert_eq!(status, 201, "{sibling}");
+	let sibling = sibling["name"].as_str().unwrap();
+	let (status, sibling_request) = request_create(
+		&app,
+		&alice,
+		&json!({"node":sibling,"root":{"id":"research","version":"1.0.0"},"reason":"Please"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{sibling_request}");
+
 	let (status, page) = request(
 		&app,
 		&alice,
@@ -7081,6 +7110,17 @@ async fn catalog_request_pending_paginates_past_a_scan_batch(
 		"the final request survives the scan"
 	);
 	assert!(page["next_offset"].is_null());
+	let (status, count) = request(
+		&app,
+		&alice,
+		"GET",
+		"/api/authorization/acme/catalog/requests/pending/count",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{count}");
+	assert_eq!(count["count"], 514);
+
 	cleanup(f, &url, &schema).await;
 }
 
@@ -8751,5 +8791,228 @@ async fn tool_call_approval_after_the_subnode_ended_is_refused(
 	late_subnode::assert_waited_at_the_subnode_check(waiting);
 	late_subnode::assert_cancelled(&late_subnode::run_to_its_end(&f, run.id).await);
 	drop(t.server);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn deployment_approval_copies_agent_subjects_and_restrictions_to_new_node(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let source = aidash_domain::nodes::NodeName::derived("acme");
+	let source_address = f.config.deployment.node(source.clone());
+	let source_subject = aidash_domain::qualified_agent(&source_address, "research", "1.0.0");
+	for id in ["model", "research"] {
+		let (status, result) = request(&app, &alice, "POST", "/api/authorization/acme/catalog", json!({
+            "node": source, "entry":{"id":id,"version":"1.0.0"}, "enabled":true,
+            "expected_revision":1, "carry_over":false, "scope":"deployment",
+            "restriction": if id == "model" { json!({"subjects":[source_subject.clone()], "groups":[]}) } else { Value::Null }
+        })).await;
+		assert_eq!(status, 200, "{id}: {result}");
+	}
+	let (status, sibling) = common::administer_node(
+		&f,
+		"acme",
+		"/api/tenants/acme/nodes",
+		json!({"label":"Sibling"}),
+	)
+	.await;
+	assert_eq!(status, 201, "{sibling}");
+	let target: aidash_domain::nodes::NodeName = sibling["name"].as_str().unwrap().parse().unwrap();
+	let target_address = f.config.deployment.node(target.clone());
+	let target_subject = aidash_domain::qualified_agent(&target_address, "research", "1.0.0");
+	let snapshot = aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.snapshot("acme")
+	.await
+	.unwrap();
+	assert!(snapshot.bundle.subjects.contains_key(&target_subject));
+	let (status, catalog) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/authorization/acme/catalog?node={target}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{catalog}");
+	let model = catalog
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|row| row["entry_id"] == "model")
+		.unwrap();
+	assert_eq!(model["enabled"], true);
+	assert_eq!(model["restriction"]["subjects"], json!([target_subject]));
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn registering_a_compatible_agent_carries_its_groups_and_dependency_restrictions(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let address = f.config.deployment.node(node.clone());
+	let old_subject = aidash_domain::qualified_agent(&address, "research", "1.0.0");
+	for id in ["model", "research"] {
+		let (status, body) = request(&app, &alice, "POST", "/api/authorization/acme/catalog", json!({
+            "node":node, "entry":{"id":id,"version":"1.0.0"}, "enabled":true,
+            "expected_revision":1, "carry_over":true, "scope":"node",
+            "restriction":if id == "model" { json!({"subjects":[old_subject.clone()],"groups":[]}) } else { Value::Null }
+        })).await;
+		assert_eq!(status, 200, "{id}: {body}");
+	}
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let mut next = f.registry.get(&tenant, "research", "1.0.0").await.unwrap();
+	next.version = "1.1.0".into();
+	next.binding_normalization = None;
+	next.config["instructions"] = json!("updated instructions");
+	let (status, result) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/registry",
+		serde_json::to_value(next).unwrap(),
+	)
+	.await;
+	assert_eq!(status, 200, "{result}");
+	assert!(
+		result["carry_results"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|result| result["node"] == node.as_str() && result["carried"] == true)
+	);
+	let new_subject = aidash_domain::qualified_agent(&address, "research", "1.1.0");
+	let snapshot = aidash_server::authorization::Authorization {
+		pool: f.store.pool.clone(),
+	}
+	.snapshot("acme")
+	.await
+	.unwrap();
+	assert_eq!(
+		snapshot.bundle.subjects[&old_subject].groups,
+		snapshot.bundle.subjects[&new_subject].groups
+	);
+	let (status, catalog) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/authorization/acme/catalog?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{catalog}");
+	let rows = catalog.as_array().unwrap();
+	let model = rows.iter().find(|row| row["entry_id"] == "model").unwrap();
+	assert!(
+		model["restriction"]["subjects"]
+			.as_array()
+			.unwrap()
+			.contains(&json!(new_subject))
+	);
+	let agent = rows
+		.iter()
+		.find(|row| row["entry_id"] == "research" && row["entry_version"] == "1.1.0")
+		.unwrap();
+	assert_eq!(agent["enabled"], true);
+	// An ordinary withdrawal leaves a carried version independent.
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({
+			"node":node, "entry":{"id":"research","version":"1.0.0"}, "enabled":false,
+			"expected_revision":2
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (_, catalog) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/authorization/acme/catalog?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(
+		catalog
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|row| row["entry_id"] == "research" && row["entry_version"] == "1.1.0")
+			.unwrap()["enabled"],
+		true
+	);
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({
+			"node":node, "entry":{"id":"research","version":"1.0.0"}, "enabled":true,
+			"expected_revision":3, "carry_over":true, "scope":"node"
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({
+			"node":node, "entry":{"id":"research","version":"1.0.0"}, "enabled":false,
+			"expected_revision":4, "withdraw_carried":true, "stop_carrying":true
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (_, catalog) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/authorization/acme/catalog?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(
+		catalog
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|row| row["entry_id"] == "research" && row["entry_version"] == "1.1.0")
+			.unwrap()["enabled"],
+		false
+	);
+	let (_, versions) = request(
+		&app,
+		&alice,
+		"GET",
+		&format!("/api/registry/versions?node={node}"),
+		Value::Null,
+	)
+	.await;
+	let original = versions["versions"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|row| row["entry"]["id"] == "research" && row["entry"]["version"] == "1.0.0")
+		.unwrap();
+	assert_eq!(original["approval"]["carry_over"], false);
 	cleanup(f, &url, &schema).await;
 }

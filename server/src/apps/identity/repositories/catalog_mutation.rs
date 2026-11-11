@@ -337,6 +337,42 @@ async fn history(
 		.execute(&mut **tx)
 		.await?
 	};
+	// A withdrawal or restriction-only revision retains the existing choice
+	// and lineage. A fresh approval may subsequently replace these options.
+	use crate::apps::identity::models::AuthorizationCatalog;
+	use reinhardt::db::orm::Model;
+	let current = AuthorizationCatalog::objects()
+		.filter(AuthorizationCatalog::field_tenant().eq(binding.tenant.clone()))
+		.filter(AuthorizationCatalog::field_node().eq(binding.node.as_str().to_owned()))
+		.filter(AuthorizationCatalog::field_entry_key().eq(binding.entry_id.clone()))
+		.filter(AuthorizationCatalog::field_entry_version().eq(binding.entry_version.clone()))
+		.filter(AuthorizationCatalog::field_revision().eq(binding.revision))
+		.all_with_executor(&mut **tx)
+		.await
+		.map_err(reinhardt::core::exception::Error::from)?
+		.pop()
+		.ok_or_else(|| crate::Error::Conflict("catalog revision changed".into()))?;
+	let sql = Query::update()
+		.table(Alias::new("authorization_catalog_history"))
+		.value(Alias::new("carry_over"), current.carry_over)
+		.value(Alias::new("scope"), current.scope)
+		.value(
+			Alias::new("carried_from_version"),
+			current.carried_from_version,
+		)
+		.value(
+			Alias::new("carried_from_approver"),
+			current.carried_from_approver,
+		)
+		.and_where(Expr::col(Alias::new("tenant")).eq(binding.tenant.clone()))
+		.and_where(Expr::col(Alias::new("node")).eq(binding.node.as_str()))
+		.and_where(Expr::col(Alias::new("entry_id")).eq(binding.entry_id.clone()))
+		.and_where(Expr::col(Alias::new("entry_version")).eq(binding.entry_version.clone()))
+		.and_where(Expr::col(Alias::new("revision")).eq(binding.revision))
+		.to_string(PostgresQueryBuilder);
+	crate::database::native::query(&sql)
+		.execute(&mut **tx)
+		.await?;
 	Ok(())
 }
 pub(crate) async fn bindings(
@@ -395,6 +431,66 @@ impl CatalogMutation for NativeMutation<'_> {
 		.await
 		.map_err(Into::into)
 	}
+	async fn carry_options(
+		&mut self,
+		binding: &Binding,
+		carry_over: bool,
+		scope: aidash_domain::identity::catalog::ApprovalScope,
+	) -> aidash_application::Result<()> {
+		let scope = match scope {
+			aidash_domain::identity::catalog::ApprovalScope::Node => "node",
+			aidash_domain::identity::catalog::ApprovalScope::Deployment => "deployment",
+		};
+		for table in ["authorization_catalog", "authorization_catalog_history"] {
+			let sql = Query::update()
+				.table(Alias::new(table))
+				.value(Alias::new("carry_over"), carry_over)
+				.value(Alias::new("scope"), scope)
+				.value(Alias::new("carried_from_version"), Option::<String>::None)
+				.value(Alias::new("carried_from_approver"), Option::<String>::None)
+				.and_where(Expr::col(Alias::new("tenant")).eq(binding.tenant.clone()))
+				.and_where(Expr::col(Alias::new("node")).eq(binding.node.as_str()))
+				.and_where(Expr::col(Alias::new("entry_id")).eq(binding.entry_id.clone()))
+				.and_where(Expr::col(Alias::new("entry_version")).eq(binding.entry_version.clone()))
+				.and_where(Expr::col(Alias::new("revision")).eq(binding.revision))
+				.to_string(PostgresQueryBuilder);
+			let result = crate::database::native::query(&sql)
+				.execute(&mut **self.0)
+				.await
+				.map_err(crate::Error::from)?;
+			if result.rows_affected() != 1 {
+				return Err(aidash_application::Error::Conflict(
+					"catalog revision changed".into(),
+				));
+			}
+		}
+		Ok(())
+	}
+
+	async fn stop_carrying(&mut self, binding: &Binding) -> aidash_application::Result<()> {
+		for table in ["authorization_catalog", "authorization_catalog_history"] {
+			let sql = Query::update()
+				.table(Alias::new(table))
+				.value(Alias::new("carry_over"), false)
+				.and_where(Expr::col(Alias::new("tenant")).eq(binding.tenant.clone()))
+				.and_where(Expr::col(Alias::new("node")).eq(binding.node.as_str()))
+				.and_where(Expr::col(Alias::new("entry_id")).eq(binding.entry_id.clone()))
+				.and_where(Expr::col(Alias::new("entry_version")).eq(binding.entry_version.clone()))
+				.and_where(Expr::col(Alias::new("revision")).eq(binding.revision))
+				.to_string(PostgresQueryBuilder);
+			let result = crate::database::native::query(&sql)
+				.execute(&mut **self.0)
+				.await
+				.map_err(crate::Error::from)?;
+			if result.rows_affected() != 1 {
+				return Err(aidash_application::Error::Conflict(
+					"catalog revision changed".into(),
+				));
+			}
+		}
+		Ok(())
+	}
+
 	async fn history(
 		&mut self,
 		binding: &Binding,
