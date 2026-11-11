@@ -186,6 +186,34 @@ pub fn compare(old: &Entry, new: &Entry) -> Result<Vec<String>> {
 					.any(|plugin| !a.agent_plugins.contains(plugin)),
 				"agent plugins",
 			);
+			let mut plugin_settings_widened = false;
+			for plugin in &b.agent_plugins {
+				for server in plugin.servers.keys() {
+					let old_settings = a
+						.agent_plugin_settings
+						.get(&plugin.name)
+						.and_then(|servers| servers.get(server))
+						.cloned()
+						.unwrap_or_default();
+					let new_settings = b
+						.agent_plugin_settings
+						.get(&plugin.name)
+						.and_then(|servers| servers.get(server))
+						.cloned()
+						.unwrap_or_default();
+					if let Some(old_tools) = &old_settings.tools {
+						plugin_settings_widened |= new_settings
+							.tools
+							.as_ref()
+							.is_none_or(|new_tools| !new_tools.is_subset(old_tools));
+					}
+					plugin_settings_widened |= new_settings
+						.read_only
+						.iter()
+						.any(|item| !old_settings.read_only.contains(item));
+				}
+			}
+			add(plugin_settings_widened, "agent plugin settings");
 			add(
 				a.remove_default.iter().collect::<BTreeSet<_>>()
 					!= b.remove_default.iter().collect::<BTreeSet<_>>(),

@@ -141,7 +141,8 @@ fn decider_host_and_retention_expansion_require_approval() {
 	let mut harmless = old.clone();
 	harmless.config["routes"][0]["model"] = json!("typesafe/jev-1.14");
 	harmless.config["max_calls_per_run"] = json!(40);
-	harmless.config["routes"][0]["threshold"] = json!(0.4);
+	harmless.config["routes"][0]["threshold"] =
+		serde_json::to_value(crate::decision::Probability::new(0.4).unwrap()).unwrap();
 	assert!(compare(&old, &harmless).unwrap().is_empty());
 	assert!(compare(&retained, &new).unwrap().is_empty());
 }
@@ -204,4 +205,31 @@ fn http_tool_host_secret_and_new_read_only_require_approval() {
 	changed.config["endpoint"] = json!("https://example.com/b");
 	changed.schema = json!({"new":"schema"});
 	assert!(compare(&old, &changed).unwrap().is_empty());
+}
+
+#[test]
+fn agent_plugin_settings_can_narrow_but_not_add_tools_or_read_only_declarations() {
+	let plugin = crate::agent_plugin::fixtures::reference_with_servers(
+		"example",
+		json!({"docs":{"type":"streamable-http","url":"https://example.com/mcp"}}),
+	);
+	let mut old = entry(
+		"agent",
+		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"first","agent_plugins":[plugin],"agent_plugin_settings":{"example":{"docs":{"tools":["search","read"]}}}}),
+	);
+	let mut new = old.clone();
+	new.config["agent_plugin_settings"]["example"]["docs"]["tools"] = json!(["search"]);
+	assert!(compare(&old, &new).unwrap().is_empty());
+	assert!(
+		compare(&new, &old)
+			.unwrap()
+			.contains(&"agent plugin settings".to_owned())
+	);
+	old.config["agent_plugin_settings"]["example"]["docs"]["read_only"] =
+		json!([{"name":"search","schema_digest":format!("sha256:{}", "a".repeat(64))}]);
+	assert!(
+		compare(&new, &old)
+			.unwrap()
+			.contains(&"agent plugin settings".to_owned())
+	);
 }
