@@ -202,6 +202,29 @@ async fn demo_data_loads_once_and_adds_only_what_is_missing(#[future] database: 
 		stdout(&first)
 	);
 	let loaded = rows(&f).await;
+	f.fixture(async |tx| {
+		for binding in AuthorizationCatalog::objects()
+			.all()
+			.all_with_db(tx)
+			.await?
+		{
+			let carries = matches!(
+				binding.entry_key.as_str(),
+				"aidash.compaction-decider"
+					| "research-assistant"
+					| "summarizer" | "support-triage"
+			);
+			assert_eq!(binding.carry_over, carries, "{}", binding.entry_key);
+			assert_eq!(
+				binding.scope,
+				if carries { "deployment" } else { "node" },
+				"{}",
+				binding.entry_key
+			);
+		}
+		Ok(())
+	})
+	.await;
 	assert_eq!(loaded.loads, 1);
 	assert_eq!(loaded.roots, 2);
 	assert_eq!(

@@ -61,12 +61,19 @@ pub(super) async fn approve(
 				if !existing.is_empty() {
 					continue;
 				}
+				let definition = definition(tx, &entry).await?;
+				let carry_over =
+					definition.kind == "agent" || entry.id == "aidash.compaction-decider";
 				let subject = aidash_domain::qualified_agent(&target, &entry.id, &entry.version);
 				let groups =
 					(!snapshot.bundle.subjects.contains_key(&subject)).then(|| want.groups.clone());
 				pending.push(Approval {
-					carry_over: true,
-					scope: aidash_domain::identity::catalog::ApprovalScope::Deployment,
+					carry_over,
+					scope: if carry_over {
+						aidash_domain::identity::catalog::ApprovalScope::Deployment
+					} else {
+						aidash_domain::identity::catalog::ApprovalScope::Node
+					},
 					provider_warning_acknowledged: false,
 					entry,
 					enabled: true,
