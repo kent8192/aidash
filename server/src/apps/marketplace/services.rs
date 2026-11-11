@@ -69,6 +69,17 @@ pub(crate) async fn state_response(
 	mut state: crate::apps::execution::serializers::state::StateResponse,
 ) -> crate::Result<Response> {
 	use crate::authorization::access::Access;
+	if state
+		.registry
+		.iter()
+		.all(|entry| entry.installation.is_none())
+		&& !state
+			.events
+			.iter()
+			.any(|event| event.kind.starts_with("marketplace."))
+	{
+		return Ok(Response::ok().with_json(&state)?);
+	}
 	let mut access = Access::begin(store, identity).await?;
 	storage::lock(&mut access.tx, false).await?;
 	let result = async {
