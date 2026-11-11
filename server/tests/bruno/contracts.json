@@ -22072,102 +22072,6 @@
               }
             ]
           },
-          "Entry": {
-            "additionalProperties": false,
-            "properties": {
-              "binding_normalization": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/AgentNormalization"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "capabilities": {
-                "default": [],
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "config": {
-                "additionalProperties": true,
-                "default": {},
-                "type": "object"
-              },
-              "description": {
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "type": "object"
-              },
-              "id": {
-                "type": "string"
-              },
-              "installation": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/MarketplaceProjection"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "kind": {
-                "type": "string"
-              },
-              "languages": {
-                "default": [],
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "name": {
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "type": "object"
-              },
-              "schema": {
-                "default": {}
-              },
-              "skills": {
-                "default": [],
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "tags": {
-                "default": [],
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "version": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "version",
-              "kind",
-              "name",
-              "description",
-              "capabilities",
-              "tags",
-              "languages",
-              "skills",
-              "schema",
-              "config"
-            ],
-            "type": "object"
-          },
           "MarketplaceProjection": {
             "additionalProperties": false,
             "properties": {
@@ -22331,10 +22235,158 @@
               "max_calls_per_run"
             ],
             "type": "object"
+          },
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "RegistrationCarryResult": {
+            "properties": {
+              "carried": {
+                "type": "boolean"
+              },
+              "changed": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "node": {
+                "type": "string"
+              },
+              "source_version": {
+                "type": ["string", "null"]
+              },
+              "unapproved_dependencies": {
+                "items": {
+                  "$ref": "#/components/schemas/EntityRef"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "node",
+              "source_version",
+              "changed",
+              "unapproved_dependencies",
+              "carried"
+            ],
+            "type": "object"
+          },
+          "RegistryCreateResult": {
+            "description": "The registered definition and the result of carrying each Node's approval.",
+            "properties": {
+              "binding_normalization": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AgentNormalization"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "capabilities": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "carry_results": {
+                "items": {
+                  "$ref": "#/components/schemas/RegistrationCarryResult"
+                },
+                "type": "array"
+              },
+              "config": {
+                "additionalProperties": true,
+                "default": {},
+                "type": "object"
+              },
+              "description": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "id": {
+                "type": "string"
+              },
+              "installation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/MarketplaceProjection"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "languages": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "name": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "schema": {
+                "default": {}
+              },
+              "skills": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "tags": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "version",
+              "kind",
+              "name",
+              "description",
+              "capabilities",
+              "tags",
+              "languages",
+              "skills",
+              "schema",
+              "config",
+              "carry_results"
+            ],
+            "type": "object"
           }
         },
         "schema": {
-          "$ref": "#/components/schemas/Entry"
+          "$ref": "#/components/schemas/RegistryCreateResult"
         }
       }
     },
@@ -23242,9 +23294,25 @@
               "revision": {
                 "format": "int64",
                 "type": "integer"
+              },
+              "carried_from_approver": {
+                "type": ["string", "null"]
+              },
+              "carried_from_version": {
+                "type": ["string", "null"]
+              },
+              "carry_over": {
+                "type": "boolean"
+              },
+              "scope": {
+                "type": "string"
               }
             },
             "required": [
+              "carry_over",
+              "scope",
+              "carried_from_version",
+              "carried_from_approver",
               "revision",
               "enabled",
               "actor",
@@ -23706,9 +23774,29 @@
               "revision": {
                 "format": "int64",
                 "type": "integer"
+              },
+              "carried_from_approver": {
+                "type": ["string", "null"]
+              },
+              "carried_from_version": {
+                "type": ["string", "null"]
+              },
+              "carry_over": {
+                "type": "boolean"
+              },
+              "scope": {
+                "type": "string"
               }
             },
-            "required": ["enabled", "revision", "restriction"],
+            "required": [
+              "carry_over",
+              "scope",
+              "carried_from_version",
+              "carried_from_approver",
+              "enabled",
+              "revision",
+              "restriction"
+            ],
             "type": "object"
           }
         },
@@ -23847,102 +23935,6 @@
                 "type": "string"
               }
             ]
-          },
-          "Entry": {
-            "additionalProperties": false,
-            "properties": {
-              "binding_normalization": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/AgentNormalization"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "capabilities": {
-                "default": [],
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "config": {
-                "additionalProperties": true,
-                "default": {},
-                "type": "object"
-              },
-              "description": {
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "type": "object"
-              },
-              "id": {
-                "type": "string"
-              },
-              "installation": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/MarketplaceProjection"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "kind": {
-                "type": "string"
-              },
-              "languages": {
-                "default": [],
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "name": {
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "type": "object"
-              },
-              "schema": {
-                "default": {}
-              },
-              "skills": {
-                "default": [],
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "tags": {
-                "default": [],
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "version": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "version",
-              "kind",
-              "name",
-              "description",
-              "capabilities",
-              "tags",
-              "languages",
-              "skills",
-              "schema",
-              "config"
-            ],
-            "type": "object"
           },
           "MarketplaceProjection": {
             "additionalProperties": false,
@@ -24107,10 +24099,158 @@
               "max_calls_per_run"
             ],
             "type": "object"
+          },
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "RegistrationCarryResult": {
+            "properties": {
+              "carried": {
+                "type": "boolean"
+              },
+              "changed": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "node": {
+                "type": "string"
+              },
+              "source_version": {
+                "type": ["string", "null"]
+              },
+              "unapproved_dependencies": {
+                "items": {
+                  "$ref": "#/components/schemas/EntityRef"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "node",
+              "source_version",
+              "changed",
+              "unapproved_dependencies",
+              "carried"
+            ],
+            "type": "object"
+          },
+          "RegistryCreateResult": {
+            "description": "The registered definition and the result of carrying each Node's approval.",
+            "properties": {
+              "binding_normalization": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AgentNormalization"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "capabilities": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "carry_results": {
+                "items": {
+                  "$ref": "#/components/schemas/RegistrationCarryResult"
+                },
+                "type": "array"
+              },
+              "config": {
+                "additionalProperties": true,
+                "default": {},
+                "type": "object"
+              },
+              "description": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "id": {
+                "type": "string"
+              },
+              "installation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/MarketplaceProjection"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "kind": {
+                "type": "string"
+              },
+              "languages": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "name": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "schema": {
+                "default": {}
+              },
+              "skills": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "tags": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "version",
+              "kind",
+              "name",
+              "description",
+              "capabilities",
+              "tags",
+              "languages",
+              "skills",
+              "schema",
+              "config",
+              "carry_results"
+            ],
+            "type": "object"
           }
         },
         "schema": {
-          "$ref": "#/components/schemas/Entry"
+          "$ref": "#/components/schemas/RegistryCreateResult"
         }
       }
     },
@@ -57030,5 +57170,93 @@
     },
     "source": "server/src/apps/identity/views/peer_execution.rs",
     "uuid_parameters": ["id"]
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "authorization-catalog-requests-pending-count",
+    "path": "/api/authorization/{tenant}/catalog/requests/pending/count",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "CatalogPendingCount": {
+            "description": "Number of open Catalog Approval Requests the caller may act on.",
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": ["count"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/CatalogPendingCount"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/policies.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "catalog-mail-preference",
+    "path": "/api/tenants/{tenant}/approval-request-mail/mine",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "CatalogMailPreference": {
+            "additionalProperties": false,
+            "description": "The signed-in person's Catalog Approval Request email preference.",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": ["enabled"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/CatalogMailPreference"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/policies.rs",
+    "uuid_parameters": []
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "catalog-set-mail-preference",
+    "path": "/api/tenants/{tenant}/approval-request-mail/mine",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "CatalogMailPreference": {
+            "additionalProperties": false,
+            "description": "The signed-in person's Catalog Approval Request email preference.",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              }
+            },
+            "required": ["enabled"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/CatalogMailPreference"
+        }
+      }
+    },
+    "source": "server/src/apps/identity/views/policies.rs",
+    "uuid_parameters": []
   }
 ]
