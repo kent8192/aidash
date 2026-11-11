@@ -2897,13 +2897,9 @@ connection: None,
 						}
 						// What people and coordinating Agents read says what was
 						// abandoned. The Model Turn keeps the model's own words.
-						let mut named = run.recovery.early_abandoned_tasks.clone();
-						for task in &abandoning {
-							if !named.iter().any(|prior| prior.id == task.id) {
-								named.push(task.clone());
-							}
-						}
-						let published = unassigned::answer_with_abandoned(&result.text, &named);
+						let published = unassigned::completion_answer(
+							&result.text, &run.recovery.early_abandoned_tasks, &abandoning,
+						);
 						let artifact = ArtifactInput {
 							kind: "text".into(),
 							name: result_artifact_name(&home.task().await?.title),

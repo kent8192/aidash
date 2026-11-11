@@ -579,8 +579,9 @@ async fn settle_saved_run(
 	let artifact = aidash_domain::ArtifactInput {
 		kind: "text".into(),
 		name: aidash_application::execution::result_artifact_name(&task.title),
-		content: serde_json::json!(aidash_domain::unassigned::answer_with_abandoned(
+		content: serde_json::json!(aidash_domain::unassigned::completion_answer(
 			&saved.response.text,
+			&run.recovery.early_abandoned_tasks,
 			&saved.abandoning
 		)),
 	};
