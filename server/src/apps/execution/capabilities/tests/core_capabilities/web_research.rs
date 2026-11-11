@@ -127,7 +127,7 @@ async fn research_fixture(
 				.iter()
 				.map(|member| json!({"id":member["id"],"version":member["version"]})),
 		)
-		.map(|entry| json!({"entry":entry,"enabled":true,"expected_revision":0}))
+		.map(|entry| json!({"entry":entry,"enabled":true,"expected_revision":0,"scope":"node"}))
 		.collect();
 	let (status, approved) = common::post(
 		&c.app,
@@ -156,7 +156,7 @@ async fn research_fixture(
 		(
 			"POST",
 			"/api/authorization/acme/catalog".to_owned(),
-			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":VERSION},"expected_revision":0,"enabled":true}),
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":VERSION},"expected_revision":0,"enabled":true,"scope":"node"}),
 		),
 	] {
 		let (status, value) = request(&c.app, &c.token, method, &path, body).await;
@@ -231,7 +231,7 @@ impl Research {
 			("/api/registry", json!(agent)),
 			(
 				"/api/authorization/acme/catalog",
-				json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"3.1.0"},"expected_revision":0,"enabled":true}),
+				json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"3.1.0"},"expected_revision":0,"enabled":true,"scope":"node"}),
 			),
 		] {
 			let (status, value) = common::post(&self.c.app, &self.c.token, path, body).await;
@@ -1197,7 +1197,7 @@ async fn the_providers_api_says_what_is_set_up_and_approved_only_to_a_tenant_sub
 		&r.c.app,
 		&r.c.token,
 		"/api/authorization/acme/catalog/approvals",
-		json!({"node":name,"approvals":[{"entry":r.search_tool,"enabled":true,"expected_revision":0}]}),
+		json!({"node":name,"approvals":[{"entry":r.search_tool,"enabled":true,"expected_revision":0,"scope":"node"}]}),
 	)
 	.await;
 	assert_eq!(status, 200, "{approved}");
