@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useId, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import {
   Languages,
   LogOut,
@@ -111,6 +111,7 @@ export function AccountPanel({ account }: { account: Account }) {
   const themeGroup = useId();
   const { nodes, selected, tenant } = useNodes();
   const queryClient = useQueryClient();
+  const [mailChoice, setMailChoice] = useState<boolean>();
   const mailKey = ["approval-request-mail", tenant] as const;
   const mailUrl = `/api/tenants/${encodeURIComponent(tenant ?? "")}/approval-request-mail/mine`;
   const mail = useQuery({
@@ -127,6 +128,7 @@ export function AccountPanel({ account }: { account: Account }) {
         body: JSON.stringify({ enabled }),
       }),
     onSuccess: (value) => queryClient.setQueryData(mailKey, value),
+    onSettled: () => setMailChoice(undefined),
   });
   return (
     <div className="grid text-[13px]">
@@ -244,9 +246,12 @@ export function AccountPanel({ account }: { account: Account }) {
           <label className="flex items-center gap-2 text-xs">
             <input
               type="checkbox"
-              checked={mail.data.enabled}
+              checked={mailChoice ?? mail.data.enabled}
               disabled={updateMail.isPending}
-              onChange={(event) => updateMail.mutate(event.target.checked)}
+              onChange={(event) => {
+                setMailChoice(event.target.checked);
+                updateMail.mutate(event.target.checked);
+              }}
             />
             {locale === "ja-JP"
               ? "承認依頼をメールで受け取る"
