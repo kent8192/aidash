@@ -571,11 +571,11 @@ async fn deferred_first_request_exposes_only_mandatory_and_eager_capabilities(
 	d.close().await;
 }
 
-/// A native memory source alone is not a memory provider, so the model is
-/// offered none of the memory builtins that would always refuse (#617).
+/// A native memory source alone is not a memory provider (#617), so both
+/// twins get Built-in Memory (#852) and the same memory builtins.
 #[rstest::rstest]
 #[tokio::test]
-async fn native_memory_source_alone_offers_no_memory_builtins(
+async fn native_memory_source_alone_falls_back_to_built_in_memory(
 	#[future] deferred_fixture: Deferred,
 ) {
 	let d = Box::pin(deferred_fixture).await;
@@ -588,10 +588,16 @@ async fn native_memory_source_alone_offers_no_memory_builtins(
 	let requests = d.requests().await;
 	let [legacy, native] = [&requests[0], &requests[requests.len() - 1]].map(tool_names);
 	for tool in aidash_domain::registry::bindings::MEMORY_TOOLS {
-		assert!(!legacy.contains(*tool), "{tool} offered without memory");
-		assert!(!native.contains(*tool), "{tool} offered without a provider");
+		assert!(
+			legacy.contains(*tool),
+			"{tool} missing from Built-in Memory"
+		);
+		assert!(
+			native.contains(*tool),
+			"{tool} missing beside a native source"
+		);
 	}
-	// Everything else the legacy twin is offered stays offered.
+	// The native source adds no tool of its own.
 	assert_eq!(legacy, native);
 	d.close().await;
 }

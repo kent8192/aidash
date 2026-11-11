@@ -621,6 +621,19 @@ mod scoped_pair_composition {
 }
 use scoped_pair_composition::scoped_pair;
 
+/// The first tool result in a Run's history. Run-start memory recall (#852)
+/// may record a history entry before it.
+fn first_result(context: &Value) -> &Value {
+	context["history"]
+		.as_array()
+		.and_then(|history| {
+			history
+				.iter()
+				.find(|entry| entry["event"].get("result").is_some())
+		})
+		.map_or(&Value::Null, |entry| entry)
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn direct_thread_attachment_fetch_checks_mapping_and_grant(#[future(awt)] scoped_pair: Pair) {
@@ -3369,7 +3382,7 @@ async fn binding_backed_remote_delegation_is_rejected_before_target_authority(
 	let run = p.run().await;
 	assert_eq!(run.control.as_str(), "ACTIVE", "{:?}", run.error);
 	let history = json!(run.context);
-	let error = history["history"][0]["event"]["result"]["error"]
+	let error = first_result(&history)["event"]["result"]["error"]
 		.as_str()
 		.unwrap_or_default();
 	assert!(error.contains("one hop"), "{history}");
@@ -6969,7 +6982,7 @@ async fn remote_memory_mutate_is_not_advertised_and_cannot_write_a_receiver_subs
 	assert_eq!(p.requests.lock().await.len(), 1);
 	let run = p.run().await;
 	assert_eq!(
-		serde_json::to_value(&run.context).unwrap()["history"][0]["event"]["result"]["error"],
+		first_result(&serde_json::to_value(&run.context).unwrap())["event"]["result"]["error"],
 		"unavailable tool memory_mutate",
 		"unsupported remote writes must return an explicit tool error"
 	);
