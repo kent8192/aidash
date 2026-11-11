@@ -57,7 +57,7 @@ impl From<BindingRow> for Binding {
 fn restriction_value(restriction: Option<&CatalogRestriction>) -> Result<SimpleExpr> {
 	match restriction {
 		Some(restriction) => Ok(Expr::value(serde_json::to_value(restriction)?).cast_as("jsonb")),
-		None => Ok(Expr::cust("NULL::jsonb").into()),
+		None => Ok(Expr::value(Option::<serde_json::Value>::None).into()),
 	}
 }
 pub(crate) struct NativeMutation<'a>(pub(crate) &'a mut crate::database::native::Transaction);

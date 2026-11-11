@@ -157,7 +157,7 @@ pub(crate) async fn copy(
 		}
 		let restriction = match &row.restriction {
 			Some(value) => Expr::value(serde_json::to_value(value)?).cast_as("jsonb"),
-			None => Expr::cust("NULL::jsonb").into(),
+			None => Expr::value(Option::<serde_json::Value>::None).into(),
 		};
 		for history in [false, true] {
 			let table = if history {
