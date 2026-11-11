@@ -1,5 +1,7 @@
 //! Copy Deployment-scoped Catalog Approvals while a Node is created.
-use crate::apps::identity::models::{AuthorizationBundle, AuthorizationCatalog};
+use crate::apps::identity::models::{
+	AuthorizationBundle, AuthorizationCatalog, AuthorizationCatalogHistory,
+};
 use crate::apps::registry::models::Definition;
 use crate::{Error, Result};
 use aidash_application::authorization::Snapshot;
@@ -25,6 +27,8 @@ struct CopyRow {
 	carry_over: bool,
 	from_version: Option<String>,
 	from_approver: Option<String>,
+	actor: String,
+	provider_warning_acknowledgment: Option<String>,
 	restriction: Option<CatalogRestriction>,
 	agent: Option<Subject>,
 }
@@ -50,6 +54,19 @@ pub(crate) async fn copy(
 		if &source == target {
 			continue;
 		}
+		let history = AuthorizationCatalogHistory::objects()
+			.filter(AuthorizationCatalogHistory::field_tenant().eq(tenant.to_owned()))
+			.filter(AuthorizationCatalogHistory::field_node().eq(row.node.clone()))
+			.filter(AuthorizationCatalogHistory::field_entry_key().eq(row.entry_key.clone()))
+			.filter(
+				AuthorizationCatalogHistory::field_entry_version().eq(row.entry_version.clone()),
+			)
+			.filter(AuthorizationCatalogHistory::field_revision().eq(row.revision))
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.pop()
+			.ok_or_else(|| Error::Conflict("deployment approval has no current history".into()))?;
 		let old_node = deployment.node(source.clone());
 		let new_node = deployment.node(target.clone());
 		let old_prefix = format!("{old_node}/agents/");
@@ -93,6 +110,8 @@ pub(crate) async fn copy(
 			carry_over: row.carry_over,
 			from_version: row.carried_from_version,
 			from_approver: row.carried_from_approver,
+			actor: history.actor,
+			provider_warning_acknowledgment: history.provider_warning_acknowledgment,
 			restriction,
 			agent,
 		};
@@ -102,6 +121,9 @@ pub(crate) async fn copy(
 				|| existing.carry_over != candidate.carry_over
 				|| existing.from_version != candidate.from_version
 				|| existing.from_approver != candidate.from_approver
+				|| existing.actor != candidate.actor
+				|| existing.provider_warning_acknowledgment
+					!= candidate.provider_warning_acknowledgment
 				|| existing.restriction != candidate.restriction
 				|| serde_json::to_value(&existing.agent)? != serde_json::to_value(&candidate.agent)?
 			{
@@ -171,7 +193,9 @@ pub(crate) async fn copy(
 				.expr(Expr::value(row.from_approver.clone()));
 			if history {
 				columns.push("actor");
-				values.expr(Expr::value("deployment-scope-copy"));
+				columns.push("provider_warning_acknowledgment");
+				values.expr(Expr::value(row.actor.clone()));
+				values.expr(Expr::value(row.provider_warning_acknowledgment.clone()));
 			}
 			let (sql, params) = Query::insert()
 				.into_table(Alias::new(table))
