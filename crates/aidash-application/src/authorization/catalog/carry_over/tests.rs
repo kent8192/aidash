@@ -100,3 +100,17 @@ async fn an_unapproved_dependency_prevents_agent_carry() {
 		}]
 	);
 }
+
+#[tokio::test]
+async fn invalid_consent_surface_reports_failure_without_writing() {
+	let mut fixture = Fixture {
+		sources: vec![source("1.0.0", true)],
+		..Default::default()
+	};
+	let mut entry = model("1.1.0", "provider");
+	entry.config = json!({"provider": "incomplete"});
+	let result = carry(&mut fixture, &entry).await.unwrap();
+	assert!(!result[0].carried);
+	assert!(result[0].changed[0].contains("consent comparison failed"));
+	assert!(fixture.writes.is_empty());
+}

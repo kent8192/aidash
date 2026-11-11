@@ -79,7 +79,19 @@ pub async fn carry(scope: &mut dyn CarryScope, entry: &Entry) -> Result<Vec<Carr
 			});
 			continue;
 		};
-		let changed = carry_over::compare(&source.definition, entry)?;
+		let changed = match carry_over::compare(&source.definition, entry) {
+			Ok(changed) => changed,
+			Err(error) => {
+				results.push(CarryResult {
+					node,
+					source_version: Some(source.definition.version.clone()),
+					changed: vec![format!("consent comparison failed: {error}")],
+					unapproved_dependencies: vec![],
+					carried: false,
+				});
+				continue;
+			}
+		};
 		let mut missing = Vec::new();
 		for dependency in approvals::dependencies(entry, node.deployment.as_str())? {
 			if !crate::registry::system::builtin_reference(&dependency)

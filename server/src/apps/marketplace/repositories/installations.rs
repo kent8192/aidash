@@ -180,7 +180,7 @@ impl StagingScope for NativeDefinitions<'_, &Store> {
 		revision: &Revision,
 	) -> aidash_application::Result<()> {
 		persist_revision(&mut self.access.tx, installation, revision).await?;
-		aidash_application::authorization::catalog::carry_over::carry(
+		crate::apps::identity::repositories::catalog_carry::carry_best_effort(
 			&mut crate::apps::identity::repositories::catalog_carry::TenantCarry {
 				tenant: &self.access.identity.tenant,
 				tx: &mut self.access.tx,

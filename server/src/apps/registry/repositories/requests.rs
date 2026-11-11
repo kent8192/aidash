@@ -101,7 +101,7 @@ impl DefinitionWriter for TenantRegistration<'_> {
 			.insert_definition(entry)
 			.await?;
 		if inserted {
-			let results = aidash_application::authorization::catalog::carry_over::carry(
+			let results = crate::apps::identity::repositories::catalog_carry::carry_best_effort(
 				&mut crate::apps::identity::repositories::catalog_carry::TenantCarry {
 					tenant: &self.access.identity.tenant,
 					tx: &mut self.access.tx,

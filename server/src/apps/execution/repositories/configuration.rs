@@ -136,7 +136,7 @@ impl ConfigurationScope for Scope<'_> {
 				},
 			)
 			.await?;
-			aidash_application::authorization::catalog::carry_over::carry(
+			crate::apps::identity::repositories::catalog_carry::carry_best_effort(
 				&mut crate::apps::identity::repositories::catalog_carry::TenantCarry {
 					tx: &mut self.access.tx,
 					snapshot: &mut self.access.snapshot,

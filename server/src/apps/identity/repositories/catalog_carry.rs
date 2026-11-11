@@ -37,6 +37,57 @@ impl TenantCarry<'_> {
 	}
 }
 
+/// Keep a failed carry attempt from aborting registration or leaving partial policy changes.
+/// A broken connection still prevents the enclosing transaction from committing.
+pub(crate) async fn carry_best_effort(
+	scope: &mut TenantCarry<'_>,
+	entry: &Entry,
+) -> Result<Vec<aidash_application::authorization::catalog::carry_over::CarryResult>> {
+	let snapshot = scope.snapshot.clone();
+	scope
+		.tx
+		.savepoint("approval_carry")
+		.await
+		.map_err(crate::Error::from)?;
+	match aidash_application::authorization::catalog::carry_over::carry(scope, entry).await {
+		Ok(results) => {
+			scope
+				.tx
+				.release_savepoint("approval_carry")
+				.await
+				.map_err(crate::Error::from)?;
+			Ok(results)
+		}
+		Err(error) => {
+			scope
+				.tx
+				.rollback_to_savepoint("approval_carry")
+				.await
+				.map_err(crate::Error::from)?;
+			scope
+				.tx
+				.release_savepoint("approval_carry")
+				.await
+				.map_err(crate::Error::from)?;
+			*scope.snapshot = snapshot;
+			tracing::warn!(%error, id = %entry.id, version = %entry.version, "approval carry failed");
+			let nodes = nodes::list_live(&mut **scope.tx, scope.tenant).await?;
+			Ok(nodes
+				.into_iter()
+				.map(
+					|node| aidash_application::authorization::catalog::carry_over::CarryResult {
+						node: scope.deployment.node(node.name),
+						source_version: None,
+						changed: vec![format!("approval carry failed: {error}")],
+						unapproved_dependencies: vec![],
+						carried: false,
+					},
+				)
+				.collect())
+		}
+	}
+}
+
 #[async_trait]
 impl CarryScope for TenantCarry<'_> {
 	async fn nodes(&mut self) -> Result<Vec<NodeAddress>> {

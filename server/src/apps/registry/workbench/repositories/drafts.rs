@@ -243,7 +243,7 @@ impl DefinitionWriter for Scope {
 					&identity.tenant,
 				)
 				.await?;
-			let results = aidash_application::authorization::catalog::carry_over::carry(
+			let results = crate::apps::identity::repositories::catalog_carry::carry_best_effort(
 				&mut crate::apps::identity::repositories::catalog_carry::TenantCarry {
 					tx: &mut self.tx,
 					snapshot: &mut snapshot,

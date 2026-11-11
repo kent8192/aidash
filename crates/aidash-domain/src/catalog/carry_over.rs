@@ -11,11 +11,16 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
-fn host(endpoint: &str) -> Result<String> {
-	url::Url::parse(endpoint)
-		.ok()
-		.and_then(|url| url.host_str().map(str::to_owned))
-		.ok_or_else(|| Error::Invalid("invalid consent endpoint host".into()))
+fn host_changed(old: &str, new: &str) -> bool {
+	let host = |endpoint: &str| {
+		url::Url::parse(endpoint)
+			.ok()
+			.and_then(|url| url.host_str().map(str::to_owned))
+	};
+	match (host(old), host(new)) {
+		(Some(old), Some(new)) => old != new,
+		_ => true,
+	}
 }
 
 fn tool(entry: &Entry) -> Result<Option<ToolConfig>> {
@@ -44,7 +49,7 @@ pub fn compare(old: &Entry, new: &Entry) -> Result<Vec<String>> {
 			let a: ModelConfig = serde_json::from_value(old.config.clone())?;
 			let b: ModelConfig = serde_json::from_value(new.config.clone())?;
 			add(a.provider != b.provider, "provider");
-			add(host(&a.endpoint)? != host(&b.endpoint)?, "endpoint host");
+			add(host_changed(&a.endpoint, &b.endpoint), "endpoint host");
 			add(
 				a.provider_credential != b.provider_credential,
 				"provider credential",
@@ -87,7 +92,7 @@ pub fn compare(old: &Entry, new: &Entry) -> Result<Vec<String>> {
 						..
 					}),
 				) => {
-					add(host(ae)? != host(be)?, "endpoint host");
+					add(host_changed(ae, be), "endpoint host");
 					add(as_ != bs, "secret");
 					add(
 						ar != "read_only" && br == "read_only",
@@ -110,7 +115,7 @@ pub fn compare(old: &Entry, new: &Entry) -> Result<Vec<String>> {
 						..
 					}),
 				) => {
-					add(host(ae)? != host(be)?, "endpoint host");
+					add(host_changed(ae, be), "endpoint host");
 					add(as_ != bs, "secret");
 					add(
 						bc.as_ref()

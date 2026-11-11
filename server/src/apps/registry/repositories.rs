@@ -286,7 +286,7 @@ impl DefinitionWriter for CarryingSeed<'_> {
 	async fn insert_definition(&mut self, entry: &Entry) -> aidash_application::Result<bool> {
 		let inserted = sql::SqlScope(self.tx).insert_definition(entry).await?;
 		if inserted {
-			aidash_application::authorization::catalog::carry_over::carry(
+			crate::apps::identity::repositories::catalog_carry::carry_best_effort(
 				&mut crate::apps::identity::repositories::catalog_carry::TenantCarry {
 					tx: self.tx,
 					snapshot: self.snapshot,

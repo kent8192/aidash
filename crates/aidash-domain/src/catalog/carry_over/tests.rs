@@ -14,6 +14,20 @@ fn model_host_change_requires_approval() {
 }
 
 #[test]
+fn hostless_endpoint_always_requires_approval() {
+	let valid = model();
+	let mut hostless = valid.clone();
+	hostless.config["endpoint"] = json!("file:///tmp/model");
+	for (old, new) in [
+		(&valid, &hostless),
+		(&hostless, &valid),
+		(&hostless, &hostless),
+	] {
+		assert_eq!(compare(old, new), Ok(vec!["endpoint host".to_owned()]));
+	}
+}
+
+#[test]
 fn model_consent_fields_and_ignored_fields() {
 	let old = model();
 	for (field, value, expected) in [
