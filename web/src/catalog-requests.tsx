@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   authorizationCatalogRequestsPending,
@@ -65,6 +65,7 @@ export function CatalogRequestQueue({
   const { t, locale } = useI18n();
   const relative = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
   const [open, setOpen] = useState<CatalogApprovalRequestView>();
+  const [dismissedLink, setDismissedLink] = useState<string>();
   const [declining, setDeclining] = useState<string>();
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -90,17 +91,11 @@ export function CatalogRequestQueue({
     staleTime: 0,
     retry: false,
   });
-  const openedLink = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    if (!initialRequestId || openedLink.current === initialRequestId) return;
-    const request = pending.data?.requests.find(
-      (item) => item.id === initialRequestId,
-    );
-    if (request) {
-      openedLink.current = initialRequestId;
-      setOpen(request);
-    }
-  }, [initialRequestId, pending.data]);
+  const linked =
+    initialRequestId && initialRequestId !== dismissedLink
+      ? pending.data?.requests.find((item) => item.id === initialRequestId)
+      : undefined;
+  const selected = open ?? linked;
   const decline = async (id: string) => {
     setBusy(true);
     setMessage("");
@@ -120,15 +115,18 @@ export function CatalogRequestQueue({
       setBusy(false);
     }
   };
-  if (open)
+  if (selected)
     return (
       <ApprovalReviewPanel
         tenant={tenant}
         node={node}
-        root={open.root}
-        requestId={open.id}
+        root={selected.root}
+        requestId={selected.id}
         subject={subject}
-        onClose={() => setOpen(undefined)}
+        onClose={() => {
+          setOpen(undefined);
+          setDismissedLink(initialRequestId);
+        }}
         onChanged={async () => {
           await pending.refetch();
         }}
