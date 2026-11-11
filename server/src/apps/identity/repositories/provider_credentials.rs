@@ -275,6 +275,8 @@ pub(crate) fn selected_providers(
 		if entry.config.get("schema_version").is_some() {
 			continue;
 		}
+		let built_in_memory =
+			aidash_domain::registry::bindings::memory_defaults::is_builtin_memory(entry);
 		let memory: aidash_domain::memory::ProviderConfig =
 			serde_json::from_value(entry.config.clone())?;
 		for role in [
@@ -287,11 +289,14 @@ pub(crate) fn selected_providers(
 			}
 		}
 		definitions.extend(memory.policy.embedding);
-		let reranker = definition(&memory.policy.reranker)?;
-		if let aidash_domain::memory::RerankerConfig::Model { model } =
-			serde_json::from_value(reranker.config.clone())?
-		{
-			definitions.push(model);
+		// The built-in memory's RRF algorithm has no model or credential.
+		if !built_in_memory {
+			let reranker = definition(&memory.policy.reranker)?;
+			if let aidash_domain::memory::RerankerConfig::Model { model } =
+				serde_json::from_value(reranker.config.clone())?
+			{
+				definitions.push(model);
+			}
 		}
 	}
 	let mut providers = std::collections::BTreeSet::new();

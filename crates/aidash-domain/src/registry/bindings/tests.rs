@@ -66,6 +66,35 @@ fn built_in_memory_is_default_and_an_explicit_provider_takes_precedence() {
 }
 
 #[test]
+fn builtin_memory_algorithms_are_internal_but_custom_provider_roles_are_dependencies() {
+	let entry = memory_defaults::definitions()
+		.unwrap()
+		.into_iter()
+		.find(|entry| entry.kind == "memory")
+		.unwrap();
+	let identity = QualifiedRef::builtin("aidash://node-a", "memory");
+	let references = definition_references(&identity, &entry).unwrap();
+	assert!(
+		!references
+			.iter()
+			.any(|(_, kind)| kind == "reranker" || kind == "tokenizer")
+	);
+	let mut custom = entry.clone();
+	custom.id = "tenant.memory".into();
+	let references = definition_references(&identity, &custom).unwrap();
+	assert!(
+		references
+			.iter()
+			.any(|(target, kind)| target.id == memory_defaults::RERANKER_ID && kind == "reranker")
+	);
+	assert!(
+		references
+			.iter()
+			.any(|(target, kind)| target.id == memory_defaults::TOKENIZER_ID && kind == "tokenizer")
+	);
+}
+
+#[test]
 fn agent_model_roles_do_not_add_registry_dependencies() {
 	let mut policy: Value = serde_json::from_str(include_str!(
 		"../../../../../tests/fixtures/native_memory_policy_baseline.json"

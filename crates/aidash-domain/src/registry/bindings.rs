@@ -168,8 +168,12 @@ pub fn definition_references(
 			if let Some(reference) = provider.policy.embedding {
 				result.push((local(&reference), "embedding".into()));
 			}
-			result.push((local(&provider.policy.reranker), "reranker".into()));
-			result.push((local(&provider.policy.tokenizer), "tokenizer".into()));
+			// The built-in provider's fixed local algorithms are implementation
+			// details, rather than independent user-selected Registry dependencies.
+			if !memory_defaults::is_builtin_memory(entry) {
+				result.push((local(&provider.policy.reranker), "reranker".into()));
+				result.push((local(&provider.policy.tokenizer), "tokenizer".into()));
+			}
 		}
 		"source" => {
 			let source: crate::memory::SourceConfig = serde_json::from_value(entry.config.clone())?;
