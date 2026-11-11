@@ -393,7 +393,10 @@ pub fn summary_candidate(
 	let mut sources = plan.absorbed.clone();
 	sources.extend(plan.people.iter().cloned());
 	sources.sort_by_key(|entry| entry.seq);
-	let content = SummaryContent::from_draft(text, goal, previous, &sources, max_tokens)
+	let mut content = SummaryContent::from_draft(text, goal, previous, &sources, max_tokens)
+		.map_err(|r| invalid(r, None))?;
+	content
+		.trim_history(fitting.budget.window / 8)
 		.map_err(|r| invalid(r, None))?;
 	let summary = ExecutionSummary::merge(
 		content,

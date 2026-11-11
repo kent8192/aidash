@@ -548,3 +548,44 @@ async fn revoked_summary_restores_only_the_entries_it_absorbed() {
 		.collect::<Vec<_>>();
 	assert_eq!(adopted.history, expected);
 }
+
+#[tokio::test]
+async fn repeated_summary_adoption_bounds_older_prose_in_context_bytes() {
+	let mut scenario = Scenario::new();
+	scenario.pinned["task"]["description"] = json!("g".repeat(433));
+	let policy = recovery_policy(true);
+	let mut context = long_history();
+	for round in 0..4 {
+		let plan = needs_summary(scenario.plan(&mut context, &policy).await.unwrap());
+		let previous = plan.pruned.execution_summary.as_deref();
+		let draft = json!({"retained":SummaryContent::retained_ids(previous),"labels":[],"prose":format!("round {round}: {}", "x".repeat(700))}).to_string();
+		let (adopted, _) = scenario.adopt(&plan, &draft, &policy).unwrap();
+		let content = &adopted.execution_summary.as_ref().unwrap().content;
+		assert!(serde_json::to_string(content).unwrap().len() <= scenario.window / 8);
+		assert_eq!(content.goal, "g".repeat(433));
+		assert!(content.decisions.iter().any(|item| {
+			item.starts_with("Full tool results remain in Context Journal sequences ")
+		}));
+		assert!(
+			content
+				.decisions
+				.iter()
+				.any(|item| item.starts_with(&format!("round {round}:")))
+		);
+		context = adopted;
+		for i in 0..30 {
+			context.push(tool(&format!("old-{round}-{i}"), &"z".repeat(400)));
+		}
+		for i in 0..6 {
+			context.push(tool(&format!("recent-{round}-{i}"), "recent"));
+		}
+		context.journal.inferred_through = context.journal.head;
+	}
+	let content = &context.execution_summary.as_ref().unwrap().content;
+	assert!(
+		!content
+			.decisions
+			.iter()
+			.any(|item| item.starts_with("round 0:"))
+	);
+}
