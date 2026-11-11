@@ -4,8 +4,8 @@ use crate::{
 	ports::authorization::state::{WorkspaceListingScope, WorkspaceStateScope},
 };
 use aidash_domain::{
-	Artifact, Conversation, Event, HumanRequest, RunInspection, RunState, Task, WaitingState,
-	Workspace, registry::Entry, workspaces::TaskPage,
+	Artifact, Conversation, Event, HumanRequest, RunInspection, RunState, RunSummary, Task,
+	WaitingState, Workspace, registry::Entry, workspaces::TaskPage,
 };
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -15,7 +15,7 @@ pub struct WorkspaceState {
 	pub workspaces: Vec<Workspace>,
 	pub tasks: Vec<Task>,
 	pub artifacts: Vec<Artifact>,
-	pub runs: Vec<RunInspection>,
+	pub runs: Vec<RunSummary>,
 	pub human_requests: Vec<HumanRequest>,
 	pub conversations: Vec<Conversation>,
 	pub events: Vec<Event>,
@@ -108,7 +108,7 @@ pub async fn state(
 			&& scope.run_visible(&row.metadata).await?
 		{
 			workspace_ids.push(row.metadata.workspace_id);
-			runs.push(row.inspect());
+			runs.push(row.inspect().into());
 		}
 	}
 	let mut human_requests = Vec::new();

@@ -16,7 +16,7 @@ pub struct StateResponse {
 	pub registry: Vec<Entry>,
 	pub workspaces: Vec<Workspace>,
 	pub tasks: Vec<Task>,
-	pub runs: Vec<crate::domain::RunInspection>,
+	pub runs: Vec<crate::domain::RunSummary>,
 	pub human_requests: Vec<HumanRequest>,
 	pub conversations: Vec<Conversation>,
 	pub events: Vec<Event>,

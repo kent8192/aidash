@@ -467,3 +467,7 @@ path = "src/apps/identity/tests/state_latency.rs"
 [[test]]
 name = "state_statement_count"
 path = "src/apps/identity/tests/state_statement_count.rs"
+
+[[test]]
+name = "state_light_runs"
+path = "src/apps/identity/tests/state_light_runs.rs"
