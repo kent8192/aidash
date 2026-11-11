@@ -639,6 +639,30 @@ export function CatalogApprovalSection({
             </Button>
           </div>
         )}
+      {tenant !== null &&
+        selected !== undefined &&
+        can("catalog.approve") &&
+        version.approval?.enabled &&
+        version.approval.carry_over && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={() =>
+              void decide(() =>
+                authorizationSetCatalog(path, {
+                  ...approvalRequest(version, true),
+                  node: selected.name,
+                  scope: "node",
+                  carry_over: false,
+                  stop_carrying: true,
+                }),
+              )
+            }
+          >
+            {locale === "ja-JP" ? "引き継ぎを停止" : "Stop carrying"}
+          </Button>
+        )}
       {reviewOpen && tenant !== null && selected !== undefined && (
         <ApprovalReviewPanel
           tenant={tenant}

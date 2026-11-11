@@ -1569,7 +1569,57 @@ impl PolicyAdministration {
 				}
 			}
 			let mut bindings = Vec::new();
-			if withdraw_carried {
+			if stop_carrying
+				&& !withdraw_carried
+				&& approvals.len() == 1
+				&& approvals[0].enabled
+				&& approvals[0].groups.is_none()
+				&& approvals[0].restriction.is_none()
+			{
+				use aidash_application::ports::catalog::CatalogApprovalScope;
+				let decision = &approvals[0];
+				access.set_node(node.clone());
+				let definition =
+					crate::apps::identity::repositories::catalog_approvals::definition(
+						&mut access.tx,
+						&decision.entry,
+					)
+					.await?;
+				TenantCatalog {
+					access: &mut access,
+					node: f.config.deployment.node(node.clone()),
+					deployment_scope_orchestrated: false,
+				}
+				.require(&definition, "catalog.approve")
+				.await?;
+				let row = AuthorizationCatalog::objects()
+					.filter(AuthorizationCatalog::field_tenant().eq(tenant.clone()))
+					.filter(AuthorizationCatalog::field_node().eq(node.as_str().to_owned()))
+					.filter(AuthorizationCatalog::field_entry_key().eq(decision.entry.id.clone()))
+					.filter(
+						AuthorizationCatalog::field_entry_version()
+							.eq(decision.entry.version.clone()),
+					)
+					.all_with_executor(&mut **access.tx)
+					.await
+					.map_err(FrameworkError::from)?
+					.into_iter()
+					.next()
+					.filter(|row| row.enabled && row.revision == decision.expected_revision)
+					.ok_or_else(|| Error::Conflict("catalog revision changed".into()))?;
+				bindings.push(Binding {
+					tenant: tenant.clone(),
+					node: node.clone(),
+					entry_id: row.entry_key,
+					entry_version: row.entry_version,
+					enabled: row.enabled,
+					revision: row.revision,
+					restriction: row
+						.restriction
+						.map(|value| serde_json::from_value(value.0))
+						.transpose()?,
+				});
+			} else if withdraw_carried {
 				for chunk in approvals.chunks(128) {
 					bindings.extend(
 						approve_scoped(
@@ -1600,13 +1650,15 @@ impl PolicyAdministration {
 			if stop_carrying {
 				let binding = bindings
 					.first()
+					.cloned()
 					.ok_or_else(|| Error::Invalid("missing withdrawal".into()))?;
-				TenantCatalog {
-					access: &mut access,
-					node: f.config.deployment.node(node.clone()),
-					deployment_scope_orchestrated: false,
-				}
-				.stop_carrying(binding)
+				bindings[0] = stop_carrying_revision(
+					&mut access,
+					&f.config.deployment,
+					&node,
+					&binding,
+					&identity.subject,
+				)
 				.await?;
 				for descendant in &mut stop_descendants {
 					if let Some(updated) = bindings.iter().find(|b| {
@@ -1615,12 +1667,13 @@ impl PolicyAdministration {
 					}) {
 						descendant.revision = updated.revision;
 					}
-					TenantCatalog {
-						access: &mut access,
-						node: f.config.deployment.node(node.clone()),
-						deployment_scope_orchestrated: false,
-					}
-					.stop_carrying(descendant)
+					*descendant = stop_carrying_revision(
+						&mut access,
+						&f.config.deployment,
+						&node,
+						descendant,
+						&identity.subject,
+					)
 					.await?;
 				}
 			}
