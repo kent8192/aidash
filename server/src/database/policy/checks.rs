@@ -84,6 +84,33 @@ pub fn assert_policy_migrations_run_the_rendered_template(
 			}
 		}
 	}
+	// These physical tables were removed by the compaction rebuild. Validate
+	// their historical templates above but do not require them in today's
+	// classification. State-only model removals do not prove physical removal.
+	for table in [
+		"decision_states",
+		"decision_outcomes",
+		"generation_compaction_usage",
+		"generation_summary_usage",
+	] {
+		assert!(
+			!owned.contains(table),
+			"retired table is still classified: {table}"
+		);
+		assert!(
+			migrations
+				.iter()
+				.flat_map(|migration| &migration.operations)
+				.any(
+					|operation| matches!(operation, Operation::DropTable { name } if name.as_str() == table)
+				),
+			"retired table has no migration state removal: {table}"
+		);
+		assert!(
+			covered.remove(table),
+			"retired table has no historical policy: {table}"
+		);
+	}
 	let expected: BTreeSet<String> = owned.iter().copied().map(str::to_owned).collect();
 	assert_eq!(
 		covered, expected,

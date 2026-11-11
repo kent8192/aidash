@@ -23,7 +23,11 @@ pub(super) fn migration() -> Migration {
 			], without_rowid: None, interleave_in_parent: None, partition: None,
 		})
 		.add_operation(Operation::RunSQL {
-			sql: "ALTER TABLE public.memory_journal_proofs ENABLE ROW LEVEL SECURITY; ALTER TABLE public.memory_journal_proofs FORCE ROW LEVEL SECURITY; CREATE POLICY tenant_isolation ON public.memory_journal_proofs AS PERMISSIVE FOR ALL TO PUBLIC USING ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant())) WITH CHECK ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant())); CREATE TRIGGER memory_journal_proofs_atomic BEFORE INSERT OR UPDATE OR DELETE ON memory_journal_proofs FOR EACH STATEMENT EXECUTE FUNCTION atomic_write_guard();".into(),
-			reverse_sql: Some("DROP TRIGGER memory_journal_proofs_atomic ON memory_journal_proofs; DROP POLICY tenant_isolation ON public.memory_journal_proofs; ALTER TABLE public.memory_journal_proofs NO FORCE ROW LEVEL SECURITY; ALTER TABLE public.memory_journal_proofs DISABLE ROW LEVEL SECURITY;".into()),
+			sql: include_str!("sql/forward/0053_memory_journal_proofs_policy.sql").into(),
+			reverse_sql: Some(include_str!("sql/backward/0053_memory_journal_proofs_policy.sql").into()),
+		})
+		.add_operation(Operation::RunSQL {
+			sql: "CREATE TRIGGER memory_journal_proofs_atomic BEFORE INSERT OR UPDATE OR DELETE ON memory_journal_proofs FOR EACH STATEMENT EXECUTE FUNCTION atomic_write_guard();".into(),
+			reverse_sql: Some("DROP TRIGGER memory_journal_proofs_atomic ON memory_journal_proofs;".into()),
 		}).atomic(true)
 }
