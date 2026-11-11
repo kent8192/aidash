@@ -664,9 +664,9 @@ jobs:
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           shared-key: production-http
-      - name: Validate every route, scenario and sanitized evidence requirement
+      - name: Render and validate every route, scenario and sanitized evidence requirement
         run: |
-          python3 scripts/bruno_contracts.py --check
+          python3 scripts/bruno_contracts.py
           python3 scripts/test_bruno_contracts.py
       - name: Start real PostgreSQL and JetStream fixtures
         run: docker compose up --build -d --wait postgres nats
