@@ -295,3 +295,33 @@ async fn a_real_pool_timeout_is_a_temporary_database_error() {
 		503
 	);
 }
+
+/// Only a database that cannot be reached starts the post-outage hold on lease
+/// recoveries; a lock wait, deadlock or statement timeout means it is up (#786).
+#[rstest]
+#[case::connection_lost(DatabaseErrorKind::Query, Some("08006"), true)]
+#[case::shutting_down(DatabaseErrorKind::Query, Some("57P01"), true)]
+#[case::client_deadline(DatabaseErrorKind::Timeout, None, true)]
+#[case::refused(DatabaseErrorKind::Connection, None, true)]
+#[case::deadlock(DatabaseErrorKind::Query, Some("40P01"), false)]
+#[case::lock_wait(DatabaseErrorKind::Query, Some("55P03"), false)]
+#[case::statement_timeout(DatabaseErrorKind::Query, Some("57014"), false)]
+fn only_an_unreachable_database_holds_lease_recoveries(
+	#[case] kind: DatabaseErrorKind,
+	#[case] code: Option<&str>,
+	#[case] unreachable: bool,
+) {
+	// Arrange
+	let mut error = DatabaseError::new(kind, "private database diagnostic");
+	if let Some(code) = code {
+		error = error.with_code(code);
+	}
+	let error = Error::Framework(error.into());
+	let outage = crate::apps::execution::repositories::store::run_state::Outage::default();
+	// Act
+	outage.note(&error);
+	// Assert
+	assert_eq!(error.is_database_unreachable(), unreachable);
+	assert_eq!(outage.holds_recoveries(30), unreachable);
+	assert!(!outage.holds_recoveries(0));
+}

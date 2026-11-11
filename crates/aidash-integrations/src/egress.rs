@@ -64,6 +64,7 @@ const REFUSAL_WINDOW: Duration = Duration::from_secs(2);
 /// Sandboxed code can fill the slots at will, so the log is thinned. The
 /// counter stays exact.
 const REFUSAL_LOG_INTERVAL: Duration = Duration::from_secs(10);
+const INDEX_LIMIT_MESSAGE: &str = "package_index_limit_exceeded: this package index is over 8 MiB. Install from a lockfile, or by tarball URL through the registry.";
 const CONNECTION_LIMIT: &str = "egress_connection_limit";
 /// How much of a request body may be discarded after the answer, and for how
 /// long. These bytes never leave the gateway, so they are not charged.
@@ -330,25 +331,21 @@ impl Refusal {
 	};
 
 	fn of(error: &aidash_application::Error) -> Self {
-		use aidash_application::Error;
-		match error {
-			Error::Conflict(code) if code == aidash_domain::egress::LIMIT_EXCEEDED => Self::LIMIT,
-			Error::Conflict(code) if code == aidash_domain::egress::OPERATION_EXPIRED => {
-				Self::EXPIRED
-			}
-			Error::Conflict(code) if code == aidash_domain::egress::OPERATION_INACTIVE => {
-				Self::INACTIVE
-			}
-			Error::Refused(code) if code == "egress_budget_exhausted" => Self {
+		use aidash_application::egress::DebitRefusal;
+		match DebitRefusal::of(error) {
+			Some(DebitRefusal::Limit) => Self::LIMIT,
+			Some(DebitRefusal::Expired) => Self::EXPIRED,
+			Some(DebitRefusal::Inactive) => Self::INACTIVE,
+			Some(DebitRefusal::ScopeBudget) => Self {
 				status: StatusCode::TOO_MANY_REQUESTS,
 				code: "egress_budget_exhausted",
 			},
-			Error::Refused(code) if code == "egress_suspended" => Self {
+			Some(DebitRefusal::Suspended) => Self {
 				status: StatusCode::FORBIDDEN,
 				code: "egress_suspended",
 			},
-			Error::Forbidden | Error::Unauthorized | Error::AuthorityRefused(_) => Self::FORBIDDEN,
-			_ => Self::UNAVAILABLE,
+			Some(DebitRefusal::Forbidden) => Self::FORBIDDEN,
+			None => Self::UNAVAILABLE,
 		}
 	}
 
@@ -530,6 +527,17 @@ async fn stopped(receiver: &mut watch::Receiver<Option<Refusal>>) -> Refusal {
 	}
 }
 impl Completion {
+	async fn fail(
+		&mut self,
+		status: StatusCode,
+		error: &'static str,
+		message: &'static str,
+	) -> Response<Body> {
+		self.status = status.as_u16();
+		self.finish(Some(error)).await;
+		failure(status, message)
+	}
+
 	fn interrupted(&mut self, code: &'static str) {
 		let _ = self.debits.interrupted.set(code);
 	}
@@ -792,13 +800,27 @@ impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for WriteDeadline<S
 /// `CONNECT` is excluded because an upgraded tunnel half-closes through the same
 /// socket and must keep reading what the other side sends.
 #[derive(Clone, Default)]
-struct UnreadBody(Arc<std::sync::atomic::AtomicBool>);
+struct UnreadBody(
+	Arc<std::sync::atomic::AtomicBool>,
+	Arc<std::sync::Mutex<progress::Progress>>,
+);
 impl UnreadBody {
 	fn note<B: hyper::body::Body>(&self, request: &Request<B>) {
-		self.0.store(
-			request.method() != hyper::Method::CONNECT && !request.body().is_end_stream(),
-			Ordering::Relaxed,
-		);
+		let has_body =
+			request.method() != hyper::Method::CONNECT && !request.body().is_end_stream();
+		self.0.store(has_body, Ordering::Relaxed);
+		let mut progress = self.1.lock().unwrap();
+		if request.method() == hyper::Method::CONNECT {
+			progress.disable();
+		} else {
+			progress.note(request.body().size_hint().exact(), has_body);
+		}
+	}
+	fn read(&self, bytes: &[u8]) {
+		self.1.lock().unwrap().read(bytes);
+	}
+	fn incomplete(&self) -> bool {
+		self.1.lock().unwrap().incomplete()
 	}
 }
 
@@ -817,6 +839,7 @@ struct LingeringClose<S> {
 	closed: bool,
 	/// Told once the answer has been written and the sending side is closed.
 	answered: Option<tokio::sync::oneshot::Sender<()>>,
+	tunnel: Option<Arc<std::sync::Mutex<Option<Arc<proxy::TunnelPermit>>>>>,
 }
 impl<S> LingeringClose<S> {
 	fn new(inner: S, unread: UnreadBody) -> Self {
@@ -827,7 +850,16 @@ impl<S> LingeringClose<S> {
 			linger: None,
 			closed: false,
 			answered: None,
+			tunnel: None,
 		}
+	}
+
+	fn releasing_tunnel(
+		mut self,
+		tunnel: Arc<std::sync::Mutex<Option<Arc<proxy::TunnelPermit>>>>,
+	) -> Self {
+		self.tunnel = Some(tunnel);
+		self
 	}
 
 	/// Reports through `answered` when the answer is out, so that a caller can
@@ -846,8 +878,8 @@ impl<S: tokio::io::AsyncRead + Unpin> LingeringClose<S> {
 			.linger
 			.get_or_insert_with(|| Box::pin(tokio::time::sleep(LINGER_TIME)));
 		if timer.as_mut().poll(cx).is_ready() {
-			// With nothing discarded, closing resets nothing and no answer is at risk.
-			if self.bytes_left < LINGER_BYTES {
+			// Count an upload cut off while its body is still incomplete.
+			if self.bytes_left < LINGER_BYTES && self.unread.incomplete() {
 				metrics::counter!("aidash_egress_linger_limit_total", "limit" => "time")
 					.increment(1);
 			}
@@ -861,6 +893,7 @@ impl<S: tokio::io::AsyncRead + Unpin> LingeringClose<S> {
 				Poll::Ready(Err(_)) => return Poll::Ready(()),
 				Poll::Ready(Ok(())) if buffer.filled().is_empty() => return Poll::Ready(()),
 				Poll::Ready(Ok(())) => {
+					self.unread.read(buffer.filled());
 					self.bytes_left = self.bytes_left.saturating_sub(buffer.filled().len() as u64);
 					if self.bytes_left == 0 {
 						metrics::counter!("aidash_egress_linger_limit_total", "limit" => "bytes")
@@ -878,7 +911,12 @@ impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for LingeringClose<S>
 		cx: &mut std::task::Context<'_>,
 		buf: &mut tokio::io::ReadBuf<'_>,
 	) -> std::task::Poll<std::io::Result<()>> {
-		std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+		let before = buf.filled().len();
+		let result = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+		if matches!(result, std::task::Poll::Ready(Ok(()))) {
+			self.unread.read(&buf.filled()[before..]);
+		}
+		result
 	}
 }
 impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite
@@ -909,6 +947,9 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWr
 			}
 		}
 		if self.unread.0.load(Ordering::Relaxed) {
+			if let Some(tunnel) = self.tunnel.take() {
+				drop(tunnel.lock().unwrap().take());
+			}
 			std::task::ready!(self.poll_discard(cx));
 		}
 		std::task::Poll::Ready(Ok(()))
@@ -944,7 +985,7 @@ pub async fn serve_with_scopes(
 	authority: Arc<dyn Authority>,
 	scopes: Option<Arc<dyn aidash_application::egress::EgressScopes>>,
 	limits: ProxyLimits,
-	mut stopping: watch::Receiver<bool>,
+	stopping: watch::Receiver<bool>,
 ) -> crate::Result<()> {
 	if limits.tenant_concurrent == 0
 		|| limits.tenant_concurrent >= limits.global_concurrent
@@ -969,6 +1010,23 @@ pub async fn serve_with_scopes(
 		.read_timeout(IDLE)
 		.build()
 		.map_err(crate::http_error)?;
+	serve_with_clients(
+		listener, authority, scopes, limits, stopping, client, public,
+	)
+	.await
+}
+
+/// The serving loop, with the upstream clients supplied. Tests give it clients
+/// that reach a local stand-in for the package registries.
+async fn serve_with_clients(
+	listener: TcpListener,
+	authority: Arc<dyn Authority>,
+	scopes: Option<Arc<dyn aidash_application::egress::EgressScopes>>,
+	limits: ProxyLimits,
+	mut stopping: watch::Receiver<bool>,
+	client: reqwest::Client,
+	public: reqwest::Client,
+) -> crate::Result<()> {
 	let slots = Arc::new(tokio::sync::Semaphore::new(CONNECTION_SLOTS));
 	let refusals = Arc::new(tokio::sync::Semaphore::new(REFUSAL_SLOTS));
 	let mut refused = RefusedConnections::default();
@@ -1001,6 +1059,7 @@ pub async fn serve_with_scopes(
 					let connection_lease = Arc::new(std::sync::Mutex::new(None));
 					let unread = UnreadBody::default();
 					let noting = unread.clone();
+					let lingering_tunnel = connection_lease.clone();
 					let service = service_fn(move |request| {
 						noting.note(&request);
 						let authority=authority.clone(); let client=client.clone(); let public=public.clone(); let scopes=scopes.clone(); let permit=permit.clone(); let tunnels=tunnels.clone(); let connection_lease=connection_lease.clone();
@@ -1016,7 +1075,7 @@ pub async fn serve_with_scopes(
 					});
 					let _ = hyper::server::conn::http1::Builder::new().timer(TokioTimer::new())
 						.header_read_timeout(IDLE).max_headers(64)
-						.serve_connection(TokioIo::new(LingeringClose::new(WriteDeadline::new(socket, IDLE), unread)), service).with_upgrades().await;
+						.serve_connection(TokioIo::new(LingeringClose::new(WriteDeadline::new(socket, IDLE), unread).releasing_tunnel(lingering_tunnel)), service).with_upgrades().await;
 				});
 			}
 		}
@@ -1448,13 +1507,19 @@ async fn forward(
 		settle_ms: 0,
 	};
 	if remaining.is_zero() {
-		completion.finish(Some("operation_expired")).await;
-		return failure(StatusCode::FORBIDDEN, "egress_expired");
+		return completion
+			.fail(StatusCode::FORBIDDEN, "operation_expired", "egress_expired")
+			.await;
 	}
 	let index = !scoped && admission.definition.builtin_index(service);
 	if asset.is_some() && !index {
-		completion.finish(Some("invalid_package_service")).await;
-		return failure(StatusCode::FORBIDDEN, "egress_forbidden");
+		return completion
+			.fail(
+				StatusCode::FORBIDDEN,
+				"invalid_package_service",
+				"egress_forbidden",
+			)
+			.await;
 	}
 	let service_url = match asset
 		.clone()
@@ -1463,8 +1528,13 @@ async fn forward(
 	{
 		Ok(url) => url,
 		Err(_) => {
-			completion.finish(Some("invalid_path")).await;
-			return failure(StatusCode::BAD_REQUEST, "invalid_egress_path");
+			return completion
+				.fail(
+					StatusCode::BAD_REQUEST,
+					"invalid_path",
+					"invalid_egress_path",
+				)
+				.await;
 		}
 	};
 	// A brokered request goes to the broker's `/v1/forward` base instead of the
@@ -1476,8 +1546,13 @@ async fn forward(
 			match broker_url(route, &service_url, &base) {
 				Ok(url) => url,
 				Err(_) => {
-					completion.finish(Some("invalid_path")).await;
-					return failure(StatusCode::BAD_REQUEST, "invalid_egress_path");
+					return completion
+						.fail(
+							StatusCode::BAD_REQUEST,
+							"invalid_path",
+							"invalid_egress_path",
+						)
+						.await;
 				}
 			}
 		}
@@ -1500,8 +1575,13 @@ async fn forward(
 			aidash_domain::keyless::Destination::PublicOnly => &public,
 			aidash_domain::keyless::Destination::Permitted => &client,
 			aidash_domain::keyless::Destination::Forbidden => {
-				completion.finish(Some("destination_forbidden")).await;
-				return failure(StatusCode::FORBIDDEN, "egress_forbidden");
+				return completion
+					.fail(
+						StatusCode::FORBIDDEN,
+						"destination_forbidden",
+						"egress_forbidden",
+					)
+					.await;
 			}
 		}
 	};
@@ -1525,9 +1605,13 @@ async fn forward(
 	if let Some(route) = &admission.route {
 		let Ok(mut value) = hyper::header::HeaderValue::from_str(route.token.expose_secret())
 		else {
-			completion.status = StatusCode::SERVICE_UNAVAILABLE.as_u16();
-			completion.finish(Some("broker_unavailable")).await;
-			return failure(StatusCode::SERVICE_UNAVAILABLE, "broker_unavailable");
+			return completion
+				.fail(
+					StatusCode::SERVICE_UNAVAILABLE,
+					"broker_unavailable",
+					"broker_unavailable",
+				)
+				.await;
 		};
 		value.set_sensitive(true);
 		upstream = upstream.header(SECRET_CALL, value);
@@ -1539,8 +1623,13 @@ async fn forward(
 			aidash_domain::egress::Authentication::Header { name } => {
 				let Ok(mut value) = hyper::header::HeaderValue::from_str(secret.expose_secret())
 				else {
-					completion.finish(Some("secret_unavailable")).await;
-					return failure(StatusCode::FAILED_DEPENDENCY, "secret_unavailable");
+					return completion
+						.fail(
+							StatusCode::FAILED_DEPENDENCY,
+							"secret_unavailable",
+							"secret_unavailable",
+						)
+						.await;
 				};
 				value.set_sensitive(true);
 				upstream.header(name, value)
@@ -1597,8 +1686,13 @@ async fn forward(
 				_ => "the operation deadline passed".to_owned(),
 			};
 			upstream_failed(&completion.debits.label, &cause);
-			completion.finish(Some("upstream_unavailable")).await;
-			return failure(StatusCode::BAD_GATEWAY, "EGRESS_UNAVAILABLE");
+			return completion
+				.fail(
+					StatusCode::BAD_GATEWAY,
+					"upstream_unavailable",
+					"EGRESS_UNAVAILABLE",
+				)
+				.await;
 		}
 	};
 	completion.status = response.status().as_u16();
@@ -1654,8 +1748,13 @@ async fn forward(
 				&& u.username().is_empty()
 				&& u.password().is_none()
 		}) else {
-			completion.finish(Some("redirect_refused")).await;
-			return failure(StatusCode::BAD_GATEWAY, "egress_redirect_refused");
+			return completion
+				.fail(
+					StatusCode::BAD_GATEWAY,
+					"redirect_refused",
+					"egress_redirect_refused",
+				)
+				.await;
 		};
 		let relative = redirected.path().strip_prefix(base.path()).unwrap_or("");
 		let prefix = if scoped {
@@ -1671,8 +1770,13 @@ async fn forward(
 				.unwrap_or_default()
 		);
 		let Ok(location) = rewritten.parse() else {
-			completion.finish(Some("redirect_refused")).await;
-			return failure(StatusCode::BAD_GATEWAY, "egress_redirect_refused");
+			return completion
+				.fail(
+					StatusCode::BAD_GATEWAY,
+					"redirect_refused",
+					"egress_redirect_refused",
+				)
+				.await;
 		};
 		headers.insert("location", location);
 	}
@@ -1712,6 +1816,7 @@ async fn forward(
 		loop {
 			let next = tokio::select! {
 				refusal = stopped(&mut active_rx) => {
+					completion.status = refusal.status.as_u16();
 					completion.interrupted(refusal.code);
 					return refusal.response();
 				}
@@ -1726,8 +1831,13 @@ async fn forward(
 						_ => "timed out".to_owned(),
 					};
 					upstream_failed(&completion.debits.label, &cause);
-					completion.finish(Some("index_unavailable")).await;
-					return failure(StatusCode::BAD_GATEWAY, "package_index_unavailable");
+					return completion
+						.fail(
+							StatusCode::BAD_GATEWAY,
+							"index_unavailable",
+							"package_index_unavailable",
+						)
+						.await;
 				}
 			};
 			completion.debits.count(Direction::Received, bytes.len());
@@ -1741,8 +1851,18 @@ async fn forward(
 				return refusal.response();
 			}
 			if buffer.len().saturating_add(bytes.len()) > INDEX_BYTES {
-				completion.finish(Some("index_limit_exceeded")).await;
-				return failure(StatusCode::BAD_GATEWAY, "package_index_limit_exceeded");
+				let mut response = completion
+					.fail(
+						StatusCode::UNPROCESSABLE_ENTITY,
+						"index_limit_exceeded",
+						INDEX_LIMIT_MESSAGE,
+					)
+					.await;
+				response.extensions_mut().insert(
+					hyper::ext::ReasonPhrase::try_from(INDEX_LIMIT_MESSAGE.as_bytes())
+						.expect("valid reason phrase"),
+				);
+				return response;
 			}
 			buffer.extend_from_slice(&bytes);
 		}
@@ -1764,8 +1884,13 @@ async fn forward(
 			)
 		};
 		let Ok(rewritten) = rewritten else {
-			completion.finish(Some("invalid_package_index")).await;
-			return failure(StatusCode::BAD_GATEWAY, "invalid_package_index");
+			return completion
+				.fail(
+					StatusCode::BAD_GATEWAY,
+					"invalid_package_index",
+					"invalid_package_index",
+				)
+				.await;
 		};
 		// Rewritten links can lengthen the index the sandbox receives.
 		completion.debits.count(
@@ -1882,4 +2007,5 @@ async fn forward(
 #[cfg(test)]
 mod tests;
 
+mod progress;
 mod proxy;

@@ -670,9 +670,38 @@ if __name__ == '__main__':
         from pathlib import Path
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from execution_pod import initialize_system_root
-        copied = initialize_system_root('/', '/scratch-image', reset=os.environ.get('AIDASH_RESET_SYSTEM') == 'true')
+        copied = initialize_system_root('/', '/scratch-image', reset=os.environ.get('AIDASH_RESET_SYSTEM') == 'true',
+                                        image_identity=os.environ['AIDASH_IMAGE_ID'])
         if copied or not (Path('/scratch-image') / 'environment.json').exists():
             save_image_environment('/scratch-image', os.environ)
+        raise SystemExit(0)
+    if len(sys.argv) == 3 and sys.argv[1] == 'image-status':
+        import json
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from execution_pod import system_image_changed
+        print(json.dumps({'image_changed': system_image_changed('/scratch-system/image-root', sys.argv[2])}))
+        raise SystemExit(0)
+    if sys.argv[1:] == ['ingress-listen']:
+        import json
+        import select
+        import socket
+        import time
+        # A re-admitted Pod can contain user processes with the same UID.
+        if sys.platform.startswith('linux') and ctypes.CDLL(None, use_errno=True).prctl(_PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
+            raise OSError(ctypes.get_errno(), 'prctl')
+        with socket.socket() as server:
+            server.bind(('0.0.0.0', 0))
+            server.listen(4)
+            print(json.dumps({'port': server.getsockname()[1]}), flush=True)
+            deadline = time.monotonic() + 90
+            while time.monotonic() < deadline:
+                ready, _, _ = select.select([server, sys.stdin], [], [], max(0, deadline - time.monotonic()))
+                if sys.stdin in ready:
+                    break
+                if server in ready:
+                    connection, _ = server.accept()
+                    connection.close()
         raise SystemExit(0)
     if sys.argv[1:] == ['bootstrap']:
         bootstrap()

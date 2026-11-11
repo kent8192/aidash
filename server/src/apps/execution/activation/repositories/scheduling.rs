@@ -39,6 +39,8 @@ pub(crate) struct Scope<E> {
 	pub tx: E,
 	/// What the leasing worker advertises; production passes `PersistedCapability::supported()`.
 	pub capabilities: &'static [PersistedCapability],
+	/// This process reached the database again within the last lease period (#786).
+	pub holds_recoveries: bool,
 }
 
 pub(crate) fn raw(row: Row) -> Result<RawRun> {
@@ -179,6 +181,9 @@ impl<E: Executor> Scope<E> {
 impl<E: Executor> SchedulingScope for Scope<E> {
 	fn capabilities(&self) -> &[PersistedCapability] {
 		self.capabilities
+	}
+	fn holds_recoveries(&self) -> bool {
+		self.holds_recoveries
 	}
 	async fn now(&mut self) -> aidash_application::Result<DateTime<Utc>> {
 		let (sql, values) = Query::select()
