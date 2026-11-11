@@ -652,7 +652,7 @@ def generate(binary, old, candidate, temp, container, port):
                     if owner and owner != app:
                         deps[app].add(owner)
     federation_seed = None
-    for name, kind, schema, body in dump_entries(dump(container, "old", "data")):
+    for name, kind, _schema, body in dump_entries(dump(container, "old", "data")):
         if name in ("reinhardt_migrations", "reinhardt_migrations_id_seq"):
             continue
         if kind == "TABLE DATA":
