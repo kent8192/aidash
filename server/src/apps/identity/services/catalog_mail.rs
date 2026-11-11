@@ -63,3 +63,31 @@ impl CatalogRequestMailer for CatalogMailer {
 		Ok(())
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[tokio::test]
+	async fn whitespace_smtp_host_is_a_noop() {
+		let settings = crate::apps::operations::serializers::deployment::SmtpSettings {
+			host: "  ".into(),
+			port: 587,
+			from: "not-an-address".into(),
+			username: None,
+			password: None,
+			starttls: true,
+		};
+		let mailer = CatalogMailer::configured(Some(&settings));
+		let notice = CatalogRequestNotice {
+			definition: aidash_domain::registry::EntityRef {
+				id: "example".into(),
+				version: "1.0.0".into(),
+			},
+			node: aidash_domain::nodes::NodeName::derived("acme"),
+			reason: "review".into(),
+			review_link: "https://example.test".into(),
+		};
+		assert!(mailer.send("not-an-address", &notice).await.is_ok());
+	}
+}

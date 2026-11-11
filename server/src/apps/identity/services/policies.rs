@@ -926,43 +926,55 @@ impl PolicyAdministration {
 		}
 		.await;
 		let (view, created) = access.finish(result).await?;
-		if created && f.config.smtp.is_some() {
-			use aidash_application::ports::catalog_mail::{
-				CatalogRequestMailer, CatalogRequestNotice,
-			};
-			let recipients =
-				request_mail_recipients(&f, &tenant, &view.node, &view.root, &view.closure_digest)
-					.await;
-			match recipients {
-				Ok(recipients) => {
-					if let Ok(mut link) = reqwest::Url::parse(&f.config.dashboard_origin) {
-						link.set_path("/settings");
-						link.query_pairs_mut()
-							.append_pair("view", "registry")
-							.append_pair("tenant", &tenant)
-							.append_pair("node", view.node.as_str())
-							.append_pair("request", &view.id.to_string());
-						let notice = CatalogRequestNotice {
-							definition: view.root.clone(),
-							node: view.node.clone(),
-							reason: view.reason.clone(),
-							review_link: link.to_string(),
-						};
-						let mailer = crate::apps::identity::services::catalog_mail::CatalogMailer::configured(f.config.smtp.as_ref());
-						for recipient in recipients {
-							if let Err(error) = mailer.send(&recipient, &notice).await {
-								tracing::warn!(%error, "catalog request mail delivery failed");
+		if created
+			&& f.config
+				.smtp
+				.as_ref()
+				.is_some_and(|smtp| !smtp.host.trim().is_empty())
+		{
+			let mail_node = view.node.clone();
+			let mail_root = view.root.clone();
+			let mail_digest = view.closure_digest.clone();
+			let mail_reason = view.reason.clone();
+			let mail_id = view.id;
+			tokio::spawn(async move {
+				use aidash_application::ports::catalog_mail::{
+					CatalogRequestMailer, CatalogRequestNotice,
+				};
+				let recipients =
+					request_mail_recipients(&f, &tenant, &mail_node, &mail_root, &mail_digest)
+						.await;
+				match recipients {
+					Ok(recipients) => {
+						if let Ok(mut link) = reqwest::Url::parse(&f.config.dashboard_origin) {
+							link.set_path("/settings");
+							link.query_pairs_mut()
+								.append_pair("view", "registry")
+								.append_pair("tenant", &tenant)
+								.append_pair("node", mail_node.as_str())
+								.append_pair("request", &mail_id.to_string());
+							let notice = CatalogRequestNotice {
+								definition: mail_root.clone(),
+								node: mail_node.clone(),
+								reason: mail_reason.clone(),
+								review_link: link.to_string(),
+							};
+							let mailer = crate::apps::identity::services::catalog_mail::CatalogMailer::configured(f.config.smtp.as_ref());
+							for recipient in recipients {
+								if let Err(error) = mailer.send(&recipient, &notice).await {
+									tracing::warn!(%error, "catalog request mail delivery failed");
+								}
 							}
+						} else {
+							tracing::warn!("catalog request mail has an invalid dashboard origin");
 						}
-					} else {
-						tracing::warn!("catalog request mail has an invalid dashboard origin");
+					}
+
+					Err(error) => {
+						tracing::warn!(%error, "catalog request mail recipient lookup failed")
 					}
 				}
-
-				Err(error) => {
-					tracing::warn!(%error, "catalog request mail recipient lookup failed")
-				}
-			}
+			});
 		}
 		Ok(view)
 	}
