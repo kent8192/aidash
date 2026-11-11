@@ -2993,7 +2993,7 @@ async fn stopped_while_buffering_index_records_client_status() {
 		audit: audit.clone(),
 		service: "core.npm",
 		base: "https://registry.npmjs.org/".into(),
-		methods: vec!["GET".into()],
+		methods: vec!["GET".into(), "HEAD".into()],
 		shape: Box::new(|_| {}),
 	});
 	let (stop, receiver) = watch::channel(false);
