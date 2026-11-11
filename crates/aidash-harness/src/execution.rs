@@ -126,8 +126,7 @@ async fn advance_step(
 	// for the database, so the worker keeps its Run and records the failure itself
 	// instead of leaving it for a Lease Recovery (#786). The step has finished its
 	// authority, so no lock of its own holds this renewal up.
-	let lease_lost =
-		matches!(&result, Err(Error::Conflict(message)) if message == "worker lease lost");
+	let lease_lost = matches!(&result, Err(Error::Conflict(message)) if message.starts_with("worker lease lost"));
 	if (result.as_ref().is_err_and(|error| leases.transient(error)) || lease_lost)
 		&& !renew(leases, run, token, seconds).await?
 	{
