@@ -201,7 +201,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	assert_eq!(execution[0].name, "0128_remove_generated_summary_state");
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0053_memory_journal_proofs");
+	assert_eq!(knowledge[0].name, "0054_memory_constraint_state");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -213,7 +213,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		110
+		111
 	);
 	let tables = migrations
 		.iter()
@@ -1001,7 +1001,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		110
+		111
 	);
 }
 
@@ -1260,6 +1260,11 @@ async fn image_policy_migrations_reverse_safely(#[future] fresh_database: Migrat
 		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	let state = source
+		.get_migration("knowledge", "0054_memory_constraint_state")
+		.await
+		.unwrap();
+	executor.rollback_migrations(&[state]).await.unwrap();
 	let proof = source
 		.get_migration("knowledge", "0053_memory_journal_proofs")
 		.await
@@ -3154,8 +3159,9 @@ async fn agent_plugin_settings_migration_validates_the_key_and_refuses_rollback_
 		combined["harness_contract"] = json!("structured@99");
 		assert!(!contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![combined]).await);
 	}
-	// Generated Agents disable implicit compaction. The replacement validator
-	// must preserve that key and the current Decider Binding restrictions.
+	// The compaction rebuild (#850) retired the implicit compaction default.
+	// Agent Plugin settings must not bring back a removal of it, with or
+	// without a Decider Binding.
 	let mut compaction = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},
 		"instructions":"Work","remove_default":["compaction"]});
 	let mut deferred_compaction = compaction.clone();
@@ -3169,8 +3175,8 @@ async fn agent_plugin_settings_migration_validates_the_key_and_refuses_rollback_
 		let mut with_settings = config.clone();
 		with_settings["agent_plugin_settings"] = json!({"acme":{"docs":{"tools":["search"]}}});
 		assert!(
-			contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![with_settings]).await,
-			"Agent Plugin settings must retain the compaction contract: {config}"
+			!contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![with_settings]).await,
+			"Agent Plugin settings must not revive the compaction default: {config}"
 		);
 	}
 	// Assert: the contract mirrors PluginSettings' shape: plugin to server to settings.

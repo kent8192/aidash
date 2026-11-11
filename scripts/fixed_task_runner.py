@@ -601,7 +601,6 @@ def register_variants(experiment, corpus, planned_runs, model_refs, fixture_url,
         config = agent_config(corpus, task, model_ref, bindings, planned["agent_fields"])
         config["bindings"] += [{"kind": "skill", "target": experiment.ref(ref["id"]), "narrow": {}}
                                for ref in skills[task["id"]]]
-        auxiliary = planned.get("auxiliary")
         if remove_all_defaults:
             config["remove_default"] = minimal_defaults(config)
         identifier = agent_id(experiment.prefix, planned)

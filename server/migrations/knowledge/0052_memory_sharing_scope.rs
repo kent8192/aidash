@@ -20,7 +20,11 @@ pub(super) fn migration() -> Migration {
 			], without_rowid: None, interleave_in_parent: None, partition: None,
 		})
 		.add_operation(Operation::RunSQL {
-			sql: "ALTER TABLE public.memory_tenant_scope ENABLE ROW LEVEL SECURITY; ALTER TABLE public.memory_tenant_scope FORCE ROW LEVEL SECURITY; CREATE POLICY tenant_isolation ON public.memory_tenant_scope AS PERMISSIVE FOR ALL TO PUBLIC USING ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant())) WITH CHECK ((SELECT public.aidash_deployment_scope()) OR tenant = (SELECT public.aidash_scope_tenant())); CREATE TRIGGER memory_tenant_scope_atomic BEFORE INSERT OR UPDATE OR DELETE ON memory_tenant_scope FOR EACH STATEMENT EXECUTE FUNCTION atomic_write_guard();".into(),
-			reverse_sql: Some("DROP TRIGGER memory_tenant_scope_atomic ON memory_tenant_scope; DROP POLICY tenant_isolation ON public.memory_tenant_scope; ALTER TABLE public.memory_tenant_scope NO FORCE ROW LEVEL SECURITY; ALTER TABLE public.memory_tenant_scope DISABLE ROW LEVEL SECURITY;".into()),
+			sql: include_str!("sql/forward/0052_memory_tenant_scope_policy.sql").into(),
+			reverse_sql: Some(include_str!("sql/backward/0052_memory_tenant_scope_policy.sql").into()),
+		})
+		.add_operation(Operation::RunSQL {
+			sql: "CREATE TRIGGER memory_tenant_scope_atomic BEFORE INSERT OR UPDATE OR DELETE ON memory_tenant_scope FOR EACH STATEMENT EXECUTE FUNCTION atomic_write_guard();".into(),
+			reverse_sql: Some("DROP TRIGGER memory_tenant_scope_atomic ON memory_tenant_scope;".into()),
 		}).atomic(true)
 }

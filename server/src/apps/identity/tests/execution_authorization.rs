@@ -24,6 +24,19 @@ use std::sync::{
 };
 use uuid::Uuid;
 
+/// The first tool result in a Run's history. Run-start memory recall (#852)
+/// may record a history entry before it.
+fn first_result(context: &Value) -> &Value {
+	context["history"]
+		.as_array()
+		.and_then(|history| {
+			history
+				.iter()
+				.find(|entry| entry["event"].get("result").is_some())
+		})
+		.map_or(&Value::Null, |entry| entry)
+}
+
 #[rstest::rstest]
 #[case::success("success")]
 #[case::policy_deny("policy")]
@@ -158,7 +171,7 @@ async fn worker_delegates_to_an_agent_on_a_sibling_node(
 			return;
 		}
 		assert_eq!(current.control.as_str(), "ACTIVE", "{:?}", current.error);
-		let error = json!(current.context)["history"][0]["event"]["result"]["error"]
+		let error = first_result(&json!(current.context))["event"]["result"]["error"]
 			.as_str()
 			.unwrap_or_default()
 			.to_owned();
@@ -399,7 +412,7 @@ async fn scoped_worker_recovers_from_a_missing_skill_path_and_reads_an_approved_
 	);
 	let run = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(
-		json!(run.context)["history"][0]["event"]["result"]["error"],
+		first_result(&json!(run.context))["event"]["result"]["error"],
 		"Skill file not found: references/missing.md"
 	);
 	assert!(
@@ -615,9 +628,10 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 	let (status, catalog) = request(&app, &token, "GET", "/api/registry", Value::Null).await;
 	assert_eq!(status, 200, "{catalog}");
 	// The Tenant's three approved definitions, current built-in declarations,
-	// workspace observation Source, and both Deciders. Legacy versions are
+	// workspace observation Source, the approval Decider, and Built-in
+	// Memory's provider, reranker and tokenizer (#852). Legacy versions are
 	// preserved for pinned Runs but are not automatically listed.
-	assert_eq!(catalog.as_array().unwrap().len(), 6 + builtin_count);
+	assert_eq!(catalog.as_array().unwrap().len(), 8 + builtin_count);
 	for (id, version) in [
 		("aidash.workspace_read", "1.1.0"),
 		("aidash.workspace_search", "1.0.0"),
@@ -681,8 +695,10 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		request(&app, other_token, "GET", "/api/registry", Value::Null).await;
 	assert_eq!(status, 200, "{other_catalog}");
 	let other_catalog = other_catalog.as_array().unwrap();
-	// The current declarations are listed for every Tenant.
-	assert_eq!(other_catalog.len(), builtin_count + 3);
+	// The current declarations are listed for every Tenant: the built-in
+	// tools, the approval Decider, the workspace observation Source and
+	// Built-in Memory's three definitions.
+	assert_eq!(other_catalog.len(), builtin_count + 5);
 	assert!(
 		other_catalog
 			.iter()
@@ -2224,9 +2240,10 @@ async fn a_delegation_naming_a_task_the_run_cannot_read_is_rejected_and_its_deni
 	assert_eq!(run.control.as_str(), "ACTIVE", "error={:?}", run.error);
 	assert_eq!(run.phase().as_str(), "TOOL_CALL");
 	assert_eq!(json!(run.state)["data"]["cursor"], 1);
-	let error = json!(run.context)["history"][0]["event"]["result"]["error"]
+	let context = json!(run.context);
+	let error = first_result(&context)["event"]["result"]["error"]
 		.as_str()
-		.unwrap_or_else(|| panic!("{}", json!(run.context)["history"][0]))
+		.unwrap_or_else(|| panic!("{}", context["history"]))
 		.to_owned();
 	assert!(error.contains("was not found in this Workspace"), "{error}");
 	let denials: i64 = sqlx::query_scalar(
@@ -2292,7 +2309,7 @@ async fn a_run_paused_by_a_short_node_name_resumes_into_a_rejected_call(
 	assert_eq!(run.control.as_str(), "ACTIVE", "error={:?}", run.error);
 	assert_eq!(run.phase().as_str(), "TOOL_CALL");
 	assert_eq!(json!(run.state)["data"]["cursor"], 1);
-	let error = json!(run.context)["history"][0]["event"]["result"]["error"]
+	let error = first_result(&json!(run.context))["event"]["result"]["error"]
 		.as_str()
 		.unwrap_or_default()
 		.to_owned();
