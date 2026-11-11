@@ -18,6 +18,16 @@ pub struct AuthorizationCatalog {
 	pub entry_version: String,
 	#[field]
 	pub enabled: bool,
+	/// Whether this approval may carry to later versions.
+	#[field(default = false)]
+	pub carry_over: bool,
+	/// The scope selected by the approver: node or deployment.
+	#[field(field_type = "text")]
+	pub scope: String,
+	#[field(field_type = "text", null = true)]
+	pub carried_from_version: Option<String>,
+	#[field(field_type = "text", null = true)]
+	pub carried_from_approver: Option<String>,
 	#[field]
 	pub revision: i64,
 	/// Subjects and Assignable Groups that may use the definition on this

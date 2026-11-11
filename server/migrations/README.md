@@ -917,3 +917,8 @@ validator with the six `core.subnodes@1` operations (#660). Its reversible
 cannot express PL/pgSQL function definitions. Rolling back restores the
 previous descriptor contract; existing Subnode descriptors then cannot be
 rewritten until the migration is reapplied.
+
+`identity/0073_approval_carry_over` adds carry-over, scope and nullable source version and
+approver columns to Catalog Approvals and their history. Existing rows are Node-scoped and do not
+carry. `identity/0074_approval_carry_over_state` records the corresponding ORM state; the
+physical `scope` default is retained for existing write paths.
