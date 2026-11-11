@@ -24,12 +24,21 @@ pub fn select_files(
 	let mut chosen = vec![];
 	let mut seen = std::collections::BTreeSet::new();
 	let mut size = 0;
+	// A Reference file can be read by a Run but never leaves it, and neither can a
+	// copy of it as made: the recipient could download what only the uploader may
+	// (ADR 0114). A copy is known by its provenance or, once copied again with the
+	// same bytes, by its digest. An edited copy is its editor's own file.
+	let reference_digests = available
+		.iter()
+		.filter(|f| f.provenance["kind"] == "reference")
+		.map(|f| f.digest.as_str())
+		.collect::<std::collections::BTreeSet<_>>();
 	for selection in selections {
-		// A Reference file can be read by a Run but never leaves it: a copy given
-		// to another Agent would outlive the file's revocation (ADR 0114).
 		let file = available
 			.iter()
-			.find(|f| f.file_id == selection.file_id && !f.is_reference_file())
+			.find(|f| {
+				f.file_id == selection.file_id && !reference_digests.contains(f.digest.as_str())
+			})
 			.ok_or_else(|| Error::NotFound("file unavailable".into()))?;
 		if file.digest != selection.expected_digest {
 			return Err(Error::Conflict(format!("FILE_CHANGED: {}", file.path)));
