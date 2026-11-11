@@ -13,6 +13,278 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+#[rstest::rstest]
+#[case::allow_once("allow_once", "completed")]
+#[case::deny("deny", "blocked")]
+#[case::not_eligible("ineligible", "blocked")]
+#[case::eligibility_revoked("revoked", "blocked")]
+#[tokio::test]
+async fn test_approval_belongs_to_its_starter_and_current_policy(
+	#[case] choice: &str,
+	#[case] expected: &str,
+	#[future(awt)] browser_workbench: (Workbench, HeaderMap, DashboardSession),
+) {
+	use std::{collections::VecDeque, time::Duration};
+	let (mut wb, headers, _) = browser_workbench;
+	let grants_before: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM core_records WHERE tenant = 'acme' AND kind = 'grant'",
+	)
+	.fetch_one(wb.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let tool = json!({"id":"approval-test-tool","version":"1.0.0","kind":"tool","name":{"en":"Approval fixture"},"description":{"en":"Fixture"},"config":{"registry_deployment":wb.f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"approval_tool","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{}/effect",wb.endpoint),"replay":"unsafe"}}});
+	wb.f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			serde_json::from_value(tool).unwrap(),
+		)
+		.await
+		.unwrap();
+	let mut entry = wb.draft["entry"].clone();
+	entry["config"]["bindings"] = json!([{"kind":"tool","target":{"registry_deployment":wb.f.config.deployment,"id":"approval-test-tool","version":"1.0.0"},"alias":"approval_tool","narrow":{}}]);
+	wb.draft = wb
+		.call(
+			"PUT",
+			&wb.path(),
+			json!({"expected_revision":1,"entry":entry,"documents":[]}),
+		)
+		.await;
+	// Neither the person's Don't ask mode nor a deny rule covers Workbench tests.
+	sqlx::query("INSERT INTO identity_approval_preferences (tenant, subject, default_mode, revision, updated_at) VALUES ('acme', 'alice', 'dont_ask', 1, now())").execute(wb.f.store.pool.fixture_driver()).await.unwrap();
+	sqlx::query("INSERT INTO identity_approval_rules (tenant, id, subject, kind, target, effect, created_at) VALUES ('acme', $1, 'alice', 'tool_call', $2, 'deny', now())").bind(Uuid::new_v4()).bind(json!("every")).execute(wb.f.store.pool.fixture_driver()).await.unwrap();
+	if choice == "ineligible" {
+		let revision = wb.policy_revision().await;
+		let bundle = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},{"id":"no-approval","effect":"deny","subjects":{"ids":["alice"]},"actions":["capability.approve"],"resources":{"kinds":["tool"]}}]});
+		assert_eq!(
+			request(
+				&wb.app,
+				&wb.f.config.api_token,
+				"POST",
+				"/api/authorization/acme",
+				json!({"expected_revision":revision,"bundle":bundle})
+			)
+			.await
+			.0,
+			200
+		);
+	}
+	*wb.responses.lock().await = VecDeque::from([
+		json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"call-1","function":{"name":"approval_tool","arguments":"{}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
+		json!({"choices":[{"finish_reason":"stop","message":{"content":"Complete"}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
+	]);
+	let (actor, _) =
+		aidash_server::dashboard_auth::actor_from_headers(&wb.f, &headers, &Method::GET)
+			.await
+			.unwrap();
+	let app = common::application_with(wb.f.clone(), |_| {
+		use aidash_server::apps::registry::workbench::views::test;
+		reinhardt::ServerRouter::new()
+			.endpoint(test::start)
+			.endpoint(test::sessions)
+			.endpoint(test::answer_approval)
+			.with_middleware(super::CapturedActor(actor.clone()))
+	})
+	.await;
+	let other_actor = other_person_same_subject(&wb).await;
+	let other = common::application_with(wb.f.clone(), |_| {
+		use aidash_server::apps::registry::workbench::views::test;
+		reinhardt::ServerRouter::new()
+			.endpoint(test::sessions)
+			.endpoint(test::answer_approval)
+			.with_middleware(super::CapturedActor(other_actor.clone()))
+	})
+	.await;
+	let path = format!("{}/tests", wb.path());
+	let (status, started) = request(&app, &wb.token, "POST", &path, json!({"expected_revision":2,"message":"Use the tool","fixtures":{"approval_tool":{"status":"success","response":{"ok":true}}}})).await;
+	assert_eq!(status, 200, "{started}");
+	let id = started["id"].as_str().unwrap();
+	let mut answered = false;
+	let mut revoked = false;
+	let mut finished = Value::Null;
+	for _ in 0..1200 {
+		let (status, sessions) = request(&app, &wb.token, "GET", &path, Value::Null).await;
+		assert_eq!(status, 200, "{sessions}");
+		let session = sessions
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|s| s["id"] == id)
+			.unwrap();
+		if session["scenario"]["pending_approval"]["state"] == "pending" && !answered && !revoked {
+			assert_ne!(choice, "ineligible");
+			let (status, others) = request(&other, &wb.token, "GET", &path, Value::Null).await;
+			assert_eq!(status, 200, "{others}");
+			assert!(others[0]["scenario"].get("pending_approval").is_none());
+			let other_answer = json!({"approval_id":session["scenario"]["pending_approval"]["id"],"choice":"allow_once"});
+			assert_eq!(
+				request(
+					&other,
+					&wb.token,
+					"POST",
+					&format!("/api/workbench/tests/{id}/approval"),
+					other_answer
+				)
+				.await
+				.0,
+				403
+			);
+			if choice == "revoked" {
+				let revision = wb.policy_revision().await;
+				let bundle = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},{"id":"no-approval","effect":"deny","subjects":{"ids":["alice"]},"actions":["capability.approve"],"resources":{"kinds":["tool"]}}]});
+				assert_eq!(
+					request(
+						&wb.app,
+						&wb.f.config.api_token,
+						"POST",
+						"/api/authorization/acme",
+						json!({"expected_revision":revision,"bundle":bundle})
+					)
+					.await
+					.0,
+					200
+				);
+				let (_, hidden) = request(&app, &wb.token, "GET", &path, Value::Null).await;
+				assert!(hidden[0]["scenario"].get("pending_approval").is_none());
+				revoked = true;
+				continue;
+			}
+			let answer = json!({"approval_id":session["scenario"]["pending_approval"]["id"],"choice":choice});
+			let endpoint = format!("/api/workbench/tests/{id}/approval");
+			assert_eq!(
+				request(&wb.app, &wb.token, "POST", &endpoint, answer.clone())
+					.await
+					.0,
+				403,
+				"a subject token is not the person who started the test"
+			);
+			assert_eq!(
+				request(&app, &wb.token, "POST", &endpoint, answer.clone())
+					.await
+					.0,
+				200
+			);
+			assert_eq!(
+				request(&app, &wb.token, "POST", &endpoint, answer).await.0,
+				403
+			);
+			answered = true;
+		}
+		if session["status"] != "running" {
+			finished = session.clone();
+			break;
+		}
+		tokio::time::sleep(Duration::from_millis(25)).await;
+	}
+	assert_eq!(finished["status"], expected, "{finished}");
+	assert_eq!(answered, choice == "allow_once" || choice == "deny");
+	assert_eq!(revoked, choice == "revoked");
+	assert_eq!(
+		finished["tool_calls"][0]["outcome"],
+		if choice == "allow_once" {
+			"simulated"
+		} else {
+			"denied"
+		}
+	);
+	let grants_after: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM core_records WHERE tenant = 'acme' AND kind = 'grant'",
+	)
+	.fetch_one(wb.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(grants_after, grants_before);
+	wb.cleanup().await;
+}
+
+async fn other_person_same_subject(
+	wb: &Workbench,
+) -> aidash_server::authorization::identity::Actor {
+	let now = Utc::now();
+	let lease = reinhardt::db::orm::DatabaseConnectionLease::register(wb.f.store.pool.connection())
+		.unwrap();
+	let mut db = lease.handle();
+	let identity = DashboardIdentity::build()
+		.id(Uuid::new_v4())
+		.issuer("https://accounts.google.com")
+		.subject("other-browser-fixture")
+		.valid_since(None)
+		.verified_email(None)
+		.display_name(None)
+		.last_valid_at(Some(now))
+		.disabled_at(None)
+		.display_observed_at(None)
+		.display_erased_at(None)
+		.display_erased_by(None)
+		.finish();
+	DashboardIdentity::objects()
+		.create_with_conn(&mut db, &identity)
+		.await
+		.unwrap();
+	let session = DashboardSession::build()
+		.id(Uuid::new_v4())
+		.token_hash(common::browser_session_digest(b"other-workbench-session"))
+		.csrf_hash(Sha256::digest(b"other-workbench-csrf").to_vec())
+		.identity(identity.id)
+		.provider_sid(None)
+		.created_at(now)
+		.auth_time(None)
+		.last_activity_at(now)
+		.expires_at(now + Duration::hours(12))
+		.revoked_at(None)
+		.desktop(false)
+		.desktop_idle_seconds(None)
+		.access_expires_at(None)
+		.finish();
+	DashboardSession::objects()
+		.create_with_conn(&mut db, &session)
+		.await
+		.unwrap();
+	let issued = Authorization {
+		pool: wb.f.store.pool.clone(),
+	}
+	.issue_credential("acme", "alice", 3600, "deployment_administrator")
+	.await
+	.unwrap();
+	let mapping = DashboardMapping::build()
+		.id(Uuid::new_v4())
+		.identity(identity.id)
+		.tenant("acme")
+		.subject("alice")
+		.credential(issued.credential.id)
+		.enabled(true)
+		.revision(1)
+		.finish();
+	wb.f.store
+		.pool
+		.atomic(&TEST_FIXTURE, async |tx| {
+			DashboardMapping::objects()
+				.create_with_conn(tx, &mapping)
+				.await?;
+			Ok(())
+		})
+		.await
+		.unwrap();
+	let mut headers = HeaderMap::new();
+	headers.insert(
+		"cookie",
+		"__Host-aidash-session=other-workbench-session"
+			.parse()
+			.unwrap(),
+	);
+	headers.insert("origin", "https://localhost:8080".parse().unwrap());
+	headers.insert("x-aidash-csrf", "other-workbench-csrf".parse().unwrap());
+	headers.insert(
+		"x-aidash-context",
+		format!("mapping:{}:{}", mapping.tenant, mapping.id)
+			.parse()
+			.unwrap(),
+	);
+	aidash_server::dashboard_auth::actor_from_headers(&wb.f, &headers, &Method::GET)
+		.await
+		.unwrap()
+		.0
+}
+
 #[rstest::fixture]
 async fn browser_workbench(
 	#[default("https://accounts.google.com")] issuer: &str,

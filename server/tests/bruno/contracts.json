@@ -57030,5 +57030,85 @@
     },
     "source": "server/src/apps/identity/views/peer_execution.rs",
     "uuid_parameters": ["id"]
+  },
+  {
+    "json": true,
+    "method": "POST",
+    "name": "workbench-answer-approval",
+    "path": "/api/workbench/tests/{id}/approval",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "TestSession": {
+            "properties": {
+              "conversation": {},
+              "created_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "draft_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "error": {
+                "type": ["string", "null"]
+              },
+              "expired_at": {
+                "format": "date-time",
+                "type": ["string", "null"]
+              },
+              "expires_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "scenario": {},
+              "status": {
+                "type": "string"
+              },
+              "tenant": {
+                "type": "string"
+              },
+              "tool_calls": {},
+              "updated_at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "usage": {}
+            },
+            "required": [
+              "id",
+              "draft_id",
+              "tenant",
+              "revision",
+              "status",
+              "scenario",
+              "conversation",
+              "tool_calls",
+              "usage",
+              "error",
+              "created_at",
+              "updated_at",
+              "expires_at",
+              "expired_at"
+            ],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/TestSession"
+        }
+      }
+    },
+    "source": "server/src/apps/registry/workbench/views/test.rs",
+    "uuid_parameters": ["id"]
   }
 ]

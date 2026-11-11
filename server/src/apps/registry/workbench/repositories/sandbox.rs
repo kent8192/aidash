@@ -19,6 +19,7 @@ pub(crate) struct Repository {
 	pub(crate) store: Store,
 	pub(crate) node_id: String,
 	pub(crate) actor: Actor,
+	pub(crate) search_destination: fn(&str, &serde_json::Value) -> Result<Option<String>>,
 	/// Shared with every scope, so the caller audits a denial after the scope's
 	/// transaction has rolled back.
 	pub(crate) tenant_actions: super::authority::TenantActions,

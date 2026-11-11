@@ -23,6 +23,7 @@ pub struct Dispatch<'a> {
 	pub repository: &'a dyn RealDispatchRepository,
 	pub configuration: &'a dyn ProfileConfiguration,
 	pub transport: &'a dyn RealToolTransport,
+	pub approval: Option<&'a crate::ports::registry::workbench::sandbox::execution::TestApproval>,
 }
 async fn prepare(
 	scope: &mut dyn RealDispatchScope,
@@ -31,12 +32,18 @@ async fn prepare(
 	pin: &ProfilePin,
 	rule: &RealToolRule,
 	call: &ToolCall,
+	consume: bool,
 ) -> Result<(TestSession, Box<dyn PreparedRealRequest>, ToolCall)> {
 	let session = scope.session(session_id, true).await?;
 	if session.status != "running" {
 		return Err(Error::Conflict("test was stopped".into()));
 	}
 	scope.lock_identity().await?;
+	if let Some(approval) = dispatch.approval {
+		scope
+			.authorize_test_call(session_id, approval, consume)
+			.await?;
+	}
 	let draft = scope.draft(session.draft_id, true).await?;
 	if draft.archived || draft.revision != session.revision {
 		return Err(Error::Conflict(
@@ -163,7 +170,7 @@ pub async fn invoke(
 	}
 	let mut scope = repository.begin_real().await?;
 	let (session, _, prepared_call) =
-		prepare(scope.as_mut(), dispatch, session_id, pin, rule, call).await?;
+		prepare(scope.as_mut(), dispatch, session_id, pin, rule, call, false).await?;
 	let pending = json!({"id":call.id,"name":call.name,"arguments":prepared_call.arguments,"outcome":"outcome_unknown","endpoint":rule.endpoint});
 	let mut calls = session.tool_calls.unwrap_or_else(|| json!([]));
 	calls
@@ -174,7 +181,7 @@ pub async fn invoke(
 	scope.commit().await?;
 	let mut scope = repository.begin_real().await?;
 	let (_, request, prepared_call) =
-		match prepare(scope.as_mut(), dispatch, session_id, pin, rule, call).await {
+		match prepare(scope.as_mut(), dispatch, session_id, pin, rule, call, true).await {
 			Ok(prepared) => prepared,
 			Err(error) => {
 				scope.rollback().await?;

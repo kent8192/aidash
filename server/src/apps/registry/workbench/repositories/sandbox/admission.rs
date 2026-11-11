@@ -28,7 +28,9 @@ impl AdmissionRepository for Repository {
 }
 #[async_trait]
 impl AdmissionScope for Scope {
-	async fn complete_listing(&mut self, id: Uuid, scenario: Value) -> Result<TestSession> {
+	async fn complete_listing(&mut self, id: Uuid, mut scenario: Value) -> Result<TestSession> {
+		scenario["starter_identity"] = starter(&self.actor);
+		scenario["starter_subject"] = starter_subject(&self.actor);
 		AgentTestSession::complete_listing(&mut self.tx, id, scenario)
 			.await
 			.map_err(Into::into)
@@ -37,9 +39,11 @@ impl AdmissionScope for Scope {
 		&mut self,
 		draft: &Draft,
 		limits: &TestLimits,
-		scenario: Value,
+		mut scenario: Value,
 		conversation: Value,
 	) -> Result<TestSession> {
+		scenario["starter_identity"] = starter(&self.actor);
+		scenario["starter_subject"] = starter_subject(&self.actor);
 		AgentTestSession::admit(
 			&mut self.tx,
 			&draft.clone().into(),
@@ -49,5 +53,27 @@ impl AdmissionScope for Scope {
 		)
 		.await
 		.map_err(Into::into)
+	}
+}
+
+fn starter(actor: &crate::authorization::identity::Actor) -> Value {
+	match actor {
+		crate::authorization::identity::Actor::Subject(identity) => identity
+			.http_session
+			.as_ref()
+			.map(|session| serde_json::json!(session.identity_id))
+			.unwrap_or(Value::Null),
+		_ => Value::Null,
+	}
+}
+
+fn starter_subject(actor: &crate::authorization::identity::Actor) -> Value {
+	match actor {
+		crate::authorization::identity::Actor::Subject(identity)
+			if identity.http_session.is_some() =>
+		{
+			serde_json::json!(identity.subject)
+		}
+		_ => Value::Null,
 	}
 }

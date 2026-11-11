@@ -26,6 +26,7 @@ struct State {
 	commits: usize,
 	begun: usize,
 	reads: usize,
+	approvals: usize,
 	session: TestSession,
 	finished: Option<TestOutcome>,
 	order: Vec<&'static str>,
@@ -37,6 +38,7 @@ struct Repository {
 	state: Mutex<State>,
 	failure: Option<(usize, &'static str)>,
 	stop_after_progress: bool,
+	approval_allowed: bool,
 }
 impl Repository {
 	fn new() -> Self {
@@ -49,12 +51,14 @@ impl Repository {
 				commits: 0,
 				begun: 0,
 				reads: 0,
+				approvals: 0,
 				session: session(),
 				finished: None,
 				order: vec![],
 			}),
 			failure: None,
 			stop_after_progress: false,
+			approval_allowed: true,
 		}
 	}
 	fn failing(&self, name: &str) -> bool {
@@ -109,6 +113,13 @@ impl RealDispatchRepository for Repository {
 }
 #[async_trait]
 impl ExecutionRepository for Repository {
+	fn search_destination(&self, _: &str, _: &Value) -> Result<Option<String>> {
+		Ok(Some("search.example".into()))
+	}
+	async fn approve_once(&self, _: Uuid, _: &TestApproval) -> Result<bool> {
+		self.state.lock().unwrap().approvals += 1;
+		Ok(self.approval_allowed)
+	}
 	async fn begin_execution(&self) -> Result<Box<dyn ExecutionScope + '_>> {
 		let mut s = self.state.lock().unwrap();
 		assert!(!s.active);
@@ -157,6 +168,89 @@ impl ExecutionRepository for Repository {
 		}
 		Ok(())
 	}
+}
+
+#[test]
+fn workbench_disclosure_approvals_name_the_actual_destination_without_a_run() {
+	use aidash_domain::registry::bindings::{
+		BindingOrigin, Narrowing, QualifiedRef, ResolvedBinding,
+	};
+	let make = |descriptor: aidash_domain::tool::providers::ToolDescriptor| ResolvedBinding {
+		identity: QualifiedRef {
+			registry_deployment: "aidash://local".into(),
+			id: "tool".into(),
+			version: "1.0.0".into(),
+		},
+		definition: crate::test_support::entry(
+			"tool",
+			"tool",
+			serde_json::to_value(descriptor).unwrap(),
+		),
+		digest: "fixture".into(),
+		origin: BindingOrigin::Explicit,
+		alias: Some("tool".into()),
+		narrow: Narrowing::default(),
+		installation: None,
+		provider_contract_digest: None,
+		provider_implementation: None,
+		excluded_reason: None,
+	};
+	let repository = Repository::new();
+	let plugins = PluginTools::default();
+	let call = |arguments| ToolCall {
+		id: "one".into(),
+		name: "tool".into(),
+		arguments,
+	};
+	let outbound = make(
+		aidash_domain::tool::providers::core_descriptor("aidash://local", "outbound_get").unwrap(),
+	);
+	let result = approval_for(
+		&repository,
+		&plugins,
+		Some(&outbound),
+		"tenant",
+		&call(json!({"url":"https://example.com/path"})),
+		&[],
+	)
+	.unwrap()
+	.unwrap();
+	assert_eq!(
+		(
+			result.resource.kind.as_str(),
+			result.resource.id.as_str(),
+			result.action
+		),
+		("outbound", "https://example.com", "network.get")
+	);
+	assert!(result.resource.attributes.get("run_id").is_none());
+	let search = make(
+		aidash_domain::tool::providers::research_descriptor(
+			"aidash://local",
+			"research.brave@1",
+			"search",
+		)
+		.unwrap(),
+	);
+	let result = approval_for(
+		&repository,
+		&plugins,
+		Some(&search),
+		"tenant",
+		&call(json!({"query":"hello"})),
+		&[],
+	)
+	.unwrap()
+	.unwrap();
+	assert_eq!(
+		(
+			result.resource.kind.as_str(),
+			result.resource.id.as_str(),
+			result.action
+		),
+		("research", "search.example", "research.disclose")
+	);
+	assert!(result.resource.attributes.get("workspace_id").is_none());
 }
 #[async_trait]
 impl SandboxScope for Scope<'_> {
@@ -1167,6 +1261,59 @@ async fn a_discoverable_plugin_tool_is_answered_only_after_it_is_loaded() {
 			.contains(&format!("{PLUGIN_TOOL} [tool]"))
 	);
 	assert!(advertises(&requests[1]));
+}
+
+#[rstest]
+#[case::allow_once(true, "completed", "simulated")]
+#[case::deny(false, "blocked", "denied")]
+#[tokio::test]
+async fn a_plugin_test_proceeds_only_after_its_approval(
+	#[case] allowed: bool,
+	#[case] status: &str,
+	#[case] call_outcome: &str,
+) {
+	let (mut repository, snapshot, pinned) = plugin_repository(None).await;
+	repository.approval_allowed = allowed;
+	let repository = Arc::new(repository);
+	let model = model(
+		repository.clone(),
+		vec![calling(PLUGIN_TOOL), response(false)],
+	);
+	let mut job = offering(job(model.clone()), &snapshot, pinned, false);
+	job.input
+		.fixtures
+		.insert(PLUGIN_TOOL.into(), plugin_fixture());
+	let outcome = simulate(&execution(repository), session().id, &job)
+		.await
+		.unwrap();
+	assert_eq!(outcome.status, status);
+	assert_eq!(outcome.tool_calls[0]["outcome"], call_outcome);
+	assert_eq!(
+		model.requests.lock().unwrap().len(),
+		if allowed { 2 } else { 1 }
+	);
+}
+
+#[tokio::test]
+async fn an_allow_once_does_not_approve_the_next_test_call() {
+	let (repository, snapshot, pinned) = plugin_repository(None).await;
+	let repository = Arc::new(repository);
+	let mut second = calling(PLUGIN_TOOL);
+	second.tool_calls[0].id = "second".into();
+	let model = model(
+		repository.clone(),
+		vec![calling(PLUGIN_TOOL), second, response(false)],
+	);
+	let mut job = offering(job(model), &snapshot, pinned, false);
+	job.input
+		.fixtures
+		.insert(PLUGIN_TOOL.into(), plugin_fixture());
+	let outcome = simulate(&execution(repository.clone()), session().id, &job)
+		.await
+		.unwrap();
+	assert_eq!(outcome.status, "completed");
+	assert_eq!(outcome.tool_calls.as_array().unwrap().len(), 2);
+	assert_eq!(repository.state.lock().unwrap().approvals, 2);
 }
 
 #[rstest]

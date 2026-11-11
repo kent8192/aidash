@@ -63,6 +63,7 @@ impl Repository {
 	}
 	fn dispatch(&self) -> Dispatch<'_> {
 		Dispatch {
+			approval: None,
 			repository: self,
 			configuration: self,
 			transport: self,
@@ -259,6 +260,19 @@ impl SandboxScope for Scope<'_> {
 }
 #[async_trait]
 impl RealDispatchScope for Scope<'_> {
+	async fn authorize_test_call(
+		&mut self,
+		_: Uuid,
+		_: &crate::ports::registry::workbench::sandbox::execution::TestApproval,
+		consume: bool,
+	) -> Result<()> {
+		assert_eq!(consume, self.repository.state.lock().unwrap().phase == 2);
+		if self.repository.failing("test_approval") {
+			Err(Error::Forbidden)
+		} else {
+			Ok(())
+		}
+	}
 	async fn lock_identity(&mut self) -> Result<()> {
 		self.repository
 			.state
@@ -581,6 +595,36 @@ async fn changed_authority_after_marker_records_denial_without_sending(
 	assert_eq!(state.calls.as_ref().unwrap()[1]["outcome"], "denied");
 	assert_eq!(state.calls.as_ref().unwrap()[1]["error"], error.to_string());
 	assert!(!state.active);
+}
+
+#[tokio::test]
+async fn revoked_test_approval_before_dispatch_never_sends_the_call() {
+	use crate::ports::registry::workbench::sandbox::execution::TestApproval;
+	let mut repository = Repository::new();
+	repository.failure = Some((2, "test_approval"));
+	let approval = TestApproval {
+		call: call(),
+		resource: aidash_domain::policy::Resource {
+			tenant: "tenant".into(),
+			kind: "tool".into(),
+			id: "tool".into(),
+			attributes: json!({}),
+		},
+		action: "tool.call_unapproved",
+		requires_approval: true,
+	};
+	let dispatch = Dispatch {
+		approval: Some(&approval),
+		..repository.dispatch()
+	};
+	assert!(
+		invoke(&dispatch, session().id, &pin(), &rule(), &call())
+			.await
+			.is_err()
+	);
+	let state = repository.state.lock().unwrap();
+	assert_eq!(state.sent, 0);
+	assert_eq!(state.calls.as_ref().unwrap()[1]["outcome"], "denied");
 }
 #[tokio::test]
 async fn transport_error_preserves_unknown_durable_outcome() {

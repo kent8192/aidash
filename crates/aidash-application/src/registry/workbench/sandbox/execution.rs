@@ -6,7 +6,10 @@ use crate::{
 		ModelProvider, NoProgress,
 		registry::workbench::{
 			profile::ProfileConfiguration,
-			sandbox::{dispatch::RealToolTransport, execution::ExecutionRepository},
+			sandbox::{
+				dispatch::RealToolTransport,
+				execution::{ExecutionRepository, TestApproval},
+			},
 		},
 	},
 };
@@ -202,6 +205,31 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 				}
 				_ => None,
 			};
+			let approval = if admitted.is_ok()
+				&& evaluated.is_none()
+				&& (real_rule.is_some() || fixture.is_some())
+			{
+				approval_for(
+					execution.repository.as_ref(),
+					&job.plugin_tools,
+					binding,
+					&admitted_session.tenant,
+					&call,
+					&conversation,
+				)
+			} else {
+				Ok(None)
+			};
+			let permitted = match &approval {
+				Ok(Some(approval)) => {
+					execution
+						.repository
+						.approve_once(session_id, approval)
+						.await?
+				}
+				Ok(None) => true,
+				Err(_) => false,
+			};
 			let result = if let Err(reason) = admitted {
 				missing = true;
 				error = Some(reason.to_string());
@@ -217,12 +245,17 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 				json!({"id":call.id,"name":call.name,"arguments":call.arguments,"outcome":"denied","error":reason})
 			} else if let Some(deferred::Evaluated::Result(output)) = evaluated {
 				json!({"id":call.id,"name":call.name,"arguments":call.arguments,"result":output,"outcome":deferred::EVALUATED})
+			} else if !permitted {
+				missing = true;
+				error = Some("test approval was refused".into());
+				json!({"id":call.id,"name":call.name,"arguments":call.arguments,"outcome":"denied","error":"test approval was refused"})
 			} else if let Some(rule) = real_rule {
 				match dispatch::invoke(
 					&dispatch::Dispatch {
 						repository: execution.repository.as_ref(),
 						configuration: execution.configuration.as_ref(),
 						transport: execution.transport.as_ref(),
+						approval: approval.as_ref().ok().and_then(Option::as_ref),
 					},
 					session_id,
 					profile.as_ref().expect("real rule requires profile"),
@@ -295,6 +328,129 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 		usage: json!({"input_tokens":input_tokens,"output_tokens":output_tokens,"usage_complete":usage_complete}),
 		error,
 	})
+}
+
+fn approval_for(
+	repository: &dyn ExecutionRepository,
+	plugins: &PluginTools,
+	binding: Option<&aidash_domain::registry::bindings::ResolvedBinding>,
+	tenant: &str,
+	call: &aidash_domain::provider::ToolCall,
+	conversation: &[Value],
+) -> Result<Option<TestApproval>> {
+	use aidash_domain::{
+		policy::Resource,
+		tool::{ToolConfig, providers::ToolDescriptor},
+	};
+	let approval =
+		|kind: &str, id: String, attributes: Value, action, requires_approval| TestApproval {
+			call: call.clone(),
+			resource: Resource {
+				tenant: tenant.into(),
+				kind: kind.into(),
+				id,
+				attributes,
+			},
+			action,
+			requires_approval,
+		};
+	if let Some(binding) = binding {
+		let descriptor: ToolDescriptor = serde_json::from_value(binding.definition.config.clone())?;
+		if (descriptor.provider == "core.egress@1" && descriptor.operation == "outbound_get")
+			|| matches!(descriptor.transport.as_ref(), Some(ToolConfig::Native { operation, .. }) if operation == "http_get")
+		{
+			let url = call.arguments["url"].as_str().ok_or(Error::Forbidden)?;
+			let parsed = url::Url::parse(url).map_err(|_| Error::Forbidden)?;
+			let origin = parsed.origin().ascii_serialization();
+			aidash_domain::capabilities::outbound::permitted_origin(
+				url,
+				std::slice::from_ref(&origin),
+			)?;
+			return Ok(Some(approval(
+				"outbound",
+				origin.clone(),
+				json!({"origin":origin,"action":"network.get"}),
+				"network.get",
+				true,
+			)));
+		}
+		if let Some((operation, _)) = aidash_domain::tool::providers::research_operation(
+			&descriptor.provider,
+			&descriptor.operation,
+		) {
+			use aidash_domain::research::Operation;
+			if operation == Operation::Fetch
+				&& ["url", "source_id", "document_id"]
+					.iter()
+					.filter(|key| call.arguments[**key].is_string())
+					.count() != 1
+			{
+				return Err(Error::Forbidden);
+			}
+			let destination = match operation {
+				Operation::Search => repository
+					.search_destination(&descriptor.provider, &call.arguments)?
+					.ok_or(Error::Forbidden)?,
+				Operation::Fetch if call.arguments["document_id"].is_string() => return Ok(None),
+				Operation::Fetch => {
+					let source = call.arguments["source_id"].as_str();
+					let address = call.arguments["url"]
+						.as_str()
+						.or_else(|| {
+							conversation
+								.iter()
+								.rev()
+								.filter_map(|item| {
+									item["content"]["fixture"]["response"]["sources"].as_array()
+								})
+								.flatten()
+								.find(|item| {
+									item["source_id"].as_str() == source && source.is_some()
+								})
+								.and_then(|item| item["url"].as_str())
+						})
+						.ok_or(Error::Forbidden)?;
+					aidash_domain::research::search::candidate_host(address)
+						.ok_or(Error::Forbidden)?
+				}
+				Operation::Find | Operation::View => return Ok(None),
+			};
+			return Ok(Some(approval(
+				"research",
+				destination.clone(),
+				json!({"destination":destination,"action":"research.disclose"}),
+				"research.disclose",
+				true,
+			)));
+		}
+		if let Some(config @ (ToolConfig::Http { .. } | ToolConfig::Mcp { .. })) =
+			descriptor.transport
+		{
+			return Ok(Some(approval(
+				"tool",
+				binding.identity.id.clone(),
+				json!({"version":binding.identity.version,"operation":"invoke","action":"tool.call_unapproved"}),
+				"tool.call_unapproved",
+				!config.declares_read_only(),
+			)));
+		}
+	}
+	for server in &plugins.servers {
+		if let Some(tool) = server.tools.iter().find(|tool| tool.alias == call.name) {
+			let id = format!(
+				"agent-plugin:{}/{}/{}",
+				server.plugin, server.server, tool.name
+			);
+			return Ok(Some(approval(
+				"tool",
+				id,
+				json!({"version":server.digest,"operation":"invoke","action":"tool.call_unapproved","plugin":server.plugin,"server":server.server,"plugin_tool":tool.name}),
+				"tool.call_unapproved",
+				!tool.read_only,
+			)));
+		}
+	}
+	Ok(None)
 }
 
 fn pinned_plugin_tool(pinned: &PluginTools, alias: &str) -> bool {

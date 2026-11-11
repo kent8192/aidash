@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "endpoint_count": 403,
+  "endpoint_count": 404,
   "requests": [
     {
       "name": "Health reports the configured node",
@@ -17746,6 +17746,42 @@
         "Rejected input preserves committed workspace state",
         "Exact HTTP 401",
         "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1606 workbench-answer-approval - Anonymous request is rejected",
+      "file": "contracts/1606-workbench-answer-approval.bru",
+      "endpoint": "POST /api/workbench/tests/{id}/approval",
+      "scenario": "Anonymous request is rejected",
+      "status": 401,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 401",
+        "Stable authorization error envelope"
+      ]
+    },
+    {
+      "name": "1607 workbench-answer-approval - Wrong JSON media type is rejected",
+      "file": "contracts/1607-workbench-answer-approval.bru",
+      "endpoint": "POST /api/workbench/tests/{id}/approval",
+      "scenario": "Wrong JSON media type is rejected",
+      "status": 415,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 415",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
+      ]
+    },
+    {
+      "name": "1608 workbench-answer-approval - Malformed JSON cannot reach the use case",
+      "file": "contracts/1608-workbench-answer-approval.bru",
+      "endpoint": "POST /api/workbench/tests/{id}/approval",
+      "scenario": "Malformed JSON cannot reach the use case",
+      "status": 400,
+      "required_checks": [
+        "Rejected input preserves committed workspace state",
+        "Exact HTTP 400",
+        "Rejection is diagnostic and does not disclose SQL or credentials"
       ]
     }
   ]
