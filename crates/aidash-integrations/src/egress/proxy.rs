@@ -1806,6 +1806,11 @@ mod tests {
 		);
 		assert_eq!(waiting_budget(8192 + 1000), 500);
 		assert_eq!(waiting_budget(1_048_576), (1_048_576 - 8192) / 2);
+		assert_eq!(
+			waiting_budget(u64::MAX >> 1),
+			waiting_budget(1_048_576),
+			"an unlimited limit counts as a large one"
+		);
 	}
 
 	#[tokio::test]

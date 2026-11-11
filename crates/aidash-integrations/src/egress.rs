@@ -948,11 +948,18 @@ impl Default for ProxyLimits {
 /// and files.
 const RESERVED_OPEN_FILES: u64 = 8192;
 
+/// Open files counted at most. An unlimited limit (macOS often reports
+/// `RLIM_INFINITY`) leaves memory as the bound, so the budget stays finite.
+const COUNTED_OPEN_FILES: u64 = 1 << 20;
+
 /// The waiting budget for a process allowed `open_files` open files: half of
 /// what remains after the reserve, and at least 64, so that a small limit still
 /// leaves waiting possible without letting it exhaust the process (#845).
 pub fn waiting_budget(open_files: u64) -> usize {
-	let budget = open_files.saturating_sub(RESERVED_OPEN_FILES) / 2;
+	let budget = open_files
+		.min(COUNTED_OPEN_FILES)
+		.saturating_sub(RESERVED_OPEN_FILES)
+		/ 2;
 	usize::try_from(budget).unwrap_or(usize::MAX).max(64)
 }
 

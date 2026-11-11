@@ -377,8 +377,9 @@ scope limit and lower than the global limit. A connection over a limit waits up
 to 10 seconds for another to close, first come first served, then receives 429
 with `egress_tunnel_limit`, `egress_tenant_tunnel_limit` or
 `egress_global_tunnel_limit`. A scope may have any number of connections
-waiting. The gateway may have half of its open-file limit beyond a reserve of
-8,192 waiting, at least 64, and one Tenant a quarter of that; a connection
+waiting. The gateway may have half of its open-file limit (counted up to
+1,048,576) beyond a reserve of 8,192 waiting, at least 64, and one Tenant a
+quarter of that; a connection
 beyond the Tenant's share is refused at once. The server raises its soft
 open-file limit to the hard limit at startup and logs the budget it derived. A
 `CONNECT` gives its listener slot back before it waits, so one Tenant's waiting
