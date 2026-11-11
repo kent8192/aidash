@@ -57,8 +57,10 @@ const STREAM_INTERRUPTED: &str = "stream_interrupted";
 /// How often counts of connections that ended before they held a Host
 /// connection limit are written (#845).
 const TALLY_INTERVAL: Duration = Duration::from_secs(60);
-/// Connections served at once. Beyond this a connection is refused.
-const CONNECTION_SLOTS: usize = 128;
+/// Connections served at once. Beyond this a connection is refused. A Host
+/// connection gives its slot back once admitted, so the slots cover only the
+/// admission of a burst from several Scratch Spaces (#845).
+const CONNECTION_SLOTS: usize = 512;
 /// Refused connections answered at once, and for how long each. Sandboxed code
 /// can open connections freely, so answering them must be bounded too; beyond
 /// this a connection is dropped unanswered.

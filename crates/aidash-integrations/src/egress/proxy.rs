@@ -131,6 +131,8 @@ struct CapacityCounts {
 /// use up the process's memory and file descriptors (#845).
 #[derive(Default)]
 struct Waiting {
+	/// Not capped: only read so that a Space's idle tunnels make way (#845).
+	scopes: std::collections::HashMap<aidash_domain::egress::ScopeId, usize>,
 	tenants: std::collections::HashMap<String, usize>,
 	global: usize,
 }
@@ -154,6 +156,31 @@ impl CapacityCounts {
 	}
 }
 type ScopeCounts = Arc<std::sync::Mutex<CapacityCounts>>;
+
+/// A tunnel idle this long makes way for a connection of its Scratch Space
+/// that waits for a limit (#845). Clients keep CONNECT tunnels open between
+/// requests, so without this a waiter would only get a slot once some tunnel
+/// reached the five-minute idle timeout.
+const RECLAIM_IDLE: std::time::Duration = std::time::Duration::from_secs(2);
+/// How often an open tunnel looks for waiters.
+const RECLAIM_CHECK: std::time::Duration = std::time::Duration::from_millis(500);
+/// A tunnel closed to make way. The client opens another when it needs one.
+const RECLAIMED: &str = "egress_idle_reclaimed";
+
+/// What lets a tunnel make way for its Scratch Space's waiting connections.
+#[derive(Clone)]
+struct Reclaim {
+	manager: Arc<TunnelManager>,
+	scope: aidash_domain::egress::ScopeId,
+}
+
+/// How long a resolved credential is reused for new connections. A revoked
+/// credential still opens connections this long; an open tunnel's own recheck
+/// closes them within five seconds, and a connection that waited is checked
+/// again before it is forwarded.
+const RESOLVED_FOR: std::time::Duration = std::time::Duration::from_secs(5);
+/// Credentials kept resolved at once; Sandboxed code can present many.
+const RESOLVED_KEPT: usize = 4096;
 
 /// Hosts of one scope kept apart in a minute's tallies.
 const TALLY_HOSTS: usize = 50;
@@ -198,6 +225,10 @@ pub(super) struct TunnelManager {
 	waiting_budget: usize,
 	counts: ScopeCounts,
 	tallies: std::sync::Mutex<Tallies>,
+	/// Credentials resolved in the last `RESOLVED_FOR`, so that a burst of
+	/// connections reads the store once per credential (#845).
+	resolved:
+		std::sync::Mutex<std::collections::HashMap<String, (tokio::time::Instant, ScopeSettings)>>,
 	reach: std::sync::Mutex<std::collections::HashMap<aidash_domain::egress::ScopeId, Reach>>,
 	tasks: std::sync::Mutex<tokio::task::JoinSet<()>>,
 	stopping: tokio::sync::watch::Receiver<bool>,
@@ -229,6 +260,12 @@ impl Drop for WaitTurn {
 		self.semaphores.clear();
 		let mut counts = self.counts.lock().unwrap();
 		let waiting = &mut counts.waiting;
+		if let Some(n) = waiting.scopes.get_mut(&self.scope) {
+			*n -= 1;
+			if *n == 0 {
+				waiting.scopes.remove(&self.scope);
+			}
+		}
 		if let Some(n) = waiting.tenants.get_mut(&self.scope.tenant) {
 			*n -= 1;
 			if *n == 0 {
@@ -270,6 +307,7 @@ impl TunnelManager {
 			waiting_budget: limits.waiting,
 			counts: Arc::new(std::sync::Mutex::new(CapacityCounts::default())),
 			tallies: Default::default(),
+			resolved: Default::default(),
 			reach: Default::default(),
 			tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
 			stopping,
@@ -356,6 +394,7 @@ impl TunnelManager {
 				counts.prune(&scope.id);
 				return Err(limit_refused(code));
 			}
+			*counts.waiting.scopes.entry(scope.id.clone()).or_default() += 1;
 			*counts
 				.waiting
 				.tenants
@@ -486,6 +525,41 @@ impl TunnelManager {
 			return Some(hosts);
 		}
 		None
+	}
+	/// Resolves a credential, reusing a resolution made in the last
+	/// `RESOLVED_FOR`. A refusal is never reused.
+	async fn resolve(
+		&self,
+		scopes: &dyn EgressScopes,
+		token: &str,
+	) -> aidash_application::Result<ScopeSettings> {
+		if let Some((at, settings)) = self.resolved.lock().unwrap().get(token)
+			&& at.elapsed() < RESOLVED_FOR
+		{
+			return Ok(settings.clone());
+		}
+		let settings = scopes.resolve(token).await?;
+		let mut resolved = self.resolved.lock().unwrap();
+		if resolved.len() >= RESOLVED_KEPT {
+			resolved.retain(|_, (at, _)| at.elapsed() < RESOLVED_FOR);
+			if resolved.len() >= RESOLVED_KEPT {
+				resolved.clear();
+			}
+		}
+		resolved.insert(
+			token.to_owned(),
+			(tokio::time::Instant::now(), settings.clone()),
+		);
+		Ok(settings)
+	}
+	/// Whether a connection of this Scratch Space waits for a limit now.
+	fn has_waiters(&self, scope: &aidash_domain::egress::ScopeId) -> bool {
+		self.counts
+			.lock()
+			.unwrap()
+			.waiting
+			.scopes
+			.contains_key(scope)
 	}
 	pub(super) async fn drain(&self) {
 		loop {
@@ -678,6 +752,8 @@ struct TunnelReports {
 	sent: Arc<AtomicU64>,
 	received: Arc<AtomicU64>,
 	failure: FailureReport,
+	/// `None` where nothing waits on the tunnel's slot, as in unit tests.
+	reclaim: Option<Reclaim>,
 }
 
 #[allow(clippy::too_many_arguments)] // The tunnel binds both streams, authority and lifecycle state.
@@ -700,6 +776,7 @@ where
 	let sent = counts.sent;
 	let received = counts.received;
 	let failure = counts.failure;
+	let reclaim = counts.reclaim;
 	let mut sent_batch = Batch::new(
 		scopes.clone(),
 		settings.clone(),
@@ -806,6 +883,9 @@ where
 			}
 		};
 		tokio::pin!(monitor);
+		let mut quiet_since = tokio::time::Instant::now();
+		let mut reclaim_check = tokio::time::interval(RECLAIM_CHECK);
+		reclaim_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 		let stopped = loop {
 			if *stopping.borrow() {
 				break (Some(io::Error::other("egress_shutdown")), None);
@@ -813,7 +893,19 @@ where
 			tokio::select! {
 				result = &mut transfer => break (None, Some(result)),
 				_ = &mut idle => break (Some(io::Error::new(io::ErrorKind::TimedOut, "egress_idle_timeout")), None),
-				_ = activity_rx.changed() => idle.as_mut().reset(tokio::time::Instant::now() + settings.tunnel_limits.idle_timeout),
+				_ = activity_rx.changed() => {
+					quiet_since = tokio::time::Instant::now();
+					idle.as_mut().reset(quiet_since + settings.tunnel_limits.idle_timeout);
+				},
+				_ = reclaim_check.tick(), if reclaim.is_some() => {
+					if let Some(reclaim) = &reclaim
+						&& quiet_since.elapsed() >= RECLAIM_IDLE
+						&& reclaim.manager.has_waiters(&reclaim.scope)
+					{
+						metrics::counter!("aidash_egress_host_connection_reclaimed_total").increment(1);
+						break (Some(io::Error::other(RECLAIMED)), None);
+					}
+				},
 				_ = &mut lifetime => break (Some(io::Error::new(io::ErrorKind::TimedOut, "egress_lifetime_exceeded")), None),
 				changed = stopping.changed() => if changed.is_err() || *stopping.borrow() { break (Some(io::Error::other("egress_shutdown")), None); },
 				error = &mut monitor => break (Some(error), None),
@@ -1159,7 +1251,7 @@ pub(super) async fn forward(
 	// How long a connection holds a listener slot before anyone is known: the
 	// listener's slot count is sized from it (#845).
 	let admitting = std::time::Instant::now();
-	let scope = match scopes.resolve(&token).await {
+	let scope = match manager.resolve(&*scopes, &token).await {
 		Ok(scope) => scope,
 		Err(error) => {
 			let (status, code) = admission_refusal(&error, &token, &manager.failures);
@@ -1343,6 +1435,7 @@ fn tunnel_outcome(result: &io::Result<()>) -> &'static str {
 	for code in [
 		"egress_budget_exhausted",
 		"egress_idle_timeout",
+		RECLAIMED,
 		"egress_lifetime_exceeded",
 		"egress_shutdown",
 		"egress_credential_revoked",
@@ -1382,6 +1475,10 @@ async fn connect_tunnel(
 	let received = audit.received.clone();
 	let upgrade = hyper::upgrade::on(&mut request);
 	let stopping = manager.stopping.clone();
+	let reclaim = Some(Reclaim {
+		manager: manager.clone(),
+		scope: scope.id.clone(),
+	});
 	let mut tasks = manager.tasks.lock().unwrap();
 	while tasks.try_join_next().is_some() {}
 	tasks.spawn(async move {
@@ -1398,6 +1495,7 @@ async fn connect_tunnel(
 						sent: sent.clone(),
 						received: received.clone(),
 						failure: report.clone(),
+						reclaim,
 					},
 					stopping,
 				)
@@ -1458,6 +1556,10 @@ async fn forward_http(
 	let received = audit.received.clone();
 	let (result_tx, mut transfer) = tokio::sync::oneshot::channel();
 	let stopping = manager.stopping.clone();
+	let reclaim = Some(Reclaim {
+		manager: manager.clone(),
+		scope: scope.id.clone(),
+	});
 	{
 		let mut tasks = manager.tasks.lock().unwrap();
 		while tasks.try_join_next().is_some() {}
@@ -1474,6 +1576,7 @@ async fn forward_http(
 					sent: sent.clone(),
 					received: received.clone(),
 					failure: report.clone(),
+					reclaim,
 				},
 				stopping,
 			)
@@ -1929,6 +2032,160 @@ mod tests {
 			"active writes must keep the tunnel open"
 		);
 		task.abort();
+	}
+
+	/// A tunnel of a Space whose slot is held, with a connection of the same
+	/// Space waiting or not, idle from the start.
+	async fn idle_tunnel(with_waiter: bool) -> (bool, Option<String>) {
+		let mut settings = test_settings();
+		settings.tunnel_limits.concurrent = 1;
+		let scopes = Arc::new(MemoryScopes::new("token".into(), settings.clone()));
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let manager = Arc::new(super::TunnelManager::new(
+			receiver.clone(),
+			super::super::ProxyLimits::default(),
+		));
+		let held = manager.try_acquire(&settings).unwrap();
+		let waiter = with_waiter.then(|| {
+			let manager = manager.clone();
+			let settings = settings.clone();
+			tokio::spawn(async move { manager.acquire(&settings, super::LIMIT_WAIT).await.is_ok() })
+		});
+		let (_client, gateway_client) = tokio::io::duplex(32);
+		let (gateway_server, _server) = tokio::io::duplex(32);
+		let task = tokio::spawn(super::tunnel_controlled(
+			gateway_client,
+			gateway_server,
+			scopes,
+			settings.clone(),
+			"token".into(),
+			"registry.npmjs.org".into(),
+			super::TunnelReports {
+				reclaim: Some(super::Reclaim {
+					manager: manager.clone(),
+					scope: settings.id.clone(),
+				}),
+				..Default::default()
+			},
+			receiver,
+		));
+		tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+		let finished = task.is_finished();
+		let ended = if finished {
+			task.await.unwrap().2.err().map(|error| error.to_string())
+		} else {
+			task.abort();
+			None
+		};
+		drop(held);
+		if let Some(waiter) = waiter {
+			assert!(waiter.await.unwrap(), "the waiter gets the slot");
+		}
+		(finished, ended)
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn an_idle_tunnel_makes_way_for_a_waiting_connection_of_its_space() {
+		let (finished, ended) = idle_tunnel(true).await;
+		assert!(finished, "two idle seconds with a waiter close the tunnel");
+		assert_eq!(ended.as_deref(), Some(super::RECLAIMED));
+		assert_eq!(
+			super::tunnel_outcome(&Err(std::io::Error::other(super::RECLAIMED))),
+			super::RECLAIMED,
+			"a reclaimed tunnel is not a transfer failure"
+		);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn an_idle_tunnel_stays_open_while_nobody_waits() {
+		let (finished, _) = idle_tunnel(false).await;
+		assert!(!finished);
+	}
+
+	/// Counts `resolve` calls and refuses once revoked.
+	struct CountedResolve(Arc<MemoryScopes>, std::sync::atomic::AtomicUsize);
+
+	#[tokio::test(start_paused = true)]
+	async fn a_resolved_credential_is_reused_for_five_seconds_and_a_refusal_never() {
+		let memory = Arc::new(MemoryScopes::new("token".into(), test_settings()));
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let manager = super::TunnelManager::new(receiver, super::super::ProxyLimits::default());
+		let counted = CountedResolve(memory.clone(), Default::default());
+		let calls = || counted.1.load(Ordering::SeqCst);
+		manager.resolve(&counted, "token").await.unwrap();
+		manager.resolve(&counted, "token").await.unwrap();
+		assert_eq!(calls(), 1);
+		assert!(manager.resolve(&counted, "wrong").await.is_err());
+		assert!(manager.resolve(&counted, "wrong").await.is_err());
+		assert_eq!(calls(), 3, "a refusal is asked again");
+		tokio::time::advance(super::RESOLVED_FOR).await;
+		memory.revoke();
+		assert!(manager.resolve(&counted, "token").await.is_err());
+	}
+
+	#[async_trait::async_trait]
+	impl EgressScopes for CountedResolve {
+		async fn resolve(&self, c: &str) -> aidash_application::Result<ScopeSettings> {
+			self.1.fetch_add(1, Ordering::SeqCst);
+			self.0.resolve(c).await
+		}
+		async fn admit_external(
+			&self,
+			c: &str,
+			s: &str,
+			m: &str,
+			p: &str,
+			d: &str,
+		) -> aidash_application::Result<aidash_application::egress::Admission> {
+			self.0.admit_external(c, s, m, p, d).await
+		}
+		async fn admit_connection(&self, s: &ScopeSettings) -> aidash_application::Result<()> {
+			self.0.admit_connection(s).await
+		}
+		async fn check_active(
+			&self,
+			s: &ScopeSettings,
+			c: &str,
+		) -> aidash_application::Result<ScopeSettings> {
+			self.0.check_active(s, c).await
+		}
+		async fn debit(
+			&self,
+			s: &ScopeSettings,
+			d: aidash_application::egress::Direction,
+			b: u64,
+			day: chrono::NaiveDate,
+		) -> aidash_application::Result<()> {
+			self.0.debit(s, d, b, day).await
+		}
+		async fn refund(
+			&self,
+			s: &ScopeSettings,
+			d: aidash_application::egress::Direction,
+			b: u64,
+			day: chrono::NaiveDate,
+		) -> aidash_application::Result<()> {
+			self.0.refund(s, d, b, day).await
+		}
+		async fn record(
+			&self,
+			r: aidash_application::egress::ConnectionRecord,
+		) -> aidash_application::Result<()> {
+			self.0.record(r).await
+		}
+		async fn record_refusals(
+			&self,
+			tallies: Vec<aidash_application::egress::RefusalTally>,
+		) -> aidash_application::Result<()> {
+			self.0.record_refusals(tallies).await
+		}
+		async fn notify_many_hosts(
+			&self,
+			id: &aidash_domain::egress::ScopeId,
+			hosts: usize,
+		) -> aidash_application::Result<()> {
+			self.0.notify_many_hosts(id, hosts).await
+		}
 	}
 
 	struct StalledChecks(Arc<MemoryScopes>, std::sync::atomic::AtomicUsize);
