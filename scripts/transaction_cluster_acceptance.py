@@ -15,16 +15,37 @@ import os
 import pathlib
 import socket
 import subprocess
+import tempfile
 import time
 import threading
 import urllib.error
 import urllib.request
 import uuid
 
+from oidc_fixture import Issuer, generate_key, oidc_environment, relay_container, tenant_administrator
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 # Where a Pod keeps its Deployment Key, and the settings overlay that names it.
 KEY_DIRECTORY = "/keys"
 SETTINGS_OVERLAY = "/app/server/settings/local.toml"
+# The test OIDC issuer Pod and the server Pods' loopback relays to it (#578).
+ISSUER_IMAGE = "python:3.13-slim"
+# The dashboard origin Aidash checks a session's Origin and callback against.
+# Nothing listens there: the script sends its requests to a Node's port-forward.
+BROWSER_ORIGIN = "https://127.0.0.1:8443"
+# The person who administers each Tenant: Node Registrations and Peer Mappings
+# need a Tenant Administrator acting through a browser Mapping (#484).
+ADMINISTRATOR = "federation-administrator"
+# The service subject another Node's alice acts as here. A Peer Mapping binds
+# only an exportable credential, which a person's user subject never has.
+PEER_SUBJECT = "remote-alice"
+# The ordinary member whose Subject Credential does each Tenant's work. A
+# Deployment Administrator cannot create or read Tenant content (#484, #832).
+MEMBER = "alice"
+# Lifetime of the member and Peer Mapping credentials issued once per run (#832).
+CREDENTIAL_LIFETIME_SECONDS = 24 * 60 * 60
+# The memory suites' Keyless model and embedding fixture, an in-cluster Service.
+MODEL_FIXTURE_ORIGIN = "http://provider:8080"
 PHASES = [("coordinator.submit", False), ("coordinator.vote", False),
           ("coordinator.commit", False), ("coordinator.abort", True),
           ("coordinator.visible", False), ("coordinator.complete", False),
@@ -94,6 +115,16 @@ class Cluster:
         self.queries = json.loads(pathlib.Path(args.queries).read_text())
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
         self.created = False
+        # Aidash takes only an HTTPS or a loopback HTTP issuer. The server Pods'
+        # relays and this script's port-forward both answer on 127.0.0.1:P, so
+        # the issuer URL is the same on both sides and nothing rewrites it.
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            self.issuer_port = listener.getsockname()[1]
+        self.issuer = Issuer(f"http://127.0.0.1:{self.issuer_port}/issuer")
+        self.issuer_forward = None
+        self.administrators = {}
+        self.members = {}
 
     def kube(self, *args, value=None, check=True):
         return subprocess.run(["kubectl", "-n", self.namespace, *args],
@@ -142,12 +173,18 @@ class Cluster:
 
     def provision_deployment_key(self, node):
         """Give a Deployment its own Deployment Key (ADR 0064): the Secret holds the
-        key file, and a settings overlay names where the Pod puts it."""
+        key file, and a settings overlay names where the Pod puts it.
+
+        The overlay also declares the memory suites' model fixture a model server
+        the Deployment runs itself. Work from another Deployment's Node runs at
+        the strictest Data Protection Level, which no Tenant Keyless endpoint
+        meets (ADR 0104, #832)."""
         pem = subprocess.run(["openssl", "genpkey", "-algorithm", "ed25519"], capture_output=True, text=True, check=True).stdout
         self.apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": f"tx-{node}-key"},
             "stringData": {"deployment-key.pem": pem}})
         self.apply({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": f"tx-{node}-settings"},
-            "data": {"local.toml": f'[deployment.key]\nfile = "{KEY_DIRECTORY}/deployment-key.pem"\n'}})
+            "data": {"local.toml": f'[deployment]\nhosted_model_origins = {json.dumps([MODEL_FIXTURE_ORIGIN])}\n\n'
+                                   f'[deployment.key]\nfile = "{KEY_DIRECTORY}/deployment-key.pem"\n'}})
 
     def key_volumes(self, node):
         """The Pod's key file, copied for the server user: the key is refused unless only its owner may read it."""
@@ -157,6 +194,71 @@ class Cluster:
                     "volumeMounts": [{"name": "secret", "mountPath": "/secret", "readOnly": True}, {"name": "key", "mountPath": KEY_DIRECTORY}]}],
                 "volumes": [{"name": "secret", "secret": {"secretName": f"tx-{node}-key"}}, {"name": "key", "emptyDir": {}},
                     {"name": "settings", "configMap": {"name": f"tx-{node}-settings"}}]}
+
+    def provision_issuer(self):
+        """Run the test OIDC issuer in the namespace, signing with a key made here."""
+        with tempfile.TemporaryDirectory() as directory:
+            key = generate_key(pathlib.Path(directory) / "issuer-key.pem").read_text()
+        self.apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": "oidc-key"}, "stringData": {"issuer-key.pem": key}})
+        self.apply({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "oidc-fixture"},
+            "data": {"oidc_fixture.py": (ROOT / "scripts" / "oidc_fixture.py").read_text()}})
+        labels = {"app": "oidc"}
+        self.apply({"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "oidc"},
+            "spec": {"replicas": 1, "selector": {"matchLabels": labels}, "template": {"metadata": {"labels": labels},
+            "spec": {"automountServiceAccountToken": False, "containers": [{"name": "issuer", "image": ISSUER_IMAGE,
+                "imagePullPolicy": "IfNotPresent",
+                "command": ["python3", "/fixture/oidc_fixture.py", "serve", "--key", "/key/issuer-key.pem",
+                            "--issuer", self.issuer.issuer, "--port", "8000"],
+                "ports": [{"containerPort": 8000}],
+                "readinessProbe": {"httpGet": {"path": "/issuer/.well-known/openid-configuration", "port": 8000}, "periodSeconds": 1},
+                "volumeMounts": [{"name": "fixture", "mountPath": "/fixture", "readOnly": True},
+                                 {"name": "key", "mountPath": "/key", "readOnly": True}]}],
+            "volumes": [{"name": "fixture", "configMap": {"name": "oidc-fixture"}},
+                        {"name": "key", "secret": {"secretName": "oidc-key", "defaultMode": 0o400}}]}}}})
+        self.service("oidc", 8000, labels)
+        self.rollout("oidc")
+
+    def reach_issuer(self):
+        """Port-forward 127.0.0.1:P to the issuer, where a login's `/authorize` redirect points."""
+        if self.issuer_forward and self.issuer_forward[0].poll() is None:
+            return
+        if self.issuer_forward:
+            self.issuer_forward[0].wait(timeout=10)
+            self.issuer_forward[1].close()
+        log = (self.directory / "forward-oidc.log").open("a")
+        process = subprocess.Popen(["kubectl", "-n", self.namespace, "port-forward", "service/oidc", f"{self.issuer_port}:8000"],
+                                   env=self.env, stdout=log, stderr=log)
+        self.issuer_forward = (process, log)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise ConnectionError(f"the issuer's port-forward on {self.issuer_port} exited; see forward-oidc.log")
+            try:
+                with socket.create_connection(("127.0.0.1", self.issuer_port), timeout=0.2):
+                    return
+            except OSError:
+                time.sleep(0.05)
+        raise TimeoutError(f"the issuer's port-forward did not listen on {self.issuer_port} within 10 seconds")
+
+    def administrator(self, node):
+        """Node `node`'s Tenant Administrator, signed in once through the issuer.
+
+        The approval creates the person in the Tenant's initial `administrators`
+        group. A driver that later replaces the policy must keep `ADMINISTRATOR`.
+        """
+        session = self.administrators.get(node)
+        if session is None:
+            self.reach_issuer()
+            session = tenant_administrator(self.forward(node), BROWSER_ORIGIN, self.issuer, self.token,
+                                           self.nodes[node]["tenant"], ADMINISTRATOR, groups=["administrators"])
+            self.administrators[node] = session
+        # A rollout replaces the Node's port-forward; the session cookie stays valid.
+        session.base = self.forward(node)
+        return session
+
+    def administer(self, node, path, body=None):
+        """Like `api`, as Node `node`'s Tenant Administrator."""
+        return self.administrator(node).call("GET" if body is None else "POST", path, body)
 
     def start_migration(self, node):
         """Apply the native history as the owner; servers refuse pending migrations."""
@@ -256,10 +358,11 @@ class Cluster:
                 log.close()
             raise
 
-    def api(self, node, path, body=None):
+    def api(self, node, path, body=None, token=None):
+        """Call Node `node` with the api_token, or with a Subject Credential's `token`."""
         request = urllib.request.Request(self.forward(node) + path,
             data=None if body is None else json.dumps(body).encode(),
-            headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"})
+            headers={"Authorization": f"Bearer {token or self.token}", "Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(request, timeout=10) as response:
                 return response.status, json.load(response)
@@ -279,12 +382,46 @@ class Cluster:
 
         A Deployment Administrator holds no Tenant authority, so the api_token
         cannot issue one over HTTP: the command opens the Node's database with
-        the server's own settings.
+        the server's own settings. The credentials are issued once, before the
+        case loop, so they must outlive the whole run: a lifecycle or coordinator
+        partition restarts servers for well over an hour.
         """
         output = self.kube("exec", f"deployment/tx-{node}-server", "--", "manage", "issue-subject-credential",
                            "--tenant", tenant, "--subject", subject, "--label", "acceptance_host",
-                           "--expires-in-seconds", "3600").stdout
+                           "--expires-in-seconds", str(CREDENTIAL_LIFETIME_SECONDS)).stdout
         return json.loads(output.strip().splitlines()[-1])
+
+    def member(self, node, path, body=None):
+        """Like `api`, as Node `node`'s `MEMBER`."""
+        return self.api(node, path, body, token=self.members[node])
+
+    def admit_members(self, count):
+        """Give each Tenant a `MEMBER` with a host-issued Subject Credential.
+
+        The api_token still replaces a Tenant's policy. The bundle keeps
+        `ADMINISTRATOR`, whom approving the Tenant Administrator created.
+        Node 0's `MEMBER` submits every transaction, so each other Node's
+        Tenant Administrator maps it to that Node's `PEER_SUBJECT`: a
+        participant's preflight acts as the subject its Tenant mapped.
+        """
+        for node in range(count):
+            tenant = self.nodes[node]["tenant"]
+            subjects = {MEMBER: {"kind": "user"}, ADMINISTRATOR: {"kind": "user"}}
+            if node:
+                subjects[PEER_SUBJECT] = {"kind": "service", "node": self.nodes[node]["node"]}
+            bundle = {"tenant": tenant, "subjects": subjects,
+                      "policies": [{"id": "transaction-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
+            status, policy = self.api(node, f"/api/authorization/{tenant}")
+            assert status == 200, (node, status, policy)
+            status, response = self.api(node, f"/api/authorization/{tenant}", {"expected_revision": policy["revision"], "bundle": bundle})
+            assert status == 200, (node, status, response)
+            self.members[node] = self.issue_credential(node, tenant, MEMBER)["token"]
+            if node:
+                peer = self.issue_credential(node, tenant, PEER_SUBJECT)
+                status, response = self.administer(node, f"/api/authorization/{tenant}/peer-mappings", {
+                    "node": self.nodes[node]["node"], "source_node": self.nodes[0]["address"], "source_subject": MEMBER,
+                    "credential_id": peer["credential"]["id"], "enabled": True, "expected_revision": 0})
+                assert status == 200, (node, status, response)
 
     def ready(self, node):
         self.until(lambda: self.api(node, "/health")[0] == 200, "Node health")
@@ -342,12 +479,14 @@ class Cluster:
         self.service("nats", 4222, {"app": "nats"})
         self.rollout("postgres", "statefulset")
         self.rollout("nats")
+        # Servers read the issuer's discovery document when a person logs in.
+        self.provision_issuer()
         for node in range(count):
             # Each node has its own database; there are no runtime cross-DB reads.
             self.provision_database(node)
             self.apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": f"tx-{node}"},
                 "stringData": {"DATABASE_URL": self.login_url("server", node),
-                "AIDASH_API_TOKEN": self.token}})
+                "AIDASH_API_TOKEN": self.token, **oidc_environment(self.issuer, BROWSER_ORIGIN, idle_seconds=86400)}})
             self.provision_deployment_key(node)
             self.start_migration(node)
         # Servers and workers start only once every migration is applied.
@@ -372,9 +511,10 @@ class Cluster:
                     {"name": "AIDASH_API_RATE_BURST", "value": "100000"}, {"name": "AIDASH_AUTH_RATE_BURST", "value": "100000"},
                     # The memory suites' Keyless model and embedding fixture is an in-cluster Service.
                     # Registering another Deployment's Node at its Service needs that origin permitted.
-                    {"name": "AIDASH_KEYLESS_PRIVATE_ORIGINS", "value": ",".join(["http://provider:8080", *(f"http://tx-{peer}:8080" for peer in range(count))])}],
+                    {"name": "AIDASH_KEYLESS_PRIVATE_ORIGINS", "value": ",".join([MODEL_FIXTURE_ORIGIN, *(f"http://tx-{peer}:8080" for peer in range(count))])}],
                     "resources": {"requests": {"cpu": "50m", "memory": "128Mi"}},
-                    **({"readinessProbe": {"httpGet": {"path": "/health", "port": 8080}, "periodSeconds": 1}} if role == "server" else {})}]}}}})
+                    **({"readinessProbe": {"httpGet": {"path": "/health", "port": 8080}, "periodSeconds": 1}} if role == "server" else {})},
+                    *([relay_container(self.issuer_port, "oidc:8000", ISSUER_IMAGE)] if role == "server" else [])]}}}})
             self.service(f"tx-{node}", 8080, {"app": f"tx-{node}", "role": "server"})
         for node in range(count):
             self.rollout(f"tx-{node}-server")
@@ -384,7 +524,9 @@ class Cluster:
         # Each Deployment has one Tenant, and its default Node is what a transaction names.
         for node in range(count):
             tenant = self.api(node, "/api/tenants", {"label": f"tx-{node}"})[1]["name"]
-            default = next(item for item in self.api(node, f"/api/tenants/{tenant}/nodes")[1] if item["default"])
+            # A Deployment Administrator reads a Tenant's Nodes only from the
+            # deleted-Node view purge uses (#484, ADR 0102).
+            default = next(item for item in self.api(node, f"/api/tenants/{tenant}/nodes?include_deleted=true")[1] if item["default"])
             self.nodes[node] = {"tenant": tenant, "node": default["name"], "address": default["address"]}
         for node in range(1, count):
             for local, remote in [(0, node), (node, 0)]:
@@ -398,11 +540,8 @@ class Cluster:
                     f"http://tx-{remote}:8080/.well-known/aidash").stdout
                 key_id = json.loads(key_id)["key"]["id"]
                 owner = self.nodes[local]
-                # TODO(#578): a Node Registration needs a Tenant Administrator, a browser
-                # Mapping session through a test OIDC issuer the Pods can reach
-                # (oidc_fixture.py). The api_token is a Deployment Administrator and is
-                # refused, so this fails until that issuer runs in the cluster.
-                status, response = self.api(local, f"/api/tenants/{owner['tenant']}/nodes/{owner['node']}/registrations",
+                # A Node Registration needs a Tenant Administrator (#484).
+                status, response = self.administer(local, f"/api/tenants/{owner['tenant']}/nodes/{owner['node']}/registrations",
                     {"source_node": self.nodes[remote]["address"], "endpoint": f"http://tx-{remote}:8080", "key_id": key_id,
                      "atomic_transactions": True, "enabled": True, "expected_revision": 0})
                 assert status == 200, (local, remote, status, response)
@@ -417,7 +556,7 @@ class Cluster:
         verified_new_state = any(entry.get("revision") == 1 for entry in observations)
         for node in range(count):
             try:
-                status, body = self.api(node, f"/api/workspaces/{workspaces[node]}")
+                status, body = self.member(node, f"/api/workspaces/{workspaces[node]}")
             except (OSError, urllib.error.URLError):
                 observations.append({"time": now(), "node": node, "status": "unavailable"})
                 continue
@@ -447,10 +586,11 @@ class Cluster:
         owner = 1 if phase.startswith("participant.") else 0
         point = f"{phase}.{edge}"
         name = f"tx-{owner}-server"
+        submission = None
         try:
             workspaces = []
             for node in range(count):
-                status, body = self.api(node, "/api/workspaces", {"title": "Transaction acceptance", "goal": "Fixed atomic state"})
+                status, body = self.member(node, "/api/workspaces", {"title": "Transaction acceptance", "goal": "Fixed atomic state"})
                 assert status == 200, status
                 workspaces.append(body["id"])
             manifest = {"id": transaction, "coordinator": self.nodes[0]["address"], "isolation": "serializable",
@@ -460,7 +600,7 @@ class Cluster:
             self.kube("set", "env", f"deployment/{name}", f"AIDASH_TRANSACTION_FAULT={transaction}:{point}", "AIDASH_TRANSACTION_FAULT_DIR=/tmp")
             self.rollout(name)
             self.ready(owner)
-            submission = self.executor.submit(self.api, 0, "/api/transactions", manifest)
+            submission = self.executor.submit(self.member, 0, "/api/transactions", manifest)
             marker = f"/tmp/{transaction}.{point}.reached"
             held = None
 
@@ -508,11 +648,11 @@ class Cluster:
             record["services_restored_at"] = now()
             restored = time.monotonic()
             if not self.inspect(0, transaction, workspaces[0], "tx_coordinator"):
-                assert self.api(0, "/api/transactions", manifest)[0] == 202
+                assert self.member(0, "/api/transactions", manifest)[0] == 202
 
             def complete():
                 self.observe(count, transaction, workspaces, trace)
-                status, detail = self.api(0, f"/api/transactions/{transaction}")
+                status, detail = self.member(0, f"/api/transactions/{transaction}")
                 return status == 200 and detail["transaction"]["complete"]
 
             self.until(complete, "complete decision and barrier release", timeout=180)
@@ -541,6 +681,10 @@ class Cluster:
                     pass
         except Exception as error:
             record["error"] = f"{type(error).__name__}: {error}"
+            # A refused submission never reaches its fault point; keep the reply.
+            if submission is not None and submission.done():
+                failure = submission.exception()
+                record["submission"] = repr(failure) if failure else submission.result()
             raise
         finally:
             record["observations"] = trace
@@ -553,6 +697,10 @@ class Cluster:
             process.terminate()
             process.wait(timeout=10)
             log.close()
+        if self.issuer_forward:
+            self.issuer_forward[0].terminate()
+            self.issuer_forward[0].wait(timeout=10)
+            self.issuer_forward[1].close()
         self.executor.shutdown(wait=False, cancel_futures=True)
         if self.created and not self.args.keep:
             self.kube("delete", "namespace", self.namespace, "--wait=true", "--timeout=180s", check=False)
@@ -587,6 +735,7 @@ def main():
             "cases": [dict(zip(["nodes", "phase", "edge", "abort", "repetition", "lifecycle"], case)) for case in cases],
         }, indent=2) + "\n")
         cluster.provision(max(args.nodes))
+        cluster.admit_members(max(args.nodes))
         for case in cases:
             cluster.case(*case)
     finally:
