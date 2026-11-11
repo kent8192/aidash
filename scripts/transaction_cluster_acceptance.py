@@ -42,6 +42,8 @@ PEER_SUBJECT = "remote-alice"
 # The ordinary member whose Subject Credential does each Tenant's work. A
 # Deployment Administrator cannot create or read Tenant content (#484, #832).
 MEMBER = "alice"
+# Lifetime of the member and Peer Mapping credentials issued once per run (#832).
+CREDENTIAL_LIFETIME_SECONDS = 24 * 60 * 60
 # The memory suites' Keyless model and embedding fixture, an in-cluster Service.
 MODEL_FIXTURE_ORIGIN = "http://provider:8080"
 PHASES = [("coordinator.submit", False), ("coordinator.vote", False),
@@ -380,11 +382,13 @@ class Cluster:
 
         A Deployment Administrator holds no Tenant authority, so the api_token
         cannot issue one over HTTP: the command opens the Node's database with
-        the server's own settings.
+        the server's own settings. The credentials are issued once, before the
+        case loop, so they must outlive the whole run: a lifecycle or coordinator
+        partition restarts servers for well over an hour.
         """
         output = self.kube("exec", f"deployment/tx-{node}-server", "--", "manage", "issue-subject-credential",
                            "--tenant", tenant, "--subject", subject, "--label", "acceptance_host",
-                           "--expires-in-seconds", "3600").stdout
+                           "--expires-in-seconds", str(CREDENTIAL_LIFETIME_SECONDS)).stdout
         return json.loads(output.strip().splitlines()[-1])
 
     def member(self, node, path, body=None):
