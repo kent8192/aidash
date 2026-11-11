@@ -456,8 +456,7 @@ impl CatalogMutation for NativeMutation<'_> {
 				.to_string(PostgresQueryBuilder);
 			let result = crate::database::native::query(&sql)
 				.execute(&mut **self.0)
-				.await
-				.map_err(crate::Error::from)?;
+				.await?;
 			if result.rows_affected() != 1 {
 				return Err(aidash_application::Error::Conflict(
 					"catalog revision changed".into(),
@@ -480,8 +479,7 @@ impl CatalogMutation for NativeMutation<'_> {
 				.to_string(PostgresQueryBuilder);
 			let result = crate::database::native::query(&sql)
 				.execute(&mut **self.0)
-				.await
-				.map_err(crate::Error::from)?;
+				.await?;
 			if result.rows_affected() != 1 {
 				return Err(aidash_application::Error::Conflict(
 					"catalog revision changed".into(),

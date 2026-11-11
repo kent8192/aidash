@@ -95,6 +95,7 @@ async fn restored_authority_does_not_rebind_old_work_and_manual_resume_retains_i
 				.display_name(None)
 				.last_valid_at(Some(now))
 				.disabled_at(None)
+				.approval_request_mail(true)
 				.display_observed_at(None)
 				.display_erased_at(None)
 				.display_erased_by(None)

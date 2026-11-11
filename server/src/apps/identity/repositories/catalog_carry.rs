@@ -198,8 +198,7 @@ impl CarryScope for TenantCarry<'_> {
 				.to_string(PostgresQueryBuilder);
 			crate::database::native::query(&sql)
 				.execute(&mut **self.tx)
-				.await
-				.map_err(crate::Error::from)?;
+				.await?;
 		}
 		if entry.kind == "agent" {
 			let old = aidash_domain::qualified_agent(node, &entry.id, &source.definition.version);
