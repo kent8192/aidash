@@ -552,7 +552,21 @@ export function Configuration({
 }) {
   const { t, locale } = useI18n();
   const { can } = useTenantActions(data.access);
-  const selectedNode = useNodes().selected;
+  const nodeSelection = useNodes();
+  const selectedNode = nodeSelection.selected;
+  const link = new URLSearchParams(window.location.search);
+  const linkTenant = link.get("tenant");
+  const linkNode = link.get("node");
+  const linkRequest = link.get("request");
+  useEffect(() => {
+    if (
+      linkTenant === nodeSelection.tenant &&
+      linkNode &&
+      nodeSelection.nodes.some((node) => node.name === linkNode) &&
+      nodeSelection.selected?.name !== linkNode
+    )
+      nodeSelection.select(linkNode);
+  }, [linkTenant, linkNode, nodeSelection]);
   const deploymentAdministrator =
     data.access.kind === "deployment_administrator";
   const restricted =
@@ -625,11 +639,20 @@ export function Configuration({
             data.access.kind === "subject" &&
             selectedNode !== undefined &&
             (can("catalog.approve") || itemPendingRequests) && (
-              <ToolSection title={t("approvalPendingTitle")}>
+              <ToolSection
+                title={t("approvalPendingTitle")}
+                initiallyOpen={!!linkRequest}
+              >
                 <CatalogRequestQueue
                   tenant={data.access.tenant}
                   node={selectedNode.name}
                   subject={data.access.subject}
+                  initialRequestId={
+                    linkTenant === data.access.tenant &&
+                    linkNode === selectedNode.name
+                      ? (linkRequest ?? undefined)
+                      : undefined
+                  }
                 />
               </ToolSection>
             )}

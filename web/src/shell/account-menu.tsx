@@ -1,10 +1,18 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, type ReactNode } from "react";
-import { Languages, LogOut, Server, SunMoon, UserRoundCog } from "lucide-react";
+import {
+  Languages,
+  LogOut,
+  Mail,
+  Server,
+  SunMoon,
+  UserRoundCog,
+} from "lucide-react";
 import { initials } from "../collaboration/avatar";
 import { NativeSelect } from "../components/ui/native-select";
 import { Button } from "../components/ui/button";
 import { cn } from "../lib/utils";
-import { mappingContext } from "../transport";
+import { apiFetch, mappingContext } from "../transport";
 import type { ThemePreference } from "../theme";
 import { useI18n, type Locale } from "../ui";
 import { authCopy, shellCopy } from "./copy";
@@ -101,7 +109,25 @@ export function AccountPanel({ account }: { account: Account }) {
   const shared = account.sharedAccess;
   const personalMapping = account.mappings.some((mapping) => mapping.personal);
   const themeGroup = useId();
-  const { nodes, selected } = useNodes();
+  const { nodes, selected, tenant } = useNodes();
+  const queryClient = useQueryClient();
+  const mailKey = ["approval-request-mail", tenant] as const;
+  const mailUrl = `/api/tenants/${encodeURIComponent(tenant ?? "")}/approval-request-mail/mine`;
+  const mail = useQuery({
+    queryKey: mailKey,
+    queryFn: () => apiFetch<{ enabled: boolean }>(mailUrl),
+    enabled: tenant !== null,
+    retry: false,
+  });
+  const updateMail = useMutation({
+    mutationFn: (enabled: boolean) =>
+      apiFetch<{ enabled: boolean }>(mailUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      }),
+    onSuccess: (value) => queryClient.setQueryData(mailKey, value),
+  });
   return (
     <div className="grid text-[13px]">
       <div className="flex items-center gap-2.5 px-2 pb-3 pt-1.5">
@@ -208,6 +234,31 @@ export function AccountPanel({ account }: { account: Account }) {
               ))}
             </NativeSelect>
           </label>
+        </Group>
+      )}
+      {typeof mail.data?.enabled === "boolean" && (
+        <Group
+          label={locale === "ja-JP" ? "通知" : "Notifications"}
+          icon={Mail}
+        >
+          <label className="flex items-center gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={mail.data.enabled}
+              disabled={updateMail.isPending}
+              onChange={(event) => updateMail.mutate(event.target.checked)}
+            />
+            {locale === "ja-JP"
+              ? "承認依頼をメールで受け取る"
+              : "Email me Catalog Approval Requests"}
+          </label>
+          {updateMail.isError && (
+            <span role="alert">
+              {locale === "ja-JP"
+                ? "設定を保存できませんでした。"
+                : "Could not save this setting."}
+            </span>
+          )}
         </Group>
       )}
       <Group label={copy.language} icon={Languages}>

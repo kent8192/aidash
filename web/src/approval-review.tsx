@@ -1,3 +1,7 @@
+import {
+  CatalogCarryOptions,
+  type ApprovalScope,
+} from "./catalog-carry-options";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -179,6 +183,8 @@ export function ApprovalReviewPanel({
   requestId,
   rootGroups,
   rootRestriction,
+  initialCarryOver = true,
+  initialScope = "deployment",
   subject,
   onClose,
   onChanged,
@@ -191,6 +197,8 @@ export function ApprovalReviewPanel({
   /** The root's restriction chosen before falling back to this review;
    *  `undefined` keeps the server's proposal, `null` clears it. */
   rootRestriction?: CatalogRestriction | null;
+  initialCarryOver?: boolean;
+  initialScope?: ApprovalScope;
   subject?: string;
   onClose?: () => void;
   onChanged?: () => void | Promise<void>;
@@ -225,6 +233,9 @@ export function ApprovalReviewPanel({
       ? {}
       : { [itemKey({ reference: root })]: rootRestriction },
   );
+  const [carryOver, setCarryOver] = useState(initialCarryOver);
+  const [approvalScope, setApprovalScope] =
+    useState<ApprovalScope>(initialScope);
   const [acknowledged, setAcknowledged] = useState<Record<string, boolean>>({});
   const [editing, setEditing] = useState<string | null>(null);
   const [reason, setReason] = useState("");
@@ -276,6 +287,24 @@ export function ApprovalReviewPanel({
       );
       await authorizationSubmitCatalogReview(tenant, {
         ...body,
+        items: (body.items ?? []).map((item) => ({
+          ...item,
+          carry_over: carryOver,
+          scope: approvalScope,
+        })),
+        installations: (body.installations ?? []).map((item) => ({
+          ...item,
+          carry_over: carryOver,
+          scope: approvalScope,
+          provider_warning_acknowledged: current.items.some(
+            (reviewItem) =>
+              reviewItem.installation?.installation === item.installation &&
+              reviewItem.installation.revision === item.revision &&
+              !!acknowledged[
+                `${current.closure_digest}:${itemKey(reviewItem)}`
+              ],
+          ),
+        })),
         ...(rootGroups !== undefined ? { root_groups: rootGroups } : {}),
       });
       // The refreshed review may keep the same closure digest; start from its
@@ -537,6 +566,15 @@ export function ApprovalReviewPanel({
         })}
       </ul>
       {message && <Notice role="status">{message}</Notice>}
+      {canSubmit && (
+        <CatalogCarryOptions
+          carry={carryOver}
+          setCarry={setCarryOver}
+          scope={approvalScope}
+          setScope={setApprovalScope}
+          disabled={busy}
+        />
+      )}
       {canSubmit && (
         <div className="flex flex-wrap gap-2">
           <Button

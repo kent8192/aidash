@@ -140,7 +140,14 @@ function SignInEntry({
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 1000 } },
 });
-type Search = { channel?: string; focus?: string; view?: string };
+type Search = {
+  channel?: string;
+  focus?: string;
+  view?: string;
+  tenant?: string;
+  node?: string;
+  request?: string;
+};
 type BrowserSession = {
   id: string;
   deployment_administrator: boolean;
@@ -626,6 +633,32 @@ function Dashboard({
     setError("");
     try {
       const result = await request();
+      if (selection?.kind === "entity" || selection?.kind === "cluster") {
+        const registration = result as {
+          id?: string;
+          version?: string;
+          carry_results?: {
+            node: string;
+            source_version: string | null;
+            changed: string[];
+            unapproved_dependencies: { id: string; version: string }[];
+            carried: boolean;
+          }[];
+        };
+        if (
+          registration.id &&
+          registration.version &&
+          registration.carry_results?.some((item) => !item.carried)
+        ) {
+          void client.invalidateQueries();
+          setSelection({
+            kind: "registrationCarry",
+            entity: result as Selection["entity"],
+            carryResults: registration.carry_results,
+          });
+          return true;
+        }
+      }
       if (selection?.kind === "workspace" || selection?.kind === "goal") {
         // A channel renders only once the dashboard state lists it, so the
         // new one is opened after the refresh.
@@ -1136,6 +1169,9 @@ const rootRoute = createRootRoute({
     channel: typeof search.channel === "string" ? search.channel : undefined,
     focus: typeof search.focus === "string" ? search.focus : undefined,
     view: typeof search.view === "string" ? search.view : undefined,
+    tenant: typeof search.tenant === "string" ? search.tenant : undefined,
+    node: typeof search.node === "string" ? search.node : undefined,
+    request: typeof search.request === "string" ? search.request : undefined,
   }),
 });
 const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: "/" });

@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import { selfHostedPlanConnections } from "@slots/plan-connections";
 import {
   forwardRef,
@@ -60,6 +61,7 @@ import {
 import { cn } from "../lib/utils";
 import { NotificationBell } from "../notifications";
 import { useNodes } from "../nodes";
+import { apiFetch } from "../transport";
 import type { Theme } from "../theme";
 import type { State } from "../types";
 import { useI18n } from "../ui";
@@ -294,6 +296,17 @@ export function AppShell({
   }, []);
   const workspace = data?.workspaces.find((value) => value.id === channel);
   const { selected } = useNodes();
+  const subject = data?.access.kind === "subject" ? data.access : undefined;
+  const pendingCatalog = useQuery({
+    queryKey: ["catalog-pending-count", subject?.tenant, subject?.subject],
+    queryFn: () =>
+      apiFetch<{ count: number }>(
+        `/api/authorization/${encodeURIComponent(subject!.tenant)}/catalog/requests/pending/count`,
+      ),
+    enabled: subject !== undefined,
+    refetchInterval: 30_000,
+    retry: false,
+  });
   // `node.id` is the selected Node's address, `aidash://<deployment>/<node>`.
   const deploymentName = data?.node.id.replace(/^aidash:\/\/([^/]*).*$/, "$1");
   const nodeName =
@@ -542,6 +555,18 @@ export function AppShell({
             </span>
           </nav>
           <div className="ml-auto flex shrink-0 items-center gap-1.5 md:gap-3">
+            {typeof pendingCatalog.data?.count === "number" && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => navigate("settings", { settings: "registry" })}
+              >
+                <ShieldCheck aria-hidden />
+                {locale === "ja-JP"
+                  ? `承認依頼 ${pendingCatalog.data.count} 件`
+                  : `${pendingCatalog.data.count} approval requests`}
+              </Button>
+            )}
             <span
               className={cn(
                 "stream-status inline-flex items-center gap-1.5 whitespace-nowrap px-1 text-xs",

@@ -39,6 +39,10 @@ import {
   type Restriction,
 } from "./catalog-approval-model";
 import { ApprovalReviewPanel } from "./approval-review";
+import {
+  CatalogCarryOptions,
+  type ApprovalScope,
+} from "./catalog-carry-options";
 import { useNodes } from "./nodes";
 import { useTenantActions } from "./tenant-administration";
 
@@ -193,6 +197,24 @@ export function AgentPluginsDisclosure({
   );
 }
 
+type CarriedSource = {
+  carried_from_version?: string | null;
+  carried_from_approver?: string | null;
+};
+
+function CarriedApproval({ source }: { source?: CarriedSource | null }) {
+  const { locale } = useI18n();
+  if (!source?.carried_from_version) return null;
+  return (
+    <span className="text-xs text-muted-foreground">
+      {locale === "ja-JP"
+        ? `バージョン ${source.carried_from_version} から引き継ぎ`
+        : `Carried from version ${source.carried_from_version}`}
+      {source.carried_from_approver ? ` · ${source.carried_from_approver}` : ""}
+    </span>
+  );
+}
+
 /** One version's Catalog Approval: its state and history, a single-item
  *  decision for a subject holding `catalog.approve`, and the server-driven
  *  review for the whole closure. */
@@ -213,12 +235,17 @@ export function CatalogApprovalSection({
   const { selected } = useNodes();
   const [acknowledged, setAcknowledged] = useState<Record<string, boolean>>({});
   const [chosen, setChosen] = useState<string[]>();
+  const [carryOver, setCarryOver] = useState(true);
+  const [approvalScope, setApprovalScope] =
+    useState<ApprovalScope>("deployment");
   const [restricting, setRestricting] = useState<boolean>();
   const [subjectNames, setSubjectNames] = useState<string>();
   const [restrictedGroups, setRestrictedGroups] = useState<string[]>();
   const [reviewOpen, setReviewOpen] = useState(false);
   // `null`: the impact could not be read; withdrawal is still offered.
   const [impact, setImpact] = useState<WithdrawalImpact | null>();
+  const [withdrawCarried, setWithdrawCarried] = useState(false);
+  const [stopCarrying, setStopCarrying] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const busyRetry = useBusyRetry();
@@ -335,6 +362,8 @@ export function CatalogApprovalSection({
           accepted(version),
         ),
         node: selected!.name,
+        carry_over: carryOver,
+        scope: approvalScope,
       }),
     );
   // Withdrawal is never blocked: it shows what it stops, then waits for the
@@ -362,6 +391,8 @@ export function CatalogApprovalSection({
       await authorizationSetCatalog(path, {
         ...approvalRequest(version, false),
         node: selected!.name,
+        withdraw_carried: withdrawCarried,
+        stop_carrying: stopCarrying,
       });
       setImpact(undefined);
     });
@@ -376,6 +407,7 @@ export function CatalogApprovalSection({
           {t("catalogApproval")}
         </h4>
         <ApprovalBadge version={version} />
+        <CarriedApproval source={version.approval as CarriedSource | null} />
         {currentRestriction != null && (
           <span className="min-w-0 text-xs text-muted-foreground [overflow-wrap:anywhere]">
             {t("catalogRestrictedTo")}: {restrictionLabel(currentRestriction)}
@@ -522,6 +554,15 @@ export function CatalogApprovalSection({
           )}
         </>
       )}
+      {decides && state !== "approved" && (
+        <CatalogCarryOptions
+          carry={carryOver}
+          setCarry={setCarryOver}
+          scope={approvalScope}
+          setScope={setApprovalScope}
+          disabled={busy}
+        />
+      )}
       {tenant !== null &&
         selected !== undefined &&
         version.needs_approval &&
@@ -561,6 +602,8 @@ export function CatalogApprovalSection({
           node={selected.name}
           root={{ id: entry.id, version: entry.version }}
           rootGroups={sentGroups}
+          initialCarryOver={carryOver}
+          initialScope={approvalScope}
           rootRestriction={
             restrictionEdited ? requestedRestriction() : undefined
           }
@@ -593,6 +636,28 @@ export function CatalogApprovalSection({
               </>
             )}
             <span>{t("catalogWithdrawScope")}</span>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={withdrawCarried}
+                disabled={busy}
+                onChange={(event) => setWithdrawCarried(event.target.checked)}
+              />
+              {locale === "ja-JP"
+                ? "この承認から引き継いだバージョンも撤回する"
+                : "Also withdraw versions carried from this approval"}
+            </label>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={stopCarrying}
+                disabled={busy}
+                onChange={(event) => setStopCarrying(event.target.checked)}
+              />
+              {locale === "ja-JP"
+                ? "今後の引き継ぎを停止する"
+                : "Stop carrying to later versions"}
+            </label>
             <div className="flex flex-wrap gap-2">
               <Button
                 size="sm"
@@ -643,6 +708,7 @@ export function CatalogApprovalSection({
                       {record.actor}
                     </span>
                   </span>
+                  <CarriedApproval source={record as CarriedSource} />
                   {record.restriction != null && (
                     <span className="col-span-2 min-w-0 text-[11px] text-muted-foreground [overflow-wrap:anywhere] sm:col-span-1">
                       {t("catalogRestrictedTo")}:{" "}

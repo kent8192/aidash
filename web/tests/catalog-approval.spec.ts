@@ -215,12 +215,19 @@ test("every version shows its approval state and newest-first history", async ({
       revision: 3,
       enabled: true,
       actor: "carol",
+      carried_from_version: "0.9.0",
+      carried_from_approver: "alice",
       created_at: "2026-10-03T09:00:00Z",
     },
   ];
   await dashboard(page, tenantSubject, () => [
     registryVersion(entry("search", "tool"), {
-      approval: { enabled: true, revision: 3 },
+      approval: {
+        enabled: true,
+        revision: 3,
+        carried_from_version: "0.9.0",
+        carried_from_approver: "alice",
+      },
       history,
     }),
     registryVersion(entry("model", "model"), unapproved),
@@ -256,6 +263,9 @@ test("every version shows its approval state and newest-first history", async ({
     ]);
   }
   await row(page, "search").click();
+  await expect(
+    approval(page).getByText("Carried from version 0.9.0 · alice"),
+  ).toHaveCount(2);
   await expect(approval(page).locator(".catalog-history")).toHaveText([
     /Approved.*Revision 3 · carol/,
     /Withdrawn.*Revision 2 · bob/,
@@ -322,6 +332,8 @@ test("a new agent version starts from the groups of the latest approved earlier 
     body: {
       entry: ref("writer", "2.0.0"),
       enabled: true,
+      carry_over: true,
+      scope: "deployment",
       expected_revision: 0,
       groups: ["reviewers"],
       node: defaultNode.name,
@@ -347,7 +359,11 @@ test("without subject.group.update an agent approval keeps the default group", a
   await routeTenantActions(page, ["catalog.approve"]);
   await page.goto("/settings?view=agents");
   await row(page, "helper").click();
-  await expect(approval(page).getByRole("checkbox")).toHaveCount(0);
+  await expect(
+    approval(page).getByRole("group", { name: "Groups for the agent subject" }),
+  ).toHaveCount(0);
+  await approval(page).getByLabel("Carry approval to later versions").uncheck();
+  await approval(page).getByLabel("Approval scope").selectOption("node");
   await expect(approval(page)).toContainText(
     "Approval makes this agent a subject of this Tenant in the members group.",
   );
@@ -358,6 +374,8 @@ test("without subject.group.update an agent approval keeps the default group", a
   expect(decisions[0].body).toEqual({
     entry: ref("helper"),
     enabled: true,
+    carry_over: false,
+    scope: "node",
     expected_revision: 0,
     node: defaultNode.name,
   });
@@ -447,6 +465,10 @@ test("withdrawing fences on the approval revision and reports a conflict", async
   );
   expect(decisions).toHaveLength(0);
   await approval(page)
+    .getByLabel("Also withdraw versions carried from this approval")
+    .check();
+  await approval(page).getByLabel("Stop carrying to later versions").check();
+  await approval(page)
     .getByRole("button", { name: "Withdraw anyway", exact: true })
     .click();
   await expect(approval(page).getByRole("alert")).toHaveText(
@@ -455,6 +477,8 @@ test("withdrawing fences on the approval revision and reports a conflict", async
   expect(decisions[0].body).toEqual({
     entry: ref("search"),
     enabled: false,
+    withdraw_carried: true,
+    stop_carrying: true,
     expected_revision: 3,
     node: defaultNode.name,
   });
@@ -573,6 +597,8 @@ test("warning tool approval requires acknowledgment once and hides the warning a
     enabled: true,
     expected_revision: 0,
     provider_warning_acknowledged: true,
+    carry_over: true,
+    scope: "deployment",
     node: defaultNode.name,
   });
   await expect(
@@ -831,6 +857,8 @@ test("the Review shows the whole closure and approves local items and activation
   await expect(review).toContainText("You can approve it");
   await expect(review).toContainText("Needs Marketplace activation");
   await expect(review).toContainText("Used by: acme/agents/writer@1.0.0");
+  await review.getByLabel("Carry approval to later versions").uncheck();
+  await review.getByLabel("Approval scope").selectOption("node");
   await review.getByRole("button", { name: /Approve selected \(3\)/ }).click();
   await expect.poll(() => decisions.length).toBe(1);
   const body = decisions[0].body as {
@@ -838,6 +866,10 @@ test("the Review shows the whole closure and approves local items and activation
     installations: { installation: string }[];
     request?: string;
   };
+  expect(decisions[0].body.items).toMatchObject([
+    { carry_over: false, scope: "node" },
+    { carry_over: false, scope: "node" },
+  ]);
   expect(body.items.map((item) => item.reference.id).sort()).toEqual([
     "model",
     "widened",
@@ -1311,4 +1343,63 @@ test("a consumer's request is fulfilled through the approver queue and then read
   await expect(fulfilled).toContainText(
     "Fulfilled: every reviewed item is approved.",
   );
+});
+
+test("the shell shows the tenant-wide pending count on every page", async ({
+  page,
+}) => {
+  await dashboard(page, tenantSubject, () => []);
+  await page.route(
+    "**/api/authorization/acme/catalog/requests/pending/count",
+    (route) => route.fulfill({ json: { count: 3 } }),
+  );
+  await page.goto("/settings?view=registry");
+  await expect(
+    page.getByRole("button", { name: "3 approval requests" }),
+  ).toBeVisible();
+  await page.goto("/collaboration");
+  await expect(
+    page.getByRole("button", { name: "3 approval requests" }),
+  ).toBeVisible();
+});
+
+test("a person can turn Catalog Approval Request mail off", async ({
+  page,
+}) => {
+  await dashboard(page, tenantSubject, () => []);
+  let enabled = true;
+  await page.route(
+    "**/api/tenants/acme/approval-request-mail/mine",
+    async (route) => {
+      if (route.request().method() === "POST")
+        enabled = route.request().postDataJSON().enabled;
+      await route.fulfill({ json: { enabled } });
+    },
+  );
+  await page.goto("/collaboration");
+  await page
+    .getByRole("button", { name: "Account settings", exact: true })
+    .click();
+  const setting = page.getByLabel("Email me Catalog Approval Requests");
+  await expect(setting).toBeChecked();
+  await setting.uncheck();
+  await expect.poll(() => enabled).toBe(false);
+  await expect(setting).not.toBeChecked();
+});
+
+test("an approval-request mail link opens the named Node's review", async ({
+  page,
+}) => {
+  await reviewDashboard(page, {
+    actions: ["catalog.approve"],
+    review: () => reviewBody([reviewItem("writer", "agent", "approvable")]),
+    pending: () => [requestBody("linked-request")],
+    answer: () => ({ json: [] }),
+  });
+  await page.goto(
+    `/settings?view=registry&tenant=acme&node=${defaultNode.name}&request=linked-request`,
+  );
+  const review = page.getByRole("region", { name: "Approval Review" });
+  await expect(review).toBeVisible();
+  await expect(review).toContainText("Answering a Catalog Approval Request.");
 });
