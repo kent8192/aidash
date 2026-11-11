@@ -212,6 +212,21 @@ impl GenerationLifecycleScope for NativeLifecycle<'_> {
 			.await?;
 		}
 		for id in ids {
+			// An earlier creator's cascade may already have cancelled this Run.
+			let raw: aidash_domain::run_state::RawRun = crate::database::query_as(
+				&Query::select()
+					.column(ColumnRef::Asterisk)
+					.from(Alias::new("runs"))
+					.and_where(Expr::col("id").eq(Expr::value(id)))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_one(&mut **self.transaction)
+			.await?;
+			if raw.metadata.phase.is_terminal()
+				|| raw.metadata.control == aidash_domain::RunControl::Cancelled
+			{
+				continue;
+			}
 			self.runtime
 				.store
 				.control_in(
