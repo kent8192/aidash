@@ -118,6 +118,7 @@ class NativeMemory(RemoteMemory):
             self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}", {"expected_revision": revision, "bundle": bundle}))
             credential = self.issue_credential(node, self.tenants[node], "alice")
             self.tokens.append(credential["token"])
+            self.approve_decider(node)
             # The other Node's alice acts here as a service subject. The Tenant's
             # administrator writes the Peer Mapping, through a browser Mapping (#484).
             peer = self.issue_credential(node, self.tenants[node], PEER_SUBJECT)
@@ -132,6 +133,9 @@ class NativeMemory(RemoteMemory):
                 self.register(node, kind, name, config)
             learning = copy.deepcopy(policy)
             learning["policy"]["learn_from_runs"] = True
+            # Learning reads the whole Run row, whose binding snapshot alone is
+            # about 60 KB, and counts every input byte as a model token (#832).
+            learning["policy"]["bounds"].update({"max_input_bytes": 262144, "max_model_tokens": 524288})
             self.register(node, "memory", "native-learning-memory", learning)
             self.register(node, "agent", "learning", {"model": reference("model"), "instructions": "Report fixture failures with their actual verification status / 検証状態を保持する",
                 "schema_version": 1, "bindings": [binding("memory", self.learning_memory)], "remove_default": ["file_search", "file_read", "memory_mutate"]}, ["native-learning-ordinary"])
@@ -270,7 +274,8 @@ class NativeMemory(RemoteMemory):
             spec = {"enabled": True, "template": template, "approval_required": False, "permissions": {"roles": [], "groups": [], "attributes": {}},
                 "limits": {"max_agents": 4, "max_concurrent": 4, "max_depth": 4, "token_budget": 4000000, "tokens_per_agent": 800000, "lifetime_seconds": 3600},
                 "embedding": {"provider": ref(self.entries[0]["home-embedding"]), "calls_per_agent": 10, "call_budget": 40}}
-            self.ok(super().api(0, f"/api/generation/{self.tenants[0]}/policies/{name}", {"expected_revision": 0, "spec": spec}))
+            # Agent Generation is Tenant content (#484). The base `user` sends the spec unchanged.
+            self.ok(super().user(0, f"/api/generation/{self.tenants[0]}/policies/{name}", {"expected_revision": 0, "spec": spec}))
             assigned = self.ok(self.user(0, f"/api/generation/{self.tenants[0]}/tasks/{task['id']}/assign", {"policy_id": name, "reason": "Bounded post-Run learning acceptance"}))
             assert assigned["kind"] == "generated", assigned
             record["generation"] = assigned["generation"]

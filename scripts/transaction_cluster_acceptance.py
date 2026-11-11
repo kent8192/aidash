@@ -39,6 +39,11 @@ ADMINISTRATOR = "federation-administrator"
 # The service subject another Node's alice acts as here. A Peer Mapping binds
 # only an exportable credential, which a person's user subject never has.
 PEER_SUBJECT = "remote-alice"
+# The ordinary member whose Subject Credential does each Tenant's work. A
+# Deployment Administrator cannot create or read Tenant content (#484, #832).
+MEMBER = "alice"
+# The memory suites' Keyless model and embedding fixture, an in-cluster Service.
+MODEL_FIXTURE_ORIGIN = "http://provider:8080"
 PHASES = [("coordinator.submit", False), ("coordinator.vote", False),
           ("coordinator.commit", False), ("coordinator.abort", True),
           ("coordinator.visible", False), ("coordinator.complete", False),
@@ -117,6 +122,7 @@ class Cluster:
         self.issuer = Issuer(f"http://127.0.0.1:{self.issuer_port}/issuer")
         self.issuer_forward = None
         self.administrators = {}
+        self.members = {}
 
     def kube(self, *args, value=None, check=True):
         return subprocess.run(["kubectl", "-n", self.namespace, *args],
@@ -165,12 +171,18 @@ class Cluster:
 
     def provision_deployment_key(self, node):
         """Give a Deployment its own Deployment Key (ADR 0064): the Secret holds the
-        key file, and a settings overlay names where the Pod puts it."""
+        key file, and a settings overlay names where the Pod puts it.
+
+        The overlay also declares the memory suites' model fixture a model server
+        the Deployment runs itself. Work from another Deployment's Node runs at
+        the strictest Data Protection Level, which no Tenant Keyless endpoint
+        meets (ADR 0104, #832)."""
         pem = subprocess.run(["openssl", "genpkey", "-algorithm", "ed25519"], capture_output=True, text=True, check=True).stdout
         self.apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": f"tx-{node}-key"},
             "stringData": {"deployment-key.pem": pem}})
         self.apply({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": f"tx-{node}-settings"},
-            "data": {"local.toml": f'[deployment.key]\nfile = "{KEY_DIRECTORY}/deployment-key.pem"\n'}})
+            "data": {"local.toml": f'[deployment]\nhosted_model_origins = {json.dumps([MODEL_FIXTURE_ORIGIN])}\n\n'
+                                   f'[deployment.key]\nfile = "{KEY_DIRECTORY}/deployment-key.pem"\n'}})
 
     def key_volumes(self, node):
         """The Pod's key file, copied for the server user: the key is refused unless only its owner may read it."""
@@ -344,10 +356,11 @@ class Cluster:
                 log.close()
             raise
 
-    def api(self, node, path, body=None):
+    def api(self, node, path, body=None, token=None):
+        """Call Node `node` with the api_token, or with a Subject Credential's `token`."""
         request = urllib.request.Request(self.forward(node) + path,
             data=None if body is None else json.dumps(body).encode(),
-            headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"})
+            headers={"Authorization": f"Bearer {token or self.token}", "Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(request, timeout=10) as response:
                 return response.status, json.load(response)
@@ -373,6 +386,38 @@ class Cluster:
                            "--tenant", tenant, "--subject", subject, "--label", "acceptance_host",
                            "--expires-in-seconds", "3600").stdout
         return json.loads(output.strip().splitlines()[-1])
+
+    def member(self, node, path, body=None):
+        """Like `api`, as Node `node`'s `MEMBER`."""
+        return self.api(node, path, body, token=self.members[node])
+
+    def admit_members(self, count):
+        """Give each Tenant a `MEMBER` with a host-issued Subject Credential.
+
+        The api_token still replaces a Tenant's policy. The bundle keeps
+        `ADMINISTRATOR`, whom approving the Tenant Administrator created.
+        Node 0's `MEMBER` submits every transaction, so each other Node's
+        Tenant Administrator maps it to that Node's `PEER_SUBJECT`: a
+        participant's preflight acts as the subject its Tenant mapped.
+        """
+        for node in range(count):
+            tenant = self.nodes[node]["tenant"]
+            subjects = {MEMBER: {"kind": "user"}, ADMINISTRATOR: {"kind": "user"}}
+            if node:
+                subjects[PEER_SUBJECT] = {"kind": "service", "node": self.nodes[node]["node"]}
+            bundle = {"tenant": tenant, "subjects": subjects,
+                      "policies": [{"id": "transaction-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
+            status, policy = self.api(node, f"/api/authorization/{tenant}")
+            assert status == 200, (node, status, policy)
+            status, response = self.api(node, f"/api/authorization/{tenant}", {"expected_revision": policy["revision"], "bundle": bundle})
+            assert status == 200, (node, status, response)
+            self.members[node] = self.issue_credential(node, tenant, MEMBER)["token"]
+            if node:
+                peer = self.issue_credential(node, tenant, PEER_SUBJECT)
+                status, response = self.administer(node, f"/api/authorization/{tenant}/peer-mappings", {
+                    "node": self.nodes[node]["node"], "source_node": self.nodes[0]["address"], "source_subject": MEMBER,
+                    "credential_id": peer["credential"]["id"], "enabled": True, "expected_revision": 0})
+                assert status == 200, (node, status, response)
 
     def ready(self, node):
         self.until(lambda: self.api(node, "/health")[0] == 200, "Node health")
@@ -462,7 +507,7 @@ class Cluster:
                     {"name": "AIDASH_API_RATE_BURST", "value": "100000"}, {"name": "AIDASH_AUTH_RATE_BURST", "value": "100000"},
                     # The memory suites' Keyless model and embedding fixture is an in-cluster Service.
                     # Registering another Deployment's Node at its Service needs that origin permitted.
-                    {"name": "AIDASH_KEYLESS_PRIVATE_ORIGINS", "value": ",".join(["http://provider:8080", *(f"http://tx-{peer}:8080" for peer in range(count))])}],
+                    {"name": "AIDASH_KEYLESS_PRIVATE_ORIGINS", "value": ",".join([MODEL_FIXTURE_ORIGIN, *(f"http://tx-{peer}:8080" for peer in range(count))])}],
                     "resources": {"requests": {"cpu": "50m", "memory": "128Mi"}},
                     **({"readinessProbe": {"httpGet": {"path": "/health", "port": 8080}, "periodSeconds": 1}} if role == "server" else {})},
                     *([relay_container(self.issuer_port, "oidc:8000", ISSUER_IMAGE)] if role == "server" else [])]}}}})
@@ -507,7 +552,7 @@ class Cluster:
         verified_new_state = any(entry.get("revision") == 1 for entry in observations)
         for node in range(count):
             try:
-                status, body = self.api(node, f"/api/workspaces/{workspaces[node]}")
+                status, body = self.member(node, f"/api/workspaces/{workspaces[node]}")
             except (OSError, urllib.error.URLError):
                 observations.append({"time": now(), "node": node, "status": "unavailable"})
                 continue
@@ -537,10 +582,11 @@ class Cluster:
         owner = 1 if phase.startswith("participant.") else 0
         point = f"{phase}.{edge}"
         name = f"tx-{owner}-server"
+        submission = None
         try:
             workspaces = []
             for node in range(count):
-                status, body = self.api(node, "/api/workspaces", {"title": "Transaction acceptance", "goal": "Fixed atomic state"})
+                status, body = self.member(node, "/api/workspaces", {"title": "Transaction acceptance", "goal": "Fixed atomic state"})
                 assert status == 200, status
                 workspaces.append(body["id"])
             manifest = {"id": transaction, "coordinator": self.nodes[0]["address"], "isolation": "serializable",
@@ -550,7 +596,7 @@ class Cluster:
             self.kube("set", "env", f"deployment/{name}", f"AIDASH_TRANSACTION_FAULT={transaction}:{point}", "AIDASH_TRANSACTION_FAULT_DIR=/tmp")
             self.rollout(name)
             self.ready(owner)
-            submission = self.executor.submit(self.api, 0, "/api/transactions", manifest)
+            submission = self.executor.submit(self.member, 0, "/api/transactions", manifest)
             marker = f"/tmp/{transaction}.{point}.reached"
             held = None
 
@@ -598,11 +644,11 @@ class Cluster:
             record["services_restored_at"] = now()
             restored = time.monotonic()
             if not self.inspect(0, transaction, workspaces[0], "tx_coordinator"):
-                assert self.api(0, "/api/transactions", manifest)[0] == 202
+                assert self.member(0, "/api/transactions", manifest)[0] == 202
 
             def complete():
                 self.observe(count, transaction, workspaces, trace)
-                status, detail = self.api(0, f"/api/transactions/{transaction}")
+                status, detail = self.member(0, f"/api/transactions/{transaction}")
                 return status == 200 and detail["transaction"]["complete"]
 
             self.until(complete, "complete decision and barrier release", timeout=180)
@@ -631,6 +677,10 @@ class Cluster:
                     pass
         except Exception as error:
             record["error"] = f"{type(error).__name__}: {error}"
+            # A refused submission never reaches its fault point; keep the reply.
+            if submission is not None and submission.done():
+                failure = submission.exception()
+                record["submission"] = repr(failure) if failure else submission.result()
             raise
         finally:
             record["observations"] = trace
@@ -681,6 +731,7 @@ def main():
             "cases": [dict(zip(["nodes", "phase", "edge", "abort", "repetition", "lifecycle"], case)) for case in cases],
         }, indent=2) + "\n")
         cluster.provision(max(args.nodes))
+        cluster.admit_members(max(args.nodes))
         for case in cases:
             cluster.case(*case)
     finally:

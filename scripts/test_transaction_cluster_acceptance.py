@@ -15,7 +15,8 @@ from urllib.parse import urlsplit
 
 from native_memory_cluster_acceptance import NativeMemory
 from remote_memory_cluster_acceptance import RemoteMemory
-from transaction_cluster_acceptance import ADMINISTRATOR, BROWSER_ORIGIN, PEER_SUBJECT, Cluster, main, transaction_cases
+from golden_path import COMPACTION_DECIDER
+from transaction_cluster_acceptance import ADMINISTRATOR, BROWSER_ORIGIN, MEMBER, PEER_SUBJECT, Cluster, main, transaction_cases
 
 
 class TransactionPartitionTests(unittest.TestCase):
@@ -141,6 +142,7 @@ class MemoryNodeContractTests(unittest.TestCase):
                     return 200, {}
                 fixture.api = Mock(side_effect=api)
                 fixture.administer = Mock(return_value=(200, {}))
+                fixture.user = Mock(return_value=(200, {}))
                 # The first credential comes from the host, never over HTTP (#484).
                 fixture.issue_credential = Mock(side_effect=lambda node, tenant, subject: {
                     "token": f"{subject}-token", "credential": {"id": f"{subject}-credential-{node}"}})
@@ -154,6 +156,12 @@ class MemoryNodeContractTests(unittest.TestCase):
                     call(0, "home-tenant", "alice"), call(0, "home-tenant", PEER_SUBJECT),
                     call(1, "worker-tenant", "alice"), call(1, "worker-tenant", PEER_SUBJECT)])
                 self.assertEqual(fixture.tokens, ["alice-token", "alice-token"])
+                # Every Agent depends on the compaction Decider, which alice approves (#832).
+                for node in range(2):
+                    self.assertIn(call(node, f"/api/authorization/{fixture.tenants[node]}/catalog/approvals", {
+                        "node": fixture.nodes[node]["node"],
+                        "approvals": [{"entry": COMPACTION_DECIDER, "enabled": True, "expected_revision": 0}]}),
+                        fixture.user.call_args_list)
                 for node in range(2):
                     policy = next(call for call in fixture.api.call_args_list
                                   if call.args[:2] == (node, f"/api/authorization/{fixture.tenants[node]}") and len(call.args) == 3)
@@ -449,10 +457,40 @@ with socket.socket() as listener:
         self.assertEqual(self.cluster.forwards, {})
 
 
+class TransactionMemberTests(unittest.TestCase):
+    def test_members_do_tenant_work_and_node_zeros_member_is_mapped_on_participants(self):
+        cluster = object.__new__(Cluster)
+        cluster.nodes = {node: {"tenant": f"tenant-{node}", "node": f"node-{node}", "address": f"aidash://tx-0{node}/node-{node}"}
+                         for node in range(3)}
+        cluster.members = {}
+        cluster.api = Mock(side_effect=lambda node, path, body=None: (200, {"revision": 2} if body is None else {}))
+        cluster.administer = Mock(return_value=(200, {}))
+        cluster.issue_credential = Mock(side_effect=lambda node, tenant, subject: {
+            "token": f"{subject}-{node}", "credential": {"id": f"{subject}-credential-{node}"}})
+
+        cluster.admit_members(3)
+
+        self.assertEqual(cluster.members, {node: f"{MEMBER}-{node}" for node in range(3)})
+        for node in range(3):
+            policy = next(c for c in cluster.api.call_args_list if c.args[:2] == (node, f"/api/authorization/tenant-{node}") and len(c.args) == 3)
+            self.assertEqual(policy.args[2]["expected_revision"], 2)
+            subjects = policy.args[2]["bundle"]["subjects"]
+            self.assertEqual(subjects[MEMBER], {"kind": "user"})
+            self.assertEqual(subjects[ADMINISTRATOR], {"kind": "user"})
+            self.assertEqual(PEER_SUBJECT in subjects, node != 0)
+        # Only a participant maps the coordinator's member, and only its Tenant Administrator writes it.
+        self.assertEqual(cluster.administer.call_args_list, [
+            call(node, f"/api/authorization/tenant-{node}/peer-mappings", {
+                "node": f"node-{node}", "source_node": "aidash://tx-00/node-0", "source_subject": MEMBER,
+                "credential_id": f"{PEER_SUBJECT}-credential-{node}", "enabled": True, "expected_revision": 0})
+            for node in (1, 2)])
+
+
 class VisibilityOracleTests(unittest.TestCase):
     def cluster(self, responses):
         cluster = object.__new__(Cluster)
-        cluster.api = Mock(side_effect=responses)
+        # A Deployment Administrator cannot read Workspaces; the member does (#832).
+        cluster.member = Mock(side_effect=responses)
         cluster.inspect = Mock(return_value=[{"revision": 1}])
         return cluster
 
