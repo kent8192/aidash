@@ -48084,6 +48084,38 @@
               "widen": {
                 "description": "An existing restriction would gain consumers.",
                 "type": "boolean"
+              },
+              "carry_over": {
+                "description": "Existing carry preferences, or absent for a new approval.",
+                "type": ["boolean", "null"]
+              },
+              "consent_changes": {
+                "description": "Consent-relevant changes since the earlier approved version.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "expected_node_revisions": {
+                "additionalProperties": {
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "previous_version": {
+                "description": "The earlier approved version used for the consent comparison, if visible.",
+                "type": ["string", "null"]
+              },
+              "scope": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ApprovalScope"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -48092,12 +48124,17 @@
               "kind",
               "name",
               "description",
+              "previous_version",
+              "consent_changes",
               "provider_warning",
               "digest",
               "status",
               "approved",
               "can_approve",
               "expected_revision",
+              "expected_node_revisions",
+              "carry_over",
+              "scope",
               "restriction",
               "proposed_restriction",
               "widen",
@@ -48143,6 +48180,11 @@
                 "type": "string"
               }
             ]
+          },
+          "ApprovalScope": {
+            "description": "Where an approver's Catalog Approval applies on this Deployment.",
+            "enum": ["node", "deployment"],
+            "type": "string"
           }
         },
         "schema": {
