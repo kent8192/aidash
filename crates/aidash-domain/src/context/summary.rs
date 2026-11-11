@@ -228,7 +228,7 @@ impl SummaryContent {
 		goal: &str,
 		previous: Option<&ExecutionSummary>,
 		absorbed: &[HistoryEntry],
-		max_tokens: u32,
+		_max_tokens: u32,
 	) -> Result<Self, Rejection> {
 		let draft: SummaryDraft =
 			serde_json::from_str(text.trim()).map_err(|_| Rejection::Malformed)?;
@@ -319,7 +319,32 @@ impl SummaryContent {
 			));
 		}
 		let encoded = serde_json::to_string(&content).map_err(|_| Rejection::Malformed)?;
-		Self::parse(&encoded, previous, absorbed, max_tokens)
+		// This is constructed state, not provider output. Validate the merge
+		// without applying the model's output-token limit to its JSON bytes.
+		Self::parse(&encoded, previous, absorbed, u32::MAX)
+	}
+
+	/// Bound accumulated, expendable history in the same byte unit as context
+	/// fitting. Retained facts and Journal pointers remain even if they alone
+	/// exceed the budget; the caller still checks overall request reduction.
+	pub fn trim_history(&mut self, budget_bytes: usize) -> Result<(), Rejection> {
+		loop {
+			let size = serde_json::to_string(self)
+				.map_err(|_| Rejection::Malformed)?
+				.len();
+			if size <= budget_bytes {
+				return Ok(());
+			}
+			if let Some(index) = self.decisions.iter().position(|decision| {
+				!decision.starts_with("Full tool results remain in Context Journal sequences ")
+			}) {
+				self.decisions.remove(index);
+			} else if !self.verification.is_empty() {
+				self.verification.remove(0);
+			} else {
+				return Ok(());
+			}
+		}
 	}
 	/// Parse provider text and enforce the merge contract against the previous
 	/// summary and the `absorbed` history. Size reduction of the complete
