@@ -2,6 +2,8 @@
 
 Supersedes the first consequence of ADR 0021.
 
+Amended by ADR 0127 (2026-11-11): an Invitation's issuer may let opening it join directly, approved in the issuer's name.
+
 Personal Tenants from direct Google sign-in and self-service Tenants have no
 Tenant Binding, so ADR 0021's rule left them without an administrator, and with
 no way to add members except a Deployment Administrator. A Tenant Administrator now exists in
