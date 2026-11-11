@@ -32,6 +32,9 @@ pub(crate) struct ClaimInput {
 pub(crate) struct DeclineCallInput {
 	/// At most 256 characters.
 	pub(crate) call: String,
+	/// Also decline later calls to this tool for the same kind of refusal in this Run.
+	#[serde(default)]
+	pub(crate) rest_of_run: bool,
 }
 #[derive(Deserialize, Serialize, JsonSchema)]
 pub(crate) struct ControlInput {

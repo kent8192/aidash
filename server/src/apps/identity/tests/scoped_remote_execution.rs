@@ -3901,7 +3901,7 @@ async fn the_home_requester_declines_a_call_a_run_on_the_receiver_is_paused_on(
 		&p.token,
 		"POST",
 		&p.decline_path(),
-		json!({"call": key}),
+		json!({"call": key, "rest_of_run": true}),
 	)
 	.await;
 	assert_eq!(status, 200, "{declined}");
@@ -3952,12 +3952,23 @@ async fn the_home_requester_declines_a_call_a_run_on_the_receiver_is_paused_on(
 	assert_eq!(there.len(), 1, "{there:?}");
 	assert_eq!(there[0]["by"], "home");
 	assert_eq!(there[0]["kind"], "other_node");
+	assert_eq!(there[0]["rest_of_run"], true);
+	let receiver = p.run().await;
+	assert!(
+		receiver
+			.recovery
+			.standing_declines
+			.iter()
+			.any(|decision| decision.tool == "task_delegate"
+				&& decision.kind == aidash_domain::tool::RefusalKind::OtherNode)
+	);
 	assert!(!there[0].to_string().contains("alice"), "{}", there[0]);
 	let here = p.home_events("remote.call_declined").await;
 	assert_eq!(here.len(), 1, "{here:?}");
 	assert_eq!(here[0]["by"], "alice");
 	assert_eq!(here[0]["tool"], "task_delegate");
 	assert_eq!(here[0]["kind"], "other_node");
+	assert_eq!(here[0]["rest_of_run"], true);
 	assert_eq!(here[0]["call"], key);
 	assert!(
 		!here[0].to_string().contains("task.delegate"),

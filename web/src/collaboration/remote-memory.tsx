@@ -120,11 +120,14 @@ export function RemoteRunManagement({
           call={declinable}
           submit={submit}
           withSentence={false}
-          decline={(call) =>
+          decline={(call, rest_of_run) =>
             apiFetch(`/api/runs/${id}/declined-calls`, {
               method: "POST",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({ call }),
+              body: JSON.stringify({
+                call,
+                ...(rest_of_run ? { rest_of_run: true } : {}),
+              }),
             })
           }
         />

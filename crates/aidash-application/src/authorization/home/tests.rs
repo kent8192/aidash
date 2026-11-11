@@ -990,7 +990,7 @@ async fn the_requester_declines_under_what_resuming_needs_and_the_home_names_the
 	let repository = Repository::default();
 	repository.state.lock().unwrap().semantic = true;
 	repository.state.lock().unwrap().replies = vec![declined_reply()];
-	decline_call(&repository, task().id, Uuid::from_u128(4), "run:7:0")
+	decline_call(&repository, task().id, Uuid::from_u128(4), "run:7:0", false)
 		.await
 		.unwrap();
 	let calls = repository.calls();
@@ -1028,7 +1028,7 @@ async fn someone_else_declines_under_run_decline_call_alone() {
 		state.grant_root = Some("other");
 		state.replies = vec![declined_reply()];
 	}
-	decline_call(&repository, task().id, Uuid::from_u128(4), "run:7:0")
+	decline_call(&repository, task().id, Uuid::from_u128(4), "run:7:0", false)
 		.await
 		.unwrap();
 	let calls = repository.calls();
@@ -1053,7 +1053,7 @@ async fn nobody_declines_without_the_right_for_their_relation(
 		state.grant_root = root;
 		state.denied = Some(denied);
 	}
-	let result = decline_call(&repository, task().id, Uuid::from_u128(4), "run:7:0").await;
+	let result = decline_call(&repository, task().id, Uuid::from_u128(4), "run:7:0", false).await;
 	assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
 	assert!(!repository.calls().iter().any(|c| c.starts_with("rpc:")));
 }

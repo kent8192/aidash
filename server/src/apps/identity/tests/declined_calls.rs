@@ -19,6 +19,8 @@ struct World {
 	f: Federation,
 	app: common::TestApplication,
 	run: Uuid,
+	task: aidash_domain::Task,
+	child_agent: aidash_server::registry::Entry,
 	alice: String,
 	_runtime: common::RuntimeFixture,
 }
@@ -94,6 +96,8 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 		f,
 		app,
 		run: run.id,
+		task,
+		child_agent: registered[2].clone(),
 		alice,
 		_runtime: fixture.runtime,
 	}
@@ -268,6 +272,73 @@ impl World {
 
 fn sentence() -> String {
 	RefusalKind::Policy.declined_sentence()
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_person_can_decline_the_same_refusal_for_the_rest_of_the_run(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let w = world(fixture).await;
+	w.pause(true).await;
+	let (status, body) = common::request(
+		&w.app,
+		&w.alice,
+		"POST",
+		&format!("/api/runs/{}/declined-calls", w.run),
+		json!({"call": w.key(), "rest_of_run": true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let events = w.events().await;
+	let event = events
+		.iter()
+		.find(|(kind, _)| kind == "run.call_declined")
+		.unwrap();
+	assert_eq!(event.1["rest_of_run"], true);
+	assert_eq!(w.row().await.unwrap().0, "COMPLETED");
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_new_child_run_does_not_inherit_the_parent_decision(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let w = world(fixture).await;
+	w.pause(true).await;
+	let (status, body) = common::request(
+		&w.app,
+		&w.alice,
+		"POST",
+		&format!("/api/runs/{}/declined-calls", w.run),
+		json!({"call":w.key(),"rest_of_run":true}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let scope = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
+	let child =
+		w.f.store
+			.create_task(
+				&scope,
+				w.task.workspace_id,
+				&aidash_domain::NewTask {
+					title: "Child".into(),
+					description: "Child task".into(),
+					requirements: json!({}),
+					dependencies: vec![],
+					parent_id: Some(w.task.id),
+				},
+				"alice",
+				None,
+			)
+			.await
+			.unwrap();
+	let child_run = common::admitted_run(&w.f, "acme", &child, &w.child_agent).await;
+	assert!(child_run.recovery.standing_declines.is_empty());
 }
 
 #[rstest::rstest]

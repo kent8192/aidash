@@ -34,6 +34,9 @@ pub(crate) struct PeerDeclineCallInput {
 	pub(crate) grant_id: Uuid,
 	#[validate(length(min = 1, max = 256))]
 	pub(crate) call: String,
+	/// Also decline later calls to this tool for the same kind of refusal in this Run.
+	#[serde(default)]
+	pub(crate) rest_of_run: bool,
 }
 
 #[derive(Deserialize, schemars::JsonSchema, reinhardt::Validate)]

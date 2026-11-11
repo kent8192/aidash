@@ -36,7 +36,12 @@ pub trait RunControlScope: Send {
 	async fn resume_run(&mut self, id: Uuid) -> Result<RunInspection>;
 	/// Answer the call `id` is paused on as declined and let the Run go on, in this transaction.
 	/// `Conflict` when the Run is no longer paused on that call.
-	async fn decline_call(&mut self, id: Uuid, call: &str) -> Result<RunInspection>;
+	async fn decline_call(
+		&mut self,
+		id: Uuid,
+		call: &str,
+		rest_of_run: bool,
+	) -> Result<RunInspection>;
 	async fn finish(self: Box<Self>, result: Result<RunInspection>) -> Result<RunInspection>;
 }
 #[async_trait]

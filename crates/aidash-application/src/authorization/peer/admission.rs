@@ -509,6 +509,7 @@ pub async fn decline_call<R: PeerAdmissionRepository>(
 	id: Uuid,
 	grant: Uuid,
 	call: &str,
+	rest_of_run: bool,
 ) -> Result<aidash_domain::federation::execution::admission::Declined> {
 	if call.is_empty() || call.len() > 256 {
 		return Err(Error::Invalid("call key is empty or too long".into()));
@@ -533,7 +534,7 @@ pub async fn decline_call<R: PeerAdmissionRepository>(
 		.await?
 		.ok_or(Error::Forbidden)?;
 	finish(scope, Ok(())).await?;
-	let (run, declined) = repository.decline_call(id, call).await?;
+	let (run, declined) = repository.decline_call(id, call, rest_of_run).await?;
 	repository.notify();
 	Ok(aidash_domain::federation::execution::admission::Declined {
 		activation: Activation {

@@ -71,6 +71,7 @@
   "cancel": "キャンセル",
   "close": "閉じる",
   "pause": "一時停止",
+  "declineCallRestOfRun": "この実行中、同じ理由で拒否されるこのツールの後続の呼び出しも断る",
   "declineCall": "この呼び出しを断る",
   "declineCallHeading": "停止中の呼び出しを断る",
   "declineCallWhat": "実行は {tool} の呼び出しで停止しています。{refuser}。",

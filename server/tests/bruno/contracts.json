@@ -33086,6 +33086,13 @@
                 "type": ["integer", "null"],
                 "format": "int64",
                 "description": "Last workspace event delivered to this Run."
+              },
+              "standing_declines": {
+                "description": "Refusals a person declined for the rest of this Run.",
+                "items": {
+                  "$ref": "#/components/schemas/StandingDecline"
+                },
+                "type": "array"
               }
             },
             "additionalProperties": false
@@ -34696,6 +34703,24 @@
               }
             },
             "required": ["id", "title", "abandonable", "handed_over"],
+            "type": "object"
+          },
+          "StandingDecline": {
+            "additionalProperties": false,
+            "description": "A decision scoped to this Run, matched only after the same refusal occurs.",
+            "properties": {
+              "by": {
+                "description": "The subject on this Node, or `home` for a decision from the Run's Home.",
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/RefusalKind"
+              },
+              "tool": {
+                "type": "string"
+              }
+            },
+            "required": ["tool", "kind", "by"],
             "type": "object"
           }
         },
@@ -37356,6 +37381,13 @@
                 "type": ["integer", "null"],
                 "format": "int64",
                 "description": "Last workspace event delivered to this Run."
+              },
+              "standing_declines": {
+                "description": "Refusals a person declined for the rest of this Run.",
+                "items": {
+                  "$ref": "#/components/schemas/StandingDecline"
+                },
+                "type": "array"
               }
             },
             "additionalProperties": false
@@ -38938,6 +38970,24 @@
               }
             },
             "required": ["id", "title", "abandonable", "handed_over"],
+            "type": "object"
+          },
+          "StandingDecline": {
+            "additionalProperties": false,
+            "description": "A decision scoped to this Run, matched only after the same refusal occurs.",
+            "properties": {
+              "by": {
+                "description": "The subject on this Node, or `home` for a decision from the Run's Home.",
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/RefusalKind"
+              },
+              "tool": {
+                "type": "string"
+              }
+            },
+            "required": ["tool", "kind", "by"],
             "type": "object"
           }
         },
@@ -53504,6 +53554,13 @@
                 "type": ["integer", "null"],
                 "format": "int64",
                 "description": "Last workspace event delivered to this Run."
+              },
+              "standing_declines": {
+                "description": "Refusals a person declined for the rest of this Run.",
+                "items": {
+                  "$ref": "#/components/schemas/StandingDecline"
+                },
+                "type": "array"
               }
             },
             "additionalProperties": false
@@ -54936,6 +54993,24 @@
               }
             },
             "required": ["id", "title", "abandonable", "handed_over"],
+            "type": "object"
+          },
+          "StandingDecline": {
+            "additionalProperties": false,
+            "description": "A decision scoped to this Run, matched only after the same refusal occurs.",
+            "properties": {
+              "by": {
+                "description": "The subject on this Node, or `home` for a decision from the Run's Home.",
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/RefusalKind"
+              },
+              "tool": {
+                "type": "string"
+              }
+            },
+            "required": ["tool", "kind", "by"],
             "type": "object"
           }
         },

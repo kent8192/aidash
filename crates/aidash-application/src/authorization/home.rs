@@ -116,6 +116,7 @@ pub async fn decline_call<R: HomeRepository>(
 	task: Uuid,
 	id: Uuid,
 	call: &str,
+	rest_of_run: bool,
 ) -> Result<Activation> {
 	if call.is_empty() || call.len() > 256 {
 		return Err(Error::Invalid("call key is empty or too long".into()));
@@ -169,7 +170,7 @@ pub async fn decline_call<R: HomeRepository>(
 			grant.workspace_id,
 			&grant.node_id,
 			&format!("/scoped/execution/admissions/{admission}/declined-calls"),
-			&json!({"grant_id":id,"call":call}),
+			&json!({"grant_id":id,"call":call,"rest_of_run":rest_of_run}),
 		)
 		.await?;
 	let activation = declined.activation;
@@ -192,6 +193,7 @@ pub async fn decline_call<R: HomeRepository>(
 				"tool": declined.tool,
 				"kind": declined.kind,
 				"by": identity.subject,
+				"rest_of_run": rest_of_run,
 			}),
 		)
 		.await;

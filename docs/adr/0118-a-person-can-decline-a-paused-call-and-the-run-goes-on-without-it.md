@@ -1,6 +1,6 @@
 # A person can decline a paused call, and the Run goes on without it
 
-Decided on 2026-11-07 for #763. After #754, an Authority Pause leaves a person two choices: change the authority and resume, or cancel the Run. A person who does not want to allow the call but wants the Run to go on had no third choice, and resuming repeats the call. For example, a Tenant administrator sees `task_delegate: task.delegate was denied` and decides this Agent should not delegate; the model could finish another way, but it never hears the answer.
+Decided on 2026-11-07 for #763. ADR 0127 later adds an optional decline for the same tool and kind of refusal for the rest of this Run (#898). After #754, an Authority Pause leaves a person two choices: change the authority and resume, or cancel the Run. A person who does not want to allow the call but wants the Run to go on had no third choice, and resuming repeats the call. For example, a Tenant administrator sees `task_delegate: task.delegate was denied` and decides this Agent should not delegate; the model could finish another way, but it never hears the answer.
 
 A person now **declines** the call the Run is paused on. The Run records the call as answered, resumes, and the next model request carries a fixed call error for that call. Nothing about the Run's authority changes, and a decline covers one call: if the model calls again and meets the same refusal, the Run pauses again.
 

@@ -1125,13 +1125,16 @@ impl PeerAdmissionRepository for Repository<'_> {
 		&self,
 		id: Uuid,
 		call: &str,
+		rest_of_run: bool,
 	) -> Result<(RunInspection, aidash_domain::run_state::PausedCall)> {
 		let store = &self.runtime.store;
 		let scope = store.run_tenancy(id).await?;
 		let mut tx = store.pool.begin(&scope).await?;
 		crate::transactions::gate::read_in(&mut tx).await?;
 		// The receiver's event says the Home declined it, and never names the Home's person.
-		let declined = store.decline_call_in(&mut tx, id, call, "home").await?;
+		let declined = store
+			.decline_call_in(&mut tx, id, call, "home", rest_of_run)
+			.await?;
 		tx.commit().await?;
 		store.run_control_committed(id, declined.run.control);
 		Ok((declined.run, declined.call))

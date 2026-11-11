@@ -43,6 +43,9 @@ pub struct RemoteExecutionDeclineInput {
 	/// The key of the call the remote Run is paused on; at most 256 characters.
 	#[validate(length(min = 1, max = 256))]
 	pub call: String,
+	/// Also decline later calls to this tool for the same kind of refusal in this Run.
+	#[serde(default)]
+	pub rest_of_run: bool,
 }
 
 impl RemoteExecutionControlInput {
