@@ -2773,7 +2773,7 @@ impl Store {
 			max_input_tokens,
 		)
 		.await?;
-		InputRecord::local_message_of(tx, creator, key).await
+		InputRecord::local_message_of(tx, creator, &result_key).await
 	}
 	/// The pages people asked `run_id` to read, oldest first (ADR 0052).
 	pub async fn url_intents(

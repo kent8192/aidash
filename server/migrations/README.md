@@ -935,3 +935,5 @@ rewritten until the migration is reapplied.
 `execution/0125_remove_generated_compaction` removes generated-chain Decider usage and its obsolete counters; `0126_remove_generated_compaction_state` updates the model state. Embedding and Summary allowances remain.
 
 `knowledge/0054_memory_constraint_state` keeps database-only memory checks and Tenant foreign keys out of model migration state while retaining the constraints in PostgreSQL.
+
+`registry/0068_reject_new_compaction_deciders` adds a `NOT VALID` check that preserves existing compaction Decider rows while rejecting new or updated ones. PostgreSQL `NOT VALID` constraint DDL is expressed as raw SQL because Reinhardt does not provide it.
