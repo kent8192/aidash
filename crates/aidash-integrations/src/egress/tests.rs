@@ -11,12 +11,64 @@ use tokio::sync::Notify;
 use uuid::Uuid;
 
 #[test]
-fn inactive_operation_is_forbidden_with_its_own_code() {
-	let refusal = Refusal::of(&aidash_application::Error::Conflict(
-		aidash_domain::egress::OPERATION_INACTIVE.into(),
-	));
-	assert_eq!(refusal.status, StatusCode::FORBIDDEN);
-	assert_eq!(refusal.code, "operation_inactive");
+fn debit_refusals_use_their_public_codes_and_store_failures_are_temporary() {
+	use aidash_application::Error;
+	let authority = aidash_domain::tool::AuthorityRefusal {
+		tool: "fixture".into(),
+		check: aidash_domain::tool::RefusalCheck::Policy,
+		action: None,
+		subject: None,
+		call: None,
+	};
+	for (error, status, code) in [
+		(
+			Error::Conflict(aidash_domain::egress::LIMIT_EXCEEDED.into()),
+			StatusCode::TOO_MANY_REQUESTS,
+			aidash_domain::egress::LIMIT_EXCEEDED,
+		),
+		(
+			Error::Conflict(aidash_domain::egress::OPERATION_EXPIRED.into()),
+			StatusCode::FORBIDDEN,
+			aidash_domain::egress::OPERATION_EXPIRED,
+		),
+		(
+			Error::Conflict(aidash_domain::egress::OPERATION_INACTIVE.into()),
+			StatusCode::FORBIDDEN,
+			aidash_domain::egress::OPERATION_INACTIVE,
+		),
+		(
+			Error::Refused("egress_budget_exhausted".into()),
+			StatusCode::TOO_MANY_REQUESTS,
+			"egress_budget_exhausted",
+		),
+		(
+			Error::Refused("egress_suspended".into()),
+			StatusCode::FORBIDDEN,
+			"egress_suspended",
+		),
+		(Error::Forbidden, StatusCode::FORBIDDEN, "egress_forbidden"),
+		(
+			Error::Unauthorized,
+			StatusCode::FORBIDDEN,
+			"egress_forbidden",
+		),
+		(
+			Error::AuthorityRefused(Box::new(authority)),
+			StatusCode::FORBIDDEN,
+			"egress_forbidden",
+		),
+	] {
+		let refusal = Refusal::of(&error);
+		assert_eq!((refusal.status, refusal.code), (status, code));
+		assert!(!refusal.temporary());
+	}
+	for error in [
+		Error::External("unavailable".into()),
+		Error::Conflict("other".into()),
+		Error::Refused("other".into()),
+	] {
+		assert!(Refusal::of(&error).temporary(), "{error}");
+	}
 }
 
 #[derive(Default)]
@@ -1888,7 +1940,7 @@ async fn an_upgraded_connection_keeps_reading_after_closing_its_sending_side() {
 	});
 	let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
 	client
-		.write_all(b"CONNECT example.com:443 HTTP/1.1\r\nhost: example.com:443\r\n\r\n")
+		.write_all(b"CONNECT example.com:443 HTTP/1.1\r\nhost: example.com:443\r\ncontent-length: 5\r\n\r\n")
 		.await
 		.unwrap();
 	let mut answer = Vec::new();
@@ -1963,13 +2015,75 @@ async fn lingering_connections_give_their_slots_back_at_the_time_limit() {
 	shutdown(tasks, stop).await;
 }
 
+/// Once the gateway has read the full upload, a client that holds its socket
+/// open must not make the discard timer count an upload cut off by that timer.
+#[tokio::test]
+async fn a_received_upload_held_open_is_not_counted_at_the_time_limit() {
+	use tokio::io::{AsyncReadExt, AsyncWriteExt};
+	let observed = Observed::start();
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let address = listener.local_addr().unwrap();
+	let gateway = tokio::spawn(async move {
+		let (socket, _) = listener.accept().await.unwrap();
+		let unread = UnreadBody::default();
+		let noting = unread.clone();
+		let service = service_fn(move |request: Request<hyper::body::Incoming>| {
+			noting.note(&request);
+			async move {
+				drop(request);
+				Ok::<_, Infallible>(
+					Response::builder()
+						.status(403)
+						.header(hyper::header::CONNECTION, "close")
+						.body(Full::new(Bytes::new()))
+						.unwrap(),
+				)
+			}
+		});
+		hyper::server::conn::http1::Builder::new()
+			.serve_connection(TokioIo::new(LingeringClose::new(socket, unread)), service)
+			.await
+			.unwrap();
+	});
+	let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+	client
+		.write_all(b"POST /upload HTTP/1.1\r\nhost: gateway\r\ncontent-length: 1024\r\n\r\n")
+		.await
+		.unwrap();
+	let mut status = [0; 12];
+	client.read_exact(&mut status).await.unwrap();
+	assert_eq!(&status, b"HTTP/1.1 403");
+	client.write_all(&[1; 1024]).await.unwrap();
+	let mut answer = Vec::new();
+	tokio::time::timeout(Duration::from_secs(10), client.read_to_end(&mut answer))
+		.await
+		.unwrap()
+		.unwrap();
+	tokio::time::timeout(LINGER_TIME + Duration::from_secs(10), gateway)
+		.await
+		.unwrap()
+		.unwrap();
+	assert_eq!(
+		observed.count(r#"aidash_egress_linger_limit_total{limit="time"}"#),
+		0
+	);
+	drop(client);
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_client_still_sending_at_the_time_limit_is_counted() {
 	use tokio::io::AsyncWriteExt;
 	let observed = Observed::start();
 	let (socket, mut client) = tokio::io::duplex(1024);
 	let closing = tokio::spawn(async move {
-		let unread = UnreadBody(Arc::new(true.into()));
+		let unread = UnreadBody::default();
+		unread.0.store(true, Ordering::Relaxed);
+		unread
+			.1
+			.lock()
+			.unwrap()
+			.read(b"POST / HTTP/1.1\r\ncontent-length: 100\r\n\r\n");
+		unread.1.lock().unwrap().note(Some(100), true);
 		LingeringClose::new(socket, unread).shutdown().await
 	});
 	client.write_all(b"unread").await.unwrap();
