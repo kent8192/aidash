@@ -8,7 +8,7 @@ We split the check in two. The Continuation Check runs on each Egress request an
 
 The bounded `/api/state` read preloads the raw rows needed for its Run and Workspace windows. Each scanned batch of up to 100 events preloads the Runs it names before checking those events. Registry data is also loaded in batches, while both Catalog and Marketplace checks still run. The existing visibility and provenance rules judge every disclosure; the preload does not cache their verdicts, and other Run readers do not use it.
 
-The rows belong to one request and authority. An authority change or savepoint rollback drops the preload; a failed visibility walk drops it as well. A withdrawal committed during a state read may therefore take effect on the next read instead of partway through the current one. Nothing from the preload carries over to the next request.
+The rows belong to one request and authority. An authority change or savepoint rollback drops the preload. A failed visibility walk drops its verdicts but retains preloaded rows under the same authority. A withdrawal committed during a state read may therefore take effect on the next read instead of partway through the current one. Nothing from the preload carries over to the next request.
 
 ## Considered Options
 

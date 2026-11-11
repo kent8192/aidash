@@ -101,7 +101,7 @@ impl ReadProvenanceScope for Reads<'_> {
 	}
 	async fn prepare_sources(&mut self, sources: &[RecordedRead]) -> Result<()> {
 		self.access
-			.prepare_read_sources(sources)
+			.prepare_walk_sources(sources)
 			.await
 			.map_err(Into::into)
 	}
@@ -599,7 +599,7 @@ impl ReadProvenanceScope for NativeReads<'_> {
 	}
 	async fn prepare_sources(&mut self, sources: &[RecordedRead]) -> Result<()> {
 		self.access
-			.prepare_read_sources(sources)
+			.prepare_walk_sources(sources)
 			.await
 			.map_err(Into::into)
 	}

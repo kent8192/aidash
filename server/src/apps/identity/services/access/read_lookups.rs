@@ -164,7 +164,6 @@ impl ReadLookups {
 	pub(super) fn end_walk(&mut self, passed: bool) {
 		self.forget_rows();
 		if !passed {
-			self.state = None;
 			self.passes = Passes::default();
 		}
 	}
@@ -1401,6 +1400,27 @@ impl Access {
 
 	/// Load what these recorded reads will ask for, in one statement per table.
 	/// Each row still goes through the same policy checks as a single read.
+	pub(crate) async fn prepare_walk_sources(&mut self, sources: &[RecordedRead]) -> Result<()> {
+		// The state preload already includes each source and its outputs. A walk
+		// must still authorize them, but it need not load the same rows again.
+		if self.current_state_rows().is_some_and(|rows| {
+			sources.iter().all(|(workspace, kind, id)| {
+				let key = (*id, *workspace);
+				match kind.as_str() {
+					"task" => rows.source_tasks.get(&key).is_some(),
+					"artifact" => rows.source_artifacts.get(&key).is_some(),
+					"message" => rows.source_messages.get(&key).is_some(),
+					"conversation" => rows.source_conversations.get(&key).is_some(),
+					"attachment" => rows.source_attachments.get(&key).is_some(),
+					_ => true,
+				}
+			})
+		}) {
+			return Ok(());
+		}
+		self.prepare_read_sources(sources).await
+	}
+
 	pub(crate) async fn prepare_read_sources(&mut self, sources: &[RecordedRead]) -> Result<()> {
 		let of_kind = |kind: &str| -> Vec<Recorded> {
 			sources
