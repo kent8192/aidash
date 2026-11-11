@@ -223,7 +223,7 @@ fn probe(lab: &Arc<Lab>, name: &'static str) -> Arc<dyn ExecutionTool> {
 				.expect("pre-concurrency pin is accepted");
 			(pinned, Some(working_area()))
 		}
-		"shell" => (builtin_contract(name).unwrap(), None),
+		"shell" | "workspace_read" => (builtin_contract(name).unwrap(), None),
 		"unsafe_test" => (builtin_contract("live_preview_start").unwrap(), None),
 		_ => unreachable!("fixture tool {name}"),
 	};
@@ -836,7 +836,7 @@ impl ExecutionHome for Bench {
 	) -> Result<Task> {
 		unexpected("ExecutionHome.complete")
 	}
-	async fn abandon_unassigned(&self, _parent: Uuid, _ids: &[Uuid]) -> Result<()> {
+	async fn abandon_unassigned(&self, _parent: Uuid, _ids: &[Uuid]) -> Result<Vec<Uuid>> {
 		unexpected("ExecutionHome.abandon_unassigned")
 	}
 	async fn report(&self, key: &str, kind: &str, _data: Value) -> Result<()> {
@@ -2093,11 +2093,38 @@ async fn a_gate_refusal_names_the_call_it_stopped() {
 		Some(aidash_domain::tool::RefusedCall {
 			key: key(&run, 0),
 			index: 0,
-			replay_safe: true
+			replay_safe: true,
+			tool_call: Some(aidash_domain::tool::RefusedToolCall {
+				name: "file_read".into(),
+				arguments: json!({"path":"p0"})
+			}),
 		})
 	);
 	// The gate runs before the call is journaled.
 	assert!(bench.starts().is_empty());
+}
+
+#[tokio::test]
+async fn catch_up_refusal_keeps_the_filtered_calls_arguments() {
+	let lab = Lab::echo();
+	let (bench, mut run) = bench(&lab, &["workspace_read"], 1, None);
+	let progress = run.state.tool_mut().unwrap();
+	progress.run_message_catchup = true;
+	progress.response.tool_calls.insert(
+		0,
+		ToolCall {
+			id: "unadvertised".into(),
+			name: "not_advertised".into(),
+			arguments: json!({"wrong": true}),
+		},
+	);
+	bench.refuse("call-0");
+	let refusal = pause_of(advance(&bench, &mut run).await);
+	assert_eq!(refusal.tool, "workspace_read");
+	let stopped = serde_json::to_value(refusal.call.unwrap()).unwrap();
+	assert_eq!(stopped["index"], 0);
+	assert_eq!(stopped["tool_call"]["name"], "workspace_read");
+	assert_eq!(stopped["tool_call"]["arguments"], json!({"path": "p0"}));
 }
 
 #[tokio::test]

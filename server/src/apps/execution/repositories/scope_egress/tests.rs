@@ -3,6 +3,27 @@ use crate::apps::execution::test_database::{DatabaseFixture, database};
 use crate::egress_tests::{settings, tenant_roots};
 use aidash_domain::egress::{AllowedHosts, AnomalyRule, DailyBudget};
 
+async fn received_bytes(store: &Store, id: &ScopeId, day: NaiveDate, service: &str) -> i64 {
+	let mut tx = store
+		.pool
+		.begin(&TenancyScope::tenant(&id.tenant).unwrap())
+		.await
+		.unwrap();
+	let row = ScopeDaily::objects()
+		.filter(ScopeDaily::field_scope_id().eq(id.scratch_space))
+		.filter(ScopeDaily::field_tenant().eq(id.tenant.clone()))
+		.filter(ScopeDaily::field_node().eq(id.node.clone()))
+		.filter(ScopeDaily::field_day().eq(day.to_string()))
+		.filter(ScopeDaily::field_service().eq(service.to_owned()))
+		.all_with_executor(&mut *tx)
+		.await
+		.unwrap()
+		.pop()
+		.unwrap();
+	tx.commit().await.unwrap();
+	row.received_bytes
+}
+
 struct Authority(ScopeSettings);
 struct AuditMeter;
 #[async_trait]
@@ -255,26 +276,12 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 			.to_string()
 			.contains("egress_budget_exhausted")
 	);
-	let recorded: i64 = sqlx::query_scalar(
-		"SELECT received_bytes FROM egress_scope_daily WHERE scope_id = $1 AND service = 'maps'",
-	)
-	.bind(scope.id.scratch_space)
-	.fetch_one(federation.store.pool.fixture_driver())
-	.await
-	.unwrap();
+	let recorded = received_bytes(&federation.store, &scope.id, day, "maps").await;
 	assert_eq!(
 		recorded, 6,
 		"already forwarded bytes remain charged after an over-limit debit"
 	);
-	let total = async || -> i64 {
-		sqlx::query_scalar(
-			"SELECT received_bytes FROM egress_scope_daily WHERE scope_id = $1 AND service = ''",
-		)
-		.bind(scope.id.scratch_space)
-		.fetch_one(federation.store.pool.fixture_driver())
-		.await
-		.unwrap()
-	};
+	let total = async || received_bytes(&federation.store, &scope.id, day, "").await;
 	let audit = Arc::new(FlakyAuditMeter::default());
 	let failed_audit =
 		ScopedMeter::new(durable.clone(), scope.clone(), "maps", None, audit.clone());
@@ -340,6 +347,15 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 			.to_string()
 			.contains("egress_suspended")
 	);
+	assert!(
+		durable
+			.debit(&scope, Direction::Received, 1, day)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("egress_suspended")
+	);
+	assert_eq!(total().await, 9, "new tunnel bytes remain refused");
 	assert!(durable.check_active(&scope, "credential").await.is_err());
 	let events: i64 = sqlx::query_scalar(
 		"SELECT count(*) FROM egress_scope_events WHERE scope_id = $1 AND kind = 'suspended'",
@@ -365,6 +381,49 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 				.contains("egress_budget_exhausted")
 		);
 	}
+	// A separate scope retains room in its budget when its anomaly rule suspends it.
+	let mut suspended = scope.clone();
+	suspended.id.scratch_space = Uuid::new_v4();
+	let suspended_durable = DurableScopes::new(
+		federation.store.clone(),
+		Arc::new(Authority(suspended.clone())),
+	);
+	suspended_durable.resolve("credential").await.unwrap();
+	suspended_durable
+		.admit_connection(&suspended)
+		.await
+		.unwrap();
+	assert!(
+		suspended_durable
+			.admit_connection(&suspended)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("egress_suspended")
+	);
+	let audit = Arc::new(FlakyAuditMeter::default());
+	audit.calls.store(1, std::sync::atomic::Ordering::Relaxed);
+	let meter = ScopedMeter::new(
+		suspended_durable,
+		suspended.clone(),
+		"maps",
+		None,
+		audit.clone(),
+	);
+	assert!(
+		meter
+			.charge(Direction::Received, 1)
+			.await
+			.unwrap_err()
+			.to_string()
+			.contains("egress_suspended")
+	);
+	let recorded = received_bytes(&federation.store, &suspended.id, day, "").await;
+	assert_eq!(
+		(recorded, audit.committed()),
+		(1, 1),
+		"both meters retain forwarded bytes after suspension"
+	);
 }
 
 #[test]
@@ -586,6 +645,115 @@ async fn deleting_the_tenant_or_the_node_closes_the_scope_credential_until_it_is
 	.await
 	.unwrap();
 	durable.resolve(&credential).await.unwrap();
+}
+
+/// Bytes forwarded while the Tenant is deleted still count against the day's
+/// budget once it is restored (#843).
+#[rstest::rstest]
+#[tokio::test]
+#[timeout(std::time::Duration::from_secs(180))]
+async fn forwarded_bytes_count_for_the_scope_while_its_authority_is_refused(
+	#[future] database: DatabaseFixture,
+) {
+	let database = database.await;
+	let context = reinhardt::InjectionContext::builder(reinhardt::SingletonScope::new()).build();
+	let settings = settings::settings_for(&database.url);
+	let federation = crate::bootstrap::initialize(&context, &settings, database.connection.clone())
+		.await
+		.unwrap();
+	tenant_roots::tenant_root(&federation, "acme").await;
+	let chosen = aidash_domain::scratch::ScratchSettings {
+		daily_sent_bytes: 10,
+		daily_received_bytes: 10,
+		..Default::default()
+	};
+	let space = insert_space(&federation, "acme", chosen).await;
+	let authority = Arc::new(ScratchAuthority::with_key(
+		federation.store.clone(),
+		federation.config.scratch_policy.clone(),
+		KEY,
+	));
+	let credential = authority.credential("acme", space).unwrap();
+	let durable = DurableScopes::new(federation.store.clone(), authority);
+	let open = durable.resolve(&credential).await.unwrap();
+	let day = Utc::now().date_naive();
+	let pool = federation.store.pool.fixture_driver();
+	let audit = Arc::new(FlakyAuditMeter::default());
+	let meter = ScopedMeter::new(durable.clone(), open.clone(), "maps", None, audit.clone());
+
+	sqlx::query(
+		"INSERT INTO tenant_deletions \
+		 (id, tenant, deleted_at, deleted_by_kind, purge_after, purge_failures) \
+		 VALUES ($1, 'acme', now(), 'deployment_administrator', now() + interval '30 days', 0)",
+	)
+	.bind(Uuid::new_v4())
+	.execute(pool)
+	.await
+	.unwrap();
+	// The audit side is unreachable at first, so the gateway charges again;
+	// the scope side has already taken its bytes and does not take them twice.
+	assert!(matches!(
+		meter.charge(Direction::Received, 10).await,
+		Err(aidash_application::Error::External(_))
+	));
+	assert!(matches!(
+		meter.charge(Direction::Received, 10).await,
+		Err(aidash_application::Error::Forbidden)
+	));
+	assert_eq!(
+		(
+			received_bytes(&federation.store, &open.id, day, "").await,
+			audit.committed()
+		),
+		(10, 10),
+		"both meters keep bytes forwarded after the refusal"
+	);
+
+	sqlx::query(
+		"UPDATE tenant_deletions SET restored_at = now(), \
+		 restored_by_kind = 'deployment_administrator' WHERE tenant = 'acme'",
+	)
+	.execute(pool)
+	.await
+	.unwrap();
+	assert!(matches!(
+		durable.debit(&open, Direction::Received, 1, day).await,
+		Err(aidash_application::Error::Refused(code)) if code == "egress_budget_exhausted"
+	));
+
+	// Delete the authority again and clear prior daily rows before testing the
+	// refused path with no state.
+	sqlx::query(
+		"UPDATE tenant_deletions SET restored_at = NULL, restored_by_kind = NULL WHERE tenant = 'acme'",
+	)
+	.execute(pool)
+	.await
+	.unwrap();
+	sqlx::query("DELETE FROM egress_scope_daily WHERE scope_id = $1 AND day = $2")
+		.bind(space)
+		.bind(day.to_string())
+		.execute(pool)
+		.await
+		.unwrap();
+	// A scope whose state is gone keeps nothing and still refuses.
+	sqlx::query("DELETE FROM egress_scope_state WHERE scope_id = $1")
+		.bind(space)
+		.execute(pool)
+		.await
+		.unwrap();
+	assert!(matches!(
+		meter.charge(Direction::Sent, 1).await,
+		Err(aidash_application::Error::Forbidden)
+	));
+	let rows: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM egress_scope_daily WHERE scope_id = $1 AND day = $2",
+	)
+	.bind(space)
+	.bind(day.to_string())
+	.fetch_one(pool)
+	.await
+	.unwrap();
+	assert_eq!(rows, 0);
 }
 
 /// Reads until the gateway closes the connection.

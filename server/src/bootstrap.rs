@@ -31,6 +31,9 @@ pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 	registry.register_capability(Box::new(
 		crate::apps::execution::services::schema::ApiContract,
 	));
+	registry.register_capability(Box::new(
+		crate::apps::execution::services::execution_pod_command::Command,
+	));
 	for command in crate::apps::execution::services::node_commands::commands() {
 		registry.register_capability(command);
 	}
@@ -2559,12 +2562,14 @@ pub(crate) fn workbench_sandbox_models(runtime: &Federation) -> WorkbenchSandbox
 /// Notification and database recovery borrow the caller's same native transaction.
 pub(crate) fn activation_scheduling_scope(
 	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	holds_recoveries: bool,
 ) -> crate::apps::execution::activation::repositories::scheduling::Scope<
 	&mut dyn reinhardt::db::backends::TransactionExecutor,
 > {
 	crate::apps::execution::activation::repositories::scheduling::Scope {
 		tx,
 		capabilities: aidash_domain::run_state::PersistedCapability::supported(),
+		holds_recoveries,
 	}
 }
 

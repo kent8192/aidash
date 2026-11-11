@@ -26,6 +26,12 @@ _Avoid_: Model request, tool call
 A time-limited authorization for one Task to execute on another Node, subject to the sending and receiving Nodes' current authority. A Run started through a Remote Grant cannot delegate work onward.
 _Avoid_: Node Registration, permanent execution permission
 
+**Home**:
+The Node that created a Remote Grant.
+
+**Requester**:
+The person a Remote Grant acts for, whether the person or their Agent asked for it.
+
 **Execution policy**:
 The effective authorization and resource constraints governing a Run's capabilities and actions. Declaring a capability does not grant permission to exercise it.
 _Avoid_: Agent preference, Skill instruction

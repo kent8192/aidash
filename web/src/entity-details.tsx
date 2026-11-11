@@ -14,6 +14,10 @@ import {
 import { approvalState } from "./catalog-approval-model";
 import { ModelSource } from "./model-source";
 import { toolReplay } from "./tool-declaration";
+import {
+  boundReferences,
+  ReferenceRevocations,
+} from "./capabilities/reference-revoke";
 
 type Selection =
   | { kind: "entityDetail"; entity: Entry }
@@ -116,6 +120,9 @@ export function EntityDetails({
           data={data}
           open={openNode}
         />
+      )}
+      {current.kind === "source" && (
+        <ReferenceRevocations references={boundReferences(current.config)} />
       )}
       <section className="grid min-w-0 gap-2 border-t border-border pt-4">
         <h4 className="text-[13px] font-semibold text-foreground">

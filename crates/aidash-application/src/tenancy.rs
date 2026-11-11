@@ -125,6 +125,8 @@ pub enum DeploymentScopeReason {
 	/// Finding the Tenant of a Run, a Workspace or a remote operation from the
 	/// row that records it, when the caller names only an id.
 	RunTenant,
+	/// Resolve the Tenant of a Scratch Space named by an operator.
+	ScratchSpaceTenant,
 	/// Reading current Data Protection policies along a Run's delegation ancestry.
 	DataProtectionEvaluation,
 	/// Finding the owner, and so the Tenant, of a Plan Connection a Run's
@@ -185,6 +187,7 @@ impl DeploymentScopeReason {
 			Self::IdentityStatus => "identity-status",
 			Self::FederationInbound => "federation-inbound",
 			Self::RunTenant => "run-tenant",
+			Self::ScratchSpaceTenant => "scratch-space-tenant",
 			Self::DataProtectionEvaluation => "data-protection-evaluation",
 			Self::PlanConnectionOwner => "plan-connection-owner",
 			Self::OAuthAuthorization => "oauth-authorization",
@@ -232,6 +235,7 @@ impl DeploymentScopeReason {
 			| Self::DeploymentAdministratorList
 			| Self::FederationInbound
 			| Self::RunTenant
+			| Self::ScratchSpaceTenant
 			| Self::DataProtectionEvaluation
 			| Self::PlanConnectionOwner
 			| Self::ActivityObserver
@@ -254,6 +258,7 @@ mod tests {
 			TenancyScope::Deployment(DeploymentScopeReason::DeploymentAdministratorList)
 				.read_only()
 		);
+		assert!(TenancyScope::Deployment(DeploymentScopeReason::ScratchSpaceTenant).read_only());
 		assert!(!TenancyScope::Deployment(DeploymentScopeReason::Retention).read_only());
 		assert!(!TenancyScope::tenant("acme").unwrap().read_only());
 		assert!(!TenancyScope::NoTenant.read_only());
@@ -285,6 +290,7 @@ mod tests {
 			DeploymentScopeReason::IdentityStatus,
 			DeploymentScopeReason::FederationInbound,
 			DeploymentScopeReason::RunTenant,
+			DeploymentScopeReason::ScratchSpaceTenant,
 			DeploymentScopeReason::DataProtectionEvaluation,
 			DeploymentScopeReason::PlanConnectionOwner,
 			DeploymentScopeReason::OAuthAuthorization,

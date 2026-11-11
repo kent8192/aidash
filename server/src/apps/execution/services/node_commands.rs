@@ -106,3 +106,35 @@ pub fn commands() -> Vec<Box<dyn CapabilityCommand>> {
 		Box::new(crate::activation::services::provision::ProvisionActivation),
 	]
 }
+
+#[cfg(test)]
+mod execution_pod_command_tests {
+	#[test]
+	fn ensure_requires_a_valid_space_id() {
+		let registry = crate::bootstrap::management_commands();
+		let command = registry
+			.get_capability("execution-pod")
+			.expect("execution-pod is registered");
+		let cli = command.cli();
+		assert!(cli.clone().try_get_matches_from(["execution-pod"]).is_err());
+		assert!(
+			cli.clone()
+				.try_get_matches_from(["execution-pod", "ensure"])
+				.is_err()
+		);
+		assert!(
+			cli.clone()
+				.try_get_matches_from(["execution-pod", "ensure", "--space", "invalid"])
+				.is_err()
+		);
+		assert!(
+			cli.try_get_matches_from([
+				"execution-pod",
+				"ensure",
+				"--space",
+				"018f47b1-eef5-7b39-b6cb-73699f612481"
+			])
+			.is_ok()
+		);
+	}
+}
