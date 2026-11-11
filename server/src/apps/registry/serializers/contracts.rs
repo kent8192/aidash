@@ -18,7 +18,7 @@ pub struct RegistryCreateResult {
 	pub carry_results: Vec<RegistrationCarryResult>,
 }
 
-#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RegistrationCarryResult {
 	pub node: String,
 	pub source_version: Option<String>,

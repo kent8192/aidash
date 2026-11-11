@@ -27,7 +27,13 @@ pub(crate) async fn configure_agent(
 	id: String,
 	input: super::configuration::Configure,
 ) -> Result<ConfiguredAgent> {
-	let mut access = access(&f, actor).await?;
+	let Actor::Subject(identity) = actor else {
+		return Err(Error::Invalid(
+			"core file operations require a tenant subject credential".into(),
+		));
+	};
+	let mut access =
+		Access::begin_change(&f.store, &identity, &["agent.configure", "registry.create"]).await?;
 	let result = super::configuration::configure(&f.store, &mut access, id, input).await;
 	typed(access.finish(result).await?)
 }

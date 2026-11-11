@@ -462,7 +462,7 @@ let (mut policy, token, task) = bootstrap(&f, &app, &endpoint).await;
 		&token,
 		"POST",
 		"/api/authorization/acme/catalog",
-		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.1.0"},"expected_revision":0,"enabled":true}),
+		json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.1.0"},"expected_revision":0,"enabled":true,"carry_over":false,"scope":"node"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{response}");

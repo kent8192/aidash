@@ -25,6 +25,8 @@ pub trait ConfigurationScope: Send {
 		entry: &Entry,
 	) -> Result<aidash_domain::registry::bindings::BindingSnapshot>;
 	async fn register(&mut self, entry: &Entry) -> Result<bool>;
+	/// Carry the new version while the caller holds its authority transaction.
+	async fn carry(&mut self, entry: &Entry, inserted: bool) -> Result<(bool, Vec<Value>)>;
 	async fn provenance(&mut self, source: &EntityRef, entry: &Entry) -> Result<()>;
 	async fn event(&mut self, kind: &str, data: Value) -> Result<()>;
 }

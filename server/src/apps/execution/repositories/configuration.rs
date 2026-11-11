@@ -124,6 +124,55 @@ impl ConfigurationScope for Scope<'_> {
 		.await
 		.map_err(Into::into)
 	}
+	async fn carry(&mut self, entry: &Entry, inserted: bool) -> Result<(bool, Vec<Value>)> {
+		let tenant = self.access.identity.tenant.clone();
+		let node = self.access.catalog_address().await?;
+		let results = if inserted {
+			let stored = crate::apps::identity::repositories::catalog_approvals::definition(
+				&mut self.access.tx,
+				&EntityRef {
+					id: entry.id.clone(),
+					version: entry.version.clone(),
+				},
+			)
+			.await?;
+			aidash_application::authorization::catalog::carry_over::carry(
+				&mut crate::apps::identity::repositories::catalog_carry::TenantCarry {
+					tx: &mut self.access.tx,
+					snapshot: &mut self.access.snapshot,
+					tenant: &tenant,
+					deployment: &self.store.deployment,
+				},
+				&stored,
+			)
+			.await?
+		} else {
+			Vec::new()
+		};
+		let approved = crate::apps::identity::repositories::catalog_approvals::approved(
+			&mut self.access.tx,
+			&tenant,
+			&node.node,
+			&EntityRef {
+				id: entry.id.clone(),
+				version: entry.version.clone(),
+			},
+		)
+		.await?;
+		let results = results
+			.into_iter()
+			.map(|result| {
+				serde_json::json!({
+					"node": result.node.node.as_str(),
+					"source_version": result.source_version,
+					"changed": result.changed,
+					"unapproved_dependencies": result.unapproved_dependencies,
+					"carried": result.carried,
+				})
+			})
+			.collect();
+		Ok((!approved, results))
+	}
 	async fn provenance(&mut self, source: &EntityRef, entry: &Entry) -> Result<()> {
 		crate::marketplace::propagate_provenance(
 			&mut self.access.tx,

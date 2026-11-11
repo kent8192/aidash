@@ -1,4 +1,54 @@
 use super::*;
+
+#[rstest::rstest]
+#[tokio::test]
+async fn configuration_carries_an_opted_in_unchanged_approval(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let c = Box::pin(capability_fixture).await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let (status, approval) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({
+			"node":node,"entry":{"id":"research","version":"1.1.0"},
+			"expected_revision":1,"enabled":true,"carry_over":true,"scope":"node"
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{approval}");
+	let source =
+		c.f.registry
+			.get(
+				&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+				"research",
+				"1.1.0",
+			)
+			.await
+			.unwrap();
+	let (status, saved) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		"/api/agents/research/capabilities",
+		json!({
+			"idempotency_key":Uuid::new_v4(),"source_version":"1.1.0","new_version":"1.2.0",
+			"bindings":source.config["bindings"],"remove_default":source.config["remove_default"]
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{saved}");
+	assert_eq!(saved["catalog_approval_required"], false);
+	assert!(
+		saved["carry_results"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|result| result["node"] == node.as_str() && result["carried"] == true)
+	);
+}
 #[rstest::rstest]
 #[tokio::test]
 async fn subject_configuration_creates_an_immutable_version_without_catalog_grants(
