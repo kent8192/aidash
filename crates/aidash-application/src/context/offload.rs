@@ -42,6 +42,7 @@ pub fn note_journal_read(
 
 /// Track a delivered Journal tool result. Only a pinned Journal builtin or
 /// descriptor may register a read; model aliases and other tools cannot spoof it.
+#[allow(clippy::too_many_arguments)] // The read is recorded with the call, its result position and the policy it ran under.
 pub fn note_journal_result(
 	context: &mut Context,
 	reader_run: uuid::Uuid,
@@ -238,11 +239,11 @@ pub fn batch(
 		protected_count += 1;
 		protected_size += tokens;
 	}
-	for index in 0..context.history.len() {
+	for (index, kept) in protected.into_iter().enumerate() {
 		if size(context) <= target {
 			break;
 		}
-		if !protected[index]
+		if !kept
 			&& !context
 				.offload_reads
 				.protects(context.history[index].seq, step)

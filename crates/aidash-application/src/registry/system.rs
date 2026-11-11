@@ -14,7 +14,6 @@ use aidash_domain::{
 use serde_json::json;
 
 /// The Decider that judges pending Tool calls in the Auto Approval Mode (ADR 0077).
-
 pub const APPROVAL_DECIDER_ID: &str = "aidash.approval-decider";
 pub const APPROVAL_DECIDER_VERSION: &str = "1.0.0";
 

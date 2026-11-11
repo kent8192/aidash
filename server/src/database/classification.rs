@@ -360,6 +360,7 @@ pub const TABLES: &[Table] = &[
 	table("knowledge", "memory_dependencies", TenantOwned),
 	table("knowledge", "memory_engine_jobs", TenantOwned),
 	table("knowledge", "memory_history", TenantOwned),
+	table("knowledge", "memory_journal_proofs", TenantOwned),
 	// the learning discovery cursor
 	table("knowledge", "memory_learning_discovery", DeploymentWide),
 	table("knowledge", "memory_model_attempts", TenantOwned),
@@ -375,6 +376,7 @@ pub const TABLES: &[Table] = &[
 	table("knowledge", "memory_run_read_gates", TenantOwned),
 	table("knowledge", "memory_run_reads", TenantOwned),
 	table("knowledge", "memory_task_participants", TenantOwned),
+	table("knowledge", "memory_tenant_scope", TenantOwned),
 	table("knowledge", "memory_unit_origins", TenantOwned),
 	table("knowledge", "memory_unit_retention", TenantOwned),
 	table("knowledge", "memory_unit_run_origins", TenantOwned),

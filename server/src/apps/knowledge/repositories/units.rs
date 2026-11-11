@@ -13,19 +13,6 @@ fn run_memory_visible(reader: Option<Uuid>, run: Uuid, terminal: bool) -> bool {
 	terminal || reader.is_none_or(|reader| reader == run)
 }
 
-#[cfg(test)]
-mod run_scope_tests {
-	use super::*;
-	#[test]
-	fn facts_become_visible_to_other_runs_only_at_terminal_state() {
-		let owner = Uuid::now_v7();
-		let other = Uuid::now_v7();
-		assert!(run_memory_visible(Some(owner), owner, false));
-		assert!(!run_memory_visible(Some(other), owner, false));
-		assert!(run_memory_visible(Some(other), owner, true));
-	}
-}
-
 pub(crate) async fn load(lease: &mut Lease<'_>, id: Uuid, exclusive: bool) -> Result<Option<Unit>> {
 	let row = native::query(
 		&Query::select()
@@ -610,4 +597,17 @@ pub(crate) fn current_in_reader<'a>(
 		}
 		Ok(())
 	})
+}
+
+#[cfg(test)]
+mod run_scope_tests {
+	use super::*;
+	#[test]
+	fn facts_become_visible_to_other_runs_only_at_terminal_state() {
+		let owner = Uuid::now_v7();
+		let other = Uuid::now_v7();
+		assert!(run_memory_visible(Some(owner), owner, false));
+		assert!(!run_memory_visible(Some(other), owner, false));
+		assert!(run_memory_visible(Some(other), owner, true));
+	}
 }

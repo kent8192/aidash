@@ -36,6 +36,8 @@ use uuid::Uuid;
 pub struct RunStore {
 	pub store: Store,
 	pub scope: TenancyScope,
+	pub(crate) offloaded:
+		std::sync::Arc<std::sync::Mutex<Vec<aidash_application::context::offload::JournalRange>>>,
 }
 
 pub(crate) struct WorkspaceInsert<'a> {
@@ -463,6 +465,7 @@ impl Store {
 		RunStore {
 			store: self.clone(),
 			scope,
+			offloaded: Default::default(),
 		}
 	}
 

@@ -1187,3 +1187,104 @@ async fn an_invocation_records_the_tenant_secret_it_carried_and_others_stay_null
 	assert_eq!(rows[1].get::<Option<String>, _>(3), None);
 	b.close().await;
 }
+
+#[rstest::rstest]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn offloaded_result_enqueues_while_the_next_worker_step_runs(
+	#[future(awt)]
+	#[from(common::runtime)]
+	runtime: RuntimeFixture,
+	#[future(awt)] scripted_model: ScriptedModel,
+) {
+	std::thread::Builder::new()
+		.stack_size(16 * 1024 * 1024)
+		.spawn(move || {
+			tokio::runtime::Builder::new_multi_thread()
+				.worker_threads(4)
+				.thread_stack_size(16 * 1024 * 1024)
+				.enable_all()
+				.build()
+				.unwrap()
+				.block_on(async move {
+					let b = Batching::new(runtime, scripted_model, 1, 1).await;
+					let run = b.delegate(b.task).await;
+					// JSON escaping makes this result exceed a quarter of the model window
+					// while remaining within the file tool's admitted byte limit.
+					let file = b
+						.file(&run, "notes/large.txt", &"\u{0001}".repeat(7000))
+						.await;
+					b.script(&[(
+						"large-read",
+						"file_read",
+						json!({
+							"file_id": file["file_id"], "representation":"text", "max_bytes":7000
+						}),
+					)]);
+					let worker = Harness {
+						federation: b.f.clone(),
+					};
+					while b.f.store.run(&TEST_FIXTURE, run.id).await.unwrap().phase()
+						!= RunPhase::ToolCall
+					{
+						assert!(worker.worker_once().await.unwrap());
+					}
+					tokio::time::timeout(Duration::from_secs(30), worker.worker_once())
+						.await
+						.expect("offloading step must finish")
+						.unwrap();
+					let after = b.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+					let result = tool_events(&after)
+						.into_iter()
+						.find(|(id, _, _)| id == "large-read")
+						.unwrap()
+						.2;
+					assert_eq!(
+						result["contract"], "aidash.context.offloaded-result/1",
+						"{result}"
+					);
+					let from = result["journal"]["from_seq"].as_i64().unwrap();
+					let pool = b.f.store.pool.fixture_driver().clone();
+					let next = async {
+						tokio::time::timeout(Duration::from_secs(75), async {
+							loop {
+								if worker.worker_once().await.unwrap() {
+									break;
+								}
+								tokio::time::sleep(Duration::from_millis(100)).await;
+							}
+						})
+						.await
+						.expect("the next worker step must run");
+					};
+					let enqueued = async {
+						tokio::time::timeout(Duration::from_secs(30), async {
+							loop {
+								let jobs: Vec<Value> = sqlx::query_scalar(
+									"SELECT input FROM memory_engine_jobs WHERE provider_id = 'aidash.memory'",
+								)
+								.fetch_all(&pool)
+								.await
+								.unwrap();
+								if jobs.iter().any(|job| {
+									job["kind"] == "offloaded_range"
+										&& job["run"] == run.id.to_string()
+										&& job["from"] == from && job["through"] == from
+								}) {
+									break;
+								}
+								tokio::time::sleep(Duration::from_millis(50)).await;
+							}
+						})
+						.await
+						.expect("background extraction must be enqueued");
+					};
+					tokio::join!(next, enqueued);
+					let after = b.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+					assert_ne!(after.phase(), RunPhase::Failed, "{:?}", after.error);
+					b.close().await;
+				});
+		})
+		.unwrap()
+		.join()
+		.unwrap();
+}
