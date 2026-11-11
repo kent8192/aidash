@@ -1334,7 +1334,7 @@ impl PolicyAdministration {
 	) -> Result<Binding> {
 		let withdraw_carried = input.withdraw_carried;
 		let stop_carrying = input.stop_carrying;
-		if input.enabled && (withdraw_carried || stop_carrying) {
+		if input.enabled && withdraw_carried {
 			return Err(Error::Invalid(
 				"withdrawal options require a withdrawal".into(),
 			));
@@ -1400,7 +1400,8 @@ impl PolicyAdministration {
 			return access.finish(Err(error)).await;
 		}
 		let result = async {
-			if withdraw_carried {
+			let mut stop_descendants = Vec::new();
+			if withdraw_carried || stop_carrying {
 				let root = approvals
 					.first()
 					.cloned()
@@ -1429,10 +1430,22 @@ impl PolicyAdministration {
 					}
 				}
 				for row in rows.into_iter().filter(|row| {
-					row.enabled
-						&& row.entry_version != root.entry.version
-						&& versions.contains(&row.entry_version)
+					row.entry_version != root.entry.version && versions.contains(&row.entry_version)
 				}) {
+					if stop_carrying {
+						stop_descendants.push(Binding {
+							tenant: tenant.clone(),
+							node: node.clone(),
+							entry_id: row.entry_key.clone(),
+							entry_version: row.entry_version.clone(),
+							enabled: row.enabled,
+							revision: row.revision,
+							restriction: None,
+						});
+					}
+					if !withdraw_carried || !row.enabled {
+						continue;
+					}
 					approvals.push(
 						aidash_application::authorization::catalog::approvals::Approval {
 							entry: crate::registry::EntityRef {
@@ -1490,6 +1503,21 @@ impl PolicyAdministration {
 				}
 				.stop_carrying(binding)
 				.await?;
+				for descendant in &mut stop_descendants {
+					if let Some(updated) = bindings.iter().find(|b| {
+						b.entry_id == descendant.entry_id
+							&& b.entry_version == descendant.entry_version
+					}) {
+						descendant.revision = updated.revision;
+					}
+					TenantCatalog {
+						access: &mut access,
+						node: f.config.deployment.node(node.clone()),
+						deployment_scope_orchestrated: false,
+					}
+					.stop_carrying(descendant)
+					.await?;
+				}
 			}
 			refresh_requests_on_node(
 				&mut access,

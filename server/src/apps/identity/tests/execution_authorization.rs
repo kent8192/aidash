@@ -8855,6 +8855,100 @@ async fn deployment_approval_copies_agent_subjects_and_restrictions_to_new_node(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn stopping_carry_prevents_descendants_from_carrying_again(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({
+			"node":node,"entry":{"id":"research","version":"1.0.0"},"enabled":true,
+			"expected_revision":1,"carry_over":true,"scope":"node"
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let mut next = f.registry.get(&tenant, "research", "1.0.0").await.unwrap();
+	next.version = "1.1.0".into();
+	next.binding_normalization = None;
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/registry",
+		serde_json::to_value(&next).unwrap(),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	assert!(
+		body["carry_results"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|r| r["node"] == node.as_str() && r["carried"] == true)
+	);
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({
+			"node":node,"entry":{"id":"research","version":"1.0.0"},"enabled":true,
+			"expected_revision":2,"stop_carrying":true,"scope":"node"
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	next.version = "1.2.0".into();
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/registry",
+		serde_json::to_value(&next).unwrap(),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	assert!(
+		body["carry_results"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|r| r["node"] == node.as_str() && r["carried"] == false),
+		"{body}"
+	);
+	let (_, versions) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/registry/versions?node={node}"),
+		Value::Null,
+	)
+	.await;
+	for version in ["1.0.0", "1.1.0"] {
+		let approval = &versions["versions"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|row| row["entry"]["id"] == "research" && row["entry"]["version"] == version)
+			.unwrap()["approval"];
+		assert_eq!(approval["carry_over"], false);
+		assert_eq!(approval["enabled"], true);
+	}
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn registering_a_compatible_agent_carries_its_groups_and_dependency_restrictions(
 	#[future(awt)]
 	#[from(common::native_application)]
