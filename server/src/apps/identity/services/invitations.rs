@@ -25,9 +25,11 @@ use aidash_domain::identity::tenant_administration::{
 	COLLECTION, INVITATION_CREATE, INVITATION_READ, INVITATION_REVOKE, REGISTRATION_APPROVE,
 };
 use http::{HeaderMap, Method};
-use reinhardt::core::exception::Error as FrameworkError;
 use reinhardt::db::orm::{AtomicTransaction, Model};
 use reinhardt::injectable;
+use reinhardt::query::{
+	Alias, Expr, ExprTrait, LockType, PostgresQueryBuilder, Query, QueryStatementBuilder,
+};
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -175,13 +177,21 @@ impl Invitations {
 				let snapshot = issuer
 					.authorize(tx, &tenant, INVITATION_CREATE, COLLECTION)
 					.await?;
-				if input.join_directly
-					&& let Issuer::TenantAdministrator(administrator) = &issuer
-				{
-					administrator
-						.require(tx, &snapshot, REGISTRATION_APPROVE, COLLECTION, json!({}))
-						.await?;
-				}
+				let join_directly = match (&issuer, input.join_directly) {
+					(_, Some(false)) => false,
+					(Issuer::TenantAdministrator(administrator), Some(true)) => {
+						administrator
+							.require(tx, &snapshot, REGISTRATION_APPROVE, COLLECTION, json!({}))
+							.await?;
+						true
+					}
+					(Issuer::TenantAdministrator(administrator), None) => {
+						administrator
+							.allowed(tx, &snapshot, REGISTRATION_APPROVE, COLLECTION, json!({}))
+							.await?
+					}
+					(Issuer::DeploymentAdministrator(_), _) => true,
+				};
 				let groups = invitations::proposed_groups(&snapshot.bundle, input.groups.clone())?;
 				invitations::issue(
 					tx,
@@ -189,9 +199,9 @@ impl Invitations {
 					groups,
 					lifetime,
 					&issuer.actor(),
-					input.join_directly,
+					join_directly,
 					match &issuer {
-						Issuer::DeploymentAdministrator(None) if input.join_directly => {
+						Issuer::DeploymentAdministrator(None) if join_directly => {
 							Some(self.runtime.config.api_token.as_str())
 						}
 						_ => None,
@@ -328,6 +338,9 @@ impl Invitations {
 		decision: &JoinDecision<'_>,
 	) -> Result<Option<(AdministrationActor, crate::authorization::Snapshot)>> {
 		let tenant = &invitation.tenant;
+		if invitation.issued_by_identity == Some(decision.identity) {
+			return Ok(None);
+		}
 		if invitation.issued_by_kind == "deployment_administrator" {
 			// A revoked grant cannot approve and need not contend for a policy
 			// change lock. A positive read is checked again under the grant lock.
@@ -350,20 +363,18 @@ impl Invitations {
 			let actor = match invitation.issued_by_identity {
 				None => AdministrationActor::DeploymentAdministratorBearer,
 				Some(identity) => {
-					let Some(person) = lock_deployment_grant(tx, identity).await? else {
+					let Some((issuer, last_valid_at, disabled_at)) =
+						lock_deployment_grant(tx, identity).await?
+					else {
 						return Ok(None);
 					};
 					let policy = self.runtime.config.dashboard_policy();
 					if policy
 						.as_ref()
-						.is_none_or(|p| p.require_identity(&person.issuer).is_err())
+						.is_none_or(|p| p.require_identity(&issuer).is_err())
 						|| crate::authorization::identity::validate_local_status(
 							policy.as_ref(),
-							Some((
-								person.issuer.clone(),
-								person.last_valid_at,
-								person.disabled_at,
-							)),
+							Some((issuer, last_valid_at, disabled_at)),
 						)
 						.is_err()
 					{
@@ -526,6 +537,11 @@ impl Invitations {
 		} else {
 			None
 		};
+		let admission_allowed = match admission {
+			Some(Ok(())) | None => true,
+			Some(Err(error)) if approval_refusal(&error) => false,
+			Some(Err(error)) => return Err(error),
+		};
 		let registration = self
 			.runtime
 			.store
@@ -540,18 +556,46 @@ impl Invitations {
 				let identity = holder.session.identity_id;
 				let registration_id = Uuid::new_v4();
 				let groups = invitations::proposed(&preview);
-				// A fresh subject prevents a returning member from regaining old
-				// roles or non-assignable groups the Invitation did not offer.
-				let subject = format!("user-{registration_id}");
+				// Reuse the one previously mapped subject, just as manual Rejoin
+				// does. Ambiguous historical subjects require a manual decision.
+				let previous = DashboardMapping::objects()
+					.filter(DashboardMapping::field_identity_id().eq(identity))
+					.filter(DashboardMapping::field_tenant().eq(input.tenant.clone()))
+					.filter(DashboardMapping::field_enabled().eq(false))
+					.order_by(&["id"])
+					.all_with_db(tx)
+					.await?;
+				let subject = previous
+					.first()
+					.map(|m| m.subject.clone())
+					.unwrap_or_else(|| format!("user-{registration_id}"));
 				let decision = JoinDecision {
 					registration: registration_id,
 					identity,
 					subject: &subject,
 					groups: &groups,
 				};
-				let approver = if preview.join_directly {
-					self.invitation_approver(tx, &preview, &input.secret, exclusive, &decision)
-						.await?
+				let approver = if preview.join_directly && previous.len() <= 1 && admission_allowed
+				{
+					// A changed policy or lost authority refuses only the optional
+					// approval. Roll back its locks and audit before opening the request.
+					match tx
+						.atomic(async |tx| {
+							self.invitation_approver(
+								tx,
+								&preview,
+								&input.secret,
+								exclusive,
+								&decision,
+							)
+							.await
+						})
+						.await
+					{
+						Ok(approver) => approver,
+						Err(error) if approval_refusal(&error) => None,
+						Err(error) => return Err(error),
+					}
 				} else {
 					None
 				};
@@ -561,26 +605,54 @@ impl Invitations {
 				let mut registration =
 					invitations::redeem(tx, invitation, &holder.session, registration_id).await?;
 				if let Some((actor, snapshot)) = approver {
-					if actor.tenant_administrator().is_some() {
-						admission
-							.ok_or_else(|| Error::Conflict("Invitation changed; retry".into()))??;
+					// A direct join is bound by the current Assignable Groups for
+					// every issuer, including Deployment Administrators.
+					let assignable =
+						aidash_domain::identity::tenant_administration::assignable_groups(
+							&snapshot.bundle,
+						);
+					let current_previous = DashboardMapping::objects()
+						.filter(DashboardMapping::field_identity_id().eq(identity))
+						.filter(DashboardMapping::field_tenant().eq(input.tenant.clone()))
+						.filter(DashboardMapping::field_enabled().eq(false))
+						.order_by(&["id"])
+						.all_with_db(tx)
+						.await?;
+					if !groups.is_subset(&assignable)
+						|| current_previous.len() != previous.len()
+						|| current_previous.first().map(|m| m.subject.as_str())
+							!= previous.first().map(|m| m.subject.as_str())
+					{
+						return Ok(registration);
 					}
-					DashboardRegistrationRequest::approve_in(
-						tx,
-						registration.id,
-						Approval {
-							tenant: input.tenant.clone(),
-							subject,
-							groups: Some(groups.clone()),
-						},
-						groups,
-						&actor,
-						digest(&random_secret()),
-						self.runtime.config.dashboard_policy(),
-						true,
-						Some(snapshot),
-					)
-					.await?;
+					// The request and spent link live outside this savepoint. Any
+					// approval refusal rolls back its partial effects and leaves the
+					// request pending; storage failures still abort the transaction.
+					let approved: Result<_> = tx
+						.atomic(async |tx| {
+							DashboardRegistrationRequest::approve_in(
+								tx,
+								registration.id,
+								Approval {
+									tenant: input.tenant.clone(),
+									subject,
+									groups: Some(groups.clone()),
+								},
+								groups,
+								&actor,
+								digest(&random_secret()),
+								self.runtime.config.dashboard_policy(),
+								true,
+								Some(snapshot),
+							)
+							.await
+						})
+						.await;
+					match approved {
+						Ok(_) => {}
+						Err(error) if approval_refusal(&error) => return Ok(registration),
+						Err(error) => return Err(error),
+					}
 					registration = DashboardRegistrationRequest::objects()
 						.filter(DashboardRegistrationRequest::field_id().eq(registration.id))
 						.all_with_db(tx)
@@ -595,32 +667,59 @@ impl Invitations {
 	}
 }
 
-/// Grant mutations lock the identity before the grant; use that order here too.
+/// Only expected approval refusals fall back; database and transaction
+/// failures must remain visible so a broken savepoint cannot commit partial work.
+fn approval_refusal(error: &Error) -> bool {
+	matches!(
+		error,
+		Error::Invalid(_)
+			| Error::Conflict(_)
+			| Error::NotFound(_)
+			| Error::Unauthorized
+			| Error::Forbidden
+			| Error::Unprocessable(_)
+			| Error::Refused(_)
+			| Error::TenantDeleted
+			| Error::NodeLimitReached
+			| Error::PolicyBusy { .. }
+			| Error::IdentityStatusUnavailable
+	)
+}
+
+/// Grant mutations take exclusive locks in this same identity-then-grant
+/// order. Shared leases also coexist with a browser administrator's boundary.
 async fn lock_deployment_grant(
 	tx: &mut AtomicTransaction,
 	identity: Uuid,
-) -> Result<Option<DashboardIdentity>> {
-	let Some(person) = DashboardIdentity::objects()
-		.filter(DashboardIdentity::field_id().eq(identity))
-		.select_for_update()
-		.all_with_executor(tx)
-		.await
-		.map_err(FrameworkError::from)?
-		.pop()
-	else {
-		return Ok(None);
-	};
-	let grant = DashboardDeploymentAdministratorGrant::objects()
-		.filter(DashboardDeploymentAdministratorGrant::field_identity_id().eq(identity))
-		.filter(DashboardDeploymentAdministratorGrant::field_enabled().eq(true))
-		.select_for_update()
-		.all_with_executor(tx)
-		.await
-		.map_err(FrameworkError::from)?;
-	if grant.is_empty() || person.disabled_at.is_some() {
-		return Ok(None);
-	}
-	Ok(Some(person))
+) -> Result<
+	Option<(
+		String,
+		Option<chrono::DateTime<chrono::Utc>>,
+		Option<chrono::DateTime<chrono::Utc>>,
+	)>,
+> {
+	let sql = Query::select()
+		.columns(["issuer", "last_valid_at", "disabled_at"].map(Alias::new))
+		.from(Alias::new("dashboard_identities"))
+		.and_where(Expr::col(Alias::new("id")).eq(Expr::cust("$1")))
+		.lock(LockType::Share)
+		.to_string(PostgresQueryBuilder);
+	let person = crate::database::native::query_as(&sql)
+		.columns(&["issuer", "last_valid_at", "disabled_at"])
+		.bind(identity)
+		.fetch_optional(&mut *tx)
+		.await?;
+	let sql = Query::select()
+		.column(Alias::new("enabled"))
+		.from(Alias::new("dashboard_deployment_administrator_grants"))
+		.and_where(Expr::col(Alias::new("identity_id")).eq(Expr::cust("$1")))
+		.lock(LockType::Share)
+		.to_string(PostgresQueryBuilder);
+	let enabled: Option<bool> = crate::database::native::query_scalar(&sql)
+		.bind(identity)
+		.scalar_optional(tx)
+		.await?;
+	Ok(if enabled == Some(true) { person } else { None })
 }
 
 /// One answer for every unusable link, so it reveals nothing about why.

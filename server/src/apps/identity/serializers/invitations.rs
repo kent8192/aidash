@@ -16,12 +16,8 @@ pub(crate) struct InvitationRequest {
 	#[serde(default)]
 	pub(crate) expires_in_seconds: Option<i64>,
 	/// Join immediately if the issuer still has approval authority.
-	#[serde(default = "default_join_directly")]
-	pub(crate) join_directly: bool,
-}
-
-fn default_join_directly() -> bool {
-	true
+	#[serde(default)]
+	pub(crate) join_directly: Option<bool>,
 }
 
 /// An issued Invitation. `link` and `secret` are shown only in this response.

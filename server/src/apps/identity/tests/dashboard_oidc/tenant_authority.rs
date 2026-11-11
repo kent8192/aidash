@@ -1126,6 +1126,28 @@ async fn invitation_issuer_without_registration_approval_must_choose_pending(
 	let (status, body) =
 		t.d.as_person(&t.bob, "POST", &path, Some(&t.bob_context), json!({}))
 			.await;
+	assert_eq!(status, 201, "{body}");
+	let holder = t.d.person("omitted-choice-holder").await;
+	let (status, request) =
+		t.d.as_person(
+			&holder,
+			"POST",
+			"/auth/invitations/redeem",
+			None,
+			json!({"tenant":t.tenant,"secret":body["secret"]}),
+		)
+		.await;
+	assert_eq!(status, 200, "{request}");
+	assert_eq!(request["status"], "pending");
+	let (status, body) =
+		t.d.as_person(
+			&t.bob,
+			"POST",
+			&path,
+			Some(&t.bob_context),
+			json!({"join_directly":true}),
+		)
+		.await;
 	assert_eq!(status, 403, "{body}");
 	let (status, body) =
 		t.d.as_person(
@@ -1242,5 +1264,103 @@ async fn invitation_uses_another_current_mapping_of_its_issuer(
 	let recorded: i64 = sqlx::query_scalar("SELECT count(*) FROM dashboard_administration_history WHERE action = 'registration.approve' AND registration_id = $1 AND actor_identity_id = $2 AND actor_mapping_id = $3")
 		.bind(Uuid::parse_str(registration["id"].as_str().unwrap()).unwrap()).bind(t.alice.identity).bind(mapping).fetch_one(pool).await.unwrap();
 	assert_eq!(recorded, 1);
+	t.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn invitation_waits_when_proposed_group_is_no_longer_assignable(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let tenant_holder = t.d.person("unassignable-tenant-holder").await;
+	let deployment_holder = t.d.person("unassignable-deployment-holder").await;
+	let path = format!("/api/tenants/{}/invitations", t.tenant);
+	let (status, first) =
+		t.d.as_person(
+			&t.alice,
+			"POST",
+			&path,
+			Some(&t.alice_context),
+			json!({"groups":["members"]}),
+		)
+		.await;
+	assert_eq!(status, 201, "{first}");
+	let (status, second) =
+		t.d.as_deployment_administrator("POST", &path, json!({"groups":["members"]}))
+			.await;
+	assert_eq!(status, 201, "{second}");
+	let (status, policy) = t
+		.replace(|bundle| bundle["groups"]["members"]["assignable"] = json!(false))
+		.await;
+	assert_eq!(status, 200, "{policy}");
+	for (holder, invitation) in [(&tenant_holder, &first), (&deployment_holder, &second)] {
+		let link = json!({"tenant":t.tenant,"secret":invitation["secret"]});
+		let (status, request) =
+			t.d.as_person(
+				holder,
+				"POST",
+				"/auth/invitations/redeem",
+				None,
+				link.clone(),
+			)
+			.await;
+		assert_eq!(status, 200, "{request}");
+		assert_eq!(request["status"], "pending");
+		assert!(t.d.context_or_none(holder, &t.tenant).await.is_none());
+		let (status, _) =
+			t.d.as_person(holder, "POST", "/auth/invitations/redeem", None, link)
+				.await;
+		assert_eq!(status, 404);
+	}
+	t.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn invitation_waits_when_member_admission_is_refused(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	struct RefuseMember;
+	#[async_trait::async_trait]
+	impl aidash_application::usage::Admission for RefuseMember {
+		async fn admit(
+			&self,
+			_: &str,
+			work: aidash_application::usage::Work,
+		) -> aidash_application::Result<aidash_application::usage::Verdict> {
+			Ok(if work == aidash_application::usage::Work::Member {
+				aidash_application::usage::Verdict::refuse("member_limit")
+			} else {
+				aidash_application::usage::Verdict::Admit
+			})
+		}
+	}
+	let mut t = Team::new(runtime).await;
+	let holder = t.d.person("admission-refused-holder").await;
+	let path = format!("/api/tenants/{}/invitations", t.tenant);
+	let (status, invitation) =
+		t.d.as_person(&t.alice, "POST", &path, Some(&t.alice_context), json!({}))
+			.await;
+	assert_eq!(status, 201, "{invitation}");
+	t.d.federation.store.admission = Arc::new(RefuseMember);
+	t.d.app.context.set_singleton(t.d.federation.clone());
+	let link = json!({"tenant":t.tenant,"secret":invitation["secret"]});
+	let (status, request) =
+		t.d.as_person(
+			&holder,
+			"POST",
+			"/auth/invitations/redeem",
+			None,
+			link.clone(),
+		)
+		.await;
+	assert_eq!(status, 200, "{request}");
+	assert_eq!(request["status"], "pending");
+	assert!(t.d.context_or_none(&holder, &t.tenant).await.is_none());
+	let (status, _) =
+		t.d.as_person(&holder, "POST", "/auth/invitations/redeem", None, link)
+			.await;
+	assert_eq!(status, 404);
 	t.finish().await;
 }

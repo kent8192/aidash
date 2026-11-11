@@ -1802,6 +1802,103 @@ async fn direct_invitation_gives_a_returning_member_only_its_proposed_groups(
 	.fetch_one(d.federation.store.pool.fixture_driver())
 	.await
 	.unwrap();
-	assert_ne!(subject, "old-administrator");
+	assert_eq!(subject, "old-administrator");
+	d.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn invitation_deployment_issuer_share_lease_and_self_approval(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let d = Deployment::new(runtime, open_rules()).await;
+	let issuer = d.person("invitation-deployment-issuer").await;
+	let holder = d.person("invitation-share-holder").await;
+	sqlx::query("INSERT INTO dashboard_deployment_administrator_grants (identity_id) VALUES ($1)")
+		.bind(issuer.identity)
+		.execute(d.federation.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	let (status, created) = d
+		.as_person(
+			&issuer,
+			"POST",
+			"/api/tenants",
+			Some("deployment_administrator"),
+			json!({"label":"Team"}),
+		)
+		.await;
+	assert_eq!(status, 201, "{created}");
+	let tenant = created["name"].as_str().unwrap();
+	let path = format!("/api/tenants/{tenant}/invitations");
+	let (status, invitation) = d
+		.as_person(
+			&issuer,
+			"POST",
+			&path,
+			Some("deployment_administrator"),
+			json!({}),
+		)
+		.await;
+	assert_eq!(status, 201, "{invitation}");
+	// The request boundary holds this same identity lease on another connection.
+	let mut lease = d
+		.federation
+		.store
+		.pool
+		.fixture_driver()
+		.begin()
+		.await
+		.unwrap();
+	sqlx::query("SELECT id FROM dashboard_identities WHERE id = $1 FOR SHARE")
+		.bind(issuer.identity)
+		.execute(&mut *lease)
+		.await
+		.unwrap();
+	sqlx::query("SELECT identity_id FROM dashboard_deployment_administrator_grants WHERE identity_id = $1 FOR SHARE")
+		.bind(issuer.identity).execute(&mut *lease).await.unwrap();
+	let (status, registration) = tokio::time::timeout(
+		std::time::Duration::from_secs(10),
+		d.as_person(
+			&holder,
+			"POST",
+			"/auth/invitations/redeem",
+			None,
+			json!({"tenant":tenant,"secret":invitation["secret"]}),
+		),
+	)
+	.await
+	.expect("redemption must coexist with the administrator boundary lease");
+	assert_eq!(status, 200, "{registration}");
+	assert_eq!(registration["status"], "approved");
+	lease.rollback().await.unwrap();
+
+	let (status, invitation) = d
+		.as_person(
+			&issuer,
+			"POST",
+			&path,
+			Some("deployment_administrator"),
+			json!({}),
+		)
+		.await;
+	assert_eq!(status, 201, "{invitation}");
+	let link = json!({"tenant":tenant,"secret":invitation["secret"]});
+	let (status, registration) = d
+		.as_person(
+			&issuer,
+			"POST",
+			"/auth/invitations/redeem",
+			None,
+			link.clone(),
+		)
+		.await;
+	assert_eq!(status, 200, "{registration}");
+	assert_eq!(registration["status"], "pending");
+	assert!(d.context_or_none(&issuer, tenant).await.is_none());
+	let (status, _) = d
+		.as_person(&issuer, "POST", "/auth/invitations/redeem", None, link)
+		.await;
+	assert_eq!(status, 404);
 	d.finish().await;
 }
