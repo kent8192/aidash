@@ -156,7 +156,7 @@ pub(crate) async fn retrieve(
 			dependencies.push(memory::definition(lease, &bank.tenant, reference, kind).await?);
 		}
 		if let Some(access) = lease.access() {
-			access.track_registry(&dependencies).await?;
+			access.track_memory_registry(&dependencies).await?;
 		}
 		let tokenizer: TokenizerConfig = serde_json::from_value(
 			memory::definition(lease, &bank.tenant, &policy.tokenizer, "tokenizer")

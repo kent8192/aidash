@@ -2020,18 +2020,16 @@ async fn malformed_scoped_delegation_arguments_remain_model_correctable(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	assert_eq!(
-		request(
-			&app,
-			&token,
-			"POST",
-			&format!("/api/tasks/{task}/claim"),
-			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
-		)
-		.await
-		.0,
-		200
-	);
+	let (claim_status, claim_body) = request(
+		&app,
+		&token,
+		"POST",
+		&format!("/api/tasks/{task}/claim"),
+		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
+	)
+	.await;
+	assert_eq!(claim_status, 200, "{claim_body}");
+
 	let harness = Harness {
 		federation: f.clone(),
 	};
@@ -2076,7 +2074,12 @@ async fn malformed_scoped_delegation_arguments_remain_model_correctable(
 	let run = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	assert_eq!(run.phase().as_str(), "TOOL_CALL");
 	assert_eq!(json!(run.state)["data"]["cursor"], 1);
-	assert!(json!(run.context)["history"][0]["event"]["result"]["error"].is_string());
+	let history = json!(run.context)["history"].as_array().unwrap().clone();
+	let result = history
+		.iter()
+		.find(|entry| entry["event"]["call"]["id"] == "bad-id")
+		.expect("the malformed call is recorded");
+	assert!(result["event"]["result"]["error"].is_string(), "{result}");
 	assert_eq!(
 		f.store
 			.task(&TEST_FIXTURE, task)

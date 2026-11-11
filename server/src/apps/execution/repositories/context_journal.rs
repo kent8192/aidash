@@ -104,6 +104,11 @@ pub(crate) async fn handed_to_run(
 	scope: &TenancyScope,
 	run: &Run,
 ) -> Result<Option<(Uuid, aidash_domain::subnodes::JournalRange)>> {
+	// Cross-Run handoffs are local Subnode grants. A foreign Run has no local
+	// execution grant, and must not inspect another Run's Journal here.
+	if !run.is_local(store.deployment.as_str()) {
+		return Ok(None);
+	}
 	let mut access =
 		crate::apps::identity::services::execution::access_for_run(store, &run.metadata(), true)
 			.await?

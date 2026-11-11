@@ -753,7 +753,8 @@ async fn deferred_revoked_binding_fails_the_step_like_legacy(#[future] deferred_
 		};
 		let sent = d.requests().await.len();
 		let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
-		while d.run(run.id).await.context.history.is_empty() {
+		// Run-start memory recall may add history before the first inference.
+		while d.requests().await.len() == sent {
 			d.step().await;
 			assert!(tokio::time::Instant::now() < deadline);
 		}

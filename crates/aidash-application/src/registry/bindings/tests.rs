@@ -364,7 +364,9 @@ async fn defaults_are_exact_and_a_saved_snapshot_is_immutable() {
 		saved.bindings.len(),
 		REQUIRED_TOOLS.len() + DEFAULT_TOOLS.len() + 2
 	);
-	assert_eq!(saved.definitions.len(), saved.bindings.len() + 4);
+	// Model and workspace source dependencies remain pinned; the built-in
+	// memory's RRF and UTF-8 algorithms are internal implementation details.
+	assert_eq!(saved.definitions.len(), saved.bindings.len() + 2);
 	let recovered: BindingSnapshot = serde_json::from_value(encoded).unwrap();
 	recovered.validate().unwrap();
 }

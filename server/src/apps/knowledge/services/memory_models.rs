@@ -166,7 +166,7 @@ impl Models {
 				)
 				.await?,
 			);
-			access.track_registry(&dependencies).await?;
+			access.track_memory_registry(&dependencies).await?;
 		}
 		// A human may request learning from a generated Run. Admission still uses
 		// the caller's lease, but model I/O must also retain that Run's current
@@ -243,7 +243,7 @@ impl Models {
 					)
 					.await?,
 				);
-				access.track_registry(&dependencies).await?;
+				access.track_memory_registry(&dependencies).await?;
 			}
 			let mut child =
 				crate::authorization::access::Access::under_lease_on(access, &store.control_pool)
