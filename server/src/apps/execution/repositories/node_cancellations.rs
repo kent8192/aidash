@@ -516,7 +516,7 @@ async fn stop_run(f: &Federation, job: &NodeCancellationJob) -> Result<bool> {
 		.await?;
 	}
 	let token = Uuid::new_v4();
-	let owned = crate::bootstrap::activation_scheduling_scope(tx.as_mut())
+	let owned = crate::bootstrap::activation_scheduling_scope(tx.as_mut(), false)
 		.repair_lease(&raw.metadata, token, 30)
 		.await?;
 	tx.commit().await?;

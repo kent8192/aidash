@@ -3350,6 +3350,7 @@ impl Store {
 			None,
 			self.deployment.as_str(),
 			&mut cursor,
+			self.recovery_cursors.outage.holds_recoveries(seconds),
 		)
 		.await?;
 		tx.commit().await?;
@@ -3363,8 +3364,15 @@ impl Store {
 		seconds: i32,
 	) -> Result<bool> {
 		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		let expired = RunRecord::expired_lease(tx.as_mut(), id, worker).await?;
 		let renewed = RunRecord::renew(tx.as_mut(), id, worker, seconds).await?;
 		tx.commit().await?;
+		if renewed && let Some(expired) = expired {
+			// Nobody took the Run while its lease had expired, so the worker
+			// keeps it and no Lease Recovery is charged (#786).
+			tracing::warn!(run_id = %id, expired_ms = expired.num_milliseconds(), "worker reclaimed its own expired lease");
+			metrics::counter!("aidash_worker_lease_reclaims_total").increment(1);
+		}
 		Ok(renewed)
 	}
 
@@ -5523,9 +5531,10 @@ impl Store {
 		run_id: Option<Uuid>,
 		node_id: &str,
 		cursor: &mut run_state::RecoveryCursor,
+		holds_recoveries: bool,
 	) -> Result<Option<Run>> {
 		aidash_application::activation::lease(
-			&mut crate::bootstrap::activation_scheduling_scope(tx),
+			&mut crate::bootstrap::activation_scheduling_scope(tx, holds_recoveries),
 			worker,
 			seconds,
 			run_id,
