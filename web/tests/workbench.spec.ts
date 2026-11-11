@@ -948,6 +948,57 @@ for (const width of [1280, 390]) {
   });
 }
 
+test("Creator offers an approval request when a new version cannot carry", async ({
+  page,
+}) => {
+  const { drafts } = await editableDrafts(page);
+  await page.route("**/api/workbench/versions/managed-agent/1.0.0", (route) =>
+    route.fulfill({
+      json: {
+        entry: drafts[0].entry,
+        source_node: "aidash://home",
+        observed_at: "2026-09-25T00:00:00Z",
+        workspaces: [],
+        usage_truncated: false,
+        external_assessment_available: false,
+      },
+    }),
+  );
+  await page.route(
+    `**/api/workbench/drafts/${drafts[0].id}/register`,
+    async (route) => {
+      await route.fulfill({
+        json: {
+          draft_id: drafts[0].id,
+          revision: drafts[0].revision,
+          entry: drafts[0].entry,
+          behavioral_tested: false,
+          carry_results: [
+            {
+              node: "brave-otter-k3m9q2xa",
+              source_version: "1.0.0",
+              changed: ["dependency"],
+              unapproved_dependencies: [],
+              carried: false,
+            },
+          ],
+        },
+      });
+    },
+  );
+  await page
+    .locator(".wb-actions")
+    .getByRole("button", { name: "Review registration", exact: true })
+    .click();
+  await page.getByRole("button", { name: /Register in Registry$/ }).click();
+  await expect(
+    page.getByText(/brave-otter-k3m9q2xa: dependency/),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Request approval" }),
+  ).toBeVisible();
+});
+
 test("Creator preserves unsaved edits across all five tabs and invalidates validation", async ({
   page,
 }) => {
