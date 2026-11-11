@@ -1402,14 +1402,14 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 		.await
 		.unwrap();
 	assert_eq!(
-		common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":0,"enabled":true}))
+		common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":0,"enabled":true,"scope":"node"}))
 		.await
 		.0,
 		200
 	);
 	if sibling_metadata {
 		assert_eq!(
-			common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":default_node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":0,"enabled":true}))
+			common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":default_node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":0,"enabled":true,"scope":"node"}))
 			.await
 			.0,
 			200
@@ -1521,7 +1521,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 	drop(app);
 	let app = common::application(f.clone()).await;
 	assert_eq!(
-		common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":1,"enabled":false}))
+		common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":1,"enabled":false,"scope":"node"}))
 		.await
 		.0,
 		200
@@ -1530,7 +1530,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 	// listed the version, so withdrawing it hides nothing.
 	assert_eq!(common::get(&app, &token, &path).await.0, 200);
 	assert_eq!(
-		common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":2,"enabled":true}))
+		common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":2,"enabled":true,"scope":"node"}))
 		.await
 		.0,
 		200
@@ -1539,7 +1539,7 @@ async fn discovered_registry_entries_remain_live_journal_dependencies(
 	if sibling_metadata {
 		for (revision, enabled, expected_status) in [(1, false, 200), (2, true, 200)] {
 			assert_eq!(
-				common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":default_node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":revision,"enabled":enabled}))
+				common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":default_node,"entry":{"id":"discovered-only","version":"1.0.0"},"expected_revision":revision,"enabled":enabled,"scope":"node"}))
 				.await
 				.0,
 				200
