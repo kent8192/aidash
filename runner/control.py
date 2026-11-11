@@ -167,11 +167,13 @@ class Runner(AllocationJournal):
         self.active = set()
         execution_config = {'namespace': config['namespace'], 'runtime_class': config['runtime_class'],
                             'processes': config.get('processes', 128), 'host_tasks': config.get('host_tasks', 512),
-                            'output_bytes': config.get('output_bytes', 8388608)}
+                            'output_bytes': config.get('output_bytes', 8388608),
+                            'node_selector': config.get('node_selector', {}),
+                            'tolerations': config.get('tolerations', [])}
         execution_config_path = os.environ.get('AIDASH_EXECUTION_POD_CONFIG')
         if execution_config_path:
             supplied = json.loads(Path(execution_config_path).read_bytes())
-            if not isinstance(supplied, dict) or {'namespace', 'runtime_class', 'processes', 'host_tasks'} & supplied.keys():
+            if not isinstance(supplied, dict) or {'namespace', 'runtime_class', 'processes', 'host_tasks', 'node_selector', 'tolerations'} & supplied.keys():
                 raise ValueError('invalid Execution Pod configuration overrides')
             execution_config.update(supplied)
         self.execution_pods = ExecutionPodController(self, execution_config)
@@ -460,6 +462,7 @@ class Runner(AllocationJournal):
         error = None
         self.execution_pods.admitted = True  # startup is not serving requests yet
         try:
+            self.execution_pods.sweep_canaries()
             if config.get('allow_docker'):
                 runtime = self.kube_json(['get', 'runtimeclass', config['docker_runtime_class'], '-o', 'json'])
                 if runtime.get('handler') != 'runsc-docker':

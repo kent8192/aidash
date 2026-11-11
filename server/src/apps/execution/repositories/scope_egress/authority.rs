@@ -93,9 +93,7 @@ impl ScratchAuthority {
 		runner_key(&self.store)
 	}
 
-	/// The credential to pass in `/v2/pods/ensure`. No code starts Execution Pods
-	/// until wave 2 of #697.
-	#[allow(dead_code)]
+	/// The credential to pass in `/v2/pods/ensure`.
 	pub fn credential(&self, tenant: &str, space: Uuid) -> crate::Result<String> {
 		Ok(issue(self.key()?.expose_secret().as_bytes(), tenant, space))
 	}

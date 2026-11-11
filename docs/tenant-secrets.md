@@ -326,7 +326,8 @@ rewritten links are used unchanged. Python downloads are disabled with
 `UV_PYTHON_DOWNLOADS=never`.
 
 Only these built-in indexes buffer index responses, up to 8 MiB, to rewrite
-package file addresses onto the gateway. npm files remain on
+package file addresses onto the gateway. An index exceeding this limit is refused
+with HTTP 422 and the message `package_index_limit_exceeded: this package index is over 8 MiB. Install from a lockfile, or by tarball URL through the registry.` in both the error body and HTTP reason phrase. npm files remain on
 `registry.npmjs.org`; PyPI files may also use `files.pythonhosted.org`.
 Integrity fields and URL hash fragments remain intact, and package files
 stream unchanged under the operation's cumulative budget. `python_install`
@@ -338,11 +339,9 @@ Live previews follow with [#405](https://github.com/kent8192/aidash/issues/405).
 
 ## Scratch Space proxy integration
 
-The scope-authenticated forward proxy is an integration component. The server
-has not yet connected it to Scratch Space credentials or durable scope policy;
-the operation-token gateway described above remains the active route.
-
-Once that authority and the Execution Pod runtime are connected, the Pod needs
+The server connects the scope-authenticated forward proxy to Scratch Space
+credentials and durable scope policy. The operation-token gateway described
+above also remains available. The Pod needs
 `HTTPS_PROXY` and `HTTP_PROXY` set to the internal Egress gateway. The gateway
 accepts HTTP Basic proxy authentication with the scope credential as the password
 (for example, `http://scope:<scope-credential>@<gateway-host>:<gateway-port>`;
@@ -384,8 +383,8 @@ Scratch Space under the server's key, verified in constant time, and is excluded
 from records and logs. It has one value per Scratch Space and stays valid until
 the space is deleted; deleting its Tenant or its Node closes it at once, before
 any purge, and a restore reopens it. An open tunnel closes at the next recheck. A
-Pod carries it in the user part of its proxy URL. No code starts Execution Pods
-yet, so no Agent uses Host connections until wave 2 of #697.
+Pod carries it in the user part of its proxy URL. Agent execution in Execution
+Pods follows in wave 2 of #697.
 
 Connection and event row retention remains a follow-up; operators must account
 for their storage until an automatic retention policy is implemented.
