@@ -115,6 +115,26 @@ impl ApprovalReviewScope for Fixture {
 				restriction: restriction.clone(),
 			}))
 	}
+	async fn previous_approved(&mut self, entry: &Entry) -> Result<Option<Entry>> {
+		let candidates: Vec<_> = self
+			.approvals
+			.iter()
+			.filter(|((id, _), _)| id == &entry.id)
+			.map(|((_, version), (enabled, _, _))| {
+				aidash_domain::catalog::carry_over::CarryCandidate {
+					version,
+					enabled: *enabled,
+					carry_over: true,
+				}
+			})
+			.collect();
+		let Some(version) =
+			aidash_domain::catalog::carry_over::source_version(&entry.version, &candidates)?
+		else {
+			return Ok(None);
+		};
+		Ok(self.definitions.get(&key(&entry.id, version)).cloned())
+	}
 	async fn installed(&mut self, projection: &Projection) -> Result<Option<InstalledRevision>> {
 		let Some(installed) = self.installed.get(&key(&projection.installation, "1.0.0")) else {
 			return Ok(None);
@@ -926,5 +946,40 @@ async fn consumers_reach_children_of_an_already_expanded_shared_bundle() {
 			.unwrap()
 			.subjects,
 		BTreeSet::from([subject("a"), subject("b")])
+	);
+}
+
+#[tokio::test]
+async fn review_reports_changes_from_highest_lower_approved_version() {
+	let old = agent("model", &[]);
+	let mut later = old.clone();
+	later.version = "1.1.0".into();
+	let mut new = old.clone();
+	new.version = "1.2.0".into();
+	new.config["model"] = json!({"id":"other", "version":"1.0.0"});
+	let mut fixture = Fixture::new(vec![old, later, new, entry("model", "other", json!({}))]);
+	fixture
+		.approvals
+		.insert(key("writer", "1.0.0"), (true, 1, None));
+	fixture
+		.approvals
+		.insert(key("writer", "1.1.0"), (true, 1, None));
+	let review = review(
+		&mut fixture,
+		&EntityRef {
+			id: "writer".into(),
+			version: "1.2.0".into(),
+		},
+	)
+	.await
+	.unwrap();
+	let item = item(&review, "writer");
+	assert_eq!(item.previous_version.as_deref(), Some("1.1.0"));
+	assert!(
+		item.consent_changes
+			.iter()
+			.any(|change| change == "dependency"),
+		"{:?}",
+		item.consent_changes
 	);
 }

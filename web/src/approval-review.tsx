@@ -438,6 +438,10 @@ export function ApprovalReviewPanel({
       <ul className="divide-y divide-border rounded-md border border-border">
         {current.items.map((item) => {
           const key = itemKey(item);
+          const comparison = item as ReviewItem & {
+            previous_version?: string | null;
+            consent_changes?: string[];
+          };
           const checked = selected.includes(key);
           const restriction = restrictionFor(item, edits);
           const actionable = needsAction(item);
@@ -508,6 +512,29 @@ export function ApprovalReviewPanel({
                 )}
               {local(item.description) && (
                 <Hint>{local(item.description)}</Hint>
+              )}
+              {comparison.previous_version && (
+                <Notice tone="warning" className="approval-consent-changes">
+                  <span>
+                    {locale === "ja-JP"
+                      ? "前回承認したバージョンとの差分"
+                      : "Changes from previously approved version"}
+                    : {comparison.previous_version}
+                  </span>
+                  {comparison.consent_changes?.length ? (
+                    <ul>
+                      {comparison.consent_changes.map((change) => (
+                        <li key={change}>{change}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <span>
+                      {locale === "ja-JP"
+                        ? "同意に関わる変更はありません"
+                        : "No consent changes"}
+                    </span>
+                  )}
+                </Notice>
               )}
               <Hint>{t(statusKeys[item.status][1])}</Hint>
               {item.consumers.length > 0 && (

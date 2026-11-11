@@ -59,6 +59,39 @@ impl ApprovalReviewScope for ReviewScope<'_> {
 					.and_then(|value| serde_json::from_value(value.0).ok()),
 			}))
 	}
+	async fn previous_approved(&mut self, entry: &Entry) -> Result<Option<Entry>> {
+		let rows = AuthorizationCatalog::objects()
+			.filter(AuthorizationCatalog::field_tenant().eq(self.tenant().to_owned()))
+			.filter(AuthorizationCatalog::field_node().eq(self.node.node.as_str().to_owned()))
+			.filter(AuthorizationCatalog::field_entry_key().eq(entry.id.clone()))
+			.all_with_executor(self.access.tx.native_mut())
+			.await
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(crate::Error::from)?;
+		let candidates: Vec<_> = rows
+			.iter()
+			.map(|row| aidash_domain::catalog::carry_over::CarryCandidate {
+				version: &row.entry_version,
+				enabled: row.enabled,
+				carry_over: true,
+			})
+			.collect();
+		let Some(version) =
+			aidash_domain::catalog::carry_over::source_version(&entry.version, &candidates)?
+		else {
+			return Ok(None);
+		};
+		let previous = self
+			.definition(&EntityRef {
+				id: entry.id.clone(),
+				version: version.to_owned(),
+			})
+			.await?;
+		match previous {
+			Some(old) if self.can_read(&old).await? => Ok(Some(old)),
+			_ => Ok(None),
+		}
+	}
 	async fn installed(&mut self, projection: &Projection) -> Result<Option<InstalledRevision>> {
 		if projection.contract != 1 || projection.tenant != self.tenant() {
 			return Ok(None);

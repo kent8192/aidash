@@ -34,6 +34,10 @@ pub trait ApprovalReviewScope: Send {
 	/// The raw exact version, approved or not.
 	async fn definition(&mut self, reference: &EntityRef) -> Result<Option<Entry>>;
 	async fn approval(&mut self, reference: &EntityRef) -> Result<Option<ApprovalSnapshot>>;
+	/// Highest lower enabled approval on this Node, if its definition is readable.
+	async fn previous_approved(&mut self, _entry: &Entry) -> Result<Option<Entry>> {
+		Ok(None)
+	}
 	async fn installed(&mut self, projection: &Projection) -> Result<Option<InstalledRevision>>;
 	/// `registry.read` on the definition, decided without a refusal.
 	async fn can_read(&mut self, entry: &Entry) -> Result<bool>;

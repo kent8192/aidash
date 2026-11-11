@@ -813,6 +813,26 @@ async function openReview(page: Page) {
   return page.getByRole("region", { name: "Approval Review" });
 }
 
+test("the Review shows consent changes from the previous approval", async ({
+  page,
+}) => {
+  await reviewDashboard(page, {
+    review: () =>
+      reviewBody([
+        reviewItem("writer", "agent", "approvable", {
+          previous_version: "0.9.0",
+          consent_changes: ["model", "endpoint host"],
+        }),
+      ]),
+    answer: () => ({ json: {} }),
+  });
+  const review = await openReview(page);
+  const changes = review.locator(".approval-consent-changes");
+  await expect(changes).toContainText("0.9.0");
+  await expect(changes).toContainText("model");
+  await expect(changes).toContainText("endpoint host");
+});
+
 test("the Review shows the whole closure and approves local items and activations in one submission", async ({
   page,
 }) => {

@@ -62,6 +62,10 @@ pub struct ReviewItem {
 	pub kind: String,
 	pub name: Localized,
 	pub description: Localized,
+	/// The earlier approved version used for the consent comparison, if visible.
+	pub previous_version: Option<String>,
+	/// Consent-relevant changes since the earlier approved version.
+	pub consent_changes: Vec<String>,
 	/// Disclosure required before approving this exact Provider tool.
 	pub provider_warning: Option<String>,
 	/// `digest(entry)`; absent only when the dependency is missing.
@@ -347,6 +351,8 @@ pub async fn review(
 			kind: String::new(),
 			name: Localized::new(),
 			description: Localized::new(),
+			previous_version: None,
+			consent_changes: Vec::new(),
 			provider_warning: None,
 			digest: None,
 			status: if hidden_consumer {
@@ -473,7 +479,21 @@ async fn review_item(
 			false,
 		)
 	};
+	let previous = if approved {
+		None
+	} else {
+		scope.previous_approved(entry).await?
+	};
+	let consent_changes = previous
+		.as_ref()
+		.map(|old| {
+			aidash_domain::catalog::carry_over::compare(old, entry)
+				.unwrap_or_else(|error| vec![format!("comparison unavailable: {error}")])
+		})
+		.unwrap_or_default();
 	Ok(ReviewItem {
+		previous_version: previous.map(|old| old.version),
+		consent_changes,
 		consumers: consumers
 			.iter()
 			.map(|(subject, _)| subject.clone())
