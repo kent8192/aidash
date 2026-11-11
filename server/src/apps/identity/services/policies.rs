@@ -22,6 +22,19 @@ use serde_json::Value;
 
 use uuid::Uuid;
 
+type PendingCountKey = (usize, String, String, Uuid, i64);
+struct PendingCountCache {
+	runtime: std::sync::Weak<tokio::sync::Notify>,
+	requests: Vec<(Uuid, i64)>,
+	approvals: Vec<(String, String, String, i64)>,
+	nodes: std::collections::BTreeSet<aidash_domain::nodes::NodeName>,
+	count: u64,
+	expires: std::time::Instant,
+}
+static PENDING_COUNTS: std::sync::LazyLock<
+	std::sync::Mutex<std::collections::HashMap<PendingCountKey, PendingCountCache>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
 fn control_service(f: Federation) -> Authorization {
 	Authorization {
 		pool: f.store.control_pool,
@@ -1273,6 +1286,36 @@ impl PolicyAdministration {
 					.into_iter()
 					.map(|node| node.name)
 					.collect::<std::collections::BTreeSet<_>>();
+			let request_revisions = requests::open_revisions(&mut access.tx, &tenant).await?;
+			if request_revisions.is_empty() {
+				return Ok(CatalogPendingCount { count: 0 });
+			}
+			let approval_revisions = requests::approval_revisions(&mut access.tx, &tenant).await?;
+			let cache_key = (
+				std::sync::Arc::as_ptr(&f.notify) as usize,
+				tenant.clone(),
+				identity.subject.clone(),
+				identity.credential_id,
+				access.snapshot.revision,
+			);
+			{
+				let cache = PENDING_COUNTS
+					.lock()
+					.unwrap_or_else(|error| error.into_inner());
+				if let Some(entry) = cache.get(&cache_key) {
+					if entry.expires > std::time::Instant::now()
+						&& entry
+							.runtime
+							.upgrade()
+							.is_some_and(|runtime| std::sync::Arc::ptr_eq(&runtime, &f.notify))
+						&& entry.requests == request_revisions
+						&& entry.approvals == approval_revisions
+						&& entry.nodes == live_nodes
+					{
+						return Ok(CatalogPendingCount { count: entry.count });
+					}
+				}
+			}
 			let mut offset = 0;
 			let mut count = 0;
 			let mut reviews =
@@ -1321,6 +1364,25 @@ impl PolicyAdministration {
 				if len < BATCH {
 					break;
 				}
+			}
+			{
+				let mut cache = PENDING_COUNTS
+					.lock()
+					.unwrap_or_else(|error| error.into_inner());
+				if cache.len() >= 1024 {
+					cache.clear();
+				}
+				cache.insert(
+					cache_key,
+					PendingCountCache {
+						runtime: std::sync::Arc::downgrade(&f.notify),
+						requests: request_revisions,
+						approvals: approval_revisions,
+						nodes: live_nodes,
+						count,
+						expires: std::time::Instant::now() + std::time::Duration::from_secs(60),
+					},
+				);
 			}
 			Ok(CatalogPendingCount { count })
 		}
