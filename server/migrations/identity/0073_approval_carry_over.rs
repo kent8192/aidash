@@ -59,4 +59,18 @@ pub(super) fn migration() -> Migration {
 				.with_not_null(false),
 			mysql_options: None,
 		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "authorization_catalog".into(),
+			constraint: Constraint::Check {
+				name: "authorization_catalog_scope_valid".into(),
+				expression: "scope IN ('node','deployment')".into(),
+			},
+		})
+		.add_operation(Operation::AddConstraintDefinition {
+			table: "authorization_catalog_history".into(),
+			constraint: Constraint::Check {
+				name: "authorization_catalog_history_scope_valid".into(),
+				expression: "scope IN ('node','deployment')".into(),
+			},
+		})
 }
