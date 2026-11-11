@@ -8,7 +8,9 @@ use crate::{
 	authorization::{access::Access, identity::SubjectIdentity},
 	store::Store,
 };
-use aidash_application::egress::{Admission, Authority, Direction, Meter, RequestTimes};
+use aidash_application::egress::{
+	Admission, Authority, DebitRefusal, Direction, Meter, RequestTimes,
+};
 use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
 use aidash_application::tenant_secrets::{
 	CachedRoute, Resolution, Resolved, RouteCache, SecretCall, SecretIdentity, SecretRoute,
@@ -696,7 +698,7 @@ async fn admit_session(
 		.duration_ms(0)
 		.admission_ms(None)
 		.settle_ms(None)
-		.error(Some("stream_interrupted".to_owned()))
+		.error(None)
 		.secret_id(secret.as_ref().map(|secret| secret.id))
 		.secret_version(secret.as_ref().map(|secret| secret.version.clone()))
 		.secret_host(secret_host(secret.as_ref(), &definition))
@@ -915,7 +917,7 @@ impl Authority for Gateway {
 				.admission_ms(None)
 				.settle_ms(None)
 				.via("operation".to_owned())
-				.error(Some("stream_interrupted".to_owned()))
+				.error(None)
 				.secret_id(secret.as_ref().map(|secret| secret.id))
 				.secret_version(secret.as_ref().map(|secret| secret.version.clone()))
 				.secret_host(secret_host)
@@ -1036,24 +1038,6 @@ async fn charge_session(
 		return Err(exhausted());
 	}
 	Ok(())
-}
-
-/// A decision that the operation may not continue, as opposed to a failure to
-/// find out. The gateway reads the same errors as a refusal, and charges again
-/// after anything else (see `Meter::charge`).
-fn stops_stream(error: &Error) -> bool {
-	match error {
-		Error::Forbidden
-		| Error::Unauthorized
-		| Error::AuthorityRefused(_)
-		| Error::TenantDeleted => true,
-		Error::Conflict(code) => {
-			code == aidash_domain::egress::OPERATION_EXPIRED
-				|| code == aidash_domain::egress::OPERATION_INACTIVE
-				|| code == aidash_domain::egress::LIMIT_EXCEEDED
-		}
-		_ => false,
-	}
 }
 
 async fn add_to_record(
@@ -1211,7 +1195,10 @@ impl Meter for RequestMeter {
 		}
 		let result: Result<()> = async {
 			let bytes = i64::try_from(bytes).map_err(|_| Error::Forbidden)?;
-			let recorded = match live(&self.store, &self.identity, self.operation).await {
+			let recorded = match live(&self.store, &self.identity, self.operation)
+				.await
+				.map_err(aidash_application::Error::from)
+			{
 				// Budget rows serialize debits in total-then-service order.
 				Ok((mut access, _)) => {
 					let recorded = record_operation_bytes(
@@ -1228,7 +1215,7 @@ impl Meter for RequestMeter {
 				}
 				// The bytes already crossed the gateway, so they still count
 				// although the operation can no longer use it.
-				Err(refusal) if stops_stream(&refusal) => {
+				Err(refusal) if DebitRefusal::of(&refusal).is_some() => {
 					let mut tx = self
 						.store
 						.pool
@@ -1244,10 +1231,10 @@ impl Meter for RequestMeter {
 					)
 					.await?;
 					tx.commit().await?;
-					return Err(refusal);
+					return Err(refusal.into());
 				}
 				// Nothing decided about this operation, and nothing committed.
-				Err(error) => return Err(error),
+				Err(error) => return Err(error.into()),
 			};
 			if recorded.expired {
 				return Err(expired());

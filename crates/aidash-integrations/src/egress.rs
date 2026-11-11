@@ -331,25 +331,21 @@ impl Refusal {
 	};
 
 	fn of(error: &aidash_application::Error) -> Self {
-		use aidash_application::Error;
-		match error {
-			Error::Conflict(code) if code == aidash_domain::egress::LIMIT_EXCEEDED => Self::LIMIT,
-			Error::Conflict(code) if code == aidash_domain::egress::OPERATION_EXPIRED => {
-				Self::EXPIRED
-			}
-			Error::Conflict(code) if code == aidash_domain::egress::OPERATION_INACTIVE => {
-				Self::INACTIVE
-			}
-			Error::Refused(code) if code == "egress_budget_exhausted" => Self {
+		use aidash_application::egress::DebitRefusal;
+		match DebitRefusal::of(error) {
+			Some(DebitRefusal::Limit) => Self::LIMIT,
+			Some(DebitRefusal::Expired) => Self::EXPIRED,
+			Some(DebitRefusal::Inactive) => Self::INACTIVE,
+			Some(DebitRefusal::ScopeBudget) => Self {
 				status: StatusCode::TOO_MANY_REQUESTS,
 				code: "egress_budget_exhausted",
 			},
-			Error::Refused(code) if code == "egress_suspended" => Self {
+			Some(DebitRefusal::Suspended) => Self {
 				status: StatusCode::FORBIDDEN,
 				code: "egress_suspended",
 			},
-			Error::Forbidden | Error::Unauthorized | Error::AuthorityRefused(_) => Self::FORBIDDEN,
-			_ => Self::UNAVAILABLE,
+			Some(DebitRefusal::Forbidden) => Self::FORBIDDEN,
+			None => Self::UNAVAILABLE,
 		}
 	}
 
@@ -804,13 +800,27 @@ impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for WriteDeadline<S
 /// `CONNECT` is excluded because an upgraded tunnel half-closes through the same
 /// socket and must keep reading what the other side sends.
 #[derive(Clone, Default)]
-struct UnreadBody(Arc<std::sync::atomic::AtomicBool>);
+struct UnreadBody(
+	Arc<std::sync::atomic::AtomicBool>,
+	Arc<std::sync::Mutex<progress::Progress>>,
+);
 impl UnreadBody {
 	fn note<B: hyper::body::Body>(&self, request: &Request<B>) {
-		self.0.store(
-			request.method() != hyper::Method::CONNECT && !request.body().is_end_stream(),
-			Ordering::Relaxed,
-		);
+		let has_body =
+			request.method() != hyper::Method::CONNECT && !request.body().is_end_stream();
+		self.0.store(has_body, Ordering::Relaxed);
+		let mut progress = self.1.lock().unwrap();
+		if request.method() == hyper::Method::CONNECT {
+			progress.disable();
+		} else {
+			progress.note(request.body().size_hint().exact(), has_body);
+		}
+	}
+	fn read(&self, bytes: &[u8]) {
+		self.1.lock().unwrap().read(bytes);
+	}
+	fn incomplete(&self) -> bool {
+		self.1.lock().unwrap().incomplete()
 	}
 }
 
@@ -829,6 +839,7 @@ struct LingeringClose<S> {
 	closed: bool,
 	/// Told once the answer has been written and the sending side is closed.
 	answered: Option<tokio::sync::oneshot::Sender<()>>,
+	tunnel: Option<Arc<std::sync::Mutex<Option<Arc<proxy::TunnelPermit>>>>>,
 }
 impl<S> LingeringClose<S> {
 	fn new(inner: S, unread: UnreadBody) -> Self {
@@ -839,7 +850,16 @@ impl<S> LingeringClose<S> {
 			linger: None,
 			closed: false,
 			answered: None,
+			tunnel: None,
 		}
+	}
+
+	fn releasing_tunnel(
+		mut self,
+		tunnel: Arc<std::sync::Mutex<Option<Arc<proxy::TunnelPermit>>>>,
+	) -> Self {
+		self.tunnel = Some(tunnel);
+		self
 	}
 
 	/// Reports through `answered` when the answer is out, so that a caller can
@@ -858,8 +878,8 @@ impl<S: tokio::io::AsyncRead + Unpin> LingeringClose<S> {
 			.linger
 			.get_or_insert_with(|| Box::pin(tokio::time::sleep(LINGER_TIME)));
 		if timer.as_mut().poll(cx).is_ready() {
-			// With nothing discarded, closing resets nothing and no answer is at risk.
-			if self.bytes_left < LINGER_BYTES {
+			// Count an upload cut off while its body is still incomplete.
+			if self.bytes_left < LINGER_BYTES && self.unread.incomplete() {
 				metrics::counter!("aidash_egress_linger_limit_total", "limit" => "time")
 					.increment(1);
 			}
@@ -873,6 +893,7 @@ impl<S: tokio::io::AsyncRead + Unpin> LingeringClose<S> {
 				Poll::Ready(Err(_)) => return Poll::Ready(()),
 				Poll::Ready(Ok(())) if buffer.filled().is_empty() => return Poll::Ready(()),
 				Poll::Ready(Ok(())) => {
+					self.unread.read(buffer.filled());
 					self.bytes_left = self.bytes_left.saturating_sub(buffer.filled().len() as u64);
 					if self.bytes_left == 0 {
 						metrics::counter!("aidash_egress_linger_limit_total", "limit" => "bytes")
@@ -890,7 +911,12 @@ impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for LingeringClose<S>
 		cx: &mut std::task::Context<'_>,
 		buf: &mut tokio::io::ReadBuf<'_>,
 	) -> std::task::Poll<std::io::Result<()>> {
-		std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+		let before = buf.filled().len();
+		let result = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+		if matches!(result, std::task::Poll::Ready(Ok(()))) {
+			self.unread.read(&buf.filled()[before..]);
+		}
+		result
 	}
 }
 impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite
@@ -921,6 +947,9 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWr
 			}
 		}
 		if self.unread.0.load(Ordering::Relaxed) {
+			if let Some(tunnel) = self.tunnel.take() {
+				drop(tunnel.lock().unwrap().take());
+			}
 			std::task::ready!(self.poll_discard(cx));
 		}
 		std::task::Poll::Ready(Ok(()))
@@ -1030,6 +1059,7 @@ async fn serve_with_clients(
 					let connection_lease = Arc::new(std::sync::Mutex::new(None));
 					let unread = UnreadBody::default();
 					let noting = unread.clone();
+					let lingering_tunnel = connection_lease.clone();
 					let service = service_fn(move |request| {
 						noting.note(&request);
 						let authority=authority.clone(); let client=client.clone(); let public=public.clone(); let scopes=scopes.clone(); let permit=permit.clone(); let tunnels=tunnels.clone(); let connection_lease=connection_lease.clone();
@@ -1045,7 +1075,7 @@ async fn serve_with_clients(
 					});
 					let _ = hyper::server::conn::http1::Builder::new().timer(TokioTimer::new())
 						.header_read_timeout(IDLE).max_headers(64)
-						.serve_connection(TokioIo::new(LingeringClose::new(WriteDeadline::new(socket, IDLE), unread)), service).with_upgrades().await;
+						.serve_connection(TokioIo::new(LingeringClose::new(WriteDeadline::new(socket, IDLE), unread).releasing_tunnel(lingering_tunnel)), service).with_upgrades().await;
 				});
 			}
 		}
@@ -1977,4 +2007,5 @@ async fn forward(
 #[cfg(test)]
 mod tests;
 
+mod progress;
 mod proxy;
