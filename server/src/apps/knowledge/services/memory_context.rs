@@ -62,7 +62,11 @@ pub(crate) async fn retrieve(
 	if !run.is_local(store.deployment.as_str()) {
 		return Err(Error::Forbidden);
 	}
-	if agent.memory.is_none() || agent.allow_cross_conversation_memory == Some(false) {
+	// Built-in Memory recalls once at Run start, never per step (#852).
+	if agent.memory.as_ref().is_none_or(|memory| {
+		memory.id == aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+	}) || agent.allow_cross_conversation_memory == Some(false)
+	{
 		return Ok(Context::status(bounded_status("disabled", budget)?));
 	}
 	let primary_automatic = !run
@@ -156,7 +160,7 @@ pub(crate) async fn retrieve(
 			dependencies.push(memory::definition(lease, &bank.tenant, reference, kind).await?);
 		}
 		if let Some(access) = lease.access() {
-			access.track_registry(&dependencies).await?;
+			access.track_memory_registry(&dependencies).await?;
 		}
 		let tokenizer: TokenizerConfig = serde_json::from_value(
 			memory::definition(lease, &bank.tenant, &policy.tokenizer, "tokenizer")

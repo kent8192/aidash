@@ -5943,6 +5943,43 @@ async fn capability_descriptions_are_recorded_whole_or_deferred(
 }
 
 #[rstest]
+#[case("journal_search", json!({"query":"Correction", "run_id": Uuid::new_v4()}))]
+#[case("journal_read", json!({"from_seq":1, "through_seq":2, "run_id": Uuid::new_v4()}))]
+#[tokio::test]
+async fn journal_fitting_reports_a_missing_run_to_the_model(
+	mut fixture: Fixture,
+	#[case] name: &str,
+	#[case] arguments: Value,
+) {
+	let tool = Scripted::new(
+		aidash_application::tools::builtins()
+			.remove(name)
+			.unwrap()
+			.specification(),
+		name,
+	);
+	tool.outputs.lock().unwrap().push_back(json!({}));
+	tool.invalid_errors.lock().unwrap().push_back(
+		"Journal run not found. Check run_id, or omit it to search this Run's Journal.".into(),
+	);
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.custom
+		.insert(name.into(), tool);
+	let request = call("call-missing-run", name, arguments);
+	respond(&mut fixture.run, vec![request.clone()]);
+	fixture.run.state.tool_mut().unwrap().request_window = 100_000;
+
+	advance_sources(&mut fixture).await.unwrap();
+	let (event, saved) = last_write(&fixture);
+	assert_eq!(event, "run.tool_recorded");
+	assert_eq!(saved.state.tool().unwrap().cursor, 1);
+	assert!(
+		matches!(saved.context.events().last(), Some(ContextEvent::Tool { call, result }) if call == &request && result["error"].as_str().is_some_and(|message| message.contains("Check run_id")))
+	);
+}
+
+#[rstest]
 #[case::whole(100_000, Some(16))]
 #[case::cut(4_000, None)]
 #[case::deferred(1, Some(0))]

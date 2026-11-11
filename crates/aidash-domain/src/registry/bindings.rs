@@ -47,7 +47,8 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 ];
 /// Default builtins that act on the Agent's own memory. Without a memory
 /// provider every call would be refused, so a Run excludes them instead of
-/// offering them (#600, #617).
+/// offering them (#600, #617). Binding resolution gives an Agent that binds
+/// no provider Built-in Memory (#852).
 pub const MEMORY_TOOLS: &[&str] = &["memory_mutate", "memory_recall", "memory_reflect"];
 /// Whether a resolved definition is a memory provider. A native conversation
 /// or semantic memory source (a definition with `schema_version`) is a
@@ -168,8 +169,12 @@ pub fn definition_references(
 			if let Some(reference) = provider.policy.embedding {
 				result.push((local(&reference), "embedding".into()));
 			}
-			result.push((local(&provider.policy.reranker), "reranker".into()));
-			result.push((local(&provider.policy.tokenizer), "tokenizer".into()));
+			// The built-in provider's fixed local algorithms are implementation
+			// details, rather than independent user-selected Registry dependencies.
+			if !memory_defaults::is_builtin_memory(entry) {
+				result.push((local(&provider.policy.reranker), "reranker".into()));
+				result.push((local(&provider.policy.tokenizer), "tokenizer".into()));
+			}
 		}
 		"source" => {
 			let source: crate::memory::SourceConfig = serde_json::from_value(entry.config.clone())?;

@@ -255,6 +255,26 @@ async fn export_tracks_cross_run_reads_and_refuses_them_without_run_read(
 	let (target, target_worker) = leased(&f, &app, &token).await;
 	let (other, other_worker) = leased(&f, &app, &token).await;
 	let (denied_reader, denied_worker) = leased(&f, &app, &token).await;
+	// A model may send its Task ID as the optional Journal Run ID. The
+	// reader exists, but the named target does not; this is a correctable
+	// input error, not a missing reader or a lost execution lease.
+	let tenant = aidash_application::tenancy::TenancyScope::tenant("acme").unwrap();
+	let missing_target = f
+		.store
+		.export(&tenant, reader.id, reader.task_id, None)
+		.await;
+	assert!(
+		matches!(missing_target, Err(aidash_application::Error::Invalid(_))),
+		"{missing_target:?}"
+	);
+	let missing_reader = f
+		.store
+		.export(&tenant, Uuid::new_v4(), target.id, None)
+		.await;
+	assert!(
+		matches!(missing_reader, Err(aidash_application::Error::NotFound(_))),
+		"{missing_reader:?}"
+	);
 	f.store
 		.export(&TEST_FIXTURE, reader.id, target.id, None)
 		.await

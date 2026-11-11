@@ -598,6 +598,94 @@ async fn a_revoked_file_stops_being_readable_through_the_run_file_routes(
 	c.close().await;
 }
 
+/// A Tenant Administrator stops a Source's files by withdrawing its Catalog
+/// Approval. The Run's file routes then answer as its worker does (#788).
+#[rstest::rstest]
+#[tokio::test]
+async fn withdrawing_a_sources_approval_stops_the_run_file_routes(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let mut c = Box::pin(capability_fixture).await;
+	let token = c.token.clone();
+	let (status, added) = add(&c, &token, vec![file("plan.md", "needle\n")]).await;
+	assert_eq!(status, 200, "{added}");
+	bind_agent(&mut c, &[("withdrawn-docs", added["references"].clone())]).await;
+	let (status, started) = start(&c, &token, c.task).await;
+	assert_eq!(status, 200, "{started}");
+	let run = latest_run(&c).await;
+	let (status, found) = request(
+		&c.app,
+		&token,
+		"POST",
+		&format!("/api/runs/{}/files/search", run.id),
+		json!({"query":"","mode":"path","scope":"references"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{found}");
+	let plan = found["matches"][0].clone();
+	let (status, area) = request(
+		&c.app,
+		&token,
+		"GET",
+		&format!("/api/runs/{}/working-area", run.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{area}");
+	let approve = |revision: i64, enabled: bool| {
+		request(
+			&c.app,
+			&token,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"withdrawn-docs","version":"1.0.0"},"expected_revision":revision,"enabled":enabled}),
+		)
+	};
+	let (status, withdrawn) = approve(1, false).await;
+	assert_eq!(status, 200, "{withdrawn}");
+
+	for (route, input) in [
+		(
+			"files/read",
+			json!({"file_id":plan["file_id"],"representation":"text"}),
+		),
+		(
+			"files/search",
+			json!({"query":"needle","mode":"literal","scope":"references"}),
+		),
+		(
+			"files/materialize",
+			json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"path":"copy.md","source":{"kind":"file","file_id":plan["file_id"],"expected_digest":plan["digest"]}}),
+		),
+	] {
+		let (status, denied) = request(
+			&c.app,
+			&token,
+			"POST",
+			&format!("/api/runs/{}/{route}", run.id),
+			input,
+		)
+		.await;
+		assert_eq!(status, 403, "{route}: {denied}");
+		assert!(!denied.to_string().contains("needle"), "{route}: {denied}");
+	}
+
+	// Approving the Source again gives the files back.
+	let (status, approved) = approve(withdrawn["revision"].as_i64().unwrap(), true).await;
+	assert_eq!(status, 200, "{approved}");
+	let (status, read) = request(
+		&c.app,
+		&token,
+		"POST",
+		&format!("/api/runs/{}/files/read", run.id),
+		json!({"file_id":plan["file_id"],"representation":"text"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{read}");
+	assert_eq!(read["content"], "needle\n", "{read}");
+	c.close().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn a_copy_of_a_reference_file_downloads_only_for_its_uploader(

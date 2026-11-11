@@ -98,10 +98,11 @@ impl PreparedSearch {
 }
 /// An unreachable or failing vector backend is a transient outage that a Run
 /// retries (#233); a rejected query or invariant violation is not. A `Port`
-/// error is untyped, so only the adapter can tell a transient database failure
-/// from a permanent one and must type the former `Unavailable` itself.
+/// error is untyped, so only the adapter can identify a temporary database
+/// failure and preserve it for the Run's database recovery path.
 fn vector_outage(error: Error) -> Error {
 	match error {
+		Error::TemporaryDatabase(_) => error,
 		Error::RemoteSemantic(Failure::Unavailable) | Error::External(_) => {
 			Error::RemoteSemantic(Failure::Unavailable)
 		}
@@ -149,7 +150,7 @@ pub async fn prepare(
 		}
 		if agent_controls.is_some_and(|agent| match &source {
 			Source::Unit { .. } => true,
-			Source::Memory { .. } => agent.memory.is_some() || !agent.semantic_memory,
+			Source::Memory { .. } => bound_provider(agent) || !agent.semantic_memory,
 			Source::Artifact { .. } | Source::Message { .. } | Source::WorkingImage { .. } => {
 				!agent.workspace_context
 			}
@@ -476,7 +477,7 @@ pub async fn workspace_context(
 ) -> Result<WorkspaceContext> {
 	// A native provider opts into its own Bank retrieval. Ordinary workspace
 	// indexing remains available only through an explicit workspace Source.
-	if (!agent.semantic_memory || agent.memory.is_some()) && !agent.workspace_context {
+	if (!agent.semantic_memory || bound_provider(agent)) && !agent.workspace_context {
 		return Ok(WorkspaceContext::Retrieved(None));
 	}
 	let configured = scope.configured(run.workspace_id).await?;
@@ -578,4 +579,13 @@ pub async fn recheck(
 		}
 	}
 	Ok(())
+}
+
+/// Whether the Agent binds its own memory provider. Built-in Memory recalls
+/// once at Run start (#852), so it does not replace a native semantic memory
+/// Source in per-step retrieval.
+fn bound_provider(agent: &AgentConfig) -> bool {
+	agent.memory.as_ref().is_some_and(|memory| {
+		memory.id != aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
+	})
 }

@@ -3159,8 +3159,9 @@ async fn agent_plugin_settings_migration_validates_the_key_and_refuses_rollback_
 		combined["harness_contract"] = json!("structured@99");
 		assert!(!contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![combined]).await);
 	}
-	// Generated Agents disable implicit compaction. The replacement validator
-	// must preserve that key and the current Decider Binding restrictions.
+	// The compaction rebuild (#850) retired the implicit compaction default.
+	// Agent Plugin settings must not bring back a removal of it, with or
+	// without a Decider Binding.
 	let mut compaction = json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},
 		"instructions":"Work","remove_default":["compaction"]});
 	let mut deferred_compaction = compaction.clone();
@@ -3174,8 +3175,8 @@ async fn agent_plugin_settings_migration_validates_the_key_and_refuses_rollback_
 		let mut with_settings = config.clone();
 		with_settings["agent_plugin_settings"] = json!({"acme":{"docs":{"tools":["search"]}}});
 		assert!(
-			contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![with_settings]).await,
-			"Agent Plugin settings must retain the compaction contract: {config}"
+			!contract_accepts(&pool, "aidash_agent_bindings_is_valid", vec![with_settings]).await,
+			"Agent Plugin settings must not revive the compaction default: {config}"
 		);
 	}
 	// Assert: the contract mirrors PluginSettings' shape: plugin to server to settings.

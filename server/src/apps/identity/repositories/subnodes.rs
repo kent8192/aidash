@@ -692,7 +692,8 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 		key: &str,
 		content: &str,
 	) -> Result<()> {
-		self.federation
+		let written = self
+			.federation
 			.store
 			.accept_member_message_in(
 				self.access.tx.native_mut(),
@@ -703,6 +704,21 @@ impl aidash_application::ports::subnodes::ManageScope for Management<'_> {
 				self.message_limit,
 			)
 			.await?;
+		// The copy depends on what the member read, and so does the creating Run that
+		// received it (#793). Both inserts ignore a replay of the same key.
+		if let Some((workspace, message)) = written {
+			self.federation
+				.store
+				.record_member_message_in(&mut self.access.tx, run.id, workspace, message)
+				.await?;
+			crate::apps::identity::models::AuthorizationRunRead::record_sources(
+				self.access.tx.native_mut(),
+				subnode.creator_run_id,
+				workspace,
+				&[("message".to_owned(), message)],
+			)
+			.await?;
+		}
 		Ok(())
 	}
 }

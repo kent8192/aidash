@@ -104,6 +104,11 @@ pub(crate) async fn handed_to_run(
 	scope: &TenancyScope,
 	run: &Run,
 ) -> Result<Option<(Uuid, aidash_domain::subnodes::JournalRange)>> {
+	// Cross-Run handoffs are local Subnode grants. A foreign Run has no local
+	// execution grant, and must not inspect another Run's Journal here.
+	if !run.is_local(store.deployment.as_str()) {
+		return Ok(None);
+	}
 	let mut access =
 		crate::apps::identity::services::execution::access_for_run(store, &run.metadata(), true)
 			.await?
@@ -180,7 +185,14 @@ impl aidash_application::ports::journal_export::JournalSource for Store {
 						.map(Into::into)
 						.collect());
 				}
-				let target = self.run(scope, target_run).await?;
+				let target = self.run(scope, target_run).await.map_err(|error| {
+					match error {
+					Error::NotFound(kind) if kind == "run" => Error::Invalid(
+						"Journal run not found. Check run_id, or omit it to search this Run's Journal.".into(),
+					),
+					other => other,
+				}
+				})?;
 				if !access.run_visible(target.metadata()).await? {
 					return Err(Error::Forbidden);
 				}

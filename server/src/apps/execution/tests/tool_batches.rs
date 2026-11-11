@@ -16,7 +16,7 @@ use aidash_server::{
 	store::{Invocation, Store},
 };
 use common::{
-	RuntimeFixture, TestApplication, request,
+	RuntimeFixture, TestApplication,
 	upstream_fixtures::{self, reply},
 };
 use reinhardt::ServerRouter as Router;
@@ -288,15 +288,9 @@ impl Batching {
 			agent.config["tool_parallelism"] = json!(parallelism);
 		}
 		agent.config["max_steps"] = json!(1000);
-		let (status, body) = request(&app, &token, "POST", "/api/registry", json!(agent)).await;
+		let (status, body) = common::post(&app, &token, "/api/registry", json!(agent)).await;
 		assert_eq!(status, 200, "{body}");
-		let (status, body) = request(
-			&app,
-			&token,
-			"POST",
-			"/api/authorization/acme/catalog",
-			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":AGENT_VERSION},"expected_revision":0,"enabled":true}),
-		)
+		let (status, body) = common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":AGENT_VERSION},"expected_revision":0,"enabled":true}))
 		.await;
 		assert_eq!(status, 200, "{body}");
 		policy["subjects"][aidash_server::domain::qualified_agent(
@@ -325,10 +319,9 @@ impl Batching {
 	}
 	/// Admit `task` to the batching Agent and return its Run.
 	async fn delegate(&self, task: Uuid) -> Run {
-		let (status, body) = request(
+		let (status, body) = common::post(
 			&self.app,
 			&self.token,
-			"POST",
 			&format!("/api/tasks/{task}/delegate"),
 			json!({"node_id":self.f.config.deployment,"agent":{"id":"research","version":AGENT_VERSION}}),
 		)
@@ -345,19 +338,17 @@ impl Batching {
 	}
 	/// A task in a fresh Workspace, so earlier Runs never grow its context.
 	async fn new_task(&self) -> Uuid {
-		let (status, workspace) = request(
+		let (status, workspace) = common::post(
 			&self.app,
 			&self.token,
-			"POST",
 			"/api/workspaces",
 			json!({"title":"Batch","goal":"Read files in one response"}),
 		)
 		.await;
 		assert_eq!(status, 200, "{workspace}");
-		let (status, task) = request(
+		let (status, task) = common::post(
 			&self.app,
 			&self.token,
-			"POST",
 			&format!(
 				"/api/workspaces/{}/tasks",
 				workspace["id"].as_str().unwrap()
@@ -370,31 +361,22 @@ impl Batching {
 	}
 	/// Materialize a text file into the Run's Working Area.
 	async fn file(&self, run: &Run, path: &str, text: &str) -> Value {
-		let (status, message) = request(
+		let (status, message) = common::post(
 			&self.app,
 			&self.token,
-			"POST",
 			&format!("/api/workspaces/{}/thread-messages", run.workspace_id),
 			json!({"content":text,"idempotency_key":Uuid::new_v4()}),
 		)
 		.await;
 		assert_eq!(status, 200, "{message}");
-		let (status, area) = request(
+		let (status, area) = common::get(
 			&self.app,
 			&self.token,
-			"GET",
 			&format!("/api/runs/{}/working-area", run.id),
-			Value::Null,
 		)
 		.await;
 		assert_eq!(status, 200, "{area}");
-		let (status, created) = request(
-			&self.app,
-			&self.token,
-			"POST",
-			&format!("/api/runs/{}/files/materialize", run.id),
-			json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"path":path,"source":{"kind":"message","message_id":message["message"]["id"]}}),
-		)
+		let (status, created) = common::post(&self.app, &self.token, &format!("/api/runs/{}/files/materialize", run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"path":path,"source":{"kind":"message","message_id":message["message"]["id"]}}))
 		.await;
 		assert_eq!(status, 200, "{created}");
 		created["file"].clone()
@@ -697,12 +679,10 @@ async fn batched_reads_share_the_working_area_row(
 }
 
 async fn run_area(b: &Batching, run: &Run) -> Value {
-	let (status, area) = request(
+	let (status, area) = common::get(
 		&b.app,
 		&b.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", run.id),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "{area}");

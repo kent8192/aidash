@@ -46,10 +46,12 @@ fn enabled(sql: &str) -> Vec<String> {
 }
 
 /// Every policy migration runs the rendered template. Together they enable
-/// the `owned` tables and no other. Returns how many operations enable tables.
+/// the `owned` tables and the `retired` ones, which a later migration drops.
+/// Returns how many operations enable tables.
 pub fn assert_policy_migrations_run_the_rendered_template(
 	migrations: &[Migration],
 	owned: &BTreeSet<&str>,
+	retired: &[&str],
 ) -> usize {
 	let mut covered = BTreeSet::new();
 	let mut policies = 0;
@@ -84,15 +86,10 @@ pub fn assert_policy_migrations_run_the_rendered_template(
 			}
 		}
 	}
-	// These physical tables were removed by the compaction rebuild. Validate
+	// Retired tables were removed after their policy migration ran. Validate
 	// their historical templates above but do not require them in today's
 	// classification. State-only model removals do not prove physical removal.
-	for table in [
-		"decision_states",
-		"decision_outcomes",
-		"generation_compaction_usage",
-		"generation_summary_usage",
-	] {
+	for &table in retired {
 		assert!(
 			!owned.contains(table),
 			"retired table is still classified: {table}"

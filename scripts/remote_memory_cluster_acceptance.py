@@ -15,8 +15,9 @@ import urllib.error
 import urllib.request
 import uuid
 
-from transaction_cluster_acceptance import Cluster, ROOT, now
+from transaction_cluster_acceptance import ADMINISTRATOR, PEER_SUBJECT, Cluster, ROOT, now
 from cluster_runtime import fixture_runtime
+from golden_path import COMPACTION_DECIDER
 
 
 def digest(value):
@@ -162,21 +163,30 @@ class RemoteMemory(Cluster):
         self.entries[node][name] = stored
         return stored
 
+    def approve_decider(self, node):
+        """Approve the compaction Decider every Agent depends on, as `golden_path.py` does."""
+        self.ok(self.user(node, f"/api/authorization/{self.tenants[node]}/catalog/approvals", {"node": self.nodes[node]["node"],
+            "approvals": [{"entry": COMPACTION_DECIDER, "enabled": True, "expected_revision": 0}]}))
+
     def configure(self):
         # Aidash assigns Tenant names, so each Deployment's Tenant is created first.
         self.tenants = [self.nodes[node]["tenant"] for node in range(2)]
         for node in range(2):
             # Remote Agent names still belong to the policy's local receiving/Home Node.
-            subjects = {"alice": {"kind": "user"}, **{f"{self.nodes[n]['address']}/agents/research@1.0.0": {"kind": "agent", "node": self.nodes[node]["node"]} for n in range(2)}}
+            # The administrator who registered the Nodes keeps its subject.
+            subjects = {"alice": {"kind": "user"}, ADMINISTRATOR: {"kind": "user"},
+                        PEER_SUBJECT: {"kind": "service", "node": self.nodes[node]["node"]}, **{f"{self.nodes[n]['address']}/agents/research@1.0.0": {"kind": "agent", "node": self.nodes[node]["node"]} for n in range(2)}}
             bundle = {"tenant": self.tenants[node], "subjects": subjects, "policies": [{"id": "approved-work", "effect": "allow", "subjects": {"any": True}, "actions": ["*"], "resources": {"kinds": ["*"]}}]}
-            self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}", {"expected_revision": 1, "bundle": bundle}))
+            # Approving the administrator already revised the Tenant's initial policy.
+            revision = self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}"))["revision"]
+            self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}", {"expected_revision": revision, "bundle": bundle}))
             credential = self.issue_credential(node, self.tenants[node], "alice")
             self.tokens.append(credential["token"])
-            # TODO(#578): a Peer Mapping needs a Tenant Administrator, a browser Mapping
-            # session through a test OIDC issuer the Pods can reach (oidc_fixture.py);
-            # the shared api_token below is a Deployment Administrator and is refused,
-            # so this acceptance cannot pass until that issuer runs in the cluster.
-            self.ok(self.api(node, f"/api/authorization/{self.tenants[node]}/peer-mappings", {"node": self.nodes[node]["node"], "source_node": self.nodes[1 - node]["address"], "source_subject": "alice", "credential_id": credential["credential"]["id"], "enabled": True, "expected_revision": 0}))
+            self.approve_decider(node)
+            # The other Node's alice acts here as a service subject. The Tenant's
+            # administrator writes the Peer Mapping, through a browser Mapping (#484).
+            peer = self.issue_credential(node, self.tenants[node], PEER_SUBJECT)
+            self.ok(self.administer(node, f"/api/authorization/{self.tenants[node]}/peer-mappings", {"node": self.nodes[node]["node"], "source_node": self.nodes[1 - node]["address"], "source_subject": "alice", "credential_id": peer["credential"]["id"], "enabled": True, "expected_revision": 0}))
             self.register(node, "model", "model", {"provider": "openrouter", "model_id": "fixture", "endpoint": "http://provider:8080/v1", "context_window": 128000, "max_output_tokens": 4096, "modalities": ["text"], "cost": {}})
             self.register(node, "memory", "home-memory", {"schema_version": 1, "source": {"adapter": "semantic_memory"}})
             self.register(node, "agent", "research", {"model": {"id": "model", "version": "1.0.0"}, "instructions": "Use approved Home memory", "schema_version": 1, "bindings": [{"kind": "memory", "target": {"registry_deployment": f"aidash://tx-{node:02}", "id": "home-memory", "version": "1.0.0"}, "narrow": {}}], "remove_default": []})

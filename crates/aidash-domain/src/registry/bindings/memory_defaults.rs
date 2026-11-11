@@ -9,6 +9,17 @@ pub const RERANKER_ID: &str = "aidash.memory-rrf";
 pub const TOKENIZER_ID: &str = "aidash.memory-utf8";
 pub const VERSION: &str = "1.0.0";
 
+/// Internal algorithms are immutable parts of the built-in memory implementation.
+pub fn is_internal_role(entry: &Entry) -> bool {
+	matches!(entry.id.as_str(), RERANKER_ID | TOKENIZER_ID)
+		&& definitions().is_ok_and(|entries| entries.contains(entry))
+}
+
+/// Recognize the complete canonical provider, not just its reserved name.
+pub fn is_builtin_memory(entry: &Entry) -> bool {
+	entry.id == MEMORY_ID && definitions().is_ok_and(|entries| entries.contains(entry))
+}
+
 pub fn reference(node: &str) -> QualifiedRef {
 	QualifiedRef {
 		registry_deployment: node.into(),
