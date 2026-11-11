@@ -38,53 +38,60 @@ pub(super) async fn approve(
 		return Ok(());
 	}
 	pool.scoped(&TenancyScope::tenant(tenant)?, async |tx| {
-		let snapshot = AuthorizationBundle::lock_for_maintenance(&mut **tx, tenant).await?;
-		let mut pending = Vec::new();
-		for want in wanted {
-			let entry = EntityRef {
-				id: want.entry.id.clone(),
-				version: want.entry.version.clone(),
-			};
-			let existing = AuthorizationCatalog::objects()
-				.filter(AuthorizationCatalog::field_tenant().eq(tenant.to_owned()))
-				.filter(AuthorizationCatalog::field_node().eq(node.node.as_str().to_owned()))
-				.filter(AuthorizationCatalog::field_entry_key().eq(entry.id.clone()))
-				.filter(AuthorizationCatalog::field_entry_version().eq(entry.version.clone()))
-				.all_with_executor(&mut **tx)
-				.await
-				.map_err(FrameworkError::from)?
-				.pop();
-			// Any binding means the version was approved once; one a person
-			// disabled since stays disabled.
-			if existing.is_some() {
+		let mut snapshot = AuthorizationBundle::lock_for_maintenance(&mut **tx, tenant).await?;
+		crate::apps::identity::repositories::nodes::lock_tenant(&mut **tx, tenant).await?;
+		let nodes =
+			crate::apps::identity::repositories::nodes::list_live(&mut **tx, tenant).await?;
+		for target in nodes {
+			let target = node.deployment.node(target.name);
+			let mut pending = Vec::new();
+			for want in wanted {
+				let entry = EntityRef {
+					id: want.entry.id.clone(),
+					version: want.entry.version.clone(),
+				};
+				let existing = AuthorizationCatalog::objects()
+					.filter(AuthorizationCatalog::field_tenant().eq(tenant.to_owned()))
+					.filter(AuthorizationCatalog::field_node().eq(target.node.as_str().to_owned()))
+					.filter(AuthorizationCatalog::field_entry_key().eq(entry.id.clone()))
+					.filter(AuthorizationCatalog::field_entry_version().eq(entry.version.clone()))
+					.all_with_executor(&mut **tx)
+					.await
+					.map_err(FrameworkError::from)?;
+				if !existing.is_empty() {
+					continue;
+				}
+				let subject = aidash_domain::qualified_agent(&target, &entry.id, &entry.version);
+				let groups =
+					(!snapshot.bundle.subjects.contains_key(&subject)).then(|| want.groups.clone());
+				pending.push(Approval {
+					carry_over: true,
+					scope: aidash_domain::identity::catalog::ApprovalScope::Deployment,
+					provider_warning_acknowledged: false,
+					entry,
+					enabled: true,
+					expected_revision: 0,
+					groups,
+					restriction: None,
+				});
+			}
+			if pending.is_empty() {
 				continue;
 			}
-			// Groups apply to a new agent subject only; an agent version that
-			// already has its subject keeps the groups it has.
-			let subject = aidash_domain::qualified_agent(node, &entry.id, &entry.version);
-			let groups =
-				(!snapshot.bundle.subjects.contains_key(&subject)).then(|| want.groups.clone());
-			pending.push(Approval {
-				provider_warning_acknowledged: false,
-				entry,
-				enabled: true,
-				expected_revision: 0,
-				groups,
-				restriction: None,
-			});
+			let mut scope = DemoCatalog {
+				tx: &mut *tx,
+				tenant,
+				node: &target,
+				snapshot,
+			};
+			approvals::approve(&mut scope, &pending)
+				.await
+				.map_err(|error| {
+					Error::Invalid(format!("tenant {key}: catalog approvals: {error}"))
+				})?;
+			snapshot = scope.snapshot;
 		}
-		if pending.is_empty() {
-			return Ok(());
-		}
-		let mut scope = DemoCatalog {
-			tx,
-			tenant,
-			node,
-			snapshot,
-		};
-		approvals::approve(&mut scope, &pending)
-			.await
-			.map_err(|error| Error::Invalid(format!("tenant {key}: catalog approvals: {error}")))?;
+
 		Ok(())
 	})
 	.await
@@ -127,6 +134,17 @@ impl CatalogMutation for DemoCatalog<'_> {
 			)
 			.await
 	}
+	async fn carry_options(
+		&mut self,
+		binding: &Binding,
+		carry_over: bool,
+		scope: aidash_domain::identity::catalog::ApprovalScope,
+	) -> aidash_application::Result<()> {
+		NativeMutation(self.tx)
+			.carry_options(binding, carry_over, scope)
+			.await
+	}
+
 	async fn history(
 		&mut self,
 		binding: &Binding,
@@ -146,6 +164,9 @@ impl CatalogApprovalScope for DemoCatalog<'_> {
 	}
 	fn node(&self) -> &NodeAddress {
 		self.node
+	}
+	fn deployment_scope_orchestrated(&self) -> bool {
+		true
 	}
 	fn actor(&self) -> &str {
 		ACTOR
