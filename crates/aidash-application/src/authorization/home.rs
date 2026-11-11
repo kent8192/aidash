@@ -165,12 +165,16 @@ pub async fn decline_call<R: HomeRepository>(
 			.await;
 		finish(authority, result).await?;
 	}
+	let mut input = json!({"grant_id":id,"call":call});
+	if rest_of_run {
+		input["rest_of_run"] = json!(true);
+	}
 	let declined: Declined = repository
 		.request(
 			grant.workspace_id,
 			&grant.node_id,
 			&format!("/scoped/execution/admissions/{admission}/declined-calls"),
-			&json!({"grant_id":id,"call":call,"rest_of_run":rest_of_run}),
+			&input,
 		)
 		.await?;
 	let activation = declined.activation;

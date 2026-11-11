@@ -1,11 +1,12 @@
 //! A person declines the tool call a paused Run stopped on, and the Run goes on without it (#763).
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
+use aidash_application::tenancy::TEST_FIXTURE;
 use aidash_domain::{
 	provider::{ModelResponse, ToolCall},
 	run_state::{PausedCall, RecoveryState, RunState, ToolCallState, encode},
 	tool::RefusalKind,
 };
-use aidash_server::federation::Federation;
+use aidash_server::{federation::Federation, harness::Harness};
 use serde_json::{Value, json};
 use uuid::Uuid;
 #[path = "../../execution/tests/support/legacy.rs"]
@@ -20,7 +21,6 @@ struct World {
 	app: common::TestApplication,
 	run: Uuid,
 	task: aidash_domain::Task,
-	child_agent: aidash_server::registry::Entry,
 	alice: String,
 	_runtime: common::RuntimeFixture,
 }
@@ -97,7 +97,6 @@ async fn world(fixture: common::ApplicationFixture) -> World {
 		app,
 		run: run.id,
 		task,
-		child_agent: registered[2].clone(),
 		alice,
 		_runtime: fixture.runtime,
 	}
@@ -270,6 +269,53 @@ impl World {
 	}
 }
 
+impl World {
+	async fn script_call(&self, run_id: Uuid, epoch: i64, task: Uuid) -> String {
+		let run = self.f.store.run(&TEST_FIXTURE, run_id).await.unwrap();
+		let mut recovery = run.recovery;
+		recovery.declined_calls.clear();
+		let node =
+			aidash_domain::nodes::NodeAddress::derived(self.f.config.deployment.as_str(), "acme");
+		let state = RunState::ToolCall(Box::new(ToolCallState {
+			response: ModelResponse {
+				tool_calls: vec![ToolCall {
+					id: format!("call-{epoch}"),
+					name: "task_delegate".into(),
+					arguments: json!({"task_id":task,"node_id":node.to_string(),"agent":{"id":LISTED,"version":"1.0.0"}}),
+				}],
+				..Default::default()
+			},
+			response_epoch: epoch,
+			..Default::default()
+		}));
+		sqlx::query("UPDATE runs SET pending = $1, phase = 'TOOL_CALL', control = 'ACTIVE', lease_owner = NULL, lease_until = NULL WHERE id = $2")
+            .bind(encode(&state, &recovery).unwrap()).bind(run_id)
+            .execute(self.f.store.pool.fixture_driver()).await.unwrap();
+		format!("{run_id}:{epoch}:0")
+	}
+
+	async fn deny_delegation(&self) {
+		let authorization = aidash_server::authorization::Authorization {
+			pool: self.f.store.pool.clone(),
+		};
+		let snapshot = authorization.snapshot("acme").await.unwrap();
+		let mut policy = serde_json::to_value(snapshot.bundle).unwrap();
+		policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-delegation","effect":"deny","subjects":{"any":true},"actions":["task.delegate"],"resources":{"kinds":["task"]}}));
+		common::replace_policy(&self.f.store, "acme", policy).await;
+	}
+
+	async fn worker(&self) {
+		assert!(
+			Harness {
+				federation: self.f.clone()
+			}
+			.worker_once()
+			.await
+			.unwrap()
+		);
+	}
+}
+
 fn sentence() -> String {
 	RefusalKind::Policy.declined_sentence()
 }
@@ -299,6 +345,36 @@ async fn a_person_can_decline_the_same_refusal_for_the_rest_of_the_run(
 		.unwrap();
 	assert_eq!(event.1["rest_of_run"], true);
 	assert_eq!(w.row().await.unwrap().0, "COMPLETED");
+	let run = w.f.store.run(&TEST_FIXTURE, w.run).await.unwrap();
+	assert!(
+		run.recovery
+			.standing_declines
+			.iter()
+			.any(|d| d.tool == "task_delegate" && d.kind == RefusalKind::Policy)
+	);
+	w.deny_delegation().await;
+	let key = w.script_call(w.run, EPOCH + 1, w.task.id).await;
+	w.worker().await;
+	let run = w.f.store.run(&TEST_FIXTURE, w.run).await.unwrap();
+	assert_eq!(run.control, aidash_domain::RunControl::Active);
+	let row: (String, Option<Value>) =
+		sqlx::query_as("SELECT status, result FROM invocations WHERE idempotency_key = $1")
+			.bind(&key)
+			.fetch_one(w.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(
+		row,
+		("COMPLETED".into(), Some(json!({"error": sentence()})))
+	);
+	assert!(
+		w.events()
+			.await
+			.iter()
+			.any(|(kind, data)| kind == "run.call_declined"
+				&& data["standing_decline"] == true
+				&& data["call"] == key)
+	);
 }
 
 #[rstest::rstest]
@@ -337,8 +413,50 @@ async fn a_new_child_run_does_not_inherit_the_parent_decision(
 			)
 			.await
 			.unwrap();
-	let child_run = common::admitted_run(&w.f, "acme", &child, &w.child_agent).await;
+	let parent_call = w.script_call(w.run, EPOCH + 1, child.id).await;
+	w.worker().await;
+	let delegation: (String, Option<Value>) =
+		sqlx::query_as("SELECT status, result FROM invocations WHERE idempotency_key = $1")
+			.bind(&parent_call)
+			.fetch_one(w.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(delegation.0, "COMPLETED", "{delegation:?}");
+	assert!(
+		delegation.1.as_ref().unwrap().get("error").is_none(),
+		"{delegation:?}"
+	);
+	let child_run =
+		w.f.store
+			.runs(&TEST_FIXTURE)
+			.await
+			.unwrap()
+			.into_iter()
+			.find(|run| run.task_id == child.id)
+			.expect("parent delegation admitted the child Run");
 	assert!(child_run.recovery.standing_declines.is_empty());
+	sqlx::query("UPDATE runs SET control = 'PAUSED' WHERE id = $1")
+		.bind(w.run)
+		.execute(w.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	w.deny_delegation().await;
+	let child_key = w.script_call(child_run.id, EPOCH + 2, child.id).await;
+	w.worker().await;
+	let stopped = w.f.store.run(&TEST_FIXTURE, child_run.id).await.unwrap();
+	assert_eq!(
+		stopped.control,
+		aidash_domain::RunControl::Paused,
+		"{:?}",
+		stopped.error
+	);
+	let paused = stopped
+		.recovery
+		.paused_call
+		.expect("child refusal is offered for decline");
+	assert_eq!(paused.key, child_key);
+	assert_eq!(paused.tool, "task_delegate");
+	assert_eq!(paused.kind, RefusalKind::Policy);
 }
 
 #[rstest::rstest]
