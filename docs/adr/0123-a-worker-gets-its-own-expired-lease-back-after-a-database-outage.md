@@ -5,7 +5,7 @@ Decided on 2026-11-09 in the #786 grilling. A Lease Recovery is another worker t
 Three changes make that hold:
 
 - **The renewal fence.** The lease renewal requires only that `lease_owner` is still the worker. Every other worker write keeps requiring an unexpired lease, including the checks that a lease has time left before an outside call. A claim replaces the owner under the row lock, so a renewal never revives a lease another worker took.
-- **A step that failed on the outage renews first.** Such a step stops renewing when it returns, so before it records the failure the worker renews its lease, waiting for the database. If another worker took the Run meanwhile, the failure is theirs and the worker drops it.
+- **A step that failed on the outage or hit an expired lease fence renews first.** Such a step stops renewing when it returns, so before it records the failure the worker renews its lease, waiting for the database. If renewal succeeds after a lease-lost conflict, the worker records a retry without charging a recovery. If another worker took the Run meanwhile, the failure is theirs and the worker drops it.
 - **A hold on recoveries.** Every process meets an outage at once, and every lease held across it expires. For one lease period after a process last failed to reach the database, its recovery claims leave Runs whose expired lease still names an owner. New Runs, Runs with no owner and cancelled Runs are claimed at once. Lock waits, deadlocks and statement timeouts do not start the hold, because the database is up.
 
 A worker cut off from the database while the others reach it still has its Run taken over and charged, because another worker really runs the step again.

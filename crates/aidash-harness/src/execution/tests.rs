@@ -89,6 +89,7 @@ struct Scope {
 	lease_recoveries: u32,
 	/// The step fails on a database outage instead of an authority refusal.
 	outage: bool,
+	lease_lost: bool,
 }
 impl Scope {
 	fn new(leases: &Leases) -> Self {
@@ -98,6 +99,7 @@ impl Scope {
 			resume_failed: false,
 			lease_recoveries: 0,
 			outage: false,
+			lease_lost: false,
 			run: Run {
 				node: "brave-otter-k3m9q2xa".parse().unwrap(),
 				id: leases.run,
@@ -137,8 +139,12 @@ impl ExecutionRecoveryStore for Scope {
 		self.trace.lock().unwrap().push("recover");
 		Ok(Some(self.run.clone()))
 	}
-	async fn save(&self, _: &Run, _: Uuid, event: &str) -> Result<()> {
-		assert!(self.outage, "authority failures must pause");
+	async fn save(&self, run: &Run, _: Uuid, event: &str) -> Result<()> {
+		assert!(
+			self.outage || self.lease_lost,
+			"authority failures must pause"
+		);
+		assert_eq!(run.recovery.lease_recoveries, 0);
 		assert_eq!(event, "run.retrying");
 		self.trace.lock().unwrap().push("save");
 		Ok(())
@@ -218,6 +224,8 @@ impl WorkerStep for Scope {
 		self.trace.lock().unwrap().push("invoke");
 		if self.blocked {
 			std::future::pending().await
+		} else if self.lease_lost {
+			Err(Error::Conflict("worker lease lost".into()))
 		} else if self.outage {
 			Err(Error::TransactionPending)
 		} else {
@@ -360,6 +368,22 @@ async fn a_step_failed_by_an_outage_renews_before_it_records_the_failure(leases:
 		[
 			"cancel", "admit", "invoke", "finish", "renew", "renew", "resume", "recover", "save",
 			"drop"
+		]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn expired_lease_conflict_reclaims_and_retries_without_recovery(leases: Leases) {
+	let mut scope = Scope::new(&leases);
+	scope.lease_lost = true;
+	advance(Box::new(scope), &leases, Uuid::nil(), 60)
+		.await
+		.unwrap();
+	assert_eq!(
+		*leases.trace.lock().unwrap(),
+		[
+			"cancel", "admit", "invoke", "finish", "renew", "resume", "recover", "save", "drop"
 		]
 	);
 }

@@ -1,6 +1,6 @@
 //! Lease supervision and terminal-outbox polling share the listener-free worker driver.
 use aidash_application::{
-	Result,
+	Error, Result,
 	authorization::refusal_note,
 	ports::{
 		activation::ActivationRepository,
@@ -121,12 +121,14 @@ async fn advance_step(
 	let Completion::Completed(result) = keepalive(work, leases, run, token, seconds).await? else {
 		return Ok(());
 	};
-	// A step that failed on a database outage stopped renewing its lease when it
+	// A step that failed on a database outage or an expired lease fence stopped renewing when it
 	// returned, and the lease may have expired meanwhile. Renew it first, waiting
 	// for the database, so the worker keeps its Run and records the failure itself
 	// instead of leaving it for a Lease Recovery (#786). The step has finished its
 	// authority, so no lock of its own holds this renewal up.
-	if result.as_ref().is_err_and(|error| leases.transient(error))
+	let lease_lost =
+		matches!(&result, Err(Error::Conflict(message)) if message == "worker lease lost");
+	if (result.as_ref().is_err_and(|error| leases.transient(error)) || lease_lost)
 		&& !renew(leases, run, token, seconds).await?
 	{
 		tracing::info!(run_id = %run, "worker step failed after another worker took its Run");
@@ -137,7 +139,11 @@ async fn advance_step(
 	if let Err(error) = result {
 		let metadata = scope.metadata();
 		tracing::warn!(run = %metadata.id, phase = metadata.phase().as_str(), error = ?error, "worker step requires recovery");
-		let failure = scope.classify_failure(error);
+		let failure = if lease_lost {
+			aidash_application::recovery::ExecutionFailure::DatabaseUnavailable
+		} else {
+			scope.classify_failure(error)
+		};
 		if crate::recovery::recover(scope.recovery_store(), token, failure, chrono::Utc::now())
 			.await?
 		{
