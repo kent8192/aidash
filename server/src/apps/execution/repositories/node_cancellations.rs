@@ -117,7 +117,21 @@ pub(in crate::apps::execution) async fn record(
 	)
 	.fetch_all(&mut *tx)
 	.await?;
+	// Lock every end before the first control event takes the event lock.
+	for raw in &runs {
+		crate::apps::execution::repositories::subnodes::lock_for_end(tx, raw.metadata.id).await?;
+	}
 	for raw in runs {
+		// An earlier creator's cascade may already have cancelled this Run.
+		let raw: RawRun = crate::database::query_as(
+			&Query::select()
+				.column(reinhardt::query::ColumnRef::Asterisk)
+				.from(Alias::new("runs"))
+				.and_where(Expr::col("id").eq(Expr::value(raw.metadata.id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_one(&mut *tx)
+		.await?;
 		if !raw.metadata.phase.is_terminal() && raw.metadata.control != RunControl::Cancelled {
 			f.store
 				.control_in_executor(tx, raw.metadata.id, RunControlAction::Cancel)
@@ -516,7 +530,7 @@ async fn stop_run(f: &Federation, job: &NodeCancellationJob) -> Result<bool> {
 		.await?;
 	}
 	let token = Uuid::new_v4();
-	let owned = crate::bootstrap::activation_scheduling_scope(tx.as_mut())
+	let owned = crate::bootstrap::activation_scheduling_scope(tx.as_mut(), false)
 		.repair_lease(&raw.metadata, token, 30)
 		.await?;
 	tx.commit().await?;
@@ -579,8 +593,9 @@ async fn settle_saved_run(
 	let artifact = aidash_domain::ArtifactInput {
 		kind: "text".into(),
 		name: aidash_application::execution::result_artifact_name(&task.title),
-		content: serde_json::json!(aidash_domain::unassigned::answer_with_abandoned(
+		content: serde_json::json!(aidash_domain::unassigned::completion_answer(
 			&saved.response.text,
+			&run.recovery.early_abandoned_tasks,
 			&saved.abandoning
 		)),
 	};

@@ -317,7 +317,7 @@ async fn fourth_lease_recovery_enters_failure_delivery_and_records_crash_loop(
 	assert_eq!(
 		saved.error.as_deref(),
 		Some(
-			"The worker process stopped 3 times in a row while running this step, so Aidash stopped retrying it."
+			"This step was taken over from its worker 3 times in a row because the worker stopped, stalled or was cut off from the database, so Aidash stopped retrying it."
 		)
 	);
 	assert!(saved.lease_owner.is_none());
@@ -382,4 +382,71 @@ async fn isolated_step_charge_is_lease_fenced_and_keeps_the_revision(
 	assert_eq!(saved.pending.0["recovery"]["lease_recoveries"], 3);
 	assert_eq!(saved.revision, leased.revision);
 	assert_eq!(saved.lease_owner, Some(token));
+}
+
+/// A worker gets its own expired lease back while nobody else took the Run,
+/// and never once another worker took it (#786).
+#[rstest]
+#[tokio::test]
+async fn a_worker_renews_its_own_expired_lease_until_another_takes_the_run(
+	#[future] database: DatabaseFixture,
+	run: Run,
+) {
+	use aidash_application::tenancy::{DeploymentScopeReason, TenancyScope};
+	// Arrange: two leases expired during an outage, held by two workers.
+	let database = database.await;
+	database.tenant("acme").await;
+	let store = Store::from_pool(
+		database.connection.into_postgres().unwrap(),
+		aidash_domain::nodes::DeploymentId::parse("aidash://lease-test").unwrap(),
+	)
+	.await
+	.unwrap();
+	let mut db = database.lease.handle();
+	let mut leased = Vec::new();
+	for _ in 0..2 {
+		let mut record = run.clone();
+		record.id = Uuid::new_v4();
+		record.task_id = Uuid::new_v4();
+		record.lease_owner = Some(Uuid::new_v4());
+		record.lease_until = Some(Utc::now() - Duration::seconds(40));
+		leased.push(
+			Run::objects()
+				.create_with_conn(&mut db, &record)
+				.await
+				.unwrap(),
+		);
+	}
+	let (kept, lost) = (&leased[0], &leased[1]);
+	let scope = TenancyScope::Deployment(DeploymentScopeReason::ActivationClaim);
+	// Act: the first owner comes back before anyone claims; a stranger and a
+	// claim try in between.
+	let stranger = store
+		.renew_lease(&scope, kept.id, Uuid::new_v4(), 30)
+		.await
+		.unwrap();
+	let renewed = store
+		.renew_lease(&scope, kept.id, kept.lease_owner.unwrap(), 30)
+		.await
+		.unwrap();
+	let taken = store.lease_run(Uuid::new_v4(), 30).await.unwrap().unwrap();
+	let late = store
+		.renew_lease(&scope, lost.id, lost.lease_owner.unwrap(), 30)
+		.await
+		.unwrap();
+	// Assert: only the owner renews, and the claim takes the other Run, whose
+	// old owner no longer renews it.
+	assert!(!stranger);
+	assert!(renewed);
+	let saved = Run::objects()
+		.filter(Run::field_id().eq(kept.id))
+		.get_with_db(&mut db)
+		.await
+		.unwrap();
+	assert_eq!(saved.lease_owner, kept.lease_owner);
+	assert!(saved.lease_until.unwrap() > Utc::now());
+	assert_eq!(taken.id, lost.id);
+	assert_eq!(taken.recovery.lease_recoveries, 1);
+	assert!(!late);
+	assert!(store.lease_run(Uuid::new_v4(), 30).await.unwrap().is_none());
 }

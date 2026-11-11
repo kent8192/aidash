@@ -18,6 +18,9 @@ use std::sync::{Arc, Mutex};
 #[derive(Default)]
 struct State {
 	mark_activated_fails: bool,
+	task_read_unreachable: bool,
+	grant_revoked: bool,
+	grant_expired: bool,
 	calls: Vec<String>,
 	scopes: usize,
 	rpcs: usize,
@@ -270,6 +273,12 @@ impl HomeScope for Scope {
 	}
 	async fn task_read(&mut self, _: Uuid) -> Result<Task> {
 		self.repository.call("task.read");
+		if self.repository.state.lock().unwrap().task_read_unreachable {
+			return Err(Error::NodeUnreachable {
+				node: "aidash://other".into(),
+				after_effect: false,
+			});
+		}
 		if self.repository.state.lock().unwrap().denied == Some("task.read") {
 			return Err(Error::Forbidden);
 		}
@@ -297,6 +306,12 @@ impl HomeScope for Scope {
 		self.repository.call("grant.by_task");
 		let state = self.repository.state.lock().unwrap();
 		let mut found = grant(state.semantic);
+		found.revoked = state.grant_revoked;
+		found.expires_at = if state.grant_expired {
+			Utc::now() - chrono::Duration::hours(1)
+		} else {
+			Utc::now() + chrono::Duration::hours(1)
+		};
 		if let Some(root) = state.grant_root {
 			found.root_subject = root.into();
 		}
@@ -333,6 +348,9 @@ impl HomeScope for Scope {
 				g
 			})
 			.collect())
+	}
+	async fn holder_grants(&mut self, _: Uuid) -> Result<Vec<Grant>> {
+		Ok(vec![])
 	}
 	async fn delegation_grants(&mut self, _: &Task, _: &str) -> Result<Vec<Grant>> {
 		Ok(vec![grant(false)])
@@ -1078,4 +1096,37 @@ async fn a_list_shows_the_paused_call_only_to_someone_who_may_decline_it() {
 			.and_then(|e| e.declinable_call.as_ref());
 		assert_eq!(call.is_some(), shown, "{denied:?}");
 	}
+}
+
+#[tokio::test]
+async fn requester_list_survives_unreachable_holder_task_read() {
+	let repository = Repository::default();
+	repository.state.lock().unwrap().task_read_unreachable = true;
+	let statuses = list(&repository, task().id).await.unwrap();
+	assert_eq!(statuses.len(), 1);
+	assert!(statuses[0].requester);
+}
+
+#[tokio::test]
+async fn holder_authority_rechecks_grant_liveness() {
+	let repository = Repository::default();
+	repository.state.lock().unwrap().grant_root = Some("other");
+	assert!(
+		holder_may_decline(&repository, task().id, Uuid::from_u128(4))
+			.await
+			.unwrap()
+	);
+	repository.state.lock().unwrap().grant_revoked = true;
+	assert!(
+		!holder_may_decline(&repository, task().id, Uuid::from_u128(4))
+			.await
+			.unwrap()
+	);
+	repository.state.lock().unwrap().grant_revoked = false;
+	repository.state.lock().unwrap().grant_expired = true;
+	assert!(
+		!holder_may_decline(&repository, task().id, Uuid::from_u128(4))
+			.await
+			.unwrap()
+	);
 }

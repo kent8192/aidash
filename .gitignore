@@ -232,3 +232,7 @@ web/desktop-test-results/
 # Reinhardt Pages generated bindings (native and WASM share Enterprise Cargo.lock).
 enterprise/auth/dist-wasm/
 enterprise/marketplace/dist-wasm/
+
+# Bruno requests and manifest rendered from contracts.json by scripts/bruno_contracts.py.
+/server/tests/bruno/contracts/[0-9]*.bru
+/server/tests/bruno/scenarios.json

@@ -423,7 +423,9 @@ pub async fn erase_job(repository: &dyn CleanupRepository, snapshot: Record) -> 
 		}
 		for digest in serde_json::from_value::<Vec<String>>(record.data["erasure_digests"].clone())?
 		{
-			scope.reclaim_blob(&area.tenant, &digest).await?;
+			if !scope.reclaim_blob(&area.tenant, &digest).await? {
+				return Ok(false);
+			}
 		}
 		if expiring {
 			if record.state == "recoverable" {
