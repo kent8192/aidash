@@ -232,6 +232,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
             id: "run-0",
             phase: "THINKING",
             control,
+            may_control: true,
             semantic_reason: semanticReason,
             semantic_recovery: {
               cause: semanticReason,
@@ -313,6 +314,7 @@ for (const locale of ["en-US", "ja-JP"] as const) {
             phase: "THINKING",
             control: "PAUSED",
             control_source: "deployment_administrator",
+            may_control: true,
           },
         });
       return route.fulfill({
@@ -3307,6 +3309,7 @@ test("a hidden Run offers declining a paused call without a sentence field", asy
           phase: "THINKING",
           control,
           control_source: "tenant",
+          may_control: false,
           ...(control === "PAUSED"
             ? {
                 declinable_call: {
@@ -3331,6 +3334,12 @@ test("a hidden Run offers declining a paused call without a sentence field", asy
     .filter({ hasText: "Researcher" })
     .click();
   const panel = page.getByRole("region", { name: "Execution management" });
+  await expect(
+    panel.getByRole("button", { name: "Decline this call", exact: true }),
+  ).toBeVisible();
+  await expect(
+    panel.getByRole("button", { name: /Pause|Cancel execution|Resume/ }),
+  ).toHaveCount(0);
   await panel
     .getByRole("button", { name: "Decline this call", exact: true })
     .click();
@@ -3456,3 +3465,61 @@ for (const failMessage of [false, true]) {
     expect(errors.filter((error) => !error.includes("503"))).toEqual([]);
   });
 }
+
+test("a remote decline holder sees only the paused call and cannot send a sentence", async ({
+  page,
+}) => {
+  const { errors } = await setup(page, { subject: true });
+  const grant = {
+    id: "grant-holder",
+    node_id: "aidash://remote",
+    agent: { id: "researcher", version: "1.0.0" },
+  };
+  const call = { call: "run:5:0", tool: "task_delegate", kind: "other_node" };
+  const declines: unknown[] = [];
+  await page.route("**/api/tasks/task-0/remote-**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/remote-executions"))
+      return route.fulfill({
+        json: [
+          {
+            view: "holder",
+            grant,
+            execution: { control: "PAUSED", declinable_call: call },
+          },
+        ],
+      });
+    if (path.endsWith("/declined-calls")) {
+      declines.push(route.request().postDataJSON());
+      return route.fulfill({ json: {} });
+    }
+    return route.fallback();
+  });
+  await page.goto("/collaboration?channel=workspace-one");
+  await page
+    .getByRole("button", { name: "Tasks and results", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button")
+    .filter({ hasText: "Collect evidence" })
+    .click();
+  const panel = page.getByRole("region", {
+    name: "Remote execution",
+    exact: true,
+  });
+  await panel
+    .getByRole("button", { name: "Decline this call", exact: true })
+    .click();
+  await expect(panel.getByLabel("Tell the Agent why (optional)")).toHaveCount(
+    0,
+  );
+  await expect(
+    panel.getByRole("button", { name: /Pause|Cancel execution|Resume/ }),
+  ).toHaveCount(0);
+  await panel
+    .getByRole("button", { name: "Decline and continue", exact: true })
+    .click();
+  await expect.poll(() => declines).toEqual([{ call: call.call }]);
+  expect(errors).toEqual([]);
+});
