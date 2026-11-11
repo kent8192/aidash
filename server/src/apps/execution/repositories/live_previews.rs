@@ -701,29 +701,37 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> 
 				.filter(EgressSession::field_run_id().eq(preview.run_id))
 				.all_with_executor(&mut *tx)
 				.await
-				.map_err(|error| NativeError::External(error.to_string()))?
+				.map_err(reinhardt::core::exception::Error::from)?
 				.pop();
-			let subjects = crate::apps::federation::peer::repositories::admissions::subject_chain(
+			let admission = crate::apps::federation::peer::repositories::admissions::admission(
 				&mut *tx,
 				preview.run_id,
 			)
 			.await?;
 			tx.commit().await?;
-			let (Some(session), Some(mut subjects)) = (session, subjects) else {
+			let Some(admission) = admission else {
 				return Ok(false);
 			};
-			if subjects.is_empty() {
+			let mut subjects = admission.subject_chain;
+			let Some(root) = subjects.first().cloned() else {
 				return Ok(false);
-			}
-			if !subjects.contains(&session.principal) {
-				subjects.push(session.principal.clone());
+			};
+			let (credential_id, tenant, subject) = match session {
+				Some(session) => (session.credential_id, session.tenant, session.principal),
+				None if store.capabilities.0.egress.is_none() => {
+					(admission.credential_id, admission.tenant, root)
+				}
+				None => return Ok(false),
+			};
+			if !subjects.contains(&subject) {
+				subjects.push(subject.clone());
 			}
 			(
 				SubjectIdentity {
 					http_session: None,
-					credential_id: session.credential_id,
-					tenant: session.tenant,
-					subject: session.principal,
+					credential_id,
+					tenant,
+					subject,
 				},
 				Some(subjects),
 			)
