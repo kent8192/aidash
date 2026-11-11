@@ -271,7 +271,9 @@ which nobody has been admitted yet, shared by every client, and gives a client
 10 seconds to send each request head. A connection whose viewer is admitted
 moves to its preview's own slots, 32 per preview and 512 in all, and a
 WebSocket keeps its slot until it closes, so a flood of silent connections
-cannot shut viewers out of previews already open. A refused connection gets
+cannot cut traffic already admitted. It can still refuse a viewer's next
+connection: an admitted keep-alive connection closes after 10 seconds idle, and
+a new one competes for the shared slots again. A refused connection gets
 `503` with `Retry-After` and `preview_gateway_busy` (shared slots or the total
 full) or `preview_connection_limit` (that preview full), unless more than 8
 refusals are being answered at once; then it is dropped. Both are counted in
