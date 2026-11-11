@@ -280,6 +280,15 @@ for browser inspection. The all-six integrated release scenario is separate.
 Scoped remote execution across Nodes is covered by `scripts/test-acceptance.sh`;
 the platform journey does not use the removed implicit peer delegation protocol.
 
+The `transactions`, `remote-memory` and `native-memory` profiles write Node
+Registrations and Peer Mappings, which only a Tenant Administrator acting through
+a browser Mapping may do. Their runners start the test OIDC issuer from
+`scripts/oidc_fixture.py` as a Pod in the namespace. Each server Pod gets a
+loopback relay sidecar, because Aidash accepts only an HTTPS issuer or a
+loopback HTTP one. The runner port-forwards the same loopback port on the host,
+logs in through it, and has the Deployment Administrator approve the Mapping.
+The issuer image is `python:3.13-slim`, pulled into the cluster.
+
 References: [Pod termination](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-termination),
 [probes](https://kubernetes.io/docs/concepts/workloads/pods/probes/),
 [Deployment updates](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/),

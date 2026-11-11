@@ -835,8 +835,9 @@ fn context_overflow(body: &Value) -> bool {
 /// Largest accepted completion, whether received whole or assembled from a stream.
 const MAX_RESPONSE_BYTES: usize = 1_048_576;
 
-/// Read a streamed completion until `[DONE]`. Only data events reset the stall
-/// timer; provider keepalive comments do not. Endpoints that ignore `stream`
+/// Read a streamed completion until `[DONE]`. Data events reset the stall timer;
+/// provider keepalive comments reset it only until the first output arrives
+/// (see `StreamAssembler::push`). Endpoints that ignore `stream`
 /// and answer with a whole JSON completion are parsed as a non-streamed
 /// response, without progress.
 async fn read_stream(

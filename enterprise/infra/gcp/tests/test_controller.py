@@ -1673,6 +1673,48 @@ class ReconcileTests(ReconcileFixture, unittest.TestCase):
         self.reconcile()
         self.assertEqual(self.store.state["environments"]["test"]["status"], "ready")
 
+    def test_update_without_build_still_stops_unpublished_failed_host(self):
+        self.fail_deployment("develop", source_ref="develop/0.1.0")
+        with patch.object(controller.time, "time", return_value=10100):
+            entry = self.request("develop", action="update", sha="b" * 40, source_ref="develop/0.1.0")
+            entry["release"] = None
+            entry["requested_at"] = 10100
+        self.busy = True
+        with patch.object(controller.time, "time", return_value=13699):
+            self.reconcile()
+        self.assertTrue(self.cloud.managed["develop"]["running"])
+        self.assertEqual(self.store.state["environments"]["develop"]["status"], "awaiting_build")
+        with patch.object(controller.time, "time", return_value=13700):
+            self.reconcile()
+        self.assertFalse(self.cloud.managed["develop"]["running"])
+        self.assertEqual(self.store.state["environments"]["develop"]["status"], "stopped")
+        self.assertNotIn(("admission", "develop", "open"), self.calls)
+
+    def test_broker_change_does_not_reopen_busy_failed_host(self):
+        self.config["credential_brokers"] = {"test": {"enabled": True, "image": "initial"}}
+        self.fail_deployment()
+        self.config["credential_brokers"]["test"]["image"] = "rotated"
+        self.busy = True
+        with patch.object(controller.time, "time", return_value=13600):
+            self.reconcile()
+        self.assertFalse(self.cloud.managed["test"]["running"])
+        self.assertNotIn(("admission", "test", "open"), self.calls)
+
+    def test_broker_change_does_not_reopen_interrupted_forced_stop(self):
+        self.config["credential_brokers"] = {"test": {"enabled": True, "image": "initial"}}
+        self.fail_deployment()
+        with patch.object(controller.time, "time", return_value=13600), \
+                patch.object(controller.kube, "stop", side_effect=RuntimeError("interrupted")), \
+                self.assertRaises(RuntimeError):
+            self.reconcile()
+        self.calls.clear()
+        self.busy = True
+        self.config["credential_brokers"]["test"]["image"] = "rotated"
+        with patch.object(controller.time, "time", return_value=13601):
+            self.reconcile()
+        self.assertFalse(self.cloud.managed["test"]["running"])
+        self.assertNotIn(("admission", "test", "open"), self.calls)
+
     def test_failed_deployment_stop_never_brings_the_failed_release_back(self):
         self.fail_deployment()
         with patch.object(controller.time, "time", return_value=10000 + 3600):

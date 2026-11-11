@@ -92,7 +92,8 @@ impl Scope<'_> {
 			.filter(Row::field_id().eq(id))
 			.all_with_executor(&mut **self.access.tx)
 			.await
-			.map_err(|error| NativeError::External(error.to_string()))?
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?
 			.pop();
 		row.map(domain).transpose()
 	}
@@ -112,7 +113,7 @@ impl application::Scope for Scope<'_> {
 			.all_with_executor(&mut **self.access.tx)
 			.await
 			.map_err(reinhardt::core::exception::Error::from)
-			.map_err(|error| NativeError::External(error.to_string()))?
+			.map_err(NativeError::from)?
 			.pop();
 		Ok(row.map(|row| Limits {
 			idle_seconds: row.idle_seconds,
@@ -125,7 +126,15 @@ impl application::Scope for Scope<'_> {
 			&self.run.metadata(),
 		)
 		.await
-		.map_err(|error| NativeError::External(error.to_string()))?;
+		.map_err(|error| {
+			let message = error.to_string();
+			let native = NativeError::from(error);
+			if native.is_database() {
+				native
+			} else {
+				NativeError::External(message)
+			}
+		})?;
 		Ok(RunFacts {
 			id: self.run.id,
 			tenant: self.access.identity.tenant.clone(),
@@ -146,7 +155,8 @@ impl application::Scope for Scope<'_> {
 			.filter(Row::field_run_id().eq(run))
 			.all_with_executor(&mut **self.access.tx)
 			.await
-			.map_err(|error| NativeError::External(error.to_string()))?;
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
 		let row = rows.into_iter().max_by_key(|row| row.started_at);
 		row.map(domain).transpose().map_err(Into::into)
 	}
@@ -157,14 +167,16 @@ impl application::Scope for Scope<'_> {
 		Row::objects()
 			.insert_with_executor(&mut **self.access.tx, &to_row(preview))
 			.await
-			.map_err(|error| NativeError::External(error.to_string()))?;
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
 		Ok(())
 	}
 	async fn save(&mut self, preview: &LivePreview) -> aidash_application::Result<()> {
 		Row::objects()
 			.save_with_executor(&mut **self.access.tx, &to_row(preview))
 			.await
-			.map_err(|error| NativeError::External(error.to_string()))?;
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
 		Ok(())
 	}
 	async fn retain_revision(
@@ -190,7 +202,8 @@ impl application::Scope for Scope<'_> {
 			.filter(Row::field_id().ne(Uuid::nil()))
 			.all_with_executor(&mut **self.access.tx)
 			.await
-			.map_err(|error| NativeError::External(error.to_string()))?;
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
 		rows.into_iter()
 			.map(domain)
 			.filter(|row| {
@@ -212,8 +225,7 @@ impl application::Scope for Scope<'_> {
 				.to_string(reinhardt::query::PostgresQueryBuilder),
 		)
 		.scalar_optional(&mut **self.access.tx)
-		.await
-		.map_err(|error| NativeError::External(error.to_string()))?;
+		.await?;
 		Ok(revision)
 	}
 	async fn mint_egress(&mut self, preview: &mut LivePreview) -> aidash_application::Result<()> {
@@ -242,7 +254,8 @@ impl application::Scope for Scope<'_> {
 					.finish(),
 			)
 			.await
-			.map_err(|error| NativeError::External(error.to_string()))?;
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
 		preview.egress_expires_at = Some(expires_at);
 		Ok(())
 	}
@@ -617,7 +630,7 @@ pub(crate) async fn mark_stopped(
 		.build(PostgresQueryBuilder);
 	tx.execute(&sql, reinhardt::db::orm::execution::convert_values(values))
 		.await
-		.map_err(|error| NativeError::External(error.to_string()))?;
+		.map_err(NativeError::from)?;
 	Ok(())
 }
 
@@ -645,7 +658,8 @@ pub(crate) async fn serving(store: &Store) -> NativeResult<Vec<Uuid>> {
 			.filter(Row::field_state().eq(state.as_str()))
 			.all_with_executor(&mut *tx)
 			.await
-			.map_err(|error| NativeError::External(error.to_string()))?;
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
 		ids.extend(rows.into_iter().map(|row| row.id));
 	}
 	tx.commit().await?;
@@ -663,7 +677,8 @@ async fn load_for_maintenance(store: &Store, id: Uuid) -> NativeResult<Option<Li
 		.filter(Row::field_id().eq(id))
 		.all_with_executor(&mut *tx)
 		.await
-		.map_err(|error| NativeError::External(error.to_string()))?
+		.map_err(reinhardt::core::exception::Error::from)
+		.map_err(NativeError::from)?
 		.pop();
 	tx.commit().await?;
 	row.map(domain).transpose()
@@ -700,7 +715,8 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<()> {
 				.filter(EgressSession::field_id().eq(preview.id))
 				.all_with_executor(&mut *tx)
 				.await
-				.map_err(|error| NativeError::External(error.to_string()))?
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(NativeError::from)?
 				.pop();
 			tx.commit().await?;
 			let Some(session) = session else {
@@ -742,7 +758,8 @@ pub(crate) async fn stop_serving(store: &Store, id: Uuid, reason: StopReason) ->
 		Row::objects()
 			.save_with_executor(&mut *tx, &to_row(&preview))
 			.await
-			.map_err(|error| NativeError::External(error.to_string()))?;
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
 		tx.commit().await?;
 	}
 	if terminate(store, &preview).await.unwrap_or(false) {
@@ -767,7 +784,8 @@ pub(crate) async fn sweep(store: &Store) -> NativeResult<()> {
 			.filter(Row::field_id().ne(Uuid::nil()))
 			.all_with_executor(&mut *tx)
 			.await
-			.map_err(|error| NativeError::External(error.to_string()))?;
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
 		tx.commit().await?;
 		rows
 	};
@@ -791,7 +809,8 @@ pub(crate) async fn sweep(store: &Store) -> NativeResult<()> {
 					Row::objects()
 						.save_with_executor(&mut *tx, &to_row(&preview))
 						.await
-						.map_err(|error| NativeError::External(error.to_string()))?;
+						.map_err(reinhardt::core::exception::Error::from)
+						.map_err(NativeError::from)?;
 				}
 				tx.commit().await?;
 			}
@@ -803,7 +822,8 @@ pub(crate) async fn sweep(store: &Store) -> NativeResult<()> {
 			Row::objects()
 				.save_with_executor(&mut *tx, &to_row(&preview))
 				.await
-				.map_err(|error| NativeError::External(error.to_string()))?;
+				.map_err(reinhardt::core::exception::Error::from)
+				.map_err(NativeError::from)?;
 			tx.commit().await?;
 		}
 		if terminate(store, &preview).await.unwrap_or(false) {
@@ -827,7 +847,8 @@ async fn sweep_stopping(store: &Store) -> NativeResult<()> {
 			.filter(Row::field_termination_confirmed().eq(false))
 			.all_with_executor(&mut *tx)
 			.await
-			.map_err(|error| NativeError::External(error.to_string()))?;
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(NativeError::from)?;
 		tx.commit().await?;
 		rows
 	};
@@ -850,7 +871,8 @@ async fn settle_row(store: &Store, tenant: &str, preview: &mut LivePreview) -> N
 	Row::objects()
 		.save_with_executor(&mut *tx, &to_row(preview))
 		.await
-		.map_err(|error| NativeError::External(error.to_string()))?;
+		.map_err(reinhardt::core::exception::Error::from)
+		.map_err(NativeError::from)?;
 	release_hold(&mut tx, tenant, preview.id).await?;
 	tx.commit().await?;
 	Ok(())
@@ -872,7 +894,6 @@ async fn area_revision(
 	)
 	.scalar_optional(&mut **tx)
 	.await
-	.map_err(|error| NativeError::External(error.to_string()))
 }
 
 async fn release_hold(
@@ -903,4 +924,85 @@ async fn release_hold(
 	.execute(&mut **tx)
 	.await?;
 	Ok(())
+}
+
+#[cfg(test)]
+mod database_failure_tests {
+	use super::*;
+	use crate::apps::execution::test_database::{DatabaseFixture, database};
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn live_preview_repository_preserves_real_pool_timeout(
+		#[future] database: DatabaseFixture,
+	) {
+		let database = database.await;
+		let driver = sqlx::postgres::PgPoolOptions::new()
+			.max_connections(8)
+			.acquire_timeout(std::time::Duration::from_secs(2))
+			.connect(&database.url)
+			.await
+			.unwrap();
+		let store = Store::from_pool(
+			driver.clone(),
+			aidash_domain::nodes::DeploymentId::parse("aidash://preview-test").unwrap(),
+		)
+		.await
+		.unwrap();
+		let mut connections = Vec::new();
+		for _ in 0..8 {
+			connections.push(driver.acquire().await.unwrap());
+		}
+		assert!(matches!(
+			driver.acquire().await.err(),
+			Some(sqlx::Error::PoolTimedOut)
+		));
+		let error = serving(&store).await.unwrap_err();
+		assert!(matches!(
+			crate::apps::execution::repositories::worker::classify_failure(&error),
+			aidash_application::recovery::ExecutionFailure::DatabaseUnavailable
+		));
+		let application = aidash_application::Error::from(error);
+		assert!(matches!(
+			application,
+			aidash_application::Error::TemporaryDatabase(_)
+		));
+		let response = NativeError::from(application).http_response();
+		assert_eq!(response.status.as_u16(), 503);
+		assert_eq!(response.headers[http::header::RETRY_AFTER], "1");
+	}
+
+	#[rstest::rstest]
+	#[tokio::test]
+	async fn live_preview_repository_preserves_orm_statement_timeout(
+		#[future] database: DatabaseFixture,
+	) {
+		let database = database.await;
+		let options: sqlx::postgres::PgConnectOptions = database.url.parse().unwrap();
+		let driver = sqlx::postgres::PgPoolOptions::new()
+			.max_connections(8)
+			.connect_with(options.options([("statement_timeout", "2s")]))
+			.await
+			.unwrap();
+		let store = Store::from_pool(
+			driver,
+			aidash_domain::nodes::DeploymentId::parse("aidash://preview-test").unwrap(),
+		)
+		.await
+		.unwrap();
+		let owner = sqlx::PgPool::connect(&database.owner_url).await.unwrap();
+		let mut lock = owner.begin().await.unwrap();
+		sqlx::query("LOCK TABLE core_live_previews IN ACCESS EXCLUSIVE MODE")
+			.execute(&mut *lock)
+			.await
+			.unwrap();
+		let error = serving(&store).await.unwrap_err();
+		assert!(error.has_database_code("57014"), "{error:?}");
+		assert!(error.is_transient_database(), "{error:?}");
+		assert!(matches!(
+			aidash_application::Error::from(error),
+			aidash_application::Error::TemporaryDatabase(_)
+		));
+		lock.rollback().await.unwrap();
+	}
 }

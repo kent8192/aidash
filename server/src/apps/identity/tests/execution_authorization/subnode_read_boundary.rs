@@ -999,3 +999,115 @@ async fn parent_depends_on_a_task_its_child_created_after_discovering_other_agen
 	rig.create_task(parent, "next", &[output]).await;
 	cleanup(f, &url, &schema).await;
 }
+
+/// A member that discovered agents writes to the Run that created its Subnode, and
+/// a policy for what it discovered is then withdrawn or not (#793). Returns what
+/// carol, a person in the creator's Workspace, and the creator's next call see.
+async fn member_message_after(rig: &SubnodeRig, withdraw: bool) -> (bool, bool, bool) {
+	const TEXT: &str = "Investigation complete";
+	let creator = rig.creator_run;
+	rig.read_own_task(creator).await;
+	let (_, _, _, leader) = rig.subnode_with_task().await;
+	rig.read_own_task(leader).await;
+	rig.call(leader, "agent_discover", json!({}), "member-discovers")
+		.await;
+	rig.call(
+		leader,
+		"subnode_message",
+		json!({"content":TEXT}),
+		"member-messages-creator",
+	)
+	.await;
+	let home = rig
+		.f
+		.store
+		.run(&TEST_FIXTURE, creator)
+		.await
+		.unwrap()
+		.workspace_id;
+	let mut policy = rig.policy.clone();
+	policy["subjects"]["carol"] = json!({"kind":"user"});
+	set_policy(&rig.f, &rig.app, &policy).await;
+	let credential = common::issued_credential(&rig.f.store, "acme", "carol").await;
+	let carol = credential["token"].as_str().unwrap();
+	if withdraw {
+		// Withdraw the read: nobody may read what the member discovered. A Catalog Approval
+		// does not govern a read (#769), so this is a policy decision.
+		policy["policies"].as_array_mut().unwrap().push(json!({
+			"id":"hide-discovered",
+			"effect":"deny",
+			"subjects":{"any":true},
+			"actions":["registry.read"],
+			"resources":{"kinds":["agent"],"ids":["delegate-target"]},
+		}));
+		set_policy(&rig.f, &rig.app, &policy).await;
+	}
+	let (status, history) = request(
+		&rig.app,
+		carol,
+		"GET",
+		&format!("/api/workspaces/{home}/message-history"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "history: {history}");
+	let in_history = history.to_string().contains(TEXT);
+	let (status, events) =
+		request(&rig.app, carol, "GET", "/api/events?after=0", Value::Null).await;
+	assert_eq!(status, 200, "events: {events}");
+	let in_events = events.to_string().contains(TEXT);
+	// The creating Run received the message, so it is bound to what the member read.
+	rig.set_run_control(leader, "PAUSED").await;
+	rig.set_run_control(creator, "ACTIVE").await;
+	let task = rig
+		.f
+		.store
+		.run(&TEST_FIXTURE, creator)
+		.await
+		.unwrap()
+		.task_id;
+	rig.script(
+		creator,
+		"workspace_read",
+		json!({"kind":"task","id":task}),
+		"creator-after-message",
+	)
+	.await;
+	let creator_goes_on = rig
+		.result_of(creator, "creator-after-message")
+		.await
+		.is_some();
+	(in_history, in_events, creator_goes_on)
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn member_message_stays_visible_while_what_the_member_read_stays_readable(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::from_conversation(&f, &fixture.application).await;
+	let (history, events, creator) = member_message_after(&rig, false).await;
+	assert!(history, "the message is in the creator's history");
+	assert!(events, "message.created is visible");
+	assert!(creator, "the creating Run goes on");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn withdrawing_what_a_member_read_hides_its_message_and_stops_the_creating_run(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::from_conversation(&f, &fixture.application).await;
+	let (history, events, creator) = member_message_after(&rig, true).await;
+	assert!(!history, "the message is hidden from the history");
+	assert!(!events, "message.created is hidden");
+	assert!(!creator, "the creating Run's Read Recheck fails");
+	cleanup(f, &url, &schema).await;
+}
