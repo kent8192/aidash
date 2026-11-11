@@ -721,6 +721,20 @@ async fn forwarded_bytes_count_for_the_scope_while_its_authority_is_refused(
 		Err(aidash_application::Error::Refused(code)) if code == "egress_budget_exhausted"
 	));
 
+	// Delete the authority again and clear prior daily rows before testing the
+	// refused path with no state.
+	sqlx::query(
+		"UPDATE tenant_deletions SET restored_at = NULL, restored_by_kind = NULL WHERE tenant = 'acme'",
+	)
+	.execute(pool)
+	.await
+	.unwrap();
+	sqlx::query("DELETE FROM egress_scope_daily WHERE scope_id = $1 AND day = $2")
+		.bind(space)
+		.bind(day.to_string())
+		.execute(pool)
+		.await
+		.unwrap();
 	// A scope whose state is gone keeps nothing and still refuses.
 	sqlx::query("DELETE FROM egress_scope_state WHERE scope_id = $1")
 		.bind(space)
@@ -731,6 +745,15 @@ async fn forwarded_bytes_count_for_the_scope_while_its_authority_is_refused(
 		meter.charge(Direction::Sent, 1).await,
 		Err(aidash_application::Error::Forbidden)
 	));
+	let rows: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM egress_scope_daily WHERE scope_id = $1 AND day = $2",
+	)
+	.bind(space)
+	.bind(day.to_string())
+	.fetch_one(pool)
+	.await
+	.unwrap();
+	assert_eq!(rows, 0);
 }
 
 /// Reads until the gateway closes the connection.
