@@ -21,7 +21,9 @@ basis for showing it their Display Attributes.
   expose every applicant's Display Attributes to every Tenant. Rejected.
 - **Joining immediately on opening an Invitation link.** Anyone holding a
   leaked link could join. Rejected in favor of a single-use link followed by an
-  approval.
+  approval. ADR 0127 partly reverses this: when the issuer can approve, opening
+  the single-use link joins directly, and the issuer's authority is rechecked
+  at redemption.
 - **Email-addressed invitations.** Emails never link identities or grant
   authority in Aidash. Rejected.
 
