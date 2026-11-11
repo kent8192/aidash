@@ -23,8 +23,12 @@ pub(crate) async fn lock_workspace(
 			.column(Alias::new("id"))
 			.from(Alias::new("workspaces"))
 			.and_where(Expr::col("id").eq(Expr::value(workspace)))
+			// Memory locks the Workspace before reading Runs; a Run step may
+			// lock its Run before inserting an event referencing the Workspace.
+			// NO KEY UPDATE still serializes memory writers but permits the
+			// foreign key's KEY SHARE, avoiding the inverse-order deadlock.
 			.lock(if exclusive {
-				LockType::Update
+				LockType::NoKeyUpdate
 			} else {
 				LockType::Share
 			})
