@@ -99,7 +99,7 @@ pub trait Extension: Sync + std::fmt::Debug {
 		&self,
 		_federation: &crate::federation::Federation,
 		_stopping: tokio::sync::watch::Receiver<bool>,
-	) -> Vec<Service> {
+	) -> Vec<(&'static str, Service)> {
 		Vec::new()
 	}
 	/// The classification of every table the build's own migrations create,

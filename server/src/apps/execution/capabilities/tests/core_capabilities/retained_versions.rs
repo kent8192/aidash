@@ -43,12 +43,10 @@ async fn held_files(c: &CoreFixture, tenant: &str) -> i64 {
 }
 
 async fn download(c: &CoreFixture, area: Uuid, file: Uuid) -> (u16, Value) {
-	request(
+	common::get(
 		&c.app,
 		&c.token,
-		"GET",
 		&format!("/api/working-areas/{area}/files/{file}/download"),
-		Value::Null,
 	)
 	.await
 }
@@ -93,14 +91,12 @@ async fn repeated_rewrites_prune_unheld_revisions_and_unique_blob_usage(
 				"*** Begin Patch\n*** Update File: report.txt\n@@\n-{old}\n+{value}\n*** End Patch"
 			)
 		};
-		let (status, result) = request(&c.app, &c.token, "POST", &path_for_patch(run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":revision,"preconditions":{"report.txt":digest},"patch":patch})).await;
+		let (status, result) = common::post(&c.app, &c.token, &path_for_patch(run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":revision,"preconditions":{"report.txt":digest},"patch":patch})).await;
 		assert_eq!(status, 200, "{result}");
-		let (status, area) = request(
+		let (status, area) = common::get(
 			&c.app,
 			&c.token,
-			"GET",
 			&format!("/api/runs/{}/working-area", run.id),
-			Value::Null,
 		)
 		.await;
 		assert_eq!(status, 200, "{area}");
@@ -149,21 +145,13 @@ async fn a_cited_revision_survives_until_its_last_hold_is_released(
 ) {
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
-	let (status, created) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&path_for_patch(run.id),
-		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"index.html":null,"assets/app.js":null},"patch":"*** Begin Patch\n*** Add File: index.html\n+<html>old</html>\n*** Add File: assets/app.js\n+old()\n*** End Patch"}),
-	)
+	let (status, created) = common::post(&c.app, &c.token, &path_for_patch(run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"index.html":null,"assets/app.js":null},"patch":"*** Begin Patch\n*** Add File: index.html\n+<html>old</html>\n*** Add File: assets/app.js\n+old()\n*** End Patch"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let (_, area) = request(
+	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", run.id),
-		Value::Null,
 	)
 	.await;
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
@@ -219,13 +207,7 @@ async fn a_cited_revision_survives_until_its_last_hold_is_released(
 		"assets/app.js": area["manifest"].as_array().unwrap().iter()
 			.find(|file| file["path"] == "assets/app.js").unwrap()["digest"].clone(),
 	});
-	let (status, replaced) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&path_for_patch(run.id),
-		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":preconditions,"patch":"*** Begin Patch\n*** Update File: index.html\n@@\n-<html>old</html>\n+<html>new</html>\n*** Update File: assets/app.js\n@@\n-old()\n+new()\n*** End Patch"}),
-	)
+	let (status, replaced) = common::post(&c.app, &c.token, &path_for_patch(run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":preconditions,"patch":"*** Begin Patch\n*** Update File: index.html\n@@\n-<html>old</html>\n+<html>new</html>\n*** Update File: assets/app.js\n@@\n-old()\n+new()\n*** End Patch"}))
 	.await;
 	assert_eq!(status, 200, "{replaced}");
 	tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
@@ -274,21 +256,13 @@ async fn a_tenant_over_its_storage_ceiling_cannot_retain_a_version(
 ) {
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
-	let (status, created) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&path_for_patch(run.id),
-		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"report.txt":null},"patch":"*** Begin Patch\n*** Add File: report.txt\n+exact bytes\n*** End Patch"}),
-	)
+	let (status, created) = common::post(&c.app, &c.token, &path_for_patch(run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"report.txt":null},"patch":"*** Begin Patch\n*** Add File: report.txt\n+exact bytes\n*** End Patch"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let (_, area) = request(
+	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", run.id),
-		Value::Null,
 	)
 	.await;
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
@@ -335,21 +309,13 @@ async fn cleanup_releases_holds_and_lets_their_versions_go(
 		"Tenant purge deletes retention holds"
 	);
 	let run = admit(&c).await;
-	let (status, created) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&path_for_patch(run.id),
-		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"page.html":null},"patch":"*** Begin Patch\n*** Add File: page.html\n+<html>page</html>\n*** End Patch"}),
-	)
+	let (status, created) = common::post(&c.app, &c.token, &path_for_patch(run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"page.html":null},"patch":"*** Begin Patch\n*** Add File: page.html\n+<html>page</html>\n*** End Patch"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let (_, area) = request(
+	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", run.id),
-		Value::Null,
 	)
 	.await;
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
@@ -370,29 +336,21 @@ async fn cleanup_releases_holds_and_lets_their_versions_go(
 
 	// An irreversible cleanup erases the Area, so it must release its holds.
 	let revision = area["revision"].clone();
-	let (status, confirmation) = request(
+	let (status, confirmation) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!("/api/working-areas/{area_id}/deletion-confirmation"),
 		json!({"expected_revision":revision}),
 	)
 	.await;
 	assert_eq!(status, 200, "{confirmation}");
-	let (status, deletion) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&format!("/api/working-areas/{area_id}/cleanup"),
-		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":revision,"choice":"irreversible","confirmation_id":confirmation["confirmation_id"]}),
-	)
+	let (status, deletion) = common::post(&c.app, &c.token, &format!("/api/working-areas/{area_id}/cleanup"), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":revision,"choice":"irreversible","confirmation_id":confirmation["confirmation_id"]}))
 	.await;
 	assert_eq!(status, 200, "{deletion}");
 	let operation: Uuid = serde_json::from_value(deletion["operation_id"].clone()).unwrap();
-	let (status, reconciled) = request(
+	let (status, reconciled) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!("/api/file-cleanups/{operation}/reconcile"),
 		json!({}),
 	)
@@ -400,14 +358,8 @@ async fn cleanup_releases_holds_and_lets_their_versions_go(
 	assert_eq!(status, 200, "{reconciled}");
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
 	loop {
-		let (_, state) = request(
-			&c.app,
-			&c.token,
-			"GET",
-			&format!("/api/file-cleanups/{operation}"),
-			Value::Null,
-		)
-		.await;
+		let (_, state) =
+			common::get(&c.app, &c.token, &format!("/api/file-cleanups/{operation}")).await;
 		if state["state"] == "deleted" {
 			break;
 		}
@@ -429,21 +381,13 @@ async fn the_reclamation_sweep_releases_an_expired_federation_hold(
 ) {
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
-	let (status, created) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&path_for_patch(run.id),
-		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"delegated.html":null},"patch":"*** Begin Patch\n*** Add File: delegated.html\n+<html>delegated</html>\n*** End Patch"}),
-	)
+	let (status, created) = common::post(&c.app, &c.token, &path_for_patch(run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"delegated.html":null},"patch":"*** Begin Patch\n*** Add File: delegated.html\n+<html>delegated</html>\n*** End Patch"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let (_, area) = request(
+	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", run.id),
-		Value::Null,
 	)
 	.await;
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
@@ -485,21 +429,13 @@ async fn citations_of_two_files_at_one_revision_share_one_hold(
 ) {
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
-	let (status, created) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&path_for_patch(run.id),
-		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"first.txt":null,"second.txt":null},"patch":"*** Begin Patch\n*** Add File: first.txt\n+first\n*** Add File: second.txt\n+second\n*** End Patch"}),
-	)
+	let (status, created) = common::post(&c.app, &c.token, &path_for_patch(run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"first.txt":null,"second.txt":null},"patch":"*** Begin Patch\n*** Add File: first.txt\n+first\n*** Add File: second.txt\n+second\n*** End Patch"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let (_, area) = request(
+	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", run.id),
-		Value::Null,
 	)
 	.await;
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
@@ -562,21 +498,13 @@ async fn citations_of_two_files_at_one_revision_share_one_hold(
 async fn concurrent_identical_citations_leave_one_hold(#[future] capability_fixture: CoreFixture) {
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
-	let (status, created) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&path_for_patch(run.id),
-		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"shared.txt":null},"patch":"*** Begin Patch\n*** Add File: shared.txt\n+shared\n*** End Patch"}),
-	)
+	let (status, created) = common::post(&c.app, &c.token, &path_for_patch(run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"shared.txt":null},"patch":"*** Begin Patch\n*** Add File: shared.txt\n+shared\n*** End Patch"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let (_, area) = request(
+	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", run.id),
-		Value::Null,
 	)
 	.await;
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
@@ -616,19 +544,17 @@ async fn identical_files_share_one_tenant_blob_across_areas_and_survive_one_rele
 	let c = capability_fixture.await;
 	let first = admit(&c).await;
 	let node = aidash_domain::nodes::NodeName::derived("acme");
-	let (status, workspace) = request(
+	let (status, workspace) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		"/api/workspaces",
 		json!({"title":"Dedup","goal":"Independent files","node":node}),
 	)
 	.await;
 	assert_eq!(status, 200, "{workspace}");
-	let (status, task) = request(
+	let (status, task) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!(
 			"/api/workspaces/{}/tasks",
 			workspace["id"].as_str().unwrap()
@@ -637,10 +563,9 @@ async fn identical_files_share_one_tenant_blob_across_areas_and_survive_one_rele
 	)
 	.await;
 	assert_eq!(status, 200, "{task}");
-	let (status, delegated) = request(
+	let (status, delegated) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!("/api/tasks/{}/delegate", task["id"].as_str().unwrap()),
 		json!({"node_id":c.f.config.deployment,"agent":{"id":"research","version":"1.1.0"}}),
 	)
@@ -659,16 +584,10 @@ async fn identical_files_share_one_tenant_blob_across_areas_and_survive_one_rele
 	for (run, path) in [(first.id, "one.txt"), (second.id, "two.txt")] {
 		let patch =
 			format!("*** Begin Patch\n*** Add File: {path}\n+identical bytes\n*** End Patch");
-		let (status, body) = request(&c.app, &c.token, "POST", &path_for_patch(run), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{(path):null},"patch":patch})).await;
+		let (status, body) = common::post(&c.app, &c.token, &path_for_patch(run), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{(path):null},"patch":patch})).await;
 		assert_eq!(status, 200, "{body}");
-		let (status, area) = request(
-			&c.app,
-			&c.token,
-			"GET",
-			&format!("/api/runs/{run}/working-area"),
-			Value::Null,
-		)
-		.await;
+		let (status, area) =
+			common::get(&c.app, &c.token, &format!("/api/runs/{run}/working-area")).await;
 		assert_eq!(status, 200, "{area}");
 		areas.push(area);
 		let quota = Query::select()
@@ -714,8 +633,7 @@ async fn identical_files_share_one_tenant_blob_across_areas_and_survive_one_rele
 	assert_eq!(text(&bytes), "identical bytes\n");
 	let first_file: Uuid =
 		serde_json::from_value(areas[0]["manifest"][0]["file_id"].clone()).unwrap();
-	let (status, changed) = request(&c.app, &c.token, "POST", &path_for_patch(first.id),
-        json!({"idempotency_key":Uuid::new_v4(),"expected_revision":areas[0]["revision"],"preconditions":{"one.txt":digest},"patch":"*** Begin Patch\n*** Update File: one.txt\n@@\n-identical bytes\n+different bytes\n*** End Patch"})).await;
+	let (status, changed) = common::post(&c.app, &c.token, &path_for_patch(first.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":areas[0]["revision"],"preconditions":{"one.txt":digest},"patch":"*** Begin Patch\n*** Update File: one.txt\n@@\n-identical bytes\n+different bytes\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{changed}");
 
 	let WorkerControl { stop, receiver: rx } = worker_control();
@@ -751,15 +669,12 @@ async fn retained_manifest_uses_the_covering_hold_revision_and_requires_a_live_h
 ) {
 	let c = Box::pin(capability_fixture).await;
 	let run = admit(&c).await;
-	let (status, created) = request(&c.app, &c.token, "POST", &path_for_patch(run.id),
-        json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"index.html":null,"app.js":null},"patch":"*** Begin Patch\n*** Add File: index.html\n+<html>page</html>\n*** Add File: app.js\n+old()\n*** End Patch"})).await;
+	let (status, created) = common::post(&c.app, &c.token, &path_for_patch(run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"index.html":null,"app.js":null},"patch":"*** Begin Patch\n*** Add File: index.html\n+<html>page</html>\n*** Add File: app.js\n+old()\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{created}");
-	let (_, area) = request(
+	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", run.id),
-		Value::Null,
 	)
 	.await;
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
@@ -782,8 +697,7 @@ async fn retained_manifest_uses_the_covering_hold_revision_and_requires_a_live_h
 	)
 	.await
 	.unwrap();
-	let (status, replaced) = request(&c.app, &c.token, "POST", &path_for_patch(run.id),
-        json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":{"app.js":original["digest"]},"patch":"*** Begin Patch\n*** Update File: app.js\n@@\n-old()\n+new()\n*** End Patch"})).await;
+	let (status, replaced) = common::post(&c.app, &c.token, &path_for_patch(run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":{"app.js":original["digest"]},"patch":"*** Begin Patch\n*** Update File: app.js\n@@\n-old()\n+new()\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{replaced}");
 	let retained = aidash_server::capabilities::retention::retained_manifest_for(
 		&c.f,

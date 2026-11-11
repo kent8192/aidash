@@ -1,5 +1,6 @@
 # Statements have one time limit and a client deadline behind it
 
+Amended by ADR 0124 (2026-11-09): temporary database failures in vector lookups wait without consuming a Run attempt.
 Decided on 2026-11-05 in the #728 grilling. Server and worker connections set `statement_timeout`, 5 minutes by default, and nothing else that limits a session. A wrapper around Reinhardt's `DatabaseBackend` and `TransactionExecutor` adds a client-side deadline 30 s later, which fires only when the server does not answer. A statement that hits either limit is a temporary database error: the Run waits and resumes, and it counts towards no failure limit.
 
 The two limits answer different failures. A live server enforces `statement_timeout`, including time spent waiting for locks. A server that vanished cannot, and SQLx sets no TCP keepalive, so without the deadline a query can wait for that reply for ever.
@@ -26,5 +27,5 @@ These run with neither limit, because their length comes from the design:
 ## Consequences
 
 - A new default method on either Reinhardt trait bypasses the wrapper without a compile error, so check `server/src/database/limits.rs` on each Reinhardt update.
-- Enterprise auth and marketplace set the same limit and keepalives but have no client deadline, because they do not use the wrapper. Marketplace has no `after_release` limit either, because Reinhardt builds its pool from a URL.
+- Enterprise auth and marketplace set the same limit and keepalives but have no client deadline, because they do not use the wrapper. Both limit `after_release` to 5 s.
 - A connection lost during `COMMIT` leaves the outcome unknown, as any lost connection does.

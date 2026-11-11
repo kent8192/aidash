@@ -236,6 +236,23 @@ pub async fn request(
 	json_response(method, path, response.status_code(), response.body())
 }
 
+#[allow(dead_code)] // Shared fixtures are used by different integration-test binaries.
+pub async fn get(app: &TestApplication, token: &str, path: &str) -> (u16, Value) {
+	request(app, token, "GET", path, Value::Null).await
+}
+
+#[allow(dead_code)] // Shared fixtures are used by different integration-test binaries.
+pub async fn post(app: &TestApplication, token: &str, path: &str, body: Value) -> (u16, Value) {
+	request(app, token, "POST", path, body).await
+}
+
+#[allow(dead_code)] // Shared fixtures are used by different integration-test binaries.
+pub fn expect(response: (u16, Value), expected: u16) -> Value {
+	let (status, body) = response;
+	assert_eq!(status, expected, "{body}");
+	body
+}
+
 /// Registers `other`'s default Node of `other_tenant` at `local`'s default Node
 /// of `tenant`, through the registration route with the Deployment
 /// Administrator's token. `other` must be serving, because the route fetches

@@ -91,10 +91,9 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	policy["subjects"][&executor] =
 		json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 	assert_eq!(
-		request(
+		common::post(
 			&aa,
 			&a.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":policy})
 		)
@@ -110,15 +109,15 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	let input = json!({"id":id,"node_id":default_node(&b.store,"acme").await,"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300});
 	assert_eq!(
 		// A Deployment Administrator holds no authority over a Tenant's Tasks (#484).
-		request(&aa, &a.config.api_token, "POST", &path, input.clone())
+		common::post(&aa, &a.config.api_token, &path, input.clone())
 			.await
 			.0,
 		403
 	);
-	let (status, prepared) = request(&aa, &token, "POST", &path, input.clone()).await;
+	let (status, prepared) = common::post(&aa, &token, &path, input.clone()).await;
 	assert_eq!(status, 200, "{prepared}");
 	assert_eq!(
-		request(&aa, &token, "POST", &path, input.clone()).await,
+		common::post(&aa, &token, &path, input.clone()).await,
 		(200, prepared.clone()),
 		"retry must preserve id and expiry"
 	);
@@ -143,7 +142,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	assert_eq!(verify(&fresh_app, (&a, &b), id).await.0, 200);
 	let mut different = input.clone();
 	different["agent"]["id"] = json!("nonexistent");
-	assert_ne!(request(&aa, &token, "POST", &path, different).await.0, 200);
+	assert_ne!(common::post(&aa, &token, &path, different).await.0, 200);
 	// Workspace data is filtered before delivery and durable dependencies survive
 	// a fresh source connection. Revocation of an already observed sibling must
 	// deny the whole grant, even though its execution task is still readable.
@@ -165,10 +164,9 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		.await
 	}
 	.unwrap();
-	let (status, sibling) = request(
+	let (status, sibling) = common::post(
 		&aa,
 		&token,
-		"POST",
 		&format!("/api/workspaces/{workspace}/tasks"),
 		json!({"title":"Sibling secret","description":"Scoped snapshot fixture"}),
 	)
@@ -178,10 +176,9 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	let mut hidden = policy.clone();
 	hidden["policies"].as_array_mut().unwrap().push(json!({"id":"hide-sibling","effect":"deny","subjects":{"ids":[executor]},"actions":["task.read"],"resources":{"kinds":["task"],"ids":[sibling_id]}}));
 	assert_eq!(
-		request(
+		common::post(
 			&aa,
 			&a.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":2,"bundle":hidden})
 		)
@@ -220,10 +217,9 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		"filtered data must not become a read dependency"
 	);
 	assert_eq!(
-		request(
+		common::post(
 			&aa,
 			&a.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":3,"bundle":policy})
 		)
@@ -258,10 +254,9 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	.unwrap();
 	assert_eq!(tracked, 1, "record reads before releasing the response");
 	assert_eq!(
-		request(
+		common::post(
 			&aa,
 			&a.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":4,"bundle":hidden})
 		)
@@ -279,10 +274,9 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		403
 	);
 	assert_eq!(
-		request(
+		common::post(
 			&aa,
 			&a.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":5,"bundle":policy})
 		)
@@ -350,10 +344,9 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	let mut denied = policy.clone();
 	denied["policies"].as_array_mut().unwrap().push(json!({"id":"deny-remote-model","effect":"deny","subjects":{"ids":[executor]},"actions":["model.infer"],"resources":{"kinds":["model"]},"condition":{"op":"eq","left":{"source":"resource","path":"/config/provider"},"right":{"source":"literal","value":"openrouter"}}}));
 	assert_eq!(
-		request(
+		common::post(
 			&aa,
 			&a.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":6,"bundle":denied})
 		)
@@ -362,12 +355,11 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		200
 	);
 	assert_eq!(verify(&fresh_app, (&a, &b), id).await.0, 403);
-	assert_eq!(request(&aa,&token,"POST",&path,json!({"id":Uuid::new_v4(),"node_id":default_node(&b.store,"acme").await,"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300})).await.0,403);
+	assert_eq!(common::post(&aa, &token, &path, json!({"id":Uuid::new_v4(),"node_id":default_node(&b.store,"acme").await,"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300})).await.0,403);
 	assert_eq!(
-		request(
+		common::post(
 			&aa,
 			&a.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":7,"bundle":policy})
 		)
@@ -379,10 +371,9 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	let mut denied_read = policy.clone();
 	denied_read["policies"].as_array_mut().unwrap().push(json!({"id":"hide-task","effect":"deny","subjects":{"ids":["alice"]},"actions":["task.read"],"resources":{"kinds":["task"],"ids":[task.to_string()]}}));
 	assert_eq!(
-		request(
+		common::post(
 			&aa,
 			&a.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":8,"bundle":denied_read})
 		)
@@ -397,10 +388,9 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 		"grant audit events must respect task visibility"
 	);
 	assert_eq!(
-		request(
+		common::post(
 			&aa,
 			&a.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":9,"bundle":policy})
 		)
@@ -447,22 +437,19 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	);
 	common::set_node_enabled((&a, &aa, "acme"), (&b, "acme"), true, 2).await;
 	let revoke = format!("{path}/{id}/revoke");
-	let (status, revoked) = request(&aa, &token, "POST", &revoke, json!({})).await;
+	let (status, revoked) = common::post(&aa, &token, &revoke, json!({})).await;
 	assert_eq!(status, 200);
 	assert_eq!(revoked["revoked"], true);
 	assert_eq!(
-		request(&aa, &token, "POST", &revoke, json!({})).await,
+		common::post(&aa, &token, &revoke, json!({})).await,
 		(200, revoked)
 	);
 	assert_eq!(verify(&fresh_app, (&a, &b), id).await.0, 403);
-	assert_eq!(
-		request(&aa, &token, "POST", &path, input.clone()).await.0,
-		409
-	);
+	assert_eq!(common::post(&aa, &token, &path, input.clone()).await.0, 409);
 	let expiry = Uuid::new_v4();
 	let mut next = input.clone();
 	next["id"] = json!(expiry);
-	assert_eq!(request(&aa, &token, "POST", &path, next).await.0, 200);
+	assert_eq!(common::post(&aa, &token, &path, next).await.0, 200);
 	{
 		let query_bind_1 = expiry;
 		sqlx::query(
@@ -492,7 +479,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	let current = Uuid::new_v4();
 	let mut next = input.clone();
 	next["id"] = json!(current);
-	assert_eq!(request(&aa, &token, "POST", &path, next).await.0, 200);
+	assert_eq!(common::post(&aa, &token, &path, next).await.0, 200);
 	{
 		let query_bind_1 = task;
 		sqlx::query(
@@ -538,7 +525,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	let mut same = input.clone();
 	same["id"] = json!(current);
 	assert_eq!(
-		request(&aa, replacement_token, "POST", &path, same).await.0,
+		common::post(&aa, replacement_token, &path, same).await.0,
 		409,
 		"a replacement credential cannot take over an existing grant"
 	);
@@ -577,7 +564,7 @@ async fn durable_grants_bind_both_nodes_and_revalidate_after_restarts_and_revoca
 	let mut next = input.clone();
 	next["id"] = json!(replacement_id);
 	assert_eq!(
-		request(&aa, replacement_token, "POST", &path, next).await.0,
+		common::post(&aa, replacement_token, &path, next).await.0,
 		200
 	);
 	assert_eq!(verify(&fresh_app, (&a, &b), replacement_id).await.0, 200);

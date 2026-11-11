@@ -15,7 +15,8 @@ from urllib.parse import urlsplit
 
 from native_memory_cluster_acceptance import NativeMemory
 from remote_memory_cluster_acceptance import RemoteMemory
-from transaction_cluster_acceptance import Cluster, main, transaction_cases
+from golden_path import COMPACTION_DECIDER
+from transaction_cluster_acceptance import ADMINISTRATOR, BROWSER_ORIGIN, MEMBER, PEER_SUBJECT, Cluster, main, transaction_cases
 
 
 class TransactionPartitionTests(unittest.TestCase):
@@ -132,27 +133,49 @@ class MemoryNodeContractTests(unittest.TestCase):
                 }
                 fixture.tokens = []
                 fixture.register = Mock()
-                def api(node, path, body):
+                def api(node, path, body=None):
                     if path == "/api/tenants":
                         return 201, {"name": "unregistered-new-tenant"}
+                    if body is None and path.startswith("/api/authorization/"):
+                        # Approving the administrator revised the initial policy.
+                        return 200, {"revision": 2}
                     return 200, {}
                 fixture.api = Mock(side_effect=api)
+                fixture.administer = Mock(return_value=(200, {}))
+                fixture.user = Mock(return_value=(200, {}))
                 # The first credential comes from the host, never over HTTP (#484).
-                fixture.issue_credential = Mock(return_value={"token": "alice-token", "credential": {"id": "alice-credential"}})
+                fixture.issue_credential = Mock(side_effect=lambda node, tenant, subject: {
+                    "token": f"{subject}-token", "credential": {"id": f"{subject}-credential-{node}"}})
 
                 fixture.configure()
 
                 self.assertEqual(fixture.tenants, ["home-tenant", "worker-tenant"])
                 self.assertFalse(any(call.args[1] == "/api/tenants" for call in fixture.api.call_args_list))
                 self.assertFalse(any(call.args[1].endswith("/credentials") for call in fixture.api.call_args_list))
-                self.assertEqual(fixture.issue_credential.call_args_list, [call(0, "home-tenant", "alice"), call(1, "worker-tenant", "alice")])
+                self.assertEqual(fixture.issue_credential.call_args_list, [
+                    call(0, "home-tenant", "alice"), call(0, "home-tenant", PEER_SUBJECT),
+                    call(1, "worker-tenant", "alice"), call(1, "worker-tenant", PEER_SUBJECT)])
+                self.assertEqual(fixture.tokens, ["alice-token", "alice-token"])
+                # Every Agent depends on the compaction Decider, which alice approves (#832).
+                for node in range(2):
+                    self.assertIn(call(node, f"/api/authorization/{fixture.tenants[node]}/catalog/approvals", {
+                        "node": fixture.nodes[node]["node"],
+                        "approvals": [{"entry": COMPACTION_DECIDER, "enabled": True, "expected_revision": 0}]}),
+                        fixture.user.call_args_list)
                 for node in range(2):
                     policy = next(call for call in fixture.api.call_args_list
-                                  if call.args[:2] == (node, f"/api/authorization/{fixture.tenants[node]}"))
-                    mapping = next(call for call in fixture.api.call_args_list
+                                  if call.args[:2] == (node, f"/api/authorization/{fixture.tenants[node]}") and len(call.args) == 3)
+                    self.assertEqual(policy.args[2]["expected_revision"], 2)
+                    # Only the Tenant Administrator writes a Peer Mapping (#484, #578).
+                    self.assertFalse(any(call.args[1].endswith("/peer-mappings") for call in fixture.api.call_args_list))
+                    mapping = next(call for call in fixture.administer.call_args_list
                                    if call.args[:2] == (node, f"/api/authorization/{fixture.tenants[node]}/peer-mappings"))
                     subjects = policy.args[2]["bundle"]["subjects"]
                     self.assertIsNone(subjects["alice"].get("node"))
+                    self.assertEqual(subjects[ADMINISTRATOR], {"kind": "user"})
+                    owning_node = ("home-12345678", "worker-abcdef12")[node]
+                    # A Peer Mapping binds a service subject's exportable credential, never a person's.
+                    self.assertEqual(subjects[PEER_SUBJECT], {"kind": "service", "node": owning_node})
                     owning_node = ("home-12345678", "worker-abcdef12")[node]
                     agent_subjects = ["aidash://tx-00/home-12345678/agents/research@1.0.0",
                                       "aidash://tx-01/worker-abcdef12/agents/research@1.0.0"]
@@ -164,8 +187,22 @@ class MemoryNodeContractTests(unittest.TestCase):
                             self.assertEqual(subjects[subject], {"kind": "agent", "node": owning_node})
                     self.assertEqual(mapping.args[2], {
                         "node": fixture.nodes[node]["node"], "source_node": fixture.nodes[1 - node]["address"],
-                        "source_subject": "alice", "credential_id": "alice-credential", "enabled": True, "expected_revision": 0,
+                        "source_subject": "alice", "credential_id": f"{PEER_SUBJECT}-credential-{node}", "enabled": True, "expected_revision": 0,
                     })
+
+    def test_native_memory_keeps_the_deployment_key_volumes(self):
+        fixture = object.__new__(NativeMemory)
+        fixture.claims = {"memory-home-0"}
+        deployment = {"kind": "Deployment", "metadata": {"name": "tx-0-server"}, "spec": {"template": {"spec": {
+            "volumes": [{"name": "key"}], "containers": [{"env": [], "volumeMounts": [{"name": "key", "mountPath": "/keys"}]},
+                                                         {"name": "oidc-relay"}]}}}}
+        with patch.object(RemoteMemory, "apply") as applied:
+            fixture.apply(deployment)
+
+        spec = applied.call_args.args[0]["spec"]["template"]["spec"]
+        self.assertEqual([volume["name"] for volume in spec["volumes"]], ["key", "memory"])
+        self.assertEqual([mount["name"] for mount in spec["containers"][0]["volumeMounts"]], ["key", "memory"])
+        self.assertEqual(spec["containers"][1], {"name": "oidc-relay"})
 
     def test_memory_registration_approves_the_receiving_node(self):
         fixture = object.__new__(RemoteMemory)
@@ -179,6 +216,32 @@ class MemoryNodeContractTests(unittest.TestCase):
         approval = fixture.user.call_args_list[1]
         self.assertEqual(approval.args[1], "/api/authorization/home-tenant/catalog")
         self.assertEqual(approval.args[2], {"node": "home-12345678", "entry": {"id": "memory", "version": "1.0.0"}, "enabled": True, "expected_revision": 0})
+
+
+class TenantAdministratorTests(unittest.TestCase):
+    def fixture(self):
+        cluster = object.__new__(Cluster)
+        cluster.administrators = {}
+        cluster.nodes = {0: {"tenant": "tenant-0"}}
+        cluster.token = "deployment-administrator"
+        cluster.issuer = Mock(issuer="http://127.0.0.1:4100/issuer")
+        cluster.reach_issuer = Mock()
+        cluster.forward = Mock(side_effect=["http://127.0.0.1:5000", "http://127.0.0.1:5000", "http://127.0.0.1:5001"])
+        return cluster
+
+    def test_signs_in_once_and_follows_the_nodes_current_forward(self):
+        cluster = self.fixture()
+        session = Mock()
+        session.call.return_value = (200, {"ok": True})
+        with patch("transaction_cluster_acceptance.tenant_administrator", return_value=session) as sign_in:
+            self.assertEqual(cluster.administer(0, "/api/x", {"a": 1}), (200, {"ok": True}))
+            self.assertEqual(cluster.administer(0, "/api/x"), (200, {"ok": True}))
+
+        sign_in.assert_called_once_with("http://127.0.0.1:5000", BROWSER_ORIGIN, cluster.issuer, "deployment-administrator",
+                                        "tenant-0", ADMINISTRATOR, groups=["administrators"])
+        cluster.reach_issuer.assert_called_once_with()
+        self.assertEqual(session.call.call_args_list, [call("POST", "/api/x", {"a": 1}), call("GET", "/api/x", None)])
+        self.assertEqual(session.base, "http://127.0.0.1:5001")
 
 
 class ExtensionBootstrapTests(unittest.TestCase):
@@ -394,10 +457,40 @@ with socket.socket() as listener:
         self.assertEqual(self.cluster.forwards, {})
 
 
+class TransactionMemberTests(unittest.TestCase):
+    def test_members_do_tenant_work_and_node_zeros_member_is_mapped_on_participants(self):
+        cluster = object.__new__(Cluster)
+        cluster.nodes = {node: {"tenant": f"tenant-{node}", "node": f"node-{node}", "address": f"aidash://tx-0{node}/node-{node}"}
+                         for node in range(3)}
+        cluster.members = {}
+        cluster.api = Mock(side_effect=lambda node, path, body=None: (200, {"revision": 2} if body is None else {}))
+        cluster.administer = Mock(return_value=(200, {}))
+        cluster.issue_credential = Mock(side_effect=lambda node, tenant, subject: {
+            "token": f"{subject}-{node}", "credential": {"id": f"{subject}-credential-{node}"}})
+
+        cluster.admit_members(3)
+
+        self.assertEqual(cluster.members, {node: f"{MEMBER}-{node}" for node in range(3)})
+        for node in range(3):
+            policy = next(c for c in cluster.api.call_args_list if c.args[:2] == (node, f"/api/authorization/tenant-{node}") and len(c.args) == 3)
+            self.assertEqual(policy.args[2]["expected_revision"], 2)
+            subjects = policy.args[2]["bundle"]["subjects"]
+            self.assertEqual(subjects[MEMBER], {"kind": "user"})
+            self.assertEqual(subjects[ADMINISTRATOR], {"kind": "user"})
+            self.assertEqual(PEER_SUBJECT in subjects, node != 0)
+        # Only a participant maps the coordinator's member, and only its Tenant Administrator writes it.
+        self.assertEqual(cluster.administer.call_args_list, [
+            call(node, f"/api/authorization/tenant-{node}/peer-mappings", {
+                "node": f"node-{node}", "source_node": "aidash://tx-00/node-0", "source_subject": MEMBER,
+                "credential_id": f"{PEER_SUBJECT}-credential-{node}", "enabled": True, "expected_revision": 0})
+            for node in (1, 2)])
+
+
 class VisibilityOracleTests(unittest.TestCase):
     def cluster(self, responses):
         cluster = object.__new__(Cluster)
-        cluster.api = Mock(side_effect=responses)
+        # A Deployment Administrator cannot read Workspaces; the member does (#832).
+        cluster.member = Mock(side_effect=responses)
         cluster.inspect = Mock(return_value=[{"revision": 1}])
         return cluster
 

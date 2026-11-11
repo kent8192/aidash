@@ -827,6 +827,80 @@ async fn cleanup_fault_fixture(#[future] capability_fixture: CoreFixture) -> (Co
 
 #[rstest::rstest]
 #[tokio::test]
+async fn cleanup_retries_when_blob_lock_is_held(
+	#[future] cleanup_fault_fixture: (CoreFixture, Value),
+) {
+	use reinhardt::query::{Alias, Expr, LockType, PostgresQueryBuilder, Query, SimpleExpr};
+	let (c, area) = Box::pin(cleanup_fault_fixture).await;
+	let id = area["id"].as_str().unwrap();
+	let digest = area["manifest"][1]["digest"].as_str().unwrap();
+	let owned = blob_path(&c, digest);
+	let backup = c.root.join("lock-test-backup");
+	let (status, confirmation) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/working-areas/{id}/deletion-confirmation"),
+		json!({"expected_revision":area["revision"]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{confirmation}");
+	let (status, deletion) = request(&c.app, &c.token, "POST", &format!("/api/working-areas/{id}/cleanup"), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"choice":"irreversible","confirmation_id":confirmation["confirmation_id"]})).await;
+	assert_eq!(status, 200, "{deletion}");
+	tokio::fs::rename(&owned, &backup).await.unwrap();
+	tokio::fs::create_dir(&owned).await.unwrap();
+	let path = format!(
+		"/api/file-cleanups/{}/reconcile",
+		deletion["operation_id"].as_str().unwrap()
+	);
+	// Stage reference removal and commit it before forcing the lock collision.
+	let (status, result) = request(&c.app, &c.token, "POST", &path, json!({})).await;
+	assert!(
+		status >= 400,
+		"directory must prevent reclamation: {result}"
+	);
+	let mut lock = c.f.store.pool.fixture_driver().begin().await.unwrap();
+	let query = Query::select()
+		.expr(SimpleExpr::CustomWithExpr(
+			"pg_advisory_xact_lock(hashtextextended(?, 0))".into(),
+			vec![Expr::value(format!("core-blob:acme:{digest}")).into()],
+		))
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&query).execute(&mut *lock).await.unwrap();
+	let (status, result) = request(&c.app, &c.token, "POST", &path, json!({})).await;
+	assert_eq!(status, 200, "{result}");
+	assert!(owned.is_dir());
+	assert_eq!(
+		result["state"], "deleting",
+		"locked blob must remain pending while its bytes exist"
+	);
+	lock.rollback().await.unwrap();
+	// A row skipped by FOR UPDATE is also busy, not a missing blob.
+	let mut row_lock = c.f.store.pool.fixture_driver().begin().await.unwrap();
+	let query = Query::select()
+		.column(Alias::new("size"))
+		.from(Alias::new("core_blobs"))
+		.and_where(Expr::col(Alias::new("tenant")).eq("acme"))
+		.and_where(Expr::col(Alias::new("digest")).eq(digest))
+		.lock(LockType::Update)
+		.to_string(PostgresQueryBuilder);
+	sqlx::query(&query).fetch_one(&mut *row_lock).await.unwrap();
+	let (status, result) = request(&c.app, &c.token, "POST", &path, json!({})).await;
+	assert_eq!(status, 200, "{result}");
+	assert_eq!(result["state"], "deleting");
+	assert!(owned.is_dir());
+	row_lock.rollback().await.unwrap();
+	tokio::fs::remove_dir(&owned).await.unwrap();
+	tokio::fs::rename(&backup, &owned).await.unwrap();
+	let (status, result) = request(&c.app, &c.token, "POST", &path, json!({})).await;
+	assert_eq!(status, 200, "{result}");
+	assert_eq!(result["state"], "deleted");
+	assert!(!owned.exists());
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn failed_snapshot_preserves_active_files_and_interrupted_delete_is_reconcilable(
 	#[future] cleanup_fault_fixture: (CoreFixture, Value),
 	#[from(worker_control)] control_1: WorkerControl,
@@ -861,16 +935,25 @@ async fn failed_snapshot_preserves_active_files_and_interrupted_delete_is_reconc
 	let (status,deletion)=request(&c.app,&c.token,"POST",&format!("/api/working-areas/{id}/cleanup"),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"choice":"irreversible","confirmation_id":confirmation["confirmation_id"]})).await;
 	assert_eq!(status, 200, "{deletion}");
 	assert_eq!(deletion["state"], "deleting");
-	// Deterministic storage failure while deleting an owned object, after the
-	// durable intent fenced every writer. No unrelated path is modified.
+	// Deterministic cleanup failure after the durable intent fenced every
+	// writer: the trigger below makes the reference removal fail inside the
+	// worker's erasure, so it is a database failure, not a storage one. The
+	// directory at the blob path only makes any byte deletion that does run
+	// fail too. No unrelated path is modified.
 	tokio::fs::rename(&owned, &backup).await.unwrap();
 	tokio::fs::create_dir(&owned).await.unwrap();
 	// SeaQuery cannot express PostgreSQL trigger/function DDL. This fixture-only
-	// barrier pauses the real worker while reporting its storage failure, so
+	// barrier pauses the real worker while reporting the failed erasure, so
 	// status polling deterministically overlaps the failure transaction.
 	let barrier_key = Uuid::new_v4().as_u128() as i64;
 	// Only the table owner can add a trigger; the server role holds DML.
 	let owner = common::owner_pool(c.f.store.pool.fixture_driver()).await;
+	// Keep reference removal from committing until failure reporting is observed.
+	// This leaves no unreferenced blob for the concurrent reclamation loop.
+	sqlx::query("CREATE FUNCTION fail_cleanup_erasure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'controlled cleanup failure'; END; $$")
+		.execute(&owner).await.unwrap();
+	sqlx::query("CREATE TRIGGER fail_cleanup_erasure BEFORE DELETE ON core_objects FOR EACH ROW EXECUTE FUNCTION fail_cleanup_erasure()")
+		.execute(&owner).await.unwrap();
 	sqlx::query(&format!("CREATE FUNCTION pause_cleanup_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock({barrier_key}); RETURN NEW; END; $$"))
 		.execute(&owner).await.unwrap();
 	sqlx::query("CREATE TRIGGER pause_cleanup_failure BEFORE UPDATE OF state ON core_records FOR EACH ROW WHEN (NEW.state = 'cleanup_failed') EXECUTE FUNCTION pause_cleanup_failure()")
@@ -928,6 +1011,10 @@ async fn failed_snapshot_preserves_active_files_and_interrupted_delete_is_reconc
 	);
 	stop.send(true).unwrap();
 	worker.await.unwrap().unwrap();
+	sqlx::query("DROP TRIGGER fail_cleanup_erasure ON core_objects")
+		.execute(&owner)
+		.await
+		.unwrap();
 	let (status, inventory) =
 		request(&c.app, &c.token, "GET", "/api/working-files", Value::Null).await;
 	assert_eq!(status, 200, "{inventory}");

@@ -121,9 +121,13 @@ pub(crate) async fn discover_in(
 			continue;
 		}
 		for entity in entries.into_iter().filter(|entry| query.matches(entry)) {
-			let mut resource = catalog::resource(access, &entity);
-			resource.id = crate::domain::agent_subject(&node, &entity.id, &entity.version);
-			resource.attributes["remote_node"] = json!(node);
+			// The Tenant's own Agent keeps its id; another Tenant's is named by its Node (#856).
+			let resource = aidash_application::federation::registry_reads::remote_agent_resource(
+				catalog::resource(access, &entity),
+				&node,
+				&entity.version,
+				same_tenant.contains(&node),
+			);
 			if access.decide(&resource, "registry.read").await?
 				&& access.decide(&resource, "agent.execute").await?
 			{
