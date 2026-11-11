@@ -352,6 +352,9 @@ async fn receiving_cas_preserves_concurrent_disable_quarantine_and_newer_keys(
 		node: source.receiver.node.clone(),
 		source_node: NodeAddress::parse(&source_node).unwrap(),
 	};
+	// Create the Mapping before holding the registration row: its setup takes
+	// Tenant authority, which the concurrent key advancement also holds.
+	let administrator = common::BrowserMapping::new(&f, "acme", "alice").await;
 	let mut blocker = f.store.pool.fixture_driver().begin().await.unwrap();
 	let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
 		.fetch_one(&mut *blocker)
@@ -377,7 +380,6 @@ async fn receiving_cas_preserves_concurrent_disable_quarantine_and_newer_keys(
 	input["expected_revision"] = json!(1);
 	input["atomic_transactions"] = json!(true);
 	// Registrations are Tenant administration, held through a Mapping (#484).
-	let administrator = common::BrowserMapping::new(&f, "acme", "alice").await;
 	let edit = tokio::spawn(async move { administrator.send("POST", &path, input).await });
 	common::wait_for_blocked(&f.store.pool, pid, 2).await;
 	blocker.commit().await.unwrap();
