@@ -719,35 +719,27 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> 
 				.map_err(reinhardt::core::exception::Error::from)
 				.map_err(NativeError::from)?
 				.pop();
-			let admission = crate::apps::federation::peer::repositories::admissions::admission(
+			let subjects = crate::apps::federation::peer::repositories::admissions::subject_chain(
 				&mut *tx,
 				preview.run_id,
 			)
 			.await?;
 			tx.commit().await?;
-			let Some(admission) = admission else {
+			let (Some(session), Some(mut subjects)) = (session, subjects) else {
 				return Ok(false);
 			};
-			let mut subjects = admission.subject_chain;
-			let Some(root) = subjects.first().cloned() else {
+			if subjects.is_empty() {
 				return Ok(false);
-			};
-			let (credential_id, tenant, subject) = match session {
-				Some(session) => (session.credential_id, session.tenant, session.principal),
-				None if store.capabilities.0.egress.is_none() => {
-					(admission.credential_id, admission.tenant, root)
-				}
-				None => return Ok(false),
-			};
-			if !subjects.contains(&subject) {
-				subjects.push(subject.clone());
+			}
+			if !subjects.contains(&session.principal) {
+				subjects.push(session.principal.clone());
 			}
 			(
 				SubjectIdentity {
 					http_session: None,
-					credential_id,
-					tenant,
-					subject,
+					credential_id: session.credential_id,
+					tenant: session.tenant,
+					subject: session.principal,
 				},
 				Some(subjects),
 			)

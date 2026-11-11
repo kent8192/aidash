@@ -675,31 +675,6 @@ async fn remote_preview_recheck_still_checks_a_viewer_outside_the_chain(
 
 #[rstest]
 #[tokio::test]
-async fn remote_preview_without_egress_rechecks_the_admission_chain(
-	#[future] database: DatabaseFixture,
-) {
-	use aidash_application::ports::capabilities::read_recheck::{
-		Outcome, ReadRecheckRepository, Target,
-	};
-	let mut fixture = fixture(database.await, 1).await;
-	let mut profile = (*fixture.store.capabilities.0).clone();
-	profile.egress = None;
-	fixture.store.capabilities = crate::capabilities::Runtime::new(profile).unwrap();
-	let (_, preview) = running_targets(&fixture).await;
-	remote_preview(&fixture, preview, false).await;
-	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
-		store: &fixture.store,
-	};
-	let target = Target::LivePreview(preview);
-	assert_eq!(repository.check(target).await.unwrap(), Outcome::Allowed);
-	fixture
-		.set_policy(1, Some(("helper", "message.read")))
-		.await;
-	assert_eq!(repository.check(target).await.unwrap(), Outcome::Refused);
-}
-
-#[rstest]
-#[tokio::test]
 async fn remote_preview_recheck_without_session_is_unconfirmed_and_stops(
 	#[future] database: DatabaseFixture,
 ) {
@@ -707,20 +682,7 @@ async fn remote_preview_recheck_without_session_is_unconfirmed_and_stops(
 		capabilities::read_recheck::{self, PERIOD, Schedule, UNCONFIRMED_LIMIT},
 		ports::capabilities::read_recheck::{Outcome, ReadRecheckRepository, Target},
 	};
-	let mut fixture = fixture(database.await, 1).await;
-	let mut profile = (*fixture.store.capabilities.0).clone();
-	profile.egress = Some(
-		crate::apps::execution::capabilities::serializers::core::EgressSettings {
-			endpoint: "http://10.96.0.90:8950".into(),
-			namespace: None,
-			pod_selector: Default::default(),
-			listen: "127.0.0.1:0".parse().unwrap(),
-			proxy_global_tunnels: 1024,
-			proxy_tenant_tunnels: 32,
-			limits: Default::default(),
-		},
-	);
-	fixture.store.capabilities = crate::capabilities::Runtime::new(profile).unwrap();
+	let fixture = fixture(database.await, 1).await;
 	let (_, preview) = running_targets(&fixture).await;
 	remote_preview(&fixture, preview, false).await;
 	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
