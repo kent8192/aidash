@@ -909,6 +909,7 @@ pub(crate) async fn approval_list(
 				"grant_id": data["grant_id"],
 				"disclosure": if row.kind == "disclosure" { data["content"].clone() } else { Value::Null },
 				"viewer_is_approver": data["approver"] == json!(subject),
+				"viewer_can_decide_inline": data["approver"] == json!(subject) && data["subjects"][0] == json!(subject),
 				"agent_id": data["agent_id"],
 				"agent_version": data["agent_version"],
 				"tool": data["tool"],

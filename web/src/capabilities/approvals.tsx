@@ -479,7 +479,14 @@ export function CapabilityApprovals({ area }: { area?: string }) {
   const items =
     query.data?.pages
       .flatMap((p) => p.items)
-      .filter((i) => !area || i.area_id === area) ?? [];
+      .filter(
+        (i) =>
+          !area ||
+          (i.area_id === area &&
+            (i.state !== "pending" ||
+              !["outbound", "disclosure", "tool_call"].includes(i.kind) ||
+              i.viewer_can_decide_inline)),
+      ) ?? [];
   return (
     <details
       className={panelClass}

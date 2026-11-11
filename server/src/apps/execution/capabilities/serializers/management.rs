@@ -38,6 +38,8 @@ pub struct ApprovalCard {
 	pub disclosure: Option<String>,
 	/// Whether the reader is the approver this card is addressed to.
 	pub viewer_is_approver: bool,
+	/// The designated approver is also the person at the root of the Run's chain.
+	pub viewer_can_decide_inline: bool,
 	pub agent_id: Option<String>,
 	pub agent_version: Option<String>,
 	/// For a Tool call approval, or a Run grant from one, the Tenant's tool and

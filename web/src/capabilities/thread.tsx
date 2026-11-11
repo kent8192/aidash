@@ -36,7 +36,8 @@ import {
   type CoreFile,
   type Operation,
 } from "./client";
-import { CapabilityApprovals } from "./approvals";
+import { ApprovalCardView, CapabilityApprovals } from "./approvals";
+import { every } from "./inbox";
 import { OutboundFiles } from "./outbound";
 import { SkillFiles } from "./skills";
 import { DisplayFile, panelClass } from "./display";
@@ -903,6 +904,22 @@ export function ThreadCapabilities({
   });
   const area =
     query.data?.items.find((a) => a.id === selected) ?? query.data?.items[0];
+  const approvals = useQuery({
+    queryKey: ["core-approvals", "thread", workspace, thread],
+    queryFn: ({ signal }) =>
+      every("/api/capabilities/approvals?state=pending&role=approver", signal),
+    refetchInterval: 5000,
+    retry: false,
+  });
+  const areaIds = new Set(query.data?.items.map((item) => item.id) ?? []);
+  const inlineApprovals = (approvals.data ?? []).filter(
+    (item) =>
+      item.viewer_can_decide_inline &&
+      item.state === "pending" &&
+      ["outbound", "disclosure", "tool_call"].includes(item.kind) &&
+      item.area_id != null &&
+      areaIds.has(item.area_id),
+  );
   const session = useQuery({
     queryKey: ["core-session", area?.id],
     queryFn: ({ signal }) =>
@@ -1009,6 +1026,15 @@ export function ThreadCapabilities({
   return (
     <section className={panelClass}>
       <h3>{ja ? "Agent の作業" : "Agent work"}</h3>
+      {inlineApprovals.length > 0 && (
+        <section
+          aria-label={ja ? "このスレッドの承認" : "Approvals for this Thread"}
+        >
+          {inlineApprovals.map((item) => (
+            <ApprovalCardView key={item.id} item={item} />
+          ))}
+        </section>
+      )}
       {query.isError && <Alert>{query.error.message}</Alert>}
       {
         <Field label={ja ? "実行する Agent" : "Agent to run"}>
