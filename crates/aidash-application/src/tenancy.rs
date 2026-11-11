@@ -114,6 +114,8 @@ pub enum DeploymentScopeReason {
 	/// Mapping. The Tenant's name is drawn inside the transaction (ADR 0050),
 	/// so no Tenant Scope can name it when the transaction begins.
 	TenantCreation,
+	/// Host Access first-run and administrator recovery.
+	Bootstrap,
 	/// Revalidating External Identities that have work in any Tenant, and
 	/// stopping a disabled identity's Runs in every Tenant.
 	IdentityStatus,
@@ -179,6 +181,7 @@ impl DeploymentScopeReason {
 			Self::DeploymentAdministration => "deployment-administration",
 			Self::IdentityTenants => "identity-tenants",
 			Self::TenantCreation => "tenant-creation",
+			Self::Bootstrap => "bootstrap",
 			Self::IdentityStatus => "identity-status",
 			Self::FederationInbound => "federation-inbound",
 			Self::RunTenant => "run-tenant",
@@ -216,6 +219,7 @@ impl DeploymentScopeReason {
 			| Self::DeploymentAdministration
 			| Self::IdentityTenants
 			| Self::TenantCreation
+			| Self::Bootstrap
 			| Self::IdentityStatus
 			| Self::MarketplaceDistribution
 			| Self::TenantPurge
@@ -277,6 +281,7 @@ mod tests {
 			DeploymentScopeReason::DeploymentAdministration,
 			DeploymentScopeReason::IdentityTenants,
 			DeploymentScopeReason::TenantCreation,
+			DeploymentScopeReason::Bootstrap,
 			DeploymentScopeReason::IdentityStatus,
 			DeploymentScopeReason::FederationInbound,
 			DeploymentScopeReason::RunTenant,

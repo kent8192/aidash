@@ -284,6 +284,12 @@ pub const TABLES: &[Table] = &[
 	// back-channel logout
 	table("identity", "dashboard_logout_tokens", DeploymentWide),
 	table("identity", "dashboard_mappings", TenantOwned),
+	// Host Access reservations are Deployment-wide.
+	table(
+		"identity",
+		"bootstrap_deployment_administrator_reservations",
+		DeploymentWide,
+	),
 	// Deployment Administrator grants
 	table(
 		"identity",
@@ -300,7 +306,7 @@ pub const TABLES: &[Table] = &[
 	table("identity", "dashboard_sessions", DeploymentWide),
 	// the digests of the Demo data the `demo-data` command finished loading
 	table("identity", "demo_data_loads", DeploymentWide),
-	// a Demo Reservation, spent by the sign-in of the email it names
+	// a Tenant reservation from Demo data or Host Access, spent by sign-in
 	table("identity", "demo_reservations", TenantOwned),
 	// The Tenant each Demo data structure key was assigned. Purge keeps this
 	// pointer: a later load resolves the purged Tenant through it and, seeing

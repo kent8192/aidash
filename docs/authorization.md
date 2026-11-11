@@ -134,6 +134,15 @@ The Tenancy Rules are deployment-wide settings under `[tenancy]`; no Tenant's po
 - Any other browser session creates a Tenant for its External Identity, without needing a Mapping, where `tenant_creation` allows it. The identity becomes the Tenant Creator: it receives the first Mapping, to `owner` in `administrators`, and the first policy revision's actor is `oidc:<identity>`. Exceeding `creation_per_hour` answers 429 with `Retry-After` until a slot frees; exceeding `creation_total` answers 403 `tenant_limit_reached`. Personal Tenants never count. An advisory lock per identity serializes concurrent creations.
 - Subject Credentials, agents and Nodes never create Tenants (403).
 
+Host Access can run `aidash bootstrap --email <address> [--tenant <name-or-label>]`
+for production Self-hosted first run or recovery. The default label is `default`.
+The command finds a generated Tenant name first, then an exact label; ambiguous
+labels are refused. It creates a Tenant only when no match exists. It reserves
+`owner` in `administrators` and a separate Deployment Administrator grant for the
+verified address, applying both immediately to an existing identity or on its
+first sign-in. New Tenant and default Node records identify their creator as
+`host_access`. These host-side grants add no HTTP authority to the command.
+
 Every Tenant starts with one default Node, labelled `Default`, which
 `tenants::create` writes with the root record for every creator, Personal Tenants
 included. A Node has an assigned name (`<adjective>-<noun>-<8 random characters>`,

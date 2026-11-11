@@ -235,6 +235,7 @@ pub async fn admit(f: &Federation, sign_in: &SignIn) -> Result<Account> {
 			&mut crate::bootstrap::dashboard_login(
 				f.store.pool.clone(),
 				f.config.deployment.as_str(),
+				f.config.dashboard_policy(),
 			),
 			sign_in,
 		)

@@ -671,7 +671,11 @@ impl DashboardSessions {
 		};
 		let identity = crate::bootstrap::dashboard_authority(&f)
 			.admit_login(
-				&mut crate::bootstrap::dashboard_login(pool.clone(), f.config.deployment.as_str()),
+				&mut crate::bootstrap::dashboard_login(
+					pool.clone(),
+					f.config.deployment.as_str(),
+					f.config.dashboard_policy(),
+				),
 				&sign_in,
 			)
 			.await?;

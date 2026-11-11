@@ -4,7 +4,8 @@ use crate::{
 	apps::{
 		execution::models::Run,
 		identity::models::{
-			DashboardExecutionOrigin, DashboardIdentity, DemoReservation, Fulfilment,
+			BootstrapDeploymentAdministratorReservation, DashboardExecutionOrigin,
+			DashboardIdentity, DemoReservation, Fulfilment,
 		},
 	},
 	authorization::access::Access,
@@ -24,15 +25,25 @@ pub(crate) struct Repository(pub(crate) Federation);
 
 /// External Identities and sessions are Deployment-wide, so these ports work
 /// in the no-Tenant scope; a personal Tenant is provisioned in its own scope.
-pub(crate) struct Login(pub(crate) Pool, pub(crate) String);
+pub(crate) struct Login(
+	pub(crate) Pool,
+	pub(crate) String,
+	pub(crate) Option<AccountPolicy>,
+);
 #[async_trait]
 impl aidash_application::ports::authorization::dashboard::LoginAccounts for Login {
 	async fn fulfil_demo_reservations(&mut self, identity: Uuid, email: &str) -> Result<()> {
-		let policy = self.0.dashboard_policy();
+		let policy = self.2.clone();
 		// Reservations are Tenant-owned: this Deployment-scope read only finds
 		// them, and each is spent in its own Tenant's scope and transaction, so
 		// one that cannot be spent leaves the others to be.
-		for reservation in DemoReservation::unspent(&self.0, &email.to_lowercase()).await? {
+		let email = email.to_lowercase();
+		BootstrapDeploymentAdministratorReservation::consume(&self.0, &email, identity).await?;
+		for reservation in DemoReservation::unspent(&self.0, &email).await? {
+			if reservation.source != "host_access" && !policy.as_ref().is_some_and(|p| p.demo_data)
+			{
+				continue;
+			}
 			let outcome = DemoReservation::fulfil(
 				&self.0,
 				policy.as_ref(),
