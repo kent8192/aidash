@@ -34,4 +34,5 @@ A person now **declines** the call the Run is paused on. The Run records the cal
 - The Run page and the Home's remote panel offer "Decline this call" beside Resume and Cancel, only when the server says the caller may decline, and not on the bulk pause bar.
 - A person with `run.decline_call` who is not the requester cannot list a Home's remote executions, so the Home's panel offers the button to the requester only. They can still decline through the route.
 - The management view needs `run.control` as well as `workspace.read`, so a holder of `run.decline_call` alone is not offered the button there, though the route accepts them.
+- For a pause saved before the stopped call was recorded, two calls to the same tool in a filtered response cannot be distinguished by name; the journal may record the other call’s arguments.
 - Nothing is deployed, so both Nodes update together and there is no compatibility path for the new `Activation` field.
