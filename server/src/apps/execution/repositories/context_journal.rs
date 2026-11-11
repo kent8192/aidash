@@ -185,7 +185,14 @@ impl aidash_application::ports::journal_export::JournalSource for Store {
 						.map(Into::into)
 						.collect());
 				}
-				let target = self.run(scope, target_run).await?;
+				let target = self.run(scope, target_run).await.map_err(|error| {
+					match error {
+					Error::NotFound(kind) if kind == "run" => Error::Invalid(
+						"Journal run not found. Check run_id, or omit it to search this Run's Journal.".into(),
+					),
+					other => other,
+				}
+				})?;
 				if !access.run_visible(target.metadata()).await? {
 					return Err(Error::Forbidden);
 				}
