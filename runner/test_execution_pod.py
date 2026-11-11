@@ -2716,6 +2716,41 @@ class JournalRetentionTest(unittest.TestCase):
             self.assertEqual(len(controller.background_processes('s')['processes']), 0)
             self.assertTrue(controller._command_path(other).exists())
 
+    def test_corrupt_journals_do_not_block_healthy_spaces(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+            op = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+            path = controller._command_path(op)
+            path.write_text(json.dumps({'operation_id': op, 'scratch_space_id': 's',
+                'status': 'running', 'terminal_at': 1, 'background': True}))
+            (path.parent / 'broken.json').write_text('{')
+            sessions = Path(directory) / 'execution-v2-python'
+            sessions.mkdir()
+            (sessions / 'broken.json').write_text('{')
+            self.assertEqual(len(controller.background_processes('s')['processes']), 1)
+            self.assertEqual(len(controller._space_journal_paths('s', sessions=True)), 0)
+
+    def test_pruning_does_not_read_unexpired_command_outputs(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+            path = controller._command_path('e6ded09d-f783-4ce8-98e9-dbfca68884f1')
+            path.write_text(json.dumps({'scratch_space_id': 's', 'status': 'completed',
+                'terminal_at': 100, 'stdout': 'x' * 1000000}))
+            controller._ensure_journal_index()
+            with patch.object(Path, 'read_bytes', side_effect=AssertionError('unexpired record read')):
+                controller.prune_space('s', now=101)
+            self.assertTrue(path.exists())
+
     def test_full_space_rejects_new_work_without_rejecting_retry(self):
         import hashlib
         import json

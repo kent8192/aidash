@@ -501,6 +501,7 @@ class ExecutionPodController:
         self.index_lock = Lock()
         self.journal_index = None
         self.session_index = None
+        self.journal_metadata = {}
 
     def _ensure_journal_index(self):
         """Rebuild the per-Space index once from the durable journals at startup."""
@@ -515,15 +516,25 @@ class ExecutionPodController:
                 index = {}
                 root = self.backend.root / directory
                 for path in root.glob('*.json') if root.exists() else ():
-                    record = json.loads(path.read_bytes())
-                    space = record['scratch_space_id']
-                    if not isinstance(space, str) or not space:
-                        raise ValueError('invalid journal Space identity')
-                    index.setdefault(space, set()).add(path.name)
+                    try:
+                        record = json.loads(path.read_bytes())
+                        space = record['scratch_space_id']
+                        if not isinstance(space, str) or not space:
+                            raise ValueError('invalid journal Space identity')
+                        index.setdefault(space, set()).add(path.name)
+                        if directory == 'execution-v2':
+                            self.journal_metadata[path.name] = self._prune_metadata(record)
+                    except (OSError, ValueError, KeyError, TypeError) as error:
+                        import sys
+                        print('Execution Pod journal index recovery failed: ' + str(error), file=sys.stderr, flush=True)
                 indexes.append(index)
             # All new records wait for the rebuild before they are written.
             self.session_index = indexes[1]
             self.journal_index = indexes[0]
+
+    @staticmethod
+    def _prune_metadata(record):
+        return (record.get('status'), record.get('terminal_at'), record.get('stop_pending'))
 
     def _space_journal_paths(self, scratch_space_id, *, sessions=False):
         self._ensure_journal_index()
@@ -540,15 +551,16 @@ class ExecutionPodController:
         current = time.time() if now is None else now
         with self._space_lock(scratch_space_id):
             expired = []
-            for path in self._space_journal_paths(scratch_space_id):
-                try:
-                    candidate = json.loads(path.read_bytes())
-                except FileNotFoundError:
+            paths = self._space_journal_paths(scratch_space_id)
+            with self.lock:
+                candidates = [(path, self.journal_metadata.get(path.name)) for path in paths]
+            for path, metadata in candidates:
+                if metadata is None:
                     continue
-                terminal_at = candidate.get('terminal_at')
-                if (candidate.get('status') not in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted')
+                status, terminal_at, stop_pending = metadata
+                if (status not in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted')
                         or not isinstance(terminal_at, (int, float)) or terminal_at > current - JOURNAL_RETENTION_SECONDS
-                        or candidate.get('stop_pending')):
+                        or stop_pending):
                     continue
                 expired.append((terminal_at, path))
             for _, path in sorted(expired):
@@ -570,6 +582,7 @@ class ExecutionPodController:
                             self.session_index.get(scratch_space_id, set()).discard(session_path.name)
                     path.unlink()
                     self.journal_index.get(scratch_space_id, set()).discard(path.name)
+                    self.journal_metadata.pop(path.name, None)
 
     def _space_lock(self, scratch_space_id):
         with self.lock:
@@ -1081,6 +1094,7 @@ print(json.dumps(r))'''
                     record.update(status='interrupted' if prior == 'running' else 'cancelled',
                                   outcome='unknown' if prior == 'running' else 'not_started', terminal_at=time.time())
                     save(path, record)
+                    self.journal_metadata[path.name] = self._prune_metadata(record)
                     future = self.futures.get(record.get('operation_id'))
                     if prior == 'queued' and future:
                         future.cancel()
@@ -1236,7 +1250,8 @@ print(json.dumps(r))'''
         for path in journal_paths + session_paths:
             path.unlink(missing_ok=True)
         with self.lock:
-            self.journal_index.pop(scratch_space_id, None)
+            for name in self.journal_index.pop(scratch_space_id, set()):
+                self.journal_metadata.pop(name, None)
             self.session_index.pop(scratch_space_id, None)
             path = self.backend.root / 'execution-v2-spaces' / (scratch_resource_name(scratch_space_id) + '.json')
             path.unlink(missing_ok=True)
@@ -1385,6 +1400,7 @@ print(json.dumps(r))'''
     def _update_command(self, operation_id, *, allow_late=False, **fields):
         import time
         from control import save
+        self._ensure_journal_index()
         with self.lock:
             record = self._read_command(operation_id)
             if allow_late and record.get('status') != 'interrupted':
@@ -1399,7 +1415,9 @@ print(json.dumps(r))'''
             if fields.get('status') in terminal:
                 fields.setdefault('terminal_at', time.time())
             record.update(fields)
-            save(self._command_path(operation_id), record)
+            path = self._command_path(operation_id)
+            save(path, record)
+            self.journal_metadata[path.name] = self._prune_metadata(record)
             return record
 
     def command_result(self, operation_id, *, retry_stop=True, observe_late=True):
@@ -1528,6 +1546,7 @@ print(json.dumps(r))'''
                 record['client_digest'] = client_digest
             save(path, record)
             self.journal_index.setdefault(scratch_id, set()).add(path.name)
+            self.journal_metadata[path.name] = self._prune_metadata(record)
             self.touch_space(scratch_id)
             if not background:
                 self.foreground_jobs[scratch_id] = self.foreground_jobs.get(scratch_id, 0) + 1
