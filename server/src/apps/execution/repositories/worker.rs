@@ -168,10 +168,13 @@ impl WorkerStep for Step {
 					store: self.federation.store.clone(),
 				},
 			);
-			let _ = crate::apps::knowledge::repositories::engine_jobs::offloads::schedule(
-				queue,
-				self.run.id,
-				std::mem::take(&mut self.offloaded),
+			// The extraction runs detached after the commit; the step does not wait for it.
+			drop(
+				crate::apps::knowledge::repositories::engine_jobs::offloads::schedule(
+					queue,
+					self.run.id,
+					std::mem::take(&mut self.offloaded),
+				),
 			);
 		} else {
 			self.offloaded.clear();

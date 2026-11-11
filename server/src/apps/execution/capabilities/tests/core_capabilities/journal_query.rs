@@ -163,7 +163,7 @@ async fn builtin_sends_the_current_journal_to_the_same_run_session(
 		.invocation_finish(&TEST_FIXTURE, &run, worker, "journal-fresh", &fresh)
 		.await
 		.unwrap();
-	let requests = calls.lock().unwrap();
+	let requests = calls.lock().unwrap().clone();
 	let sessions: Vec<_> = requests
 		.iter()
 		.filter(|call| call["path"] == "/v1/operations")
@@ -203,7 +203,6 @@ async fn builtin_sends_the_current_journal_to_the_same_run_session(
 			.count(),
 		3
 	);
-	drop(requests);
 	use reinhardt::query::{
 		Alias, Expr, ExprTrait as _, PostgresQueryBuilder, Query, QueryStatementBuilder as _,
 	};

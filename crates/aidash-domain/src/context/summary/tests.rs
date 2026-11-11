@@ -689,3 +689,64 @@ fn draft_rejects_a_missing_previous_item() {
 		Err(Rejection::DroppedItem(_))
 	));
 }
+
+#[test]
+fn draft_can_extend_a_previous_summary_near_the_model_output_limit() {
+	let mut first = adopted(&content(&[], &[], &[]), None, &[tool(2)]);
+	first.content.goal = "g".repeat(700);
+	let draft = json!({"retained":SummaryContent::retained_ids(Some(&first)),"labels":[],"prose":"d".repeat(400)}).to_string();
+	let result = SummaryContent::from_draft(&draft, "ignored", Some(&first), &[], 1024).unwrap();
+	assert_eq!(result.goal, first.content.goal);
+	assert!(result.decisions.iter().any(|item| item == &"d".repeat(400)));
+}
+
+#[test]
+fn history_budget_evicts_oldest_decisions_then_verification_but_keeps_required_state() {
+	let mut summary = SummaryContent {
+		goal: "日本語の目的".into(),
+		constraints: vec![SummaryItem {
+			id: "c".into(),
+			text: "keep constraint".into(),
+		}],
+		unresolved: vec![SummaryItem {
+			id: "u".into(),
+			text: "keep unresolved".into(),
+		}],
+		resolved: vec![],
+		artifacts: vec![ArtifactRef {
+			reference: "src/main.rs".into(),
+			revision: "".into(),
+		}],
+		decisions: vec![
+			"old decision".repeat(30),
+			"Full tool results remain in Context Journal sequences 10 through 20.".into(),
+			"new decision".repeat(30),
+		],
+		verification: vec![
+			VerificationRef {
+				reference: "old".into(),
+				outcome: "passed".repeat(30),
+			},
+			VerificationRef {
+				reference: "new".into(),
+				outcome: "passed".into(),
+			},
+		],
+	};
+	summary.trim_history(400).unwrap();
+	assert!(serde_json::to_string(&summary).unwrap().len() <= 400);
+	assert_eq!(
+		summary.decisions,
+		["Full tool results remain in Context Journal sequences 10 through 20."]
+	);
+	assert_eq!(summary.verification.len(), 1);
+	assert_eq!(summary.verification[0].reference, "new");
+	assert_eq!(summary.constraints[0].text, "keep constraint");
+	assert_eq!(summary.unresolved[0].text, "keep unresolved");
+	assert_eq!(summary.artifacts[0].reference, "src/main.rs");
+	summary.trim_history(1).unwrap();
+	assert_eq!(summary.decisions.len(), 1);
+	assert_eq!(summary.constraints.len(), 1);
+	assert_eq!(summary.unresolved.len(), 1);
+	assert_eq!(summary.artifacts.len(), 1);
+}

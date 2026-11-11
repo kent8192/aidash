@@ -390,6 +390,8 @@ impl AgentBindings {
 	}
 	fn normalize_mode(&self, node: &str, mode: u8) -> Result<Vec<NormalizedBinding>> {
 		self.validate()?;
+		let previous_builtin_versions = mode >= 4;
+		let mode = mode % 4;
 		if mode != 0
 			&& self.remove_default.iter().any(|name| {
 				(mode == 1 && matches!(name.as_str(), "attachment_copy" | "workspace_search"))
@@ -428,6 +430,9 @@ impl AgentBindings {
 						&& matches!(b.target.version.as_str(), "1.0.0" | "1.0.1" | "1.1.0")
 				}) {
 				target = binding.target.clone();
+			}
+			if previous_builtin_versions && matches!(*operation, "memory_mutate" | "subnode_task") {
+				target.version = "1.0.0".into();
 			}
 			let explicit = self
 				.bindings
@@ -513,13 +518,11 @@ impl Entry {
 			let legacy = config.normalize_version(node, true);
 			if !current.is_ok_and(|expected| saved.bindings == expected)
 				&& !legacy.is_ok_and(|expected| saved.bindings == expected)
-				&& !config
-					.normalize_mode(node, 2)
-					.is_ok_and(|expected| saved.bindings == expected)
-				&& !config
-					.normalize_mode(node, 3)
-					.is_ok_and(|expected| saved.bindings == expected)
-			{
+				&& !(2..8).any(|mode| {
+					config
+						.normalize_mode(node, mode)
+						.is_ok_and(|expected| saved.bindings == expected)
+				}) {
 				return Err(Error::Invalid(
 					"Agent normalization differs from its immutable definition".into(),
 				));
@@ -595,7 +598,10 @@ impl QualifiedRef {
 		Self {
 			registry_deployment: node.into(),
 			id: format!("aidash.{operation}"),
-			version: if operation == "workspace_read" {
+			version: if matches!(
+				operation,
+				"workspace_read" | "memory_mutate" | "subnode_task"
+			) {
 				"1.1.0"
 			} else if matches!(operation, "workspace_observe" | "workspace_message") {
 				"1.0.1"

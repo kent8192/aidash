@@ -40,6 +40,32 @@ pub fn snapshot_from_lines(lines: Vec<JournalLine>, range: Option<(u64, u64)>) -
 	}
 }
 
+#[async_trait]
+pub trait JournalSource: Send + Sync {
+	/// Export an inclusive sequence range under the reader Run's authority.
+	async fn export(
+		&self,
+		scope: &TenancyScope,
+		reader_run: Uuid,
+		target_run: Uuid,
+		range: Option<(u64, u64)>,
+	) -> Result<Vec<JournalLine>>;
+
+	async fn snapshot(
+		&self,
+		scope: &TenancyScope,
+		reader_run: Uuid,
+		target_run: Uuid,
+		range: Option<(u64, u64)>,
+	) -> Result<JournalSnapshot> {
+		if range.is_some_and(|(from, through)| from > through || through > i64::MAX as u64) {
+			return Err(Error::Invalid("invalid journal range".into()));
+		}
+		let lines = self.export(scope, reader_run, target_run, None).await?;
+		Ok(snapshot_from_lines(lines, range))
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -117,31 +143,5 @@ mod tests {
 			.unwrap();
 		assert!(bounded.lines.is_empty());
 		assert!(bounded.dependencies.is_empty());
-	}
-}
-
-#[async_trait]
-pub trait JournalSource: Send + Sync {
-	/// Export an inclusive sequence range under the reader Run's authority.
-	async fn export(
-		&self,
-		scope: &TenancyScope,
-		reader_run: Uuid,
-		target_run: Uuid,
-		range: Option<(u64, u64)>,
-	) -> Result<Vec<JournalLine>>;
-
-	async fn snapshot(
-		&self,
-		scope: &TenancyScope,
-		reader_run: Uuid,
-		target_run: Uuid,
-		range: Option<(u64, u64)>,
-	) -> Result<JournalSnapshot> {
-		if range.is_some_and(|(from, through)| from > through || through > i64::MAX as u64) {
-			return Err(Error::Invalid("invalid journal range".into()));
-		}
-		let lines = self.export(scope, reader_run, target_run, None).await?;
-		Ok(snapshot_from_lines(lines, range))
 	}
 }
