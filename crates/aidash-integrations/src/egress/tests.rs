@@ -2682,8 +2682,10 @@ enum Registry {
 	TooLarge,
 	Breaks,
 	Packages,
+	StalledIndex,
 }
 
+static INDEX_STARTED: Notify = Notify::const_new();
 const TARBALL: &[u8] = b"\x1f\x8b\x00\xfftypescript-tarball\x00\x80";
 static RELEASE_TARBALL: Notify = Notify::const_new();
 fn package_registry_response(path: &str) -> Response<Body> {
@@ -2800,6 +2802,12 @@ async fn tunnel_to_registry(
 								yield Ok(Frame::data(Bytes::from_static(b"{\"name\":")));
 								tokio::time::sleep(Duration::from_millis(200)).await;
 								yield Err(io_error("registry_broke"));
+							})
+							.boxed_unsync(),
+							Registry::StalledIndex => StreamBody::new(async_stream::stream! {
+								yield Ok(Frame::data(Bytes::from_static(b"{")));
+								INDEX_STARTED.notify_one();
+								std::future::pending::<()>().await;
 							})
 							.boxed_unsync(),
 							Registry::Packages => unreachable!(),
@@ -2972,6 +2980,57 @@ async fn a_package_index_failure_records_the_status_the_client_received() {
 		}
 		shutdown(vec![gateway, tunnel], stop).await;
 	}
+}
+
+#[tokio::test]
+async fn stopped_while_buffering_index_records_client_status() {
+	let (client, tunnel) = tunnel_to_registry(&Registry::StalledIndex).await;
+	let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let origin = format!("http://{}", listener.local_addr().unwrap());
+	let audit = Arc::new(Audit::default());
+	let authority = Arc::new(ShapedAuthority {
+		origin: origin.clone(),
+		audit: audit.clone(),
+		service: "core.npm",
+		base: "https://registry.npmjs.org/".into(),
+		methods: vec!["GET".into()],
+		shape: Box::new(|_| {}),
+	});
+	let (stop, receiver) = watch::channel(false);
+	let gateway = tokio::spawn(async move {
+		serve_with_clients(
+			listener,
+			authority,
+			None,
+			ProxyLimits::default(),
+			receiver,
+			client.clone(),
+			client,
+		)
+		.await
+		.unwrap()
+	});
+	let request =
+		tokio::spawn(
+			async move { raw_get(&origin, "/v1/operation-token/core.npm/typescript").await },
+		);
+	tokio::time::timeout(Duration::from_secs(5), INDEX_STARTED.notified())
+		.await
+		.unwrap();
+	audit.stopped.store(true, Ordering::Release);
+	let (line, _) = tokio::time::timeout(Duration::from_secs(10), request)
+		.await
+		.unwrap()
+		.unwrap();
+	tokio::time::timeout(Duration::from_secs(5), audit.finished.notified())
+		.await
+		.unwrap();
+	assert!(line.starts_with("HTTP/1.1 403"), "{line}");
+	assert_eq!(
+		*audit.finished_records.lock().unwrap(),
+		vec![(403, Some("operation_expired".into()))]
+	);
+	shutdown(vec![gateway, tunnel], stop).await;
 }
 
 /// Keeps its record from being written for `STALL`, then writes it.

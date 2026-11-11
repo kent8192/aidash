@@ -1786,6 +1786,7 @@ async fn forward(
 		loop {
 			let next = tokio::select! {
 				refusal = stopped(&mut active_rx) => {
+					completion.status = refusal.status.as_u16();
 					completion.interrupted(refusal.code);
 					return refusal.response();
 				}
