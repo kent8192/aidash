@@ -310,7 +310,7 @@ async fn refuse_bypass(connection: &DatabaseConnection, login: Login) -> Result<
 	Err(Error::Invalid(format!(
 		"the {} database login {reason}, so row-level security would not apply to it; \
 		 connect as the server role (aidash_server) and run migrations as the owner role \
-		 (aidash_owner)",
+		 (aidash_owner); run `aidash setup-roles --superuser-url <url>` once to create them",
 		match login {
 			Login::Server => "server's",
 			Login::Maintenance => "maintenance",

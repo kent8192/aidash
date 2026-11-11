@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Keep role definitions in sync with server/src/database/setup_roles.rs.
 # Provision Aidash's database roles on a new data directory (#262).
 #
 # Migrations log in as aidash_owner, which owns every table. Servers and workers

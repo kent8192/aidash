@@ -8,6 +8,7 @@ pub mod purge;
 mod records;
 pub mod runtime;
 pub mod scope;
+pub mod setup_roles;
 pub use records::Record;
 mod projections;
 pub use projections::query_as;
