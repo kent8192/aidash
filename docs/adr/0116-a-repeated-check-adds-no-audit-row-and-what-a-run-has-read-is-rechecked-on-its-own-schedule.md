@@ -4,6 +4,12 @@ Decided on 2026-11-07 for #758 and #752. One build of 11 Runs wrote 38 million A
 
 We split the check in two. The Continuation Check runs on each Egress request and each pass over a running command, and asks only whether the Run may still run. The Read Recheck asks whether everything the Run read may still be read. It runs at each worker boundary and, for what runs between boundaries, every 30 seconds on a loop of its own. Inside one check nothing is looked up twice and rows are loaded together, so the statement count does not grow with the reads. Read Coalescing then records a repeated allow once per Run or Remote Grant, subject, action, resource and policy revision.
 
+## Dashboard state preload
+
+The bounded `/api/state` read preloads the raw rows needed for its Run and Workspace windows. Each scanned batch of up to 100 events preloads the Runs it names before checking those events. Registry data is also loaded in batches, while both Catalog and Marketplace checks still run. The existing visibility and provenance rules judge every disclosure; the preload does not cache their verdicts, and other Run readers do not use it.
+
+The rows belong to one request and authority. An authority change or savepoint rollback drops the preload; a failed visibility walk drops it as well. A withdrawal committed during a state read may therefore take effect on the next read instead of partway through the current one. Nothing from the preload carries over to the next request.
+
 ## Considered Options
 
 - **Remember a verdict between Read Rechecks, until something changes.** A shared change counter would have to cover Catalog Approvals, Peer Mappings and others that keep their own revisions, and one missed bump leaves a revocation without effect. Rejected: no outcome carries over between checks, only the fact that a row exists.
