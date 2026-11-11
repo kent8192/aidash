@@ -494,6 +494,13 @@ The forward and backward SQL assets from `registry/0008_provider_descriptors` to
    `BYPASSRLS`. Configure all new replicas to use that database, the
    `aidash_server` login and the same pinned image; servers and workers refuse
    to start as a superuser, a `BYPASSRLS` role or an owner of database objects.
+   For a non-Compose database, run `aidash setup-roles --superuser-url <url>`
+   once to create the roles, database ownership, default privileges and
+   extensions. Save
+   the printed URLs securely; existing roles retain their passwords unless
+   `--owner-password` or `--server-password` is supplied. The PostgreSQL image
+   or package must provide the extensions; `local-dev-db` and `migrate` check
+   for `pg_jsonschema` 0.3.4.
 3. Run the native migration command once as `aidash_owner`. Inspect `showmigrations` and verify
    replay, schema constraints, and configured Federation and identity settings before
    accepting writes.
@@ -905,6 +912,8 @@ Federation retains its pre-existing separate `0007_model_state` leaf alongside
 
 `identity/0072_remote_execution_activation` adds the nullable `authorization_remote_execution.activated_at` (#772). The Home sets it after the receiving Node's activation response matched, so a binding left behind by a refused activation is not read as a Run that started. One Reinhardt `AddColumn` carries both the table and the model state; nothing is backfilled, because nothing is deployed. A binding counts as live only while its `task_revision` equals the Task's revision, so a Task reopened after its remote Run ended is an Unassigned Task again.
 
+`identity/0073_provider_credential_origin` adds `provider_credentials.key_origin` (#892): `authorization`, `pasted` or `host_access`, saying how the pinned Key Material arrived. A Reinhardt `AddColumn` with the default `'authorization'` fills existing rows, which all came from Provider Authorization, and an `AlterColumn` then drops the default so every write names its origin.
+
 `workspaces/0019_scratch_spaces` adds Node-owned Scratch Spaces, their Tenant-scoped settings, and membership. Composite foreign keys keep each child and its parent in the same Tenant. `0020_scratch_spaces_row_level_security` applies the standard Tenant row policies. Reinhardt has no row-policy migration operation, so this migration uses the reversible policy SQL template. `0021_conversation_scratch_space` fixes each conversation to one Scratch Space in the same Tenant. `0022_scratch_space_model_state` records the ORM relationship state without changing the database-enforced constraints. The Query-generated `migrationseeds` assets backfill conversations before enforcing the binding. `0024_workspace_scratch_space` moves Run resolution to Workspace bindings, creating a dedicated space for each Workspace. It recovers the starter from Workspace ownership, a conversation, or the earliest Task. `0025_scratch_workspace_model_state` records the ORM relationship without changing the physical foreign key. A cleared space retains a tombstone while conversations still reference it; runtime reclamation is delivered separately.
 
 `execution/0094_subnodes`, `0095_subnodes_row_level_security`, and
@@ -917,3 +926,5 @@ validator with the six `core.subnodes@1` operations (#660). Its reversible
 cannot express PL/pgSQL function definitions. Rolling back restores the
 previous descriptor contract; existing Subnode descriptors then cannot be
 rewritten until the migration is reapplied.
+
+`identity/0074_bootstrap_reservations` records each Tenant reservation source and adds a Deployment-wide Host Access email reservation for the first sign-in. It allows one Demo and one Host Access reservation per Tenant and email, and extends the Tenant and Node creator checks to accept `host_access`; `identity/0075_bootstrap_reservations_state` records the new field and table in ORM state, keeping physical checks out of that state. Rollback removes pending Deployment Administrator reservations and the reservation source column, and refuses while Tenant or Node records name Host Access as their creator or when Demo and Host Access reservations share an address in a Tenant.
