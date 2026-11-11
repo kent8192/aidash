@@ -935,12 +935,15 @@ async fn failed_snapshot_preserves_active_files_and_interrupted_delete_is_reconc
 	let (status,deletion)=request(&c.app,&c.token,"POST",&format!("/api/working-areas/{id}/cleanup"),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"choice":"irreversible","confirmation_id":confirmation["confirmation_id"]})).await;
 	assert_eq!(status, 200, "{deletion}");
 	assert_eq!(deletion["state"], "deleting");
-	// Deterministic storage failure while deleting an owned object, after the
-	// durable intent fenced every writer. No unrelated path is modified.
+	// Deterministic cleanup failure after the durable intent fenced every
+	// writer: the trigger below makes the reference removal fail inside the
+	// worker's erasure, so it is a database failure, not a storage one. The
+	// directory at the blob path only makes any byte deletion that does run
+	// fail too. No unrelated path is modified.
 	tokio::fs::rename(&owned, &backup).await.unwrap();
 	tokio::fs::create_dir(&owned).await.unwrap();
 	// SeaQuery cannot express PostgreSQL trigger/function DDL. This fixture-only
-	// barrier pauses the real worker while reporting its storage failure, so
+	// barrier pauses the real worker while reporting the failed erasure, so
 	// status polling deterministically overlaps the failure transaction.
 	let barrier_key = Uuid::new_v4().as_u128() as i64;
 	// Only the table owner can add a trigger; the server role holds DML.
