@@ -9,7 +9,7 @@
 - Corpus: `fixed-task-corpus-v2`, SHA-256 `b25486371e8165f241e7283236321984547ab7b89d205687b733d299177ee99b`.
 - Evaluator: `2.1.4`, SHA-256 `19a92df85ea1ab034a846b8244615d670ea39b37555a4f5f8812301cfc6c6526`.
 - Campaign configuration SHA-256: `d69922b99893667bc81027355d28641d8e31d7eecadf56f8bf7103d5298336e2`.
-- Configuration, prompt-free Run evidence, corpus/campaign file fingerprints and the fixed-evaluator digest: [JSON artifact](projection-comparison-fixture-evidence.json).
+- Configuration, prompt-free Run evidence, corpus/campaign file fingerprints and the fixed-evaluator digest: [JSON artifact](https://github.com/kent8192/aidash/blob/268497a929bf5e32cc866939fef6b5e134950793/docs/evaluation/projection-comparison-fixture-evidence.json), SHA-256 `a58d62592edf5cdd7891cc27e335acb9ac048c33845881df8138e91fa3186a40`. It left the working tree with #858 and stays in Git history at commit `268497a929`.
 - Protocol: [accepted decisions](../decisions/projection-comparison-protocol.md). Campaign workflow and migration/compatibility details: [comparison guide](../projection-comparison.md).
 
 ```sh
