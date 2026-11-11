@@ -179,6 +179,30 @@ async function research(
 ) {
   const pendingCards = pending.map((item) => ({ ...item }));
   const grantCards = grants.map((item) => ({ ...item }));
+  const inlineCards = [
+    Object.assign(pendingCards[0], { viewer_can_decide_inline: true }),
+    {
+      ...pendingCards[0],
+      id: "outbound",
+      kind: "outbound",
+      action: "network.get",
+      viewer_can_decide_inline: true,
+    },
+    {
+      ...pendingCards[0],
+      id: "tool-call",
+      kind: "tool_call",
+      action: "tool.call_unapproved",
+      tool: "fixture",
+      viewer_can_decide_inline: true,
+    },
+    {
+      ...pendingCards[2],
+      id: "other-thread",
+      area_id: "area-other",
+      viewer_can_decide_inline: true,
+    },
+  ];
   const fixture = await setup(page, { subject: true, coreCapabilities: true });
   await page.goto("/collaboration?channel=workspace-one");
   const data = await page.evaluate(() =>
@@ -381,41 +405,20 @@ async function research(
     if (path === "/api/capabilities/approvals") {
       const state = url.searchParams.get("state");
       const role = url.searchParams.get("role");
+      if (inlineApprovals && state === "pending" && role === "approver") {
+        return url.searchParams.has("cursor")
+          ? send({ items: inlineCards.slice(1), next_cursor: null })
+          : send({ items: [inlineCards[0]], next_cursor: "page-2" });
+      }
+      if (inlineApprovals && !state && !role) {
+        return url.searchParams.has("cursor")
+          ? send({ items: inlineCards.slice(1), next_cursor: null })
+          : send({ items: [thread[0], inlineCards[0]], next_cursor: "page-2" });
+      }
       const items =
         role === "approver"
           ? state === "pending"
-            ? (inlineApprovals
-                ? [
-                    { ...pendingCards[0], viewer_can_decide_inline: true },
-                    {
-                      ...pendingCards[0],
-                      id: "outbound",
-                      kind: "outbound",
-                      action: "network.get",
-                      viewer_can_decide_inline: true,
-                    },
-                    {
-                      ...pendingCards[0],
-                      id: "tool-call",
-                      kind: "tool_call",
-                      action: "tool.call_unapproved",
-                      tool: "fixture",
-                      viewer_can_decide_inline: true,
-                    },
-                    {
-                      ...pendingCards[1],
-                      id: "other-approver",
-                      viewer_can_decide_inline: false,
-                    },
-                    {
-                      ...pendingCards[2],
-                      id: "other-thread",
-                      area_id: "area-other",
-                      viewer_can_decide_inline: true,
-                    },
-                  ]
-                : pendingCards
-              ).filter((item) => item.state === "pending")
+            ? pendingCards.filter((item) => item.state === "pending")
             : grantCards.filter((item) => item.state === "active")
           : state === "pending"
             ? thread.filter((item) => item.state === "pending")
@@ -480,11 +483,23 @@ test("a requester-approver decides their Run's approval in the Thread", async ({
     inline.getByRole("article", { name: "Tool call approval" }),
   ).toBeVisible();
   await expect(inline).toContainText("rust release");
-  await expect(
-    page.getByRole("article", { name: "Page reading disclosure" }).filter({
-      hasText: "Awaiting a decision",
-    }),
-  ).toHaveCount(0);
+  const work = page.getByRole("heading", { name: "Agent work" }).locator("..");
+  const waiting = work
+    .getByRole("article", { name: "Page reading disclosure" })
+    .filter({ hasText: "Awaiting a decision" });
+  await expect(waiting).toHaveCount(1);
+  await expect(waiting).toContainText("Approver: bob");
+  await expect(waiting.getByRole("button", { name: /Allow|Deny/ })).toHaveCount(
+    0,
+  );
+  await work.getByRole("button", { name: "Load more" }).click();
+  for (const name of [
+    "Web search disclosure",
+    "Outbound request",
+    "Tool call approval",
+  ]) {
+    await expect(work.getByRole("article", { name })).toHaveCount(1);
+  }
   await inline
     .getByRole("article", { name: "Web search disclosure" })
     .getByRole("button", { name: "Allow once" })
@@ -498,6 +513,9 @@ test("a requester-approver decides their Run's approval in the Thread", async ({
         )?.body.choice,
     )
     .toBe("allow_once");
+  await expect(
+    inline.getByRole("article", { name: "Web search disclosure" }),
+  ).toHaveCount(0);
 });
 
 async function openThread(page: Page) {
@@ -733,8 +751,14 @@ test("an approver decides Web disclosures and revokes Run grants from the global
     .toBe(true);
   await page.keyboard.press("Escape");
 
-  // The Thread retains the decided history, but does not offer Bob's pending card.
-  await page.getByText(/Approvals and grants \(/).click();
+  // The Thread retains the pending status and decided history.
+  const bobWaiting = page
+    .getByRole("article", { name: "Page reading disclosure" })
+    .filter({ hasText: "Awaiting a decision" });
+  await expect(bobWaiting).toBeVisible();
+  await expect(
+    bobWaiting.getByRole("button", { name: /Allow|Deny/ }),
+  ).toHaveCount(0);
   await expect(
     page.getByText("Denied by bob at", { exact: false }),
   ).toBeVisible();

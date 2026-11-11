@@ -461,7 +461,13 @@ export function ApprovalCardView({ item }: { item: Approval }) {
   );
 }
 
-export function CapabilityApprovals({ area }: { area?: string }) {
+export function CapabilityApprovals({
+  area,
+  inlineIds,
+}: {
+  area?: string;
+  inlineIds: ReadonlySet<string>;
+}) {
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
   const query = useInfiniteQuery({
@@ -476,21 +482,15 @@ export function CapabilityApprovals({ area }: { area?: string }) {
     refetchInterval: 2000,
     retry: false,
   });
-  const items =
+  const areaItems =
     query.data?.pages
       .flatMap((p) => p.items)
-      .filter(
-        (i) =>
-          !area ||
-          (i.area_id === area &&
-            (i.state !== "pending" ||
-              !["outbound", "disclosure", "tool_call"].includes(i.kind) ||
-              i.viewer_can_decide_inline)),
-      ) ?? [];
+      .filter((i) => !area || i.area_id === area) ?? [];
+  const items = areaItems.filter((item) => !inlineIds.has(item.id));
   return (
     <details
       className={panelClass}
-      open={items.some((i) => i.state === "pending")}
+      open={areaItems.some((i) => i.state === "pending")}
     >
       <summary>
         {ja ? "承認と接続許可" : "Approvals and grants"} ({items.length})

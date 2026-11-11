@@ -37,7 +37,7 @@ import {
   type Operation,
 } from "./client";
 import { ApprovalCardView, CapabilityApprovals } from "./approvals";
-import { every } from "./inbox";
+import { usePendingApprovalInbox } from "./inbox";
 import { OutboundFiles } from "./outbound";
 import { SkillFiles } from "./skills";
 import { DisplayFile, panelClass } from "./display";
@@ -184,11 +184,13 @@ function FileOperations({
   run,
   data,
   refresh,
+  inlineIds,
 }: {
   area: Area;
   run: string;
   data: State;
   refresh: () => Promise<unknown>;
+  inlineIds: ReadonlySet<string>;
 }) {
   const { locale, t } = useI18n();
   const ja = locale === "ja-JP";
@@ -851,7 +853,7 @@ function FileOperations({
         files={area.manifest}
         thread={area.thread_id}
       />
-      <CapabilityApprovals area={area.id} />
+      <CapabilityApprovals area={area.id} inlineIds={inlineIds} />
       {error && <Alert>{error}</Alert>}
     </>
   );
@@ -904,13 +906,9 @@ export function ThreadCapabilities({
   });
   const area =
     query.data?.items.find((a) => a.id === selected) ?? query.data?.items[0];
-  const approvals = useQuery({
-    queryKey: ["core-approvals", "thread", workspace, thread],
-    queryFn: ({ signal }) =>
-      every("/api/capabilities/approvals?state=pending&role=approver", signal),
-    refetchInterval: 5000,
-    retry: false,
-  });
+  // The shell already polls this inbox. Subscribe to its cache without adding
+  // another polling observer or fetching every page of approval history.
+  const approvals = usePendingApprovalInbox(false);
   const areaIds = new Set(query.data?.items.map((item) => item.id) ?? []);
   const inlineApprovals = (approvals.data ?? []).filter(
     (item) =>
@@ -920,6 +918,7 @@ export function ThreadCapabilities({
       item.area_id != null &&
       areaIds.has(item.area_id),
   );
+  const inlineIds = new Set(inlineApprovals.map((item) => item.id));
   const session = useQuery({
     queryKey: ["core-session", area?.id],
     queryFn: ({ signal }) =>
@@ -1213,6 +1212,7 @@ export function ThreadCapabilities({
           run={active}
           data={data}
           refresh={refresh}
+          inlineIds={inlineIds}
         />
       )}
       <ThreadDeletion
