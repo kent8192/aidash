@@ -10531,6 +10531,41 @@
   {
     "json": false,
     "method": "GET",
+    "name": "reference_revocation",
+    "path": "/api/references/{id}/revocation",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "ReferenceRevocation": {
+            "properties": {
+              "reference_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": ["reference_id", "revision", "state"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/ReferenceRevocation"
+        }
+      }
+    },
+    "source": "server/src/apps/execution/capabilities/views/management.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": false,
+    "method": "GET",
     "name": "reference_download",
     "path": "/api/references/{id}/download",
     "query_parameters": ["offset"],

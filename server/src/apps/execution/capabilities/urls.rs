@@ -98,6 +98,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::management::reference_revoke)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
+			.endpoint(super::views::management::reference_revocation)
+			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::management::reference_download)
 			.with_route_middleware(AccessBoundary::authenticated().with_visibility())
 			.endpoint(super::views::management::file_download)
