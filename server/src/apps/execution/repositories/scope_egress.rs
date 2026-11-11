@@ -89,28 +89,46 @@ impl DurableScopes {
 		service: Option<(&str, aidash_domain::egress::Limits)>,
 		forwarded: bool,
 	) -> Result<()> {
-		let current = self.live(&settings.id).await.map_err(Error::from)?;
+		// Forwarded bytes have already crossed the gateway, so they are added
+		// even when live authority refuses: a deleted Tenant or Node can be
+		// restored the same day, and its scope's totals count again. With no
+		// live settings there is no budget to compare, and the refusal is the
+		// decision returned. A scope whose state is gone, such as one on a
+		// purged Node, keeps them only in the request record.
+		let (current, refused) = match self.live(&settings.id).await {
+			Ok(current) => (Some(current), None),
+			Err(error)
+				if forwarded && DebitRefusal::of(&error) == Some(DebitRefusal::Forbidden) =>
+			{
+				(None, Some(error))
+			}
+			Err(error) => return Err(error.into()),
+		};
+		let id = current.as_ref().map_or(&settings.id, |current| &current.id);
 		let bytes = i64::try_from(bytes).map_err(|_| Error::Forbidden)?;
 		let mut tx = self
 			.store
 			.pool
-			.begin(&TenancyScope::tenant(&current.id.tenant)?)
+			.begin(&TenancyScope::tenant(&id.tenant)?)
 			.await?;
-		let state = locked_state(&mut tx, &current.id).await?;
+		let state = locked_state(&mut tx, id).await?;
 		if state.suspended && !forwarded {
 			return Err(Error::Conflict("egress_suspended".into()));
 		}
-		let mut total = daily(&mut tx, &current.id, day, "").await?;
-		let max = match direction {
-			Direction::Sent => current.budget.sent_bytes,
-			Direction::Received => current.budget.received_bytes,
-		};
+		let mut total = daily(&mut tx, id, day, "").await?;
+		let max = current
+			.as_ref()
+			.map_or(u64::MAX, |current| match direction {
+				Direction::Sent => current.budget.sent_bytes,
+				Direction::Received => current.budget.received_bytes,
+			});
 		let mut exhausted = charge_row(&mut total, direction, bytes, max, forwarded)?;
 		let service_row = if let Some((name, limits)) = service {
-			let mut row = daily(&mut tx, &current.id, day, name).await?;
-			let max = match direction {
-				Direction::Sent => limits.sent_bytes,
-				Direction::Received => limits.received_bytes,
+			let mut row = daily(&mut tx, id, day, name).await?;
+			let max = match (&current, direction) {
+				(None, _) => u64::MAX,
+				(Some(_), Direction::Sent) => limits.sent_bytes,
+				(Some(_), Direction::Received) => limits.received_bytes,
 			};
 			exhausted |= charge_row(&mut row, direction, bytes, max, forwarded)?;
 			Some(row)
@@ -128,6 +146,9 @@ impl DurableScopes {
 				.map_err(reinhardt::core::exception::Error::from)?;
 		}
 		tx.commit().await?;
+		if let Some(refused) = refused {
+			return Err(refused.into());
+		}
 		if state.suspended {
 			return Err(Error::Conflict("egress_suspended".into()));
 		}

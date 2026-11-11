@@ -647,6 +647,92 @@ async fn deleting_the_tenant_or_the_node_closes_the_scope_credential_until_it_is
 	durable.resolve(&credential).await.unwrap();
 }
 
+/// Bytes forwarded while the Tenant is deleted still count against the day's
+/// budget once it is restored (#843).
+#[rstest::rstest]
+#[tokio::test]
+#[timeout(std::time::Duration::from_secs(180))]
+async fn forwarded_bytes_count_for_the_scope_while_its_authority_is_refused(
+	#[future] database: DatabaseFixture,
+) {
+	let database = database.await;
+	let context = reinhardt::InjectionContext::builder(reinhardt::SingletonScope::new()).build();
+	let settings = settings::settings_for(&database.url);
+	let federation = crate::bootstrap::initialize(&context, &settings, database.connection.clone())
+		.await
+		.unwrap();
+	tenant_roots::tenant_root(&federation, "acme").await;
+	let chosen = aidash_domain::scratch::ScratchSettings {
+		daily_sent_bytes: 10,
+		daily_received_bytes: 10,
+		..Default::default()
+	};
+	let space = insert_space(&federation, "acme", chosen).await;
+	let authority = Arc::new(ScratchAuthority::with_key(
+		federation.store.clone(),
+		federation.config.scratch_policy.clone(),
+		KEY,
+	));
+	let credential = authority.credential("acme", space).unwrap();
+	let durable = DurableScopes::new(federation.store.clone(), authority);
+	let open = durable.resolve(&credential).await.unwrap();
+	let day = Utc::now().date_naive();
+	let pool = federation.store.pool.fixture_driver();
+	let audit = Arc::new(FlakyAuditMeter::default());
+	let meter = ScopedMeter::new(durable.clone(), open.clone(), "maps", None, audit.clone());
+
+	sqlx::query(
+		"INSERT INTO tenant_deletions \
+		 (id, tenant, deleted_at, deleted_by_kind, purge_after, purge_failures) \
+		 VALUES ($1, 'acme', now(), 'deployment_administrator', now() + interval '30 days', 0)",
+	)
+	.bind(Uuid::new_v4())
+	.execute(pool)
+	.await
+	.unwrap();
+	// The audit side is unreachable at first, so the gateway charges again;
+	// the scope side has already taken its bytes and does not take them twice.
+	assert!(matches!(
+		meter.charge(Direction::Received, 10).await,
+		Err(aidash_application::Error::External(_))
+	));
+	assert!(matches!(
+		meter.charge(Direction::Received, 10).await,
+		Err(aidash_application::Error::Forbidden)
+	));
+	assert_eq!(
+		(
+			received_bytes(&federation.store, &open.id, day, "").await,
+			audit.committed()
+		),
+		(10, 10),
+		"both meters keep bytes forwarded after the refusal"
+	);
+
+	sqlx::query(
+		"UPDATE tenant_deletions SET restored_at = now(), \
+		 restored_by_kind = 'deployment_administrator' WHERE tenant = 'acme'",
+	)
+	.execute(pool)
+	.await
+	.unwrap();
+	assert!(matches!(
+		durable.debit(&open, Direction::Received, 1, day).await,
+		Err(aidash_application::Error::Refused(code)) if code == "egress_budget_exhausted"
+	));
+
+	// A scope whose state is gone keeps nothing and still refuses.
+	sqlx::query("DELETE FROM egress_scope_state WHERE scope_id = $1")
+		.bind(space)
+		.execute(pool)
+		.await
+		.unwrap();
+	assert!(matches!(
+		meter.charge(Direction::Sent, 1).await,
+		Err(aidash_application::Error::Forbidden)
+	));
+}
+
 /// Reads until the gateway closes the connection.
 async fn proxy_request(address: std::net::SocketAddr, request: String) -> String {
 	use tokio::io::{AsyncReadExt, AsyncWriteExt};
