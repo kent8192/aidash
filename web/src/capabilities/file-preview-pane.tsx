@@ -29,6 +29,8 @@ import type { PreviewAvailability } from "../generated/models";
 import { useI18n } from "../ui";
 import { download, saveFile, type CoreFile } from "./client";
 import { createCurrentManifestResolver } from "./file-preview-source";
+import { filePreviewFallback } from "./file-preview-fallback";
+import { PdfFallback } from "./pdf-fallback";
 import { previewTicketErrorKey } from "./preview-errors";
 import { issueRemotePreview } from "./remote-preview";
 
@@ -143,9 +145,20 @@ export function FilePreviewPane({
     selection.file.path,
     selection.file.media_type,
   );
+  const fallback =
+    kind === "preview-domain" && availability
+      ? filePreviewFallback(
+          selection.file.path,
+          selection.file.media_type,
+          availability.available,
+        )
+      : null;
   const needsBytes =
     !selection.run &&
-    (isImageKind(kind) || kind === "markdown" || isSpreadsheetKind(kind));
+    (isImageKind(kind) ||
+      kind === "markdown" ||
+      isSpreadsheetKind(kind) ||
+      fallback !== null);
   const tooLarge = needsBytes && selection.file.size > FILE_PREVIEW_BYTE_LIMIT;
   const siblingFiles = useMemo(
     () => selection.files ?? manifestFor(selection.area),
@@ -252,7 +265,7 @@ export function FilePreviewPane({
     (state.status === "error" && state.code === "too-large")
   ) {
     body = <Notice tone="warning">{t("filePreviewTooLargeBody")}</Notice>;
-  } else if (kind === "preview-domain") {
+  } else if (kind === "preview-domain" && !fallback) {
     if (!availability) {
       body = <Loading>{t("filePreviewCheckingAvailability")}</Loading>;
     } else if (!availability.available) {
@@ -297,6 +310,17 @@ export function FilePreviewPane({
             {t("retry")}
           </Button>
         )}
+      </div>
+    );
+  } else if (fallback === "pdf") {
+    body = <PdfFallback bytes={state.version.bytes} />;
+  } else if (fallback === "html") {
+    body = (
+      <div className="grid gap-2">
+        <Notice>{t("filePreviewHtmlSourceNote")}</Notice>
+        <pre className="overflow-auto whitespace-pre-wrap break-words">
+          {new TextDecoder().decode(state.version.bytes)}
+        </pre>
       </div>
     );
   } else {

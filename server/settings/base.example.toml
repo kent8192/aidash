@@ -87,9 +87,9 @@ federation = true
 
 # Previews (ADR 0068): HTML and PDF File versions and Live previews are
 # served from one random subdomain each of a registrable domain separate from
-# the dashboard's. Leave `domain` unset to offer none. A local cluster uses
-# `localhost`, whose previews are served from `*.localhost`. The section may be
-# omitted; leaving every value unset makes previews unavailable.
+# the dashboard's. When unset, a localhost or loopback dashboard defaults to
+# `localhost`, with previews under `*.localhost`. Otherwise Live previews need
+# a domain; local PDF and HTML source previews remain available without one.
 [preview]
 # domain = "aidashusercontent.app"
 # The gateway listener. In-process Self-hosted binds loopback; a Helm

@@ -329,3 +329,30 @@ test("preview ticket failures map to actionable states", () => {
     "filePreviewTicketError",
   );
 });
+
+test("fallback chooses PDF or HTML from the declared type or filename", async () => {
+  const { filePreviewFallback } = await import(
+    "../src/capabilities/file-preview-fallback.ts"
+  );
+  assert.equal(
+    filePreviewFallback("report.html", "application/pdf", false),
+    "pdf",
+  );
+  assert.equal(filePreviewFallback("report.pdf", "text/html", false), "html");
+  assert.equal(
+    filePreviewFallback("report.pdf", "application/pdf", true),
+    null,
+  );
+  assert.equal(
+    filePreviewFallback("report.PDF", "application/octet-stream", false),
+    "pdf",
+  );
+  assert.equal(
+    filePreviewFallback("index.html", "application/octet-stream", false),
+    "html",
+  );
+  assert.equal(
+    filePreviewFallback("file.bin", "application/octet-stream", false),
+    null,
+  );
+});
