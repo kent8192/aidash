@@ -470,9 +470,6 @@ async fn process(store: &Store, id: Uuid) -> Result<bool> {
 	.execute(&mut *claim_tx)
 	.await?;
 	claim_tx.commit().await?;
-	// Past this point another worker may claim the job again.
-	let claim_expires =
-		tokio::time::Instant::now() + std::time::Duration::from_secs(timeout.unsigned_abs());
 	let outcome = execute(
 		store,
 		&bank,
@@ -487,7 +484,7 @@ async fn process(store: &Store, id: Uuid) -> Result<bool> {
 	// Only this write restores an attempt the outcome did not use, and a crash leaves
 	// the attempt counted. Waiting out a database outage here keeps the claim's
 	// attempt from being spent on it (#728).
-	settle_while_claimed(claim_expires, || async move {
+	settle_while_claimed(|| async move {
 		let mut tx = store.pool.begin(&MAINTENANCE).await?;
 		native::query(
 			&Query::update()
@@ -517,13 +514,10 @@ async fn process(store: &Store, id: Uuid) -> Result<bool> {
 }
 
 /// Run a settlement write again for as long as the database is temporarily
-/// unavailable and the job's claim has not expired. The write is fenced by the
-/// claim and the `running` state, so repeating one that already committed
-/// changes nothing. Any other error, or the last one at expiry, is returned.
-async fn settle_while_claimed<Write, Fut>(
-	claim_expires: tokio::time::Instant,
-	mut write: Write,
-) -> Result<()>
+/// unavailable, even past expiry. The claim and `running` state fence the write;
+/// a re-claim immediately after recovery can still win the race and spend an attempt.
+/// Repeating a committed write changes nothing. Other errors are returned.
+async fn settle_while_claimed<Write, Fut>(mut write: Write) -> Result<()>
 where
 	Write: FnMut() -> Fut,
 	Fut: std::future::Future<Output = Result<()>>,
@@ -534,7 +528,7 @@ where
 			Ok(()) => return Ok(()),
 			Err(error) => error,
 		};
-		if !error.is_transient_database() || tokio::time::Instant::now() >= claim_expires {
+		if !error.is_transient_database() {
 			return Err(error);
 		}
 		tracing::warn!(%error, "engine job settlement waits for the database");

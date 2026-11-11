@@ -37,6 +37,30 @@ pub(in crate::apps::execution) async fn request_files(
 	Ok(files)
 }
 
+/// Run the complete capability set for callers that own a single lifecycle.
+/// Production supervises each loop separately in bootstrap.
+pub async fn run(store: Store, stopping: tokio::sync::watch::Receiver<bool>) -> Result<()> {
+	use aidash_application::ports::capabilities::processing::CapabilityBackgroundJobs as _;
+	let repository = crate::bootstrap::operation_processing_repository(&store);
+	let jobs = crate::bootstrap::capability_background_jobs(&store);
+	tokio::try_join!(
+		Box::pin(aidash_runtime::capabilities::execution_loop(
+			&repository,
+			stopping.clone()
+		)),
+		Box::pin(aidash_runtime::capabilities::read_recheck_loop(
+			&repository,
+			stopping.clone()
+		)),
+		Box::pin(jobs.network(stopping.clone())),
+		Box::pin(jobs.references(stopping.clone())),
+		Box::pin(jobs.cleanup(stopping.clone())),
+		Box::pin(jobs.reclamation(stopping)),
+	)
+	.map_err(crate::Error::from)?;
+	Ok(())
+}
+
 #[cfg(test)]
 fn has_input_path_collision(files: &[FileEntry]) -> bool {
 	aidash_domain::capabilities::operations::has_input_path_collision(
@@ -127,18 +151,6 @@ pub(crate) async fn remote(
 		.request(method.as_str(), path, body.as_ref())
 		.await
 		.map_err(Into::into)
-}
-
-pub async fn run(store: Store, stopping: tokio::sync::watch::Receiver<bool>) -> Result<()> {
-	let repository = crate::bootstrap::operation_processing_repository(&store);
-	aidash_runtime::capabilities::run(
-		&repository,
-		&repository,
-		&crate::bootstrap::capability_background_jobs(&store),
-		stopping,
-	)
-	.await
-	.map_err(Into::into)
 }
 
 #[cfg(test)]

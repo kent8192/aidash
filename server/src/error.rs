@@ -342,6 +342,16 @@ impl Error {
 		}
 	}
 
+	/// Whether this came from the database at all, temporary or not. Callers
+	/// that otherwise redact or flatten an error keep these typed (#787).
+	pub(crate) fn is_database(&self) -> bool {
+		match self {
+			Self::Database(_) => true,
+			Self::Framework(error) => error.database_error().is_some(),
+			_ => false,
+		}
+	}
+
 	pub(crate) fn is_transient_database(&self) -> bool {
 		fn retryable_code(code: &str) -> bool {
 			code.starts_with("08")
