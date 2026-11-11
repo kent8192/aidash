@@ -95,7 +95,7 @@ export function CatalogRequestQueue({
     initialRequestId && initialRequestId !== dismissedLink
       ? pending.data?.requests.find((item) => item.id === initialRequestId)
       : undefined;
-  const selected = open ?? linked;
+  const selected = linked ?? open;
   const decline = async (id: string) => {
     setBusy(true);
     setMessage("");
