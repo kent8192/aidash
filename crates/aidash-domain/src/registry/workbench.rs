@@ -93,6 +93,18 @@ pub struct Registration {
 	pub revision: i64,
 	pub entry: Entry,
 	pub behavioral_tested: bool,
+	/// Per-Node carry decisions for the newly registered version.
+	pub carry_results: Vec<RegistrationCarryResult>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(rename = "WorkbenchRegistrationCarryResult")]
+pub struct RegistrationCarryResult {
+	pub node: String,
+	pub source_version: Option<String>,
+	pub changed: Vec<String>,
+	pub unapproved_dependencies: Vec<crate::registry::EntityRef>,
+	pub carried: bool,
 }
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct RegisteredVersion {

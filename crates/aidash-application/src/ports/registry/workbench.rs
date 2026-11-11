@@ -73,6 +73,9 @@ use aidash_domain::registry::workbench::{RegistrationEvidence, RegistrationRecor
 /// Publication holds the authored revision through evidence, immutable content and outbox writes.
 #[async_trait]
 pub trait PublicationScope: DraftScope + DefinitionWriter {
+	fn carry_results(&self) -> Vec<aidash_domain::registry::workbench::RegistrationCarryResult> {
+		Vec::new()
+	}
 	async fn registrations(&mut self, draft: Uuid, agent: &str) -> Result<Vec<RegistrationRecord>>;
 	async fn registered_evidence(&mut self, entry: &Entry) -> Result<Option<RegistrationEvidence>>;
 	async fn completed_test(&mut self, draft: &Draft) -> Result<bool>;
