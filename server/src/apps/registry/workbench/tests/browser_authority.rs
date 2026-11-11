@@ -14,10 +14,46 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 #[rstest::rstest]
+#[tokio::test]
+async fn fixture_only_call_needs_no_identifiable_starter(#[future(awt)] workbench: Workbench) {
+	use std::collections::VecDeque;
+	let mut wb = workbench;
+	let tool = json!({"id":"simulated-unsafe","version":"1.0.0","kind":"tool","name":{"en":"Simulated"},"description":{"en":"Fixture"},"config":{"registry_deployment":wb.f.config.deployment,"provider":"integration.http@1","operation":"invoke","default_alias":"approval_tool","tier":"integration","narrow":{},"transport":{"transport":"http","endpoint":format!("{}/effect",wb.endpoint),"replay":"unsafe"}}});
+	wb.f.registry
+		.register(
+			&aidash_domain::tenancy::TenantName::new("acme").unwrap(),
+			serde_json::from_value(tool).unwrap(),
+		)
+		.await
+		.unwrap();
+	let mut entry = wb.draft["entry"].clone();
+	entry["config"]["bindings"] = json!([{"kind":"tool","target":{"registry_deployment":wb.f.config.deployment,"id":"simulated-unsafe","version":"1.0.0"},"alias":"approval_tool","narrow":{}}]);
+	wb.draft = wb
+		.call(
+			"PUT",
+			&wb.path(),
+			json!({"expected_revision":1,"entry":entry,"documents":[]}),
+		)
+		.await;
+	*wb.responses.lock().await = VecDeque::from([
+		json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"call-1","function":{"name":"approval_tool","arguments":"{}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
+		json!({"choices":[{"finish_reason":"stop","message":{"content":"Complete"}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
+	]);
+	let result = wb.finished(json!({"expected_revision":2,"message":"Use the tool","fixtures":{"approval_tool":{"status":"success","response":{"ok":true}}}})).await;
+	assert_eq!(result["status"], "completed", "{result}");
+	assert_eq!(result["tool_calls"][0]["outcome"], "simulated");
+	assert!(result["scenario"].get("pending_approval").is_none());
+	wb.cleanup().await;
+}
+
+#[rstest::rstest]
 #[case::allow_once("allow_once", "completed")]
 #[case::deny("deny", "blocked")]
 #[case::not_eligible("ineligible", "blocked")]
 #[case::eligibility_revoked("revoked", "blocked")]
+#[case::test_permission_revoked("test_revoked", "blocked")]
+#[case::second_call_requires_new_decision("twice", "blocked")]
+#[case::changed_arguments("tampered", "blocked")]
 #[tokio::test]
 async fn test_approval_belongs_to_its_starter_and_current_policy(
 	#[case] choice: &str,
@@ -49,6 +85,7 @@ async fn test_approval_belongs_to_its_starter_and_current_policy(
 			json!({"expected_revision":1,"entry":entry,"documents":[]}),
 		)
 		.await;
+	assert_eq!(request(&wb.app, &wb.token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"approval-test-tool","version":"1.0.0"},"endpoint":format!("{}/test-effect",wb.endpoint),"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await.0, 200);
 	// Neither the person's Don't ask mode nor a deny rule covers Workbench tests.
 	sqlx::query("INSERT INTO identity_approval_preferences (tenant, subject, default_mode, revision, updated_at) VALUES ('acme', 'alice', 'dont_ask', 1, now())").execute(wb.f.store.pool.fixture_driver()).await.unwrap();
 	sqlx::query("INSERT INTO identity_approval_rules (tenant, id, subject, kind, target, effect, created_at) VALUES ('acme', $1, 'alice', 'tool_call', $2, 'deny', now())").bind(Uuid::new_v4()).bind(json!("every")).execute(wb.f.store.pool.fixture_driver()).await.unwrap();
@@ -69,9 +106,15 @@ async fn test_approval_belongs_to_its_starter_and_current_policy(
 		);
 	}
 	*wb.responses.lock().await = VecDeque::from([
-		json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"call-1","function":{"name":"approval_tool","arguments":"{}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
+		json!({"choices":[{"finish_reason":"tool_calls","message":{"content":"","tool_calls":[{"id":"call-1","function":{"name":"approval_tool","arguments":"{\"action\":\"read\",\"resource\":\"sandbox\"}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
 		json!({"choices":[{"finish_reason":"stop","message":{"content":"Complete"}}],"usage":{"prompt_tokens":30,"completion_tokens":5}}),
 	]);
+	if choice == "twice" {
+		wb.responses.lock().await[0]["choices"][0]["message"]["tool_calls"] = json!([
+			{"id":"call-1","function":{"name":"approval_tool","arguments":"{\"action\":\"read\",\"resource\":\"sandbox\"}"}},
+			{"id":"call-2","function":{"name":"approval_tool","arguments":"{\"action\":\"read\",\"resource\":\"sandbox\",\"extra\":\"changed\"}"}}
+		]);
+	}
 	let (actor, _) =
 		aidash_server::dashboard_auth::actor_from_headers(&wb.f, &headers, &Method::GET)
 			.await
@@ -95,10 +138,19 @@ async fn test_approval_belongs_to_its_starter_and_current_policy(
 	})
 	.await;
 	let path = format!("{}/tests", wb.path());
-	let (status, started) = request(&app, &wb.token, "POST", &path, json!({"expected_revision":2,"message":"Use the tool","fixtures":{"approval_tool":{"status":"success","response":{"ok":true}}}})).await;
+	let (status, started) = request(
+		&app,
+		&wb.token,
+		"POST",
+		&path,
+		json!({"expected_revision":2,"message":"Use the tool","mode":"real","profile_id":"sandbox"}),
+	)
+	.await;
 	assert_eq!(status, 200, "{started}");
 	let id = started["id"].as_str().unwrap();
 	let mut answered = false;
+	let mut first_approval = Value::Null;
+	let mut second_answered = false;
 	let mut revoked = false;
 	let mut finished = Value::Null;
 	for _ in 0..1200 {
@@ -110,6 +162,42 @@ async fn test_approval_belongs_to_its_starter_and_current_policy(
 			.iter()
 			.find(|s| s["id"] == id)
 			.unwrap();
+		if choice == "twice"
+			&& answered
+			&& !second_answered
+			&& session["scenario"]["pending_approval"]["state"] == "pending"
+		{
+			let pending = &session["scenario"]["pending_approval"];
+			assert_ne!(pending["id"], first_approval);
+			assert_eq!(pending["call"]["arguments"]["extra"], "changed");
+			assert_eq!(wb.effect_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+			let endpoint = format!("/api/workbench/tests/{id}/approval");
+			assert_eq!(
+				request(
+					&app,
+					&wb.token,
+					"POST",
+					&endpoint,
+					json!({"approval_id":first_approval,"choice":"allow_once"})
+				)
+				.await
+				.0,
+				403
+			);
+			assert_eq!(
+				request(
+					&app,
+					&wb.token,
+					"POST",
+					&endpoint,
+					json!({"approval_id":pending["id"],"choice":"deny"})
+				)
+				.await
+				.0,
+				200
+			);
+			second_answered = true;
+		}
 		if session["scenario"]["pending_approval"]["state"] == "pending" && !answered && !revoked {
 			assert_ne!(choice, "ineligible");
 			let (status, others) = request(&other, &wb.token, "GET", &path, Value::Null).await;
@@ -128,6 +216,66 @@ async fn test_approval_belongs_to_its_starter_and_current_policy(
 				.0,
 				403
 			);
+			if choice == "test_revoked" {
+				let approval_id = session["scenario"]["pending_approval"]["id"].clone();
+				let revision = wb.policy_revision().await;
+				let bundle = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},{"id":"no-test","effect":"deny","subjects":{"ids":["alice"]},"actions":["agent_draft.test"],"resources":{"kinds":["agent_draft"]}}]});
+				assert_eq!(
+					request(
+						&wb.app,
+						&wb.f.config.api_token,
+						"POST",
+						"/api/authorization/acme",
+						json!({"expected_revision":revision,"bundle":bundle})
+					)
+					.await
+					.0,
+					200
+				);
+				let (_, hidden) = request(&app, &wb.token, "GET", &path, Value::Null).await;
+				assert!(hidden[0]["scenario"].get("pending_approval").is_none());
+				let endpoint = format!("/api/workbench/tests/{id}/approval");
+				assert_eq!(
+					request(
+						&app,
+						&wb.token,
+						"POST",
+						&endpoint,
+						json!({"approval_id":approval_id,"choice":"deny"})
+					)
+					.await
+					.0,
+					403
+				);
+				let revision = wb.policy_revision().await;
+				let bundle = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}}]});
+				assert_eq!(
+					request(
+						&wb.app,
+						&wb.f.config.api_token,
+						"POST",
+						"/api/authorization/acme",
+						json!({"expected_revision":revision,"bundle":bundle})
+					)
+					.await
+					.0,
+					200
+				);
+				assert_eq!(
+					request(
+						&app,
+						&wb.token,
+						"POST",
+						&endpoint,
+						json!({"approval_id":approval_id,"choice":"deny"})
+					)
+					.await
+					.0,
+					200
+				);
+				answered = true;
+				continue;
+			}
 			if choice == "revoked" {
 				let revision = wb.policy_revision().await;
 				let bundle = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[{"id":"fixture","effect":"allow","subjects":{"any":true},"actions":["*"],"resources":{"kinds":["*"]}},{"id":"no-approval","effect":"deny","subjects":{"ids":["alice"]},"actions":["capability.approve"],"resources":{"kinds":["tool"]}}]});
@@ -148,7 +296,14 @@ async fn test_approval_belongs_to_its_starter_and_current_policy(
 				revoked = true;
 				continue;
 			}
-			let answer = json!({"approval_id":session["scenario"]["pending_approval"]["id"],"choice":choice});
+			first_approval = session["scenario"]["pending_approval"]["id"].clone();
+			if choice == "tampered" {
+				let mut pending = session["scenario"]["pending_approval"].clone();
+				pending["call"]["arguments"]["extra"] = json!("changed");
+				sqlx::query("UPDATE agent_test_sessions SET scenario = jsonb_set(scenario, '{pending_approval}', $1) WHERE id = $2")
+					.bind(pending).bind(Uuid::parse_str(id).unwrap()).execute(wb.f.store.pool.fixture_driver()).await.unwrap();
+			}
+			let answer = json!({"approval_id":first_approval,"choice":if choice == "twice" || choice == "tampered" { "allow_once" } else { choice }});
 			let endpoint = format!("/api/workbench/tests/{id}/approval");
 			assert_eq!(
 				request(&wb.app, &wb.token, "POST", &endpoint, answer.clone())
@@ -176,12 +331,22 @@ async fn test_approval_belongs_to_its_starter_and_current_policy(
 		tokio::time::sleep(Duration::from_millis(25)).await;
 	}
 	assert_eq!(finished["status"], expected, "{finished}");
-	assert_eq!(answered, choice == "allow_once" || choice == "deny");
+	assert_eq!(
+		answered,
+		matches!(
+			choice,
+			"allow_once" | "deny" | "test_revoked" | "twice" | "tampered"
+		)
+	);
+	assert_eq!(second_answered, choice == "twice");
+	if choice == "tampered" {
+		assert_eq!(wb.effect_hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+	}
 	assert_eq!(revoked, choice == "revoked");
 	assert_eq!(
 		finished["tool_calls"][0]["outcome"],
-		if choice == "allow_once" {
-			"simulated"
+		if choice == "allow_once" || choice == "twice" {
+			"real"
 		} else {
 			"denied"
 		}

@@ -74,10 +74,10 @@ pub fn workbench_approver_eligible(
 	approver_eligible(&bundle, &evaluation, starter)
 }
 
-/// A Workbench test has no Run or workspace. A statement that depends on
-/// either is not applicable, even when another branch of an `any` is true.
+/// A Workbench test has no Run or workspace. An allow that depends on either
+/// cannot grant access; denies still evaluate their other applicable branches.
 pub fn workbench_policy(bundle: &PolicyBundle) -> PolicyBundle {
-	use crate::policy::{Condition, Operand};
+	use crate::policy::{Condition, Effect, Operand};
 	// Do not make an invalid bundle valid by filtering a malformed statement.
 	if bundle.validate().is_err() {
 		return bundle.clone();
@@ -104,9 +104,9 @@ pub fn workbench_policy(bundle: &PolicyBundle) -> PolicyBundle {
 		}
 	}
 	let mut scoped = bundle.clone();
-	scoped
-		.policies
-		.retain(|policy| !policy.condition.as_ref().is_some_and(run_condition));
+	scoped.policies.retain(|policy| {
+		policy.effect != Effect::Allow || !policy.condition.as_ref().is_some_and(run_condition)
+	});
 	scoped
 }
 pub fn requested_state(direct: bool, grant: bool, designated: bool) -> &'static str {

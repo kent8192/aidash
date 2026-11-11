@@ -142,8 +142,26 @@ impl BehavioralTests {
 			let snapshot = identity
 				.lock_native(&mut tx, false, policy.as_ref())
 				.await?;
+			let draft =
+				crate::apps::registry::workbench::models::AgentDraft::read(&mut tx, id, false)
+					.await?;
+			let can_test = match aidash_application::registry::workbench::authorize(
+				&mut crate::bootstrap::draft_authority_scope(&mut tx, &actor, policy),
+				&draft.into(),
+				"agent_draft.test",
+				true,
+			)
+			.await
+			{
+				Ok(()) => true,
+				Err(aidash_application::Error::Forbidden) => false,
+				Err(error) => return Err(error.into()),
+			};
 			for row in &mut rows {
-				redact(row, Some((viewer, &identity.subject, &snapshot.bundle)));
+				redact(
+					row,
+					can_test.then_some((viewer, &identity.subject, &snapshot.bundle)),
+				);
 			}
 			tx.commit().await?;
 		} else {

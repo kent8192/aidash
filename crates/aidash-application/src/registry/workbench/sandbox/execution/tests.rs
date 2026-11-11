@@ -1263,46 +1263,14 @@ async fn a_discoverable_plugin_tool_is_answered_only_after_it_is_loaded() {
 	assert!(advertises(&requests[1]));
 }
 
-#[rstest]
-#[case::allow_once(true, "completed", "simulated")]
-#[case::deny(false, "blocked", "denied")]
 #[tokio::test]
-async fn a_plugin_test_proceeds_only_after_its_approval(
-	#[case] allowed: bool,
-	#[case] status: &str,
-	#[case] call_outcome: &str,
-) {
+async fn a_simulated_plugin_call_never_requests_approval() {
 	let (mut repository, snapshot, pinned) = plugin_repository(None).await;
-	repository.approval_allowed = allowed;
+	repository.approval_allowed = false;
 	let repository = Arc::new(repository);
 	let model = model(
 		repository.clone(),
 		vec![calling(PLUGIN_TOOL), response(false)],
-	);
-	let mut job = offering(job(model.clone()), &snapshot, pinned, false);
-	job.input
-		.fixtures
-		.insert(PLUGIN_TOOL.into(), plugin_fixture());
-	let outcome = simulate(&execution(repository), session().id, &job)
-		.await
-		.unwrap();
-	assert_eq!(outcome.status, status);
-	assert_eq!(outcome.tool_calls[0]["outcome"], call_outcome);
-	assert_eq!(
-		model.requests.lock().unwrap().len(),
-		if allowed { 2 } else { 1 }
-	);
-}
-
-#[tokio::test]
-async fn an_allow_once_does_not_approve_the_next_test_call() {
-	let (repository, snapshot, pinned) = plugin_repository(None).await;
-	let repository = Arc::new(repository);
-	let mut second = calling(PLUGIN_TOOL);
-	second.tool_calls[0].id = "second".into();
-	let model = model(
-		repository.clone(),
-		vec![calling(PLUGIN_TOOL), second, response(false)],
 	);
 	let mut job = offering(job(model), &snapshot, pinned, false);
 	job.input
@@ -1312,8 +1280,8 @@ async fn an_allow_once_does_not_approve_the_next_test_call() {
 		.await
 		.unwrap();
 	assert_eq!(outcome.status, "completed");
-	assert_eq!(outcome.tool_calls.as_array().unwrap().len(), 2);
-	assert_eq!(repository.state.lock().unwrap().approvals, 2);
+	assert_eq!(outcome.tool_calls[0]["outcome"], "simulated");
+	assert_eq!(repository.state.lock().unwrap().approvals, 0);
 }
 
 #[rstest]

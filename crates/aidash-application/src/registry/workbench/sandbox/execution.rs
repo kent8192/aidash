@@ -205,10 +205,7 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 				}
 				_ => None,
 			};
-			let approval = if admitted.is_ok()
-				&& evaluated.is_none()
-				&& (real_rule.is_some() || fixture.is_some())
-			{
+			let approval = if admitted.is_ok() && evaluated.is_none() && real_rule.is_some() {
 				approval_for(
 					execution.repository.as_ref(),
 					&job.plugin_tools,
