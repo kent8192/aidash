@@ -108,6 +108,7 @@ async fn targeted_claim_never_acquires_an_older_neighbor(
 #[rstest]
 #[case::tool_batch("tool_batch_state")]
 #[case::mcp_continuation("mcp_call_state")]
+#[case::early_abandonment("early_unassigned_abandonment")]
 #[tokio::test]
 async fn leasing_skips_runs_whose_stored_requirement_exceeds_the_worker(
 	#[future] database: DatabaseFixture,

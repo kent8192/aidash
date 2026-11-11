@@ -221,6 +221,7 @@ impl World {
 				index: 0,
 				replay_safe: true,
 				tool: "task_delegate".into(),
+				tool_call: None,
 				kind: RefusalKind::Policy,
 			}),
 			..Default::default()
