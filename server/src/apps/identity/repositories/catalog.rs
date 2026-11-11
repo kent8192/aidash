@@ -302,13 +302,17 @@ async fn system_document(access: &mut Access, reference: &EntityRef) -> Result<V
 	.into_iter()
 	.find(|entry| entry.id == reference.id && entry.version == reference.version)
 	.ok_or(crate::Error::Forbidden)?;
-	let stored = crate::apps::registry::models::transaction_records::definition(
-		&mut **access.tx,
-		&reference.id,
-		&reference.version,
-	)
-	.await?;
-	let entry: Entry = serde_json::from_value(stored.metadata.0)?;
+	let entry: Entry = if let Some(entry) = access.state_definition(reference) {
+		entry?
+	} else {
+		let stored = crate::apps::registry::models::transaction_records::definition(
+			&mut **access.tx,
+			&reference.id,
+			&reference.version,
+		)
+		.await?;
+		serde_json::from_value(stored.metadata.0)?
+	};
 	if entry != expected {
 		return Err(crate::Error::Conflict(
 			"system declaration bytes differ from admitted Node composition".into(),
@@ -373,7 +377,11 @@ impl CatalogScope for NativeCatalog<'_> {
 	) -> aidash_application::Result<bool> {
 		let node = self.0.catalog_node().await?;
 		// Each user is still judged below. What one walk remembers is the restriction.
-		let restriction = match self.0.read_lookups.restriction(node.as_str(), reference) {
+		let restriction = match self
+			.0
+			.state_restriction(node.as_str(), reference)
+			.or_else(|| self.0.read_lookups.restriction(node.as_str(), reference))
+		{
 			Some(restriction) => restriction,
 			None => {
 				let restriction: Option<Value> = crate::database::native::query_scalar(
@@ -424,6 +432,11 @@ impl CatalogScope for NativeCatalog<'_> {
 		self.0.tx.admit(admission, entry.clone());
 	}
 	async fn distribution_lock(&mut self) -> aidash_application::Result<()> {
+		// The state preload is scoped to this transaction. Its shared lock was
+		// already taken before loading Catalog rows and is invalidated on rollback.
+		if self.0.has_state_preload() && self.0.tx.distribution_hold().held() {
+			return Ok(());
+		}
 		crate::marketplace::lock_catalog(&mut self.0.tx, false)
 			.await
 			.map_err(Into::into)
@@ -432,10 +445,22 @@ impl CatalogScope for NativeCatalog<'_> {
 		&mut self,
 		reference: &EntityRef,
 	) -> aidash_application::Result<Option<Value>> {
+		if self.0.has_state_preload()
+			&& !aidash_application::registry::system::builtin_reference(reference)
+		{
+			let node = self.0.catalog_node().await?;
+			if let Some(document) = self.0.state_catalog_document(node.as_str(), reference) {
+				return Ok(document);
+			}
+		}
 		document(self.0, reference).await.map_err(Into::into)
 	}
 	async fn documents(&mut self) -> aidash_application::Result<Vec<Value>> {
-		documents(self.0).await.map_err(Into::into)
+		let rows = documents(self.0).await?;
+		self.0.prepare_state_restrictions().await?;
+		self.0.remember_state_documents(&rows).await?;
+		self.0.prepare_state_marketplace(&rows).await?;
+		Ok(rows)
 	}
 	fn resource(&self, entry: &Entry) -> Resource {
 		crate::authorization::catalog::resource(self.0, entry)

@@ -60,6 +60,7 @@ pub async fn state(
 	let mut cache = HashMap::new();
 	let mut workspace_ids = Vec::new();
 	let workspace_candidates = scope.workspace_candidates(node, None).await?;
+	scope.prepare_workspaces(&workspace_candidates).await?;
 	let mut cursors = NextCursors {
 		workspaces: cursor(&workspace_candidates, |id| *id),
 		..Default::default()
@@ -69,9 +70,17 @@ pub async fn state(
 			workspace_ids.push(id);
 		}
 	}
+	let run_candidates = scope.run_candidates(node).await?;
+	cursors.runs = cursor(&run_candidates, |row| row.metadata.id);
+	let run_metadata = run_candidates
+		.iter()
+		.map(|row| row.metadata.clone())
+		.collect::<Vec<_>>();
+	scope.prepare_runs(&run_metadata).await?;
 	let mut tasks = Vec::new();
 	let candidates = scope.task_candidates(node).await?;
 	cursors.tasks = cursor(&candidates, |row| row.id);
+	scope.prepare_tasks(&candidates).await?;
 	for row in candidates {
 		if workspace_ok(scope, &mut cache, row.workspace_id).await?
 			&& scope.task_visible(&row).await?
@@ -83,6 +92,7 @@ pub async fn state(
 	let mut artifacts = Vec::new();
 	let candidates = scope.artifact_candidates(node).await?;
 	cursors.artifacts = cursor(&candidates, |row| row.id);
+	scope.prepare_artifacts(&candidates).await?;
 	for row in candidates {
 		if workspace_ok(scope, &mut cache, row.workspace_id).await?
 			&& scope.artifact_visible(&row).await?
@@ -92,8 +102,7 @@ pub async fn state(
 		}
 	}
 	let mut runs = Vec::new();
-	let candidates = scope.run_candidates(node).await?;
-	cursors.runs = cursor(&candidates, |row| row.metadata.id);
+	let candidates = run_candidates;
 	for row in candidates {
 		if workspace_ok(scope, &mut cache, row.metadata.workspace_id).await?
 			&& scope.run_visible(&row.metadata).await?
@@ -106,6 +115,15 @@ pub async fn state(
 	let mut visible_runs = HashMap::new();
 	let candidates = scope.pending_human_candidates(node).await?;
 	cursors.human_requests = cursor(&candidates, |row| row.id);
+	scope
+		.prepare_workspaces(
+			&candidates
+				.iter()
+				.map(|row| row.workspace_id)
+				.collect::<Vec<_>>(),
+		)
+		.await?;
+	let had_humans = !candidates.is_empty();
 	for mut row in candidates {
 		if !workspace_ok(scope, &mut cache, row.workspace_id).await? {
 			continue;
@@ -124,6 +142,11 @@ pub async fn state(
 			workspace_ids.push(row.workspace_id);
 			human_requests.push(row);
 		}
+	}
+	if had_humans {
+		// The nested Run checks use each Workspace's authority. Prepare again
+		// under the state reader's restored authority before continuing.
+		scope.prepare_runs(&run_metadata).await?;
 	}
 	let mut conversations = Vec::new();
 	let candidates = scope.conversation_candidates(node).await?;

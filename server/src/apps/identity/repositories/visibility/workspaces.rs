@@ -119,6 +119,9 @@ impl WorkspaceResourceScope for Reads<'_> {
 #[async_trait]
 impl WorkspaceAuthorityScope for Reads<'_> {
 	async fn locked_owner(&mut self, id: Uuid) -> Result<Option<String>> {
+		if let Some(owner) = self.access.tx.workspace_owner(id, true) {
+			return Ok(Some(owner));
+		}
 		let result: NativeResult<Option<String>> = async {
 			let owner: Option<String> =
 				{
@@ -159,6 +162,9 @@ impl WorkspaceAuthorityScope for Reads<'_> {
 				.scalar_optional(&mut **self.access.tx)
 				.await?
 				};
+			if let Some(owner) = &owner {
+				self.access.tx.remember_workspace_owner(id, true, owner);
+			}
 			Ok(owner)
 		}
 		.await;

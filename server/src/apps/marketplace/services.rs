@@ -69,20 +69,13 @@ pub(crate) async fn state_response(
 	mut state: crate::apps::execution::serializers::state::StateResponse,
 ) -> crate::Result<Response> {
 	use crate::authorization::access::Access;
-	if state
-		.registry
-		.iter()
-		.all(|entry| entry.installation.is_none())
-		&& !state
-			.events
-			.iter()
-			.any(|event| event.kind.starts_with("marketplace."))
-	{
-		return Ok(Response::ok().with_json(&state)?);
-	}
 	let mut access = Access::begin(store, identity).await?;
 	storage::lock(&mut access.tx, false).await?;
 	let result = async {
+		access.begin_state_registry_preload();
+		access.prepare_state_builtin_definitions().await?;
+		let mut catalog = crate::bootstrap::catalog_scope(&mut access);
+		aidash_application::ports::catalog::CatalogScope::documents(&mut catalog).await?;
 		let mut scope = crate::bootstrap::marketplace_distribution_scope(&mut access);
 		state.registry = aidash_application::marketplace::events::state_registry(
 			&mut scope,

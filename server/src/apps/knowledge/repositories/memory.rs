@@ -133,6 +133,14 @@ impl SemanticMemoryReadSession for Memory<'_, '_> {
 	}
 
 	async fn dependencies(&mut self, run: Uuid) -> Result<Vec<(Uuid, i64)>> {
+		if let Some(rows) = self
+			.entries
+			.lease
+			.access()
+			.and_then(|access| access.state_semantic_reads(run))
+		{
+			return Ok(rows);
+		}
 		let result: NativeResult<Vec<(Uuid, i64)>> = async {
 			let dependencies: Vec<(Uuid, i64)> = {
 				let query_bind_1 = run;

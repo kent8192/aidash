@@ -19,7 +19,11 @@ impl LocalOutputScope for Reads<'_> {
 			.map_err(Into::into)
 	}
 	async fn producers(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>> {
-		if let Some(producers) = self.access.read_lookups.producers(workspace, kind, id) {
+		if let Some(producers) = self
+			.access
+			.state_producers(workspace, kind, id)
+			.or_else(|| self.access.read_lookups.producers(workspace, kind, id))
+		{
 			return self
 				.access
 				.producers_to_check(workspace, producers)
@@ -81,7 +85,11 @@ impl OutputScope for Reads<'_> {
 			.map_err(Into::into)
 	}
 	async fn remote_grants(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>> {
-		if let Some(grants) = self.access.read_lookups.remote_grants(workspace, kind, id) {
+		if let Some(grants) = self
+			.access
+			.state_remote_outputs(workspace, kind, id)
+			.or_else(|| self.access.read_lookups.remote_grants(workspace, kind, id))
+		{
 			return Ok(grants);
 		}
 		let result: NativeResult<Vec<Uuid>> = async {

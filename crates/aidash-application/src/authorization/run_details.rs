@@ -23,6 +23,7 @@ pub async fn visible(repository: &dyn RunDetailsRepository, id: Uuid) -> Result<
 }
 pub async fn visible_in(scope: &mut dyn RunDetailsScope, id: Uuid) -> Result<RunInspection> {
 	let run = in_workspace(scope, id).await?;
+	scope.prepare_visible(&run).await?;
 	if !scope.run_visible(&run).await? {
 		return Err(Error::Forbidden);
 	}

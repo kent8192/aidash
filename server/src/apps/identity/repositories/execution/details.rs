@@ -27,6 +27,7 @@ pub(crate) struct Details<'a> {
 struct Scope<'a> {
 	federation: &'a Federation,
 	access: Held<'a>,
+	state_preload: bool,
 }
 /// The authorization transaction a scope reads through: its own, which it
 /// finishes, or a caller's, which the caller goes on using and finishes.
@@ -55,6 +56,7 @@ impl RunDetailsRepository for Details<'_> {
 		Ok(Box::new(Scope {
 			federation: self.federation,
 			access: Held::Own(Box::new(access)),
+			state_preload: false,
 		}))
 	}
 }
@@ -67,10 +69,28 @@ pub(crate) async fn visible_within(
 	access: &mut Access,
 	run: Uuid,
 ) -> Result<RunInspection> {
+	visible_within_mode(federation, access, run, false).await
+}
+
+pub(crate) async fn visible_within_state(
+	federation: &Federation,
+	access: &mut Access,
+	run: Uuid,
+) -> Result<RunInspection> {
+	visible_within_mode(federation, access, run, true).await
+}
+
+async fn visible_within_mode(
+	federation: &Federation,
+	access: &mut Access,
+	run: Uuid,
+	state_preload: bool,
+) -> Result<RunInspection> {
 	let context = access.context.clone();
 	let mut scope = Scope {
 		federation,
 		access: Held::Borrowed(&mut *access),
+		state_preload,
 	};
 	let result = aidash_application::authorization::run_details::visible_in(&mut scope, run).await;
 	scope.access.get().context = context;
@@ -161,6 +181,12 @@ impl RunDetailsScope for Scope<'_> {
 			.require(resource, action)
 			.await
 			.map_err(Into::into)
+	}
+	async fn prepare_visible(&mut self, run: &RunInspection) -> Result<()> {
+		if self.state_preload {
+			self.access.get().prepare_state_inspection(run).await?;
+		}
+		Ok(())
 	}
 	async fn run_visible(&mut self, run: &RunInspection) -> Result<bool> {
 		self.access.get().run_visible(run).await.map_err(Into::into)

@@ -67,6 +67,12 @@ impl WorkspaceStateScope for StateReads<'_> {
 	async fn allowed(&mut self, id: Uuid, action: &str) -> Result<bool> {
 		self.access.allowed(id, action).await.map_err(Into::into)
 	}
+	async fn prepare_workspaces(&mut self, workspaces: &[Uuid]) -> Result<()> {
+		self.access
+			.prepare_state_workspaces(workspaces)
+			.await
+			.map_err(Into::into)
+	}
 	async fn registry(&mut self) -> Result<Vec<Entry>> {
 		aidash_application::authorization::catalog::list(
 			&mut crate::bootstrap::catalog_scope(self.access),
@@ -176,17 +182,35 @@ impl WorkspaceStateScope for StateReads<'_> {
 			.await
 			.map_err(Into::into)
 	}
+	async fn prepare_tasks(&mut self, tasks: &[Task]) -> Result<()> {
+		self.access
+			.prepare_state_tasks(tasks)
+			.await
+			.map_err(Into::into)
+	}
+	async fn prepare_artifacts(&mut self, artifacts: &[Artifact]) -> Result<()> {
+		self.access
+			.prepare_state_artifacts(artifacts)
+			.await
+			.map_err(Into::into)
+	}
 	async fn task_visible(&mut self, row: &Task) -> Result<bool> {
 		self.access.task_visible(row).await.map_err(Into::into)
 	}
 	async fn artifact_visible(&mut self, row: &Artifact) -> Result<bool> {
 		self.access.artifact_visible(row).await.map_err(Into::into)
 	}
+	async fn prepare_runs(&mut self, runs: &[RunMetadata]) -> Result<()> {
+		self.access
+			.prepare_state_runs(runs)
+			.await
+			.map_err(Into::into)
+	}
 	async fn run_visible(&mut self, row: &RunMetadata) -> Result<bool> {
 		self.access.run_visible(row).await.map_err(Into::into)
 	}
 	async fn visible_run(&mut self, id: Uuid) -> Result<Option<RunInspection>> {
-		match crate::apps::identity::repositories::execution::details::visible_within(
+		match crate::apps::identity::repositories::execution::details::visible_within_state(
 			self.federation,
 			self.access,
 			id,

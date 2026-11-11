@@ -1271,7 +1271,7 @@ async fn worker_continues_with_visible_subset_and_never_sends_denied_records(
 
 #[rstest::rstest]
 #[tokio::test]
-async fn artifact_state_page_is_filled_after_task_denials(
+async fn artifact_state_page_is_bounded_after_task_denials(
 	#[future(awt)]
 	#[from(common::native_application)]
 	fixture: common::ApplicationFixture,
@@ -1403,6 +1403,21 @@ async fn artifact_state_page_is_filled_after_task_denials(
 		.0,
 		200
 	);
+	let (status, state) = request(&app, &token, "GET", "/api/state", Value::Null).await;
+	assert_eq!(status, 200);
+	assert!(state["artifacts"].as_array().unwrap().is_empty());
+	assert!(state["next_cursors"]["artifacts"].is_string());
+	// The older readable artifact is outside the bounded candidate window,
+	// rather than denied. Once it enters the window it remains visible.
+	let delete = reinhardt::query::Query::delete()
+		.from_table(reinhardt::query::Alias::new("artifacts"))
+		.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+		.and_where(Expr::col("task_id").eq(Expr::value(hidden)))
+		.to_string(reinhardt::query::PostgresQueryBuilder);
+	sqlx::query(&delete)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
 	let (status, state) = request(&app, &token, "GET", "/api/state", Value::Null).await;
 	assert_eq!(status, 200);
 	assert_eq!(state["artifacts"].as_array().unwrap().len(), 1);

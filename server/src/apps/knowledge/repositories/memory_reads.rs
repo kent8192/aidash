@@ -213,28 +213,49 @@ pub(crate) async fn invalidity(lease: &mut Lease<'_>, run_id: Uuid) -> Result<Op
 		Error::Forbidden => Ok(Some(Failure::Authority)),
 		error => Err(error),
 	};
-	let Some(run) = crate::database::query_as::<RunMetadata>(
-		&Query::select()
-			.column(ColumnRef::Asterisk)
-			.from(Alias::new("runs"))
-			.and_where(Expr::col("id").eq(Expr::value(run_id)))
-			.to_string(PostgresQueryBuilder),
-	)
-	.fetch_optional(&mut **lease.tx())
-	.await?
-	else {
+	let cached_run = lease
+		.access()
+		.and_then(|access| access.state_metadata(run_id));
+	let run = if let Some(run) = cached_run {
+		Some(run)
+	} else {
+		crate::database::query_as::<RunMetadata>(
+			&Query::select()
+				.column(ColumnRef::Asterisk)
+				.from(Alias::new("runs"))
+				.and_where(Expr::col("id").eq(Expr::value(run_id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.fetch_optional(&mut **lease.tx())
+		.await?
+	};
+	let Some(run) = run else {
 		return Ok(Some(Failure::Authority));
 	};
-	let binding = match bindings::load(&mut **lease.tx(), &run).await {
+	let binding = match if lease
+		.access()
+		.and_then(|access| access.state_binding_exists(run_id))
+		== Some(false)
+	{
+		Ok(None)
+	} else {
+		bindings::load(&mut **lease.tx(), &run).await
+	} {
 		Ok(binding) => binding,
 		Err(error) => return binding_change(error),
 	};
-	let Some(binding) = binding else {
-		return Ok(has_reads(&mut **lease.tx(), run_id)
-			.await?
-			.then_some(Failure::Authority));
+	let cached_reads = lease
+		.access()
+		.and_then(|access| access.state_memory_reads(run_id));
+	let reads = if let Some(reads) = cached_reads {
+		reads
+	} else {
+		has_reads(&mut **lease.tx(), run_id).await?
 	};
-	if !has_reads(&mut **lease.tx(), run_id).await? {
+	let Some(binding) = binding else {
+		return Ok(reads.then_some(Failure::Authority));
+	};
+	if !reads {
 		return Ok(None);
 	}
 	if let Err(error) = units::authorize(lease, &binding.bank, "memory.read").await {

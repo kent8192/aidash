@@ -463,3 +463,7 @@ path = "src/apps/identity/tests/oauth_clients.rs"
 [[test]]
 name = "state_latency"
 path = "src/apps/identity/tests/state_latency.rs"
+
+[[test]]
+name = "state_statement_count"
+path = "src/apps/identity/tests/state_statement_count.rs"

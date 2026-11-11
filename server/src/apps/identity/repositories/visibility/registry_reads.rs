@@ -55,6 +55,9 @@ impl RegistryReadScope for Reads<'_> {
 			.map_err(Into::into)
 	}
 	async fn dependencies(&mut self, run: Uuid) -> Result<Vec<RegistryJournalRow>> {
+		if let Some(rows) = self.access.state_remote_reads(run) {
+			return Ok(rows);
+		}
 		let result: NativeResult<Vec<RegistryJournalRow>> = async {
 			let rows: Vec<RegistryJournalRow> = {
 				let query_bind_1 = run;
