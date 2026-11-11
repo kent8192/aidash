@@ -7242,9 +7242,16 @@
               },
               "entry": {
                 "$ref": "#/components/schemas/Entry"
+              },
+              "carry_results": {
+                "default": [],
+                "items": {
+                  "$ref": "#/components/schemas/RegistrationCarryResult"
+                },
+                "type": "array"
               }
             },
-            "required": ["entry", "catalog_approval_required"],
+            "required": ["entry", "catalog_approval_required", "carry_results"],
             "type": "object"
           },
           "Entry": {
@@ -7504,6 +7511,51 @@
               "preserve_recent",
               "forbid_apply",
               "max_calls_per_run"
+            ],
+            "type": "object"
+          },
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "RegistrationCarryResult": {
+            "properties": {
+              "carried": {
+                "type": "boolean"
+              },
+              "changed": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "node": {
+                "type": "string"
+              },
+              "source_version": {
+                "type": ["string", "null"]
+              },
+              "unapproved_dependencies": {
+                "items": {
+                  "$ref": "#/components/schemas/EntityRef"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "node",
+              "source_version",
+              "changed",
+              "unapproved_dependencies",
+              "carried"
             ],
             "type": "object"
           }
@@ -28713,9 +28765,67 @@
               "revision": {
                 "format": "int64",
                 "type": "integer"
+              },
+              "carry_results": {
+                "description": "Per-Node carry decisions for the newly registered version.",
+                "items": {
+                  "$ref": "#/components/schemas/WorkbenchRegistrationCarryResult"
+                },
+                "type": "array"
               }
             },
-            "required": ["draft_id", "revision", "entry", "behavioral_tested"],
+            "required": [
+              "draft_id",
+              "revision",
+              "entry",
+              "behavioral_tested",
+              "carry_results"
+            ],
+            "type": "object"
+          },
+          "EntityRef": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "version"],
+            "type": "object"
+          },
+          "WorkbenchRegistrationCarryResult": {
+            "properties": {
+              "carried": {
+                "type": "boolean"
+              },
+              "changed": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "node": {
+                "type": "string"
+              },
+              "source_version": {
+                "type": ["string", "null"]
+              },
+              "unapproved_dependencies": {
+                "items": {
+                  "$ref": "#/components/schemas/EntityRef"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "node",
+              "source_version",
+              "changed",
+              "unapproved_dependencies",
+              "carried"
+            ],
             "type": "object"
           }
         },
