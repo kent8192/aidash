@@ -49,6 +49,9 @@ impl reinhardt::commands::CapabilityCommand for Command {
 	) -> Vec<reinhardt::commands::CapabilityRequirement> {
 		Vec::new()
 	}
+	// A superuser creates roles and extensions before any Tenant data exists,
+	// as `local-dev-db` prepares a database; no tenancy scope applies.
+	#[allow(clippy::disallowed_methods)]
 	async fn execute(
 		&self,
 		args: &clap::ArgMatches,

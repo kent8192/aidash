@@ -367,6 +367,7 @@ impl Service {
 		}
 		scope.commit().await
 	}
+	#[allow(clippy::too_many_arguments)]
 	async fn write_new(
 		&self,
 		tenant: &str,
@@ -447,6 +448,7 @@ impl Service {
 			previous_key_settings_url: None,
 		})
 	}
+	#[allow(clippy::too_many_arguments)]
 	async fn write_rotation(
 		&self,
 		tenant: &str,
