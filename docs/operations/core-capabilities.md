@@ -423,7 +423,11 @@ read every file it binds.
 Whoever may run an Agent version can have that Run read the Reference files of
 its approved Sources, and the Agent needs no `reference.*` action (ADR 0114).
 Direct download stays with the uploader, through both the reference and the
-working-area routes. Revoking one file refuses new Runs of every version that
+working-area routes. Revoking a file is not limited to its uploader: any subject
+the Tenant's policy grants `reference.delete` can revoke it, and one the policy
+refuses gets 404, as for a missing file. `GET /api/references/{id}/revocation`
+gives such a subject the revision and state to revoke with, never the content.
+Revoking one file refuses new Runs of every version that
 binds it, and the error names its path. A Run that already holds the set stops
 reading a revoked file too: `file_read` and the copy refuse it, `file_search`
 skips it, and the set's other files stay readable. `file_share` refuses a
