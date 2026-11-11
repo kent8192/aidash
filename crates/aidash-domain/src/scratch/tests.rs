@@ -118,8 +118,14 @@ fn default_hosts_cover_major_package_and_container_registries() {
 	};
 	for host in [
 		"registry.npmjs.org",
+		"registry.yarnpkg.com",
 		"pypi.org",
+		"releases.astral.sh",
 		"crates.io",
+		"static.rust-lang.org",
+		"repo.maven.apache.org",
+		"rubygems.org",
+		"ports.ubuntu.com",
 		"proxy.golang.org",
 		"github.com",
 		"deb.debian.org",

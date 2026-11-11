@@ -279,6 +279,7 @@ class PodProxyUrlTest(unittest.TestCase):
         env = {item['name']: item.get('value') for item in pod['spec']['containers'][0]['env']}
         for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'):
             self.assertEqual(env[name], 'http://aidash:aidash-scope-v1.a@10.0.0.8:8888')
+        self.assertEqual(env['NODE_USE_ENV_PROXY'], '1')
 
 
 class StartupStorageRegressionTest(unittest.TestCase):

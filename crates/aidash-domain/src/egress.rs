@@ -12,23 +12,67 @@ pub struct ScopeId {
 	pub scratch_space: uuid::Uuid,
 }
 
-/// Registry and anonymous container-pull destinations enabled by default.
+/// Hosts a Scratch Space may reach by default (#845): each ecosystem's official,
+/// anonymously readable package sources and the delivery hosts they send
+/// downloads to, and the hosts a tool fetches itself or its runtime from. No
+/// unofficial mirrors, no new general-purpose content hosts, and nothing whose
+/// terms restrict commercial use (Anaconda's own channels; conda-forge instead).
+/// Hosts marked "seen" were reached by the tools on the #845 live rig; the rest
+/// come from each project's documentation.
 pub const DEFAULT_ALLOWED_HOSTS: &[&str] = &[
+	// JavaScript: npm, pnpm and bun (seen); yarn 1 (seen); corepack fetching
+	// yarn (seen); JSR.
 	"registry.npmjs.org",
+	"registry.yarnpkg.com",
+	"repo.yarnpkg.com",
+	"jsr.io",
+	"npm.jsr.io",
+	// Python: pip and uv (seen); uv's Python builds (seen); conda-forge.
 	"pypi.org",
 	"files.pythonhosted.org",
+	"releases.astral.sh",
+	"conda.anaconda.org",
+	// Rust: cargo's sparse index and downloads; rustup toolchains.
 	"crates.io",
 	"index.crates.io",
 	"static.crates.io",
+	"static.rust-lang.org",
+	// Go: module proxy and checksum database, which also serve toolchains.
 	"proxy.golang.org",
 	"sum.golang.org",
+	// Java: Maven Central, the Gradle plugin portal and Gradle distributions.
+	"repo.maven.apache.org",
+	"repo1.maven.org",
+	"plugins.gradle.org",
+	"services.gradle.org",
+	"downloads.gradle.org",
+	// Ruby, PHP (Composer metadata; packages come from GitHub), .NET, Dart,
+	// Elixir and R.
+	"rubygems.org",
+	"index.rubygems.org",
+	"repo.packagist.org",
+	"packagist.org",
+	"getcomposer.org",
+	"api.nuget.org",
+	"pub.dev",
+	"hex.pm",
+	"repo.hex.pm",
+	"builds.hex.pm",
+	"cloud.r-project.org",
+	// GitHub, for sources and release downloads.
 	"github.com",
+	"api.github.com",
 	"codeload.github.com",
 	"objects.githubusercontent.com",
+	"release-assets.githubusercontent.com",
+	// OS packages: Debian (seen), Ubuntu including arm64 ports, Alpine.
 	"deb.debian.org",
 	"security.debian.org",
 	"archive.ubuntu.com",
 	"security.ubuntu.com",
+	"ports.ubuntu.com",
+	"dl-cdn.alpinelinux.org",
+	// Anonymous container pulls.
 	"registry-1.docker.io",
 	"auth.docker.io",
 	"production.cloudflare.docker.com",

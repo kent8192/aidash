@@ -354,6 +354,14 @@ addresses or the cluster network. The Pod's network policy must enforce the
 same boundary regardless of these environment variables. The scope credential
 is not a Tenant Secret, and Tenant Secret values never enter the Pod.
 
+A new Scratch Space may reach, by default, the official package sources of
+JavaScript (npm, yarn, JSR), Python (PyPI, uv's Python builds, conda-forge),
+Rust, Go, Java (Maven Central, Gradle), Ruby, PHP, .NET, Dart, Elixir and R,
+GitHub, Debian, Ubuntu (including arm64 ports), Alpine and the public container
+registries; `DEFAULT_ALLOWED_HOSTS` in `aidash-domain` is the list. Execution
+Pods set `NODE_USE_ENV_PROXY=1` besides the proxy variables, because Node's
+built-in `fetch`, which corepack uses, ignores them otherwise.
+
 For CONNECT, the gateway tunnels TLS without inspecting it. For plain HTTP it
 forwards absolute-form requests. It checks the scope's host allowlist and rejects
 non-public resolved addresses even when all hosts are enabled. All-host access
