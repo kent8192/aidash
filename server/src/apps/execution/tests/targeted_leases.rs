@@ -77,6 +77,7 @@ async fn targeted_claim_never_acquires_an_older_neighbor(
 		Some(target.id),
 		store.deployment.as_str(),
 		&mut None,
+		false,
 	)
 	.await
 	.unwrap();
@@ -155,7 +156,7 @@ async fn leasing_skips_runs_whose_stored_requirement_exceeds_the_worker(
 		.into_executor()
 		.await
 		.unwrap();
-	let mut scope = crate::bootstrap::activation_scheduling_scope(tx.as_mut());
+	let mut scope = crate::bootstrap::activation_scheduling_scope(tx.as_mut(), false);
 	scope.capabilities = old_worker;
 	let visible: Vec<Uuid> =
 		aidash_application::ports::activation::SchedulingScope::candidates(&mut scope, None, None)
@@ -204,6 +205,7 @@ async fn leasing_skips_runs_whose_stored_requirement_exceeds_the_worker(
 		Some(reserved.id),
 		store.deployment.as_str(),
 		&mut None,
+		false,
 	)
 	.await
 	.unwrap();
@@ -266,7 +268,7 @@ async fn malformed_requirements_stay_visible_and_hidden_runs_are_counted(
 		.into_executor()
 		.await
 		.unwrap();
-	let mut scope = crate::bootstrap::activation_scheduling_scope(tx.as_mut());
+	let mut scope = crate::bootstrap::activation_scheduling_scope(tx.as_mut(), false);
 	scope.capabilities = current;
 	let waiting = scope.capability_waits().await.unwrap();
 	let visible: Vec<Uuid> =
@@ -323,7 +325,7 @@ async fn a_cancelled_run_no_worker_can_load_is_handed_to_cancellation_delivery(
 		.into_executor()
 		.await
 		.unwrap();
-	let mut scope = crate::bootstrap::activation_scheduling_scope(tx.as_mut());
+	let mut scope = crate::bootstrap::activation_scheduling_scope(tx.as_mut(), false);
 	let waiting = scope.capability_waits().await.unwrap();
 	let visible: Vec<Uuid> =
 		aidash_application::ports::activation::SchedulingScope::candidates(&mut scope, None, None)

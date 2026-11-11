@@ -29,7 +29,7 @@ fn tenant_row(node: &str, id: &str) -> RegistryJournalRow {
 }
 struct Scope {
 	rows: Vec<RegistryJournalRow>,
-	cache: BTreeMap<(Uuid, u8), bool>,
+	cache: BTreeMap<(Uuid, u8), RemoteReads>,
 	authority: u8,
 	frontier: Option<Vec<Dependency>>,
 	unavailable: BTreeSet<String>,
@@ -83,16 +83,17 @@ impl RegistryReadScope for Scope {
 	fn identity(&self) -> (&str, &str) {
 		("tenant", "reader")
 	}
-	fn cached(&self, run: Uuid) -> Option<bool> {
+	fn cached(&self, run: Uuid) -> Option<RemoteReads> {
 		self.frontier
 			.is_none()
-			.then(|| self.cache.get(&(run, self.authority)).copied())
+			.then(|| self.cache.get(&(run, self.authority)).cloned())
 			.flatten()
 	}
-	fn remember(&mut self, run: Uuid, visible: bool) {
+	fn remember(&mut self, run: Uuid, reads: RemoteReads) {
 		if self.frontier.is_none() {
+			let visible = reads == RemoteReads::Visible;
 			self.calls.push(format!("remember:{visible}"));
-			self.cache.insert((run, self.authority), visible);
+			self.cache.insert((run, self.authority), reads);
 		}
 	}
 	fn frontier(&mut self) -> Option<&mut Vec<Dependency>> {
@@ -432,8 +433,8 @@ async fn changed_authority_does_not_reuse_the_prior_true_cache(mut scope: Scope)
 		scope.calls,
 		vec!["dependencies", "registry.read", "remember:false"]
 	);
-	assert!(scope.cache[&(run, 0)]);
-	assert!(!scope.cache[&(run, 1)]);
+	assert_eq!(scope.cache[&(run, 0)], RemoteReads::Visible);
+	assert_eq!(scope.cache[&(run, 1)], RemoteReads::Unconfirmed);
 }
 #[rstest]
 #[case::all(Verification::Verified, true)]
@@ -671,6 +672,82 @@ async fn a_same_tenant_node_still_needs_both_policies(
 			.unwrap()
 	);
 	assert_eq!(scope.calls, calls);
+}
+#[rstest]
+#[tokio::test]
+async fn a_same_tenant_agent_is_named_as_the_tenant_names_it(mut scope: Scope) {
+	scope.rows = vec![tenant_row("aidash://sibling", "agent")];
+	assert!(
+		reads_visible(&mut scope, &Transport::default(), Uuid::from_u128(1))
+			.await
+			.unwrap()
+	);
+	let (resource, action) = &scope.decisions[0];
+	assert_eq!(action, "registry.read");
+	assert_eq!(
+		(resource.kind.as_str(), resource.id.as_str()),
+		("agent", "agent")
+	);
+	assert_eq!(resource.attributes["remote_node"], "aidash://sibling");
+	assert_eq!(resource.attributes["version"], "1.0.0");
+}
+#[rstest]
+#[tokio::test]
+async fn a_denied_same_tenant_agent_is_a_definition_not_an_unconfirmed_read(mut scope: Scope) {
+	scope.rows = vec![tenant_row("aidash://sibling", "agent")];
+	scope.denied = Some("registry.read");
+	assert_eq!(
+		reads(&mut scope, &Transport::default(), Uuid::from_u128(1))
+			.await
+			.unwrap(),
+		RemoteReads::Definition(EntityRef {
+			id: "agent".into(),
+			version: "1.0.0".into(),
+		})
+	);
+	assert_eq!(
+		scope.cache.values().next(),
+		Some(&RemoteReads::Definition(EntityRef {
+			id: "agent".into(),
+			version: "1.0.0".into(),
+		}))
+	);
+}
+#[rstest]
+#[case::registry("registry.read")]
+#[case::discover("federation.discover")]
+#[tokio::test]
+async fn another_tenant_refusal_and_a_same_tenant_node_refusal_stay_unconfirmed(
+	mut scope: Scope,
+	#[case] denied: &'static str,
+) {
+	scope.denied = Some(denied);
+	assert_eq!(
+		reads(&mut scope, &Transport::default(), Uuid::from_u128(1))
+			.await
+			.unwrap(),
+		RemoteReads::Unconfirmed
+	);
+	if denied == "federation.discover" {
+		scope.rows = vec![tenant_row("aidash://sibling", "agent")];
+		scope.cache.clear();
+		assert_eq!(
+			reads(&mut scope, &Transport::default(), Uuid::from_u128(1))
+				.await
+				.unwrap(),
+			RemoteReads::Unconfirmed
+		);
+	}
+}
+#[test]
+fn only_another_tenant_agent_is_named_by_its_node() {
+	let local = Scope::resource_for("agent", "agent", json!({"version":"1.0.0"}));
+	let own = remote_agent_resource(local.clone(), "aidash://sibling", "1.0.0", true);
+	let foreign = remote_agent_resource(local, "aidash://leaf", "1.0.0", false);
+	assert_eq!(own.id, "agent");
+	assert_eq!(foreign.id, "aidash://leaf/agents/agent@1.0.0");
+	assert_eq!(own.attributes["remote_node"], "aidash://sibling");
+	assert_eq!(foreign.attributes["remote_node"], "aidash://leaf");
 }
 #[rstest]
 #[tokio::test]

@@ -59,6 +59,7 @@ fn stream_router(
 	#[default(json!({}))] whole: Value,
 	completions: Completions,
 ) -> Arc<ServerRouter> {
+	let response_steps = steps.clone();
 	Arc::new(
 		reinhardt::test::stub::StubRouter::new()
 			.route(
@@ -70,6 +71,15 @@ fn stream_router(
 					let steps = steps.clone();
 					let whole = whole.clone();
 					async move { scripted(steps, whole, body) }
+				}),
+			)
+			.route(
+				"/responses",
+				http::Method::POST,
+				reply(move |request: reinhardt::Request| {
+					let body = request.json::<Value>().unwrap();
+					let steps = response_steps.clone();
+					async move { scripted(steps, json!({}), body) }
 				}),
 			)
 			.into_server_router(),
@@ -508,17 +518,17 @@ async fn streamed_requests_reject_other_content_types(
 /// Comment-only keepalives that outlast the one-second stall window.
 #[fixture]
 fn keepalive_steps() -> Vec<Step> {
-	let mut steps = vec![delta(json!({"content":"Hi"}))];
-	for _ in 0..50 {
+	let mut steps = vec![];
+	for _ in 0..15 {
 		steps.extend([keepalive(), Step::Sleep(Duration::from_millis(100))]);
 	}
-	steps.extend([finish("stop"), done()]);
+	steps.extend([delta(json!({"content":"Done"})), finish("stop"), done()]);
 	steps
 }
 
 #[rstest::rstest]
 #[tokio::test]
-async fn comment_only_keepalives_stall_the_stream(
+async fn comment_only_keepalives_keep_the_stream_alive(
 	mut model_config: ModelConfig,
 	#[from(stream_router)]
 	#[with(keepalive_steps())]
@@ -531,17 +541,178 @@ async fn comment_only_keepalives_stall_the_stream(
 ) {
 	// Arrange
 	model_config.stream_stall_timeout_secs = Some(1);
-	let started = std::time::Instant::now();
 
-	// Act
 	let result = infer_stream(&server, model_config, streaming_client).await;
+	assert_eq!(result.unwrap().text, "Done");
+}
 
-	// Assert
+/// Keepalives before any output remain live beyond the stall window.
+#[fixture]
+fn pre_output_keepalive_steps() -> Vec<Step> {
+	let mut steps = vec![delta(json!({"role":"assistant","content":""}))];
+	for _ in 0..15 {
+		steps.extend([keepalive(), Step::Sleep(Duration::from_millis(100))]);
+	}
+	steps.extend([delta(json!({"content":"Done"})), finish("stop"), done()]);
+	steps
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn keepalives_before_first_output_keep_stream_alive(
+	mut model_config: ModelConfig,
+	#[from(stream_router)]
+	#[with(pre_output_keepalive_steps())]
+	_router: Arc<ServerRouter>,
+	#[future(awt)]
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
+	streaming_client: reqwest::Client,
+) {
+	model_config.stream_stall_timeout_secs = Some(1);
+	let result = infer_stream(&server, model_config, streaming_client).await;
+	assert_eq!(result.unwrap().text, "Done");
+}
+
+#[rstest::rstest]
+#[case::after_text(Some(delta(json!({"content":"Hi"}))), false)]
+#[case::after_reasoning(Some(delta(json!({"reasoning":"thinking"}))), false)]
+#[case::after_reasoning_details(Some(delta(json!({"reasoning_details":[{"type":"reasoning.text","text":"thinking"}]}))), false)]
+#[case::after_reasoning_summary(Some(delta(json!({"reasoning_details":[{"type":"reasoning.summary","summary":"thinking"}]}))), false)]
+#[case::after_tool_call(Some(delta(json!({"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"read","arguments":""}}]}))), false)]
+#[case::silence(None, true)]
+#[case::silence_after_output(Some(delta(json!({"content":"Hi"}))), true)]
+#[tokio::test]
+async fn output_then_comments_or_silence_stalls(
+	#[case] first: Option<Step>,
+	#[case] silence: bool,
+	mut model_config: ModelConfig,
+	streaming_client: reqwest::Client,
+) {
+	let mut steps: Vec<Step> = first.into_iter().collect();
+	if steps.is_empty() {
+		steps.push(keepalive());
+	}
+	if silence {
+		steps.push(Step::Sleep(Duration::from_secs(2)));
+	} else {
+		for _ in 0..15 {
+			steps.extend([keepalive(), Step::Sleep(Duration::from_millis(100))]);
+		}
+	}
+	let router = stream_router(steps, json!({}), completions());
+	let server = upstream(router).await;
+	model_config.stream_stall_timeout_secs = Some(1);
+	let result = infer_stream(&server, model_config, streaming_client).await;
 	assert!(
 		matches!(result, Err(aidash_application::Error::InferenceStalled)),
 		"{result:?}"
 	);
-	assert!(started.elapsed() < Duration::from_secs(4));
+}
+
+struct PlanAccess(String);
+
+#[async_trait::async_trait]
+impl aidash_application::provider_access::ProviderAccess for PlanAccess {
+	async fn resolve(
+		&self,
+		_: &aidash_application::provider_access::Context,
+		_: &str,
+		_: &aidash_application::provider_access::Source,
+	) -> aidash_application::Result<aidash_application::provider_access::Access> {
+		Ok(aidash_application::provider_access::Access {
+			endpoint: self.0.clone(),
+			bearer: "fixture".into(),
+			keyless: None,
+		})
+	}
+
+	async fn check(
+		&self,
+		_: &aidash_application::provider_access::Context,
+		_: &str,
+		_: &aidash_application::provider_access::Source,
+	) -> aidash_application::Result<()> {
+		Ok(())
+	}
+}
+
+#[rstest::rstest]
+#[case::comments_before_output("before", true)]
+#[case::empty_then_comments("empty", true)]
+#[case::usage_then_comments("usage", true)]
+#[case::comments_after_output("after", false)]
+#[case::silence("silence", false)]
+#[case::silence_after_output("after_silence", false)]
+#[case::reasoning_then_comments("reasoning", false)]
+#[case::tool_then_comments("tool", false)]
+#[case::tool_item_then_comments("tool_item", false)]
+#[tokio::test]
+async fn responses_stream_liveness_phases(
+	#[case] scenario: &str,
+	#[case] completes: bool,
+	streaming_client: reqwest::Client,
+) {
+	let mut steps = match scenario {
+		"empty" => vec![data(
+			json!({"type":"response.output_text.delta","delta":""}),
+		)],
+		"silence" => vec![keepalive()],
+		"after" | "after_silence" => vec![data(
+			json!({"type":"response.output_text.delta","delta":"Hi"}),
+		)],
+		"usage" => vec![data(
+			json!({"type":"response.in_progress","response":{"usage":{"input_tokens":1}}}),
+		)],
+		"reasoning" => vec![data(
+			json!({"type":"response.reasoning_summary_text.delta","delta":"thinking"}),
+		)],
+		"tool" => vec![data(
+			json!({"type":"response.function_call_arguments.delta","output_index":0,"delta":"{"}),
+		)],
+		"tool_item" => vec![data(
+			json!({"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call-1","name":"read"}}),
+		)],
+		_ => vec![],
+	};
+	if scenario == "silence" || scenario == "after_silence" {
+		steps.push(Step::Sleep(Duration::from_secs(2)));
+	} else {
+		for _ in 0..15 {
+			steps.extend([keepalive(), Step::Sleep(Duration::from_millis(100))]);
+		}
+	}
+	steps.push(data(json!({"type":"response.completed","response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Done"}]}]}})));
+	let router = stream_router(steps, json!({}), completions());
+	let server = upstream(router).await;
+	let config: ModelConfig = serde_json::from_value(json!({
+		"provider":"chatgpt","model_id":"gpt-fixture","endpoint":"https://api.openai.com/v1",
+		"plan_connection":"chatgpt","context_window":32768,"max_output_tokens":4096,
+		"modalities":["text"],"cost":{},"stream_stall_timeout_secs":1
+	}))
+	.unwrap();
+	let provider = aidash_integrations::inference::responses::ResponsesProvider {
+		clients: aidash_integrations::keyless::Clients::new(
+			streaming_client,
+			Duration::from_secs(30),
+			Duration::from_secs(5),
+		)
+		.unwrap(),
+		config,
+		access: Arc::new(PlanAccess(server.url.clone())),
+		context: Default::default(),
+		cache_salt: None,
+	};
+	let result = provider.infer(request(false), &NoProgress).await;
+	if completes {
+		assert_eq!(result.unwrap().text, "Done");
+	} else {
+		assert!(
+			matches!(result, Err(aidash_application::Error::InferenceStalled)),
+			"{result:?}"
+		);
+	}
 }
 
 /// Reasoning chunks spaced inside the one-second stall window.

@@ -72,11 +72,12 @@ impl ReadRecheckRepository for Repository<'_> {
 	}
 	async fn check(&self, target: Target) -> Result<Outcome> {
 		let checked = match target {
-			Target::Operation(id) => check_operation(self, id).await,
+			Target::Operation(id) => check_operation(self, id).await.map(|()| true),
 			Target::LivePreview(id) => live_previews::read_recheck(self.store, id).await,
 		};
 		match checked {
-			Ok(()) => Ok(Outcome::Allowed),
+			Ok(true) => Ok(Outcome::Allowed),
+			Ok(false) => Ok(Outcome::Unconfirmed),
 			Err(Error::Forbidden | Error::Unauthorized | Error::NotFound(_)) => {
 				Ok(Outcome::Refused)
 			}

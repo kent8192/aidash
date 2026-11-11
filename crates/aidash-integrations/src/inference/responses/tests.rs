@@ -541,13 +541,13 @@ fn anonymous_function_calls_count_against_the_output_limit() {
 	assert!(refused);
 }
 
-/// Bytes of a data line still arriving keep the stream alive; comments and
-/// other fields do not.
+/// Bytes of a data line still arriving keep the stream alive; comments do so
+/// before output, while other fields do not.
 #[test]
 fn partial_data_lines_are_liveness() {
 	let recorder = Recorder::default();
 	let mut assembler = Assembler::new(&recorder, MAX_RESPONSE_BYTES);
-	assert!(!assembler.push(b": keep-alive\n").unwrap());
+	assert!(assembler.push(b": keep-alive\n").unwrap());
 	assert!(!assembler.push(b"event: response.completed\n").unwrap());
 	assert!(assembler.push(b"data: {\"type\":\"response.").unwrap());
 	assert!(assembler.push(b"completed\"").unwrap());
@@ -1472,6 +1472,7 @@ mod openrouter {
 			"/v1/responses",
 			post(|| async {
 				let stream = async_stream::stream! {
+					yield Ok::<_, std::io::Error>("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hi\"}\n\n");
 					loop {
 						yield Ok::<_, std::io::Error>(": keepalive\n\n");
 						tokio::time::sleep(std::time::Duration::from_millis(10)).await;

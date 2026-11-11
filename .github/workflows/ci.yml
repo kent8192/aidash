@@ -496,6 +496,7 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 -m unittest discover -s scripts -p test_transaction_cluster_acceptance.py
+      - run: python3 -m unittest discover -s scripts -p test_oidc_fixture.py
       - run: python3 -m unittest discover -s scripts -p test_core_capability_evidence.py
       - run: python3 -m unittest discover -s scripts -p test_golden_path.py
       - run: python3 -m unittest discover -s scripts -p test_local_k8s_credentials.py
@@ -664,9 +665,9 @@ jobs:
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           shared-key: production-http
-      - name: Validate every route, scenario and sanitized evidence requirement
+      - name: Render and validate every route, scenario and sanitized evidence requirement
         run: |
-          python3 scripts/bruno_contracts.py --check
+          python3 scripts/bruno_contracts.py
           python3 scripts/test_bruno_contracts.py
       - name: Start real PostgreSQL and JetStream fixtures
         run: docker compose up --build -d --wait postgres nats
