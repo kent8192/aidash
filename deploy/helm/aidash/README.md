@@ -265,6 +265,20 @@ modes expose `<release>-preview` on `preview.port`. A ticket URL names
 `preview.publicPort` (443 by default). Enable `preview.ingress` for a wildcard
 `*.<preview.domain>` Ingress and name its `tlsSecret`.
 
+The gateway's public listener shares the process's open-file limit, which the
+process raises to its hard limit at startup. It holds at most 64 connections on
+which nobody has been admitted yet, shared by every client, and gives a client
+10 seconds to send each request head. A connection whose viewer is admitted
+moves to its preview's own slots, 32 per preview and 512 in all, and a
+WebSocket keeps its slot until it closes, so a flood of silent connections
+cannot cut traffic already admitted. It can still refuse a viewer's next
+connection: an admitted keep-alive connection closes after 10 seconds idle, and
+a new one competes for the shared slots again. A refused connection gets
+`503` with `Retry-After` and `preview_gateway_busy` (shared slots or the total
+full) or `preview_connection_limit` (that preview full), unless more than 8
+refusals are being answered at once; then it is dropped. Both are counted in
+`aidash_preview_connections_refused_total` by `slots` and `outcome`.
+
 The chart renders `<release>-preview-sandbox` in `execution.sandboxNamespace`:
 only the gateway Pods of this release may reach an Execution Pod, and only on
 `preview.podPort` (the port a Live preview declares; W6 sets it). Without a

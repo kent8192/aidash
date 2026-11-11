@@ -52,6 +52,14 @@ pub fn main(build: &'static Build, compatibility: bool) {
 		process::exit(status);
 	}
 	build::install(build);
+	// Listeners, proxied connections and database connections share one limit
+	// on open files; a low soft limit runs it out first (#780).
+	#[cfg(unix)]
+	{
+		if let Err(error) = aidash_runtime::open_files::raise_soft_limit() {
+			eprintln!("Warning: the open file limit could not be raised: {error}");
+		}
+	}
 	let mut runtime = tokio::runtime::Builder::new_multi_thread();
 	runtime.enable_all();
 	// An explicit RUST_MIN_STACK still decides, as it does for every other
