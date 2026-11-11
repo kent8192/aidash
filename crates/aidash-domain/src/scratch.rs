@@ -21,28 +21,10 @@ pub enum HostAllowlist {
 
 /// Public package and source registries enabled for a new Tenant by default.
 pub fn default_public_hosts() -> BTreeSet<String> {
-	[
-		"registry.npmjs.org",
-		"pypi.org",
-		"files.pythonhosted.org",
-		"crates.io",
-		"index.crates.io",
-		"static.crates.io",
-		"proxy.golang.org",
-		"sum.golang.org",
-		"github.com",
-		"objects.githubusercontent.com",
-		"archive.ubuntu.com",
-		"security.ubuntu.com",
-		"deb.debian.org",
-		"registry-1.docker.io",
-		"auth.docker.io",
-		"ghcr.io",
-		"quay.io",
-	]
-	.into_iter()
-	.map(str::to_owned)
-	.collect()
+	crate::egress::DEFAULT_ALLOWED_HOSTS
+		.iter()
+		.map(|host| (*host).to_owned())
+		.collect()
 }
 
 impl HostAllowlist {

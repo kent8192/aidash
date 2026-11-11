@@ -30,6 +30,9 @@ pub fn management_commands() -> reinhardt::commands::CommandRegistry {
 	registry.register_capability(Box::new(
 		crate::apps::execution::services::schema::ApiContract,
 	));
+	registry.register_capability(Box::new(
+		crate::apps::execution::services::execution_pod_command::Command,
+	));
 	for command in crate::apps::execution::services::node_commands::commands() {
 		registry.register_capability(command);
 	}

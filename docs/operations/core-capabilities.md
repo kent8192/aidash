@@ -87,8 +87,10 @@ foreground commands, then replaces Pods and stops their background processes.
 A trusted, read-only injected helper copies the image filesystem into the PVC
 on first start, then runs commands as root in that persisted root. `/scratch`
 contains user files; the copied system tree lives separately on the same PVC.
-Installed packages survive Pod restarts. Reset replaces the system tree from the
-image and preserves `/scratch`. The change log records cheap mtime/size diffs
+Installed packages survive Pod restarts. The Runner receipt reports `image_changed`
+when the requested image differs from the image used to initialize the tree;
+unknown legacy image identity also reports a change. Reset replaces the system
+tree from the requested image and preserves `/scratch`. The change log records cheap mtime/size diffs
 at active-command transitions and periodically while commands run. An interval
 with one command is attributed to its Run; overlapping commands produce an
 `ambiguous` record listing the Runs. The index does not capture every possible
@@ -99,7 +101,12 @@ Pod; background processes have a separate pool of 16. The
 default deadline is ten minutes and the maximum is 60 minutes. Foreground
 commands waiting for a Run may be cancelled; background processes expose their
 starting Run and bounded logs. Commands interrupted by a lost Pod or node have
-an unknown outcome and are never replayed. Python interpreters are per Run.
+an unknown outcome and are never replayed during the retry window. Terminal
+command records are retained for 24 hours and 15 minutes after completion; unsettled
+commands and stops awaiting confirmation are retained. Each Space is limited to
+4096 command records. At the limit, new commands are refused until records can
+expire, while retries of retained commands still return their prior results.
+Python interpreters are per Run.
 The Pod stops after 30 minutes without a command or Live preview viewer;
 background processes alone do not extend its life. Preview and MCP integration
 with the application remains for wave 2.
@@ -109,11 +116,17 @@ sandbox to host cgroup CPU, memory and pids limits. It independently checks
 termination before a new writer starts. Normal-mode commands lose SYS_ADMIN,
 NET_ADMIN, NET_RAW and SYS_CHROOT from all capability sets including the bounding set and
 run with `no_new_privs`; admission runs a user process to verify this and the
-guest process limit. The v2 guest ceiling defaults to 512 tasks and can be set
-with `v2_processes` in the Execution Pod configuration. There is no service-account token. Network admission checks
+guest process limit. The default v2 guest ceiling scales with Pod memory at one task
+per 16 MiB, bounded between 32 and 128 tasks. An operator can override it with
+`v2_processes` in the Execution Pod configuration. There is no service-account token. Network admission checks
 the effective Kubernetes NetworkPolicies and probes a reachable peer Pod, node,
 metadata endpoint and external destination, allowing only the Egress gateway.
-It fails closed when its positive controls cannot be reached. Network probes
+It also verifies that a listener in the Execution Pod is reachable locally but
+not from the admission canary.
+It fails closed when its positive controls cannot be reached. On a cluster with
+no metadata server, explicitly set `execution.pods.metadataServerAbsent: true`
+(or `--metadata-server-absent` in the setup script) to omit only that positive
+control; the metadata isolation probe and other controls remain required. Network probes
 currently require IPv4. The CNI must enforce policy against raw and spoofed
 packets; Docker-mode admission also runs raw packet negative controls.
 
@@ -142,8 +155,22 @@ local kind installation, `setup-capability-runtime.py --execution-pods` accepts
 and one or more `--proxy-selector key=value` arguments; `--allow-docker` is
 optional. Provision the enforcing storage class and Egress gateway separately.
 
+For a disposable single-node kind rig, TopoLVM can provide the required fixed-size
+filesystem and CSI deletion finalizer. Create a dedicated loop-backed LVM volume
+group on the kind node, install TopoLVM with a device class for that group, and
+use an ext4 StorageClass with `reclaimPolicy: Delete` and
+`volumeBindingMode: WaitForFirstConsumer`. The #714 rig used TopoLVM chart
+17.3.1, a 20 GiB sparse loop file and `spare-gb: 0`; its 1 GiB probe passed
+node-guard capacity validation and the Runner's deletion-finalizer check, then
+the PV disappeared after PVC deletion. In this kind node, udev is not running;
+LVM needed `activation/udev_sync = 0` and `activation/udev_rules = 0` to create
+device nodes itself. These are node-wide settings, so use this procedure only
+on a dedicated disposable node. Record the loop file, device and volume group;
+never reuse or remove another workload's devices. This kind result is not a
+substitute for the required real-cloud-disk proof before production enablement.
+
 Known limits of this runtime, which no tool uses yet. Keep it disabled in
-production until wave 2 of #697 has run it on a live gVisor cluster:
+production until wave 2 of #697 has verified it on a real cloud disk:
 
 - Docker mode has no boundary inside the Pod. A user process keeps `SYS_ADMIN`,
   so it can attack the trusted supervisor, the admission probe and the result
@@ -154,10 +181,24 @@ production until wave 2 of #697 has run it on a live gVisor cluster:
   image, whose `/etc/ld.so.preload` is honoured. Such code runs without mount
   capabilities and sees only its own `image-root` subPath, and the controller
   refuses a symlinked root before `chroot`.
-- Full-disk recovery, the guest process ceiling and admission are covered by
-  unit tests against mocks and have not been exercised on a real PVC and gVisor.
+- Admission, the default guest process ceiling and full-disk recovery passed
+  on kind with gVisor and a quota-enforcing TopoLVM PVC. A real cloud disk
+  remains a production enablement prerequisite.
 - Images that need more than the fixed startup deadline to pull and copy fail.
-  There is no progress-based extension.
+  There is no progress-based extension (F12).
+- Change tracking scans the system tree, with the associated cost and fragility
+  (F20). Changes made while no command is tracked have no change-log entry (F31).
+- Loader-related image environment variables blanked during initialization cannot
+  be restored to guest commands (F24).
+- `/v1/activity` does not report v2 work (F27).
+- Enabling v2 labels a created sandbox namespace privileged, removing the API
+  server's restricted admission check for v1 Pods. Their specs remain hard-coded;
+  the label is rendered only with `createNamespaces: true` (F33).
+
+Phase 4 of #697 must resolve the Docker-mode trust boundary and init loader
+issues (F7, F8, F10), including the Docker user probe failure, before Docker
+mode is used. Full-disk and admission evidence on a real cloud disk is required
+before production enables Execution Pods.
 
 ## Reproduce the runtime gate
 
