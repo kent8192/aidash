@@ -16,6 +16,34 @@ use std::{collections::BTreeMap, sync::Arc};
 const NODE: &str = "aidash://local";
 
 #[test]
+fn seed_orders_bundle_dependencies_before_the_bundle() {
+	let validation = DefinitionValidation::new(Arc::new(Contracts));
+	let group = packages::declarations(&validation, NODE)
+		.unwrap()
+		.into_iter()
+		.next()
+		.unwrap();
+	let bundle = group.bundle.clone();
+	let mut entries = vec![group.bundle];
+	entries.extend(group.operations);
+	let ordered = dependencies_first(entries, NODE);
+	let bundle_index = ordered
+		.iter()
+		.position(|entry| entry.id == bundle.id)
+		.unwrap();
+	let refs = crate::authorization::catalog::approvals::dependencies(&bundle, NODE).unwrap();
+	assert!(!refs.is_empty());
+	for dependency in refs {
+		if let Some(index) = ordered
+			.iter()
+			.position(|entry| entry.id == dependency.id && entry.version == dependency.version)
+		{
+			assert!(index < bundle_index);
+		}
+	}
+}
+
+#[test]
 fn workspace_attachment_tools_keep_original_declarations_immutable() {
 	let validation = DefinitionValidation::new(Arc::new(Contracts));
 	let current = entries(&validation, NODE).unwrap();

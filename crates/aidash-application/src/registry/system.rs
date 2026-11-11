@@ -263,14 +263,15 @@ pub async fn seed(
 		.into_iter()
 		.flat_map(|group| group.operations.into_iter().chain([group.bundle]));
 	let deciders = [approval_decider()?, compaction_decider()?];
-	for entry in entries(validation, node)?
+	let entries: Vec<_> = entries(validation, node)?
 		.into_iter()
 		.chain(legacy_workspace_entries(validation, node)?)
 		.chain(offered)
 		.chain(deciders)
 		.chain([aidash_domain::registry::bindings::source_defaults::workspace_observation()?])
 		.chain(external_services())
-	{
+		.collect();
+	for entry in dependencies_first(entries, node) {
 		aidash_domain::registry::rules::validate_metadata(&entry, false)?;
 		// Restart may precede recovery of a prepared transaction. Even an
 		// INSERT that does nothing takes Registry's statement-level write guard.
@@ -287,6 +288,34 @@ pub async fn seed(
 		scope.insert_definition(&entry).await?;
 	}
 	Ok(())
+}
+
+/// Preserve declaration order among independent definitions while ensuring a
+/// carried dependency is available before its dependent is registered.
+fn dependencies_first(entries: Vec<Entry>, node: &str) -> Vec<Entry> {
+	let mut pending = entries;
+	let mut ordered = Vec::with_capacity(pending.len());
+	while !pending.is_empty() {
+		let index = pending.iter().position(|entry| {
+			crate::authorization::catalog::approvals::dependencies(entry, node)
+				.unwrap_or_default()
+				.iter()
+				.all(|dependency| {
+					!pending.iter().any(|candidate| {
+						candidate.id == dependency.id && candidate.version == dependency.version
+					})
+				})
+		});
+		match index {
+			Some(index) => ordered.push(pending.remove(index)),
+			None => {
+				// Cycles cannot satisfy each other's approvals. Still seed the
+				// definitions so startup does not fail on a carry attempt.
+				ordered.append(&mut pending);
+			}
+		}
+	}
+	ordered
 }
 
 pub fn is_builtin(entry: &Entry) -> bool {
