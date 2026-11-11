@@ -104,23 +104,35 @@ impl Registry {
 		for tenant in tenants {
 			self.pool
 				.scoped(&scope(&tenant), async |tx| {
-					let mut snapshot =
-						crate::apps::identity::models::AuthorizationBundle::lock_for_maintenance(
-							&mut **tx,
-							tenant.as_str(),
-						)
-						.await?;
-					Ok(aidash_application::registry::system::seed(
-						&mut CarryingSeed {
-							tx,
-							snapshot: &mut snapshot,
-							tenant: tenant.as_str(),
-							deployment: &self.deployment,
-						},
-						&crate::bootstrap::registry_validation(),
-						self.deployment.as_str(),
+					let snapshot = match crate::apps::identity::models::AuthorizationBundle::lock_frozen_for_maintenance(
+						&mut **tx,
+						tenant.as_str(),
 					)
-					.await?)
+					.await {
+						Ok(snapshot) => Some(snapshot),
+						Err(crate::Error::NotFound(_)) => None,
+						Err(error) => return Err(error),
+					};
+					// A deleted Tenant's policy stays frozen. Restore seeds and carries
+					// any missed definitions atomically before making it available again.
+					if crate::apps::identity::repositories::tenant_deletions::is_deleted(
+						&mut **tx,
+						tenant.as_str(),
+					)
+					.await?
+					{
+						return Ok(());
+					}
+					let Some(mut snapshot) = snapshot else {
+						// A Tenant without a policy has no approval to carry.
+						return Ok(aidash_application::registry::system::seed(
+							&mut NativeScope(&mut **tx),
+							&crate::bootstrap::registry_validation(),
+							self.deployment.as_str(),
+						)
+						.await?);
+					};
+					seed_with_carry(tx, &mut snapshot, tenant.as_str(), &self.deployment).await
 				})
 				.await?;
 		}
@@ -241,6 +253,25 @@ struct CarryingSeed<'a> {
 	snapshot: &'a mut aidash_application::authorization::Snapshot,
 	tenant: &'a str,
 	deployment: &'a aidash_domain::nodes::DeploymentId,
+}
+
+pub(crate) async fn seed_with_carry(
+	tx: &mut crate::database::native::Transaction,
+	snapshot: &mut aidash_application::authorization::Snapshot,
+	tenant: &str,
+	deployment: &aidash_domain::nodes::DeploymentId,
+) -> Result<()> {
+	Ok(aidash_application::registry::system::seed(
+		&mut CarryingSeed {
+			tx,
+			snapshot,
+			tenant,
+			deployment,
+		},
+		&crate::bootstrap::registry_validation(),
+		deployment.as_str(),
+	)
+	.await?)
 }
 
 #[async_trait]

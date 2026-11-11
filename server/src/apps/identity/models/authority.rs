@@ -114,9 +114,9 @@ impl AuthorizationBundle {
 		Ok(snapshot)
 	}
 
-	/// Locks the Tenant's policy whether or not the Tenant is deleted: only
-	/// deleting and restoring a Tenant read a deleted Tenant's policy, which
-	/// stays as it was when the Tenant was deleted.
+	/// Locks the Tenant's policy whether or not the Tenant is deleted. Deletion,
+	/// restoration and startup reconciliation leave a deleted Tenant's policy
+	/// as it was when the Tenant was deleted.
 	pub(crate) async fn lock_frozen(
 		tx: &mut dyn TransactionExecutor,
 		tenant: &str,
@@ -142,6 +142,15 @@ impl AuthorizationBundle {
 			return Err(Error::TenantDeleted);
 		}
 		Ok(snapshot)
+	}
+
+	/// Startup seeding holds the frozen policy while distinguishing deleted
+	/// Tenants from live ones; it never changes a deleted Tenant's policy.
+	pub(crate) async fn lock_frozen_for_maintenance(
+		tx: &mut dyn TransactionExecutor,
+		tenant: &str,
+	) -> Result<Snapshot> {
+		Self::read_locked(tx, tenant, LockType::Update).await
 	}
 
 	async fn read_locked(
