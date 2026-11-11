@@ -89,7 +89,18 @@ impl RegistryManagement {
 					.ok_or_else(|| Error::Invalid("Idempotency-Key must be a UUID".into()))
 			})
 			.transpose()?;
-		let mut access = Access::begin_change(&f.store, &identity, &["registry.create"]).await?;
+		let mut access = Access::begin(&f.store, &identity).await?;
+		let has_source = crate::apps::identity::repositories::catalog_carry::has_source(
+			&mut access.tx,
+			&identity.tenant,
+			&entry,
+		)
+		.await?;
+		if has_source {
+			access.finish(Ok(())).await?;
+			// Carry rechecks the source while holding the exclusive lease.
+			access = Access::begin_change(&f.store, &identity, &["registry.create"]).await?;
+		}
 		let mut scope = TenantRegistration {
 			access: &mut access,
 			store: &f.store,

@@ -59,8 +59,8 @@ pub trait DraftRepository: Send + Sync {
 	fn principal(&self) -> Principal;
 	fn node_id(&self) -> &str;
 	async fn begin(&self) -> Result<Self::Scope>;
-	/// Publication may carry approvals and therefore takes an authority-change lock.
-	async fn begin_publication(&self) -> Result<Self::Scope> {
+	/// Publication may carry approvals; the preview identifies a possible source.
+	async fn begin_publication(&self, _preview: &Entry) -> Result<Self::Scope> {
 		self.begin().await
 	}
 	/// Embed after the preflight scope is committed, before the write scope opens.

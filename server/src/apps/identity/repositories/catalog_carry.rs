@@ -24,6 +24,38 @@ pub(crate) struct TenantCarry<'a> {
 	pub deployment: &'a DeploymentId,
 }
 
+/// Read under the shared policy lease; an approval writer cannot create a
+/// source until that lease is released.
+pub(crate) async fn has_source(
+	tx: &mut crate::database::native::Transaction,
+	tenant: &str,
+	entry: &Entry,
+) -> Result<bool> {
+	let rows = AuthorizationCatalog::objects()
+		.filter(AuthorizationCatalog::field_tenant().eq(tenant.to_owned()))
+		.filter(AuthorizationCatalog::field_entry_key().eq(entry.id.clone()))
+		.filter(AuthorizationCatalog::field_enabled().eq(true))
+		.filter(AuthorizationCatalog::field_carry_over().eq(true))
+		.all_with_executor(&mut **tx)
+		.await
+		.map_err(FrameworkError::from)
+		.map_err(crate::Error::from)?;
+	let candidates: Vec<_> = rows
+		.iter()
+		.map(|row| aidash_domain::catalog::carry_over::CarryCandidate {
+			version: &row.entry_version,
+			enabled: true,
+			carry_over: true,
+		})
+		.collect();
+	Ok(
+		aidash_domain::catalog::carry_over::source_version(&entry.version, &candidates)
+			.ok()
+			.flatten()
+			.is_some(),
+	)
+}
+
 impl TenantCarry<'_> {
 	async fn rows(&mut self, node: &NodeAddress, id: &str) -> Result<Vec<AuthorizationCatalog>> {
 		Ok(AuthorizationCatalog::objects()

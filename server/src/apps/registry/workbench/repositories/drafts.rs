@@ -76,10 +76,21 @@ impl DraftRepository for Repository {
 		.await;
 		result.map_err(Into::into)
 	}
-	async fn begin_publication(&self) -> Result<Scope> {
+	async fn begin_publication(&self, preview: &Entry) -> Result<Scope> {
 		let mut scope = self.begin().await?;
-		if let Actor::Subject(identity) = &scope.actor {
-			identity.lock_with_mode(&mut scope.tx, true).await?;
+		if let Actor::Subject(identity) = scope.actor.clone() {
+			identity.lock_with_mode(&mut scope.tx, false).await?;
+			let candidate = crate::apps::identity::repositories::catalog_carry::has_source(
+				&mut scope.tx,
+				&identity.tenant,
+				preview,
+			)
+			.await?;
+			if candidate {
+				scope.tx.commit().await?;
+				scope = self.begin().await?;
+				identity.lock_with_mode(&mut scope.tx, true).await?;
+			}
 		}
 		Ok(scope)
 	}
@@ -237,12 +248,7 @@ impl DefinitionWriter for Scope {
 			let Actor::Subject(identity) = &self.actor else {
 				return Err(aidash_application::Error::Forbidden);
 			};
-			let mut snapshot =
-				crate::apps::identity::models::AuthorizationBundle::lock_for_maintenance(
-					&mut *self.tx,
-					&identity.tenant,
-				)
-				.await?;
+			let mut snapshot = identity.lock_with_mode(&mut self.tx, false).await?;
 			let results = crate::apps::identity::repositories::catalog_carry::carry_best_effort(
 				&mut crate::apps::identity::repositories::catalog_carry::TenantCarry {
 					tx: &mut self.tx,
