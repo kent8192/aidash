@@ -80,6 +80,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0065_agent_default_removals"),
 	("registry", "0066_native_context_recovery"),
 	("registry", "0067_optional_memory_roles"),
+	("registry", "0068_reject_new_compaction_deciders"),
 	("registry", "0060_subnode_provider"),
 	("registry", "0055_remove_structured_harness_contracts"),
 	("registry", "0056_attachment_tools"),
@@ -195,7 +196,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	assert_eq!(federation[0].name, "0021_node_preview_origin_merge");
 	let registry = graph.get_leaf_nodes_for_app("registry");
 	assert_eq!(registry.len(), 1);
-	assert_eq!(registry[0].name, "0067_optional_memory_roles");
+	assert_eq!(registry[0].name, "0068_reject_new_compaction_deciders");
 	let execution = graph.get_leaf_nodes_for_app("execution");
 	assert_eq!(execution.len(), 1);
 	assert_eq!(execution[0].name, "0128_remove_generated_summary_state");
@@ -301,6 +302,17 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 						Some(aidash_server::database::policy::disable(&tables).as_str()),
 						"{} reversed",
 						migration.name
+					);
+				} else if (migration.app_label.as_str(), migration.name.as_str())
+					== ("registry", "0068_reject_new_compaction_deciders")
+				{
+					assert!(sql.contains("ADD CONSTRAINT registry_no_compaction_decider"));
+					assert!(sql.contains("NOT VALID"));
+					assert!(
+						reverse_sql
+							.as_deref()
+							.unwrap()
+							.contains("DROP CONSTRAINT registry_no_compaction_decider")
 					);
 				} else if sql.starts_with("ALTER TABLE") {
 					// These PostgreSQL JSONB CHECK replacements use reversible SQL
@@ -2103,6 +2115,7 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 			("registry", "0065_agent_default_removals"),
 			("registry", "0066_native_context_recovery"),
 			("registry", "0067_optional_memory_roles"),
+			("registry", "0068_reject_new_compaction_deciders"),
 		])
 		.await;
 	fixture.tenant_root("acme").await;
@@ -2128,7 +2141,23 @@ async fn registry_upgrade_keeps_existing_compaction_decider(
 	let stored: serde_json::Value = sqlx::query_scalar("SELECT metadata FROM registry WHERE tenant='acme' AND id='aidash.compaction-decider' AND version='1.0.0'")
 		.fetch_one(&mut *tx).await.unwrap();
 	assert_eq!(stored, decider);
-	tx.commit().await.unwrap();
+	let validated: bool = sqlx::query_scalar("SELECT convalidated FROM pg_constraint WHERE conrelid = 'public.registry'::regclass AND conname = 'registry_no_compaction_decider'")
+		.fetch_one(&mut *tx).await.unwrap();
+	assert!(
+		!validated,
+		"legacy declarations must not be validated during the upgrade"
+	);
+	let mut new_decider = decider.clone();
+	new_decider["id"] = json!("new-compaction");
+	let error = sqlx::query("INSERT INTO registry (tenant,id,version,kind,metadata) VALUES ('acme','new-compaction','1.0.0','decider',$1)")
+		.bind(&new_decider).execute(&mut *tx).await.unwrap_err();
+	assert_eq!(
+		error
+			.as_database_error()
+			.and_then(|error| error.constraint()),
+		Some("registry_no_compaction_decider")
+	);
+	tx.rollback().await.unwrap();
 }
 
 #[rstest]
