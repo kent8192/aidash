@@ -7,6 +7,7 @@
 //! The fixtures' direct database pool exists only with debug assertions, so the
 //! server crate (alone) needs them; its dependencies stay plain release.
 //! Set `AIDASH_STATE_MEASURE_FIELDS_ONLY` to stop after the first measured read.
+//! Set `AIDASH_STATE_MEASURE_SQL` to print the recorded statements in order.
 //! Statement counts come from the thread-local SQLx tracing recorder; field sizes
 //! are compact JSON values after parsing and reserializing the response.
 #![allow(clippy::disallowed_methods)] // Fixtures reach the database outside a tenancy scope.
@@ -267,6 +268,19 @@ async fn state_latency_with_665_workspaces_and_670_runs(
 	))
 	.await;
 	println!("STATEMENTS {}", statements.len());
+	if std::env::var_os("AIDASH_STATE_MEASURE_SQL").is_some() {
+		for (index, statement) in statements.iter().enumerate() {
+			println!("SQL_TRACE {index} {statement}");
+		}
+	}
+	let mut statement_types = BTreeMap::new();
+	for statement in &statements {
+		let summary = statement.split("\" \"").next().unwrap_or(statement);
+		*statement_types.entry(summary).or_insert(0_usize) += 1;
+	}
+	for (summary, count) in statement_types {
+		println!("STATEMENT_TYPE {count} {summary}");
+	}
 	assert_eq!(status, 200, "{state}");
 	for (field, value) in state.as_object().expect("state object") {
 		println!(
