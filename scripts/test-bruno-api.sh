@@ -3,6 +3,8 @@ set -euo pipefail
 project_root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$project_root"
 export RUSTC_WRAPPER=
+# The request files and scenarios.json are not committed; render them from the catalog.
+python3 "$project_root/scripts/bruno_contracts.py"
 build_report=$(mktemp /tmp/aidash-bruno-build.XXXXXX)
 trap 'rm -f "$build_report"' EXIT
 cargo build --locked -p aidash-server --bin aidash --bin manage --message-format=json > "$build_report"
