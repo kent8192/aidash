@@ -1172,3 +1172,12 @@ fn wire_api_is_refused_without_a_provider_credential(
 		assert!(error.to_string().contains(expected), "{error}");
 	}
 }
+
+#[test]
+fn removed_decider_hook_is_reported_as_invalid_registration() {
+	let mut entry = crate::registry::system::approval_decider().unwrap();
+	entry.config["hook"] = json!("compaction");
+	assert!(
+		matches!(validation().validate_in(&entry, true), Err(Error::Invalid(message)) if message.contains("invalid Decider config") && message.contains("compaction"))
+	);
+}
