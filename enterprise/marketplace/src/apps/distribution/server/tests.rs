@@ -128,6 +128,54 @@ struct ProvisionedDatabase {
 	app_url: String,
 	_container: Box<dyn std::any::Any>,
 }
+
+#[tokio::test]
+async fn a_stalled_returned_connection_is_discarded_after_five_seconds() {
+	let (_container, _fixture_pool, port, admin_url) =
+		reinhardt::test::fixtures::postgres_container_with(
+			reinhardt::test::fixtures::PostgresContainerConfig::default()
+				.image("postgres", "17-alpine")
+				.user("postgres")
+				.password("fixture-admin-password")
+				.database("marketplace"),
+		)
+		.await;
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	let proxy_port = listener.local_addr().unwrap().port();
+	let (stall, mut stalled) = tokio::sync::watch::channel(false);
+	let proxy = tokio::spawn(async move {
+		let (mut client, _) = listener.accept().await.unwrap();
+		let mut server = tokio::net::TcpStream::connect(("127.0.0.1", port))
+			.await
+			.unwrap();
+		tokio::select! {
+			_ = tokio::io::copy_bidirectional(&mut client, &mut server) => {},
+			_ = stalled.changed() => std::future::pending::<()>().await,
+		}
+	});
+	let mut url = url::Url::parse(&admin_url).unwrap();
+	url.set_host(Some("127.0.0.1")).unwrap();
+	url.set_port(Some(proxy_port)).unwrap();
+	let pool =
+		store::released_within_limit(sqlx::postgres::PgPoolOptions::new().max_connections(1))
+			.connect(url.as_str())
+			.await
+			.unwrap();
+	let connection = pool.acquire().await.unwrap();
+	stall.send(true).unwrap();
+	tokio::task::yield_now().await;
+	let start = tokio::time::Instant::now();
+	drop(connection);
+	tokio::time::timeout(std::time::Duration::from_secs(8), async {
+		while pool.size() != 0 {
+			tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+		}
+	})
+	.await
+	.expect("stalled connection was not discarded");
+	assert!(start.elapsed() >= std::time::Duration::from_secs(5));
+	proxy.abort();
+}
 // Only the fixture administrator provisions this service's schema and roles;
 // application operations use the Marketplace runtime credential.
 #[allow(clippy::disallowed_methods)]

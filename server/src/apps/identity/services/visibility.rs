@@ -170,9 +170,12 @@ impl NativeAccess {
 		.map_err(Into::into)
 	}
 
-	pub(crate) async fn remote_reads_visible(&mut self, run: Uuid) -> Result<bool> {
+	pub(crate) async fn remote_reads(
+		&mut self,
+		run: Uuid,
+	) -> Result<aidash_application::ports::federation::registry_reads::RemoteReads> {
 		let transport = crate::bootstrap::native_registry_transport(self);
-		aidash_application::federation::registry_reads::reads_visible(
+		aidash_application::federation::registry_reads::reads(
 			&mut crate::bootstrap::native_run_visibility_scope(self),
 			&transport,
 			run,

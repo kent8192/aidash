@@ -4,10 +4,50 @@ import json
 import subprocess
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
 import node_guard
+
+
+class CellDeadlineTest(unittest.TestCase):
+    def test_guard_persists_whether_it_stopped_a_live_cell_after_its_deadline(self):
+        for now, expected in ((50, False), (150, True)):
+            with self.subTest(now=now), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                area, pod, operation = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+                record = {'area_id': area, 'pod_uid': pod, 'container_id': 'a' * 64,
+                          'epoch': 1, 'image': 'pinned', 'action': 'cell', 'operation_id': operation,
+                          'deadline': 100, 'sentry_pid': 42, 'sentry_start': '1'}
+                (root / (area + '.json')).write_text(json.dumps(record))
+                request = dict(record, action='terminate')
+                with patch.object(node_guard, 'ROOT', root), patch.object(node_guard, 'gone', return_value=False), \
+                     patch.object(node_guard, 'validate', return_value=('a' * 64, pod, area, {'status': 'running', 'pid': 42})), \
+                     patch.object(node_guard, 'process_identity', return_value=('1', 'S')), \
+                     patch.object(node_guard, 'kill_sandbox'), patch.object(node_guard.time, 'time', return_value=now):
+                    node_guard.handle(request)
+                    status = node_guard.handle(dict(record, action='cell_status'))
+                self.assertEqual(status['deadline_expired'], expected)
+
+
+    def test_termination_requested_before_deadline_does_not_gain_a_timeout_during_teardown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            area, pod, operation = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+            record = {'area_id': area, 'pod_uid': pod, 'container_id': 'a' * 64,
+                      'epoch': 1, 'image': 'pinned', 'action': 'cell', 'operation_id': operation,
+                      'deadline': 100, 'sentry_pid': 42, 'sentry_start': '1'}
+            (root / (area + '.json')).write_text(json.dumps(record))
+            clock = [99]
+            with patch.object(node_guard, 'ROOT', root), patch.object(node_guard, 'gone', return_value=False), \
+                 patch.object(node_guard, 'validate', return_value=('a' * 64, pod, area, {'status': 'running', 'pid': 42})), \
+                 patch.object(node_guard, 'process_identity', return_value=('1', 'S')), \
+                 patch.object(node_guard, 'kill_sandbox', side_effect=lambda state: clock.__setitem__(0, 101)), \
+                 patch.object(node_guard.time, 'time', side_effect=lambda: clock[0]):
+                node_guard.handle(dict(record, action='terminate'))
+                status = node_guard.handle(dict(record, action='cell_status'))
+            self.assertFalse(status['deadline_expired'])
 
 
 class GuardMigrationTest(unittest.TestCase):

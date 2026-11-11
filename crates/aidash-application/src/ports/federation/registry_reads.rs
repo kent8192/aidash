@@ -11,6 +11,16 @@ use uuid::Uuid;
 /// A remote read: its Node, the Agent's id and version, the digest and metadata read, and
 /// whether the Node belongs to the reader's own Tenant.
 pub type RegistryJournalRow = (String, String, String, String, Value, bool);
+/// What a Run's reads of Agents found on other Nodes are to one reader.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RemoteReads {
+	Visible,
+	/// `registry.read` is denied on an Agent found on a Node of the reader's own Tenant,
+	/// which is the Tenant's own definition (#856).
+	Definition(EntityRef),
+	/// Another Node refused or could not confirm it, or its record no longer holds.
+	Unconfirmed,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verification {
 	Verified,
@@ -28,8 +38,8 @@ pub trait RegistryTransport: Send + Sync {
 #[async_trait]
 pub trait RegistryReadScope: Send {
 	fn identity(&self) -> (&str, &str);
-	fn cached(&self, run: Uuid) -> Option<bool>;
-	fn remember(&mut self, run: Uuid, visible: bool);
+	fn cached(&self, run: Uuid) -> Option<RemoteReads>;
+	fn remember(&mut self, run: Uuid, reads: RemoteReads);
 	fn frontier(&mut self) -> Option<&mut Vec<Dependency>>;
 	/// Whether a Node already failed to answer within this authority (#751).
 	fn unavailable(&self, node: &str) -> bool;

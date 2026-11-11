@@ -450,6 +450,8 @@ def handle(request):
             if previous.get('container_id') == cid and not bound:
                 raise ValueError('terminated execution cannot be reused')
             if not previous.get('terminated'):
+                if previous.get('action') == 'cell' and previous.get('deadline') is not None and time.time() < previous['deadline']:
+                    previous.update(cell_operation_id=previous.get('operation_id'), cell_deadline_expired=False)
                 previous.update(terminated=True, deadline=None, frozen=False)
                 save(path, previous)
             handoff_cleanup(path, previous)
@@ -458,7 +460,10 @@ def handle(request):
                 raise ValueError('previous native cleanup handoff is not durable')
         if bound and previous_stopped:
             if request['action'] in ('terminate', 'status', 'cell_status'):
-                return {'termination_confirmed': True, 'status': 'stopped'}
+                result = {'termination_confirmed': True, 'status': 'stopped'}
+                if request.get('operation_id') == previous.get('cell_operation_id') and isinstance(previous.get('cell_deadline_expired'), bool):
+                    result['deadline_expired'] = previous['cell_deadline_expired']
+                return result
             if request['action'] not in ('export', 'read', 'logs'):
                 raise ValueError('sandbox terminated; reset required')
             cid, pod, state = previous['container_id'], str(uuid.UUID(previous['pod_uid'])), {'status': 'stopped'}
@@ -589,6 +594,7 @@ def handle(request):
             save(path, binding(request, state, frozen=True, deadline=time.time()+min(request.get('idle_seconds',1800),1800)))
             return {'writer_frozen': state['status']=='paused', 'termination_confirmed': state['status']=='stopped', 'container_id': cid, 'pod_uid': pod}
         if op == 'terminate':
+            stop_requested_at = time.time()
             if state['status'] in ('running', 'paused'):
                 stopped = binding(request, state)
                 kill_sandbox(state)
@@ -596,10 +602,17 @@ def handle(request):
                 stopped = dict(request, native_cleanup_root=RUNTIME, native_cleanup_namespace=NAMESPACE)
             else:
                 raise ValueError('physical writer stop unconfirmed')
+            if bound and previous.get('action') == 'cell' and previous.get('deadline') is not None:
+                if state['status'] in ('running', 'paused') or stop_requested_at < previous['deadline']:
+                    stopped.update(cell_operation_id=previous.get('operation_id'),
+                                   cell_deadline_expired=state['status'] in ('running', 'paused') and stop_requested_at >= previous['deadline'])
             stopped.update(frozen=False, terminated=True, deadline=None)
             save(path, stopped)
             handoff_cleanup(path, stopped)
-            return {'termination_confirmed': True}
+            result = {'termination_confirmed': True}
+            if request.get('operation_id') == stopped.get('cell_operation_id') and isinstance(stopped.get('cell_deadline_expired'), bool):
+                result['deadline_expired'] = stopped['cell_deadline_expired']
+            return result
         if op == 'cell':
             # Refuse admission without an independent deadline enforcer.
             with (ROOT / 'watch.lock').open('a') as watcher:
