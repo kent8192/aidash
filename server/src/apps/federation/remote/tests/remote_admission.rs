@@ -42,10 +42,9 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		"1.0.0",
 	)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 	assert_eq!(
-		request(
+		common::post(
 			&aa,
 			&a.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":ap})
 		)
@@ -65,7 +64,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	let grant = Uuid::new_v4();
 	let input = json!({"id":grant,"node_id":default_node(&b.store,"acme").await,"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300});
 	let path = format!("/api/tasks/{task}/remote-grants");
-	let (status, prepared) = request(&aa, &at, "POST", &path, input.clone()).await;
+	let (status, prepared) = common::post(&aa, &at, &path, input.clone()).await;
 	assert_eq!(status, 200, "{prepared}");
 	let admit = "/federation/v0.1/scoped/execution/admissions";
 	let (first, second) = tokio::join!(
@@ -108,7 +107,7 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	let replacement = Uuid::new_v4();
 	let mut another = input.clone();
 	another["id"] = json!(replacement);
-	assert_eq!(request(&aa, &at, "POST", &path, another).await.0, 200);
+	assert_eq!(common::post(&aa, &at, &path, another).await.0, 200);
 	assert_eq!(
 		peer(&fresh_app, (&a, &b), admit, json!({"grant_id":replacement}))
 			.await
@@ -120,10 +119,9 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	let mut denied = bp.clone();
 	denied["policies"].as_array_mut().unwrap().push(json!({"id":"deny-foreign-workspace","effect":"deny","subjects":{"any":true},"actions":["workspace.read"],"resources":{"kinds":["workspace"]},"condition":{"op":"eq","left":{"source":"resource","path":"/source_node"},"right":{"source":"literal","value":default_node(&a.store,"acme").await}}}));
 	assert_eq!(
-		request(
+		common::post(
 			&ba,
 			&b.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":denied})
 		)
@@ -136,10 +134,9 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		403
 	);
 	assert_eq!(
-		request(
+		common::post(
 			&ba,
 			&b.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":2,"bundle":bp})
 		)
@@ -154,10 +151,9 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	let mut denied_model = bp.clone();
 	denied_model["policies"].as_array_mut().unwrap().push(json!({"id":"deny-model-in-workspace","effect":"deny","subjects":{"any":true},"actions":["model.infer"],"resources":{"kinds":["model"]},"condition":{"op":"eq","left":{"source":"resource","path":"/source_workspace_id"},"right":{"source":"literal","value":source_task.workspace_id}}}));
 	assert_eq!(
-		request(
+		common::post(
 			&ba,
 			&b.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":3,"bundle":denied_model})
 		)
@@ -171,10 +167,9 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		"executor metadata checks must include the admitted workspace context"
 	);
 	assert_eq!(
-		request(
+		common::post(
 			&ba,
 			&b.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":4,"bundle":bp})
 		)
@@ -185,10 +180,9 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	let mut denied = ap.clone();
 	denied["policies"].as_array_mut().unwrap().push(json!({"id":"deny-source-task","effect":"deny","subjects":{"any":true},"actions":["task.read"],"resources":{"kinds":["task"]}}));
 	assert_eq!(
-		request(
+		common::post(
 			&aa,
 			&a.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":2,"bundle":denied})
 		)
@@ -200,10 +194,9 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	assert_ne!(denied.0, 200);
 	assert!(!denied.1.to_string().contains("Research"));
 	assert_eq!(
-		request(
+		common::post(
 			&aa,
 			&a.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":3,"bundle":ap})
 		)
@@ -265,15 +258,9 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 		"receiver tenants must not receive unscoped source task events"
 	);
 	assert_eq!(
-		request(
-			&aa,
-			&at,
-			"POST",
-			&format!("{path}/{grant}/revoke"),
-			json!({})
-		)
-		.await
-		.0,
+		common::post(&aa, &at, &format!("{path}/{grant}/revoke"), json!({}))
+			.await
+			.0,
 		200
 	);
 	assert_ne!(
@@ -298,10 +285,9 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	.await
 	.unwrap();
 	assert_eq!(count, 1);
-	let (status, candidate) = request(
+	let (status, candidate) = common::post(
 		&aa,
 		&at,
-		"POST",
 		&format!("/api/workspaces/{}/tasks", source_task.workspace_id),
 		json!({"title":"Admission race","description":"Fixture"}),
 	)
@@ -312,10 +298,9 @@ async fn receiver_admission_is_idempotent_scoped_and_revalidated_after_reconnect
 	let mut race_input = input.clone();
 	race_input["id"] = json!(race_grant);
 	assert_eq!(
-		request(
+		common::post(
 			&aa,
 			&at,
-			"POST",
 			&format!("/api/tasks/{}/remote-grants", candidate.id),
 			race_input
 		)
@@ -421,10 +406,9 @@ async fn remote_home_child_summary_observes_terminal_transition(
 		"1.0.0",
 	)] = json!({"kind":"agent", "node":aidash_domain::nodes::NodeName::derived("acme")});
 	assert_eq!(
-		request(
+		common::post(
 			&aa,
 			&a.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":policy})
 		)
@@ -437,22 +421,15 @@ async fn remote_home_child_summary_observes_terminal_transition(
 	assert_eq!(common::set_peer_mapping(&b, "acme", "alice", json!({"node":default_node(&b.store,"acme").await.node,"source_node":default_node(&a.store,"acme").await,"source_subject":"alice","credential_id":credential["credential"]["id"],"enabled":true,"expected_revision":0})).await.0, 200);
 	let grant = Uuid::new_v4();
 	let path = format!("/api/tasks/{task}/remote-grants");
-	let (status, prepared) = request(&aa, &token, "POST", &path, json!({"id":grant,"node_id":default_node(&b.store,"acme").await,"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300})).await;
+	let (status, prepared) = common::post(&aa, &token, &path, json!({"id":grant,"node_id":default_node(&b.store,"acme").await,"agent":{"id":"research","version":"1.0.0"},"ttl_seconds":300})).await;
 	assert_eq!(status, 200, "{prepared}");
-	let (status, activation) = request(
-		&aa,
-		&token,
-		"POST",
-		&format!("{path}/{grant}/activate"),
-		json!({}),
-	)
-	.await;
+	let (status, activation) =
+		common::post(&aa, &token, &format!("{path}/{grant}/activate"), json!({})).await;
 	assert_eq!(status, 200, "{activation}");
 	let parent = a.store.task(&TEST_FIXTURE, task).await.unwrap();
-	let (status, child) = request(
+	let (status, child) = common::post(
 		&aa,
 		&token,
-		"POST",
 		&format!("/api/workspaces/{}/tasks", parent.workspace_id),
 		json!({"title":"Remote child","description":"Wait fixture","parent_id":task}),
 	)

@@ -28,7 +28,7 @@ async fn abort_honors_manifest_attribute_denies(
 		.workspace_id;
 	let manifest = manifest(node(&f).await.as_str(), workspace);
 	assert_eq!(
-		request(&app, &token, "POST", "/api/transactions", manifest.clone())
+		common::post(&app, &token, "/api/transactions", manifest.clone())
 			.await
 			.0,
 		202
@@ -43,10 +43,9 @@ async fn abort_honors_manifest_attribute_denies(
 		"condition":{"op":"eq","left":{"source":"resource","path":format!("/{attribute}")},"right":{"source":"literal","value":expected}}
 	}));
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":policy})
 		)
@@ -56,10 +55,9 @@ async fn abort_honors_manifest_attribute_denies(
 	);
 	let id = manifest["id"].as_str().unwrap();
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/transactions/{id}/abort"),
 			Value::Null
 		)
@@ -112,12 +110,10 @@ async fn authorization_submission_and_abort_work_with_one_control_connection(
 		// a Tenant Administrator Mapping.
 		let (status, body) = if path == "catalog" {
 			let query = format!("?node={}", aidash_domain::nodes::NodeName::derived("acme"));
-			request(
+			common::get(
 				&app,
 				&token,
-				"GET",
 				&format!("/api/authorization/acme/{path}{query}"),
-				Value::Null,
 			)
 			.await
 		} else {
@@ -147,22 +143,21 @@ async fn authorization_submission_and_abort_work_with_one_control_connection(
 	let manifest = manifest(node(&f).await.as_str(), workspace);
 	for _ in 0..2 {
 		let (status, body) =
-			request(&app, &token, "POST", "/api/transactions", manifest.clone()).await;
+			common::post(&app, &token, "/api/transactions", manifest.clone()).await;
 		assert_eq!(
 			status, 202,
 			"new and retried submission must not require another control slot: {body}"
 		);
 	}
-	let (status, rows) = request(&app, &token, "GET", "/api/transactions", Value::Null).await;
+	let (status, rows) = common::get(&app, &token, "/api/transactions").await;
 	assert_eq!(
 		status, 200,
 		"listing must work with one control connection: {rows}"
 	);
 	assert_eq!(rows.as_array().unwrap().len(), 1);
-	let (status, body) = request(
+	let (status, body) = common::post(
 		&app,
 		&token,
-		"POST",
 		&format!(
 			"/api/transactions/{}/abort",
 			manifest["id"].as_str().unwrap()
@@ -209,7 +204,7 @@ async fn transaction_visibility_scans_past_hidden_rows_without_poll_audits(
 		.workspace_id;
 	let oldest = manifest(node(&f).await.as_str(), workspace);
 	assert_eq!(
-		request(&app, &token, "POST", "/api/transactions", oldest.clone())
+		common::post(&app, &token, "/api/transactions", oldest.clone())
 			.await
 			.0,
 		202
@@ -218,15 +213,14 @@ async fn transaction_visibility_scans_past_hidden_rows_without_poll_audits(
 	for _ in 0..201 {
 		let next = manifest(node(&f).await.as_str(), workspace);
 		hidden.push(next["id"].clone());
-		let (status, body) = request(&app, &token, "POST", "/api/transactions", next).await;
+		let (status, body) = common::post(&app, &token, "/api/transactions", next).await;
 		assert_eq!(status, 202, "{body}");
 	}
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"hide-newer","effect":"deny","subjects":{"any":true},"actions":["transaction.read"],"resources":{"kinds":["transaction"],"ids":hidden}}));
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":policy})
 		)
@@ -236,7 +230,7 @@ async fn transaction_visibility_scans_past_hidden_rows_without_poll_audits(
 	);
 	let before = audit_count(&f).await;
 	for _ in 0..2 {
-		let (status, rows) = request(&app, &token, "GET", "/api/transactions", Value::Null).await;
+		let (status, rows) = common::get(&app, &token, "/api/transactions").await;
 		assert_eq!(status, 200, "{rows}");
 		assert_eq!(rows.as_array().unwrap().len(), 1);
 		assert_eq!(rows[0]["id"], oldest["id"]);
@@ -303,7 +297,7 @@ async fn subject_transaction_errors_do_not_reveal_other_owners(
 		.workspace_id;
 	let own = manifest(node(&f).await.as_str(), workspace);
 	assert_eq!(
-		request(&app, &token, "POST", "/api/transactions", own.clone())
+		common::post(&app, &token, "/api/transactions", own.clone())
 			.await
 			.0,
 		202
@@ -312,10 +306,9 @@ async fn subject_transaction_errors_do_not_reveal_other_owners(
 	// and leaves nothing behind (#484).
 	let deployment_administrator = manifest(node(&f).await.as_str(), workspace);
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/transactions",
 			deployment_administrator.clone()
 		)
@@ -327,10 +320,9 @@ async fn subject_transaction_errors_do_not_reveal_other_owners(
 	// exists but must look absent to Alice.
 	let foreign = manifest(node(&f).await.as_str(), workspace);
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&common::tenant_token(&f.store, "acme").await,
-			"POST",
 			"/api/transactions",
 			foreign.clone()
 		)
@@ -430,10 +422,9 @@ async fn transaction_targets_must_belong_to_the_exact_participant_node(
 		.await
 		.unwrap()
 		.workspace_id;
-	let (status, body) = request(
+	let (status, body) = common::post(
 		&app,
 		&token,
-		"POST",
 		&format!("/api/tasks/{task_id}/claim"),
 		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
 	)
@@ -462,7 +453,7 @@ async fn transaction_targets_must_belong_to_the_exact_participant_node(
 	};
 	let input = json!({"id":Uuid::new_v4(),"coordinator":sibling["address"],"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":sibling["address"],"mutations":[mutation]}]});
 	// The subject preflight must refuse before reserving the visibility gate.
-	let (status, body) = request(&app, &token, "POST", "/api/transactions", input.clone()).await;
+	let (status, body) = common::post(&app, &token, "/api/transactions", input.clone()).await;
 	assert_eq!(
 		status, 403,
 		"a target on the default Node cannot be submitted for its sibling: {body}"

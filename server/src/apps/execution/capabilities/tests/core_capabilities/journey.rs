@@ -174,10 +174,9 @@ async fn journey_fixture(
 	let server = _provider.await;
 	let receiver = admit(&peer).await;
 	*recipient.lock().unwrap() = json!({"node_id":common::default_node(&peer.f.store,"acme").await,"agent_id":"research","agent_version":"1.1.0","thread_id":peer.task});
-	let (status, result) = request(
+	let (status, result) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!("/api/tasks/{}/delegate", c.task),
 		json!({"node_id":c.f.config.deployment,"agent":{"id":"research","version":"1.2.0"}}),
 	)
@@ -236,12 +235,10 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 			assert_eq!(call.name, "plugin_0");
 			assert_eq!(call.arguments, json!({"result":42}));
 			assert_eq!(j.effects.load(Ordering::SeqCst), 0);
-			let (status, card) = request(
+			let (status, card) = common::get(
 				&j.c.app,
 				&j.c.token,
-				"GET",
 				"/api/capabilities/approvals?state=pending&role=approver",
-				Value::Null,
 			)
 			.await;
 			assert_eq!(status, 200, "{card}");
@@ -303,12 +300,10 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 		}
 		assert!(!names.contains(&"plugin_1"));
 	}
-	let (_, area) = request(
+	let (_, area) = common::get(
 		&j.c.app,
 		&j.c.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", j.run.id),
-		Value::Null,
 	)
 	.await;
 	let answer = area["manifest"]
@@ -317,10 +312,9 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 		.iter()
 		.find(|f| f["path"] == "answer.txt")
 		.unwrap();
-	let (status, read) = request(
+	let (status, read) = common::post(
 		&j.c.app,
 		&j.c.token,
-		"POST",
 		&format!("/api/runs/{}/files/read", j.run.id),
 		json!({"file_id":answer["file_id"],"representation":"text"}),
 	)
@@ -336,40 +330,35 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 		)),
 		"a graph must be an authorized file display reference"
 	);
-	let (_, received) = request(
+	let (_, received) = common::get(
 		&j.peer.app,
 		&j.peer.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", j.receiver.id),
-		Value::Null,
 	)
 	.await;
 	let copy = &received["manifest"][0];
 	assert_eq!(copy["digest"], answer["digest"]);
 	assert_ne!(copy["file_id"], answer["file_id"]);
-	let (status, read) = request(
+	let (status, read) = common::post(
 		&j.peer.app,
 		&j.peer.token,
-		"POST",
 		&format!("/api/runs/{}/files/read", j.receiver.id),
 		json!({"file_id":copy["file_id"],"representation":"text"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{read}");
 	assert_eq!(read["content"], "42");
-	let (status,cleaned)=request(&j.c.app,&j.c.token,"POST",&format!("/api/working-areas/{}/cleanup",area["id"].as_str().unwrap()),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"choice":"recoverable"})).await;
+	let (status,cleaned)=common::post(&j.c.app, &j.c.token, &format!("/api/working-areas/{}/cleanup",area["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"choice":"recoverable"})).await;
 	assert_eq!(status, 200, "{cleaned}");
 	let cleanup_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
 	loop {
-		let (status, current) = request(
+		let (status, current) = common::get(
 			&j.c.app,
 			&j.c.token,
-			"GET",
 			&format!(
 				"/api/file-cleanups/{}",
 				cleaned["operation_id"].as_str().unwrap()
 			),
-			Value::Null,
 		)
 		.await;
 		assert_eq!(status, 200, "{current}");
@@ -379,10 +368,9 @@ async fn harness_journey_keeps_core_names_state_and_integration_secrets_separate
 		assert!(tokio::time::Instant::now() < cleanup_deadline, "{current}");
 		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 	}
-	let (_, read_after) = request(
+	let (_, read_after) = common::post(
 		&j.peer.app,
 		&j.peer.token,
-		"POST",
 		&format!("/api/runs/{}/files/read", j.receiver.id),
 		json!({"file_id":copy["file_id"],"representation":"text"}),
 	)
@@ -465,22 +453,10 @@ fn journey_core(#[from(capability_fixture)] core: CoreFuture) -> CoreFuture {
 		agent.config["bindings"].as_array_mut().unwrap().push(json!({"kind":"tool","target":{"registry_deployment":c.f.config.deployment,"id":"http","version":"1.1.0"},"alias":"plugin_0","narrow":{}}));
 		agent.config["max_steps"] = json!(200);
 		for entry in [tool, agent] {
-			let (status, result) = request(
-				&c.app,
-				&c.token,
-				"POST",
-				"/api/registry",
-				json!(entry),
-			)
+			let (status, result) = common::post(&c.app, &c.token, "/api/registry", json!(entry))
 			.await;
 			assert_eq!(status, 200, "{result}");
-			let (status, result) = request(
-				&c.app,
-				&c.token,
-				"POST",
-				"/api/authorization/acme/catalog",
-				json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":entry.id,"version":entry.version},"expected_revision":0,"enabled":true}),
-			)
+			let (status, result) = common::post(&c.app, &c.token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":entry.id,"version":entry.version},"expected_revision":0,"enabled":true}))
 			.await;
 			assert_eq!(status, 200, "{result}");
 		}

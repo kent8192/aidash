@@ -141,3 +141,11 @@ export OPENROUTER_API_KEY=...   # never recorded
 python3 -I probe.py results.jsonl          # every arm, stops at 2 credits
 python3 -I probe.py results.jsonl terra    # arms whose name starts with "terra"
 ```
+
+## Archived records
+
+The data files below left the working tree with #858. They stay in Git history at commit `268497a929`; each link opens the file there, and the SHA-256 is of the file as committed.
+
+| File                                                                                                                                                                    | SHA-256                                                            |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| [`results.json`](https://github.com/kent8192/aidash/blob/268497a929bf5e32cc866939fef6b5e134950793/docs/operations/evidence/2026-11-07-prompt-cache-routes/results.json) | `357b80da2cd46a966f968d321c8dcd3f720e2c0dca948fe364d9b8c1454a8d77` |
