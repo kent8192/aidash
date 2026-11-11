@@ -281,10 +281,22 @@ impl RuntimeTasks {
 				),
 			);
 			let stopping = receiver.clone();
+			// Waiting Host connections hold open files, so their budget follows
+			// the limit the process runs under (#845).
+			#[cfg(unix)]
+			let open_files: u64 = aidash_runtime::open_files::raise_soft_limit().unwrap_or(1024);
+			#[cfg(not(unix))]
+			let open_files = 1024;
 			let limits = aidash_integrations::egress::ProxyLimits {
 				global_concurrent: egress.proxy_global_tunnels,
 				tenant_concurrent: egress.proxy_tenant_tunnels,
+				waiting: aidash_integrations::egress::waiting_budget(open_files),
 			};
+			tracing::info!(
+				waiting = limits.waiting,
+				open_files,
+				"Egress gateway waiting budget"
+			);
 			tasks.spawn_service(
 				"egress gateway",
 				runtime_task(async move {

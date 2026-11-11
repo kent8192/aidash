@@ -372,7 +372,7 @@ class ChartsTest(unittest.TestCase):
         self.assertEqual(runner['endpoint'], 'http://10.96.0.90:8950')
         self.assertEqual(runner['pod_selector'], service['selector'])
         self.assertEqual(runner['limits'], {'sent_bytes': 1 << 30, 'received_bytes': 1 << 30, 'requests': 1000})
-        self.assertEqual((runner.get('proxy_global_tunnels'), runner.get('proxy_tenant_tunnels')), (1024, 64))
+        self.assertEqual((runner.get('proxy_global_tunnels'), runner.get('proxy_tenant_tunnels')), (1024, 256))
         custom_egress = dict(execution['egress'], proxyGlobalTunnels=240, proxyTenantTunnels=48)
         custom = render(self.aidash, dict(values, execution=dict(execution, egress=custom_egress)), 'app', namespace='tenant-app')
         for role in ('server', 'worker'):

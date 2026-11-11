@@ -91,15 +91,18 @@ impl Default for DailyBudget {
 	}
 }
 
-/// A scope is suspended when its new connections exceed this per-minute limit.
+/// When a scope that may reach any host reaches more distinct hosts in a minute
+/// than this, the operator is told; nothing is stopped (#845). Installs touch a
+/// handful of hosts, a scan many. Under a host list every other host is refused
+/// one connection at a time, so the rule has nothing to add there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnomalyRule {
-	pub connections_per_minute: u32,
+	pub distinct_hosts_per_minute: u32,
 }
 impl Default for AnomalyRule {
 	fn default() -> Self {
 		Self {
-			connections_per_minute: 600,
+			distinct_hosts_per_minute: 100,
 		}
 	}
 }

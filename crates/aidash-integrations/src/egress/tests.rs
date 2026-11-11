@@ -1150,8 +1150,18 @@ impl aidash_application::egress::EgressScopes for ScopeServiceFixture {
 	async fn record(&self, record: aidash_application::egress::ConnectionRecord) -> Result<()> {
 		self.scopes.record(record).await
 	}
-	async fn lift_suspension(&self, scope: &aidash_domain::egress::ScopeId) -> Result<()> {
-		self.scopes.lift_suspension(scope).await
+	async fn record_refusals(
+		&self,
+		tallies: Vec<aidash_application::egress::RefusalTally>,
+	) -> Result<()> {
+		self.scopes.record_refusals(tallies).await
+	}
+	async fn notify_many_hosts(
+		&self,
+		scope: &aidash_domain::egress::ScopeId,
+		hosts: usize,
+	) -> Result<()> {
+		self.scopes.notify_many_hosts(scope, hosts).await
 	}
 }
 
@@ -1280,11 +1290,6 @@ impl Meter for BudgetMeter {
 		if self.limit == 0 {
 			return Err(aidash_application::Error::Refused(
 				"egress_budget_exhausted".into(),
-			));
-		}
-		if self.limit == 1 {
-			return Err(aidash_application::Error::Refused(
-				"egress_suspended".into(),
 			));
 		}
 		if used >= self.limit {
@@ -1666,10 +1671,7 @@ async fn an_exhausted_upload_budget_is_reported_as_the_limit_not_the_upstream() 
 
 #[tokio::test]
 async fn scoped_refusals_are_reported_on_upload() {
-	for (limit, status, code) in [
-		(0, StatusCode::TOO_MANY_REQUESTS, "egress_budget_exhausted"),
-		(1, StatusCode::FORBIDDEN, "egress_suspended"),
-	] {
+	for (limit, status, code) in [(0, StatusCode::TOO_MANY_REQUESTS, "egress_budget_exhausted")] {
 		let (origin, audit, tasks, stop) = metered_gateway(limit, false).await;
 		let upload = futures_util::stream::iter(
 			(0..32).map(|_| Ok::<_, std::io::Error>(Bytes::from(vec![1; CHUNK]))),

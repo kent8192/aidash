@@ -165,9 +165,7 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 			sent_bytes: 10,
 			received_bytes: 10,
 		},
-		anomaly: AnomalyRule {
-			connections_per_minute: 1,
-		},
+		anomaly: AnomalyRule::default(),
 		operator_allows_all: false,
 		tunnel_limits: Default::default(),
 	};
@@ -356,26 +354,54 @@ async fn durable_scope_serializes_daily_budget_and_persists_stop_event(
 				.contains("egress_budget_exhausted")
 		);
 	}
-	durable.admit_connection(&scope).await.unwrap();
-	assert!(
-		durable
-			.admit_connection(&scope)
-			.await
-			.unwrap_err()
-			.to_string()
-			.contains("egress_suspended")
+	// No number of connections stops a scope (#845).
+	for _ in 0..3 {
+		durable.admit_connection(&scope).await.unwrap();
+	}
+	durable.check_active(&scope, "credential").await.unwrap();
+	let minute = chrono::DateTime::from_timestamp(Utc::now().timestamp() / 60 * 60, 0).unwrap();
+	durable
+		.record_refusals(vec![
+			aidash_application::egress::RefusalTally {
+				scope: scope.id.clone(),
+				minute,
+				host: "denied.example".into(),
+				reason: "egress_host_forbidden".into(),
+				count: 3,
+			},
+			aidash_application::egress::RefusalTally {
+				scope: scope.id.clone(),
+				minute,
+				host: String::new(),
+				reason: "egress_client_closed".into(),
+				count: 2,
+			},
+		])
+		.await
+		.unwrap();
+	let refusals: Vec<(String, String, i64)> = sqlx::query_as(
+		"SELECT host, reason, count FROM egress_scope_refusals WHERE scope_id = $1 ORDER BY reason",
+	)
+	.bind(scope.id.scratch_space)
+	.fetch_all(federation.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert_eq!(
+		refusals,
+		vec![
+			(String::new(), "egress_client_closed".into(), 2),
+			("denied.example".into(), "egress_host_forbidden".into(), 3),
+		]
 	);
-	assert!(durable.check_active(&scope, "credential").await.is_err());
+	durable.notify_many_hosts(&scope.id, 101).await.unwrap();
 	let events: i64 = sqlx::query_scalar(
-		"SELECT count(*) FROM egress_scope_events WHERE scope_id = $1 AND kind = 'suspended'",
+		"SELECT count(*) FROM egress_scope_events WHERE scope_id = $1 AND kind = 'many_hosts'",
 	)
 	.bind(scope.id.scratch_space)
 	.fetch_one(federation.store.pool.fixture_driver())
 	.await
 	.unwrap();
 	assert_eq!(events, 1);
-	durable.lift_suspension(&scope.id).await.unwrap();
-	durable.admit_connection(&scope).await.unwrap();
 	durable
 		.debit(&scope, Direction::Sent, 1, day)
 		.await
@@ -673,7 +699,7 @@ async fn a_real_listener_records_host_connections_in_the_database(
 	)
 	.await;
 	assert!(forbidden.contains("egress_host_forbidden"), "{forbidden}");
-	// Port 0 is held to the record's check constraint from its first write.
+	// Port 0 and a port other than 443 are both invalid targets.
 	for port in [22, 0] {
 		let invalid = proxy_request(
 			address,
@@ -685,32 +711,34 @@ async fn a_real_listener_records_host_connections_in_the_database(
 	stop.send(true).unwrap();
 	gateway.await.unwrap().unwrap();
 
-	let records: Vec<(String, i32, String, Option<String>)> = sqlx::query_as(
-		"SELECT host, port, outcome, error FROM egress_scope_connections WHERE scope_id = $1 ORDER BY created_at",
+	// Each ended before it held a Host connection limit: no row, a tally.
+	let rows: i64 =
+		sqlx::query_scalar("SELECT count(*) FROM egress_scope_connections WHERE scope_id = $1")
+			.bind(space)
+			.fetch_one(federation.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(rows, 0);
+	let tallies: Vec<(String, String, i64)> = sqlx::query_as(
+		"SELECT host, reason, sum(count)::bigint FROM egress_scope_refusals WHERE scope_id = $1 GROUP BY 1, 2 ORDER BY 1",
 	)
 	.bind(space)
 	.fetch_all(federation.store.pool.fixture_driver())
 	.await
 	.unwrap();
-	let invalid = |port| {
-		(
-			"registry.npmjs.org".to_owned(),
-			port,
-			"invalid_proxy_target".to_owned(),
-			Some("invalid_proxy_target".to_owned()),
-		)
-	};
 	assert_eq!(
-		records,
+		tallies,
 		vec![
 			(
 				"not-allowed.example".to_owned(),
-				443,
-				"refused".to_owned(),
-				Some("egress_host_forbidden".to_owned())
+				"egress_host_forbidden".to_owned(),
+				1
 			),
-			invalid(22),
-			invalid(0),
+			(
+				"registry.npmjs.org".to_owned(),
+				"invalid_proxy_target".to_owned(),
+				2
+			),
 		]
 	);
 }

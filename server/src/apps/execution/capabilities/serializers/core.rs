@@ -104,5 +104,5 @@ fn default_proxy_global_tunnels() -> usize {
 	1024
 }
 fn default_proxy_tenant_tunnels() -> usize {
-	64
+	256
 }

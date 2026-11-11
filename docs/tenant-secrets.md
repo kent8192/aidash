@@ -362,32 +362,47 @@ also requires the operator's Offering setting. The default traffic allowance is
 limit. External service traffic is accounted in batches after forwarding; each
 active stream can exceed a limit by up to one batch plus one chunk. Once a
 scope or service budget is exhausted, new admissions are refused until the next
-UTC day. The default anomaly rule suspends the scope after more than 600 new
-authenticated connection attempts in one minute, including invalid targets and
-hosts denied by the allowlist; an operator must lift the suspension. Hosts longer than 253 bytes are rejected. The
-authority must emit an operator notification when it suspends a scope.
+UTC day. Hosts longer than 253 bytes are rejected. Nothing stops a scope for
+the number of its connections (#845, amending ADR 0111): under a host list every
+other host is refused one connection at a time, so stopping would add nothing.
+When a scope that may reach any host reaches more than 100 distinct hosts in a
+minute, the pattern of a scan, the gateway logs a warning, counts it in
+`aidash_egress_many_hosts_total` and records a `many_hosts` operator event, once
+a minute at most. No consumer delivers these events yet.
 
 Each gateway instance has a Host connection limit of 32 open connections per
-scope, 64 per Tenant and 1,024 overall. The Tenant and global limits can be
+scope, 256 per Tenant and 1,024 overall. The Tenant and global limits can be
 configured in the capability profile; the Tenant limit must be at least the
 scope limit and lower than the global limit. A connection over a limit waits up
-to 10 seconds for another to close, first come first served, and as many
-connections may wait as the limit allows to be open; beyond that, or after the
-wait, it receives 429 with `egress_tunnel_limit`, `egress_tenant_tunnel_limit`
-or `egress_global_tunnel_limit`. A `CONNECT` gives its listener slot back before
-it waits, so one Tenant's waiting connections never keep another Tenant's from
-being accepted. A connection that waited is checked against its scope once more
-before it is forwarded. A connection's record keeps the code its client received
-in `error` and the time it waited in `wait_ms`; the waits and refusals are also
-counted in `aidash_egress_host_connection_wait_seconds{limit}` and
+to 10 seconds for another to close, first come first served, then receives 429
+with `egress_tunnel_limit`, `egress_tenant_tunnel_limit` or
+`egress_global_tunnel_limit`. A scope may have any number of connections
+waiting. The gateway may have half of its open-file limit beyond a reserve of
+8,192 waiting, at least 64, and one Tenant a quarter of that; a connection
+beyond the Tenant's share is refused at once. The server raises its soft
+open-file limit to the hard limit at startup and logs the budget it derived. A
+`CONNECT` gives its listener slot back before it waits, so one Tenant's waiting
+connections never keep another Tenant's from being accepted. A connection that
+waited is checked against its scope once more before it is forwarded.
+
+A connection costs the database nothing until it holds its limits: the
+credential is read, but nothing is written. A connection that ends before then
+(invalid target, host not allowed, limit still full, client gone while waiting
+as `egress_client_closed`) is counted per scope, minute, host and reason in
+`egress_scope_refusals`, written once a minute by each gateway instance and at
+shutdown; a minute keeps 50 hosts of one scope apart and counts the rest under
+an empty host. A connection that holds its limits has a row in
+`egress_scope_connections`, whose `error` keeps the code its client received
+when the gateway answered with one and `wait_ms` the time it waited. The waits
+and refusals are also counted in
+`aidash_egress_host_connection_wait_seconds{limit}` and
 `aidash_egress_host_connection_limit_refused_total{limit}`, where `limit` is
 `space`, `tenant` or `deployment`. DNS resolution and a stalled client write each have a 30-second
 deadline. Idle tunnels close after five minutes and all tunnels close after 24
 hours. The gateway reauthenticates the credential and reloads scope and host
 policy every five seconds, including while idle. Revocation or a narrowed host
 allowlist closes an existing tunnel. Three consecutive transient errors or timed-out
-checks close it as `egress_authority_unavailable`; they are not reported as a
-suspension. A traffic debit that fails because the store is unavailable ends it
+checks close it as `egress_authority_unavailable`. A traffic debit that fails because the store is unavailable ends it
 the same way, and a refund that fails ends it as `egress_refund_failed`; neither
 counts as an upstream failure. A scope credential is a MAC over the Tenant and
 Scratch Space under the server's key, verified in constant time, and is excluded

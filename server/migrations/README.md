@@ -767,13 +767,20 @@ operations (#752). A record holds them once its outcome settles, so a record tha
 never settled and a record older than this migration leave them null. The typed
 operations update the ORM snapshot, so no state-only checkpoint is needed.
 
-`execution/0123_scope_connection_causes` (after
+`execution/0123_host_connection_limits` (after
 `execution/0122_invocation_refused_state`) adds the nullable `error` and
-`wait_ms` of `egress_scope_connections` with typed column operations (#845). A
-Host connection that did not complete records the code its client received, and
-every settled record holds how long it waited for a Host connection limit. Rows
-older than this migration leave both null. The typed operations update the ORM
-snapshot, so no state-only checkpoint is needed.
+`wait_ms` of `egress_scope_connections` and drops `suspended`,
+`window_started_at` and `connections_in_window` from `egress_scope_state`, with
+typed operations (#845). Nothing suspends a scope any more, so a suspended scope
+opens again. A Host connection that held its limits records the code its client
+received and its wait. Rows older than the migration leave the new columns
+null. The reverse restores the state columns with their defaults, so every scope
+comes back unsuspended. `execution/0124_scope_refusals` is database-only and
+creates `egress_scope_refusals`, the per-minute counts of connections that ended
+before they held a limit, with its index and the Tenant isolation policy that
+`0110` gives the other scope tables; Reinhardt migrations cannot express row
+policies. `execution/0125_scope_refusals_state` is its state-only checkpoint, as
+`0111` is for `0109`.
 
 ## Home ledger recovery eligibility (#434)
 

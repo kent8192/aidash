@@ -1,6 +1,6 @@
 //! Scope-authenticated forward proxy.
 
-use aidash_application::egress::{Direction, EgressScopes, ScopeSettings};
+use aidash_application::egress::{Direction, EgressScopes, RefusalTally, ScopeSettings};
 use http_body_util::BodyExt;
 use hyper::body::Body as _;
 use std::{
@@ -125,11 +125,12 @@ struct CapacityCounts {
 	tenants: std::collections::HashMap<String, Arc<tokio::sync::Semaphore>>,
 	waiting: Waiting,
 }
-/// Connections waiting for a limit. At most as many may wait as the limit
-/// itself, so one Tenant has at most twice its limit open or waiting.
+/// Connections waiting for a limit. A Scratch Space may have any number
+/// waiting; the gateway as a whole may have its waiting budget, which follows
+/// its open-file limit, and a Tenant a quarter of it, so that one Tenant cannot
+/// use up the process's memory and file descriptors (#845).
 #[derive(Default)]
 struct Waiting {
-	scopes: std::collections::HashMap<aidash_domain::egress::ScopeId, usize>,
 	tenants: std::collections::HashMap<String, usize>,
 	global: usize,
 }
@@ -154,12 +155,50 @@ impl CapacityCounts {
 }
 type ScopeCounts = Arc<std::sync::Mutex<CapacityCounts>>;
 
+/// Hosts of one scope kept apart in a minute's tallies.
+const TALLY_HOSTS: usize = 50;
+
+/// Connections that ended before they held a limit, by scope, minute (since
+/// the epoch), host and reason, until the next write (#845).
+#[derive(Default)]
+struct Tallies {
+	counts:
+		std::collections::HashMap<(aidash_domain::egress::ScopeId, i64, String, &'static str), u64>,
+	/// Distinct hosts kept apart per scope and minute.
+	hosts: std::collections::HashMap<(aidash_domain::egress::ScopeId, i64), usize>,
+}
+
+/// The hosts a scope that may reach any host reached this minute.
+struct Reach {
+	minute: i64,
+	hosts: std::collections::HashSet<String>,
+	told: bool,
+}
+
+/// Counts a connection that is dropped while it waits for a limit: its client
+/// went away, and the future serving it with it.
+struct PendingTally {
+	manager: Arc<TunnelManager>,
+	scope: aidash_domain::egress::ScopeId,
+	host: String,
+	armed: bool,
+}
+impl Drop for PendingTally {
+	fn drop(&mut self) {
+		if self.armed {
+			self.manager.tally(&self.scope, &self.host, CLIENT_CLOSED);
+		}
+	}
+}
+
 /// Scope tunnel capacity is separate from the HTTP listener's request pool.
 pub(super) struct TunnelManager {
 	global: Arc<tokio::sync::Semaphore>,
-	global_limit: usize,
 	tenant_limit: usize,
+	waiting_budget: usize,
 	counts: ScopeCounts,
+	tallies: std::sync::Mutex<Tallies>,
+	reach: std::sync::Mutex<std::collections::HashMap<aidash_domain::egress::ScopeId, Reach>>,
 	tasks: std::sync::Mutex<tokio::task::JoinSet<()>>,
 	stopping: tokio::sync::watch::Receiver<bool>,
 	failures: Arc<FailureLog>,
@@ -190,12 +229,6 @@ impl Drop for WaitTurn {
 		self.semaphores.clear();
 		let mut counts = self.counts.lock().unwrap();
 		let waiting = &mut counts.waiting;
-		if let Some(n) = waiting.scopes.get_mut(&self.scope) {
-			*n -= 1;
-			if *n == 0 {
-				waiting.scopes.remove(&self.scope);
-			}
-		}
 		if let Some(n) = waiting.tenants.get_mut(&self.scope.tenant) {
 			*n -= 1;
 			if *n == 0 {
@@ -220,7 +253,7 @@ fn limit_label(code: &str) -> &'static str {
 		.map_or("unknown", |(_, label)| label)
 }
 /// A connection over a limit, after waiting for it or because too many already
-/// wait. The client receives the code; the record names it too.
+/// wait. The client receives the code; the minute's tally names it too.
 fn limit_refused(code: &'static str) -> &'static str {
 	metrics::counter!("aidash_egress_host_connection_limit_refused_total", "limit" => limit_label(code))
 		.increment(1);
@@ -233,9 +266,11 @@ impl TunnelManager {
 	) -> Self {
 		Self {
 			global: Arc::new(tokio::sync::Semaphore::new(limits.global_concurrent)),
-			global_limit: limits.global_concurrent,
 			tenant_limit: limits.tenant_concurrent,
+			waiting_budget: limits.waiting,
 			counts: Arc::new(std::sync::Mutex::new(CapacityCounts::default())),
+			tallies: Default::default(),
+			reach: Default::default(),
 			tasks: std::sync::Mutex::new(tokio::task::JoinSet::new()),
 			stopping,
 			failures: Arc::default(),
@@ -300,20 +335,19 @@ impl TunnelManager {
 		}
 		let mut turn = {
 			let mut counts = self.counts.lock().unwrap();
-			let full = if counts.waiting.scopes.get(&scope.id).copied().unwrap_or(0)
-				>= scope.tunnel_limits.concurrent
-			{
-				Some(LIMITS[0].0)
-			} else if counts
+			// Nothing caps one Scratch Space's waiters: the Tenant's share and
+			// the gateway's budget bound them, and a Pod has only so many source
+			// ports for one gateway address anyway.
+			let full = if counts
 				.waiting
 				.tenants
 				.get(&scope.id.tenant)
 				.copied()
 				.unwrap_or(0)
-				>= self.tenant_limit
+				>= (self.waiting_budget / 4).max(1)
 			{
 				Some(LIMITS[1].0)
-			} else if counts.waiting.global >= self.global_limit {
+			} else if counts.waiting.global >= self.waiting_budget {
 				Some(LIMITS[2].0)
 			} else {
 				None
@@ -322,7 +356,6 @@ impl TunnelManager {
 				counts.prune(&scope.id);
 				return Err(limit_refused(code));
 			}
-			*counts.waiting.scopes.entry(scope.id.clone()).or_default() += 1;
 			*counts
 				.waiting
 				.tenants
@@ -367,6 +400,92 @@ impl TunnelManager {
 			},
 			started.elapsed(),
 		))
+	}
+	/// Counts a connection that ended before it held a limit. A minute keeps
+	/// at most `TALLY_HOSTS` hosts of one scope apart; Sandboxed code chooses
+	/// the host names, so the rest are counted together under an empty host.
+	fn tally(&self, scope: &aidash_domain::egress::ScopeId, host: &str, reason: &'static str) {
+		let minute = chrono::Utc::now().timestamp().div_euclid(60);
+		let mut tallies = self.tallies.lock().unwrap();
+		let key = (scope.clone(), minute, host.to_owned(), reason);
+		let key = if tallies.counts.contains_key(&key) {
+			key
+		} else {
+			let hosts = tallies.hosts.entry((scope.clone(), minute)).or_default();
+			if *hosts >= TALLY_HOSTS {
+				(scope.clone(), minute, String::new(), reason)
+			} else {
+				*hosts += 1;
+				key
+			}
+		};
+		*tallies.counts.entry(key).or_default() += 1;
+	}
+	/// Writes the tallies counted so far. A failed write loses those counts,
+	/// which the log and `aidash_egress_settle_failures_total` say.
+	pub(super) async fn flush_tallies(&self, scopes: &dyn EgressScopes) {
+		let taken = std::mem::take(&mut *self.tallies.lock().unwrap());
+		let current = chrono::Utc::now().timestamp().div_euclid(60);
+		self.reach
+			.lock()
+			.unwrap()
+			.retain(|_, reach| reach.minute == current);
+		if taken.counts.is_empty() {
+			return;
+		}
+		let tallies = taken
+			.counts
+			.into_iter()
+			.map(|((scope, minute, host, reason), count)| RefusalTally {
+				scope,
+				minute: chrono::DateTime::from_timestamp(minute * 60, 0).unwrap_or_default(),
+				host,
+				reason: reason.to_owned(),
+				count,
+			})
+			.collect();
+		let cause = match tokio::time::timeout(
+			super::SETTLE_ATTEMPT,
+			scopes.record_refusals(tallies),
+		)
+		.await
+		{
+			Ok(Ok(())) => return,
+			Ok(Err(error)) => error.to_string(),
+			Err(_) => "attempt timed out".to_owned(),
+		};
+		super::settle_failure("refusal_tallies", "abandoned");
+		self.failures.internal("refusal_tallies", None, &cause);
+	}
+	/// Notes a host reached by a scope that may reach any host, and says whether
+	/// the scope has just passed its anomaly rule's distinct hosts for the
+	/// minute. Each scope is reported once a minute at most.
+	fn reached(&self, scope: &ScopeSettings, host: &str) -> Option<usize> {
+		let minute = chrono::Utc::now().timestamp().div_euclid(60);
+		let mut reach = self.reach.lock().unwrap();
+		let entry = reach.entry(scope.id.clone()).or_insert_with(|| Reach {
+			minute,
+			hosts: Default::default(),
+			told: false,
+		});
+		if entry.minute != minute {
+			*entry = Reach {
+				minute,
+				hosts: Default::default(),
+				told: false,
+			};
+		}
+		if entry.told {
+			return None;
+		}
+		entry.hosts.insert(host.to_owned());
+		let hosts = entry.hosts.len();
+		if hosts > scope.anomaly.distinct_hosts_per_minute as usize {
+			entry.told = true;
+			entry.hosts = Default::default();
+			return Some(hosts);
+		}
+		None
 	}
 	pub(super) async fn drain(&self) {
 		loop {
@@ -767,10 +886,8 @@ struct Audit {
 	outcome: &'static str,
 	/// The code the client received, when the gateway answered with one.
 	error: Option<&'static str>,
-	wait_ms: Option<u64>,
-	/// Set while the connection waits for a limit, so that a client that gives
-	/// up meanwhile leaves a record of how long it waited.
-	waiting_since: Option<std::time::Instant>,
+	/// How long the connection waited for its Host connection limits.
+	wait_ms: u64,
 	finished: bool,
 	started_record: bool,
 }
@@ -855,9 +972,7 @@ impl Audit {
 			duration_ms: self.started.elapsed().as_millis().min(u64::MAX as u128) as u64,
 			outcome: self.outcome.to_owned(),
 			error: self.error.map(str::to_owned),
-			wait_ms: self
-				.wait_ms
-				.or_else(|| self.waiting_since.map(|since| millis(since.elapsed()))),
+			wait_ms: Some(self.wait_ms),
 		}
 	}
 	/// Answer the client with an error code and keep it in the record.
@@ -881,9 +996,7 @@ impl Audit {
 			return true;
 		}
 		let mut record = self.record();
-		if self.outcome != INVALID_TARGET {
-			record.outcome = UNSETTLED.into();
-		}
+		record.outcome = UNSETTLED.into();
 		match write_start_record(&*self.scopes, record).await {
 			Ok(()) => self.started_record = true,
 			Err(cause) => {
@@ -985,9 +1098,6 @@ fn refusal(error: &aidash_application::Error) -> (hyper::StatusCode, &'static st
 			hyper::StatusCode::TOO_MANY_REQUESTS,
 			"egress_budget_exhausted",
 		),
-		Error::Refused(code) if code == "egress_suspended" => {
-			(hyper::StatusCode::FORBIDDEN, "egress_suspended")
-		}
 		_ => (hyper::StatusCode::SERVICE_UNAVAILABLE, "egress_unavailable"),
 	}
 }
@@ -1022,9 +1132,6 @@ async fn still_active(
 			Ok(())
 		}
 		Ok(Ok(_)) => Err((StatusCode::FORBIDDEN, "egress_host_revoked")),
-		Ok(Err(Error::Refused(code))) if code == "egress_suspended" => {
-			Err((StatusCode::FORBIDDEN, "egress_suspended"))
-		}
 		Ok(Err(Error::Refused(code))) if code == "egress_budget_exhausted" => {
 			Err((StatusCode::TOO_MANY_REQUESTS, "egress_budget_exhausted"))
 		}
@@ -1049,6 +1156,9 @@ pub(super) async fn forward(
 	let Some(token) = credential(request.headers()) else {
 		return auth_required();
 	};
+	// How long a connection holds a listener slot before anyone is known: the
+	// listener's slot count is sized from it (#845).
+	let admitting = std::time::Instant::now();
 	let scope = match scopes.resolve(&token).await {
 		Ok(scope) => scope,
 		Err(error) => {
@@ -1063,6 +1173,8 @@ pub(super) async fn forward(
 		let (status, code) = admission_refusal(&error, &token, &manager.failures);
 		return super::refuse(status, code);
 	}
+	metrics::histogram!("aidash_egress_proxy_admission_seconds")
+		.record(admitting.elapsed().as_secs_f64());
 	let connect = request.method() == Method::CONNECT;
 	let parsed = if connect {
 		request
@@ -1072,18 +1184,71 @@ pub(super) async fn forward(
 	} else {
 		url::Url::parse(&request.uri().to_string()).ok()
 	};
+	// Until a connection holds its limits it costs the store nothing: what ends
+	// it before then is counted per minute instead of written one row each, so
+	// no number of attempts can load the database (#845).
+	let refuse = |host: &str, status: StatusCode, code: &'static str| {
+		manager.tally(&scope.id, host, code);
+		super::failure(status, code)
+	};
 	let Some(url) = parsed else {
-		return super::refuse(StatusCode::BAD_REQUEST, "invalid_proxy_target");
+		return refuse("", StatusCode::BAD_REQUEST, INVALID_TARGET);
 	};
 	let Some(host) = url.host_str() else {
-		return super::refuse(StatusCode::BAD_REQUEST, "invalid_proxy_target");
+		return refuse("", StatusCode::BAD_REQUEST, INVALID_TARGET);
 	};
 	if host.len() > 253 {
-		return super::refuse(StatusCode::BAD_REQUEST, "invalid_proxy_target");
+		return refuse("", StatusCode::BAD_REQUEST, INVALID_TARGET);
 	}
 	let host = host.to_owned();
-	let Some(port) = url.port_or_known_default() else {
-		return super::refuse(StatusCode::BAD_REQUEST, "invalid_proxy_target");
+	let valid_target = url.username().is_empty()
+		&& url.password().is_none()
+		&& url.fragment().is_none()
+		&& ((connect && url.scheme() == "https" && url.port_or_known_default() == Some(443))
+			|| (!connect && url.scheme() == "http" && url.port_or_known_default() == Some(80)));
+	let Some(port) = url.port_or_known_default().filter(|_| valid_target) else {
+		return refuse(&host, StatusCode::BAD_REQUEST, INVALID_TARGET);
+	};
+	if !scope
+		.allowed_hosts
+		.permits(&host, scope.operator_allows_all)
+	{
+		return refuse(&host, StatusCode::FORBIDDEN, "egress_host_forbidden");
+	}
+	if scope.allowed_hosts.allow_all
+		&& scope.operator_allows_all
+		&& let Some(hosts) = manager.reached(&scope, &host)
+	{
+		metrics::counter!("aidash_egress_many_hosts_total").increment(1);
+		let (scopes, id) = (scopes.clone(), scope.id.clone());
+		let report = manager.failures.clone();
+		let mut tasks = manager.tasks.lock().unwrap();
+		while tasks.try_join_next().is_some() {}
+		tasks.spawn(async move {
+			if let Err(error) = scopes.notify_many_hosts(&id, hosts).await {
+				report.internal("many_hosts_notice", None, &error.to_string());
+			}
+		});
+	}
+	// The listener's slots are shared by every Tenant and taken before anyone is
+	// known, so an admitted CONNECT gives its slot back before it may wait for a
+	// limit; the Tenant's share of the waiting budget bounds it from here
+	// (#845). A plain HTTP connection remains charged until Hyper finishes
+	// flushing it.
+	if connect {
+		drop(listener_permit.lock().unwrap().take());
+	}
+	let mut pending = PendingTally {
+		manager: manager.clone(),
+		scope: scope.id.clone(),
+		host: host.clone(),
+		armed: true,
+	};
+	let acquired = manager.acquire(&scope, LIMIT_WAIT).await;
+	pending.armed = false;
+	let (permit, waited) = match acquired {
+		Ok((permit, waited)) => (Arc::new(permit), waited),
+		Err(code) => return refuse(&host, StatusCode::TOO_MANY_REQUESTS, code),
 	};
 	let mut audit = Audit {
 		id: uuid::Uuid::new_v4(),
@@ -1097,60 +1262,18 @@ pub(super) async fn forward(
 		received: Arc::new(AtomicU64::new(0)),
 		outcome: "refused",
 		error: None,
-		wait_ms: None,
-		waiting_since: None,
+		wait_ms: millis(waited),
 		finished: false,
 		started_record: false,
 	};
-	let valid_target = url.username().is_empty()
-		&& url.password().is_none()
-		&& url.fragment().is_none()
-		&& ((connect && url.scheme() == "https" && port == 443)
-			|| (!connect && url.scheme() == "http" && port == 80));
-	if !valid_target {
-		audit.outcome = INVALID_TARGET;
-		audit.error = Some(INVALID_TARGET);
-	}
 	if !audit.start().await {
 		return super::refuse(StatusCode::SERVICE_UNAVAILABLE, "egress_audit_unavailable");
 	}
-	if !valid_target {
-		return audit.fail(StatusCode::BAD_REQUEST, INVALID_TARGET);
-	}
-
-	if !scope
-		.allowed_hosts
-		.permits(&host, scope.operator_allows_all)
+	if !waited.is_zero()
+		&& let Err((status, code)) = still_active(&*scopes, &scope, &token, &host).await
 	{
-		return audit.fail(StatusCode::FORBIDDEN, "egress_host_forbidden");
+		return audit.fail(status, code);
 	}
-	// The listener's slots are shared by every Tenant and taken before anyone is
-	// known, so an admitted CONNECT gives its slot back before it may wait for a
-	// limit; the waiter caps bound it from here (#845). A plain HTTP connection
-	// remains charged until Hyper finishes flushing it.
-	if connect {
-		drop(listener_permit.lock().unwrap().take());
-	}
-	// Until the wait ends, the record says the client went away: that is what
-	// it means if this future is dropped while it waits.
-	audit.error = Some(CLIENT_CLOSED);
-	audit.waiting_since = Some(std::time::Instant::now());
-	let permit = match manager.acquire(&scope, LIMIT_WAIT).await {
-		Ok((permit, waited)) => {
-			audit.error = None;
-			audit.wait_ms = Some(millis(waited));
-			if !waited.is_zero()
-				&& let Err((status, code)) = still_active(&*scopes, &scope, &token, &host).await
-			{
-				return audit.fail(status, code);
-			}
-			Arc::new(permit)
-		}
-		Err(code) => {
-			audit.wait_ms = Some(millis(audit.started.elapsed()));
-			return audit.fail(StatusCode::TOO_MANY_REQUESTS, code);
-		}
-	};
 	if !connect {
 		*connection_lease.lock().unwrap() = Some(permit.clone());
 	}
@@ -1219,7 +1342,6 @@ fn tunnel_outcome(result: &io::Result<()>) -> &'static str {
 	let message = error.to_string();
 	for code in [
 		"egress_budget_exhausted",
-		"egress_suspended",
 		"egress_idle_timeout",
 		"egress_lifetime_exceeded",
 		"egress_shutdown",
@@ -1423,7 +1545,6 @@ async fn forward_http(
 			// buffer but before Hyper has parsed its headers.
 			Ok("completed") => { transfer_completed = true; pending_response.await },
 			Ok("egress_budget_exhausted") => return super::failure(StatusCode::TOO_MANY_REQUESTS, "egress_budget_exhausted"),
-			Ok("egress_suspended") => return super::failure(StatusCode::FORBIDDEN, "egress_suspended"),
 			ended => {
 				let code = ended.unwrap_or("the transfer stopped");
 				report.upstream("request", format!("ended before a response: {code}"));
@@ -1522,7 +1643,13 @@ mod tests {
 	#[test]
 	fn tenants_cannot_exhaust_proxy_capacity_using_multiple_scopes() {
 		let (_stop, receiver) = tokio::sync::watch::channel(false);
-		let manager = super::TunnelManager::new(receiver, super::super::ProxyLimits::default());
+		let manager = super::TunnelManager::new(
+			receiver,
+			super::super::ProxyLimits {
+				tenant_concurrent: 64,
+				..Default::default()
+			},
+		);
 		let first = test_settings();
 		let second = test_settings();
 		let third = test_settings();
@@ -1553,6 +1680,7 @@ mod tests {
 			super::super::ProxyLimits {
 				global_concurrent: 2,
 				tenant_concurrent: 1,
+				..Default::default()
 			},
 		);
 		let one = test_settings();
@@ -1614,6 +1742,7 @@ mod tests {
 			super::super::ProxyLimits {
 				global_concurrent: 4,
 				tenant_concurrent: 1,
+				..Default::default()
 			},
 		);
 		let first = test_settings();
@@ -1632,26 +1761,75 @@ mod tests {
 	}
 
 	#[tokio::test(start_paused = true)]
-	async fn no_more_connections_wait_than_the_limit_allows_open() {
+	async fn a_tenant_may_have_a_quarter_of_the_waiting_budget() {
 		let (_stop, receiver) = tokio::sync::watch::channel(false);
 		let manager = Arc::new(super::TunnelManager::new(
 			receiver,
-			super::super::ProxyLimits::default(),
+			super::super::ProxyLimits {
+				waiting: 8,
+				..Default::default()
+			},
 		));
 		let one = limited(1);
 		let _held = manager.try_acquire(&one).unwrap();
-		let _waiting = tokio::spawn({
+		for _ in 0..2 {
 			let manager = manager.clone();
 			let one = one.clone();
-			async move { manager.acquire(&one, super::LIMIT_WAIT).await.is_ok() }
-		});
-		tokio::task::yield_now().await;
+			tokio::spawn(async move { manager.acquire(&one, super::LIMIT_WAIT).await.is_ok() });
+			tokio::task::yield_now().await;
+		}
 		let started = tokio::time::Instant::now();
 		assert_eq!(
 			manager.acquire(&one, super::LIMIT_WAIT).await.err(),
-			Some("egress_tunnel_limit")
+			Some("egress_tenant_tunnel_limit"),
+			"two waiters fill this Tenant's share of eight"
 		);
 		assert_eq!(started.elapsed(), std::time::Duration::ZERO);
+		let mut other = limited(1);
+		other.id.tenant = "other".into();
+		let _other = manager.try_acquire(&other).unwrap();
+		let waiting = tokio::spawn({
+			let manager = manager.clone();
+			async move { manager.acquire(&other, super::LIMIT_WAIT).await.err() }
+		});
+		tokio::task::yield_now().await;
+		assert!(!waiting.is_finished(), "another Tenant still waits");
+	}
+
+	#[test]
+	fn the_waiting_budget_follows_the_open_file_limit() {
+		use super::super::waiting_budget;
+		assert_eq!(
+			waiting_budget(1024),
+			64,
+			"a small limit still lets some wait"
+		);
+		assert_eq!(waiting_budget(8192 + 1000), 500);
+		assert_eq!(waiting_budget(1_048_576), (1_048_576 - 8192) / 2);
+	}
+
+	#[tokio::test]
+	async fn a_minute_keeps_fifty_hosts_of_a_scope_apart() {
+		let (_stop, receiver) = tokio::sync::watch::channel(false);
+		let manager = super::TunnelManager::new(receiver, super::super::ProxyLimits::default());
+		let settings = test_settings();
+		for index in 0..60 {
+			manager.tally(
+				&settings.id,
+				&format!("h{index}.example"),
+				"egress_host_forbidden",
+			);
+		}
+		manager.tally(&settings.id, "h0.example", "egress_host_forbidden");
+		let scopes = MemoryScopes::new("token".into(), settings);
+		manager.flush_tallies(&scopes).await;
+		let tallies = scopes.refusals();
+		assert_eq!(tallies.len(), 51);
+		assert_eq!(tallies.iter().map(|tally| tally.count).sum::<u64>(), 61);
+		let rest = tallies.iter().find(|tally| tally.host.is_empty()).unwrap();
+		assert_eq!(rest.count, 10);
+		manager.flush_tallies(&scopes).await;
+		assert_eq!(scopes.refusals().len(), 51, "a flush takes what it writes");
 	}
 
 	#[tokio::test(start_paused = true)]
@@ -1809,8 +1987,18 @@ mod tests {
 			}
 			self.0.record(r).await
 		}
-		async fn lift_suspension(&self, id: &ScopeId) -> aidash_application::Result<()> {
-			self.0.lift_suspension(id).await
+		async fn record_refusals(
+			&self,
+			tallies: Vec<aidash_application::egress::RefusalTally>,
+		) -> aidash_application::Result<()> {
+			self.0.record_refusals(tallies).await
+		}
+		async fn notify_many_hosts(
+			&self,
+			id: &aidash_domain::egress::ScopeId,
+			hosts: usize,
+		) -> aidash_application::Result<()> {
+			self.0.notify_many_hosts(id, hosts).await
 		}
 	}
 	#[tokio::test(start_paused = true)]
@@ -1951,8 +2139,18 @@ mod tests {
 		) -> aidash_application::Result<()> {
 			self.0.record(r).await
 		}
-		async fn lift_suspension(&self, id: &ScopeId) -> aidash_application::Result<()> {
-			self.0.lift_suspension(id).await
+		async fn record_refusals(
+			&self,
+			tallies: Vec<aidash_application::egress::RefusalTally>,
+		) -> aidash_application::Result<()> {
+			self.0.record_refusals(tallies).await
+		}
+		async fn notify_many_hosts(
+			&self,
+			id: &aidash_domain::egress::ScopeId,
+			hosts: usize,
+		) -> aidash_application::Result<()> {
+			self.0.notify_many_hosts(id, hosts).await
 		}
 	}
 	#[tokio::test(start_paused = true)]
@@ -2024,7 +2222,7 @@ mod tests {
 	}
 
 	#[tokio::test(start_paused = true)]
-	async fn periodic_suspension_closes_idle_tunnel_and_settles_batch() {
+	async fn periodic_revocation_closes_idle_tunnel_and_settles_batch() {
 		let settings = test_settings();
 		let scopes = Arc::new(MemoryScopes::new("token".into(), settings.clone()));
 		let (mut client, gateway_client) = tokio::io::duplex(64);
@@ -2061,11 +2259,16 @@ mod tests {
 		}
 		assert_eq!(scopes.checks(), 0, "no check per read");
 		tokio::task::yield_now().await;
-		scopes.suspend();
+		scopes.revoke();
 		tokio::time::advance(std::time::Duration::from_secs(5)).await;
 		let (sent, _, result) = task.await.unwrap();
 		assert_eq!(sent, 6);
-		assert!(result.unwrap_err().to_string().contains("egress_suspended"));
+		assert!(
+			result
+				.unwrap_err()
+				.to_string()
+				.contains("egress_credential_revoked")
+		);
 		assert!(
 			idle_task
 				.await
@@ -2073,7 +2276,7 @@ mod tests {
 				.2
 				.unwrap_err()
 				.to_string()
-				.contains("egress_suspended")
+				.contains("egress_credential_revoked")
 		);
 		assert_eq!(scopes.usage(chrono::Utc::now().date_naive()).0, 6);
 	}
@@ -2203,22 +2406,19 @@ mod tests {
 		client.read_to_end(&mut response).await.unwrap();
 		assert!(response.starts_with(b"HTTP/1.1 429"));
 		assert!(String::from_utf8_lossy(&response).contains("egress_tunnel_limit"));
-		tokio::time::timeout(std::time::Duration::from_secs(3), async {
-			while scopes
-				.records()
-				.first()
-				.is_none_or(|record| record.outcome != "refused")
-			{
-				tokio::task::yield_now().await;
-			}
-		})
-		.await
-		.unwrap();
-		let record = &scopes.records()[0];
-		assert_eq!(record.error.as_deref(), Some("egress_tunnel_limit"));
-		assert!(record.wait_ms.is_some());
 		stop.send(true).unwrap();
 		server.await.unwrap().unwrap();
+		assert!(scopes.records().is_empty(), "no row before a permit");
+		let tallies = scopes.refusals();
+		assert_eq!(tallies.len(), 1);
+		assert_eq!(
+			(
+				tallies[0].host.as_str(),
+				tallies[0].reason.as_str(),
+				tallies[0].count
+			),
+			("registry.npmjs.org", "egress_tunnel_limit", 1)
+		);
 	}
 
 	#[tokio::test]
@@ -2234,13 +2434,10 @@ mod tests {
 				allow_all: false,
 			},
 			budget: DailyBudget::default(),
-			anomaly: AnomalyRule {
-				connections_per_minute: 2,
-			},
+			anomaly: AnomalyRule::default(),
 			operator_allows_all: false,
 			tunnel_limits: Default::default(),
 		};
-		let scope_id = settings.id.clone();
 		let scopes = Arc::new(MemoryScopes::new("token".into(), settings));
 		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 		let address = listener.local_addr().unwrap();
@@ -2283,12 +2480,8 @@ mod tests {
 		let mut response = String::new();
 		socket.read_to_string(&mut response).await.unwrap();
 		assert!(response.starts_with("HTTP/1.1 403"));
-		let suspended = request(address, "Proxy-Authorization: Bearer token\r\n").await;
-		assert!(suspended.contains("egress_suspended"));
-		assert_eq!(scopes.notifications(), 1);
-		scopes.lift_suspension(&scope_id).await.unwrap();
-		let lifted = request(address, "Proxy-Authorization: Bearer token\r\n").await;
-		assert!(lifted.contains("egress_destination_forbidden"));
+		let again = request(address, "Proxy-Authorization: Bearer token\r\n").await;
+		assert!(again.contains("egress_destination_forbidden"));
 		tokio::time::timeout(std::time::Duration::from_secs(3), async {
 			while scopes
 				.records()
@@ -2312,9 +2505,53 @@ mod tests {
 		gateway.await.unwrap().unwrap();
 	}
 	#[tokio::test]
-	async fn forbidden_hosts_count_toward_anomaly_suspension() {
+	async fn forbidden_hosts_are_tallied_and_never_stop_the_space() {
+		let scopes = Arc::new(MemoryScopes::new("token".into(), test_settings()));
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = listener.local_addr().unwrap();
+		let (stop, receiver) = tokio::sync::watch::channel(false);
+		let server = tokio::spawn(super::super::serve_with_scopes(
+			listener,
+			Arc::new(DenyLegacy),
+			Some(scopes.clone()),
+			super::super::ProxyLimits::default(),
+			receiver,
+		));
+		for index in [0, 1, 2, 0] {
+			let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+			client.write_all(format!("CONNECT denied{index}.example:443 HTTP/1.1\r\nHost: denied{index}.example:443\r\nProxy-Authorization: Bearer token\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+			let mut response = String::new();
+			client.read_to_string(&mut response).await.unwrap();
+			assert!(response.contains("egress_host_forbidden"), "{response}");
+		}
+		stop.send(true).unwrap();
+		server.await.unwrap().unwrap();
+		assert!(scopes.records().is_empty(), "no row before a permit");
+		assert_eq!(scopes.notifications(), 0);
+		let mut tallies: Vec<_> = scopes
+			.refusals()
+			.into_iter()
+			.map(|tally| (tally.host, tally.reason, tally.count))
+			.collect();
+		tallies.sort();
+		let forbidden =
+			|host: &str, count| (host.to_owned(), "egress_host_forbidden".to_owned(), count);
+		assert_eq!(
+			tallies,
+			vec![
+				forbidden("denied0.example", 2),
+				forbidden("denied1.example", 1),
+				forbidden("denied2.example", 1),
+			]
+		);
+	}
+
+	#[tokio::test]
+	async fn a_space_that_may_reach_any_host_is_reported_once_for_many_hosts() {
 		let mut settings = test_settings();
-		settings.anomaly.connections_per_minute = 2;
+		settings.allowed_hosts.allow_all = true;
+		settings.operator_allows_all = true;
+		settings.anomaly.distinct_hosts_per_minute = 2;
 		let scopes = Arc::new(MemoryScopes::new("token".into(), settings));
 		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 		let address = listener.local_addr().unwrap();
@@ -2326,25 +2563,26 @@ mod tests {
 			super::super::ProxyLimits::default(),
 			receiver,
 		));
-		for index in 0..3 {
+		// Reserved names never resolve, so nothing leaves the machine.
+		for index in [0, 1, 1, 2, 3] {
 			let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
-			client.write_all(format!("CONNECT denied{index}.example:443 HTTP/1.1\r\nHost: denied{index}.example:443\r\nProxy-Authorization: Bearer token\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+			client.write_all(format!("CONNECT h{index}.invalid:443 HTTP/1.1\r\nHost: h{index}.invalid:443\r\nProxy-Authorization: Bearer token\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
 			let mut response = String::new();
 			client.read_to_string(&mut response).await.unwrap();
-			if index == 2 {
-				assert!(response.contains("egress_suspended"), "{response}");
-			}
+			assert!(!response.contains("egress_host_forbidden"), "{response}");
 		}
-		assert_eq!(scopes.notifications(), 1);
 		stop.send(true).unwrap();
 		server.await.unwrap().unwrap();
+		assert_eq!(
+			scopes.notifications(),
+			1,
+			"a third host passes the rule once"
+		);
 	}
 
 	#[tokio::test]
 	async fn oversized_host_is_rejected_without_an_audit_row() {
-		let mut settings = test_settings();
-		settings.anomaly.connections_per_minute = 2;
-		let scopes = Arc::new(MemoryScopes::new("token".into(), settings));
+		let scopes = Arc::new(MemoryScopes::new("token".into(), test_settings()));
 		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 		let address = listener.local_addr().unwrap();
 		let (stop, receiver) = tokio::sync::watch::channel(false);
@@ -2367,22 +2605,26 @@ mod tests {
 			client.write_all(format!("CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\nProxy-Authorization: Bearer token\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
 			let mut response = String::new();
 			client.read_to_string(&mut response).await.unwrap();
-			assert!(response.contains(if attempt == 2 {
-				"egress_suspended"
-			} else {
-				"invalid_proxy_target"
-			}));
+			assert!(response.contains("invalid_proxy_target"), "{attempt}");
 		}
 
 		stop.send(true).unwrap();
 		task.await.unwrap().unwrap();
 		assert!(scopes.records().is_empty());
-		assert_eq!(scopes.notifications(), 1);
+		let tallies = scopes.refusals();
+		assert_eq!(tallies.len(), 1);
+		assert_eq!(
+			(tallies[0].host.as_str(), tallies[0].count),
+			("", 3),
+			"an oversized host is not kept"
+		);
 	}
 
 	#[tokio::test]
 	async fn audit_insert_is_retried_before_a_connection_is_admitted() {
-		let memory = Arc::new(MemoryScopes::new("token".into(), test_settings()));
+		let mut settings = test_settings();
+		settings.allowed_hosts.hosts = vec!["127.0.0.1".into()];
+		let memory = Arc::new(MemoryScopes::new("token".into(), settings));
 		let scopes = Arc::new(StalledChecks(
 			memory.clone(),
 			std::sync::atomic::AtomicUsize::new(1),
@@ -2398,18 +2640,26 @@ mod tests {
 			receiver,
 		));
 		let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
-		client.write_all(b"CONNECT registry.npmjs.org:22 HTTP/1.1\r\nHost: registry.npmjs.org:22\r\nProxy-Authorization: Bearer token\r\nConnection: close\r\n\r\n").await.unwrap();
+		// The connection holds its limits, so it has a row, which is retried; a
+		// private address then refuses it without anything leaving the machine.
+		client.write_all(b"CONNECT 127.0.0.1:443 HTTP/1.1\r\nHost: 127.0.0.1:443\r\nProxy-Authorization: Bearer token\r\nConnection: close\r\n\r\n").await.unwrap();
 		let mut response = String::new();
 		client.read_to_string(&mut response).await.unwrap();
-		assert!(response.contains("invalid_proxy_target"));
+		assert!(
+			response.contains("egress_destination_forbidden"),
+			"{response}"
+		);
 		stop.send(true).unwrap();
 		task.await.unwrap().unwrap();
 		assert_eq!(memory.records().len(), 1);
-		assert_eq!(memory.records()[0].outcome, "invalid_proxy_target");
+		assert_eq!(
+			memory.records()[0].error.as_deref(),
+			Some("egress_destination_forbidden")
+		);
 	}
 
 	#[tokio::test]
-	async fn invalid_port_is_audited_before_shutdown_finishes() {
+	async fn invalid_ports_are_tallied_before_shutdown_finishes() {
 		let scopes = Arc::new(MemoryScopes::new("token".into(), test_settings()));
 		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 		let address = listener.local_addr().unwrap();
@@ -2431,13 +2681,17 @@ mod tests {
 
 		stop.send(true).unwrap();
 		task.await.unwrap().unwrap();
-		let records = scopes.records();
-		assert_eq!(records.len(), 2);
-		for (record, port) in records.iter().zip([22, 0]) {
-			assert_eq!(record.host, "registry.npmjs.org");
-			assert_eq!(record.port, port);
-			assert_eq!(record.outcome, "invalid_proxy_target");
-		}
+		assert!(scopes.records().is_empty(), "no row before a permit");
+		let tallies = scopes.refusals();
+		assert_eq!(tallies.len(), 1);
+		assert_eq!(
+			(
+				tallies[0].host.as_str(),
+				tallies[0].reason.as_str(),
+				tallies[0].count
+			),
+			("registry.npmjs.org", "invalid_proxy_target", 2)
+		);
 	}
 
 	#[tokio::test]
@@ -2529,8 +2783,7 @@ mod tests {
 						received: Arc::new(super::AtomicU64::new(0)),
 						outcome: "refused",
 						error: None,
-						wait_ms: None,
-						waiting_since: None,
+						wait_ms: 0,
 						finished: false,
 						started_record: false,
 					};
@@ -2636,8 +2889,7 @@ mod tests {
 						received: Arc::new(super::AtomicU64::new(0)),
 						outcome: "refused",
 						error: None,
-						wait_ms: None,
-						waiting_since: None,
+						wait_ms: 0,
 						finished: false,
 						started_record: false,
 					};
@@ -2748,8 +3000,7 @@ mod tests {
 						received: Arc::new(super::AtomicU64::new(0)),
 						outcome: "refused",
 						error: None,
-						wait_ms: None,
-						waiting_since: None,
+						wait_ms: 0,
 						finished: false,
 						started_record: false,
 					};
@@ -2879,8 +3130,7 @@ mod tests {
 						received: Arc::new(super::AtomicU64::new(0)),
 						outcome: "refused",
 						error: None,
-						wait_ms: None,
-						waiting_since: None,
+						wait_ms: 0,
 						finished: false,
 						started_record: false,
 					};
@@ -3036,8 +3286,18 @@ mod tests {
 			}
 			self.memory.record(r).await
 		}
-		async fn lift_suspension(&self, id: &ScopeId) -> aidash_application::Result<()> {
-			self.memory.lift_suspension(id).await
+		async fn record_refusals(
+			&self,
+			tallies: Vec<aidash_application::egress::RefusalTally>,
+		) -> aidash_application::Result<()> {
+			self.memory.record_refusals(tallies).await
+		}
+		async fn notify_many_hosts(
+			&self,
+			id: &aidash_domain::egress::ScopeId,
+			hosts: usize,
+		) -> aidash_application::Result<()> {
+			self.memory.notify_many_hosts(id, hosts).await
 		}
 	}
 
@@ -3078,8 +3338,7 @@ mod tests {
 			received: Arc::new(super::AtomicU64::new(0)),
 			outcome: "refused",
 			error: None,
-			wait_ms: None,
-			waiting_since: None,
+			wait_ms: 0,
 			finished: false,
 			started_record: false,
 		}
@@ -3435,7 +3694,7 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn the_start_record_is_unsettled_and_an_invalid_target_says_so_from_the_start() {
+	async fn the_start_record_is_unsettled() {
 		let settings = test_settings();
 		let scopes = Arc::new(MemoryScopes::new(CREDENTIAL.into(), settings.clone()));
 		let (_stop, manager) = manager();
@@ -3443,15 +3702,6 @@ mod tests {
 		assert!(audit.start().await);
 		assert_eq!(scopes.records()[0].outcome, "unsettled");
 		audit.finished = true;
-
-		let mut invalid = audit_for(&manager, scopes.clone(), &settings);
-		invalid.port = 0;
-		invalid.outcome = "invalid_proxy_target";
-		assert!(invalid.start().await);
-		let records = scopes.records();
-		let written = records.iter().find(|record| record.port == 0).unwrap();
-		assert_eq!(written.outcome, "invalid_proxy_target");
-		invalid.finished = true;
 	}
 
 	#[tokio::test(start_paused = true)]
