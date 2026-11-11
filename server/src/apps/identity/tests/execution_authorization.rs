@@ -688,6 +688,8 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 			.iter()
 			.all(|entry| { entry["tags"].as_array().unwrap().contains(&json!("system")) })
 	);
+	// `research` is registered only in acme, so the other Tenant finds no such
+	// definition rather than an unapproved one (#813).
 	assert_eq!(
 		request(
 			&app,
@@ -698,7 +700,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		)
 		.await
 		.0,
-		403
+		404
 	);
 	let catalog = json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.0"},"enabled":false,"expected_revision":1});
 	assert_eq!(
