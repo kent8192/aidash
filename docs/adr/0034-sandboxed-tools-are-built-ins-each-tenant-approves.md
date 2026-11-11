@@ -28,3 +28,7 @@ limits, and a Deployment without a runner offers none.
 ## Amendment (2026-10-17, #311)
 
 - Research providers, built in or declared (ADR 0048, ADR 0055), need a Catalog Approval like Sandboxed tools, though they do not run in an Execution Pod. Each provider's research operations, including the host-supplied `find`, are approved as one group.
+
+## Amendment (2026-11-11, #873)
+
+The one approval step stays, with no exception for Personal Tenants. With the Deployment-wide Approval Scope and Version Carry-over (ADR 0128), it covers every Node of the Tenant on the Deployment and later versions of the tool.
