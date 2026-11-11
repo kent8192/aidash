@@ -6495,6 +6495,15 @@ async fn catalog_request_decline_and_withdraw_respect_authority_and_pending_visi
 		assert_eq!(status, 200, "{count}");
 		assert_eq!(count["count"], expected);
 	}
+	let (_, cached) = request(
+		&app,
+		&alice,
+		"GET",
+		"/api/authorization/acme/catalog/requests/pending/count",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(cached["count"], 1);
 
 	// The requester cannot decline or withdraw someone else's request, and
 	// an approver declines with a reason.
@@ -6519,6 +6528,15 @@ async fn catalog_request_decline_and_withdraw_respect_authority_and_pending_visi
 	assert_eq!(declined["state"], "declined");
 	assert_eq!(declined["decline_reason"], "Not this version");
 	assert_eq!(declined["next_action"], "declined");
+	let (_, after_decline) = request(
+		&app,
+		&alice,
+		"GET",
+		"/api/authorization/acme/catalog/requests/pending/count",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(after_decline["count"], 0);
 
 	// A final request frees the tuple; only the requester may withdraw the next.
 	let (status, second) = request_create(
@@ -6528,6 +6546,15 @@ async fn catalog_request_decline_and_withdraw_respect_authority_and_pending_visi
 	)
 	.await;
 	assert_eq!(status, 200, "{second}");
+	let (_, after_creation) = request(
+		&app,
+		&alice,
+		"GET",
+		"/api/authorization/acme/catalog/requests/pending/count",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(after_creation["count"], 1);
 	let second_id = second["id"].as_str().unwrap();
 	let (status, body) = request(
 		&app,
@@ -8943,6 +8970,205 @@ async fn stopping_carry_prevents_descendants_from_carrying_again(
 			.unwrap()["approval"];
 		assert_eq!(approval["carry_over"], false);
 		assert_eq!(approval["enabled"], true);
+		assert_eq!(approval["revision"], if version == "1.0.0" { 3 } else { 2 });
+	}
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn registration_without_a_carry_source_keeps_the_policy_lock_shared(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let mut entry = f.registry.get(&tenant, "model", "1.0.0").await.unwrap();
+	entry.id = "new-model-without-carry-source".into();
+	let mut held = f.store.pool.fixture_driver().begin().await.unwrap();
+	sqlx::query("SELECT tenant FROM authorization_bundles WHERE tenant = $1 FOR SHARE")
+		.bind("acme")
+		.execute(&mut *held)
+		.await
+		.unwrap();
+	let result = tokio::time::timeout(
+		std::time::Duration::from_secs(30),
+		request(
+			&app,
+			&token,
+			"POST",
+			"/api/registry",
+			serde_json::to_value(entry).unwrap(),
+		),
+	)
+	.await;
+	held.rollback().await.unwrap();
+	let (status, body) = result.expect("ordinary registration waited for an exclusive policy lock");
+	assert_eq!(status, 200, "{body}");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn deployment_approval_rejects_another_nodes_stale_revision(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({
+			"node":node,"entry":{"id":"research","version":"1.0.0"},"enabled":true,
+			"expected_revision":1,"carry_over":false,"scope":"node"
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, sibling) = common::administer_node(
+		&f,
+		"acme",
+		"/api/tenants/acme/nodes",
+		json!({"label":"Sibling"}),
+	)
+	.await;
+	assert_eq!(status, 201, "{sibling}");
+	let other = sibling["name"].as_str().unwrap();
+	let decide_other = |revision| json!({"node":other,"entry":{"id":"research","version":"1.0.0"},"enabled":true,"expected_revision":revision,"carry_over":false,"scope":"node"});
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		decide_other(0),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, review) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/authorization/acme/catalog/review?node={node}&entry=research@1.0.0"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{review}");
+	let revisions = review["items"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["reference"]["id"] == "research")
+		.unwrap()["expected_node_revisions"]
+		.clone();
+	assert_eq!(revisions[other], 1);
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		decide_other(1),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({
+			"node":node,"entry":{"id":"research","version":"1.0.0"},"enabled":true,
+			"expected_revision":2,"carry_over":true,"scope":"deployment","expected_node_revisions":revisions
+		}),
+	)
+	.await;
+	assert_eq!(status, 409, "{body}");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn withdrawal_can_include_transitively_carried_versions(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({
+			"node": node, "entry": {"id":"research","version":"1.0.0"}, "enabled":true,
+			"expected_revision":1,"carry_over":true,"scope":"node"
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let mut entry = f.registry.get(&tenant, "research", "1.0.0").await.unwrap();
+	entry.binding_normalization = None;
+	for version in ["1.1.0", "1.2.0"] {
+		entry.version = version.into();
+		let (status, body) = request(
+			&app,
+			&token,
+			"POST",
+			"/api/registry",
+			serde_json::to_value(&entry).unwrap(),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+		assert!(
+			body["carry_results"]
+				.as_array()
+				.unwrap()
+				.iter()
+				.any(|r| r["node"] == node.as_str() && r["carried"] == true),
+			"{body}"
+		);
+	}
+	let (status, body) = request(
+		&app,
+		&token,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({
+			"node":node,"entry":{"id":"research","version":"1.0.0"},"enabled":false,
+			"expected_revision":2,"withdraw_carried":true,"scope":"node"
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, versions) = request(
+		&app,
+		&token,
+		"GET",
+		&format!("/api/registry/versions?node={node}"),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{versions}");
+	for version in ["1.0.0", "1.1.0", "1.2.0"] {
+		let row = versions["versions"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|row| row["entry"]["id"] == "research" && row["entry"]["version"] == version)
+			.unwrap();
+		assert_eq!(row["approval"]["enabled"], false, "{version}: {row}");
 	}
 	cleanup(f, &url, &schema).await;
 }

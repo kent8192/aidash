@@ -384,6 +384,58 @@ test("without subject.group.update an agent approval keeps the default group", a
 const SCOPE =
   "Only Runs using this version stop. Results produced so far stay readable. To hide them too, deny registry.read on this version in Access policies.";
 
+test("stopping carry keeps an approval enabled", async ({ page }) => {
+  const { decisions } = await dashboard(page, tenantSubject, () => [
+    registryVersion(entry("writer", "agent"), {
+      approval: {
+        enabled: true,
+        revision: 3,
+        carry_over: true,
+        scope: "deployment",
+      },
+    }),
+  ]);
+  await routeTenantActions(page, ["catalog.approve"]);
+  await page.goto("/settings?view=agents");
+  await row(page, "writer").click();
+  await approval(page).getByRole("button", { name: "Stop carrying" }).click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(decisions[0].body).toMatchObject({
+    entry: ref("writer"),
+    enabled: true,
+    expected_revision: 3,
+    stop_carrying: true,
+    carry_over: false,
+    scope: "node",
+    node: defaultNode.name,
+  });
+});
+
+test("deployment approval submits the reviewed Node revisions", async ({
+  page,
+}) => {
+  const { decisions } = await dashboard(page, tenantSubject, () => [
+    registryVersion(entry("writer", "agent"), unapproved),
+  ]);
+  await routeTenantActions(page, ["catalog.approve"]);
+  await page.route("**/api/authorization/acme/catalog/review?**", (route) =>
+    route.fulfill({
+      json: {
+        items: [
+          { reference: ref("writer"), expected_node_revisions: { sibling: 4 } },
+        ],
+      },
+    }),
+  );
+  await page.goto("/settings?view=agents");
+  await row(page, "writer").click();
+  await approval(page)
+    .getByRole("button", { name: "Approve", exact: true })
+    .click();
+  await expect.poll(() => decisions.length).toBe(1);
+  expect(decisions[0].body.expected_node_revisions).toEqual({ sibling: 4 });
+});
+
 test("withdrawing says that only Runs using the version stop, with or without impact", async ({
   page,
 }) => {
@@ -831,6 +883,26 @@ test("the Review shows consent changes from the previous approval", async ({
   await expect(changes).toContainText("0.9.0");
   await expect(changes).toContainText("model");
   await expect(changes).toContainText("endpoint host");
+});
+
+test("the Review shows saved carry options for an existing approval", async ({
+  page,
+}) => {
+  await reviewDashboard(page, {
+    review: () =>
+      reviewBody([
+        reviewItem("writer", "agent", "approvable", {
+          carry_over: false,
+          scope: "node",
+        }),
+      ]),
+    answer: () => ({ json: {} }),
+  });
+  const review = await openReview(page);
+  await expect(
+    review.getByLabel("Carry approval to later versions"),
+  ).not.toBeChecked();
+  await expect(review.getByLabel("Approval scope")).toHaveValue("node");
 });
 
 test("the Review shows the whole closure and approves local items and activations in one submission", async ({

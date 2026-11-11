@@ -64,6 +64,26 @@ async fn a_backport_carries_only_from_the_highest_lower_opted_in_version() {
 }
 
 #[tokio::test]
+async fn compatible_builtin_compaction_decider_version_can_carry() {
+	let next = crate::registry::system::compaction_decider().unwrap();
+	let mut previous = next.clone();
+	previous.version = "0.9.0".into();
+	let mut fixture = Fixture {
+		sources: vec![Source {
+			definition: previous,
+			enabled: true,
+			carry_over: true,
+			scope: ApprovalScope::Deployment,
+			approver: "alice".into(),
+		}],
+		..Default::default()
+	};
+	let result = carry(&mut fixture, &next).await.unwrap();
+	assert!(result[0].carried);
+	assert_eq!(fixture.writes, [("0.9.0".into(), next.version)]);
+}
+
+#[tokio::test]
 async fn a_changed_consent_surface_is_reported_without_writing_an_approval() {
 	let mut fixture = Fixture {
 		sources: vec![source("1.0.0", true)],
