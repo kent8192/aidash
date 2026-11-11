@@ -238,7 +238,7 @@ fn agent_plugin_settings_can_narrow_but_not_add_tools_or_read_only_declarations(
 fn restored_default_capabilities_and_allow_flags_change_consent() {
 	let old = entry(
 		"agent",
-		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"first","remove_default":["file_read","task_create"]}),
+		json!({"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"first","remove_default":["file_search","file_read","task_create"]}),
 	);
 	let mut new = old.clone();
 	new.config["remove_default"] = json!([]);
