@@ -382,6 +382,16 @@ async fn draft_conflict_register_and_factual_inspection(
 	assert_eq!(status, 200, "register: {registration}");
 	assert_eq!(registration["entry"]["id"], agent_id);
 	assert_eq!(registration["behavioral_tested"], false);
+	assert!(
+		registration["carry_results"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|result| {
+				result["carried"] == false
+					&& result["changed"] == json!(["no earlier carrying approval"])
+			})
+	);
 	let (status, versions) = common::get(&app, alice_token, &format!("{path}/versions")).await;
 	assert_eq!(status, 200, "versions: {versions}");
 	assert_eq!(versions[0]["entry"]["id"], agent_id);

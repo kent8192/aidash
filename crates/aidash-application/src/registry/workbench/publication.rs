@@ -194,7 +194,7 @@ where
 	} else {
 		None
 	};
-	let mut scope = repository.begin().await?;
+	let mut scope = repository.begin_publication().await?;
 	let draft = scope.read(id, true).await?;
 	authorize(&mut scope, &draft, "agent_draft.register", true).await?;
 	if draft.archived || input.expected_revision != draft.revision {

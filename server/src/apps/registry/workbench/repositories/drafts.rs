@@ -39,6 +39,7 @@ pub(crate) struct Scope {
 	pub tx: crate::database::native::Transaction,
 	pub actor: Actor,
 	pub runtime: Federation,
+	pub carry_results: Vec<aidash_domain::registry::workbench::RegistrationCarryResult>,
 }
 impl Scope {
 	fn authority(&mut self) -> authority::Scope<'_> {
@@ -69,10 +70,18 @@ impl DraftRepository for Repository {
 					.await?,
 				actor: self.actor.clone(),
 				runtime: self.runtime.clone(),
+				carry_results: Vec::new(),
 			})
 		}
 		.await;
 		result.map_err(Into::into)
+	}
+	async fn begin_publication(&self) -> Result<Scope> {
+		let mut scope = self.begin().await?;
+		if let Actor::Subject(identity) = &scope.actor {
+			identity.lock_with_mode(&mut scope.tx, true).await?;
+		}
+		Ok(scope)
 	}
 	async fn embed_reference_images(
 		&self,
@@ -120,10 +129,7 @@ impl DraftAuthority for Scope {
 		authority::principal(&self.actor)
 	}
 	async fn lock_identity(&mut self) -> Result<()> {
-		if let Actor::Subject(identity) = &self.actor {
-			identity.lock_with_mode(&mut self.tx, true).await?;
-		}
-		Ok(())
+		self.authority().lock_identity().await
 	}
 	async fn share(&mut self, draft: Uuid, subject: &str) -> Result<Option<(bool, String)>> {
 		self.authority().share(draft, subject).await
@@ -237,7 +243,7 @@ impl DefinitionWriter for Scope {
 					&identity.tenant,
 				)
 				.await?;
-			aidash_application::authorization::catalog::carry_over::carry(
+			let results = aidash_application::authorization::catalog::carry_over::carry(
 				&mut crate::apps::identity::repositories::catalog_carry::TenantCarry {
 					tx: &mut self.tx,
 					snapshot: &mut snapshot,
@@ -247,12 +253,24 @@ impl DefinitionWriter for Scope {
 				entry,
 			)
 			.await?;
+			self.carry_results.extend(results.into_iter().map(|result| {
+				aidash_domain::registry::workbench::RegistrationCarryResult {
+					node: result.node.node.as_str().to_owned(),
+					source_version: result.source_version,
+					changed: result.changed,
+					unapproved_dependencies: result.unapproved_dependencies,
+					carried: result.carried,
+				}
+			}));
 		}
 		Ok(inserted)
 	}
 }
 #[async_trait]
 impl PublicationScope for Scope {
+	fn carry_results(&self) -> Vec<aidash_domain::registry::workbench::RegistrationCarryResult> {
+		self.carry_results.clone()
+	}
 	async fn validate_prepared_embedding(&mut self, entry: &Entry) -> Result<()> {
 		let Actor::Subject(identity) = &self.actor else {
 			return Err(aidash_application::Error::Forbidden);
