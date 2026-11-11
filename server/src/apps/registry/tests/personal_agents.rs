@@ -60,11 +60,9 @@ fn assert_replay(first: &(u16, Value), replay: (u16, Value)) {
 				.is_some_and(|node| !node.is_empty())
 		);
 	}
-	assert_eq!(replay.1["carry_results"], json!([]));
-	assert_eq!(
-		registered_entry(first.1.clone()),
-		registered_entry(replay.1)
-	);
+	let mut expected = first.clone();
+	expected.1["carry_results"] = json!([]);
+	assert_eq!(replay, expected);
 }
 
 #[rstest::rstest]
