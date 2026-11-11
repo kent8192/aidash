@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Hint } from "../components/patterns";
 import { Button } from "../components/ui/button";
-import { apiFetch } from "../transport";
+import { ApiError, apiFetch } from "../transport";
 import { useI18n } from "../ui";
 import { post } from "./client";
 
@@ -30,10 +30,19 @@ function BoundReference({ id, path }: { id: string; path: string }) {
   const client = useQueryClient();
   const key = ["reference-revocation", id];
   // The route answers 404 to a subject whose policy lacks `reference.delete`,
-  // and for a file already revoked. Either way there is nothing to offer.
+  // and for a file already revoked. Either way there is nothing to offer, so a
+  // 404 resolves to `null`: a failed refetch would otherwise keep the old data
+  // and show the Revoke button again. Other failures stay errors.
   const revocation = useQuery({
     queryKey: key,
-    queryFn: () => apiFetch<Revocation>(`/api/references/${id}/revocation`),
+    queryFn: async () => {
+      try {
+        return await apiFetch<Revocation>(`/api/references/${id}/revocation`);
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 404) return null;
+        throw e;
+      }
+    },
     retry: false,
   });
   const [confirming, setConfirming] = useState(false);
@@ -45,6 +54,8 @@ function BoundReference({ id, path }: { id: string; path: string }) {
     try {
       await post(`/references/${id}/revoke`, { expected_revision: revision });
       setConfirming(false);
+      // A revoked file has nothing left to offer; do not wait for the refetch.
+      client.setQueryData(key, null);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -92,7 +103,7 @@ function BoundReference({ id, path }: { id: string; path: string }) {
               {ja ? "取り消す" : "Revoke"}
             </Button>
           ))}
-        {revocation.isError && (
+        {revocation.data === null && (
           <Hint>
             {ja
               ? "取り消せません（権限がないか、すでに取り消されています）。"
@@ -100,6 +111,7 @@ function BoundReference({ id, path }: { id: string; path: string }) {
           </Hint>
         )}
       </div>
+      {revocation.isError && <Alert>{String(revocation.error)}</Alert>}
       {error && <Alert>{error}</Alert>}
     </li>
   );
