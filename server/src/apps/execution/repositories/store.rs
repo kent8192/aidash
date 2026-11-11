@@ -1808,11 +1808,12 @@ impl Store {
 		parent: Uuid,
 		ids: &[Uuid],
 		actor: &str,
-	) -> Result<()> {
+	) -> Result<Vec<Uuid>> {
 		// A fixed order keeps two transactions from locking in opposite ones.
 		let mut ids = ids.to_vec();
 		ids.sort();
 		ids.dedup();
+		let mut abandoned = Vec::new();
 		for id in ids {
 			let locked: Option<Task> = {
 				let query_bind_1 = id;
@@ -1856,8 +1857,9 @@ impl Store {
 			}
 			self.abandon_locked_in(tx, &child, aidash_domain::unassigned::ABANDON_REASON, actor)
 				.await?;
+			abandoned.push(id);
 		}
-		Ok(())
+		Ok(abandoned)
 	}
 	/// Abandon Unassigned children of a running parent without completing it.
 	pub async fn abandon_unassigned(
@@ -1866,12 +1868,13 @@ impl Store {
 		parent: Uuid,
 		owner: &str,
 		ids: &[Uuid],
-	) -> Result<()> {
+	) -> Result<Vec<Uuid>> {
 		let mut tx = self.pool.begin(scope).await?;
-		self.abandon_unassigned_for_in(&mut tx, parent, owner, ids)
+		let abandoned = self
+			.abandon_unassigned_for_in(&mut tx, parent, owner, ids)
 			.await?;
 		tx.commit().await?;
-		Ok(())
+		Ok(abandoned)
 	}
 	pub(crate) async fn abandon_unassigned_for_in(
 		&self,
@@ -1879,7 +1882,7 @@ impl Store {
 		parent: Uuid,
 		owner: &str,
 		ids: &[Uuid],
-	) -> Result<()> {
+	) -> Result<Vec<Uuid>> {
 		let task: Task = {
 			let query_bind_1 = parent;
 			aidash_server::database::query_as(
@@ -5618,8 +5621,12 @@ impl Store {
 					key: call.key.clone(),
 					index: call.index,
 					replay_safe: call.replay_safe,
-					tool: refusal.tool.clone(),
+					tool: call
+						.tool_call
+						.as_ref()
+						.map_or_else(|| refusal.tool.clone(), |stopped| stopped.name.clone()),
 					kind,
+					tool_call: call.tool_call.clone(),
 				}
 			}),
 		)
