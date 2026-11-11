@@ -201,7 +201,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 	assert_eq!(execution[0].name, "0128_remove_generated_summary_state");
 	let knowledge = graph.get_leaf_nodes_for_app("knowledge");
 	assert_eq!(knowledge.len(), 1);
-	assert_eq!(knowledge[0].name, "0053_memory_journal_proofs");
+	assert_eq!(knowledge[0].name, "0054_memory_constraint_state");
 	// Assert: retain the physical graph, model snapshots, and all supported tables.
 	assert!(
 		migrations
@@ -213,7 +213,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		110
+		111
 	);
 	let tables = migrations
 		.iter()
@@ -1001,7 +1001,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		110
+		111
 	);
 }
 
@@ -1260,6 +1260,11 @@ async fn image_policy_migrations_reverse_safely(#[future] fresh_database: Migrat
 		FilesystemSource::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"));
 	let mut executor =
 		reinhardt::db::migrations::DatabaseMigrationExecutor::new(fixture.connection.clone());
+	let state = source
+		.get_migration("knowledge", "0054_memory_constraint_state")
+		.await
+		.unwrap();
+	executor.rollback_migrations(&[state]).await.unwrap();
 	let proof = source
 		.get_migration("knowledge", "0053_memory_journal_proofs")
 		.await
