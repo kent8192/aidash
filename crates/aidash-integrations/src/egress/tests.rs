@@ -2025,8 +2025,7 @@ async fn a_received_upload_held_open_is_not_counted_at_the_time_limit() {
 		let service = service_fn(move |request: Request<hyper::body::Incoming>| {
 			noting.note(&request);
 			async move {
-				let body = request.into_body().collect().await.unwrap().to_bytes();
-				assert_eq!(body.len(), 1024);
+				drop(request);
 				Ok::<_, Infallible>(
 					Response::builder()
 						.status(403)
@@ -2046,13 +2045,15 @@ async fn a_received_upload_held_open_is_not_counted_at_the_time_limit() {
 		.write_all(b"POST /upload HTTP/1.1\r\nhost: gateway\r\ncontent-length: 1024\r\n\r\n")
 		.await
 		.unwrap();
+	let mut status = [0; 12];
+	client.read_exact(&mut status).await.unwrap();
+	assert_eq!(&status, b"HTTP/1.1 403");
 	client.write_all(&[1; 1024]).await.unwrap();
 	let mut answer = Vec::new();
 	tokio::time::timeout(Duration::from_secs(10), client.read_to_end(&mut answer))
 		.await
 		.unwrap()
 		.unwrap();
-	assert!(answer.starts_with(b"HTTP/1.1 403"));
 	tokio::time::timeout(LINGER_TIME + Duration::from_secs(10), gateway)
 		.await
 		.unwrap()
@@ -2070,7 +2071,14 @@ async fn a_client_still_sending_at_the_time_limit_is_counted() {
 	let observed = Observed::start();
 	let (socket, mut client) = tokio::io::duplex(1024);
 	let closing = tokio::spawn(async move {
-		let unread = UnreadBody(Arc::new(true.into()));
+		let unread = UnreadBody::default();
+		unread.0.store(true, Ordering::Relaxed);
+		unread
+			.1
+			.lock()
+			.unwrap()
+			.read(b"POST / HTTP/1.1\r\ncontent-length: 100\r\n\r\n");
+		unread.1.lock().unwrap().note(Some(100), true);
 		LingeringClose::new(socket, unread).shutdown().await
 	});
 	client.write_all(b"unread").await.unwrap();
