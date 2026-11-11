@@ -307,18 +307,27 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 		Err(Error::Forbidden) => (vec![], true),
 		Err(error) => return Err(error),
 	};
-	let mut scope = repository.begin().await?;
+	let has_requester_grants = !grants.is_empty();
 	let mut task_read_denied = false;
-	let result = async {
-		if let Err(error) = scope.task_read(task).await {
-			task_read_denied = matches!(&error, Error::Forbidden);
-			return Err(error);
+	let holder_result = async {
+		let mut scope = repository.begin().await?;
+		let result = async {
+			if let Err(error) = scope.task_read(task).await {
+				task_read_denied = matches!(&error, Error::Forbidden);
+				return Err(error);
+			}
+			scope.holder_grants(task).await
 		}
-		scope.holder_grants(task).await
+		.await;
+		finish(scope, result).await
 	}
 	.await;
-	let holder_grants = match finish(scope, result).await {
+	let holder_grants = match holder_result {
 		Ok(grants) => grants,
+		Err(error) if has_requester_grants => {
+			tracing::warn!(%error, "holder grant lookup failed");
+			vec![]
+		}
 		Err(Error::Forbidden) if task_read_denied => vec![],
 		Err(error) => return Err(error),
 	};
@@ -505,10 +514,10 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 		.buffered(4)
 		.collect()
 		.await;
-	for holder in holders {
-		if let Some(holder) = holder? {
-			result.push(holder);
-		}
+	match holders.into_iter().collect::<Result<Vec<_>>>() {
+		Ok(holders) => result.extend(holders.into_iter().flatten()),
+		Err(error) if has_requester_grants => tracing::warn!(%error, "holder grant recheck failed"),
+		Err(error) => return Err(error),
 	}
 	if (requester_denied || task_read_denied) && result.is_empty() {
 		return Err(Error::Forbidden);
@@ -527,6 +536,9 @@ async fn holder_may_decline<R: HomeRepository>(
 		let Some(found) = scope.task_grant(task, grant).await? else {
 			return Ok(false);
 		};
+		if found.revoked || found.expires_at <= chrono::Utc::now() {
+			return Ok(false);
+		}
 		let identity = scope.identity();
 		if found.tenant == identity.tenant && found.root_subject == identity.subject {
 			return Ok(false);
