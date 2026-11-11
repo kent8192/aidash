@@ -7,13 +7,15 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub(crate) struct CatalogInput {
 	#[serde(default)]
+	pub(crate) expected_node_revisions: std::collections::BTreeMap<String, i64>,
+	#[serde(default)]
 	pub(crate) withdraw_carried: bool,
 	#[serde(default)]
 	pub(crate) stop_carrying: bool,
-	#[serde(default = "aidash_application::authorization::catalog::approvals::default_carry_over")]
-	pub(crate) carry_over: bool,
-	#[serde(default = "aidash_application::authorization::catalog::approvals::default_scope")]
-	pub(crate) scope: aidash_domain::identity::catalog::ApprovalScope,
+	#[serde(default)]
+	pub(crate) carry_over: Option<bool>,
+	#[serde(default)]
+	pub(crate) scope: Option<aidash_domain::identity::catalog::ApprovalScope>,
 	#[serde(default)]
 	pub provider_warning_acknowledged: bool,
 	/// The Node the approval applies to.
@@ -143,7 +145,27 @@ pub(crate) struct CatalogMailPreference {
 pub(crate) struct CatalogApprovals {
 	/// The Node the approvals apply to.
 	pub(crate) node: aidash_domain::nodes::NodeName,
-	pub(crate) approvals: Vec<aidash_application::authorization::catalog::approvals::Approval>,
+	pub(crate) approvals: Vec<CatalogApprovalInput>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CatalogApprovalInput {
+	#[serde(default)]
+	pub expected_node_revisions: std::collections::BTreeMap<String, i64>,
+	pub entry: EntityRef,
+	pub enabled: bool,
+	pub expected_revision: i64,
+	#[serde(default)]
+	pub carry_over: Option<bool>,
+	#[serde(default)]
+	pub scope: Option<aidash_domain::identity::catalog::ApprovalScope>,
+	#[serde(default)]
+	pub provider_warning_acknowledged: bool,
+	#[serde(default)]
+	pub groups: Option<std::collections::BTreeSet<String>>,
+	#[serde(default)]
+	pub restriction: Option<aidash_domain::identity::catalog::CatalogRestriction>,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

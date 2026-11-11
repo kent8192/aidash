@@ -31,6 +31,10 @@ pub fn default_scope() -> ApprovalScope {
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Approval {
+	/// Revisions observed for the same approval on other Nodes; absent entries
+	/// fence on no row, so a concurrent creation is also detected.
+	#[serde(default)]
+	pub expected_node_revisions: BTreeMap<String, i64>,
 	#[serde(default = "default_carry_over")]
 	pub carry_over: bool,
 	#[serde(default = "default_scope")]

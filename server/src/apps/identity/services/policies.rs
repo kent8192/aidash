@@ -29,11 +29,11 @@ fn control_service(f: Federation) -> Authorization {
 }
 
 use crate::apps::identity::serializers::policies::{
-	AuthorizationPage, AuthorizationUpdate, CatalogApprovalRequestPage, CatalogApprovalRequestView,
-	CatalogImpactQuery, CatalogInput, CatalogMailPreference, CatalogPendingCount,
-	CatalogRequestDecline, CatalogRequestInput, CatalogRequestNextAction, CatalogRequestPage,
-	CatalogRequestReview, CatalogReviewQuery, CatalogReviewResult, CredentialInput, CredentialPage,
-	CredentialRevocation, PolicyReplacement,
+	AuthorizationPage, AuthorizationUpdate, CatalogApprovalInput, CatalogApprovalRequestPage,
+	CatalogApprovalRequestView, CatalogImpactQuery, CatalogInput, CatalogMailPreference,
+	CatalogPendingCount, CatalogRequestDecline, CatalogRequestInput, CatalogRequestNextAction,
+	CatalogRequestPage, CatalogRequestReview, CatalogReviewQuery, CatalogReviewResult,
+	CredentialInput, CredentialPage, CredentialRevocation, PolicyReplacement,
 };
 use aidash_application::authorization::catalog::review::{
 	ApprovalReview, ApprovalReviewSubmission, ReviewItem,
@@ -119,10 +119,44 @@ async fn request_review_for(
 	access.set_node(node.clone());
 	let mut scope = ReviewScope {
 		access,
+		include_node_revisions: false,
 		node: deployment.node(node.clone()),
 		validation: crate::bootstrap::registry_validation_for(store),
 	};
 	Ok(aidash_application::authorization::catalog::review::review(&mut scope, root).await?)
+}
+
+/// Record stopping carry as a new revision without changing approval or lineage.
+async fn stop_carrying_revision(
+	access: &mut Access,
+	deployment: &aidash_domain::nodes::DeploymentId,
+	node: &aidash_domain::nodes::NodeName,
+	binding: &Binding,
+	actor: &str,
+) -> Result<Binding> {
+	let mut scope = TenantCatalog {
+		access,
+		node: deployment.node(node.clone()),
+		deployment_scope_orchestrated: false,
+	};
+	let reference = crate::registry::EntityRef {
+		id: binding.entry_id.clone(),
+		version: binding.entry_version.clone(),
+	};
+	let updated = scope
+		.compare_and_set(
+			&binding.tenant,
+			node,
+			&reference,
+			binding.revision,
+			binding.enabled,
+			aidash_domain::identity::catalog::RestrictionChange::Preserve,
+		)
+		.await?
+		.ok_or_else(|| Error::Conflict("catalog revision changed".into()))?;
+	scope.history(&updated, actor, None).await?;
+	scope.stop_carrying(&updated).await?;
+	Ok(updated)
 }
 
 /// Apply a selected approval on every Node in its scope under one policy lease.
@@ -179,15 +213,11 @@ async fn approve_scoped(
 			.filter(|item| item.enabled && item.scope == ApprovalScope::Deployment)
 		{
 			let mut item = item.clone();
-			let rows = AuthorizationCatalog::objects()
-				.filter(AuthorizationCatalog::field_tenant().eq(tenant.clone()))
-				.filter(AuthorizationCatalog::field_node().eq(node.as_str().to_owned()))
-				.filter(AuthorizationCatalog::field_entry_key().eq(item.entry.id.clone()))
-				.filter(AuthorizationCatalog::field_entry_version().eq(item.entry.version.clone()))
-				.all_with_executor(&mut **access.tx)
-				.await
-				.map_err(FrameworkError::from)?;
-			item.expected_revision = rows.first().map_or(0, |row| row.revision);
+			item.expected_revision = item
+				.expected_node_revisions
+				.get(node.as_str())
+				.copied()
+				.unwrap_or(0);
 			if let Some(restriction) = &mut item.restriction {
 				restriction.subjects = restriction.subjects.iter().map(&translate).collect();
 			}
@@ -494,6 +524,7 @@ impl PolicyAdministration {
 			let root = review_entry(&query.entry)?;
 			let mut scope = ReviewScope {
 				access: &mut access,
+				include_node_revisions: true,
 				node: f.config.deployment.node(node),
 				validation: crate::bootstrap::registry_validation_for(&f.store),
 			};
@@ -576,6 +607,7 @@ impl PolicyAdministration {
 			let current = {
 				let mut scope = ReviewScope {
 					access: &mut access,
+					include_node_revisions: false,
 					node: node_address.clone(),
 					validation: crate::bootstrap::registry_validation_for(&f.store),
 				};
@@ -677,22 +709,21 @@ impl PolicyAdministration {
 			}
 			// A local Deployment-wide approval may depend on an installation in this
 			// submission only if that installation is also approved on every Node.
-			let deployment_activations = plan
-				.installations
-				.iter()
-				.filter(|activation| {
-					activation.scope == aidash_domain::identity::catalog::ApprovalScope::Deployment
-				})
-				.filter_map(|activation| {
-					current.items.iter().find(|item| {
-						item.installation.as_ref().is_some_and(|installed| {
-							installed.installation == activation.installation
-								&& installed.revision == activation.revision
+			let deployment_activations =
+				plan.installations
+					.iter()
+					.filter_map(|activation| {
+						current.items.iter().find(|item| {
+							item.installation.as_ref().is_some_and(|installed| {
+								installed.installation == activation.installation
+									&& installed.revision == activation.revision
+							}) && activation.scope.or(item.scope).unwrap_or(
+								aidash_domain::identity::catalog::ApprovalScope::Deployment,
+							) == aidash_domain::identity::catalog::ApprovalScope::Deployment
 						})
 					})
-				})
-				.map(|item| (item.reference.id.clone(), item.reference.version.clone()))
-				.collect();
+					.map(|item| (item.reference.id.clone(), item.reference.version.clone()))
+					.collect();
 			// An activation-only submission has no local approval to decide.
 			let bindings = if plan.approvals.is_empty() {
 				vec![]
@@ -801,11 +832,14 @@ impl PolicyAdministration {
 						.ok_or_else(|| Error::Conflict("activated approval disappeared".into()))?;
 					scoped.push(
 						aidash_application::authorization::catalog::approvals::Approval {
+							expected_node_revisions: activation.expected_node_revisions.clone(),
 							entry: item.reference.clone(),
 							enabled: true,
 							expected_revision: row.revision,
-							carry_over: activation.carry_over,
-							scope: activation.scope,
+							carry_over: activation.carry_over.or(item.carry_over).unwrap_or(true),
+							scope: activation.scope.or(item.scope).unwrap_or(
+								aidash_domain::identity::catalog::ApprovalScope::Deployment,
+							),
 							provider_warning_acknowledged: activation.provider_warning_acknowledged,
 							groups: None,
 							restriction: row
@@ -829,6 +863,7 @@ impl PolicyAdministration {
 			let after = {
 				let mut scope = ReviewScope {
 					access: &mut access,
+					include_node_revisions: false,
 					node: node_address.clone(),
 					validation: crate::bootstrap::registry_validation_for(&f.store),
 				};
@@ -1346,14 +1381,18 @@ impl PolicyAdministration {
 	) -> Result<Binding> {
 		let withdraw_carried = input.withdraw_carried;
 		let stop_carrying = input.stop_carrying;
+		let options = (input.carry_over, input.scope);
 		if input.enabled && withdraw_carried {
 			return Err(Error::Invalid(
 				"withdrawal options require a withdrawal".into(),
 			));
 		}
 		let approval = aidash_application::authorization::catalog::approvals::Approval {
-			carry_over: input.carry_over,
-			scope: input.scope,
+			expected_node_revisions: input.expected_node_revisions,
+			carry_over: input.carry_over.unwrap_or(true),
+			scope: input
+				.scope
+				.unwrap_or(aidash_domain::identity::catalog::ApprovalScope::Deployment),
 			entry: input.entry,
 			enabled: input.enabled,
 			expected_revision: input.expected_revision,
@@ -1369,6 +1408,7 @@ impl PolicyAdministration {
 				vec![approval],
 				withdraw_carried,
 				stop_carrying,
+				Some(vec![options]),
 			)
 			.await?
 			.remove(0))
@@ -1379,9 +1419,31 @@ impl PolicyAdministration {
 		actor: Actor,
 		tenant: String,
 		node: aidash_domain::nodes::NodeName,
-		approvals: Vec<aidash_application::authorization::catalog::approvals::Approval>,
+		inputs: Vec<CatalogApprovalInput>,
 	) -> Result<Vec<Binding>> {
-		self.approve_with_withdrawal(actor, tenant, node, approvals, false, false)
+		let options = inputs
+			.iter()
+			.map(|item| (item.carry_over, item.scope))
+			.collect();
+		let approvals = inputs
+			.into_iter()
+			.map(
+				|item| aidash_application::authorization::catalog::approvals::Approval {
+					expected_node_revisions: item.expected_node_revisions,
+					entry: item.entry,
+					enabled: item.enabled,
+					expected_revision: item.expected_revision,
+					carry_over: item.carry_over.unwrap_or(true),
+					scope: item
+						.scope
+						.unwrap_or(aidash_domain::identity::catalog::ApprovalScope::Deployment),
+					provider_warning_acknowledged: item.provider_warning_acknowledged,
+					groups: item.groups,
+					restriction: item.restriction,
+				},
+			)
+			.collect();
+		self.approve_with_withdrawal(actor, tenant, node, approvals, false, false, Some(options))
 			.await
 	}
 
@@ -1393,6 +1455,12 @@ impl PolicyAdministration {
 		mut approvals: Vec<aidash_application::authorization::catalog::approvals::Approval>,
 		withdraw_carried: bool,
 		stop_carrying: bool,
+		options: Option<
+			Vec<(
+				Option<bool>,
+				Option<aidash_domain::identity::catalog::ApprovalScope>,
+			)>,
+		>,
 	) -> Result<Vec<Binding>> {
 		let f = self.runtime.clone();
 		let identity = tenant_subject(actor, &tenant)?;
@@ -1412,6 +1480,30 @@ impl PolicyAdministration {
 			return access.finish(Err(error)).await;
 		}
 		let result = async {
+			if let Some(options) = options {
+				for (first, (carry, scope)) in approvals.iter_mut().zip(options) {
+					let row = AuthorizationCatalog::objects()
+						.filter(AuthorizationCatalog::field_tenant().eq(tenant.clone()))
+						.filter(AuthorizationCatalog::field_node().eq(node.as_str().to_owned()))
+						.filter(AuthorizationCatalog::field_entry_key().eq(first.entry.id.clone()))
+						.filter(
+							AuthorizationCatalog::field_entry_version()
+								.eq(first.entry.version.clone()),
+						)
+						.all_with_executor(&mut **access.tx)
+						.await
+						.map_err(FrameworkError::from)?
+						.into_iter()
+						.next();
+					first.carry_over =
+						carry.unwrap_or_else(|| row.as_ref().map_or(true, |r| r.carry_over));
+					first.scope =
+						scope.unwrap_or_else(|| match row.as_ref().map(|r| r.scope.as_str()) {
+							Some("node") => aidash_domain::identity::catalog::ApprovalScope::Node,
+							_ => aidash_domain::identity::catalog::ApprovalScope::Deployment,
+						});
+				}
+			}
 			let mut stop_descendants = Vec::new();
 			if withdraw_carried || stop_carrying {
 				let root = approvals
@@ -1460,6 +1552,7 @@ impl PolicyAdministration {
 					}
 					approvals.push(
 						aidash_application::authorization::catalog::approvals::Approval {
+							expected_node_revisions: Default::default(),
 							entry: crate::registry::EntityRef {
 								id: row.entry_key,
 								version: row.entry_version,

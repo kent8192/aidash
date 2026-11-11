@@ -68,6 +68,7 @@ pub(super) async fn approve(
 				let groups =
 					(!snapshot.bundle.subjects.contains_key(&subject)).then(|| want.groups.clone());
 				pending.push(Approval {
+					expected_node_revisions: Default::default(),
 					carry_over,
 					scope: if carry_over {
 						aidash_domain::identity::catalog::ApprovalScope::Deployment

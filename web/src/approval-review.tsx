@@ -236,6 +236,7 @@ export function ApprovalReviewPanel({
   const [carryOver, setCarryOver] = useState(initialCarryOver);
   const [approvalScope, setApprovalScope] =
     useState<ApprovalScope>(initialScope);
+  const [carryOptionsEdited, setCarryOptionsEdited] = useState(false);
   const [acknowledged, setAcknowledged] = useState<Record<string, boolean>>({});
   const [editing, setEditing] = useState<string | null>(null);
   const [reason, setReason] = useState("");
@@ -243,6 +244,21 @@ export function ApprovalReviewPanel({
   const [message, setMessage] = useState("");
   const [stale, setStale] = useState(false);
   const current = review.data;
+  const rootPreferences = current?.items.find(
+    (item) =>
+      item.reference.id === root.id && item.reference.version === root.version,
+  ) as
+    | (ReviewItem & {
+        carry_over?: boolean | null;
+        scope?: ApprovalScope | null;
+      })
+    | undefined;
+  const displayedCarry = carryOptionsEdited
+    ? carryOver
+    : (rootPreferences?.carry_over ?? carryOver);
+  const displayedScope = carryOptionsEdited
+    ? approvalScope
+    : (rootPreferences?.scope ?? approvalScope);
   const selected =
     current === undefined
       ? []
@@ -285,17 +301,46 @@ export function ApprovalReviewPanel({
           ]),
         ),
       );
+      const optionsFor = (reference: { id: string; version: string }) => {
+        const item = current.items.find(
+          (candidate) =>
+            candidate.reference.id === reference.id &&
+            candidate.reference.version === reference.version,
+        ) as
+          | (ReviewItem & {
+              carry_over?: boolean | null;
+              scope?: ApprovalScope | null;
+              expected_node_revisions?: Record<string, number>;
+            })
+          | undefined;
+        return {
+          ...(item?.expected_node_revisions &&
+          Object.keys(item.expected_node_revisions).length > 0
+            ? { expected_node_revisions: item.expected_node_revisions }
+            : {}),
+          carry_over: !carryOptionsEdited
+            ? (item?.carry_over ?? carryOver)
+            : carryOver,
+          scope: !carryOptionsEdited
+            ? (item?.scope ?? approvalScope)
+            : approvalScope,
+        };
+      };
       await authorizationSubmitCatalogReview(tenant, {
         ...body,
         items: (body.items ?? []).map((item) => ({
           ...item,
-          carry_over: carryOver,
-          scope: approvalScope,
+          ...optionsFor(item.reference),
         })),
         installations: (body.installations ?? []).map((item) => ({
           ...item,
-          carry_over: carryOver,
-          scope: approvalScope,
+          ...optionsFor(
+            current.items.find(
+              (reviewItem) =>
+                reviewItem.installation?.installation === item.installation &&
+                reviewItem.installation.revision === item.revision,
+            )?.reference ?? current.root,
+          ),
           provider_warning_acknowledged: current.items.some(
             (reviewItem) =>
               reviewItem.installation?.installation === item.installation &&
@@ -595,10 +640,18 @@ export function ApprovalReviewPanel({
       {message && <Notice role="status">{message}</Notice>}
       {canSubmit && (
         <CatalogCarryOptions
-          carry={carryOver}
-          setCarry={setCarryOver}
-          scope={approvalScope}
-          setScope={setApprovalScope}
+          carry={displayedCarry}
+          setCarry={(value) => {
+            if (!carryOptionsEdited) setApprovalScope(displayedScope);
+            setCarryOptionsEdited(true);
+            setCarryOver(value);
+          }}
+          scope={displayedScope}
+          setScope={(value) => {
+            if (!carryOptionsEdited) setCarryOver(displayedCarry);
+            setCarryOptionsEdited(true);
+            setApprovalScope(value);
+          }}
           disabled={busy}
         />
       )}

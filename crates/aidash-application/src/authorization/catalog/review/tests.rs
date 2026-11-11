@@ -112,6 +112,8 @@ impl ApprovalReviewScope for Fixture {
 			.map(|(enabled, revision, restriction)| ApprovalSnapshot {
 				enabled: *enabled,
 				revision: *revision,
+				carry_over: false,
+				scope: aidash_domain::identity::catalog::ApprovalScope::Node,
 				restriction: restriction.clone(),
 			}))
 	}
@@ -462,8 +464,9 @@ fn submission(review: &ApprovalReview, ids: &[&str]) -> ApprovalReviewSubmission
 					.find(|item| item.reference.id == *id)
 					.unwrap();
 				ReviewApproval {
-					carry_over: false,
-					scope: aidash_domain::identity::catalog::ApprovalScope::Node,
+					expected_node_revisions: item.expected_node_revisions.clone(),
+					carry_over: Some(false),
+					scope: Some(aidash_domain::identity::catalog::ApprovalScope::Node),
 					provider_warning_acknowledged: false,
 					reference: item.reference.clone(),
 					digest: item.digest.clone().unwrap(),
@@ -474,6 +477,48 @@ fn submission(review: &ApprovalReview, ids: &[&str]) -> ApprovalReviewSubmission
 			.collect(),
 		installations: vec![],
 	}
+}
+
+#[tokio::test]
+async fn omitted_carry_options_keep_existing_values_and_default_new_approvals() {
+	let mut fixture = Fixture::new(vec![
+		agent("model", &[]),
+		entry("model", "model", json!({})),
+	]);
+	fixture.approve(
+		"model",
+		Some(CatalogRestriction {
+			subjects: ["someone-else".into()].into(),
+			groups: BTreeSet::new(),
+		}),
+	);
+	let review = review(&mut fixture, &reference("writer")).await.unwrap();
+	let mut request = submission(&review, &["model", "writer"]);
+	for item in &mut request.items {
+		item.carry_over = None;
+		item.scope = None;
+	}
+	let plan = plan(&review, &request).unwrap();
+	let existing = plan
+		.approvals
+		.iter()
+		.find(|item| item.entry.id == "model")
+		.unwrap();
+	assert!(!existing.carry_over);
+	assert_eq!(
+		existing.scope,
+		aidash_domain::identity::catalog::ApprovalScope::Node
+	);
+	let new = plan
+		.approvals
+		.iter()
+		.find(|item| item.entry.id == "writer")
+		.unwrap();
+	assert!(new.carry_over);
+	assert_eq!(
+		new.scope,
+		aidash_domain::identity::catalog::ApprovalScope::Deployment
+	);
 }
 
 #[rstest]
@@ -592,8 +637,9 @@ async fn an_installation_plan_uses_the_review_node_and_restriction() {
 	let review = review(&mut fixture, &reference("writer")).await.unwrap();
 	let mut submission = submission(&review, &[]);
 	submission.installations.push(ReviewActivation {
-		carry_over: true,
-		scope: aidash_domain::identity::catalog::ApprovalScope::Deployment,
+		expected_node_revisions: Default::default(),
+		carry_over: Some(true),
+		scope: Some(aidash_domain::identity::catalog::ApprovalScope::Deployment),
 		provider_warning_acknowledged: false,
 		installation: "package".into(),
 		revision: 2,
@@ -657,8 +703,9 @@ async fn widening_the_active_revision_skips_activation_while_a_newer_one_is_stag
 	// Act: widen it together with an unrelated local approval of the root.
 	let mut submission = submission(&review, &["writer"]);
 	submission.installations.push(ReviewActivation {
-		carry_over: true,
-		scope: aidash_domain::identity::catalog::ApprovalScope::Deployment,
+		expected_node_revisions: Default::default(),
+		carry_over: Some(true),
+		scope: Some(aidash_domain::identity::catalog::ApprovalScope::Deployment),
 		provider_warning_acknowledged: false,
 		installation: "package".into(),
 		revision: 1,

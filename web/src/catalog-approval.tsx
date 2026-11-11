@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   authorizationCatalogImpact,
+  authorizationCatalogReview,
   authorizationSetCatalog,
   registryVersions,
 } from "./generated/aidash";
@@ -235,9 +236,12 @@ export function CatalogApprovalSection({
   const { selected } = useNodes();
   const [acknowledged, setAcknowledged] = useState<Record<string, boolean>>({});
   const [chosen, setChosen] = useState<string[]>();
-  const [carryOver, setCarryOver] = useState(true);
-  const [approvalScope, setApprovalScope] =
-    useState<ApprovalScope>("deployment");
+  const [carryOver, setCarryOver] = useState(
+    version.approval?.carry_over ?? true,
+  );
+  const [approvalScope, setApprovalScope] = useState<ApprovalScope>(
+    version.approval?.scope === "node" ? "node" : "deployment",
+  );
   const [restricting, setRestricting] = useState<boolean>();
   const [subjectNames, setSubjectNames] = useState<string>();
   const [restrictedGroups, setRestrictedGroups] = useState<string[]>();
@@ -265,6 +269,23 @@ export function CatalogApprovalSection({
     can("catalog.approve") &&
     version.needs_approval &&
     !installed;
+  const nodeRevisions = useQuery({
+    queryKey: [
+      "catalog-review-revisions",
+      tenant,
+      selected?.name,
+      entry.id,
+      entry.version,
+    ],
+    queryFn: () =>
+      authorizationCatalogReview(tenant!, {
+        node: selected!.name,
+        entry: `${entry.id}@${entry.version}`,
+      }),
+    enabled: decides,
+    retry: false,
+    staleTime: 0,
+  });
   const newSubject = entry.kind === "agent" && !version.subject;
   const choosesGroups =
     newSubject && can("subject.group.update") && assignable.length > 0;
@@ -364,6 +385,24 @@ export function CatalogApprovalSection({
         node: selected!.name,
         carry_over: carryOver,
         scope: approvalScope,
+        ...(() => {
+          const items = nodeRevisions.data?.items;
+          const item = Array.isArray(items)
+            ? (items.find(
+                (candidate) =>
+                  candidate.reference.id === entry.id &&
+                  candidate.reference.version === entry.version,
+              ) as
+                | ((typeof items)[number] & {
+                    expected_node_revisions?: Record<string, number>;
+                  })
+                | undefined)
+            : undefined;
+          return item?.expected_node_revisions &&
+            Object.keys(item.expected_node_revisions).length > 0
+            ? { expected_node_revisions: item.expected_node_revisions }
+            : {};
+        })(),
       }),
     );
   // Withdrawal is never blocked: it shows what it stops, then waits for the
@@ -580,7 +619,11 @@ export function CatalogApprovalSection({
             ) : decides ? (
               <Button
                 size="sm"
-                disabled={busy || !accepted(version)}
+                disabled={
+                  busy ||
+                  !accepted(version) ||
+                  (approvalScope === "deployment" && nodeRevisions.isPending)
+                }
                 onClick={() => void approve()}
               >
                 {t("catalogApprove")}

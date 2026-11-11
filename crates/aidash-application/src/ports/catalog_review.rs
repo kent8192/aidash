@@ -12,6 +12,8 @@ use async_trait::async_trait;
 pub struct ApprovalSnapshot {
 	pub enabled: bool,
 	pub revision: i64,
+	pub carry_over: bool,
+	pub scope: aidash_domain::identity::catalog::ApprovalScope,
 	pub restriction: Option<CatalogRestriction>,
 }
 
@@ -34,6 +36,13 @@ pub trait ApprovalReviewScope: Send {
 	/// The raw exact version, approved or not.
 	async fn definition(&mut self, reference: &EntityRef) -> Result<Option<Entry>>;
 	async fn approval(&mut self, reference: &EntityRef) -> Result<Option<ApprovalSnapshot>>;
+	/// Revisions of the reviewed exact approval on all current local Nodes.
+	async fn node_revisions(
+		&mut self,
+		_reference: &EntityRef,
+	) -> Result<std::collections::BTreeMap<String, i64>> {
+		Ok(Default::default())
+	}
 	/// Highest lower enabled approval on this Node, if its definition is readable.
 	async fn previous_approved(&mut self, _entry: &Entry) -> Result<Option<Entry>> {
 		Ok(None)

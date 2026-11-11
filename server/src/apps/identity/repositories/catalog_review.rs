@@ -17,6 +17,7 @@ pub(crate) struct ReviewScope<'a> {
 	pub(crate) access: &'a mut Access,
 	pub(crate) node: NodeAddress,
 	pub(crate) validation: aidash_application::registry::DefinitionValidation,
+	pub(crate) include_node_revisions: bool,
 }
 
 #[async_trait]
@@ -54,10 +55,35 @@ impl ApprovalReviewScope for ReviewScope<'_> {
 			.map(|row| ApprovalSnapshot {
 				enabled: row.enabled,
 				revision: row.revision,
+				carry_over: row.carry_over,
+				scope: if row.scope == "deployment" {
+					aidash_domain::identity::catalog::ApprovalScope::Deployment
+				} else {
+					aidash_domain::identity::catalog::ApprovalScope::Node
+				},
 				restriction: row
 					.restriction
 					.and_then(|value| serde_json::from_value(value.0).ok()),
 			}))
+	}
+	async fn node_revisions(
+		&mut self,
+		reference: &EntityRef,
+	) -> Result<std::collections::BTreeMap<String, i64>> {
+		if !self.include_node_revisions {
+			return Ok(Default::default());
+		}
+		Ok(AuthorizationCatalog::objects()
+			.filter(AuthorizationCatalog::field_tenant().eq(self.tenant().to_owned()))
+			.filter(AuthorizationCatalog::field_entry_key().eq(reference.id.clone()))
+			.filter(AuthorizationCatalog::field_entry_version().eq(reference.version.clone()))
+			.all_with_executor(self.access.tx.native_mut())
+			.await
+			.map_err(reinhardt::core::exception::Error::from)
+			.map_err(crate::Error::from)?
+			.into_iter()
+			.map(|row| (row.node, row.revision))
+			.collect())
 	}
 	async fn previous_approved(&mut self, entry: &Entry) -> Result<Option<Entry>> {
 		let rows = AuthorizationCatalog::objects()

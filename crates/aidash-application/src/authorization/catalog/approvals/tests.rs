@@ -61,6 +61,7 @@ fn reference(id: &str) -> EntityRef {
 }
 fn approval(id: &str, enabled: bool) -> Approval {
 	Approval {
+		expected_node_revisions: Default::default(),
 		carry_over: false,
 		scope: aidash_domain::identity::catalog::ApprovalScope::Node,
 		provider_warning_acknowledged: false,
