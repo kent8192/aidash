@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "./components/ui/button";
+import { Input } from "./components/ui/input";
 import { Badge as StatusBadge } from "./components/ui/badge";
 import { NativeSelect } from "./components/ui/native-select";
 import {
@@ -24,6 +25,7 @@ import {
   providerCredentialBindingList,
   providerCredentialBindingUpdate,
   providerAuthorizationStart,
+  providerCredentialSupply,
 } from "./generated/aidash";
 
 const outcomes = [
@@ -99,8 +101,10 @@ const stateTones: Record<string, StatusTone> = {
 
 export function ProviderCredentialsPage({
   access,
+  offering,
 }: {
   access: State["access"];
+  offering?: State["offering"];
 }) {
   const { t } = useI18n();
   // Provider Credentials belong to a Tenant; a Deployment Administrator holds
@@ -111,12 +115,28 @@ export function ProviderCredentialsPage({
   return (
     <div className="grid max-w-5xl min-w-0 gap-6">
       <Notice>{t("providerCredentialsHelp")}</Notice>
-      <TenantProviderCredentials key={tenant} tenant={tenant} />
+      <TenantProviderCredentials
+        key={tenant}
+        tenant={tenant}
+        // Only a Self-hosted host, which already reads the Secret Store,
+        // accepts a pasted key (ADR 0006 as amended by #877).
+        pasting={offering === "self-hosted"}
+      />
     </div>
   );
 }
-function TenantProviderCredentials({ tenant }: { tenant: string }) {
+function TenantProviderCredentials({
+  tenant,
+  pasting,
+}: {
+  tenant: string;
+  pasting: boolean;
+}) {
   const { t, locale } = useI18n();
+  const [pasted, setPasted] = useState("");
+  const [pasteOutcome, setPasteOutcome] = useState<"bound" | "unbound" | null>(
+    null,
+  );
   const client = useQueryClient();
   const path = encodeURIComponent(tenant);
   const [offset, setOffset] = useState(0);
@@ -195,6 +215,23 @@ function TenantProviderCredentials({ tenant }: { tenant: string }) {
       sessionStorage.setItem(tenantKey, tenant);
       window.location.assign(started.authorization_url);
     });
+  // A pasted key replaces the connected key's version, or becomes a new
+  // Provider Credential bound like a connection. The field is cleared at
+  // once so the key does not stay in the page.
+  const supply = (target?: { id: string; revision: number }) => {
+    const key = pasted.trim();
+    setPasted("");
+    setPasteOutcome(null);
+    return act(async () => {
+      const stored = await providerCredentialSupply(path, {
+        provider: "openrouter",
+        key,
+        provider_credential_id: target?.id ?? null,
+        expected_revision: target?.revision ?? null,
+      });
+      setPasteOutcome(stored.bound ? "bound" : "unbound");
+    });
+  };
   const disabled = rows.error instanceof ApiError && rows.error.status === 404;
   const connected = choices.find(
     (row) => row.id === boundId && row.state === "active",
@@ -309,6 +346,55 @@ function TenantProviderCredentials({ tenant }: { tenant: string }) {
           </div>
         </div>
       </Panel>
+      {pasting && (
+        <Panel title={t("providerKeyPaste")}>
+          <p className="text-xs text-muted-foreground">
+            {t("providerKeyPasteHelp")}
+          </p>
+          {pasteOutcome && (
+            <Notice
+              role="status"
+              tone={pasteOutcome === "bound" ? "info" : "warning"}
+            >
+              {t(`providerKeyPasteOutcome_${pasteOutcome}`)}
+            </Notice>
+          )}
+          <form
+            className="flex min-w-0 flex-wrap items-end gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void supply(
+                connected
+                  ? { id: connected.id, revision: connected.revision }
+                  : undefined,
+              );
+            }}
+          >
+            <div className="w-full max-w-md">
+              <Field label="OpenRouter">
+                <Input
+                  type="password"
+                  autoComplete="off"
+                  spellCheck={false}
+                  aria-label={t("providerKeyPaste")}
+                  value={pasted}
+                  disabled={busy}
+                  onChange={(event) => setPasted(event.currentTarget.value)}
+                />
+              </Field>
+            </div>
+            <Button
+              type="submit"
+              size="sm"
+              disabled={busy || !connectionKnown || pasted.trim() === ""}
+            >
+              {connected
+                ? t("providerKeyPasteReplace")
+                : t("providerKeyPasteSave")}
+            </Button>
+          </form>
+        </Panel>
+      )}
       <Panel title={t("providerCredentialBindings")}>
         <div className="w-full max-w-md">
           <Field label="OpenRouter">
@@ -378,6 +464,11 @@ function TenantProviderCredentials({ tenant }: { tenant: string }) {
                         <StatusBadge tone={stateTones[row.state] ?? "neutral"}>
                           {t(`providerCredentialState_${row.state}`)}
                         </StatusBadge>
+                        {row.key_origin !== "authorization" && (
+                          <StatusBadge tone="neutral">
+                            {t(`providerKeyOrigin_${row.key_origin}`)}
+                          </StatusBadge>
+                        )}
                       </div>
                     </TableCell>
                     <TableCell className="font-mono text-xs">

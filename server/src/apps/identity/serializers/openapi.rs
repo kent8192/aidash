@@ -430,6 +430,14 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 	)?;
 	contracts.query::<_, pc::Page>(document, views::provider_credentials::list)?;
 	contracts.path(document, views::provider_credentials::list, &["String"])?;
+	contracts.request::<_, pc::Supply>(document, views::provider_credentials::supply)?;
+	contracts.response::<_, pc::Supplied>(
+		document,
+		views::provider_credentials::supply,
+		200,
+		"application/json",
+	)?;
+	contracts.path(document, views::provider_credentials::supply, &["String"])?;
 	contracts.response::<_, Metadata>(
 		document,
 		views::provider_credentials::get_record,

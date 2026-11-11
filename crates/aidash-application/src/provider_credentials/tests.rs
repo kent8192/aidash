@@ -221,6 +221,7 @@ fn service() -> (Service, Repo, FakeStore) {
 			exchange: Arc::new(NoExchange),
 			fingerprint_key: "test-fingerprint-root-key".into(),
 			max_per_tenant: 2,
+			supplied_keys: false,
 		},
 		repo,
 		store,
@@ -912,6 +913,7 @@ async fn deleted_intent_recovers_partial_destruction_secret_deletion_and_final_c
 			exchange: Arc::new(NoExchange),
 			fingerprint_key: "test-fingerprint-root-key".into(),
 			max_per_tenant: 2,
+			supplied_keys: false,
 		};
 		let page = restarted.reconcile_page(None).await.unwrap();
 		assert_eq!(page.cleaned, 1);
@@ -1192,4 +1194,88 @@ async fn purge_ends_every_credential_of_one_tenant_bound_or_not_and_resumes_afte
 	}
 	assert_eq!(data.rows[&beta].state, State::Active);
 	assert!(store.state.lock().await.contains_key(&store.resource(beta)));
+}
+#[tokio::test]
+async fn supplied_keys_are_refused_unless_the_deployment_accepts_them() {
+	let (s, repo, store) = service();
+	let refused = s
+		.supply(
+			"alpha",
+			Provider::Openrouter,
+			Target::Connect { id: Uuid::now_v7() },
+			"pasted-provider-key-1234".into(),
+			KeyOrigin::Pasted,
+			"actor",
+		)
+		.await;
+	assert!(
+		matches!(refused, Err(Error::Conflict(ref code)) if code == "SUPPLIED_KEYS_UNAVAILABLE"),
+		"{refused:?}"
+	);
+	assert!(repo.0.lock().await.rows.is_empty());
+	assert!(store.state.lock().await.is_empty());
+}
+#[tokio::test]
+async fn supplied_keys_record_their_origin_and_keep_no_digest() {
+	let (mut s, repo, _store) = service();
+	s.supplied_keys = true;
+	let id = Uuid::now_v7();
+	let pasted = s
+		.supply(
+			"alpha",
+			Provider::Openrouter,
+			Target::Connect { id },
+			"pasted-provider-key-1234".into(),
+			KeyOrigin::Pasted,
+			"alice",
+		)
+		.await
+		.unwrap();
+	assert_eq!(pasted.provider_credential.key_origin, KeyOrigin::Pasted);
+	assert_eq!(pasted.provider_credential.last4, "1234");
+	assert!(pasted.provider_credential.key_settings_url.is_none());
+	assert!(repo.0.lock().await.rows[&id].key_digest.is_none());
+	// A new version from the host replaces the recorded origin.
+	let replaced = s
+		.supply(
+			"alpha",
+			Provider::Openrouter,
+			Target::Reconnect {
+				id,
+				expected_revision: pasted.provider_credential.revision,
+			},
+			"host-provider-key-5678".into(),
+			KeyOrigin::HostAccess,
+			"host_access",
+		)
+		.await
+		.unwrap();
+	assert_eq!(
+		replaced.provider_credential.key_origin,
+		KeyOrigin::HostAccess
+	);
+	assert_eq!(replaced.provider_credential.last4, "5678");
+	// Provider Authorization never arrives through this path, and a Plan
+	// Connection entry holds no Provider Credential.
+	for (provider, origin) in [
+		(Provider::Openrouter, KeyOrigin::Authorization),
+		(Provider::Chatgpt, KeyOrigin::Pasted),
+	] {
+		assert!(
+			s.supply(
+				"alpha",
+				provider,
+				Target::Connect { id: Uuid::now_v7() },
+				"another-provider-key".into(),
+				origin,
+				"alice",
+			)
+			.await
+			.is_err()
+		);
+	}
+	// Metadata never carries the key.
+	let json = serde_json::to_string(&replaced).unwrap();
+	assert!(json.contains("\"key_origin\":\"host_access\""));
+	assert!(!json.contains("host-provider-key"));
 }

@@ -25,6 +25,9 @@ pub struct ProviderCredential {
 	/// Unkeyed SHA-256 for the provider key-settings deep link (ADR 0006).
 	#[field(field_type = "text", null = true)]
 	pub key_digest: Option<String>,
+	/// `authorization`, `pasted` or `host_access` (#892).
+	#[field(field_type = "text")]
+	pub key_origin: String,
 	#[field(field_type = "text")]
 	pub state: String,
 	#[field]

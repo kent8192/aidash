@@ -135,6 +135,7 @@ fn row(id: Uuid, tenant: &str, version: &str) -> ProviderCredential {
 		fingerprint: "fixture".into(),
 		last4: "test".into(),
 		key_digest: None,
+		key_origin: Default::default(),
 		state: CredentialState::Active,
 		created_at: chrono::Utc::now(),
 		rotated_at: None,

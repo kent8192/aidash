@@ -25,6 +25,8 @@ pub fn url_patterns() -> UnifiedRouter {
 			.with_route_middleware(AccessBoundary::public())
 			.endpoint(super::views::provider_credentials::list)
 			.with_route_middleware(AccessBoundary::authenticated())
+			.endpoint(super::views::provider_credentials::supply)
+			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(super::views::provider_credentials::get_record)
 			.with_route_middleware(AccessBoundary::authenticated())
 			.endpoint(super::views::provider_credentials::revoke)

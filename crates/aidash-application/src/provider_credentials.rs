@@ -1,6 +1,8 @@
 //! Provider Credential lifecycle; all Key Material stays in write-only ports.
 use crate::{Error, Result, provider_authorization::Target};
-use aidash_domain::provider_credentials::{Binding, Provider, ProviderCredential, State};
+use aidash_domain::provider_credentials::{
+	Binding, KeyOrigin, Provider, ProviderCredential, State,
+};
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use hmac::{Hmac, Mac};
@@ -149,6 +151,10 @@ pub struct Service {
 	pub exchange: Arc<dyn crate::provider_authorization::Exchange>,
 	pub fingerprint_key: SecretString,
 	pub max_per_tenant: usize,
+	/// Whether Key Material may also come from a person or Host Access rather
+	/// than Provider Authorization. Only a Self-hosted Deployment, whose host
+	/// already reads the Secret Store, sets it (ADR 0006, amended by #877).
+	pub supplied_keys: bool,
 }
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 #[schemars(rename = "ProviderCredentialMetadata")]
@@ -159,6 +165,7 @@ pub struct Metadata {
 	pub base_url: String,
 	pub fingerprint: String,
 	pub last4: String,
+	pub key_origin: KeyOrigin,
 	/// The provider's owner-only settings page for the issued key. Revocation
 	/// destroys only Aidash's copy, so users delete the key there.
 	pub key_settings_url: Option<String>,
@@ -177,6 +184,7 @@ impl From<ProviderCredential> for Metadata {
 			base_url: v.base_url,
 			fingerprint: v.fingerprint,
 			last4: v.last4,
+			key_origin: v.key_origin,
 			key_settings_url: v
 				.key_digest
 				.as_deref()
@@ -296,15 +304,31 @@ impl Service {
 		let key_settings_url = provider.key_settings_url(&digest);
 		let written = match target {
 			Target::Connect { id } => {
-				self.write_new(tenant, id, provider, key, Some(digest), actor)
-					.await
+				self.write_new(
+					tenant,
+					id,
+					provider,
+					key,
+					Some(digest),
+					KeyOrigin::Authorization,
+					actor,
+				)
+				.await
 			}
 			Target::Reconnect {
 				id,
 				expected_revision,
 			} => {
-				self.write_rotation(tenant, id, expected_revision, key, Some(digest), actor)
-					.await
+				self.write_rotation(
+					tenant,
+					id,
+					expected_revision,
+					key,
+					Some(digest),
+					KeyOrigin::Authorization,
+					actor,
+				)
+				.await
 			}
 		};
 		written.map_err(|error| AuthorizationFailure {
@@ -350,6 +374,7 @@ impl Service {
 		provider: Provider,
 		key: SecretString,
 		key_digest: Option<String>,
+		key_origin: KeyOrigin,
 		actor: &str,
 	) -> Result<Validated> {
 		Self::validate_key(&key)?;
@@ -369,6 +394,7 @@ impl Service {
 			fingerprint,
 			last4,
 			key_digest,
+			key_origin,
 			state: State::Pending,
 			created_at: Utc::now(),
 			rotated_at: None,
@@ -428,6 +454,7 @@ impl Service {
 		expected: i64,
 		key: SecretString,
 		key_digest: Option<String>,
+		key_origin: KeyOrigin,
 		actor: &str,
 	) -> Result<Validated> {
 		Self::validate_key(&key)?;
@@ -450,6 +477,7 @@ impl Service {
 		row.fingerprint = fingerprint;
 		row.last4 = last4;
 		row.key_digest = key_digest;
+		row.key_origin = key_origin;
 		row.rotated_at = Some(Utc::now());
 		row.revision += 1;
 		scope
@@ -472,6 +500,52 @@ impl Service {
 			warnings,
 			previous_key_settings_url,
 		})
+	}
+	/// Stores Key Material that a person pasted or Host Access supplied, as a
+	/// new Provider Credential or, on `Reconnect`, as its new version (#892).
+	/// Only a Deployment with [`Self::supplied_keys`] accepts it; everywhere
+	/// else Provider Authorization stays the only source (ADR 0006). No key
+	/// digest is kept: the same pasted key may be stored in several Tenants,
+	/// so it must not correlate them the way a freshly issued key cannot.
+	pub async fn supply(
+		&self,
+		tenant: &str,
+		provider: Provider,
+		target: Target,
+		key: SecretString,
+		key_origin: KeyOrigin,
+		actor: &str,
+	) -> Result<Validated> {
+		if !self.supplied_keys {
+			return Err(Error::Conflict("SUPPLIED_KEYS_UNAVAILABLE".into()));
+		}
+		if key_origin == KeyOrigin::Authorization {
+			return Err(Error::Invalid(
+				"Provider Authorization supplies its own Key Material".into(),
+			));
+		}
+		provider.require_credential()?;
+		match target {
+			Target::Connect { id } => {
+				self.write_new(tenant, id, provider, key, None, key_origin, actor)
+					.await
+			}
+			Target::Reconnect {
+				id,
+				expected_revision,
+			} => {
+				let mut scope = self.repository.begin(tenant).await?;
+				let row = scope.get(id).await?;
+				scope.commit().await?;
+				if row.provider != provider {
+					return Err(Error::Invalid(
+						"the key's provider does not match the Provider Credential".into(),
+					));
+				}
+				self.write_rotation(tenant, id, expected_revision, key, None, key_origin, actor)
+					.await
+			}
+		}
 	}
 	pub async fn revoke(
 		&self,
@@ -756,7 +830,16 @@ pub mod testing {
 			key: SecretString,
 			actor: &str,
 		) -> Result<Validated> {
-			self.write_new(tenant, id, provider, key, None, actor).await
+			self.write_new(
+				tenant,
+				id,
+				provider,
+				key,
+				None,
+				KeyOrigin::Authorization,
+				actor,
+			)
+			.await
 		}
 		async fn rotate(
 			&self,
@@ -766,8 +849,16 @@ pub mod testing {
 			key: SecretString,
 			actor: &str,
 		) -> Result<Validated> {
-			self.write_rotation(tenant, id, expected, key, None, actor)
-				.await
+			self.write_rotation(
+				tenant,
+				id,
+				expected,
+				key,
+				None,
+				KeyOrigin::Authorization,
+				actor,
+			)
+			.await
 		}
 	}
 	/// Fails every exchange; for tests that never run Provider Authorization.
