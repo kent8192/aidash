@@ -1044,6 +1044,110 @@ impl PolicyAdministration {
 			.await;
 			return access.finish(result).await;
 		}
+		if origin.is_none() {
+			let identity = tenant_subject(actor, &tenant)?;
+			if identity.http_session.is_some() {
+				return Err(Error::Forbidden);
+			}
+			let mut access = Access::begin(&f.store, &identity).await?;
+			let result = async {
+				use crate::apps::identity::models::{
+					AuthorizationCredential, DashboardMapping, Tenant,
+				};
+				use aidash_domain::policy::SubjectKind;
+				let issuer = AuthorizationCredential::objects()
+					.filter(AuthorizationCredential::field_id().eq(identity.credential_id))
+					.all_with_executor(&mut **access.tx)
+					.await
+					.map_err(FrameworkError::from)?
+					.pop()
+					.ok_or(Error::Unauthorized)?;
+				let issuer_kind = access
+					.snapshot
+					.bundle
+					.subjects
+					.get(&identity.subject)
+					.map(|s| s.kind.clone());
+				if issuer.mapping_id.is_some()
+					|| issuer.parent_id.is_some()
+					|| issuer.issued_by == "dashboard-oidc"
+					|| !matches!(issuer_kind, Some(SubjectKind::Service | SubjectKind::Agent))
+				{
+					return Err(Error::Forbidden);
+				}
+				if !DashboardMapping::objects()
+					.filter(DashboardMapping::field_tenant().eq(tenant.clone()))
+					.filter(DashboardMapping::field_subject().eq(identity.subject.clone()))
+					.all_with_executor(&mut **access.tx)
+					.await
+					.map_err(FrameworkError::from)?
+					.is_empty()
+				{
+					return Err(Error::Forbidden);
+				}
+				let kind = access
+					.snapshot
+					.bundle
+					.subjects
+					.get(&input.subject)
+					.map(|s| s.kind.clone());
+				let resource =
+					access.resource("subject", &input.subject, serde_json::json!({"kind": kind}));
+				access
+					.require(
+						&resource,
+						aidash_domain::identity::tenant_administration::CREDENTIAL_ISSUE,
+					)
+					.await?;
+				if !matches!(kind, Some(SubjectKind::Service | SubjectKind::Agent)) {
+					return Err(Error::Invalid(
+						"credentials may only be issued for service or agent subjects".into(),
+					));
+				}
+				let previously_mapped = !DashboardMapping::objects()
+					.filter(DashboardMapping::field_tenant().eq(tenant.clone()))
+					.filter(DashboardMapping::field_subject().eq(input.subject.clone()))
+					.all_with_executor(&mut **access.tx)
+					.await
+					.map_err(FrameworkError::from)?
+					.is_empty();
+				if previously_mapped {
+					return Err(Error::Invalid("a person was mapped to this subject".into()));
+				}
+				crate::authorization::identity::require_live_subject(
+					&mut **access.tx,
+					&access.snapshot,
+					&input.subject,
+				)
+				.await?;
+				let maximum = Tenant::credential_maximum(
+					&mut **access.tx,
+					&tenant,
+					f.config.credential_max_seconds,
+					false,
+				)
+				.await?;
+				aidash_domain::identity::credentials::validate_tenant_lifetime(
+					input.expires_in_seconds,
+					maximum,
+				)?;
+				let name = aidash_domain::tenancy::TenantName::new(&tenant)?;
+				let token = aidash_domain::identity::credentials::subject_token(&name);
+				let credential = AuthorizationCredential::issue(
+					&mut **access.tx,
+					&tenant,
+					&input.subject,
+					crate::authorization::identity::digest(&token),
+					input.expires_in_seconds,
+					&format!("subject:{}", identity.subject),
+					None,
+				)
+				.await?;
+				Ok(IssuedCredential { credential, token })
+			}
+			.await;
+			return access.finish(result).await;
+		}
 		self.administrations()
 			.run(actor, origin, &tenant, async |administrator| {
 				administrator

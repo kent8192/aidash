@@ -495,6 +495,80 @@ async fn active_self_issued_credentials_are_bounded_independently_of_history(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn tenant_owned_credential_may_issue_independent_credentials_under_policy(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let (status, body) = t.replace(|bundle| {
+		bundle["subjects"]["ci"] = json!({"kind":"service", "node":t.node, "groups":["members"]});
+		bundle["subjects"]["other-ci"] = json!({"kind":"service", "node":t.node, "groups":["members"]});
+		bundle["policies"].as_array_mut().unwrap().push(json!({"id":"ci-issue", "effect":"allow", "subjects":{"ids":["ci"]}, "actions":["credential.issue"], "resources":{"kinds":["*"], "ids":["other-ci"]}}));
+	}).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, issuer) = t
+		.alice("POST", "/credentials", json!({"subject":"ci"}))
+		.await;
+	assert_eq!(status, 200, "{issuer}");
+	let issuer_token = issuer["token"].as_str().unwrap();
+	let (status, issued) =
+		t.d.send(
+			"POST",
+			&t.path("/credentials"),
+			None,
+			None,
+			Some(issuer_token),
+			json!({"subject":"other-ci"}),
+		)
+		.await;
+	assert_eq!(status, 200, "{issued}");
+	let (status, child) =
+		t.d.send(
+			"POST",
+			&t.path("/credentials"),
+			None,
+			None,
+			Some(issuer_token),
+			json!({"subject":"ci", "child":true, "expires_in_seconds":300}),
+		)
+		.await;
+	assert_eq!(status, 200, "{child}");
+	let (status, _) =
+		t.d.send(
+			"POST",
+			&t.path("/credentials"),
+			None,
+			None,
+			child["token"].as_str(),
+			json!({"subject":"other-ci"}),
+		)
+		.await;
+	assert_eq!(status, 403);
+	let (status, revoked) = t
+		.alice(
+			"POST",
+			&format!(
+				"/credentials/{}/revoke",
+				issuer["credential"]["id"].as_str().unwrap()
+			),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{revoked}");
+	assert_eq!(
+		t.bearer(
+			issued["token"].as_str().unwrap(),
+			"GET",
+			"/api/state",
+			Value::Null
+		)
+		.await,
+		200
+	);
+	t.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn a_child_credential_ends_with_its_parent_and_cannot_issue_children(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
