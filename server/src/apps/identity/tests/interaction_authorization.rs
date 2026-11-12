@@ -21,8 +21,7 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) =
-		request(&app, &token, "POST", "/api/conversations", conversation()).await;
+	let (status, created) = common::post(&app, &token, "/api/conversations", conversation()).await;
 	assert_eq!(status, 200, "{created}");
 	let workspace = created["workspace"]["id"].as_str().unwrap();
 	let run: Run = {
@@ -96,10 +95,9 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 	let before:Value=sqlx::query_scalar(&reinhardt::query::Query::select().expr(reinhardt::query::Expr::cust("JSONB_BUILD_ARRAY((SELECT COUNT(*) FROM workspaces), (SELECT COUNT(*) FROM authorization_workspaces), (SELECT COUNT(*) FROM tasks), (SELECT COUNT(*) FROM conversations), (SELECT COUNT(*) FROM runs), (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM events))")).to_string(reinhardt::query::PostgresQueryBuilder)).fetch_one(f.store.pool.fixture_driver()).await.unwrap();
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-execution","effect":"deny","subjects":{"any":true},"actions":["task.execute"],"resources":{"kinds":["task"]}}));
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":policy})
 		)
@@ -108,7 +106,7 @@ async fn conversation_admission_is_atomic_and_records_denials_without_orphans(
 		200
 	);
 	assert_eq!(
-		request(&app, &token, "POST", "/api/conversations", conversation())
+		common::post(&app, &token, "/api/conversations", conversation())
 			.await
 			.0,
 		403
@@ -148,8 +146,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, created) =
-		request(&app, &token, "POST", "/api/conversations", conversation()).await;
+	let (status, created) = common::post(&app, &token, "/api/conversations", conversation()).await;
 	assert_eq!(status, 200);
 	let workspace = created["workspace"]["id"]
 		.as_str()
@@ -189,10 +186,9 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 	other["tenant"] = json!("other");
 	common::tenant_root(&f, "other").await;
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/authorization/other",
 			json!({"expected_revision":0,"bundle":other})
 		)
@@ -216,13 +212,12 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 			json!({"revision":1,"reason":"foreign"}),
 		),
 	] {
-		assert_eq!(request(&app, foreign, "POST", &path, body).await.0, 403);
+		assert_eq!(common::post(&app, foreign, &path, body).await.0, 403);
 	}
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/runs/{}/message", Uuid::new_v4()),
 			json!({"content":"hidden run"})
 		)
@@ -237,10 +232,9 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 		let token = token.clone();
 		let run_id = run.id;
 		concurrent.spawn(async move {
-			request(
+			common::post(
 				&app,
 				&token,
-				"POST",
 				&format!("/api/runs/{run_id}/message"),
 				json!({"content":format!("parallel scoped message {index}"),"idempotency_key":Uuid::new_v4()}),
 			)
@@ -259,10 +253,9 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 	assert_eq!(statuses, vec![200; 16]);
 	let replay_key = Uuid::new_v4();
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/runs/{}/message", run.id),
 			json!({"content":"authorized message","idempotency_key":replay_key})
 		)
@@ -271,10 +264,9 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 		200
 	);
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/runs/{}/message", run.id),
 			json!({"content":"authorized message","idempotency_key":replay_key})
 		)
@@ -284,10 +276,9 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 		"an authorized exact key replay uses the existing ledger row"
 	);
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/runs/{}/message", run.id),
 			json!({"content":"changed content","idempotency_key":replay_key})
 		)
@@ -314,10 +305,9 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 	}
 	.unwrap();
 	assert_eq!(sender, "alice");
-	let (status, answer) = request(
+	let (status, answer) = common::post(
 		&app,
 		&token,
-		"POST",
 		&format!("/api/human-requests/{}/answer", human.id),
 		json!({"approved":false}),
 	)
@@ -325,10 +315,9 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 	assert_eq!(status, 200);
 	assert_eq!(answer["answered_by"], "alice");
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/human-requests/{}/answer", human.id),
 			json!({"approved":false})
 		)
@@ -337,10 +326,9 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 		200
 	);
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/human-requests/{}/answer", human.id),
 			json!({"approved":true})
 		)
@@ -378,10 +366,9 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 		.unwrap();
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-interaction","effect":"deny","subjects":{"ids":["alice"]},"actions":["human.answer","run.message","task.abandon"],"resources":{"kinds":["*"]}}));
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":policy})
 		)
@@ -390,10 +377,9 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 		200
 	);
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/human-requests/{}/answer", second.id),
 			json!({"text":"forbidden answer"})
 		)
@@ -402,10 +388,9 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 		403
 	);
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/runs/{}/message", run.id),
 			json!({"content":"forbidden message"})
 		)
@@ -451,10 +436,9 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 	assert_eq!(count, 0);
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-interaction-read","effect":"deny","subjects":{"any":true},"actions":["human.read","conversation.read"],"resources":{"kinds":["*"]}}));
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":2,"bundle":policy})
 		)
@@ -466,15 +450,9 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 	// that run's aggregate data instead of exposing it through its context.
 	{ let query_bind_1 = run.id; let query_bind_2 = common::pending(aidash_server::domain::RunState::Waiting(Box::new(aidash_server::domain::WaitingState::Human { request_id: human.id, answer_by: None, resume: aidash_server::domain::ResumeState::Thinking(Default::default()) }))); let query_bind_3 = common::context(json!({"history":[{"seq":1,"event":{"kind":"human","request":"private approval prompt","request_kind":"APPROVAL","response":null}}],"journal":{"head":1,"imported_through":0,"inferred_through":0}})); sqlx::query(&reinhardt::query::Query::update().table(reinhardt::query::Alias::new("runs")).value_expr(reinhardt::query::Alias::new("phase"), reinhardt::query::Expr::cust("'WAITING'")).value_expr(reinhardt::query::Alias::new("pending"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_2.to_owned()).into()])).value_expr(reinhardt::query::Alias::new("context"), SimpleExpr::CustomWithExpr("(?)".to_owned(), vec![Expr::value(query_bind_3.to_owned()).into()])).and_where(SimpleExpr::CustomWithExpr("(id = ?)".to_owned(), vec![Expr::value(query_bind_1.to_owned()).into()])).to_string(reinhardt::query::PostgresQueryBuilder)).execute(f.store.pool.fixture_driver()).await }.unwrap();
 	assert_eq!(
-		request(
-			&app,
-			&token,
-			"GET",
-			&format!("/api/runs/{}", run.id),
-			Value::Null
-		)
-		.await
-		.0,
+		common::get(&app, &token, &format!("/api/runs/{}", run.id))
+			.await
+			.0,
 		403
 	);
 	for path in [
@@ -482,7 +460,7 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 		format!("/api/events?workspace_id={workspace}"),
 		format!("/api/workspaces/{workspace}"),
 	] {
-		let (status, value) = request(&app, &token, "GET", &path, Value::Null).await;
+		let (status, value) = common::get(&app, &token, &path).await;
 		assert_eq!(status, 200);
 		assert!(
 			!value.to_string().contains("private approval prompt"),
@@ -524,10 +502,9 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 		.await
 		.unwrap();
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/tasks/{}/abandon", task.id),
 			json!({"revision":failed.revision,"reason":"stop failed child"})
 		)
@@ -537,10 +514,9 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 	);
 	policy["policies"].as_array_mut().unwrap().truncate(1);
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":3,"bundle":policy})
 		)
@@ -548,10 +524,9 @@ async fn human_interactions_enforce_tenant_actions_read_visibility_and_actor_att
 		.0,
 		200
 	);
-	let (status, abandoned) = request(
+	let (status, abandoned) = common::post(
 		&app,
 		&token,
-		"POST",
 		&format!("/api/tasks/{}/abandon", task.id),
 		json!({"revision":failed.revision,"reason":"stop failed child"}),
 	)
@@ -590,33 +565,25 @@ async fn cluster_conversations_recheck_approval_at_worker_boundaries(
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	let cluster = json!({"id":"cluster","version":"1.0.0","kind":"cluster","name":{"en":"cluster"},"description":{"en":"fixture"},"schema":{},"config":{"coordinator":{"id":"research","version":"1.0.0"}}});
 	assert_eq!(
-		request(&app, &token, "POST", "/api/registry", cluster)
-			.await
-			.0,
+		common::post(&app, &token, "/api/registry", cluster).await.0,
 		200
 	);
 	let mut input = conversation();
 	input["target"]["id"] = json!("cluster");
 	input["target_kind"] = json!("cluster");
 	assert_eq!(
-		request(&app, &token, "POST", "/api/conversations", input.clone())
+		common::post(&app, &token, "/api/conversations", input.clone())
 			.await
 			.0,
 		403
 	);
 	assert_eq!(
-		request(
-			&app,
-			&token,
-			"POST",
-			"/api/authorization/acme/catalog",
-			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"cluster","version":"1.0.0"},"expected_revision":0,"enabled":true})
-		)
+		common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"cluster","version":"1.0.0"},"expected_revision":0,"enabled":true}))
 		.await
 		.0,
 		200
 	);
-	let (status, created) = request(&app, &token, "POST", "/api/conversations", input).await;
+	let (status, created) = common::post(&app, &token, "/api/conversations", input).await;
 	assert_eq!(status, 200, "{created}");
 	let task = created["task"]["id"]
 		.as_str()
@@ -624,13 +591,7 @@ async fn cluster_conversations_recheck_approval_at_worker_boundaries(
 		.parse::<Uuid>()
 		.unwrap();
 	assert_eq!(
-		request(
-			&app,
-			&token,
-			"POST",
-			"/api/authorization/acme/catalog",
-			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"cluster","version":"1.0.0"},"expected_revision":1,"enabled":false})
-		)
+		common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"cluster","version":"1.0.0"},"expected_revision":1,"enabled":false}))
 		.await
 		.0,
 		200
@@ -707,15 +668,9 @@ async fn a_conversation_with_a_memory_target_creates_the_workspace_index(
 		("agent", "remembering", agent),
 	] {
 		let entry = json!({"id":id,"version":"1.0.0","kind":kind,"name":{"en":id},"description":{"en":"fixture"},"schema":{},"config":config});
-		let (status, body) = request(&app, &token, "POST", "/api/registry", entry).await;
+		let (status, body) = common::post(&app, &token, "/api/registry", entry).await;
 		assert_eq!(status, 200, "{id}: {body}");
-		let (status, body) = request(
-			&app,
-			&token,
-			"POST",
-			"/api/authorization/acme/catalog",
-			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":reference(id),"expected_revision":0,"enabled":true}),
-		)
+		let (status, body) = common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":reference(id),"expected_revision":0,"enabled":true}))
 		.await;
 		assert_eq!(status, 200, "{id}: {body}");
 	}
@@ -727,31 +682,23 @@ async fn a_conversation_with_a_memory_target_creates_the_workspace_index(
 		"1.0.0",
 	);
 	for id in ["e", "p"] {
-		let (status, body) = request(
-			&app,
-			&token,
-			"POST",
-			"/api/authorization/acme/catalog",
-			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":reference(id),"expected_revision":1,"enabled":true,
-				"restriction":{"subjects":[agent_subject],"groups":[]}}),
-		)
+		let (status, body) = common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":reference(id),"expected_revision":1,"enabled":true,
+				"restriction":{"subjects":[agent_subject],"groups":[]}}))
 		.await;
 		assert_eq!(status, 200, "{id}: {body}");
 	}
 	let mut input = conversation();
 	input["target"]["id"] = json!("remembering");
 	// Act
-	let (status, created) = request(&app, &token, "POST", "/api/conversations", input).await;
+	let (status, created) = common::post(&app, &token, "/api/conversations", input).await;
 	// Assert: the agent was delegated, and the index carries the policy's embedding.
 	assert_eq!(status, 200, "{created}");
 	assert_eq!(created["task"]["status"], "CLAIMED");
 	let workspace = created["workspace"]["id"].as_str().unwrap();
-	let (status, index) = request(
+	let (status, index) = common::get(
 		&app,
 		&token,
-		"GET",
 		&format!("/api/workspaces/{workspace}/semantic/index"),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "{index}");

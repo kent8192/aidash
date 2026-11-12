@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 async fn finished_test(app: &common::TestApplication, token: &str, path: &str, id: &str) -> Value {
 	for _ in 0..100 {
-		let (_, sessions) = request(app, token, "GET", path, Value::Null).await;
+		let (_, sessions) = common::get(app, token, path).await;
 		let session = sessions
 			.as_array()
 			.unwrap()
@@ -79,10 +79,9 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 	let bundle = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"}},"policies":[{"id":"profiles","effect":"allow","subjects":{"ids":["alice"]},"actions":["workbench.test_profile.update"],"resources":{"kinds":["*"]}},{"id":"creator","effect":"allow","subjects":{"ids":["alice"]},"actions":["agent_draft.create","agent_draft.read","agent_draft.write","agent_draft.test","agent_dependency.read"],"resources":{"kinds":["agent_draft","registry_entry"]}}]});
 	common::tenant_root(&f, "acme").await;
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&deployment_administrator,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":0,"bundle":bundle})
 		)
@@ -93,14 +92,8 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 	let token = &common::subject_credential(&f.store, "acme", "alice").await;
 	let mut entry = agent();
 	entry["config"]["bindings"] = json!([{"kind":"tool","target":{"registry_deployment":f.config.deployment,"id":"fixture-tool","version":"1.0.0"},"alias":"plugin_0","narrow":{}}]);
-	let (status, draft) = request(
-		&app,
-		token,
-		"POST",
-		"/api/workbench/drafts",
-		json!({"entry":entry}),
-	)
-	.await;
+	let (status, draft) =
+		common::post(&app, token, "/api/workbench/drafts", json!({"entry":entry})).await;
 	assert_eq!(status, 200, "draft: {draft}");
 	let path = format!(
 		"/api/workbench/drafts/{}/tests",
@@ -113,10 +106,9 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 			"completed",
 		),
 	] {
-		let (status, session) = request(
+		let (status, session) = common::post(
 			&app,
 			token,
-			"POST",
 			&path,
 			json!({"expected_revision":1,"message":"Please use the tool","fixtures":fixtures}),
 		)
@@ -125,7 +117,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		let id = session["id"].as_str().unwrap();
 		let mut finished = Value::Null;
 		for _ in 0..100 {
-			let (_, sessions) = request(&app, token, "GET", &path, Value::Null).await;
+			let (_, sessions) = common::get(&app, token, &path).await;
 			finished = sessions
 				.as_array()
 				.unwrap()
@@ -148,15 +140,13 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 	);
 	let (status, profile) = request(&app, token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":0,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{endpoint}/test-effect"),"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["sandbox"]}]})).await;
 	assert_eq!(status, 200, "profile: {profile}");
-	let (status, visible) = request(
+	let (status, visible) = common::get(
 		&app,
 		token,
-		"GET",
 		&format!(
 			"/api/workbench/test-profiles?draft_id={}",
 			draft["id"].as_str().unwrap()
 		),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "visible profiles: {visible}");
@@ -165,12 +155,12 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		visible[0].get("rules").is_none(),
 		"profile scope should not leak from list"
 	);
-	let (status, real) = request(&app, token, "POST", &path, json!({"expected_revision":1,"message":"Use the confined Tool","mode":"real","profile_id":"sandbox"})).await;
+	let (status, real) = common::post(&app, token, &path, json!({"expected_revision":1,"message":"Use the confined Tool","mode":"real","profile_id":"sandbox"})).await;
 	assert_eq!(status, 200, "real test: {real}");
 	let id = real["id"].as_str().unwrap();
 	let mut finished = Value::Null;
 	for _ in 0..100 {
-		let (_, sessions) = request(&app, token, "GET", &path, Value::Null).await;
+		let (_, sessions) = common::get(&app, token, &path).await;
 		finished = sessions
 			.as_array()
 			.unwrap()
@@ -187,7 +177,7 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 	assert_eq!(finished["tool_calls"][0]["outcome"], "real");
 	assert_eq!(real_hits.load(Ordering::SeqCst), 1);
 	assert_eq!(tool_hits.load(Ordering::SeqCst), 0);
-	let (status, continued) = request(&app, token, "POST", &path, json!({"expected_revision":1,"message":"Continue the conversation","mode":"real","profile_id":"sandbox","continue_from":id})).await;
+	let (status, continued) = common::post(&app, token, &path, json!({"expected_revision":1,"message":"Continue the conversation","mode":"real","profile_id":"sandbox","continue_from":id})).await;
 	assert_eq!(status, 200, "continue: {continued}");
 	let continuation = finished_test(&app, token, &path, continued["id"].as_str().unwrap()).await;
 	assert_eq!(
@@ -203,14 +193,14 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 		1,
 		"continuation unexpectedly repeated a Tool"
 	);
-	let (status, reset) = request(&app, token, "POST", &path, json!({"expected_revision":1,"message":"Fresh conversation after reset","mode":"real","profile_id":"sandbox"})).await;
+	let (status, reset) = common::post(&app, token, &path, json!({"expected_revision":1,"message":"Fresh conversation after reset","mode":"real","profile_id":"sandbox"})).await;
 	assert_eq!(status, 200, "reset: {reset}");
 	let reset = finished_test(&app, token, &path, reset["id"].as_str().unwrap()).await;
 	assert_eq!(reset["status"], "completed", "reset session: {reset}");
 	assert_eq!(real_hits.load(Ordering::SeqCst), 2);
 	let (status, revised) = request(&app, token, "PUT", "/api/workbench/test-profiles/acme/sandbox", json!({"expected_revision":1,"enabled":true,"rules":[{"tool":{"id":"fixture-tool","version":"1.0.0"},"endpoint":format!("{endpoint}/test-effect"),"read_only_verified":true,"allowed_actions":["read"],"allowed_resources":["other"]}]})).await;
 	assert_eq!(status, 200, "revised profile: {revised}");
-	let (status, denied) = request(&app, token, "POST", &path, json!({"expected_revision":1,"message":"Try outside the test resource","mode":"real","profile_id":"sandbox"})).await;
+	let (status, denied) = common::post(&app, token, &path, json!({"expected_revision":1,"message":"Try outside the test resource","mode":"real","profile_id":"sandbox"})).await;
 	assert_eq!(status, 200, "denied test: {denied}");
 	let denied = finished_test(&app, token, &path, denied["id"].as_str().unwrap()).await;
 	assert_ne!(
@@ -248,10 +238,9 @@ async fn simulated_test_never_invokes_the_registered_external_tool(
 			.await
 			.unwrap();
 	}
-	let (status, refused) = request(
+	let (status, refused) = common::post(
 		&app,
 		token,
-		"POST",
 		&path,
 		json!({"expected_revision":1,"message":"Tenant content after the policy raise"}),
 	)
@@ -298,10 +287,9 @@ async fn draft_conflict_register_and_factual_inspection(
 		{"id":"editor","effect":"allow","subjects":{"ids":["bob"]},"actions":["agent_draft.read","agent_draft.write"],"resources":{"kinds":["agent_draft"]}}
 	]});
 	common::tenant_root(&f, "acme").await;
-	let (status, body) = request(
+	let (status, body) = common::post(
 		&app,
 		&deployment_administrator,
-		"POST",
 		"/api/authorization/acme",
 		json!({"expected_revision":0,"bundle":bundle}),
 	)
@@ -309,10 +297,9 @@ async fn draft_conflict_register_and_factual_inspection(
 	assert_eq!(status, 200, "policy: {body}");
 	let alice_token = &common::subject_credential(&f.store, "acme", "alice").await;
 	let bob_token = &common::subject_credential(&f.store, "acme", "bob").await;
-	let (status, draft) = request(
+	let (status, draft) = common::post(
 		&app,
 		alice_token,
-		"POST",
 		"/api/workbench/drafts",
 		json!({"entry":agent(),"documents":[],"release_notes":"First version"}),
 	)
@@ -341,12 +328,10 @@ async fn draft_conflict_register_and_factual_inspection(
 		400
 	);
 	assert_eq!(
-		request(
+		common::get(
 			&app,
 			bob_token,
-			"GET",
-			&format!("/api/workbench/drafts/{draft_id}"),
-			Value::Null
+			&format!("/api/workbench/drafts/{draft_id}")
 		)
 		.await
 		.0,
@@ -377,10 +362,9 @@ async fn draft_conflict_register_and_factual_inspection(
 		.0,
 		409
 	);
-	let (status, validated) = request(
+	let (status, validated) = common::post(
 		&app,
 		alice_token,
-		"POST",
 		&format!("{path}/validate"),
 		json!({"expected_revision":2}),
 	)
@@ -388,10 +372,9 @@ async fn draft_conflict_register_and_factual_inspection(
 	assert_eq!(status, 200, "validation: {validated}");
 	assert_eq!(validated["valid"], true, "validation: {validated}");
 	let register_path = format!("{path}/register");
-	let (status, registration) = request(
+	let (status, registration) = common::post(
 		&app,
 		alice_token,
-		"POST",
 		&register_path,
 		json!({"expected_revision":2}),
 	)
@@ -399,24 +382,16 @@ async fn draft_conflict_register_and_factual_inspection(
 	assert_eq!(status, 200, "register: {registration}");
 	assert_eq!(registration["entry"]["id"], agent_id);
 	assert_eq!(registration["behavioral_tested"], false);
-	let (status, versions) = request(
-		&app,
-		alice_token,
-		"GET",
-		&format!("{path}/versions"),
-		Value::Null,
-	)
-	.await;
+	let (status, versions) = common::get(&app, alice_token, &format!("{path}/versions")).await;
 	assert_eq!(status, 200, "versions: {versions}");
 	assert_eq!(versions[0]["entry"]["id"], agent_id);
 	assert_eq!(versions[0]["draft_revision"], 2);
 	assert_eq!(versions[0]["release_notes"], "First version");
 	assert_eq!(versions[0]["behavioral_tested"], false);
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			alice_token,
-			"POST",
 			&register_path,
 			json!({"expected_revision":2})
 		)
@@ -432,34 +407,30 @@ async fn draft_conflict_register_and_factual_inspection(
 	.unwrap();
 	assert!(catalog.is_empty(), "{catalog:?}");
 	assert_eq!(
-		request(
+		common::get(
 			&app,
 			alice_token,
-			"GET",
-			&format!("/api/registry/{agent_id}/1.0.0"),
-			Value::Null
+			&format!("/api/registry/{agent_id}/1.0.0")
 		)
 		.await
 		.0,
 		403
 	);
 	let trust_path = format!("/api/workbench/versions/{agent_id}/1.0.0");
-	let (status, inspection) = request(&app, alice_token, "GET", &trust_path, Value::Null).await;
+	let (status, inspection) = common::get(&app, alice_token, &trust_path).await;
 	assert_eq!(status, 200, "inspection: {inspection}");
 	assert_eq!(inspection["external_assessment_available"], false);
 	assert_eq!(inspection["workspaces"], json!([]));
 	assert_eq!(inspection["test_evidence"], json!([]));
-	let (status, incident) = request(&app, alice_token, "POST", &format!("{trust_path}/incidents"), json!({"severity":"medium","owner":"alice","notes":"Manual report","evidence":[{"title":"Observation","content":"Fixed copy"}]})).await;
+	let (status, incident) = common::post(&app, alice_token, &format!("{trust_path}/incidents"), json!({"severity":"medium","owner":"alice","notes":"Manual report","evidence":[{"title":"Observation","content":"Fixed copy"}]})).await;
 	assert_eq!(status, 200, "incident: {incident}");
 	let (status, archived_incident) = request(&app, alice_token, "PUT", &format!("/api/workbench/incidents/{}", incident["id"].as_str().unwrap()), json!({"expected_revision":1,"severity":"medium","status":"open","archived":true,"owner":"alice","notes":"Manual report","add_evidence":[]})).await;
 	assert_eq!(status, 200, "archive open incident: {archived_incident}");
 	assert_eq!(archived_incident["evidence_expires_at"], Value::Null);
-	let (status, report) = request(
+	let (status, report) = common::get(
 		&app,
 		alice_token,
-		"GET",
 		&format!("{trust_path}/report?format=json"),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "report: {report}");
@@ -521,7 +492,7 @@ async fn draft_conflict_register_and_factual_inspection(
 			.unwrap(),
 		1
 	);
-	let (_, expired) = request(&app, alice_token, "GET", &incident_path, Value::Null).await;
+	let (_, expired) = common::get(&app, alice_token, &incident_path).await;
 	assert_eq!(expired["evidence"][0]["content"], Value::Null);
 	assert!(expired["evidence_expired_at"].is_string());
 	let (status, reopened) = request(&app, alice_token, "PUT", &incident_path, json!({"expected_revision":3,"severity":"medium","status":"open","archived":false,"owner":"alice","notes":"Reopened after expiry","add_evidence":[]})).await;
@@ -529,10 +500,9 @@ async fn draft_conflict_register_and_factual_inspection(
 	assert_eq!(reopened["evidence"][0]["content"], Value::Null);
 	let share_path = format!("{path}/shares");
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			alice_token,
-			"POST",
 			&share_path,
 			json!({"subject":"bob","can_edit":false,"enabled":true,"include_documents":false})
 		)
@@ -540,10 +510,7 @@ async fn draft_conflict_register_and_factual_inspection(
 		.0,
 		200
 	);
-	assert_eq!(
-		request(&app, bob_token, "GET", &path, Value::Null).await.0,
-		200
-	);
+	assert_eq!(common::get(&app, bob_token, &path).await.0, 200);
 	assert_eq!(
 		request(
 			&app,
@@ -557,10 +524,9 @@ async fn draft_conflict_register_and_factual_inspection(
 		403
 	);
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			alice_token,
-			"POST",
 			&share_path,
 			json!({"subject":"bob","can_edit":true,"enabled":true,"include_documents":false})
 		)
@@ -579,10 +545,9 @@ async fn draft_conflict_register_and_factual_inspection(
 	assert_eq!(status, 200, "shared edit: {edited}");
 	assert_eq!(edited["revision"], 3);
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			bob_token,
-			"POST",
 			&register_path,
 			json!({"expected_revision":3})
 		)
@@ -591,10 +556,9 @@ async fn draft_conflict_register_and_factual_inspection(
 		403
 	);
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			alice_token,
-			"POST",
 			&register_path,
 			json!({"expected_revision":3})
 		)
@@ -606,17 +570,13 @@ async fn draft_conflict_register_and_factual_inspection(
 		json!([{"name":"notes.txt","media_type":"text/plain","text":"Private note"}]);
 	let (status, with_documents) = request(&app, alice_token, "PUT", &path, json!({"expected_revision":3,"entry":edited["entry"],"documents":private_documents,"release_notes":"Add reference"})).await;
 	assert_eq!(status, 200, "add private document: {with_documents}");
-	assert_eq!(
-		request(&app, bob_token, "GET", &path, Value::Null).await.0,
-		403
-	);
-	let (_, shares) = request(&app, alice_token, "GET", &share_path, Value::Null).await;
+	assert_eq!(common::get(&app, bob_token, &path).await.0, 403);
+	let (_, shares) = common::get(&app, alice_token, &share_path).await;
 	assert_eq!(shares[0]["documents_current"], false);
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			alice_token,
-			"POST",
 			&share_path,
 			json!({"subject":"bob","can_edit":true,"enabled":true,"include_documents":false})
 		)
@@ -625,10 +585,9 @@ async fn draft_conflict_register_and_factual_inspection(
 		400
 	);
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			alice_token,
-			"POST",
 			&share_path,
 			json!({"subject":"bob","can_edit":true,"enabled":true,"include_documents":true})
 		)
@@ -636,14 +595,10 @@ async fn draft_conflict_register_and_factual_inspection(
 		.0,
 		200
 	);
-	assert_eq!(
-		request(&app, bob_token, "GET", &path, Value::Null).await.0,
-		200
-	);
-	let (status, duplicate) = request(
+	assert_eq!(common::get(&app, bob_token, &path).await.0, 200);
+	let (status, duplicate) = common::post(
 		&app,
 		alice_token,
-		"POST",
 		&format!("{path}/duplicate"),
 		json!({"expected_revision":4}),
 	)
@@ -652,10 +607,9 @@ async fn draft_conflict_register_and_factual_inspection(
 	assert_ne!(duplicate["entry"]["id"], agent_id);
 	assert_eq!(duplicate["source_id"], agent_id);
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			alice_token,
-			"POST",
 			&format!("{path}/archive"),
 			json!({"expected_revision":4,"archived":true})
 		)
@@ -664,10 +618,9 @@ async fn draft_conflict_register_and_factual_inspection(
 		200
 	);
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			alice_token,
-			"POST",
 			&format!("{path}/archive"),
 			json!({"expected_revision":5,"archived":false})
 		)
@@ -676,10 +629,9 @@ async fn draft_conflict_register_and_factual_inspection(
 		200
 	);
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			alice_token,
-			"POST",
 			&format!("{path}/transfer"),
 			json!({"expected_revision":6,"new_owner":"bob"})
 		)
@@ -687,25 +639,16 @@ async fn draft_conflict_register_and_factual_inspection(
 		.0,
 		200
 	);
-	assert_eq!(
-		request(&app, alice_token, "GET", &path, Value::Null)
-			.await
-			.0,
-		403
-	);
-	assert_eq!(
-		request(&app, bob_token, "GET", &path, Value::Null).await.0,
-		200
-	);
+	assert_eq!(common::get(&app, alice_token, &path).await.0, 403);
+	assert_eq!(common::get(&app, bob_token, &path).await.0, 200);
 	let restricted = json!({"tenant":"acme","subjects":{"alice":{"kind":"user"},"bob":{"kind":"user"}},"policies":[
 		{"id":"profiles","effect":"allow","subjects":{"ids":["alice"]},"actions":["workbench.test_profile.update"],"resources":{"kinds":["*"]}},
 		{"id":"creator","effect":"allow","subjects":{"ids":["alice"]},"actions":["agent_draft.create","agent_draft.read","agent_draft.write","agent_draft.register","agent_draft.test","agent_dependency.read"],"resources":{"kinds":["agent_draft","registry_entry"]}}
 	]});
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&deployment_administrator,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":restricted})
 		)
@@ -713,30 +656,18 @@ async fn draft_conflict_register_and_factual_inspection(
 		.0,
 		200
 	);
+	assert_eq!(common::get(&app, alice_token, &trust_path).await.0, 403);
 	assert_eq!(
-		request(&app, alice_token, "GET", &trust_path, Value::Null)
-			.await
-			.0,
-		403
-	);
-	assert_eq!(
-		request(
+		common::get(
 			&app,
 			alice_token,
-			"GET",
-			&format!("{trust_path}/report?format=json"),
-			Value::Null
+			&format!("{trust_path}/report?format=json")
 		)
 		.await
 		.0,
 		403
 	);
-	assert_eq!(
-		request(&app, alice_token, "GET", &path, Value::Null)
-			.await
-			.0,
-		403
-	);
+	assert_eq!(common::get(&app, alice_token, &path).await.0, 403);
 	cleanup(f, &url, &schema).await;
 }
 

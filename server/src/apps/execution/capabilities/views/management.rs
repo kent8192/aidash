@@ -538,6 +538,19 @@ pub async fn reference_inspect(
 	crate::http::json(api::reference_inspect(service.runtime.clone(), actor, id).await)
 }
 
+#[get(
+	"/api/references/{id}/revocation",
+	name = "!reference_revocation",
+	auth = "protected"
+)]
+pub async fn reference_revocation(
+	#[inject] service: Depends<CapabilitiesManagement>,
+	#[inject] actor: Actor,
+	Path(id): Path<Uuid>,
+) -> ViewResult<Response> {
+	crate::http::json(api::reference_revocation(service.runtime.clone(), actor, id).await)
+}
+
 #[post(
 	"/api/references/{id}/revoke",
 	name = "!reference_revoke",

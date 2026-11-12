@@ -5,6 +5,11 @@ from threading import Lock, RLock
 STOP_RETRY_SECONDS = 15 * 60
 LATE_RESULT_SECONDS = 24 * 60 * 60
 OUTPUT_RETRY_SECONDS = 60
+# Late result observation lasts 24h; leave one 15-minute stop retry window as
+# margin. RunnerHttp's v2 command calls time out after 30s and its execution_pod
+# adapter does not retry requests itself (crates/aidash-integrations/src/runner).
+JOURNAL_RETENTION_SECONDS = max(LATE_RESULT_SECONDS, STOP_RETRY_SECONDS) + STOP_RETRY_SECONDS
+JOURNAL_MAX_RECORDS_PER_SPACE = 4096
 # How long a Python interpreter may take to show a terminal result once its stop was accepted. After the
 # stop signal the in-Pod supervisor (sandbox_v2.run_supervised) kills and reaps the interpreter's processes
 # within 5 s, joins its output readers for FORWARD_GRACE_SECONDS (5 s), drains a reader that is still held
@@ -108,7 +113,7 @@ def system_tree_diff(before, after):
             'removed': sorted(old - new)}
 
 
-def initialize_system_root(image_root, store, *, reset=False):
+def initialize_system_root(image_root, store, *, reset=False, image_identity=None):
     """Copy image contents once, or replace them after the caller stops the Pod.
 
     The caller serializes startup and reset and must stop all user processes
@@ -133,6 +138,13 @@ def initialize_system_root(image_root, store, *, reset=False):
         os.replace(backup, root)
     if root.exists() and not reset:
         return False
+    # Never leave an old identity attached to a root that may be replaced.
+    (store / 'image-identity.json').unlink(missing_ok=True)
+    directory = os.open(store, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
     if reset:
         if root.exists():
             shutil.rmtree(root)
@@ -181,10 +193,40 @@ def initialize_system_root(image_root, store, *, reset=False):
             raise
         if backup.exists():
             shutil.rmtree(backup)
+        if image_identity is not None:
+            import json
+            marker_tmp = store / ('image-identity.' + uuid.uuid4().hex + '.new')
+            try:
+                with marker_tmp.open('x', encoding='utf-8') as file:
+                    json.dump({'image': image_identity}, file)
+                    file.flush()
+                    os.fsync(file.fileno())
+                os.replace(marker_tmp, store / 'image-identity.json')
+                directory = os.open(store, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+            finally:
+                marker_tmp.unlink(missing_ok=True)
     finally:
         if staging.exists():
             shutil.rmtree(staging)
     return True
+
+
+def system_image_changed(store, requested_image):
+    import json
+    import os
+    from pathlib import Path
+    try:
+        fd = os.open(Path(store) / 'image-identity.json', os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        # Legacy roots have no trustworthy identity; require an explicit reset.
+        return True
+    with os.fdopen(fd, 'rb') as file:
+        marker = json.load(file)
+    return marker.get('image') != requested_image
 
 
 def append_change_log(path, run_id, changes):
@@ -279,10 +321,16 @@ def pod_proxy_url(endpoint, credential):
     return urlunsplit(parts._replace(netloc=f'aidash:{credential}@{parts.netloc}'))
 
 
+def v2_process_limit(settings, config):
+    # The sentry shares the Pod's memory; bound the default to 128 per 2 GiB.
+    return config.get('v2_processes', max(32, min(128, settings['memory_bytes'] // (16 << 20))))
+
+
 def execution_manifests(settings, config):
     """Build the durable claim and sandbox Pod for one Scratch Space."""
     import hashlib
     import re
+    from urllib.parse import urlsplit
     from control import scratch_resource_name
 
     name = scratch_resource_name(settings['scratch_space_id'])
@@ -297,7 +345,7 @@ def execution_manifests(settings, config):
                          ('capacity_bytes', min(config.get('max_capacity_bytes', 1 << 40), 1 << 40))):
         if type(ceiling) is not int or ceiling <= 0 or settings[key] > ceiling:
             raise ValueError(key + ' exceeds the Deployment ceiling')
-    processes = config.get('v2_processes', 512)
+    processes = v2_process_limit(settings, config)
     if type(processes) is not int or processes < 32:
         raise ValueError('processes must be an integer of at least 32')
     docker = settings['docker_enabled']
@@ -360,7 +408,8 @@ def execution_manifests(settings, config):
                                 '/.aidash-helpers/python/bin/python3', '-I',
                                 '/.aidash-helpers/sandbox_v2.py', 'init'],
                     'env': [{'name': key, 'value': ''} for key in ('LD_PRELOAD', 'LD_AUDIT', 'LD_LIBRARY_PATH', 'PYTHONPATH', 'PYTHONHOME')] +
-                           [{'name': 'AIDASH_RESET_SYSTEM', 'value': str(bool(settings.get('_reset_system'))).lower()}],
+                           [{'name': 'AIDASH_RESET_SYSTEM', 'value': str(bool(settings.get('_reset_system'))).lower()},
+                            {'name': 'AIDASH_IMAGE_ID', 'value': settings['image']}],
                     'securityContext': image_security, 'resources': {'limits': limits},
                     'volumeMounts': [{'name': 'scratch', 'mountPath': '/scratch-image', 'subPath': 'image-root'},
                                      {'name': 'helpers', 'mountPath': '/.aidash-helpers', 'readOnly': True}]},
@@ -375,14 +424,18 @@ def execution_manifests(settings, config):
                                         'valueFrom': {'fieldRef': {'fieldPath': 'metadata.uid'}}}],
                                'securityContext': security, 'resources': {'limits': limits},
                                'volumeMounts': mounts}], 'volumes': volumes}
+    podspec['nodeSelector'] = dict(config.get('node_selector', {}))
+    podspec['tolerations'] = list(config.get('tolerations', []))
     if docker:
         tenant = settings.get('tenant_id')
         if not isinstance(tenant, str) or not tenant:
             raise ValueError('tenant_id required for Docker execution')
         tenant_label = 'tenant-' + hashlib.sha256(tenant.encode()).hexdigest()[:48]
-        podspec['nodeSelector'] = {'aidash.run/tenant': tenant_label}
-        podspec['tolerations'] = [{'key': 'aidash.run/tenant', 'operator': 'Equal',
-                                   'value': tenant_label, 'effect': 'NoSchedule'}]
+        if podspec['nodeSelector'].get('aidash.run/tenant', tenant_label) != tenant_label:
+            raise ValueError('sandbox selector conflicts with tenant')
+        podspec['nodeSelector']['aidash.run/tenant'] = tenant_label
+        podspec['tolerations'].append({'key': 'aidash.run/tenant', 'operator': 'Equal',
+                                       'value': tenant_label, 'effect': 'NoSchedule'})
     pod = {'apiVersion': 'v1', 'kind': 'Pod', 'metadata': dict(metadata,
            labels={'aidash-sandbox': 'true', 'aidash-v2': 'true'}), 'spec': podspec}
     if config.get('proxy_endpoint'):
@@ -393,6 +446,9 @@ def execution_manifests(settings, config):
         proxy = pod_proxy_url(config['proxy_endpoint'], settings.get('egress_credential'))
         podspec['containers'][0]['env'] += [
             {'name': key, 'value': proxy} for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy')]
+        # Loopback (Live previews) and the gateway itself must not be sent through the proxy.
+        bypass = 'localhost,127.0.0.1,::1,' + urlsplit(config['proxy_endpoint']).hostname
+        podspec['containers'][0]['env'] += [{'name': key, 'value': bypass} for key in ('NO_PROXY', 'no_proxy')]
     return claim, pod
 
 
@@ -445,6 +501,91 @@ class ExecutionPodController:
         self.lifecycle_locks = {}
         self.command_stop_locks = [RLock() for _ in range(64)]
         self.helper_checks = set()
+        self.index_lock = Lock()
+        self.journal_index = None
+        self.session_index = None
+        self.journal_metadata = {}
+
+    def _ensure_journal_index(self):
+        """Rebuild the per-Space index once from the durable journals at startup."""
+        import json
+        if self.journal_index is not None:
+            return
+        with self.index_lock:
+            if self.journal_index is not None:
+                return
+            indexes = []
+            for directory in ('execution-v2', 'execution-v2-python'):
+                index = {}
+                root = self.backend.root / directory
+                for path in root.glob('*.json') if root.exists() else ():
+                    try:
+                        record = json.loads(path.read_bytes())
+                        space = record['scratch_space_id']
+                        if not isinstance(space, str) or not space:
+                            raise ValueError('invalid journal Space identity')
+                        index.setdefault(space, set()).add(path.name)
+                        if directory == 'execution-v2':
+                            self.journal_metadata[path.name] = self._prune_metadata(record)
+                    except (OSError, ValueError, KeyError, TypeError) as error:
+                        import sys
+                        print('Execution Pod journal index recovery failed: ' + str(error), file=sys.stderr, flush=True)
+                indexes.append(index)
+            # All new records wait for the rebuild before they are written.
+            self.session_index = indexes[1]
+            self.journal_index = indexes[0]
+
+    @staticmethod
+    def _prune_metadata(record):
+        return (record.get('status'), record.get('terminal_at'), record.get('stop_pending'))
+
+    def _space_journal_paths(self, scratch_space_id, *, sessions=False):
+        self._ensure_journal_index()
+        with self.lock:
+            index = self.session_index if sessions else self.journal_index
+            names = tuple(index.get(scratch_space_id, ()))
+        directory = 'execution-v2-python' if sessions else 'execution-v2'
+        return [self.backend.root / directory / name for name in names]
+
+    def prune_space(self, scratch_space_id, *, now=None):
+        """Remove only settled records after the retry and late-result window."""
+        import json
+        import time
+        current = time.time() if now is None else now
+        with self._space_lock(scratch_space_id):
+            expired = []
+            paths = self._space_journal_paths(scratch_space_id)
+            with self.lock:
+                candidates = [(path, self.journal_metadata.get(path.name)) for path in paths]
+            for path, metadata in candidates:
+                if metadata is None:
+                    continue
+                status, terminal_at, stop_pending = metadata
+                if (status not in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted')
+                        or not isinstance(terminal_at, (int, float)) or terminal_at > current - JOURNAL_RETENTION_SECONDS
+                        or stop_pending):
+                    continue
+                expired.append((terminal_at, path))
+            for _, path in sorted(expired):
+                with self.lock:
+                    if not path.exists():
+                        continue
+                    record = json.loads(path.read_bytes())
+                    terminal_at = record.get('terminal_at')
+                    if (record.get('status') not in ('completed', 'timed_out', 'stopped', 'cancelled', 'interrupted')
+                            or not isinstance(terminal_at, (int, float)) or terminal_at > current - JOURNAL_RETENTION_SECONDS
+                            or record.get('stop_pending') or record.get('operation_id') in self.futures):
+                        continue
+                    # A Python session pointer cannot outlive the record it names.
+                    run = record.get('run_id')
+                    if record.get('kind') == 'python_session' and run:
+                        session_path = self._python_session_path(scratch_space_id, run)
+                        if session_path.exists() and json.loads(session_path.read_bytes()).get('operation_id') == record['operation_id']:
+                            session_path.unlink()
+                            self.session_index.get(scratch_space_id, set()).discard(session_path.name)
+                    path.unlink()
+                    self.journal_index.get(scratch_space_id, set()).discard(path.name)
+                    self.journal_metadata.pop(path.name, None)
 
     def _space_lock(self, scratch_space_id):
         with self.lock:
@@ -554,12 +695,54 @@ class ExecutionPodController:
         try:
             report = json.loads(result.stdout)
             verify_user_probe(report, docker=settings['docker_enabled'],
-                              processes=self.config.get('v2_processes', 512))
+                              processes=v2_process_limit(settings, self.config))
         except (ValueError, KeyError, TypeError) as error:
             raise ExecutionPodError('admission_failed', 'User isolation probe failed: ' + str(error)) from error
         self._record_guard(pod, 'execution', container_id, epoch, host_evidence=evidence, user_evidence=report)
         self._verify_network_pod(pod, settings, container_id, epoch)
         return pod['metadata']['uid']
+
+    def _verify_ingress_pod(self, pod, canary_name):
+        """Prove a live listener is unreachable from another Pod."""
+        import ipaddress
+        import json
+        import select
+        import subprocess
+        address = str(ipaddress.IPv4Address(pod['status']['podIP']))
+        name = pod['metadata']['name']
+        transport = subprocess.Popen(self.backend.command + ['exec', '-i', name, '-c', 'execution', '--'] +
+                                     helper_command('ingress-listen'), stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                     env=self.backend.environment)
+        try:
+            readable, _, _ = select.select([transport.stdout], [], [], 15)
+            if not readable:
+                raise ValueError('ingress listener did not start')
+            port = json.loads(transport.stdout.readline())['port']
+            if type(port) is not int or not 1 <= port <= 65535:
+                raise ValueError('ingress listener returned an invalid port')
+            probe = ('import json,socket,sys\n'
+                     'try:\n s=socket.create_connection((sys.argv[1],int(sys.argv[2])),timeout=2);s.close();ok=True\n'
+                     'except OSError:ok=False\n'
+                     'print(json.dumps({"connected":ok}))')
+            def connect(target, container, ip):
+                result = self.backend.kube(['exec', target, '-c', container, '--',
+                                            'python3', '-I', '-c', probe, ip, str(port)])
+                return json.loads(result.stdout)['connected']
+            if connect(name, 'execution', '127.0.0.1') is not True:
+                raise ValueError('ingress listener positive control unavailable')
+            if connect(canary_name, 'canary', address) is not False:
+                raise ValueError('network isolation admits ingress from a peer Pod')
+        finally:
+            if transport.stdin:
+                transport.stdin.close()
+            try:
+                transport.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                transport.kill()
+                transport.wait()
+            if transport.stdout:
+                transport.stdout.close()
 
     def _verify_network_pod(self, pod, settings, container_id, epoch):
         import ipaddress
@@ -613,7 +796,9 @@ except Exception:r["peer"]=False
 print(json.dumps(r))'''
             positive = self.backend.kube(['exec', canary_name, '-c', 'canary', '--', 'python3', '-I', '-c',
                                           control, json.dumps(targets)])
-            verify_positive_controls(json.loads(positive.stdout))
+            verify_positive_controls(json.loads(positive.stdout),
+                                     metadata_server_absent=self.config.get('metadata_server_absent', False))
+            self._verify_ingress_pod(pod, canary_name)
             if settings['docker_enabled']:
                 self.backend.guard_execution_pod(pod, settings, 'execution', container_id, epoch,
                     action='v2_network_udp_control', address=peer_ip, port=18081)
@@ -656,15 +841,45 @@ print(json.dumps(r))'''
             self.backend.kube(['delete', 'pod', canary_name, '--ignore-not-found', '--wait=true'])
             self.backend.kube(['delete', 'networkpolicy', canary_name, '--ignore-not-found', '--wait=true'])
 
+    def sweep_canaries(self):
+        import json
+        # Remove permissive policies before their listener Pods.
+        for kind in ('networkpolicy', 'pod'):
+            result = self.backend.kube(['get', kind, '-l', 'aidash.run/v2-canary=true', '-o', 'json'])
+            for item in json.loads(result.stdout)['items']:
+                name = item['metadata']['name']
+                self.backend.kube(['delete', kind, name, '--ignore-not-found', '--wait=true'])
+
     def _old_helper_image(self, pod):
         containers = pod.get('spec', {}).get('containers', [])
         execution = next((item for item in containers if item.get('name') == 'execution'), None)
         image = self.config.get('helper_image')
         return bool(image and execution and execution.get('image') and execution['image'] != image)
 
+    def _pod_receipt(self, name, requested_image):
+        import json
+        try:
+            result = self.backend.kube(['exec', name, '-c', 'execution', '--'] +
+                                       helper_command('image-status', requested_image))
+            changed = json.loads(result.stdout)['image_changed']
+            if type(changed) is not bool:
+                raise ValueError('invalid image status')
+        except Exception as error:
+            raise ExecutionPodError('image_status_unavailable', 'Could not verify the system image identity') from error
+        return {'protocol': 'aidash-runner/2', 'pod': name, 'claim': name, 'image_changed': changed}
+
     def ensure(self, settings):
         with self._space_lock(settings['scratch_space_id']):
-            return self._ensure(settings)
+            try:
+                return self._ensure(settings)
+            except Exception as error:
+                credential = settings.get('egress_credential')
+                if isinstance(credential, str) and credential and credential in str(error):
+                    message = str(error).replace(credential, '[redacted]')
+                    if isinstance(error, ExecutionPodError):
+                        raise ExecutionPodError(error.code, message) from None
+                    raise RuntimeError(message) from None
+                raise
 
     def _ensure(self, settings):
         import hashlib
@@ -691,6 +906,14 @@ print(json.dumps(r))'''
             if quantity_bytes(current) != settings['capacity_bytes']:
                 raise ExecutionPodError('capacity_mismatch', 'Scratch Space capacity differs from the existing claim')
         existing_pod = self._get('pod', name)
+        if existing_pod:
+            status = existing_pod.get('status', {})
+            execution = next((item for item in status.get('containerStatuses', [])
+                              if item.get('name') == 'execution'), {})
+            if status.get('phase') in ('Failed', 'Succeeded') or 'terminated' in execution.get('state', {}):
+                # Retire the exact guarded writer and interrupt its command journal before replacement.
+                self.stop(settings['scratch_space_id'])
+                existing_pod = None
         if existing_pod is None:
             self._terminate_recorded_pod(settings['scratch_space_id'])
             pod['metadata']['annotations']['aidash.run/epoch'] = str(self.reserve_epoch(settings['scratch_space_id']))
@@ -699,10 +922,28 @@ print(json.dumps(r))'''
         elif self._old_helper_image(existing_pod):
             raise ExecutionPodError('pod_updating', 'Execution Pod is updating; retry shortly')
         elif existing_pod.get('metadata', {}).get('annotations', {}).get('aidash.run/spec-digest') != fingerprint:
-            raise ExecutionPodError('settings_mismatch', 'Existing Execution Pod has different settings')
+            old_image = next((item.get('image') for item in existing_pod.get('spec', {}).get('initContainers', [])
+                              if item.get('name') == 'image-root'), None)
+            if old_image and old_image != settings['image']:
+                prior_spec = json.loads(json.dumps(fingerprint_spec))
+                prior_spec['initContainers'][1]['image'] = old_image
+                for item in prior_spec['initContainers'][1]['env']:
+                    if item['name'] == 'AIDASH_IMAGE_ID':
+                        item['value'] = old_image
+                prior_digest = hashlib.sha256(json.dumps(prior_spec, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+            else:
+                prior_digest = None
+            if existing_pod.get('metadata', {}).get('annotations', {}).get('aidash.run/spec-digest') != prior_digest:
+                raise ExecutionPodError('settings_mismatch', 'Existing Execution Pod has different settings')
         uid = existing_pod.get('metadata', {}).get('uid') if existing_pod else None
         if uid and uid == self._admitted_uid(settings['scratch_space_id']):
-            return {'protocol': 'aidash-runner/2', 'pod': name, 'claim': name}
+            status = existing_pod.get('status', {})
+            execution = next((item for item in status.get('containerStatuses', [])
+                              if item.get('name') == 'execution'), {})
+            if (status.get('phase') != 'Running' or not execution.get('ready') or
+                    'running' not in execution.get('state', {})):
+                raise ExecutionPodError('pod_unavailable', 'Execution Pod is not running and ready')
+            return self._pod_receipt(name, settings['image'])
         try:
             self._admit_pod(name, settings)
             self.backend.kube(['wait', '--for=condition=Ready', 'pod/' + name, '--timeout=1800s'], timeout=1810)
@@ -727,7 +968,7 @@ print(json.dumps(r))'''
                 self._mark_space_unconfirmed(settings['scratch_space_id'])
                 raise ExecutionPodError('termination_unconfirmed', 'Admission cleanup failed: ' + str(cleanup)) from cleanup
             raise ExecutionPodError('startup_failed', 'Execution Pod did not become ready: ' + detail[-2000:]) from error
-        return {'protocol': 'aidash-runner/2', 'pod': name, 'claim': name}
+        return self._pod_receipt(name, settings['image'])
 
     def stop(self, scratch_space_id):
         with self._space_lock(scratch_space_id):
@@ -840,17 +1081,23 @@ print(json.dumps(r))'''
         import json
         import time
         from control import save
-        directory = self.backend.root / 'execution-v2'
-        if not directory.exists():
-            return
-        with self.lock:
-            for path in directory.glob('*.json'):
+        for path in self._space_journal_paths(scratch_space_id):
+            try:
+                candidate = json.loads(path.read_bytes())
+            except FileNotFoundError:
+                continue
+            if candidate.get('status') not in ('queued', 'running'):
+                continue
+            with self.lock:
+                if not path.exists():
+                    continue
                 record = json.loads(path.read_bytes())
-                if record.get('scratch_space_id') == scratch_space_id and record.get('status') in ('queued', 'running'):
+                if record.get('status') in ('queued', 'running'):
                     prior = record['status']
                     record.update(status='interrupted' if prior == 'running' else 'cancelled',
                                   outcome='unknown' if prior == 'running' else 'not_started', terminal_at=time.time())
                     save(path, record)
+                    self.journal_metadata[path.name] = self._prune_metadata(record)
                     future = self.futures.get(record.get('operation_id'))
                     if prior == 'queued' and future:
                         future.cancel()
@@ -980,6 +1227,7 @@ print(json.dumps(r))'''
             claim = self._get('pvc', name)
             if claim and claim.get('spec', {}).get('volumeName'):
                 self._volume_for_purge(claim)
+            journal_paths = self._space_journal_paths(scratch_space_id)
             with self.lock:
                 path = self.backend.root / 'execution-v2-spaces' / (name + '.json')
                 path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -987,14 +1235,7 @@ print(json.dumps(r))'''
                     'scratch_space_id': scratch_space_id, 'last_command_at': time.time()}
                 state['purging'] = True
                 save(path, state)
-                directory = self.backend.root / 'execution-v2'
-                operations = []
-                for record_path in directory.glob('*.json') if directory.exists() else ():
-                    record = json.loads(record_path.read_bytes())
-                    if record.get('scratch_space_id') == scratch_space_id:
-                        future = self.futures.get(record.get('operation_id'))
-                        if future:
-                            operations.append(future)
+                operations = [self.futures[path.stem] for path in journal_paths if path.stem in self.futures]
             self._stop(scratch_space_id)
         if operations:
             _, pending = wait(operations, timeout=30)
@@ -1006,14 +1247,15 @@ print(json.dumps(r))'''
             return result
 
     def _purge_local_state(self, scratch_space_id):
-        import json
         from control import scratch_resource_name
+        journal_paths = self._space_journal_paths(scratch_space_id)
+        session_paths = self._space_journal_paths(scratch_space_id, sessions=True)
+        for path in journal_paths + session_paths:
+            path.unlink(missing_ok=True)
         with self.lock:
-            for directory in ('execution-v2', 'execution-v2-python'):
-                root = self.backend.root / directory
-                for path in root.glob('*.json') if root.exists() else ():
-                    if json.loads(path.read_bytes()).get('scratch_space_id') == scratch_space_id:
-                        path.unlink()
+            for name in self.journal_index.pop(scratch_space_id, set()):
+                self.journal_metadata.pop(name, None)
+            self.session_index.pop(scratch_space_id, None)
             path = self.backend.root / 'execution-v2-spaces' / (scratch_resource_name(scratch_space_id) + '.json')
             path.unlink(missing_ok=True)
             self.foreground_jobs.pop(scratch_space_id, None)
@@ -1161,6 +1403,7 @@ print(json.dumps(r))'''
     def _update_command(self, operation_id, *, allow_late=False, **fields):
         import time
         from control import save
+        self._ensure_journal_index()
         with self.lock:
             record = self._read_command(operation_id)
             if allow_late and record.get('status') != 'interrupted':
@@ -1175,7 +1418,9 @@ print(json.dumps(r))'''
             if fields.get('status') in terminal:
                 fields.setdefault('terminal_at', time.time())
             record.update(fields)
-            save(self._command_path(operation_id), record)
+            path = self._command_path(operation_id)
+            save(path, record)
+            self.journal_metadata[path.name] = self._prune_metadata(record)
             return record
 
     def command_result(self, operation_id, *, retry_stop=True, observe_late=True):
@@ -1263,6 +1508,9 @@ print(json.dumps(r))'''
                 if prior.get('request_digest') != digest:
                     raise ExecutionPodError('command_conflict', 'Operation ID was already used for another command')
                 return self.command_result(operation_id, observe_late=False)
+        self.prune_space(scratch_id)
+        if len(self._space_journal_paths(scratch_id)) >= JOURNAL_MAX_RECORDS_PER_SPACE:
+            raise ExecutionPodError('journal_full', 'Scratch Space command journal is full; retry after retention expires')
         pod = self._get('pod', name)
         with self.lock:
             # Different Spaces use different lifecycle locks, so another Space
@@ -1300,6 +1548,8 @@ print(json.dumps(r))'''
             if client_digest:
                 record['client_digest'] = client_digest
             save(path, record)
+            self.journal_index.setdefault(scratch_id, set()).add(path.name)
+            self.journal_metadata[path.name] = self._prune_metadata(record)
             self.touch_space(scratch_id)
             if not background:
                 self.foreground_jobs[scratch_id] = self.foreground_jobs.get(scratch_id, 0) + 1
@@ -1726,10 +1976,12 @@ print(json.dumps(r))'''
                 queue = self.queues.get(scratch_space_id)
             if queue:
                 queue.cancel_waiting(run_id)
-            directory = self.backend.root / 'execution-v2'
             failures = []
-            for path in directory.glob('*.json') if directory.exists() else ():
-                record = json.loads(path.read_bytes())
+            for path in self._space_journal_paths(scratch_space_id):
+                try:
+                    record = json.loads(path.read_bytes())
+                except FileNotFoundError:
+                    continue
                 if (record.get('scratch_space_id') == scratch_space_id and record.get('run_id') == run_id
                         and not record.get('background') and (record.get('status') in ('queued', 'running')
                             or (record.get('status') == 'interrupted' and record.get('docker_enabled')))):
@@ -1747,13 +1999,13 @@ print(json.dumps(r))'''
         from control import scratch_resource_name
 
         scratch_resource_name(scratch_space_id)
-        directory = self.backend.root / 'execution-v2'
-        if not directory.exists():
-            return {'processes': []}
         result = []
         terminal = {'completed', 'timed_out', 'stopped', 'cancelled', 'interrupted'}
-        for path in directory.glob('*.json'):
-            record = json.loads(path.read_bytes())
+        for path in self._space_journal_paths(scratch_space_id):
+            try:
+                record = json.loads(path.read_bytes())
+            except FileNotFoundError:
+                continue
             if (record.get('scratch_space_id') == scratch_space_id and record.get('background')
                     and record.get('kind') != 'python_session'):
                 finished = record.get('terminal_at') or record.get('accepted_at')
@@ -1933,6 +2185,7 @@ print(json.dumps(r))'''
             try:
                 scratch_id = json.loads(path.read_bytes())['scratch_space_id']
                 with self._space_lock(scratch_id):
+                    self.prune_space(scratch_id, now=current)
                     with self.lock:
                         space = json.loads(path.read_bytes())
                         unconfirmed = space.get('termination_unconfirmed', False)
@@ -2032,7 +2285,10 @@ print(json.dumps(r))'''
                              'run_id': run_id, 'code': code, 'background': True}, kind='python_session')
         session = {'operation_id': operation_id, 'scratch_space_id': scratch_space_id,
                    'run_id': run_id, 'socket_path': socket_path}
+        self._ensure_journal_index()
         save(path, session)
+        with self.lock:
+            self.session_index.setdefault(scratch_space_id, set()).add(path.name)
         return dict(session, session_replaced=True) if replaced else session
 
     def python_cell(self, request):
@@ -2293,7 +2549,8 @@ def network_canary_manifests(config, node, nonce):
         raise ValueError('network canary requires a node')
     name = 'admission-' + nonce
     labels = {'aidash-canary': nonce}
-    metadata = {'name': name, 'namespace': config['namespace'], 'labels': labels}
+    metadata = {'name': name, 'namespace': config['namespace'],
+                'labels': dict(labels, **{'aidash.run/v2-canary': 'true'})}
     security = {'runAsUser': 10000, 'runAsNonRoot': True, 'allowPrivilegeEscalation': False,
                 'readOnlyRootFilesystem': True, 'capabilities': {'drop': ['ALL']},
                 'seccompProfile': {'type': 'RuntimeDefault'}}
@@ -2309,17 +2566,20 @@ def network_canary_manifests(config, node, nonce):
                                                        'periodSeconds': 1, 'timeoutSeconds': 1},
                                     'resources': {'limits': {'cpu': '250m', 'memory': '128Mi'}}}]}}
     policy = {'apiVersion': 'networking.k8s.io/v1', 'kind': 'NetworkPolicy',
-              'metadata': {'name': name, 'namespace': config['namespace']},
+              'metadata': {'name': name, 'namespace': config['namespace'],
+                           'labels': {'aidash.run/v2-canary': 'true'}},
               'spec': {'podSelector': {'matchLabels': labels}, 'policyTypes': ['Ingress', 'Egress'],
                        'ingress': [{'ports': [{'protocol': 'TCP', 'port': 18080},
                                               {'protocol': 'UDP', 'port': 18081}]}], 'egress': [{}]}}
     return policy, pod
 
 
-def verify_positive_controls(report):
+def verify_positive_controls(report, *, metadata_server_absent=False):
     """Refuse negative evidence unless each target was independently reachable."""
+    if type(metadata_server_absent) is not bool:
+        raise ValueError('metadata_server_absent must be a boolean')
     missing = [name for name in ('peer', 'node', 'metadata', 'internet', 'gateway')
-               if report.get(name) is not True]
+               if not (name == 'metadata' and metadata_server_absent) and report.get(name) is not True]
     if missing:
         raise ValueError('network positive control unavailable: ' + ', '.join(missing))
 

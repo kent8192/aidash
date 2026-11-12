@@ -359,6 +359,38 @@ impl HomeScope for Scope {
 			.map(|r| r.into_iter().map(Into::into).collect())
 			.map_err(Into::into)
 	}
+	async fn holder_grants(&mut self, task: Uuid) -> Result<Vec<Grant>> {
+		let result: NativeResult<Vec<GrantRow>> = async {
+			let identity = self.access.identity.clone();
+			let access = &mut *self.access;
+			Ok({
+				let query_bind_1 = task;
+				let query_bind_2 = &identity.tenant;
+				let query_bind_3 = &identity.subject;
+				crate::database::native::query_as(
+					&Query::select()
+						.column(Asterisk)
+						.from(Alias::new("authorization_remote_grants"))
+						.and_where(Expr::col("task_id").eq(Expr::value(query_bind_1)))
+						.and_where(Expr::col("tenant").eq(Expr::value(query_bind_2.to_owned())))
+						.and_where(
+							Expr::col("root_subject").ne(Expr::value(query_bind_3.to_owned())),
+						)
+						.and_where(Expr::col("revoked").eq(false))
+						.and_where(Expr::col("expires_at").gt(Expr::value(chrono::Utc::now())))
+						.order_by(Alias::new("expires_at"), reinhardt::query::Order::Desc)
+						.limit(100)
+						.to_string(PostgresQueryBuilder),
+				)
+				.fetch_all(&mut **access.tx)
+				.await?
+			})
+		}
+		.await;
+		result
+			.map(|r| r.into_iter().map(Into::into).collect())
+			.map_err(Into::into)
+	}
 	async fn delegation_grants(&mut self, task: &Task, node: &str) -> Result<Vec<Grant>> {
 		let worker_subjects = self.access.read_run.map(|_| self.access.subjects.clone());
 		let result:NativeResult<Vec<GrantRow>>=async {let identity=self.access.identity.clone();let access=&mut *self.access;Ok({ let query_bind_1 = task.id; let query_bind_2 = node; let query_bind_3 = &identity.tenant; let query_bind_4 = &identity.subject; crate::database::native::query_as(&Query::select().column(Asterisk).from(Alias::new("authorization_remote_grants"))

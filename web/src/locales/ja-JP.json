@@ -72,6 +72,8 @@
   "close": "閉じる",
   "pause": "一時停止",
   "declineCall": "この呼び出しを断る",
+  "remoteDeclineGrant": "許可",
+  "remoteDeclineState": "実行制御の状態",
   "declineCallHeading": "停止中の呼び出しを断る",
   "declineCallWhat": "実行は {tool} の呼び出しで停止しています。{refuser}。",
   "declineCallExplain": "Agent はこの呼び出しなしで先へ進みます。人が断ったことが Agent に伝わりますが、新しい権限は与えられません。",

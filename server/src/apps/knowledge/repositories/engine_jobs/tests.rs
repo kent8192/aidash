@@ -32,9 +32,8 @@ async fn settlement_waits_out_an_outage_instead_of_leaving_the_claim_attempt_spe
 	// Arrange
 	let writes = std::cell::Cell::new(0);
 	let writes = &writes;
-	let expires = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
 	// Act
-	let result = settle_while_claimed(expires, || async move {
+	let result = settle_while_claimed(|| async move {
 		writes.set(writes.get() + 1);
 		if writes.get() < 4 {
 			Err(pool_timeout())
@@ -54,9 +53,8 @@ async fn settlement_does_not_repeat_a_failure_that_is_not_the_database() {
 	// Arrange
 	let writes = std::cell::Cell::new(0);
 	let writes = &writes;
-	let expires = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
 	// Act
-	let result = settle_while_claimed(expires, || async move {
+	let result = settle_while_claimed(|| async move {
 		writes.set(writes.get() + 1);
 		Err(Error::Conflict("engine claim was replaced".into()))
 	})
@@ -66,17 +64,24 @@ async fn settlement_does_not_repeat_a_failure_that_is_not_the_database() {
 	assert_eq!(writes.get(), 1);
 }
 
-/// Past its expiry another worker may hold the claim, so the wait ends with the outage's error.
+/// An outage past expiry does not stop settlement when the database recovers.
 #[rstest]
 #[tokio::test(start_paused = true)]
-async fn settlement_stops_waiting_when_the_claim_expires() {
+async fn settlement_succeeds_after_the_claim_expires() {
 	// Arrange
 	let started = tokio::time::Instant::now();
 	let expires = started + std::time::Duration::from_secs(30);
 	// Act
-	let result = settle_while_claimed(expires, || async { Err::<(), _>(pool_timeout()) }).await;
+	let result = settle_while_claimed(|| async {
+		if tokio::time::Instant::now() < expires {
+			Err(pool_timeout())
+		} else {
+			Ok(())
+		}
+	})
+	.await;
 	// Assert
-	assert!(result.unwrap_err().is_transient_database());
+	result.unwrap();
 	let waited = started.elapsed();
 	assert!(waited >= std::time::Duration::from_secs(30), "{waited:?}");
 	assert!(waited < std::time::Duration::from_secs(36), "{waited:?}");

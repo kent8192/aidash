@@ -27,6 +27,43 @@ pub struct Admission {
 	pub meter: Arc<dyn Meter>,
 }
 
+/// A debit committed its bytes and decided that the stream must stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DebitRefusal {
+	/// The operation's byte budget was exhausted.
+	Limit,
+	/// The operation or session expired.
+	Expired,
+	/// The operation is no longer active.
+	Inactive,
+	/// The Scratch Space's daily budget was exhausted.
+	ScopeBudget,
+	/// The request's authority was refused.
+	Forbidden,
+}
+impl DebitRefusal {
+	/// A store failure is not a decision: the caller must retry its bytes.
+	pub fn of(error: &crate::Error) -> Option<Self> {
+		use crate::Error;
+		match error {
+			Error::Conflict(code) if code == aidash_domain::egress::LIMIT_EXCEEDED => {
+				Some(Self::Limit)
+			}
+			Error::Conflict(code) if code == aidash_domain::egress::OPERATION_EXPIRED => {
+				Some(Self::Expired)
+			}
+			Error::Conflict(code) if code == aidash_domain::egress::OPERATION_INACTIVE => {
+				Some(Self::Inactive)
+			}
+			Error::Refused(code) if code == "egress_budget_exhausted" => Some(Self::ScopeBudget),
+			Error::Forbidden | Error::Unauthorized | Error::AuthorityRefused(_) => {
+				Some(Self::Forbidden)
+			}
+			_ => None,
+		}
+	}
+}
+
 #[derive(Clone, Copy)]
 pub enum Direction {
 	Sent,
@@ -63,8 +100,14 @@ pub trait Meter: Send + Sync {
 	/// bytes are always committed, even past a limit. Afterwards the call
 	/// reports why the stream must stop: `Conflict(LIMIT_EXCEEDED)` when a
 	/// budget is exhausted, `Conflict(OPERATION_EXPIRED)` when the operation or
-	/// session ended or expired, and `Forbidden` when its authority was revoked
-	/// (see [`aidash_domain::egress::LIMIT_EXCEEDED`]). Any other error means
+	/// session expired, `Conflict(OPERATION_INACTIVE)` when the operation ended,
+	/// and `Forbidden` when its authority was revoked.
+	/// Scoped meters can also refuse for their budget or suspension. When their
+	/// Scratch Space's live authority refuses, they still add the bytes to its
+	/// daily totals and return `Forbidden`, which outranks their other
+	/// refusals; a scope whose state is gone keeps them only in the request
+	/// record. All such
+	/// decisions are classified by [`DebitRefusal`]. Any other error means
 	/// the bytes were not committed, and the caller charges them again.
 	async fn charge(&self, direction: Direction, bytes: usize) -> Result<()>;
 	/// Completes the metadata-only request record, including failures and partial bodies.

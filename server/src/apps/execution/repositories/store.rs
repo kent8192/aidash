@@ -1808,11 +1808,12 @@ impl Store {
 		parent: Uuid,
 		ids: &[Uuid],
 		actor: &str,
-	) -> Result<()> {
+	) -> Result<Vec<Uuid>> {
 		// A fixed order keeps two transactions from locking in opposite ones.
 		let mut ids = ids.to_vec();
 		ids.sort();
 		ids.dedup();
+		let mut abandoned = Vec::new();
 		for id in ids {
 			let locked: Option<Task> = {
 				let query_bind_1 = id;
@@ -1856,8 +1857,9 @@ impl Store {
 			}
 			self.abandon_locked_in(tx, &child, aidash_domain::unassigned::ABANDON_REASON, actor)
 				.await?;
+			abandoned.push(id);
 		}
-		Ok(())
+		Ok(abandoned)
 	}
 	/// Abandon Unassigned children of a running parent without completing it.
 	pub async fn abandon_unassigned(
@@ -1866,12 +1868,13 @@ impl Store {
 		parent: Uuid,
 		owner: &str,
 		ids: &[Uuid],
-	) -> Result<()> {
+	) -> Result<Vec<Uuid>> {
 		let mut tx = self.pool.begin(scope).await?;
-		self.abandon_unassigned_for_in(&mut tx, parent, owner, ids)
+		let abandoned = self
+			.abandon_unassigned_for_in(&mut tx, parent, owner, ids)
 			.await?;
 		tx.commit().await?;
-		Ok(())
+		Ok(abandoned)
 	}
 	pub(crate) async fn abandon_unassigned_for_in(
 		&self,
@@ -1879,7 +1882,7 @@ impl Store {
 		parent: Uuid,
 		owner: &str,
 		ids: &[Uuid],
-	) -> Result<()> {
+	) -> Result<Vec<Uuid>> {
 		let task: Task = {
 			let query_bind_1 = parent;
 			aidash_server::database::query_as(
@@ -2745,7 +2748,8 @@ impl Store {
 		)
 		.await
 	}
-	/// A Subnode member's message to the Run that created the Subnode.
+	/// A Subnode member's message to the Run that created the Subnode. Returns the
+	/// creator's Workspace and the copy written there, none when the creator is remote.
 	pub(crate) async fn accept_member_message_in(
 		&self,
 		tx: &mut dyn TransactionExecutor,
@@ -2754,7 +2758,7 @@ impl Store {
 		content: &str,
 		key: &str,
 		max_input_tokens: usize,
-	) -> Result<()> {
+	) -> Result<Option<(Uuid, Uuid)>> {
 		let deployment = self.deployment.as_str();
 		InputRecord::admit_from_run(
 			tx,
@@ -2764,7 +2768,8 @@ impl Store {
 			(&member.executor_subject(deployment), content, key),
 			max_input_tokens,
 		)
-		.await
+		.await?;
+		InputRecord::local_message_of(tx, creator, key).await
 	}
 	/// The pages people asked `run_id` to read, oldest first (ADR 0052).
 	pub async fn url_intents(
@@ -3098,6 +3103,61 @@ impl Store {
 			&[(read_kind.to_owned(), id)],
 		)
 		.await?;
+		Self::insert_output_in(tx, run, workspace, kind, id).await
+	}
+	/// A Subnode member Run produced the `message` it sent to the Run that created
+	/// the Subnode, in that creator's Workspace (#793). Only that case is accepted:
+	/// `workspace` must be one the creating Run works in. The member does not read its
+	/// own message there, so no self-read is journaled; its Workspace is a foreign one.
+	pub(crate) async fn record_member_message_in(
+		&self,
+		tx: &mut crate::database::native::Transaction,
+		member: Uuid,
+		workspace: Uuid,
+		message: Uuid,
+	) -> Result<()> {
+		let valid: bool = crate::database::native::query_scalar(
+			&Query::select()
+				.expr(Expr::exists(
+					Query::select()
+						.expr(Expr::value(1_i32))
+						.from(Alias::new("subnodes"))
+						.and_where(
+							Expr::col("workspace_id").in_subquery(
+								Query::select()
+									.column(Alias::new("workspace_id"))
+									.from(Alias::new("authorization_execution"))
+									.and_where(Expr::col("run_id").eq(Expr::value(member)))
+									.to_owned(),
+							),
+						)
+						.and_where(
+							Expr::col("creator_run_id").in_subquery(
+								Query::select()
+									.column(Alias::new("run_id"))
+									.from(Alias::new("authorization_execution"))
+									.and_where(Expr::col("workspace_id").eq(Expr::value(workspace)))
+									.to_owned(),
+							),
+						)
+						.to_owned(),
+				))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut **tx)
+		.await?;
+		if !valid {
+			return Err(Error::Forbidden);
+		}
+		Self::insert_output_in(tx, member, workspace, "message", message).await
+	}
+	async fn insert_output_in(
+		tx: &mut crate::database::native::Transaction,
+		run: Uuid,
+		workspace: Uuid,
+		kind: &str,
+		id: Uuid,
+	) -> Result<()> {
 		crate::database::native::query(
 			&Query::insert()
 				.into_table(Alias::new("authorization_run_outputs"))
@@ -3293,6 +3353,7 @@ impl Store {
 			None,
 			self.deployment.as_str(),
 			&mut cursor,
+			self.recovery_cursors.outage.holds_recoveries(seconds),
 		)
 		.await?;
 		tx.commit().await?;
@@ -3306,8 +3367,15 @@ impl Store {
 		seconds: i32,
 	) -> Result<bool> {
 		let mut tx = self.pool.begin(scope).await?.into_executor().await?;
+		let expired = RunRecord::expired_lease(tx.as_mut(), id, worker).await?;
 		let renewed = RunRecord::renew(tx.as_mut(), id, worker, seconds).await?;
 		tx.commit().await?;
+		if renewed && let Some(expired) = expired {
+			// Nobody took the Run while its lease had expired, so the worker
+			// keeps it and no Lease Recovery is charged (#786).
+			tracing::warn!(run_id = %id, expired_ms = expired.num_milliseconds(), "worker reclaimed its own expired lease");
+			metrics::counter!("aidash_worker_lease_reclaims_total").increment(1);
+		}
 		Ok(renewed)
 	}
 
@@ -5466,9 +5534,10 @@ impl Store {
 		run_id: Option<Uuid>,
 		node_id: &str,
 		cursor: &mut run_state::RecoveryCursor,
+		holds_recoveries: bool,
 	) -> Result<Option<Run>> {
 		aidash_application::activation::lease(
-			&mut crate::bootstrap::activation_scheduling_scope(tx),
+			&mut crate::bootstrap::activation_scheduling_scope(tx, holds_recoveries),
 			worker,
 			seconds,
 			run_id,
@@ -5552,8 +5621,12 @@ impl Store {
 					key: call.key.clone(),
 					index: call.index,
 					replay_safe: call.replay_safe,
-					tool: refusal.tool.clone(),
+					tool: call
+						.tool_call
+						.as_ref()
+						.map_or_else(|| refusal.tool.clone(), |stopped| stopped.name.clone()),
 					kind,
+					tool_call: call.tool_call.clone(),
 				}
 			}),
 		)

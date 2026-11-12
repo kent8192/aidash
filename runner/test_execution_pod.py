@@ -109,6 +109,50 @@ class SystemTreeTest(unittest.TestCase):
             self.assertIn('link', index)
             self.assertNotIn('link/secret', index)
 
+    def test_image_change_is_reported_until_reset_applies_it(self):
+        import tempfile
+        from pathlib import Path
+        from execution_pod import initialize_system_root, system_image_changed
+        image_a, image_b = 'image@sha256:' + 'a' * 64, 'image@sha256:' + 'b' * 64
+        with tempfile.TemporaryDirectory() as directory:
+            image, store = Path(directory) / 'image', Path(directory) / 'store'
+            image.mkdir()
+            (image / 'version').write_text('first')
+            initialize_system_root(image, store, image_identity=image_a)
+            self.assertFalse(system_image_changed(store, image_a))
+            (image / 'version').write_text('second')
+            initialize_system_root(image, store, image_identity=image_b)
+            self.assertTrue(system_image_changed(store, image_b))
+            self.assertEqual((store / 'rootfs' / 'version').read_text(), 'first')
+            initialize_system_root(image, store, reset=True, image_identity=image_b)
+            self.assertFalse(system_image_changed(store, image_b))
+            self.assertEqual((store / 'rootfs' / 'version').read_text(), 'second')
+
+    def test_interrupted_reset_does_not_leave_a_stale_image_marker(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from execution_pod import initialize_system_root, system_image_changed
+        image_id = 'image@sha256:' + 'a' * 64
+        with tempfile.TemporaryDirectory() as directory:
+            image, store = Path(directory) / 'image', Path(directory) / 'store'
+            image.mkdir()
+            initialize_system_root(image, store, image_identity=image_id)
+            with patch('shutil.copytree', side_effect=OSError('copy interrupted')):
+                with self.assertRaises(OSError):
+                    initialize_system_root(image, store, reset=True, image_identity='image@sha256:' + 'b' * 64)
+            self.assertTrue(system_image_changed(store, image_id))
+
+    def test_image_status_helper_runs_with_isolated_python(self):
+        import json
+        import subprocess
+        import sys
+        from pathlib import Path
+        helper = Path(__file__).with_name('sandbox_v2.py')
+        result = subprocess.run([sys.executable, '-I', str(helper), 'image-status', 'image@sha256:' + 'a' * 64],
+                                capture_output=True, check=True)
+        self.assertIsInstance(json.loads(result.stdout)['image_changed'], bool)
+
     def test_initial_copy_reuses_system_and_reset_recopies_image(self):
         import tempfile
         from pathlib import Path
@@ -238,14 +282,20 @@ class ImageEnvironmentRegressionTest(unittest.TestCase):
             root = Path(directory) / 'rootfs'
             root.mkdir()
             save_image_environment(root.parent, {'PATH': '/opt/rust/bin:/usr/bin', 'CARGO_HOME': '/cargo',
-                                                 'AIDASH_PROCESS_LIMIT': 'evil'})
+                                                 'AIDASH_PROCESS_LIMIT': 'evil', 'HTTPS_PROXY': 'http://image-proxy',
+                                                 'NO_PROXY': 'image-value'})
+            proxy_env = {key: 'http://aidash:token@proxy' for key in
+                         ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy')}
+            proxy_env.update({'NO_PROXY': 'localhost,127.0.0.1,::1,proxy',
+                              'no_proxy': 'localhost,127.0.0.1,::1,proxy'})
             with patch('sandbox_v2.enter_user_root'), patch('os.execvpe') as execute, \
-                 patch.dict('os.environ', {'AIDASH_PROCESS_LIMIT': '128', 'HTTPS_PROXY': 'http://proxy'}, clear=True):
+                 patch.dict('os.environ', dict(proxy_env, AIDASH_PROCESS_LIMIT='128'), clear=True):
                 chroot_command(str(root), '.', ['/bin/sh'], False)
             env = execute.call_args.args[2]
             self.assertEqual(env['PATH'], '/opt/rust/bin:/usr/bin')
             self.assertEqual(env['CARGO_HOME'], '/cargo')
-            self.assertEqual(env['HTTPS_PROXY'], 'http://proxy')
+            for key, value in proxy_env.items():
+                self.assertEqual(env[key], value)
             self.assertNotIn('AIDASH_PROCESS_LIMIT', env)
 
 
@@ -280,6 +330,8 @@ class PodProxyUrlTest(unittest.TestCase):
         for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy'):
             self.assertEqual(env[name], 'http://aidash:aidash-scope-v1.a@10.0.0.8:8888')
         self.assertEqual(env['NODE_USE_ENV_PROXY'], '1')
+        for name in ('NO_PROXY', 'no_proxy'):
+            self.assertEqual(env[name], 'localhost,127.0.0.1,::1,10.0.0.8')
 
 
 class StartupStorageRegressionTest(unittest.TestCase):
@@ -305,7 +357,13 @@ class StartupStorageRegressionTest(unittest.TestCase):
                   'namespace': 'sandbox', 'processes': 128}
         _, pod = execution_manifests(settings, config)
         env = {item['name']: item.get('value') for item in pod['spec']['containers'][0]['env']}
-        self.assertEqual(env['AIDASH_PROCESS_LIMIT'], '512')
+        self.assertEqual(env['AIDASH_PROCESS_LIMIT'], '128')
+        _, small = execution_manifests(dict(settings, memory_bytes=1 << 30), config)
+        small_env = {item['name']: item.get('value') for item in small['spec']['containers'][0]['env']}
+        self.assertEqual(small_env['AIDASH_PROCESS_LIMIT'], '64')
+        _, overridden = execution_manifests(settings, dict(config, v2_processes=200))
+        override_env = {item['name']: item.get('value') for item in overridden['spec']['containers'][0]['env']}
+        self.assertEqual(override_env['AIDASH_PROCESS_LIMIT'], '200')
 
     def test_tmp_is_memory_bounded_and_ephemeral_storage_has_a_limit(self):
         from execution_pod import execution_manifests
@@ -381,6 +439,19 @@ class PodManifestTest(unittest.TestCase):
         self.assertTrue(any(v.get('persistentVolumeClaim', {}).get('claimName') == pvc['metadata']['name']
                             for v in pod['spec']['volumes']))
         self.assertFalse(any('hostPath' in v for v in pod['spec']['volumes']))
+
+    def test_v2_pod_inherits_sandbox_pool_scheduling(self):
+        from execution_pod import execution_manifests
+        settings = {'scratch_space_id': 's', 'image': 'image@sha256:' + 'a' * 64,
+                    'cpu': 2, 'memory_bytes': 2 << 30, 'capacity_bytes': 2 << 30,
+                    'docker_enabled': False}
+        selector = {'pool': 'sandbox'}
+        tolerations = [{'key': 'sandbox', 'operator': 'Exists', 'effect': 'NoSchedule'}]
+        config = {'runtime_class': 'gvisor', 'helper_image': 'helper@sha256:' + 'b' * 64,
+                  'namespace': 'sandbox', 'node_selector': selector, 'tolerations': tolerations}
+        _, pod = execution_manifests(settings, config)
+        self.assertEqual(pod['spec']['nodeSelector'], selector)
+        self.assertEqual(pod['spec']['tolerations'], tolerations)
 
     def test_docker_requires_operator_authority_and_dedicated_tenant(self):
         from execution_pod import execution_manifests
@@ -462,6 +533,40 @@ class ExecutionPodControllerTest(unittest.TestCase):
             for queue in queues.values():
                 queue.close()
 
+    def test_credential_is_not_exposed_by_pod_creation_failure(self):
+        import contextlib
+        import io
+        import json
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from execution_pod import ExecutionPodController
+        token = 'aidash-scope-v1.secret-token'
+        class Backend:
+            def __init__(self, root):
+                self.root = Path(root)
+            def kube(self, args, data=None, **kwargs):
+                if args[0] == 'get':
+                    return SimpleNamespace(stdout=b'')
+                obj = json.loads(data)
+                if obj['kind'] == 'Pod':
+                    raise RuntimeError('API echoed ' + token)
+                return SimpleNamespace(stdout=b'')
+        settings = {'scratch_space_id': 's', 'image': 'image@sha256:' + 'a' * 64,
+                    'cpu': 2, 'memory_bytes': 2 << 30, 'capacity_bytes': 2 << 30,
+                    'docker_enabled': False, 'egress_credential': token}
+        config = {'runtime_class': 'gvisor', 'helper_image': 'helper@sha256:' + 'b' * 64,
+                  'namespace': 'sandbox', 'proxy_endpoint': 'http://10.0.0.8:8888',
+                  'proxy_namespace': 'gateway', 'proxy_selector': {'app': 'gateway'}}
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Backend(directory), config, admitted=True)
+            logs = io.StringIO()
+            with contextlib.redirect_stderr(logs), self.assertRaises(Exception) as failure:
+                controller.ensure(settings)
+            output = str(failure.exception) + logs.getvalue()
+            output += ''.join(p.read_text(errors='replace') for p in Path(directory).rglob('*') if p.is_file())
+            self.assertNotIn(token, output)
+
     def test_ensure_is_idempotent_and_stop_preserves_claim(self):
         import json
         import tempfile
@@ -476,6 +581,9 @@ class ExecutionPodControllerTest(unittest.TestCase):
                 self.calls = []
             def kube(self, args, data=None, **_kwargs):
                 self.calls.append(args)
+                if args[0] == 'exec' and 'image-status' in args:
+                    return SimpleNamespace(stdout=json.dumps({'image_changed': args[-1] !=
+                        'image@sha256:' + 'a' * 64}).encode())
                 if args[0] == 'get':
                     obj = self.objects.get((args[1], args[2]))
                     return SimpleNamespace(stdout=json.dumps(obj).encode() if obj else b'')
@@ -495,9 +603,11 @@ class ExecutionPodControllerTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         backend.root = Path(temporary.name)
         config = {'runtime_class': 'aidash-gvisor', 'helper_image': 'helper@sha256:' + 'b' * 64,
-                  'namespace': 'aidash-sandbox'}
+                  'namespace': 'aidash-sandbox', 'proxy_endpoint': 'http://10.0.0.8:8888',
+                  'proxy_namespace': 'gateway', 'proxy_selector': {'app': 'gateway'}}
         settings = {'scratch_space_id': 'id', 'image': 'image@sha256:' + 'a' * 64, 'cpu': 2,
-                    'memory_bytes': 1 << 30, 'capacity_bytes': 1 << 30, 'docker_enabled': False}
+                    'memory_bytes': 1 << 30, 'capacity_bytes': 1 << 30, 'docker_enabled': False,
+                    'egress_credential': 'aidash-scope-v1.test-secret'}
         controller = ExecutionPodController(backend, config, admitted=True)
         controller._admit_pod = Mock()
         import threading
@@ -506,6 +616,9 @@ class ExecutionPodControllerTest(unittest.TestCase):
         def verify(*args):
             started.set()
             self.assertTrue(release.wait(3))
+            pod = next(obj for (kind, _), obj in backend.objects.items() if kind == 'pod')
+            pod['status'] = {'phase': 'Running', 'containerStatuses': [
+                {'name': 'execution', 'ready': True, 'state': {'running': {}}}]}
             return 'pod-uid'
         controller._verify_running_pod = Mock(side_effect=verify)
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -515,9 +628,47 @@ class ExecutionPodControllerTest(unittest.TestCase):
             release.set()
             resource = first.result(timeout=3)
             self.assertEqual(second.result(timeout=3), resource)
+        self.assertFalse(resource['image_changed'])
+        changed = controller.ensure(dict(settings, image='image@sha256:' + 'c' * 64))
+        self.assertTrue(changed['image_changed'])
+        self.assertIn(('pod', resource['pod']), backend.objects)
+        self.assertNotIn(settings['egress_credential'], json.dumps(resource))
+        for path in backend.root.rglob('*.json'):
+            self.assertNotIn(settings['egress_credential'], path.read_text())
         controller._verify_running_pod.assert_called_once()
+        pod = backend.objects[('pod', resource['pod'])]
+        from execution_pod import ExecutionPodError
+        pod['status'] = {'phase': 'Running', 'containerStatuses': [
+            {'name': 'execution', 'ready': False, 'state': {'running': {}}}]}
+        with self.assertRaises(ExecutionPodError) as failure:
+            controller.ensure(settings)
+        self.assertEqual(failure.exception.code, 'pod_unavailable')
+        self.assertIs(backend.objects[('pod', resource['pod'])], pod)
+        # A failed node guard must fence the Space and interrupt the old command.
+        operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        controller._command_path(operation).write_text(json.dumps({'operation_id': operation,
+            'scratch_space_id': 'id', 'run_id': 'run', 'status': 'running'}))
+        pod['status'] = {'phase': 'Failed'}
+        controller._terminate_recorded_pod = Mock(side_effect=ExecutionPodError('termination_unconfirmed', 'guard unavailable'))
+        with self.assertRaises(ExecutionPodError) as failure:
+            controller.ensure(settings)
+        self.assertEqual(failure.exception.code, 'termination_unconfirmed')
+        self.assertIs(backend.objects[('pod', resource['pod'])], pod)
+        self.assertEqual(controller._read_command(operation)['status'], 'interrupted')
+        controller._clear_space_unconfirmed('id')
+        # The node guard is exercised by the stop tests; here it confirms retirement.
+        controller._terminate_recorded_pod = Mock()
+        for phase in ('Failed', 'Succeeded', 'Running'):
+            pod['status'] = {'phase': phase, 'containerStatuses': [
+                {'name': 'execution', 'ready': False, 'state': {'terminated': {'reason': 'OOMKilled'}}}]}
+            self.assertEqual(controller.ensure(settings), resource)
+            self.assertIsNot(backend.objects[('pod', resource['pod'])], pod)
+            self.assertIn(('pvc', resource['claim']), backend.objects)
+            pod = backend.objects[('pod', resource['pod'])]
+        self.assertEqual(controller._verify_running_pod.call_count, 4)
+        pod['status'] = {'phase': 'Pending'}
         waits = [args for args in backend.calls if args[0] == 'wait']
-        self.assertEqual(len(waits), 1)
+        self.assertEqual(len(waits), 4)
         self.assertIn('--timeout=1800s', waits[0])
         controller.stop('id')
         self.assertIn(('pvc', resource['claim']), backend.objects)
@@ -2489,6 +2640,152 @@ class RecoveryRegressionTest(unittest.TestCase):
             controller._require_space_termination_confirmed('s')
 
 
+class JournalRetentionTest(unittest.TestCase):
+    def test_two_hundred_sequential_commands_in_a_day_are_accepted(self):
+        import tempfile
+        import uuid
+        from concurrent.futures import Future
+        from pathlib import Path
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+            controller._get = Mock(return_value={'metadata': {'uid': 'uid'}, 'status': {'phase': 'Running'},
+                'spec': {'containers': [{'name': 'execution'}]}})
+            controller._admitted_uid = Mock(return_value='uid')
+            queue = Mock()
+            queue.submit.side_effect = lambda *args, **kwargs: Future()
+            controller.queues['s'] = queue
+            with patch('time.time') as clock:
+                for index in range(200):
+                    clock.return_value = 1_000_000 + index * 400
+                    operation = str(uuid.UUID(int=index + 1))
+                    request = {'operation_id': operation, 'scratch_space_id': 's', 'run_id': 'r', 'code': 'true'}
+                    self.assertEqual(controller.submit_command(request)['status'], 'queued')
+                    future = controller.futures[operation]
+                    controller._update_command(operation, status='completed', outcome='completed', exit_code=0)
+                    future.set_result(None)
+                self.assertEqual(queue.submit.call_count, 200)
+
+    def test_pruning_keeps_retry_window_and_unsettled_records_in_their_space(self):
+        import hashlib
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController, JOURNAL_RETENTION_SECONDS
+        self.assertEqual(JOURNAL_RETENTION_SECONDS, 24 * 60 * 60 + 15 * 60)
+        now = 2_000_000
+        ids = [f'e6ded09d-f783-4ce8-98e9-dbfca68884f{i}' for i in range(1, 5)]
+        request = {'operation_id': ids[0], 'scratch_space_id': 's', 'run_id': 'r', 'code': 'true'}
+        digest = hashlib.sha256(json.dumps(request, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+            for op, space, state, finished in ((ids[0], 's', 'completed', now - JOURNAL_RETENTION_SECONDS + 1),
+                                               (ids[1], 's', 'completed', now - JOURNAL_RETENTION_SECONDS - 1),
+                                               (ids[2], 's', 'running', 1),
+                                               (ids[3], 'other', 'completed', 1)):
+                controller._command_path(op).write_text(json.dumps({'operation_id': op, 'scratch_space_id': space,
+                    'run_id': 'r', 'status': state, 'terminal_at': finished, 'request_digest': digest}))
+            with patch('time.time', return_value=now):
+                controller.prune_space('s')
+                self.assertEqual(controller.submit_command(request)['status'], 'completed')
+                controller.backend.kube.assert_not_called()
+            self.assertTrue(controller._command_path(ids[0]).exists())
+            self.assertFalse(controller._command_path(ids[1]).exists())
+            self.assertTrue(controller._command_path(ids[2]).exists())
+            self.assertTrue(controller._command_path(ids[3]).exists())
+
+    def test_rebuilt_index_isolates_spaces_and_keeps_unconfirmed_stops(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController, JOURNAL_RETENTION_SECONDS
+        first = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        other = 'e6ded09d-f783-4ce8-98e9-dbfca68884f2'
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+            for op, space in ((first, 's'), (other, 'other')):
+                controller._command_path(op).write_text(json.dumps({'operation_id': op, 'scratch_space_id': space,
+                    'run_id': 'r', 'status': 'interrupted', 'terminal_at': 1, 'stop_pending': True,
+                    'background': True}))
+            controller._ensure_journal_index()
+            controller._command_path(other).write_text('{unreadable')
+            controller.prune_space('s', now=JOURNAL_RETENTION_SECONDS + 2)
+            self.assertTrue(controller._command_path(first).exists())
+            self.assertEqual(len(controller.background_processes('s')['processes']), 0)
+            self.assertTrue(controller._command_path(other).exists())
+
+    def test_corrupt_journals_do_not_block_healthy_spaces(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+            op = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+            path = controller._command_path(op)
+            path.write_text(json.dumps({'operation_id': op, 'scratch_space_id': 's',
+                'status': 'running', 'terminal_at': 1, 'background': True}))
+            (path.parent / 'broken.json').write_text('{')
+            sessions = Path(directory) / 'execution-v2-python'
+            sessions.mkdir()
+            (sessions / 'broken.json').write_text('{')
+            self.assertEqual(len(controller.background_processes('s')['processes']), 1)
+            self.assertEqual(len(controller._space_journal_paths('s', sessions=True)), 0)
+
+    def test_pruning_does_not_read_unexpired_command_outputs(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+            path = controller._command_path('e6ded09d-f783-4ce8-98e9-dbfca68884f1')
+            path.write_text(json.dumps({'scratch_space_id': 's', 'status': 'completed',
+                'terminal_at': 100, 'stdout': 'x' * 1000000}))
+            controller._ensure_journal_index()
+            with patch.object(Path, 'read_bytes', side_effect=AssertionError('unexpired record read')):
+                controller.prune_space('s', now=101)
+            self.assertTrue(path.exists())
+
+    def test_full_space_rejects_new_work_without_rejecting_retry(self):
+        import hashlib
+        import json
+        import tempfile
+        from concurrent.futures import Future
+        from pathlib import Path
+        from unittest.mock import Mock, patch
+        from execution_pod import ExecutionPodController, ExecutionPodError, JOURNAL_RETENTION_SECONDS
+        op = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
+        request = {'operation_id': op, 'scratch_space_id': 's', 'run_id': 'r', 'code': 'true'}
+        digest = hashlib.sha256(json.dumps(request, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
+            controller._command_path(op).write_text(json.dumps({'operation_id': op, 'scratch_space_id': 's',
+                'run_id': 'r', 'status': 'completed', 'terminal_at': 1_000_000, 'request_digest': digest}))
+            with patch('execution_pod.JOURNAL_MAX_RECORDS_PER_SPACE', 1), patch('time.time', return_value=1_000_001):
+                self.assertEqual(controller.submit_command(request)['status'], 'completed')
+                with self.assertRaises(ExecutionPodError) as refused:
+                    controller.submit_command(dict(request, operation_id='e6ded09d-f783-4ce8-98e9-dbfca68884f2'))
+                self.assertEqual(refused.exception.code, 'journal_full')
+            controller.backend.kube.assert_not_called()
+            controller._get = Mock(return_value={'metadata': {'uid': 'uid'}, 'status': {'phase': 'Running'},
+                'spec': {'containers': [{'name': 'execution'}]}})
+            controller._admitted_uid = Mock(return_value='uid')
+            queue = Mock()
+            queue.submit.return_value = Future()
+            controller.queues['s'] = queue
+            with patch('execution_pod.JOURNAL_MAX_RECORDS_PER_SPACE', 1), \
+                    patch('time.time', return_value=1_000_000 + JOURNAL_RETENTION_SECONDS + 1):
+                new_request = dict(request, operation_id='e6ded09d-f783-4ce8-98e9-dbfca68884f2')
+                self.assertEqual(controller.submit_command(new_request)['status'], 'queued')
+            self.assertFalse(controller._command_path(op).exists())
+
+
 class BackgroundListingRegressionTest(unittest.TestCase):
     def test_listing_omits_output_and_old_terminal_records(self):
         import json
@@ -2831,8 +3128,8 @@ class PythonSessionMappingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
             operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
-            controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id':operation}))
-            controller._command_path(operation).write_text(json.dumps({'operation_id':operation, 'status':'interrupted', 'pod_uid': 'uid'}))
+            controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id':operation, 'scratch_space_id': 's'}))
+            controller._command_path(operation).write_text(json.dumps({'operation_id':operation, 'scratch_space_id': 's', 'status':'interrupted', 'pod_uid': 'uid'}))
             controller._get = Mock(return_value={'metadata': {'uid': 'uid'}})
             controller.command_result = Mock(return_value={'status':'interrupted'})
             controller.submit_command = Mock()
@@ -2850,8 +3147,8 @@ class PythonSessionMappingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             controller = ExecutionPodController(Mock(root=Path(directory)), {'output_bytes': 8388608}, admitted=True)
             operation = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
-            controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id': operation}))
-            controller._command_path(operation).write_text(json.dumps({'operation_id': operation,
+            controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id': operation, 'scratch_space_id': 's'}))
+            controller._command_path(operation).write_text(json.dumps({'operation_id': operation, 'scratch_space_id': 's',
                 'status': 'interrupted', 'pod_uid': 'old'}))
             controller._get = Mock(return_value={'metadata': {'uid': 'new'}})
             controller.submit_command = Mock(return_value={'status': 'queued'})
@@ -2870,8 +3167,8 @@ class PythonSessionMappingTest(unittest.TestCase):
             controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
             op = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
             path = controller._python_session_path('s', 'r')
-            path.write_text(json.dumps({'operation_id': op}))
-            controller._command_path(op).write_text(json.dumps({'operation_id': op, 'status': 'interrupted', 'pod_uid': 'old'}))
+            path.write_text(json.dumps({'operation_id': op, 'scratch_space_id': 's'}))
+            controller._command_path(op).write_text(json.dumps({'operation_id': op, 'scratch_space_id': 's', 'status': 'interrupted', 'pod_uid': 'old'}))
             controller._get = Mock(return_value={'metadata': {'uid': 'new'}})
             controller.submit_command = Mock(return_value={'status': 'queued'})
             first = controller.start_python('s', 'r')
@@ -2905,8 +3202,8 @@ class PythonSessionMappingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
             op = 'e6ded09d-f783-4ce8-98e9-dbfca68884f1'
-            controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id': op}))
-            controller._command_path(op).write_text(json.dumps({'operation_id': op, 'status': 'stopped', 'pod_uid': 'old'}))
+            controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id': op, 'scratch_space_id': 's'}))
+            controller._command_path(op).write_text(json.dumps({'operation_id': op, 'scratch_space_id': 's', 'status': 'stopped', 'pod_uid': 'old'}))
             controller._get = Mock(return_value={'metadata': {'uid': 'new'}})
             controller.submit_command = Mock(return_value={'status': 'queued'})
             self.assertFalse(controller.start_python('s', 'r').get('session_replaced', False))
@@ -3317,6 +3614,71 @@ class V2NetworkPolicyTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             v2_network_policy(dict(config, proxy_endpoint='http://169.254.169.254:80'))
 
+    def test_canary_resources_have_a_shared_cleanup_label(self):
+        from execution_pod import network_canary_manifests
+        policy, pod = network_canary_manifests(
+            {'namespace': 'sandbox', 'helper_image': 'helper'}, 'node', 'a' * 32)
+        for obj in (policy, pod):
+            self.assertEqual(obj['metadata']['labels']['aidash.run/v2-canary'], 'true')
+
+    def test_startup_removes_canary_leftovers(self):
+        import json
+        from types import SimpleNamespace
+        from execution_pod import ExecutionPodController
+        class Backend:
+            def __init__(self):
+                self.objects = {'networkpolicy': ['admission-a'], 'pod': ['admission-a']}
+            def kube(self, args, **kwargs):
+                if args[0] == 'get':
+                    return SimpleNamespace(stdout=json.dumps({'items': [
+                        {'metadata': {'name': name}} for name in self.objects[args[1]]]}).encode())
+                if args[0] == 'delete':
+                    self.objects[args[1]].remove(args[2])
+                    return SimpleNamespace(stdout=b'')
+                raise AssertionError(args)
+        backend = Backend()
+        controller = ExecutionPodController(backend, {})
+        controller.sweep_canaries()
+        self.assertEqual(backend.objects, {'networkpolicy': [], 'pod': []})
+
+    def test_admission_requires_a_reachable_listener_and_blocked_ingress(self):
+        import json
+        import sys
+        from pathlib import Path
+        from types import SimpleNamespace
+        from execution_pod import ExecutionPodController
+        helper = Path(__file__).with_name('sandbox_v2.py')
+        pod = {'metadata': {'name': 'target'}, 'status': {'podIP': '10.1.2.3'}}
+        for local, remote, accepted in ((True, False, True), (False, False, False), (True, True, False)):
+            with self.subTest(local=local, remote=remote):
+                class Backend:
+                    command = [sys.executable, '-I', '-c',
+                               'import runpy,sys;sys.argv=[sys.argv[1],"ingress-listen"];runpy.run_path(sys.argv[0],run_name="__main__")',
+                               str(helper)]
+                    environment = {}
+                    def kube(self, args, local=local, remote=remote, **kwargs):
+                        connected = local if args[1] == 'target' else remote
+                        return SimpleNamespace(stdout=json.dumps({'connected': connected}).encode())
+                controller = ExecutionPodController(Backend(), {})
+                if accepted:
+                    controller._verify_ingress_pod(pod, 'canary')
+                else:
+                    with self.assertRaises(ValueError):
+                        controller._verify_ingress_pod(pod, 'canary')
+
+    def test_ingress_listener_fails_closed_if_it_cannot_block_tracing(self):
+        import subprocess
+        import sys
+        from pathlib import Path
+        helper = Path(__file__).with_name('sandbox_v2.py')
+        code = ('import ctypes,runpy,sys;from unittest.mock import Mock;'
+                'ctypes.CDLL=Mock(return_value=Mock(prctl=Mock(return_value=-1)));'
+                'sys.platform="linux";sys.argv=[sys.argv[1],"ingress-listen"];'
+                'runpy.run_path(sys.argv[0],run_name="__main__")')
+        result = subprocess.run([sys.executable, '-I', '-c', code, str(helper)],
+                                stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+
     def test_negative_probe_requires_reachable_positive_controls(self):
         from execution_pod import verify_positive_controls
         controls = {'peer': True, 'node': True, 'metadata': True, 'internet': True, 'gateway': True}
@@ -3324,6 +3686,10 @@ class V2NetworkPolicyTest(unittest.TestCase):
         for name in controls:
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'positive control'):
                 verify_positive_controls(dict(controls, **{name: False}))
+        verify_positive_controls(dict(controls, metadata=False), metadata_server_absent=True)
+        for name in ('peer', 'node', 'internet', 'gateway'):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'positive control'):
+                verify_positive_controls(dict(controls, metadata=False, **{name: False}), metadata_server_absent=True)
 
     def test_guard_network_control_distinguishes_spoof_from_positive_udp(self):
         import json
@@ -3417,7 +3783,7 @@ class StartupAdmissionTest(unittest.TestCase):
         runner = object.__new__(Runner)
         runner.config = {'image': 'image@sha256:' + 'a' * 64, 'cpu': 2, 'memory_bytes': 2 << 30}
         runner.execution_pods = SimpleNamespace(config={'enabled': True, 'helper_image': 'helper@sha256:' + 'b' * 64},
-            admitted=False, ensure=Mock(side_effect=RuntimeError('network probe failed')), delete=Mock())
+            admitted=False, sweep_canaries=Mock(), ensure=Mock(side_effect=RuntimeError('network probe failed')), delete=Mock())
         runner.activate_execution_pods()
         self.assertFalse(runner.execution_pods.admitted)
         self.assertIn('network probe failed', runner.execution_pods.admission_error)
@@ -3430,7 +3796,7 @@ class StartupAdmissionTest(unittest.TestCase):
         runner = object.__new__(Runner)
         runner.config = {'image': 'image@sha256:' + 'a' * 64, 'cpu': 2, 'memory_bytes': 2 << 30}
         runner.execution_pods = SimpleNamespace(config={'enabled': True, 'helper_image': 'helper@sha256:' + 'b' * 64},
-            admitted=False, ensure=Mock(), delete=Mock())
+            admitted=False, sweep_canaries=Mock(), ensure=Mock(), delete=Mock())
         runner.activate_execution_pods()
         self.assertTrue(runner.execution_pods.admitted)
         runner.execution_pods.ensure.assert_called_once()
@@ -3868,7 +4234,7 @@ class PythonInterpreterStopTest(unittest.TestCase):
                     'pod_uid': 'uid', 'docker_enabled': False, 'background': False, 'status': 'running',
                     'kind': 'python_cell', 'session_operation_id': self.session}
             controller._command_path(self.cell).write_text(json.dumps(cell))
-            controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id': self.session}))
+            controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id': self.session, 'scratch_space_id': 's'}))
             # The session stays `running` in the journal: after a Runner restart its watcher polls only every 5 s
             # and then reads saved output, which fails here.
             controller._command_path(self.session).write_text(json.dumps({'operation_id': self.session,
@@ -4127,8 +4493,8 @@ class PythonSessionRefusalTest(unittest.TestCase):
         for age in (0, 30 * 86400):
             with self.subTest(age=age), tempfile.TemporaryDirectory() as directory:
                 controller = ExecutionPodController(Mock(root=Path(directory)), {}, admitted=True)
-                controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id': self.operation}))
-                controller._command_path(self.operation).write_text(json.dumps({'operation_id': self.operation,
+                controller._python_session_path('s', 'r').write_text(json.dumps({'operation_id': self.operation, 'scratch_space_id': 's'}))
+                controller._command_path(self.operation).write_text(json.dumps({'operation_id': self.operation, 'scratch_space_id': 's',
                     'status': 'interrupted', 'pod_uid': 'old', 'terminal_at': 1_000_000 - age}))
                 controller._get = Mock(return_value=None)
                 controller.submit_command = Mock(return_value={'status': 'queued'})

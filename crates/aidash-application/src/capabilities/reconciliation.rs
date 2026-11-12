@@ -358,9 +358,13 @@ async fn reconcile(
 				operation.result["error"] =
 					serde_json::to_value(CapabilityError::command_timed_out(&TimedOut {
 						limit_seconds: time_limit(&operation),
-						maximum_seconds: limits.maximum_seconds,
+						maximum_seconds: scope
+							.timeout_ceiling(&operation.kind)
+							.unwrap_or(limits.maximum_seconds)
+							.min(limits.maximum_seconds),
 						revision: area.revision,
 						python: operation.kind == "code_interpreter",
+						install: operation.kind == "python_install",
 					}))?;
 			}
 			if operation.kind == "code_interpreter" {
