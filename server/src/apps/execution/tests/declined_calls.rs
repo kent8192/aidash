@@ -352,7 +352,7 @@ async fn a_legacy_pause_does_not_journal_a_different_tool(
 	let mut tx = w.store.pool.begin(&TEST_FIXTURE).await.unwrap();
 	let result = w
 		.store
-		.decline_call_in(&mut tx, w.id, &w.key, "alice")
+		.decline_call_in(&mut tx, w.id, &w.key, "alice", false)
 		.await;
 	assert!(matches!(result, Err(Error::Conflict(_))));
 	drop(tx);
