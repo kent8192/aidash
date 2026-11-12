@@ -165,6 +165,7 @@ enabled = false
 # ca_certificate_file = "/run/auth-tls/ca.pem"
 # client_certificate_file = "/run/auth-tls/cloud.pem"
 # client_private_key_file = "/run/auth-tls/cloud-key.pem"
+# validity_cache_seconds = 30 # 0 disables reuse; maximum 300
 # [dashboard.common_auth.source_issuers]
 # "https://securetoken.google.com/PROJECT/tenants/shared-pool" = "" # unrestricted
 # "https://securetoken.google.com/PROJECT/tenants/corporate-pool" = "acme" # Tenant-bound
