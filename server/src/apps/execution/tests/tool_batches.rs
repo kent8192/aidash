@@ -1376,6 +1376,104 @@ async fn learn(b: &Batching, run: &Run, facts: &[&str]) -> Vec<Uuid> {
 	units
 }
 
+/// #852 decision 8 and the per-Unit hydration fix: a Unit a Run recalled at
+/// start is deleted mid-Run (as eviction, correction or reconciliation would
+/// do). The Run goes on, and later inferences keep the other recalled facts.
+#[rstest::rstest]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recalled_builtin_unit_leaving_the_bank_neither_stops_the_run_nor_drops_other_facts(
+	#[future(awt)]
+	#[from(common::runtime)]
+	runtime: RuntimeFixture,
+	#[future(awt)] scripted_model: ScriptedModel,
+) {
+	std::thread::Builder::new()
+		.stack_size(16 * 1024 * 1024)
+		.spawn(move || {
+			tokio::runtime::Builder::new_multi_thread()
+				.worker_threads(4)
+				.thread_stack_size(16 * 1024 * 1024)
+				.enable_all()
+				.build()
+				.unwrap()
+				.block_on(async move {
+					// Arrange: two facts learned in the Workspace, recalled by a new Run.
+					let b = Batching::new(runtime, scripted_model, 1, 1).await;
+					let pool = b.f.store.pool.fixture_driver().clone();
+					let gone = "The staging deploy key rotates every quarter.";
+					let kept = "The staging deploy key lives in the team vault.";
+					let source = b.delegate(b.task).await;
+					let units = learn(&b, &source, &[gone, kept]).await;
+					let (status, task) = common::post(
+						&b.app,
+						&b.token,
+						&format!("/api/workspaces/{}/tasks", source.workspace_id),
+						json!({"title":"Memory","description":"Check the staging deploy key rotation and vault"}),
+					)
+					.await;
+					assert_eq!(status, 200, "{task}");
+					let reader = b
+						.delegate(serde_json::from_value(task["id"].clone()).unwrap())
+						.await;
+					b.script(&[(
+						"before",
+						"file_search",
+						json!({"query":"absent","mode":"literal","scope":"working"}),
+					)]);
+					let worker = Harness {
+						federation: b.f.clone(),
+					};
+					while b
+						.f
+						.store
+						.run(&TEST_FIXTURE, reader.id)
+						.await
+						.unwrap()
+						.phase() != RunPhase::ToolCall
+					{
+						assert!(worker.worker_once().await.unwrap());
+					}
+					assert!(worker.worker_once().await.unwrap());
+					let recalled =
+						start_recall_units(&b.f.store.run(&TEST_FIXTURE, reader.id).await.unwrap());
+					assert!(
+						units.iter().all(|unit| recalled.contains(unit)),
+						"start recall must hold both facts: {recalled:?}"
+					);
+
+					// Act: the first fact leaves the bank, then the Run uses a tool, whose
+					// result never carries memory text.
+					sqlx::query("UPDATE memory_units SET deleted = true WHERE id = $1")
+						.bind(units[0])
+						.execute(&pool)
+						.await
+						.unwrap();
+					let seen = b.requests.lock().unwrap().len();
+					b.script(&[(
+						"after",
+						"file_search",
+						json!({"query":"absent","mode":"literal","scope":"working"}),
+					)]);
+					complete(&b.f, reader.id).await;
+
+					// Assert
+					let reader = b.f.store.run(&TEST_FIXTURE, reader.id).await.unwrap();
+					assert_eq!(reader.phase(), RunPhase::Completed, "{:?}", reader.error);
+					let requests = b.requests.lock().unwrap()[seen..].to_vec();
+					assert!(!requests.is_empty());
+					for request in &requests {
+						let request = request.to_string();
+						assert!(request.contains(kept), "the kept fact stays in context");
+						assert!(!request.contains(gone), "the gone fact leaves the context");
+					}
+					b.close().await;
+				});
+		})
+		.unwrap()
+		.join()
+		.unwrap();
+}
+
 /// #852 decision 6: when the Tenant widens Built-in Memory to the Agent, a
 /// Run in one Workspace recalls at start what the same Agent learned in
 /// another Workspace, and the fact reaches the model. Under the default
