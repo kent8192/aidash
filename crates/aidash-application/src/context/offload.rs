@@ -90,6 +90,15 @@ pub fn note_journal_result(
 			None => return,
 		},
 	};
+	// A read without a range, such as a search or query of the whole
+	// Journal, only protects its result: it never counts as reading one range
+	// again (Decision 7).
+	if range.get("from_seq").is_none() && range.get("through_seq").is_none() {
+		context
+			.offload_reads
+			.protect(target_run, result_seq, step, policy.reread_immunity_steps);
+		return;
+	}
 	let from_seq = range
 		.get("from_seq")
 		.and_then(Value::as_u64)
@@ -99,11 +108,25 @@ pub fn note_journal_result(
 		.get("through_seq")
 		.and_then(Value::as_u64)
 		.unwrap_or(i64::MAX as u64);
+	// Paging through one range delivers new text: only a page already
+	// delivered counts as reading it again. A search pages by its cursor.
+	let offset = match operation.as_deref() {
+		Some("journal_read") => result.get("offset").and_then(Value::as_u64),
+		Some("journal_search") => input
+			.get("cursor")
+			.and_then(Value::as_str)
+			.and_then(|cursor| cursor.parse().ok()),
+		_ => None,
+	}
+	.unwrap_or(0);
 	if from_seq <= through_seq && through_seq <= i64::MAX as u64 {
 		context.offload_reads.record_for(
 			target_run,
-			from_seq,
-			through_seq,
+			aidash_domain::context::offload::Page {
+				from_seq,
+				through_seq,
+				offset,
+			},
 			result_seq,
 			step,
 			policy.reread_immunity_steps,
@@ -421,6 +444,67 @@ mod tests {
 		);
 		assert_eq!(restored.offload_reads.ranges[4].reads, 3);
 		assert!(restored.offload_reads.summary_pending);
+	}
+
+	#[test]
+	fn paging_and_unranged_reads_do_not_ask_for_a_summary() {
+		let mut context = Context::default();
+		let policy = aidash_domain::context::policy::Effective::of(None);
+		let read = aidash_domain::tool::builtin_contract("journal_read").unwrap();
+		let search = aidash_domain::tool::builtin_contract("journal_search").unwrap();
+		let query = aidash_domain::tool::builtin_contract("journal_query").unwrap();
+		let mut seq = 0;
+		let mut note = |context: &mut Context,
+		                contract: &aidash_domain::tool::ToolContract,
+		                input: Value,
+		                result: Value| {
+			seq += 1;
+			note_journal_result(
+				context,
+				uuid::Uuid::nil(),
+				contract,
+				&input,
+				&result,
+				seq,
+				10,
+				&policy,
+			);
+		};
+		// One 9000-char original read in three pages.
+		for offset in [0, 4000, 8000] {
+			note(
+				&mut context,
+				&read,
+				json!({"from_seq":3,"through_seq":3,"offset":offset}),
+				json!({"text":"x","offset":offset,"total_chars":9000}),
+			);
+		}
+		for _ in 0..3 {
+			note(
+				&mut context,
+				&search,
+				json!({"query":"needle"}),
+				json!({"results":[{"seq":3}]}),
+			);
+			note(
+				&mut context,
+				&query,
+				json!({"code":"journal()"}),
+				json!({"contract":"aidash.journal.query/1","stdout":"ok"}),
+			);
+		}
+		assert!(!context.offload_reads.summary_pending);
+		assert!(!context.offload_reads.notice_pending);
+		// Reading the first page again still counts.
+		for _ in 0..2 {
+			note(
+				&mut context,
+				&read,
+				json!({"from_seq":3,"through_seq":3}),
+				json!({"text":"x","offset":0,"total_chars":9000}),
+			);
+		}
+		assert!(context.offload_reads.summary_pending);
 	}
 
 	#[test]
