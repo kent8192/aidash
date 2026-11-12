@@ -1017,6 +1017,33 @@ impl PolicyAdministration {
 		input: CredentialInput,
 	) -> Result<IssuedCredential> {
 		let f = self.runtime.clone();
+		if input.child {
+			if origin.is_some() {
+				return Err(Error::Forbidden);
+			}
+			let identity = tenant_subject(actor, &tenant)?;
+			if identity.subject != input.subject || identity.http_session.is_some() {
+				return Err(Error::Forbidden);
+			}
+			let mut access = Access::begin(&f.store, &identity).await?;
+			let result = async {
+				let name = aidash_domain::tenancy::TenantName::new(&tenant)?;
+				let token = aidash_domain::identity::credentials::subject_token(&name);
+				let credential =
+					crate::apps::identity::models::AuthorizationCredential::issue_child(
+						&mut **access.tx,
+						identity.credential_id,
+						&tenant,
+						&identity.subject,
+						crate::authorization::identity::digest(&token),
+						input.expires_in_seconds,
+					)
+					.await?;
+				Ok(IssuedCredential { credential, token })
+			}
+			.await;
+			return access.finish(result).await;
+		}
 		self.administrations()
 			.run(actor, origin, &tenant, async |administrator| {
 				administrator

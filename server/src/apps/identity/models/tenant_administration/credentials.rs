@@ -181,6 +181,7 @@ impl TenantAdministrator {
 						.filter(
 							AuthorizationCredential::field_mapping_id().eq(Some(self.mapping_id)),
 						)
+						.filter(AuthorizationCredential::field_parent_id().is_null())
 						.filter(AuthorizationCredential::field_revoked_at().is_null())
 						.filter(AuthorizationCredential::field_expires_at().gt(now))
 						.all_with_db(tx)

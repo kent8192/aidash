@@ -16,6 +16,7 @@ pub struct Credential {
 	/// The Mapping a member issued this credential through for itself.
 	pub mapping_id: Option<Uuid>,
 	pub end_reason: Option<String>,
+	pub parent_id: Option<Uuid>,
 }
 crate::native_record!(Credential {
 	id,
@@ -26,7 +27,8 @@ crate::native_record!(Credential {
 	revoked_at,
 	issued_by,
 	mapping_id,
-	end_reason
+	end_reason,
+	parent_id
 });
 
 /// The bearer value is returned exactly once; only its SHA-256 digest is stored.

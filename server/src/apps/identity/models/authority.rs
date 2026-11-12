@@ -168,6 +168,130 @@ impl AuthorizationBundle {
 }
 
 impl AuthorizationCredential {
+	pub(crate) async fn issue_child(
+		tx: &mut dyn TransactionExecutor,
+		parent: Uuid,
+		tenant: &str,
+		subject: &str,
+		token_hash: Vec<u8>,
+		lifetime: i64,
+	) -> Result<Credential> {
+		use aidash_domain::identity::credentials::{
+			MAX_ACTIVE_CHILDREN, MAX_TENANT_LIFETIME_SECONDS, validate_tenant_lifetime,
+		};
+		validate_tenant_lifetime(lifetime, MAX_TENANT_LIFETIME_SECONDS)?;
+		let (sql, values) = Query::select()
+			.expr(SimpleExpr::FunctionCall(
+				"pg_advisory_xact_lock".into_iden(),
+				vec![SimpleExpr::FunctionCall(
+					"hashtextextended".into_iden(),
+					vec![
+						Expr::value(parent.to_string()).into(),
+						Expr::value(36_300_359_i64).into(),
+					],
+				)],
+			))
+			.build(PostgresQueryBuilder);
+		tx.execute(&sql, convert_values(values)).await?;
+		let parent_row = Self::objects()
+			.filter(Self::field_id().eq(parent))
+			.filter(Self::field_tenant().eq(tenant.to_owned()))
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.pop()
+			.ok_or(Error::Unauthorized)?;
+		if parent_row.parent_id.is_some()
+			|| parent_row.issued_by == "dashboard-oidc"
+			|| parent_row.subject != subject
+		{
+			return Err(Error::Forbidden);
+		}
+		let now = super::dashboard_administration::database_time(tx).await?;
+		if parent_row.revoked_at.is_some() || parent_row.expires_at <= now {
+			return Err(Error::Unauthorized);
+		}
+		if now + Duration::seconds(lifetime) > parent_row.expires_at {
+			return Err(Error::Invalid(
+				"child credential expires after its parent".into(),
+			));
+		}
+		let active = Self::objects()
+			.filter(Self::field_parent_id().eq(Some(parent)))
+			.filter(Self::field_revoked_at().is_null())
+			.filter(Self::field_expires_at().gt(now))
+			.all_with_executor(tx)
+			.await
+			.map_err(FrameworkError::from)?
+			.len();
+		if active >= MAX_ACTIVE_CHILDREN {
+			return Err(Error::Conflict(
+				"a credential holds at most 100 active children".into(),
+			));
+		}
+		let mut child = Self::issue(
+			tx,
+			tenant,
+			subject,
+			token_hash,
+			lifetime,
+			&format!("subject:{subject}"),
+			parent_row.mapping_id,
+		)
+		.await?;
+		if child.expires_at > parent_row.expires_at {
+			return Err(Error::Invalid(
+				"child credential expires after its parent".into(),
+			));
+		}
+		let (sql, values) = Query::update()
+			.table(Alias::new(Self::table_name()))
+			.value(Alias::new("parent_id"), parent)
+			.and_where(Expr::col("id").eq(child.id))
+			.build(PostgresQueryBuilder);
+		tx.execute(&sql, convert_values(values)).await?;
+		child.parent_id = Some(parent);
+		Ok(child)
+	}
+	/// Retain the parent lease through the protected effect. Missing, ended or
+	/// mismatched parents make a child unusable.
+	pub(crate) async fn lock_parent(
+		tx: &mut dyn TransactionExecutor,
+		id: Uuid,
+		tenant: &str,
+		subject: &str,
+	) -> Result<()> {
+		let (sql, values) = Query::select()
+			.column(Alias::new("parent_id"))
+			.from(Alias::new(Self::table_name()))
+			.and_where(Expr::col("id").eq(id))
+			.build(PostgresQueryBuilder);
+		let row = tx
+			.fetch_optional(&sql, convert_values(values))
+			.await?
+			.ok_or(Error::Unauthorized)?;
+		let parent: Option<Uuid> = row.get("parent_id").map_err(FrameworkError::from)?;
+		if let Some(parent) = parent {
+			let (sql, values) = Query::select()
+				.column(Alias::new("id"))
+				.from(Alias::new(Self::table_name()))
+				.and_where(Expr::col("id").eq(parent))
+				.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+				.and_where(Expr::col("subject").eq(subject.to_owned()))
+				.and_where(Expr::col("parent_id").is_null())
+				.and_where(Expr::col("revoked_at").is_null())
+				.and_where(Expr::col("expires_at").gt(SimpleExpr::FunctionCall(
+					"clock_timestamp".into_iden(),
+					vec![],
+				)))
+				.lock(LockType::Share)
+				.build(PostgresQueryBuilder);
+			tx.fetch_optional(&sql, convert_values(values))
+				.await?
+				.ok_or(Error::Unauthorized)?;
+		}
+		Ok(())
+	}
 	pub(crate) async fn issue(
 		tx: &mut dyn TransactionExecutor,
 		tenant: &str,
@@ -199,6 +323,7 @@ impl AuthorizationCredential {
 			issued_by: actor.into(),
 			mapping_id: mapping,
 			end_reason: None,
+			parent_id: None,
 		};
 		let (sql, values) = Query::insert()
 			.into_table(Alias::new(Self::table_name()))
@@ -248,11 +373,11 @@ impl AuthorizationCredential {
 			.fetch_optional(&sql, convert_values(values))
 			.await?
 			.ok_or(Error::Unauthorized)?;
-		Ok((
-			row.get("id").map_err(FrameworkError::from)?,
-			row.get("tenant").map_err(FrameworkError::from)?,
-			row.get("subject").map_err(FrameworkError::from)?,
-		))
+		let id: Uuid = row.get("id").map_err(FrameworkError::from)?;
+		let tenant: String = row.get("tenant").map_err(FrameworkError::from)?;
+		let subject: String = row.get("subject").map_err(FrameworkError::from)?;
+		Self::lock_parent(tx, id, &tenant, &subject).await?;
+		Ok((id, tenant, subject))
 	}
 
 	pub(crate) async fn lock_valid(
@@ -282,6 +407,7 @@ impl AuthorizationCredential {
 		let credential = QueryRow::from_backend_row(credential).data;
 		let issued_through: Option<Uuid> =
 			serde_json::from_value(credential["mapping_id"].clone())?;
+		Self::lock_parent(tx, id, tenant, subject).await?;
 		let (sql, values) = Query::select()
 			.columns(["identity_id", "enabled", "tenant"].map(Alias::new))
 			.from(Alias::new(DashboardMapping::table_name()))

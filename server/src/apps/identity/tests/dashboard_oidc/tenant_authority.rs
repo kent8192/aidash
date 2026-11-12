@@ -495,6 +495,80 @@ async fn active_self_issued_credentials_are_bounded_independently_of_history(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn a_child_credential_ends_with_its_parent_and_cannot_issue_children(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	let t = Team::new(runtime).await;
+	let (status, parent) = t
+		.bob(
+			"POST",
+			"/credentials",
+			json!({"subject":"bob", "expires_in_seconds":3600}),
+		)
+		.await;
+	assert_eq!(status, 200, "{parent}");
+	let token = parent["token"].as_str().unwrap();
+	for invalid in [
+		json!({"subject":"alice", "child":true, "expires_in_seconds":300}),
+		json!({"subject":"bob", "child":true, "expires_in_seconds":7200}),
+	] {
+		let (status, _) =
+			t.d.send(
+				"POST",
+				&t.path("/credentials"),
+				None,
+				None,
+				Some(token),
+				invalid,
+			)
+			.await;
+		assert!(status == 400 || status == 403, "unexpected status {status}");
+	}
+	let (status, child) =
+		t.d.send(
+			"POST",
+			&t.path("/credentials"),
+			None,
+			None,
+			Some(token),
+			json!({"subject":"bob", "child":true, "expires_in_seconds":1800}),
+		)
+		.await;
+	assert_eq!(status, 200, "{child}");
+	assert_eq!(child["credential"]["parent_id"], parent["credential"]["id"]);
+	let child_token = child["token"].as_str().unwrap();
+	let (status, _) =
+		t.d.send(
+			"POST",
+			&t.path("/credentials"),
+			None,
+			None,
+			Some(child_token),
+			json!({"subject":"bob", "child":true, "expires_in_seconds":300}),
+		)
+		.await;
+	assert_eq!(status, 403);
+	let (status, body) = t
+		.bob(
+			"POST",
+			&format!(
+				"/credentials/{}/revoke",
+				parent["credential"]["id"].as_str().unwrap()
+			),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(
+		t.bearer(child_token, "GET", "/api/state", Value::Null)
+			.await,
+		401
+	);
+	t.finish().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn tenant_credential_maximum_shortens_existing_credentials(
 	#[from(common::runtime)] runtime: common::RuntimeFuture,
 ) {
