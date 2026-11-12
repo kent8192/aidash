@@ -412,6 +412,12 @@ pub fn summary_candidate(
 	candidate
 		.history
 		.retain(|entry| !absorbed.contains(&entry.seq));
+	// The summary keeps only short excerpts of what it absorbed and points to
+	// the Context Journal for the rest, so Journal retrieval stays exposed
+	// even when no result was offloaded on its own (#850 decision 2).
+	if !absorbed.is_empty() {
+		candidate.offloaded.get_or_insert_default();
+	}
 	candidate.execution_summary = Some(Box::new(summary));
 	candidate.offload_reads.summary_pending = false;
 	let after = fitting.size(&candidate);

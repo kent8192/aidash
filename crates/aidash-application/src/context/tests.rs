@@ -407,6 +407,10 @@ async fn summary_merges_old_history_and_refuses_a_dropped_previous_item() {
 	let (first, _) = scenario
 		.adopt(&plan, &summary_text(&[], &[], &[]), &policy)
 		.unwrap();
+	// Nothing was offloaded on its own, yet the summary sends the agent to
+	// the Context Journal for what it absorbed, so retrieval is exposed.
+	assert!(plan.pruned.offloaded.is_none());
+	assert!(first.offloaded.is_some());
 	let previous = first.execution_summary.as_ref().unwrap();
 	assert_eq!(previous.content.goal, "Ship the release");
 	let mut second = first.clone();
