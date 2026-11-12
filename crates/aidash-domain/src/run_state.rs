@@ -262,6 +262,14 @@ pub enum ApprovalRef {
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WaitingState {
+	/// A service is unavailable; the same step will be retried after waking.
+	Outage {
+		service: String,
+		started_at: DateTime<Utc>,
+		wake_at: DateTime<Utc>,
+		cadence: OutageCadence,
+		resume: ResumeState,
+	},
 	/// A Run waits for relevant workspace changes, input, or a ceiling.
 	Workspace {
 		wake_at: DateTime<Utc>,
@@ -310,7 +318,8 @@ pub enum WaitingState {
 impl WaitingState {
 	pub fn deadline(&self) -> Option<DateTime<Utc>> {
 		match self {
-			Self::Workspace { wake_at, .. }
+			Self::Outage { wake_at, .. }
+			| Self::Workspace { wake_at, .. }
 			| Self::Operation { wake_at, .. }
 			| Self::Dependencies { wake_at, .. }
 			| Self::Timer { wake_at, .. }
@@ -333,6 +342,28 @@ impl WaitingState {
 			| Self::Reconciliation { request_id, .. } => Some(*request_id),
 			_ => None,
 		}
+	}
+}
+/// Retry interval for an external service or a plan allowance.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OutageCadence {
+	Service,
+	PlanAllowance,
+}
+
+impl OutageCadence {
+	/// The deadline is fixed from the first failed attempt, including lease retries.
+	pub fn next_wake(self, started_at: DateTime<Utc>, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+		let deadline = started_at + chrono::Duration::hours(24);
+		if now >= deadline {
+			return None;
+		}
+		let interval = match self {
+			Self::Service => chrono::Duration::minutes(5),
+			Self::PlanAllowance => chrono::Duration::hours(1),
+		};
+		Some((now + interval).min(deadline))
 	}
 }
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -411,6 +442,10 @@ impl RunState {
 				WaitingState::Approval { resume, .. }
 				| WaitingState::Reconciliation { resume, .. } => check(resume),
 				WaitingState::Timer {
+					resume: ResumeState::ToolCall(s),
+					..
+				}
+				| WaitingState::Outage {
 					resume: ResumeState::ToolCall(s),
 					..
 				}
@@ -716,6 +751,10 @@ impl Run {
 					..
 				}
 				| WaitingState::Timer {
+					resume: ResumeState::ToolCall(s),
+					..
+				}
+				| WaitingState::Outage {
 					resume: ResumeState::ToolCall(s),
 					..
 				} => s.included_input_seq,

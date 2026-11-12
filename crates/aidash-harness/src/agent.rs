@@ -3695,7 +3695,7 @@ connection: None,
 						}
 						resume.into_state()
 					}
-					WaitingState::Timer { resume, .. } | WaitingState::Human { resume, .. } => {
+					WaitingState::Outage { resume, .. } | WaitingState::Timer { resume, .. } | WaitingState::Human { resume, .. } => {
 						resume.into_state()
 					}
 					WaitingState::Operation { operation_id, mut resume, .. } => {
