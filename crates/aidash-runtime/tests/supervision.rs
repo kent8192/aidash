@@ -69,11 +69,11 @@ async fn service_failure_stops_and_drains_workers() {
 #[tokio::test]
 async fn a_panicking_service_is_named_when_it_stops_the_process() {
 	let mut supervisor = Supervisor::new(Duration::from_secs(20));
-	supervisor.spawn_service("panicking service", async { panic!("boom") });
+	supervisor.spawn_service("capabilities.network", async { panic!("boom") });
 
 	let message = supervisor.run(pending()).await.unwrap_err().to_string();
 
-	assert!(message.contains("panicking service"), "{message}");
+	assert!(message.contains("capabilities.network"), "{message}");
 }
 
 #[tokio::test]

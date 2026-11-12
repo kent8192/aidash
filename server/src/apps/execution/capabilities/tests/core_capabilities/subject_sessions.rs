@@ -25,10 +25,9 @@ fn shared_thread(
 				.unwrap()
 				.workspace_id;
 		let root = source(&c, workspace, "Shared conversation; private working files").await;
-		let (_, thread) = request(
+		let (_, thread) = common::post(
 			&c.app,
 			&c.token,
-			"POST",
 			&format!("/api/workspaces/{workspace}/threads"),
 			json!({"root_message_id":root}),
 		)
@@ -45,30 +44,22 @@ fn shared_thread(
 		let mut areas = vec![];
 		let mut runs = vec![];
 		for (owner, token) in [("alice", &c.token), ("bob", &bob)] {
-			let (status, area) = request(&c.app, token, "POST", &format!("/api/workspaces/{workspace}/threads/{thread}/agents/research/runs"), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Private work","description":"One owner's files"})).await;
+			let (status, area) = common::post(&c.app, token, &format!("/api/workspaces/{workspace}/threads/{thread}/agents/research/runs"), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Private work","description":"One owner's files"})).await;
 			assert_eq!(status, 200, "{owner}: {area}");
-			let (_, session) = request(
+			let (_, session) = common::get(
 				&c.app,
 				token,
-				"GET",
 				&format!(
 					"/api/working-areas/{}/session",
 					area["id"].as_str().unwrap()
 				),
-				Value::Null,
 			)
 			.await;
 			let run: Uuid = serde_json::from_value(session["active_run_id"].clone()).unwrap();
-			let (status, patch) = request(&c.app, token, "POST", &path_for_patch(run), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":{"private.txt":null},"patch":format!("*** Begin Patch\n*** Add File: private.txt\n+{owner}-only\n*** End Patch")})).await;
+			let (status, patch) = common::post(&c.app, token, &path_for_patch(run), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":{"private.txt":null},"patch":format!("*** Begin Patch\n*** Add File: private.txt\n+{owner}-only\n*** End Patch")})).await;
 			assert_eq!(status, 200, "{patch}");
-			let (_, area) = request(
-				&c.app,
-				token,
-				"GET",
-				&format!("/api/runs/{run}/working-area"),
-				Value::Null,
-			)
-			.await;
+			let (_, area) =
+				common::get(&c.app, token, &format!("/api/runs/{run}/working-area")).await;
 			areas.push(area);
 			runs.push(run);
 		}
@@ -92,33 +83,24 @@ async fn same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_s
 	assert_ne!(f.areas[0]["id"], f.areas[1]["id"]);
 	assert_ne!(f.runs[0], f.runs[1]);
 	let run_path = format!("/api/runs/{}", f.runs[0]);
-	assert_eq!(
-		request(&f.c.app, &f.c.token, "GET", &run_path, Value::Null)
-			.await
-			.0,
-		200
-	);
-	let (status, denied) = request(&f.c.app, &f.bob, "GET", &run_path, Value::Null).await;
+	assert_eq!(common::get(&f.c.app, &f.c.token, &run_path).await.0, 200);
+	let (status, denied) = common::get(&f.c.app, &f.bob, &run_path).await;
 	assert!(
 		matches!(status, 403 | 404),
 		"run history must not disclose the other subject's private files: {denied}"
 	);
 	assert!(!denied.to_string().contains("alice-only"));
 	assert!(denied.get("run").is_none());
-	let hidden = request(
+	let hidden = common::get(
 		&f.c.app,
 		&f.bob,
-		"GET",
 		&format!("/api/runs/{}/working-area", f.runs[0]),
-		Value::Null,
 	)
 	.await;
-	let absent = request(
+	let absent = common::get(
 		&f.c.app,
 		&f.bob,
-		"GET",
 		&format!("/api/runs/{}/working-area", Uuid::new_v4()),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(hidden.0, 403);
@@ -126,16 +108,14 @@ async fn same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_s
 		hidden, absent,
 		"private run existence must not be disclosed"
 	);
-	let (_, visible) = request(
+	let (_, visible) = common::get(
 		&f.c.app,
 		&f.c.token,
-		"GET",
 		&format!("/api/working-areas?thread_id={}", f.thread),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(visible["items"].as_array().unwrap().len(), 1);
-	let (status, deleted) = request(&f.c.app, &f.c.token, "POST", &format!("/api/workspaces/{}/threads/{}/delete", f.workspace, f.thread), json!({"idempotency_key":Uuid::new_v4(),"files":[{"area_id":f.areas[0]["id"],"expected_revision":f.areas[0]["revision"],"choice":"keep"}]})).await;
+	let (status, deleted) = common::post(&f.c.app, &f.c.token, &format!("/api/workspaces/{}/threads/{}/delete", f.workspace, f.thread), json!({"idempotency_key":Uuid::new_v4(),"files":[{"area_id":f.areas[0]["id"],"expected_revision":f.areas[0]["revision"],"choice":"keep"}]})).await;
 	assert_eq!(status, 200, "{deleted}");
 	assert_eq!(deleted["file_operations"].as_array().unwrap().len(), 1);
 	assert!(
@@ -143,19 +123,17 @@ async fn same_thread_agent_keeps_subject_sessions_private_and_deletion_choices_s
 			.to_string()
 			.contains(f.areas[1]["id"].as_str().unwrap())
 	);
-	let (_, bob_files) = request(&f.c.app, &f.bob, "GET", "/api/working-files", Value::Null).await;
+	let (_, bob_files) = common::get(&f.c.app, &f.bob, "/api/working-files").await;
 	assert_eq!(bob_files["items"][0]["area_id"], f.areas[1]["id"]);
 	assert_eq!(bob_files["items"][0]["revision"], f.areas[1]["revision"]);
-	let (status, read) = request(
+	let (status, read) = common::get(
 		&f.c.app,
 		&f.bob,
-		"GET",
 		&format!(
 			"/api/working-areas/{}/files/{}/download",
 			f.areas[1]["id"].as_str().unwrap(),
 			f.areas[1]["manifest"][0]["file_id"].as_str().unwrap()
 		),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "{read}");
@@ -176,7 +154,7 @@ fn successor_fixture(
 	let shared_thread = Box::pin(shared_thread);
 	async move {
 		let f = shared_thread.await;
-		let (_, queued) = request(&f.c.app, &f.c.token, "POST", &format!("/api/workspaces/{}/threads/{}/agents/research/runs", f.workspace, f.thread), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Successor","description":"Own the next turn"})).await;
+		let (_, queued) = common::post(&f.c.app, &f.c.token, &format!("/api/workspaces/{}/threads/{}/agents/research/runs", f.workspace, f.thread), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Successor","description":"Own the next turn"})).await;
 		assert_eq!(queued["id"], f.areas[0]["id"]);
 		// Model the predecessor's committed terminal transition, before the
 		// next Worker executes. The endpoint must honor the live queue owner.
@@ -193,15 +171,13 @@ fn successor_fixture(
 			.await
 		}
 		.unwrap();
-		let (_, session) = request(
+		let (_, session) = common::get(
 			&f.c.app,
 			&f.c.token,
-			"GET",
 			&format!(
 				"/api/working-areas/{}/session",
 				f.areas[0]["id"].as_str().unwrap()
 			),
-			Value::Null,
 		)
 		.await;
 		let successor: Uuid = serde_json::from_value(session["active_run_id"].clone()).unwrap();
@@ -217,30 +193,26 @@ async fn completed_run_cannot_materialize_into_its_successor_but_current_run_can
 	#[future] successor_fixture: (SharedThread, Uuid, Value),
 ) {
 	let (f, successor, input) = Box::pin(successor_fixture).await;
-	let (status, rejected) = request(
+	let (status, rejected) = common::post(
 		&f.c.app,
 		&f.c.token,
-		"POST",
 		&format!("/api/runs/{}/files/materialize", f.runs[0]),
 		input.clone(),
 	)
 	.await;
 	assert_eq!(status, 409, "{rejected}");
 	assert_eq!(rejected["error"]["code"], "RUN_NOT_ACTIVE");
-	let (_, before) = request(
+	let (_, before) = common::get(
 		&f.c.app,
 		&f.c.token,
-		"GET",
 		&format!("/api/runs/{successor}/working-area"),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(before["manifest"], f.areas[0]["manifest"]);
 	assert_eq!(before["revision"], f.areas[0]["revision"]);
-	let (status, copied) = request(
+	let (status, copied) = common::post(
 		&f.c.app,
 		&f.c.token,
-		"POST",
 		&format!("/api/runs/{successor}/files/materialize"),
 		input,
 	)
@@ -269,7 +241,7 @@ async fn delegated_thread_child(#[future] shared_thread: SharedThread) -> (Share
 	entry.id = "reviewer".into();
 	entry.binding_normalization = None;
 	assert_eq!(
-		request(&f.c.app, &f.c.token, "POST", "/api/registry", json!(entry))
+		common::post(&f.c.app, &f.c.token, "/api/registry", json!(entry))
 			.await
 			.0,
 		200
@@ -280,10 +252,9 @@ async fn delegated_thread_child(#[future] shared_thread: SharedThread) -> (Share
 		"1.1.0",
 	)] = json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
 	assert_eq!(
-		request(
+		common::post(
 			&f.c.app,
 			&f.c.f.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":2,"bundle":f.c.policy})
 		)
@@ -292,22 +263,15 @@ async fn delegated_thread_child(#[future] shared_thread: SharedThread) -> (Share
 		200
 	);
 	assert_eq!(
-		request(
-			&f.c.app,
-			&f.c.token,
-			"POST",
-			"/api/authorization/acme/catalog",
-			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"reviewer","version":"1.1.0"},"expected_revision":0,"enabled":true})
-		)
+		common::post(&f.c.app, &f.c.token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"reviewer","version":"1.1.0"},"expected_revision":0,"enabled":true}))
 		.await
 		.0,
 		200
 	);
 	let parent = f.c.f.store.run(&TEST_FIXTURE, f.runs[1]).await.unwrap();
-	let (status, child) = request(
+	let (status, child) = common::post(
 		&f.c.app,
 		&f.bob,
-		"POST",
 		&format!("/api/workspaces/{}/tasks", f.workspace),
 		json!({"title":"Child","description":"Inherit Bob's live thread","parent_id":parent.task_id}),
 	)
@@ -353,7 +317,7 @@ async fn inherited_child_admission_waits_for_deletion_and_rechecks_tombstone(
 		f.workspace, f.thread
 	);
 	let input = json!({"idempotency_key":Uuid::new_v4(),"files":[{"area_id":f.areas[0]["id"],"expected_revision":f.areas[0]["revision"],"choice":"keep"}]});
-	let deleting = tokio::spawn(async move { request(&app, &token, "POST", &path, input).await });
+	let deleting = tokio::spawn(async move { common::post(&app, &token, &path, input).await });
 	super::lifecycle_tests::wait_for_channel_thread_lock_waiters(
 		f.c.f.store.pool.fixture_driver(),
 		1,
@@ -366,7 +330,7 @@ async fn inherited_child_admission_waits_for_deletion_and_rechecks_tombstone(
 		json!({"node_id":f.c.f.config.deployment,"agent":{"id":"reviewer","version":"1.1.0"}});
 	let child_path = path.clone();
 	let child_input = input.clone();
-	let admitting = tokio::spawn(async move { request(&app, &token, "POST", &path, input).await });
+	let admitting = tokio::spawn(async move { common::post(&app, &token, &path, input).await });
 	super::lifecycle_tests::wait_for_channel_thread_lock_waiters(
 		f.c.f.store.pool.fixture_driver(),
 		2,
@@ -378,7 +342,7 @@ async fn inherited_child_admission_waits_for_deletion_and_rechecks_tombstone(
 	let (status, denied) = admitting.await.unwrap();
 	assert_eq!(status, 404, "{denied}");
 	assert_eq!(
-		request(&f.c.app, &f.bob, "POST", &child_path, child_input)
+		common::post(&f.c.app, &f.bob, &child_path, child_input)
 			.await
 			.0,
 		404,

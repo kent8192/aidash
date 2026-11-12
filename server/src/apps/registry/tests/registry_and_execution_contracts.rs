@@ -184,7 +184,7 @@ async fn registry_assigns_uuid_v7_to_blank_ids_and_preserves_explicit_ids(
 	for id in ["", "", "explicit-tool"] {
 		let mut entry = tool(id);
 		entry.name.insert("en".into(), "calm-otter".into());
-		let (status, result) = request(&app, &token, "POST", "/api/registry", json!(entry)).await;
+		let (status, result) = common::post(&app, &token, "/api/registry", json!(entry)).await;
 		assert_eq!(status, 200, "{result}");
 		let assigned = result["id"].as_str().unwrap();
 		if id.is_empty() {
@@ -299,7 +299,7 @@ async fn ancestor_dependencies_and_invalid_local_executor_are_rejected(
 	] {
 		entry.config = json!({"registry_deployment":f.config.deployment,"provider":"integration.agent@1","operation":"invoke","default_alias":"delegate","tier":"integration","transport":{"transport":"agent","node_id":f.config.deployment,"agent":agent}});
 		assert_ne!(
-			request(&app, &token, "POST", "/api/registry", json!(entry))
+			common::post(&app, &token, "/api/registry", json!(entry))
 				.await
 				.0,
 			200
@@ -362,10 +362,9 @@ async fn visible_messages_and_events_survive_a_denied_burst(
 	.unwrap();
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-messages","effect":"deny","subjects":{"ids":["alice"]},"actions":["message.read"],"resources":{"kinds":["message"],"ids":denied}}));
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&f.config.api_token,
-			"POST",
 			"/api/authorization/acme",
 			json!({"expected_revision":1,"bundle":policy})
 		)
@@ -374,7 +373,7 @@ async fn visible_messages_and_events_survive_a_denied_burst(
 		200
 	);
 	for path in [format!("/api/workspaces/{workspace}"), "/api/state".into()] {
-		let (status, body) = request(&app, &token, "GET", &path, Value::Null).await;
+		let (status, body) = common::get(&app, &token, &path).await;
 		assert_eq!(status, 200, "{body}");
 		assert!(
 			body["events"].to_string().contains("older-visible"),
@@ -398,10 +397,9 @@ async fn run_message_retries_have_one_durable_effect(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, body) = request(
+	let (status, body) = common::post(
 		&app,
 		&token,
-		"POST",
 		&format!("/api/tasks/{task}/claim"),
 		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
 	)
@@ -417,10 +415,9 @@ async fn run_message_retries_have_one_durable_effect(
 		.unwrap();
 	let key = Uuid::new_v4();
 	for _ in 0..2 {
-		let (status, body) = request(
+		let (status, body) = common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/runs/{}/message", run.id),
 			json!({"content":"once","idempotency_key":key}),
 		)
@@ -452,10 +449,9 @@ async fn scoped_run_details_keep_memory_home_namespace(
 	let app = application_fixture.application.clone();
 	let (_, token, task) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/tasks/{task}/claim"),
 			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
 		)
@@ -464,14 +460,7 @@ async fn scoped_run_details_keep_memory_home_namespace(
 		200
 	);
 	let run = f.store.runs(&TEST_FIXTURE).await.unwrap().remove(0);
-	let (status, details) = request(
-		&app,
-		&token,
-		"GET",
-		&format!("/api/runs/{}", run.id),
-		Value::Null,
-	)
-	.await;
+	let (status, details) = common::get(&app, &token, &format!("/api/runs/{}", run.id)).await;
 	assert_eq!(status, 200, "{details}");
 	assert!(
 		details["memory"].is_null(),
@@ -562,7 +551,7 @@ async fn oversized_agent_instructions_skills_and_tools_are_rejected_at_registrat
 				.is_err()
 		);
 		assert_eq!(
-			request(&app, &token, "POST", "/api/registry", json!(agent))
+			common::post(&app, &token, "/api/registry", json!(agent))
 				.await
 				.0,
 			400
@@ -664,14 +653,8 @@ async fn registry_replays_emit_once(
 	let app = application_fixture.application.clone();
 	let token = tenant_token(&f.store, "acme").await;
 	for _ in 0..2 {
-		let (status, body) = request(
-			&app,
-			&token,
-			"POST",
-			"/api/registry",
-			json!(tool("replayed")),
-		)
-		.await;
+		let (status, body) =
+			common::post(&app, &token, "/api/registry", json!(tool("replayed"))).await;
 		assert_eq!(status, 200, "{body}");
 	}
 	assert_eq!(
@@ -726,10 +709,9 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 	let path = format!("/api/workspaces/{workspace}/messages");
 	for actor in [&token, &bob] {
 		for _ in 0..2 {
-			let (status, body) = request(
+			let (status, body) = common::post(
 				&app,
 				actor,
-				"POST",
 				&path,
 				json!({"content":"once per actor","idempotency_key":key}),
 			)
@@ -737,10 +719,9 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 			assert_eq!(status, 200, "{body}");
 		}
 		assert_eq!(
-			request(
+			common::post(
 				&app,
 				actor,
-				"POST",
 				&path,
 				json!({"content":"changed","idempotency_key":key})
 			)
@@ -779,10 +760,9 @@ async fn workspace_messages_deduplicate_retries_and_isolate_actor_and_workspace_
 		.await
 		.unwrap();
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/workspaces/{}/messages", other.id),
 			json!({"content":"another workspace","idempotency_key":key})
 		)
@@ -803,7 +783,7 @@ async fn subject_conversation_returns_the_committed_task_revision(
 	let (f, url, schema) = application_fixture.runtime.parts();
 	let app = application_fixture.application.clone();
 	let (_, token, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, response) = request(&app, &token, "POST", "/api/conversations", json!({"title":"Conversation","goal":"Work","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})).await;
+	let (status, response) = common::post(&app, &token, "/api/conversations", json!({"title":"Conversation","goal":"Work","target":{"id":"research","version":"1.0.0"},"target_kind":"agent"})).await;
 	assert_eq!(status, 200, "{response}");
 	let task = f
 		.store
@@ -840,10 +820,9 @@ async fn plugin_control_shaped_data_does_not_suspend_execution(
 	let app = application_fixture.application.clone();
 	let (_, token, task) = bootstrap_requiring_tool_call_approval(&f, &app, &endpoint).await;
 	assert_eq!(
-		request(
+		common::post(
 			&app,
 			&token,
-			"POST",
 			&format!("/api/tasks/{task}/claim"),
 			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}})
 		)

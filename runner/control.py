@@ -101,10 +101,24 @@ def termination_time(terminated, started_at, observed):
     return min(observed, finished + 1)
 
 
+def cell_termination_time(terminated, started_at, observed):
+    """Return a bound only when Kubernetes supplied a usable termination time."""
+    try:
+        finished = datetime.fromisoformat(terminated['finishedAt'].replace('Z', '+00:00')).timestamp()
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+    if started_at is not None and finished + 1 < started_at:
+        return None
+    # A whole-second Kubernetes timestamp is a lower bound on the stop.
+    # Only that bound can prove the cell reached its deadline.
+    return min(observed, finished)
+
+
 def cell_timed_out(record):
-    """Whether a Python cell ran into its limit. The node watchdog stops it there
-    without saying why, so a stop at or past the limit counts as one."""
-    stopped_at, running_at = record.get('stop_confirmed_at'), record.get('running_at')
+    """Use stop evidence; a late observation alone cannot establish a timeout."""
+    if isinstance(record.get('cell_deadline_expired'), bool):
+        return record['cell_deadline_expired']
+    stopped_at, running_at = record.get('cell_stopped_at'), record.get('running_at')
     return stopped_at is not None and running_at is not None and stopped_at >= running_at + record['request']['seconds']
 
 
@@ -153,11 +167,13 @@ class Runner(AllocationJournal):
         self.active = set()
         execution_config = {'namespace': config['namespace'], 'runtime_class': config['runtime_class'],
                             'processes': config.get('processes', 128), 'host_tasks': config.get('host_tasks', 512),
-                            'output_bytes': config.get('output_bytes', 8388608)}
+                            'output_bytes': config.get('output_bytes', 8388608),
+                            'node_selector': config.get('node_selector', {}),
+                            'tolerations': config.get('tolerations', [])}
         execution_config_path = os.environ.get('AIDASH_EXECUTION_POD_CONFIG')
         if execution_config_path:
             supplied = json.loads(Path(execution_config_path).read_bytes())
-            if not isinstance(supplied, dict) or {'namespace', 'runtime_class', 'processes', 'host_tasks'} & supplied.keys():
+            if not isinstance(supplied, dict) or {'namespace', 'runtime_class', 'processes', 'host_tasks', 'node_selector', 'tolerations'} & supplied.keys():
                 raise ValueError('invalid Execution Pod configuration overrides')
             execution_config.update(supplied)
         self.execution_pods = ExecutionPodController(self, execution_config)
@@ -446,6 +462,7 @@ class Runner(AllocationJournal):
         error = None
         self.execution_pods.admitted = True  # startup is not serving requests yet
         try:
+            self.execution_pods.sweep_canaries()
             if config.get('allow_docker'):
                 runtime = self.kube_json(['get', 'runtimeclass', config['docker_runtime_class'], '-o', 'json'])
                 if runtime.get('handler') != 'runsc-docker':
@@ -1057,8 +1074,11 @@ class Runner(AllocationJournal):
             self.update(operation, status="starting")
             self.kube(["create", "-f", "-"], json.dumps(self.manifest(record)).encode(), check=False)
         if record.get('executed') and record.get('cancel_requested'):
-            if self.guard(record, 'terminate').get('termination_confirmed') is not True:
+            stopped = self.guard(record, 'terminate', operation_id=operation)
+            if stopped.get('termination_confirmed') is not True:
                 raise RuntimeError('Python termination not confirmed')
+            if isinstance(stopped.get('deadline_expired'), bool):
+                self.update(operation, cell_deadline_expired=stopped['deadline_expired'])
             self.update(operation, status='finishing', termination_confirmed=True, writer_frozen=False,
                         stop_confirmed_at=record.get('stop_confirmed_at') or time.time(),
                         pending_status='cancelled', pending_error={'code':'CANCELLED', 'message':'Python stopped; session reset.'}, exit_code=137)
@@ -1076,8 +1096,15 @@ class Runner(AllocationJournal):
                 statuses = {s["name"]: s for s in pod.get("status", {}).get("containerStatuses", [])}
                 execution = statuses.get('execution', {}).get('state', {})
                 if record.get('executed') and 'terminated' in execution:
+                    observed = time.time()
+                    try:
+                        stop_evidence = self.guard(record, 'cell_status', operation_id=operation)
+                    except Exception:
+                        stop_evidence = {}
                     self.update(operation, status='finishing', termination_confirmed=True, writer_frozen=False,
-                                stop_confirmed_at=record.get('stop_confirmed_at') or time.time(),
+                                cell_deadline_expired=stop_evidence.get('deadline_expired', record.get('cell_deadline_expired')),
+                                cell_stopped_at=cell_termination_time(execution['terminated'], record.get('running_at'), observed),
+                                stop_confirmed_at=record.get('stop_confirmed_at') or observed,
                                 pending_status='failed', pending_error={'code':'SESSION_LOST', 'message':'Interpreter stopped during the cell; code was not replayed.'}, exit_code=137)
                     raise RuntimeError('Python stopped; collecting its output')
                 if record.get('executed') and 'running' in execution:
@@ -1142,14 +1169,26 @@ class Runner(AllocationJournal):
         while True:
             current = self.get(operation)
             if current["cancel_requested"]:
-                if self.guard(record, "terminate").get('termination_confirmed') is not True:
+                stopped = self.guard(record, "terminate", operation_id=operation)
+                if stopped.get('termination_confirmed') is not True:
                     raise RuntimeError('Python termination not confirmed')
+                if isinstance(stopped.get('deadline_expired'), bool):
+                    self.update(operation, cell_deadline_expired=stopped['deadline_expired'])
                 memory_live = False
                 result = dict(status="cancelled", exit_code=137, stdout=current.get("stdout", ""),
                               truncated=True, error={"code":"CANCELLED", "message":"Python stopped; session reset."})
                 break
             result = self.guard(record, "cell_status", operation_id=operation)
             if result["status"] == "stopped" and result.get("termination_confirmed"):
+                if isinstance(result.get('deadline_expired'), bool):
+                    self.update(operation, cell_deadline_expired=result['deadline_expired'])
+                else:
+                    pod = self.pod(pod_operation)
+                    if not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']:
+                        raise SandboxGone()
+                    execution = next((s.get('state', {}).get('terminated') for s in pod.get('status', {}).get('containerStatuses', []) if s.get('name') == 'execution'), None)
+                    if execution is not None:
+                        self.update(operation, cell_stopped_at=cell_termination_time(execution, record.get('running_at'), time.time()))
                 memory_live = False
                 result = dict(status="failed", exit_code=137, stdout=current.get("stdout", ""),
                               truncated=True, error={"code":"SESSION_LOST", "message":"Interpreter stopped during the cell; code was not replayed."})
@@ -1168,8 +1207,14 @@ class Runner(AllocationJournal):
             if not pod or pod.get('metadata', {}).get('uid') != record['pod_uid']:
                 raise SandboxGone()
             if any("terminated" in s.get("state", {}) for s in pod.get("status", {}).get("containerStatuses", [])):
-                if self.guard(record, "terminate").get('termination_confirmed') is not True:
+                execution = next((s.get('state', {}).get('terminated') for s in pod.get('status', {}).get('containerStatuses', []) if s.get('name') == 'execution'), None)
+                if execution is not None:
+                    self.update(operation, cell_stopped_at=cell_termination_time(execution, record.get('running_at'), time.time()))
+                stopped = self.guard(record, "terminate", operation_id=operation)
+                if stopped.get('termination_confirmed') is not True:
                     raise RuntimeError('Python termination not confirmed')
+                if isinstance(stopped.get('deadline_expired'), bool):
+                    self.update(operation, cell_deadline_expired=stopped['deadline_expired'])
                 memory_live = False
                 result = dict(status="failed", exit_code=137, stdout=result.get("stdout", ""),
                               truncated=True, error={"code":"SESSION_LOST", "message":"Interpreter stopped during the cell; code was not replayed."})
@@ -1178,8 +1223,13 @@ class Runner(AllocationJournal):
                 # The cell is seen unfinished past its limit: the Runner's watchdog stops it. Nobody cancelled, so
                 # it never reads as cancelled; a cell that finished during an outage was settled above instead.
                 self.update(operation, status='cancelling', limit_stop_requested=True)
-                if self.guard(record, "terminate").get('termination_confirmed') is not True:
+                stopped = self.guard(record, "terminate", operation_id=operation)
+                if stopped.get('termination_confirmed') is not True:
                     raise RuntimeError('Python termination not confirmed')
+                if isinstance(stopped.get('deadline_expired'), bool):
+                    self.update(operation, cell_deadline_expired=stopped['deadline_expired'])
+                elif result['status'] == 'running' and time.time() >= record['running_at'] + record['request']['seconds']:
+                    self.update(operation, cell_deadline_expired=True)
                 memory_live = False
                 if reply_lost:
                     result = dict(status="uncertain", exit_code=None, stdout=current.get("stdout", ""), truncated=True,

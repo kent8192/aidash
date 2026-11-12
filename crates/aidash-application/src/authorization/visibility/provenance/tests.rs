@@ -151,9 +151,16 @@ impl ReadProvenanceScope for Scope {
 		}
 		Ok(())
 	}
-	async fn remote_reads(&mut self, _: Uuid) -> Result<bool> {
+	async fn remote_reads(&mut self, _: Uuid) -> Result<RemoteReads> {
 		self.touch("remote")?;
-		Ok(self.denied != Some("remote"))
+		Ok(match self.denied {
+			Some("remote") => RemoteReads::Unconfirmed,
+			Some("tenant_agent") => RemoteReads::Definition(EntityRef {
+				id: "sibling-agent".into(),
+				version: "1.0.0".into(),
+			}),
+			_ => RemoteReads::Visible,
+		})
 	}
 	async fn semantic_reads(&mut self, _: Uuid) -> Result<bool> {
 		self.touch("semantic")?;
@@ -540,6 +547,17 @@ async fn opaque_remote_denials_keep_the_existing_invalidated_verdict(
 }
 #[rstest]
 #[tokio::test]
+async fn a_denied_agent_of_the_tenant_on_another_node_is_lost_authority(mut scope: Scope) {
+	scope.denied = Some("tenant_agent");
+	assert_eq!(
+		run_reads_invalidity(&mut scope, Uuid::from_u128(1))
+			.await
+			.unwrap(),
+		Some(Failure::Authority),
+	);
+}
+#[rstest]
+#[tokio::test]
 async fn cycles_and_duplicate_run_references_terminate_after_checking_each_journal(
 	mut scope: Scope,
 ) {
@@ -674,6 +692,7 @@ async fn hidden_dependency_journals_stop_before_loading_any_source_records(
 #[rstest]
 #[case("catalog", ReadBlock::Definition(EntityRef { id: "entry".into(), version: "1".into() }))]
 #[case("remote", ReadBlock::RemoteRead)]
+#[case("tenant_agent", ReadBlock::Definition(EntityRef { id: "sibling-agent".into(), version: "1.0.0".into() }))]
 #[case("semantic", ReadBlock::SemanticRead)]
 #[case("received", ReadBlock::SemanticRead)]
 #[case("base", ReadBlock::Source("run".into()))]

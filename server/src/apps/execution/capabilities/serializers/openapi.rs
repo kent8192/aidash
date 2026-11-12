@@ -392,6 +392,14 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		)?;
 	contracts.path(document, views::management::reference_inspect, &["Uuid"])?;
 	contracts
+		.response::<_, crate::apps::execution::capabilities::serializers::management::ReferenceRevocation>(
+			document,
+			views::management::reference_revocation,
+			200,
+			"application/json",
+		)?;
+	contracts.path(document, views::management::reference_revocation, &["Uuid"])?;
+	contracts
 		.response::<_, crate::apps::execution::capabilities::serializers::management::ReferenceRevoked>(
 			document,
 			views::management::reference_revoke,

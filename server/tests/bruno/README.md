@@ -98,8 +98,11 @@ status. Non-public routes retain reviewed transport metadata without carrying
 forward stale payload schemas.
 
 Then generate the ordinary Bruno requests with
-`python3 scripts/bruno_contracts.py` and inspect the changes. This renderer writes
-the request files and `scenarios.json`; it does not generate the catalog. Expected
+`python3 scripts/bruno_contracts.py`. This renderer writes the request files
+(`contracts/[0-9]*.bru`) and `scenarios.json`; it does not generate the catalog.
+Both outputs are ignored by Git: `scripts/test-bruno-api.sh` and CI render them
+before every run, so review a change through `contracts.json` and the renderer
+itself. Expected
 statuses and authority/state assertions remain independently authored in the
 renderer and journeys, never learned from a server response or selected from
 OpenAPI. The schema for an independently authored success status, including HTTP201,

@@ -244,7 +244,7 @@ async fn world(provider: Provider) -> World {
 
 impl World {
 	async fn get(&self, path: &str) -> (u16, Value) {
-		request(&self.app, &self.token, "GET", path, Value::Null).await
+		common::get(&self.app, &self.token, path).await
 	}
 
 	/// Alice claims her Task with `research`, whose Run follows the script. The
@@ -252,10 +252,9 @@ impl World {
 	/// which is when what it did before has been saved. A Run with an open
 	/// child Task does not complete, so completion is not awaited.
 	async fn run_coordinator(&self, requests: usize) -> Run {
-		let (status, claimed) = request(
+		let (status, claimed) = common::post(
 			&self.app,
 			&self.token,
-			"POST",
 			&format!("/api/tasks/{}/claim", self.task),
 			json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
 		)
@@ -352,12 +351,10 @@ fn listed(tasks: &Value, task: Uuid) -> bool {
 
 /// Adds `subjects` and `policies` to the Tenant's policy bundle.
 async fn add_policies(world: &World, subjects: &[&str], policies: Vec<Value>) {
-	let (status, current) = request(
+	let (status, current) = common::get(
 		&world.app,
 		&world.f.config.api_token,
-		"GET",
 		"/api/authorization/acme",
-		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "{current}");
@@ -366,10 +363,9 @@ async fn add_policies(world: &World, subjects: &[&str], policies: Vec<Value>) {
 		bundle["subjects"][*subject] = json!({"kind":"user"});
 	}
 	bundle["policies"].as_array_mut().unwrap().extend(policies);
-	let (status, body) = request(
+	let (status, body) = common::post(
 		&world.app,
 		&world.f.config.api_token,
-		"POST",
 		"/api/authorization/acme",
 		json!({"expected_revision":current["revision"],"bundle":bundle}),
 	)
@@ -505,10 +501,9 @@ async fn a_person_delegates_a_task_whose_producer_discovered_the_agent(
 	let world = world(provider).await;
 	world.run_coordinator(WITHOUT_DELEGATION).await;
 	let child = world.handed_over().await;
-	let (status, body) = request(
+	let (status, body) = common::post(
 		&world.app,
 		&world.token,
-		"POST",
 		&format!("/api/tasks/{}/delegate", child.id),
 		json!({"node_id":world.sibling.to_string(),"agent":{"id":"sibling-agent","version":"1.0.0"}}),
 	)
@@ -630,7 +625,7 @@ async fn a_silent_node_of_the_tenant_leaves_the_read_decided_here(
 	let (status, tasks) = world.get("/api/tasks").await;
 	assert_eq!(status, 200, "{tasks}");
 	assert!(listed(&tasks, child.id), "{tasks}");
-	let (status, body) = request(&world.app, &bob, "GET", &single, Value::Null).await;
+	let (status, body) = common::get(&world.app, &bob, &single).await;
 	assert_eq!(status, 403, "{body}");
 	assert_ne!(body["code"], "node_unreachable", "{body}");
 	restore_pool(&mut world, original).await;
@@ -774,7 +769,7 @@ async fn opening_a_run_stream_while_a_node_is_silent_opens_and_a_refusal_stays(
 	assert_eq!(response.status, 200);
 	drop(response);
 	for credential in [&bob, &carol] {
-		let (status, body) = request(&world.app, credential, "GET", &path, Value::Null).await;
+		let (status, body) = common::get(&world.app, credential, &path).await;
 		assert_eq!(status, 403, "{body}");
 		assert_ne!(body["code"], "node_unreachable", "{body}");
 	}
@@ -800,33 +795,20 @@ async fn restore_pool(world: &mut World, pool: aidash_server::database::native::
 /// the second Node.
 async fn queued_generation(world: &World) -> Uuid {
 	let child = world.handed_over().await;
-	let (_, mut template) = request(
-		&world.app,
-		&world.token,
-		"GET",
-		"/api/registry/research/1.0.0",
-		Value::Null,
-	)
-	.await;
+	let (_, mut template) =
+		common::get(&world.app, &world.token, "/api/registry/research/1.0.0").await;
 	template["id"] = json!("research-template");
 	template["capabilities"] = json!(["special.research"]);
 	let spec = json!({"enabled":true,"template":template,"permissions":{"roles":[],"groups":[],"attributes":{"team":"research"}},"approval_required":true,"limits":{"max_agents":4,"max_concurrent":2,"max_depth":2,"token_budget":800000,"tokens_per_agent":200000,"lifetime_seconds":3600}});
-	let (status, body) = request(
+	let (status, body) = common::post(
 		&world.app,
 		&world.token,
-		"POST",
 		"/api/generation/acme/policies/research",
 		json!({"expected_revision":0,"spec":spec}),
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
-	let (status, assigned) = request(
-		&world.app,
-		&world.token,
-		"POST",
-		&format!("/api/generation/acme/tasks/{}/assign", child.id),
-		json!({"policy_id":"research","reason":"specialist for a Task another Node's Agent was found for"}),
-	)
+	let (status, assigned) = common::post(&world.app, &world.token, &format!("/api/generation/acme/tasks/{}/assign", child.id), json!({"policy_id":"research","reason":"specialist for a Task another Node's Agent was found for"}))
 	.await;
 	assert_eq!(status, 200, "{assigned}");
 	let id: Uuid = assigned["generation"]["id"]
@@ -834,10 +816,9 @@ async fn queued_generation(world: &World) -> Uuid {
 		.unwrap()
 		.parse()
 		.unwrap();
-	let (status, approved) = request(
+	let (status, approved) = common::post(
 		&world.app,
 		&world.token,
-		"POST",
 		&format!("/api/generation/acme/requests/{id}/control"),
 		json!({"action":"approve","reason":"reviewed definition"}),
 	)
@@ -880,10 +861,10 @@ async fn a_queued_generation_request_activates_while_a_node_is_silent(
 	restore_pool(&mut world, original).await;
 
 	let stop = json!({"action":"stop","reason":"changed my mind"});
-	let (status, body) = request(&world.app, &carol, "POST", &control, stop.clone()).await;
+	let (status, body) = common::post(&world.app, &carol, &control, stop.clone()).await;
 	assert_eq!(status, 403, "{body}");
 	assert_ne!(body["code"], "node_unreachable", "{body}");
-	let (status, body) = request(&world.app, &world.token, "POST", &control, stop).await;
+	let (status, body) = common::post(&world.app, &world.token, &control, stop).await;
 	assert_eq!(status, 200, "{body}");
 	world.close().await;
 }
@@ -898,12 +879,10 @@ async fn a_real_refusal_at_activation_still_fails_the_request(#[future(awt)] pro
 	let world = world(provider).await;
 	world.run_coordinator(WITHOUT_DELEGATION).await;
 	let job = queued_generation(&world).await;
-	let (status, current) = request(
+	let (status, current) = common::get(
 		&world.app,
 		&world.f.config.api_token,
-		"GET",
 		"/api/authorization/acme",
-		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "{current}");
@@ -912,10 +891,9 @@ async fn a_real_refusal_at_activation_still_fails_the_request(#[future(awt)] pro
 		"id":"alice-reads-no-workspace","effect":"deny","subjects":{"ids":["alice"]},
 		"actions":["workspace.read"],"resources":{"kinds":["*"]}
 	}));
-	let (status, body) = request(
+	let (status, body) = common::post(
 		&world.app,
 		&world.f.config.api_token,
-		"POST",
 		"/api/authorization/acme",
 		json!({"expected_revision":current["revision"],"bundle":bundle}),
 	)
@@ -1008,7 +986,7 @@ async fn resuming_while_a_node_is_silent_resumes(#[future(awt)] provider: Provid
 }
 
 async fn world_post(world: &World, path: &str, body: Value) -> (u16, Value) {
-	request(&world.app, &world.token, "POST", path, body).await
+	common::post(&world.app, &world.token, path, body).await
 }
 
 /// #751 made the Node a reader asked run inside the reader's shared hold of the
@@ -1043,5 +1021,149 @@ async fn a_read_does_not_wait_for_a_writer_holding_the_distribution_lock(
 		elapsed < Duration::from_secs(8),
 		"the read waited for the writer: {elapsed:?}"
 	);
+	world.close().await;
+}
+
+/// A deny on `registry.read` for `sibling-agent`, written as for any definition of the Tenant.
+fn alice_may_not_read_sibling_agent() -> Value {
+	json!({"id":"no-definition","effect":"deny","subjects":{"ids":["alice"]},
+		"actions":["registry.read"],"resources":{"kinds":["agent"],"ids":["sibling-agent"]}})
+}
+
+/// A deny on `registry.read` for Agents found on the Node `node`.
+fn alice_may_not_read_agents_found_on(id: &str, node: &str) -> Value {
+	json!({"id":id,"effect":"deny","subjects":{"ids":["alice"]},
+		"actions":["registry.read"],"resources":{"kinds":["agent"]},
+		"condition":{"op":"eq","left":{"source":"resource","path":"/remote_node"},
+			"right":{"source":"literal","value":node}}})
+}
+
+/// An Agent found on another Node of the Tenant is the Tenant's own definition,
+/// so a deny on `registry.read` that names it hides the Run as for a local one
+/// (#856, decisions 1 and 3).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_denied_registry_read_hides_a_run_that_found_the_agent_on_another_node(
+	#[future(awt)] provider: Provider,
+) {
+	*provider.script.delegate.lock().unwrap() = false;
+	let world = world(provider).await;
+	let coordinator = world.run_coordinator(WITHOUT_DELEGATION).await;
+	let run = format!("/api/runs/{}", coordinator.id);
+	let (status, body) = world.get(&run).await;
+	assert_eq!(status, 200, "{body}");
+
+	add_policies(&world, &[], vec![alice_may_not_read_sibling_agent()]).await;
+	let (status, body) = world.get(&run).await;
+	assert_eq!(status, 403, "{body}");
+	assert_eq!(body["run_reads"], json!({"kind":"definition_not_readable"}));
+	assert!(!body.to_string().contains("sibling-agent"), "{body}");
+	world.close().await;
+}
+
+/// `remote_node` still singles out the Node an Agent was found on (#856, decision 2).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_remote_node_condition_hides_only_what_was_found_on_that_node(
+	#[future(awt)] provider: Provider,
+) {
+	*provider.script.delegate.lock().unwrap() = false;
+	let world = world(provider).await;
+	let coordinator = world.run_coordinator(WITHOUT_DELEGATION).await;
+	let run = format!("/api/runs/{}", coordinator.id);
+
+	let elsewhere = world
+		.f
+		.config
+		.deployment
+		.node(NodeName::parse("quiet-heron-x2b7k9qa").unwrap())
+		.to_string();
+	add_policies(
+		&world,
+		&[],
+		vec![alice_may_not_read_agents_found_on("elsewhere", &elsewhere)],
+	)
+	.await;
+	let (status, body) = world.get(&run).await;
+	assert_eq!(status, 200, "{body}");
+
+	add_policies(
+		&world,
+		&[],
+		vec![alice_may_not_read_agents_found_on(
+			"sibling",
+			&world.sibling.to_string(),
+		)],
+	)
+	.await;
+	let (status, body) = world.get(&run).await;
+	assert_eq!(status, 403, "{body}");
+	assert_eq!(body["run_reads"], json!({"kind":"definition_not_readable"}));
+	world.close().await;
+}
+
+/// Discovery names the Agent the same way, so the deny keeps it out of what a
+/// person discovers (#856, decision 4).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_denied_registry_read_leaves_the_agent_out_of_discovery(
+	#[future(awt)] provider: Provider,
+) {
+	let world = world(provider).await;
+	let discover = || async {
+		let (status, body) = request(
+			&world.app,
+			&world.token,
+			"POST",
+			"/api/discover",
+			json!({"capability":"sibling.discovery"}),
+		)
+		.await;
+		assert_eq!(status, 200, "{body}");
+		body["agents"]
+			.as_array()
+			.unwrap_or_else(|| panic!("a list of Agents: {body}"))
+			.iter()
+			.any(|agent| agent["entity"]["id"] == "sibling-agent")
+	};
+	assert!(discover().await, "the second Node offers sibling-agent");
+	add_policies(&world, &[], vec![alice_may_not_read_sibling_agent()]).await;
+	assert!(!discover().await, "the deny keeps sibling-agent out");
+	world.close().await;
+}
+
+/// A running Run that found the Agent stops at its next worker boundary once
+/// its owner may no longer read it (#856).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_denied_registry_read_stops_a_running_run_that_found_the_agent(
+	#[future(awt)] provider: Provider,
+) {
+	*provider.script.delegate.lock().unwrap() = false;
+	let world = world(provider).await;
+	// The discovery is saved once the next request is made.
+	world.run_coordinator(2).await;
+	add_policies(&world, &[], vec![alice_may_not_read_sibling_agent()]).await;
+	let worker = Harness {
+		federation: world.f.clone(),
+	};
+	let stopped = tokio::time::timeout(Duration::from_secs(120), async {
+		loop {
+			worker.worker_once().await.unwrap();
+			let run = world.coordinator().await;
+			assert!(
+				world.script.stage.load(std::sync::atomic::Ordering::SeqCst) < WITHOUT_DELEGATION,
+				"the coordinator went on: {:?}",
+				run.phase()
+			);
+			if run.error.is_some() || matches!(run.phase().as_str(), "FAILED" | "CANCELLED") {
+				return run;
+			}
+			tokio::time::sleep(Duration::from_millis(20)).await;
+		}
+	})
+	.await
+	.expect("the coordinator stops");
+	assert_ne!(stopped.phase().as_str(), "COMPLETED", "{:?}", stopped.error);
 	world.close().await;
 }

@@ -4,10 +4,9 @@ use base64::Engine;
 use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 
 async fn post(c: &CoreFixture, workspace: Uuid, content: &str, citations: &Value) -> (u16, Value) {
-	request(
+	common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!("/api/workspaces/{workspace}/thread-messages"),
 		json!({
 			"content": content,
@@ -19,12 +18,10 @@ async fn post(c: &CoreFixture, workspace: Uuid, content: &str, citations: &Value
 }
 
 async fn history(c: &CoreFixture, workspace: Uuid, token: &str) -> Value {
-	let (status, value) = request(
+	let (status, value) = common::get(
 		&c.app,
 		token,
-		"GET",
 		&format!("/api/workspaces/{workspace}/message-history?limit=100"),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "{value}");
@@ -60,21 +57,13 @@ async fn a_cited_version_survives_an_overwrite_and_downloads_its_old_bytes(
 ) {
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
-	let (status, created) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&path_for_patch(run.id),
-		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"report.html":null},"patch":"*** Begin Patch\n*** Add File: report.html\n+<html>old</html>\n*** End Patch"}),
-	)
+	let (status, created) = common::post(&c.app, &c.token, &path_for_patch(run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"report.html":null},"patch":"*** Begin Patch\n*** Add File: report.html\n+<html>old</html>\n*** End Patch"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let (_, area) = request(
+	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", run.id),
-		Value::Null,
 	)
 	.await;
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
@@ -91,21 +80,13 @@ async fn a_cited_version_survives_an_overwrite_and_downloads_its_old_bytes(
 	assert_eq!(posted["citations"][0]["available"], true);
 
 	// A later publication replaces the version; the citation keeps the old one.
-	let (status, replaced) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&path_for_patch(run.id),
-		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":{"report.html":digest},"patch":"*** Begin Patch\n*** Update File: report.html\n@@\n-<html>old</html>\n+<html>new</html>\n*** End Patch"}),
-	)
+	let (status, replaced) = common::post(&c.app, &c.token, &path_for_patch(run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":{"report.html":digest},"patch":"*** Begin Patch\n*** Update File: report.html\n@@\n-<html>old</html>\n+<html>new</html>\n*** End Patch"}))
 	.await;
 	assert_eq!(status, 200, "{replaced}");
-	let (_, replaced_area) = request(
+	let (_, replaced_area) = common::get(
 		&c.app,
 		&c.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", run.id),
-		Value::Null,
 	)
 	.await;
 	assert_ne!(
@@ -118,12 +99,10 @@ async fn a_cited_version_survives_an_overwrite_and_downloads_its_old_bytes(
 	assert_eq!(cited["file_id"], json!(file));
 	assert_eq!(cited["digest"], digest);
 	assert_eq!(cited["available"], true);
-	let (status, chunk) = request(
+	let (status, chunk) = common::get(
 		&c.app,
 		&c.token,
-		"GET",
 		&format!("/api/working-areas/{area_id}/files/{file}/download"),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "{chunk}");
@@ -136,21 +115,13 @@ async fn a_cited_version_survives_an_overwrite_and_downloads_its_old_bytes(
 async fn a_quota_refusal_leaves_no_message_and_no_hold(#[future] capability_fixture: CoreFixture) {
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
-	let (status, created) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&path_for_patch(run.id),
-		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"quota.txt":null},"patch":"*** Begin Patch\n*** Add File: quota.txt\n+quota\n*** End Patch"}),
-	)
+	let (status, created) = common::post(&c.app, &c.token, &path_for_patch(run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"quota.txt":null},"patch":"*** Begin Patch\n*** Add File: quota.txt\n+quota\n*** End Patch"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let (_, area) = request(
+	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", run.id),
-		Value::Null,
 	)
 	.await;
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
@@ -206,21 +177,13 @@ async fn a_viewer_without_download_authority_sees_no_digest(
 ) {
 	let c = capability_fixture.await;
 	let run = admit(&c).await;
-	let (status, created) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&path_for_patch(run.id),
-		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"private.html":null},"patch":"*** Begin Patch\n*** Add File: private.html\n+<html>private</html>\n*** End Patch"}),
-	)
+	let (status, created) = common::post(&c.app, &c.token, &path_for_patch(run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"private.html":null},"patch":"*** Begin Patch\n*** Add File: private.html\n+<html>private</html>\n*** End Patch"}))
 	.await;
 	assert_eq!(status, 200, "{created}");
-	let (_, area) = request(
+	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", run.id),
-		Value::Null,
 	)
 	.await;
 	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();

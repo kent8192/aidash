@@ -24,13 +24,12 @@ async fn lowered_content_limits_bound_reads_search_patches_uploads_and_shares(
 	let run = admit(&c).await;
 	let message = source(&c, run.workspace_id, &"東京の資料\n".repeat(8)).await;
 	let base = format!("/api/runs/{}", run.id);
-	let (status, created) = request(&c.app, &c.token, "POST", &format!("{base}/files/materialize"), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"path":"notes.txt","source":{"kind":"message","message_id":message}})).await;
+	let (status, created) = common::post(&c.app, &c.token, &format!("{base}/files/materialize"), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"path":"notes.txt","source":{"kind":"message","message_id":message}})).await;
 	assert_eq!(status, 200, "{created}");
 	let file = &created["file"];
-	let (status, read) = request(
+	let (status, read) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!("{base}/files/read"),
 		json!({"file_id":file["file_id"],"representation":"text"}),
 	)
@@ -39,10 +38,9 @@ async fn lowered_content_limits_bound_reads_search_patches_uploads_and_shares(
 	assert_eq!(read["content"], "東京");
 	assert_eq!(read["next_offset"], 6);
 	assert_eq!(
-		request(
+		common::post(
 			&c.app,
 			&c.token,
-			"POST",
 			&format!("{base}/files/read"),
 			json!({"file_id":file["file_id"],"representation":"text","max_bytes":8})
 		)
@@ -50,10 +48,9 @@ async fn lowered_content_limits_bound_reads_search_patches_uploads_and_shares(
 		.0,
 		400
 	);
-	let (status, search) = request(
+	let (status, search) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!("{base}/files/search"),
 		json!({"query":"東京","mode":"literal","scope":"working"}),
 	)
@@ -63,10 +60,9 @@ async fn lowered_content_limits_bound_reads_search_patches_uploads_and_shares(
 	assert!(search["next_cursor"].is_string());
 	assert!(search.to_string().len() <= 4096);
 	assert_eq!(
-		request(
+		common::post(
 			&c.app,
 			&c.token,
-			"POST",
 			&format!("{base}/files/search"),
 			json!({"query":"東京","mode":"literal","scope":"working","limit":3})
 		)
@@ -74,19 +70,12 @@ async fn lowered_content_limits_bound_reads_search_patches_uploads_and_shares(
 		.0,
 		400
 	);
-	let (_, skills) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&format!("{base}/skills/list"),
-		json!({}),
-	)
-	.await;
+	let (_, skills) =
+		common::post(&c.app, &c.token, &format!("{base}/skills/list"), json!({})).await;
 	let skill = &skills["skills"][0];
-	let (status, text) = request(
+	let (status, text) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!("{base}/skills/read"),
 		json!({"skill_id":skill["skill_id"],"digest":skill["digest"],"path":"scripts/analyze.py"}),
 	)
@@ -98,21 +87,14 @@ async fn lowered_content_limits_bound_reads_search_patches_uploads_and_shares(
 		"*** Begin Patch\n*** Add File: too-big.txt\n+{}\n*** End Patch",
 		"x".repeat(512)
 	);
-	assert_eq!(request(&c.app, &c.token, "POST", &path_for_patch(run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":created["revision"],"preconditions":{"too-big.txt":null},"patch":patch})).await.0, 400);
-	let (status, upload) = request(&c.app, &c.token, "POST", "/api/references/uploads", json!({"idempotency_key":Uuid::new_v4(),"name":"too-big.txt","media_type":"text/plain","size":33,"digest":"a".repeat(64)})).await;
+	assert_eq!(common::post(&c.app, &c.token, &path_for_patch(run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":created["revision"],"preconditions":{"too-big.txt":null},"patch":patch})).await.0, 400);
+	let (status, upload) = common::post(&c.app, &c.token, "/api/references/uploads", json!({"idempotency_key":Uuid::new_v4(),"name":"too-big.txt","media_type":"text/plain","size":33,"digest":"a".repeat(64)})).await;
 	assert_eq!(status, 400, "{upload}");
 	assert_eq!(upload["error"]["code"], "REFERENCE_UPLOAD_LIMIT");
-	let (status, share) = request(&c.app, &c.token, "POST", &format!("{base}/files/share"), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":created["revision"],"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),"agent_id":"research","agent_version":"1.1.0","thread_id":Uuid::new_v4()}})).await;
+	let (status, share) = common::post(&c.app, &c.token, &format!("{base}/files/share"), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":created["revision"],"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.f.config.deployment.as_str(), "acme"),"agent_id":"research","agent_version":"1.1.0","thread_id":Uuid::new_v4()}})).await;
 	assert_eq!(status, 400, "{share}");
 	assert_eq!(share["error"]["code"], "SHARE_FILE_LIMIT");
-	let (_, area) = request(
-		&c.app,
-		&c.token,
-		"GET",
-		&format!("{base}/working-area"),
-		Value::Null,
-	)
-	.await;
+	let (_, area) = common::get(&c.app, &c.token, &format!("{base}/working-area")).await;
 	assert_eq!(area["revision"], created["revision"]);
 	assert_eq!(area["manifest"].as_array().unwrap().len(), 1);
 	c.close().await;
@@ -128,14 +110,12 @@ fn search_boundary_fixture(
 		let c = lowered_content_fixture.await;
 		let run = admit(&c).await;
 		let message = source(&c, run.workspace_id, &"matched text ".repeat(60)).await;
-		let (status, large) = request(&c.app, &c.token, "POST", &format!("/api/runs/{}/files/materialize", run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"path":"a".repeat(1000),"source":{"kind":"message","message_id":message}})).await;
+		let (status, large) = common::post(&c.app, &c.token, &format!("/api/runs/{}/files/materialize", run.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"path":"a".repeat(1000),"source":{"kind":"message","message_id":message}})).await;
 		assert_eq!(status, 200, "{large}");
-		let (_, area) = request(
+		let (_, area) = common::get(
 			&c.app,
 			&c.token,
-			"GET",
 			&format!("/api/runs/{}/working-area", run.id),
-			Value::Null,
 		)
 		.await;
 		// A committed binary working object is valid input, but has no UTF-8
@@ -187,10 +167,9 @@ async fn oversized_search_matches_fail_explicitly_instead_of_repeating_an_empty_
 	#[future] search_boundary_fixture: (CoreFixture, Uuid),
 ) {
 	let (c, run) = Box::pin(search_boundary_fixture).await;
-	let (status, result) = request(
+	let (status, result) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!("/api/runs/{run}/files/search"),
 		json!({"query":"matched","mode":"literal","scope":"working","path":"a".repeat(1000)}),
 	)
@@ -211,30 +190,27 @@ async fn binary_search_reports_unavailable_text_while_path_search_remains_usable
 ) {
 	let (c, run) = Box::pin(search_boundary_fixture).await;
 	let path = format!("/api/runs/{run}/files/search");
-	let (status, result) = request(
+	let (status, result) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&path,
 		json!({"query":"matched","mode":mode,"scope":"working","path":"binary.bin"}),
 	)
 	.await;
 	assert_eq!(status, 400, "{result}");
 	assert_eq!(result["error"]["code"], "REPRESENTATION_UNAVAILABLE");
-	let (status, result) = request(
+	let (status, result) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&path,
 		json!({"query":"binary","mode":"path","scope":"working","path":"binary.bin"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{result}");
 	assert_eq!(result["matches"].as_array().unwrap().len(), 1);
-	let (status, batch) = request(
+	let (status, batch) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&path,
 		json!({"query":"not-present","mode":mode,"scope":"working"}),
 	)

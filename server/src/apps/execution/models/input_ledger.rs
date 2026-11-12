@@ -225,6 +225,22 @@ impl RunInput {
 			.await
 			.map(|_| ())
 	}
+	/// The Workspace of `run` and the message bound to its input `key`, if the
+	/// message was written locally.
+	pub(crate) async fn local_message_of(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+		key: &str,
+	) -> Result<Option<(Uuid, Uuid)>> {
+		let run = Self::locked_run(tx, run).await?;
+		let input = Self::for_run(tx, run.id)
+			.await?
+			.into_iter()
+			.find(|input| input.idempotency_key == key);
+		Ok(input
+			.and_then(|input| input.message_id)
+			.map(|message| (run.workspace_id, message)))
+	}
 	pub(crate) async fn admit_media(
 		tx: &mut dyn TransactionExecutor,
 		node: &str,
