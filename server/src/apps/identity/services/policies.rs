@@ -1790,7 +1790,10 @@ impl PolicyAdministration {
 						b.entry_id == descendant.entry_id
 							&& b.entry_version == descendant.entry_version
 					}) {
+						// Stop carrying on the withdrawn revision; the state read
+						// before the withdrawal would re-enable the version.
 						descendant.revision = updated.revision;
+						descendant.enabled = updated.enabled;
 					}
 					*descendant = stop_carrying_revision(
 						&mut access,
