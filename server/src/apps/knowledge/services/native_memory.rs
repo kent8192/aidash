@@ -480,6 +480,24 @@ pub(crate) async fn operate_staged(
 		} => Some(*id),
 		_ => run,
 	};
+	// Tenant widening (#852 decision 6) lets a Run's model roles serve another
+	// Workspace's built-in bank only to recall from it, never to change it.
+	if let Some(id) = model_run
+		&& !matches!(input.action, Action::Recall { .. })
+	{
+		let workspace: Uuid = native::query_scalar(
+			&Query::select()
+				.column(Alias::new("workspace_id"))
+				.from(Alias::new("runs"))
+				.and_where(Expr::col("id").eq(Expr::value(id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut **lease.tx())
+		.await?;
+		if workspace != input.bank.workspace {
+			return Err(Error::Forbidden);
+		}
+	}
 	let cycle = retry_cycle(lease, run).await?;
 	let mut models = super::memory_models::Models::resolve(
 		store,
@@ -824,57 +842,88 @@ pub(crate) async fn run_hydrate(
 			"initial memory exceeds its result bound".into(),
 		));
 	}
+	if sources
+		.iter()
+		.any(|source| !matches!(source, Evidence::Unit { .. }))
+	{
+		return Err(Error::Invalid(
+			"initial memory requires Unit references".into(),
+		));
+	}
+	// Each Unit is hydrated on its own. One that changed, left the bank or is
+	// no longer readable is dropped from this inference; the others stay, so
+	// the context changes only by what actually changed (#852 decision 8).
 	let mut recalled = Vec::with_capacity(sources.len());
 	for source in sources {
-		let Evidence::Unit { bank, id, revision } = source else {
-			return Err(Error::Invalid(
-				"initial memory requires Unit references".into(),
-			));
-		};
-		let foreign = bank != &binding.bank;
-		if foreign {
-			if bank.tenant != binding.bank.tenant
-				|| bank.workspace == run.workspace_id
-				|| super::super::repositories::sharing::get(&mut **lease.tx(), &bank.tenant)
-					.await?
-					.0 != SharingScope::TenantAgent
-			{
-				return Err(Error::Forbidden);
-			}
-			scope(store, lease, bank, "memory.read").await?;
-			bank_provider(lease, bank, &binding.provider).await?;
+		match hydrate_unit(store, lease, run, &binding, &policy, source).await {
+			Ok(unit) => recalled.push(unit),
+			Err(Error::Forbidden | Error::Conflict(_)) => continue,
+			Err(error) => return Err(error),
 		}
-		let unit = units::load(lease, *id, false)
-			.await?
-			.ok_or(Error::Forbidden)?;
-		if unit.bank != *bank || unit.revision != *revision || !unit.visible() {
-			return Err(Error::Conflict("initial memory changed".into()));
-		}
-		if foreign
-			&& !super::super::repositories::sharing::agent_unit(
-				lease,
-				&unit,
-				&run.agent_id,
-				policy.bounds.max_graph_visits,
-			)
-			.await?
+	}
+	Ok(serde_json::to_value(Outcome::Recall(
+		if recalled.is_empty() {
+			Recall::Empty
+		} else {
+			Recall::Ready { units: recalled }
+		},
+	))?)
+}
+
+/// One Run-start Unit under the Run's current authority and provenance.
+async fn hydrate_unit(
+	store: &Store,
+	lease: &mut Lease<'_>,
+	run: &aidash_domain::Run,
+	binding: &Binding,
+	policy: &Policy,
+	source: &Evidence,
+) -> Result<Unit> {
+	let Evidence::Unit { bank, id, revision } = source else {
+		return Err(Error::Invalid(
+			"initial memory requires Unit references".into(),
+		));
+	};
+	let foreign = bank != &binding.bank;
+	if foreign {
+		if bank.tenant != binding.bank.tenant
+			|| bank.workspace == run.workspace_id
+			|| super::super::repositories::sharing::get(&mut **lease.tx(), &bank.tenant)
+				.await?
+				.0 != SharingScope::TenantAgent
 		{
 			return Err(Error::Forbidden);
 		}
-		units::unexpired(lease, &unit).await?;
-		units::current_for_run(
-			lease,
-			bank.workspace,
-			&unit.content.evidence,
-			policy.bounds.max_graph_visits,
-			Some(run.id),
-		)
-		.await?;
-		recalled.push(unit);
+		scope(store, lease, bank, "memory.read").await?;
+		bank_provider(lease, bank, &binding.provider).await?;
 	}
-	Ok(serde_json::to_value(Outcome::Recall(Recall::Ready {
-		units: recalled,
-	}))?)
+	let unit = units::load(lease, *id, false)
+		.await?
+		.ok_or(Error::Forbidden)?;
+	if unit.bank != *bank || unit.revision != *revision || !unit.visible() {
+		return Err(Error::Conflict("initial memory changed".into()));
+	}
+	if foreign
+		&& !super::super::repositories::sharing::agent_unit(
+			lease,
+			&unit,
+			&run.agent_id,
+			policy.bounds.max_graph_visits,
+		)
+		.await?
+	{
+		return Err(Error::Forbidden);
+	}
+	units::unexpired(lease, &unit).await?;
+	units::current_for_run(
+		lease,
+		bank.workspace,
+		&unit.content.evidence,
+		policy.bounds.max_graph_visits,
+		Some(run.id),
+	)
+	.await?;
+	Ok(unit)
 }
 
 /// Role configuration comes from the immutable definition, never an installation overlay.

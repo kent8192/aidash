@@ -33,6 +33,9 @@ pub(crate) enum Input {
 		run: Uuid,
 		from: u64,
 		through: u64,
+		/// Which `learning::offload_parts` part of the range this job extracts.
+		#[serde(default, skip_serializing_if = "is_first_part")]
+		part: usize,
 	},
 	Observation {
 		source: Evidence,
@@ -44,6 +47,9 @@ pub(crate) enum Input {
 		sources: Vec<Evidence>,
 		origin_run: Option<Uuid>,
 	},
+}
+fn is_first_part(part: &usize) -> bool {
+	*part == 0
 }
 impl Input {
 	fn origin_run(&self) -> Option<Uuid> {
@@ -674,7 +680,12 @@ async fn execute(
 			delivered: &mut Vec::new(),
 		};
 		match input {
-			Input::OffloadedRange { run, from, through } => {
+			Input::OffloadedRange {
+				run,
+				from,
+				through,
+				part,
+			} => {
 				if provider.id != aidash_domain::registry::bindings::memory_defaults::MEMORY_ID
 					|| provider.version
 						!= aidash_domain::registry::bindings::memory_defaults::VERSION
@@ -690,14 +701,13 @@ async fn execute(
 				let text =
 					super::learning::offloaded_range(scope.lease, bank, &proof, &policy.bounds)
 						.await?;
+				let parts = super::learning::offload_parts(&text, &proof, &policy.bounds)?;
+				// The Journal range is immutable, so its split is the one enqueued.
+				let text = parts
+					.get(*part)
+					.ok_or_else(|| Error::Conflict("offloaded range part changed".into()))?;
 				engine
-					.learn(
-						&mut scope,
-						bank,
-						&proof,
-						&text,
-						std::slice::from_ref(&proof),
-					)
+					.learn(&mut scope, bank, &proof, text, std::slice::from_ref(&proof))
 					.await?;
 			}
 			Input::Learn { run, revision } => {
