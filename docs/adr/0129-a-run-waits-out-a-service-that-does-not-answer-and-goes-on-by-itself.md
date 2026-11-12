@@ -10,8 +10,8 @@ Many outages used to end in a pause that only a person could lift, even when the
 
 **Outage Wait.** A Run that needs a service which does not answer:
 
-1. Retries the same step inside its lease at 2, 4, 8, 16 and 32 seconds, as before. So an outage of about a minute behaves as it did.
-2. Then releases its worker and lease and waits as a Timer does, retrying the same step every 5 minutes. No separate health probe exists; the retry is the probe.
+1. Retries the same step at 2, 4, 8, 16 and 32 seconds, as before. So an outage of about a minute behaves as it did.
+2. Then waits as a Timer does, holding no worker, retrying the same step every 5 minutes. No separate health probe exists; the retry is the probe.
 3. Goes on by itself at the first retry that gets an answer.
 4. After 24 hours without an answer, pauses as before, so that only a person can resume it, and sends the normal pause notice. Runs and schedules have no deadline of their own today, so the bound is the same 24 hours for all.
 
