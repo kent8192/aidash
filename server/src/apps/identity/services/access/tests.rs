@@ -438,21 +438,16 @@ async fn a_row_is_counted_under_the_first_silent_node_its_check_reached_and_each
 	assert_eq!(access.take_row_silence(), None);
 }
 
-/// A refusal is remembered unless the row's own check stopped at a silent Node,
-/// so five refusals beside one earlier mark are cheap and a refusal reached by
-/// silence is asked again (#770).
+/// While any peer is silent, no refusal is cached across publisher views (#751).
 #[rstest::rstest]
 #[tokio::test]
-async fn a_refusal_is_remembered_unless_the_row_stopped_at_a_silent_node(mut access: Access) {
+async fn a_refusal_is_not_cached_after_another_row_met_a_silent_node(mut access: Access) {
 	use aidash_application::ports::federation::registry_reads::RemoteReads;
 	let (refused, silent) = (Uuid::new_v4(), Uuid::new_v4());
 	access.mark_peer_unavailable("aidash://other/sibling");
 	access.begin_row();
 	access.remember_remote_read(refused, RemoteReads::Unconfirmed);
-	assert_eq!(
-		access.cached_remote_read(refused),
-		Some(RemoteReads::Unconfirmed)
-	);
+	assert_eq!(access.cached_remote_read(refused), None);
 	access.skip_peer("aidash://other/sibling");
 	access.remember_remote_read(silent, RemoteReads::Unconfirmed);
 	assert_eq!(access.cached_remote_read(silent), None);
@@ -617,6 +612,52 @@ async fn silent_nodes_and_denials_do_not_cross_a_publisher_view(mut access: Acce
 	assert!(matches!(access.named(Error::Forbidden), Error::Forbidden));
 }
 
+/// A publisher can meet a silent Node and then reach an independent refusal.
+/// That refused unit must not be counted under the earlier silent Node.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_publishers_refusal_after_silence_is_not_counted(mut access: Access) {
+	access.snapshot.bundle = serde_json::from_value(json!({
+		"tenant":"acme", "subjects":{"alice":{"kind":"user"}},
+		"policies":[{"id":"discover","effect":"allow","subjects":{"ids":["alice"]},
+			"actions":["federation.discover"],"resources":{"kinds":["node"]}}]
+	}))
+	.unwrap();
+	let identity = access.identity.clone();
+	let marks = {
+		let mut publisher = access
+			.publisher_view(identity, vec!["alice".into()])
+			.await
+			.unwrap();
+		publisher.mark_peer_unavailable("aidash://other/silent");
+		let refused = publisher.resource("node", "aidash://other/refused", json!({}));
+		assert!(matches!(
+			publisher.require(&refused, "node.refused").await,
+			Err(Error::Forbidden)
+		));
+		// The independent refusal takes precedence over the earlier silence.
+		assert!(publisher.take_row_silence().is_some());
+		assert!(publisher.row_silence().is_none());
+		publisher.take_peer_marks()
+	};
+	access.adopt_silent_peers(marks, None).await.unwrap();
+	let mut tally = aidash_domain::unconfirmed::Tally::new();
+	assert!(!tally.settle(
+		access.take_row_silence(),
+		aidash_domain::unconfirmed::Kind::MemoryUnit,
+		Uuid::nil(),
+		false
+	));
+	assert!(
+		tally.into_entries().is_empty(),
+		"an independent refusal must not be counted"
+	);
+	assert!(
+		access.peer_unavailable("aidash://other/silent"),
+		"the reader still remembers the peer"
+	);
+}
+
 /// What the publisher found silent reaches the reader only when the reader may
 /// discover that Node (#751).
 #[rstest::rstest]
@@ -636,16 +677,17 @@ async fn a_publishers_silent_node_is_the_readers_only_if_the_reader_may_discover
 		.unwrap();
 	}
 	let identity = access.identity.clone();
-	let silent = {
+	let (silent, row) = {
 		let mut publisher = access
 			.publisher_view(identity, vec!["alice".into()])
 			.await
 			.unwrap();
 		publisher.mark_peer_unavailable("aidash://other/publisher");
-		publisher.take_peer_marks()
+		let row = publisher.take_row_silence();
+		(publisher.take_peer_marks(), row)
 	};
 	assert!(!access.peer_unavailable("aidash://other/publisher"));
-	access.adopt_silent_peers(silent).await.unwrap();
+	access.adopt_silent_peers(silent, row).await.unwrap();
 	assert_eq!(access.peer_unavailable("aidash://other/publisher"), allowed);
 	// A list counts the row under the adopted Node, only if it may discover it (#770).
 	assert_eq!(

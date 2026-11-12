@@ -147,7 +147,7 @@ impl NativeAccess {
 			.begin_read_walk(DecisionOwner::Run(run), outermost);
 		let result = self.run_reads_visible_in(run).await;
 		// A `false` reached while a Node did not answer is not a verdict (#751).
-		let unconfirmed = matches!(result, Ok(false)) && self.access.row_silence.is_some();
+		let unconfirmed = matches!(result, Ok(false)) && !self.access.unavailable_peers.is_empty();
 		match result {
 			Ok(_) if unconfirmed && outermost => self.access.read_verdicts.abandon(),
 			Ok(_) if unconfirmed => {}
@@ -203,7 +203,7 @@ impl NativeAccess {
 	}
 	pub(crate) fn remember_run(&mut self, run: &domain::RunMetadata, allowed: bool) {
 		// A refusal reached while a Node did not answer is not a verdict (#770).
-		if !allowed && self.access.row_silence.is_some() {
+		if !allowed && !self.access.unavailable_peers.is_empty() {
 			return;
 		}
 		self.access

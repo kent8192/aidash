@@ -463,7 +463,7 @@ impl Workspaces {
 		workspace: Option<Uuid>,
 		limit: i64,
 	) -> Result<(Vec<Event>, i64)> {
-		// The stream says nothing about a skipped event (ADR 0118).
+		// The stream says nothing about a skipped event (ADR 0133).
 		self.read_events(after, workspace, limit, false)
 			.await
 			.map(|(events, cursor, _)| (events, cursor))
@@ -537,7 +537,7 @@ impl Workspaces {
 
 	/// [`Self::can_emit`] for the event stream, which leaves a Node alone for a
 	/// while after it did not answer. The inference stream shares `can_emit`
-	/// and always asks (ADR 0118).
+	/// and always asks (ADR 0133).
 	pub async fn can_emit_listing(&self, event: &Event) -> Result<bool> {
 		self.can_emit_in(event, true).await
 	}
