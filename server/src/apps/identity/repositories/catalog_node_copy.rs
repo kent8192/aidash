@@ -44,11 +44,14 @@ pub(crate) async fn copy(
 	let rows = AuthorizationCatalog::objects()
 		.filter(AuthorizationCatalog::field_tenant().eq(tenant.to_owned()))
 		.filter(AuthorizationCatalog::field_scope().eq("deployment".to_owned()))
+		.filter(AuthorizationCatalog::field_enabled().eq(true))
 		.order_by(&["entry_id", "entry_version", "node"])
 		.all_with_executor(tx)
 		.await
 		.map_err(FrameworkError::from)?;
-	let mut copies = BTreeMap::<(String, String), CopyRow>::new();
+	// `None` marks a version whose Nodes disagree. Creating a Node never fails
+	// on that: the new Node gets no approval for it and asks again.
+	let mut copies = BTreeMap::<(String, String), Option<CopyRow>>::new();
 	for row in rows {
 		let source = NodeName::parse(&row.node)?;
 		if &source == target {
@@ -90,14 +93,16 @@ pub(crate) async fn copy(
 		let agent = if definition.kind == "agent" {
 			let original =
 				aidash_domain::qualified_agent(&old_node, &row.entry_key, &row.entry_version);
-			let mut subject = snapshot
-				.bundle
-				.subjects
-				.get(&original)
-				.cloned()
-				.ok_or_else(|| {
-					Error::Conflict("deployment approval has no source agent subject".into())
-				})?;
+			let Some(mut subject) = snapshot.bundle.subjects.get(&original).cloned() else {
+				tracing::warn!(
+					tenant,
+					entry = %row.entry_key,
+					version = %row.entry_version,
+					"deployment approval has no source agent subject; not copied to the new Node"
+				);
+				copies.insert((row.entry_key, row.entry_version), None);
+				continue;
+			};
 			subject.node = Some(target.clone());
 			Some(subject)
 		} else {
@@ -117,6 +122,9 @@ pub(crate) async fn copy(
 		};
 		let key = (candidate.id.clone(), candidate.version.clone());
 		if let Some(existing) = copies.get(&key) {
+			let Some(existing) = existing else {
+				continue;
+			};
 			if existing.enabled != candidate.enabled
 				|| existing.carry_over != candidate.carry_over
 				|| existing.from_version != candidate.from_version
@@ -127,16 +135,20 @@ pub(crate) async fn copy(
 				|| existing.restriction != candidate.restriction
 				|| serde_json::to_value(&existing.agent)? != serde_json::to_value(&candidate.agent)?
 			{
-				return Err(Error::Conflict(
-					"deployment approvals differ across Nodes".into(),
-				));
+				tracing::warn!(
+					tenant,
+					entry = %key.0,
+					version = %key.1,
+					"deployment approvals differ across Nodes; not copied to the new Node"
+				);
+				copies.insert(key, None);
 			}
 		} else {
-			copies.insert(key, candidate);
+			copies.insert(key, Some(candidate));
 		}
 	}
 	let mut policy_changed = false;
-	for row in copies.values() {
+	for row in copies.values().flatten() {
 		if let Some(subject) = &row.agent {
 			let name = aidash_domain::qualified_agent(
 				&deployment.node(target.clone()),
