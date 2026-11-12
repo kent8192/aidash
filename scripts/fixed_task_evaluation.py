@@ -581,7 +581,8 @@ def oracle_errors(result, corpus):
             continue
         observation = {"final_answer": answer, "tool_calls": run["tool_calls"], "human_answers": run["human_answers"],
                        "native_projection": variant["agent_fields"].get("projection_version") == "native",
-                       "compactions": run["compactions"], "recovery_operations": run.get("recovery_operations", [])}
+                       "compactions": run["compactions"], "recovery_operations": run.get("recovery_operations", []),
+                       "fixture_record_pages": evidence.get("fixture_record_pages")}
         try:
             loads = [ref["id"] for ref in variant["skills"]] if selects_skill(task, variant) else []
             key = (corpus["_snapshot"]["sha256"], task["id"], canonical_sha256([observation, loads]))
@@ -1323,14 +1324,14 @@ def grade(corpus, task, observation, allow_code_execution, required_loads=()):
     elif kind in ("constraint-retention", "compaction-retention"):
         passed, checks, detail = oracle_constraints(oracle, answer)
         if task.get("fixture_record_pages"):
-            calls = [call for call in observation.get("tool_calls", [])
-                     if call.get("name") == "record_note" and not call.get("dispatch_rejected")]
-            pages = [call["arguments"].get("page") if isinstance(call.get("arguments"), dict) else None
-                     for call in calls]
-            ok = pages == list(range(1, task["reference_pages"] + 1)) and all(not call.get("error") for call in calls)
-            checks.append({"check": "each-page-recorded-once", "passed": ok})
-            if not ok:
-                passed, detail = False, "the ledger did not record each page exactly once in order"
+            pages = observation.get("fixture_record_pages")
+            if pages is None:
+                passed, detail = None, "the fixture's per-Run side-effect ledger is unavailable"
+            else:
+                ok = pages == list(range(1, task["reference_pages"] + 1))
+                checks.append({"check": "each-page-recorded-once", "passed": ok})
+                if not ok:
+                    passed, detail = False, "the ledger did not record each page exactly once in order"
         if kind == "compaction-retention":
             adopted = observation.get("recovery_operations", [])
             operation = oracle["operation"]
@@ -1593,7 +1594,9 @@ def record_run_result(corpus, planned, repeat, observation, tier, oracle):
                      "final_answer_sha256": sha256_text(answer) if answer is not None else None,
                      # A deterministic answer is kept whole: validation regrades the oracle from it.
                      "final_answer": None if live else answer,
-                     "verifier": oracle["checks"]},
+                     "verifier": oracle["checks"],
+                     **({"fixture_record_pages": observation["fixture_record_pages"]}
+                        if not live and observation.get("fixture_record_pages") is not None else {})},
     }
 
 

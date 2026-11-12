@@ -845,7 +845,9 @@ def live(args, read_json=None, transport=None, clock=time.monotonic, sleep=time.
                                        runner.binding_guard(args.tenant, credential["provider"],
                                                             (binding["provider_credential_id"], binding["revision"]), subject),
                                        execution_seed=args.execution_seed,
-                                       auxiliary=auxiliary, approve_fixture_tools=fixture_endpoint is not None)
+                                       auxiliary=auxiliary, approve_fixture_tools=fixture_endpoint is not None,
+                                       side_effect_reader=(lambda run_id: runner.read_fixture_ledger(fixture_endpoint, run_id))
+                                       if fixture_endpoint is not None else None)
     except (KeyboardInterrupt, Terminated) as stop:
         stopped = stop
         error = f"interrupted by the evaluator ({type(stop).__name__})"

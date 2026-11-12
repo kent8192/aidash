@@ -994,9 +994,47 @@ class RecoveryCorpusTest(unittest.TestCase):
             self.assertEqual(fixture.behave(probe, {}, "")["tool_calls"], [("record_note", {"page": page})])
         answer = answer_json({"budget_usd": 300, "excluded_vendors": ["Northwind", "Contoso"]})
         calls = [{"name": "record_note", "arguments": {"page": page}} for page in range(1, 21)]
-        self.assertTrue(evaluation.grade(value, item, observation(final_answer=answer, tool_calls=calls), False)["passed"])
+        self.assertTrue(evaluation.grade(value, item, observation(final_answer=answer, tool_calls=calls,
+                                                               fixture_record_pages=list(range(1, 21))), False)["passed"])
         calls.append(calls[0])
-        self.assertFalse(evaluation.grade(value, item, observation(final_answer=answer, tool_calls=calls), False)["passed"])
+        self.assertFalse(evaluation.grade(value, item, observation(final_answer=answer, tool_calls=calls,
+                                                                fixture_record_pages=list(range(1, 21)) + [1]), False)["passed"])
+
+    def test_ledger_grades_receiver_records_after_projection_is_summarized(self):
+        value = evaluation.load_corpus(evaluation.EVALUATION / "corpus-context-recovery.toml")
+        item = task(value, "side-effect-ledger")
+        answer = answer_json({"budget_usd": 300, "excluded_vendors": ["Northwind", "Contoso"]})
+        projected = [{"name": "record_note", "arguments_sha256": "0" * 64}]
+        for pages, expected in [(list(range(1, 21)), True),
+                                (list(range(1, 21)) + [20], False),
+                                (list(range(1, 20)), False)]:
+            with self.subTest(pages=pages):
+                observed = observation(final_answer=answer, tool_calls=projected, fixture_record_pages=pages)
+                self.assertEqual(evaluation.grade(value, item, observed, False)["passed"], expected)
+
+    def test_fixture_http_ledger_is_run_scoped_and_reports_missing_identity(self):
+        from urllib.request import Request, urlopen
+        value = evaluation.load_corpus(evaluation.EVALUATION / "corpus-context-recovery.toml")
+        item = task(value, "side-effect-ledger")
+        fixture = fixture_module.Fixture({})
+        server = fixture.serve({item["id"]: item})
+        endpoint = f"http://127.0.0.1:{server.server_port}"
+        first, second = str(uuid.uuid4()), str(uuid.uuid4())
+        try:
+            for run_id, page in [(first, 1), (second, 9), (first, 2), (first, 2)]:
+                request = Request(f"{endpoint}/tools/{item['id']}/record_note", method="POST",
+                                  data=json.dumps({"page": page}).encode(),
+                                  headers={"Idempotency-Key": f"{run_id}:1:{page}"})
+                with urlopen(request, timeout=5) as response:
+                    self.assertEqual(response.status, 200)
+            self.assertEqual(runner.read_fixture_ledger(endpoint, first), [1, 2, 2])
+            self.assertEqual(runner.read_fixture_ledger(endpoint, second), [9])
+            fixture.record_delivery(None, "record_note", {"page": 3}, 200)
+            with self.assertRaisesRegex(ValueError, "incomplete"):
+                runner.read_fixture_ledger(endpoint, first)
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_document_fixture_reads_documents_in_order(self):
         value = evaluation.load_corpus(evaluation.EVALUATION / "corpus-context-recovery.toml")
