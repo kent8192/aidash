@@ -68,14 +68,16 @@ mod tests {
 
 	#[test]
 	fn summary_keeps_state_and_only_exposes_context_aggregates() {
-		let mut context = Context::default();
-		context.usage = Some(ContextUsage {
-			input_tokens: 42,
-			output_tokens: 17,
-			context_window: 4096,
-			compactions: 0,
-			exposure: None,
-		});
+		let mut context = Context {
+			usage: Some(ContextUsage {
+				input_tokens: 42,
+				output_tokens: 17,
+				context_window: 4096,
+				compactions: 0,
+				exposure: None,
+			}),
+			..Context::default()
+		};
 		for id in ["one", "two"] {
 			context.push(ContextEvent::Tool {
 				call: crate::provider::ToolCall {
