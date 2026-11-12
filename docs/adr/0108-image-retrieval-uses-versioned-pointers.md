@@ -43,3 +43,47 @@ exact reference embedding; a mismatch is rejected without widening those policie
 Thread Attachment storage, selection, indexing and Image Descriptions follow
 #602 and are outside this decision's initial implementation slice. The ADR
 number is provisional until the concurrent branches are merged.
+
+## Amendment: Thread Attachment images (#622 part 2)
+
+An image Thread Attachment enters the same Workspace index when its message is
+posted, in the posting transaction and under the poster's authority, whether a
+person or an Agent posted it. A poster who may not write to the index, or a
+Workspace without an enabled index, leaves it out; configuring or enabling the
+index later enters earlier images under the configuring person's authority,
+oldest message first. Its states and reasons are those of a Working Area image,
+and it shares the index's one image limit: an attachment is admitted while
+attachment and Working Area images together hold fewer slots than the limit,
+and the File publication ledger counts admitted attachments against its own
+admissions. Deleting the attachment, with its Thread, retires the entry and its
+vector.
+
+An image has an optional Image Description, required when an Agent posts the
+image through `workspace_message` (`image_descriptions`, by path). Only the
+poster writes or replaces it. It is embedded together with the image as one
+input, so its words find the image, and its point records a digest of the
+image bytes and the description: an edited description makes the old point
+stale until the image is embedded again. Points still hold no bytes and no
+description.
+
+An attachment match names its message and attachment and carries the file
+name, size, digest, Image Description and up to 1,000 characters of the message
+text, never the bytes. The pointer, like the entry, is shown only to a reader
+who can read the message now. A match is not a selection: the Agent opens it
+with `workspace_read kind=attachment`, and only an explicit
+`representation=model_input` selection puts the image into its next inference.
+A model whose Registry modalities do not include images is not refused: opening
+gives it the Image Description, file name and message text, and no selection.
+
+A Thread Attachment is an image query only if the querying Run's own history
+shows a completed `workspace_read` selection of that attachment with the same
+bytes. A Run that only listed, read the metadata of, or was given the words of
+an attachment has not seen it, and a selection a compaction has removed from
+the history must be made again. The attachment is read under the Run's current
+message authority before embedding and again after the vector search. The
+same rule applies when the query also searches the agent version's private
+Reference Document images.
+
+`workspace_search` and `workspace_message` move to version 1.1.0 for these
+inputs; Agent versions that pinned 1.0.0 and 1.0.1 keep them. A pinned 1.0.1
+`workspace_message` cannot supply a description, so it cannot post an image.
