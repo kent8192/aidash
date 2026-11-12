@@ -200,6 +200,7 @@ export function AppShell({
   deploymentAdministrator,
   streamStatus,
   decisions,
+  workspaceMore,
   humanMore,
   inbox,
   queueOpen,
@@ -219,6 +220,12 @@ export function AppShell({
   deploymentAdministrator: boolean;
   streamStatus: "live" | "reconnecting";
   decisions: PendingDecision[];
+  workspaceMore: {
+    available: boolean;
+    loading: boolean;
+    error: boolean;
+    load: () => void;
+  };
   humanMore: {
     available: boolean;
     loading: boolean;
@@ -337,7 +344,7 @@ export function AppShell({
   };
   const listProps = {
     data,
-    node: selected?.name,
+    more: workspaceMore,
     current: section === "collaboration" ? channel : "",
     filter,
     setFilter,

@@ -1,28 +1,27 @@
-import { useState, type RefObject } from "react";
-import { useQueryClient } from "@tanstack/react-query";
-import { authenticatedFetch } from "../transport";
-import type { TenantState, Workspace } from "../types";
+import type { RefObject } from "react";
 import { Link } from "@tanstack/react-router";
 import { Plus, Search } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Kbd } from "../components/ui/kbd";
 import { cn } from "../lib/utils";
-import { taskProgress } from "../collaboration/model";
 import type { State } from "../types";
 import { useI18n } from "../ui";
 import { shellCopy } from "./copy";
+import { workspaceStatus } from "./workspace-status";
 
 const dotTone = {
   attention: "bg-warning",
   active: "bg-brand-mark",
   done: "bg-success",
   idle: "bg-faint",
+  // Older Tasks lie beyond the window, so neither done nor idle is known.
+  unknown: "border border-faint bg-transparent",
 } as const;
 
 /** Searchable request history: the workspace switcher body on desktop and in the mobile menu. */
 export function WorkspaceList({
   data,
-  node,
+  more,
   current,
   filter,
   setFilter,
@@ -33,7 +32,13 @@ export function WorkspaceList({
   className,
 }: {
   data?: State;
-  node?: string;
+  /** "Show more" beyond the Workspace window; the pages live with State. */
+  more: {
+    available: boolean;
+    loading: boolean;
+    error: boolean;
+    load: () => void;
+  };
   current: string;
   filter: string;
   setFilter: (value: string) => void;
@@ -45,55 +50,9 @@ export function WorkspaceList({
 }) {
   const { locale } = useI18n();
   const copy = shellCopy[locale];
-  const client = useQueryClient();
-  const [status, setStatus] = useState<{
-    node?: string;
-    loading: boolean;
-    error: boolean;
-  }>({ loading: false, error: false });
-  const loading = status.node === node && status.loading;
-  const error = status.node === node && status.error;
-  const cursor = data?.next_cursors.workspaces ?? null;
-  const loadMore = async () => {
-    if (!cursor || loading) return;
-    setStatus({ node, loading: true, error: false });
-    const updatedAt = client.getQueryState(["state", node])?.dataUpdatedAt;
-    try {
-      const params = new URLSearchParams({ cursor });
-      if (node) params.set("node", node);
-      const page = (await (
-        await authenticatedFetch(`/api/workspaces?${params}`)
-      ).json()) as { items: Workspace[]; next_cursor: string | null };
-      if (client.getQueryState(["state", node])?.dataUpdatedAt !== updatedAt) {
-        setStatus((old) =>
-          old.node === node ? { node, loading: false, error: false } : old,
-        );
-        return;
-      }
-      client.setQueryData<TenantState>(
-        ["state", node],
-        (old) => {
-          if (!old || old.next_cursors.workspaces !== cursor) return old;
-          return {
-            ...old,
-            workspaces: [
-              ...new Map(
-                [...old.workspaces, ...page.items].map((row) => [row.id, row]),
-              ).values(),
-            ],
-            next_cursors: { ...old.next_cursors, workspaces: page.next_cursor },
-          };
-        },
-        { updatedAt },
-      );
-      setStatus((old) =>
-        old.node === node ? { node, loading: false, error: false } : old,
-      );
-    } catch {
-      setStatus((old) =>
-        old.node === node ? { node, loading: false, error: true } : old,
-      );
-    }
+  const windows = {
+    moreTasks: Boolean(data?.next_cursors.tasks),
+    moreRequests: Boolean(data?.next_cursors.human_requests),
   };
   const query = filter.toLocaleLowerCase();
   const workspaces = (data?.workspaces ?? []).filter((value) =>
@@ -125,21 +84,12 @@ export function WorkspaceList({
         className="flex min-h-0 flex-col gap-px overflow-y-auto"
       >
         {workspaces.map((workspace) => {
-          const progress = taskProgress(data?.tasks ?? [], workspace.id);
-          const pending =
-            data?.human_requests.filter(
-              (request) =>
-                request.workspace_id === workspace.id &&
-                request.response === null,
-            ).length ?? 0;
-          const tone =
-            progress.attention > 0
-              ? "attention"
-              : progress.active > 0
-                ? "active"
-                : progress.total > 0 && progress.completed === progress.total
-                  ? "done"
-                  : "idle";
+          const { tone, progress, pending, pendingMore } = workspaceStatus(
+            data?.tasks ?? [],
+            data?.human_requests ?? [],
+            workspace.id,
+            windows,
+          );
           const selected = workspace.id === current;
           return (
             <Link
@@ -172,7 +122,7 @@ export function WorkspaceList({
                   </span>
                   {pending > 0 && (
                     <span className="shrink-0 rounded-sm bg-warning-soft px-1.5 font-mono text-[11px] leading-[18px] text-warning tabular">
-                      {copy.awaiting(pending)}
+                      {copy.awaiting(pending, pendingMore)}
                     </span>
                   )}
                 </span>
@@ -180,7 +130,7 @@ export function WorkspaceList({
                   {workspace.goal}
                 </span>
               </span>
-              {progress.total > 0 && (
+              {progress && (
                 <span className="font-mono text-xs text-muted-foreground tabular">
                   {progress.completed}/{progress.total}
                 </span>
@@ -194,16 +144,12 @@ export function WorkspaceList({
           </p>
         )}
       </nav>
-      {cursor && (
-        <Button
-          variant="ghost"
-          onClick={() => void loadMore()}
-          disabled={loading}
-        >
-          {loading ? copy.loading : copy.showMore}
+      {more.available && (
+        <Button variant="ghost" onClick={more.load} disabled={more.loading}>
+          {more.loading ? copy.loading : copy.showMore}
         </Button>
       )}
-      {error && <p role="alert">{copy.moreError}</p>}
+      {more.error && <p role="alert">{copy.moreError}</p>}
       {showCreate && (
         <div className="mt-1 border-t border-border pt-1">
           <Button
