@@ -9431,6 +9431,10 @@
               "version": {
                 "type": ["string", "null"]
               },
+              "viewer_can_decide_inline": {
+                "description": "The card is a pending outbound, disclosure or tool call approval whose\ndesignated approver is the reader and the person at the root of the\nRun's delegation chain, so the Thread may offer it inline.",
+                "type": "boolean"
+              },
               "viewer_is_approver": {
                 "description": "Whether the reader is the approver this card is addressed to.",
                 "type": "boolean"
@@ -9450,6 +9454,7 @@
               "expires_at",
               "grant_id",
               "viewer_is_approver",
+              "viewer_can_decide_inline",
               "agent_id",
               "agent_version",
               "decided_by",
