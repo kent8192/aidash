@@ -247,6 +247,11 @@ async fn fresh_status_and_original_provenance_are_required_over_mtls() {
 		client.validate_interactive(source, session).await,
 		Err(Error::Forbidden)
 	));
+	// A refusal seen online ends the reuse for admitted work at once (ADR 0130).
+	assert!(matches!(
+		client.validate_interactive_within_t(source, session).await,
+		Err(Error::Forbidden)
+	));
 	assert!(matches!(
 		client.validate_origin(source).await,
 		Err(Error::Forbidden)

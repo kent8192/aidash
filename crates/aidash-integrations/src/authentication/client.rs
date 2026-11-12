@@ -161,7 +161,16 @@ impl Client {
 		let entry = entry(&self.interactive_cache, (identity, session), self.cache_ttl);
 		let mut last = entry.lock().await;
 		let checked = Instant::now();
-		let response = self.interactive_online(identity, session).await?;
+		let response = match self.interactive_online(identity, session).await {
+			Ok(response) => response,
+			// A definite refusal ends the reuse at once, so open streams of the
+			// session stop at their next frame instead of up to T later.
+			Err(error @ (Error::Forbidden | Error::Unauthorized)) => {
+				*last = None;
+				return Err(error);
+			}
+			Err(error) => return Err(error),
+		};
 		if !self.cache_ttl.is_zero() {
 			*last = Some(checked);
 		}

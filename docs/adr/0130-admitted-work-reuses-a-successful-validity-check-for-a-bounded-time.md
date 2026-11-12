@@ -6,7 +6,7 @@ A successful online validity check against the Authentication Server may be reus
 
 The reuse applies only to work already admitted: protected stream frames, the periodic check on an open stream, and the boundaries of a running Run (bound-origin checks). A new HTTP request, a sign-in, a manual Run resume, an egress request and a preview admission still check online every time.
 
-A reused result is keyed by what it proved: the External Identity and Product Session for an interactive check, and the External Identity, Account and recorded epochs for a bound origin. Every stream and Run with the same key shares it. A failed or refused check is never reused. A local logout drops its entry at once. The product's own authority checks still run on every frame and boundary.
+A reused result is keyed by what it proved: the External Identity and Product Session for an interactive check, and the External Identity, Account and recorded epochs for a bound origin. Every stream and Run with the same key shares it. A failed or refused check is never reused, and a refusal seen by any online check ends the reuse of its key at once. A local logout drops its entry at once. The product's own authority checks still run on every frame and boundary.
 
 When the Authentication Server stops answering, admitted work continues until T after the last success. Then a stream closes as before, and a Run pauses and resumes automatically as ADR 0085 decided.
 
