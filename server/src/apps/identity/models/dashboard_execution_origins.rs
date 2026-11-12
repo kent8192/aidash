@@ -246,6 +246,7 @@ impl DashboardExecutionOrigin {
 		db: &mut dyn TransactionExecutor,
 		run: Uuid,
 		policy: Option<&aidash_application::ports::authorization::dashboard::AccountPolicy>,
+		recheck: aidash_application::ports::accounts::Recheck,
 	) -> Result<()> {
 		let Some(authority) = policy.and_then(|policy| policy.authority.as_ref()) else {
 			return Ok(());
@@ -263,15 +264,21 @@ impl DashboardExecutionOrigin {
 			.map(u64::try_from)
 			.transpose()
 			.map_err(|_| crate::Error::Forbidden)?;
-		authority
-			.validate_bound_origin(&aidash_domain::accounts::DurableOrigin {
-				identity_id: origin.identity_id(),
-				account_id: origin.account_id,
-				suspension_epoch: epoch,
-				source_disable_epoch: source_epoch,
-			})
-			.await
-			.map_err(Into::into)
+		let binding = aidash_domain::accounts::DurableOrigin {
+			identity_id: origin.identity_id(),
+			account_id: origin.account_id,
+			suspension_epoch: epoch,
+			source_disable_epoch: source_epoch,
+		};
+		match recheck {
+			aidash_application::ports::accounts::Recheck::Online => {
+				authority.validate_bound_origin(&binding).await
+			}
+			aidash_application::ports::accounts::Recheck::WithinT => {
+				authority.validate_bound_origin_within_t(&binding).await
+			}
+		}
+		.map_err(Into::into)
 	}
 
 	pub(crate) async fn renew_manual(

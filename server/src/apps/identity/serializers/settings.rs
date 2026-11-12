@@ -83,6 +83,7 @@ impl CommonAuthSettings {
 				product_client_id: client_id.to_owned(),
 			},
 		)
+		.map(|client| client.with_validity_cache_seconds(self.validity_cache_seconds))
 		.map_err(Into::into)
 	}
 }

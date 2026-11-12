@@ -4,7 +4,14 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-/// Every call is a new protected-operation boundary; no positive-result cache.
+#[derive(Clone, Copy)]
+pub enum Recheck {
+	Online,
+	WithinT,
+}
+
+/// New admissions require online checks. Explicitly selected checks of already
+/// admitted work may reuse a recent successful bound-origin check.
 /// Verify the returned original source/session provenance, not merely success.
 /// Unreachable authority maps to `IdentityStatusUnavailable`, never fallback.
 #[async_trait]
@@ -25,6 +32,13 @@ pub trait Authority: Send + Sync {
 		&self,
 		origin: &aidash_domain::accounts::DurableOrigin,
 	) -> crate::Result<()>;
+	/// For an already admitted Run boundary only; adapters without caching check online.
+	async fn validate_bound_origin_within_t(
+		&self,
+		origin: &aidash_domain::accounts::DurableOrigin,
+	) -> crate::Result<()> {
+		self.validate_bound_origin(origin).await
+	}
 }
 
 /// Implementations serialize concurrent mutations affecting the same Account,

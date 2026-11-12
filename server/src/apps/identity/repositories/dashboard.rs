@@ -208,8 +208,13 @@ impl StatusRecovery for Recovery {
 			return Ok(false);
 		};
 		let policy = pool.dashboard_policy();
-		match DashboardExecutionOrigin::require_current(&mut **access.tx, run, policy.as_ref())
-			.await
+		match DashboardExecutionOrigin::require_current(
+			&mut **access.tx,
+			run,
+			policy.as_ref(),
+			aidash_application::ports::accounts::Recheck::Online,
+		)
+		.await
 		{
 			Ok(()) => {}
 			Err(crate::Error::Forbidden | crate::Error::Unauthorized) => {

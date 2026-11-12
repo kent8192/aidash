@@ -12,7 +12,11 @@ use reinhardt::grpc::{
 	GrpcClientTlsConfig,
 	tonic::{self, transport::Channel},
 };
-use std::time::Duration;
+use std::{
+	collections::HashMap,
+	sync::Arc,
+	time::{Duration, Instant},
+};
 use uuid::Uuid;
 
 /// TLS material is loaded by the process composition boundary, never from a request.
@@ -25,11 +29,15 @@ pub struct Settings {
 	pub product_client_id: String,
 }
 
-/// Cloning shares the authenticated HTTP/2 channel. No active result is cached.
+type OriginKey = (Uuid, Option<Uuid>, Option<u64>, Option<u64>);
+
+/// Clones share the channel and the cache for admitted work.
 #[derive(Clone)]
 pub struct Client {
 	channel: Channel,
 	product_client_id: String,
+	cache_ttl: Duration,
+	origin_cache: Arc<tokio::sync::Mutex<HashMap<OriginKey, Instant>>>,
 }
 fn rpc_error(status: tonic::Status) -> Error {
 	match status.code() {
@@ -121,7 +129,13 @@ impl Client {
 		Ok(Self {
 			channel,
 			product_client_id: settings.product_client_id,
+			cache_ttl: Duration::ZERO,
+			origin_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
 		})
+	}
+	pub fn with_validity_cache_seconds(mut self, seconds: u64) -> Self {
+		self.cache_ttl = Duration::from_secs(seconds);
+		self
 	}
 	pub async fn interactive(&self, identity: Uuid, session: Uuid) -> Result<ValidityResponse> {
 		let response = AuthenticationValidityClient::new(self.channel.clone())
@@ -224,6 +238,29 @@ impl Authority for Client {
 		{
 			return Err(Error::Forbidden);
 		}
+		Ok(())
+	}
+	async fn validate_bound_origin_within_t(
+		&self,
+		origin: &aidash_domain::accounts::DurableOrigin,
+	) -> Result<()> {
+		if self.cache_ttl.is_zero() {
+			return self.validate_bound_origin(origin).await;
+		}
+		let key = (
+			origin.identity_id,
+			origin.account_id,
+			origin.suspension_epoch,
+			origin.source_disable_epoch,
+		);
+		let mut cache = self.origin_cache.lock().await;
+		let now = Instant::now();
+		cache.retain(|_, checked| now.duration_since(*checked) < self.cache_ttl);
+		if cache.contains_key(&key) {
+			return Ok(());
+		}
+		self.validate_bound_origin(origin).await?;
+		cache.insert(key, now);
 		Ok(())
 	}
 }

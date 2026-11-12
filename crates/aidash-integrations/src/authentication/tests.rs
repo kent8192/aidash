@@ -132,11 +132,23 @@ async fn fresh_status_and_original_provenance_are_required_over_mtls() {
 		client_private_key: key.into_bytes(),
 		product_client_id: "cloud-client".into(),
 	})
-	.unwrap();
+	.unwrap()
+	.with_validity_cache_seconds(30);
 	client.validate_interactive(source, session).await.unwrap();
 	client.validate_origin(source).await.unwrap();
 	let admitted = client.origin_binding(source).await.unwrap();
 	assert_eq!(admitted.suspension_epoch, Some(0));
+	let before = calls.lock().unwrap().len();
+	client
+		.validate_bound_origin_within_t(&admitted)
+		.await
+		.unwrap();
+	client
+		.clone()
+		.validate_bound_origin_within_t(&admitted)
+		.await
+		.unwrap();
+	assert_eq!(calls.lock().unwrap().len(), before + 1);
 	let legacy = aidash_domain::accounts::DurableOrigin {
 		identity_id: source,
 		account_id: None,
@@ -146,6 +158,11 @@ async fn fresh_status_and_original_provenance_are_required_over_mtls() {
 	// First Account assignment may bind old work only before any stop epoch.
 	client.validate_bound_origin(&legacy).await.unwrap();
 	response.lock().unwrap().suspension_epoch = Some(1);
+	// Only the explicitly selected already-admitted path can reuse the old result.
+	client
+		.validate_bound_origin_within_t(&admitted)
+		.await
+		.unwrap();
 	// Restoring an account never refreshes an old Run's saved admission epoch.
 	assert!(matches!(
 		client.validate_bound_origin(&admitted).await,
@@ -155,6 +172,17 @@ async fn fresh_status_and_original_provenance_are_required_over_mtls() {
 		client.validate_bound_origin(&legacy).await,
 		Err(Error::Forbidden)
 	));
+	// A failed check is never cached.
+	assert!(matches!(
+		client.validate_bound_origin_within_t(&legacy).await,
+		Err(Error::Forbidden)
+	));
+	response.lock().unwrap().suspension_epoch = Some(0);
+	client
+		.validate_bound_origin_within_t(&legacy)
+		.await
+		.unwrap();
+	response.lock().unwrap().suspension_epoch = Some(1);
 	let manually_readmitted = client.origin_binding(source).await.unwrap();
 	client
 		.validate_bound_origin(&manually_readmitted)

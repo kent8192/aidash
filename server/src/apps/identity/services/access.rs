@@ -886,6 +886,7 @@ impl Access {
 			&mut **self.tx,
 			run_id,
 			policy.as_ref(),
+			aidash_application::ports::accounts::Recheck::WithinT,
 		)
 		.await?;
 		self.tx.admissions.clear();
