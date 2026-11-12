@@ -50,6 +50,7 @@ fn source_rejects_cross_node_and_dangling_projection() {
 		}],
 		edges: vec![],
 		activity: vec![],
+		unconfirmed: vec![],
 		next_cursor: None,
 	};
 	assert!(valid_remote_page(&page, &input));

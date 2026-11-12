@@ -42,6 +42,8 @@ struct Scope {
 	generations: usize,
 	change_generation: bool,
 	fail: bool,
+	silent_row: Option<u128>,
+	row_silence: Option<String>,
 }
 impl Scope {
 	fn new(n: u128) -> Self {
@@ -53,6 +55,8 @@ impl Scope {
 			generations: 0,
 			change_generation: false,
 			fail: false,
+			silent_row: None,
+			row_silence: None,
 		}
 	}
 }
@@ -99,8 +103,15 @@ impl GraphProjectionScope for Scope {
 	}
 	async fn visible(&mut self, c: &Candidate, scoped: bool) -> Result<bool> {
 		self.scoped.push(scoped);
+		if let Candidate::Task(w) = c
+			&& self.silent_row == Some(w.id.as_u128())
+		{
+			self.row_silence = Some("aidash://silent-c".into());
+			return Ok(false);
+		}
 		Ok(match c {
 			Candidate::Workspace(w) => w.id.as_u128() > self.deny_through,
+			Candidate::Task(w) => w.id.as_u128() > self.deny_through,
 			_ => false,
 		})
 	}
@@ -270,4 +281,58 @@ fn continuation_is_not_part_of_the_scope_digest() {
 		cursor_binding("aidash://source", subject(), &o).unwrap(),
 		first
 	);
+}
+
+impl crate::ports::authorization::visibility::RowOutcome for Scope {
+	fn begin_row(&mut self) {
+		self.row_silence = None;
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.row_silence.take()
+	}
+}
+
+#[tokio::test]
+async fn graph_reports_unconfirmed_rows_under_the_answering_node() {
+	let mut scope = Scope::new(0);
+	scope.rows = (1..=3)
+		.map(|n| {
+			Candidate::Task(aidash_domain::Task {
+				id: Uuid::from_u128(n),
+				workspace_id: Uuid::from_u128(10),
+				title: "task".into(),
+				description: String::new(),
+				status: aidash_domain::TaskStatus::Open,
+				requirements: json!({}),
+				owner: None,
+				created_by: "user".into(),
+				dependencies: vec![],
+				parent_id: None,
+				revision: 0,
+				created_at: now(),
+			})
+		})
+		.collect();
+	let mut options = options();
+	options.kinds = vec!["task".into()];
+	scope.silent_row = Some(1);
+	scope.deny_through = 2;
+	let page = project(&mut scope, "aidash://source", subject(), &options)
+		.await
+		.unwrap();
+	let body = serde_json::to_value(page).unwrap();
+	assert_eq!(body["nodes"].as_array().unwrap().len(), 1);
+	assert_eq!(
+		body["unconfirmed"],
+		json!([{ "node": "aidash://b", "kind": "task", "workspace_id": Uuid::from_u128(10), "count": 1 }])
+	);
+	assert!(!body.to_string().contains("aidash://silent-c"));
+	scope.silent_row = None;
+	scope.deny_through = 0;
+	options.limit = 4;
+	let recovered = project(&mut scope, "aidash://source", subject(), &options)
+		.await
+		.unwrap();
+	assert_eq!(recovered.nodes.len(), 3);
+	assert!(recovered.unconfirmed.is_empty());
 }
