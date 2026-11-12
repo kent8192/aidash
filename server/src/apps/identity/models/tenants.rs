@@ -59,9 +59,9 @@ impl Tenant {
 			.fetch_optional(&sql, convert_values(values))
 			.await?
 			.ok_or(crate::Error::Forbidden)?;
-		let configured: Option<i64> = row
-			.get("credential_max_seconds")
-			.map_err(reinhardt::core::exception::Error::from)?;
+		// A NULL maximum reads as `None` through `QueryRow`: the Deployment's applies.
+		let configured: Option<i64> =
+			reinhardt::db::orm::QueryRow::from_backend_row(row).get("credential_max_seconds");
 		Ok(configured.unwrap_or(deployment).min(deployment))
 	}
 	/// The name of every Tenant, oldest first.

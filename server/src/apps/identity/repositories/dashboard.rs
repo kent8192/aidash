@@ -211,7 +211,7 @@ impl StatusRecovery for Recovery {
 		// A suspension requires a separate, explicit administrator authorization.
 		// Lock the Run and rebind its origin in the same transaction as resume.
 		{
-			use reinhardt::db::orm::{Model, OrmExecutor};
+			use reinhardt::db::orm::Model;
 			let row = Run::objects()
 				.filter(Run::field_id().eq(run))
 				.filter(
@@ -220,9 +220,9 @@ impl StatusRecovery for Recovery {
 				)
 				.filter(Run::field_error().eq(Some("account_suspended".to_owned())))
 				.select_for_update()
-				.all_with_executor(&mut **access.tx)
+				.all_with_executor(access.tx.native_mut())
 				.await
-				.map_err(crate::Error::from)?
+				.map_err(reinhardt::core::exception::Error::from)?
 				.pop();
 			if let Some(mut row) = row {
 				let Some(epoch) = row
@@ -257,9 +257,9 @@ impl StatusRecovery for Recovery {
 				row.revision += 1;
 				row.updated_at = Utc::now();
 				Run::objects()
-					.update_with_conn(&mut **access.tx, &row)
+					.save_with_executor(access.tx.native_mut(), &row)
 					.await
-					.map_err(crate::Error::from)?;
+					.map_err(reinhardt::core::exception::Error::from)?;
 				return access.finish(Ok(true)).await.map_err(Into::into);
 			}
 		}

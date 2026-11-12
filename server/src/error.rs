@@ -570,6 +570,10 @@ impl From<Error> for aidash_application::Error {
 			Error::Unprocessable(message) => Self::Unprocessable(message),
 			Error::FederationDisabled => Self::FederationDisabled,
 			Error::Forbidden => Self::Forbidden,
+			// The reason is for the HTTP caller; work refused by a credential pauses
+			// like any other refused authority (ADR 0131).
+			Error::CredentialForbidden(_) => Self::Forbidden,
+			Error::CredentialUnauthorized(_) => Self::Unauthorized,
 			// Work stopped by a Tenant Deletion pauses like any refused authority. The note
 			// names the check where it reaches the application, so every source of the error
 			// (the Tenant's policy lock, its deletion record) is covered at once.

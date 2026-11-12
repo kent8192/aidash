@@ -178,7 +178,7 @@ impl AuthorizationCredential {
 		let (sql, values) = Query::select()
 			.columns(["revoked_at", "expires_at", "end_reason"].map(Alias::new))
 			.from(Alias::new(Self::table_name()))
-			.and_where(Expr::col("id").eq(id))
+			.and_where(Expr::col("id").eq(Expr::value(id)))
 			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
 			.and_where(Expr::col("subject").eq(subject.to_owned()))
 			.build(PostgresQueryBuilder);
@@ -187,9 +187,11 @@ impl AuthorizationCredential {
 			.await?
 			.ok_or(Error::Unauthorized)?;
 		Self::lock_parent(tx, id, tenant, subject).await?;
-		let revoked: Option<DateTime<Utc>> = row.get("revoked_at").map_err(FrameworkError::from)?;
-		let expires: DateTime<Utc> = row.get("expires_at").map_err(FrameworkError::from)?;
-		let reason: Option<String> = row.get("end_reason").map_err(FrameworkError::from)?;
+		// Nullable columns read through `QueryRow`, which answers `None` for NULL.
+		let row = QueryRow::from_backend_row(row);
+		let revoked: Option<DateTime<Utc>> = row.get("revoked_at");
+		let expires: DateTime<Utc> = row.get("expires_at").ok_or(Error::Unauthorized)?;
+		let reason: Option<String> = row.get("end_reason");
 		if revoked.is_some() {
 			return Err(if reason.as_deref() == Some("mapping_disabled") {
 				Error::CredentialForbidden(crate::error::CredentialReason::MappingDisabled)
@@ -282,8 +284,8 @@ impl AuthorizationCredential {
 		}
 		let (sql, values) = Query::update()
 			.table(Alias::new(Self::table_name()))
-			.value(Alias::new("parent_id"), parent)
-			.and_where(Expr::col("id").eq(child.id))
+			.value(Alias::new("parent_id"), Expr::value(parent))
+			.and_where(Expr::col("id").eq(Expr::value(child.id)))
 			.build(PostgresQueryBuilder);
 		tx.execute(&sql, convert_values(values)).await?;
 		child.parent_id = Some(parent);
@@ -300,18 +302,18 @@ impl AuthorizationCredential {
 		let (sql, values) = Query::select()
 			.column(Alias::new("parent_id"))
 			.from(Alias::new(Self::table_name()))
-			.and_where(Expr::col("id").eq(id))
+			.and_where(Expr::col("id").eq(Expr::value(id)))
 			.build(PostgresQueryBuilder);
 		let row = tx
 			.fetch_optional(&sql, convert_values(values))
 			.await?
 			.ok_or(Error::Unauthorized)?;
-		let parent: Option<Uuid> = row.get("parent_id").map_err(FrameworkError::from)?;
+		let parent: Option<Uuid> = QueryRow::from_backend_row(row).get("parent_id");
 		if let Some(parent) = parent {
 			let (sql, values) = Query::select()
 				.column(Alias::new("id"))
 				.from(Alias::new(Self::table_name()))
-				.and_where(Expr::col("id").eq(parent))
+				.and_where(Expr::col("id").eq(Expr::value(parent)))
 				.and_where(Expr::col("tenant").eq(tenant.to_owned()))
 				.and_where(Expr::col("subject").eq(subject.to_owned()))
 				.and_where(Expr::col("parent_id").is_null())
@@ -416,13 +418,15 @@ impl AuthorizationCredential {
 			.fetch_optional(&sql, convert_values(values))
 			.await?
 			.ok_or(Error::Unauthorized)?;
-		let id: Uuid = row.get("id").map_err(FrameworkError::from)?;
-		let tenant: String = row.get("tenant").map_err(FrameworkError::from)?;
-		let subject: String = row.get("subject").map_err(FrameworkError::from)?;
+		// Nullable columns read through `QueryRow`, which answers `None` for NULL.
+		let row = QueryRow::from_backend_row(row);
+		let id: Uuid = row.get("id").ok_or(Error::Unauthorized)?;
+		let tenant: String = row.get("tenant").ok_or(Error::Unauthorized)?;
+		let subject: String = row.get("subject").ok_or(Error::Unauthorized)?;
 		Self::lock_parent(tx, id, &tenant, &subject).await?;
-		let revoked: Option<DateTime<Utc>> = row.get("revoked_at").map_err(FrameworkError::from)?;
-		let expires: DateTime<Utc> = row.get("expires_at").map_err(FrameworkError::from)?;
-		let reason: Option<String> = row.get("end_reason").map_err(FrameworkError::from)?;
+		let revoked: Option<DateTime<Utc>> = row.get("revoked_at");
+		let expires: DateTime<Utc> = row.get("expires_at").ok_or(Error::Unauthorized)?;
+		let reason: Option<String> = row.get("end_reason");
 		if revoked.is_some() {
 			return Err(if reason.as_deref() == Some("mapping_disabled") {
 				Error::CredentialForbidden(crate::error::CredentialReason::MappingDisabled)

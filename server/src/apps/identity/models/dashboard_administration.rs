@@ -740,6 +740,8 @@ pub(super) async fn issue_mapping(
 		.revoked_at(None)
 		.issued_by("dashboard-oidc".to_owned())
 		.mapping_id(None)
+		.end_reason(None)
+		.parent_id(None)
 		.finish();
 	AuthorizationCredential::objects()
 		.create_with_conn(tx, &credential)
