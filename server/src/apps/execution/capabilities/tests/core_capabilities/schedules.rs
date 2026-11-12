@@ -350,3 +350,186 @@ async fn an_agent_registers_for_its_person_and_a_scheduled_run_cannot(
 	);
 	c.close().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_refused_start_is_a_failed_tick_with_its_reason_and_is_not_retried(
+	#[future] capability_fixture: CoreFixture,
+) {
+	use aidash_domain::registry::bindings::{COMPACTION_DECIDER_ID, COMPACTION_DECIDER_VERSION};
+	// Arrange: the Agent's compaction Decider loses its Catalog Approval (#540).
+	let c = capability_fixture.await;
+	let workspace = workspace(&c).await;
+	let schedule = register(&c, workspace, definition("Hourly digest", 3600)).await;
+	let id: Uuid = serde_json::from_value(schedule["id"].clone()).unwrap();
+	let withdrawn = sqlx::query(
+		"UPDATE authorization_catalog SET enabled = false WHERE tenant = 'acme' AND entry_id = $1 AND entry_version = $2",
+	)
+	.bind(COMPACTION_DECIDER_ID)
+	.bind(COMPACTION_DECIDER_VERSION)
+	.execute(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert!(withdrawn.rows_affected() > 0);
+	make_due(&c, id).await;
+	// Act
+	let now = Utc::now();
+	let report = pass(&c.f, now).await.unwrap();
+	// Assert: recorded as failed, naming the Decider, and moved on.
+	assert!(report.started.is_empty(), "{report:?}");
+	assert_eq!(report.failed.len(), 1, "{report:?}");
+	let recorded = ticks(&c, id).await;
+	assert_eq!(recorded.len(), 1, "{recorded:?}");
+	assert_eq!(recorded[0].0, "failed");
+	assert!(
+		recorded[0]
+			.1
+			.as_deref()
+			.is_some_and(|reason| reason.contains("COMPACTION_DECIDER_UNAPPROVED")),
+		"{recorded:?}"
+	);
+	let (next, failures): (chrono::DateTime<Utc>, i32) = sqlx::query_as(
+		"SELECT next_scheduled_at, consecutive_failures FROM schedules WHERE id = $1",
+	)
+	.bind(id)
+	.fetch_one(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert!(next > now);
+	assert_eq!(failures, 1);
+	// A second pass does not retry the refused tick.
+	pass(&c.f, Utc::now()).await.unwrap();
+	assert_eq!(ticks(&c, id).await.len(), 1);
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn three_failed_runs_in_a_row_pause_a_schedule_and_the_bell_says_so(
+	#[future] capability_fixture: CoreFixture,
+) {
+	// Arrange: a Schedule with its own Approval Mode.
+	let c = capability_fixture.await;
+	let workspace = workspace(&c).await;
+	let mut body = definition("Nightly check", 86_400);
+	body["approval_mode"] = json!("dont_ask");
+	let schedule = register(&c, workspace, body).await;
+	let id: Uuid = serde_json::from_value(schedule["id"].clone()).unwrap();
+	for round in 0..3 {
+		// Earlier ticks lie far enough back that the next is not too soon.
+		sqlx::query(
+			"UPDATE schedule_ticks SET scheduled_at = scheduled_at - interval '3 days' WHERE schedule_id = $1",
+		)
+		.bind(id)
+		.execute(c.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+		make_due(&c, id).await;
+		// Act: the tick starts a Run, which fails; the next pass settles it.
+		let report = pass(&c.f, Utc::now()).await.unwrap();
+		assert_eq!(report.started.len(), 1, "round {round}: {report:?}");
+		let task = report.started[0];
+		if round == 0 {
+			// The Schedule's mode is its Thread's mode for the Registrant.
+			let mode: String = sqlx::query_scalar(
+				"SELECT m.mode FROM identity_thread_approval_modes m JOIN schedule_ticks k ON k.thread_id = m.thread_id WHERE k.task_id = $1",
+			)
+			.bind(task)
+			.fetch_one(c.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+			assert_eq!(mode, "dont_ask");
+		}
+		sqlx::query("UPDATE tasks SET status = 'FAILED' WHERE id = $1")
+			.bind(task)
+			.execute(c.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+		let settled = pass(&c.f, Utc::now()).await.unwrap();
+		assert_eq!(settled.settled, 1, "round {round}: {settled:?}");
+	}
+	// Assert: paused for failures, and the Registrant is told.
+	assert_eq!(halt(&c, id).await.as_deref(), Some("failures"));
+	let statuses: Vec<String> = ticks(&c, id).await.into_iter().map(|tick| tick.0).collect();
+	assert_eq!(statuses, ["failed", "failed", "failed"]);
+	let (status, notices) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		"/api/schedules/notices",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{notices}");
+	assert_eq!(notices["stopped"][0]["halt"], "failures");
+	// Only the Registrant resumes it, and it runs again.
+	let (status, resumed) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/schedules/{id}/resume"),
+		json!({}),
+	)
+	.await;
+	assert_eq!(status, 200, "{resumed}");
+	assert_eq!(resumed["status"], "active");
+	assert_eq!(resumed["consecutive_failures"], 0);
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn an_agent_definition_removes_the_schedule_tools(#[future] capability_fixture: CoreFixture) {
+	// Arrange: a new version of the Agent without the `schedules` capability.
+	let c = capability_fixture.await;
+	let (status, mut agent) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		"/api/registry/research/1.1.0",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{agent}");
+	agent
+		.as_object_mut()
+		.unwrap()
+		.remove("binding_normalization");
+	let tools = [
+		"schedule_create",
+		"schedule_list",
+		"schedule_update",
+		"schedule_delete",
+	];
+	let mut duplicated = agent.clone();
+	agent["version"] = json!("1.2.0");
+	agent["config"]["remove_default"] = json!(tools);
+	duplicated["version"] = json!("1.3.0");
+	duplicated["config"]["remove_default"] = json!(["schedule_list", "schedule_list"]);
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	// Act
+	let saved =
+		c.f.registry
+			.register(&tenant, serde_json::from_value(agent).unwrap())
+			.await;
+	let refused =
+		c.f.registry
+			.register(&tenant, serde_json::from_value(duplicated).unwrap())
+			.await;
+	// Assert: accepted, and none of the tools is bound; a repeated name is refused.
+	assert!(saved.is_ok(), "{saved:?}");
+	let stored =
+		c.f.registry
+			.get(&tenant, "research", "1.2.0")
+			.await
+			.unwrap();
+	let normalized = serde_json::to_string(&stored.binding_normalization).unwrap();
+	for tool in tools {
+		assert!(
+			!normalized.contains(&format!("aidash.{tool}")),
+			"{tool}: {normalized}"
+		);
+	}
+	assert!(refused.is_err(), "{refused:?}");
+	c.close().await;
+}

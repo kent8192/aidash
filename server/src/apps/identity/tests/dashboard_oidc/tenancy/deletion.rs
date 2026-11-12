@@ -977,3 +977,84 @@ async fn only_disabling_the_last_mapping_destroys_personal_credentials(
 	}
 	d.finish().await;
 }
+
+/// Leaving stops the person's Schedules, and Tenant Deletion stops the rest;
+/// a restore leaves them stopped (#557 decisions 3 and 22, ADR 0134).
+#[rstest::rstest]
+#[tokio::test]
+async fn leaving_and_tenant_deletion_stop_schedules_and_a_restore_leaves_them_stopped(
+	#[from(common::runtime)] runtime: common::RuntimeFuture,
+) {
+	// Arrange: Alice and Bob each hold a Schedule in the Tenant.
+	let d = Deployment::new(runtime, open_rules()).await;
+	let alice = d.person("alice").await;
+	let bob = d.person("bob").await;
+	let (tenant, context) = d.tenant_of(&alice, "Team").await;
+	let bob_context = d.admit(&tenant, &bob, "bob", json!(["members"])).await;
+	let scope = aidash_application::tenancy::TenancyScope::tenant(&tenant).unwrap();
+	let workspace = d
+		.federation
+		.store
+		.create_workspace(&scope, "alice", "Reports", "Weekly reports")
+		.await
+		.unwrap();
+	let schedule = |registrant: &'static str| {
+		let (tenant, pool) = (
+			tenant.clone(),
+			d.federation.store.pool.fixture_driver().clone(),
+		);
+		async move {
+			let id = Uuid::new_v4();
+			sqlx::query(
+				"INSERT INTO schedules (id, tenant, workspace_id, registrant, credential_id, title, request, agent_id, agent_version, trigger, max_lateness_seconds, anchor, next_scheduled_at, next_fire_at, consecutive_failures, revision, created_at, updated_at) \
+				 VALUES ($1, $2, $3, $4, $5, 'Weekly', 'Report', 'reporter', '1.0.0', '{\"kind\":\"interval\",\"every_seconds\":3600}', 3600, now(), now() + interval '1 hour', now() + interval '1 hour', 0, 0, now(), now())",
+			)
+			.bind(id)
+			.bind(&tenant)
+			.bind(workspace.id)
+			.bind(registrant)
+			.bind(Uuid::new_v4())
+			.execute(&pool)
+			.await
+			.unwrap();
+			id
+		}
+	};
+	let alices = schedule("alice").await;
+	let bobs = schedule("bob").await;
+	let halt = |id: Uuid| {
+		let pool = d.federation.store.pool.fixture_driver().clone();
+		async move {
+			sqlx::query_scalar::<_, Option<String>>("SELECT halt FROM schedules WHERE id = $1")
+				.bind(id)
+				.fetch_one(&pool)
+				.await
+				.unwrap()
+		}
+	};
+	// Act: Bob leaves.
+	let (status, body) = d
+		.as_person(
+			&bob,
+			"POST",
+			&format!("/api/tenants/{tenant}/leave"),
+			Some(&bob_context),
+			Value::Null,
+		)
+		.await;
+	// Assert: his Schedule waits for a successor at once; Alice's runs on.
+	assert_eq!(status, 204, "{body}");
+	assert_eq!(halt(bobs).await.as_deref(), Some("registrant_left"));
+	assert_eq!(halt(alices).await, None);
+	// Act: the Tenant is deleted, then restored.
+	let (status, body) = d.delete(&alice, &context, &tenant).await;
+	assert_eq!(status, 200, "{body}");
+	assert_eq!(halt(alices).await.as_deref(), Some("tenant_deleted"));
+	assert_eq!(halt(bobs).await.as_deref(), Some("registrant_left"));
+	let (status, body) = d.restore(&alice, &context, &tenant).await;
+	assert_eq!(status, 200, "{body}");
+	// Assert: nothing resumes with the restore.
+	assert_eq!(halt(alices).await.as_deref(), Some("tenant_deleted"));
+	assert_eq!(halt(bobs).await.as_deref(), Some("registrant_left"));
+	d.finish().await;
+}
