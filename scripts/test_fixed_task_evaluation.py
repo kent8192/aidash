@@ -1860,6 +1860,7 @@ class LiveGuardTest(unittest.TestCase):
 
     def test_live_stops_dispatch_at_the_ceiling_and_records_every_attempt(self):
         # Reserve 24 steps and eight possible Summary calls, with six attempts each.
+        # A Summary call may output window / 8 = 125 tokens, past the ordinary 100.
         for phase in ("FAILED", "COMPLETED"):
             with self.subTest(phase):
                 call, _ = self.live_node(phase=phase)
@@ -1870,7 +1871,7 @@ class LiveGuardTest(unittest.TestCase):
                 self.assertEqual(len(spend["attempts"]), 1)
                 self.assertEqual(spend["attempts"][0]["provider_work"][0]["input_tokens"], 10)
                 # Even a completed Run keeps its whole reservation: its usage is not readable over HTTP.
-                self.assertEqual(spend["committed_nanocredits"], 288000)
+                self.assertEqual(spend["committed_nanocredits"], 294000)
                 self.assertEqual(spend["uncertain_attempts"], 1)
                 self.assertIn("exceed the ceiling", spend["refusal"])
                 self.assertEqual(result["runs"][0]["evidence"]["content_class"], "restricted-live")
@@ -2307,8 +2308,16 @@ class LiveGuardTest(unittest.TestCase):
         model = {"context_window": 1000, "max_output_tokens": 100}
         price = {"input_nanocredits_per_token": 4, "cache_write_nanocredits_per_token": 5,
                  "output_nanocredits_per_token": 20}
+        # A Summary call may output window / 8 = 125 tokens, more than the
+        # ordinary 100-token reservation.
         self.assertEqual(runner.run_worst_case(item, value, model, price),
-                         (24 + 8) * runner.PROVIDER_ATTEMPTS_PER_STEP * (1000 * 5 + 100 * 20))
+                         runner.PROVIDER_ATTEMPTS_PER_STEP * (24 * (1000 * 5 + 100 * 20)
+                                                             + 8 * (1000 * 5 + 125 * 20)))
+        bounded = dict(item, context_policy={"version": "context-recovery/1",
+                                             "summary": {"max_tokens": 256, "call_budget": 2}})
+        self.assertEqual(runner.run_worst_case(bounded, value, dict(model, context_window=100_000), price),
+                         runner.PROVIDER_ATTEMPTS_PER_STEP * (24 * (100_000 * 5 + 100 * 20)
+                                                             + 2 * (100_000 * 5 + 256 * 20)))
         self.assertEqual(runner.PROVIDER_ATTEMPTS_PER_STEP, 6, "one attempt plus five harness retries")
 
     def test_ledger_holds_the_approval_expiry_on_the_monotonic_clock(self):

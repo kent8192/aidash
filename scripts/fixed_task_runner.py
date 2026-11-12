@@ -721,6 +721,11 @@ def run_memory_scenario(api, token, workspace, provider, bank, scenario):
 # ------------------------------------------------------------ live tier
 
 
+# crates/aidash-domain/src/context/policy.rs: MAX_SUMMARY_TOKENS and DEFAULT_SUMMARY_CALLS.
+MAX_SUMMARY_TOKENS = 4096
+DEFAULT_SUMMARY_CALLS = 8
+
+
 def run_worst_case(task, corpus, model_config, price, auxiliary=None):
     """Worst-case nanocredits for one Run.
 
@@ -733,9 +738,18 @@ def run_worst_case(task, corpus, model_config, price, auxiliary=None):
     per_attempt = (model_config["context_window"] * prompt_rate
                    + model_config["max_output_tokens"] * price["output_nanocredits_per_token"])
     main = steps * PROVIDER_ATTEMPTS_PER_STEP * per_attempt
-    # Every Agent may spend its default eight Summary calls on its own model.
-    # Reserve them even when the Run never needs the Summary Stage.
-    summary = 8 * PROVIDER_ATTEMPTS_PER_STEP * per_attempt
+    # Every Agent may spend its Summary calls (eight by default) on its own model.
+    # Reserve them even when the Run never needs the Summary Stage. The harness
+    # sizes a Summary's output by the policy and window, not by the ordinary
+    # max_output_tokens: min(summary.max_tokens, window / 8, provider limit).
+    policy_summary = (task.get("context_policy") or {}).get("summary") or {}
+    summary_tokens = min(policy_summary.get("max_tokens", MAX_SUMMARY_TOKENS),
+                         model_config["context_window"] // 8,
+                         model_config.get("provider_max_output_tokens") or float("inf"))
+    per_summary = (model_config["context_window"] * prompt_rate
+                   + summary_tokens * price["output_nanocredits_per_token"])
+    summary_calls = policy_summary.get("call_budget", DEFAULT_SUMMARY_CALLS)
+    summary = summary_calls * PROVIDER_ATTEMPTS_PER_STEP * per_summary
     return main + summary + (auxiliary or {}).get("worst_case_nanocredits", 0)
 
 
