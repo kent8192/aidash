@@ -46,4 +46,5 @@ pub mod oauth_clients;
 
 pub mod oauth_connections;
 
+pub(crate) mod schedule_policy_backfill;
 pub(crate) mod scratch_policy_backfill;

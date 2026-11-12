@@ -6,11 +6,14 @@ pub(crate) fn forward() -> String {
 	};
 	let bundle = aidash_domain::identity::tenancy::initial_policy("migration", false)
 		.expect("the migration Tenant name is valid");
-	let current = bundle
+	let mut current = bundle
 		.policies
 		.into_iter()
 		.find(|policy| policy.id == "members")
 		.expect("the initial member policy exists");
+	// The member policy as it stood when this migration was written: later
+	// grants have their own migrations (`identity/0073_schedule_member_policy`).
+	current.actions.remove(aidash_domain::schedules::CREATE);
 	let mut previous = current.clone();
 	previous.actions.remove("scratch.create");
 	let previous = serde_json::to_value(previous).expect("the member policy serializes");
@@ -70,6 +73,7 @@ mod tests {
 				.find(|policy| policy.id == "members")
 				.unwrap();
 			policy.actions.remove("scratch.create");
+			policy.actions.remove(aidash_domain::schedules::CREATE);
 			if tenant == "scratch-custom-policy" {
 				policy.actions.remove("workspace.create");
 			}

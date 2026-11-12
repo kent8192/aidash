@@ -76,6 +76,7 @@ const TENANT_REGISTRY_MIGRATIONS: &[(&str, &str)] = &[
 	("registry", "0061_provider_tools"),
 	("registry", "0062_provider_warning_tools"),
 	("registry", "0063_reference_set_limit"),
+	("registry", "0064_schedule_tools"),
 	("registry", "0060_subnode_provider"),
 	("registry", "0055_remove_structured_harness_contracts"),
 	("registry", "0056_attachment_tools"),
@@ -191,7 +192,7 @@ async fn native_history_uses_typed_schema_operations_and_lf_sql_assets() {
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		107
+		108
 	);
 	let tables = migrations
 		.iter()
@@ -675,14 +676,14 @@ async fn nonempty_generation_reads_sql_assets_and_replays_only_logical_state(
 	let generated = after
 		.iter()
 		.find(|migration| {
-			migration.app_label == "workspaces" && migration.name == "0027_content_probe"
+			migration.app_label == "workspaces" && migration.name == "0030_content_probe"
 		})
 		.unwrap();
 	assert_eq!(
 		generated.dependencies,
 		vec![(
 			"workspaces".to_owned(),
-			"0026_scratch_binding_indexes".to_owned()
+			"0029_schedules_model_state".to_owned()
 		)]
 	);
 	assert_eq!(generated.operations.len(), 1);
@@ -972,7 +973,7 @@ async fn preserved_baseline_does_not_generate_table_recreation(
 			.iter()
 			.filter(|migration| migration.state_only)
 			.count(),
-		107
+		108
 	);
 }
 
@@ -4741,6 +4742,9 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0024_workspace_scratch_space"),
 			("workspaces", "0025_scratch_workspace_model_state"),
 			("workspaces", "0026_scratch_binding_indexes"),
+			("workspaces", "0027_schedules"),
+			("workspaces", "0028_schedules_row_level_security"),
+			("workspaces", "0029_schedules_model_state"),
 		])
 		.await;
 	fixture.tenant_root("scratch-upgrade").await;
@@ -4797,6 +4801,9 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 			("workspaces", "0024_workspace_scratch_space"),
 			("workspaces", "0025_scratch_workspace_model_state"),
 			("workspaces", "0026_scratch_binding_indexes"),
+			("workspaces", "0027_schedules"),
+			("workspaces", "0028_schedules_row_level_security"),
+			("workspaces", "0029_schedules_model_state"),
 		])
 		.await;
 	let pool = fixture.connection.clone().into_postgres().unwrap();
@@ -4861,6 +4868,9 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 			("workspaces", "0024_workspace_scratch_space"),
 			("workspaces", "0025_scratch_workspace_model_state"),
 			("workspaces", "0026_scratch_binding_indexes"),
+			("workspaces", "0027_schedules"),
+			("workspaces", "0028_schedules_row_level_security"),
+			("workspaces", "0029_schedules_model_state"),
 		])
 		.await;
 	fixture.tenant_root("scratch-workspace-upgrade").await;
