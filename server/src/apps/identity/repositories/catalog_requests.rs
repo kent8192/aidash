@@ -224,10 +224,10 @@ pub(crate) async fn open_revisions(
 		.and_where(Expr::col(Alias::new("state")).eq(State::Open.as_str()))
 		.order_by(Alias::new("id"), Order::Asc)
 		.to_string(PostgresQueryBuilder);
-	Ok(crate::database::native::query_as(&query)
+	crate::database::native::query_as(&query)
 		.columns(&["id", "revision"])
 		.fetch_all(&mut **tx)
-		.await?)
+		.await
 }
 
 /// Approval changes can change whether an open request still needs this caller.
@@ -243,10 +243,10 @@ pub(crate) async fn approval_revisions(
 		.order_by(Alias::new("entry_id"), Order::Asc)
 		.order_by(Alias::new("entry_version"), Order::Asc)
 		.to_string(PostgresQueryBuilder);
-	Ok(crate::database::native::query_as(&query)
+	crate::database::native::query_as(&query)
 		.columns(&["node", "entry_id", "entry_version", "revision"])
 		.fetch_all(&mut **tx)
-		.await?)
+		.await
 }
 
 pub(crate) async fn insert(

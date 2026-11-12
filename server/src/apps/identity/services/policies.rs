@@ -1302,18 +1302,17 @@ impl PolicyAdministration {
 				let cache = PENDING_COUNTS
 					.lock()
 					.unwrap_or_else(|error| error.into_inner());
-				if let Some(entry) = cache.get(&cache_key) {
-					if entry.expires > std::time::Instant::now()
-						&& entry
-							.runtime
-							.upgrade()
-							.is_some_and(|runtime| std::sync::Arc::ptr_eq(&runtime, &f.notify))
-						&& entry.requests == request_revisions
-						&& entry.approvals == approval_revisions
-						&& entry.nodes == live_nodes
-					{
-						return Ok(CatalogPendingCount { count: entry.count });
-					}
+				if let Some(entry) = cache.get(&cache_key)
+					&& entry.expires > std::time::Instant::now()
+					&& entry
+						.runtime
+						.upgrade()
+						.is_some_and(|runtime| std::sync::Arc::ptr_eq(&runtime, &f.notify))
+					&& entry.requests == request_revisions
+					&& entry.approvals == approval_revisions
+					&& entry.nodes == live_nodes
+				{
+					return Ok(CatalogPendingCount { count: entry.count });
 				}
 			}
 			let mut offset = 0;
@@ -1468,8 +1467,7 @@ impl PolicyAdministration {
 				tenant,
 				input.node,
 				vec![approval],
-				withdraw_carried,
-				stop_carrying,
+				(withdraw_carried, stop_carrying),
 				Some(vec![options]),
 			)
 			.await?
@@ -1505,8 +1503,15 @@ impl PolicyAdministration {
 				},
 			)
 			.collect();
-		self.approve_with_withdrawal(actor, tenant, node, approvals, false, false, Some(options))
-			.await
+		self.approve_with_withdrawal(
+			actor,
+			tenant,
+			node,
+			approvals,
+			(false, false),
+			Some(options),
+		)
+		.await
 	}
 
 	async fn approve_with_withdrawal(
@@ -1515,8 +1520,7 @@ impl PolicyAdministration {
 		tenant: String,
 		node: aidash_domain::nodes::NodeName,
 		mut approvals: Vec<aidash_application::authorization::catalog::approvals::Approval>,
-		withdraw_carried: bool,
-		stop_carrying: bool,
+		(withdraw_carried, stop_carrying): (bool, bool),
 		options: Option<
 			Vec<(
 				Option<bool>,
@@ -1558,7 +1562,7 @@ impl PolicyAdministration {
 						.into_iter()
 						.next();
 					first.carry_over =
-						carry.unwrap_or_else(|| row.as_ref().map_or(true, |r| r.carry_over));
+						carry.unwrap_or_else(|| row.as_ref().is_none_or(|r| r.carry_over));
 					first.scope =
 						scope.unwrap_or_else(|| match row.as_ref().map(|r| r.scope.as_str()) {
 							Some("node") => aidash_domain::identity::catalog::ApprovalScope::Node,
