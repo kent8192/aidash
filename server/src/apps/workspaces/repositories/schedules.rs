@@ -536,7 +536,8 @@ pub(crate) enum Stop<'a> {
 }
 
 /// Stops the Schedules `stop` reaches and returns them. A Schedule already
-/// waiting for a successor, or stopped with the Tenant, keeps that reason.
+/// waiting for a successor, or stopped with the Tenant, keeps that reason, and
+/// Tenant Deletion leaves every stopped Schedule's reason as it was.
 pub(crate) async fn stop(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
@@ -572,7 +573,9 @@ pub(crate) async fn stop(
 				schedule.halt,
 				Some(Halt::RegistrantLeft | Halt::TenantDeleted)
 			),
-			_ => schedule.halt == Some(Halt::TenantDeleted),
+			// A Schedule already stopped keeps its reason through a Tenant
+			// Deletion and its restore, such as one waiting for a successor.
+			_ => schedule.halt.is_some(),
 		};
 		if keep {
 			continue;

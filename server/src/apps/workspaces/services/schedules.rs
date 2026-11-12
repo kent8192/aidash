@@ -388,7 +388,10 @@ async fn start(
 				.id
 		}
 	};
-	if let Some(mode) = definition.approval_mode {
+	// "Run now" is an ordinary Run of the person who clicked it, in their own
+	// mode; only a scheduled tick carries the Schedule's.
+	let scheduled = key.1.is_empty();
+	if let Some(mode) = definition.approval_mode.filter(|_| scheduled) {
 		// The Schedule's Approval Mode is its Thread's mode for the person
 		// its Runs act as (#557 decision 4).
 		let access = lease.access_mut();
