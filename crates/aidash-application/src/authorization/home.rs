@@ -260,6 +260,7 @@ pub async fn control<R: HomeRepository>(
 			scope.require(&run, "run.control").await?;
 			// Revocation shares the lease row with every Home command; completed effects stay fenced.
 			scope.revoke(id).await?;
+			scope.close_human_requests(id, admission).await?;
 			if !matches!(
 				current.status,
 				TaskStatus::Cancelled | TaskStatus::Completed | TaskStatus::Failed
@@ -363,6 +364,13 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 		)
 		.await
 		.unwrap_or_else(|_| Err(Error::External("remote status unavailable".into())));
+		// Keep terminal evidence even if a later semantic read is unavailable.
+		let ended = status
+			.as_ref()
+			.ok()
+			.and_then(Option::as_ref)
+			.filter(|activation| !activation.recoverable())
+			.cloned();
 		let binding: Binding = serde_json::from_value(grant.semantic.clone())?;
 		let mut reason = status
 			.as_ref()
@@ -394,7 +402,7 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 				}
 			}
 		}
-		let human_requests = match requests {
+		let mut human_requests = match requests {
 			Ok(result) => result?,
 			Err(_) => {
 				status = Err(Error::External("remote status unavailable".into()));
@@ -404,6 +412,22 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 				vec![]
 			}
 		};
+		if let Some(activation) = ended {
+			if activation.grant_id != grant.id || activation.run_id != activation.admission_id {
+				return Err(Error::Forbidden);
+			}
+			let mut scope = repository.begin().await?;
+			let result = scope
+				.close_human_requests(grant.id, activation.admission_id)
+				.await;
+			finish(scope, result).await?;
+			// Do not take Task and policy read locks while holding the journal lock.
+			let mut reader = repository.begin().await?;
+			let result = reader
+				.human_requests(grant.id, activation.admission_id)
+				.await;
+			human_requests = finish(reader, result).await?;
+		}
 		let mut semantic = repository
 			.semantic_status(grant.id, &binding, reason)
 			.await?;
@@ -831,10 +855,28 @@ pub async fn answer_human<R: HomeRepository>(
 			.requester_grant(task, grant)
 			.await?
 			.ok_or(Error::Forbidden)?;
-		if current.revoked || current.expires_at <= chrono::Utc::now() {
-			return Err(Error::Forbidden);
-		}
 		let bound = scope.binding(grant).await?.ok_or(Error::Forbidden)?;
+		if current.revoked || current.expires_at <= chrono::Utc::now() {
+			// Preserve the revoked-grant boundary except for a known closed
+			// question; answer_human still checks the person's answer authority.
+			let closed = scope
+				.human_requests(grant, bound.admission_id)
+				.await?
+				.into_iter()
+				.any(|request| {
+					request.id == id
+						&& request.answered_by.as_deref() == Some("system")
+						&& request
+							.response
+							.as_ref()
+							.and_then(|value| value.get("reason"))
+							.and_then(serde_json::Value::as_str)
+							== Some("run_ended")
+				});
+			if !closed {
+				return Err(Error::Forbidden);
+			}
+		}
 		scope
 			.answer_human(grant, bound.admission_id, id, response)
 			.await

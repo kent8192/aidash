@@ -10262,3 +10262,143 @@ async fn a_run_on_another_node_abandons_the_unassigned_task_it_created(
 	}));
 	p.close().await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+async fn remote_question_closes_when_home_observes_cancelled_run(#[future(awt)] scoped_pair: Pair) {
+	let p = scoped_pair;
+	p.step().await;
+	let home = Home::new(p.b.clone(), p.run().await);
+	let question = home
+		.human_request("QUESTION", "Continue?", "run-end-question")
+		.await
+		.unwrap();
+	let management = format!("/api/runs/{}/management", p.admission);
+	let (status, body) = request(
+		&p.ba,
+		&p.receiver_token,
+		"POST",
+		&management,
+		json!({"action":"cancel"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"GET",
+		&format!("/api/tasks/{}/remote-executions", p.task),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let requests = body[0]["human_requests"].as_array().unwrap();
+	let closed = requests
+		.iter()
+		.find(|entry| entry["id"] == json!(question.id))
+		.unwrap();
+	assert_eq!(closed["answered_by"], "system");
+	assert_eq!(
+		closed["response"],
+		json!({"answered":false,"reason":"run_ended"})
+	);
+	let path = format!(
+		"/api/tasks/{}/remote-grants/{}/human-requests/answer",
+		p.task, p.grant
+	);
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&path,
+		json!({"id":question.id,"response":{"answer":"late"}}),
+	)
+	.await;
+	assert_eq!(status, 409, "{body}");
+	p.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn home_cancellation_closes_remote_questions_and_refuses_late_answers(
+	#[future(awt)] scoped_pair: Pair,
+) {
+	let p = scoped_pair;
+	p.step().await;
+	let home = Home::new(p.b.clone(), p.run().await);
+	let question = home
+		.human_request("QUESTION", "Continue?", "home-cancel-question")
+		.await
+		.unwrap();
+	let answer_path = format!(
+		"/api/tasks/{}/remote-grants/{}/human-requests/answer",
+		p.task, p.grant
+	);
+	let answered = home
+		.human_request("QUESTION", "Already answered?", "home-answer-before-cancel")
+		.await
+		.unwrap();
+	let (status, response) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&answer_path,
+		json!({"id":answered.id,"response":{"answer":"yes"}}),
+	)
+	.await;
+	assert_eq!(status, 200, "{response}");
+	let control_path = format!("/api/tasks/{}/remote-grants/{}/control", p.task, p.grant);
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&control_path,
+		json!({"action":"cancel"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let journal: Value = sqlx::query_scalar(
+		"SELECT human_requests FROM authorization_remote_execution WHERE grant_id = $1",
+	)
+	.bind(p.grant)
+	.fetch_one(p.a.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let closed = journal
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|entry| entry["request"]["id"] == json!(question.id))
+		.unwrap();
+	let retained = journal
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|entry| entry["request"]["id"] == json!(answered.id))
+		.unwrap();
+	assert_eq!(retained["request"]["response"], json!({"answer":"yes"}));
+	assert_eq!(closed["request"]["answered_by"], "system");
+	assert_eq!(
+		closed["request"]["response"],
+		json!({"answered":false,"reason":"run_ended"})
+	);
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&answer_path,
+		json!({"id":question.id,"response":{"answer":"late"}}),
+	)
+	.await;
+	assert_eq!(status, 409, "{body}");
+	let (status, body) = request(
+		&p.aa,
+		&p.token,
+		"POST",
+		&answer_path,
+		json!({"id":answered.id,"response":{"answer":"yes"}}),
+	)
+	.await;
+	assert_eq!(status, 403, "{body}");
+	p.close().await;
+}

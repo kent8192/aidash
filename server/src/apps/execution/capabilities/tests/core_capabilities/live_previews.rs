@@ -343,9 +343,12 @@ async fn a_newer_revision_marks_a_running_preview_stale(#[future] capability_fix
 /// A Live preview start waits for the Runner while its Run is cancelled.
 /// The stub reports starting until released, then reports the Pod running.
 #[rstest::rstest]
+#[case::stop_confirmed(false)]
+#[case::stop_retry_after_earlier_proof(true)]
 #[tokio::test]
 async fn m6_a_live_preview_start_waiting_for_the_runner_when_the_run_is_cancelled(
 	#[future] capability_fixture: CoreFixture,
+	#[case] fail_cancel: bool,
 ) {
 	use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 	let case = "M6 Live preview start racing the cancel";
@@ -395,6 +398,11 @@ async fn m6_a_live_preview_start_waiting_for_the_runner_when_the_run_is_cancelle
 				let (cancels, cancelled) = (cancels.clone(), cancelled.clone());
 				async move {
 					cancels.fetch_add(1, Ordering::SeqCst);
+					if fail_cancel {
+						return Ok(reinhardt::Response::new(
+							http::StatusCode::INTERNAL_SERVER_ERROR,
+						));
+					}
 					cancelled.store(true, Ordering::SeqCst);
 					Ok(reinhardt::Response::ok()
 						.with_json(&json!({"status":"cancelled"}))
@@ -463,6 +471,14 @@ async fn m6_a_live_preview_start_waiting_for_the_runner_when_the_run_is_cancelle
 		"row after the cancel (state, stop_reason, confirmed)",
 		&live_row(&c, row.0).await,
 	);
+	if fail_cancel {
+		// A prior sweep confirmed termination before this late running reply.
+		sqlx::query("UPDATE core_live_previews SET termination_confirmed = true WHERE id = $1")
+			.bind(row.0)
+			.execute(c.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	}
 	released.store(true, Ordering::SeqCst);
 	let started = start.await.unwrap();
 	let result = started.as_ref().expect("start result");
@@ -473,7 +489,7 @@ async fn m6_a_live_preview_start_waiting_for_the_runner_when_the_run_is_cancelle
 		(
 			String::from("stopped"),
 			Some(String::from("run_cancelled")),
-			true
+			!fail_cancel
 		)
 	);
 	note(

@@ -482,8 +482,17 @@ pub(crate) async fn finish_start(
 		.map_err(NativeError::from)?
 		.pop()
 		.ok_or_else(|| NativeError::NotFound("live preview".into()))?;
-	let current = self::domain(current)?;
+	let mut current = self::domain(current)?;
 	if current.state.is_stopped() {
+		if current.termination_confirmed
+			&& dispatched.pod_host.is_some()
+			&& dispatched.failure.is_none()
+		{
+			// An earlier termination proof cannot cover a later running observation.
+			// Re-arm the stopped row so the sweep retries if cancellation fails.
+			current.termination_confirmed = false;
+			application::Scope::save(&mut scope, &current).await?;
+		}
 		return Ok(Started {
 			status: Status::of(&current, current.revision),
 			startup_log: aidash_domain::preview::live::startup_tail(&dispatched.startup_log),
@@ -571,17 +580,14 @@ pub(crate) async fn settle(
 pub(crate) async fn terminate(store: &Store, preview: &LivePreview) -> NativeResult<bool> {
 	use aidash_application::ports::capabilities::runner::RunnerTransport as _;
 	let runner = crate::bootstrap::operation_runner(store)?;
-	if runner
+	runner
 		.request(
 			"POST",
 			&format!("/v1/operations/{}/cancel", preview.id),
 			None,
 		)
 		.await
-		.is_err()
-	{
-		return Ok(false);
-	}
+		.map_err(|error| NativeError::External(error.to_string()))?;
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
 	loop {
 		let observed = runner

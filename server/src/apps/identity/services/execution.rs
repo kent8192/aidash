@@ -1101,13 +1101,24 @@ impl WorkerAuthority {
 		.await;
 		let started = access.finish(result).await?;
 		drop(outer);
-		if started.status.state.is_stopped()
-			&& previews::terminate(store, &pending).await.unwrap_or(false)
-		{
-			let outer = self.access.read().await;
-			let mut access = Access::under_lease(&outer).await?;
-			let result = previews::settle(store, &mut access, run, domain, pending.id).await;
-			access.finish(result).await?;
+		if started.status.state.is_stopped() {
+			let confirmed = match previews::terminate(store, &pending).await {
+				Ok(true) => true,
+				Ok(false) => {
+					tracing::warn!(preview_id = %pending.id, "live preview termination is not confirmed; the sweep will retry");
+					false
+				}
+				Err(error) => {
+					tracing::warn!(preview_id = %pending.id, %error, "could not terminate stopped live preview; the sweep will retry");
+					false
+				}
+			};
+			if confirmed {
+				let outer = self.access.read().await;
+				let mut access = Access::under_lease(&outer).await?;
+				let result = previews::settle(store, &mut access, run, domain, pending.id).await;
+				access.finish(result).await?;
+			}
 		}
 		Ok(json!(started))
 	}
