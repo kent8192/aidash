@@ -99,6 +99,7 @@ async fn fresh_status_and_original_provenance_are_required_over_mtls() {
 		account_id: Uuid::new_v4().to_string(),
 		suspension_epoch: Some(0),
 		source_disable_epoch: 0,
+		resumable_suspension_epochs: Vec::new(),
 		source_issuer: "upstream".into(),
 		source_subject: "source".into(),
 	}));

@@ -368,17 +368,26 @@ impl Authentication {
 		expected_epoch: Option<u64>,
 		expected_source_epoch: Option<u64>,
 		bind_current: bool,
-	) -> Result<(Validity, Option<ExternalIdentity>, Option<u64>)> {
+	) -> Result<(Validity, Option<ExternalIdentity>, Option<u64>, Vec<u64>)> {
 		self.refresh_identity(source).await?;
 		let mut tx = self.store.scope().await?;
 		let Some(identity) = tx.identity(source).await? else {
-			return Ok((Validity::Denied(Denial::ProvenanceMismatch), None, None));
+			return Ok((
+				Validity::Denied(Denial::ProvenanceMismatch),
+				None,
+				None,
+				Vec::new(),
+			));
 		};
 		let account = match identity.first_account {
 			Some(id) => tx.account(id).await?,
 			None => None,
 		};
 		let epoch = account.as_ref().map(|account| account.suspension_epoch);
+		let resumable = account
+			.as_ref()
+			.map(|account| account.resumable_suspension_epochs.clone())
+			.unwrap_or_default();
 		let origin = DurableOrigin {
 			identity_id: source,
 			account_id: expected_account,
@@ -390,7 +399,7 @@ impl Authentication {
 			},
 		};
 		let result = durable_validity(&origin, account.as_ref(), &identity, Utc::now());
-		Ok((result, Some(identity), epoch))
+		Ok((result, Some(identity), epoch, resumable))
 	}
 	pub(crate) fn resource_client(&self, id: &str, raw: &str) -> Result<String> {
 		use subtle::ConstantTimeEq;

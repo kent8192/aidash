@@ -36,6 +36,7 @@ impl<R: Repository> Service<R> {
 			status: AccountStatus::Active,
 			session_epoch: 0,
 			suspension_epoch: 0,
+			resumable_suspension_epochs: Vec::new(),
 		})
 		.await?;
 		tx.save_identity(&identity).await?;
@@ -114,12 +115,27 @@ impl<R: Repository> Service<R> {
 		Ok(())
 	}
 
-	/// Restores eligibility for fresh login/manual authorized resume. It does
-	/// not revive sessions, reset epochs, or emit an automatic Run resume.
-	pub async fn restore(&self, administrator: Administrator, account: Uuid) -> Result<()> {
+	/// Restores eligibility without reviving sessions. An administrator can also
+	/// authorize recovery of work paused under this suspension's epoch.
+	pub async fn restore(
+		&self,
+		administrator: Administrator,
+		account: Uuid,
+		resume_paused_work: bool,
+	) -> Result<()> {
 		require_administrator(administrator)?;
 		let mut tx = self.repository.begin().await?;
 		let mut account = tx.account(account).await?.ok_or(AccountError::NotFound)?;
+		if resume_paused_work
+			&& account.status == AccountStatus::Suspended
+			&& !account
+				.resumable_suspension_epochs
+				.contains(&account.suspension_epoch)
+		{
+			account
+				.resumable_suspension_epochs
+				.push(account.suspension_epoch);
+		}
 		account.status = AccountStatus::Active;
 		tx.save_account(&account).await?;
 		tx.commit().await?;

@@ -128,6 +128,7 @@ async fn actual_auth_grpc_preserves_session_stop_and_administrator_boundaries() 
 	let command = AccountAdministrationRequest {
 		account_id: fixture.account.id.to_string(),
 		audit_reason: "Real RPC contract regression".into(),
+		resume_paused_work: false,
 	};
 	let forbidden = AccountAdministrationClient::new(cloud_channel.clone())
 		.suspend_account(command.clone())

@@ -38,6 +38,7 @@ impl AuthenticationPeer {
 			source_subject: "desktop-fixture".into(),
 			suspension_epoch: Some(0),
 			source_disable_epoch: 0,
+			resumable_suspension_epochs: Vec::new(),
 		}
 	}
 }

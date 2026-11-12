@@ -47,6 +47,7 @@ message ValidityResponse {
   string source_subject = 6;
   optional uint64 suspension_epoch = 7;
   uint64 source_disable_epoch = 8;
+  repeated uint64 resumable_suspension_epochs = 9;
 }
 message RevokeProductSessionRequest {
   string product_session_id = 1;
@@ -71,6 +72,7 @@ message DesktopSessionResponse {
 message AccountAdministrationRequest {
   string account_id = 1;
   string audit_reason = 2;
+  bool resume_paused_work = 3;
 }
 message RestoreIdentityRequest {
   string external_identity_id = 1;
