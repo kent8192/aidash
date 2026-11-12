@@ -222,7 +222,9 @@ impl StatusRecovery for Recovery {
 				.select_for_update()
 				.all_with_executor(access.tx.native_mut())
 				.await
-				.map_err(reinhardt::core::exception::Error::from)?
+				.map_err(|error| {
+					crate::Error::from(reinhardt::core::exception::Error::from(error))
+				})?
 				.pop();
 			if let Some(mut row) = row {
 				let Some(epoch) = row
@@ -259,7 +261,9 @@ impl StatusRecovery for Recovery {
 				Run::objects()
 					.save_with_executor(access.tx.native_mut(), &row)
 					.await
-					.map_err(reinhardt::core::exception::Error::from)?;
+					.map_err(|error| {
+						crate::Error::from(reinhardt::core::exception::Error::from(error))
+					})?;
 				return access.finish(Ok(true)).await.map_err(Into::into);
 			}
 		}

@@ -127,6 +127,7 @@ async fn conversation_member_recalls_empty_bank_after_reading_coordinator(
 			preview: None,
 			dashboard_origin: "http://localhost:3000".into(),
 			scratch_policy: Default::default(),
+			credential_max_seconds: 90 * 24 * 60 * 60,
 		},
 		store,
 		client: runtime_controls.client,

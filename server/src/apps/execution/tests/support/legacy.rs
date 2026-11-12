@@ -1123,6 +1123,7 @@ pub fn runtime(execution_database: DatabaseFuture, http_client: reqwest::Client)
 			registry,
 			config: Config {
 				scratch_policy: Default::default(),
+				credential_max_seconds: 90 * 24 * 60 * 60,
 				deployment: aidash_domain::nodes::DeploymentId::parse("aidash://execution-test")
 					.unwrap(),
 				endpoint: "http://localhost:8080".into(),

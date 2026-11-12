@@ -460,6 +460,8 @@ async fn active_self_issued_credentials_are_bounded_independently_of_history(
 					})
 					.issued_by("history-fixture")
 					.mapping_id(Some(mapping))
+					.end_reason(None)
+					.parent_id(None)
 					.finish();
 				AuthorizationCredential::objects()
 					.create_with_conn(tx, &row)
@@ -510,7 +512,7 @@ async fn tenant_owned_credential_may_issue_independent_credentials_under_policy(
 		.await;
 	assert_eq!(status, 200, "{issuer}");
 	let issuer_token = issuer["token"].as_str().unwrap();
-	let (status, issued) =
+	let (status, issued, _) =
 		t.d.send(
 			"POST",
 			&t.path("/credentials"),
@@ -521,7 +523,7 @@ async fn tenant_owned_credential_may_issue_independent_credentials_under_policy(
 		)
 		.await;
 	assert_eq!(status, 200, "{issued}");
-	let (status, child) =
+	let (status, child, _) =
 		t.d.send(
 			"POST",
 			&t.path("/credentials"),
@@ -532,7 +534,7 @@ async fn tenant_owned_credential_may_issue_independent_credentials_under_policy(
 		)
 		.await;
 	assert_eq!(status, 200, "{child}");
-	let (status, _) =
+	let (status, _, _) =
 		t.d.send(
 			"POST",
 			&t.path("/credentials"),
@@ -586,7 +588,7 @@ async fn a_child_credential_ends_with_its_parent_and_cannot_issue_children(
 		json!({"subject":"alice", "child":true, "expires_in_seconds":300}),
 		json!({"subject":"bob", "child":true, "expires_in_seconds":7200}),
 	] {
-		let (status, _) =
+		let (status, _, _) =
 			t.d.send(
 				"POST",
 				&t.path("/credentials"),
@@ -598,7 +600,7 @@ async fn a_child_credential_ends_with_its_parent_and_cannot_issue_children(
 			.await;
 		assert!(status == 400 || status == 403, "unexpected status {status}");
 	}
-	let (status, child) =
+	let (status, child, _) =
 		t.d.send(
 			"POST",
 			&t.path("/credentials"),
@@ -611,7 +613,7 @@ async fn a_child_credential_ends_with_its_parent_and_cannot_issue_children(
 	assert_eq!(status, 200, "{child}");
 	assert_eq!(child["credential"]["parent_id"], parent["credential"]["id"]);
 	let child_token = child["token"].as_str().unwrap();
-	let (status, _) =
+	let (status, _, _) =
 		t.d.send(
 			"POST",
 			&t.path("/credentials"),
@@ -633,12 +635,12 @@ async fn a_child_credential_ends_with_its_parent_and_cannot_issue_children(
 		)
 		.await;
 	assert_eq!(status, 200, "{body}");
-	let (status, parent_body) =
+	let (status, parent_body, _) =
 		t.d.send("GET", "/api/state", None, None, Some(token), Value::Null)
 			.await;
 	assert_eq!(status, 401, "{parent_body}");
 	assert_eq!(parent_body["reason"], "revoked");
-	let (status, body) =
+	let (status, body, _) =
 		t.d.send(
 			"GET",
 			"/api/state",
