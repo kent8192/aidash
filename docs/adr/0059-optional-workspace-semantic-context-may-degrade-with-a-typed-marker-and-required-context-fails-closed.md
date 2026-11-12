@@ -1,6 +1,7 @@
 # Optional Workspace semantic context may degrade with a typed marker; required context fails closed
 
 Amended by ADR 0124 (2026-11-09): temporary database failures in vector lookups wait without consuming a Run attempt.
+Amended by ADR 0129 (2026-11-11): `on_unavailable` defaults to `degrade`, and `pause` now means an Outage Wait that goes on by itself.
 Decided on 2026-10-12 (#154) and refined on 2026-10-17 (#234). When retrieval of a local Run's Workspace semantic context stays unavailable after the bounded retry (five retries after 2, 4, 8, 16 and 32 s, the same as a required-Home Run), the step continues with Degraded context. This happens only when every Registry source feeding the workspace slot opts in. The opt-in is `on_unavailable: pause | degrade` on the `workspace_retrieval` source Binding and defaults to `pause`. In place of the context, the step gets the typed marker `{"status":"unavailable","cause":"embedding_provider"|"vector_backend"}`. Everything else fails closed with a typed pause: required-Home semantic context, native memory, a legacy `semantic_memory` source with no native provider (it has no opt-in), and every authorization, binding, contract, invalidation, budget or allowance failure. We degrade instead of pausing because an embedding outage should not stop a step whose inference is healthy and whose author has said the context is optional. Under #158 an alternate provider is impossible, and a Deployment-hosted model is never a failover target (ADR 0036).
 
 ## Considered Options
