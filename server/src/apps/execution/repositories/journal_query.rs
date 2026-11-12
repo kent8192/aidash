@@ -410,11 +410,18 @@ pub(crate) async fn execute(
 		output["research_derived"] = json!(true);
 	}
 	output["dependencies"] = json!(snapshot.dependencies);
-	if JournalSource::snapshot(store, tenancy, run.id, run.id, None)
-		.await?
-		.generation
-		!= snapshot.generation
-	{
+	// Recheck the Journal the cell actually read: the same target Run and
+	// authorized range as the snapshot above. A reader that lost the target
+	// meanwhile gets nothing built from it either.
+	let recheck =
+		JournalSource::snapshot(store, tenancy, run.id, target_run.unwrap_or(run.id), range).await;
+	let withdrawn = match recheck {
+		Ok(current) => (current.generation != snapshot.generation)
+			.then(|| Error::Conflict("JOURNAL_GENERATION_CHANGED".into())),
+		Err(Error::Forbidden) => Some(Error::Forbidden),
+		Err(error) => return Err(error),
+	};
+	if let Some(withdrawn) = withdrawn {
 		let stopped = transport
 			.request(
 				"POST",
@@ -428,7 +435,7 @@ pub(crate) async fn execute(
 		// This result is deliberately discarded, so it may be acknowledged
 		// without waiting for an invocation result to be saved.
 		acknowledge_runner(&transport, &operation.to_string(), json!({"digest":digest})).await?;
-		return Err(Error::Conflict("JOURNAL_GENERATION_CHANGED".into()));
+		return Err(withdrawn);
 	}
 	let mut access =
 		crate::apps::identity::services::execution::access_for_run(store, &run.metadata(), true)
