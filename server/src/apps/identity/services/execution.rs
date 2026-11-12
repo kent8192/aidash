@@ -19,7 +19,10 @@ use uuid::Uuid;
 /// retried either ([`after_effect`]).
 fn authority_gone_after_effect(error: Error) -> Error {
 	match error {
-		Error::Forbidden | Error::Unauthorized => {
+		Error::Forbidden
+		| Error::Unauthorized
+		| Error::CredentialForbidden(_)
+		| Error::CredentialUnauthorized(_) => {
 			Error::AuthorityRefused(Box::new(aidash_domain::tool::AuthorityRefusal {
 				tool: String::new(),
 				check: aidash_domain::tool::RefusalCheck::RunAuthority,

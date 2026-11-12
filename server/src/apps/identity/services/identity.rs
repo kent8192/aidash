@@ -428,6 +428,13 @@ impl SubjectIdentity {
 			.await?
 		};
 		let Some((_, issued_through)) = valid else {
+			AuthorizationCredential::explain_ended(
+				tx,
+				self.credential_id,
+				&self.tenant,
+				&self.subject,
+			)
+			.await?;
 			return Err(Error::Unauthorized);
 		};
 		AuthorizationCredential::lock_parent(tx, self.credential_id, &self.tenant, &self.subject)
@@ -466,7 +473,12 @@ impl SubjectIdentity {
 			.await?
 		};
 		if let Some((identity_id, mapping_enabled, mapping_tenant)) = mapping {
-			if !mapping_enabled || mapping_tenant != self.tenant {
+			if !mapping_enabled {
+				return Err(Error::CredentialForbidden(
+					crate::error::CredentialReason::MappingDisabled,
+				));
+			}
+			if mapping_tenant != self.tenant {
 				return Err(Error::Forbidden);
 			}
 			let validity: Option<IdentityValidity> = {
@@ -628,6 +640,14 @@ pub(crate) fn validate_local_status(
 	policy: Option<&aidash_application::ports::authorization::dashboard::AccountPolicy>,
 	validity: Option<IdentityValidity>,
 ) -> Result<()> {
+	if validity
+		.as_ref()
+		.is_some_and(|(_, _, disabled)| disabled.is_some())
+	{
+		return Err(Error::CredentialForbidden(
+			crate::error::CredentialReason::IdentityDisabled,
+		));
+	}
 	if policy.is_some_and(|policy| policy.authority.is_some()) {
 		return match validity {
 			Some((_, _, None)) => Ok(()),

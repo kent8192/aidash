@@ -168,6 +168,42 @@ impl AuthorizationBundle {
 }
 
 impl AuthorizationCredential {
+	/// Diagnose an already identified credential after a boundary finds it unusable.
+	pub(crate) async fn explain_ended(
+		tx: &mut dyn TransactionExecutor,
+		id: Uuid,
+		tenant: &str,
+		subject: &str,
+	) -> Result<()> {
+		let (sql, values) = Query::select()
+			.columns(["revoked_at", "expires_at", "end_reason"].map(Alias::new))
+			.from(Alias::new(Self::table_name()))
+			.and_where(Expr::col("id").eq(id))
+			.and_where(Expr::col("tenant").eq(tenant.to_owned()))
+			.and_where(Expr::col("subject").eq(subject.to_owned()))
+			.build(PostgresQueryBuilder);
+		let row = tx
+			.fetch_optional(&sql, convert_values(values))
+			.await?
+			.ok_or(Error::Unauthorized)?;
+		Self::lock_parent(tx, id, tenant, subject).await?;
+		let revoked: Option<DateTime<Utc>> = row.get("revoked_at").map_err(FrameworkError::from)?;
+		let expires: DateTime<Utc> = row.get("expires_at").map_err(FrameworkError::from)?;
+		let reason: Option<String> = row.get("end_reason").map_err(FrameworkError::from)?;
+		if revoked.is_some() {
+			return Err(if reason.as_deref() == Some("mapping_disabled") {
+				Error::CredentialForbidden(crate::error::CredentialReason::MappingDisabled)
+			} else {
+				Error::CredentialUnauthorized(crate::error::CredentialReason::Revoked)
+			});
+		}
+		if expires <= super::dashboard_administration::database_time(tx).await? {
+			return Err(Error::CredentialUnauthorized(
+				crate::error::CredentialReason::Expired,
+			));
+		}
+		Ok(())
+	}
 	pub(crate) async fn issue_child(
 		tx: &mut dyn TransactionExecutor,
 		parent: Uuid,
@@ -288,7 +324,9 @@ impl AuthorizationCredential {
 				.build(PostgresQueryBuilder);
 			tx.fetch_optional(&sql, convert_values(values))
 				.await?
-				.ok_or(Error::Unauthorized)?;
+				.ok_or(Error::CredentialUnauthorized(
+					crate::error::CredentialReason::ParentEnded,
+				))?;
 		}
 		Ok(())
 	}
@@ -360,14 +398,19 @@ impl AuthorizationCredential {
 		token_hash: Vec<u8>,
 	) -> Result<(Uuid, String, String)> {
 		let (sql, values) = Query::select()
-			.columns(["id", "tenant", "subject"].map(Alias::new))
+			.columns(
+				[
+					"id",
+					"tenant",
+					"subject",
+					"revoked_at",
+					"expires_at",
+					"end_reason",
+				]
+				.map(Alias::new),
+			)
 			.from(Alias::new(Self::table_name()))
 			.and_where(Expr::col("token_hash").eq(Expr::value(token_hash)))
-			.and_where(Expr::col("revoked_at").is_null())
-			.and_where(Expr::col("expires_at").gt(SimpleExpr::FunctionCall(
-				"clock_timestamp".into_iden(),
-				vec![],
-			)))
 			.build(PostgresQueryBuilder);
 		let row = tx
 			.fetch_optional(&sql, convert_values(values))
@@ -377,6 +420,21 @@ impl AuthorizationCredential {
 		let tenant: String = row.get("tenant").map_err(FrameworkError::from)?;
 		let subject: String = row.get("subject").map_err(FrameworkError::from)?;
 		Self::lock_parent(tx, id, &tenant, &subject).await?;
+		let revoked: Option<DateTime<Utc>> = row.get("revoked_at").map_err(FrameworkError::from)?;
+		let expires: DateTime<Utc> = row.get("expires_at").map_err(FrameworkError::from)?;
+		let reason: Option<String> = row.get("end_reason").map_err(FrameworkError::from)?;
+		if revoked.is_some() {
+			return Err(if reason.as_deref() == Some("mapping_disabled") {
+				Error::CredentialForbidden(crate::error::CredentialReason::MappingDisabled)
+			} else {
+				Error::CredentialUnauthorized(crate::error::CredentialReason::Revoked)
+			});
+		}
+		if expires <= super::dashboard_administration::database_time(tx).await? {
+			return Err(Error::CredentialUnauthorized(
+				crate::error::CredentialReason::Expired,
+			));
+		}
 		Ok((id, tenant, subject))
 	}
 
@@ -400,10 +458,10 @@ impl AuthorizationCredential {
 			)))
 			.lock(LockType::Share)
 			.build(PostgresQueryBuilder);
-		let credential = tx
-			.fetch_optional(&sql, convert_values(values))
-			.await?
-			.ok_or(Error::Unauthorized)?;
+		let Some(credential) = tx.fetch_optional(&sql, convert_values(values)).await? else {
+			Self::explain_ended(tx, id, tenant, subject).await?;
+			return Err(Error::Unauthorized);
+		};
 		let credential = QueryRow::from_backend_row(credential).data;
 		let issued_through: Option<Uuid> =
 			serde_json::from_value(credential["mapping_id"].clone())?;
@@ -422,7 +480,9 @@ impl AuthorizationCredential {
 				.get::<bool>("enabled")
 				.map_err(FrameworkError::from)?
 			{
-				return Err(Error::Forbidden);
+				return Err(Error::CredentialForbidden(
+					crate::error::CredentialReason::MappingDisabled,
+				));
 			}
 			let mapping_tenant: String = mapping.get("tenant").map_err(FrameworkError::from)?;
 			if mapping_tenant != tenant {

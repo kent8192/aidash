@@ -1287,6 +1287,7 @@ impl DashboardMapping {
 		let own = credential.revoked_at.is_none().then_some(credential);
 		for mut credential in own.into_iter().chain(issued) {
 			credential.revoked_at = Some(revoked_at);
+			credential.end_reason = Some("mapping_disabled".into());
 			AuthorizationCredential::objects()
 				.update_with_conn(tx, &credential)
 				.await?;

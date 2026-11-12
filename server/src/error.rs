@@ -14,6 +14,28 @@ fn tenant_creation_message(refusal: &CreationRefusal) -> &'static str {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// A known Credential or its issuing identity is no longer usable.
+#[derive(Debug, Clone, Copy)]
+pub enum CredentialReason {
+	Expired,
+	Revoked,
+	ParentEnded,
+	MappingDisabled,
+	IdentityDisabled,
+}
+
+impl CredentialReason {
+	fn as_str(self) -> &'static str {
+		match self {
+			Self::Expired => "expired",
+			Self::Revoked => "revoked",
+			Self::ParentEnded => "parent_ended",
+			Self::MappingDisabled => "mapping_disabled",
+			Self::IdentityDisabled => "identity_disabled",
+		}
+	}
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
 	#[error("{}", .0.code())]
@@ -34,8 +56,12 @@ pub enum Error {
 	Unprocessable(String),
 	#[error("unauthorized")]
 	Unauthorized,
+	#[error("unauthorized")]
+	CredentialUnauthorized(CredentialReason),
 	#[error("forbidden")]
 	Forbidden,
+	#[error("forbidden")]
+	CredentialForbidden(CredentialReason),
 	/// A tool call the Run's authority refused; the API answers it like [`Error::Forbidden`].
 	#[error("forbidden")]
 	AuthorityRefused(Box<aidash_domain::tool::AuthorityRefusal>),
@@ -140,9 +166,12 @@ impl Error {
 			}
 			Self::NotFound(s) => (StatusCode::NOT_FOUND, s.clone()),
 			Self::Unprocessable(s) => (StatusCode::UNPROCESSABLE_ENTITY, s.clone()),
-			Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".into()),
+			Self::Unauthorized | Self::CredentialUnauthorized(_) => {
+				(StatusCode::UNAUTHORIZED, "unauthorized".into())
+			}
 			Self::Connection(cause) => (StatusCode::CONFLICT, cause.code().into()),
 			Self::Forbidden
+			| Self::CredentialForbidden(_)
 			| Self::AuthorityRefused(_)
 			| Self::RunHidden(_)
 			| Self::AccountSuspended { .. } => (StatusCode::FORBIDDEN, "forbidden".into()),
@@ -263,6 +292,13 @@ impl Error {
 			}
 			_ => json!({"error": message}),
 		};
+		match &self {
+			Self::CredentialUnauthorized(reason) | Self::CredentialForbidden(reason) => {
+				envelope["reason"] = json!(reason.as_str())
+			}
+			Self::AccountSuspended { .. } => envelope["reason"] = json!("account_suspended"),
+			_ => {}
+		}
 		if let Self::RunHidden(block) | Self::ResumeBlocked(block) = &self {
 			envelope["run_reads"] = json!(block);
 		}

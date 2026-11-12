@@ -633,11 +633,23 @@ async fn a_child_credential_ends_with_its_parent_and_cannot_issue_children(
 		)
 		.await;
 	assert_eq!(status, 200, "{body}");
-	assert_eq!(
-		t.bearer(child_token, "GET", "/api/state", Value::Null)
-			.await,
-		401
-	);
+	let (status, parent_body) =
+		t.d.send("GET", "/api/state", None, None, Some(token), Value::Null)
+			.await;
+	assert_eq!(status, 401, "{parent_body}");
+	assert_eq!(parent_body["reason"], "revoked");
+	let (status, body) =
+		t.d.send(
+			"GET",
+			"/api/state",
+			None,
+			None,
+			Some(child_token),
+			Value::Null,
+		)
+		.await;
+	assert_eq!(status, 401, "{body}");
+	assert_eq!(body["reason"], "parent_ended");
 	t.finish().await;
 }
 
