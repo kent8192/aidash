@@ -2,6 +2,7 @@
 use super::super::views;
 use crate::apps::federation::remote::serializers::actions::SentResponse;
 use crate::apps::workspaces::serializers::channels::ChannelAttachment;
+use crate::apps::workspaces::serializers::channels::ChannelAttachmentDescription;
 use crate::apps::workspaces::serializers::channels::ChannelAttachmentUploadQuery;
 use crate::apps::workspaces::serializers::channels::ChannelHistoryQuery;
 use crate::apps::workspaces::serializers::channels::ChannelMessage;
@@ -200,6 +201,21 @@ pub(crate) fn register(contracts: &mut Contracts, document: &mut OpenApiSchema) 
 		document,
 		views::channels::channel_attachment_upload,
 		&["Uuid"],
+	)?;
+	contracts.response::<_, ChannelAttachment>(
+		document,
+		views::channels::channel_attachment_description,
+		200,
+		"application/json",
+	)?;
+	contracts.request::<_, ChannelAttachmentDescription>(
+		document,
+		views::channels::channel_attachment_description,
+	)?;
+	contracts.path(
+		document,
+		views::channels::channel_attachment_description,
+		&["Uuid", "Uuid"],
 	)?;
 	contracts.empty(document, views::channels::channel_attachment_download, 200)?;
 	contracts.path(

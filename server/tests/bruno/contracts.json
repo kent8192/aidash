@@ -13135,12 +13135,20 @@
         "definitions": {
           "ChannelAttachment": {
             "properties": {
+              "description": {
+                "description": "The Image Description its writer gave an image, if any (#622).",
+                "type": ["string", "null"]
+              },
               "filename": {
                 "type": "string"
               },
               "id": {
                 "format": "uuid",
                 "type": "string"
+              },
+              "index_state": {
+                "description": "Where an image stands in the Workspace index: `pending`, `indexed`,\n`unsupported` or `failed`. Absent when the image has no index entry.",
+                "type": ["string", "null"]
               },
               "media_type": {
                 "type": "string"
@@ -13301,12 +13309,20 @@
         "definitions": {
           "ChannelAttachment": {
             "properties": {
+              "description": {
+                "description": "The Image Description its writer gave an image, if any (#622).",
+                "type": ["string", "null"]
+              },
               "filename": {
                 "type": "string"
               },
               "id": {
                 "format": "uuid",
                 "type": "string"
+              },
+              "index_state": {
+                "description": "Where an image stands in the Workspace index: `pending`, `indexed`,\n`unsupported` or `failed`. Absent when the image has no index entry.",
+                "type": ["string", "null"]
               },
               "media_type": {
                 "type": "string"
@@ -13478,18 +13494,31 @@
     "method": "POST",
     "name": "channel-attachment-upload",
     "path": "/api/workspaces/{id}/attachments",
-    "query_parameters": ["filename", "idempotency_key", "media_type"],
+    "query_parameters": [
+      "description",
+      "filename",
+      "idempotency_key",
+      "media_type"
+    ],
     "responses": {
       "200": {
         "definitions": {
           "ChannelAttachment": {
             "properties": {
+              "description": {
+                "description": "The Image Description its writer gave an image, if any (#622).",
+                "type": ["string", "null"]
+              },
               "filename": {
                 "type": "string"
               },
               "id": {
                 "format": "uuid",
                 "type": "string"
+              },
+              "index_state": {
+                "description": "Where an image stands in the Workspace index: `pending`, `indexed`,\n`unsupported` or `failed`. Absent when the image has no index entry.",
+                "type": ["string", "null"]
               },
               "media_type": {
                 "type": "string"
@@ -13528,6 +13557,63 @@
     "name": "channel-attachment-download",
     "path": "/api/workspaces/{id}/attachments/{attachment_id}",
     "query_parameters": [],
+    "source": "server/src/apps/workspaces/views/channels.rs",
+    "uuid_parameters": ["attachment_id", "id"]
+  },
+  {
+    "json": true,
+    "method": "PUT",
+    "name": "channel-attachment-description",
+    "path": "/api/workspaces/{id}/attachments/{attachment_id}/description",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "ChannelAttachment": {
+            "properties": {
+              "description": {
+                "description": "The Image Description its writer gave an image, if any (#622).",
+                "type": ["string", "null"]
+              },
+              "filename": {
+                "type": "string"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "index_state": {
+                "description": "Where an image stands in the Workspace index: `pending`, `indexed`,\n`unsupported` or `failed`. Absent when the image has no index entry.",
+                "type": ["string", "null"]
+              },
+              "media_type": {
+                "type": "string"
+              },
+              "no_assigned_agent_can_read": {
+                "default": false,
+                "description": "Computed for the Workspace's currently assigned Agents, not persisted.",
+                "type": "boolean"
+              },
+              "size_bytes": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "filename",
+              "media_type",
+              "size_bytes",
+              "no_assigned_agent_can_read"
+            ],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/ChannelAttachment"
+        }
+      }
+    },
     "source": "server/src/apps/workspaces/views/channels.rs",
     "uuid_parameters": ["attachment_id", "id"]
   },
