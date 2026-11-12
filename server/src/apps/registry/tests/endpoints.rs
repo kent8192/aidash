@@ -113,8 +113,13 @@ async fn registration_rolls_back_invalid_requests_and_replays_concurrent_retries
 		.post("/api/registry", &conflict, "json")
 		.await
 		.unwrap();
-	// Assert: identity, definition and event commit exactly once.
-	assert_eq!(first, second);
+	// Assert: identity, definition and event commit exactly once. Carry
+	// outcomes describe only the request that registered (#873).
+	let without_carry = |mut response: serde_json::Value| {
+		response.as_object_mut().unwrap().remove("carry_results");
+		response
+	};
+	assert_eq!(without_carry(first.clone()), without_carry(second));
 	Uuid::parse_str(first["id"].as_str().unwrap()).unwrap();
 	assert_json(rejected, 409);
 	assert_eq!(
