@@ -4,9 +4,11 @@ FROM postgres:17-bookworm AS memory-build
 ARG PGVECTOR_VERSION=0.8.7
 ARG PGROONGA_VERSION=4.0.9
 ARG GROONGA_VERSION=16.1.2
+# Build against the base image's own server version (#921): headers from a newer
+# minor release can reference symbols the image's server does not export.
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends build-essential ca-certificates curl pkg-config postgresql-server-dev-17 liblz4-dev libzstd-dev zlib1g-dev libmsgpack-dev meson ninja-build ruby; \
+    apt-get install -y --no-install-recommends build-essential ca-certificates curl pkg-config "postgresql-server-dev-17=${PG_VERSION}" liblz4-dev libzstd-dev zlib1g-dev libmsgpack-dev meson ninja-build ruby; \
     curl -fsSL --retry 5 "https://codeload.github.com/pgvector/pgvector/tar.gz/refs/tags/v${PGVECTOR_VERSION}" -o /tmp/pgvector.tar.gz; \
     echo "cac0b10c360f05b2d521200105ba3697e773d4cd3731f5a915a7e37ebe0bea85  /tmp/pgvector.tar.gz" | sha256sum -c -; \
     curl -fsSL --retry 5 "https://github.com/groonga/groonga/releases/download/v${GROONGA_VERSION}/groonga-${GROONGA_VERSION}.tar.gz" -o /tmp/groonga.tar.gz; \
@@ -19,16 +21,19 @@ RUN set -eux; \
     make -j2; make install; \
     tar -xzf /tmp/pgvector.tar.gz -C /tmp; \
     make -C "/tmp/pgvector-${PGVECTOR_VERSION}" -j2 OPTFLAGS=""; \
-    make -C "/tmp/pgvector-${PGVECTOR_VERSION}" install; \
+    make -C "/tmp/pgvector-${PGVECTOR_VERSION}" install DESTDIR=/staging; \
     tar -xzf /tmp/pgroonga.tar.gz -C /tmp; \
     meson setup /tmp/pgroonga-build "/tmp/pgroonga-${PGROONGA_VERSION}" --buildtype=release -Dmessage_pack=enabled; \
     meson compile -C /tmp/pgroonga-build -j2; \
-    meson install -C /tmp/pgroonga-build
+    meson install -C /tmp/pgroonga-build --destdir /staging
 
 FROM postgres:17-bookworm AS extensions
 
-COPY --from=memory-build /usr/lib/postgresql/17/lib/ /usr/lib/postgresql/17/lib/
-COPY --from=memory-build /usr/share/postgresql/17/extension/ /usr/share/postgresql/17/extension/
+# Copy only what the extension installs wrote (#921). The build stage's apt may
+# upgrade postgresql-17 past the base image, and its core libraries (for example
+# plpgsql.so) then need symbols this image's server does not have.
+COPY --from=memory-build /staging/usr/lib/postgresql/17/lib/ /usr/lib/postgresql/17/lib/
+COPY --from=memory-build /staging/usr/share/postgresql/17/extension/ /usr/share/postgresql/17/extension/
 COPY --from=memory-build /usr/lib/libgroonga* /usr/lib/
 # Crash-safer resets PGroonga WAL positions; its WAL implementation requires
 # MessagePack at build time and the matching shared library at runtime.
