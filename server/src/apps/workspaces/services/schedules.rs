@@ -669,35 +669,44 @@ async fn fire(
 				return Err(Error::Forbidden);
 			}
 		}
-		if let ThreadMode::Fixed { thread_id } = schedule.definition.thread
-			&& crate::apps::execution::capabilities::services::endpoints::readable_thread(
+		// Only a refusal stops the Schedule; any other error, such as a
+		// database outage, leaves the tick to the next pass.
+		if let ThreadMode::Fixed { thread_id } = schedule.definition.thread {
+			match crate::apps::execution::capabilities::services::endpoints::readable_thread(
 				lease.access_mut(),
 				schedule.workspace_id,
 				thread_id,
 			)
 			.await
-			.is_err()
-		{
-			stopping = Some((
-				Halt::ThreadDeleted,
-				"the Schedule's Thread was deleted".into(),
-			));
-			return Err(Error::NotFound("thread unavailable".into()));
+			{
+				Ok(()) => {}
+				Err(error @ (Error::NotFound(_) | Error::Forbidden)) => {
+					stopping = Some((
+						Halt::ThreadDeleted,
+						"the Schedule's Thread was deleted".into(),
+					));
+					return Err(error);
+				}
+				Err(error) => return Err(error),
+			}
 		}
-		if crate::apps::identity::services::catalog::entry(
+		match crate::apps::identity::services::catalog::entry(
 			lease.access_mut(),
 			&schedule.definition.agent,
 			"agent.execute",
 		)
 		.await
-		.is_err()
 		{
-			let reason = format!(
-				"Agent {}@{} can no longer be started",
-				schedule.definition.agent.id, schedule.definition.agent.version
-			);
-			stopping = Some((Halt::AgentVersionUnusable, reason.clone()));
-			return Err(Error::Forbidden);
+			Ok(_) => {}
+			Err(error @ (Error::NotFound(_) | Error::Forbidden)) => {
+				let reason = format!(
+					"Agent {}@{} can no longer be started",
+					schedule.definition.agent.id, schedule.definition.agent.version
+				);
+				stopping = Some((Halt::AgentVersionUnusable, reason));
+				return Err(error);
+			}
+			Err(error) => return Err(error),
 		}
 		let (task, thread) = start(f, &mut lease, &schedule, (claim.scheduled_at, "")).await?;
 		advance(lease.tx(), tenant, &schedule, &claim, now).await?;

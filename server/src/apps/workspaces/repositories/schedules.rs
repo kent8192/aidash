@@ -19,6 +19,9 @@ use crate::apps::workspaces::models::{ScheduleLimitRecord, ScheduleRecord, Sched
 use crate::database::native::{self, Pool};
 use crate::{Error, Result};
 
+/// The seed of the advisory lock that serializes a Tenant's registrations.
+const SCHEDULE_LOCK: i64 = 557;
+
 fn framework(error: impl Into<reinhardt::core::exception::Error>) -> Error {
 	Error::from(error.into())
 }
@@ -227,24 +230,29 @@ pub(crate) async fn list(
 		.collect()
 }
 
-/// The Tenant's Schedules and how many `registrant` holds. The Tenant's row
-/// lock serializes registrations, so two cannot both take the last place.
+/// The Tenant's Schedules and how many `registrant` holds. A transaction
+/// lock per Tenant serializes registrations, so two cannot both take the
+/// last place; it is advisory, so no Run's lease on the Tenant waits for it.
 pub(crate) async fn counts(
 	tx: &mut dyn TransactionExecutor,
 	tenant: &str,
 	registrant: &str,
 ) -> Result<(i64, i64)> {
-	native::query_scalar::<String>(
-		&Query::select()
-			.column(Alias::new("name"))
-			.from(Alias::new("tenants"))
-			.and_where(Expr::col("name").eq(tenant.to_owned()))
-			.lock(LockType::Update)
-			.to_string(PostgresQueryBuilder),
-	)
-	.scalar_optional(&mut *tx)
-	.await?
-	.ok_or(Error::Forbidden)?;
+	use reinhardt::db::orm::execution::convert_values;
+	use reinhardt::query::{IntoIden, SimpleExpr};
+	let (sql, values) = Query::select()
+		.expr(SimpleExpr::FunctionCall(
+			"pg_advisory_xact_lock".into_iden(),
+			vec![SimpleExpr::FunctionCall(
+				"hashtextextended".into_iden(),
+				vec![
+					Expr::value(tenant.to_owned()).into(),
+					Expr::value(SCHEDULE_LOCK).into(),
+				],
+			)],
+		))
+		.build(PostgresQueryBuilder);
+	tx.execute(&sql, convert_values(values)).await?;
 	let count = |mine: bool| {
 		let mut query = Query::select();
 		query
@@ -680,6 +688,8 @@ pub(crate) async fn scheduled_chain(
 				.from(Alias::new("schedule_ticks"))
 				.and_where(Expr::col("tenant").eq(tenant.to_owned()))
 				.and_where(Expr::col("task_id").eq(Expr::value(id)))
+				// "Run now" starts an ordinary Run of the person who clicked it.
+				.and_where(Expr::col("started_by").is_null())
 				.limit(1)
 				.to_string(PostgresQueryBuilder),
 		)
