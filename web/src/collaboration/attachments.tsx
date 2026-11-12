@@ -1,9 +1,10 @@
 import { Button } from "../components/ui/button";
 import { useEffect, useState } from "react";
 import { Alert, Loading } from "../components/patterns";
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, Eye, FileText } from "lucide-react";
 import {
+  channelAttachmentDescription,
   channelMessageHistory,
   getChannelAttachmentDownloadUrl,
 } from "../generated/aidash";
@@ -155,6 +156,9 @@ export function AttachmentCard({
           {attachmentWarningText(attachment.media_type, workspaceCopy[locale])}
         </p>
       )}
+      {attachment.media_type.startsWith("image/") && (
+        <ImageDescription workspace={workspace} attachment={attachment} />
+      )}
       {error && <Alert className="mt-1">{error}</Alert>}
       {preview && (
         <AttachmentPreview
@@ -164,6 +168,89 @@ export function AttachmentCard({
         />
       )}
     </>
+  );
+}
+
+/** An image's Image Description and index state; only its writer can save. */
+function ImageDescription({
+  workspace,
+  attachment,
+}: {
+  workspace: string;
+  attachment: ChannelAttachment;
+}) {
+  const { locale } = useI18n();
+  const words = workspaceCopy[locale];
+  const client = useQueryClient();
+  const [editing, setEditing] = useState(false),
+    [text, setText] = useState(attachment.description ?? ""),
+    [saving, setSaving] = useState(false),
+    [error, setError] = useState("");
+  const state = attachment.index_state as
+    | keyof typeof words.indexState
+    | null
+    | undefined;
+  async function save() {
+    if (!text.trim()) return;
+    setSaving(true);
+    setError("");
+    try {
+      await channelAttachmentDescription(workspace, attachment.id, {
+        description: text.trim(),
+      });
+      setEditing(false);
+      await client.invalidateQueries({
+        queryKey: ["channel-history", workspace],
+      });
+    } catch (reason) {
+      setError(
+        `${words.imageDescriptionFailed} ${reason instanceof Error ? reason.message : String(reason)}`,
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+  return (
+    <div className="mt-1 grid max-w-md gap-1 text-xs">
+      {editing ? (
+        <form
+          className="flex items-center gap-1"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void save();
+          }}
+        >
+          <input
+            className="h-6 min-w-0 flex-1 rounded-sm border border-border bg-background px-2"
+            maxLength={2000}
+            value={text}
+            disabled={saving}
+            aria-label={`${words.imageDescription}: ${attachment.filename}`}
+            onChange={(event) => setText(event.target.value)}
+          />
+          <Button size="sm" variant="outline" type="submit" disabled={saving}>
+            {words.saveImageDescription}
+          </Button>
+        </form>
+      ) : (
+        <p className="flex items-start gap-2 text-muted-foreground">
+          {attachment.description && <span>{attachment.description}</span>}
+          <button
+            type="button"
+            className="shrink-0 text-faint underline-offset-2 hover:text-foreground hover:underline"
+            onClick={() => setEditing(true)}
+          >
+            {words.editImageDescription}
+          </button>
+        </p>
+      )}
+      {state && words.indexState[state] && (
+        <span className="text-faint" data-index-state={state}>
+          {words.indexState[state]}
+        </span>
+      )}
+      {error && <Alert>{error}</Alert>}
+    </div>
   );
 }
 

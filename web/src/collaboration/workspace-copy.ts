@@ -43,6 +43,18 @@ export const workspaceCopy = {
     invalidAttachment:
       "添付できるのは空でない8 MiB以下のファイル（最大8件）です。",
     removeAttachment: "添付を削除",
+    imageDescription: "画像の説明",
+    imageDescriptionPlaceholder:
+      "画像の説明（任意）: 画像を見られない人やエージェントの検索に使われます",
+    editImageDescription: "説明を編集",
+    saveImageDescription: "説明を保存",
+    imageDescriptionFailed: "説明を保存できませんでした。",
+    indexState: {
+      pending: "索引待ち",
+      indexed: "索引済み",
+      unsupported: "索引できません",
+      failed: "索引に失敗",
+    },
     uploading: "アップロード中…",
     attachmentError: "添付できませんでした。ファイルは保持しています。",
     attachmentUnreadable:
@@ -115,6 +127,18 @@ export const workspaceCopy = {
       "Up to 8 files, 8 MiB each. You can send attachments without text.",
     invalidAttachment: "Choose up to 8 non-empty files of 8 MiB or less.",
     removeAttachment: "Remove attachment",
+    imageDescription: "Image Description",
+    imageDescriptionPlaceholder:
+      "Describe the image (optional); search uses it for people and agents who cannot see it",
+    editImageDescription: "Edit description",
+    saveImageDescription: "Save description",
+    imageDescriptionFailed: "The description could not be saved.",
+    indexState: {
+      pending: "Index pending",
+      indexed: "Indexed",
+      unsupported: "Not indexable",
+      failed: "Indexing failed",
+    },
     uploading: "Uploading…",
     attachmentError: "Upload failed. Your files have been kept.",
     attachmentUnreadable: "The agents in this Workspace cannot read this file.",

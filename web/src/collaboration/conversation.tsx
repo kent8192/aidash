@@ -67,7 +67,13 @@ import {
   PopoverTrigger,
 } from "../components/ui/popover";
 
-type DraftFile = { key: string; file: File; uploaded?: ChannelAttachment };
+type DraftFile = {
+  key: string;
+  file: File;
+  uploaded?: ChannelAttachment;
+  /** The sender's Image Description of an image, sent with its upload. */
+  description?: string;
+};
 type Draft = { text: string; files: DraftFile[] };
 type Drafts = Record<string, Draft>;
 const emptyDraft: Draft = { text: "", files: [] };
@@ -409,10 +415,14 @@ function ConversationFeed({
         let uploaded = entry.uploaded;
         if (!uploaded) {
           setUploading(true);
+          const description = entry.description?.trim();
           uploaded = await channelAttachmentUpload(workspace, entry.file, {
             filename: entry.file.name,
             media_type: entry.file.type || "application/octet-stream",
             idempotency_key: entry.key,
+            ...(description && entry.file.type.startsWith("image/")
+              ? { description }
+              : {}),
           });
           updateDraft((current) => ({
             ...current,
@@ -918,6 +928,29 @@ function ConversationFeed({
                             <X className="size-3" />
                           </button>
                         </span>
+                        {entry.file.type.startsWith("image/") && (
+                          <input
+                            className="mt-1 block h-6 w-full max-w-sm rounded-sm border border-border bg-background px-2 text-[11px]"
+                            maxLength={2000}
+                            disabled={busy || !!entry.uploaded}
+                            value={entry.description ?? ""}
+                            placeholder={words.imageDescriptionPlaceholder}
+                            aria-label={`${words.imageDescription}: ${entry.file.name}`}
+                            onChange={(event) =>
+                              updateDraft((current) => ({
+                                ...current,
+                                files: current.files.map((file) =>
+                                  file.key === entry.key
+                                    ? {
+                                        ...file,
+                                        description: event.target.value,
+                                      }
+                                    : file,
+                                ),
+                              }))
+                            }
+                          />
+                        )}
                         {entry.uploaded?.no_assigned_agent_can_read && (
                           <p className="text-xs text-warning">
                             {attachmentWarningText(
