@@ -47,7 +47,10 @@ impl WorkerLeases for Leases {
 		self.store
 			.renew_lease(&claimed(), run, token, seconds)
 			.await
-			.map_err(Into::into)
+			.map_err(|error| {
+				self.store.recovery_cursors.outage.note(&error);
+				error.into()
+			})
 	}
 	fn transient(&self, error: &Error) -> bool {
 		matches!(

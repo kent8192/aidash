@@ -126,8 +126,10 @@ pub(crate) async fn may_decline_run(
 	};
 	let own =
 		grant.tenant == access.identity.tenant && grant.root_subject == access.identity.subject;
+	let workspace = access.workspace(run.workspace_id).await?;
+	let previous_context = std::mem::replace(&mut access.context, workspace.attributes);
 	let resource = access.resource("run", run.id, serde_json::json!({}));
-	access
+	let result = access
 		.decide(
 			&resource,
 			if own {
@@ -136,7 +138,9 @@ pub(crate) async fn may_decline_run(
 				"run.decline_call"
 			},
 		)
-		.await
+		.await;
+	access.context = previous_context;
+	result
 }
 
 #[async_trait]

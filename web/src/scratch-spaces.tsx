@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { bytesFromGiB, millisFromCores } from "./scratch-settings";
+import {
+  bytesFromGiB,
+  millisFromCores,
+  loadScratchSpaces,
+} from "./scratch-settings";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { ApiError, dashboardContext, transportGeneration } from "./transport";
@@ -348,11 +352,18 @@ export function ScratchSpacesSettings({ focus }: { focus?: string }) {
     queryKey: [
       "scratch-spaces",
       node,
+      focus,
       dashboardContext(),
       transportGeneration(),
     ],
     enabled: !!node,
-    queryFn: () => scratchList({ node: node ?? "" }),
+    queryFn: () =>
+      loadScratchSpaces(
+        node ?? "",
+        focus,
+        () => scratchList({ node: node ?? "" }),
+        scratchRead,
+      ),
   });
   const limits = useQuery({
     queryKey: [
@@ -364,14 +375,14 @@ export function ScratchSpacesSettings({ focus }: { focus?: string }) {
     enabled: !!node,
     queryFn: () => scratchLimits({ node: node ?? "" }),
   });
-  const space = list.data?.find((value) => value.id === id);
+  const space = list.data?.spaces.find((value) => value.id === id);
   const section = useRef<HTMLElement>(null);
   // Scroll only once the settings form is rendered, or the page is still too
   // short to bring the section to the top.
   const focused =
     !!focus &&
     !!limits.data &&
-    !!list.data?.some((value) => value.id === focus);
+    !!list.data?.spaces.some((value) => value.id === focus);
   useEffect(() => {
     if (focused) section.current?.scrollIntoView({ block: "start" });
   }, [focused]);
@@ -406,7 +417,7 @@ export function ScratchSpacesSettings({ focus }: { focus?: string }) {
       <Field label={t("scratchChoose")}>
         <NativeSelect value={id} onChange={(e) => setId(e.target.value)}>
           <option value="">{t("scratchChoose")}</option>
-          {list.data?.map((s) => (
+          {list.data?.spaces.map((s) => (
             <option key={s.id} value={s.id}>
               {s.name} · {s.id.slice(0, 8)}
             </option>
@@ -415,6 +426,9 @@ export function ScratchSpacesSettings({ focus }: { focus?: string }) {
       </Field>
       {(list.isError || limits.isError) && (
         <Notice role="alert">{t("scratchLoadError")}</Notice>
+      )}
+      {list.data?.unavailable && id === focus && (
+        <Notice role="alert">{t("scratchUnavailable")}</Notice>
       )}
       {space?.expired && <Notice>{t("scratchExpired")}</Notice>}
       {space && limits.data && (

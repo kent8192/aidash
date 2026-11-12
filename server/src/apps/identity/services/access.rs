@@ -282,7 +282,10 @@ enum Scope {
 pub(crate) struct Access {
 	pub marketplace_audit: Option<serde_json::Value>,
 	pub core_gc_complete: bool,
-	pub(super) remote_read_cache: std::collections::BTreeMap<(Uuid, String), bool>,
+	pub(super) remote_read_cache: std::collections::BTreeMap<
+		(Uuid, String),
+		aidash_application::ports::federation::registry_reads::RemoteReads,
+	>,
 	/// Nodes that did not answer a check within this authority (#751). They
 	/// are not asked again, and no negative verdict is kept while any is set.
 	pub(super) unavailable_peers: std::collections::BTreeSet<String>,
@@ -366,7 +369,10 @@ pub(crate) struct PublicationContext {
 	approved_catalog: std::collections::BTreeSet<(String, String)>,
 	cached_runs: std::collections::BTreeMap<(Uuid, Uuid), bool>,
 	cached_humans: std::collections::BTreeMap<Uuid, bool>,
-	remote_read_cache: std::collections::BTreeMap<(Uuid, String), bool>,
+	remote_read_cache: std::collections::BTreeMap<
+		(Uuid, String),
+		aidash_application::ports::federation::registry_reads::RemoteReads,
+	>,
 	/// The reader's silent Nodes and its own denial (#751): a mark made under
 	/// the publisher's identity must never name a Node to the reader.
 	unavailable_peers: std::collections::BTreeSet<String>,
@@ -1643,11 +1649,18 @@ impl NativeAccess {
 	pub(crate) fn reach(&self) -> crate::apps::federation::remote::services::wire::Reach {
 		self.access.reach()
 	}
-	pub(crate) fn cached_remote_read(&self, run: Uuid) -> Option<bool> {
+	pub(crate) fn cached_remote_read(
+		&self,
+		run: Uuid,
+	) -> Option<aidash_application::ports::federation::registry_reads::RemoteReads> {
 		self.access.cached_remote_read(run)
 	}
-	pub(crate) fn remember_remote_read(&mut self, run: Uuid, visible: bool) {
-		self.access.remember_remote_read(run, visible);
+	pub(crate) fn remember_remote_read(
+		&mut self,
+		run: Uuid,
+		reads: aidash_application::ports::federation::registry_reads::RemoteReads,
+	) {
+		self.access.remember_remote_read(run, reads);
 	}
 	pub(crate) fn peer_unavailable(&self, node: &str) -> bool {
 		self.access.peer_unavailable(node)
@@ -1667,19 +1680,28 @@ impl Access {
 			self.tx.distribution_hold(),
 		)
 	}
-	pub(crate) fn cached_remote_read(&self, run: Uuid) -> Option<bool> {
+	pub(crate) fn cached_remote_read(
+		&self,
+		run: Uuid,
+	) -> Option<aidash_application::ports::federation::registry_reads::RemoteReads> {
 		self.remote_read_cache
 			.get(&(run, self.authority_context()))
-			.copied()
+			.cloned()
 	}
-	pub(crate) fn remember_remote_read(&mut self, run: Uuid, visible: bool) {
+	pub(crate) fn remember_remote_read(
+		&mut self,
+		run: Uuid,
+		reads: aidash_application::ports::federation::registry_reads::RemoteReads,
+	) {
 		// A refusal reached while a Node did not answer may be that Node's
 		// silence, so it is asked again and not remembered (#751).
-		if !visible && !self.unavailable_peers.is_empty() {
+		if reads != aidash_application::ports::federation::registry_reads::RemoteReads::Visible
+			&& !self.unavailable_peers.is_empty()
+		{
 			return;
 		}
 		self.remote_read_cache
-			.insert((run, self.authority_context()), visible);
+			.insert((run, self.authority_context()), reads);
 	}
 	pub(crate) fn peer_unavailable(&self, node: &str) -> bool {
 		self.unavailable_peers.contains(node)

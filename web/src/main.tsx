@@ -46,7 +46,31 @@ const Configuration = lazy(() =>
   })),
 );
 
-import type { TenantState, HumanRequest } from "./types";
+import type { TenantState, HumanRequest, Workspace } from "./types";
+import {
+  continuation,
+  emptyPages,
+  mergeWindow,
+  olderRows,
+  uniqueById,
+  type WindowPages,
+} from "./window-pages";
+
+const noWorkspaces: Workspace[] = [];
+
+/** One page of a Node's pending Human Requests (`GET /api/human-requests`). */
+async function readHumanPage(
+  node: string | undefined,
+  cursor: string,
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams({ cursor });
+  if (node) params.set("node", node);
+  return (await (
+    await authenticatedFetch(`/api/human-requests?${params}`, { signal })
+  ).json()) as { items: HumanRequest[]; next_cursor: string | null };
+}
+const noHumanRequests: HumanRequest[] = [];
 import type { Selection } from "./collaboration/details";
 const OperationsDialog = lazy(() =>
   import("./collaboration/details").then((module) => ({
@@ -337,56 +361,165 @@ function Dashboard({
     enabled: connected && (administratorContext || !remembered.pending),
     refetchInterval: 60_000,
   });
-  const humanKey = `${remembered.selected?.name ?? ""}:${state.dataUpdatedAt}`;
-  const [humanPages, setHumanPages] = useState<{
-    key: string;
-    items: HumanRequest[];
-    cursor: string | null;
-    loading: boolean;
-    error: boolean;
-  }>({ key: "", items: [], cursor: null, loading: false, error: false });
-  const humanPage =
-    humanPages.key === humanKey
-      ? humanPages
-      : {
-          key: humanKey,
-          items: [],
-          cursor: state.data?.next_cursors.human_requests ?? null,
-          loading: false,
-          error: false,
-        };
-  const olderHumans = humanPage.items;
-  const humanCursor = humanPage.cursor;
-  const humanLoading = humanPage.loading;
-  const humanError = humanPage.error;
-  const loadOlderHumans = async () => {
-    if (!humanCursor || humanLoading) return;
-    setHumanPages({ ...humanPage, loading: true, error: false });
+  // "Show more" pages beyond the Workspace and pending Human Request windows
+  // of `/api/state` (#664) belong to one Node: a refresh merges them with the
+  // fresh window instead of dropping them, and only a Node change resets them.
+  const pagesKey = `${context ?? ""}:${remembered.selected?.name ?? ""}`;
+  const [workspacePages, setWorkspacePages] = useState<WindowPages<Workspace>>(
+    () => emptyPages(""),
+  );
+  const workspacePage =
+    workspacePages.key === pagesKey
+      ? workspacePages
+      : emptyPages<Workspace>(pagesKey);
+  const workspaceWindowCursor = state.data?.next_cursors.workspaces ?? null;
+  const olderWorkspaces =
+    (workspacePages.key === pagesKey &&
+      olderRows(workspacePages, workspaceWindowCursor)) ||
+    noWorkspaces;
+  const workspaceCursor = continuation(workspacePage, workspaceWindowCursor);
+  const loadMoreWorkspaces = async () => {
+    if (!workspaceCursor || workspacePage.loading) return;
+    const key = pagesKey;
+    const read = workspacePage.read;
+    setWorkspacePages({ ...workspacePage, loading: true, error: false });
     try {
-      const params = new URLSearchParams({ cursor: humanCursor });
+      const params = new URLSearchParams({ cursor: workspaceCursor });
       if (remembered.selected?.name)
         params.set("node", remembered.selected.name);
       const page = (await (
-        await authenticatedFetch(`/api/human-requests?${params}`)
-      ).json()) as { items: HumanRequest[]; next_cursor: string | null };
-      setHumanPages((old) =>
-        old.key === humanKey
-          ? {
-              ...old,
-              items: [...old.items, ...page.items],
-              cursor: page.next_cursor,
-              loading: false,
-            }
-          : old,
+        await authenticatedFetch(`/api/workspaces?${params}`)
+      ).json()) as { items: Workspace[]; next_cursor: string | null };
+      setWorkspacePages((old) =>
+        old.key !== key
+          ? old
+          : old.read !== read
+            ? { ...old, loading: false }
+            : {
+                ...old,
+                items: uniqueById([...old.items, ...page.items]),
+                read: read + 1,
+                cursor: page.next_cursor,
+                loading: false,
+              },
       );
     } catch {
-      setHumanPages((old) =>
-        old.key === humanKey ? { ...old, error: true, loading: false } : old,
+      setWorkspacePages((old) =>
+        old.key === key ? { ...old, loading: false, error: true } : old,
       );
     }
   };
+  const [humanPages, setHumanPages] = useState<WindowPages<HumanRequest>>(() =>
+    emptyPages(""),
+  );
+  const humanPage =
+    humanPages.key === pagesKey
+      ? humanPages
+      : emptyPages<HumanRequest>(pagesKey);
+  const humanWindowCursor = state.data?.next_cursors.human_requests ?? null;
+  const olderHumans =
+    (humanPages.key === pagesKey && olderRows(humanPages, humanWindowCursor)) ||
+    noHumanRequests;
+  const humanCursor = continuation(humanPage, humanWindowCursor);
+  const humanLoading = humanPage.loading;
+  const humanError = humanPage.error;
+  // Pages "show more" asked for in this Node, one in flight included; a
+  // refresh re-reads that many (see below).
+  const humanDepth = useRef({ key: "", depth: 0 });
+  const loadOlderHumans = async () => {
+    if (!humanCursor || humanLoading) return;
+    const key = pagesKey;
+    const { read, cursor } = humanPage;
+    // The depth counts this page at once, so a refresh that re-reads the
+    // pages while it is in flight reads it too.
+    humanDepth.current = { key, depth: read + 1 };
+    setHumanPages({ ...humanPage, loading: true, error: false });
+    try {
+      const page = await readHumanPage(remembered.selected?.name, humanCursor);
+      setHumanPages((old) =>
+        old.key !== key
+          ? old
+          : old.read !== read || old.cursor !== cursor
+            ? { ...old, loading: false }
+            : {
+                ...old,
+                items: uniqueById([...old.items, ...page.items]),
+                read: read + 1,
+                cursor: page.next_cursor,
+                loading: false,
+              },
+      );
+    } catch {
+      setHumanPages((old) =>
+        old.key === key ? { ...old, error: true, loading: false } : old,
+      );
+    }
+  };
+  // The pending list is how the dashboard learns that a request was answered:
+  // a request leaves it once answered. Every fresh window therefore re-reads
+  // as many older pages as were loaded, starting at the window's own cursor,
+  // and replaces the old ones, so answered requests drop out and requests
+  // that slid out of the newest window are not skipped.
+  const selectedNode = remembered.selected?.name;
+  useEffect(() => {
+    const key = pagesKey;
+    const { depth } =
+      humanDepth.current.key === key ? humanDepth.current : { depth: 0 };
+    if (!state.dataUpdatedAt || depth === 0) return;
+    const controller = new AbortController();
+    void (async () => {
+      const items: HumanRequest[] = [];
+      let cursor = humanWindowCursor;
+      let read = 0;
+      try {
+        while (cursor && read < depth) {
+          const page = await readHumanPage(
+            selectedNode,
+            cursor,
+            controller.signal,
+          );
+          items.push(...page.items);
+          cursor = page.next_cursor;
+          read += 1;
+        }
+      } catch {
+        if (!controller.signal.aborted)
+          setHumanPages((old) =>
+            old.key === key ? { ...old, error: true } : old,
+          );
+        return;
+      }
+      if (controller.signal.aborted) return;
+      setHumanPages((old) =>
+        old.key === key
+          ? { ...old, items: uniqueById(items), read, cursor, error: false }
+          : old,
+      );
+    })();
+    return () => controller.abort();
+    // A fresh window, not each render, starts a re-read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.dataUpdatedAt, pagesKey, selectedNode]);
   // State is scoped to the selected Node.
-  const projected = state.isError ? undefined : state.data;
+  const projected = useMemo(() => {
+    const fresh = state.isError ? undefined : state.data;
+    if (!fresh) return fresh;
+    return {
+      ...fresh,
+      workspaces: mergeWindow(fresh.workspaces, olderWorkspaces),
+      next_cursors: {
+        ...fresh.next_cursors,
+        workspaces: workspaceCursor,
+        human_requests: humanCursor,
+      },
+    };
+  }, [
+    state.isError,
+    state.data,
+    olderWorkspaces,
+    workspaceCursor,
+    humanCursor,
+  ]);
   const selectedWorkspace = useQuery({
     queryKey: ["workspace", route.channel],
     queryFn: () => workspaceGet(route.channel),
@@ -449,14 +582,7 @@ function Dashboard({
       everything
         ? {
             ...nodeView(everything, current),
-            human_requests: [
-              ...new Map(
-                [...everything.human_requests, ...olderHumans].map((row) => [
-                  row.id,
-                  row,
-                ]),
-              ).values(),
-            ],
+            human_requests: mergeWindow(everything.human_requests, olderHumans),
           }
         : undefined,
     [everything, current, olderHumans],
@@ -1028,6 +1154,12 @@ function Dashboard({
           deploymentAdministrator={deploymentAdministrator}
           streamStatus={administratorContext ? "live" : streamStatus}
           decisions={requests.filter((item) => item.request.response === null)}
+          workspaceMore={{
+            available: workspaceCursor !== null,
+            loading: workspacePage.loading,
+            error: workspacePage.error,
+            load: () => void loadMoreWorkspaces(),
+          }}
           humanMore={{
             available: humanCursor !== null,
             loading: humanLoading,

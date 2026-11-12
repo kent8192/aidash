@@ -455,6 +455,9 @@ pub struct RecoveryState {
 	/// resume; people never read it, only whether they may decline.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub paused_call: Option<PausedCall>,
+	/// Unassigned Tasks this Run abandoned before it could finish.
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub early_abandoned_tasks: Vec<crate::unassigned::UnassignedTask>,
 	/// Calls a person declined, kept until the worker has answered them. Separate from
 	/// `paused_call`: an earlier sibling of a Tool Batch can pause the Run again first.
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -497,6 +500,9 @@ pub struct PausedCall {
 	pub replay_safe: bool,
 	pub tool: String,
 	pub kind: crate::tool::RefusalKind,
+	/// Exact input at the authority check; absent on pauses saved by older workers.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub tool_call: Option<crate::tool::RefusedToolCall>,
 }
 /// What a person is offered to decline: the call by its key, the tool, and the kind of refusal.
 /// Never the action, the subject or the receiver's own sentence.
