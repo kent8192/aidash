@@ -243,6 +243,7 @@ async fn restored_authority_does_not_rebind_old_work_and_manual_resume_retains_i
 		Err(crate::Error::Forbidden)
 	));
 	identity.http_session = Some(crate::authorization::identity::HttpSession {
+		recheck: aidash_application::ports::accounts::Recheck::Online,
 		id: Uuid::new_v4(),
 		provider_session: Some(online.session),
 		common_authority: Some(online.clone()),

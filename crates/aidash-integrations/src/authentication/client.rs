@@ -38,6 +38,7 @@ pub struct Client {
 	product_client_id: String,
 	cache_ttl: Duration,
 	origin_cache: Arc<tokio::sync::Mutex<HashMap<OriginKey, Instant>>>,
+	interactive_cache: Arc<tokio::sync::Mutex<HashMap<(Uuid, Uuid), Instant>>>,
 }
 fn rpc_error(status: tonic::Status) -> Error {
 	match status.code() {
@@ -131,6 +132,7 @@ impl Client {
 			product_client_id: settings.product_client_id,
 			cache_ttl: Duration::ZERO,
 			origin_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+			interactive_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
 		})
 	}
 	pub fn with_validity_cache_seconds(mut self, seconds: u64) -> Self {
@@ -138,6 +140,28 @@ impl Client {
 		self
 	}
 	pub async fn interactive(&self, identity: Uuid, session: Uuid) -> Result<ValidityResponse> {
+		let mut cache = self.interactive_cache.lock().await;
+		let checked = Instant::now();
+		let response = self.interactive_online(identity, session).await?;
+		if !self.cache_ttl.is_zero() {
+			cache.retain(|_, at| checked.duration_since(*at) < self.cache_ttl);
+			cache.insert((identity, session), checked);
+		}
+		Ok(response)
+	}
+	pub async fn forget_session(&self, identity: Uuid, session: Uuid) {
+		self.interactive_cache
+			.lock()
+			.await
+			.remove(&(identity, session));
+	}
+	pub async fn forget_identity(&self, identity: Uuid) {
+		self.interactive_cache
+			.lock()
+			.await
+			.retain(|(id, _), _| *id != identity);
+	}
+	async fn interactive_online(&self, identity: Uuid, session: Uuid) -> Result<ValidityResponse> {
 		let response = AuthenticationValidityClient::new(self.channel.clone())
 			.validate_interactive(ValidateInteractiveRequest {
 				external_identity_id: identity.to_string(),
@@ -180,6 +204,29 @@ impl Authority for Client {
 		self.interactive(source_identity, product_session)
 			.await
 			.map(|_| ())
+	}
+	async fn validate_interactive_within_t(
+		&self,
+		source_identity: Uuid,
+		product_session: Uuid,
+	) -> Result<()> {
+		if self.cache_ttl.is_zero() {
+			return self
+				.interactive(source_identity, product_session)
+				.await
+				.map(|_| ());
+		}
+		let mut cache = self.interactive_cache.lock().await;
+		let checked = Instant::now();
+		cache.retain(|_, at| checked.duration_since(*at) < self.cache_ttl);
+		let key = (source_identity, product_session);
+		if cache.contains_key(&key) {
+			return Ok(());
+		}
+		self.interactive_online(source_identity, product_session)
+			.await?;
+		cache.insert(key, checked);
+		Ok(())
 	}
 	async fn validate_origin(&self, source_identity: Uuid) -> Result<()> {
 		self.origin_binding(source_identity).await.map(|_| ())

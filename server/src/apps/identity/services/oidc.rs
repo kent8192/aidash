@@ -253,13 +253,26 @@ async fn session_record_from_headers(
 }
 
 pub async fn session_from_headers(f: &Federation, headers: &HeaderMap) -> Result<BrowserSession> {
+	session_from_headers_with_recheck(
+		f,
+		headers,
+		aidash_application::ports::accounts::Recheck::Online,
+	)
+	.await
+}
+
+async fn session_from_headers_with_recheck(
+	f: &Federation,
+	headers: &HeaderMap,
+	recheck: aidash_application::ports::accounts::Recheck,
+) -> Result<BrowserSession> {
 	let session =
 		if let Some(token) = crate::apps::identity::repositories::desktop::access_token(headers) {
 			crate::apps::identity::repositories::desktop::session_record(f, token).await?
 		} else {
 			session_record_from_headers(f, headers).await?
 		};
-	validate_session_identity(f, session).await
+	validate_session_identity_with_recheck(f, session, recheck).await
 }
 
 pub(crate) async fn browser_session_from_headers(
@@ -273,6 +286,19 @@ pub(crate) async fn browser_session_from_headers(
 pub(crate) async fn validate_session_identity(
 	f: &Federation,
 	session: BrowserSession,
+) -> Result<BrowserSession> {
+	validate_session_identity_with_recheck(
+		f,
+		session,
+		aidash_application::ports::accounts::Recheck::Online,
+	)
+	.await
+}
+
+async fn validate_session_identity_with_recheck(
+	f: &Federation,
+	session: BrowserSession,
+	recheck: aidash_application::ports::accounts::Recheck,
 ) -> Result<BrowserSession> {
 	let pool = &f.store.pool;
 	let identity = pool
@@ -288,7 +314,7 @@ pub(crate) async fn validate_session_identity(
 			.and_then(|sid| Uuid::parse_str(sid).ok())
 			.ok_or(Error::Unauthorized)?;
 		authority
-			.validate_interactive(session.identity_id(), remote_session)
+			.check_interactive(session.identity_id(), remote_session, recheck)
 			.await?;
 	}
 	account_valid(f, identity).await?;
@@ -358,6 +384,7 @@ fn http_session(
 ) -> identity::HttpSession {
 	identity::HttpSession {
 		id: session.id,
+		recheck: aidash_application::ports::accounts::Recheck::Online,
 		provider_session: session
 			.provider_sid
 			.as_deref()
@@ -376,9 +403,39 @@ pub async fn actor_from_headers(
 	headers: &HeaderMap,
 	method: &Method,
 ) -> Result<(Actor, BrowserOrigin)> {
+	actor_from_headers_with_recheck(
+		f,
+		headers,
+		method,
+		aidash_application::ports::accounts::Recheck::Online,
+	)
+	.await
+}
+
+pub(crate) async fn stream_actor_from_headers(
+	f: &Federation,
+	headers: &HeaderMap,
+	method: &Method,
+) -> Result<(Actor, BrowserOrigin)> {
+	actor_from_headers_with_recheck(
+		f,
+		headers,
+		method,
+		aidash_application::ports::accounts::Recheck::WithinT,
+	)
+	.await
+}
+
+async fn actor_from_headers_with_recheck(
+	f: &Federation,
+	headers: &HeaderMap,
+	method: &Method,
+	recheck: aidash_application::ports::accounts::Recheck,
+) -> Result<(Actor, BrowserOrigin)> {
 	let config = required_config(f)?;
-	let session = session_from_headers(f, headers).await?;
+	let session = session_from_headers_with_recheck(f, headers, recheck).await?;
 	let mut http_session = http_session(config, &session);
+	http_session.recheck = recheck;
 	http_session.common_authority = f.config.common_auth.as_ref().map(|authority| {
 		authority.clone() as std::sync::Arc<dyn aidash_application::ports::accounts::Authority>
 	});
@@ -1148,6 +1205,17 @@ impl DashboardSessions {
 			return Err(Error::Forbidden);
 		}
 		DashboardSession::revoke(&f.store.pool, session.id, false).await?;
+		if let Some(authority) = &f.config.common_auth {
+			if let Some(remote) = session
+				.provider_sid
+				.as_deref()
+				.and_then(|sid| Uuid::parse_str(sid).ok())
+			{
+				authority
+					.forget_session(session.identity_id(), remote)
+					.await;
+			}
+		}
 		let mut response = Response::new(http::StatusCode::NO_CONTENT);
 		clear_cookie(&mut response, SESSION_COOKIE, config, true)?;
 		clear_cookie(&mut response, CSRF_COOKIE, config, false)?;
@@ -1186,6 +1254,9 @@ impl DashboardSessions {
 			authority.revoke_all_sessions(remote).await?;
 		}
 		DashboardSession::revoke(&f.store.pool, session.identity_id(), true).await?;
+		if let Some(authority) = &f.config.common_auth {
+			authority.forget_identity(session.identity_id()).await;
+		}
 		let mut response = Response::new(http::StatusCode::NO_CONTENT);
 		clear_cookie(&mut response, SESSION_COOKIE, config, true)?;
 		clear_cookie(&mut response, CSRF_COOKIE, config, false)?;

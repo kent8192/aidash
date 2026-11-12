@@ -127,7 +127,11 @@ impl Watch<Delivery> for RunContext {
 		self.base.authority(false).await
 	}
 	async fn periodic_authority(&self) -> std::result::Result<(), Closed> {
-		if !self.base.browser_authorized().await {
+		if !self
+			.base
+			.browser_authorized(aidash_application::ports::accounts::Recheck::WithinT)
+			.await
+		{
 			return Err(Closed::Browser);
 		}
 		// Run-read and source revocation close an idle stream, not only the next frame.
@@ -153,7 +157,11 @@ impl Watch<Delivery> for RunContext {
 			match ReadLease::begin(&self.base.f.store).await {
 				Ok(visibility) => {
 					control.waiting_for_gate(&self.base.service, false);
-					if !self.base.browser_authorized().await {
+					if !self
+						.base
+						.browser_authorized(aidash_application::ports::accounts::Recheck::WithinT)
+						.await
+					{
 						return Err(Closed::Browser);
 					}
 					if !self.visible().await.map_err(|_| Closed::Authority)? {
@@ -223,7 +231,7 @@ impl Service {
 			store: f.store.clone(),
 			identity,
 		};
-		let context = RunContext {
+		let mut context = RunContext {
 			base: Context {
 				f,
 				scope,
@@ -253,6 +261,7 @@ impl Service {
 					.map_or(0, |first| first - 1),
 			}
 		};
+		context.base.admitted();
 		let control = Arc::new(Control::new(lease));
 		let (sender, pages) = mpsc::channel::<()>(1);
 		let reader = read_run(

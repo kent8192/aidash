@@ -135,6 +135,19 @@ async fn fresh_status_and_original_provenance_are_required_over_mtls() {
 	.unwrap()
 	.with_validity_cache_seconds(30);
 	client.validate_interactive(source, session).await.unwrap();
+	let before = calls.lock().unwrap().len();
+	client
+		.clone()
+		.validate_interactive_within_t(source, session)
+		.await
+		.unwrap();
+	assert_eq!(calls.lock().unwrap().len(), before);
+	client.forget_session(source, session).await;
+	client
+		.validate_interactive_within_t(source, session)
+		.await
+		.unwrap();
+	assert_eq!(calls.lock().unwrap().len(), before + 1);
 	client.validate_origin(source).await.unwrap();
 	let admitted = client.origin_binding(source).await.unwrap();
 	assert_eq!(admitted.suspension_epoch, Some(0));
@@ -230,11 +243,14 @@ async fn fresh_status_and_original_provenance_are_required_over_mtls() {
 		Err(Error::Forbidden)
 	));
 	assert_eq!(
-		&calls.lock().unwrap()[..2],
-		&[
-			(source.to_string(), session.to_string()),
-			(source.to_string(), String::new()),
-		]
+		calls.lock().unwrap()[0],
+		(source.to_string(), session.to_string())
+	);
+	assert!(
+		calls
+			.lock()
+			.unwrap()
+			.contains(&(source.to_string(), String::new()))
 	);
 	running.shutdown().await;
 	assert!(matches!(

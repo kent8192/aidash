@@ -190,13 +190,34 @@ struct Context {
 	service: Service,
 }
 impl Context {
-	async fn browser_authorized(&self) -> bool {
+	fn admitted(&mut self) {
+		if let Some(session) = &mut self.scope.identity.http_session {
+			session.recheck = aidash_application::ports::accounts::Recheck::WithinT;
+		}
+	}
+	async fn browser_authorized(
+		&self,
+		recheck: aidash_application::ports::accounts::Recheck,
+	) -> bool {
 		let Some(origin) = &self.browser else {
 			return true;
 		};
 		metrics::counter!("aidash_sse_browser_checks_total").increment(1);
-		match crate::dashboard_auth::actor_from_headers(&self.f, &self.headers, &Method::GET).await
-		{
+		let result = match recheck {
+			aidash_application::ports::accounts::Recheck::Online => {
+				crate::dashboard_auth::actor_from_headers(&self.f, &self.headers, &Method::GET)
+					.await
+			}
+			aidash_application::ports::accounts::Recheck::WithinT => {
+				crate::dashboard_auth::stream_actor_from_headers(
+					&self.f,
+					&self.headers,
+					&Method::GET,
+				)
+				.await
+			}
+		};
+		match result {
 			Ok((actor, current)) => {
 				current.identity_id == origin.identity_id
 					&& current.mapping_id == origin.mapping_id
@@ -213,7 +234,11 @@ impl Context {
 			.fetch_add(1, Ordering::Relaxed);
 		metrics::counter!("aidash_sse_authority_checks_total").increment(1);
 		self.scope.stream_authority(self.workspace).await?;
-		if browser && !self.browser_authorized().await {
+		if browser
+			&& !self
+				.browser_authorized(aidash_application::ports::accounts::Recheck::Online)
+				.await
+		{
 			return Err(Error::Unauthorized);
 		}
 		Ok(())
@@ -229,7 +254,10 @@ impl Watch<Event> for Context {
 		self.authority(false).await
 	}
 	async fn periodic_authority(&self) -> std::result::Result<(), Closed> {
-		if self.browser_authorized().await {
+		if self
+			.browser_authorized(aidash_application::ports::accounts::Recheck::WithinT)
+			.await
+		{
 			Ok(())
 		} else {
 			Err(Closed::Browser)
@@ -245,7 +273,10 @@ impl Watch<Event> for Context {
 			match ReadLease::begin(&self.f.store).await {
 				Ok(visibility) => {
 					control.waiting_for_gate(&self.service, false);
-					if !self.browser_authorized().await {
+					if !self
+						.browser_authorized(aidash_application::ports::accounts::Recheck::WithinT)
+						.await
+					{
 						return Err(Closed::Browser);
 					}
 					let scope = &self.scope;
@@ -319,7 +350,7 @@ impl Service {
 			store: f.store.clone(),
 			identity,
 		};
-		let context = Context {
+		let mut context = Context {
 			f,
 			scope,
 			browser,
@@ -328,6 +359,7 @@ impl Service {
 			service: self.clone(),
 		};
 		context.authority(true).await?;
+		context.admitted();
 		if cursor < 0 {
 			let _visibility = ReadLease::begin(&context.f.store).await?;
 			self.record_read(Reasons::INITIAL);

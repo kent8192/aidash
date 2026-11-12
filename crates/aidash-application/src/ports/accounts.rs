@@ -21,6 +21,26 @@ pub trait Authority: Send + Sync {
 		source_identity: Uuid,
 		product_session: Uuid,
 	) -> crate::Result<()>;
+	/// Only for the continued delivery of an already admitted stream.
+	async fn validate_interactive_within_t(
+		&self,
+		source_identity: Uuid,
+		product_session: Uuid,
+	) -> crate::Result<()> {
+		self.validate_interactive(source_identity, product_session)
+			.await
+	}
+	async fn check_interactive(
+		&self,
+		source: Uuid,
+		session: Uuid,
+		recheck: Recheck,
+	) -> crate::Result<()> {
+		match recheck {
+			Recheck::Online => self.validate_interactive(source, session).await,
+			Recheck::WithinT => self.validate_interactive_within_t(source, session).await,
+		}
+	}
 	async fn validate_origin(&self, source_identity: Uuid) -> crate::Result<()>;
 	/// Capture only for a newly admitted Run or explicit authorized manual resume.
 	async fn origin_binding(
