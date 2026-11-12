@@ -470,8 +470,6 @@ A Deployment Administrator can pause or cancel one Run this Deployment executes,
 
 A person can decide in advance which approvals their own Runs get without waiting for a Designated approver. Their Approval Mode and Approval Rules never approve more than the Tenant's policy lets that person approve in advance. Aidash records each approval they give under their name, with the rule or mode that gave it (ADR 0076).
 
-When the Designated approver of a pending Web disclosure, outbound request or Tool call is also the person at the root of the Run's delegation chain, the Thread offers the same approval card as the approvals list. Other participants are not offered that inline card. The decision uses the same choices and record; asking the Run to act is not itself an approval. The list and decision queue continue to offer the approval.
-
 These settings cover only Runs whose delegation chain starts at an enabled user subject of the Tenant and that execute on their home Node. They never cover a Run that arrived through Federation.
 
 Aidash decides each approval when the Run needs it, in this order:
@@ -528,6 +526,8 @@ The routes below read and change these settings. The `mine` routes and the Threa
 | PUT    | `/api/tenants/{tenant}/approval-decider`                     | Body: `expected_revision`, and `decider` or `null` to reset to the built-in. Needs `tenant.update`. |
 
 The GET and PUT routes for `approval-preferences/mine` and `approval-decider` accept an optional `node=<Node name>` query. The Node must belong to the Tenant and the caller must hold `node.use`; omitting it selects the Tenant's default Node. Mode availability and the Decider's `approved` status use that Node's Catalog Approval. The person's preferences and the chosen Decider remain settings for the whole Tenant. Thread mode availability uses the Thread's Workspace Node, and a worker uses its Run's Node.
+
+When the Designated approver of a pending Web disclosure, outbound request or Tool call is also the person at the root of the Run's delegation chain, the Thread offers the same approval card as the approvals list. Other participants are not offered that inline card. The decision uses the same choices and record; asking the Run to act is not itself an approval. The list and decision queue continue to offer the approval.
 
 ## Scoped conversations and human interaction
 
