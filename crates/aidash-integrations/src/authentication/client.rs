@@ -57,7 +57,12 @@ pub struct Client {
 	cache_ttl: Duration,
 	origin_cache: Cache<OriginKey>,
 	interactive_cache: Cache<(Uuid, Uuid)>,
+	/// The dashboard reads its session on every page load; the sign-in method
+	/// count is asked at most once per session per [`SIGN_IN_METHOD_COUNT_TTL`].
+	sign_in_method_counts: Arc<Mutex<HashMap<(Uuid, Uuid), (Instant, Option<u32>)>>>,
 }
+
+const SIGN_IN_METHOD_COUNT_TTL: Duration = Duration::from_secs(60 * 60);
 fn rpc_error(status: tonic::Status) -> Error {
 	match status.code() {
 		tonic::Code::Unauthenticated => Error::Unauthorized,
@@ -151,6 +156,7 @@ impl Client {
 			cache_ttl: Duration::ZERO,
 			origin_cache: Arc::new(Mutex::new(HashMap::new())),
 			interactive_cache: Arc::new(Mutex::new(HashMap::new())),
+			sign_in_method_counts: Arc::new(Mutex::new(HashMap::new())),
 		})
 	}
 	pub fn with_validity_cache_seconds(mut self, seconds: u64) -> Self {
@@ -206,10 +212,27 @@ impl Client {
 		self.interactive_read(identity, session, false).await
 	}
 	pub async fn sign_in_method_count(&self, identity: Uuid, session: Uuid) -> Result<Option<u32>> {
-		Ok(self
+		let now = Instant::now();
+		if let Some((at, count)) = self
+			.sign_in_method_counts
+			.lock()
+			.expect("sign-in method counts")
+			.get(&(identity, session))
+			&& now.duration_since(*at) < SIGN_IN_METHOD_COUNT_TTL
+		{
+			return Ok(*count);
+		}
+		let count = self
 			.interactive_read(identity, session, true)
 			.await?
-			.usable_sign_in_method_count)
+			.usable_sign_in_method_count;
+		let mut counts = self
+			.sign_in_method_counts
+			.lock()
+			.expect("sign-in method counts");
+		counts.retain(|_, (at, _)| now.duration_since(*at) < SIGN_IN_METHOD_COUNT_TTL);
+		counts.insert((identity, session), (now, count));
+		Ok(count)
 	}
 	async fn interactive_read(
 		&self,

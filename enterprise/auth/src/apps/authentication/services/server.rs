@@ -346,19 +346,27 @@ impl Authentication {
 	/// Read only linked methods owned by this account; unknown upstream status
 	/// suppresses the prompt rather than claiming a method is unusable.
 	pub(crate) async fn usable_sign_in_method_count(&self, account: Uuid) -> Result<Option<u32>> {
-		use reinhardt::db::orm::Model;
+		use reinhardt::db::orm::execution::convert_values;
+		use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query, QueryStatementBuilder};
+		// The dashboard asks on every session read, so the lookup uses the
+		// `auth_identity_first_account` index instead of decoding every identity.
 		let mut tx = self.store.scope().await?;
-		let rows = crate::models::IdentityRecord::objects()
-			.all()
-			.all_with_executor(tx.executor())
+		let (sql, args) = Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("auth_identities"))
+			.and_where(Expr::cust_with_values(
+				"document->>'first_account' = ?",
+				[account.to_string()],
+			))
+			.build(PostgresQueryBuilder);
+		let rows = tx
+			.executor()
+			.fetch_all(&sql, convert_values(args))
 			.await
 			.map_err(crate::store::unavailable)?;
-		let mut ids = Vec::new();
+		let mut ids = Vec::with_capacity(rows.len());
 		for row in rows {
-			let identity: ExternalIdentity = crate::store::decode(row.document.0)?;
-			if identity.first_account == Some(account) && identity.linked {
-				ids.push(identity.id);
-			}
+			ids.push(row.get::<Uuid>("id").map_err(crate::store::unavailable)?);
 		}
 		drop(tx);
 		let mut count = 0u32;
