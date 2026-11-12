@@ -1048,7 +1048,10 @@ impl<'a> Executor<'a> {
 		}
 		let reservation = match guard {
 			Some(guard) => match guard
-				.reserve_inference(token, summary_window, max_tokens, &request)
+				// Each physical summary call, a truncation retry included, is
+				// its own Usage Record: reserve it under its attempt, not the
+				// lease shared by every call of this step.
+				.reserve_inference(attempt.id, summary_window, max_tokens, &request)
 				.await
 			{
 				Ok(reservation) => reservation,

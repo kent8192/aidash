@@ -180,6 +180,8 @@ struct State {
 	summarizer_provider_limit: Option<u32>,
 	summarizer_window: usize,
 	reservations: Mutex<Vec<(usize, u32)>>,
+	/// Attempt identifiers of summary reservations, one per physical call.
+	summary_reservations: Mutex<Vec<Uuid>>,
 	summary_estimate_diagnostics: Option<Value>,
 	/// Provider scripts consumed one per inference; an empty queue answers at once.
 	scripts: Mutex<VecDeque<Vec<Step>>>,
@@ -1300,7 +1302,11 @@ impl ExecutionAuthority for Backend {
 		request: &ModelRequest,
 	) -> Result<Option<Box<dyn InferenceReservation>>> {
 		self.0.reservations.lock().unwrap().push((window, output));
-		assert!(token == self.0.token || matches!(request.context, ModelContext::Sampling(_)));
+		if request.response_format.is_some() {
+			self.0.summary_reservations.lock().unwrap().push(token);
+		} else {
+			assert!(token == self.0.token || matches!(request.context, ModelContext::Sampling(_)));
+		}
 		self.record("reservation.admit");
 		Ok(Some(Box::new(self.clone())))
 	}
@@ -1929,6 +1935,7 @@ fn fixture() -> Fixture {
 		summarizer_provider_limit: None,
 		summarizer_window: 128_000,
 		reservations: Mutex::new(vec![]),
+		summary_reservations: Mutex::new(vec![]),
 		summary_estimate_diagnostics: None,
 		scripts: Mutex::new(VecDeque::new()),
 		attempts: Mutex::new(vec![]),
@@ -3822,6 +3829,17 @@ async fn truncated_summary_retries_once_with_a_smaller_range(
 			.count(),
 		2
 	);
+	// Each physical summary call is reserved under its own attempt, never
+	// under the lease shared by the step.
+	let reserved = fixture.backend.0.summary_reservations.lock().unwrap();
+	assert_eq!(
+		*reserved,
+		attempts
+			.iter()
+			.map(|attempt| attempt.0.id)
+			.collect::<Vec<_>>()
+	);
+	assert!(!reserved.contains(&fixture.backend.0.token));
 }
 
 #[rstest]
