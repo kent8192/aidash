@@ -262,7 +262,9 @@ pub trait ToolOperations: Send + Sync {
 	/// Model-visible specifications of the Run's aliased tool Bindings, by alias,
 	/// exactly as dispatch advertises them (`bound_specification`).
 	async fn binding_specifications(&self) -> Result<BTreeMap<String, ToolSpec>>;
-	/// Intrinsic Subnode coordination tools present in this Run.
+	/// Intrinsic tools present in this Run: Subnode coordination tools, and
+	/// Journal retrieval tools once the Run has offloaded material or a
+	/// handed Journal range.
 	async fn intrinsic_subnode_specifications(&self) -> Result<BTreeMap<String, ToolSpec>> {
 		Ok(BTreeMap::new())
 	}

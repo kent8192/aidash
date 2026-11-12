@@ -30,7 +30,7 @@ pub fn operations() -> impl Iterator<Item = &'static str> {
 }
 
 /// Journal retrieval is seeded for later exposure after offloading.
-pub const JOURNAL_TOOLS: &[&str] = &["journal_search", "journal_read", "journal_query"];
+pub const JOURNAL_TOOLS: &[&str] = aidash_domain::context::journal_query::TOOLS;
 
 /// Select the Run's Journal capabilities from the Deployment's Runner configuration.
 pub fn journal_tools(has_runner: bool) -> &'static [&'static str] {
