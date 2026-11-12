@@ -131,4 +131,28 @@ pub trait ChannelScope: AttachmentObjects + Send {
 		workspace: Uuid,
 		ids: &[Uuid],
 	) -> Result<HashMap<Uuid, Vec<ChannelCitation>>>;
+	/// Replace the Image Description of an attachment its writer posted. The
+	/// words are embedded with the image, so an indexed image is queued again.
+	async fn describe_attachment(
+		&mut self,
+		_workspace: Uuid,
+		_id: Uuid,
+		_writer: &str,
+		_description: &str,
+	) -> Result<()> {
+		Err(crate::Error::Invalid(
+			"Image Descriptions are unavailable".into(),
+		))
+	}
+	/// Enter or refresh posted images in the Workspace index in this same
+	/// transaction, under the current authority. A Workspace without an index,
+	/// or an author who may not write to it, leaves the images unindexed.
+	async fn index_attachment_images(
+		&mut self,
+		_workspace: Uuid,
+		_message: Uuid,
+		_attachments: &[ChannelAttachment],
+	) -> Result<()> {
+		Ok(())
+	}
 }

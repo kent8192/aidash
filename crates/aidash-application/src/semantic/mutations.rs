@@ -69,6 +69,14 @@ pub fn validate_public_put(input: &Put) -> Result<()> {
 			"Working Area images are indexed through File publication".into(),
 		));
 	}
+	if matches!(
+		input.source,
+		aidash_domain::semantic::Source::AttachmentImage { .. }
+	) {
+		return Err(Error::Invalid(
+			"Thread Attachment images are indexed when they are posted".into(),
+		));
+	}
 	if input.key.starts_with("agent-memory:")
 		|| input.key.starts_with("memory-unit:")
 		|| matches!(input.source, aidash_domain::semantic::Source::Unit { .. })
@@ -178,15 +186,14 @@ pub async fn entries(
 		if !scope.permits(&entry, "semantic.read").await? {
 			continue;
 		}
-		let source = serde_json::from_value(entry.source.clone())?;
-		let source_visible =
-			if matches!(source, aidash_domain::semantic::Source::WorkingImage { .. }) {
-				scope.image_visible(workspace, &source).await?
-			} else if entry.deleted {
-				true
-			} else {
-				scope.source(workspace, &source).await?.is_some()
-			};
+		let source: aidash_domain::semantic::Source = serde_json::from_value(entry.source.clone())?;
+		let source_visible = if source.is_image() {
+			scope.image_visible(workspace, &source).await?
+		} else if entry.deleted {
+			true
+		} else {
+			scope.source(workspace, &source).await?.is_some()
+		};
 		if source_visible {
 			visible.push(entry);
 		}
@@ -225,13 +232,18 @@ pub async fn change(
 	if !scope.permits(&entry, action).await? || !scope.permits(&entry, "semantic.read").await? {
 		return Err(Error::Forbidden);
 	}
-	if matches!(
-		serde_json::from_value::<aidash_domain::semantic::Source>(entry.source.clone())?,
-		aidash_domain::semantic::Source::WorkingImage { .. }
-	) {
-		return Err(Error::Invalid(
-			"Working Area images are managed through File publication".into(),
-		));
+	match serde_json::from_value::<aidash_domain::semantic::Source>(entry.source.clone())? {
+		aidash_domain::semantic::Source::WorkingImage { .. } => {
+			return Err(Error::Invalid(
+				"Working Area images are managed through File publication".into(),
+			));
+		}
+		aidash_domain::semantic::Source::AttachmentImage { .. } => {
+			return Err(Error::Invalid(
+				"Thread Attachment images are managed through their attachment".into(),
+			));
+		}
+		_ => {}
 	}
 	if !delete
 		&& !entry.deleted
@@ -294,10 +306,9 @@ pub async fn history(
 				if !scope.permits(&entry, "semantic.read").await? {
 					continue;
 				}
-				let source = serde_json::from_value(entry.source.clone())?;
-				if matches!(source, aidash_domain::semantic::Source::WorkingImage { .. })
-					&& !scope.image_visible(workspace, &source).await?
-				{
+				let source: aidash_domain::semantic::Source =
+					serde_json::from_value(entry.source.clone())?;
+				if source.is_image() && !scope.image_visible(workspace, &source).await? {
 					continue;
 				}
 			}

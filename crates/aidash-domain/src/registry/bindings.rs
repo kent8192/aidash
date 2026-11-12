@@ -452,17 +452,28 @@ impl AgentBindings {
 				continue;
 			}
 			let mut target = QualifiedRef::builtin(node, operation);
+			// Mode 2 predates image retrieval and mode 4 predates Thread
+			// Attachment images (#622): each keeps the versions it pinned.
 			if mode == 1 || (mode == 3 && *operation != "workspace_read") {
 				target.version = "1.0.0".into();
-			} else if mode == 2 && *operation == "workspace_read" {
+			} else if mode == 2 && matches!(*operation, "workspace_read" | "workspace_message") {
 				target.version = "1.0.1".into();
-			} else if (mode == 0 || mode == 3)
-				&& *operation == "workspace_read"
-				&& let Some(binding) = self.bindings.iter().find(|b| {
-					b.target.id == target.id
-						&& b.target.registry_deployment == node
-						&& matches!(b.target.version.as_str(), "1.0.0" | "1.0.1" | "1.1.0")
-				}) {
+			} else if mode == 4 && *operation == "workspace_message" {
+				target.version = "1.0.1".into();
+			} else if mode == 4 && *operation == "workspace_search" {
+				target.version = "1.0.0".into();
+			}
+			let pinned: &[&str] = match *operation {
+				"workspace_read" if matches!(mode, 0 | 3 | 4) => &["1.0.0", "1.0.1", "1.1.0"],
+				"workspace_message" if mode == 0 => &["1.0.0", "1.0.1", "1.1.0"],
+				"workspace_search" if mode == 0 => &["1.0.0", "1.1.0"],
+				_ => &[],
+			};
+			if let Some(binding) = self.bindings.iter().find(|b| {
+				b.target.id == target.id
+					&& b.target.registry_deployment == node
+					&& pinned.contains(&b.target.version.as_str())
+			}) {
 				target = binding.target.clone();
 			}
 			let explicit = self
@@ -571,6 +582,9 @@ impl Entry {
 				&& !config
 					.normalize_mode(node, replacement, 3)
 					.is_ok_and(|expected| saved.bindings == expected)
+				&& !config
+					.normalize_mode(node, replacement, 4)
+					.is_ok_and(|expected| saved.bindings == expected)
 			{
 				return Err(Error::Invalid(
 					"Agent normalization differs from its immutable definition".into(),
@@ -647,9 +661,12 @@ impl QualifiedRef {
 		Self {
 			registry_deployment: node.into(),
 			id: format!("aidash.{operation}"),
-			version: if operation == "workspace_read" {
+			version: if matches!(
+				operation,
+				"workspace_read" | "workspace_search" | "workspace_message"
+			) {
 				"1.1.0"
-			} else if matches!(operation, "workspace_observe" | "workspace_message") {
+			} else if operation == "workspace_observe" {
 				"1.0.1"
 			} else {
 				"1.0.0"

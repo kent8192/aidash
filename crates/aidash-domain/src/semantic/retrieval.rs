@@ -16,10 +16,22 @@ pub struct ImageQuery {
 	pub expected_digest: String,
 }
 
+/// A Thread Attachment image used as a query. Only an attachment the named Run
+/// has already selected for its own inference qualifies (#622 decision 4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttachmentImageQuery {
+	pub run_id: Uuid,
+	pub message_id: Uuid,
+	pub attachment_id: Uuid,
+	pub expected_digest: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Search {
 	pub query: String,
 	pub image: Option<ImageQuery>,
+	pub attachment: Option<AttachmentImageQuery>,
 	pub agent: Option<String>,
 	pub metadata: Value,
 	pub limit: usize,
@@ -27,7 +39,18 @@ pub struct Search {
 }
 impl Search {
 	pub fn validate(&self, spec: &IndexingSpec) -> Result<()> {
-		if let Some(image) = &self.image {
+		if let Some(attachment) = &self.attachment {
+			if !self.query.is_empty()
+				|| self.image.is_some()
+				|| attachment.expected_digest.is_empty()
+				|| !spec
+					.embedding
+					.inputs
+					.contains(&super::EmbeddingInputKind::Image)
+			{
+				return Err(Error::Invalid("invalid semantic image query".into()));
+			}
+		} else if let Some(image) = &self.image {
 			if !self.query.is_empty()
 				|| image.generation <= 0
 				|| image.expected_digest.is_empty()

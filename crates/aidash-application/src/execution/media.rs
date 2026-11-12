@@ -16,6 +16,13 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+/// Whether opening this attachment gives the model its Image Description and
+/// message text instead of the image: an image, for a model whose Registry
+/// modalities do not include images (#622 decision 6).
+pub fn describes_instead(model: &ModelConfig, media_type: &str) -> bool {
+	media_type.starts_with("image/") && !model.modalities.iter().any(|item| item == "image")
+}
+
 /// Select the original format or a WAV rendition using the current route evidence.
 pub fn thread_attachment_wav(model: &ModelConfig, media_type: &str) -> Result<bool> {
 	if model.require_media_types([media_type]).is_ok()

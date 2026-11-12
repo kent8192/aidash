@@ -118,6 +118,13 @@ pub enum EmbeddingInput<'a> {
 		media_type: &'a str,
 		bytes: &'a [u8],
 	},
+	/// An image embedded together with its Image Description, so the words of
+	/// the description also find the image in the shared vector space.
+	DescribedImage {
+		text: &'a str,
+		media_type: &'a str,
+		bytes: &'a [u8],
+	},
 }
 
 impl EmbeddingInput<'_> {
@@ -125,15 +132,26 @@ impl EmbeddingInput<'_> {
 		config.validate_parameters()?;
 		let kind = match self {
 			Self::Text(_) => EmbeddingInputKind::Text,
-			Self::Image { .. } => EmbeddingInputKind::Image,
+			Self::Image { .. } | Self::DescribedImage { .. } => EmbeddingInputKind::Image,
 		};
 		if !config.inputs.contains(&kind) {
 			return Err(crate::Error::Invalid(
 				"embedding input modality is not supported".into(),
 			));
 		}
-		if let Self::Image { media_type, bytes } = self {
-			crate::provider::validate_image(media_type, bytes)?;
+		match self {
+			Self::Text(_) => {}
+			Self::Image { media_type, bytes } => {
+				crate::provider::validate_image(media_type, bytes)?;
+			}
+			Self::DescribedImage {
+				text,
+				media_type,
+				bytes,
+			} => {
+				indexing::validate_image_description(text)?;
+				crate::provider::validate_image(media_type, bytes)?;
+			}
 		}
 		Ok(())
 	}
@@ -141,23 +159,29 @@ impl EmbeddingInput<'_> {
 		match self {
 			Self::Text(text) => text.len(),
 			Self::Image { bytes, .. } => bytes.len(),
+			Self::DescribedImage { text, bytes, .. } => bytes.len().saturating_add(text.len()),
 		}
 	}
 	pub fn reservation_amount(&self) -> crate::Result<i64> {
 		match self {
 			Self::Text(text) => crate::generation::embedding::reservation_amount(text.len()),
-			Self::Image { media_type, bytes } => {
-				let size = crate::provider::image_token_allowance(bytes.len())
-					.and_then(|v| v.checked_add(media_type.len()))
-					.and_then(|v| v.checked_add(1024))
-					.and_then(|v| i64::try_from(v).ok())
-					.ok_or_else(|| {
-						crate::Error::Invalid("embedding input reservation overflow".into())
-					})?;
-				Ok(size)
-			}
+			Self::Image { media_type, bytes } => image_reservation(media_type, bytes, 0),
+			Self::DescribedImage {
+				text,
+				media_type,
+				bytes,
+			} => image_reservation(media_type, bytes, text.len()),
 		}
 	}
+}
+
+fn image_reservation(media_type: &str, bytes: &[u8], text: usize) -> crate::Result<i64> {
+	crate::provider::image_token_allowance(bytes.len())
+		.and_then(|v| v.checked_add(media_type.len()))
+		.and_then(|v| v.checked_add(text))
+		.and_then(|v| v.checked_add(1024))
+		.and_then(|v| i64::try_from(v).ok())
+		.ok_or_else(|| crate::Error::Invalid("embedding input reservation overflow".into()))
 }
 
 /// Result of one approved embedding request.
@@ -241,9 +265,22 @@ pub enum Source {
 		file_id: Uuid,
 		path: String,
 	},
+	/// An image Thread Attachment. Its bytes and Image Description stay with
+	/// the attachment, so the point holds neither.
+	AttachmentImage {
+		message_id: Uuid,
+		attachment_id: Uuid,
+	},
 }
 
 impl Source {
+	/// Image sources are disclosed only as pointers, never as text.
+	pub fn is_image(&self) -> bool {
+		matches!(
+			self,
+			Self::WorkingImage { .. } | Self::AttachmentImage { .. }
+		)
+	}
 	pub fn same_origin(&self, other: &Self) -> bool {
 		match (self, other) {
 			(Self::Memory { .. }, Self::Memory { .. }) => true,

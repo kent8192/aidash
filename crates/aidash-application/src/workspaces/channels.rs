@@ -29,6 +29,8 @@ pub struct AttachmentUpload<'a> {
 	pub media_type: &'a str,
 	pub idempotency_key: Uuid,
 	pub measurements: MediaMeasurements,
+	/// The uploader's Image Description, if any; only an image has one.
+	pub description: Option<&'a str>,
 }
 
 pub async fn thread(
@@ -121,6 +123,16 @@ pub async fn post(
 			.await?
 	};
 	let attachments = attach(scope, workspace, message.id, input.attachment_ids).await?;
+	// A posted image enters the Workspace index with the message, under the
+	// poster's authority (#622 decision 2).
+	if attachments
+		.iter()
+		.any(|attachment| attachment.media_type.starts_with("image/"))
+	{
+		scope
+			.index_attachment_images(workspace, message.id, &attachments)
+			.await?;
+	}
 	let root_thread = scope.root_thread(message.id).await?;
 	Ok(ChannelMessage {
 		message,
@@ -183,6 +195,9 @@ pub async fn upload(
 	content: &[u8],
 ) -> Result<ChannelAttachment> {
 	validate_attachment(input.filename, input.media_type, content)?;
+	if let Some(description) = input.description {
+		validate_attachment_description(input.media_type, description)?;
+	}
 	let uploader = scope.principal();
 	let digest = format!("{:x}", Sha256::digest(content));
 	let attachment = match scope
@@ -197,6 +212,7 @@ pub async fn upload(
 			if existing.sha256 != digest
 				|| existing.filename != input.filename
 				|| existing.media_type != input.media_type
+				|| existing.description.as_deref() != input.description
 				|| attachment_bytes(scope, &existing).await? != content
 			{
 				return Err(Error::Conflict(
@@ -237,6 +253,36 @@ async fn attachment_bytes(
 		return Err(Error::Conflict("OBJECT_INTEGRITY".into()));
 	}
 	Ok(bytes)
+}
+/// Write or replace an image's Image Description. Only the person or Agent who
+/// posted the image writes it (#622 decision 7); the indexed image follows.
+pub async fn describe(
+	scope: &mut dyn ChannelScope,
+	workspace: Uuid,
+	id: Uuid,
+	description: &str,
+) -> Result<ChannelAttachment> {
+	let attachment = scope
+		.attachment(workspace, id)
+		.await?
+		.ok_or_else(|| Error::NotFound("attachment unavailable".into()))?;
+	let message = attachment
+		.message_id
+		.ok_or_else(|| Error::NotFound("attachment unavailable".into()))?;
+	scope.message(workspace, message).await?;
+	if attachment.uploaded_by != scope.principal() {
+		return Err(Error::Forbidden);
+	}
+	validate_attachment_description(&attachment.media_type, description)?;
+	if attachment.description.as_deref() == Some(description) {
+		return Ok(attachment.metadata());
+	}
+	scope
+		.describe_attachment(workspace, id, &attachment.uploaded_by, description)
+		.await?;
+	let mut metadata = attachment.metadata();
+	metadata.description = Some(description.to_owned());
+	Ok(metadata)
 }
 pub async fn download(
 	scope: &mut dyn ChannelScope,

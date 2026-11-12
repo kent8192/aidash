@@ -600,3 +600,52 @@ fn legacy_harness_contract_accepts_every_projection_version() {
 		);
 	}
 }
+
+#[test]
+fn an_agent_normalized_before_attachment_image_search_keeps_its_tool_versions() {
+	// Arrange: the defaults pinned between image retrieval (#639) and Thread
+	// Attachment image search (#622 part 2).
+	let node = "aidash://node-a";
+	let config = agent();
+	let previous = config.normalize_mode(node, None, 4).unwrap();
+	let version = |bindings: &[NormalizedBinding], id: &str| {
+		bindings
+			.iter()
+			.find(|binding| binding.binding.target.id == id)
+			.map(|binding| binding.binding.target.version.clone())
+	};
+	let mut entry: Entry = serde_json::from_value(json!({"id":"agent","version":"1.0.0","kind":"agent","name":{"en":"Agent"},"description":{"en":"Agent"},"config":config})).unwrap();
+	entry.binding_normalization = Some(AgentNormalization {
+		schema_version: BINDING_SCHEMA,
+		registry_deployment: node.into(),
+		compaction_override: None,
+		bindings: previous.clone(),
+	});
+
+	// Act
+	let resolved = entry.normalized_bindings(node).unwrap();
+	let current = config.normalize(node).unwrap();
+
+	// Assert
+	assert_eq!(resolved, previous);
+	assert_eq!(
+		version(&previous, "aidash.workspace_message").as_deref(),
+		Some("1.0.1")
+	);
+	assert_eq!(
+		version(&previous, "aidash.workspace_search").as_deref(),
+		Some("1.0.0")
+	);
+	assert_eq!(
+		version(&previous, "aidash.workspace_read").as_deref(),
+		Some("1.1.0")
+	);
+	assert_eq!(
+		version(&current, "aidash.workspace_message").as_deref(),
+		Some("1.1.0")
+	);
+	assert_eq!(
+		version(&current, "aidash.workspace_search").as_deref(),
+		Some("1.1.0")
+	);
+}
