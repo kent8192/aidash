@@ -1119,3 +1119,66 @@ async fn every_published_revision_holds_one_row_per_file_of_its_manifest(
 	);
 	c.close().await;
 }
+
+/// Publishing must write each new revision reference once, in one statement.
+#[rstest::rstest]
+#[tokio::test]
+async fn publication_batches_new_revision_references_without_rewriting_the_old_revision(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let mut c = Box::pin(capability_fixture).await;
+	let token = c.token.clone();
+	let files = (0..4)
+		.map(|i| file(&format!("doc-{i}.md"), &format!("document {i}\n")))
+		.collect();
+	let (status, added) = add(&c, &token, files).await;
+	assert_eq!(status, 200, "{added}");
+	bind_agent(&mut c, &[("batch-count", added["references"].clone())]).await;
+	let (status, started) = start(&c, &token, c.task).await;
+	assert_eq!(status, 200, "{started}");
+	let run = latest_run(&c).await;
+	let (status, area) = request(
+		&c.app,
+		&token,
+		"GET",
+		&format!("/api/runs/{}/working-area", run.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{area}");
+
+	// Fixture-only triggers count attempted revision rows, including conflicts,
+	// and statements that inserted revision rows. Query cannot express trigger DDL.
+	let owner = common::owner_pool(c.f.store.pool.fixture_driver()).await;
+	for ddl in [
+		"CREATE TABLE revision_write_probe (kind text NOT NULL)",
+		"GRANT INSERT, SELECT ON revision_write_probe TO PUBLIC",
+		"CREATE FUNCTION count_revision_row() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.holder_kind = 'revision' THEN INSERT INTO revision_write_probe VALUES ('row'); END IF; RETURN NEW; END $$",
+		"CREATE TRIGGER count_revision_row BEFORE INSERT ON core_blob_references FOR EACH ROW EXECUTE FUNCTION count_revision_row()",
+		"CREATE FUNCTION count_revision_statement() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF EXISTS (SELECT 1 FROM inserted_refs WHERE holder_kind = 'revision') THEN INSERT INTO revision_write_probe VALUES ('statement'); END IF; RETURN NULL; END $$",
+		"CREATE TRIGGER count_revision_statement AFTER INSERT ON core_blob_references REFERENCING NEW TABLE AS inserted_refs FOR EACH STATEMENT EXECUTE FUNCTION count_revision_statement()",
+	] {
+		sqlx::query(ddl).execute(&owner).await.unwrap();
+	}
+	let (status, patched) = request(
+		&c.app, &token, "POST", &path_for_patch(run.id),
+		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"preconditions":{"note.md":null},"patch":"*** Begin Patch\n*** Add File: note.md\n+note\n*** End Patch"}),
+	).await;
+	assert_eq!(status, 200, "{patched}");
+	let attempted: i64 =
+		sqlx::query_scalar("SELECT count(*) FROM revision_write_probe WHERE kind = 'row'")
+			.fetch_one(&owner)
+			.await
+			.unwrap();
+	let statements: i64 =
+		sqlx::query_scalar("SELECT count(*) FROM revision_write_probe WHERE kind = 'statement'")
+			.fetch_one(&owner)
+			.await
+			.unwrap();
+	assert_eq!(attempted, 5, "only the new manifest's rows are attempted");
+	assert_eq!(
+		statements, 1,
+		"the new manifest is inserted in one statement"
+	);
+	c.close().await;
+}
