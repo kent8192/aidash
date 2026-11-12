@@ -8,6 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const SUMMARY_VERSION: u8 = 1;
 const MAX_ITEM_ID: usize = 64;
+/// Characters of a person's request or response a summary copies.
+const MAX_PERSON_TEXT: usize = 512;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -268,6 +270,18 @@ impl SummaryContent {
 						if text.trim().is_empty() {
 							continue;
 						}
+						// The Human event stays verbatim in the projection; a long
+						// text is copied as a bounded excerpt and its Journal
+						// sequence, so it cannot outgrow the summary.
+						let text = if text.chars().count() > MAX_PERSON_TEXT {
+							let excerpt: String = text.chars().take(MAX_PERSON_TEXT).collect();
+							format!(
+								"{excerpt}… [full {kind} in Context Journal sequence {}]",
+								entry.seq
+							)
+						} else {
+							text
+						};
 						content.constraints.push(SummaryItem {
 							id: format!("journal-{}-{kind}", entry.seq),
 							text,
@@ -284,9 +298,16 @@ impl SummaryContent {
 							.decisions
 							.push(format!("{}: {}", call.id, label.label));
 					}
+					// A running command reports a null `exit_code`, and `holds`
+					// matches only a string or a number: any other field is no
+					// outcome.
 					let outcome = ["exit_code", "status", "error"]
 						.iter()
-						.find_map(|key| result.get(*key))
+						.find_map(|key| {
+							result
+								.get(*key)
+								.filter(|value| value.is_string() || value.is_number())
+						})
 						.unwrap_or(result);
 					let text = match outcome {
 						Value::String(value) => value.clone(),
