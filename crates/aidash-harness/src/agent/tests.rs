@@ -3858,6 +3858,76 @@ async fn truncated_native_summary_retries_with_whole_model_turns(mut fixture: Fi
 	assert_eq!(attempts[1].1, Some(Outcome::Adopted));
 }
 
+#[rstest]
+#[tokio::test]
+async fn an_offloaded_original_larger_than_the_summarizer_window_stays_a_marker(
+	mut fixture: Fixture,
+) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(true));
+	state.projection = ProjectionVersion::Native;
+	state.summarizer_window = 20_000;
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	for i in 0..20 {
+		let id = format!("call-{i}");
+		fixture.run.context.push(ContextEvent::Assistant {
+			provider_activity: vec![],
+			epoch: i,
+			text: "working".into(),
+			calls: vec![id.clone()],
+		});
+		let result = if i == 0 {
+			json!("h".repeat(200_000))
+		} else {
+			json!("data")
+		};
+		fixture
+			.run
+			.context
+			.push(ContextEvent::tool(call(&id, "read", json!({})), result));
+	}
+	fixture.run.context.journal.inferred_through = fixture.run.context.journal.head;
+	// The oldest result was offloaded: its original is only in the Journal.
+	fixture.backend.0.journal.lock().unwrap().extend(
+		fixture
+			.run
+			.context
+			.history
+			.iter()
+			.map(|entry| (fixture.run.id, entry.clone())),
+	);
+	let entry = &mut fixture.run.context.history[1];
+	let ContextEvent::Tool { result, .. } = &mut entry.event else {
+		unreachable!()
+	};
+	*result = aidash_application::context::offload::marker(entry.seq, result);
+	entry.research = None;
+	fixture.run.context.offloaded.get_or_insert_default();
+	fixture.run.context.offload_reads.summary_pending = true;
+	advance_sources(&mut fixture).await.unwrap();
+	let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
+	assert_eq!(
+		attempts.last().unwrap().1,
+		Some(Outcome::Adopted),
+		"{attempts:?}"
+	);
+	assert_eq!(attempts.last().unwrap().0.source_from_seq, 1);
+	// The huge original went back to its marker instead of dropping the
+	// turns after it.
+	assert!(attempts.last().unwrap().0.source_through_seq > 2);
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let summary = requests
+		.iter()
+		.find(|request| request.response_format.is_some())
+		.unwrap();
+	assert!(
+		!serde_json::to_string(summary)
+			.unwrap()
+			.contains(&"h".repeat(1000))
+	);
+}
+
 fn fixture_with(configure: impl FnOnce(&mut State)) -> Fixture {
 	let mut fixture = fixture();
 	configure(Arc::get_mut(&mut fixture.backend.0).unwrap());

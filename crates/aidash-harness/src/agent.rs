@@ -932,11 +932,31 @@ impl<'a> Executor<'a> {
 			if request.ensure_fits(summary_window).is_ok() {
 				break request;
 			}
+			// An original whose bytes exceed a quarter of the summarizer's window goes
+			// back to its marker before any turn is dropped: the summary then
+			// still absorbs the turns around it, and one huge result cannot
+			// block every later summary. `from_draft` reads only a short
+			// outcome of each result anyway.
+			if aidash_application::context::offload_largest_absorbed(
+				&mut plan.absorbed,
+				summary_window / 4,
+			) {
+				continue;
+			}
 			if fitting.native() {
 				let turns = aidash_domain::projection::native::model_turns(&plan.absorbed);
 				let Some(last) = turns.iter().flatten().max().copied() else {
 					return Err(Error::Context(ContextFailure::ContextUnreducible));
 				};
+				// The oldest turn alone does not fit: its remaining originals
+				// go back to their markers, largest first.
+				if turns.iter().flatten().min() == Some(&last) {
+					if aidash_application::context::offload_largest_absorbed(&mut plan.absorbed, 0)
+					{
+						continue;
+					}
+					return Err(Error::Context(ContextFailure::ContextUnreducible));
+				}
 				let before = plan.absorbed.len();
 				let mut index = 0;
 				plan.absorbed.retain(|_| {
@@ -945,6 +965,10 @@ impl<'a> Executor<'a> {
 					keep
 				});
 				if plan.absorbed.len() == before {
+					return Err(Error::Context(ContextFailure::ContextUnreducible));
+				}
+			} else if plan.absorbed.len() == 1 {
+				if !aidash_application::context::offload_largest_absorbed(&mut plan.absorbed, 0) {
 					return Err(Error::Context(ContextFailure::ContextUnreducible));
 				}
 			} else {

@@ -589,3 +589,72 @@ async fn repeated_summary_adoption_bounds_older_prose_in_context_bytes() {
 			.any(|item| item.starts_with("round 0:"))
 	);
 }
+
+#[rstest::rstest]
+fn an_oversized_rehydrated_original_goes_back_to_its_marker_so_the_summary_fits() {
+	// Arrange: the oldest absorbed result is larger than the summary window.
+	let mut context = journaled(vec![
+		tool("huge", &"x".repeat(40_000)),
+		tool("small", "ok"),
+		tool("recent", "recent"),
+	]);
+	context.journal.inferred_through = context.journal.head;
+	let mut plan = SummaryPlan {
+		pruned: context.clone(),
+		absorbed: context.history[..2].to_vec(),
+		people: vec![],
+		before_tokens: usize::MAX,
+	};
+	let pinned = json!({"task":{"description":"Work"}});
+	let window = 8_000;
+	assert!(
+		summary_request(&plan, &pinned, 512)
+			.ensure_fits(window)
+			.is_err()
+	);
+
+	// Act
+	assert!(offload_largest_absorbed(&mut plan.absorbed, 0));
+
+	// Assert: only the large result became its marker; the request fits and
+	// the adopted summary points to the original in the Journal.
+	assert!(matches!(
+		&plan.absorbed[0].event,
+		ContextEvent::Tool { result, .. } if super::offload::is_marker(result) && result["journal"]["from_seq"] == 1
+	));
+	assert!(matches!(
+		&plan.absorbed[1].event,
+		ContextEvent::Tool { result, .. } if result == "ok"
+	));
+	assert!(
+		summary_request(&plan, &pinned, 512)
+			.ensure_fits(window)
+			.is_ok()
+	);
+	assert!(!offload_largest_absorbed(&mut plan.absorbed[1..], 0));
+	let policy = recovery_policy(true);
+	let budget = Scenario::budget(window);
+	let fitting = Fitting {
+		budget: &budget,
+		pinned: &pinned,
+		policy: &policy,
+	};
+	let draft = json!({"retained":[],"labels":[],"prose":"read the huge file"}).to_string();
+	let (adopted, _) = summary_candidate(
+		&plan,
+		&draft,
+		Default::default(),
+		summarizer(),
+		512,
+		&fitting,
+	)
+	.unwrap();
+	let summary = adopted.execution_summary.unwrap();
+	assert!(
+		summary
+			.content
+			.decisions
+			.iter()
+			.any(|decision| decision.contains("sequences 1 through 1"))
+	);
+}
