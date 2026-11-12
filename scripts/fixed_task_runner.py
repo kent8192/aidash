@@ -10,6 +10,7 @@ import json
 import time
 from urllib.parse import quote
 import uuid
+from urllib.request import urlopen
 
 import tool_call_approvals
 from fixed_task_evaluation import (DEFAULT_TOOLS, SKILL_ASSET_READ, SKILL_TOOLS, canonical_sha256, task_description,
@@ -389,9 +390,22 @@ def record_final_state(observation, run):
                         "summary_recovered": bool(context.get("execution_summary"))})
 
 
+def read_fixture_ledger(endpoint, run_id):
+    """Read only the approved fixture's synthetic, per-Run side-effect ledger."""
+    run_id = str(uuid.UUID(run_id))
+    with urlopen(f"{endpoint.rstrip('/')}/observations/{run_id}", timeout=10) as response:
+        data = json.loads(response.read(65537))
+    if not isinstance(data, dict) or data.get("run_id") != run_id or data.get("complete") is not True:
+        raise ValueError("fixture ledger is incomplete or names a different Run")
+    pages = data.get("pages")
+    if not isinstance(pages, list) or any(type(page) is not int for page in pages):
+        raise ValueError("invalid fixture ledger")
+    return pages
+
+
 def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_reader=None, timeout=300.0,
              interval=1.0, clock=time.monotonic, sleep=time.sleep, approve_fixture_tools=False, observation=None,
-             after_claim=None):
+             after_claim=None, side_effect_reader=None):
     """Execute one Task Run end to end and return raw observations; never raises for Run failures.
 
     Every request ends by the Run's deadline. When the deadline passes, even
@@ -529,6 +543,19 @@ def run_task(api, experiment, planned, repeat, agent_ref, fixture=None, usage_re
             observation["final_answer"] = final_answer(reader, token, observation["workspace"], run)
         if fixture is not None:
             observation["requests"] = fixture.observed(task_uuid)
+        if task.get("fixture_record_pages"):
+            try:
+                ledger = fixture.ledger(run_id) if fixture is not None else (
+                    side_effect_reader(run_id) if side_effect_reader is not None else None)
+                if isinstance(ledger, dict):
+                    if ledger.get("run_id") != run_id or ledger.get("complete") is not True:
+                        raise ValueError("fixture ledger is incomplete")
+                    ledger = ledger.get("pages")
+                if not isinstance(ledger, list) or any(type(page) is not int for page in ledger):
+                    raise ValueError("fixture ledger is unavailable or invalid")
+                observation["fixture_record_pages"] = ledger
+            except (OSError, ValueError, TypeError):
+                observation["fixture_record_pages"] = None
         if usage_reader is not None:
             observation["usage_records"] = usage_reader(observation["run_id"])
     except Exception as error:  # Counted as an infrastructure failure, never dropped.
@@ -761,7 +788,7 @@ def observed_provider_work(api, token, workspace, run_id):
 
 def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, prices, timeout, observations,
               clock=time.monotonic, sleep=time.sleep, binding_check=None, *, execution_seed=None, fixture=None,
-              usage_reader=None, auxiliary=None, approve_fixture_tools=False):
+              usage_reader=None, auxiliary=None, approve_fixture_tools=False, side_effect_reader=None):
     """Dispatch live Runs only inside the ledger's spend and time ceilings.
 
     Each Run is reserved at its worst case before dispatch; a refusal stops all
@@ -819,7 +846,8 @@ def live_runs(api, experiment, corpus, planned_runs, repeats, ledger, models, pr
             run_task(api, experiment, planned, repeat, planned["agent_ref"],
                      fixture=fixture, usage_reader=usage_reader, timeout=min(timeout, ledger.remaining()),
                      clock=clock, sleep=sleep, observation=observation, approve_fixture_tools=approve_fixture_tools,
-                     after_claim=after_claim if binding_check is not None else None)
+                     after_claim=after_claim if binding_check is not None else None,
+                     side_effect_reader=side_effect_reader)
             if observation.get("cancellation_failed"):
                 stops.append(f"Run {key} may still be active: the evaluator could not cancel it with the subject "
                              "or the Deployment Administrator token")

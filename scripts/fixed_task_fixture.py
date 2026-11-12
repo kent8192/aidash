@@ -19,6 +19,7 @@ import json
 import math
 import re
 import threading
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # One token per byte. Reported prompt tokens then never fall below Aidash's byte
@@ -160,6 +161,8 @@ class Fixture:
         self.probes = {}
         self.requests = {}
         self.tool_calls = {}
+        self.recorded_pages = {}
+        self.unattributed_records = 0
         self.cache = set()
         self.errors = []
 
@@ -182,6 +185,25 @@ class Fixture:
                 "overflow_rejections": sum(item["overflow"] for item in records),
                 "native_envelopes": [{"calls": item["native_tool_calls"], "results": item["native_tool_results"]}
                                      for item in records]}
+
+    def record_delivery(self, key, alias, arguments, status):
+        """Record successful side effects by the Run named in the idempotency key."""
+        if alias != "record_note" or status != 200:
+            return
+        try:
+            run_id = str(uuid.UUID((key or "").split(":", 1)[0]))
+        except (ValueError, AttributeError):
+            with self.lock:
+                self.unattributed_records += 1
+            return
+        with self.lock:
+            self.recorded_pages.setdefault(run_id, []).append(arguments.get("page"))
+
+    def ledger(self, run_id):
+        run_id = str(uuid.UUID(run_id))
+        with self.lock:
+            return {"run_id": run_id, "pages": list(self.recorded_pages.get(run_id, [])),
+                    "complete": self.unattributed_records == 0}
 
     # ------------------------------------------------------------- model
     def infer(self, body):
@@ -492,7 +514,13 @@ class Fixture:
                     pass
 
             def do_GET(self):
-                self.reply(405, {"error": "method not allowed"})
+                match = re.fullmatch(r"/observations/([0-9a-fA-F-]{36})", self.path)
+                if match:
+                    try:
+                        return self.reply(200, fixture.ledger(match.group(1)))
+                    except ValueError:
+                        pass
+                self.reply(404, {"error": "unknown fixture path"})
 
             def do_POST(self):
                 try:
@@ -503,7 +531,9 @@ class Fixture:
                         return self.reply(*fixture.embed(body))
                     match = re.fullmatch(r"/tools/([a-z0-9-]+)/([a-z_]+)", self.path)
                     if match and match.group(1) in tasks_by_id:
-                        return self.reply(*fixture.tool(tasks_by_id[match.group(1)], match.group(2), body))
+                        status, result = fixture.tool(tasks_by_id[match.group(1)], match.group(2), body)
+                        fixture.record_delivery(self.headers.get("Idempotency-Key"), match.group(2), body, status)
+                        return self.reply(status, result)
                     self.reply(404, {"error": "unknown fixture path"})
                 except Exception as error:  # Report fixture faults; never hide them as model output.
                     with fixture.lock:
