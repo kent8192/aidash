@@ -30,10 +30,9 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (mut policy, token, task_id) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (status, body) = request(
+	let (status, body) = common::post(
 		&app,
 		&token,
-		"POST",
 		&format!("/api/tasks/{task_id}/claim"),
 		json!({"revision":0,"agent":{"id":"research","version":"1.0.0"}}),
 	)
@@ -67,10 +66,9 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 		);
 		policy["policies"].as_array_mut().unwrap().push(json!({"id":"agent-finalize-denied","effect":"deny","subjects":{"ids":[agent]},"actions":["run.finish"],"resources":{"kinds":["run"]}}));
 		assert_eq!(
-			request(
+			common::post(
 				&app,
 				&f.config.api_token,
-				"POST",
 				"/api/authorization/acme",
 				json!({"expected_revision":1,"bundle":policy})
 			)
@@ -83,7 +81,7 @@ async fn paired_subject_completion_preserves_the_stored_execution_chain(
 		"participants":[{"node_id":node(&f).await,"mutations":[
 			{"kind":"complete_task","task_id":task_id,"expected_revision":task.revision,"artifact":{"kind":"text","name":"Answer","content":"Atomic answer"}},
 			{"kind":"finish_run","run_id":run.id,"task_id":task_id,"expected_revision":run.revision}]}]})).unwrap();
-	let (status, body) = request(&app, &token, "POST", "/api/transactions", json!(manifest)).await;
+	let (status, body) = common::post(&app, &token, "/api/transactions", json!(manifest)).await;
 	assert_eq!(status, if denied { 403 } else { 202 }, "{body}");
 	if denied {
 		assert!(matches!(
@@ -186,8 +184,7 @@ async fn subject_transaction_admission_preserves_only_accepted_obligations(
 		}]}]
 	}))
 	.unwrap();
-	let (status, body) =
-		request(&app, &subject, "POST", "/api/transactions", json!(manifest)).await;
+	let (status, body) = common::post(&app, &subject, "/api/transactions", json!(manifest)).await;
 	assert_eq!(status, 202, "{body}");
 	for _ in 0..steps_before_revocation {
 		coordinator::advance(&f, manifest.id).await.unwrap();
@@ -242,12 +239,10 @@ async fn subject_transaction_admission_preserves_only_accepted_obligations(
 		revision
 	);
 	assert_eq!(
-		request(
+		common::get(
 			&app,
 			&subject,
-			"GET",
-			&format!("/api/transactions/{}", manifest.id),
-			Value::Null
+			&format!("/api/transactions/{}", manifest.id)
 		)
 		.await
 		.0,
@@ -267,17 +262,14 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 	let (f, url, schema) = fixture.runtime.parts();
 	let app = fixture.application;
 	let (_, subject, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
-	let (session_status, session) =
-		request(&app, &subject, "GET", "/api/session", Value::Null).await;
+	let (session_status, session) = common::get(&app, &subject, "/api/session").await;
 	assert_eq!(session_status, 200);
 	assert_eq!(
 		session["access"],
 		json!({"kind":"subject","tenant":"acme","subject":"alice"})
 	);
 	assert_eq!(
-		request(&app, &subject, "GET", "/api/transactions", Value::Null)
-			.await
-			.0,
+		common::get(&app, &subject, "/api/transactions").await.0,
 		200
 	);
 	let workspace = f
@@ -292,32 +284,19 @@ async fn atomic_submission_validates_the_entire_manifest_before_creating_work(
 		.unwrap();
 	let id = Uuid::new_v4();
 	let manifest = json!({"id":id,"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),"participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_state","workspace_id":workspace.id,"expected_revision":0,"state":{"result":"committed"}}]}]});
-	let (status, response) = request(
-		&app,
-		&subject,
-		"POST",
-		"/api/transactions",
-		manifest.clone(),
-	)
-	.await;
+	let (status, response) =
+		common::post(&app, &subject, "/api/transactions", manifest.clone()).await;
 	assert_eq!(status, 202, "{response}");
 	assert_eq!(response["id"], json!(id));
 	assert_eq!(response["decision"], Value::Null);
 	assert_eq!(
-		request(
-			&app,
-			&subject,
-			"POST",
-			"/api/transactions",
-			manifest.clone()
-		)
-		.await,
+		common::post(&app, &subject, "/api/transactions", manifest.clone()).await,
 		(202, response)
 	);
 	let mut changed = manifest.clone();
 	changed["participants"][0]["mutations"][0]["state"] = json!({"different":true});
 	assert_eq!(
-		request(&app, &subject, "POST", "/api/transactions", changed)
+		common::post(&app, &subject, "/api/transactions", changed)
 			.await
 			.0,
 		409
@@ -406,7 +385,7 @@ async fn subject_transaction_requires_all_authority_before_persisting_a_manifest
 	let id = Uuid::new_v4();
 	let manifest = json!({"id":id,"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
         "participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_state","workspace_id":workspace,"expected_revision":0,"state":{"private":"do not disclose"}}]}]});
-	let (status, body) = request(&app, &token, "POST", "/api/transactions", manifest).await;
+	let (status, body) = common::post(&app, &token, "/api/transactions", manifest).await;
 	assert_eq!(status, 403, "{body}");
 	assert!(matches!(
 		aidash_server::transactions::coordinator::status(&f, id).await,
@@ -444,14 +423,14 @@ async fn busy_subject_submission_preserves_exact_id_retry_and_current_read_autho
 	let manifest = json!({"id":id,"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
         "participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_state","workspace_id":workspace,"expected_revision":0,"state":{"accepted":true}}]}]});
 	assert_eq!(
-		request(&app, &token, "POST", "/api/transactions", manifest.clone())
+		common::post(&app, &token, "/api/transactions", manifest.clone())
 			.await
 			.0,
 		202
 	);
 	coordinator::advance(&f, id).await.unwrap();
 	assert_eq!(
-		request(&app, &token, "POST", "/api/transactions", manifest.clone())
+		common::post(&app, &token, "/api/transactions", manifest.clone())
 			.await
 			.0,
 		202
@@ -459,21 +438,15 @@ async fn busy_subject_submission_preserves_exact_id_retry_and_current_read_autho
 	let mut other = manifest.clone();
 	other["id"] = json!(Uuid::new_v4());
 	assert_eq!(
-		request(&app, &token, "POST", "/api/transactions", other)
+		common::post(&app, &token, "/api/transactions", other)
 			.await
 			.0,
 		503
 	);
 	assert_eq!(
-		request(
-			&app,
-			&token,
-			"GET",
-			&format!("/api/transactions/{id}"),
-			Value::Null
-		)
-		.await
-		.0,
+		common::get(&app, &token, &format!("/api/transactions/{id}"))
+			.await
+			.0,
 		200
 	);
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-read","effect":"deny","subjects":{"any":true},"actions":["workspace.read"],"resources":{"kinds":["*"]}}));
@@ -481,31 +454,22 @@ async fn busy_subject_submission_preserves_exact_id_retry_and_current_read_autho
 		pool: f.store.control_pool.clone(),
 	};
 	let revision = auth.snapshot("acme").await.unwrap().revision;
-	let (status, body) = request(
+	let (status, body) = common::post(
 		&app,
 		&f.config.api_token,
-		"POST",
 		"/api/authorization/acme",
 		json!({"expected_revision":revision,"bundle":policy}),
 	)
 	.await;
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(
-		request(
-			&app,
-			&token,
-			"GET",
-			&format!("/api/transactions/{id}"),
-			Value::Null
-		)
-		.await
-		.0,
+		common::get(&app, &token, &format!("/api/transactions/{id}"))
+			.await
+			.0,
 		403
 	);
 	assert_eq!(
-		request(&app, &token, "GET", "/api/transactions", Value::Null)
-			.await
-			.1,
+		common::get(&app, &token, "/api/transactions").await.1,
 		json!([])
 	);
 	for _ in 0..12 {
@@ -552,7 +516,7 @@ async fn authority_control_does_not_unlock_ordinary_mutations(
 	let manifest:Manifest=serde_json::from_value(json!({"id":Uuid::new_v4(),"coordinator":node(&f).await,"isolation":"serializable","deadline":Utc::now()+Duration::minutes(5),
         "participants":[{"node_id":node(&f).await,"mutations":[{"kind":"workspace_state","workspace_id":workspace,"expected_revision":0,"state":{"accepted":true}}]}]})).unwrap();
 	assert_eq!(
-		request(&app, &token, "POST", "/api/transactions", json!(manifest))
+		common::post(&app, &token, "/api/transactions", json!(manifest))
 			.await
 			.0,
 		202
@@ -565,7 +529,7 @@ async fn authority_control_does_not_unlock_ordinary_mutations(
 		let path = format!("/api/authorization/acme/{operation}");
 		let input = json!({"subject":"alice","action":"transaction.read","resource":{"tenant":"acme","kind":"transaction","id":manifest.id.to_string()}});
 		let (status, body) = if operation == "evaluate" {
-			request(&app, &f.config.api_token, "POST", &path, input).await
+			common::post(&app, &f.config.api_token, &path, input).await
 		} else {
 			common::BrowserMapping::new(&f, "acme", "alice")
 				.await
@@ -660,7 +624,7 @@ async fn deployment_administrators_cannot_submit_list_read_or_abort_transactions
 	let own = review::manifest(node(&f).await.as_str(), workspace);
 	let own_id = own["id"].as_str().unwrap().to_owned();
 	assert_eq!(
-		request(&app, &token, "POST", "/api/transactions", own.clone())
+		common::post(&app, &token, "/api/transactions", own.clone())
 			.await
 			.0,
 		202
@@ -712,19 +676,18 @@ async fn deployment_administrators_cannot_submit_list_read_or_abort_transactions
 		);
 		assert!(body.get("transaction").is_none(), "{body}");
 	}
-	let (status, body) = request(&app, &other_token, "GET", "/api/transactions", Value::Null).await;
+	let (status, body) = common::get(&app, &other_token, "/api/transactions").await;
 	assert_eq!(status, 200, "{body}");
 	assert_eq!(body, json!([]));
 	// Assert: the owner still reads it, undecided, and may abort it.
-	let (status, listed) = request(&app, &token, "GET", "/api/transactions", Value::Null).await;
+	let (status, listed) = common::get(&app, &token, "/api/transactions").await;
 	assert_eq!(status, 200, "{listed}");
 	assert_eq!(listed.as_array().unwrap().len(), 1);
 	assert_eq!(listed[0]["id"], json!(own_id));
-	let (status, details) = request(&app, &token, "GET", &path, Value::Null).await;
+	let (status, details) = common::get(&app, &token, &path).await;
 	assert_eq!(status, 200, "{details}");
 	assert!(details["transaction"]["decision"].is_null(), "{details}");
-	let (status, aborted) =
-		request(&app, &token, "POST", &format!("{path}/abort"), Value::Null).await;
+	let (status, aborted) = common::post(&app, &token, &format!("{path}/abort"), Value::Null).await;
 	assert_eq!(status, 200, "{aborted}");
 	assert_eq!(aborted["decision"], "ABORT");
 	cleanup(f, &url, &schema).await;

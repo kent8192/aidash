@@ -94,22 +94,14 @@ async fn invalid_deadline_cannot_bypass_cross_node_submission_suspension(
 		..
 	} = scoped_pair;
 	manifest.deadline = Utc::now() + Duration::seconds(seconds);
-	let (status, body) = common::request(
-		&app_a,
-		&token_a,
-		"POST",
-		"/api/transactions",
-		json!(manifest),
-	)
-	.await;
+	let (status, body) = common::post(&app_a, &token_a, "/api/transactions", json!(manifest)).await;
 	assert_eq!(status, 403, "{body}");
 	assert_no_transaction_state(&[&a, &b], manifest.id).await;
 	// A Deployment Administrator owns no transactions: it is refused before the
 	// deadline is looked at, so it cannot step around the suspension (#484).
-	let (status, body) = common::request(
+	let (status, body) = common::post(
 		&app_a,
 		&a.f.config.api_token,
-		"POST",
 		"/api/transactions",
 		json!(manifest),
 	)
@@ -117,23 +109,15 @@ async fn invalid_deadline_cannot_bypass_cross_node_submission_suspension(
 	assert_eq!(status, 403, "{body}");
 	assert_no_transaction_state(&[&a, &b], manifest.id).await;
 	manifest.deadline = Utc::now() + Duration::minutes(5);
-	let (retry, body) = common::request(
-		&app_a,
-		&token_a,
-		"POST",
-		"/api/transactions",
-		json!(manifest),
-	)
-	.await;
+	let (retry, body) = common::post(&app_a, &token_a, "/api/transactions", json!(manifest)).await;
 	assert_eq!(
 		retry, 403,
 		"correcting the deadline must not bypass suspension: {body}"
 	);
 	assert_no_transaction_state(&[&a, &b], manifest.id).await;
-	let (retry, body) = common::request(
+	let (retry, body) = common::post(
 		&app_a,
 		&a.f.config.api_token,
-		"POST",
 		"/api/transactions",
 		json!(manifest),
 	)
@@ -181,14 +165,7 @@ async fn suspended_submission_keeps_expired_existing_transactions_recoverable(
 			},
 		));
 	serve(&mut b, app).await;
-	let (status, body) = common::request(
-		&app_a,
-		&token_a,
-		"POST",
-		"/api/transactions",
-		json!(manifest),
-	)
-	.await;
+	let (status, body) = common::post(&app_a, &token_a, "/api/transactions", json!(manifest)).await;
 	assert_eq!(
 		status, 403,
 		"fresh scoped submission must be suspended: {body}"
@@ -202,14 +179,7 @@ async fn suspended_submission_keeps_expired_existing_transactions_recoverable(
 	assert!(Utc::now() > manifest.deadline);
 	let state = complete(&a, manifest.id).await;
 	assert_eq!(state.decision.as_deref(), Some("ABORT"));
-	let (retry, body) = common::request(
-		&app_a,
-		&token_a,
-		"POST",
-		"/api/transactions",
-		json!(manifest),
-	)
-	.await;
+	let (retry, body) = common::post(&app_a, &token_a, "/api/transactions", json!(manifest)).await;
 	a.cleanup().await;
 	b.cleanup().await;
 	assert_eq!(
@@ -230,38 +200,22 @@ async fn unavailable_peer_hides_only_its_rows(#[future(awt)] scoped_pair: Scoped
 		..
 	} = scoped_pair;
 	seed_existing_scoped_transaction(&a, &manifest, &[&a, &b]).await;
-	let (status, body) = common::request(
-		&app_a,
-		&token_a,
-		"POST",
-		"/api/transactions",
-		json!(manifest),
-	)
-	.await;
+	let (status, body) = common::post(&app_a, &token_a, "/api/transactions", json!(manifest)).await;
 	assert_eq!(status, 202, "{body}");
 	let remote_id = manifest.id;
 	manifest.id = Uuid::new_v4();
 	manifest
 		.participants
 		.retain(|node| node.node_id == a.address);
-	let (status, body) = common::request(
-		&app_a,
-		&token_a,
-		"POST",
-		"/api/transactions",
-		json!(manifest),
-	)
-	.await;
+	let (status, body) = common::post(&app_a, &token_a, "/api/transactions", json!(manifest)).await;
 	assert_eq!(status, 202, "{body}");
 	b.stop().await;
-	let (status, rows) =
-		common::request(&app_a, &token_a, "GET", "/api/transactions", Value::Null).await;
+	let (status, rows) = common::get(&app_a, &token_a, "/api/transactions").await;
 	assert_eq!(status, 200, "{rows}");
 	assert_eq!(rows.as_array().unwrap().len(), 1, "{rows}");
 	assert_eq!(rows[0]["id"], json!(manifest.id));
 	b.restart().await;
-	let (status, rows) =
-		common::request(&app_a, &token_a, "GET", "/api/transactions", Value::Null).await;
+	let (status, rows) = common::get(&app_a, &token_a, "/api/transactions").await;
 	a.cleanup().await;
 	b.cleanup().await;
 	assert_eq!(status, 200, "{rows}");
@@ -327,7 +281,7 @@ async fn bidirectional_new_scoped_submissions_are_rejected_before_preflight(
 			ids.push(manifest.id);
 			manifest.coordinator = coordinator.to_owned();
 			requests.push(tokio::spawn(async move {
-				common::request(&app, &token, "POST", "/api/transactions", json!(manifest)).await
+				common::post(&app, &token, "/api/transactions", json!(manifest)).await
 			}));
 		}
 	}
@@ -421,13 +375,7 @@ async fn multi_peer_new_scoped_submissions_are_rejected_before_preflight(
 	}
 	let response = tokio::time::timeout(
 		StdDuration::from_secs(5),
-		common::request(
-			&app_a,
-			&token_a,
-			"POST",
-			"/api/transactions",
-			json!(manifest),
-		),
+		common::post(&app_a, &token_a, "/api/transactions", json!(manifest)),
 	)
 	.await;
 	let (status, body) = response.expect("suspension must reject without any peer preflight");

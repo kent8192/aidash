@@ -93,6 +93,34 @@ async fn a_run_without_a_live_preview_reads_null(#[future] capability_fixture: C
 
 #[rstest::rstest]
 #[tokio::test]
+async fn live_preview_http_returns_unavailable_when_the_pool_times_out(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let c = capability_fixture.await;
+	let run = admit(&c).await;
+	let pool = c.f.store.pool.driver();
+	let mut held = Vec::new();
+	for _ in 0..pool.options().get_max_connections() {
+		held.push(pool.acquire().await.unwrap());
+	}
+	let error = pool.acquire().await.err().unwrap();
+	assert!(matches!(error, sqlx::Error::PoolTimedOut));
+	let authorization = format!("Bearer {}", c.token);
+	let response = common::http_response(
+		&c.app,
+		"GET",
+		&format!("/api/runs/{}/live-preview", run.id),
+		&[("authorization", &authorization)],
+		b"",
+	)
+	.await;
+	assert_eq!(response.status_code(), 503);
+	assert_eq!(response.headers()[http::header::RETRY_AFTER], "1");
+	drop(held);
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn missing_runs_and_administrator_refusals_are_distinct(
 	#[future] capability_fixture: CoreFixture,
 ) {

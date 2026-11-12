@@ -142,3 +142,11 @@ python3 docs/operations/evidence/2026-10-10-prompt-cache-prefix/run.py \
   --variant "B2 projection=ordered projection_versions=legacy+ordered model_cache_mode=explicit prompt_cache=explicit" \
   --repeats 3 --run-timeout 420 --results /path/outside/repo/route-b.json
 ```
+
+## Archived records
+
+The data files below left the working tree with #858. They stay in Git history at commit `268497a929`; each link opens the file there, and the SHA-256 is of the file as committed.
+
+| File                                                                                                                                                                                        | SHA-256                                                            |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| [`results-explicit.json`](https://github.com/kent8192/aidash/blob/268497a929bf5e32cc866939fef6b5e134950793/docs/operations/evidence/2026-10-10-prompt-cache-explicit/results-explicit.json) | `65b2dd97ed8f9a03636e4fa592512adc77a8d65c14bb9e5dcdb8b6c462e1aa64` |

@@ -161,13 +161,28 @@ pub fn decide_children(
 	ChildrenDecision::AbandonAndWait(abandon)
 }
 
+/// Render the completion answer with earlier and newly abandoned Tasks, once per ID.
+pub fn completion_answer(
+	answer: &str,
+	early: &[UnassignedTask],
+	abandoning: &[UnassignedTask],
+) -> String {
+	let mut named = early.to_vec();
+	for task in abandoning {
+		if !named.iter().any(|prior| prior.id == task.id) {
+			named.push(task.clone());
+		}
+	}
+	answer_with_abandoned(answer, &named)
+}
+
 /// The answer followed by the fixed sentence naming the abandoned Tasks.
 pub fn answer_with_abandoned(answer: &str, abandoned: &[UnassignedTask]) -> String {
 	if abandoned.is_empty() {
 		return answer.to_owned();
 	}
 	format!(
-		"{answer}\n\nNobody was given these subtasks, so they were abandoned when this Run finished: {}.",
+		"{answer}\n\nNobody was given these subtasks, so they were abandoned during this Run: {}.",
 		title_list(abandoned)
 	)
 }
