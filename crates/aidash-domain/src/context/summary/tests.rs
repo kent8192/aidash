@@ -750,3 +750,47 @@ fn history_budget_evicts_oldest_decisions_then_verification_but_keeps_required_s
 	assert_eq!(summary.unresolved.len(), 1);
 	assert_eq!(summary.artifacts.len(), 1);
 }
+
+#[test]
+fn a_running_command_with_a_null_exit_code_keeps_its_status_as_outcome() {
+	let running = tool_with(
+		2,
+		json!({}),
+		json!({"exit_code":null,"status":"running","stdout":"partial"}),
+	);
+	let draft = json!({"retained":[],"labels":[],"prose":""}).to_string();
+	let content = SummaryContent::from_draft(&draft, "Ship", None, &[running], 4096).unwrap();
+	assert!(
+		content
+			.verification
+			.iter()
+			.any(|item| item.reference == "call_2" && item.outcome == "running")
+	);
+}
+
+#[test]
+fn a_long_human_response_is_copied_as_a_bounded_excerpt_with_its_sequence() {
+	let human = HistoryEntry::new(
+		7,
+		ContextEvent::Human {
+			request: "Review this".into(),
+			request_kind: "instruction".into(),
+			response: json!("r".repeat(5 * 1024)),
+		},
+	);
+	let draft = json!({"retained":[],"labels":[],"prose":""}).to_string();
+	let content = SummaryContent::from_draft(&draft, "Ship", None, &[human], 4096).unwrap();
+	let response = content
+		.constraints
+		.iter()
+		.find(|item| item.id == "journal-7-response")
+		.unwrap();
+	assert!(response.text.len() < 1024, "{}", response.text.len());
+	assert!(response.text.ends_with("Context Journal sequence 7]"));
+	assert!(
+		content
+			.constraints
+			.iter()
+			.any(|item| item.text == "Review this")
+	);
+}

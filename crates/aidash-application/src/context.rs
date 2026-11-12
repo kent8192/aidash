@@ -316,6 +316,34 @@ pub fn retain_summarizable_turns(
 	});
 }
 
+/// Put the largest rehydrated result of `absorbed` that is larger than
+/// `min_bytes` back to its marker so a summary request can fit; the original
+/// stays readable in the Context Journal, and the summary points to it as a
+/// large result. The entry keeps its Research reference for revocation and
+/// expiry. Returns whether anything shrank.
+pub fn offload_largest_absorbed(absorbed: &mut [HistoryEntry], min_bytes: usize) -> bool {
+	let largest = absorbed
+		.iter()
+		.enumerate()
+		.filter_map(|(index, entry)| match &entry.event {
+			ContextEvent::Tool { result, .. } if !offload::is_marker(result) => {
+				let size = result.to_string().len();
+				(size > min_bytes && offload::marker(entry.seq, result).to_string().len() < size)
+					.then_some((size, index))
+			}
+			_ => None,
+		})
+		.max();
+	let Some((_, index)) = largest else {
+		return false;
+	};
+	let entry = &mut absorbed[index];
+	if let ContextEvent::Tool { result, .. } = &mut entry.event {
+		*result = offload::marker(entry.seq, result);
+	}
+	true
+}
+
 /// Bounded structured-output request for one merge. Only the task, the
 /// previous summary and the absorbed events are disclosed to the summarizer.
 pub fn summary_request(plan: &SummaryPlan, pinned: &Value, max_tokens: u32) -> ModelRequest {

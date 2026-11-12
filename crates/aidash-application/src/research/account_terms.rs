@@ -7,7 +7,7 @@ use crate::{
 	ports::research::{ProviderResultRetention, RetainedResult},
 };
 use aidash_domain::{
-	context::{Context, ContextEvent},
+	context::{Context, ContextEvent, HistoryEntry},
 	research::{
 		account::{AccountTerms, Termination, basis_ends_at},
 		expiry::{self, ExpiredResults},
@@ -106,6 +106,18 @@ fn cut(event: &ContextEvent) -> bool {
 	matches!(event, ContextEvent::Tool { result, .. } if crate::context::truncated_result(result) || crate::context::offload::is_marker(result))
 }
 
+/// Whether a journaled original carried an expired Provider result. The
+/// Journal resolves such an original to the expired placeholder, which no
+/// longer names its identities, but keeps its Research reference: an
+/// offloaded marker or a summary built from it still carries the text.
+fn expired_original(entry: &HistoryEntry, expired: &ExpiredResults) -> bool {
+	expired.carried_by(&entry.event)
+		|| entry.research_reference().is_some_and(|reference| {
+			reference.covered_by(expired)
+				|| matches!(&entry.event, ContextEvent::Tool { result, .. } if ContextEvent::is_expired_result(result))
+		})
+}
+
 /// Keep a Run's expired Provider results out of its projection (ADR 0058).
 /// Every research result built from one becomes the expired placeholder;
 /// its call's arguments stay. Purges newer than the projection's watermark
@@ -131,7 +143,7 @@ pub async fn expire_projection(
 			let entries = journal.entries(source.from_seq, source.through_seq).await?;
 			if entries
 				.iter()
-				.any(|entry| source.absorbs(entry.seq) && expired.carried_by(&entry.event))
+				.any(|entry| source.absorbs(entry.seq) && expired_original(entry, expired))
 			{
 				crate::context::restore_summarized(context, entries)?;
 				crate::context::record_stage("summary", "research_expired");
@@ -148,7 +160,7 @@ pub async fn expire_projection(
 				.entries(from, through)
 				.await?
 				.into_iter()
-				.filter(|entry| cut.contains(&entry.seq) && expired.carried_by(&entry.event))
+				.filter(|entry| cut.contains(&entry.seq) && expired_original(entry, expired))
 				.map(|entry| entry.seq)
 				.collect();
 		}

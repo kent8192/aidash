@@ -90,6 +90,15 @@ pub fn note_journal_result(
 			None => return,
 		},
 	};
+	// A read without a range, such as a search or query of the whole
+	// Journal, only protects its result: it never counts as reading one range
+	// again (Decision 7).
+	if range.get("from_seq").is_none() && range.get("through_seq").is_none() {
+		context
+			.offload_reads
+			.protect(target_run, result_seq, step, policy.reread_immunity_steps);
+		return;
+	}
 	let from_seq = range
 		.get("from_seq")
 		.and_then(Value::as_u64)
@@ -99,11 +108,25 @@ pub fn note_journal_result(
 		.get("through_seq")
 		.and_then(Value::as_u64)
 		.unwrap_or(i64::MAX as u64);
+	// Paging through one range delivers new text: only a page already
+	// delivered counts as reading it again. A search pages by its cursor.
+	let offset = match operation.as_deref() {
+		Some("journal_read") => result.get("offset").and_then(Value::as_u64),
+		Some("journal_search") => input
+			.get("cursor")
+			.and_then(Value::as_str)
+			.and_then(|cursor| cursor.parse().ok()),
+		_ => None,
+	}
+	.unwrap_or(0);
 	if from_seq <= through_seq && through_seq <= i64::MAX as u64 {
 		context.offload_reads.record_for(
 			target_run,
-			from_seq,
-			through_seq,
+			aidash_domain::context::offload::Page {
+				from_seq,
+				through_seq,
+				offset,
+			},
 			result_seq,
 			step,
 			policy.reread_immunity_steps,
@@ -176,8 +199,11 @@ fn replace(context: &mut Context, index: usize, batch: &mut OffloadBatch) -> boo
 	true
 }
 
-/// Offload any newly received result exceeding its share of the window,
-/// including results in an unfinished or protected Model Turn.
+/// Offload newly received results exceeding their share of the window,
+/// including results in an unfinished or protected Model Turn. The results of
+/// one Model Turn, such as parallel calls (#613), share one share: its largest
+/// results are offloaded until the rest fit in it. A result outside a turn
+/// has the share to itself.
 pub fn intake(context: &mut Context, window: usize, first_seq: u64, step: u32) -> OffloadBatch {
 	let mut batch = OffloadBatch::default();
 	// Older saved Tool Call states may lack a request window; the complete
@@ -187,17 +213,37 @@ pub fn intake(context: &mut Context, window: usize, first_seq: u64, step: u32) -
 	}
 	let share = window / 4;
 	let estimate = context.estimate.current();
-	for index in 0..context.history.len() {
-		let entry = &context.history[index];
+	let turns = aidash_domain::projection::native::model_turns(&context.history);
+	let mut groups =
+		std::collections::BTreeMap::<(Option<usize>, usize), Vec<(usize, usize)>>::new();
+	for (index, entry) in context.history.iter().enumerate() {
 		if entry.seq < first_seq || context.offload_reads.protects(entry.seq, step) {
 			continue;
 		}
 		if let ContextEvent::Tool { result, .. } = &entry.event
-			&& estimate.tokens_for_bytes(result.to_string().len()) > share
+			&& !is_marker(result)
 		{
-			replace(context, index, &mut batch);
+			let key = match turns[index] {
+				Some(turn) => (Some(turn), 0),
+				None => (None, index),
+			};
+			let tokens = estimate.tokens_for_bytes(result.to_string().len());
+			groups.entry(key).or_default().push((tokens, index));
 		}
 	}
+	for mut results in groups.into_values() {
+		let mut total: usize = results.iter().map(|(tokens, _)| *tokens).sum();
+		results.sort_by(|a, b| b.cmp(a));
+		for (tokens, index) in results {
+			if total <= share {
+				break;
+			}
+			if replace(context, index, &mut batch) {
+				total = total.saturating_sub(tokens);
+			}
+		}
+	}
+	batch.ranges.sort_by_key(|range| range.from_seq);
 	batch
 }
 
@@ -218,14 +264,18 @@ pub fn batch(
 	let turns = aidash_domain::projection::native::model_turns(&context.history);
 	let newest = turns.iter().flatten().max().copied();
 	let mut protected_size = 0usize;
+	// `preserve_recent` counts Model Turns, as the policy and the Summary
+	// Stage do; an event outside a turn counts alone.
 	let mut protected_count = 0usize;
+	let mut current = None;
 	let mut protected = vec![false; context.history.len()];
 	for index in (0..context.history.len()).rev() {
 		if newest.is_some() && turns[index] == newest {
 			protected[index] = true;
 			continue;
 		}
-		if protected_count >= preserve_recent {
+		let same_turn = turns[index].is_some() && turns[index] == current;
+		if !same_turn && protected_count >= preserve_recent {
 			break;
 		}
 		let bytes = serde_json::to_string(&context.history[index].event).expect("history is JSON");
@@ -236,7 +286,10 @@ pub fn batch(
 			break;
 		}
 		protected[index] = true;
-		protected_count += 1;
+		if !same_turn {
+			protected_count += 1;
+			current = turns[index];
+		}
 		protected_size += tokens;
 	}
 	for (index, kept) in protected.into_iter().enumerate() {
@@ -424,6 +477,67 @@ mod tests {
 	}
 
 	#[test]
+	fn paging_and_unranged_reads_do_not_ask_for_a_summary() {
+		let mut context = Context::default();
+		let policy = aidash_domain::context::policy::Effective::of(None);
+		let read = aidash_domain::tool::builtin_contract("journal_read").unwrap();
+		let search = aidash_domain::tool::builtin_contract("journal_search").unwrap();
+		let query = aidash_domain::tool::builtin_contract("journal_query").unwrap();
+		let mut seq = 0;
+		let mut note = |context: &mut Context,
+		                contract: &aidash_domain::tool::ToolContract,
+		                input: Value,
+		                result: Value| {
+			seq += 1;
+			note_journal_result(
+				context,
+				uuid::Uuid::nil(),
+				contract,
+				&input,
+				&result,
+				seq,
+				10,
+				&policy,
+			);
+		};
+		// One 9000-char original read in three pages.
+		for offset in [0, 4000, 8000] {
+			note(
+				&mut context,
+				&read,
+				json!({"from_seq":3,"through_seq":3,"offset":offset}),
+				json!({"text":"x","offset":offset,"total_chars":9000}),
+			);
+		}
+		for _ in 0..3 {
+			note(
+				&mut context,
+				&search,
+				json!({"query":"needle"}),
+				json!({"results":[{"seq":3}]}),
+			);
+			note(
+				&mut context,
+				&query,
+				json!({"code":"journal()"}),
+				json!({"contract":"aidash.journal.query/1","stdout":"ok"}),
+			);
+		}
+		assert!(!context.offload_reads.summary_pending);
+		assert!(!context.offload_reads.notice_pending);
+		// Reading the first page again still counts.
+		for _ in 0..2 {
+			note(
+				&mut context,
+				&read,
+				json!({"from_seq":3,"through_seq":3}),
+				json!({"text":"x","offset":0,"total_chars":9000}),
+			);
+		}
+		assert!(context.offload_reads.summary_pending);
+	}
+
+	#[test]
 	fn failed_or_spoofed_journal_results_do_not_record_reads() {
 		let mut context = Context::default();
 		let policy = aidash_domain::context::policy::Effective::of(None);
@@ -463,6 +577,47 @@ mod tests {
 				context.offload_reads.ranges[0].through_seq
 			),
 			(1, i64::MAX as u64)
+		);
+	}
+
+	#[test]
+	fn parallel_results_of_one_turn_share_the_intake_share() {
+		// #613: eight results of one Model Turn, each within the share alone,
+		// together larger than the window.
+		let mut context = Context::default();
+		let ids: Vec<String> = (0..8).map(|i| format!("p{i}")).collect();
+		context.push(ContextEvent::Assistant {
+			provider_activity: vec![],
+			epoch: 1,
+			text: String::new(),
+			calls: ids.clone(),
+		});
+		for id in &ids {
+			context.push(ContextEvent::tool(call(id), json!("x".repeat(4000))));
+		}
+		let estimate = context.estimate.current();
+		let tokens = |context: &Context| -> Vec<usize> {
+			context
+				.history
+				.iter()
+				.filter_map(|entry| match &entry.event {
+					ContextEvent::Tool { result, .. } if !is_marker(result) => {
+						Some(estimate.tokens_for_bytes(result.to_string().len()))
+					}
+					_ => None,
+				})
+				.collect()
+		};
+		let one = tokens(&context)[0];
+		let window = one * 8;
+		assert!(one <= window / 4, "each result fits the share alone");
+		let batch = intake(&mut context, window, 1, 0);
+		assert!(!batch.ranges.is_empty());
+		// The originals left in the projection fit the turn's share.
+		assert!(tokens(&context).iter().sum::<usize>() <= window / 4);
+		assert!(
+			tokens(&context).len() >= 2,
+			"only what exceeds the share goes"
 		);
 	}
 

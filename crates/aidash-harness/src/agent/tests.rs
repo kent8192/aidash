@@ -180,6 +180,8 @@ struct State {
 	summarizer_provider_limit: Option<u32>,
 	summarizer_window: usize,
 	reservations: Mutex<Vec<(usize, u32)>>,
+	/// Attempt identifiers of summary reservations, one per physical call.
+	summary_reservations: Mutex<Vec<Uuid>>,
 	summary_estimate_diagnostics: Option<Value>,
 	/// Provider scripts consumed one per inference; an empty queue answers at once.
 	scripts: Mutex<VecDeque<Vec<Step>>>,
@@ -1300,7 +1302,11 @@ impl ExecutionAuthority for Backend {
 		request: &ModelRequest,
 	) -> Result<Option<Box<dyn InferenceReservation>>> {
 		self.0.reservations.lock().unwrap().push((window, output));
-		assert!(token == self.0.token || matches!(request.context, ModelContext::Sampling(_)));
+		if request.response_format.is_some() {
+			self.0.summary_reservations.lock().unwrap().push(token);
+		} else {
+			assert!(token == self.0.token || matches!(request.context, ModelContext::Sampling(_)));
+		}
 		self.record("reservation.admit");
 		Ok(Some(Box::new(self.clone())))
 	}
@@ -1929,6 +1935,7 @@ fn fixture() -> Fixture {
 		summarizer_provider_limit: None,
 		summarizer_window: 128_000,
 		reservations: Mutex::new(vec![]),
+		summary_reservations: Mutex::new(vec![]),
 		summary_estimate_diagnostics: None,
 		scripts: Mutex::new(VecDeque::new()),
 		attempts: Mutex::new(vec![]),
@@ -3216,12 +3223,12 @@ async fn invalid_summary_leaves_the_saved_context_unchanged(mut fixture: Fixture
 	*state.summary_text.lock().unwrap() = Some("not json".into());
 	thinking_with_history(&mut fixture, 40);
 	let before = fixture.run.context.history.clone();
-	assert!(matches!(
-		advance_sources(&mut fixture).await,
-		Err(Error::Context(
-			aidash_domain::context::recovery::Failure::SummaryInvalid
-		))
-	));
+	// Repeated reads asked for this summary while the request fits, so its
+	// failure drops the request instead of pausing the Run (ADR 0125).
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(matches!(fixture.run.state, RunState::Thinking(_)));
+	assert!(!fixture.run.context.offload_reads.summary_pending);
+	assert_eq!(events(&fixture).last().unwrap(), "context.summary_skipped");
 	assert_eq!(fixture.run.context.history, before);
 	assert!(fixture.run.context.execution_summary.is_none());
 	assert!(!events(&fixture).contains(&"context.compacted".to_owned()));
@@ -3792,8 +3799,13 @@ async fn truncated_summary_retries_once_with_a_smaller_range(
 	*state.summary_text.lock().unwrap() = Some(valid_summary());
 	*state.summary_truncations.lock().unwrap() = truncations;
 	thinking_with_history(&mut fixture, 40);
-	let result = advance_sources(&mut fixture).await;
-	assert_eq!(result.is_ok(), succeeds, "{result:?}");
+	// Repeated reads asked for this summary while the request fits, so even
+	// a retry that is truncated again does not pause the Run (ADR 0125).
+	advance_sources(&mut fixture).await.unwrap();
+	assert_eq!(
+		events(&fixture).last().unwrap() == "context.summary_skipped",
+		!succeeds
+	);
 	let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
 	assert_eq!(attempts.len(), 2);
 	assert_eq!(attempts[0].1, Some(Outcome::Invalid));
@@ -3822,6 +3834,17 @@ async fn truncated_summary_retries_once_with_a_smaller_range(
 			.count(),
 		2
 	);
+	// Each physical summary call is reserved under its own attempt, never
+	// under the lease shared by the step.
+	let reserved = fixture.backend.0.summary_reservations.lock().unwrap();
+	assert_eq!(
+		*reserved,
+		attempts
+			.iter()
+			.map(|attempt| attempt.0.id)
+			.collect::<Vec<_>>()
+	);
+	assert!(!reserved.contains(&fixture.backend.0.token));
 }
 
 #[rstest]
@@ -3856,6 +3879,76 @@ async fn truncated_native_summary_retries_with_whole_model_turns(mut fixture: Fi
 	assert_eq!(second * 2, first);
 	assert_eq!(second % 2, 0, "a call and its result must stay together");
 	assert_eq!(attempts[1].1, Some(Outcome::Adopted));
+}
+
+#[rstest]
+#[tokio::test]
+async fn an_offloaded_original_larger_than_the_summarizer_window_stays_a_marker(
+	mut fixture: Fixture,
+) {
+	let state = Arc::get_mut(&mut fixture.backend.0).unwrap();
+	state.context_policy = Some(recovery_policy(true));
+	state.projection = ProjectionVersion::Native;
+	state.summarizer_window = 20_000;
+	*state.summary_text.lock().unwrap() = Some(valid_summary());
+	fixture.run.state = RunState::Thinking(ThinkingState::default());
+	for i in 0..20 {
+		let id = format!("call-{i}");
+		fixture.run.context.push(ContextEvent::Assistant {
+			provider_activity: vec![],
+			epoch: i,
+			text: "working".into(),
+			calls: vec![id.clone()],
+		});
+		let result = if i == 0 {
+			json!("h".repeat(200_000))
+		} else {
+			json!("data")
+		};
+		fixture
+			.run
+			.context
+			.push(ContextEvent::tool(call(&id, "read", json!({})), result));
+	}
+	fixture.run.context.journal.inferred_through = fixture.run.context.journal.head;
+	// The oldest result was offloaded: its original is only in the Journal.
+	fixture.backend.0.journal.lock().unwrap().extend(
+		fixture
+			.run
+			.context
+			.history
+			.iter()
+			.map(|entry| (fixture.run.id, entry.clone())),
+	);
+	let entry = &mut fixture.run.context.history[1];
+	let ContextEvent::Tool { result, .. } = &mut entry.event else {
+		unreachable!()
+	};
+	*result = aidash_application::context::offload::marker(entry.seq, result);
+	entry.research = None;
+	fixture.run.context.offloaded.get_or_insert_default();
+	fixture.run.context.offload_reads.summary_pending = true;
+	advance_sources(&mut fixture).await.unwrap();
+	let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
+	assert_eq!(
+		attempts.last().unwrap().1,
+		Some(Outcome::Adopted),
+		"{attempts:?}"
+	);
+	assert_eq!(attempts.last().unwrap().0.source_from_seq, 1);
+	// The huge original went back to its marker instead of dropping the
+	// turns after it.
+	assert!(attempts.last().unwrap().0.source_through_seq > 2);
+	let requests = fixture.backend.0.requests.lock().unwrap();
+	let summary = requests
+		.iter()
+		.find(|request| request.response_format.is_some())
+		.unwrap();
+	assert!(
+		!serde_json::to_string(summary)
+			.unwrap()
+			.contains(&"h".repeat(1000))
+	);
 }
 
 fn fixture_with(configure: impl FnOnce(&mut State)) -> Fixture {

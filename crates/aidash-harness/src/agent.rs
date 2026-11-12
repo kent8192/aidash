@@ -932,11 +932,31 @@ impl<'a> Executor<'a> {
 			if request.ensure_fits(summary_window).is_ok() {
 				break request;
 			}
+			// An original whose bytes exceed a quarter of the summarizer's window goes
+			// back to its marker before any turn is dropped: the summary then
+			// still absorbs the turns around it, and one huge result cannot
+			// block every later summary. `from_draft` reads only a short
+			// outcome of each result anyway.
+			if aidash_application::context::offload_largest_absorbed(
+				&mut plan.absorbed,
+				summary_window / 4,
+			) {
+				continue;
+			}
 			if fitting.native() {
 				let turns = aidash_domain::projection::native::model_turns(&plan.absorbed);
 				let Some(last) = turns.iter().flatten().max().copied() else {
 					return Err(Error::Context(ContextFailure::ContextUnreducible));
 				};
+				// The oldest turn alone does not fit: its remaining originals
+				// go back to their markers, largest first.
+				if turns.iter().flatten().min() == Some(&last) {
+					if aidash_application::context::offload_largest_absorbed(&mut plan.absorbed, 0)
+					{
+						continue;
+					}
+					return Err(Error::Context(ContextFailure::ContextUnreducible));
+				}
 				let before = plan.absorbed.len();
 				let mut index = 0;
 				plan.absorbed.retain(|_| {
@@ -945,6 +965,10 @@ impl<'a> Executor<'a> {
 					keep
 				});
 				if plan.absorbed.len() == before {
+					return Err(Error::Context(ContextFailure::ContextUnreducible));
+				}
+			} else if plan.absorbed.len() == 1 {
+				if !aidash_application::context::offload_largest_absorbed(&mut plan.absorbed, 0) {
 					return Err(Error::Context(ContextFailure::ContextUnreducible));
 				}
 			} else {
@@ -1024,7 +1048,10 @@ impl<'a> Executor<'a> {
 		}
 		let reservation = match guard {
 			Some(guard) => match guard
-				.reserve_inference(token, summary_window, max_tokens, &request)
+				// Each physical summary call, a truncation retry included, is
+				// its own Usage Record: reserve it under its attempt, not the
+				// lease shared by every call of this step.
+				.reserve_inference(attempt.id, summary_window, max_tokens, &request)
 				.await
 			{
 				Ok(reservation) => reservation,
@@ -2359,9 +2386,19 @@ impl<'a> Executor<'a> {
                             *entry = original.into_iter().find(|item| item.seq == entry.seq && matches!(item.event, ContextEvent::Human { .. }))
                                 .ok_or_else(|| Error::Conflict("human Journal event is missing".into()))?;
                         }
-                        return Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, &agent.model, agent.harness_contract, *plan, &tools, true)).await
-                            .map_err(at_stage("compaction"))
-                            .map_err(|error| remote_budget(guard, error));
+                        // Repeated reads ask for a summary even when the request
+                        // fits. Such a Run pauses only when nothing makes its
+                        // request fit (ADR 0125): a failed summary is dropped and
+                        // the step goes on with the projection it already has.
+                        let forced = plan.pruned.offload_reads.summary_pending && plan.before_tokens <= fitting.budget.window;
+                        return match Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, &agent.model, agent.harness_contract, *plan, &tools, true)).await {
+                            // Every exit of `summarize` settles its attempt first.
+                            Err(Error::Context(_) | Error::ContextOverflow) if forced => {
+                                run.context.offload_reads.release();
+                                store.save_run(run, token, "context.summary_skipped").await
+                            }
+                            result => result.map_err(at_stage("compaction")).map_err(|error| remote_budget(guard, error)),
+                        };
                     }
                 }
 
