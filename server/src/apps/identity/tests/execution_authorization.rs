@@ -8882,6 +8882,100 @@ async fn deployment_approval_copies_agent_subjects_and_restrictions_to_new_node(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn withdrawing_a_deployment_approval_reaches_every_node_unless_kept_to_one(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (_, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	let source = aidash_domain::nodes::NodeName::derived("acme");
+	let add_node = async |label: &str| -> aidash_domain::nodes::NodeName {
+		let (status, node) = common::administer_node(
+			&f,
+			"acme",
+			"/api/tenants/acme/nodes",
+			json!({ "label": label }),
+		)
+		.await;
+		// Creating a Node never fails because Deployment approvals differ (#873).
+		assert_eq!(status, 201, "{node}");
+		node["name"].as_str().unwrap().parse().unwrap()
+	};
+	let model = async |node: &aidash_domain::nodes::NodeName| -> Option<Value> {
+		let (status, catalog) = request(
+			&app,
+			&alice,
+			"GET",
+			&format!("/api/authorization/acme/catalog?node={node}"),
+			Value::Null,
+		)
+		.await;
+		assert_eq!(status, 200, "{catalog}");
+		catalog
+			.as_array()
+			.unwrap()
+			.iter()
+			.find(|row| row["entry_id"] == "model" && row["entry_version"] == "1.0.0")
+			.cloned()
+	};
+	let withdraw = async |node: &aidash_domain::nodes::NodeName, scope: Option<&str>| {
+		let revision = model(node).await.unwrap()["revision"].clone();
+		let mut body = json!({
+			"node": node, "entry": {"id": "model", "version": "1.0.0"},
+			"enabled": false, "expected_revision": revision,
+		});
+		if let Some(scope) = scope {
+			body["scope"] = json!(scope);
+		}
+		let (status, result) = request(
+			&app,
+			&alice,
+			"POST",
+			"/api/authorization/acme/catalog",
+			body,
+		)
+		.await;
+		assert_eq!(status, 200, "{result}");
+	};
+	let (status, result) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({
+			"node": source, "entry": {"id": "model", "version": "1.0.0"}, "enabled": true,
+			"expected_revision": 1, "carry_over": false, "scope": "deployment",
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{result}");
+	let sibling = add_node("Sibling").await;
+	assert_eq!(model(&sibling).await.unwrap()["enabled"], true);
+
+	// "This Node only" keeps the others and leaves the row out of new copies.
+	withdraw(&sibling, Some("node")).await;
+	assert_eq!(model(&sibling).await.unwrap()["enabled"], false);
+	assert_eq!(model(&source).await.unwrap()["enabled"], true);
+	let third = add_node("Third").await;
+	assert_eq!(model(&third).await.unwrap()["enabled"], true);
+
+	// By default the withdrawal follows the approval's Deployment scope.
+	withdraw(&source, None).await;
+	assert_eq!(model(&source).await.unwrap()["enabled"], false);
+	assert_eq!(model(&third).await.unwrap()["enabled"], false);
+	let fourth = add_node("Fourth").await;
+	assert!(
+		model(&fourth)
+			.await
+			.is_none_or(|row| row["enabled"] == false)
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn stopping_carry_prevents_descendants_from_carrying_again(
 	#[future(awt)]
 	#[from(common::native_application)]
