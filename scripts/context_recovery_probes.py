@@ -41,6 +41,9 @@ def generate(entries, side_effect_tools=()):
     if len({seq for seq, _ in events}) != len(events):
         raise ValueError("duplicate journal sequence")
     constraints, probes = {}, []
+    # Distinct excluded values per (key, event), in text order, so two values
+    # one event names for the same key get distinguishable questions.
+    exclusions = {}
     for seq, event in events:
         kind = event.get("kind")
         # Assistant text may repeat an obsolete value. Only people and tool
@@ -74,10 +77,15 @@ def generate(entries, side_effect_tools=()):
                 key, value = match.groups()
                 # Exclusions accumulate; scalar constraints are replaced by later corrections.
                 slot = (key, value) if key.startswith("EXCLUDE-") else (key, "")
-                constraints[slot] = {"type": "constraint", "seq": seq,
-                                     "question": f"What is the current value of {key}?" if not slot[1]
-                                                 else f"Which excluded value is named by {key} at event {seq}?",
-                                     "answer": value}
+                if slot[1]:
+                    named = exclusions.setdefault((key, seq), [])
+                    if value not in named:
+                        named.append(value)
+                    question = (f"Which excluded value is named by occurrence {named.index(value) + 1} "
+                                f"of {key} at event {seq}?")
+                else:
+                    question = f"What is the current value of {key}?"
+                constraints[slot] = {"type": "constraint", "seq": seq, "question": question, "answer": value}
             for match in IDENTIFIER.finditer(text):
                 identifier = match.group()
                 identifier_index += 1
