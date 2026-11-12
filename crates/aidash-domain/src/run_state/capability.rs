@@ -117,9 +117,15 @@ impl RecoveryState {
 	fn required_capabilities(&self) -> impl IntoIterator<Item = PersistedCapability> {
 		// Degraded context (#234) is rejected by workers built before it. It is
 		// omitted while empty, so a Run that never degraded needs nothing.
-		(!self.degraded.is_empty())
-			.then_some(PersistedCapability::DegradedContext)
+		self.outage
+			.as_ref()
+			.map(|_| PersistedCapability::OutageWait)
 			.into_iter()
+			.chain(
+				(!self.degraded.is_empty())
+					.then_some(PersistedCapability::DegradedContext)
+					.into_iter(),
+			)
 			.chain(
 				self.workspace_event_cursor
 					.map(|_| PersistedCapability::EventWait),

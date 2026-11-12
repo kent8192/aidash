@@ -465,6 +465,9 @@ pub const LEASE_RECOVERY_LIMIT: u32 = 3;
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RecoveryState {
+	/// Start of the current external-service outage, retained across wake-ups.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub outage: Option<OutageTracking>,
 	/// Last workspace event delivered to this Run.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub workspace_event_cursor: Option<i64>,
@@ -523,6 +526,12 @@ pub struct RecoveryState {
 		skip_serializing_if = "crate::semantic::degraded::DegradedContext::is_empty"
 	)]
 	pub degraded: crate::semantic::degraded::DegradedContext,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OutageTracking {
+	pub service: String,
+	pub started_at: DateTime<Utc>,
 }
 /// The call an Authority Pause stopped, recorded only when it certainly did not run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

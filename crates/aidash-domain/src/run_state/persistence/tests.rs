@@ -3,6 +3,24 @@ use crate::{RawRun, context::Context};
 use rstest::{fixture, rstest};
 use serde_json::json;
 use uuid::Uuid;
+
+#[rstest]
+fn outage_tracking_survives_wake_and_is_cleared_after_progress(mut run: Run) {
+	let start = chrono::DateTime::parse_from_rfc3339("2030-01-01T00:00:00Z")
+		.unwrap()
+		.to_utc();
+	run.recovery.outage = Some(crate::run_state::OutageTracking {
+		service: "Decider".into(),
+		started_at: start,
+	});
+	run.recovery.decider_retry = 6;
+	let resumed = run.worker_snapshot("run.outage_resumed").unwrap();
+	assert_eq!(resumed.pending["recovery"]["outage"]["service"], "Decider");
+	assert_eq!(resumed.pending["recovery"]["decider_retry"], 6);
+	let completed = run.worker_snapshot("model.completed").unwrap();
+	assert!(completed.pending["recovery"].get("outage").is_none());
+	assert!(completed.pending["recovery"].get("decider_retry").is_none());
+}
 #[fixture]
 fn run() -> Run {
 	serde_json::from_value::<RawRun>(json!({

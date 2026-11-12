@@ -3542,6 +3542,7 @@ connection: None,
 			.await?,
 			RunState::Waiting(waiting) => {
 				let mut waiting = *waiting;
+				let outage_resume = matches!(waiting, WaitingState::Outage { .. });
 				// A newer input ends a Completion Review without an answer: the
 				// candidate under review is stale.
 				let superseded = match waiting.request_id() {
@@ -3695,7 +3696,17 @@ connection: None,
 						}
 						resume.into_state()
 					}
-					WaitingState::Outage { resume, .. } | WaitingState::Timer { resume, .. } | WaitingState::Human { resume, .. } => {
+					WaitingState::Outage { resume, .. } => {
+						// Preserve the exhausted short-retry count across the wake-up.
+						if run.recovery.semantic_reason.is_some() {
+							run.recovery.retry = Some(aidash_domain::RetryState {
+								count: aidash_domain::semantic::OUTAGE_RETRIES,
+								at: chrono::Utc::now(),
+							});
+						}
+						resume.into_state()
+					}
+					WaitingState::Timer { resume, .. } | WaitingState::Human { resume, .. } => {
 						resume.into_state()
 					}
 					WaitingState::Operation { operation_id, mut resume, .. } => {
@@ -3741,7 +3752,7 @@ connection: None,
 						));
 					}
 				};
-				store.save_run(run, token, "run.resumed").await?;
+				store.save_run(run, token, if outage_resume { "run.outage_resumed" } else { "run.resumed" }).await?;
 			}
 			RunState::Completed(_) | RunState::Failed(_) | RunState::Cancelled(_) => {
 				return Err(Error::Conflict("run is not executable".into()));

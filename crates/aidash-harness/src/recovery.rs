@@ -2,10 +2,53 @@
 use aidash_application::{
 	Result, authorization::refusal_note, ports::ExecutionRecoveryStore, recovery::ExecutionFailure,
 };
+use aidash_domain::run_state::{OutageCadence, OutageTracking};
 use aidash_domain::semantic::{Failure as SemanticFailure, OUTAGE_RETRIES, PENDING_REPLAY_SECONDS};
 use aidash_domain::{FailureTarget, RetryState, Run, RunControl, RunPhase, RunState, WaitingState};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
+
+fn track_outage(run: &mut Run, service: &str, now: DateTime<Utc>) -> DateTime<Utc> {
+	if run
+		.recovery
+		.outage
+		.as_ref()
+		.is_none_or(|outage| outage.service != service)
+	{
+		run.recovery.outage = Some(OutageTracking {
+			service: service.into(),
+			started_at: now,
+		});
+	}
+	run.recovery
+		.outage
+		.as_ref()
+		.expect("outage just recorded")
+		.started_at
+}
+
+async fn wait_outage(
+	store: &dyn ExecutionRecoveryStore,
+	run: &mut Run,
+	token: Uuid,
+	service: &str,
+	cadence: OutageCadence,
+	now: DateTime<Utc>,
+) -> Result<bool> {
+	let started_at = track_outage(run, service, now);
+	let Some(wake_at) = cadence.next_wake(started_at, now) else {
+		return Ok(false);
+	};
+	run.suspend(|resume| WaitingState::Outage {
+		service: service.into(),
+		started_at,
+		wake_at,
+		resume,
+		cadence,
+	})?;
+	store.save(run, token, "run.outage_waiting").await?;
+	Ok(true)
+}
 
 fn plain_tool_name(name: &str) -> bool {
 	(1..=64).contains(&name.len())
@@ -52,6 +95,9 @@ pub async fn recover(
 		.map_or(0, |retry| retry.count)
 		+ 1;
 	if let ExecutionFailure::Semantic(reason) = failure {
+		if reason == SemanticFailure::Unavailable {
+			track_outage(&mut current, "Semantic context", now);
+		}
 		if reason == SemanticFailure::Stale && attempts <= OUTAGE_RETRIES {
 			// The Home refused a reused retrieval whose corpus changed (ADR
 			// 0020). Drop the cached Source observation so the retry retrieves
@@ -93,6 +139,22 @@ pub async fn recover(
 			});
 			current.error = Some(reason.to_string());
 			store.save(&current, token, "run.semantic_retrying").await?;
+		} else if reason == SemanticFailure::Unavailable {
+			current.recovery.semantic_reason = Some(SemanticFailure::RetriesExhausted);
+			if !wait_outage(
+				store,
+				&mut current,
+				token,
+				"Semantic context",
+				OutageCadence::Service,
+				now,
+			)
+			.await?
+			{
+				store
+					.pause_semantic(&current, token, SemanticFailure::RetriesExhausted)
+					.await?;
+			}
 		} else {
 			let reason = if reason.transient() || reason == SemanticFailure::Stale {
 				SemanticFailure::RetriesExhausted
@@ -103,9 +165,10 @@ pub async fn recover(
 			store.pause_semantic(&current, token, reason).await?;
 		}
 	} else if matches!(failure, ExecutionFailure::DeciderOutage) {
+		track_outage(&mut current, "Decider", now);
 		// Every Decider Route failed. Retry after 2, 4, 8, 16 and 32 s, each
 		// time as a new decision, then pause until a person resumes (ADR 0066).
-		let retries = current.recovery.decider_retry + 1;
+		let retries = current.recovery.decider_retry.saturating_add(1);
 		if retries <= OUTAGE_RETRIES {
 			current.recovery.decider_retry = retries;
 			current.recovery.retry = Some(RetryState {
@@ -115,11 +178,25 @@ pub async fn recover(
 			current.error = Some(failure.message());
 			store.save(&current, token, "run.decider_retrying").await?;
 		} else {
+			current.recovery.decider_retry = retries;
 			let reason = aidash_domain::context::recovery::Failure::DeciderUnavailable;
 			current.recovery.context_reason = Some(reason);
-			store.pause_context(&current, token, reason).await?;
+			if !wait_outage(
+				store,
+				&mut current,
+				token,
+				"Decider",
+				OutageCadence::Service,
+				now,
+			)
+			.await?
+			{
+				store.pause_context(&current, token, reason).await?;
+			}
 		}
-	} else if let ExecutionFailure::NodeUnreachable { retry, .. } = failure {
+	} else if let ExecutionFailure::NodeUnreachable { retry, ref node } = failure {
+		let service = format!("Node {node}");
+		track_outage(&mut current, &service, now);
 		// Another Node did not answer. As with a Decider outage, retry after 2,
 		// 4, 8, 16 and 32 s while nothing took effect, then pause until a person
 		// resumes, which checks again (#751). A Run never goes on unconfirmed.
@@ -132,6 +209,18 @@ pub async fn recover(
 			});
 			current.error = Some(failure.message());
 			store.save(&current, token, "run.node_retrying").await?;
+		} else if !retry
+			&& wait_outage(
+				store,
+				&mut current,
+				token,
+				&service,
+				OutageCadence::Service,
+				now,
+			)
+			.await?
+		{
+			// A post-effect check must be retried without repeating the effect.
 		} else {
 			store
 				.pause(
