@@ -447,6 +447,136 @@ async fn revoking_one_file_refuses_new_runs_and_names_its_path(
 	c.close().await;
 }
 
+/// The default test policy lets everyone do everything. This one leaves Alice
+/// the uploader's whole authority and gives Bob, if anyone, only `reference.delete`.
+fn only_alice_uses_references(c: &mut CoreFixture, bob_may_revoke: bool) {
+	let resources = c.policy["policies"][0]["resources"].clone();
+	c.policy["policies"][0]["subjects"] = json!({"kinds":["agent"]});
+	let policies = c.policy["policies"].as_array_mut().unwrap();
+	policies.push(json!({"id":"alice-works","effect":"allow","subjects":{"ids":["alice"]},"actions":["*"],"resources":resources}));
+	if bob_may_revoke {
+		policies.push(json!({"id":"bob-revokes-references","effect":"allow","subjects":{"ids":["bob"]},"actions":["reference.delete"],"resources":{"kinds":["reference"]}}));
+	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_subject_the_policy_grants_reference_delete_revokes_a_file_it_did_not_upload(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let mut c = Box::pin(capability_fixture).await;
+	let token = c.token.clone();
+	let (status, added) = add(&c, &token, vec![file("gone/plan.md", "gone\n")]).await;
+	assert_eq!(status, 200, "{added}");
+	only_alice_uses_references(&mut c, true);
+	bind_agent(
+		&mut c,
+		&[("bobs-revocable-docs", added["references"].clone())],
+	)
+	.await;
+	let id = added["files"][0]["reference"]["reference_id"]
+		.as_str()
+		.unwrap()
+		.to_owned();
+	let bob = common::issued_credential(&c.f.store, "acme", "bob").await;
+	let bob = bob["token"].as_str().unwrap();
+
+	// Reading and downloading stay with the uploader.
+	let (status, read) = request(
+		&c.app,
+		bob,
+		"GET",
+		&format!("/api/references/{id}"),
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 404, "{read}");
+	let (status, download) = request(
+		&c.app,
+		bob,
+		"GET",
+		&format!("/api/references/{id}/download"),
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 404, "{download}");
+	// The revocation view gives the revision and state, and no content.
+	let (status, view) = request(
+		&c.app,
+		bob,
+		"GET",
+		&format!("/api/references/{id}/revocation"),
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 200, "{view}");
+	assert_eq!(view["state"], "ready", "{view}");
+	assert_eq!(view.as_object().unwrap().len(), 3, "{view}");
+	let (status, stale) = request(
+		&c.app,
+		bob,
+		"POST",
+		&format!("/api/references/{id}/revoke"),
+		json!({"expected_revision":view["revision"].as_i64().unwrap() + 1}),
+	)
+	.await;
+	assert_eq!(status, 409, "{stale}");
+	let (status, result) = request(
+		&c.app,
+		bob,
+		"POST",
+		&format!("/api/references/{id}/revoke"),
+		json!({"expected_revision":view["revision"]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{result}");
+
+	let (status, refused) = start(&c, &token, c.task).await;
+	assert_eq!(status, 404, "{refused}");
+	assert!(refused.to_string().contains("gone/plan.md"), "{refused}");
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_subject_the_policy_does_not_grant_reference_delete_gets_404_and_revokes_nothing(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let mut c = Box::pin(capability_fixture).await;
+	let token = c.token.clone();
+	let (status, added) = add(&c, &token, vec![file("keep.md", "keep\n")]).await;
+	assert_eq!(status, 200, "{added}");
+	only_alice_uses_references(&mut c, false);
+	bind_agent(&mut c, &[("kept-docs", added["references"].clone())]).await;
+	let reference = &added["files"][0]["reference"];
+	let id = reference["reference_id"].as_str().unwrap();
+	let bob = common::issued_credential(&c.f.store, "acme", "bob").await;
+	let bob = bob["token"].as_str().unwrap();
+
+	let (status, view) = request(
+		&c.app,
+		bob,
+		"GET",
+		&format!("/api/references/{id}/revocation"),
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 404, "{view}");
+	let (status, result) = request(
+		&c.app,
+		bob,
+		"POST",
+		&format!("/api/references/{id}/revoke"),
+		json!({"expected_revision":reference["revision"]}),
+	)
+	.await;
+	assert_eq!(status, 404, "{result}");
+
+	let (status, started) = start(&c, &token, c.task).await;
+	assert_eq!(status, 200, "{started}");
+	c.close().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn revoking_a_file_does_not_lock_an_area_that_never_copied_it(

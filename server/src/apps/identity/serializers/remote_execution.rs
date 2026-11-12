@@ -21,12 +21,30 @@ pub struct RemoteExecutionActivation {
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
-pub struct RemoteExecutionStatus {
-	pub human_requests: Vec<aidash_domain::HumanRequest>,
-	pub grant: Prepared,
-	pub execution: Option<RemoteExecutionActivation>,
-	pub unavailable: bool,
-	pub semantic: crate::semantic::remote::status::Status,
+#[serde(tag = "view", rename_all = "snake_case")]
+pub enum RemoteExecutionStatus {
+	Requester {
+		human_requests: Vec<aidash_domain::HumanRequest>,
+		grant: Box<Prepared>,
+		execution: Option<RemoteExecutionActivation>,
+		unavailable: bool,
+		semantic: crate::semantic::remote::status::Status,
+	},
+	Holder {
+		grant: RemoteDeclineGrant,
+		execution: RemoteDeclineExecution,
+	},
+}
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct RemoteDeclineGrant {
+	pub id: Uuid,
+	pub node_id: String,
+	pub agent: aidash_domain::registry::EntityRef,
+}
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct RemoteDeclineExecution {
+	pub control: RemoteExecutionControlState,
+	pub declinable_call: aidash_domain::run_state::DeclinableCall,
 }
 
 pub use aidash_domain::federation::execution::admission::RemoteExecutionControl;
@@ -126,12 +144,31 @@ impl From<RemoteExecutionMessageInput>
 }
 impl From<aidash_domain::federation::execution::home::Status> for RemoteExecutionStatus {
 	fn from(row: aidash_domain::federation::execution::home::Status) -> Self {
-		Self {
-			human_requests: row.human_requests,
-			grant: row.grant,
-			execution: row.execution.map(Into::into),
-			unavailable: row.unavailable,
-			semantic: row.semantic,
+		if row.requester {
+			Self::Requester {
+				human_requests: row.human_requests,
+				grant: Box::new(row.grant),
+				execution: row.execution.map(Into::into),
+				unavailable: row.unavailable,
+				semantic: row.semantic,
+			}
+		} else {
+			let execution = row
+				.execution
+				.expect("holder offers contain a paused execution");
+			Self::Holder {
+				grant: RemoteDeclineGrant {
+					id: row.grant.id,
+					node_id: row.grant.node_id,
+					agent: row.grant.agent,
+				},
+				execution: RemoteDeclineExecution {
+					control: execution.control,
+					declinable_call: execution
+						.declinable_call
+						.expect("holder offers contain a declinable call"),
+				},
+			}
 		}
 	}
 }

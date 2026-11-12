@@ -55,6 +55,7 @@ fn worker_save_keeps_only_the_event_specific_retry_and_error_disposition(
 #[case::estimate("run.estimate_pinned")]
 #[case::mcp("run.mcp_checkpoint")]
 #[case::summary_revoked("context.summary_revoked")]
+#[case::early_abandonment("run.unassigned_tasks_abandoned")]
 fn lease_retaining_checkpoints_keep_the_lease_recovery_count(run: Run, #[case] event: &str) {
 	assert!(retains_lease(event));
 	let snapshot = run.worker_snapshot(event).unwrap();

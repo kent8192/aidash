@@ -41,6 +41,8 @@ pub enum PersistedCapability {
 	EventWait,
 	/// A saved completion names the Unassigned Tasks it abandons (#772).
 	UnassignedAbandonment,
+	/// Early abandonments must survive waits and worker recovery (#818).
+	EarlyUnassignedAbandonment,
 }
 impl PersistedCapability {
 	pub const ALL: &'static [Self] = &[
@@ -51,6 +53,7 @@ impl PersistedCapability {
 		Self::ConnectionWait,
 		Self::EventWait,
 		Self::UnassignedAbandonment,
+		Self::EarlyUnassignedAbandonment,
 	];
 
 	/// What this build can load. A worker only leases Runs whose state needs a subset.
@@ -66,6 +69,7 @@ impl PersistedCapability {
 			Self::ConnectionWait => "connection_wait",
 			Self::EventWait => "event_wait",
 			Self::UnassignedAbandonment => "unassigned_abandonment",
+			Self::EarlyUnassignedAbandonment => "early_unassigned_abandonment",
 		}
 	}
 }
@@ -120,6 +124,10 @@ impl RecoveryState {
 				self.remote_task_fingerprint
 					.as_ref()
 					.map(|_| PersistedCapability::EventWait),
+			)
+			.chain(
+				(!self.early_abandoned_tasks.is_empty())
+					.then_some(PersistedCapability::EarlyUnassignedAbandonment),
 			)
 			.chain(
 				(!self.connection_waited.is_empty()

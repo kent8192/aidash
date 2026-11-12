@@ -81,7 +81,8 @@ export function RemoteRunManagement({
       <h3 className="text-[13px] font-semibold text-foreground">
         {ja ? "実行の管理" : "Execution management"}
       </h3>
-      {state.control !== "ACTIVE" &&
+      {state.may_control &&
+        state.control !== "ACTIVE" &&
         state.control_source === "deployment_administrator" && (
           <Hint role="status">
             {state.control === "CANCELLED"
@@ -89,13 +90,13 @@ export function RemoteRunManagement({
               : copy.pausedByAdministrator}
           </Hint>
         )}
-      {state.semantic_reason && (
+      {state.may_control && state.semantic_reason && (
         <Hint role="status">{reasons[state.semantic_reason][ja ? 1 : 0]}</Hint>
       )}
-      {state.memory_cleanup && (
+      {state.may_control && state.memory_cleanup && (
         <CleanupMessage state={state.memory_cleanup.state} />
       )}
-      {!terminal && (
+      {state.may_control && !terminal && (
         <div className="flex min-w-0 flex-wrap gap-2">
           {state.control === "ACTIVE" && (
             <Button
@@ -132,7 +133,8 @@ export function RemoteRunManagement({
           }
         />
       )}
-      {resumeElsewhere &&
+      {state.may_control &&
+        resumeElsewhere &&
         state.control === "PAUSED" &&
         !terminal &&
         (!state.semantic_recovery ||

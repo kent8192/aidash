@@ -35,7 +35,7 @@ function offers(
   );
 }
 export function RemoteExecutions({ task }: { task: string }) {
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
   const ja = locale === "ja-JP";
   const client = useQueryClient();
   const [busy, setBusy] = useState<string | null>(null);
@@ -106,233 +106,269 @@ export function RemoteExecutions({ task }: { task: string }) {
       {status.isError && <Alert>{status.error.message}</Alert>}
       {error && <Alert>{error}</Alert>}
       <div className="grid min-w-0 divide-y divide-border border-y border-border">
-        {(!status.isError ? status.data : undefined)?.map(
-          ({ grant, execution, unavailable, semantic, human_requests }) => {
-            const expired =
-              Date.parse(grant.expires_at) <=
-              (clock.data ?? Number.POSITIVE_INFINITY);
-            const live = !grant.revoked && !expired;
-            const terminal =
-              execution &&
-              ["COMPLETED", "FAILED", "CANCELLED"].includes(execution.phase);
+        {(!status.isError ? status.data : undefined)?.map((row) => {
+          if (row.view === "holder") {
+            const { grant, execution } = row;
             return (
               <article className="grid min-w-0 gap-3 py-3" key={grant.id}>
-                <div className="grid min-w-0 gap-0.5">
-                  <p className="min-w-0 font-mono text-xs text-foreground [overflow-wrap:anywhere]">
-                    {grant.node_id}
-                  </p>
-                  <p className="min-w-0 font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
-                    {grant.agent.id}@{grant.agent.version}
-                  </p>
-                </div>
+                <p className="font-mono text-xs">{grant.node_id}</p>
+                <p className="font-mono text-xs">
+                  {grant.agent.id}@{grant.agent.version}
+                </p>
                 <Facts
                   items={[
+                    [t("remoteDeclineGrant"), grant.id, true],
                     [
-                      ja ? "許可" : "Grant",
-                      <span className="flex min-w-0 flex-wrap items-center gap-2">
-                        <ToneBadge
-                          tone={
-                            grant.revoked || expired ? "warning" : "success"
-                          }
-                        >
-                          {grant.revoked
-                            ? ja
-                              ? "取り消し済み"
-                              : "Revoked"
-                            : expired
-                              ? ja
-                                ? "期限切れ"
-                                : "Expired"
-                              : ja
-                                ? "有効"
-                                : "Valid"}
-                        </ToneBadge>
-                        <code className="min-w-0 font-mono text-xs text-faint [overflow-wrap:anywhere]">
-                          {grant.id}
-                        </code>
-                      </span>,
+                      t("remoteDeclineState"),
+                      <Badge value={execution.control} />,
                     ],
-                    [
-                      ja ? "有効期限" : "Expires",
-                      new Date(grant.expires_at).toLocaleString(locale),
-                      true,
-                    ],
-                    ...(execution
-                      ? ([
-                          [
-                            ja ? "受信・実行 ID" : "Admission / run ID",
-                            execution.admission_id,
-                            true,
-                          ],
-                          [
-                            ja ? "実行状態" : "Execution state",
-                            <span className="flex flex-wrap items-center gap-1.5">
-                              <Badge value={execution.phase} />
-                              <Badge value={execution.control} />
-                            </span>,
-                          ],
-                        ] as const)
-                      : []),
                   ]}
                 />
-                {live &&
-                  human_requests?.map((request) => (
-                    <RemoteHuman
-                      key={request.id}
-                      task={task}
-                      grant={grant.id}
-                      request={request}
-                    />
-                  ))}
-                {semantic && (
-                  <RemoteMemoryStatus
-                    status={semantic}
-                    provenanceUrl={`/api/tasks/${task}/remote-grants/${grant.id}/semantic`}
-                  />
-                )}
-                {offers(semantic, "create_follow_up_task") && (
-                  <RemoteFollowUp
+                <DeclineCall
+                  call={execution.declinable_call}
+                  submit={submit}
+                  withSentence={false}
+                  decline={(call, rest_of_run) =>
+                    apiFetch(
+                      `/api/tasks/${task}/remote-grants/${grant.id}/declined-calls`,
+                      {
+                        method: "POST",
+                        headers: { "content-type": "application/json" },
+                        body: JSON.stringify({
+                          call,
+                          ...(rest_of_run ? { rest_of_run: true } : {}),
+                        }),
+                      },
+                    )
+                  }
+                />
+              </article>
+            );
+          }
+          const { grant, execution, unavailable, semantic, human_requests } =
+            row;
+          const expired =
+            Date.parse(grant.expires_at) <=
+            (clock.data ?? Number.POSITIVE_INFINITY);
+          const live = !grant.revoked && !expired;
+          const terminal =
+            execution &&
+            ["COMPLETED", "FAILED", "CANCELLED"].includes(execution.phase);
+          return (
+            <article className="grid min-w-0 gap-3 py-3" key={grant.id}>
+              <div className="grid min-w-0 gap-0.5">
+                <p className="min-w-0 font-mono text-xs text-foreground [overflow-wrap:anywhere]">
+                  {grant.node_id}
+                </p>
+                <p className="min-w-0 font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                  {grant.agent.id}@{grant.agent.version}
+                </p>
+              </div>
+              <Facts
+                items={[
+                  [
+                    ja ? "許可" : "Grant",
+                    <span className="flex min-w-0 flex-wrap items-center gap-2">
+                      <ToneBadge
+                        tone={grant.revoked || expired ? "warning" : "success"}
+                      >
+                        {grant.revoked
+                          ? ja
+                            ? "取り消し済み"
+                            : "Revoked"
+                          : expired
+                            ? ja
+                              ? "期限切れ"
+                              : "Expired"
+                            : ja
+                              ? "有効"
+                              : "Valid"}
+                      </ToneBadge>
+                      <code className="min-w-0 font-mono text-xs text-faint [overflow-wrap:anywhere]">
+                        {grant.id}
+                      </code>
+                    </span>,
+                  ],
+                  [
+                    ja ? "有効期限" : "Expires",
+                    new Date(grant.expires_at).toLocaleString(locale),
+                    true,
+                  ],
+                  ...(execution
+                    ? ([
+                        [
+                          ja ? "受信・実行 ID" : "Admission / run ID",
+                          execution.admission_id,
+                          true,
+                        ],
+                        [
+                          ja ? "実行状態" : "Execution state",
+                          <span className="flex flex-wrap items-center gap-1.5">
+                            <Badge value={execution.phase} />
+                            <Badge value={execution.control} />
+                          </span>,
+                        ],
+                      ] as const)
+                    : []),
+                ]}
+              />
+              {live &&
+                human_requests?.map((request) => (
+                  <RemoteHuman
+                    key={request.id}
                     task={task}
                     grant={grant.id}
-                    onCreated={() => client.invalidateQueries()}
+                    request={request}
                   />
-                )}
-                {unavailable && (
-                  <Hint role="status">
-                    {ja
-                      ? "相手ノードに接続できません。再読み込みで状態を確認できます。"
-                      : "The destination is unavailable. Refresh to reconcile its durable state."}
-                  </Hint>
-                )}
-                {execution?.error && (
-                  <Alert>
-                    {ja
-                      ? "実行の確認が必要です。現在の権限と接続を確認してから再開してください。"
-                      : execution.error}
-                  </Alert>
-                )}
-                {execution && execution.phase !== "ADMITTED" && (
-                  <RemotePreviewFiles run={execution.run_id} />
-                )}
-                {!terminal && (
-                  <div className="flex min-w-0 flex-wrap gap-2">
-                    {live && (!execution || execution.phase === "ADMITTED") && (
-                      <Button
-                        variant="outline"
-                        disabled={busy === grant.id}
-                        onClick={() => void act(grant.id, "activate")}
-                      >
-                        {ja ? "起動を再試行" : "Retry activation"}
-                      </Button>
-                    )}
-                    {execution && execution.phase !== "ADMITTED" && (
-                      <>
-                        {live &&
-                          execution.control === "PAUSED" &&
-                          offers(semantic, "retry_unchanged_binding") && (
-                            <Button
-                              variant="outline"
-                              disabled={busy === grant.id}
-                              onClick={() => void act(grant.id, "resume")}
-                            >
-                              {ja
-                                ? "権限を再確認して再開"
-                                : "Recheck authority and resume"}
-                            </Button>
-                          )}
-                        {execution.control === "ACTIVE" && (
+                ))}
+              {semantic && (
+                <RemoteMemoryStatus
+                  status={semantic}
+                  provenanceUrl={`/api/tasks/${task}/remote-grants/${grant.id}/semantic`}
+                />
+              )}
+              {offers(semantic, "create_follow_up_task") && (
+                <RemoteFollowUp
+                  task={task}
+                  grant={grant.id}
+                  onCreated={() => client.invalidateQueries()}
+                />
+              )}
+              {unavailable && (
+                <Hint role="status">
+                  {ja
+                    ? "相手ノードに接続できません。再読み込みで状態を確認できます。"
+                    : "The destination is unavailable. Refresh to reconcile its durable state."}
+                </Hint>
+              )}
+              {execution?.error && (
+                <Alert>
+                  {ja
+                    ? "実行の確認が必要です。現在の権限と接続を確認してから再開してください。"
+                    : execution.error}
+                </Alert>
+              )}
+              {execution && execution.phase !== "ADMITTED" && (
+                <RemotePreviewFiles run={execution.run_id} />
+              )}
+              {!terminal && (
+                <div className="flex min-w-0 flex-wrap gap-2">
+                  {live && (!execution || execution.phase === "ADMITTED") && (
+                    <Button
+                      variant="outline"
+                      disabled={busy === grant.id}
+                      onClick={() => void act(grant.id, "activate")}
+                    >
+                      {ja ? "起動を再試行" : "Retry activation"}
+                    </Button>
+                  )}
+                  {execution && execution.phase !== "ADMITTED" && (
+                    <>
+                      {live &&
+                        execution.control === "PAUSED" &&
+                        offers(semantic, "retry_unchanged_binding") && (
                           <Button
                             variant="outline"
                             disabled={busy === grant.id}
-                            onClick={() => void act(grant.id, "pause")}
+                            onClick={() => void act(grant.id, "resume")}
                           >
-                            {ja ? "一時停止" : "Pause"}
+                            {ja
+                              ? "権限を再確認して再開"
+                              : "Recheck authority and resume"}
                           </Button>
                         )}
-                        {execution.control !== "CANCELLED" && (
-                          <Button
-                            variant="destructive"
-                            disabled={busy === grant.id}
-                            onClick={() => void act(grant.id, "cancel")}
-                          >
-                            {ja ? "実行を中止" : "Cancel execution"}
-                          </Button>
+                      {execution.control === "ACTIVE" && (
+                        <Button
+                          variant="outline"
+                          disabled={busy === grant.id}
+                          onClick={() => void act(grant.id, "pause")}
+                        >
+                          {ja ? "一時停止" : "Pause"}
+                        </Button>
+                      )}
+                      {execution.control !== "CANCELLED" && (
+                        <Button
+                          variant="destructive"
+                          disabled={busy === grant.id}
+                          onClick={() => void act(grant.id, "cancel")}
+                        >
+                          {ja ? "実行を中止" : "Cancel execution"}
+                        </Button>
+                      )}
+                      {live &&
+                        (offeredDecline(execution, execution.control) ??
+                          held[grant.id]) && (
+                          <DeclineCall
+                            call={
+                              (offeredDecline(execution, execution.control) ??
+                                held[grant.id])!
+                            }
+                            submit={submit}
+                            order="decline-first"
+                            onDeclined={() =>
+                              setHeld((current) => ({
+                                ...current,
+                                [grant.id]: (offeredDecline(
+                                  execution,
+                                  execution.control,
+                                ) ?? current[grant.id])!,
+                              }))
+                            }
+                            onFinished={() =>
+                              setHeld((current) => {
+                                const rest = { ...current };
+                                delete rest[grant.id];
+                                return rest;
+                              })
+                            }
+                            send={(content, key) =>
+                              apiFetch(
+                                `/api/tasks/${task}/remote-grants/${grant.id}/messages`,
+                                {
+                                  method: "POST",
+                                  headers: {
+                                    "content-type": "application/json",
+                                  },
+                                  // The form's key, so a retry after a lost reply sends the sentence once.
+                                  body: JSON.stringify({
+                                    id: key,
+                                    content,
+                                  }),
+                                },
+                              )
+                            }
+                            decline={(call, rest_of_run) =>
+                              apiFetch(
+                                `/api/tasks/${task}/remote-grants/${grant.id}/declined-calls`,
+                                {
+                                  method: "POST",
+                                  headers: {
+                                    "content-type": "application/json",
+                                  },
+                                  body: JSON.stringify({
+                                    call,
+                                    ...(rest_of_run
+                                      ? { rest_of_run: true }
+                                      : {}),
+                                  }),
+                                },
+                              )
+                            }
+                          />
                         )}
-                        {live &&
-                          (offeredDecline(execution, execution.control) ??
-                            held[grant.id]) && (
-                            <DeclineCall
-                              call={
-                                (offeredDecline(execution, execution.control) ??
-                                  held[grant.id])!
-                              }
-                              submit={submit}
-                              order="decline-first"
-                              onDeclined={() =>
-                                setHeld((current) => ({
-                                  ...current,
-                                  [grant.id]: (offeredDecline(
-                                    execution,
-                                    execution.control,
-                                  ) ?? current[grant.id])!,
-                                }))
-                              }
-                              onFinished={() =>
-                                setHeld((current) => {
-                                  const rest = { ...current };
-                                  delete rest[grant.id];
-                                  return rest;
-                                })
-                              }
-                              send={(content, key) =>
-                                apiFetch(
-                                  `/api/tasks/${task}/remote-grants/${grant.id}/messages`,
-                                  {
-                                    method: "POST",
-                                    headers: {
-                                      "content-type": "application/json",
-                                    },
-                                    // The form's key, so a retry after a lost reply sends the sentence once.
-                                    body: JSON.stringify({
-                                      id: key,
-                                      content,
-                                    }),
-                                  },
-                                )
-                              }
-                              decline={(call, rest_of_run) =>
-                                apiFetch(
-                                  `/api/tasks/${task}/remote-grants/${grant.id}/declined-calls`,
-                                  {
-                                    method: "POST",
-                                    headers: {
-                                      "content-type": "application/json",
-                                    },
-                                    body: JSON.stringify({
-                                      call,
-                                      ...(rest_of_run
-                                        ? { rest_of_run: true }
-                                        : {}),
-                                    }),
-                                  },
-                                )
-                              }
-                            />
-                          )}
-                      </>
-                    )}
-                  </div>
-                )}
-                {live &&
-                  !terminal &&
-                  execution &&
-                  execution.phase !== "ADMITTED" && (
-                    <RemoteMessage task={task} grant={grant.id} />
+                    </>
                   )}
-              </article>
-            );
-          },
-        )}
+                </div>
+              )}
+              {live &&
+                !terminal &&
+                execution &&
+                execution.phase !== "ADMITTED" && (
+                  <RemoteMessage task={task} grant={grant.id} />
+                )}
+            </article>
+          );
+        })}
       </div>
     </section>
   );

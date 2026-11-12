@@ -83,6 +83,7 @@ impl World {
 				key: self.key.clone(),
 				index: 0,
 				replay_safe: true,
+				tool_call: None,
 			}),
 		}
 	}
@@ -290,6 +291,73 @@ async fn declining_completes_the_call_with_the_fixed_sentence_and_resumes_the_ru
 	assert_eq!(event["kind"], "policy");
 	// Never the action.
 	assert!(!event.to_string().contains("task.delegate"), "{event}");
+}
+
+#[rstest]
+#[tokio::test]
+async fn decline_records_the_call_from_the_filtered_response(
+	#[future] database: DatabaseFixture,
+	run: Record,
+) {
+	let w = world(database.await, run).await;
+	// The worker's cursor indexes the catch-up list, after the first call is filtered out.
+	let calls = json!([
+		{"id":"discarded", "name":"unadvertised", "arguments":{"wrong":true}},
+		{"id":"kept", "name":"task_delegate", "arguments":{"task_id":"correct"}}
+	]);
+	sqlx::query(
+		"UPDATE runs SET pending = jsonb_set(pending, '{data,response,tool_calls}', $1) WHERE id = $2",
+	)
+	.bind(calls)
+	.bind(w.id)
+	.execute(w.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let mut refusal = w.refusal(RefusalCheck::Policy, true);
+	refusal.call.as_mut().unwrap().tool_call = Some(aidash_domain::tool::RefusedToolCall {
+		name: "task_delegate".into(),
+		arguments: json!({"task_id":"correct"}),
+	});
+	w.pause(&refusal).await;
+	let event: Value = sqlx::query_scalar(
+		"SELECT data FROM events WHERE kind = 'run.authorization_blocked' AND data->>'run_id' = $1",
+	)
+	.bind(w.id.to_string())
+	.fetch_one(w.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert!(event.get("call").is_none(), "{event}");
+	assert!(!event.to_string().contains("correct"), "{event}");
+	w.decline(&w.key, "alice").await.unwrap();
+	let (tool, input): (String, Value) =
+		sqlx::query_as("SELECT tool, input FROM invocations WHERE idempotency_key = $1")
+			.bind(&w.key)
+			.fetch_one(w.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(tool, "task_delegate");
+	assert_eq!(input, json!({"task_id":"correct"}));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_legacy_pause_does_not_journal_a_different_tool(
+	#[future] database: DatabaseFixture,
+	run: Record,
+) {
+	let w = world(database.await, run).await;
+	let mut refusal = w.refusal(RefusalCheck::Policy, true);
+	refusal.tool = "workspace_read".into();
+	w.pause(&refusal).await;
+	let mut tx = w.store.pool.begin(&TEST_FIXTURE).await.unwrap();
+	let result = w
+		.store
+		.decline_call_in(&mut tx, w.id, &w.key, "alice")
+		.await;
+	assert!(matches!(result, Err(Error::Conflict(_))));
+	drop(tx);
+	assert!(w.row().await.is_none());
+	assert_eq!(w.run().await.control, crate::domain::RunControl::Paused);
 }
 
 #[rstest]

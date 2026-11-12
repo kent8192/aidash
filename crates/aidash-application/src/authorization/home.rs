@@ -301,11 +301,42 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 	subject(repository)?;
 	let mut scope = repository.begin().await?;
 	let result = async {
-		managed_task(&mut scope, task, false).await?;
-		scope.grants(task).await
+		let grants = scope.grants(task).await?;
+		if !grants.is_empty() {
+			managed_task(&mut scope, task, false).await?;
+		}
+		Ok(grants)
 	}
 	.await;
-	let grants = finish(scope, result).await?;
+	let (grants, requester_denied) = match finish(scope, result).await {
+		Ok(grants) => (grants, false),
+		Err(Error::Forbidden) => (vec![], true),
+		Err(error) => return Err(error),
+	};
+	let has_requester_grants = !grants.is_empty();
+	let mut task_read_denied = false;
+	let holder_result = async {
+		let mut scope = repository.begin().await?;
+		let result = async {
+			if let Err(error) = scope.task_read(task).await {
+				task_read_denied = matches!(&error, Error::Forbidden);
+				return Err(error);
+			}
+			scope.holder_grants(task).await
+		}
+		.await;
+		finish(scope, result).await
+	}
+	.await;
+	let holder_grants = match holder_result {
+		Ok(grants) => grants,
+		Err(error) if has_requester_grants => {
+			tracing::warn!(%error, "holder grant lookup failed");
+			vec![]
+		}
+		Err(Error::Forbidden) if task_read_denied => vec![],
+		Err(error) => return Err(error),
+	};
 	let results: Vec<Result<Status>> = stream::iter(grants.into_iter().map(|grant| async move {
 		// Home-owned continuations have their own bounded read, completed before
 		// peer RPC so a slow receiver cannot hide an already durable request.
@@ -399,7 +430,7 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 		}
 		let mut execution = status.as_ref().ok().cloned().flatten();
 		// The paused call is shown only to a caller who may decline it; `list` already
-		// narrowed the grants to the caller's own, so the requester's check is `run.control`.
+		// narrowed these grants to the requester, whose check is `run.control`.
 		if execution
 			.as_ref()
 			.is_some_and(|activation| activation.declinable_call.is_some())
@@ -423,6 +454,7 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 			}
 		}
 		Ok(Status {
+			requester: true,
 			human_requests,
 			semantic,
 			grant: grant.prepared()?,
@@ -433,7 +465,103 @@ pub async fn list<R: HomeRepository>(repository: &R, task: Uuid) -> Result<Vec<S
 	.buffered(4)
 	.collect()
 	.await;
-	results.into_iter().collect()
+	let mut result: Vec<Status> = results.into_iter().collect::<Result<_>>()?;
+	let holders: Vec<Result<Option<Status>>> =
+		stream::iter(holder_grants.into_iter().map(|grant| async move {
+			if !holder_may_decline(repository, task, grant.id).await? {
+				return Ok(None);
+			}
+			let status: Result<Option<Activation>> = tokio::time::timeout(
+				std::time::Duration::from_secs(2),
+				repository.request(
+					grant.workspace_id,
+					&grant.node_id,
+					"/scoped/execution/status",
+					&json!({"grant_id":grant.id}),
+				),
+			)
+			.await
+			.unwrap_or_else(|_| Err(Error::External("remote status unavailable".into())));
+			let Ok(Some(activation)) = status else {
+				return Ok(None);
+			};
+			if activation.control != RemoteExecutionControlState::Paused
+				|| !activation.recoverable()
+			{
+				return Ok(None);
+			}
+			if activation.declinable_call.is_none() {
+				return Ok(None);
+			}
+			// Authority or the grant may have changed while the peer RPC was in flight.
+			if !holder_may_decline(repository, task, grant.id).await? {
+				return Ok(None);
+			}
+			Ok(Some(Status {
+				requester: false,
+				grant: grant.prepared()?,
+				execution: Some(activation),
+				unavailable: false,
+				human_requests: vec![],
+				semantic: aidash_domain::semantic::remote::status::Status {
+					state: "disabled".into(),
+					body_cleanup: None,
+					reason: None,
+					operation_id: None,
+					retry_count: 0,
+					retry_at: None,
+					result_count: None,
+					truncated: false,
+					retrieved_at: None,
+					recovery: None,
+				},
+			}))
+		}))
+		.buffered(4)
+		.collect()
+		.await;
+	match holders.into_iter().collect::<Result<Vec<_>>>() {
+		Ok(holders) => result.extend(holders.into_iter().flatten()),
+		Err(error) if has_requester_grants => tracing::warn!(%error, "holder grant recheck failed"),
+		Err(error) => return Err(error),
+	}
+	if (requester_denied || task_read_denied) && result.is_empty() {
+		return Err(Error::Forbidden);
+	}
+	Ok(result)
+}
+
+async fn holder_may_decline<R: HomeRepository>(
+	repository: &R,
+	task: Uuid,
+	grant: Uuid,
+) -> Result<bool> {
+	// A non-requester follows the same Task and Run checks as the decline route.
+	let mut scope = repository.begin().await?;
+	let result = async {
+		let Some(found) = scope.task_grant(task, grant).await? else {
+			return Ok(false);
+		};
+		if found.revoked || found.expires_at <= chrono::Utc::now() {
+			return Ok(false);
+		}
+		let identity = scope.identity();
+		if found.tenant == identity.tenant && found.root_subject == identity.subject {
+			return Ok(false);
+		}
+		let task = scope.task_read(task).await?;
+		let resource = scope.task_resource(&task).await?;
+		let Some(binding) = scope.binding(grant).await? else {
+			return Ok(false);
+		};
+		let run = scope.resource("run", binding.admission_id, resource.attributes);
+		scope.may(&run, "run.decline_call").await
+	}
+	.await;
+	match finish(scope, result).await {
+		Err(Error::Forbidden) => Ok(false),
+		result => result,
+	}
 }
 /// A check that fails after the target Node has acted. The `task_delegate` tool tells the model
 /// the delegation may have partly happened, where pausing would resume into a second admission;

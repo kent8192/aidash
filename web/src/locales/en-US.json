@@ -73,6 +73,8 @@
   "pause": "Pause",
   "declineCallRestOfRun": "Decline later calls to this tool for the same reason in this Run",
   "declineCall": "Decline this call",
+  "remoteDeclineGrant": "Grant",
+  "remoteDeclineState": "Control state",
   "declineCallHeading": "Decline a paused call",
   "declineCallWhat": "The Run is paused on a call to {tool}, which {refuser}.",
   "declineCallExplain": "The Agent goes on without this call. It is told that a person declined it, and it gives the Agent no new authority.",

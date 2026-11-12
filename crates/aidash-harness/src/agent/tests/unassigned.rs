@@ -227,6 +227,34 @@ async fn with_no_step_left_there_is_no_notice_and_the_run_still_completes(mut fi
 
 #[rstest]
 #[tokio::test]
+async fn asking_a_person_at_the_step_limit_leaves_room_to_resume(mut fixture: Fixture) {
+	set_children(&fixture, children(1, false, vec![task(1, false, false)]));
+	fixture.run.step = 63;
+	answer(&mut fixture.run, "All done.");
+	advance_sources(&mut fixture).await.unwrap();
+	let (_, saved) = last_write(&fixture);
+	assert!(matches!(saved.state, RunState::Waiting(_)));
+	fixture.run = saved;
+	fixture
+		.backend
+		.0
+		.human
+		.lock()
+		.unwrap()
+		.as_mut()
+		.unwrap()
+		.response = Some(json!({"answer": "Done"}));
+	advance_sources(&mut fixture).await.unwrap();
+	assert_eq!(fixture.run.phase(), RunPhase::Thinking);
+	set_children(&fixture, children(0, false, vec![]));
+	// The answer allows one final model turn and completion.
+	advance_sources(&mut fixture).await.unwrap();
+	advance_sources(&mut fixture).await.unwrap();
+	assert_eq!(fixture.run.phase(), RunPhase::Completed);
+}
+
+#[rstest]
+#[tokio::test]
 async fn a_running_child_beside_an_unassigned_task_means_waiting_without_a_notice(
 	mut fixture: Fixture,
 ) {
@@ -309,6 +337,79 @@ async fn a_handed_over_child_makes_the_parent_abandon_the_root_and_wait(mut fixt
 		fixture.run.state,
 		RunState::Waiting(ref waiting) if matches!(**waiting, WaitingState::Workspace { .. })
 	));
+}
+
+#[rstest]
+#[tokio::test]
+async fn early_abandonment_is_named_in_the_final_answer(mut fixture: Fixture) {
+	set_children(
+		&fixture,
+		children(2, false, vec![task(1, true, false), task(2, true, true)]),
+	);
+	answer(&mut fixture.run, "First answer.");
+	advance_sources(&mut fixture).await.unwrap();
+	fixture.run = last_write(&fixture).1;
+	answer(&mut fixture.run, "Second answer.");
+	advance_sources(&mut fixture).await.unwrap();
+	fixture.run = last_write(&fixture).1;
+	// Simulate a worker restart using the persisted state and recovery payload.
+	let pending =
+		aidash_domain::run_state::encode(&fixture.run.state, &fixture.run.recovery).unwrap();
+	let (state, recovery) = aidash_domain::run_state::decode(fixture.run.phase(), pending).unwrap();
+	fixture.run.state = state;
+	fixture.run.recovery = recovery;
+	set_children(&fixture, children(0, false, vec![]));
+	answer(&mut fixture.run, "Finished.");
+	advance_sources(&mut fixture).await.unwrap();
+	let artifact = fixture.backend.0.artifacts.lock().unwrap();
+	let text = artifact.last().unwrap().as_str().unwrap();
+	assert!(text.contains("Task 1"), "{text}");
+	assert_eq!(
+		fixture.backend.0.published.lock().unwrap().last().unwrap(),
+		text
+	);
+	assert_eq!(
+		*fixture.backend.0.completed_abandoning.lock().unwrap(),
+		[Vec::<Uuid>::new()]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_task_handed_over_before_abandonment_is_not_named_as_abandoned(mut fixture: Fixture) {
+	set_children(
+		&fixture,
+		children(
+			3,
+			false,
+			vec![
+				task(1, true, false),
+				task(2, true, false),
+				task(3, true, true),
+			],
+		),
+	);
+	answer(&mut fixture.run, "First answer.");
+	advance_sources(&mut fixture).await.unwrap();
+	fixture.run = last_write(&fixture).1;
+	// The Home observes Task 2 handed over after the summary was read.
+	fixture
+		.backend
+		.0
+		.abandon_skipped
+		.lock()
+		.unwrap()
+		.push(Uuid::from_u128(2));
+	answer(&mut fixture.run, "Second answer.");
+	advance_sources(&mut fixture).await.unwrap();
+	fixture.run = last_write(&fixture).1;
+	set_children(&fixture, children(0, false, vec![]));
+	answer(&mut fixture.run, "Finished.");
+	advance_sources(&mut fixture).await.unwrap();
+	let artifacts = fixture.backend.0.artifacts.lock().unwrap();
+	let text = artifacts.last().unwrap().as_str().unwrap();
+	assert!(text.contains("Task 1"), "{text}");
+	assert!(!text.contains("Task 2"), "{text}");
 }
 
 #[rstest]
