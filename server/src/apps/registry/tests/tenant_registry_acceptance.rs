@@ -239,12 +239,11 @@ async fn the_versions_list_reports_the_approvals_of_the_node_it_names(
 	tenant(&fixture, "acme").await;
 	let owner = credential(&fixture, "acme", "owner").await;
 	assert_eq!(register(&owner, &model("model")).await.0, 200);
-	assert_eq!(
-		approve(&owner, "acme", json!([approval("model", "1.0.0", true)]))
-			.await
-			.0,
-		200
-	);
+	// A Node-scoped approval stays on its Node; a Deployment-wide one would be
+	// copied to the new Node (#873).
+	let mut node_scoped = approval("model", "1.0.0", true);
+	node_scoped["scope"] = json!("node");
+	assert_eq!(approve(&owner, "acme", json!([node_scoped])).await.0, 200);
 	// Nodes are administered by a Tenant Administrator Mapping in a browser (#484).
 	let administrator = support::browser_mapping(&fixture, "acme", "owner").await;
 	let (status, second) = administrator
@@ -276,7 +275,7 @@ async fn the_versions_list_reports_the_approvals_of_the_node_it_names(
 	assert_eq!(
 		approval_of(&other),
 		Value::Null,
-		"a new Node starts without approvals: {other}"
+		"a new Node starts without the other Node's Node-scoped approvals: {other}"
 	);
 	assert_eq!(missing.status_code(), 400, "{}", missing.text());
 	// Selecting a Node outside this Tenant must not fabricate approval subjects.
