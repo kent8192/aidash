@@ -28,11 +28,14 @@ fn names(json: SimpleExpr, sources: Sources, nested: bool) -> SimpleExpr {
 		)
 	};
 	match sources {
-		Sources::One(run) => contains(Expr::value(if nested {
-			serde_json::json!({"dependencies":{"runs":[run]}})
-		} else {
-			serde_json::json!({"runs":[run]})
-		})),
+		Sources::One(run) => contains(
+			Expr::value(if nested {
+				serde_json::json!({"dependencies":{"runs":[run]}})
+			} else {
+				serde_json::json!({"runs":[run]})
+			})
+			.into(),
+		),
 		Sources::Revoked => {
 			let object = |key: &str, value: SimpleExpr| -> SimpleExpr {
 				SimpleExpr::FunctionCall(
