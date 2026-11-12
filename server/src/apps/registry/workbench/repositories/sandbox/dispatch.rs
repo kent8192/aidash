@@ -21,64 +21,12 @@ impl RealDispatchRepository for Repository {
 			node_id: self.node_id.clone(),
 			ceilings: self.store.test_limit_ceilings,
 			tenant_secrets: self.store.tenant_secrets.clone(),
+			capabilities: self.store.capabilities.clone(),
 		}))
 	}
 }
 #[async_trait]
 impl RealDispatchScope for Scope {
-	async fn authorize_test_call(
-		&mut self,
-		id: Uuid,
-		approval: &aidash_application::ports::registry::workbench::sandbox::execution::TestApproval,
-		consume: bool,
-	) -> Result<()> {
-		let Actor::Subject(identity) = &self.actor else {
-			return Err(aidash_application::Error::Forbidden);
-		};
-		let policy = self.tx.pool().dashboard_policy();
-		let snapshot = identity
-			.lock_native(&mut self.tx, false, policy.as_ref())
-			.await?;
-		let session = AgentTestSession::read(&mut self.tx, id, true).await?;
-		let evaluation = aidash_domain::policy::Evaluation {
-			subject: identity.subject.clone(),
-			action: approval.action.into(),
-			resource: approval.resource.clone(),
-			environment: serde_json::json!({}),
-		};
-		let direct = aidash_domain::capabilities::approvals::workbench_policy(&snapshot.bundle)
-			.evaluate(&evaluation);
-		if direct.allowed || (direct.reason == "no_matching_allow" && !approval.requires_approval) {
-			return Ok(());
-		}
-		let person = identity
-			.http_session
-			.as_ref()
-			.map(|s| s.identity_id)
-			.ok_or(aidash_application::Error::Forbidden)?;
-		let pending = &session.scenario["pending_approval"];
-		if direct.reason != "no_matching_allow"
-			|| session.status != "running"
-			|| session.scenario["starter_identity"] != serde_json::json!(person)
-			|| session.scenario["starter_subject"] != identity.subject
-			|| pending["state"] != "allow_once"
-			|| pending["resource"] != serde_json::to_value(&approval.resource)?
-			|| pending["call"] != serde_json::to_value(&approval.call)?
-			|| pending["action"] != approval.action
-			|| !aidash_domain::capabilities::approvals::workbench_approver_eligible(
-				&snapshot.bundle,
-				&identity.subject,
-				&approval.resource,
-			) {
-			return Err(aidash_application::Error::Forbidden);
-		}
-		if consume {
-			let mut scenario = session.scenario;
-			scenario["pending_approval"]["state"] = serde_json::json!("consumed");
-			AgentTestSession::complete_listing(&mut self.tx, id, scenario).await?;
-		}
-		Ok(())
-	}
 	async fn lock_identity(&mut self) -> Result<()> {
 		if let Actor::Subject(identity) = &self.actor {
 			let policy = self.tx.pool().dashboard_policy();

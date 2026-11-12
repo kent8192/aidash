@@ -34,15 +34,14 @@ async fn prepare(
 	call: &ToolCall,
 	consume: bool,
 ) -> Result<(TestSession, Box<dyn PreparedRealRequest>, ToolCall)> {
+	// Identity and Tenant policy before the session, as every test path locks.
+	scope.lock_identity().await?;
 	let session = scope.session(session_id, true).await?;
 	if session.status != "running" {
 		return Err(Error::Conflict("test was stopped".into()));
 	}
-	scope.lock_identity().await?;
 	if let Some(approval) = dispatch.approval {
-		scope
-			.authorize_test_call(session_id, approval, consume)
-			.await?;
+		super::approval::recheck(&mut *scope, session_id, approval, consume).await?;
 	}
 	let draft = scope.draft(session.draft_id, true).await?;
 	if draft.archived || draft.revision != session.revision {

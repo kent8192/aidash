@@ -17,15 +17,6 @@ use uuid::Uuid;
 #[async_trait]
 pub trait RealDispatchScope: SandboxScope {
 	async fn lock_identity(&mut self) -> Result<()>;
-	/// Recheck a test approval under the authority lease held through dispatch.
-	async fn authorize_test_call(
-		&mut self,
-		_session: Uuid,
-		_approval: &super::execution::TestApproval,
-		_consume: bool,
-	) -> Result<()> {
-		Err(crate::Error::Forbidden)
-	}
 	async fn profile(&mut self, tenant: &str, id: &str) -> Result<TestProfile>;
 	async fn effective(&mut self, reference: &EntityRef) -> Result<Entry>;
 	async fn write_calls(&mut self, id: Uuid, calls: Value, running: bool) -> Result<()>;

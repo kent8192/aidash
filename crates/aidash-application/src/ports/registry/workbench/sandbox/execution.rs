@@ -36,10 +36,6 @@ pub trait ExecutionRepository: RealDispatchRepository {
 	fn search_destination(&self, _provider: &str, _arguments: &Value) -> Result<Option<String>> {
 		Ok(None)
 	}
-	/// Ask the person who started this test. A negative answer never grants a Run.
-	async fn approve_once(&self, _session: Uuid, _approval: &TestApproval) -> Result<bool> {
-		Ok(false)
-	}
 	async fn begin_execution(&self) -> Result<Box<dyn ExecutionScope + '_>>;
 	/// Read and commit one observation before inference or outcome classification.
 	async fn read_session(&self, id: Uuid) -> Result<TestSession>;

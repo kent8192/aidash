@@ -223,9 +223,7 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 					// meet a database error. Keep the model's tool-call message and
 					// its usage durable first, so settling does not lose them.
 					execution.repository.progress(session_id,json!(conversation),json!(calls),json!({"input_tokens":input_tokens,"output_tokens":output_tokens,"usage_complete":usage_complete})).await?;
-					execution
-						.repository
-						.approve_once(session_id, approval)
+					super::approval::ask(execution.repository.as_ref(), session_id, approval)
 						.await?
 				}
 				Ok(None) => true,

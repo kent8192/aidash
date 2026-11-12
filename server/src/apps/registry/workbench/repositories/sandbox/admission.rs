@@ -23,6 +23,7 @@ impl AdmissionRepository for Repository {
 			node_id: self.node_id.clone(),
 			ceilings: self.store.test_limit_ceilings,
 			tenant_secrets: self.store.tenant_secrets.clone(),
+			capabilities: self.store.capabilities.clone(),
 		}))
 	}
 }

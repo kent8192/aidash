@@ -247,6 +247,26 @@ impl SandboxScope for Scope<'_> {
 	async fn stop(&mut self, _: Uuid) -> Result<TestSession> {
 		panic!("dispatch must not stop sessions")
 	}
+	fn approver(&self) -> Option<crate::ports::registry::workbench::sandbox::Approver> {
+		Some(crate::ports::registry::workbench::sandbox::Approver {
+			subject: "owner".into(),
+			person: None,
+		})
+	}
+	async fn approval_policy(&mut self) -> Result<aidash_domain::policy::PolicyBundle> {
+		self.repository
+			.state
+			.lock()
+			.unwrap()
+			.order
+			.push("approval_policy".into());
+		// A policy that lets the owner make the call needs no answer.
+		if self.repository.failing("test_approval") {
+			Err(Error::Forbidden)
+		} else {
+			Ok(serde_json::from_value(json!({"tenant":"tenant","subjects":{"owner":{"kind":"user"}},"policies":[{"id":"call","effect":"allow","subjects":{"ids":["owner"]},"actions":["tool.call_unapproved"],"resources":{"kinds":["tool"]}}]})).unwrap())
+		}
+	}
 	async fn commit(mut self: Box<Self>) -> Result<()> {
 		let mut state = self.repository.state.lock().unwrap();
 		if let Some(calls) = self.pending.take() {
@@ -260,19 +280,6 @@ impl SandboxScope for Scope<'_> {
 }
 #[async_trait]
 impl RealDispatchScope for Scope<'_> {
-	async fn authorize_test_call(
-		&mut self,
-		_: Uuid,
-		_: &crate::ports::registry::workbench::sandbox::execution::TestApproval,
-		consume: bool,
-	) -> Result<()> {
-		assert_eq!(consume, self.repository.state.lock().unwrap().phase == 2);
-		if self.repository.failing("test_approval") {
-			Err(Error::Forbidden)
-		} else {
-			Ok(())
-		}
-	}
 	async fn lock_identity(&mut self) -> Result<()> {
 		self.repository
 			.state
@@ -497,16 +504,16 @@ async fn pending_is_durable_before_send_and_current_leases_cover_result(
 	assert_eq!(
 		state.order,
 		[
-			"session_update_lock",
 			"identity_lock",
+			"session_update_lock",
 			"draft_update_lock",
 			"current_authority",
 			"profile_share_lock",
 			"effective_tool",
 			"persist_pending",
 			"commit",
-			"session_update_lock",
 			"identity_lock",
+			"session_update_lock",
 			"draft_update_lock",
 			"current_authority",
 			"profile_share_lock",

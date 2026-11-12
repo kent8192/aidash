@@ -38,7 +38,6 @@ struct Repository {
 	state: Mutex<State>,
 	failure: Option<(usize, &'static str)>,
 	stop_after_progress: bool,
-	approval_allowed: bool,
 	/// The approval wait leaves its request pending and fails, as a database
 	/// error or the runtime's time limit would end it.
 	approval_fails: bool,
@@ -61,7 +60,6 @@ impl Repository {
 			}),
 			failure: None,
 			stop_after_progress: false,
-			approval_allowed: true,
 			approval_fails: false,
 		}
 	}
@@ -112,22 +110,21 @@ fn session() -> TestSession {
 #[async_trait]
 impl RealDispatchRepository for Repository {
 	async fn begin_real(&self) -> Result<Box<dyn RealDispatchScope + '_>> {
-		panic!("simulated fixtures must not dispatch real tools")
+		// Only asking for an approval reaches here in these tests.
+		let mut s = self.state.lock().unwrap();
+		s.approvals += 1;
+		assert!(
+			self.approval_fails,
+			"simulated fixtures must not dispatch real tools"
+		);
+		s.session.scenario["pending_approval"] = json!({"state":"pending"});
+		Err(Error::External("database unavailable".into()))
 	}
 }
 #[async_trait]
 impl ExecutionRepository for Repository {
 	fn search_destination(&self, _: &str, _: &Value) -> Result<Option<String>> {
 		Ok(Some("search.example".into()))
-	}
-	async fn approve_once(&self, _: Uuid, _: &TestApproval) -> Result<bool> {
-		let mut s = self.state.lock().unwrap();
-		s.approvals += 1;
-		if self.approval_fails {
-			s.session.scenario["pending_approval"] = json!({"state":"pending"});
-			return Err(Error::External("database unavailable".into()));
-		}
-		Ok(self.approval_allowed)
 	}
 	async fn begin_execution(&self) -> Result<Box<dyn ExecutionScope + '_>> {
 		let mut s = self.state.lock().unwrap();
@@ -1274,8 +1271,7 @@ async fn a_discoverable_plugin_tool_is_answered_only_after_it_is_loaded() {
 
 #[tokio::test]
 async fn a_simulated_plugin_call_never_requests_approval() {
-	let (mut repository, snapshot, pinned) = plugin_repository(None).await;
-	repository.approval_allowed = false;
+	let (repository, snapshot, pinned) = plugin_repository(None).await;
 	let repository = Arc::new(repository);
 	let model = model(
 		repository.clone(),

@@ -33,54 +33,18 @@ impl BehavioralTests {
 		input: crate::apps::registry::workbench::serializers::test::TestApprovalAnswer,
 	) -> Result<TestSession> {
 		use crate::apps::registry::workbench::serializers::test::TestApprovalChoice;
-		let Actor::Subject(identity) = &actor else {
-			return Err(crate::Error::Forbidden);
-		};
-		let person = identity
-			.http_session
-			.as_ref()
-			.map(|s| s.identity_id)
-			.ok_or(crate::Error::Forbidden)?;
-		let mut tx = self.runtime.store.pool.begin(&actor.tenancy()?).await?;
-		let policy = tx.pool().dashboard_policy();
-		let snapshot = identity
-			.lock_native(&mut tx, false, policy.as_ref())
-			.await?;
-		let session = AgentTestSession::read(&mut tx, id, true).await?;
-		let pending = &session.scenario["pending_approval"];
-		if session.status != "running"
-			|| session.scenario["starter_identity"] != serde_json::json!(person)
-			|| session.scenario["starter_subject"] != identity.subject
-			|| pending["id"] != serde_json::json!(input.approval_id)
-			|| pending["state"] != "pending"
-		{
-			return Err(crate::Error::Forbidden);
-		}
-		if !pending_permitted(&snapshot.bundle, &identity.subject, pending) {
-			return Err(crate::Error::Forbidden);
-		}
-		let draft = crate::apps::registry::workbench::models::AgentDraft::read(
-			&mut tx,
-			session.draft_id,
-			false,
+		use aidash_application::registry::workbench::sandbox::approval;
+		approval::answer(
+			&crate::bootstrap::workbench_sandbox_repository(&self.runtime, actor),
+			id,
+			input.approval_id,
+			match input.choice {
+				TestApprovalChoice::AllowOnce => approval::Choice::AllowOnce,
+				TestApprovalChoice::Deny => approval::Choice::Deny,
+			},
 		)
-		.await?;
-		aidash_application::registry::workbench::authorize(
-			&mut crate::bootstrap::draft_authority_scope(&mut tx, &actor, policy),
-			&draft.into(),
-			"agent_draft.test",
-			true,
-		)
-		.await?;
-		let mut scenario = session.scenario;
-		scenario["pending_approval"]["state"] = serde_json::json!(match input.choice {
-			TestApprovalChoice::AllowOnce => "allow_once",
-			TestApprovalChoice::Deny => "deny",
-		});
-		let mut result = AgentTestSession::complete_listing(&mut tx, id, scenario).await?;
-		tx.commit().await?;
-		redact(&mut result, None);
-		Ok(result)
+		.await
+		.map_err(Into::into)
 	}
 	pub(crate) async fn get_limits(&self, actor: Actor, id: Uuid) -> Result<TestLimits> {
 		Ok(
@@ -129,56 +93,20 @@ impl BehavioralTests {
 		Ok(result?)
 	}
 	pub(crate) async fn sessions(&self, actor: Actor, id: Uuid) -> Result<Vec<TestSession>> {
-		let mut rows = aidash_application::registry::workbench::sandbox::sessions(
-			&crate::bootstrap::workbench_sandbox_repository(&self.runtime, actor.clone()),
-			id,
-		)
-		.await?;
-		if let Actor::Subject(identity) = &actor
-			&& let Some(viewer) = person(&actor)
-		{
-			let mut tx = self.runtime.store.pool.begin(&actor.tenancy()?).await?;
-			let policy = tx.pool().dashboard_policy();
-			let snapshot = identity
-				.lock_native(&mut tx, false, policy.as_ref())
-				.await?;
-			let draft =
-				crate::apps::registry::workbench::models::AgentDraft::read(&mut tx, id, false)
-					.await?;
-			let can_test = match aidash_application::registry::workbench::authorize(
-				&mut crate::bootstrap::draft_authority_scope(&mut tx, &actor, policy),
-				&draft.into(),
-				"agent_draft.test",
-				true,
-			)
-			.await
-			{
-				Ok(()) => true,
-				Err(aidash_application::Error::Forbidden) => false,
-				Err(error) => return Err(error.into()),
-			};
-			for row in &mut rows {
-				redact(
-					row,
-					can_test.then_some((viewer, &identity.subject, &snapshot.bundle)),
-				);
-			}
-			tx.commit().await?;
-		} else {
-			for row in &mut rows {
-				redact(row, None);
-			}
-		}
-		Ok(rows)
-	}
-	pub(crate) async fn stop(&self, actor: Actor, id: Uuid) -> Result<TestSession> {
-		let mut session = aidash_application::registry::workbench::sandbox::stop(
+		aidash_application::registry::workbench::sandbox::sessions(
 			&crate::bootstrap::workbench_sandbox_repository(&self.runtime, actor),
 			id,
 		)
-		.await?;
-		redact(&mut session, None);
-		Ok(session)
+		.await
+		.map_err(Into::into)
+	}
+	pub(crate) async fn stop(&self, actor: Actor, id: Uuid) -> Result<TestSession> {
+		aidash_application::registry::workbench::sandbox::stop(
+			&crate::bootstrap::workbench_sandbox_repository(&self.runtime, actor),
+			id,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	pub(crate) async fn start(
 		&self,
@@ -223,68 +151,7 @@ impl BehavioralTests {
 			return Err(error.into());
 		}
 		let mut session = admitted.session;
-		redact(&mut session, None);
+		aidash_application::registry::workbench::sandbox::approval::conceal(&mut session);
 		Ok(session)
 	}
-}
-
-fn person(actor: &Actor) -> Option<Uuid> {
-	match actor {
-		Actor::Subject(identity) => identity.http_session.as_ref().map(|s| s.identity_id),
-		_ => None,
-	}
-}
-
-fn redact(
-	session: &mut TestSession,
-	viewer: Option<(Uuid, &str, &aidash_domain::policy::PolicyBundle)>,
-) {
-	if let Some(scenario) = session.scenario.as_object_mut() {
-		let starter = scenario
-			.remove("starter_identity")
-			.and_then(|value| serde_json::from_value::<Uuid>(value).ok());
-		let starter_subject = scenario.remove("starter_subject");
-		let permitted = viewer.is_some_and(|(viewer, subject, bundle)| {
-			starter == Some(viewer)
-				&& starter_subject.as_ref().and_then(|value| value.as_str()) == Some(subject)
-				&& scenario.get("pending_approval").is_some_and(|pending| {
-					pending["state"] == "pending" && pending_permitted(bundle, subject, pending)
-				})
-		});
-		if !permitted {
-			scenario.remove("pending_approval");
-		}
-	}
-}
-
-fn pending_permitted(
-	bundle: &aidash_domain::policy::PolicyBundle,
-	subject: &str,
-	pending: &serde_json::Value,
-) -> bool {
-	let Some(action) = pending["action"].as_str().filter(|action| {
-		matches!(
-			*action,
-			"tool.call_unapproved" | "network.get" | "research.disclose"
-		)
-	}) else {
-		return false;
-	};
-	let Ok(resource) =
-		serde_json::from_value::<aidash_domain::policy::Resource>(pending["resource"].clone())
-	else {
-		return false;
-	};
-	let evaluation = aidash_domain::policy::Evaluation {
-		subject: subject.into(),
-		action: action.into(),
-		resource: resource.clone(),
-		environment: serde_json::json!({}),
-	};
-	let decision =
-		aidash_domain::capabilities::approvals::workbench_policy(bundle).evaluate(&evaluation);
-	decision.reason == "no_matching_allow"
-		&& aidash_domain::capabilities::approvals::workbench_approver_eligible(
-			bundle, subject, &resource,
-		)
 }
