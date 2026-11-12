@@ -711,7 +711,7 @@ impl ExecutionHome for NativeHome {
 			.await
 			.map_err(Into::into)
 	}
-	async fn abandon_unassigned(&self, parent: Uuid, ids: &[Uuid]) -> Result<()> {
+	async fn abandon_unassigned(&self, parent: Uuid, ids: &[Uuid]) -> Result<Vec<Uuid>> {
 		Home::abandon_unassigned(&self.0, parent, ids)
 			.await
 			.map_err(Into::into)

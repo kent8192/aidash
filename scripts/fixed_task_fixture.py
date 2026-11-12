@@ -121,6 +121,22 @@ def cache_boundaries(body):
     return boundaries
 
 
+
+def splice(filler, offset, correction):
+    """Replace whole filler words from `offset` with the correction, keeping the length.
+
+    The page length stays unchanged, so it does not reveal which page carries a
+    correction. The correction starts at a word boundary and is padded with spaces
+    to the next one, so no filler fragment joins it (an earlier splice turned
+    "Contoso." and "terms" into "Contoso.ms").
+    """
+    start = filler.find(" ", offset)
+    start = len(filler) if start < 0 else start
+    resume = filler.find(" ", start + len(correction) + 2)
+    resume = len(filler) if resume < 0 else resume
+    spliced = filler[:start] + " " + correction.ljust(resume - start - 1) + filler[resume:]
+    return spliced if len(spliced) == len(filler) else (filler[:start] + " " + correction + " ")[:len(filler)]
+
 class Probe:
     """Per-Task scripted Agent state. The evaluator registers each Task UUID."""
 
@@ -431,10 +447,9 @@ class Fixture:
             size = task.get("reference_page_bytes", 400)
             filler = (f"Archive page {page}: vendor catalogue entries, delivery terms and historical quotes. "
                       * (size // 80 + 1))[:size]
-            # Keep the page length unchanged when splicing a correction.
             offset = task.get("reference_correction_offset")
             if correction and offset is not None:
-                return 200, {"page": page, "content": filler[:offset] + correction + filler[offset + len(correction):]}
+                return 200, {"page": page, "content": splice(filler, offset, correction)}
             return 200, {"page": page, "content": (correction + " " if correction else "") + filler}
         if alias == "document_lookup":
             name = str(arguments.get("document", ""))
@@ -443,7 +458,7 @@ class Fixture:
             filler = (f"Document {name}: routine notes, schedules and historical remarks. " * (size // 50 + 1))[:size]
             offset = task.get("reference_correction_offset", 0)
             if correction:
-                filler = filler[:offset] + correction + filler[offset + len(correction):]
+                filler = splice(filler, offset, correction)
             return 200, {"document": name, "content": filler}
         if alias == "record_note":
             return 200, {"recorded": True, "page": arguments.get("page")}

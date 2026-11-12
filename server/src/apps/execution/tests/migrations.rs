@@ -5248,7 +5248,7 @@ async fn existing_conversations_receive_distinct_dedicated_scratch_spaces(
 		sqlx::query_as(&settings).fetch_all(&pool).await.unwrap();
 	assert_eq!(values.len(), 2);
 	assert!(values.iter().all(|(value,)| *value
-		== serde_json::to_value(aidash_domain::scratch::ScratchSettings::default()).unwrap()));
+		== aidash_server::apps::workspaces::services::migration_backfill::legacy_settings()));
 	let nullable = Query::select()
 		.column(Alias::new("is_nullable"))
 		.from((Alias::new("information_schema"), Alias::new("columns")))
@@ -5469,7 +5469,7 @@ async fn existing_workspace_receives_scratch_space_owned_by_its_creator(
 	let (settings,): (serde_json::Value,) = sqlx::query_as(&sql).fetch_one(&pool).await.unwrap();
 	assert_eq!(
 		settings,
-		serde_json::to_value(aidash_domain::scratch::ScratchSettings::default()).unwrap()
+		aidash_server::apps::workspaces::services::migration_backfill::legacy_settings()
 	);
 	assert_ne!(selected, existing_space);
 	assert_ne!(selected, other_space);

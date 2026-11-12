@@ -398,6 +398,13 @@ async fn existing_workspace_tool_versions_are_preserved_when_seeding_attachment_
 	);
 }
 
+/// Constraint DDL needs the table owner; the server role holds only DML.
+async fn owner_ddl(database: &DatabaseFixture, sql: &str) {
+	let owner = sqlx::PgPool::connect(&database.owner_url).await.unwrap();
+	sqlx::raw_sql(sql).execute(&owner).await.unwrap();
+	owner.close().await;
+}
+
 #[rstest]
 #[tokio::test]
 async fn develop_system_definitions_and_removed_decider_survive_upgrade_seeding(
@@ -435,6 +442,16 @@ async fn develop_system_definitions_and_removed_decider_survive_upgrade_seeding(
 		})
 		.collect::<Vec<_>>();
 	let mut connection = database.lease.handle();
+	// A deployed database held these rows before registry/0068 added its NOT
+	// VALID check, so write them the way an upgrade meets them: with the check
+	// absent, then restored without validating existing rows.
+	owner_ddl(
+		&database,
+		include_str!(
+			"../../../../migrations/registry/sql/backward/0068_reject_new_compaction_deciders.sql"
+		),
+	)
+	.await;
 	for entry in &entries {
 		let definition = Definition::build()
 			.tenant("acme")
@@ -452,6 +469,13 @@ async fn develop_system_definitions_and_removed_decider_survive_upgrade_seeding(
 			.await
 			.unwrap();
 	}
+	owner_ddl(
+		&database,
+		include_str!(
+			"../../../../migrations/registry/sql/forward/0068_reject_new_compaction_deciders.sql"
+		),
+	)
+	.await;
 	registry.seed_system().await.unwrap();
 	registry.seed_system().await.unwrap();
 	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();

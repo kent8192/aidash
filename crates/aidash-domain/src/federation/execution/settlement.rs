@@ -22,8 +22,8 @@ pub fn allows(
 	let decoded = crate::run_state::decode(raw.metadata.phase, raw.pending.clone()).ok();
 	let finalizing = decoded
 		.as_ref()
-		.and_then(|(state, _)| state.tool().ok())
-		.filter(|tool| tool.finalizing);
+		.and_then(|(state, recovery)| state.tool().ok().map(|tool| (tool, recovery)))
+		.filter(|(tool, _)| tool.finalizing);
 	let saved_failure = decoded.as_ref().and_then(|(state, _)| match state {
 		crate::RunState::Waiting(wait) => match wait.as_ref() {
 			crate::WaitingState::FailureDelivery { target, .. } => Some(target.task_status()),
@@ -84,7 +84,7 @@ pub fn allows(
 		}
 		"run_message_complete" => {
 			original_run
-				&& finalizing.is_some_and(|tool| {
+				&& finalizing.is_some_and(|(tool, recovery)| {
 					// The saved continuation already chose which Tasks it abandons.
 					// Without any, the command keeps exactly its earlier shape.
 					let saved = &tool.abandoning;
@@ -102,7 +102,7 @@ pub fn allows(
 							== json!({
 								"kind":"text",
 								"name":result_name,
-								"content":crate::unassigned::answer_with_abandoned(&tool.response.text, saved)
+								"content":crate::unassigned::completion_answer(&tool.response.text, &recovery.early_abandoned_tasks, saved)
 							})
 				})
 		}
@@ -219,6 +219,30 @@ mod tests {
 			data["abandon"] = json!(abandon);
 		}
 		data
+	}
+
+	#[test]
+	fn saved_completion_includes_early_abandonments() {
+		let mut raw = finalizing_run("Done.", vec![task(6)]);
+		let (state, mut recovery) =
+			crate::run_state::decode(raw.metadata.phase, raw.pending.clone()).unwrap();
+		recovery.early_abandoned_tasks = vec![task(5), task(6)];
+		raw.pending = crate::run_state::encode(&state, &recovery).unwrap();
+		let text = "Done.\n\nNobody was given these subtasks, so they were abandoned during this Run: \"Task 5\", \"Task 6\".";
+		assert!(allows(
+			&raw,
+			&[],
+			"result",
+			"run_message_complete",
+			&completion(text, Some(vec![Uuid::from_u128(6)]))
+		));
+		assert!(!allows(
+			&raw,
+			&[],
+			"result",
+			"run_message_complete",
+			&completion("Done.", Some(vec![Uuid::from_u128(6)]))
+		));
 	}
 
 	#[test]

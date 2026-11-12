@@ -2,8 +2,8 @@
 
 pub use crate::apps::execution::capabilities::serializers::management::{
 	ApprovalDecided, ApprovalPage, ConfiguredAgent, DeletedThread, DeletionConfirmation,
-	MaterializedFile, OperationPage, OutboundStatus, RecipientPage, ReferenceRevoked, Revoked,
-	TransferPage, TransferStatus,
+	MaterializedFile, OperationPage, OutboundStatus, RecipientPage, ReferenceRevocation,
+	ReferenceRevoked, Revoked, TransferPage, TransferStatus,
 };
 
 #[cfg(test)]

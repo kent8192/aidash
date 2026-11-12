@@ -480,8 +480,9 @@ pub trait ExecutionHome: Send + Sync {
 	async fn complete(&self, key: &str, artifact: &ArtifactInput, abandon: &[Uuid])
 	-> Result<Task>;
 	/// Abandon those of `ids` that are still Unassigned Tasks of `parent`
-	/// created by a Run of it, without completing the parent.
-	async fn abandon_unassigned(&self, parent: Uuid, ids: &[Uuid]) -> Result<()>;
+	/// created by a Run of it, without completing the parent. Returns only
+	/// the Task IDs changed by this operation.
+	async fn abandon_unassigned(&self, parent: Uuid, ids: &[Uuid]) -> Result<Vec<Uuid>>;
 	async fn report(&self, key: &str, kind: &str, data: Value) -> Result<()>;
 	async fn response_message(
 		&self,
