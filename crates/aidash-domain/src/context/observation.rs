@@ -5,6 +5,8 @@ use serde_json::{Value, json};
 pub const DEFAULT_LIMIT: usize = 20;
 pub const MAX_LIMIT: usize = 50;
 
+pub use crate::unconfirmed::NOTE as UNCONFIRMED_NOTE;
+
 fn preview(text: &str, limit: usize) -> String {
 	let mut chars = text.chars();
 	let mut head: String = chars.by_ref().take(limit).collect();
@@ -40,6 +42,8 @@ pub fn project(snapshot: &WorkspaceSnapshot, offset: usize, limit: usize) -> Val
 		})).collect::<Vec<_>>(),
 		"details":"Use workspace_read with kind and id for full records. Concatenate its content chunks in offset order to recover the JSON record."
 	});
+	// Only when something was left out, so an ordinary result does not change.
+	crate::unconfirmed::attach(&mut value, snapshot.unconfirmed.clone());
 	for (name, count) in [
 		("tasks", snapshot.tasks.len()),
 		("artifacts", snapshot.artifacts.len()),

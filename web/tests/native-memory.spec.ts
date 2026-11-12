@@ -208,83 +208,86 @@ async function fixture(
     }
     if (path.endsWith("/memory/units/query"))
       return route.fulfill({
-        json: paged
-          ? [
-              ...(visual
-                ? [
-                    {
-                      id: "019c0000-0000-7000-8000-000000000005",
-                      bank,
-                      revision: 1,
-                      content: {
-                        text: "The team prefers PostgreSQL for durable memory.",
-                        kind: "experience",
-                        learning: "preference",
-                        verification: "unverified",
-                        occurred: null,
-                        entities: [],
-                        evidence: [],
-                        links: [],
+        json: {
+          units: paged
+            ? [
+                ...(visual
+                  ? [
+                      {
+                        id: "019c0000-0000-7000-8000-000000000005",
+                        bank,
+                        revision: 1,
+                        content: {
+                          text: "The team prefers PostgreSQL for durable memory.",
+                          kind: "experience",
+                          learning: "preference",
+                          verification: "unverified",
+                          occurred: null,
+                          entities: [],
+                          evidence: [],
+                          links: [],
+                        },
+                        learned_at: "2026-10-06T00:00:00Z",
+                        updated_at: "2026-10-06T00:00:00Z",
+                        deleted: false,
+                        stale: false,
                       },
-                      learned_at: "2026-10-06T00:00:00Z",
-                      updated_at: "2026-10-06T00:00:00Z",
-                      deleted: false,
-                      stale: false,
-                    },
-                  ]
-                : []),
-              {
-                id: source,
-                bank,
-                revision: 40,
-                content: {
-                  text: "A history-bearing memory unit",
-                  kind: "world",
-                  learning: "fact",
-                  verification: "unverified",
-                  occurred: visual
-                    ? {
-                        start: "2026-10-05T08:00:00Z",
-                        end: "2026-10-05T09:00:00Z",
-                      }
-                    : null,
-                  entities: visual
-                    ? [
-                        {
-                          name: "PostgreSQL",
-                          category: "Database",
-                          aliases: ["Postgres", "ポストグレス"],
-                        },
-                      ]
-                    : [],
-                  evidence: visual
-                    ? [
-                        {
-                          kind: "unit",
-                          bank,
-                          id: "019c0000-0000-7000-8000-000000000005",
-                          revision: 1,
-                        },
-                      ]
-                    : [],
-                  links: visual
-                    ? [
-                        {
-                          kind: "causes",
-                          target: "019c0000-0000-7000-8000-000000000005",
-                          revision: 1,
-                          weight: 0.8,
-                        },
-                      ]
-                    : [],
+                    ]
+                  : []),
+                {
+                  id: source,
+                  bank,
+                  revision: 40,
+                  content: {
+                    text: "A history-bearing memory unit",
+                    kind: "world",
+                    learning: "fact",
+                    verification: "unverified",
+                    occurred: visual
+                      ? {
+                          start: "2026-10-05T08:00:00Z",
+                          end: "2026-10-05T09:00:00Z",
+                        }
+                      : null,
+                    entities: visual
+                      ? [
+                          {
+                            name: "PostgreSQL",
+                            category: "Database",
+                            aliases: ["Postgres", "ポストグレス"],
+                          },
+                        ]
+                      : [],
+                    evidence: visual
+                      ? [
+                          {
+                            kind: "unit",
+                            bank,
+                            id: "019c0000-0000-7000-8000-000000000005",
+                            revision: 1,
+                          },
+                        ]
+                      : [],
+                    links: visual
+                      ? [
+                          {
+                            kind: "causes",
+                            target: "019c0000-0000-7000-8000-000000000005",
+                            revision: 1,
+                            weight: 0.8,
+                          },
+                        ]
+                      : [],
+                  },
+                  learned_at: "2026-10-06T00:00:00Z",
+                  updated_at: "2026-10-06T00:00:00Z",
+                  deleted: false,
+                  stale: false,
                 },
-                learned_at: "2026-10-06T00:00:00Z",
-                updated_at: "2026-10-06T00:00:00Z",
-                deleted: false,
-                stale: false,
-              },
-            ]
-          : [],
+              ]
+            : [],
+          unconfirmed: [],
+        },
       });
     if (path.endsWith("/memory/units/mutate")) {
       writes.push({ url: path, body });
@@ -415,6 +418,8 @@ async function fixture(
         });
       }
     }
+    if (path.endsWith("/semantic/entries"))
+      return route.fulfill({ json: { entries: [], unconfirmed: [] } });
     return route.fulfill({ json: [] });
   });
   await page.goto("/semantic");

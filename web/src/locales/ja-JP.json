@@ -1078,5 +1078,6 @@
   "subnodeRemoteMayCreate": "他のNodeから始まった実行にSubnodeの作成を許可する",
   "subnodeLimitsSave": "上限を保存",
   "subnodeLimitsInvalid": "Subnodeあたりのメンバー数は1から20、実行あたりのSubnode数は1から10の整数で入力してください。",
-  "subnodeLimitsForbidden": "Subnodeの上限を変更する権限がありません。"
+  "subnodeLimitsForbidden": "Subnodeの上限を変更する権限がありません。",
+  "unconfirmedItems": "{node} に確認できなかったため、{count} 件を表示していません。{node} が応答したら確認し直します。"
 }

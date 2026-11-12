@@ -8,6 +8,8 @@ struct Scope {
 	grants: Vec<Uuid>,
 	producers: Vec<Uuid>,
 	denied: Option<Uuid>,
+	silent: Option<Uuid>,
+	row_silence: Option<String>,
 	fail: Option<&'static str>,
 	calls: Vec<String>,
 	scopes: Vec<(Uuid, String, Uuid)>,
@@ -23,6 +25,17 @@ impl Scope {
 		Ok(())
 	}
 }
+impl crate::ports::authorization::visibility::RowOutcome for Scope {
+	fn row_silence(&self) -> Option<String> {
+		self.row_silence.clone()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.row_silence.take()
+	}
+	fn set_row_silence(&mut self, node: Option<String>) {
+		self.row_silence = node;
+	}
+}
 #[async_trait]
 impl LocalOutputScope for Scope {
 	async fn producers(&mut self, workspace: Uuid, kind: &str, id: Uuid) -> Result<Vec<Uuid>> {
@@ -33,6 +46,10 @@ impl LocalOutputScope for Scope {
 	async fn producer_reads_visible(&mut self, run: Uuid) -> Result<bool> {
 		self.touch("producer")?;
 		self.calls.push(format!("producer:{run}"));
+		if self.silent == Some(run) {
+			self.row_silence = Some("aidash://other/silent".into());
+			return Ok(false);
+		}
 		Ok(self.denied != Some(run))
 	}
 }
@@ -46,6 +63,10 @@ impl OutputScope for Scope {
 	async fn grant_visible(&mut self, grant: Uuid) -> Result<bool> {
 		self.touch("grant")?;
 		self.calls.push(format!("grant:{grant}"));
+		if self.silent == Some(grant) {
+			self.row_silence = Some("aidash://other/silent".into());
+			return Ok(false);
+		}
 		Ok(self.denied != Some(grant))
 	}
 }
@@ -196,4 +217,28 @@ async fn output_membership_and_read_failures_keep_their_error_identity(
 		.unwrap_err();
 	assert!(matches!(error,Error::Port(ref error) if error.to_string()=="output adapter fault"));
 	assert_eq!(scope.calls.last().map(String::as_str), Some(boundary));
+}
+
+#[rstest]
+#[case(1, 3)]
+#[case(3, 4)]
+#[tokio::test]
+async fn a_silent_provenance_does_not_hide_a_separate_refusal(
+	#[case] silent: u128,
+	#[case] denied: u128,
+) {
+	let mut scope = fixture();
+	scope.silent = Some(Uuid::from_u128(silent));
+	scope.denied = Some(Uuid::from_u128(denied));
+	assert!(
+		!output_visible(
+			&mut scope,
+			Uuid::from_u128(5),
+			"artifact",
+			Uuid::from_u128(6)
+		)
+		.await
+		.unwrap()
+	);
+	assert!(scope.row_silence.is_none());
 }

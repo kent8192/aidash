@@ -49,6 +49,9 @@ struct Viewer {
 	cached_runs: BTreeMap<(Uuid, Uuid), bool>,
 	cached_humans: BTreeMap<Uuid, bool>,
 	read_verdicts: aidash_application::authorization::visits::ReadVerdicts,
+	/// The reader's row, which a Node met under the producer's identity must
+	/// not name (#770).
+	row_silence: Option<String>,
 	/// The walk's record of what it has visited and passed. It is the viewer's: a
 	/// Run it has visited has not been visited under the grant's chain.
 	read_passes: Passes,
@@ -67,6 +70,7 @@ impl Drop for Producer<'_> {
 			self.access.cached_runs = viewer.cached_runs;
 			self.access.cached_humans = viewer.cached_humans;
 			self.access.read_verdicts = viewer.read_verdicts;
+			self.access.row_silence = viewer.row_silence;
 			self.access.read_lookups.restore_passes(viewer.read_passes);
 		}
 	}
@@ -92,6 +96,7 @@ impl<'a> Producer<'a> {
 			cached_humans: std::mem::take(&mut access.cached_humans),
 			read_verdicts: std::mem::take(&mut access.read_verdicts),
 			read_passes: Passes::default(),
+			row_silence: access.row_silence.take(),
 		};
 		let authority = access.authority_context();
 		viewer.read_passes = access.read_lookups.lend_passes(authority);

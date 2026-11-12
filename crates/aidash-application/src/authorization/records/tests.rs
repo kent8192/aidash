@@ -22,6 +22,7 @@ struct Scope {
 	cursors: Vec<Option<Uuid>>,
 	task_reads: Vec<Vec<Uuid>>,
 	fail: Option<&'static str>,
+	silence: Option<String>,
 }
 #[fixture]
 fn scope() -> Scope {
@@ -90,6 +91,7 @@ fn scope() -> Scope {
 		events_allowed: true,
 		found: true,
 		visible: true,
+		silence: None,
 		children: vec![],
 		cursors: vec![],
 		task_reads: vec![],
@@ -220,6 +222,17 @@ impl WorkspaceRecordScope for Scope {
 		Ok(())
 	}
 }
+impl crate::ports::authorization::visibility::RowOutcome for Scope {
+	fn begin_row(&mut self) {
+		self.silence = None;
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.silence.clone()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.silence.take()
+	}
+}
 #[async_trait]
 impl ChildSummaryScope for Scope {
 	async fn workspace(&mut self, id: Uuid) -> Result<Resource> {
@@ -265,6 +278,10 @@ impl ChildSummaryScope for Scope {
 		assert_eq!(resource.attributes["owner"], "saved-owner");
 		assert_eq!(workspace, self.workspace.id);
 		self.touch("summary_visible")?;
+		if created_by == "silent" {
+			self.silence = Some("aidash://other/silent".into());
+			return Ok(false);
+		}
 		Ok(created_by == "visible")
 	}
 	async fn track_tasks(&mut self, workspace: Uuid, tasks: &[Uuid]) -> Result<()> {
@@ -676,4 +693,43 @@ async fn attachment_record_requires_current_message_visibility(mut scope: Scope)
 		record(&mut scope, Uuid::from_u128(1), "attachment", id).await,
 		Err(Error::Forbidden)
 	));
+}
+
+/// A child whose check stopped at a silent Node makes the summary unknown only
+/// if its status could change the summary (#770).
+#[rstest]
+#[case::unfinished(TaskStatus::Open, true)]
+#[case::failed(TaskStatus::Failed, true)]
+#[case::completed(TaskStatus::Completed, false)]
+#[case::abandoned(TaskStatus::Abandoned, false)]
+#[tokio::test]
+async fn a_child_that_cannot_be_confirmed_blocks_the_summary_only_if_it_could_change_it(
+	mut scope: Scope,
+	#[case] status: TaskStatus,
+	#[case] blocks: bool,
+) {
+	scope.children = vec![(Uuid::from_u128(5), "silent".into(), status)];
+	let result = children(&mut scope, Uuid::from_u128(1), Uuid::from_u128(99)).await;
+	if blocks {
+		assert!(matches!(
+			result,
+			Err(Error::NodeUnreachable { ref node, after_effect: false }) if node == "aidash://other/silent"
+		));
+	} else {
+		let summary = result.unwrap();
+		assert!(!summary.has_pending && !summary.has_failed);
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_silent_open_child_is_not_discarded_after_a_visible_open_child(mut scope: Scope) {
+	scope.children = vec![
+		(Uuid::from_u128(1), "visible".into(), TaskStatus::Open),
+		(Uuid::from_u128(2), "silent".into(), TaskStatus::Open),
+	];
+	let result = children(&mut scope, Uuid::from_u128(1), Uuid::from_u128(99)).await;
+	assert!(
+		matches!(result, Err(Error::NodeUnreachable { ref node, after_effect: false }) if node == "aidash://other/silent")
+	);
 }

@@ -257,7 +257,7 @@ impl Watch<Event> for Context {
 							.map_err(|_| Closed::Authority)?
 					} else {
 						scope
-							.can_emit(event)
+							.can_emit_listing(event)
 							.await
 							.map_err(|_| Closed::Authority)?
 							.then(|| {

@@ -192,6 +192,9 @@ fn access() -> Access {
 		core_gc_complete: false,
 		remote_read_cache: Default::default(),
 		unavailable_peers: Default::default(),
+		row_silence: None,
+		lists: false,
+		unconfirmed: Default::default(),
 		denied: false,
 		silent_events: 0,
 		silent_last: None,
@@ -399,6 +402,98 @@ async fn no_negative_read_verdict_is_remembered_while_a_node_is_silent(mut acces
 	assert_eq!(access.cached_remote_read(other), Some(RemoteReads::Visible));
 }
 
+/// The Node a row's check gave up on is its own: a list loop clears it when a
+/// row starts and takes it after the check, a Node already marked is named again
+/// by the next row, and the first Node a row reached is the one it is counted
+/// under (#770).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_row_is_counted_under_the_first_silent_node_its_check_reached_and_each_row_starts_clean(
+	mut access: Access,
+) {
+	access.begin_row();
+	assert_eq!(access.take_row_silence(), None);
+	// A check meets a silent Node, then another one.
+	access.mark_peer_unavailable("aidash://other/sibling");
+	access.mark_peer_unavailable("aidash://other/zebra");
+	assert_eq!(
+		access.row_silence().as_deref(),
+		Some("aidash://other/sibling")
+	);
+	assert_eq!(
+		access.take_row_silence().as_deref(),
+		Some("aidash://other/sibling")
+	);
+	// The next row stops at a Node already marked, without asking it.
+	access.begin_row();
+	assert_eq!(access.row_silence(), None);
+	assert!(access.peer_unavailable("aidash://other/sibling"));
+	access.skip_peer("aidash://other/sibling");
+	assert_eq!(
+		access.take_row_silence().as_deref(),
+		Some("aidash://other/sibling")
+	);
+	// A row that reached no silent Node has nothing to take.
+	access.begin_row();
+	assert_eq!(access.take_row_silence(), None);
+}
+
+/// A refusal is remembered unless the row's own check stopped at a silent Node,
+/// so five refusals beside one earlier mark are cheap and a refusal reached by
+/// silence is asked again (#770).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_refusal_is_remembered_unless_the_row_stopped_at_a_silent_node(mut access: Access) {
+	use aidash_application::ports::federation::registry_reads::RemoteReads;
+	let (refused, silent) = (Uuid::new_v4(), Uuid::new_v4());
+	access.mark_peer_unavailable("aidash://other/sibling");
+	access.begin_row();
+	access.remember_remote_read(refused, RemoteReads::Unconfirmed);
+	assert_eq!(
+		access.cached_remote_read(refused),
+		Some(RemoteReads::Unconfirmed)
+	);
+	access.skip_peer("aidash://other/sibling");
+	access.remember_remote_read(silent, RemoteReads::Unconfirmed);
+	assert_eq!(access.cached_remote_read(silent), None);
+}
+
+/// An authority with no transport asks nobody, so it never reads the memory of
+/// silent Nodes and a mark of its own is only its own (#751, #770).
+#[rstest::rstest]
+#[tokio::test]
+async fn an_authority_with_no_transport_does_not_use_the_memory_of_silent_nodes(
+	mut access: Access,
+) {
+	access.lists = true;
+	assert!(!access.peer_unavailable("aidash://other/sibling"));
+	access.mark_peer_unavailable("aidash://other/sibling");
+	// The mark is in this authority's own set, not in a memory shared with others.
+	access.unavailable_peers.clear();
+	assert!(!access.peer_unavailable("aidash://other/sibling"));
+}
+
+/// The row's silence is its reader's: a publisher check does not carry it in or
+/// out (#770).
+#[rstest::rstest]
+#[tokio::test]
+async fn a_publisher_view_neither_sees_nor_leaves_the_readers_row_silence(mut access: Access) {
+	let identity = access.identity.clone();
+	access.mark_peer_unavailable("aidash://other/reader");
+	{
+		let mut publisher = access
+			.publisher_view(identity.clone(), vec!["alice".into()])
+			.await
+			.unwrap();
+		assert_eq!(publisher.row_silence(), None);
+		publisher.mark_peer_unavailable("aidash://other/publisher");
+	}
+	assert_eq!(
+		access.take_row_silence().as_deref(),
+		Some("aidash://other/reader")
+	);
+}
+
 /// A memory step names a Node that did not answer for `Invalidated` as well as
 /// for `Authority`, so decisions 7 and 8 can fire; other reasons keep their
 /// meaning (#751).
@@ -552,6 +647,11 @@ async fn a_publishers_silent_node_is_the_readers_only_if_the_reader_may_discover
 	assert!(!access.peer_unavailable("aidash://other/publisher"));
 	access.adopt_silent_peers(silent).await.unwrap();
 	assert_eq!(access.peer_unavailable("aidash://other/publisher"), allowed);
+	// A list counts the row under the adopted Node, only if it may discover it (#770).
+	assert_eq!(
+		access.row_silence().as_deref(),
+		allowed.then_some("aidash://other/publisher")
+	);
 	// Allowed: a refusal that follows is the Node's silence. Otherwise it stays.
 	assert_eq!(
 		matches!(

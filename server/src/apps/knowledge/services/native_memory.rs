@@ -822,19 +822,41 @@ async fn validate_direct_mutation(
 	}
 	Ok(())
 }
+/// The units a reader may see, and the units a Node's silence left out (#770).
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+#[schemars(rename = "MemoryUnitList")]
+pub struct UnitList {
+	pub units: Vec<Unit>,
+	/// Units this read scanned and could not confirm because a Node did not
+	/// answer, for each Node. `[]` when none.
+	pub unconfirmed: Vec<aidash_domain::unconfirmed::Unconfirmed>,
+}
+
 pub async fn list(store: &Store, actor: &Actor, input: ReadBank) -> Result<Vec<Unit>> {
+	list_counted(store, actor, input)
+		.await
+		.map(|list| list.units)
+}
+
+/// The units a reader may see, and those a silent Node left out (#770).
+pub async fn list_counted(store: &Store, actor: &Actor, input: ReadBank) -> Result<UnitList> {
 	let mut lease = Lease::begin(store, actor, input.bank.workspace).await?;
+	lease.lists();
 	let result = async {
 		scope(store, &mut lease, &input.bank, "memory.read").await?;
 		bank_provider(&mut lease, &input.bank, &input.provider).await?;
 		let policy = policy(&mut lease, &input.bank.tenant, &input.provider).await?;
-		repository::list(
+		let units = repository::list(
 			&mut lease,
 			&input.bank,
 			policy.bounds.max_units,
 			policy.bounds.max_graph_visits,
 		)
-		.await
+		.await?;
+		Ok(UnitList {
+			units,
+			unconfirmed: lease.take_unconfirmed().into_entries(),
+		})
 	}
 	.await;
 	lease.finish(result).await
@@ -1093,11 +1115,11 @@ impl NativeMemory {
 		}
 		super::memory_impact::impact(&self.runtime.store, &actor, input).await
 	}
-	pub async fn list(&self, actor: Actor, workspace: Uuid, input: ReadBank) -> Result<Vec<Unit>> {
+	pub async fn list(&self, actor: Actor, workspace: Uuid, input: ReadBank) -> Result<UnitList> {
 		if input.bank.workspace != workspace {
 			return Err(Error::Forbidden);
 		}
-		list(&self.runtime.store, &actor, input).await
+		list_counted(&self.runtime.store, &actor, input).await
 	}
 	pub async fn participant(
 		&self,

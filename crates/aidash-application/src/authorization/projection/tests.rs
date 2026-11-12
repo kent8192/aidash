@@ -87,6 +87,21 @@ struct Scope {
 	tracked: Vec<WorkspaceSnapshot>,
 	verdicts_seen: Vec<usize>,
 	fail: Option<&'static str>,
+	/// Tasks, artifacts and messages whose check stops at a silent Node (#770).
+	silent: std::collections::BTreeSet<Uuid>,
+	silence: Option<String>,
+}
+const SILENT_NODE: &str = "aidash://other/silent";
+impl crate::ports::authorization::visibility::RowOutcome for Scope {
+	fn begin_row(&mut self) {
+		self.silence = None;
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.silence.clone()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.silence.take()
+	}
 }
 #[fixture]
 fn scope() -> Scope {
@@ -107,6 +122,8 @@ fn scope() -> Scope {
 		tracked: vec![],
 		verdicts_seen: vec![],
 		fail: None,
+		silent: Default::default(),
+		silence: None,
 	}
 }
 impl Scope {
@@ -160,14 +177,26 @@ impl WorkspaceProjection for Scope {
 	}
 	async fn task_visible(&mut self, row: &Task) -> Result<bool> {
 		self.touch("task_visible")?;
+		if self.silent.contains(&row.id) {
+			self.silence = Some(SILENT_NODE.into());
+			return Ok(false);
+		}
 		Ok(row.created_by == "visible")
 	}
 	async fn artifact_visible(&mut self, row: &Artifact) -> Result<bool> {
 		self.touch("artifact_visible")?;
+		if self.silent.contains(&row.id) {
+			self.silence = Some(SILENT_NODE.into());
+			return Ok(false);
+		}
 		Ok(row.created_by == "visible")
 	}
 	async fn message_visible(&mut self, row: &Message) -> Result<bool> {
 		self.touch("message_visible")?;
+		if self.silent.contains(&row.id) {
+			self.silence = Some(SILENT_NODE.into());
+			return Ok(false);
+		}
 		let visits = self.message_visits.entry(row.id).or_default();
 		*visits += 1;
 		Ok(row.sender == "visible" && !(self.second_message_denied && *visits > 1))
@@ -607,4 +636,64 @@ async fn observation_discloses_only_visible_attachment_metadata_within_the_fit(m
 	assert_eq!(output["messages"][0]["attachments"][0]["width"], 2);
 	assert!(!output.to_string().contains("2.png"));
 	assert!(!output.to_string().contains("content_bytes"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn three_unconfirmed_tasks_and_five_refusals_report_three(mut scope: Scope) {
+	// Arrange: ids 0..3 wait on a silent Node, 3..8 are refused, 8..20 are visible.
+	scope.tasks = (0..20).map(|id| task(id, id >= 8)).collect();
+	scope.silent = (0..3).map(Uuid::from_u128).collect();
+	// Act
+	let page = task_page(&mut scope, &[Uuid::from_u128(1)], 0)
+		.await
+		.unwrap();
+	// Assert
+	assert_eq!(page.tasks.len(), 12);
+	assert_eq!(
+		page.unconfirmed,
+		vec![aidash_domain::unconfirmed::Unconfirmed {
+			node: SILENT_NODE.into(),
+			kind: Kind::Task,
+			workspace_id: Uuid::from_u128(1),
+			count: 3,
+		}]
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn a_page_with_nothing_left_out_says_so_with_an_empty_list(mut scope: Scope) {
+	scope.tasks = (0..4).map(|id| task(id, true)).collect();
+	let page = task_page(&mut scope, &[Uuid::from_u128(1)], 0)
+		.await
+		.unwrap();
+	assert!(page.unconfirmed.is_empty());
+	assert_eq!(
+		serde_json::to_value(&page).unwrap()["unconfirmed"],
+		json!([])
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn a_snapshot_counts_tasks_artifacts_and_messages_a_silent_node_left_out(mut scope: Scope) {
+	scope.tasks = (10..14).map(|id| task(id, true)).collect();
+	scope.artifacts = (20..23).map(|id| artifact(id, true)).collect();
+	scope.messages = (30..33).map(|id| message(id, true)).collect();
+	scope.silent = [10, 11, 20, 30, 31, 32]
+		.into_iter()
+		.map(Uuid::from_u128)
+		.collect();
+	let snapshot = snapshot_untracked(&mut scope, Uuid::from_u128(1))
+		.await
+		.unwrap();
+	let counts: Vec<_> = snapshot
+		.unconfirmed
+		.iter()
+		.map(|entry| (entry.kind, entry.count))
+		.collect();
+	assert_eq!(
+		counts,
+		vec![(Kind::Task, 2), (Kind::Artifact, 1), (Kind::Message, 3)]
+	);
+	assert_eq!(snapshot.tasks.len(), 2);
 }

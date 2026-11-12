@@ -280,6 +280,8 @@ struct State {
 	/// A child Task failed and the others are unfinished, so the Run's final
 	/// answer waits for a person to intervene.
 	failed_children: bool,
+	/// A child Task's check stops at this Node, which did not answer (#770).
+	unconfirmed_child: Option<&'static str>,
 	/// The Answer Deadline, in seconds, of the person the Run's chain starts at.
 	answer_deadline: Option<i64>,
 	/// A person's answer that lands just before the system closes the Home
@@ -1065,6 +1067,13 @@ impl ExecutionHome for Backend {
 	}
 	async fn child_summary(&self, parent: Uuid) -> Result<ChildTaskSummary> {
 		let _ = parent;
+		self.record("home.child_summary");
+		if let Some(node) = self.0.unconfirmed_child {
+			return Err(Error::NodeUnreachable {
+				node: node.into(),
+				after_effect: false,
+			});
+		}
 		if let Some(summary) = self.0.child_summaries.lock().unwrap().pop_front() {
 			return Ok(summary);
 		}
@@ -1990,6 +1999,7 @@ fn fixture() -> Fixture {
 		approval_mode: None,
 		auto_judging: false,
 		failed_children: false,
+		unconfirmed_child: None,
 		answer_deadline: None,
 		answered_just_before_close: Mutex::new(None),
 		approval_judgements: Mutex::new(VecDeque::new()),
@@ -2570,6 +2580,62 @@ async fn rejected_authority_never_accepts_or_persists_provider_output(
 		vec![]
 	};
 	assert_eq!(fixture.backend.outcomes(), expected);
+}
+#[rstest]
+#[tokio::test]
+async fn a_child_task_that_cannot_be_confirmed_retries_the_step_without_calling_the_model(
+	mut fixture: Fixture,
+) {
+	// Arrange: the model already answered, so the Run is in its Tool state, and
+	// a child Task's check stops at a Node that did not answer.
+	Arc::get_mut(&mut fixture.backend.0)
+		.unwrap()
+		.unconfirmed_child = Some("aidash://other/sibling");
+	fixture.run.state = RunState::ToolCall(Box::new(ToolCallState {
+		response: ModelResponse {
+			text: "Final answer".into(),
+			..Default::default()
+		},
+		..Default::default()
+	}));
+	// Act: two attempts, as a retry would make.
+	let mut errors = vec![];
+	for _ in 0..2 {
+		errors.push(
+			Executor::new(&fixture.backend)
+				.advance(
+					&mut fixture.run,
+					fixture.backend.0.token,
+					&mut fixture.backend.clone(),
+				)
+				.await
+				.unwrap_err(),
+		);
+	}
+	// Assert: the failure is the typed one the recovery path retries and then
+	// pauses on, nothing was decided about the children, and the Run stays in
+	// its Tool state so no inference runs again.
+	for error in errors {
+		assert!(
+			matches!(
+				&error,
+				Error::NodeUnreachable { node, after_effect: false } if node == "aidash://other/sibling"
+			),
+			"{error:?}"
+		);
+	}
+	assert!(matches!(fixture.run.state, RunState::ToolCall(_)));
+	let calls = fixture.backend.0.calls.lock().unwrap();
+	assert_eq!(
+		calls
+			.iter()
+			.filter(|call| **call == "home.child_summary")
+			.count(),
+		2
+	);
+	assert!(!calls.contains(&"home.output"));
+	assert!(!calls.contains(&"home.complete"));
+	assert!(!calls.iter().any(|call| call.starts_with("inference")));
 }
 #[rstest]
 #[tokio::test]

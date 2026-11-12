@@ -45,7 +45,12 @@ export function nodeView(
   node: Pick<TenantNode, "name" | "address"> | undefined,
 ): State {
   const { id: deployment, endpoint } = state.deployment;
-  if (!node) return { ...state, node: { id: deployment, endpoint } };
+  if (!node)
+    return {
+      ...state,
+      unconfirmed: state.unconfirmed ?? [],
+      node: { id: deployment, endpoint },
+    };
   const workspaces = state.workspaces.filter(
     (workspace) => workspace.node === node.name,
   );
@@ -67,6 +72,9 @@ export function nodeView(
     ),
     artifacts: state.artifacts.filter((artifact) =>
       ids.has(artifact.workspace_id),
+    ),
+    unconfirmed: (state.unconfirmed ?? []).filter((entry) =>
+      ids.has(entry.workspace_id),
     ),
   };
 }

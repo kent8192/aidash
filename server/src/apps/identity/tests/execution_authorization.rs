@@ -943,7 +943,7 @@ async fn catalog_approval_and_run_read_denials_cover_search_collections_and_even
 		}
 		if path.starts_with("/api/events?") {
 			assert_eq!(
-				value.as_array().unwrap().len(),
+				value["events"].as_array().unwrap().len(),
 				1,
 				"hidden events must not trap pagination"
 			);

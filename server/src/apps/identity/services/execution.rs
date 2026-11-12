@@ -580,6 +580,7 @@ impl WorkerAuthority {
 				max_tokens,
 			)?;
 		}
+		aidash_domain::unconfirmed::for_tool(&mut result);
 		Ok(result)
 	}
 	pub(crate) async fn workspace_image(
@@ -1460,7 +1461,10 @@ impl WorkerAuthority {
 		key: &str,
 		query: aidash_domain::memory::RecallQuery,
 		reflect: bool,
-	) -> Result<crate::semantic::native_memory::Outcome> {
+	) -> Result<(
+		crate::semantic::native_memory::Outcome,
+		Vec<aidash_domain::unconfirmed::Unconfirmed>,
+	)> {
 		let mut outer = self.access.write().await;
 		if outer.tx.is_active() {
 			outer.suspend().await?;
@@ -1471,11 +1475,16 @@ impl WorkerAuthority {
 				.ok_or(Error::Forbidden)?;
 			memory_run_check(&mut access, &run.metadata()).await?;
 			let mut lease = crate::semantic::service::Lease::Scoped(Box::new(access));
+			lease.lists();
 			let result = crate::semantic::native_memory::run_recall(
 				store, &mut lease, run, key, query, reflect,
 			)
 			.await;
-			lease.finish(result).await
+			let left_out = lease.take_unconfirmed().into_entries();
+			lease
+				.finish(result)
+				.await
+				.map(|outcome| (outcome, left_out))
 		}
 		.await;
 		restore_outer(&mut outer, store, run, result).await

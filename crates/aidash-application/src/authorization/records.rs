@@ -23,6 +23,7 @@ pub async fn record(
 		artifacts: vec![],
 		events: vec![],
 		messages: vec![],
+		unconfirmed: vec![],
 	};
 	let value = match kind {
 		"workspace" if id == workspace_id => json!(snapshot.workspace.clone()),
@@ -144,10 +145,26 @@ pub async fn children(
 		let mut visible_ids = Vec::with_capacity(rows.len());
 		for row in rows {
 			after = Some(row.id);
+			scope.begin_row();
 			if !scope
 				.visible(&resource, workspace_id, row.id, &row.created_by)
 				.await?
 			{
+				// A child that cannot be confirmed is not "no pending child": the
+				// parent would complete over a Task that may be unfinished or
+				// failed. It is retried like a Read Recheck (#770).
+				// Only a child whose status could change the summary matters: a
+				// completed one cannot make the parent wait or fail. Any unfinished
+				// child can change the open count and unassigned classification, even
+				// when another pending child is already visible.
+				if let Some(node) = scope.take_row_silence()
+					&& !matches!(row.status, TaskStatus::Completed | TaskStatus::Abandoned)
+				{
+					return Err(Error::NodeUnreachable {
+						node,
+						after_effect: false,
+					});
+				}
 				continue;
 			}
 			visible_ids.push(row.id);

@@ -1078,5 +1078,6 @@
   "subnodeRemoteMayCreate": "Runs started from other Nodes may create Subnodes",
   "subnodeLimitsSave": "Save limits",
   "subnodeLimitsInvalid": "Members per Subnode must be a whole number from 1 to 20, and Subnodes per Run a whole number from 1 to 10.",
-  "subnodeLimitsForbidden": "You may not change the Subnode limits."
+  "subnodeLimitsForbidden": "You may not change the Subnode limits.",
+  "unconfirmedItems": "{count} items are not shown because {node} could not be reached to confirm them. They are checked again once it answers."
 }

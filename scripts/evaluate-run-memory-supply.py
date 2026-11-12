@@ -198,7 +198,7 @@ class Campaign:
     def wait_ready(self, workspace, ids, timeout=120):
         deadline = time.monotonic() + timeout
         while True:
-            entries = self.api.get(f"/api/workspaces/{workspace}/semantic/entries", self.token)
+            entries = self.api.get(f"/api/workspaces/{workspace}/semantic/entries", self.token)["entries"]
             states = {entry["id"]: entry["state"] for entry in entries if entry["id"] in ids}
             if len(states) == len(ids) and all(value == "READY" for value in states.values()):
                 return

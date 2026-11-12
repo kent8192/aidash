@@ -368,11 +368,12 @@ impl ToolOperations for Operations {
 	) -> Result<Value> {
 		let ctx = &self.0;
 		if let Some(authority) = &ctx.home.authority {
-			return Ok(json!(
-				authority
-					.memory_recall(&ctx.store, &ctx.run, key, query.clone(), reflect)
-					.await?
-			));
+			let (outcome, left_out) = authority
+				.memory_recall(&ctx.store, &ctx.run, key, query.clone(), reflect)
+				.await?;
+			let mut result = json!(outcome);
+			aidash_domain::unconfirmed::attach(&mut result, left_out);
+			return Ok(result);
 		}
 		let mut lease = crate::semantic::service::Lease::within(&ctx.store, &ctx.scope).await?;
 		let result = crate::semantic::native_memory::run_recall(

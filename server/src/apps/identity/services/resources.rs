@@ -276,7 +276,7 @@ impl Access {
 		}
 		// A `false` reached while a Node did not answer may be that Node's
 		// silence; it is kept like an abandoned check, not as a verdict (#751).
-		let unconfirmed = matches!(result, Ok(false)) && !self.unavailable_peers.is_empty();
+		let unconfirmed = matches!(result, Ok(false)) && self.row_silence.is_some();
 		match result {
 			Ok(_) if unconfirmed && outermost => self.read_verdicts.abandon(),
 			Ok(_) if unconfirmed => {}

@@ -152,7 +152,7 @@ A state mutation and its event are committed together. The event table doubles a
 
 When a CloudEvent plus its NATS headers exceeds the broker payload limit, the publisher omits `data` and includes a `dataref` URI such as `/api/events?after=123`. Resolve this URI against the source Node using an authorized API credential and match the event ID in the returned replay page. All CloudEvent identity and sequence fields remain intact; the full event stays in PostgreSQL. Small events retain their inline `data`.
 
-Event sequence allocation is serialized through a transaction advisory lock so commit order agrees with the SSE cursor. `/api/events/stream` honors `Last-Event-ID`; `/api/events?after=N` provides JSON replay. A disconnected or slow client can resume from the PostgreSQL event log. SSE is an observation channel, not the worker's durable queue.
+Event sequence allocation is serialized through a transaction advisory lock so commit order agrees with the SSE cursor. `/api/events/stream` honors `Last-Event-ID`; `/api/events?after=N` provides JSON replay and answers `{"events": [...], "unconfirmed": [...]}`, with the cursor to continue from in the `x-aidash-event-cursor` header. The stream can skip an event whose Read dependency lies on a Node that did not answer, says nothing about it, and does not send it again while the client stays connected; a reconnect reads forward only, and `GET /api/events?after=` checks the skipped events again (ADR 0133). Holding the cursor until the Node answers would stop every stream for one Node's trouble. A disconnected or slow client can resume from the PostgreSQL event log. SSE is an observation channel, not the worker's durable queue.
 
 The Workspace's home Node owns task revisions and artifacts. A remote Node owns its run journal and tool invocations. Ordinary federation commands operate on the home API and use stable keys. When a reply is lost, replay either returns the original result or reports a conflict for mismatched input. These ordinary commands do not form a cross-Node atomic transaction. The separate [distributed transaction protocol](transactions.md) implements durable prepare/commit/abort, participant decisions and visibility barriers for admitted mutations. Its subject-scoped authorization, complete process/network failure matrix and Kubernetes release acceptance remain open in #40. External Tool and nonparticipating A2A effects cannot join an atomic manifest.
 
@@ -451,7 +451,7 @@ UI strings live in `web/src/locales/en-US.json` and `ja-JP.json`. Entity names a
 
 `GET /api/tasks?offset=N` returns up to 500 authorized tasks, newest first, with
 `next_offset` for the next page. `/api/state` includes only the first task page.
-`GET /api/tasks/{id}/runs` and `GET /api/human-requests` return `{items, next_cursor}`
+`GET /api/tasks/{id}/runs` and `GET /api/human-requests` return `{items, next_cursor, unconfirmed}`
 in newest-first order, with up to 50 candidates per page. Supply the opaque `cursor` to
 continue; visibility filtering can leave a page short or empty even when it has
 a next cursor. A full candidate page can also lead to an empty final page.
@@ -494,6 +494,24 @@ definitions and eager Skill blocks plus the full `metadata_bytes`,
 `schema_bytes` and `skill_bytes` budgets. It also rejects any single tool
 definition over `schema_bytes`, or any Registry or attached Skill block over
 `skill_bytes`, naming the alias and size.
+
+### Unconfirmed items
+
+A list, search or Agent tool result that leaves out an item because a Node holding one of its Read dependencies did not answer says so (ADR 0133). `GET /api/state`, `GET /api/tasks`, `GET /api/tasks/{id}/runs`, `GET /api/human-requests`, `GET /api/workspaces/{id}`, `GET /api/workspaces/{id}/message-history`, `POST /api/workspaces/{workspace}/memory/units/query`, `POST /api/workspaces/{workspace}/semantic/search`, `GET /api/workspaces/{workspace}/semantic/entries` and `GET /api/events` carry `unconfirmed`, always present and `[]` when empty:
+
+```json
+"unconfirmed": [
+  {"node": "aidash://local/brave-otter-k3m9q2xa", "kind": "task", "workspace_id": "…", "count": 3}
+]
+```
+
+`kind` is one of `task`, `run`, `artifact`, `event`, `message`, `human_request`, `semantic_entry` and `memory_unit`. `count` is the number of rows this response scanned and could not confirm, so a later page can report more. It is not a total, and it is not "you should see these": the Node can still refuse an item once it answers. A row counts once, under the first silent Node its check reached, only after the reader's own permission to read that kind in that Workspace and `federation.discover` on that Node have passed. A real refusal is never counted: where a check that can meet a silent Node is followed by others in a chain (a Run's `run.read`, `memory.read` and Human Requests after its Task, an artifact's provenance after its Task, the other evidence of a memory unit), the rest of the chain is judged too, and a row any of them refuses is not counted. An event that sits in no Workspace is never counted. A peer's `503 node_unreachable` for a call a Run made through its Home (`{"code": "node_unreachable", "node", "after_effect"}`) stays typed and is retried or paused like a local one. `/api/events`, `semantic/entries` and `memory/units/query` were bare arrays and are now `{events, unconfirmed}`, `{entries, unconfirmed}` and `{units, unconfirmed}`. `WorkspaceSnapshot` has the field with a default, because peers read it. The federated graph does not report it (#799).
+
+`GET /api/tasks/{id}/runs` with a parent Task that cannot be confirmed stays `503 node_unreachable`, and so does a message-history `before` message that cannot be confirmed; both are the read of one thing. Only their rows are counted.
+
+A list, search or event read does not ask a Node again for 30 seconds after it did not answer, per Tenant and Node in each process, so a poll stops spending up to 10 seconds with a database connection held. An answer from the Node, including a refusal, clears it. A single read, a Read Recheck and a Run's inference stream always ask. After a Node returns, items can stay out for up to 30 seconds.
+
+`workspace_observe`, `workspace_search`, `memory_recall` and `memory_reflect` add `unconfirmed` and `unconfirmed_note` to their result only when something was left out, so an ordinary result does not change. A child Task that cannot be confirmed is not "no pending child": `complete` and the parent's child summary answer `node_unreachable` before any effect, which retries up to 5 times and then pauses the Run like a Read Recheck.
 
 ### Remote semantic reuse
 

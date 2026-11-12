@@ -86,6 +86,9 @@ struct Scope {
 	image_visible: bool,
 	replay: bool,
 	pages: VecDeque<Vec<History>>,
+	/// Sources whose text stops at a Node that did not answer (#770).
+	silent_text: BTreeSet<String>,
+	silence: Option<String>,
 }
 impl Default for Scope {
 	fn default() -> Self {
@@ -102,6 +105,8 @@ impl Default for Scope {
 			image_visible: false,
 			replay: false,
 			pages: VecDeque::new(),
+			silent_text: BTreeSet::new(),
+			silence: None,
 		}
 	}
 }
@@ -112,6 +117,17 @@ impl Scope {
 			return Err(Error::External(name.into()));
 		}
 		Ok(())
+	}
+}
+impl crate::ports::authorization::visibility::RowOutcome for Scope {
+	fn begin_row(&mut self) {
+		self.silence = None;
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.silence.clone()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.silence.take()
 	}
 }
 #[async_trait]
@@ -147,8 +163,14 @@ impl SemanticEntriesSession for Scope {
 		})?;
 		Ok(!self.deny_entries && !self.denied.contains(action))
 	}
-	async fn source(&mut self, _: Uuid, _: &Source) -> Result<Option<String>> {
+	async fn source(&mut self, _: Uuid, source: &Source) -> Result<Option<String>> {
 		self.touch("source")?;
+		if let Source::Memory { text } = source
+			&& self.silent_text.contains(text)
+		{
+			self.silence = Some("aidash://other/silent".into());
+			return Ok(None);
+		}
 		Ok(self.text.clone())
 	}
 	async fn image_visible(&mut self, _: Uuid, _: &Source) -> Result<bool> {
@@ -461,11 +483,46 @@ async fn listing_omits_sources_that_have_disappeared() {
 		entries(&mut scope, Uuid::from_u128(1))
 			.await
 			.unwrap()
+			.0
 			.is_empty()
 	);
 	assert_eq!(
 		scope.calls,
 		["workspace", "index_share", "list", "read", "source"]
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn listing_counts_the_entries_a_silent_node_left_out_and_not_the_vanished_ones() {
+	// Arrange: three entries stop at a silent Node, one source has vanished, one reads.
+	let row = |n: u128, text: &str| Entry {
+		id: Uuid::from_u128(40 + n),
+		source: json!({"kind":"memory","text":text}),
+		..entry()
+	};
+	let mut scope = Scope {
+		rows: vec![
+			row(0, "silent"),
+			row(1, "silent"),
+			row(2, "silent"),
+			row(3, "readable"),
+		],
+		silent_text: BTreeSet::from(["silent".to_owned()]),
+		..Default::default()
+	};
+	// Act
+	let (visible, unconfirmed) = entries(&mut scope, Uuid::from_u128(1)).await.unwrap();
+	// Assert
+	assert_eq!(visible.len(), 1);
+	assert_eq!(
+		unconfirmed,
+		vec![aidash_domain::unconfirmed::Unconfirmed {
+			node: "aidash://other/silent".into(),
+			kind: aidash_domain::unconfirmed::Kind::SemanticEntry,
+			workspace_id: Uuid::from_u128(1),
+			count: 3,
+		}]
 	);
 }
 
@@ -494,7 +551,7 @@ async fn image_index_state_is_listed_only_under_current_area_authority(
 		image_visible: visible,
 		..Default::default()
 	};
-	let result = entries(&mut scope, Uuid::from_u128(1)).await.unwrap();
+	let (result, _) = entries(&mut scope, Uuid::from_u128(1)).await.unwrap();
 	assert_eq!(result.len(), usize::from(visible));
 	if visible {
 		assert_eq!(result[0].state, "PENDING");

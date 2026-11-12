@@ -160,7 +160,7 @@ DENIED_SUBJECT = {"Authorization": "Bearer {{denied_token}}"}
 SUBJECT_READS = {
     "GET /api/tasks/{id}/runs": [
         ("Subject lists the readable Task's Runs", 200, SUBJECT,
-         "/api/tasks/{{task_id}}/runs", 'expect(res.getBody().items).to.be.an("array");'),
+         "/api/tasks/{{task_id}}/runs", 'expect(res.getBody().items).to.be.an("array");expect(res.getBody().unconfirmed).to.eql([]);'),
     ],
     "GET /api/registry/versions": [
         ("Tenant subject lists only the versions it may read", 200, SUBJECT,
@@ -1560,7 +1560,7 @@ def render():
         if path == "/api/tasks":
             checks += 'expect(res.getBody().tasks.map(value=>value.id)).to.include(bru.getVar("task_id"));'
         if path == "/api/events":
-            checks += 'expect(res.getBody()).to.be.an("array");expect(res.getHeader("x-aidash-event-cursor")).to.match(/^\\d+$/);'
+            checks += 'expect(res.getBody().events).to.be.an("array");expect(res.getBody().unconfirmed).to.eql([]);expect(res.getHeader("x-aidash-event-cursor")).to.match(/^\\d+$/);'
         if path == "/api/events/stream":
             add(
                 endpoint,

@@ -91,6 +91,17 @@ impl AttachmentObjects for NativeChannels<'_> {
 			.map_err(Into::into)
 	}
 }
+impl aidash_application::ports::authorization::visibility::RowOutcome for NativeChannels<'_> {
+	fn begin_row(&mut self) {
+		self.lease.access_mut().begin_row();
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.lease.row_silence()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.lease.access_mut().take_row_silence()
+	}
+}
 #[async_trait]
 impl ChannelScope for NativeChannels<'_> {
 	fn sender(&self) -> String {

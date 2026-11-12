@@ -44,6 +44,9 @@ struct Scope {
 	fail: Option<&'static str>,
 	calls: Vec<&'static str>,
 	decisions: Vec<Resource>,
+	/// The Task's check stops at a Node that did not answer (#770).
+	silent_task: bool,
+	silence: Option<String>,
 }
 
 #[fixture]
@@ -63,6 +66,8 @@ fn scope() -> Scope {
 		fail: None,
 		calls: vec![],
 		decisions: vec![],
+		silent_task: false,
+		silence: None,
 	}
 }
 
@@ -78,6 +83,20 @@ impl Scope {
 	}
 }
 
+impl crate::ports::authorization::visibility::RowOutcome for Scope {
+	fn begin_row(&mut self) {
+		self.silence = None;
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.silence.clone()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.silence.take()
+	}
+	fn set_row_silence(&mut self, node: Option<String>) {
+		self.silence = node;
+	}
+}
 #[async_trait]
 impl LocalRunVisibilityScope for Scope {
 	async fn core_area_visible(&mut self, _: Uuid) -> Result<bool> {
@@ -138,6 +157,10 @@ impl LocalRunVisibilityScope for Scope {
 	}
 	async fn task_visible(&mut self, _: &Task) -> Result<bool> {
 		self.touch("task_visible")?;
+		if self.silent_task {
+			self.silence = Some("aidash://other/silent".into());
+			return Ok(false);
+		}
 		Ok(self.task_visible)
 	}
 	async fn decide(&mut self, resource: &Resource, action: &str) -> Result<bool> {
@@ -430,6 +453,7 @@ fn event(kind: &str, data: Value) -> Event {
 		created_at: chrono::Utc::now(),
 	}
 }
+impl crate::ports::authorization::visibility::RowOutcome for Events {}
 #[async_trait]
 impl EventVisibilityScope for Events {
 	async fn marketplace_visible(&mut self, _: &Event) -> Result<bool> {
@@ -833,4 +857,55 @@ async fn a_failed_run_evaluation_is_not_remembered(#[case] boundary: &'static st
 			.unwrap()
 	);
 	assert_eq!(scope.calls, vec!["resource", "run", "run_visible"]);
+}
+
+/// A Run counts as unconfirmed only if every other check for this reader
+/// passed: a reader refused `run.read`, `memory.read` or a Human Request is
+/// refused whatever the silent Node says (#770, decisions 3 and 4).
+#[rstest]
+#[case::run_read_refused(Some("run.read"), true, false)]
+#[case::memory_read_refused(Some("memory.read"), true, false)]
+#[case::human_request_refused(None, false, false)]
+#[case::nothing_else_refuses(None, true, true)]
+#[tokio::test]
+async fn a_run_held_back_by_a_silent_task_check_counts_only_if_nothing_else_refuses_it(
+	mut scope: Scope,
+	#[case] denied: Option<&'static str>,
+	#[case] humans: bool,
+	#[case] counted: bool,
+) {
+	scope.silent_task = true;
+	scope.denied = denied;
+	scope.humans = humans;
+	let run = run();
+	scope.begin_row();
+	assert!(!local_base_visible(&mut scope, &run).await.unwrap());
+	assert_eq!(scope.take_row_silence().is_some(), counted);
+	// Whether the Task is visible is not known, so no verdict is kept.
+	assert_eq!(scope.cache, None);
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_refused_task_check_without_silence_stays_a_plain_refusal_and_is_remembered(
+	mut scope: Scope,
+) {
+	scope.task_visible = false;
+	let run = run();
+	scope.begin_row();
+	assert!(!local_base_visible(&mut scope, &run).await.unwrap());
+	assert_eq!(scope.take_row_silence(), None);
+	assert_eq!(scope.cache, Some(false));
+	// Nothing else was asked of a Run the Task already hides.
+	assert!(!scope.calls.contains(&"run.read"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_run_with_a_silent_task_and_refused_reads_is_not_counted(mut scope: Scope) {
+	scope.silent_task = true;
+	scope.reads = false;
+	scope.begin_row();
+	assert!(!local_run_visible(&mut scope, &run()).await.unwrap());
+	assert_eq!(scope.take_row_silence(), None);
 }

@@ -26,6 +26,8 @@ import {
   channelMessageHistory,
 } from "./generated/aidash";
 import { discoveryQuery, useNodes } from "./nodes";
+import { readUnconfirmed, unconfirmedFor } from "./unconfirmed";
+import { UnconfirmedNotice } from "./unconfirmed-notice";
 import type {
   SemanticEntry,
   SemanticIndexSpec,
@@ -221,7 +223,10 @@ function SemanticWorkspace({
   });
   const entries = useQuery({
     queryKey: ["semantic", workspace, "entries"],
-    queryFn: () => semanticEntries(workspace),
+    queryFn: async () => {
+      const list = await semanticEntries(workspace);
+      return { items: list.entries, unconfirmed: list.unconfirmed };
+    },
     enabled: !!index.data && !index.isError,
     refetchInterval: 2000,
   });
@@ -264,9 +269,19 @@ function SemanticWorkspace({
     cleanup.error,
   ].filter(Boolean);
   const knownScopes =
-    (entries.isError ? [] : entries.data)
+    (entries.isError ? [] : entries.data?.items)
       ?.map((entry) => entry.agent)
       .filter((agent): agent is string => !!agent) ?? [];
+  const missingEntries = unconfirmedFor(
+    entries.data?.unconfirmed,
+    ["semantic_entry"],
+    [workspace],
+  );
+  const missingMatches = unconfirmedFor(
+    readUnconfirmed(result),
+    ["semantic_entry"],
+    [workspace],
+  );
   const dialogAlert = error && <Alert>{describe(error)}</Alert>;
   return (
     <>
@@ -349,12 +364,13 @@ function SemanticWorkspace({
             </form>
             {result && !entries.isError && (
               <div aria-live="polite" className="grid gap-2">
+                <UnconfirmedNotice lines={missingMatches} />
                 <p className="font-mono text-[11px] text-faint tabular">
                   {result.model} · {result.model_version} ·{" "}
                   {result.estimated_tokens} {t("semanticTokens")}
                   {result.truncated ? ` · ${t("semanticTruncated")}` : ""}
                 </p>
-                {result.matches.length === 0 && (
+                {result.matches.length === 0 && missingMatches.length === 0 && (
                   <Hint>{t("semanticNoMatches")}</Hint>
                 )}
                 {result.matches.length > 0 && (
@@ -399,9 +415,10 @@ function SemanticWorkspace({
               </Button>
             }
           >
-            {!entries.isError && !!entries.data?.length && (
+            {!entries.isError && <UnconfirmedNotice lines={missingEntries} />}
+            {!entries.isError && !!entries.data?.items.length && (
               <ul className="divide-y divide-border border-y border-border">
-                {entries.data.map((entry) => (
+                {entries.data.items.map((entry) => (
                   <li key={entry.id}>
                     <article className="semantic-entry flex flex-wrap items-center gap-x-4 gap-y-2 py-2.5">
                       <div className="grid min-w-0 flex-1 gap-0.5">
@@ -467,7 +484,9 @@ function SemanticWorkspace({
                 ))}
               </ul>
             )}
-            {!entries.isError && entries.data?.length === 0 && <Empty />}
+            {!entries.isError &&
+              entries.data?.items.length === 0 &&
+              missingEntries.length === 0 && <Empty />}
           </Panel>
           {cleanup.data && !cleanup.isError && (
             <Panel title={t("semanticCleanup")}>

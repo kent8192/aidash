@@ -108,6 +108,7 @@ impl Scope {
 		Ok(())
 	}
 }
+impl crate::ports::authorization::visibility::RowOutcome for Scope {}
 #[async_trait]
 impl SemanticEntriesSession for Scope {
 	async fn workspace(&mut self, _workspace: Uuid, action: &str) -> Result<()> {

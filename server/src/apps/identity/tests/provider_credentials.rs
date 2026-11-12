@@ -666,7 +666,7 @@ async fn lifecycle_api_uses_live_tenant_policy_and_never_persists_or_returns_key
 			.to_string()
 			.contains("provider_credential_binding.updated")
 	);
-	let cleanup = own_events
+	let cleanup = own_events["events"]
 		.as_array()
 		.unwrap()
 		.iter()

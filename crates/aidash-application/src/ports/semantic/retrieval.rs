@@ -9,7 +9,9 @@ use serde_json::Value;
 use uuid::Uuid;
 
 #[async_trait]
-pub trait SemanticRetrievalSession: Send {
+pub trait SemanticRetrievalSession:
+	Send + crate::ports::authorization::visibility::RowOutcome
+{
 	async fn workspace(&mut self, workspace: Uuid, action: &str) -> Result<()>;
 	/// Retain the same shared index lock through candidate and delivery checks.
 	async fn index(&mut self, workspace: Uuid) -> Result<Index>;

@@ -152,7 +152,7 @@ async fn buffered_resource_revocation_filters_without_rewinding(
 	.await;
 	assert_eq!(status, 200);
 	assert!(
-		visible
+		visible["events"]
 			.as_array()
 			.unwrap()
 			.iter()

@@ -106,6 +106,7 @@ pub async fn verify_all(
 	// The last other Node this walk asked, which a slow answer may have used up
 	// the time for.
 	let mut last_asked: Option<String> = None;
+	let mut silent: Option<String> = None;
 	while let Some(reference) = pending.pop() {
 		let remaining = deadline.saturating_duration_since(scope.now());
 		if remaining.is_zero() {
@@ -115,13 +116,12 @@ pub async fn verify_all(
 			let node = if reference.node() != scope.node() {
 				let node = reference.node();
 				let resource = scope.resource("node", node, json!({"remote_node":node}));
-				if scope.decide(&resource, "federation.discover").await?
-					&& scope.route(node).await?.is_some()
+				if !scope.decide(&resource, "federation.discover").await?
+					|| scope.route(node).await?.is_none()
 				{
-					Some(node.to_owned())
-				} else {
-					None
+					return Ok(false);
 				}
+				Some(node.to_owned())
 			} else {
 				if last_asked.is_none() {
 					tracing::warn!("the dependency walk ran out of time with no other Node asked");
@@ -129,8 +129,13 @@ pub async fn verify_all(
 				last_asked.clone()
 			};
 			if let Some(node) = node {
-				scope.mark_unavailable(&node);
+				// The deadline is not proof of silence and must not extend the memory.
+				scope.skipped(&node);
+				if let Some(node) = scope.take_row_silence() {
+					silent.get_or_insert(node);
+				}
 			}
+			scope.set_row_silence(silent);
 			return Ok(false);
 		}
 		let key = digest(&serde_json::to_value(&reference)?);
@@ -151,9 +156,11 @@ pub async fn verify_all(
 			// After the decision: a mark may come from another identity of the
 			// same authority, and this reader's own right comes first.
 			if scope.unavailable(node) {
-				// Not asked again, but this walk met it: its caller is told so (#751).
-				scope.mark_unavailable(node);
-				return Ok(false);
+				scope.skipped(node);
+				if let Some(node) = scope.take_row_silence() {
+					silent.get_or_insert(node);
+				}
+				continue;
 			}
 			let Some(route) = scope.route(node).await? else {
 				return Ok(false);
@@ -161,20 +168,41 @@ pub async fn verify_all(
 			last_asked = Some(node.to_owned());
 			let input = Input { reference };
 			match transport.check(&route, &input, remaining).await {
-				Check::Confirmed(checked) => checked,
-				Check::Refused | Check::NotAsked => return Ok(false),
+				Check::Confirmed(checked) => {
+					scope.answered(input.reference.node());
+					checked
+				}
+				Check::Refused => {
+					scope.answered(input.reference.node());
+					return Ok(false);
+				}
+				Check::NotAsked => return Ok(false),
 				Check::Unavailable => {
 					scope.mark_unavailable(input.reference.node());
-					return Ok(false);
+					if let Some(node) = scope.take_row_silence() {
+						silent.get_or_insert(node);
+					}
+					continue;
 				}
 			}
 		};
-		if !checked.visible || checked.pending.len() > LIMIT {
+		if !checked.visible {
+			match scope.take_row_silence() {
+				Some(node) => {
+					silent.get_or_insert(node);
+					continue;
+				}
+				None => return Ok(false),
+			}
+		}
+		if checked.pending.len() > LIMIT {
 			return Ok(false);
 		}
 		pending.extend(checked.pending);
 	}
-	Ok(true)
+	let visible = silent.is_none();
+	scope.set_row_silence(silent);
+	Ok(visible)
 }
 
 #[cfg(test)]

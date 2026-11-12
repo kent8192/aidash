@@ -67,6 +67,7 @@ fn receipt(binding: Binding) -> Receipt {
 			}],
 			estimated_tokens: 10,
 			truncated: false,
+			unconfirmed: vec![],
 		},
 		estimated_tokens: 10,
 	}

@@ -3,7 +3,11 @@ use crate::{
 	Result,
 	ports::authorization::{projection::WorkspaceProjection, visibility::RunVerdicts},
 };
-use aidash_domain::{Event, Message, Task, WorkspaceSnapshot, workspaces::TaskPage};
+use aidash_domain::{
+	Event, Message, Task, WorkspaceSnapshot,
+	unconfirmed::{Kind, Tally},
+	workspaces::TaskPage,
+};
 use serde_json::Value;
 use uuid::Uuid;
 pub const EVENT_SCAN_LIMIT: usize = 4096;
@@ -14,18 +18,23 @@ pub async fn task_page(
 ) -> Result<TaskPage> {
 	let mut cursor = offset;
 	let mut tasks: Vec<Task> = vec![];
+	let mut unconfirmed = Tally::new();
 	loop {
 		let rows = scope.task_rows(workspaces, cursor).await?;
 		let exhausted = rows.len() < 500;
 		for task in rows {
 			cursor = cursor.saturating_add(1);
-			if scope.task_visible(&task).await? {
+			scope.begin_row();
+			let visible = scope.task_visible(&task).await?;
+			let silence = scope.take_row_silence();
+			if unconfirmed.settle(silence, Kind::Task, task.workspace_id, visible) {
 				tasks.push(task);
 			}
 			if tasks.len() == 500 {
 				return Ok(TaskPage {
 					tasks,
 					next_offset: Some(cursor),
+					unconfirmed: unconfirmed.into_entries(),
 				});
 			}
 		}
@@ -33,6 +42,7 @@ pub async fn task_page(
 			return Ok(TaskPage {
 				tasks,
 				next_offset: None,
+				unconfirmed: unconfirmed.into_entries(),
 			});
 		}
 	}
@@ -42,8 +52,19 @@ pub async fn latest_visible_events(
 	workspaces: &[Uuid],
 	include_marketplace: bool,
 ) -> Result<Vec<Event>> {
+	latest_visible_events_counted(scope, workspaces, include_marketplace)
+		.await
+		.map(|(events, _)| events)
+}
+/// The latest visible events and the events left out because a Node did not answer (#770).
+pub async fn latest_visible_events_counted(
+	scope: &mut dyn WorkspaceProjection,
+	workspaces: &[Uuid],
+	include_marketplace: bool,
+) -> Result<(Vec<Event>, Tally)> {
 	let mut cursor = i64::MAX;
 	let mut result = vec![];
+	let mut unconfirmed = Tally::new();
 	let mut scanned = 0;
 	// Every event of a Run would otherwise repeat that Run's full disclosure check (#292).
 	let mut runs = RunVerdicts::default();
@@ -56,7 +77,10 @@ pub async fn latest_visible_events(
 		scanned += rows.len();
 		for event in rows {
 			cursor = event.sequence;
-			if scope.event_visible(&event, &mut runs).await? {
+			scope.begin_row();
+			let visible = scope.event_visible(&event, &mut runs).await?;
+			let silence = scope.take_row_silence();
+			if unconfirmed.settle_in(silence, Kind::Event, event.workspace_id, visible) {
 				result.push(event);
 			}
 			if result.len() == 100 {
@@ -68,19 +92,32 @@ pub async fn latest_visible_events(
 		}
 	}
 	result.reverse();
-	Ok(result)
+	Ok((result, unconfirmed))
 }
 pub async fn latest_visible_messages(
 	scope: &mut dyn WorkspaceProjection,
 	workspace: Uuid,
 ) -> Result<Vec<Message>> {
+	latest_visible_messages_counted(scope, workspace)
+		.await
+		.map(|(messages, _)| messages)
+}
+/// The latest visible messages and the messages left out because a Node did not answer (#770).
+pub async fn latest_visible_messages_counted(
+	scope: &mut dyn WorkspaceProjection,
+	workspace: Uuid,
+) -> Result<(Vec<Message>, Tally)> {
 	let mut offset = 0;
 	let mut result = vec![];
+	let mut unconfirmed = Tally::new();
 	loop {
 		let rows = scope.message_rows(workspace, offset).await?;
 		let exhausted = rows.len() < 100;
 		for message in rows {
-			if scope.message_visible(&message).await? {
+			scope.begin_row();
+			let visible = scope.message_visible(&message).await?;
+			let silence = scope.take_row_silence();
+			if unconfirmed.settle(silence, Kind::Message, message.workspace_id, visible) {
 				result.push(message);
 			}
 			if result.len() == 100 {
@@ -93,7 +130,7 @@ pub async fn latest_visible_messages(
 		offset += 100;
 	}
 	result.reverse();
-	Ok(result)
+	Ok((result, unconfirmed))
 }
 pub async fn snapshot_untracked(
 	scope: &mut dyn WorkspaceProjection,
@@ -101,39 +138,61 @@ pub async fn snapshot_untracked(
 ) -> Result<WorkspaceSnapshot> {
 	let workspace = scope.workspace(id).await?;
 	scope.require(&workspace, "workspace.read").await?;
+	let mut unconfirmed = Tally::new();
 	let events = if scope.decide(&workspace, "workspace.events").await? {
-		latest_visible_events(scope, &[id], false).await?
+		let (events, left_out) = latest_visible_events_counted(scope, &[id], false).await?;
+		unconfirmed.merge(left_out);
+		events
 	} else {
 		vec![]
 	};
+	let workspace_row = scope.workspace_row(id).await?;
+	let workspace_tasks = scope.workspace_tasks(id).await?;
+	let workspace_artifacts = scope.workspace_artifacts(id).await?;
+	let (messages, left_out) = latest_visible_messages_counted(scope, id).await?;
+	unconfirmed.merge(left_out);
 	let mut snapshot = WorkspaceSnapshot {
-		workspace: scope.workspace_row(id).await?,
-		tasks: scope.workspace_tasks(id).await?,
-		artifacts: scope.workspace_artifacts(id).await?,
-		messages: latest_visible_messages(scope, id).await?,
+		workspace: workspace_row,
+		tasks: workspace_tasks,
+		artifacts: workspace_artifacts,
+		messages,
 		events,
+		unconfirmed: vec![],
 	};
 	let mut tasks = vec![];
 	for task in snapshot.tasks {
-		if scope.task_visible(&task).await? {
+		scope.begin_row();
+		let visible = scope.task_visible(&task).await?;
+		let silence = scope.take_row_silence();
+		if unconfirmed.settle(silence, Kind::Task, task.workspace_id, visible) {
 			tasks.push(task);
 		}
 	}
 	snapshot.tasks = tasks;
 	let mut artifacts = vec![];
 	for artifact in snapshot.artifacts {
-		if scope.artifact_visible(&artifact).await? {
+		scope.begin_row();
+		let visible = scope.artifact_visible(&artifact).await?;
+		let silence = scope.take_row_silence();
+		if unconfirmed.settle(silence, Kind::Artifact, artifact.workspace_id, visible) {
 			artifacts.push(artifact);
 		}
 	}
 	snapshot.artifacts = artifacts;
+	// Each message was judged by `latest_visible_messages` and is judged again
+	// here. Messages dropped by the first pass are not in the list, so a message
+	// dropped now, because a Node stopped answering in between, is counted once.
 	let mut messages = vec![];
 	for message in snapshot.messages {
-		if scope.message_visible(&message).await? {
+		scope.begin_row();
+		let visible = scope.message_visible(&message).await?;
+		let silence = scope.take_row_silence();
+		if unconfirmed.settle(silence, Kind::Message, message.workspace_id, visible) {
 			messages.push(message);
 		}
 	}
 	snapshot.messages = messages;
+	snapshot.unconfirmed = unconfirmed.into_entries();
 	Ok(snapshot)
 }
 pub async fn snapshot(scope: &mut dyn WorkspaceProjection, id: Uuid) -> Result<WorkspaceSnapshot> {
@@ -221,6 +280,7 @@ where
 			.take(fitted_limit)
 			.cloned()
 			.collect(),
+		unconfirmed: vec![],
 	};
 	scope.track(&dependencies).await?;
 	Ok(Some((fitted_limit, output)))

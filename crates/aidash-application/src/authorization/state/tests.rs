@@ -139,6 +139,21 @@ struct Scope {
 	decisions: Vec<(Resource, String)>,
 	visited: Vec<(&'static str, Uuid)>,
 	fail: Option<&'static str>,
+	/// Runs whose check stops at a Node that did not answer (#770).
+	silent_runs: BTreeSet<Uuid>,
+	silence: Option<String>,
+}
+const SILENT_NODE: &str = "aidash://other/silent";
+impl crate::ports::authorization::visibility::RowOutcome for Scope {
+	fn begin_row(&mut self) {
+		self.silence = None;
+	}
+	fn row_silence(&self) -> Option<String> {
+		self.silence.clone()
+	}
+	fn take_row_silence(&mut self) -> Option<String> {
+		self.silence.take()
+	}
 }
 #[fixture]
 fn scope() -> Scope {
@@ -224,6 +239,7 @@ impl WorkspaceListingScope for Scope {
 		Ok(TaskPage {
 			tasks: self.tasks.clone(),
 			next_offset: self.next_offset,
+			unconfirmed: vec![],
 		})
 	}
 }
@@ -254,19 +270,22 @@ impl WorkspaceStateScope for Scope {
 		&mut self,
 		workspaces: &[Uuid],
 		include_marketplace: bool,
-	) -> Result<Vec<Event>> {
+	) -> Result<(Vec<Event>, Tally)> {
 		self.touch("events")?;
 		self.event_scopes
 			.push((workspaces.to_vec(), include_marketplace));
-		Ok(vec![Event {
-			id: id(7),
-			sequence: 9,
-			node: None,
-			workspace_id: None,
-			kind: "marketplace.installed".into(),
-			data: json!({"saved":true}),
-			created_at: Utc::now(),
-		}])
+		Ok((
+			vec![Event {
+				id: id(7),
+				sequence: 9,
+				node: None,
+				workspace_id: None,
+				kind: "marketplace.installed".into(),
+				data: json!({"saved":true}),
+				created_at: Utc::now(),
+			}],
+			Tally::new(),
+		))
 	}
 	async fn artifact_rows(&mut self, workspaces: &[Uuid], offset: u64) -> Result<Vec<Artifact>> {
 		assert_eq!(workspaces, self.selected);
@@ -311,6 +330,10 @@ impl WorkspaceStateScope for Scope {
 	async fn run_visible(&mut self, row: &RunMetadata) -> Result<bool> {
 		self.touch("run_visible")?;
 		self.visited.push(("run", row.id));
+		if self.silent_runs.contains(&row.id) {
+			self.silence = Some(SILENT_NODE.into());
+			return Ok(false);
+		}
 		Ok(row.agent_id != "hidden")
 	}
 	async fn human_resource(&mut self, row: &HumanRequest) -> Result<Resource> {
@@ -708,4 +731,54 @@ async fn conversation_policy_failure_does_not_return_the_already_built_projectio
 	);
 	assert_eq!(scope.calls.last(), Some(&"decide"));
 	assert_eq!(scope.visited.last(), Some(&("conversation", id(6))));
+}
+
+#[rstest]
+#[tokio::test]
+async fn requests_of_a_run_left_out_for_a_silent_node_are_counted_after_human_read(
+	mut scope: Scope,
+) {
+	// Arrange: Run 30 waits on a silent Node. It has one request the reader may
+	// read and one they may not.
+	scope.silent_runs = BTreeSet::from([id(30)]);
+	scope.runs = BTreeMap::from([(0, vec![run(3, true), run(30, true)])]);
+	let request = |value: u128, visible: bool| HumanRequest {
+		run_id: id(30),
+		..human(value, visible)
+	};
+	scope.humans = BTreeMap::from([(
+		0,
+		vec![human(5, true), request(50, true), request(51, false)],
+	)]);
+	// Act
+	let state = state(&mut scope).await.unwrap();
+	// Assert: the surviving Run's request is returned, the other Run is counted,
+	// and only the request the reader may read is counted under the same Node.
+	assert_eq!(state.runs.len(), 1);
+	assert_eq!(state.human_requests.len(), 1);
+	let counts: Vec<_> = state
+		.unconfirmed
+		.iter()
+		.map(|entry| {
+			(
+				entry.node.as_str(),
+				entry.kind,
+				entry.workspace_id,
+				entry.count,
+			)
+		})
+		.collect();
+	assert_eq!(
+		counts,
+		vec![
+			(SILENT_NODE, Kind::Run, id(1), 1),
+			(SILENT_NODE, Kind::HumanRequest, id(1), 1),
+		]
+	);
+}
+#[rstest]
+#[tokio::test]
+async fn a_state_with_nothing_left_out_has_an_empty_unconfirmed_list(mut scope: Scope) {
+	let state = state(&mut scope).await.unwrap();
+	assert!(state.unconfirmed.is_empty());
 }

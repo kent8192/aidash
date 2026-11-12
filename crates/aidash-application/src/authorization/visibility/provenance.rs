@@ -45,13 +45,14 @@ pub async fn registry_reads_visible(
 pub async fn run_reads_visible(scope: &mut dyn ReadProvenanceScope, run: Uuid) -> Result<bool> {
 	Ok(run_reads_block(scope, run).await?.is_none())
 }
-/// Walk a Run's recorded reads and return the first that stops this reader.
+/// Walk recorded reads; a refusal takes precedence over the first silent dependency.
 pub async fn run_reads_block(
 	scope: &mut dyn ReadProvenanceScope,
 	run: Uuid,
 ) -> Result<Option<ReadBlock>> {
 	let mut pending = vec![run];
 	let mut visited = BTreeSet::new();
+	let mut silent = None;
 	while let Some(run) = pending.pop() {
 		if !visited.insert(run) || !scope.first_visit(run) {
 			continue;
@@ -61,11 +62,37 @@ pub async fn run_reads_block(
 		if opened {
 			scope.close_run_reads();
 		}
-		if let Some(block) = block? {
-			return Ok(Some(block));
+		if let Some(block) = block?
+			&& let Some(refused) = hold_or_refuse(scope, &mut silent, block)
+		{
+			return Ok(Some(refused));
 		}
 	}
-	Ok(None)
+	Ok(restore_silence(scope, silent))
+}
+
+fn hold_or_refuse(
+	scope: &mut dyn ReadProvenanceScope,
+	silent: &mut Option<(String, ReadBlock)>,
+	block: ReadBlock,
+) -> Option<ReadBlock> {
+	match scope.take_row_silence() {
+		Some(node) => {
+			silent.get_or_insert((node, block));
+			None
+		}
+		None => Some(block),
+	}
+}
+
+fn restore_silence(
+	scope: &mut dyn ReadProvenanceScope,
+	silent: Option<(String, ReadBlock)>,
+) -> Option<ReadBlock> {
+	silent.map(|(node, block)| {
+		scope.set_row_silence(Some(node));
+		block
+	})
 }
 
 async fn one_run_reads_block(
@@ -73,25 +100,39 @@ async fn one_run_reads_block(
 	run: Uuid,
 	pending: &mut Vec<Uuid>,
 ) -> Result<Option<ReadBlock>> {
+	let mut silent = None;
 	if let Some(reference) = registry_read_block(scope, run).await? {
 		return Ok(Some(ReadBlock::Definition(reference)));
 	}
 	match scope.remote_reads(run).await? {
 		RemoteReads::Visible => {}
 		RemoteReads::Definition(reference) => return Ok(Some(ReadBlock::Definition(reference))),
-		RemoteReads::Unconfirmed => return Ok(Some(ReadBlock::RemoteRead)),
+		RemoteReads::Unconfirmed => {
+			if let Some(block) = hold_or_refuse(scope, &mut silent, ReadBlock::RemoteRead) {
+				return Ok(Some(block));
+			}
+		}
 	}
-	if !scope.semantic_reads(run).await? || !scope.received_semantic(run).await? {
-		return Ok(Some(ReadBlock::SemanticRead));
+	if !scope.semantic_reads(run).await?
+		&& let Some(block) = hold_or_refuse(scope, &mut silent, ReadBlock::SemanticRead)
+	{
+		return Ok(Some(block));
+	}
+	if !scope.received_semantic(run).await?
+		&& let Some(block) = hold_or_refuse(scope, &mut silent, ReadBlock::SemanticRead)
+	{
+		return Ok(Some(block));
 	}
 	let sources = scope.sources(run).await?;
 	scope.prepare_sources(&sources).await?;
 	for (workspace, kind, id) in sources {
-		if !source_visible(scope, workspace, &kind, id, pending).await? {
-			return Ok(Some(ReadBlock::Source(kind)));
+		if !source_visible(scope, workspace, &kind, id, pending).await?
+			&& let Some(block) = hold_or_refuse(scope, &mut silent, ReadBlock::Source(kind))
+		{
+			return Ok(Some(block));
 		}
 	}
-	Ok(None)
+	Ok(restore_silence(scope, silent))
 }
 
 /// Classify the same dependency graph for memory execution recovery.
@@ -288,6 +329,7 @@ struct ClassifiedOutputs<'a> {
 	pending: &'a mut Vec<Uuid>,
 }
 
+impl crate::ports::authorization::visibility::RowOutcome for ClassifiedOutputs<'_> {}
 #[async_trait]
 impl ResourceVisibilityScope for ClassifiedOutputs<'_> {
 	fn resource(&self, kind: &str, id: &str, attributes: Value) -> Resource {
@@ -332,12 +374,20 @@ pub async fn local_output_visible(
 	kind: &str,
 	id: Uuid,
 ) -> Result<bool> {
+	let mut silent = None;
 	for producer in scope.producers(workspace, kind, id).await? {
 		if !scope.producer_reads_visible(producer).await? {
-			return Ok(false);
+			match scope.take_row_silence() {
+				Some(node) => {
+					silent.get_or_insert(node);
+				}
+				None => return Ok(false),
+			}
 		}
 	}
-	Ok(true)
+	let visible = silent.is_none();
+	scope.set_row_silence(silent);
+	Ok(visible)
 }
 pub async fn output_visible(
 	scope: &mut dyn crate::ports::authorization::visibility::provenance::OutputScope,
@@ -345,12 +395,28 @@ pub async fn output_visible(
 	kind: &str,
 	id: Uuid,
 ) -> Result<bool> {
+	let mut silent = None;
 	for grant in scope.remote_grants(workspace, kind, id).await? {
 		if !scope.grant_visible(grant).await? {
-			return Ok(false);
+			match scope.take_row_silence() {
+				Some(node) => {
+					silent.get_or_insert(node);
+				}
+				None => return Ok(false),
+			}
 		}
 	}
-	local_output_visible(scope, workspace, kind, id).await
+	if !local_output_visible(scope, workspace, kind, id).await? {
+		match scope.take_row_silence() {
+			Some(node) => {
+				silent.get_or_insert(node);
+			}
+			None => return Ok(false),
+		}
+	}
+	let visible = silent.is_none();
+	scope.set_row_silence(silent);
+	Ok(visible)
 }
 
 #[cfg(test)]

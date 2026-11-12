@@ -197,7 +197,12 @@ function FileOperations({
   const [busy, setBusy] = useState(false);
   const imageIndex = useQuery({
     queryKey: ["semantic", area.workspace_id, "entries"],
-    queryFn: () => semanticEntries(area.workspace_id),
+    // Shares its cache entry with the Workspace's semantic index view, so it
+    // reads the same shape.
+    queryFn: async () => {
+      const list = await semanticEntries(area.workspace_id);
+      return { items: list.entries, unconfirmed: list.unconfirmed };
+    },
     enabled: area.manifest.some(
       (file) =>
         file.scope === "working" && file.media_type.startsWith("image/"),
@@ -462,8 +467,8 @@ function FileOperations({
                     <Hint>
                       {f.scope} · {f.size} bytes
                     </Hint>
-                    {imageIndex.data
-                      ?.filter((entry) => {
+                    {imageIndex.data?.items
+                      .filter((entry) => {
                         const source = entry.source as {
                           kind?: string;
                           area_id?: string;
