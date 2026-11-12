@@ -211,6 +211,30 @@ async fn fresh_status_and_original_provenance_are_required_over_mtls() {
 		.await
 		.unwrap();
 	response.lock().unwrap().suspension_epoch = Some(1);
+	assert!(
+		client
+			.resume_suspended_origin(&admitted, 1)
+			.await
+			.unwrap()
+			.is_none()
+	);
+	response.lock().unwrap().resumable_suspension_epochs.push(1);
+	assert_eq!(
+		client
+			.resume_suspended_origin(&admitted, 1)
+			.await
+			.unwrap()
+			.unwrap()
+			.suspension_epoch,
+		Some(1)
+	);
+	assert!(
+		client
+			.resume_suspended_origin(&admitted, 2)
+			.await
+			.unwrap()
+			.is_none()
+	);
 	let manually_readmitted = client.origin_binding(source).await.unwrap();
 	client
 		.validate_bound_origin(&manually_readmitted)
