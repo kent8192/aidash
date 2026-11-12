@@ -311,3 +311,185 @@ async fn a_newer_revision_marks_a_running_preview_stale(#[future] capability_fix
 	assert_eq!(state, "running");
 	assert_eq!(reason, None);
 }
+
+/// Measurement for #781, not a regression test: a Live preview whose start
+/// waits for the Runner while its Run is cancelled. A stub Runner accepts the
+/// dispatch, reports the Pod as starting until the test releases it, and then
+/// reports it running. Observations are printed as `#781` lines.
+#[rstest::rstest]
+#[tokio::test]
+async fn m6_a_live_preview_start_waiting_for_the_runner_when_the_run_is_cancelled(
+	#[future] capability_fixture: CoreFixture,
+) {
+	use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+	let case = "M6 Live preview start racing the cancel";
+	let note =
+		|what: &str, value: &dyn std::fmt::Debug| eprintln!("#781 {case} | {what} | {value:?}");
+	let c = capability_fixture.await;
+	let run = admit(&c).await;
+	let (_area, _) = working_area(&c, run.id).await;
+	let run = c.f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
+	// The stub Runner.
+	let released = Arc::new(AtomicBool::new(false));
+	let dispatched = Arc::new(AtomicUsize::new(0));
+	let cancels = Arc::new(AtomicUsize::new(0));
+	let router = {
+		let (released, dispatched, cancels) =
+			(released.clone(), dispatched.clone(), cancels.clone());
+		let cancelled = Arc::new(AtomicBool::new(false));
+		let seen = cancelled.clone();
+		reinhardt::test::stub::StubRouter::new()
+			.post("/v1/operations", move |_request| {
+				let dispatched = dispatched.clone();
+				async move {
+					dispatched.fetch_add(1, Ordering::SeqCst);
+					Ok(reinhardt::Response::ok()
+						.with_json(&json!({"status":"accepted"}))
+						.unwrap())
+				}
+			})
+			.get("/v1/operations/{id}", move |_request| {
+				let (released, cancelled) = (released.clone(), seen.clone());
+				async move {
+					let gone = cancelled.load(Ordering::SeqCst);
+					let serve = if gone {
+						json!({"status":"stopped","reason":"cancelled"})
+					} else if released.load(Ordering::SeqCst) {
+						json!({"status":"running","pod_host":"10.0.0.9","startup_log":"serving"})
+					} else {
+						json!({"status":"starting","startup_log":""})
+					};
+					Ok(reinhardt::Response::ok()
+						.with_json(&json!({"status": if gone {"cancelled"} else {"running"},
+							"serve": serve, "termination_confirmed": gone}))
+						.unwrap())
+				}
+			})
+			.post("/v1/operations/{id}/cancel", move |_request| {
+				let (cancels, cancelled) = (cancels.clone(), cancelled.clone());
+				async move {
+					cancels.fetch_add(1, Ordering::SeqCst);
+					cancelled.store(true, Ordering::SeqCst);
+					Ok(reinhardt::Response::ok()
+						.with_json(&json!({"status":"cancelled"}))
+						.unwrap())
+				}
+			})
+			.into_server_router()
+	};
+	let runner = reinhardt::test::fixtures::server::test_server_guard(router).await;
+	// A store that reaches the stub Runner and has a preview domain. The
+	// application keeps its own store, so its cancel marks rows as it would.
+	let mut store = c.f.store.clone();
+	let mut profile = (*c.f.store.capabilities.0).clone();
+	profile.runner = Some(
+		serde_json::from_value(json!({
+			"endpoint": runner.url, "token_env": "AIDASH_781_RUNNER_TOKEN",
+			"image": "stub", "runtime_class": "stub", "namespace": "stub",
+		}))
+		.unwrap(),
+	);
+	store.capabilities = aidash_server::capabilities::Runtime::new(profile).unwrap();
+	store.preview_domain = Some("preview.example.test".into());
+	let authority =
+		aidash_server::authorization::services::execution::StepAuthority::begin(&c.f, &run)
+			.await
+			.unwrap();
+	let start = {
+		let (store, run) = (store.clone(), run.clone());
+		tokio::spawn(async move {
+			authority
+				.live_preview_start(&store, &run, "python3 -m http.server 3000", 3000)
+				.await
+		})
+	};
+	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+	while dispatched.load(Ordering::SeqCst) == 0 {
+		assert!(
+			!start.is_finished(),
+			"the start ended before its dispatch: {:?}",
+			start.await
+		);
+		assert!(
+			tokio::time::Instant::now() < deadline,
+			"no dispatch reached the stub Runner"
+		);
+		tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+	}
+	let row: (Uuid, String) =
+		sqlx::query_as("SELECT id, state FROM core_live_previews WHERE run_id = $1")
+			.bind(run.id)
+			.fetch_one(c.f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	note("row while the start waits for the Runner", &row);
+	let (status, body) = request(
+		&c.app,
+		&c.token,
+		"POST",
+		&format!("/api/runs/{}/control", run.id),
+		json!({"action":"cancel"}),
+	)
+	.await;
+	note("cancel status", &(status, &body["control"]));
+	note(
+		"row after the cancel (state, stop_reason, confirmed)",
+		&live_row(&c, row.0).await,
+	);
+	released.store(true, Ordering::SeqCst);
+	let started = start.await.unwrap();
+	note(
+		"live_preview_start result",
+		&started
+			.as_ref()
+			.map(|value| value["state"].clone())
+			.map_err(|error| error.to_string()),
+	);
+	note(
+		"row after the start finished (state, stop_reason, confirmed)",
+		&live_row(&c, row.0).await,
+	);
+	let (status, body) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		&format!("/api/runs/{}/live-preview", run.id),
+		Value::Null,
+	)
+	.await;
+	note(
+		"GET live-preview: status, state, stop_reason",
+		&(
+			status,
+			&body["live_preview"]["state"],
+			&body["live_preview"]["stop_reason"],
+		),
+	);
+	let (_, run_body) = request(
+		&c.app,
+		&c.token,
+		"GET",
+		&format!("/api/runs/{}", run.id),
+		Value::Null,
+	)
+	.await;
+	note(
+		"Run phase, control",
+		&(&run_body["phase"], &run_body["control"]),
+	);
+	tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+	note(
+		"Runner cancel requests within 3 s",
+		&cancels.load(Ordering::SeqCst),
+	);
+	let holds: i64 = sqlx::query_scalar(
+		"SELECT count(*) FROM core_live_previews WHERE run_id = $1 AND state <> 'stopped'",
+	)
+	.bind(run.id)
+	.fetch_one(c.f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	note("rows of the cancelled Run not stopped", &holds);
+	drop(runner);
+	c.close().await;
+}

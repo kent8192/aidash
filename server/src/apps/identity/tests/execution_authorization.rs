@@ -6,6 +6,8 @@ use http::Method;
 use upstream_fixtures::{async_upstream, reply};
 #[path = "../../execution/tests/support/legacy.rs"]
 mod common;
+#[path = "execution_authorization/issue_781_measure.rs"]
+mod issue_781_measure;
 #[path = "../../execution/tests/support/late_subnode.rs"]
 mod late_subnode;
 #[path = "execution_authorization/subnode_read_boundary.rs"]
