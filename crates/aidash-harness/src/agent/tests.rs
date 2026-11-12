@@ -3223,12 +3223,12 @@ async fn invalid_summary_leaves_the_saved_context_unchanged(mut fixture: Fixture
 	*state.summary_text.lock().unwrap() = Some("not json".into());
 	thinking_with_history(&mut fixture, 40);
 	let before = fixture.run.context.history.clone();
-	assert!(matches!(
-		advance_sources(&mut fixture).await,
-		Err(Error::Context(
-			aidash_domain::context::recovery::Failure::SummaryInvalid
-		))
-	));
+	// Repeated reads asked for this summary while the request fits, so its
+	// failure drops the request instead of pausing the Run (ADR 0125).
+	advance_sources(&mut fixture).await.unwrap();
+	assert!(matches!(fixture.run.state, RunState::Thinking(_)));
+	assert!(!fixture.run.context.offload_reads.summary_pending);
+	assert_eq!(events(&fixture).last().unwrap(), "context.summary_skipped");
 	assert_eq!(fixture.run.context.history, before);
 	assert!(fixture.run.context.execution_summary.is_none());
 	assert!(!events(&fixture).contains(&"context.compacted".to_owned()));
@@ -3799,8 +3799,13 @@ async fn truncated_summary_retries_once_with_a_smaller_range(
 	*state.summary_text.lock().unwrap() = Some(valid_summary());
 	*state.summary_truncations.lock().unwrap() = truncations;
 	thinking_with_history(&mut fixture, 40);
-	let result = advance_sources(&mut fixture).await;
-	assert_eq!(result.is_ok(), succeeds, "{result:?}");
+	// Repeated reads asked for this summary while the request fits, so even
+	// a retry that is truncated again does not pause the Run (ADR 0125).
+	advance_sources(&mut fixture).await.unwrap();
+	assert_eq!(
+		events(&fixture).last().unwrap() == "context.summary_skipped",
+		!succeeds
+	);
 	let attempts = fixture.backend.0.compaction_attempts.lock().unwrap();
 	assert_eq!(attempts.len(), 2);
 	assert_eq!(attempts[0].1, Some(Outcome::Invalid));

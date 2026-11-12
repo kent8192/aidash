@@ -2386,9 +2386,19 @@ impl<'a> Executor<'a> {
                             *entry = original.into_iter().find(|item| item.seq == entry.seq && matches!(item.event, ContextEvent::Human { .. }))
                                 .ok_or_else(|| Error::Conflict("human Journal event is missing".into()))?;
                         }
-                        return Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, &agent.model, agent.harness_contract, *plan, &tools, true)).await
-                            .map_err(at_stage("compaction"))
-                            .map_err(|error| remote_budget(guard, error));
+                        // Repeated reads ask for a summary even when the request
+                        // fits. Such a Run pauses only when nothing makes its
+                        // request fit (ADR 0125): a failed summary is dropped and
+                        // the step goes on with the projection it already has.
+                        let forced = plan.pruned.offload_reads.summary_pending && plan.before_tokens <= fitting.budget.window;
+                        return match Box::pin(self.summarize(run, token, guard, visibility, home.as_ref(), &fitting, &agent.model, agent.harness_contract, *plan, &tools, true)).await {
+                            // Every exit of `summarize` settles its attempt first.
+                            Err(Error::Context(_) | Error::ContextOverflow) if forced => {
+                                run.context.offload_reads.release();
+                                store.save_run(run, token, "context.summary_skipped").await
+                            }
+                            result => result.map_err(at_stage("compaction")).map_err(|error| remote_budget(guard, error)),
+                        };
                     }
                 }
 
