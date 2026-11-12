@@ -448,6 +448,7 @@
   "authExpires": "Expires",
   "authActive": "Active",
   "authExpired": "Expired",
+  "authExpiringSoon": "Expires within 7 days",
   "authRevoked": "Revoked",
   "authRevoke": "Revoke",
   "authRevokeHelp": "Revoke this specific credential. Subsequent authorized operations and stream deliveries using it will be rejected.",

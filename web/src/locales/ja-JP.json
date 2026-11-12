@@ -448,6 +448,7 @@
   "authExpires": "有効期限",
   "authActive": "有効",
   "authExpired": "期限切れ",
+  "authExpiringSoon": "7日以内に期限切れ",
   "authRevoked": "失効済み",
   "authRevoke": "失効",
   "authRevokeHelp": "この認証情報を失効します。以降、この認証情報を使った操作とストリーム配信は拒否されます。",

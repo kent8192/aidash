@@ -67,6 +67,7 @@ const accessTones = {
   authDenied: "danger",
   authRevoked: "danger",
   authExpired: "warning",
+  authExpiringSoon: "warning",
   authDisabled: "neutral",
 } satisfies Record<string, StatusTone>;
 
@@ -465,7 +466,11 @@ function TenantAuthorization({
                             : Date.parse(credential.expires_at) <=
                                 credentials.dataUpdatedAt
                               ? "authExpired"
-                              : "authActive"
+                              : Date.parse(credential.expires_at) <=
+                                  credentials.dataUpdatedAt +
+                                    7 * 24 * 60 * 60 * 1000
+                                ? "authExpiringSoon"
+                                : "authActive"
                         }
                       />
                       {!credential.revoked_at && canRevoke && (
