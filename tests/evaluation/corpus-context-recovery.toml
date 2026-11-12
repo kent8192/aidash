@@ -331,7 +331,7 @@ reference_pages = 20
 max_steps = 40
 reference_page_bytes = 3000
 # Page 2 carries the correction. Page 1 is the oldest call and stays pinned.
-reference_corrections = { 2 = "Correction: the budget is now BUDGET-USD=300. Also EXCLUDE-VENDOR=Contoso." }
+reference_corrections = { 2 = "Correction: the budget is now BUDGET-USD=300. Keep EXCLUDE-VENDOR=Northwind and also EXCLUDE-VENDOR=Contoso." }
 [tasks.oracle]
 kind = "constraint-retention"
 budget_usd = 300
@@ -565,7 +565,7 @@ reference_pages = 20
 max_steps = 40
 reference_page_bytes = 3000
 reference_correction_offset = 1500
-reference_corrections = { 2 = "Correction: the budget is now BUDGET-USD=300. Also EXCLUDE-VENDOR=Contoso." }
+reference_corrections = { 2 = "Correction: the budget is now BUDGET-USD=300. Keep EXCLUDE-VENDOR=Northwind and also EXCLUDE-VENDOR=Contoso." }
 [tasks.oracle]
 kind = "constraint-retention"
 budget_usd = 300
@@ -613,7 +613,7 @@ context_policy = { version = "context-recovery/1", preserve_recent = 6, overflow
 max_steps = 40
 reference_page_bytes = 3000
 reference_correction_offset = 1500
-document_corrections = { "procurement-budget-policy-update" = "Correction: the budget is now BUDGET-USD=300. Also EXCLUDE-VENDOR=Contoso." }
+document_corrections = { "procurement-budget-policy-update" = "Correction: the budget is now BUDGET-USD=300. Keep EXCLUDE-VENDOR=Northwind and also EXCLUDE-VENDOR=Contoso." }
 [tasks.oracle]
 kind = "constraint-retention"
 budget_usd = 300
@@ -641,7 +641,7 @@ reference_pages = 20
 max_steps = 60
 reference_page_bytes = 3000
 reference_correction_offset = 1500
-reference_corrections = { 2 = "Correction: the budget is now BUDGET-USD=300. Also EXCLUDE-VENDOR=Contoso." }
+reference_corrections = { 2 = "Correction: the budget is now BUDGET-USD=300. Keep EXCLUDE-VENDOR=Northwind and also EXCLUDE-VENDOR=Contoso." }
 [tasks.oracle]
 kind = "constraint-retention"
 budget_usd = 300

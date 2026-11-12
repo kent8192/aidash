@@ -864,7 +864,7 @@ class FixtureTest(unittest.TestCase):
         _, pruned = chat(self.fixture, "task-1", history=[{"result": "BUDGET-USD=500 EXCLUDE-VENDOR=Northwind"}])
         self.assertIn('"budget_usd": 500', pruned["choices"][0]["message"]["content"])
         _, kept = chat(self.fixture, "task-1", history=[
-            {"result": "Correction: the budget is now BUDGET-USD=300. Also EXCLUDE-VENDOR=Contoso."}])
+            {"result": "Correction: the budget is now BUDGET-USD=300. Keep EXCLUDE-VENDOR=Northwind and also EXCLUDE-VENDOR=Contoso."}])
         self.assertIn('"budget_usd": 300', kept["choices"][0]["message"]["content"])
 
     def test_cost_is_rendered_as_an_exact_decimal_and_overflow_is_rejected(self):
@@ -976,8 +976,17 @@ class RecoveryCorpusTest(unittest.TestCase):
             item = task(value, identifier)
             status, result = fixture.tool(item, alias, args)
             self.assertEqual(status, 200)
-            self.assertEqual(len(result["content"]), 3000)
-            self.assertTrue(result["content"][1500:].startswith("Correction:"))
+            content = result["content"]
+            self.assertEqual(len(content), 3000)
+            # The correction starts at the first word boundary from the offset and is
+            # bounded by spaces, so no filler fragment joins it (not "Contoso.ms").
+            correction = item.get("reference_corrections", {}).get("2") or next(
+                iter(item.get("document_corrections", {}).values()))
+            start = content.index(correction)
+            self.assertGreaterEqual(start, 1500)
+            self.assertEqual(content[start - 1], " ")
+            self.assertEqual(content[start + len(correction)], " ")
+            self.assertEqual(sorted(set(re.findall(r"EXCLUDE-VENDOR=(\S+)", content))), ["Contoso.", "Northwind"])
         item = task(value, "side-effect-ledger")
         probe = fixture_module.Probe(item, "run")
         for page in range(1, 21):
