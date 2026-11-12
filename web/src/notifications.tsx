@@ -11,6 +11,7 @@ import {
 } from "react";
 import {
   Bell,
+  CalendarX2,
   CheckCircle2,
   CircleHelp,
   ShieldCheck,
@@ -46,6 +47,11 @@ import {
   type NoticeFrame,
   type NoticeTarget,
 } from "./notifications/model";
+import {
+  quietCompletion,
+  scheduleNoticeEntries,
+  type ScheduleNotices,
+} from "./schedules-model";
 
 const copy = {
   "ja-JP": {
@@ -59,6 +65,7 @@ const copy = {
     input: "回答が必要です",
     completed: "タスクが完了しました",
     failed: "タスクが失敗しました",
+    schedule_stopped: "スケジュールが止まりました",
     updates: (count: number) => `${count}件の更新があります`,
     view: "通知を確認",
     close: "通知を閉じる",
@@ -74,6 +81,7 @@ const copy = {
     input: "Your response is needed",
     completed: "Task completed",
     failed: "Task failed",
+    schedule_stopped: "Schedule stopped",
     updates: (count: number) => `${count} updates`,
     view: "View notifications",
     close: "Dismiss notification",
@@ -84,16 +92,19 @@ const icons = {
   input: CircleHelp,
   completed: CheckCircle2,
   failed: TriangleAlert,
+  schedule_stopped: CalendarX2,
 };
 const iconTone = {
   approval: "text-warning",
   input: "text-warning",
   completed: "text-success",
   failed: "text-destructive",
+  schedule_stopped: "text-warning",
 };
 function frame(
   data: TenantState | undefined,
   approvals: ApprovalCard[] | undefined,
+  schedules: ScheduleNotices | undefined,
   ja: boolean,
 ): NoticeFrame | null {
   if (!data) return null;
@@ -105,27 +116,32 @@ function frame(
       JSON.stringify([data.deployment.id, request.workspace_id]),
     ),
   );
-  const entries: NoticeEntry[] = data.tasks.map((task) => ({
-    key: JSON.stringify([data.deployment.id, "task", task.id]),
-    scope: JSON.stringify([data.deployment.id, task.workspace_id]),
-    signature: `${task.revision}:${task.status}`,
-    kind:
+  const scheduled = new Set(schedules?.scheduled_tasks ?? []);
+  const entries: NoticeEntry[] = data.tasks.map((task) => {
+    const kind =
       task.status === "FAILED"
         ? "failed"
         : task.status === "COMPLETED"
           ? "completed"
-          : null,
-    detail: task.title.slice(0, 180),
-    workspaceTitle:
-      data.workspaces.find((workspace) => workspace.id === task.workspace_id)
-        ?.title ?? "",
-    target: {
-      kind: "task",
-      id: task.id,
-      node: data.deployment.id,
-      workspace: task.workspace_id,
-    },
-  }));
+          : null;
+    return {
+      key: JSON.stringify([data.deployment.id, "task", task.id]),
+      scope: JSON.stringify([data.deployment.id, task.workspace_id]),
+      signature: `${task.revision}:${task.status}`,
+      kind,
+      quiet: quietCompletion(kind, task.id, scheduled),
+      detail: task.title.slice(0, 180),
+      workspaceTitle:
+        data.workspaces.find((workspace) => workspace.id === task.workspace_id)
+          ?.title ?? "",
+      target: {
+        kind: "task",
+        id: task.id,
+        node: data.deployment.id,
+        workspace: task.workspace_id,
+      },
+    };
+  });
   const requests = data.human_requests.map((request) => ({
     request,
     node: data.deployment.id,
@@ -176,6 +192,19 @@ function frame(
         },
       });
   }
+  // Stopped Schedules wait in the pending section (#557). Their scope appears
+  // once the list has loaded, so Schedules already stopped stay quiet.
+  if (schedules) {
+    const stopped = scheduleNoticeEntries(
+      data.deployment.id,
+      schedules,
+      (id) =>
+        data.workspaces.find((workspace) => workspace.id === id)?.title ?? "",
+      ja,
+    );
+    scopes.push(stopped.scope);
+    entries.push(...stopped.entries);
+  }
   return { scopes, entries };
 }
 const NotificationContext = createContext<{
@@ -215,6 +244,7 @@ export function NotificationBell({ className }: { className?: string }) {
 export function NotificationProvider({
   data,
   approvals,
+  schedules,
   locale,
   theme,
   onSelect,
@@ -223,6 +253,8 @@ export function NotificationProvider({
   data: TenantState | undefined;
   /** Pending capability approvals addressed to the signed-in person. */
   approvals?: ApprovalCard[];
+  /** Stopped Schedules and the Tasks Schedules started (#557). */
+  schedules?: ScheduleNotices;
   locale: Locale;
   theme: "light" | "dark";
   onSelect: (target: NoticeTarget) => void;
@@ -258,7 +290,7 @@ export function NotificationProvider({
     [store, toastId],
   );
   useEffect(() => {
-    store.observe(frame(data, approvals, locale === "ja-JP"));
+    store.observe(frame(data, approvals, schedules, locale === "ja-JP"));
     if (centerOpen) store.markRead();
     if (
       active.current.length &&
@@ -331,7 +363,17 @@ export function NotificationProvider({
         },
       );
     }, delay);
-  }, [data, approvals, locale, store, toastId, show, visit, centerOpen]);
+  }, [
+    data,
+    approvals,
+    schedules,
+    locale,
+    store,
+    toastId,
+    show,
+    visit,
+    centerOpen,
+  ]);
   useEffect(
     () => () => {
       clearTimeout(timer.current);

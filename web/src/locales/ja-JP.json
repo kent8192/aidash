@@ -853,6 +853,7 @@
   "nodeRegistrationEnabled": "有効",
   "nodeRegistrationDisabled": "無効",
   "approvals": "承認",
+  "schedules": "スケジュール",
   "bundle": "バンドル",
   "source": "ソース",
   "decider": "Decider",

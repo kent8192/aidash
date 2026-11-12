@@ -25,6 +25,7 @@ import {
   Server,
   Settings2,
   ShieldCheck,
+  CalendarClock,
   ShieldHalf,
   Store,
   Sun,
@@ -102,6 +103,7 @@ const settingsIcons: Record<
   planConnections: KeyRound,
   marketplace: Store,
   approvals: ShieldCheck,
+  schedules: CalendarClock,
 };
 const railButton =
   "relative grid size-10 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-surface hover:text-foreground aria-expanded:bg-surface aria-expanded:text-foreground [&_svg]:size-[18px]";
