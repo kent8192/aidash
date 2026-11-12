@@ -127,7 +127,7 @@ impl LocalRunVisibilityScope for Reads<'_> {
 	}
 	fn remember(&mut self, run: &RunMetadata, allowed: bool) {
 		// A refusal reached while a Node did not answer is not a verdict (#770).
-		if !allowed && self.access.row_silence.is_some() {
+		if !allowed && self.access.has_silent_peers() {
 			return;
 		}
 		if self.access.dependency_frontier.is_none() {

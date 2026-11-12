@@ -1401,19 +1401,26 @@ impl Access {
 		std::mem::take(&mut self.unavailable_peers)
 	}
 
-	/// Mark Nodes that another identity of this authority found silent, but
-	/// only those this reader may discover: to any other reader a silent Node
-	/// is the plain refusal it always was. With discover decided, the row being
-	/// checked is unconfirmed under the adopted Node, so a list counts it (#770);
-	/// the publisher's check already wrote the process's memory of it.
+	/// Preserve discoverable peer marks from the publisher for retries. Only
+	/// its final row outcome may identify an unconfirmed row to the reader.
 	pub(crate) async fn adopt_silent_peers(
 		&mut self,
 		nodes: impl IntoIterator<Item = String>,
+		row_silence: Option<String>,
 	) -> Result<()> {
+		let mut nodes: std::collections::BTreeSet<String> = nodes.into_iter().collect();
+		if let Some(node) = &row_silence {
+			nodes.insert(node.clone());
+		}
 		for node in nodes {
 			let resource = self.resource("node", &node, json!({"remote_node":node}));
 			if self.decide(&resource, "federation.discover").await? {
+				let earlier = self.row_silence.take();
 				self.skip_peer(&node);
+				self.row_silence = earlier;
+				if row_silence.as_deref() == Some(node.as_str()) {
+					self.row_silence.get_or_insert(node);
+				}
 			}
 		}
 		Ok(())
@@ -1718,12 +1725,15 @@ impl Access {
 		// A refusal reached while a Node did not answer may be that Node's
 		// silence, so it is asked again and not remembered (#751).
 		if reads != aidash_application::ports::federation::registry_reads::RemoteReads::Visible
-			&& self.row_silence.is_some()
+			&& !self.unavailable_peers.is_empty()
 		{
 			return;
 		}
 		self.remote_read_cache
 			.insert((run, self.authority_context()), reads);
+	}
+	pub(crate) fn has_silent_peers(&self) -> bool {
+		!self.unavailable_peers.is_empty()
 	}
 	pub(crate) fn peer_unavailable(&self, node: &str) -> bool {
 		self.unavailable_peers.contains(node) || self.recently_silent(node)

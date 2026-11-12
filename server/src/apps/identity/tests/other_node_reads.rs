@@ -1253,13 +1253,51 @@ async fn a_reader_refused_run_read_is_told_of_no_unconfirmed_run(
 	world.close().await;
 }
 
-/// A Node that answers and refuses is a refusal: no Task is counted as
-/// unconfirmed for it (#770, decision 3).
+/// A real refusal of the Run's root subject remains a refusal when the peer
+/// subsequently stops answering: none of the refused Tasks is counted.
 #[rstest::rstest]
 #[tokio::test]
 async fn a_task_the_other_node_refuses_is_not_counted(#[future(awt)] provider: Provider) {
-	let world = world(provider).await;
-	world.run_coordinator(WITH_DELEGATION).await;
+	provider
+		.script
+		.tasks
+		.store(2, std::sync::atomic::Ordering::SeqCst);
+	provider
+		.script
+		.read_delegated
+		.store(true, std::sync::atomic::Ordering::SeqCst);
+	let mut world = world(provider).await;
+	establish_delegated_read(&world, 2).await;
+	let children = world.all_handed_over().await;
+	assert_eq!(children.len(), 2);
+	let (status, current) = request(
+		&world.app,
+		&world.f.config.api_token,
+		"GET",
+		"/api/authorization/acme",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{current}");
+	let mut bundle = current["bundle"].clone();
+	bundle["subjects"]["bob"] = json!({"kind":"user"});
+	let (status, body) = request(
+		&world.app,
+		&world.f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":current["revision"],"bundle":bundle}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let bob = subject_credential(&world.f.store, "acme", "bob").await;
+	let (status, before) = request(&world.app, &bob, "GET", "/api/tasks", Value::Null).await;
+	assert_eq!(status, 200, "{before}");
+	assert!(
+		children.iter().all(|child| listed(&before, child.id)),
+		"{before}"
+	);
+	// The receiver's Catalog Approval is independently checked on that Node.
 	let authorization = aidash_server::authorization::Authorization {
 		pool: world.f.store.pool.clone(),
 	};
@@ -1272,9 +1310,9 @@ async fn a_task_the_other_node_refuses_is_not_counted(#[future(awt)] provider: P
 		.await
 		.unwrap()
 		.into_iter()
-		.find(|binding| binding.entry_id == reference.id)
-		.expect("the approval exists");
-	authorization
+		.find(|entry| entry.entry_id == reference.id)
+		.unwrap();
+	let revoked = authorization
 		.set_catalog(
 			"acme",
 			&world.sibling.node,
@@ -1285,9 +1323,106 @@ async fn a_task_the_other_node_refuses_is_not_counted(#[future(awt)] provider: P
 		)
 		.await
 		.unwrap();
-	let (status, tasks) = world.get("/api/tasks").await;
-	assert_eq!(status, 200, "{tasks}");
-	assert_eq!(tasks["unconfirmed"], json!([]), "{tasks}");
+	let (status, refused_by_peer) =
+		request(&world.app, &bob, "GET", "/api/tasks", Value::Null).await;
+	assert_eq!(status, 200, "{refused_by_peer}");
+	assert!(
+		children
+			.iter()
+			.all(|child| !listed(&refused_by_peer, child.id)),
+		"{refused_by_peer}"
+	);
+	assert_eq!(
+		refused_by_peer["unconfirmed"],
+		json!([]),
+		"{refused_by_peer}"
+	);
+	authorization
+		.set_catalog(
+			"acme",
+			&world.sibling.node,
+			&reference,
+			revoked.revision,
+			true,
+			"deployment_administrator",
+		)
+		.await
+		.unwrap();
+	let (status, current) = request(
+		&world.app,
+		&world.f.config.api_token,
+		"GET",
+		"/api/authorization/acme",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{current}");
+	let mut bundle = current["bundle"].clone();
+	bundle["subjects"]["alice"]["enabled"] = json!(false);
+	let (status, body) = request(
+		&world.app,
+		&world.f.config.api_token,
+		"POST",
+		"/api/authorization/acme",
+		json!({"expected_revision":current["revision"],"bundle":bundle}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, refused) = request(&world.app, &bob, "GET", "/api/tasks", Value::Null).await;
+	assert_eq!(status, 200, "{refused}");
+	assert!(
+		children.iter().all(|child| !listed(&refused, child.id)),
+		"{refused}"
+	);
+	assert_eq!(refused["unconfirmed"], json!([]), "{refused}");
+	let _original = limit_pool(&mut world, 1).await;
+	let (status, silent) = request(&world.app, &bob, "GET", "/api/tasks", Value::Null).await;
+	assert_eq!(status, 200, "{silent}");
+	assert!(
+		children.iter().all(|child| !listed(&silent, child.id)),
+		"{silent}"
+	);
+	assert_eq!(silent["unconfirmed"], json!([]), "{silent}");
+	world.close().await;
+}
+
+/// Closing the receiver Node revokes disclosure for a RequiredHome admission.
+#[rstest::rstest]
+#[tokio::test]
+async fn closing_a_required_home_receiver_withholds_its_outputs(#[future(awt)] provider: Provider) {
+	provider
+		.script
+		.tasks
+		.store(2, std::sync::atomic::Ordering::SeqCst);
+	provider
+		.script
+		.read_delegated
+		.store(true, std::sync::atomic::Ordering::SeqCst);
+	let world = world(provider).await;
+	establish_delegated_read(&world, 2).await;
+	let children = world.all_handed_over().await;
+	assert_eq!(children.len(), 2);
+	let (status, before) = world.get("/api/tasks").await;
+	assert_eq!(status, 200, "{before}");
+	assert!(
+		children.iter().all(|child| listed(&before, child.id)),
+		"{before}"
+	);
+	let (status, body) = administer_node(
+		&world.f,
+		"acme",
+		&format!("/api/tenants/acme/nodes/{}/deletion", world.sibling.node),
+		json!({"confirmation":world.sibling.node}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, after) = world.get("/api/tasks").await;
+	assert_eq!(status, 200, "{after}");
+	assert!(
+		children.iter().all(|child| !listed(&after, child.id)),
+		"{after}"
+	);
+	assert_eq!(after["unconfirmed"], json!([]), "{after}");
 	world.close().await;
 }
 
