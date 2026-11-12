@@ -9,7 +9,15 @@ import {
   authorizationRevokeCredential,
 } from "./generated/aidash";
 import type { Credential, IssuedCredential } from "./generated/models";
-import { Badge, Empty, Field, Modal, Panel, useI18n } from "./ui";
+import {
+  Badge,
+  credentialEndReason,
+  Empty,
+  Field,
+  Modal,
+  Panel,
+  useI18n,
+} from "./ui";
 import { Alert, Hint, Loading, Notice, RowList } from "./components/patterns";
 import { useBusyRetry } from "./policy-busy";
 
@@ -130,6 +138,12 @@ export function OwnCredentials({
                   <time className="font-mono" dateTime={credential.expires_at}>
                     {new Date(credential.expires_at).toLocaleString(locale)}
                   </time>
+                  {credential.end_reason && (
+                    <>
+                      {" · "}
+                      {credentialEndReason(t, credential.end_reason)}
+                    </>
+                  )}
                 </span>
                 <Badge
                   value={state}

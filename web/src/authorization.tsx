@@ -32,6 +32,7 @@ import { ApiError, apiFetch } from "./transport";
 import { useBusyRetry } from "./policy-busy";
 import {
   Badge,
+  credentialEndReason,
   Empty,
   Field,
   JsonView,
@@ -457,6 +458,12 @@ function TenantAuthorization({
                               locale,
                             )}
                           </time>
+                          {credential.end_reason && (
+                            <>
+                              {" · "}
+                              {credentialEndReason(t, credential.end_reason)}
+                            </>
+                          )}
                         </span>
                       </div>
                       <AccessBadge
