@@ -9,6 +9,8 @@ import {
   validRunMediaAttachments,
   runMediaAccept,
   validRunMediaRoute,
+  uploadDescription,
+  MAX_IMAGE_DESCRIPTION_CHARS,
 } from "../src/collaboration/conversation-model.ts";
 import {
   MAX_FILE_CITATIONS,
@@ -265,4 +267,20 @@ test("a remote citation pins its source Run in the message payload", () => {
   assert.deepEqual(fileCitationPayload([citation]), [
     { area_id: "remote-area", file_id: "version", run_id: "source-run" },
   ]);
+});
+
+test("only an image upload sends its trimmed Image Description", () => {
+  assert.equal(
+    uploadDescription("image/png", "  A red bicycle  "),
+    "A red bicycle",
+  );
+  assert.equal(uploadDescription("image/png", "   "), undefined);
+  assert.equal(uploadDescription("image/png", undefined), undefined);
+  assert.equal(uploadDescription("text/plain", "Notes"), undefined);
+});
+
+test("an Image Description is counted in characters, as the server counts it", () => {
+  const japanese = "画".repeat(MAX_IMAGE_DESCRIPTION_CHARS);
+  assert.equal(uploadDescription("image/jpeg", japanese), japanese);
+  assert.equal(uploadDescription("image/jpeg", `${japanese}画`), undefined);
 });

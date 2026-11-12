@@ -12,7 +12,11 @@ import type { ChannelAttachment } from "../generated/models";
 import { authenticatedFetch } from "../transport";
 import { Modal, useI18n } from "../ui";
 import { collaborationCopy } from "./copy";
-import { attachmentWarningText, mergeMessagePages } from "./conversation-model";
+import {
+  MAX_IMAGE_DESCRIPTION_CHARS,
+  attachmentWarningText,
+  mergeMessagePages,
+} from "./conversation-model";
 import { threadCopy } from "./thread-copy";
 import { workspaceCopy } from "./workspace-copy";
 
@@ -222,7 +226,7 @@ function ImageDescription({
         >
           <input
             className="h-6 min-w-0 flex-1 rounded-sm border border-border bg-background px-2"
-            maxLength={2000}
+            maxLength={MAX_IMAGE_DESCRIPTION_CHARS}
             value={text}
             disabled={saving}
             aria-label={`${words.imageDescription}: ${attachment.filename}`}

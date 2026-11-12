@@ -53,7 +53,9 @@ import {
   attachmentWarningKey,
   attachmentWarningText,
   submissionFor,
+  uploadDescription,
   validAttachments,
+  MAX_IMAGE_DESCRIPTION_CHARS,
   type MessageSubmission,
 } from "./conversation-model";
 import { Avatar } from "./avatar";
@@ -415,14 +417,15 @@ function ConversationFeed({
         let uploaded = entry.uploaded;
         if (!uploaded) {
           setUploading(true);
-          const description = entry.description?.trim();
+          const description = uploadDescription(
+            entry.file.type,
+            entry.description,
+          );
           uploaded = await channelAttachmentUpload(workspace, entry.file, {
             filename: entry.file.name,
             media_type: entry.file.type || "application/octet-stream",
             idempotency_key: entry.key,
-            ...(description && entry.file.type.startsWith("image/")
-              ? { description }
-              : {}),
+            ...(description ? { description } : {}),
           });
           updateDraft((current) => ({
             ...current,
@@ -931,7 +934,7 @@ function ConversationFeed({
                         {entry.file.type.startsWith("image/") && (
                           <input
                             className="mt-1 block h-6 w-full max-w-sm rounded-sm border border-border bg-background px-2 text-[11px]"
-                            maxLength={2000}
+                            maxLength={MAX_IMAGE_DESCRIPTION_CHARS}
                             disabled={busy || !!entry.uploaded}
                             value={entry.description ?? ""}
                             placeholder={words.imageDescriptionPlaceholder}

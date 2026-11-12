@@ -124,3 +124,20 @@ export function validAttachments(
     )
   );
 }
+
+/** The longest Image Description, in characters (#622). */
+export const MAX_IMAGE_DESCRIPTION_CHARS = 2000;
+
+/**
+ * The Image Description an upload sends: only for an image, trimmed, and only
+ * when the sender wrote one within the limit. Anything else sends none, so the
+ * server never refuses an upload for its description.
+ */
+export function uploadDescription(
+  mediaType: string,
+  description: string | undefined,
+): string | undefined {
+  const text = description?.trim();
+  if (!mediaType.startsWith("image/") || !text) return undefined;
+  return [...text].length <= MAX_IMAGE_DESCRIPTION_CHARS ? text : undefined;
+}
