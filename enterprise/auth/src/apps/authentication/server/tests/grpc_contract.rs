@@ -112,6 +112,13 @@ async fn actual_auth_grpc_preserves_session_stop_and_administrator_boundaries() 
 		.unwrap();
 	assert_eq!(admitted.suspension_epoch, None);
 	assert_eq!(admitted.account_id, fixture.account.id.to_string());
+	assert_eq!(
+		client
+			.sign_in_method_count(fixture.identity.id, browser.id)
+			.await
+			.unwrap(),
+		Some(1)
+	);
 	assert!(matches!(
 		client
 			.validate_interactive(Uuid::new_v4(), browser.id)

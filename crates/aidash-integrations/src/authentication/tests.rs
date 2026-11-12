@@ -100,6 +100,7 @@ async fn fresh_status_and_original_provenance_are_required_over_mtls() {
 		suspension_epoch: Some(0),
 		source_disable_epoch: 0,
 		resumable_suspension_epochs: Vec::new(),
+		usable_sign_in_method_count: None,
 		source_issuer: "upstream".into(),
 		source_subject: "source".into(),
 	}));
@@ -291,7 +292,24 @@ async fn fresh_status_and_original_provenance_are_required_over_mtls() {
 			.unwrap()
 			.contains(&(source.to_string(), String::new()))
 	);
+	{
+		let mut response = response.lock().unwrap();
+		response.source_identity_id = source.to_string();
+		response.account_id = Uuid::new_v4().to_string();
+		response.active = true;
+	}
+	let short = client.clone().with_validity_cache_seconds(1);
+	short.validate_interactive(source, session).await.unwrap();
 	running.shutdown().await;
+	short
+		.validate_interactive_within_t(source, session)
+		.await
+		.unwrap();
+	tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+	assert!(matches!(
+		short.validate_interactive_within_t(source, session).await,
+		Err(Error::IdentityStatusUnavailable)
+	));
 	assert!(matches!(
 		client.validate_origin(source).await,
 		Err(Error::IdentityStatusUnavailable)

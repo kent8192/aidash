@@ -14,7 +14,8 @@ use reinhardt::grpc::{
 };
 use std::{
 	collections::HashMap,
-	sync::Arc,
+	hash::Hash,
+	sync::{Arc, Mutex},
 	time::{Duration, Instant},
 };
 use uuid::Uuid;
@@ -30,6 +31,23 @@ pub struct Settings {
 }
 
 type OriginKey = (Uuid, Option<Uuid>, Option<u64>, Option<u64>);
+type Entry = Arc<tokio::sync::Mutex<Option<Instant>>>;
+type Cache<K> = Arc<Mutex<HashMap<K, Entry>>>;
+
+fn entry<K: Eq + Hash>(cache: &Cache<K>, key: K, ttl: Duration) -> Entry {
+	let now = Instant::now();
+	let mut cache = cache.lock().expect("validity cache");
+	cache.retain(|_, value| {
+		Arc::strong_count(value) > 1
+			|| value
+				.try_lock()
+				.map_or(true, |at| at.is_some_and(|at| now.duration_since(at) < ttl))
+	});
+	cache
+		.entry(key)
+		.or_insert_with(|| Arc::new(tokio::sync::Mutex::new(None)))
+		.clone()
+}
 
 /// Clones share the channel and the cache for admitted work.
 #[derive(Clone)]
@@ -37,8 +55,8 @@ pub struct Client {
 	channel: Channel,
 	product_client_id: String,
 	cache_ttl: Duration,
-	origin_cache: Arc<tokio::sync::Mutex<HashMap<OriginKey, Instant>>>,
-	interactive_cache: Arc<tokio::sync::Mutex<HashMap<(Uuid, Uuid), Instant>>>,
+	origin_cache: Cache<OriginKey>,
+	interactive_cache: Cache<(Uuid, Uuid)>,
 }
 fn rpc_error(status: tonic::Status) -> Error {
 	match status.code() {
@@ -131,8 +149,8 @@ impl Client {
 			channel,
 			product_client_id: settings.product_client_id,
 			cache_ttl: Duration::ZERO,
-			origin_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-			interactive_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+			origin_cache: Arc::new(Mutex::new(HashMap::new())),
+			interactive_cache: Arc::new(Mutex::new(HashMap::new())),
 		})
 	}
 	pub fn with_validity_cache_seconds(mut self, seconds: u64) -> Self {
@@ -140,33 +158,62 @@ impl Client {
 		self
 	}
 	pub async fn interactive(&self, identity: Uuid, session: Uuid) -> Result<ValidityResponse> {
-		let mut cache = self.interactive_cache.lock().await;
+		let entry = entry(&self.interactive_cache, (identity, session), self.cache_ttl);
+		let mut last = entry.lock().await;
 		let checked = Instant::now();
 		let response = self.interactive_online(identity, session).await?;
 		if !self.cache_ttl.is_zero() {
-			cache.retain(|_, at| checked.duration_since(*at) < self.cache_ttl);
-			cache.insert((identity, session), checked);
+			*last = Some(checked);
 		}
 		Ok(response)
 	}
 	pub async fn forget_session(&self, identity: Uuid, session: Uuid) {
-		self.interactive_cache
+		let removed = self
+			.interactive_cache
 			.lock()
-			.await
+			.expect("validity cache")
 			.remove(&(identity, session));
+		if let Some(entry) = removed {
+			*entry.lock().await = None;
+		}
 	}
 	pub async fn forget_identity(&self, identity: Uuid) {
-		self.interactive_cache
-			.lock()
-			.await
-			.retain(|(id, _), _| *id != identity);
+		let removed = {
+			let mut cache = self.interactive_cache.lock().expect("validity cache");
+			let keys: Vec<_> = cache
+				.keys()
+				.copied()
+				.filter(|(id, _)| *id == identity)
+				.collect();
+			keys.into_iter()
+				.filter_map(|key| cache.remove(&key))
+				.collect::<Vec<_>>()
+		};
+		for entry in removed {
+			*entry.lock().await = None;
+		}
 	}
 	async fn interactive_online(&self, identity: Uuid, session: Uuid) -> Result<ValidityResponse> {
+		self.interactive_read(identity, session, false).await
+	}
+	pub async fn sign_in_method_count(&self, identity: Uuid, session: Uuid) -> Result<Option<u32>> {
+		Ok(self
+			.interactive_read(identity, session, true)
+			.await?
+			.usable_sign_in_method_count)
+	}
+	async fn interactive_read(
+		&self,
+		identity: Uuid,
+		session: Uuid,
+		include_sign_in_method_count: bool,
+	) -> Result<ValidityResponse> {
 		let response = AuthenticationValidityClient::new(self.channel.clone())
 			.validate_interactive(ValidateInteractiveRequest {
 				external_identity_id: identity.to_string(),
 				product_session_id: session.to_string(),
 				product_client_id: self.product_client_id.clone(),
+				include_sign_in_method_count,
 			})
 			.await
 			.map_err(rpc_error)?
@@ -216,16 +263,19 @@ impl Authority for Client {
 				.await
 				.map(|_| ());
 		}
-		let mut cache = self.interactive_cache.lock().await;
+		let entry = entry(
+			&self.interactive_cache,
+			(source_identity, product_session),
+			self.cache_ttl,
+		);
+		let mut last = entry.lock().await;
 		let checked = Instant::now();
-		cache.retain(|_, at| checked.duration_since(*at) < self.cache_ttl);
-		let key = (source_identity, product_session);
-		if cache.contains_key(&key) {
+		if last.is_some_and(|at| checked.duration_since(at) < self.cache_ttl) {
 			return Ok(());
 		}
 		self.interactive_online(source_identity, product_session)
 			.await?;
-		cache.insert(key, checked);
+		*last = Some(checked);
 		Ok(())
 	}
 	async fn validate_origin(&self, source_identity: Uuid) -> Result<()> {
@@ -312,14 +362,14 @@ impl Authority for Client {
 			origin.suspension_epoch,
 			origin.source_disable_epoch,
 		);
-		let mut cache = self.origin_cache.lock().await;
+		let entry = entry(&self.origin_cache, key, self.cache_ttl);
+		let mut last = entry.lock().await;
 		let now = Instant::now();
-		cache.retain(|_, checked| now.duration_since(*checked) < self.cache_ttl);
-		if cache.contains_key(&key) {
+		if last.is_some_and(|checked| now.duration_since(checked) < self.cache_ttl) {
 			return Ok(());
 		}
 		self.validate_bound_origin(origin).await?;
-		cache.insert(key, now);
+		*last = Some(now);
 		Ok(())
 	}
 	async fn resume_suspended_origin(

@@ -343,6 +343,42 @@ impl Authentication {
 		// there is no positive-result cache when this authority is unreachable.
 		Ok(())
 	}
+	/// Read only linked methods owned by this account; unknown upstream status
+	/// suppresses the prompt rather than claiming a method is unusable.
+	pub(crate) async fn usable_sign_in_method_count(&self, account: Uuid) -> Result<Option<u32>> {
+		use reinhardt::db::orm::Model;
+		let mut tx = self.store.scope().await?;
+		let rows = crate::models::IdentityRecord::objects()
+			.all()
+			.all_with_executor(tx.executor())
+			.await
+			.map_err(crate::store::unavailable)?;
+		let mut ids = Vec::new();
+		for row in rows {
+			let identity: ExternalIdentity = crate::store::decode(row.document.0)?;
+			if identity.first_account == Some(account) && identity.linked {
+				ids.push(identity.id);
+			}
+		}
+		drop(tx);
+		let mut count = 0u32;
+		for id in ids {
+			self.refresh_identity(id).await?;
+			let mut tx = self.store.scope().await?;
+			let Some(identity) = tx.identity(id).await? else {
+				return Ok(None);
+			};
+			if identity.first_account != Some(account) || !identity.linked {
+				continue;
+			}
+			match identity.validity(Utc::now()) {
+				Validity::Active => count += 1,
+				Validity::Unavailable => return Ok(None),
+				Validity::Denied(_) => {}
+			}
+		}
+		Ok(Some(count))
+	}
 	pub async fn check_session(
 		&self,
 		id: Uuid,

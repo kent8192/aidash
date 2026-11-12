@@ -76,6 +76,13 @@ impl AuthenticationValidity for Rpc {
 		}
 		let mut response = validity_response(validity, source);
 		response.account_id = session.account_id.to_string();
+		if input.include_sign_in_method_count && response.active {
+			response.usable_sign_in_method_count = self
+				.auth
+				.usable_sign_in_method_count(session.account_id)
+				.await
+				.map_err(status)?;
+		}
 		Ok(Response::new(response))
 	}
 	async fn validate_origin(
@@ -354,6 +361,7 @@ fn validity_response(
 		suspension_epoch: None,
 		source_disable_epoch: 0,
 		resumable_suspension_epochs: Vec::new(),
+		usable_sign_in_method_count: None,
 	};
 	if let Some(source) = source {
 		result.source_disable_epoch = source.disable_epoch;

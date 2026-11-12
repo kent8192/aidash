@@ -770,6 +770,35 @@ impl DashboardSessions {
 	pub(crate) async fn session_info(&self, headers: HeaderMap) -> Result<Response> {
 		let f = self.runtime.clone();
 		let session = session_from_headers(&f, &headers).await?;
+		let sign_in_method_prompt = if let (Some(authority), Some(config), Some(remote)) = (
+			&f.config.common_auth,
+			&f.config.oidc,
+			session
+				.provider_sid
+				.as_deref()
+				.and_then(|sid| Uuid::parse_str(sid).ok()),
+		) {
+			if matches!(
+				authority
+					.sign_in_method_count(session.identity_id(), remote)
+					.await,
+				Ok(Some(1))
+			) {
+				reqwest::Url::parse(&config.issuer)
+					.ok()
+					.and_then(|url| url.join("/settings/account").ok())
+					.map(
+						|url| crate::apps::identity::serializers::oidc::SignInMethodPrompt {
+							identity_id: session.identity_id(),
+							account_url: url.to_string(),
+						},
+					)
+			} else {
+				None
+			}
+		} else {
+			None
+		};
 		let pool = &f.store.pool;
 		let external = pool
 			.atomic(&TenancyScope::NoTenant, async |tx| {
@@ -922,6 +951,7 @@ impl DashboardSessions {
 		let mut response = Response::ok().with_json(
 			&(SessionView {
 				id: session.id,
+				sign_in_method_prompt,
 				personal_account: personal.is_some(),
 				tenant_creation: crate::apps::identity::services::tenants::creation_offered(
 					&f,

@@ -26,6 +26,7 @@ message ValidateInteractiveRequest {
   // The authentication server's product session, never a caller's account claim.
   string product_session_id = 2;
   string product_client_id = 3;
+  bool include_sign_in_method_count = 4;
 }
 message ValidateOriginRequest {
   string external_identity_id = 1;
@@ -48,6 +49,7 @@ message ValidityResponse {
   optional uint64 suspension_epoch = 7;
   uint64 source_disable_epoch = 8;
   repeated uint64 resumable_suspension_epochs = 9;
+  optional uint32 usable_sign_in_method_count = 10;
 }
 message RevokeProductSessionRequest {
   string product_session_id = 1;

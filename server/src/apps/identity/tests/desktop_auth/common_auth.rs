@@ -39,6 +39,7 @@ impl AuthenticationPeer {
 			suspension_epoch: Some(0),
 			source_disable_epoch: 0,
 			resumable_suspension_epochs: Vec::new(),
+			usable_sign_in_method_count: None,
 		}
 	}
 }
