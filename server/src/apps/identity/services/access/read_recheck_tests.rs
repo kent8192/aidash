@@ -34,7 +34,7 @@ fn policy(deny: Option<(&str, &str)>) -> Value {
 	}
 	json!({
 		"tenant":"acme",
-		"subjects":{"reader":{"kind":"user"},"helper":{"kind":"user"}},
+		"subjects":{"reader":{"kind":"user"},"helper":{"kind":"user"},"viewer":{"kind":"user"}},
 		"policies":policies
 	})
 }
@@ -587,6 +587,183 @@ async fn preview_stop(fixture: &Fixture, id: Uuid) -> (String, Option<String>) {
 		.unwrap()
 }
 
+async fn remote_preview(fixture: &Fixture, preview: Uuid, with_session: bool) {
+	sqlx::query("DELETE FROM authorization_execution WHERE run_id = $1")
+		.bind(fixture.run)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	let node = aidash_domain::nodes::NodeName::derived("acme").to_string();
+	// Keep the read journal local while exercising the receiver admission path.
+	// The preview has no local grant, as on a Remote Grant Run.
+	sqlx::query("UPDATE runs SET home_node = $1 WHERE id = $2")
+		.bind(format!("{DEPLOYMENT}/{node}"))
+		.bind(fixture.run)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	sqlx::query("INSERT INTO authorization_remote_admissions (id,node,source_node,grant_id,task_id,tenant,credential_id,subject_chain,description) VALUES ($1,$2,$3,$4,$5,'acme',$6,$7,'{}')")
+		.bind(fixture.run).bind(node).bind(DEPLOYMENT).bind(Uuid::new_v4()).bind(fixture.task)
+		.bind(fixture.identity.credential_id).bind(vec!["reader", "helper"])
+		.execute(fixture.driver()).await.unwrap();
+	if with_session {
+		sqlx::query("INSERT INTO egress_sessions (id,tenant,run_id,live_preview_id,principal,credential_id,expires_at,max_sent_bytes,max_received_bytes,max_requests) VALUES ($1,'acme',$2,$1,'reader',$3,clock_timestamp()+interval '1 hour',100,100,10)")
+			.bind(preview).bind(fixture.run).bind(fixture.identity.credential_id)
+			.execute(fixture.driver()).await.unwrap();
+	}
+}
+
+#[rstest]
+#[tokio::test]
+async fn remote_preview_recheck_stops_when_a_chain_member_loses_read(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_application::ports::capabilities::read_recheck::{
+		Outcome, ReadRecheckRepository, Target,
+	};
+	let fixture = fixture(database.await, 1).await;
+	let (_, preview) = running_targets(&fixture).await;
+	remote_preview(&fixture, preview, true).await;
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	let target = Target::LivePreview(preview);
+	assert_eq!(repository.check(target).await.unwrap(), Outcome::Allowed);
+	fixture
+		.set_policy(1, Some(("helper", "message.read")))
+		.await;
+	assert_eq!(repository.check(target).await.unwrap(), Outcome::Refused);
+	repository.stop_refused(target).await.unwrap();
+	assert_eq!(
+		preview_stop(&fixture, preview).await,
+		("stopped".into(), Some("run_authority_revoked".into()))
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn remote_preview_recheck_still_checks_a_viewer_outside_the_chain(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_application::ports::capabilities::read_recheck::{
+		Outcome, ReadRecheckRepository, Target,
+	};
+	let fixture = fixture(database.await, 1).await;
+	let (_, preview) = running_targets(&fixture).await;
+	remote_preview(&fixture, preview, true).await;
+	let credential = Uuid::new_v4();
+	sqlx::query("INSERT INTO authorization_credentials (id,tenant,subject,token_hash,created_at,expires_at,issued_by) VALUES ($1,'acme','viewer',$2,clock_timestamp(),clock_timestamp()+interval '1 day','fixture')")
+		.bind(credential).bind(vec![2u8; 32]).execute(fixture.driver()).await.unwrap();
+	sqlx::query(
+		"UPDATE egress_sessions SET principal = 'viewer', credential_id = $1 WHERE id = $2",
+	)
+	.bind(credential)
+	.bind(preview)
+	.execute(fixture.driver())
+	.await
+	.unwrap();
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	let target = Target::LivePreview(preview);
+	assert_eq!(repository.check(target).await.unwrap(), Outcome::Allowed);
+	fixture
+		.set_policy(1, Some(("viewer", "message.read")))
+		.await;
+	assert_eq!(repository.check(target).await.unwrap(), Outcome::Refused);
+}
+
+#[rstest]
+#[tokio::test]
+async fn remote_preview_recheck_without_session_is_unconfirmed_and_stops(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_application::{
+		capabilities::read_recheck::{self, PERIOD, Schedule, UNCONFIRMED_LIMIT},
+		ports::capabilities::read_recheck::{Outcome, ReadRecheckRepository, Target},
+	};
+	let fixture = fixture(database.await, 1).await;
+	let (_, preview) = running_targets(&fixture).await;
+	remote_preview(&fixture, preview, false).await;
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	assert_eq!(
+		repository
+			.check(Target::LivePreview(preview))
+			.await
+			.unwrap(),
+		Outcome::Unconfirmed
+	);
+	let mut schedule = Schedule::default();
+	let now = std::time::Instant::now();
+	for count in 0..UNCONFIRMED_LIMIT {
+		read_recheck::pass(&repository, &mut schedule, now + PERIOD * count)
+			.await
+			.unwrap();
+	}
+	assert_eq!(
+		preview_stop(&fixture, preview).await,
+		("stopped".into(), Some("node_unreachable".into()))
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn remote_preview_recheck_without_admission_is_unconfirmed(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_application::ports::capabilities::read_recheck::{
+		Outcome, ReadRecheckRepository, Target,
+	};
+	let fixture = fixture(database.await, 1).await;
+	let (_, preview) = running_targets(&fixture).await;
+	remote_preview(&fixture, preview, true).await;
+	sqlx::query("DELETE FROM authorization_remote_admissions WHERE id = $1")
+		.bind(fixture.run)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	assert_eq!(
+		repository
+			.check(Target::LivePreview(preview))
+			.await
+			.unwrap(),
+		Outcome::Unconfirmed
+	);
+}
+
+#[rstest]
+#[tokio::test]
+async fn remote_preview_recheck_with_an_empty_chain_is_unconfirmed(
+	#[future] database: DatabaseFixture,
+) {
+	use aidash_application::ports::capabilities::read_recheck::{
+		Outcome, ReadRecheckRepository, Target,
+	};
+	let fixture = fixture(database.await, 1).await;
+	let (_, preview) = running_targets(&fixture).await;
+	remote_preview(&fixture, preview, true).await;
+	sqlx::query("UPDATE authorization_remote_admissions SET subject_chain = '{}' WHERE id = $1")
+		.bind(fixture.run)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	let repository = crate::apps::execution::repositories::operations::reconciliation::Repository {
+		store: &fixture.store,
+	};
+	assert_eq!(
+		repository
+			.check(Target::LivePreview(preview))
+			.await
+			.unwrap(),
+		Outcome::Unconfirmed
+	);
+}
+
 #[rstest]
 #[case::the_person("reader")]
 #[case::only_someone_else_on_the_chain("helper")]
@@ -703,6 +880,47 @@ async fn a_sweep_pass_that_only_repeats_adds_no_rows_for_a_running_command(
 	use aidash_application::ports::capabilities::reconciliation::OperationReconciliationRepository;
 	// Arrange: the command's Run is bound to its Working Area, as a started Run is.
 	let fixture = fixture(database.await, 1).await;
+	// The sweep also rechecks the Run's Agent under its current Catalog Approval.
+	let model = json!({
+		"id":"model", "version":"1.0.0", "kind":"model",
+		"name":{"en":"Model"}, "description":{"en":"Fixture"},
+		"config":{"provider":"openrouter","model_id":"fixture","endpoint":"http://127.0.0.1:9/v1","context_window":128000,"max_output_tokens":4096,"modalities":["text"],"cost":{}}
+	});
+	sqlx::query("INSERT INTO registry (tenant,id,version,kind,metadata) VALUES ('acme','model','1.0.0','model',$1)")
+		.bind(model)
+		.execute(fixture.driver())
+		.await
+		.unwrap();
+	let entry: crate::registry::Entry = serde_json::from_value(json!({
+		"id":"fixture", "version":"1.0.0", "kind":"agent",
+		"name":{"en":"Fixture"}, "description":{"en":"Fixture"},
+		"config":{"schema_version":1,"model":{"id":"model","version":"1.0.0"},"instructions":"Work","bindings":[],"remove_default":[]}
+	})).unwrap();
+	sqlx::query(
+		"INSERT INTO registry (tenant,id,version,kind,metadata) VALUES ('acme',$1,$2,'agent',$3)",
+	)
+	.bind(&entry.id)
+	.bind(&entry.version)
+	.bind(serde_json::to_value(&entry).unwrap())
+	.execute(fixture.driver())
+	.await
+	.unwrap();
+	Authorization {
+		pool: fixture.store.pool.clone(),
+	}
+	.set_catalog(
+		"acme",
+		&aidash_domain::nodes::NodeName::derived("acme"),
+		&crate::registry::EntityRef {
+			id: entry.id,
+			version: entry.version,
+		},
+		0,
+		true,
+		"fixture",
+	)
+	.await
+	.unwrap();
 	let (operation, _) = running_targets(&fixture).await;
 	sqlx::query("INSERT INTO core_runs (run_id,tenant,area_id,sequence,initialized,generation) SELECT $1,'acme',id,1,true,generation FROM core_areas WHERE id=(SELECT area_id FROM core_operations WHERE id=$2)")
 		.bind(fixture.run)
@@ -719,9 +937,10 @@ async fn a_sweep_pass_that_only_repeats_adds_no_rows_for_a_running_command(
 		scope.load(operation, snapshot.run_id).await.unwrap();
 		scope.finish(Ok(())).await.unwrap();
 	};
+	let before = fixture.rows("true").await;
 	pass().await;
 	let written = fixture.rows("true").await;
-	assert!(written > 0, "the first pass records what it allowed");
+	assert!(written > before, "the first pass records what it allowed");
 
 	// Act
 	pass().await;

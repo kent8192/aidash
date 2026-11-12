@@ -7,28 +7,24 @@ async fn same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runn
 ) {
 	let c = Box::pin(capability_fixture).await;
 	let parent = admit(&c).await;
-	let (status,patch)=request(&c.app,&c.token,"POST",&path_for_patch(parent.id),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"private.txt":null},"patch":"*** Begin Patch\n*** Add File: private.txt\n+parent-only\n*** End Patch"})).await;
+	let (status,patch)=common::post(&c.app, &c.token, &path_for_patch(parent.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"private.txt":null},"patch":"*** Begin Patch\n*** Add File: private.txt\n+parent-only\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{patch}");
-	let (_, area) = request(
+	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", parent.id),
-		Value::Null,
 	)
 	.await;
-	let (_, child) = request(
+	let (_, child) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!("/api/workspaces/{}/tasks", parent.workspace_id),
 		json!({"title":"Child","description":"Dependent work","parent_id":parent.task_id}),
 	)
 	.await;
-	let (status, denied) = request(
+	let (status, denied) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!("/api/tasks/{}/delegate", child["id"].as_str().unwrap()),
 		json!({"node_id":c.f.config.deployment,"agent":{"id":"research","version":"1.1.0"}}),
 	)
@@ -42,18 +38,16 @@ async fn same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runn
 			.unwrap()
 			.unwrap();
 	assert_eq!(first.id, parent.id);
-	let (_, other) = request(
+	let (_, other) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!("/api/workspaces/{}/tasks", parent.workspace_id),
 		json!({"title":"Independent","description":"A separate conversation"}),
 	)
 	.await;
-	let (status, result) = request(
+	let (status, result) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!("/api/tasks/{}/delegate", other["id"].as_str().unwrap()),
 		json!({"node_id":c.f.config.deployment,"agent":{"id":"research","version":"1.1.0"}}),
 	)
@@ -67,20 +61,17 @@ async fn same_agent_child_cannot_deadlock_parent_and_another_thread_remains_runn
 			.unwrap();
 	assert_eq!(second.task_id.to_string(), other["id"].as_str().unwrap());
 	assert_ne!(second.id, parent.id);
-	let (_, own) = request(
+	let (_, own) = common::get(
 		&c.app,
 		&c.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", second.id),
-		Value::Null,
 	)
 	.await;
 	assert_ne!(own["id"], area["id"]);
 	assert_eq!(own["manifest"], json!([]));
-	let (status, denied) = request(
+	let (status, denied) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!("/api/runs/{}/files/read", second.id),
 		json!({"file_id":area["manifest"][0]["file_id"],"representation":"text"}),
 	)
@@ -104,21 +95,13 @@ async fn predecessor_run_cannot_read_files_after_its_successor_becomes_active(
 		"Successor-only current file\n",
 	)
 	.await;
-	let (status, materialized) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&format!("/api/runs/{}/files/materialize", predecessor.id),
-		json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"path":"current.txt","source":{"kind":"message","message_id":message}}),
-	)
+	let (status, materialized) = common::post(&c.app, &c.token, &format!("/api/runs/{}/files/materialize", predecessor.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"path":"current.txt","source":{"kind":"message","message_id":message}}))
 	.await;
 	assert_eq!(status, 200, "{materialized}");
-	let (_, area) = request(
+	let (_, area) = common::get(
 		&c.app,
 		&c.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", predecessor.id),
-		Value::Null,
 	)
 	.await;
 	let file_id = area["manifest"][0]["file_id"].clone();
@@ -136,10 +119,9 @@ async fn predecessor_run_cannot_read_files_after_its_successor_becomes_active(
 	}
 	.unwrap();
 	let input = json!({"file_id":file_id,"representation":"text"});
-	let (status, latest) = request(
+	let (status, latest) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!("/api/runs/{}/files/read", predecessor.id),
 		input.clone(),
 	)
@@ -148,32 +130,24 @@ async fn predecessor_run_cannot_read_files_after_its_successor_becomes_active(
 		status, 200,
 		"the latest completed run remains readable: {latest}"
 	);
-	let (status, queued) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		&format!("/api/working-areas/{}/queue", area["id"].as_str().unwrap()),
-		json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Successor","description":"Read the current session"}),
-	)
+	let (status, queued) = common::post(&c.app, &c.token, &format!("/api/working-areas/{}/queue", area["id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"agent_version":"1.1.0","title":"Successor","description":"Read the current session"}))
 	.await;
 	assert_eq!(status, 200, "{queued}");
 	let successor: Uuid = serde_json::from_value(
 		queued["queue"].as_array().unwrap().last().unwrap()["run_id"].clone(),
 	)
 	.unwrap();
-	let (status, denied) = request(
+	let (status, denied) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!("/api/runs/{}/files/read", predecessor.id),
 		input.clone(),
 	)
 	.await;
 	assert_eq!(status, 404, "{denied}");
-	let (status, current) = request(
+	let (status, current) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!("/api/runs/{successor}/files/read"),
 		input,
 	)
@@ -218,10 +192,9 @@ async fn designated_approver_is_rechecked_and_preserves_the_original_requester(
 	#[future] approver_fixture: (CoreFixture, aidash_server::domain::Run, String),
 ) {
 	let (mut c, run, bob) = Box::pin(approver_fixture).await;
-	let (status, pending) = request(
+	let (status, pending) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!("/api/runs/{}/outbound", run.id),
 		json!({"idempotency_key":Uuid::new_v4(),"url":"https://example.com/"}),
 	)
@@ -229,18 +202,11 @@ async fn designated_approver_is_rechecked_and_preserves_the_original_requester(
 	assert_eq!(status, 200, "{pending}");
 	assert_eq!(pending["approver"], "bob");
 	if grant {
-		let (status,approved)=request(&c.app,&bob,"POST",&format!("/api/capabilities/approvals/{}/decide",pending["approval_id"].as_str().unwrap()),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"choice":"allow_run","targets":["https://example.com"],"expires_at":chrono::Utc::now()+chrono::Duration::minutes(1)})).await;
+		let (status,approved)=common::post(&c.app, &bob, &format!("/api/capabilities/approvals/{}/decide",pending["approval_id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"choice":"allow_run","targets":["https://example.com"],"expires_at":chrono::Utc::now()+chrono::Duration::minutes(1)})).await;
 		assert_eq!(status, 200, "{approved}");
 		assert!(approved["grant_id"].is_string());
 	}
-	let (_, cards) = request(
-		&c.app,
-		&bob,
-		"GET",
-		"/api/capabilities/approvals",
-		Value::Null,
-	)
-	.await;
+	let (_, cards) = common::get(&c.app, &bob, "/api/capabilities/approvals").await;
 	assert_eq!(cards["items"][0]["requester"], "alice");
 	assert_eq!(cards["items"][0]["approver"], "bob");
 	let revoke = withdrawal != "none";
@@ -251,10 +217,9 @@ async fn designated_approver_is_rechecked_and_preserves_the_original_requester(
 			c.policy["policies"].as_array_mut().unwrap().push(json!({"id":"deny-designated-approver","effect":"deny","subjects":{"ids":["bob"]},"actions":["capability.approve"],"resources":{"kinds":["outbound"]}}));
 		}
 		assert_eq!(
-			request(
+			common::post(
 				&c.app,
 				&c.f.config.api_token,
-				"POST",
 				"/api/authorization/acme",
 				json!({"expected_revision":4,"bundle":c.policy})
 			)
@@ -263,40 +228,25 @@ async fn designated_approver_is_rechecked_and_preserves_the_original_requester(
 			200
 		);
 	}
-	let (status, cards) = request(
-		&c.app,
-		&bob,
-		"GET",
-		"/api/capabilities/approvals",
-		Value::Null,
-	)
-	.await;
+	let (status, cards) = common::get(&c.app, &bob, "/api/capabilities/approvals").await;
 	assert_eq!(status, 200, "{cards}");
 	assert_eq!(
 		cards["items"].as_array().unwrap().len(),
 		if revoke { 0 } else { 1 + usize::from(grant) },
 		"revoked designated approvers must not see stored cards: {cards}"
 	);
-	let (_, owner_cards) = request(
-		&c.app,
-		&c.token,
-		"GET",
-		"/api/capabilities/approvals",
-		Value::Null,
-	)
-	.await;
+	let (_, owner_cards) = common::get(&c.app, &c.token, "/api/capabilities/approvals").await;
 	assert_eq!(
 		owner_cards["items"].as_array().unwrap().len(),
 		1 + usize::from(grant),
 		"owners retain their cards"
 	);
-	let (status,result)=request(&c.app,&bob,"POST",&format!("/api/capabilities/approvals/{}/decide",pending["approval_id"].as_str().unwrap()),json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"choice":"allow_run","targets":["https://example.com"],"expires_at":chrono::Utc::now()+chrono::Duration::minutes(1)})).await;
+	let (status,result)=common::post(&c.app, &bob, &format!("/api/capabilities/approvals/{}/decide",pending["approval_id"].as_str().unwrap()), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"choice":"allow_run","targets":["https://example.com"],"expires_at":chrono::Utc::now()+chrono::Duration::minutes(1)})).await;
 	if revoke {
 		assert_eq!(status, 404, "{result}");
-		let (blocked_status, blocked) = request(
+		let (blocked_status, blocked) = common::post(
 			&c.app,
 			&c.token,
-			"POST",
 			&format!("/api/runs/{}/outbound", run.id),
 			json!({"idempotency_key":Uuid::new_v4(),"url":"https://example.com/blocked"}),
 		)
@@ -304,14 +254,7 @@ async fn designated_approver_is_rechecked_and_preserves_the_original_requester(
 		assert_eq!(blocked_status, 200, "{blocked}");
 		assert_eq!(blocked["status"], "blocked", "{blocked}");
 		assert!(blocked["approver"].is_null());
-		let (status, cards) = request(
-			&c.app,
-			&c.token,
-			"GET",
-			"/api/capabilities/approvals",
-			Value::Null,
-		)
-		.await;
+		let (status, cards) = common::get(&c.app, &c.token, "/api/capabilities/approvals").await;
 		assert_eq!(status, 200, "{cards}");
 		assert!(
 			cards["items"]
@@ -322,14 +265,7 @@ async fn designated_approver_is_rechecked_and_preserves_the_original_requester(
 		);
 	} else {
 		assert_eq!(status, 200, "{result}");
-		let (_, cards) = request(
-			&c.app,
-			&c.token,
-			"GET",
-			"/api/capabilities/approvals",
-			Value::Null,
-		)
-		.await;
+		let (_, cards) = common::get(&c.app, &c.token, "/api/capabilities/approvals").await;
 		let grant = cards["items"]
 			.as_array()
 			.unwrap()
@@ -367,30 +303,21 @@ async fn approval_list_and_decision_restore_the_request_workspace_context(
 		"condition":{"op":"eq","left":{"source":"resource","path":"/workspace_id"},"right":{"source":"literal","value":run.workspace_id}}
 	}));
 	crate::common::replace_policy(&c.f.store, "acme", policy.clone()).await;
-	let (status, pending) = request(
+	let (status, pending) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!("/api/runs/{}/outbound", run.id),
 		json!({"idempotency_key":Uuid::new_v4(),"url":"https://example.com/"}),
 	)
 	.await;
 	assert_eq!(status, 200, "{pending}");
 	assert_eq!(pending["approver"], "bob");
-	let (status, cards) = request(
-		&c.app,
-		&bob,
-		"GET",
-		"/api/capabilities/approvals",
-		Value::Null,
-	)
-	.await;
+	let (status, cards) = common::get(&c.app, &bob, "/api/capabilities/approvals").await;
 	assert_eq!(status, 200, "{cards}");
 	assert_eq!(cards["items"][0]["requester"], "alice");
-	let (status, decision) = request(
+	let (status, decision) = common::post(
 		&c.app,
 		&bob,
-		"POST",
 		&format!(
 			"/api/capabilities/approvals/{}/decide",
 			pending["approval_id"].as_str().unwrap()

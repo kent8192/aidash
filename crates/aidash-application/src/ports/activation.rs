@@ -24,6 +24,12 @@ pub trait SchedulingScope: Send {
 	fn capabilities(&self) -> &[PersistedCapability] {
 		PersistedCapability::supported()
 	}
+	/// Whether this process reached the database again within the last lease
+	/// period. While it does, a Run whose expired lease still names an owner is
+	/// left for that owner to renew (#786).
+	fn holds_recoveries(&self) -> bool {
+		false
+	}
 	async fn now(&mut self) -> Result<DateTime<Utc>>;
 	/// Oldest first, at most 128 rows, FOR UPDATE SKIP LOCKED; target is exact.
 	async fn candidates(

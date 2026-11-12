@@ -144,6 +144,7 @@ struct State {
 	completed_abandoning: Mutex<Vec<Vec<Uuid>>>,
 	/// The Task ids each `home.abandon_unassigned` was given.
 	abandoned: Mutex<Vec<Vec<Uuid>>>,
+	abandon_skipped: Mutex<Vec<Uuid>>,
 	/// Fails the next `home.complete` once, as a commit race would.
 	complete_error: Mutex<Option<Error>>,
 	/// Children that appear after the Run's last look at them: the next
@@ -1104,11 +1105,17 @@ impl ExecutionHome for Backend {
 		self.0.task.lock().unwrap().status = TaskStatus::Completed;
 		Ok(self.task_value())
 	}
-	async fn abandon_unassigned(&self, parent: Uuid, ids: &[Uuid]) -> Result<()> {
+	async fn abandon_unassigned(&self, parent: Uuid, ids: &[Uuid]) -> Result<Vec<Uuid>> {
 		let _ = parent;
 		self.record("home.abandon_unassigned");
-		self.0.abandoned.lock().unwrap().push(ids.to_vec());
-		Ok(())
+		let skipped = self.0.abandon_skipped.lock().unwrap();
+		let abandoned: Vec<Uuid> = ids
+			.iter()
+			.copied()
+			.filter(|id| !skipped.contains(id))
+			.collect();
+		self.0.abandoned.lock().unwrap().push(abandoned.clone());
+		Ok(abandoned)
 	}
 	async fn report(&self, key: &str, kind: &str, data: Value) -> Result<()> {
 		let _ = (key, kind, data);
@@ -1887,6 +1894,7 @@ fn fixture() -> Fixture {
 		published: Mutex::new(Vec::new()),
 		completed_abandoning: Mutex::new(Vec::new()),
 		abandoned: Mutex::new(Vec::new()),
+		abandon_skipped: Mutex::new(Vec::new()),
 		complete_error: Mutex::new(None),
 		late_children: Mutex::new(None),
 		human: Mutex::new(None),
@@ -2004,6 +2012,7 @@ async fn refused_tool_call_is_a_model_correctable_result(fixture: Fixture) {
 		"refused-call",
 		DeliveredTool {
 			name: "task_delegate",
+			arguments: &Value::Null,
 			index: 0,
 			replay_safe: true,
 		},
@@ -2041,6 +2050,7 @@ async fn a_node_that_did_not_answer_before_the_effect_is_retried_then_returned_t
 			"call",
 			DeliveredTool {
 				name: "task_delegate",
+				arguments: &Value::Null,
 				index: 0,
 				replay_safe: true,
 			},
@@ -2068,6 +2078,7 @@ async fn a_node_that_did_not_answer_before_the_effect_is_retried_then_returned_t
 		"call",
 		DeliveredTool {
 			name: "task_delegate",
+			arguments: &Value::Null,
 			index: 0,
 			replay_safe: true,
 		},
@@ -2094,6 +2105,7 @@ async fn a_node_that_did_not_answer_after_the_effect_passes_through_without_a_re
 		"call",
 		DeliveredTool {
 			name: "task_delegate",
+			arguments: &Value::Null,
 			index: 0,
 			replay_safe: true,
 		},

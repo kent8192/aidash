@@ -7,7 +7,7 @@ composition, authorization, cookies, CSRF, persistence and migrations are real.
 
 import argparse
 from collections import Counter
-from bruno_contracts import load_manifest, inventory
+from bruno_contracts import load_manifest, inventory, render
 from oidc_fixture import IdentityProvider, checked, oidc_environment
 import contextlib
 import hashlib
@@ -495,6 +495,9 @@ def main():
         "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
         "cli_version": checked([cli, "--version"], text=True).stdout.strip(),
     }
+    # The request files and scenarios.json are not committed. Render them here so a
+    # direct run with a prebuilt binary works on a fresh checkout too.
+    render()
     routes, scenarios = load_manifest()
     expected = [scenario["name"] for scenario in scenarios]
     manage = (args.manage or binary.with_name("manage")).resolve(strict=True)

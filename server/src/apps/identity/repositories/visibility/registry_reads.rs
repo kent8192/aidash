@@ -4,7 +4,7 @@ use crate::{Result as NativeResult, apps::identity::services::access::Access};
 use aidash_application::{
 	Result,
 	ports::federation::registry_reads::{
-		RegistryJournalRow, RegistryReadScope, RegistryVerificationScope,
+		RegistryJournalRow, RegistryReadScope, RegistryVerificationScope, RemoteReads,
 	},
 };
 use aidash_domain::{
@@ -21,16 +21,16 @@ impl RegistryReadScope for Reads<'_> {
 	fn identity(&self) -> (&str, &str) {
 		(&self.access.identity.tenant, &self.access.identity.subject)
 	}
-	fn cached(&self, run: Uuid) -> Option<bool> {
+	fn cached(&self, run: Uuid) -> Option<RemoteReads> {
 		self.access
 			.dependency_frontier
 			.is_none()
 			.then(|| self.access.cached_remote_read(run))
 			.flatten()
 	}
-	fn remember(&mut self, run: Uuid, visible: bool) {
+	fn remember(&mut self, run: Uuid, reads: RemoteReads) {
 		if self.access.dependency_frontier.is_none() {
-			self.access.remember_remote_read(run, visible);
+			self.access.remember_remote_read(run, reads);
 		}
 	}
 	fn frontier(&mut self) -> Option<&mut Vec<Dependency>> {
@@ -144,11 +144,11 @@ impl RegistryReadScope for NativeReads<'_> {
 	fn identity(&self) -> (&str, &str) {
 		self.access.remote_identity()
 	}
-	fn cached(&self, run: Uuid) -> Option<bool> {
+	fn cached(&self, run: Uuid) -> Option<RemoteReads> {
 		self.access.cached_remote_read(run)
 	}
-	fn remember(&mut self, run: Uuid, visible: bool) {
-		self.access.remember_remote_read(run, visible);
+	fn remember(&mut self, run: Uuid, reads: RemoteReads) {
+		self.access.remember_remote_read(run, reads);
 	}
 	fn frontier(&mut self) -> Option<&mut Vec<Dependency>> {
 		None

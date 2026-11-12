@@ -15,6 +15,7 @@ struct Trace {
 	area: Area,
 	run: RunMetadata,
 	limits: Limits,
+	timeout_ceiling: Option<u64>,
 	capabilities: CoreCapabilities,
 	health: Value,
 	observed: Value,
@@ -92,6 +93,7 @@ fn repository() -> Repository {
 			read_bytes: 8,
 			maximum_seconds: 600,
 		},
+		timeout_ceiling: None,
 		capabilities: CoreCapabilities {
 			shell: true,
 			python: true,
@@ -155,6 +157,9 @@ impl OperationReconciliationRepository for Repository {
 impl OperationReconciliationScope for Scope {
 	fn limits(&self) -> Limits {
 		self.0.0.lock().unwrap().limits
+	}
+	fn timeout_ceiling(&self, _: &str) -> Option<u64> {
+		self.0.0.lock().unwrap().timeout_ceiling
 	}
 	async fn load(&mut self, _: Uuid, run: Uuid) -> Result<Loaded> {
 		assert_eq!(run, Uuid::from_u128(3));
@@ -1448,4 +1453,39 @@ async fn an_export_over_the_byte_quota_is_refused_before_any_download(repository
 	);
 	assert!(!trace.calls.contains(&"begin_output".into()));
 	assert!(!trace.calls.contains(&"publish".into()));
+}
+
+#[rstest]
+#[tokio::test]
+async fn a_timed_out_install_gets_install_advice(repository: Repository) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.operation.kind = "python_install".into();
+		trace.observed = past_its_limit("failed", 143);
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	let message = trace.saved[0].result["error"]["message"].as_str().unwrap();
+	assert!(message.contains("wheels"), "{message}");
+	assert!(message.contains("complete"), "{message}");
+	assert!(message.contains("dependencies"), "{message}");
+	assert!(!message.contains("at a time"), "{message}");
+	assert!(!message.contains("shorter commands"), "{message}");
+	assert!(trace.calls.contains(&"require:code_interpreter".into()));
+	assert!(trace.calls.contains(&"packages".into()));
+}
+
+#[rstest]
+#[tokio::test]
+async fn timeout_advice_respects_the_binding_ceiling(repository: Repository) {
+	{
+		let mut trace = repository.0.lock().unwrap();
+		trace.timeout_ceiling = Some(120);
+		trace.operation.input["seconds"] = json!(120);
+		trace.observed = past_its_limit("failed", 143);
+	}
+	run(&repository).await.unwrap();
+	let trace = repository.0.lock().unwrap();
+	let message = trace.saved[0].result["error"]["message"].as_str().unwrap();
+	assert!(!message.contains("raise timeout_seconds"), "{message}");
 }

@@ -59,11 +59,11 @@ impl ReadProvenanceScope for Reads<'_> {
 			.remember_catalog_read(&node, reference, false);
 		Ok(())
 	}
-	async fn remote_reads(&mut self, run: Uuid) -> Result<bool> {
-		self.access
-			.remote_reads_visible(run)
-			.await
-			.map_err(Into::into)
+	async fn remote_reads(
+		&mut self,
+		run: Uuid,
+	) -> Result<aidash_application::ports::federation::registry_reads::RemoteReads> {
+		self.access.remote_reads(run).await.map_err(Into::into)
 	}
 	async fn semantic_reads(&mut self, run: Uuid) -> Result<bool> {
 		self.access
@@ -539,11 +539,11 @@ impl ReadProvenanceScope for NativeReads<'_> {
 			.remember_catalog_read(&node, reference, true);
 		Ok(())
 	}
-	async fn remote_reads(&mut self, run: Uuid) -> Result<bool> {
-		self.access
-			.remote_reads_visible(run)
-			.await
-			.map_err(Into::into)
+	async fn remote_reads(
+		&mut self,
+		run: Uuid,
+	) -> Result<aidash_application::ports::federation::registry_reads::RemoteReads> {
+		self.access.remote_reads(run).await.map_err(Into::into)
 	}
 	async fn semantic_reads(&mut self, run: Uuid) -> Result<bool> {
 		self.access

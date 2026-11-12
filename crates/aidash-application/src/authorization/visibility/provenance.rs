@@ -1,7 +1,13 @@
 //! Iterative journal traversal terminates cycles without omitting any current read policy.
 use super::resources::{artifact_visible, conversation_resource, message_visible, task_visible};
 use crate::ports::authorization::visibility::resources::ResourceVisibilityScope;
-use crate::{Error, Result, ports::authorization::visibility::provenance::ReadProvenanceScope};
+use crate::{
+	Error, Result,
+	ports::{
+		authorization::visibility::provenance::ReadProvenanceScope,
+		federation::registry_reads::RemoteReads,
+	},
+};
 use aidash_domain::semantic::Failure;
 use aidash_domain::{Artifact, HumanRequest, Task, policy::Resource, registry::EntityRef};
 use async_trait::async_trait;
@@ -70,8 +76,10 @@ async fn one_run_reads_block(
 	if let Some(reference) = registry_read_block(scope, run).await? {
 		return Ok(Some(ReadBlock::Definition(reference)));
 	}
-	if !scope.remote_reads(run).await? {
-		return Ok(Some(ReadBlock::RemoteRead));
+	match scope.remote_reads(run).await? {
+		RemoteReads::Visible => {}
+		RemoteReads::Definition(reference) => return Ok(Some(ReadBlock::Definition(reference))),
+		RemoteReads::Unconfirmed => return Ok(Some(ReadBlock::RemoteRead)),
 	}
 	if !scope.semantic_reads(run).await? || !scope.received_semantic(run).await? {
 		return Ok(Some(ReadBlock::SemanticRead));
@@ -126,8 +134,14 @@ async fn one_run_reads_invalidity(
 	if !registry_reads_visible(scope, run).await? {
 		return Ok(Some(Failure::Authority));
 	}
-	// Peer visibility carries no reason; preserve its existing verdict.
-	if !scope.remote_reads(run).await? || !scope.received_semantic(run).await? {
+	// A denied definition of the reader's own Tenant reads as a local one does; other
+	// peer visibility carries no reason, so it keeps its existing verdict.
+	match scope.remote_reads(run).await? {
+		RemoteReads::Visible => {}
+		RemoteReads::Definition(_) => return Ok(Some(Failure::Authority)),
+		RemoteReads::Unconfirmed => return Ok(Some(Failure::Invalidated)),
+	}
+	if !scope.received_semantic(run).await? {
 		return Ok(Some(Failure::Invalidated));
 	}
 	if let Some(reason) = scope.semantic_invalidity(run, pending).await? {

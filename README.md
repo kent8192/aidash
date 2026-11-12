@@ -27,6 +27,12 @@ The `aidash` binary delegates to the same command registry and only preserves
 the existing executable name and default `serve` behavior. Existing
 `cargo run --locked -- serve`, `server`, and `worker` invocations remain valid.
 
+An operator can start or check an active Scratch Space's Execution Pod with
+`manage execution-pod ensure --space <uuid>`. It uses the Deployment's Runner
+and current Scratch Space policy, prints whether the Pod is ready, and does not
+print its proxy credential. The Runner protocol accepts whole CPU cores; Space
+limits are rounded down, and limits below one core are refused.
+
 On Unix, `server` and `serve` can receive an owned listening socket through
 `AIDASH_LISTEN_FD`, validated against `AIDASH_LISTEN`. The
 [transaction process fixture](docs/operations/transaction-acceptance.md) uses

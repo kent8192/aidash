@@ -942,7 +942,7 @@ impl Home {
 		}
 	}
 	/// Abandon Unassigned children of the Run's Task without completing it.
-	pub async fn abandon_unassigned(&self, parent: Uuid, ids: &[Uuid]) -> Result<()> {
+	pub async fn abandon_unassigned(&self, parent: Uuid, ids: &[Uuid]) -> Result<Vec<Uuid>> {
 		if parent != self.run.task_id {
 			return Err(Error::Forbidden);
 		}
@@ -959,9 +959,10 @@ impl Home {
 				self.run.id,
 				aidash_domain::registry::rules::digest(&json!(ids))
 			);
-			self.command::<Value>("run_abandon_unassigned", json!({"key":key,"abandon":ids}))
+			let result = self
+				.command::<Value>("run_abandon_unassigned", json!({"key":key,"abandon":ids}))
 				.await?;
-			Ok(())
+			Ok(serde_json::from_value(result["abandoned"].clone())?)
 		}
 	}
 	pub async fn artifact(&self, key: &str, artifact: &ArtifactInput) -> Result<Artifact> {
