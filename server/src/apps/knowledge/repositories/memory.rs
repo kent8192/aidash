@@ -115,6 +115,9 @@ impl SemanticMemoryReadSession for Memory<'_, '_> {
 	async fn permits(&mut self, entry: &Entry, action: &str) -> Result<bool> {
 		self.entries.permits(entry, action).await
 	}
+	async fn image_visible(&mut self, workspace: Uuid, source: &Source) -> Result<bool> {
+		SemanticEntriesSession::image_visible(&mut self.entries, workspace, source).await
+	}
 	async fn entry_authorized(&mut self, entry: &Entry) -> Result<bool> {
 		aidash_application::semantic::visibility::permits_resource(
 			&mut crate::bootstrap::semantic_disclosure_scope(self.entries.lease),

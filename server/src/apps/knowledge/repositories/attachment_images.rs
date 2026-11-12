@@ -395,6 +395,56 @@ pub(crate) async fn enqueue(
 	Ok(())
 }
 
+/// Reapply the image limit to posted images after a reconfiguration queued
+/// every live entry again. Images keep their posting order and fill the room
+/// Working Area images leave; the rest stay turned away. The File publication
+/// ledger then rebuilds into what remains (#622 decision 12).
+pub(crate) async fn relimit(
+	lease: &mut Lease<'_>,
+	workspace: Uuid,
+	max_images: usize,
+) -> Result<()> {
+	let room = max_images.saturating_sub(working(lease.tx(), workspace).await?);
+	let query = Query::select()
+		.column(("a", "id"))
+		.from_as(Alias::new("semantic_entries"), Alias::new("se"))
+		.join(
+			JoinType::InnerJoin,
+			TableRef::table_alias(Alias::new("channel_attachments"), Alias::new("a")),
+			Expr::cust(
+				"se.key = 'attachment-image:' || a.id::text AND a.workspace_id = se.workspace_id",
+			),
+		)
+		.join(
+			JoinType::InnerJoin,
+			TableRef::table_alias(Alias::new("messages"), Alias::new("m")),
+			Expr::col(("m", "id")).equals(("a", "message_id")),
+		)
+		.and_where(Expr::col(("se", "workspace_id")).eq(Expr::value(workspace)))
+		.and_where(Expr::col(("se", "deleted")).eq(Expr::value(false)))
+		.order_by(("m", "created_at"), Order::Asc)
+		.order_by(("a", "position"), Order::Asc)
+		.order_by(("a", "id"), Order::Asc)
+		.to_string(PostgresQueryBuilder);
+	let posted: Vec<Uuid> = native::query_scalar(&query)
+		.scalar_all(&mut **lease.tx())
+		.await?;
+	let mut entries = Entries { lease };
+	for attachment in posted.into_iter().skip(room) {
+		let Some(entry) = entries
+			.by_key(workspace, &attachment_image_key(attachment))
+			.await?
+		else {
+			continue;
+		};
+		if entry.state == "UNSUPPORTED" && entry.last_error.as_deref() == Some("limit") {
+			continue;
+		}
+		super::image_publications::mark_limit(&mut entries, workspace, &entry).await?;
+	}
+	Ok(())
+}
+
 /// Enter images posted before the index existed or was enabled, under the
 /// authority of the person configuring it, oldest message first and at most
 /// the image limit at a time.

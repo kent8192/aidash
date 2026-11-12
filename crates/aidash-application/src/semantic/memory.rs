@@ -28,9 +28,12 @@ pub async fn reads_visible(scope: &mut dyn SemanticMemoryReadSession, run: Uuid)
 		let source: Source = serde_json::from_value(entry.source.clone())?;
 		if source.is_image() {
 			// An image match showed a pointer and, for a Thread Attachment, the
-			// text of its message: that message must still be readable. Its
-			// point holds no text to compare; an edited description changes
-			// the entry's revision instead.
+			// text of its message: the image and that message must still be
+			// readable. Its point holds no text to compare; an edited
+			// description changes the entry's revision instead.
+			if !scope.image_visible(entry.workspace_id, &source).await? {
+				return Ok(false);
+			}
 			if let Some(message) = attachment_message(&source)
 				&& scope.source(entry.workspace_id, &message).await?.is_none()
 			{
@@ -77,7 +80,9 @@ pub async fn reads_invalidity(
 			return Ok(Some(Failure::Invalidated));
 		}
 		if source.is_image() {
-			if !scope.permits(&entry, "semantic.read").await? {
+			if !scope.permits(&entry, "semantic.read").await?
+				|| !scope.image_visible(entry.workspace_id, &source).await?
+			{
 				return Ok(Some(Failure::Authority));
 			}
 			// The message an attachment match quoted joins the classified walk,

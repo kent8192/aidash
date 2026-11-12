@@ -297,6 +297,9 @@ impl SemanticConfigurationSession for Configuration {
 			.lease
 			.as_mut()
 			.ok_or_else(|| Error::Conflict("semantic index configuration ended".into()))?;
+		// Posted images first take back their places in posting order, so the
+		// ledger rebuilds Working Area images into the room they leave.
+		super::attachment_images::relimit(lease, workspace, max_images).await?;
 		super::image_publications::rebuild(lease, workspace, max_images).await?;
 		// Images posted before the index existed or was enabled enter it now,
 		// under the authority of the person configuring it (#622).
@@ -438,7 +441,7 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 						.expr(Expr::cust("COUNT(*)"))
 						.from(Alias::new("semantic_entries"))
 						.and_where(SimpleExpr::CustomWithExpr(
-							"(workspace_id = ? AND NOT deleted AND source->>'kind' <> 'working_image')".to_owned(),
+							"(workspace_id = ? AND NOT deleted AND source->>'kind' NOT IN ('working_image', 'attachment_image'))".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],
 						))
 						.to_string(PostgresQueryBuilder),

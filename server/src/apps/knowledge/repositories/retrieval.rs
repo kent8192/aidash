@@ -213,7 +213,7 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 						))
 						.from(reinhardt::query::Alias::new("semantic_entries"))
 						.and_where(SimpleExpr::CustomWithExpr(
-							"(workspace_id = ? AND NOT deleted AND (source->>'kind' <> 'working_image' OR state = 'READY'))".to_owned(),
+							"(workspace_id = ? AND NOT deleted AND (source->>'kind' NOT IN ('working_image', 'attachment_image') OR state = 'READY'))".to_owned(),
 							vec![Expr::value(query_bind_1.to_owned()).into()],
 						))
 						.order_by_expr(

@@ -1053,3 +1053,71 @@ async fn only_an_image_takes_a_description(#[future] scoped_channel: ScopedChann
 	// Assert
 	assert_eq!(status, 400, "{refusal}");
 }
+
+async fn post_image(app: &EndpointFixture, token: &str, workspace: &str, content: &str) -> String {
+	let (status, image) = upload_image(app, token, workspace, None).await;
+	assert_eq!(status, 200, "{image}");
+	let (status, message) = request(
+		app,
+		token,
+		"POST",
+		&format!("/api/workspaces/{workspace}/thread-messages"),
+		json!({"content":content, "idempotency_key":Uuid::new_v4(), "attachment_ids":[image["id"]]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{message}");
+	image["id"].as_str().unwrap().to_owned()
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn posted_images_use_the_image_limit_not_the_text_source_quota(
+	#[future] scoped_channel: ScopedChannel,
+) {
+	// Arrange: room for one text source and one image.
+	let ScopedChannel {
+		app,
+		token,
+		workspace,
+		..
+	} = Box::pin(scoped_channel).await;
+	let index_path = format!("/api/workspaces/{workspace}/semantic/index");
+	let mut spec = json!({"embedding":{"provider":"openai","endpoint":"http://localhost:9","model":"fixture","model_version":"1","dimensions":8},
+		"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,
+		"max_sources":1,"max_results":5,"max_result_tokens":128,"max_input_bytes":256,"max_images":1});
+	let (status, index) = request(
+		&app,
+		&token,
+		"POST",
+		&index_path,
+		json!({"expected_revision":0,"spec":spec}),
+	)
+	.await;
+	assert_eq!(status, 200, "{index}");
+	let first = post_image(&app, &token, &workspace, "First").await;
+	let second = post_image(&app, &token, &workspace, "Second").await;
+
+	// Act: add the one text source, then reconfigure the index.
+	let (text_status, text) = request(&app, &token, "POST", &format!("/api/workspaces/{workspace}/semantic/entries"),
+		json!({"key":"note","source":{"kind":"memory","text":"A note"},"expected_revision":0,"metadata":{}})).await;
+	spec["max_results"] = json!(4);
+	let (reconfigured, body) = request(
+		&app,
+		&token,
+		"POST",
+		&index_path,
+		json!({"expected_revision":1,"spec":spec}),
+	)
+	.await;
+
+	// Assert: images never counted against the text quota, and the image the
+	// limit turned away stays turned away after the rebuild.
+	assert_eq!(text_status, 200, "{text}");
+	assert_eq!(reconfigured, 200, "{body}");
+	assert_eq!(image_entry(&app, &first).await.unwrap().0, "PENDING");
+	let limited = image_entry(&app, &second).await.unwrap();
+	assert_eq!(
+		(limited.0.as_str(), limited.1.as_deref()),
+		("UNSUPPORTED", Some("limit"))
+	);
+}

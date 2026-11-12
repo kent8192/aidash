@@ -55,12 +55,16 @@ oldest message first. Its states and reasons are those of a Working Area image,
 and it shares the index's one image limit: an attachment is admitted while
 attachment and Working Area images together hold fewer slots than the limit,
 and the File publication ledger counts admitted attachments against its own
-admissions. Deleting the attachment, with its Thread, retires the entry and its
-vector.
+admissions. A reconfiguration reconsiders them first: posted images keep their
+posting order and fill the room Working Area images hold no slot for, and the
+ledger then rebuilds into what remains. They never count against the text source
+quota. Deleting the attachment, with its Thread, retires the entry and its
+vector. An entry keeps its poster's saved authority, like a text entry put over
+HTTP, so an image leaves the index when that authority can no longer be restored.
 
-An image has an optional Image Description, required when an Agent posts the
-image through `workspace_message` (`image_descriptions`, by path). Only the
-poster writes or replaces it. It is embedded together with the image as one
+An image has an optional Image Description of at most 2,000 characters,
+required when an Agent posts the image through `workspace_message`
+(`image_descriptions`, by path). Only the poster writes or replaces it. It is embedded together with the image as one
 input, so its words find the image, and its point records a digest of the
 image bytes and the description: an edited description makes the old point
 stale until the image is embedded again. Points still hold no bytes and no
@@ -69,7 +73,9 @@ description.
 An attachment match names its message and attachment and carries the file
 name, size, digest, Image Description and up to 1,000 characters of the message
 text, never the bytes. The pointer, like the entry, is shown only to a reader
-who can read the message now. A match is not a selection: the Agent opens it
+who can read the message now. When automatic context delivers an attachment match, the Run's recorded read
+is rechecked like a message match: whoever reads its outputs must still be able
+to read that message. A match is not a selection: the Agent opens it
 with `workspace_read kind=attachment`, and only an explicit
 `representation=model_input` selection puts the image into its next inference.
 A model whose Registry modalities do not include images is not refused: opening

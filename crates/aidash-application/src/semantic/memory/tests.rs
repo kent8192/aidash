@@ -213,6 +213,9 @@ impl SemanticMemoryReadSession for Scope {
 	async fn source_invalidated(&mut self, _: Uuid, _: &Source) -> Result<bool> {
 		Ok(self.source_invalidated)
 	}
+	async fn image_visible(&mut self, _: Uuid, _: &Source) -> Result<bool> {
+		Ok(!self.denied.contains("image"))
+	}
 
 	async fn dependencies(&mut self, _: Uuid) -> Result<Vec<(Uuid, i64)>> {
 		self.touch("dependencies")?;
@@ -407,4 +410,30 @@ async fn an_attachment_image_read_stays_visible_only_with_its_message(
 		(!visible).then_some(aidash_domain::semantic::Failure::Authority)
 	);
 	assert!(!scope.calls.contains(&"digest"), "{:?}", scope.calls);
+}
+
+#[tokio::test]
+async fn an_image_read_is_refused_once_the_image_is_out_of_reach() {
+	// Arrange: the message is readable, the image is not.
+	let entry = attachment_entry();
+	let mut scope = Scope {
+		dependencies: vec![(entry.id, entry.revision)],
+		entries: vec![entry],
+		text: Some("Photo from this morning".into()),
+		..Default::default()
+	};
+	scope.denied.insert("image".into());
+
+	// Act
+	let visible = reads_visible(&mut scope, Uuid::from_u128(7)).await.unwrap();
+	let invalidity = reads_invalidity(&mut scope, Uuid::from_u128(7), &mut vec![])
+		.await
+		.unwrap();
+
+	// Assert
+	assert!(!visible);
+	assert_eq!(
+		invalidity,
+		Some(aidash_domain::semantic::Failure::Authority)
+	);
 }
