@@ -1195,7 +1195,7 @@ fn selected_thread_router(
 				0 => Some(("workspace_observe", json!({}))),
 				1 | 6 | 7 | 9 => Some(("workspace_read", json!({"kind":"attachment", "id":requests.attachment.lock().unwrap().as_ref().unwrap(), "representation":"model_input"}))),
 				2 => Some(("attachment_copy", json!({"id":requests.attachment.lock().unwrap().as_ref().unwrap(), "path":"copied.png", "expected_revision":*requests.revision.lock().unwrap(), "idempotency_key":Uuid::new_v4()}))),
-				3 => Some(("workspace_message", json!({"content":"Agent snapshot", "files":["copied.png"]}))),
+				3 => Some(("workspace_message", json!({"content":"Agent snapshot", "files":["copied.png"], "image_descriptions":{"copied.png":"A single pixel"}}))),
 				5 => Some(("workspace_observe", json!({}))),
 				_ => None,
 			};
@@ -1498,10 +1498,22 @@ async fn visible_thread_attachment_is_selected_for_the_next_model_request(
 		}
 	}
 	assert!(requests.len() >= 11, "provider requests: {requests:?}");
+	// A text-only model opening an image gets its words, not an error and not
+	// the image (#622 decision 6).
 	assert!(
 		requests[10]
 			.to_string()
-			.contains("this model cannot read image/png through any current route"),
+			.contains("this model cannot read images"),
+		"{}",
+		requests[10]
+	);
+	assert!(
+		requests[10].to_string().contains("Please inspect"),
+		"the message text comes with it: {}",
+		requests[10]
+	);
+	assert!(
+		!requests[10].to_string().contains("image_url"),
 		"{}",
 		requests[10]
 	);
@@ -1723,7 +1735,20 @@ async fn an_agents_message_with_files_is_sent_by_the_agent(
 	assert_eq!(status, 200, "{area}");
 	let copied = run_tool(&f, run.id, 1, "attachment_copy", json!({"id":attachment["id"], "path":"copied.png", "expected_revision":area["revision"], "idempotency_key":Uuid::new_v4()})).await;
 	assert_eq!(copied["file"]["path"], "copied.png", "{copied}");
-	let with_files = json!({"content":"Agent snapshot", "files":["copied.png"]});
+	// An Agent describes every image it posts (#622 decision 7).
+	let undescribed = run_tool(
+		&f,
+		run.id,
+		10,
+		"workspace_message",
+		json!({"content":"No words", "files":["copied.png"]}),
+	)
+	.await;
+	assert!(
+		undescribed.to_string().contains("Image Description"),
+		"{undescribed}"
+	);
+	let with_files = json!({"content":"Agent snapshot", "files":["copied.png"], "image_descriptions":{"copied.png":"A single grey pixel"}});
 	let sent = run_tool(&f, run.id, 2, "workspace_message", with_files.clone()).await;
 	assert_eq!(sent["sent"], true, "{sent}");
 	let sent = run_tool(
@@ -1751,6 +1776,14 @@ async fn an_agents_message_with_files_is_sent_by_the_agent(
 	let messages = message_history(&app, &token, &workspace).await;
 	let posted = with_content(&messages, "Agent snapshot");
 	assert_eq!(posted.len(), 1, "{messages:?}");
+	assert_eq!(
+		posted[0]["attachments"][0]["description"], "A single grey pixel",
+		"{messages:?}"
+	);
+	assert!(
+		with_content(&messages, "No words").is_empty(),
+		"{messages:?}"
+	);
 	assert_eq!(posted[0]["message"]["sender"], json!(agent));
 	assert_eq!(posted[0]["message"]["run_id"], json!(run.id));
 	let note = with_content(&messages, "Agent note");
@@ -2029,4 +2062,261 @@ async fn live_openrouter_thread_attachment(
 	);
 	drop(server);
 	cleanup(f, &url, &schema).await;
+}
+
+/// Model and embedding stubs for Thread Attachment image retrieval (#622). The
+/// model stops at once, so tools run only when the test schedules them; every
+/// model request is kept. Text naming a car or vehicle shares one direction
+/// with an image described as a car; an image without words has its own.
+#[derive(Clone, Default)]
+struct AttachmentSearchRequests(Arc<std::sync::Mutex<Vec<Value>>>);
+#[rstest::fixture]
+fn attachment_search_requests() -> AttachmentSearchRequests {
+	AttachmentSearchRequests::default()
+}
+#[rstest::fixture]
+fn attachment_search_router(
+	#[from(attachment_search_requests)] requests: AttachmentSearchRequests,
+) -> Arc<Router> {
+	Arc::new(reinhardt::test::stub::StubRouter::new()
+	.route("/v1/models/fixture/endpoints", http::Method::GET, reply(|_request: reinhardt::Request| async { reinhardt::Response::ok().with_json(&json!({"data":{"architecture":{"input_modalities":["text","image"]},"endpoints":[{"tag":"fixture/verified","context_length":128000}]}})).unwrap() }))
+	.route("/v1/endpoints/zdr", http::Method::GET, reply(|_request: reinhardt::Request| async { reinhardt::Response::ok().with_json(&json!({"data":[{"model_id":"fixture","tag":"fixture/verified"}]})).unwrap() }))
+	.route("/v1/chat/completions", http::Method::POST, reply(move |request: reinhardt::Request| {
+		let requests = requests.clone();
+		async move {
+			requests.0.lock().unwrap().push(request.json::<Value>().unwrap());
+			reinhardt::Response::ok().with_json(&json!({"choices":[{"finish_reason":"stop","message":{"content":"Done"}}],"usage":{"prompt_tokens":10,"completion_tokens":2}})).unwrap()
+		}
+	}))
+	.route("/v1/embeddings", http::Method::POST, reply(|request: reinhardt::Request| async move {
+		let input = request.json::<Value>().unwrap();
+		let words = match &input["input"] {
+			Value::String(text) => text.to_lowercase(),
+			Value::Array(items) => items
+				.iter()
+				.flat_map(|item| item["content"].as_array().cloned().unwrap_or_default())
+				.filter_map(|part| part["text"].as_str().map(str::to_lowercase))
+				.collect::<Vec<_>>()
+				.join(" "),
+			_ => String::new(),
+		};
+		let vector = if words.contains("car") || words.contains("vehicle") {
+			vec![1.0, 0.0, 0.0]
+		} else if words.is_empty() {
+			vec![0.0, 1.0, 0.0]
+		} else {
+			vec![0.0, 0.0, 1.0]
+		};
+		reinhardt::Response::ok().with_json(&json!({"model":input["model"],"data":[{"index":0,"embedding":vector}],"usage":{"prompt_tokens":1,"total_tokens":1}})).unwrap()
+	}))
+	.into_server_router())
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_posted_image_is_found_by_its_description_and_queried_only_after_selection(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+	attachment_search_requests: AttachmentSearchRequests,
+	#[from(attachment_search_router)]
+	#[with(attachment_search_requests.clone())]
+	_router: Arc<Router>,
+	#[future(awt)]
+	#[from(upstream)]
+	#[with(_router.clone())]
+	server: TestServerGuard,
+) {
+	// Arrange: an image-capable Agent, an index that accepts images, and an
+	// image a person posted with an Image Description.
+	let (f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, token, _) = common::bootstrap_with_area(&f, &app, &server.url).await;
+	policy["subjects"][aidash_server::domain::qualified_agent(
+		&aidash_domain::nodes::NodeAddress::derived(f.config.deployment.as_str(), "acme"),
+		"research",
+		"1.0.1",
+	)] = json!({"kind":"agent", "node":aidash_domain::nodes::NodeName::derived("acme")});
+	let (status, body) = common::post(
+		&app,
+		&f.config.api_token,
+		"/api/authorization/acme",
+		json!({"expected_revision":1,"bundle":policy}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let mut model = f.registry.get(&tenant, "model", "1.0.0").await.unwrap();
+	model.version = "1.0.1".into();
+	model.config["modalities"] = json!(["text", "image"]);
+	model.config["media_routes"] = json!([{"tag":"fixture/verified", "formats":["image/png"], "source":"fixture", "verified_at":chrono::Utc::now() - chrono::Duration::hours(1), "expires_at":chrono::Utc::now() + chrono::Duration::hours(1)}]);
+	let (status, body) = common::post(&app, &token, "/api/registry", json!(model)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"model","version":"1.0.1"},"expected_revision":0,"enabled":true})).await;
+	assert_eq!(status, 200, "{body}");
+	let mut agent = f.registry.get(&tenant, "research", "1.0.0").await.unwrap();
+	agent.version = "1.0.1".into();
+	agent.binding_normalization = None;
+	agent.config["model"]["version"] = json!("1.0.1");
+	let (status, body) = common::post(&app, &token, "/api/registry", json!(agent)).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, body) = common::post(&app, &token, "/api/authorization/acme/catalog", json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"research","version":"1.0.1"},"expected_revision":0,"enabled":true})).await;
+	assert_eq!(status, 200, "{body}");
+	let (status, created) = common::post(&app, &token, "/api/conversations", json!({"title":"Street", "goal":"Find the photo", "target":{"id":"research","version":"1.0.1"}, "target_kind":"agent"})).await;
+	assert_eq!(status, 200, "{created}");
+	let workspace = created["workspace"]["id"].as_str().unwrap().to_owned();
+	let run = f
+		.store
+		.runs(&TEST_FIXTURE)
+		.await
+		.unwrap()
+		.into_iter()
+		.find(|run| run.workspace_id.to_string() == workspace)
+		.unwrap();
+	let spec = json!({"embedding":{"provider":"openai","endpoint":format!("{}/v1", server.url),"model":"fixture","model_version":"1","dimensions":3,"inputs":["text","image"]},
+		"vector":{"provider":"postgres","endpoint":"local","credential_env":null},"enabled":true,"auto_context":false,
+		"max_sources":64,"max_results":10,"max_result_tokens":4096,"max_input_bytes":8192});
+	let (status, body) = common::post(
+		&app,
+		&token,
+		&format!("/api/workspaces/{workspace}/semantic/index"),
+		json!({"expected_revision":0,"spec":spec}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let (status, photo) = upload_described(
+		&app,
+		&token,
+		&workspace,
+		"street.png",
+		PNG,
+		"A red car parked by the shop",
+	)
+	.await;
+	assert_eq!(status, 200, "{photo}");
+	assert_eq!(photo["description"], "A red car parked by the shop");
+	let (status, body) = common::post(&app, &token, &format!("/api/workspaces/{workspace}/thread-messages"), json!({"content":"Photo from this morning", "idempotency_key":Uuid::new_v4(), "attachment_ids":[photo["id"]]})).await;
+	assert_eq!(status, 200, "{body}");
+	let photo_id = photo["id"].as_str().unwrap().to_owned();
+	let messages = message_history(&app, &token, &workspace).await;
+	assert_eq!(
+		with_content(&messages, "Photo from this morning")[0]["attachments"][0]["index_state"],
+		"pending"
+	);
+	aidash_server::semantic::worker::sweep(&f.store)
+		.await
+		.unwrap();
+	let messages = message_history(&app, &token, &workspace).await;
+	let posted = with_content(&messages, "Photo from this morning")[0].clone();
+	assert_eq!(
+		posted["attachments"][0]["index_state"], "indexed",
+		"{posted}"
+	);
+	let message_id = posted["message"]["id"].clone();
+
+	// Act: the Agent searches by words, then tries the image as a query before
+	// and after it selected the image for its own inference.
+	let found = run_tool(
+		&f,
+		run.id,
+		1,
+		"workspace_search",
+		json!({"query":"a vehicle on the street"}),
+	)
+	.await;
+	let early = run_tool(&f, run.id, 2, "workspace_search", json!({"image":{"attachment_id":photo_id,"message_id":message_id,"expected_digest":aidash_domain::semantic::indexing::content_digest_bytes(PNG)}})).await;
+	let opened = run_tool(
+		&f,
+		run.id,
+		3,
+		"workspace_read",
+		json!({"kind":"attachment","id":photo_id,"representation":"model_input"}),
+	)
+	.await;
+	let before = attachment_search_requests.0.lock().unwrap().len();
+	let worker = Harness {
+		federation: f.clone(),
+	};
+	for _ in 0..10 {
+		worker.worker_once().await.unwrap();
+		if attachment_search_requests.0.lock().unwrap().len() > before {
+			break;
+		}
+	}
+	let inference = attachment_search_requests.0.lock().unwrap()[before..].to_vec();
+	let later = run_tool(
+		&f,
+		run.id,
+		4,
+		"workspace_search",
+		json!({"image":opened["selection"]}),
+	)
+	.await;
+
+	// Assert: the match points at the message and attachment with its words,
+	// never the image; an unseen image is refused; the opened one reaches the
+	// next inference and may then be a query.
+	let matched = &found["matches"][0];
+	assert_eq!(
+		matched["metadata"]["attachment_id"],
+		json!(photo_id),
+		"{found}"
+	);
+	assert_eq!(matched["metadata"]["message_id"], message_id, "{found}");
+	assert_eq!(
+		matched["metadata"]["message_text"],
+		"Photo from this morning"
+	);
+	assert_eq!(
+		matched["metadata"]["description"],
+		"A red car parked by the shop"
+	);
+	let encoded = base64::engine::general_purpose::STANDARD.encode(PNG);
+	assert!(!found.to_string().contains(&encoded), "{found}");
+	assert!(
+		early.get("matches").is_none(),
+		"an unseen image must be refused: {early}"
+	);
+	assert_eq!(
+		opened["selection"]["attachment_id"],
+		json!(photo_id),
+		"{opened}"
+	);
+	assert!(!inference.is_empty(), "no inference followed the selection");
+	assert!(
+		inference[0].to_string().contains(&encoded),
+		"the next inference carries the selected image"
+	);
+	assert!(later.get("matches").is_some(), "{later}");
+	assert_eq!(
+		later["matches"][0]["metadata"]["attachment_id"],
+		json!(photo_id),
+		"{later}"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+async fn upload_described(
+	app: &common::TestApplication,
+	token: &str,
+	workspace: &str,
+	name: &str,
+	bytes: &[u8],
+	description: &str,
+) -> (u16, Value) {
+	let path = format!(
+		"/api/workspaces/{workspace}/attachments?filename={name}&media_type=image%2Fpng&idempotency_key={}&description={}",
+		Uuid::new_v4(),
+		description.replace(' ', "%20")
+	);
+	let response = app
+		.api_http
+		.request(http::Method::POST, &path)
+		.body(bytes::Bytes::copy_from_slice(bytes))
+		.header(http::header::CONTENT_TYPE, "application/octet-stream")
+		.header("authorization", format!("Bearer {token}").as_str())
+		.send()
+		.await
+		.unwrap();
+	(response.status_code(), response.json_value().unwrap())
 }

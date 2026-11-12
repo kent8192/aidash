@@ -42,6 +42,19 @@ pub struct ChannelAttachmentUploadQuery {
 	#[validate(length(min = 1, max = 128))]
 	pub media_type: String,
 	pub idempotency_key: Uuid,
+	/// The uploader's Image Description of an image, if any (#622). It is
+	/// indexed with the image; only its writer replaces it later.
+	#[serde(default)]
+	#[validate(length(min = 1, max = 2000))]
+	pub description: Option<String>,
+}
+
+/// A replacement Image Description, written by the person who posted the image.
+#[derive(Debug, Deserialize, Validate, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelAttachmentDescription {
+	#[validate(length(min = 1, max = 2000))]
+	pub description: String,
 }
 
 pub(crate) fn default_limit() -> u16 {

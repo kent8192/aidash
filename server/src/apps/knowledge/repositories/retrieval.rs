@@ -41,6 +41,11 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 		workspace: Uuid,
 		source: &Source,
 	) -> Result<Option<serde_json::Value>> {
+		if matches!(source, Source::AttachmentImage { .. }) {
+			return super::attachment_images::pointer(self.entries.lease, workspace, source)
+				.await
+				.map_err(Into::into);
+		}
 		let Some(access) = self.entries.lease.access() else {
 			return Ok(None);
 		};
@@ -102,9 +107,54 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 		}
 		let bytes = self.store.capabilities.read(access, &file).await?;
 		Ok(aidash_application::ports::semantic::IndexImage {
+			description: None,
 			media_type: file.media_type,
 			bytes,
 		})
+	}
+	async fn attachment_seen(
+		&mut self,
+		input: &aidash_domain::semantic::retrieval::AttachmentImageQuery,
+	) -> Result<bool> {
+		let scope = self
+			.entries
+			.lease
+			.access()
+			.ok_or(aidash_application::Error::Forbidden)?
+			.tenancy()?;
+		let run = self.store.run(&scope, input.run_id).await?;
+		Ok(aidash_domain::media::selected_attachment(
+			&run.context.history,
+			input.attachment_id,
+			&input.expected_digest,
+		)
+		.is_some_and(|selection| selection.message_id == input.message_id))
+	}
+	async fn query_attachment(
+		&mut self,
+		workspace: Uuid,
+		input: &aidash_domain::semantic::retrieval::AttachmentImageQuery,
+		max_bytes: usize,
+	) -> Result<aidash_application::ports::semantic::IndexImage> {
+		let scope = self
+			.entries
+			.lease
+			.access()
+			.ok_or(aidash_application::Error::Forbidden)?
+			.tenancy()?;
+		let run = self.store.run(&scope, input.run_id).await?;
+		if run.workspace_id != workspace {
+			return Err(aidash_application::Error::Forbidden);
+		}
+		super::attachment_images::query(
+			&self.store,
+			self.entries.lease,
+			workspace,
+			input,
+			max_bytes,
+		)
+		.await
+		.map_err(Into::into)
 	}
 	async fn embed_image(
 		&mut self,
@@ -118,10 +168,7 @@ impl SemanticRetrievalSession for Retrieval<'_, '_> {
 			self.entries.lease,
 			workspace,
 			config,
-			aidash_domain::semantic::EmbeddingInput::Image {
-				media_type: &image.media_type,
-				bytes: &image.bytes,
-			},
+			image.input(),
 			crate::generation::embedding::Origin::Query(run),
 		)
 		.await
@@ -238,6 +285,7 @@ impl From<&native::Search> for Search {
 		Self {
 			query: input.query.clone(),
 			image: input.image.clone(),
+			attachment: input.attachment.clone(),
 			agent: input.agent.clone(),
 			metadata: input.metadata.clone(),
 			limit: input.limit,

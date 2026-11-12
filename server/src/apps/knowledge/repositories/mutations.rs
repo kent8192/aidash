@@ -297,7 +297,10 @@ impl SemanticConfigurationSession for Configuration {
 			.lease
 			.as_mut()
 			.ok_or_else(|| Error::Conflict("semantic index configuration ended".into()))?;
-		super::image_publications::rebuild(lease, workspace, max_images)
+		super::image_publications::rebuild(lease, workspace, max_images).await?;
+		// Images posted before the index existed or was enabled enter it now,
+		// under the authority of the person configuring it (#622).
+		super::attachment_images::backfill(lease, workspace, max_images)
 			.await
 			.map_err(Into::into)
 	}
@@ -351,6 +354,11 @@ impl SemanticEntriesSession for Entries<'_, '_> {
 			.map_err(Into::into)
 	}
 	async fn image_visible(&mut self, workspace: Uuid, source: &Source) -> Result<bool> {
+		if matches!(source, Source::AttachmentImage { .. }) {
+			return super::attachment_images::visible(self.lease, workspace, source)
+				.await
+				.map_err(Into::into);
+		}
 		let Some(access) = self.lease.access() else {
 			return Ok(false);
 		};
