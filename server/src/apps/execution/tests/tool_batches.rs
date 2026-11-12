@@ -1275,7 +1275,9 @@ async fn offloaded_result_enqueues_while_the_next_worker_step_runs(
 		.unwrap();
 }
 
-/// Create a task in a fresh Workspace with `description`, and return its id.
+/// Create a task in a fresh Workspace whose title and description are both
+/// `description`, and return its id. Start recall searches the Task text with
+/// PGroonga query syntax, where every word must match the fact.
 async fn task_in_new_workspace(b: &Batching, description: &str) -> Uuid {
 	let (status, workspace) = common::post(
 		&b.app,
@@ -1292,7 +1294,7 @@ async fn task_in_new_workspace(b: &Batching, description: &str) -> Uuid {
 			"/api/workspaces/{}/tasks",
 			workspace["id"].as_str().unwrap()
 		),
-		json!({"title":"Memory","description":description}),
+		json!({"title":description,"description":description}),
 	)
 	.await;
 	assert_eq!(status, 200, "{task}");
@@ -1376,12 +1378,13 @@ async fn learn(b: &Batching, run: &Run, facts: &[&str]) -> Vec<Uuid> {
 	units
 }
 
-/// #852 decision 8 and the per-Unit hydration fix: a Unit a Run recalled at
-/// start is deleted mid-Run (as eviction, correction or reconciliation would
-/// do). The Run goes on, and later inferences keep the other recalled facts.
+/// #852 decision 8: a Unit a Run recalled at start is deleted mid-Run (as
+/// eviction, correction or reconciliation would do). The Run goes on, and
+/// later inferences no longer carry that fact. Start recall's 1024-byte
+/// budget holds one serialized Unit, so this covers a single recalled fact.
 #[rstest::rstest]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_recalled_builtin_unit_leaving_the_bank_neither_stops_the_run_nor_drops_other_facts(
+async fn a_recalled_builtin_unit_leaving_the_bank_does_not_stop_the_run(
 	#[future(awt)]
 	#[from(common::runtime)]
 	runtime: RuntimeFixture,
@@ -1397,18 +1400,17 @@ async fn a_recalled_builtin_unit_leaving_the_bank_neither_stops_the_run_nor_drop
 				.build()
 				.unwrap()
 				.block_on(async move {
-					// Arrange: two facts learned in the Workspace, recalled by a new Run.
+					// Arrange: a fact learned in the Workspace, recalled by a new Run.
 					let b = Batching::new(runtime, scripted_model, 1, 1).await;
 					let pool = b.f.store.pool.fixture_driver().clone();
 					let gone = "The staging deploy key rotates every quarter.";
-					let kept = "The staging deploy key lives in the team vault.";
 					let source = b.delegate(b.task).await;
-					let units = learn(&b, &source, &[gone, kept]).await;
+					let units = learn(&b, &source, &[gone]).await;
 					let (status, task) = common::post(
 						&b.app,
 						&b.token,
 						&format!("/api/workspaces/{}/tasks", source.workspace_id),
-						json!({"title":"Memory","description":"Check the staging deploy key rotation and vault"}),
+						json!({"title":"staging deploy key","description":"staging deploy key"}),
 					)
 					.await;
 					assert_eq!(status, 200, "{task}");
@@ -1434,11 +1436,18 @@ async fn a_recalled_builtin_unit_leaving_the_bank_neither_stops_the_run_nor_drop
 						assert!(worker.worker_once().await.unwrap());
 					}
 					assert!(worker.worker_once().await.unwrap());
-					let recalled =
-						start_recall_units(&b.f.store.run(&TEST_FIXTURE, reader.id).await.unwrap());
+					let state = b.f.store.run(&TEST_FIXTURE, reader.id).await.unwrap();
+					let recalled = start_recall_units(&state);
+					let rows: Vec<Value> = sqlx::query_scalar(
+						"SELECT to_jsonb(u) FROM memory_units u WHERE id = ANY($1)",
+					)
+					.bind(&units)
+					.fetch_all(&pool)
+					.await
+					.unwrap();
 					assert!(
 						units.iter().all(|unit| recalled.contains(unit)),
-						"start recall must hold both facts: {recalled:?}"
+						"start recall must hold the fact: {recalled:?}\nunits: {rows:?}"
 					);
 
 					// Act: the first fact leaves the bank, then the Run uses a tool, whose
@@ -1463,7 +1472,6 @@ async fn a_recalled_builtin_unit_leaving_the_bank_neither_stops_the_run_nor_drop
 					assert!(!requests.is_empty());
 					for request in &requests {
 						let request = request.to_string();
-						assert!(request.contains(kept), "the kept fact stays in context");
 						assert!(!request.contains(gone), "the gone fact leaves the context");
 					}
 					b.close().await;
@@ -1502,7 +1510,7 @@ async fn tenant_agent_scope_recalls_the_same_agents_facts_from_another_workspace
 					let fact = "The staging deploy key rotates every quarter.";
 					let source = b.delegate(b.task).await;
 					let unit = learn(&b, &source, &[fact]).await[0];
-					let description = "Check the staging deploy key rotation";
+					let description = "staging deploy key";
 
 					// Act: one Run under the default scope, one after widening it.
 					let local = b
@@ -1590,10 +1598,7 @@ async fn narrowing_the_scope_stops_a_run_that_recalled_a_changed_foreign_fact(
 					.await
 					.unwrap();
 					let reader = b
-						.delegate(
-							task_in_new_workspace(&b, "Check the staging deploy key rotation")
-								.await,
-						)
+						.delegate(task_in_new_workspace(&b, "staging deploy key").await)
 						.await;
 					b.script(&[(
 						"before",
