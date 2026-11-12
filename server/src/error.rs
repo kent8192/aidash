@@ -62,6 +62,8 @@ pub enum Error {
 	NodeLimitReached,
 	#[error("external identity status is unavailable")]
 	IdentityStatusUnavailable,
+	#[error("account suspended")]
+	AccountSuspended { epoch: u64 },
 	#[error("OAuth Client secret storage is unavailable")]
 	OAuthClientSecretsUnavailable,
 	#[error("verified model media route unavailable for {model}{}", aidash_application::route_refusal::CandidateRefusals(.candidates))]
@@ -140,9 +142,10 @@ impl Error {
 			Self::Unprocessable(s) => (StatusCode::UNPROCESSABLE_ENTITY, s.clone()),
 			Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".into()),
 			Self::Connection(cause) => (StatusCode::CONFLICT, cause.code().into()),
-			Self::Forbidden | Self::AuthorityRefused(_) | Self::RunHidden(_) => {
-				(StatusCode::FORBIDDEN, "forbidden".into())
-			}
+			Self::Forbidden
+			| Self::AuthorityRefused(_)
+			| Self::RunHidden(_)
+			| Self::AccountSuspended { .. } => (StatusCode::FORBIDDEN, "forbidden".into()),
 			Self::ResumeBlocked(block) => (StatusCode::CONFLICT, block.to_string()),
 			Self::RemoteExecutionRefused(reason) => (StatusCode::FORBIDDEN, reason.to_string()),
 			Self::Refused(code) => (StatusCode::PAYMENT_REQUIRED, code.clone()),
@@ -497,6 +500,7 @@ impl From<aidash_application::Error> for Error {
 			}
 			ApplicationError::SemanticUnavailable => Self::SemanticUnavailable,
 			ApplicationError::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
+			ApplicationError::AccountSuspended { epoch } => Self::AccountSuspended { epoch },
 			ApplicationError::OAuthClientSecretsUnavailable => Self::OAuthClientSecretsUnavailable,
 			ApplicationError::ProviderRejected { status, reason } => {
 				Self::ProviderRejected { status, reason }
@@ -559,6 +563,7 @@ impl From<Error> for aidash_application::Error {
 			}
 			Error::SemanticUnavailable => Self::SemanticUnavailable,
 			Error::IdentityStatusUnavailable => Self::IdentityStatusUnavailable,
+			Error::AccountSuspended { epoch } => Self::AccountSuspended { epoch },
 			Error::ConnectionStoreUnavailable => Self::ConnectionStoreUnavailable,
 			Error::TransactionPending => Self::TransactionPending,
 			Error::PolicyBusy { retry_after } => Self::PolicyBusy { retry_after },

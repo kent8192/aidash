@@ -130,6 +130,9 @@ pub enum Error {
 	SemanticUnavailable,
 	#[error("external identity status is unavailable")]
 	IdentityStatusUnavailable,
+	/// An authenticated authority identified the suspension epoch stopping a Run.
+	#[error("account suspended")]
+	AccountSuspended { epoch: u64 },
 	#[error("{0}")]
 	RemoteSemantic(aidash_domain::semantic::Failure),
 	/// Typed context-recovery pause; never retried as transport.
