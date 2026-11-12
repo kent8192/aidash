@@ -809,3 +809,95 @@ async fn ninety_documents_register_and_a_run_finds_a_passage_within_budget(
 	);
 	c.close().await;
 }
+
+/// Each command that publishes a revision writes one row per manifest file, so
+/// a Reference set makes every command pay for its size (#789). A patch takes
+/// the same publication path as a shell command, without needing a Runner.
+#[rstest::rstest]
+#[case::one_document(1)]
+#[case::ninety_documents(90)]
+#[case::a_full_set(aidash_domain::capabilities::references::MAX_REFERENCE_FILES)]
+#[tokio::test]
+async fn every_published_revision_holds_one_row_per_file_of_its_manifest(
+	#[future] capability_fixture: CoreFixture,
+	#[case] documents: usize,
+) {
+	use reinhardt::query::{Alias, Expr, Func, PostgresQueryBuilder, Query};
+	const PATCHES: usize = 5;
+	let mut c = Box::pin(capability_fixture).await;
+	let token = c.token.clone();
+	let files = (0..documents)
+		.map(|index| file(&format!("doc-{index}.md"), &format!("document {index}\n")))
+		.collect::<Vec<_>>();
+	let (status, added) = add(&c, &token, files).await;
+	assert_eq!(status, 200, "{added}");
+	bind_agent(&mut c, &[("sized-set", added["references"].clone())]).await;
+	let (status, started) = start(&c, &token, c.task).await;
+	assert_eq!(status, 200, "{started}");
+	let run = latest_run(&c).await;
+	let (_, area) = request(
+		&c.app,
+		&token,
+		"GET",
+		&format!("/api/runs/{}/working-area", run.id),
+		Value::Null,
+	)
+	.await;
+	let area_id: Uuid = serde_json::from_value(area["id"].clone()).unwrap();
+	let first_revision = area["revision"].as_i64().unwrap();
+
+	let mut revision = area["revision"].clone();
+	let mut took = vec![];
+	for index in 0..PATCHES {
+		let patched_at = std::time::Instant::now();
+		let (status, patched) = request(
+			&c.app,
+			&token,
+			"POST",
+			&path_for_patch(run.id),
+			json!({"idempotency_key":Uuid::new_v4(),"expected_revision":revision,"preconditions":{format!("note-{index}.md"):null},"patch":format!("*** Begin Patch\n*** Add File: note-{index}.md\n+note {index}\n*** End Patch")}),
+		)
+		.await;
+		took.push(patched_at.elapsed());
+		assert_eq!(status, 200, "{patched}");
+		revision = patched["revision"].clone();
+	}
+
+	let rows = |revision: i64| {
+		Query::select()
+			.expr(Func::count(Expr::col(Alias::new("id")).into()))
+			.from(Alias::new("core_blob_references"))
+			.and_where(Expr::col(Alias::new("area_id")).eq(Expr::value(area_id)))
+			.and_where(Expr::col(Alias::new("revision")).eq(Expr::value(revision)))
+			.and_where(Expr::col(Alias::new("holder_kind")).eq(Expr::value("revision")))
+			.to_string(PostgresQueryBuilder)
+	};
+	let pool = c.f.store.pool.fixture_driver();
+	for (written, revision) in (first_revision + 1..).take(PATCHES).enumerate() {
+		let count: i64 = sqlx::query_scalar(&rows(revision))
+			.fetch_one(pool)
+			.await
+			.unwrap();
+		assert_eq!(
+			count as usize,
+			documents + written + 1,
+			"revision {revision} holds a row for each Reference file and each note"
+		);
+	}
+	let probe = Query::select()
+		.expr(Expr::value(1))
+		.to_string(PostgresQueryBuilder);
+	let probed_at = std::time::Instant::now();
+	for _ in 0..200 {
+		sqlx::query(&probe).execute(pool).await.unwrap();
+	}
+	let round_trip = probed_at.elapsed() / 200;
+	took.sort();
+	println!(
+		"#789 timing: {documents} documents, patch median {:?} (min {:?}, max {:?}), one database round trip {round_trip:?}",
+		took[PATCHES / 2],
+		took[0],
+		took[PATCHES - 1]
+	);
+	c.close().await;
+}
