@@ -2826,6 +2826,8 @@ struct ToolCallApprovals {
 	script: Arc<AtomicUsize>,
 	/// When set, the model's first call is `human_request`, a question for a person.
 	question: Arc<AtomicBool>,
+	/// When set, the model's first call is `schedule_create` (#557).
+	schedule: Arc<AtomicBool>,
 	judge: Arc<Judge>,
 }
 
@@ -2836,6 +2838,8 @@ struct Hits {
 	inferences: Arc<AtomicUsize>,
 	reads: Arc<AtomicUsize>,
 	question: Arc<AtomicBool>,
+	/// When set, the model's first call registers a Schedule (#557).
+	schedule: Arc<AtomicBool>,
 	judge: Arc<Judge>,
 }
 
@@ -2860,6 +2864,7 @@ fn tool_call_router(
 			inferences,
 			reads,
 			question,
+			schedule,
 			judge,
 		} = hits;
 		let server = reinhardt::test::stub::StubRouter::new()
@@ -2933,6 +2938,7 @@ fn tool_call_router(
 					let inference = inferences.fetch_add(1, Ordering::SeqCst) + 1;
 					let script = script.clone();
 					let question = question.clone();
+					let schedule = schedule.clone();
 					async move {
 						let context: Value =
 							serde_json::from_str(body["messages"][1]["content"].as_str().unwrap())
@@ -2950,8 +2956,11 @@ fn tool_call_router(
 									.any(|tool| tool["function"]["name"] == "plugin_1")
 							});
 						let asks = called == 0 && question.load(Ordering::SeqCst);
+						let schedules = called == 0 && schedule.load(Ordering::SeqCst);
 						let name = if asks {
 							"human_request"
+						} else if schedules {
+							"schedule_create"
 						} else if reads_first {
 							"plugin_1"
 						} else {
@@ -2959,6 +2968,8 @@ fn tool_call_router(
 						};
 						let arguments = if asks {
 							json!({"kind":"QUESTION","prompt":"Which one?"})
+						} else if schedules {
+							json!({"title":"Weekly digest","request":"Summarize the week.","trigger":{"kind":"cron","expression":"0 9 * * 1","time_zone":"UTC"}})
 						} else {
 							json!({"call":called + 1})
 						};
@@ -3004,6 +3015,7 @@ fn tool_call_approvals(
 			inferences: hits.inferences,
 			script,
 			question: hits.question,
+			schedule: hits.schedule,
 			judge: hits.judge,
 		}
 	}
@@ -8837,6 +8849,106 @@ async fn tool_call_approval_after_the_subnode_ended_is_refused(
 	assert_eq!(t.effects.load(Ordering::SeqCst), 0);
 	late_subnode::assert_waited_at_the_subnode_check(waiting);
 	late_subnode::assert_cancelled(&late_subnode::run_to_its_end(&f, run.id).await);
+	drop(t.server);
+	cleanup(f, &url, &schema).await;
+}
+
+/// An Agent's Schedule tool call is a Tool call approval of the person at the
+/// root of its Run (#557, ADR 0134): nothing is registered until they approve,
+/// and the Schedule then acts as them.
+#[rstest::rstest]
+#[tokio::test]
+async fn an_agent_registers_a_schedule_only_once_its_person_approves(
+	#[future(awt)] tool_call_approvals: ToolCallApprovals,
+) {
+	// Arrange: the model's one call registers a Schedule.
+	let t = tool_call_approvals;
+	t.schedule.store(true, Ordering::SeqCst);
+	t.script.store(1, Ordering::SeqCst);
+	let (f, url, schema) = t.application.runtime.parts();
+	let (token, run) = claimed_run(&t, &f, |_| {}).await;
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let count = || async {
+		sqlx::query_scalar::<_, i64>("SELECT count(*) FROM schedules")
+			.fetch_one(f.store.pool.fixture_driver())
+			.await
+			.unwrap()
+	};
+	// Act: the Run reaches the call, which waits for the person.
+	let waiting = step_until(&harness, &f, run.id, |run| awaited_tool_call(run).is_some()).await;
+	let (approval, call) = awaited_tool_call(&waiting).unwrap();
+	// Assert: nothing is registered before the decision.
+	assert_eq!(call.name, "schedule_create");
+	assert_eq!(count().await, 0);
+	let pending = approval_cards(
+		&t.application.application,
+		&token,
+		"?state=pending&role=approver",
+	)
+	.await;
+	assert_eq!(pending.len(), 1, "{pending:?}");
+	assert_eq!(pending[0]["kind"], "tool_call");
+	assert_eq!(pending[0]["approver"], "alice");
+	// Act: the person approves this one call.
+	let (status, decided) =
+		decide_tool_call(&t.application.application, &token, approval, "allow_once").await;
+	assert_eq!(status, 200, "{decided}");
+	let finished = step_until(&harness, &f, run.id, |run| {
+		run.phase().as_str() == "COMPLETED"
+	})
+	.await;
+	// Assert: the Schedule acts as the person and names the Run that asked.
+	assert_eq!(
+		finished.phase().as_str(),
+		"COMPLETED",
+		"{:?}",
+		finished.error
+	);
+	let (registrant, registered_by, title): (String, Option<Uuid>, String) =
+		sqlx::query_as("SELECT registrant, created_by_run_id, title FROM schedules")
+			.fetch_one(f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	assert_eq!(registrant, "alice");
+	assert_eq!(registered_by, Some(run.id));
+	assert_eq!(title, "Weekly digest");
+	drop(t.server);
+	cleanup(f, &url, &schema).await;
+}
+
+/// A denied Schedule tool call registers nothing; the Run goes on.
+#[rstest::rstest]
+#[tokio::test]
+async fn a_denied_schedule_tool_call_registers_nothing(
+	#[future(awt)] tool_call_approvals: ToolCallApprovals,
+) {
+	// Arrange
+	let t = tool_call_approvals;
+	t.schedule.store(true, Ordering::SeqCst);
+	t.script.store(1, Ordering::SeqCst);
+	let (f, url, schema) = t.application.runtime.parts();
+	let (token, run) = claimed_run(&t, &f, |_| {}).await;
+	let harness = Harness {
+		federation: f.clone(),
+	};
+	let waiting = step_until(&harness, &f, run.id, |run| awaited_tool_call(run).is_some()).await;
+	let (approval, _) = awaited_tool_call(&waiting).unwrap();
+	// Act
+	let (status, decided) =
+		decide_tool_call(&t.application.application, &token, approval, "deny").await;
+	assert_eq!(status, 200, "{decided}");
+	step_until(&harness, &f, run.id, |run| {
+		run.phase().as_str() != "TOOL_CALL" && awaited_tool_call(run).is_none()
+	})
+	.await;
+	// Assert
+	let registered: i64 = sqlx::query_scalar("SELECT count(*) FROM schedules")
+		.fetch_one(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	assert_eq!(registered, 0);
 	drop(t.server);
 	cleanup(f, &url, &schema).await;
 }
