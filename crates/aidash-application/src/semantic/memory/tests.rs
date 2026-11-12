@@ -369,3 +369,42 @@ async fn missing_native_dependency_denies_without_policy_or_digest() {
 	);
 	assert_eq!(scope.calls, vec!["dependencies", "entry"]);
 }
+
+fn attachment_entry() -> Entry {
+	let mut entry = entry();
+	entry.source = json!({"kind":"attachment_image","message_id":Uuid::from_u128(20),"attachment_id":Uuid::from_u128(21)});
+	entry
+}
+
+#[rstest]
+#[case::readable(Some("Photo from this morning".to_owned()), true)]
+#[case::message_hidden(None, false)]
+#[tokio::test]
+async fn an_attachment_image_read_stays_visible_only_with_its_message(
+	#[case] message: Option<String>,
+	#[case] visible: bool,
+) {
+	// Arrange: the point holds no text, so only the message text is checked.
+	let entry = attachment_entry();
+	let mut scope = Scope {
+		dependencies: vec![(entry.id, entry.revision)],
+		entries: vec![entry],
+		text: message,
+		digest: Some("an image digest".into()),
+		..Default::default()
+	};
+
+	// Act
+	let result = reads_visible(&mut scope, Uuid::from_u128(7)).await.unwrap();
+	let invalidity = reads_invalidity(&mut scope, Uuid::from_u128(7), &mut vec![])
+		.await
+		.unwrap();
+
+	// Assert
+	assert_eq!(result, visible);
+	assert_eq!(
+		invalidity,
+		(!visible).then_some(aidash_domain::semantic::Failure::Authority)
+	);
+	assert!(!scope.calls.contains(&"digest"), "{:?}", scope.calls);
+}

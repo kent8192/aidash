@@ -734,7 +734,7 @@ pub fn builtins() -> BTreeMap<String, Builtin> {
 			contract: aidash_domain::tool::builtin_contract("workspace_message")
 				.expect("declared builtin"),
 			description: "Send a message to the human and other agents sharing this workspace. Optionally attach snapshots of up to eight current Working Area files by path (8 MiB total). Each attached image needs an Image Description in image_descriptions, keyed by its path: say what the image shows, so people and agents who cannot see it can find and understand it.",
-			schema: json!({"type":"object","required":["content"],"properties":{"content":string,"files":{"type":"array","maxItems":8,"items":string},"image_descriptions":{"type":"object","maxProperties":8,"additionalProperties":{"type":"string","minLength":1,"maxLength":aidash_domain::semantic::indexing::MAX_IMAGE_DESCRIPTION_BYTES}}},"additionalProperties":false}),
+			schema: json!({"type":"object","required":["content"],"properties":{"content":string,"files":{"type":"array","maxItems":8,"items":string},"image_descriptions":{"type":"object","maxProperties":8,"additionalProperties":{"type":"string","minLength":1,"maxLength":aidash_domain::semantic::indexing::MAX_IMAGE_DESCRIPTION_CHARS}}},"additionalProperties":false}),
 		},
 		Builtin {
 			name: "workspace_observe",

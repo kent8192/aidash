@@ -2,7 +2,7 @@
 use aidash_domain::semantic::{
 	EmbeddingInput,
 	indexing::{
-		MAX_IMAGE_DESCRIPTION_BYTES, attachment_image_key, content_digest, image_digest,
+		MAX_IMAGE_DESCRIPTION_CHARS, attachment_image_key, content_digest, image_digest,
 		validate_image_description,
 	},
 };
@@ -39,8 +39,10 @@ fn descriptions_are_bounded_prose() {
 	assert!(validate_image_description("A chart\nwith two lines").is_ok());
 	assert!(validate_image_description("   ").is_err());
 	assert!(validate_image_description("bell\u{7}").is_err());
-	assert!(validate_image_description(&"x".repeat(MAX_IMAGE_DESCRIPTION_BYTES)).is_ok());
-	assert!(validate_image_description(&"x".repeat(MAX_IMAGE_DESCRIPTION_BYTES + 1)).is_err());
+	assert!(validate_image_description(&"x".repeat(MAX_IMAGE_DESCRIPTION_CHARS)).is_ok());
+	assert!(validate_image_description(&"x".repeat(MAX_IMAGE_DESCRIPTION_CHARS + 1)).is_err());
+	// Counted in characters: a full-length Japanese description fits.
+	assert!(validate_image_description(&"画".repeat(MAX_IMAGE_DESCRIPTION_CHARS)).is_ok());
 }
 
 #[test]

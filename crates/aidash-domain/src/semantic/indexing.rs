@@ -21,21 +21,22 @@ pub fn default_max_images() -> usize {
 	256
 }
 
-/// The longest Image Description, in bytes. It is embedded with its image, so
-/// it stays well inside one embedding input.
-pub const MAX_IMAGE_DESCRIPTION_BYTES: usize = 2000;
+/// The longest Image Description, in characters, as people and JSON Schema
+/// count them. It is embedded with its image, so it stays well inside one
+/// embedding input.
+pub const MAX_IMAGE_DESCRIPTION_CHARS: usize = 2000;
 
 /// An Image Description is plain prose: present, bounded, without control
 /// characters other than line breaks.
 pub fn validate_image_description(text: &str) -> Result<()> {
 	if text.trim().is_empty()
-		|| text.len() > MAX_IMAGE_DESCRIPTION_BYTES
+		|| text.chars().count() > MAX_IMAGE_DESCRIPTION_CHARS
 		|| text
 			.chars()
 			.any(|c| c.is_control() && c != '\n' && c != '\t')
 	{
 		return Err(Error::Invalid(format!(
-			"an Image Description must be 1 to {MAX_IMAGE_DESCRIPTION_BYTES} bytes of text"
+			"an Image Description must be 1 to {MAX_IMAGE_DESCRIPTION_CHARS} characters of text"
 		)));
 	}
 	Ok(())

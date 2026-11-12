@@ -3,6 +3,14 @@ use crate::{Result, ports::semantic::memory::SemanticMemoryReadSession};
 use aidash_domain::semantic::{Failure, Source, indexing::content_digest};
 use uuid::Uuid;
 
+/// The message a Thread Attachment image was posted in, whose text its match carries.
+fn attachment_message(source: &Source) -> Option<Source> {
+	match source {
+		Source::AttachmentImage { message_id, .. } => Some(Source::Message { id: *message_id }),
+		_ => None,
+	}
+}
+
 pub async fn reads_visible(scope: &mut dyn SemanticMemoryReadSession, run: Uuid) -> Result<bool> {
 	if !scope.native_reads_visible(run).await? {
 		return Ok(false);
@@ -16,6 +24,19 @@ pub async fn reads_visible(scope: &mut dyn SemanticMemoryReadSession, run: Uuid)
 			|| !scope.permits(&entry, "semantic.read").await?
 		{
 			return Ok(false);
+		}
+		let source: Source = serde_json::from_value(entry.source.clone())?;
+		if source.is_image() {
+			// An image match showed a pointer and, for a Thread Attachment, the
+			// text of its message: that message must still be readable. Its
+			// point holds no text to compare; an edited description changes
+			// the entry's revision instead.
+			if let Some(message) = attachment_message(&source)
+				&& scope.source(entry.workspace_id, &message).await?.is_none()
+			{
+				return Ok(false);
+			}
+			continue;
 		}
 		let Some(text) = scope
 			.source(entry.workspace_id, &serde_json::from_value(entry.source)?)
@@ -48,12 +69,28 @@ pub async fn reads_invalidity(
 		if entry.deleted || entry.revision != revision {
 			return Ok(Some(Failure::Invalidated));
 		}
-		let source = serde_json::from_value(entry.source.clone())?;
+		let source: Source = serde_json::from_value(entry.source.clone())?;
 		if scope
 			.source_invalidated(entry.workspace_id, &source)
 			.await?
 		{
 			return Ok(Some(Failure::Invalidated));
+		}
+		if source.is_image() {
+			if !scope.permits(&entry, "semantic.read").await? {
+				return Ok(Some(Failure::Authority));
+			}
+			// The message an attachment match quoted joins the classified walk,
+			// as a message match does.
+			if let Some(message) = attachment_message(&source)
+				&& scope
+					.classified_output_source(entry.workspace_id, &message, pending)
+					.await?
+					.is_none()
+			{
+				return Ok(Some(Failure::Authority));
+			}
+			continue;
 		}
 		let text = if matches!(source, Source::Artifact { .. } | Source::Message { .. }) {
 			scope
