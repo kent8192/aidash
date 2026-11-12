@@ -1245,11 +1245,17 @@ async fn offloaded_result_enqueues_while_the_next_worker_step_runs(
 								.fetch_all(&pool)
 								.await
 								.unwrap();
-								if jobs.iter().any(|job| {
-									job["kind"] == "offloaded_range"
-										&& job["run"] == run.id.to_string()
-										&& job["from"] == from && job["through"] == from
-								}) {
+								let part = |part: Option<u64>| {
+									jobs.iter().any(|job| {
+										job["kind"] == "offloaded_range"
+											&& job["run"] == run.id.to_string()
+											&& job["from"] == from && job["through"] == from
+											&& job["part"].as_u64() == part
+									})
+								};
+								// #852 decision 3: the result exceeds one extraction
+								// input, so its range is extracted in several parts.
+								if part(None) && part(Some(1)) {
 									break;
 								}
 								tokio::time::sleep(Duration::from_millis(50)).await;

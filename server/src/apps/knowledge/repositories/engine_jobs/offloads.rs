@@ -74,32 +74,40 @@ impl BackgroundExtraction for OffloadQueue {
 					&binding.provider,
 				)
 				.await?;
-				units::current(
-					&mut lease,
-					binding.bank.workspace,
-					std::slice::from_ref(&proof),
-					policy.bounds.max_graph_visits,
-				)
-				.await?;
-				let id = crate::semantic::native_memory::request_id(
-					range.run,
-					&format!("offloaded:{}:{}", range.from, range.through),
-				)?;
-				super::enqueue(
+				// Loading the range also checks it under the Run's authority.
+				let text = super::super::learning::offloaded_range(
 					&mut lease,
 					&binding.bank,
-					&binding.provider,
-					&policy,
-					id,
-					Input::OffloadedRange {
-						run: range.run,
-						from: range.from,
-						through: range.through,
-					},
-					"pending",
-					None,
+					&proof,
+					&policy.bounds,
 				)
 				.await?;
+				let parts =
+					super::super::learning::offload_parts(&text, &proof, &policy.bounds)?.len();
+				// One job per part, so each extraction has its own model allowance.
+				for part in 0..parts {
+					let key = if part == 0 {
+						format!("offloaded:{}:{}", range.from, range.through)
+					} else {
+						format!("offloaded:{}:{}:{part}", range.from, range.through)
+					};
+					super::enqueue(
+						&mut lease,
+						&binding.bank,
+						&binding.provider,
+						&policy,
+						crate::semantic::native_memory::request_id(range.run, &key)?,
+						Input::OffloadedRange {
+							run: range.run,
+							from: range.from,
+							through: range.through,
+							part,
+						},
+						"pending",
+						None,
+					)
+					.await?;
+				}
 				Ok(())
 			}
 			.await;
