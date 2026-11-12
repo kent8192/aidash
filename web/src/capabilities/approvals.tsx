@@ -461,6 +461,26 @@ export function ApprovalCardView({ item }: { item: Approval }) {
   );
 }
 
+/**
+ * The Thread's approvals list, newest first. Only the list polls; another
+ * reader passes `enabled: false` to follow its cache without a second poll.
+ */
+export function useThreadApprovalList(enabled: boolean) {
+  return useInfiniteQuery({
+    queryKey: ["core-approvals"],
+    initialPageParam: "",
+    queryFn: ({ pageParam, signal }) =>
+      apiFetch<{ items: Approval[]; next_cursor: string | null }>(
+        `/api/capabilities/approvals${pageParam ? `?cursor=${pageParam}` : ""}`,
+        { signal },
+      ),
+    getNextPageParam: (p) => p.next_cursor ?? undefined,
+    refetchInterval: enabled ? 2000 : false,
+    retry: false,
+    enabled,
+  });
+}
+
 export function CapabilityApprovals({
   area,
   inlineIds,
@@ -470,18 +490,7 @@ export function CapabilityApprovals({
 }) {
   const { locale } = useI18n();
   const ja = locale === "ja-JP";
-  const query = useInfiniteQuery({
-    queryKey: ["core-approvals"],
-    initialPageParam: "",
-    queryFn: ({ pageParam, signal }) =>
-      apiFetch<{ items: Approval[]; next_cursor: string | null }>(
-        `/api/capabilities/approvals${pageParam ? `?cursor=${pageParam}` : ""}`,
-        { signal },
-      ),
-    getNextPageParam: (p) => p.next_cursor ?? undefined,
-    refetchInterval: 2000,
-    retry: false,
-  });
+  const query = useThreadApprovalList(true);
   const areaItems =
     query.data?.pages
       .flatMap((p) => p.items)

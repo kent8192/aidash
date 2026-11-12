@@ -36,7 +36,11 @@ import {
   type CoreFile,
   type Operation,
 } from "./client";
-import { ApprovalCardView, CapabilityApprovals } from "./approvals";
+import {
+  ApprovalCardView,
+  CapabilityApprovals,
+  useThreadApprovalList,
+} from "./approvals";
 import { usePendingApprovalInbox } from "./inbox";
 import { OutboundFiles } from "./outbound";
 import { SkillFiles } from "./skills";
@@ -46,7 +50,7 @@ import { LivePreviewPanel } from "./live-preview";
 import { TransferHistory } from "./transfers";
 import { ResearchPanel, UrlIntentPicker, useResearch } from "./research";
 import { snapshotReadsPages, urlIntents } from "../research";
-import type { RunDetails } from "../generated/models";
+import type { ApprovalCard as Approval, RunDetails } from "../generated/models";
 import { semanticEntries } from "../generated/aidash";
 type Session = {
   active_run_id: string | null;
@@ -906,19 +910,10 @@ export function ThreadCapabilities({
   });
   const area =
     query.data?.items.find((a) => a.id === selected) ?? query.data?.items[0];
-  // The shell already polls this inbox. Subscribe to its cache without adding
-  // another polling observer or fetching every page of approval history.
-  const approvals = usePendingApprovalInbox(false);
-  const areaIds = new Set(query.data?.items.map((item) => item.id) ?? []);
-  const inlineApprovals = (approvals.data ?? []).filter(
-    (item) =>
-      item.viewer_can_decide_inline &&
-      item.state === "pending" &&
-      ["outbound", "disclosure", "tool_call"].includes(item.kind) &&
-      item.area_id != null &&
-      areaIds.has(item.area_id),
-  );
-  const inlineIds = new Set(inlineApprovals.map((item) => item.id));
+  // Follow the shell inbox's and the Thread list's caches without adding a
+  // polling observer or fetching every page of approval history.
+  const inbox = usePendingApprovalInbox(false);
+  const list = useThreadApprovalList(false);
   const session = useQuery({
     queryKey: ["core-session", area?.id],
     queryFn: ({ signal }) =>
@@ -928,6 +923,25 @@ export function ThreadCapabilities({
     retry: false,
   });
   const active = session.data?.active_run_id ?? session.data?.last_run_id;
+  // Whichever poll sees a card first offers it inline, so a card never moves
+  // from the Thread's list to the top of the panel before a decision. The
+  // list's copy wins because it polls more often, but only while the list is
+  // shown: nothing refreshes its cache otherwise, not even a decision.
+  const known = new Map<string, Approval>();
+  for (const item of inbox.data ?? []) known.set(item.id, item);
+  if (area && active)
+    for (const item of list.data?.pages.flatMap((p) => p.items) ?? [])
+      known.set(item.id, item);
+  const areaIds = new Set(query.data?.items.map((item) => item.id) ?? []);
+  const inlineApprovals = [...known.values()].filter(
+    (item) =>
+      item.viewer_can_decide_inline &&
+      item.state === "pending" &&
+      ["outbound", "disclosure", "tool_call"].includes(item.kind) &&
+      item.area_id != null &&
+      areaIds.has(item.area_id),
+  );
+  const inlineIds = new Set(inlineApprovals.map((item) => item.id));
   const agents = data.registry.filter(
     (e) => e.kind === "agent" && e.config?.schema_version === 1,
   );

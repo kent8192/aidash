@@ -175,6 +175,7 @@ async function research(
     admittedPageReading = true,
     nextVersionWithoutResearch = false,
     inlineApprovals = false,
+    inboxBehind = false,
   } = {},
 ) {
   const pendingCards = pending.map((item) => ({ ...item }));
@@ -406,6 +407,9 @@ async function research(
       const state = url.searchParams.get("state");
       const role = url.searchParams.get("role");
       if (inlineApprovals && state === "pending" && role === "approver") {
+        // The shell inbox polls less often than the Thread's list, so it may
+        // not have the card yet when the list first shows it.
+        if (inboxBehind) return send({ items: [], next_cursor: null });
         return url.searchParams.has("cursor")
           ? send({ items: inlineCards.slice(1), next_cursor: null })
           : send({ items: [inlineCards[0]], next_cursor: "page-2" });
@@ -515,6 +519,28 @@ test("a requester-approver decides their Run's approval in the Thread", async ({
     .toBe("allow_once");
   await expect(
     inline.getByRole("article", { name: "Web search disclosure" }),
+  ).toHaveCount(0);
+});
+
+test("a card the Thread list sees before the inbox is offered inline at once", async ({
+  page,
+}) => {
+  await research(page, { inlineApprovals: true, inboxBehind: true });
+  await openThread(page);
+  const inline = page.getByRole("region", {
+    name: "Approvals for this Thread",
+  });
+  await expect(
+    inline.getByRole("article", { name: "Web search disclosure" }),
+  ).toBeVisible();
+  const list = page
+    .locator("details")
+    .filter({ has: page.getByText(/^Approvals and grants/) });
+  await expect(
+    list.getByRole("article", { name: "Page reading disclosure" }),
+  ).toHaveCount(1);
+  await expect(
+    list.getByRole("article", { name: "Web search disclosure" }),
   ).toHaveCount(0);
 });
 
