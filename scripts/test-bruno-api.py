@@ -549,6 +549,10 @@ def main():
                     "AIDASH_LISTEN": f"127.0.0.1:{port}",
                     "AIDASH_API_TOKEN": deployment_administrator,
                     "AIDASH_API_RATE_BURST": "10000",
+                    # Loopback endpoints default the preview domain to
+                    # `*.localhost` (#894); the stream processes cannot all
+                    # hold the default gateway listener.
+                    "AIDASH_PREVIEW_IN_PROCESS": "false",
                     "AIDASH_WEB_DIR": str(web),
                     **oidc_environment(provider, browser_origin),
                 }
