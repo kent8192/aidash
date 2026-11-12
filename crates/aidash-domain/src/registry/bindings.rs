@@ -45,6 +45,18 @@ pub const DEFAULT_TOOLS: &[&str] = &[
 	"memory_mutate",
 	"memory_recall",
 	"memory_reflect",
+	"schedule_create",
+	"schedule_list",
+	"schedule_update",
+	"schedule_delete",
+];
+/// The core capability `schedules` (#557): on by default, so its tools are
+/// default tools an Agent definition removes with `remove_default`.
+pub const SCHEDULE_TOOLS: &[&str] = &[
+	"schedule_create",
+	"schedule_list",
+	"schedule_update",
+	"schedule_delete",
 ];
 /// Default builtins that act on the Agent's own memory. Without a memory
 /// provider every call would be refused, so a Run excludes them instead of

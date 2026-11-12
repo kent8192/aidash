@@ -72,9 +72,12 @@ pub const CONNECTION_SCOPES_UPDATE: &str = "connection.scopes.update";
 /// Force-disconnecting another subject's MCP OAuth Connection. The
 /// administrator sees metadata only, never a token.
 pub const CONNECTION_ADMINISTER: &str = "connection.administer";
+/// Seeing, stopping and deleting anyone's Schedules, naming a successor and
+/// setting the Tenant's Schedule limits (#557).
+pub const SCHEDULE_ADMINISTER: &str = crate::schedules::ADMINISTER;
 
 /// Every action a Tenant's policy can permit to make a Tenant Administrator.
-pub const ACTIONS: [&str; 29] = [
+pub const ACTIONS: [&str; 30] = [
 	REGISTRATION_READ,
 	REGISTRATION_APPROVE,
 	REGISTRATION_REJECT,
@@ -104,6 +107,7 @@ pub const ACTIONS: [&str; 29] = [
 	APPROVAL_READ,
 	CONNECTION_SCOPES_UPDATE,
 	CONNECTION_ADMINISTER,
+	SCHEDULE_ADMINISTER,
 ];
 
 /// The actions an administrator needs to keep a Tenant running: deciding
@@ -158,7 +162,7 @@ pub fn resource_kind(action: &str) -> &'static str {
 		}
 		NODE_REGISTRATION_READ | NODE_REGISTRATION_UPDATE => "node_registration",
 		TEST_LIMITS_UPDATE => "test_limits",
-		SUBNODE_LIMITS_UPDATE => "tenant",
+		SUBNODE_LIMITS_UPDATE | SCHEDULE_ADMINISTER => "tenant",
 		TEST_PROFILE_UPDATE => "test_profile",
 		APPROVAL_READ => "subject",
 		crate::approval_rules::MODE_AUTO | crate::approval_rules::MODE_BYPASS => {

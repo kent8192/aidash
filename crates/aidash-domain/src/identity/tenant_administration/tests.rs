@@ -112,3 +112,12 @@ fn connection_administration_is_a_tenant_administrator_action() {
 	assert!(!crate::identity::tenancy::MEMBER_ACTIONS.contains(&CONNECTION_SCOPES_UPDATE));
 	assert!(!crate::identity::tenancy::MEMBER_ACTIONS.contains(&CONNECTION_ADMINISTER));
 }
+
+#[test]
+fn schedule_administration_is_a_tenant_administrator_action() {
+	assert!(ACTIONS.contains(&SCHEDULE_ADMINISTER));
+	assert!(!ADMINISTRATION_ACTIONS.contains(&SCHEDULE_ADMINISTER));
+	assert_eq!(resource_kind(SCHEDULE_ADMINISTER), "tenant");
+	assert!(!crate::identity::tenancy::MEMBER_ACTIONS.contains(&SCHEDULE_ADMINISTER));
+	assert!(crate::identity::tenancy::MEMBER_ACTIONS.contains(&crate::schedules::CREATE));
+}
