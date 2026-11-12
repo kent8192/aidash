@@ -457,7 +457,6 @@
   "suspendedRunsPaused": "アカウントの停止により一時停止している Run があります。停止が解除されるまで再開できません。",
   "suspendedRunsResume": "停止で一時停止した Run を再開",
   "suspendedRunsResumed": "停止で一時停止したあなたの Run {total} 件のうち {resumed} 件を再開しました。再開しなかった Run は開くと理由がわかります。",
-  "suspendedRunsNone": "一時停止中の Run のうち、あなたが再開できるものはありません。",
   "authRevoked": "失効済み",
   "authRevoke": "失効",
   "authRevokeHelp": "この認証情報を失効します。以降、この認証情報を使った操作とストリーム配信は拒否されます。",

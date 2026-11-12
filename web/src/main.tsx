@@ -215,37 +215,49 @@ function SignInMethodPrompt({
 }
 /**
  * One action that resumes every Run of this person that an Account suspension
- * paused (#876). The server resumes each Run with the checks of a single
- * resume and only the caller's own Runs, so the answer says how many went on.
+ * paused (#876). State does not say who started a Run, and the server resumes
+ * only the caller's own, so a paused Run the answer leaves out belongs to
+ * someone else and stops showing the action.
  */
 function SuspendedRunsPrompt({
   runs,
 }: {
-  runs: readonly { control: string; error?: string | null }[];
+  runs: readonly { id: string; control: string; error?: string | null }[];
 }) {
   const { t } = useI18n();
   const client = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState("");
-  const paused = runs.some(
-    (run) => run.control === "PAUSED" && run.error === "account_suspended",
+  const [others, setOthers] = useState<ReadonlySet<string>>(() => new Set());
+  const paused = runs.filter(
+    (run) =>
+      run.control === "PAUSED" &&
+      run.error === "account_suspended" &&
+      !others.has(run.id),
   );
-  if (!paused && !outcome) return null;
+  if (paused.length === 0) return null;
   async function resume() {
     setBusy(true);
     setOutcome("");
     try {
       const { runs: results } = await suspendedRunsResume();
+      const mine = new Set(results.map((result) => result.run_id));
+      setOthers(
+        (known) =>
+          new Set([
+            ...known,
+            ...paused.map((run) => run.id).filter((id) => !mine.has(id)),
+          ]),
+      );
       const resumed = results.filter(
         (result) => result.outcome === "resumed",
       ).length;
-      setOutcome(
-        results.length === 0
-          ? t("suspendedRunsNone")
-          : t("suspendedRunsResumed")
-              .replace("{resumed}", String(resumed))
-              .replace("{total}", String(results.length)),
-      );
+      if (results.length > 0)
+        setOutcome(
+          t("suspendedRunsResumed")
+            .replace("{resumed}", String(resumed))
+            .replace("{total}", String(results.length)),
+        );
     } catch (reason) {
       setOutcome(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -259,16 +271,14 @@ function SuspendedRunsPrompt({
       className="flex items-center justify-between gap-4 border-b bg-muted px-4 py-2 text-sm"
     >
       <span>{outcome || t("suspendedRunsPaused")}</span>
-      {paused && (
-        <Button
-          type="button"
-          size="sm"
-          disabled={busy}
-          onClick={() => void resume()}
-        >
-          {t("suspendedRunsResume")}
-        </Button>
-      )}
+      <Button
+        type="button"
+        size="sm"
+        disabled={busy}
+        onClick={() => void resume()}
+      >
+        {t("suspendedRunsResume")}
+      </Button>
     </div>
   );
 }

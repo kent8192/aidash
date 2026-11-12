@@ -277,15 +277,20 @@ impl World {
 		.await
 	}
 
-	/// Records `error` as the reason the paused Run stopped, as the worker records an Account
-	/// suspension's pause.
+	/// Records `error` as the reason the paused Run stopped. An Account suspension's pause also
+	/// records the epoch it paused under, as `pause_for_execution` does.
 	async fn paused_for(&self, error: &str) {
-		sqlx::query("UPDATE runs SET error = $1 WHERE id = $2 AND control = 'PAUSED'")
-			.bind(error)
-			.bind(self.run)
-			.execute(self.f.store.pool.fixture_driver())
-			.await
-			.unwrap();
+		sqlx::query(
+			"UPDATE runs SET error = $1, pending = CASE WHEN $1 = 'account_suspended' \
+			 THEN jsonb_set(pending, '{recovery}', \
+			 COALESCE(pending->'recovery', '{}'::jsonb) || '{\"account_suspension_epoch\": 1}') \
+			 ELSE pending END WHERE id = $2 AND control = 'PAUSED'",
+		)
+		.bind(error)
+		.bind(self.run)
+		.execute(self.f.store.pool.fixture_driver())
+		.await
+		.unwrap();
 	}
 
 	/// `carol` may control Runs but not read them.

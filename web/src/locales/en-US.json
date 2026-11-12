@@ -457,7 +457,6 @@
   "suspendedRunsPaused": "Some Runs are paused because an account was suspended. The suspension has to be lifted before they can go on.",
   "suspendedRunsResume": "Resume Runs paused by a suspension",
   "suspendedRunsResumed": "Resumed {resumed} of your {total} Runs paused by a suspension. Open a Run that did not resume to see why.",
-  "suspendedRunsNone": "None of the paused Runs are yours to resume.",
   "authRevoked": "Revoked",
   "authRevoke": "Revoke",
   "authRevokeHelp": "Revoke this specific credential. Subsequent authorized operations and stream deliveries using it will be rejected.",
