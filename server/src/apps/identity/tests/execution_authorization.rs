@@ -8977,6 +8977,168 @@ async fn stopping_carry_prevents_descendants_from_carrying_again(
 
 #[rstest::rstest]
 #[tokio::test]
+async fn request_mail_respects_recipients_opt_out_and_never_blocks_or_notifies_carry(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+	let (mut f, url, schema) = fixture.runtime.parts();
+	let app = fixture.application;
+	let (mut policy, alice, _) = bootstrap(&f, &app, "http://127.0.0.1:9").await;
+	policy["subjects"]["bob"] = json!({"kind":"user"});
+	policy["subjects"]["charlie"] = json!({"kind":"user"});
+	policy["policies"].as_array_mut().unwrap().push(json!({
+		"id":"deny-charlie-approval", "effect":"deny", "subjects":{"ids":["charlie"]},
+		"actions":["catalog.approve"], "resources":{"kinds":["*"]}
+	}));
+	common::replace_policy(&f.store, "acme", policy).await;
+	for (subject, email, enabled) in [
+		("alice", "alice@example.test", true),
+		("bob", "bob@example.test", false),
+		("charlie", "charlie@example.test", true),
+	] {
+		let mapping = common::BrowserMapping::new(&f, "acme", subject).await;
+		let credential: Uuid = mapping.credential.parse().unwrap();
+		sqlx::query("UPDATE dashboard_identities SET verified_email = $1, approval_request_mail = $2 WHERE id = (SELECT identity_id FROM dashboard_mappings WHERE credential_id = $3)")
+			.bind(email).bind(enabled).bind(credential).execute(f.store.pool.fixture_driver()).await.unwrap();
+	}
+	let bob = common::issued_credential(&f.store, "acme", "bob").await;
+	let bob = bob["token"].as_str().unwrap();
+	let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+	f.config.smtp = Some(
+		aidash_server::apps::operations::serializers::deployment::SmtpSettings {
+			host: "127.0.0.1".into(),
+			port: listener.local_addr().unwrap().port(),
+			from: "catalog@example.test".into(),
+			username: None,
+			password: None,
+			starttls: false,
+		},
+	);
+	let app = common::application(f.clone()).await;
+	let node = aidash_domain::nodes::NodeName::derived("acme");
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({
+			"node":node,"entry":{"id":"research","version":"1.0.0"},"enabled":true,
+			"expected_revision":1,"carry_over":true,"scope":"node"
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	let tenant = aidash_domain::tenancy::TenantName::new("acme").unwrap();
+	let mut next = f.registry.get(&tenant, "research", "1.0.0").await.unwrap();
+	next.version = "1.1.0".into();
+	next.binding_normalization = None;
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/registry",
+		serde_json::to_value(next).unwrap(),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	assert!(
+		body["carry_results"]
+			.as_array()
+			.unwrap()
+			.iter()
+			.any(|result| result["carried"] == true)
+	);
+	assert!(
+		tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
+			.await
+			.is_err(),
+		"a carry sent mail"
+	);
+	let (status, body) = request(
+		&app,
+		&alice,
+		"POST",
+		"/api/authorization/acme/catalog",
+		json!({
+			"node":node,"entry":{"id":"research","version":"1.0.0"},"enabled":false,
+			"expected_revision":2,"scope":"node"
+		}),
+	)
+	.await;
+	assert_eq!(status, 200, "{body}");
+	// The SMTP server deliberately sends no greeting until the HTTP request has returned.
+	let (status, body) = tokio::time::timeout(
+		std::time::Duration::from_secs(45),
+		request_create(
+			&app,
+			bob,
+			&json!({"node":node,"root":{"id":"research","version":"1.0.0"},"reason":"Please review"}),
+		),
+	)
+	.await
+	.expect("request waited for SMTP");
+	assert_eq!(status, 200, "{body}");
+	let (stream, _) = tokio::time::timeout(std::time::Duration::from_secs(30), listener.accept())
+		.await
+		.unwrap()
+		.unwrap();
+	let (read, mut write) = stream.into_split();
+	let mut read = BufReader::new(read);
+	write.write_all(b"220 localhost ESMTP\r\n").await.unwrap();
+	let mut line = String::new();
+	let mut recipients = Vec::new();
+	let mut data = false;
+	loop {
+		line.clear();
+		let n = tokio::time::timeout(
+			std::time::Duration::from_secs(15),
+			read.read_line(&mut line),
+		)
+		.await
+		.unwrap()
+		.unwrap();
+		if n == 0 {
+			break;
+		}
+		let upper = line.to_ascii_uppercase();
+		if data {
+			if line == ".\r\n" {
+				data = false;
+				write.write_all(b"250 queued\r\n").await.unwrap();
+			}
+		} else if upper.starts_with("EHLO") || upper.starts_with("HELO") {
+			write.write_all(b"250 localhost\r\n").await.unwrap();
+		} else if upper.starts_with("RCPT TO:") {
+			recipients.push(line.trim().to_owned());
+			write.write_all(b"250 ok\r\n").await.unwrap();
+		} else if upper.starts_with("DATA") {
+			data = true;
+			write.write_all(b"354 end with dot\r\n").await.unwrap();
+		} else if upper.starts_with("QUIT") {
+			write.write_all(b"221 bye\r\n").await.unwrap();
+			break;
+		} else {
+			write.write_all(b"250 ok\r\n").await.unwrap();
+		}
+	}
+	assert_eq!(recipients.len(), 1, "{recipients:?}");
+	assert!(
+		recipients[0].contains("alice@example.test"),
+		"{recipients:?}"
+	);
+	assert!(
+		tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
+			.await
+			.is_err(),
+		"an opted-out or ineligible person received mail"
+	);
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
 async fn registration_without_a_carry_source_keeps_the_policy_lock_shared(
 	#[future(awt)]
 	#[from(common::native_application)]
