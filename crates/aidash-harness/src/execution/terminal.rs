@@ -38,6 +38,9 @@ pub async fn settle(scope: &mut dyn FailureScope, result: Result<TaskStatus>) ->
 			Some(AuthorityFailure::Denied(Some((**refusal).clone())))
 		}
 		Err(Error::IdentityStatusUnavailable) => Some(AuthorityFailure::IdentityUnavailable),
+		Err(Error::AccountSuspended { epoch }) => {
+			Some(AuthorityFailure::AccountSuspended { epoch: *epoch })
+		}
 		_ => None,
 	};
 	if let Some(failure) = failure {

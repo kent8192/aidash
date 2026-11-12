@@ -430,6 +430,8 @@ impl SubjectIdentity {
 		let Some((_, issued_through)) = valid else {
 			return Err(Error::Unauthorized);
 		};
+		AuthorizationCredential::lock_parent(tx, self.credential_id, &self.tenant, &self.subject)
+			.await?;
 		// Dashboard credentials are never exported as bearer secrets. Their
 		// original mapping and external identity remain part of every durable
 		// execution lease, including leases obtained after browser logout. A

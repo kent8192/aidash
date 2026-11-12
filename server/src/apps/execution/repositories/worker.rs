@@ -333,6 +333,9 @@ pub(crate) fn classify_failure(error: &NativeError) -> ExecutionFailure {
 		NativeError::IdentityStatusUnavailable => {
 			ExecutionFailure::Authority(AuthorityFailure::IdentityUnavailable)
 		}
+		NativeError::AccountSuspended { epoch } => {
+			ExecutionFailure::Authority(AuthorityFailure::AccountSuspended { epoch: *epoch })
+		}
 		NativeError::MediaRouteUnavailable { .. } => {
 			ExecutionFailure::MediaRoute(error.to_string())
 		}

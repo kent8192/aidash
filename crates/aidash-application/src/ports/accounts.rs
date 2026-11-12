@@ -59,6 +59,15 @@ pub trait Authority: Send + Sync {
 	) -> crate::Result<()> {
 		self.validate_bound_origin(origin).await
 	}
+	/// An explicit administrator choice may authorize rebinding exactly one
+	/// suspension epoch. Implementations that cannot prove it refuse recovery.
+	async fn resume_suspended_origin(
+		&self,
+		_origin: &aidash_domain::accounts::DurableOrigin,
+		_epoch: u64,
+	) -> crate::Result<Option<aidash_domain::accounts::DurableOrigin>> {
+		Ok(None)
+	}
 }
 
 /// Implementations serialize concurrent mutations affecting the same Account,

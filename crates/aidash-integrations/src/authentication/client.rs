@@ -276,6 +276,18 @@ impl Authority for Client {
 			.await
 			.map_err(rpc_error)?
 			.into_inner();
+		if !response.active
+			&& response.reason == "account_suspended"
+			&& Uuid::parse_str(&response.source_identity_id).ok() == Some(origin.identity_id)
+			&& origin
+				.account_id
+				.is_none_or(|id| response.account_id == id.to_string())
+			&& origin.source_disable_epoch.unwrap_or(0) == response.source_disable_epoch
+		{
+			if let Some(epoch) = response.suspension_epoch {
+				return Err(Error::AccountSuspended { epoch });
+			}
+		}
 		require_validity(origin.identity_id, &response, false)?;
 		if origin
 			.account_id
@@ -309,5 +321,42 @@ impl Authority for Client {
 		self.validate_bound_origin(origin).await?;
 		cache.insert(key, now);
 		Ok(())
+	}
+	async fn resume_suspended_origin(
+		&self,
+		origin: &aidash_domain::accounts::DurableOrigin,
+		epoch: u64,
+	) -> Result<Option<aidash_domain::accounts::DurableOrigin>> {
+		let response = AuthenticationValidityClient::new(self.channel.clone())
+			.validate_origin(ValidateOriginRequest {
+				external_identity_id: origin.identity_id.to_string(),
+				expected_account_id: origin
+					.account_id
+					.map(|id| id.to_string())
+					.unwrap_or_default(),
+				expected_suspension_epoch: origin.suspension_epoch,
+				expected_source_disable_epoch: origin.source_disable_epoch,
+				bind_current: true,
+			})
+			.await
+			.map_err(rpc_error)?
+			.into_inner();
+		require_validity(origin.identity_id, &response, false)?;
+		if response.suspension_epoch != Some(epoch)
+			|| !response.resumable_suspension_epochs.contains(&epoch)
+			|| origin
+				.account_id
+				.is_some_and(|id| response.account_id != id.to_string())
+			|| origin.source_disable_epoch.unwrap_or(0) != response.source_disable_epoch
+		{
+			return Ok(None);
+		}
+		let account_id = Uuid::parse_str(&response.account_id).map_err(|_| Error::Forbidden)?;
+		Ok(Some(aidash_domain::accounts::DurableOrigin {
+			identity_id: origin.identity_id,
+			account_id: Some(account_id),
+			suspension_epoch: Some(epoch),
+			source_disable_epoch: Some(response.source_disable_epoch),
+		}))
 	}
 }

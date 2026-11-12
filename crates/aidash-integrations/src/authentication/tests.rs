@@ -172,6 +172,20 @@ async fn fresh_status_and_original_provenance_are_required_over_mtls() {
 	// First Account assignment may bind old work only before any stop epoch.
 	client.validate_bound_origin(&legacy).await.unwrap();
 	response.lock().unwrap().suspension_epoch = Some(1);
+	{
+		let mut response = response.lock().unwrap();
+		response.active = false;
+		response.reason = "account_suspended".into();
+	}
+	assert!(matches!(
+		client.validate_bound_origin(&admitted).await,
+		Err(Error::AccountSuspended { epoch: 1 })
+	));
+	{
+		let mut response = response.lock().unwrap();
+		response.active = true;
+		response.reason.clear();
+	}
 	// Only the explicitly selected already-admitted path can reuse the old result.
 	client
 		.validate_bound_origin_within_t(&admitted)

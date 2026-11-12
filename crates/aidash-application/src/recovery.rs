@@ -11,6 +11,8 @@ use aidash_domain::{
 pub enum AuthorityFailure {
 	/// The external identity provider's status could not be read.
 	IdentityUnavailable,
+	/// The common Account was suspended under this epoch.
+	AccountSuspended { epoch: u64 },
 	/// Authority was denied. The refusal names the tool (or stage) and the check; `None` is a
 	/// refusal nothing has named yet, which [`AuthorityFailure::named`] fills in where the Run's
 	/// state is known.
@@ -22,6 +24,7 @@ impl AuthorityFailure {
 	pub fn reason(&self) -> String {
 		match self {
 			Self::IdentityUnavailable => "identity status unavailable".into(),
+			Self::AccountSuspended { epoch } => format!("account_suspended:{epoch}"),
 			Self::Denied(Some(refusal)) => refusal.to_string(),
 			Self::Denied(None) => "an authority check refused this step".into(),
 		}
@@ -48,7 +51,7 @@ impl AuthorityFailure {
 	pub fn refusal(&self) -> Option<&AuthorityRefusal> {
 		match self {
 			Self::Denied(refusal) => refusal.as_ref(),
-			Self::IdentityUnavailable => None,
+			Self::IdentityUnavailable | Self::AccountSuspended { .. } => None,
 		}
 	}
 }
