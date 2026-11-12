@@ -39,6 +39,9 @@ struct Repository {
 	failure: Option<(usize, &'static str)>,
 	stop_after_progress: bool,
 	approval_allowed: bool,
+	/// The approval wait leaves its request pending and fails, as a database
+	/// error or the runtime's time limit would end it.
+	approval_fails: bool,
 }
 impl Repository {
 	fn new() -> Self {
@@ -59,6 +62,7 @@ impl Repository {
 			failure: None,
 			stop_after_progress: false,
 			approval_allowed: true,
+			approval_fails: false,
 		}
 	}
 	fn failing(&self, name: &str) -> bool {
@@ -117,7 +121,12 @@ impl ExecutionRepository for Repository {
 		Ok(Some("search.example".into()))
 	}
 	async fn approve_once(&self, _: Uuid, _: &TestApproval) -> Result<bool> {
-		self.state.lock().unwrap().approvals += 1;
+		let mut s = self.state.lock().unwrap();
+		s.approvals += 1;
+		if self.approval_fails {
+			s.session.scenario["pending_approval"] = json!({"state":"pending"});
+			return Err(Error::External("database unavailable".into()));
+		}
 		Ok(self.approval_allowed)
 	}
 	async fn begin_execution(&self) -> Result<Box<dyn ExecutionScope + '_>> {
@@ -1350,4 +1359,65 @@ async fn a_plugin_tool_the_session_did_not_pin_stays_denied_despite_a_fixture() 
 	assert_eq!(outcome.status, "blocked");
 	assert_eq!(outcome.tool_calls[0]["outcome"], "denied");
 	assert_eq!(model.requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn an_unanswered_approval_keeps_the_tool_call_and_says_the_approval_timed_out() {
+	let (mut repository, snapshot, pinned) = plugin_repository(None).await;
+	let permitted = EntityRef {
+		id: "message".into(),
+		version: "1.0.0".into(),
+	};
+	repository.rules = vec![RealToolRule {
+		read_only_verified: true,
+		secret: None,
+		tool: permitted.clone(),
+		endpoint: "https://test.example/rpc".into(),
+		allowed_actions: vec!["read".into()],
+		allowed_resources: vec!["fixture".into()],
+	}];
+	repository.approval_fails = true;
+	let repository = Arc::new(repository);
+	let model = model(repository.clone(), vec![calling(PLUGIN_TOOL)]);
+	let mut job = offering(job(model), &snapshot, pinned, false);
+	job.input.mode = "real".into();
+	job.input.profile_id = Some("profile".into());
+	job.profile = Some(ProfilePin {
+		id: "profile".into(),
+		revision: 7,
+		tenant: "tenant".into(),
+		rules: repository.rules.clone(),
+	});
+	job.tool_references = BTreeMap::from([(PLUGIN_TOOL.to_owned(), permitted)]);
+	assert!(
+		simulate(&execution(repository.clone()), session().id, &job)
+			.await
+			.is_err()
+	);
+	// The runtime settles a dropped wait from what is durable.
+	settle(
+		repository.as_ref(),
+		session().id,
+		&job.input.message,
+		Err(Failure::TimedOut),
+	)
+	.await
+	.unwrap();
+	let state = repository.state.lock().unwrap();
+	assert_eq!(state.approvals, 1);
+	let outcome = state.finished.as_ref().unwrap();
+	assert_eq!(outcome.status, "timed_out");
+	assert_eq!(
+		outcome.error.as_deref(),
+		Some("test approval was not answered before the time limit")
+	);
+	let conversation = outcome.conversation.as_array().unwrap();
+	assert_eq!(conversation.len(), 2);
+	assert_eq!(conversation[1]["role"], "assistant");
+	assert_eq!(conversation[1]["tool_calls"][0]["name"], PLUGIN_TOOL);
+	assert_eq!(
+		outcome.usage,
+		json!({"input_tokens":3,"output_tokens":5,"usage_complete":true})
+	);
+	assert_eq!(outcome.tool_calls, json!([]));
 }

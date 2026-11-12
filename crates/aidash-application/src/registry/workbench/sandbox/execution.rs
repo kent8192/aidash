@@ -219,6 +219,10 @@ pub async fn simulate(execution: &Execution, session_id: Uuid, job: &Job) -> Res
 			};
 			let permitted = match &approval {
 				Ok(Some(approval)) => {
+					// The wait for a person can outlast the test's time limit or
+					// meet a database error. Keep the model's tool-call message and
+					// its usage durable first, so settling does not lose them.
+					execution.repository.progress(session_id,json!(conversation),json!(calls),json!({"input_tokens":input_tokens,"output_tokens":output_tokens,"usage_complete":usage_complete})).await?;
 					execution
 						.repository
 						.approve_once(session_id, approval)
@@ -498,6 +502,8 @@ pub async fn settle(
 		Err(failure) => {
 			let prior = repository.read_session(session_id).await?;
 			let dispatched = has_unknown_call(&prior.tool_calls);
+			// The test was waiting for its starter, not for the model.
+			let awaiting = prior.scenario["pending_approval"]["state"] == "pending";
 			let (status, error) = match failure {
 				Failure::Execution(error) => (
 					if dispatched {
@@ -515,6 +521,8 @@ pub async fn settle(
 					},
 					if dispatched {
 						"test timed out while an external call was in flight; its outcome is unknown"
+					} else if awaiting {
+						"test approval was not answered before the time limit"
 					} else {
 						"model request timed out; provider outcome is unknown"
 					}
