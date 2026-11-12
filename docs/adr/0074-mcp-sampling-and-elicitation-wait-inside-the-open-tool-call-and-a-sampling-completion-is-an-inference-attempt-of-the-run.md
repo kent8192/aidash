@@ -43,3 +43,7 @@ Modern checkpoints preserve the original method, arguments, origin, Agent Plugin
 The Deployment sets a continuation ceiling, defaulting to 10 continuation sends per logical tool call. It includes rounds carrying only `requestState`, so zero-human-wait loops are bounded too. Exhaustion is recorded and ends the tool call with a typed error. Lease changes, batches and continuation rounds never reset the cumulative human-wait allowance or per-sampling accounting.
 
 Primary references: [version compatibility](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning), [multi round-trip requests](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr), and [sampling](https://modelcontextprotocol.io/specification/2026-07-28/client/sampling).
+
+## Amendment (Run end)
+
+An unanswered human request stored on the Run's Node closes when the Run is cancelled or reaches a terminal phase. The closure records `run_ended`, and a later answer is refused. A call that passed its entrance before the end cannot create a new pending question there after the end commits. A Home-owned remote request is held in a separate journal on its Home Node.

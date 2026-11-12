@@ -471,6 +471,24 @@ pub(crate) async fn finish_start(
 		run: run.clone(),
 		domain,
 	};
+	// Lock the current row before using the pre-dispatch snapshot. A stop can
+	// commit while the Runner is starting; its reason must remain authoritative.
+	let current = Row::objects()
+		.filter(Row::field_id().eq(pending.id))
+		.select_for_update()
+		.all_with_executor(&mut **scope.access.tx)
+		.await
+		.map_err(reinhardt::core::exception::Error::from)
+		.map_err(NativeError::from)?
+		.pop()
+		.ok_or_else(|| NativeError::NotFound("live preview".into()))?;
+	let current = self::domain(current)?;
+	if current.state.is_stopped() {
+		return Ok(Started {
+			status: Status::of(&current, current.revision),
+			startup_log: aidash_domain::preview::live::startup_tail(&dispatched.startup_log),
+		});
+	}
 	match dispatched.pod_host {
 		Some(pod_host) if dispatched.failure.is_none() => application::serving(
 			&mut scope,

@@ -1,11 +1,9 @@
-//! Measurement for #781, not a regression test: what a person sees when a Run
-//! is cancelled while one of its calls asks a person.
+//! Regression coverage for cancellation while a call asks a person.
 //!
 //! A call that passed the step's control check holds the Run as it was loaded
 //! and its authority. Each case therefore loads the Run and begins its
 //! authority while the Run is active, cancels it through the real endpoint, and
-//! then makes the write the call would make. Every observation is printed as a
-//! `#781` line; only preconditions are asserted.
+//! then makes the write the call would make.
 use super::*;
 
 fn note(case: &str, what: &str, value: impl std::fmt::Debug) {
@@ -74,7 +72,7 @@ async fn person_sees(case: &str, app: &common::TestApplication, token: &str, run
 	);
 }
 
-async fn answer(case: &str, app: &common::TestApplication, token: &str, id: Uuid) {
+async fn answer(_case: &str, app: &common::TestApplication, token: &str, id: Uuid) {
 	let (status, body) = request(
 		app,
 		token,
@@ -83,7 +81,7 @@ async fn answer(case: &str, app: &common::TestApplication, token: &str, id: Uuid
 		json!("an answer after the cancel"),
 	)
 	.await;
-	note(case, "POST answer status, body", (status, body));
+	assert_eq!(status, 409, "closed request answer: {body}");
 }
 
 async fn rows(f: &aidash_server::federation::Federation, sql: &str, run: Uuid) -> i64 {
@@ -122,7 +120,35 @@ async fn m1_a_question_the_run_waits_on_when_it_is_cancelled(
 	};
 	let id = *request_id;
 	person_sees(&format!("{case} / before cancel"), app, &token, run.id, id).await;
-	note(case, "cancel", cancel(app, &token, run.id).await);
+	let (status, body) = cancel(app, &token, run.id).await;
+	assert_eq!(status, 200, "cancel: {body}");
+	let (status, page) = request(
+		app,
+		&token,
+		"GET",
+		"/api/human-requests?state=pending",
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200);
+	assert!(
+		!page["items"]
+			.as_array()
+			.or(page.as_array())
+			.unwrap()
+			.iter()
+			.any(|item| item["id"] == json!(id))
+	);
+	let (status, state) = request(app, &token, "GET", "/api/state", Value::Null).await;
+	assert_eq!(status, 200);
+	let closed = state["human_requests"]
+		.as_array()
+		.unwrap()
+		.iter()
+		.find(|item| item["id"] == json!(id))
+		.unwrap();
+	assert_eq!(closed["answered_by"], "system");
+	assert_eq!(closed["response"]["reason"], "run_ended");
 	person_sees(&format!("{case} / after cancel"), app, &token, run.id, id).await;
 	for _ in 0..3 {
 		harness.worker_once().await.unwrap();
@@ -158,9 +184,6 @@ async fn m2_a_question_written_after_the_cancel(
 	let (f, url, schema) = t.application.runtime.parts();
 	let (token, run) = claimed_run(&t, &f, |_| {}).await;
 	let app = &t.application.application;
-	let harness = Harness {
-		federation: f.clone(),
-	};
 	let authority = StepAuthority::begin(&f, &run).await;
 	note(case, "authority begun while active", authority.is_ok());
 	let (status, body) = cancel(app, &token, run.id).await;
@@ -175,6 +198,10 @@ async fn m2_a_question_written_after_the_cancel(
 			"late-question",
 		)
 		.await;
+	assert!(
+		matches!(&asked, Err(aidash_server::Error::Conflict(message)) if message == "run has ended"),
+		"late question: {asked:?}"
+	);
 	note(
 		case,
 		"store.human_request result",
@@ -183,38 +210,15 @@ async fn m2_a_question_written_after_the_cancel(
 			.map(|request| request.id)
 			.map_err(|error| error.to_string()),
 	);
-	note(
-		case,
-		"human_requests rows",
+	assert_eq!(
 		rows(
 			&f,
 			"SELECT count(*) FROM human_requests WHERE run_id = $1",
-			run.id,
+			run.id
 		)
 		.await,
+		0
 	);
-	if let Ok(request) = &asked {
-		person_sees(
-			&format!("{case} / right after"),
-			app,
-			&token,
-			run.id,
-			request.id,
-		)
-		.await;
-		for _ in 0..3 {
-			harness.worker_once().await.unwrap();
-		}
-		person_sees(
-			&format!("{case} / after worker steps"),
-			app,
-			&token,
-			run.id,
-			request.id,
-		)
-		.await;
-		answer(case, app, &token, request.id).await;
-	}
 	let current = f.store.run(&TEST_FIXTURE, run.id).await.unwrap();
 	note(
 		case,
@@ -275,6 +279,10 @@ async fn m3_a_sampling_approval_opened_after_the_cancel(
 	let pending = approval_cards(app, &token, "?state=pending&role=approver").await;
 	note(case, "pending inbox (approver) cards", pending.len());
 	let all = approval_cards(app, &token, "").await;
+	assert!(pending.is_empty());
+	assert!(all.iter().any(|card| card["kind"] == "sampling"
+		&& card["state"] == "closed"
+		&& card["closed_reason"] == "run_ended"));
 	note(
 		case,
 		"all cards: kind, state, closed_reason",

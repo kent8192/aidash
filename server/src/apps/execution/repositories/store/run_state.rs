@@ -290,6 +290,7 @@ impl Store {
 		if state.phase().is_terminal() {
 			// Before the first event; see `lock_end`.
 			crate::apps::execution::repositories::subnodes::lock_for_end(&mut tx, m.id).await?;
+			crate::apps::execution::models::HumanRequest::close_for_run(tx.as_mut(), m.id).await?;
 		}
 		self.run_event(
 			&mut tx,

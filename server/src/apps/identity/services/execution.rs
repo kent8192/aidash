@@ -1073,7 +1073,16 @@ impl WorkerAuthority {
 				previews::Dispatch::failed(String::new()),
 			)
 			.await;
-			access.finish(result).await?;
+			let started = access.finish(result).await?;
+			drop(outer);
+			if started.status.state.is_stopped() {
+				// Admission was refused before any dispatch, so no Pod can exist.
+				let outer = self.access.read().await;
+				let mut access = Access::under_lease(&outer).await?;
+				let result =
+					previews::settle(store, &mut access, run, domain.clone(), pending.id).await;
+				access.finish(result).await?;
+			}
 		}
 		accepted?;
 		let dispatched = previews::wait_ready(store, &pending)
@@ -1081,9 +1090,25 @@ impl WorkerAuthority {
 			.unwrap_or_else(|error| previews::Dispatch::failed(error.to_string()));
 		let outer = self.access.read().await;
 		let mut access = Access::under_lease(&outer).await?;
-		let result =
-			previews::finish_start(store, &mut access, run, domain, pending, dispatched).await;
+		let result = previews::finish_start(
+			store,
+			&mut access,
+			run,
+			domain.clone(),
+			pending.clone(),
+			dispatched,
+		)
+		.await;
 		let started = access.finish(result).await?;
+		drop(outer);
+		if started.status.state.is_stopped()
+			&& previews::terminate(store, &pending).await.unwrap_or(false)
+		{
+			let outer = self.access.read().await;
+			let mut access = Access::under_lease(&outer).await?;
+			let result = previews::settle(store, &mut access, run, domain, pending.id).await;
+			access.finish(result).await?;
+		}
 		Ok(json!(started))
 	}
 

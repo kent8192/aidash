@@ -340,10 +340,8 @@ async fn a_newer_revision_marks_a_running_preview_stale(#[future] capability_fix
 	assert_eq!(reason, None);
 }
 
-/// Measurement for #781, not a regression test: a Live preview whose start
-/// waits for the Runner while its Run is cancelled. A stub Runner accepts the
-/// dispatch, reports the Pod as starting until the test releases it, and then
-/// reports it running. Observations are printed as `#781` lines.
+/// A Live preview start waits for the Runner while its Run is cancelled.
+/// The stub reports starting until released, then reports the Pod running.
 #[rstest::rstest]
 #[tokio::test]
 async fn m6_a_live_preview_start_waiting_for_the_runner_when_the_run_is_cancelled(
@@ -459,6 +457,7 @@ async fn m6_a_live_preview_start_waiting_for_the_runner_when_the_run_is_cancelle
 		json!({"action":"cancel"}),
 	)
 	.await;
+	assert_eq!(status, 200, "cancel: {body}");
 	note("cancel status", &(status, &body["control"]));
 	note(
 		"row after the cancel (state, stop_reason, confirmed)",
@@ -466,11 +465,22 @@ async fn m6_a_live_preview_start_waiting_for_the_runner_when_the_run_is_cancelle
 	);
 	released.store(true, Ordering::SeqCst);
 	let started = start.await.unwrap();
+	let result = started.as_ref().expect("start result");
+	assert_eq!(result["status"]["state"], "stopped");
+	assert_eq!(result["status"]["stop_reason"], "run_cancelled");
+	assert_eq!(
+		live_row(&c, row.0).await,
+		(
+			String::from("stopped"),
+			Some(String::from("run_cancelled")),
+			true
+		)
+	);
 	note(
 		"live_preview_start result",
 		&started
 			.as_ref()
-			.map(|value| value["state"].clone())
+			.map(|value| value["status"]["state"].clone())
 			.map_err(|error| error.to_string()),
 	);
 	note(
@@ -517,6 +527,13 @@ async fn m6_a_live_preview_start_waiting_for_the_runner_when_the_run_is_cancelle
 	.fetch_one(c.f.store.pool.fixture_driver())
 	.await
 	.unwrap();
+	assert_eq!(holds, 0);
+	assert!(
+		cancels.load(Ordering::SeqCst) > 0,
+		"Runner must be cancelled"
+	);
+	assert_eq!(body["live_preview"]["state"], "stopped");
+	assert_eq!(body["live_preview"]["stop_reason"], "run_cancelled");
 	note("rows of the cancelled Run not stopped", &holds);
 	drop(runner);
 	c.close().await;

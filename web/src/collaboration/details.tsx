@@ -67,6 +67,7 @@ import { unapprovedCompactionDecider } from "../catalog-approval-model";
 import { ArtifactList } from "./channel";
 import {
   answeredAtDeadline,
+  closedWhenRunEnded,
   continuesAt,
   deadlineTime,
 } from "../approval-settings-model";
@@ -284,13 +285,18 @@ export function OperationsDialog({
                     </div>
                   </form>
                 )
-              ) : request && answeredAtDeadline(request) ? (
+              ) : request &&
+                (answeredAtDeadline(request) || closedWhenRunEnded(request)) ? (
                 <div className="grid min-w-0 justify-items-start gap-2">
                   <Badge value={request.kind} />
                   <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
                     {elicitationMessage(request)}
                   </p>
-                  <Hint role="status">{copy.noAnswerBeforeDeadline}</Hint>
+                  <Hint role="status">
+                    {closedWhenRunEnded(request)
+                      ? copy.questionClosedRunEnded
+                      : copy.noAnswerBeforeDeadline}
+                  </Hint>
                 </div>
               ) : (
                 <Hint role="status">{copy.unavailable}</Hint>

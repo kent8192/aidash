@@ -12,6 +12,46 @@ use serde_json::Value;
 use uuid::Uuid;
 
 impl HumanRequest {
+	/// Serialize admission and answers with Run termination.
+	pub(crate) async fn require_active_run(
+		tx: &mut dyn TransactionExecutor,
+		run: Uuid,
+	) -> Result<()> {
+		use reinhardt::query::LockType;
+		let (sql, values) = Query::select()
+			.column(Alias::new("id"))
+			.from(Alias::new("runs"))
+			.and_where(Expr::col("id").eq(Expr::value(run)))
+			.and_where(Expr::col("phase").is_not_in(["COMPLETED", "FAILED", "CANCELLED"]))
+			.and_where(Expr::col("control").ne("CANCELLED"))
+			.lock(LockType::NoKeyUpdate)
+			.build(PostgresQueryBuilder);
+		if tx
+			.fetch_optional(&sql, convert_values(values))
+			.await?
+			.is_none()
+		{
+			return Err(Error::Conflict("run has ended".into()));
+		}
+		Ok(())
+	}
+
+	/// Close only unanswered requests in the transaction that ends the Run.
+	pub(crate) async fn close_for_run(tx: &mut dyn TransactionExecutor, run: Uuid) -> Result<()> {
+		let (sql, values) = Query::update()
+			.table(Alias::new(Self::table_name()))
+			.value(
+				Alias::new("response"),
+				serde_json::json!({"answered":false,"reason":"run_ended"}),
+			)
+			.value(Alias::new("answered_by"), "system")
+			.and_where(Expr::col("run_id").eq(Expr::value(run)))
+			.and_where(Expr::col("response").is_null())
+			.build(PostgresQueryBuilder);
+		tx.execute(&sql, convert_values(values)).await?;
+		Ok(())
+	}
+
 	pub(crate) async fn read_in(
 		tx: &mut dyn TransactionExecutor,
 		id: Uuid,
@@ -56,6 +96,7 @@ impl HumanRequest {
 	) -> Result<(Contract, bool)> {
 		let workspace = request.workspace_id;
 		let run = request.run_id;
+		Self::require_active_run(tx, run).await?;
 		let kind = request.kind.as_str();
 		let prompt = request.prompt.as_str();
 		let (sql, values) = Query::insert()
