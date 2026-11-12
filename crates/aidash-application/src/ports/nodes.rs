@@ -8,6 +8,11 @@ use async_trait::async_trait;
 pub trait TierLimits: Send + Sync {
 	/// The most Nodes `tenant`'s Tier allows, or `None` when the Tier sets no limit.
 	async fn nodes(&self, tenant: &TenantName) -> Result<Option<u32>>;
+	/// The most Schedules `tenant`'s Tier allows, or `None` when the Tier sets
+	/// no limit. It only lowers the Tenant's own limit (#557 decision 16).
+	async fn schedules(&self, _tenant: &TenantName) -> Result<Option<u32>> {
+		Ok(None)
+	}
 }
 
 /// No Tier limits: the Tenancy Rule alone applies.
