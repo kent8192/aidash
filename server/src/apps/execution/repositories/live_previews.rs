@@ -694,7 +694,7 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> 
 	let grant = crate::bootstrap::execution_grants(store)
 		.grant(preview.run_id)
 		.await?;
-	let (identity, subjects) = match grant {
+	let (identity, subjects, remote) = match grant {
 		Some(grant) => (
 			SubjectIdentity {
 				http_session: None,
@@ -703,9 +703,10 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> 
 				subject: grant.root_subject,
 			},
 			Some(grant.subject_chain),
+			false,
 		),
-		// A Run started through a Remote Grant has no local grant. Its session
-		// names the subject that holds the preview.
+		// A Remote Grant Run has an admission instead of a local grant. Its
+		// session, when present, also names the subject holding the preview.
 		None => {
 			let mut tx = store
 				.pool
@@ -719,37 +720,57 @@ pub(crate) async fn read_recheck(store: &Store, id: Uuid) -> NativeResult<bool> 
 				.map_err(reinhardt::core::exception::Error::from)
 				.map_err(NativeError::from)?
 				.pop();
-			let subjects = crate::apps::federation::peer::repositories::admissions::subject_chain(
+			let admission = crate::apps::federation::peer::repositories::admissions::for_run(
 				&mut *tx,
 				preview.run_id,
 			)
 			.await?;
 			tx.commit().await?;
-			let (Some(session), Some(mut subjects)) = (session, subjects) else {
+			let Some(admission) = admission else {
 				return Ok(false);
 			};
-			if subjects.is_empty() {
+			let mut subjects = admission.subject_chain;
+			let Some(root) = subjects.first().cloned() else {
+				return Ok(false);
+			};
+			if session.is_none() && store.capabilities.0.egress.is_some() {
 				return Ok(false);
 			}
-			if !subjects.contains(&session.principal) {
-				subjects.push(session.principal.clone());
-			}
-			(
+			let identity = if let Some(session) = session {
+				if !subjects.contains(&session.principal) {
+					subjects.push(session.principal.clone());
+				}
 				SubjectIdentity {
 					http_session: None,
 					credential_id: session.credential_id,
 					tenant: session.tenant,
 					subject: session.principal,
-				},
-				Some(subjects),
-			)
+				}
+			} else {
+				SubjectIdentity {
+					http_session: None,
+					credential_id: admission.credential_id,
+					tenant: admission.tenant,
+					subject: root,
+				}
+			};
+			(identity, Some(subjects), true)
 		}
 	};
 	let mut access = Access::begin(store, &identity).await?;
 	if let Some(subjects) = subjects {
 		access.subjects = subjects;
 	}
-	let result = access.recheck_run_reads(preview.run_id).await.map(|_| ());
+	let result = if remote {
+		let mut check = access.rechecking(preview.run_id);
+		match check.run_reads_visible(preview.run_id).await {
+			Ok(true) => Ok(()),
+			Ok(false) => Err(NativeError::Forbidden),
+			Err(error) => Err(error),
+		}
+	} else {
+		access.recheck_run_reads(preview.run_id).await.map(|_| ())
+	};
 	access.finish(result).await.map(|()| true)
 }
 
