@@ -5,6 +5,7 @@ import { useState, useCallback, useRef, useSyncExternalStore } from "react";
 import { Alert } from "../components/patterns";
 import { useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
+import { uniqueById } from "../window-pages";
 import {
   ChevronRight,
   FileText,
@@ -374,7 +375,9 @@ export function Channel({
         items.push(...page.items);
         cursor = page.next_cursor;
       } while (cursor);
-      return items;
+      // Pages follow `updated_at`, so a Run that changes while they are read
+      // can come back on a later page; the later copy is the newer one.
+      return uniqueById(items);
     },
     refetchInterval: 2000,
     retry: false,
