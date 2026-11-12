@@ -204,6 +204,7 @@
             "type": "object",
             "required": [
               "id",
+              "may_control",
               "phase",
               "control",
               "control_source",
@@ -277,6 +278,10 @@
                   }
                 ],
                 "description": "The exact semantic cause and its authorized next actions while the Run\ncan still be recovered; absent for a cancelled or finished Run."
+              },
+              "may_control": {
+                "description": "Whether this caller may change the Run's control state.",
+                "type": "boolean"
               }
             }
           },
@@ -511,6 +516,7 @@
             "type": "object",
             "required": [
               "id",
+              "may_control",
               "phase",
               "control",
               "control_source",
@@ -584,6 +590,10 @@
                   }
                 ],
                 "description": "The exact semantic cause and its authorized next actions while the Run\ncan still be recovered; absent for a cancelled or finished Run."
+              },
+              "may_control": {
+                "description": "Whether this caller may change the Run's control state.",
+                "type": "boolean"
               }
             }
           },
@@ -2762,41 +2772,66 @@
             ]
           },
           "RemoteExecutionStatus": {
-            "type": "object",
-            "required": [
-              "human_requests",
-              "grant",
-              "execution",
-              "unavailable",
-              "semantic"
-            ],
-            "properties": {
-              "execution": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/RemoteExecutionActivation"
+            "oneOf": [
+              {
+                "properties": {
+                  "execution": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/RemoteExecutionActivation"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
-                  {
-                    "type": "null"
+                  "grant": {
+                    "$ref": "#/components/schemas/Prepared"
+                  },
+                  "human_requests": {
+                    "items": {
+                      "$ref": "#/components/schemas/HumanRequest"
+                    },
+                    "type": "array"
+                  },
+                  "semantic": {
+                    "$ref": "#/components/schemas/RemoteSemanticStatus"
+                  },
+                  "unavailable": {
+                    "type": "boolean"
+                  },
+                  "view": {
+                    "enum": ["requester"],
+                    "type": "string"
                   }
-                ]
+                },
+                "required": [
+                  "view",
+                  "human_requests",
+                  "grant",
+                  "execution",
+                  "unavailable",
+                  "semantic"
+                ],
+                "type": "object"
               },
-              "grant": {
-                "$ref": "#/components/schemas/Prepared"
-              },
-              "human_requests": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/HumanRequest"
-                }
-              },
-              "semantic": {
-                "$ref": "#/components/schemas/RemoteSemanticStatus"
-              },
-              "unavailable": {
-                "type": "boolean"
+              {
+                "properties": {
+                  "execution": {
+                    "$ref": "#/components/schemas/RemoteDeclineExecution"
+                  },
+                  "grant": {
+                    "$ref": "#/components/schemas/RemoteDeclineGrant"
+                  },
+                  "view": {
+                    "enum": ["holder"],
+                    "type": "string"
+                  }
+                },
+                "required": ["view", "grant", "execution"],
+                "type": "object"
               }
-            }
+            ]
           },
           "RemoteSemanticBinding": {
             "oneOf": [
@@ -3052,6 +3087,34 @@
                 "enum": ["create_follow_up_task"]
               }
             ]
+          },
+          "RemoteDeclineExecution": {
+            "properties": {
+              "control": {
+                "$ref": "#/components/schemas/RemoteExecutionControlState"
+              },
+              "declinable_call": {
+                "$ref": "#/components/schemas/DeclinableCall"
+              }
+            },
+            "required": ["control", "declinable_call"],
+            "type": "object"
+          },
+          "RemoteDeclineGrant": {
+            "properties": {
+              "agent": {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "node_id": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "node_id", "agent"],
+            "type": "object"
           }
         },
         "schema": {
@@ -10459,6 +10522,41 @@
         },
         "schema": {
           "$ref": "#/components/schemas/ReferenceRevoked"
+        }
+      }
+    },
+    "source": "server/src/apps/execution/capabilities/views/management.rs",
+    "uuid_parameters": ["id"]
+  },
+  {
+    "json": false,
+    "method": "GET",
+    "name": "reference_revocation",
+    "path": "/api/references/{id}/revocation",
+    "query_parameters": [],
+    "responses": {
+      "200": {
+        "definitions": {
+          "ReferenceRevocation": {
+            "properties": {
+              "reference_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "revision": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": ["reference_id", "revision", "state"],
+            "type": "object"
+          }
+        },
+        "schema": {
+          "$ref": "#/components/schemas/ReferenceRevocation"
         }
       }
     },
@@ -39147,6 +39245,7 @@
             "type": "object",
             "required": [
               "id",
+              "may_control",
               "phase",
               "control",
               "control_source",
@@ -39220,6 +39319,10 @@
                   }
                 ],
                 "description": "The exact semantic cause and its authorized next actions while the Run\ncan still be recovered; absent for a cancelled or finished Run."
+              },
+              "may_control": {
+                "description": "Whether this caller may change the Run's control state.",
+                "type": "boolean"
               }
             }
           },
@@ -56537,6 +56640,7 @@
             "type": "object",
             "required": [
               "id",
+              "may_control",
               "phase",
               "control",
               "control_source",
@@ -56610,6 +56714,10 @@
                   }
                 ],
                 "description": "The exact semantic cause and its authorized next actions while the Run\ncan still be recovered; absent for a cancelled or finished Run."
+              },
+              "may_control": {
+                "description": "Whether this caller may change the Run's control state.",
+                "type": "boolean"
               }
             }
           },

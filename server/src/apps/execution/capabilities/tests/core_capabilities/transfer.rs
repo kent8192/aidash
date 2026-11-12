@@ -28,20 +28,19 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 	assert_eq!(status, 201, "{second}");
 	let name = second["name"].as_str().unwrap();
 	let address = second["address"].as_str().unwrap();
-	let (status, bindings) = request(
-		&c.app,
-		&c.token,
-		"GET",
-		&format!("/api/authorization/acme/catalog?node={}", home.node),
-		Value::Null,
-	)
-	.await;
-	assert_eq!(status, 200, "{bindings}");
+	let bindings = common::expect(
+		common::get(
+			&c.app,
+			&c.token,
+			&format!("/api/authorization/acme/catalog?node={}", home.node),
+		)
+		.await,
+		200,
+	);
 	let approvals: Vec<_> = bindings.as_array().unwrap().iter().filter(|binding| binding["enabled"] == true).map(|binding| json!({"entry":{"id":binding["entry_id"],"version":binding["entry_version"]},"expected_revision":0,"enabled":true})).collect();
-	let (status, approved) = request(
+	let (status, approved) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		"/api/authorization/acme/catalog/approvals",
 		json!({"node":name,"approvals":approvals}),
 	)
@@ -51,19 +50,17 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 	policy["subjects"][aidash_domain::agent_subject(address, "research", "1.1.0")] =
 		json!({"kind":"agent", "node": name});
 	common::replace_policy(&c.f.store, "acme", policy.clone()).await;
-	let (status, workspace) = request(
+	let (status, workspace) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		"/api/workspaces",
 		json!({"title":"Sibling files","goal":"Receive selected files","node":name}),
 	)
 	.await;
 	assert_eq!(status, 200, "{workspace}");
-	let (status, task) = request(
+	let (status, task) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!(
 			"/api/workspaces/{}/tasks",
 			workspace["id"].as_str().unwrap()
@@ -72,10 +69,9 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 	)
 	.await;
 	assert_eq!(status, 200, "{task}");
-	let (status, delegated) = request(
+	let (status, delegated) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!("/api/tasks/{}/delegate", task["id"].as_str().unwrap()),
 		json!({"node_id":address,"agent":{"id":"research","version":"1.1.0"}}),
 	)
@@ -92,24 +88,20 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 	assert_eq!(receiver.node.as_str(), name);
 	assert_eq!(receiver.home_node, address);
 	for run in [&sender, &receiver] {
-		let (status, area) = request(
+		let (status, area) = common::get(
 			&c.app,
 			&c.token,
-			"GET",
 			&format!("/api/runs/{}/working-area", run.id),
-			Value::Null,
 		)
 		.await;
 		assert_eq!(status, 200, "{area}");
 	}
 	// Each local recipient lookup stays in the Node named by the UI.
 	for (node, expected) in [(home.to_string(), &sender), (address.to_owned(), &receiver)] {
-		let (status, page) = request(
+		let (status, page) = common::get(
 			&c.app,
 			&c.token,
-			"GET",
 			&format!("/api/file-recipients?node_id={node}"),
-			Value::Null,
 		)
 		.await;
 		assert_eq!(status, 200, "{page}");
@@ -131,12 +123,10 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 	}));
 	common::replace_policy(&c.f.store, "acme", denied_node).await;
 	for (node, expected_status) in [(address.to_owned(), 403), (home.to_string(), 200)] {
-		let (status, page) = request(
+		let (status, page) = common::get(
 			&c.app,
 			&c.token,
-			"GET",
 			&format!("/api/file-recipients?node_id={node}"),
-			Value::Null,
 		)
 		.await;
 		assert_eq!(status, expected_status, "{page}");
@@ -148,14 +138,12 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 		(&sender, &receiver)
 	};
 	let target_address = format!("{}/{}", c.f.config.deployment, target.node);
-	let (status, patched) = request(&c.app, &c.token, "POST", &format!("/api/runs/{}/patch", source.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"data.txt":null},"patch":"*** Begin Patch\n*** Add File: data.txt\n+sibling 東京\n*** End Patch"})).await;
+	let (status, patched) = common::post(&c.app, &c.token, &format!("/api/runs/{}/patch", source.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"data.txt":null},"patch":"*** Begin Patch\n*** Add File: data.txt\n+sibling 東京\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{patched}");
-	let (status, area) = request(
+	let (status, area) = common::get(
 		&c.app,
 		&c.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", source.id),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "{area}");
@@ -166,10 +154,10 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 	denied["policies"].as_array_mut().unwrap().push(json!({"id":"no-transfer","effect":"deny","subjects":{"any":true},"actions":["file.transfer"],"resources":{"kinds":["node"]}}));
 	common::replace_policy(&c.f.store, "acme", denied).await;
 	// Act / Assert: sharing with a sibling must cross file.transfer admission.
-	let (status, refused) = request(&c.app, &c.token, "POST", &path, input.clone()).await;
+	let (status, refused) = common::post(&c.app, &c.token, &path, input.clone()).await;
 	assert_eq!(status, 403, "{refused}");
 	common::replace_policy(&c.f.store, "acme", policy).await;
-	let (status, pending) = request(&c.app, &c.token, "POST", &path, input).await;
+	let (status, pending) = common::post(&c.app, &c.token, &path, input).await;
 	assert_eq!(status, 200, "{pending}");
 	assert_eq!(pending["status"], "pending");
 	let transfer = pending["transfer_id"].as_str().unwrap();
@@ -177,14 +165,8 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 	let worker = tokio::spawn(aidash_server::capabilities::transfer::run(c.f.clone(), rx));
 	let receipt = tokio::time::timeout(std::time::Duration::from_secs(30), async {
 		loop {
-			let (status, state) = request(
-				&c.app,
-				&c.token,
-				"GET",
-				&format!("/api/file-transfers/{transfer}"),
-				Value::Null,
-			)
-			.await;
+			let (status, state) =
+				common::get(&c.app, &c.token, &format!("/api/file-transfers/{transfer}")).await;
 			assert_eq!(status, 200, "{state}");
 			if state["status"] == "completed" {
 				break state;
@@ -198,10 +180,9 @@ async fn sibling_file_transfers_require_their_own_node_authority(
 	stop.send(true).unwrap();
 	worker.await.unwrap().unwrap();
 	let file = &receipt["receipt"]["files"][0];
-	let (status, received) = request(
+	let (status, received) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!("/api/runs/{}/files/read", target.id),
 		json!({"file_id":file["file_id"],"representation":"text"}),
 	)
@@ -260,12 +241,10 @@ struct ChunkedTransfer {
 async fn chunked_transfer(#[future] two_nodes: TransferFixture) -> ChunkedTransfer {
 	use reinhardt::query::{Alias, Expr, PostgresQueryBuilder, Query};
 	let c = Box::pin(two_nodes).await;
-	let (_, area) = request(
+	let (_, area) = common::get(
 		&c.a.app,
 		&c.a.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", c.sender.id),
-		Value::Null,
 	)
 	.await;
 	// Explicit immutable transport fixture: 4 MiB plus a final short chunk.
@@ -328,10 +307,9 @@ async fn chunked_transfer(#[future] two_nodes: TransferFixture) -> ChunkedTransf
 	)
 	.await;
 	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":id,"expected_digest":digest}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.b.f.config.deployment.as_str(), "acme").to_string(),"agent_id":c.receiver.agent_id,"agent_version":c.receiver.agent_version,"thread_id":c.b.task}});
-	let (status, pending) = request(
+	let (status, pending) = common::post(
 		&c.a.app,
 		&c.a.token,
-		"POST",
 		&format!("/api/runs/{}/files/share", c.sender.id),
 		input.clone(),
 	)
@@ -398,12 +376,10 @@ async fn chunks_resume_out_of_order_after_both_servers_restart_without_duplicate
 		409,
 		"missing first chunk cannot publish"
 	);
-	let (_, hidden) = request(
+	let (_, hidden) = common::get(
 		&c.b.app,
 		&c.b.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", c.receiver.id),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(hidden["manifest"], json!([]));
@@ -441,12 +417,10 @@ async fn chunks_resume_out_of_order_after_both_servers_restart_without_duplicate
 	assert_eq!(observed["receipt"], receipt["receipt"]);
 	stop.send(true).unwrap();
 	worker.await.unwrap().unwrap();
-	let (_, area) = request(
+	let (_, area) = common::get(
 		&c.b.app,
 		&c.b.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", c.receiver.id),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(area["manifest"].as_array().unwrap().len(), 1);
@@ -549,12 +523,10 @@ async fn corrupted_first_chunk_and_quota_exhaustion_never_publish_files(
 	assert_eq!(peer_request(&c.b, &c.a, "chunk", chunk).await.0, 200);
 	let (status, failed) = peer_request(&c.b, &c.a, "commit", identity).await;
 	assert_eq!(status, 409, "{failed}");
-	let (_, area) = request(
+	let (_, area) = common::get(
 		&c.b.app,
 		&c.b.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", c.receiver.id),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(
@@ -640,13 +612,7 @@ a.f.config.endpoint = format!("http://{}", al.local_addr().unwrap());
 	a.policy["subjects"]
 		[aidash_server::domain::qualified_agent(&aidash_domain::nodes::NodeAddress::derived(b.f.config.deployment.as_str(), "acme"), "research", "1.1.0")] =
 		json!({"kind":"agent", "node": aidash_domain::nodes::NodeName::derived("acme")});
-	let (status, result) = request(
-		&a.app,
-		&a.f.config.api_token,
-		"POST",
-		"/api/authorization/acme",
-		json!({"expected_revision":revision,"bundle":a.policy}),
-	)
+	let (status, result) = common::post(&a.app, &a.f.config.api_token, "/api/authorization/acme", json!({"expected_revision":revision,"bundle":a.policy}))
 	.await;
 	assert_eq!(status, 200, "{result}");
  for node in [&a,&b] {node.app.context.set_singleton(node.f.clone());
@@ -698,22 +664,19 @@ async fn peer_request(
 	.await
 }
 async fn prepare_file(c: &TransferFixture) -> (Value, Value) {
-	let (status, value) = request(&c.a.app, &c.a.token, "POST", &format!("/api/runs/{}/patch", c.sender.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"data.txt":null},"patch":"*** Begin Patch\n*** Add File: data.txt\n+immutable 東京\n*** End Patch"})).await;
+	let (status, value) = common::post(&c.a.app, &c.a.token, &format!("/api/runs/{}/patch", c.sender.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"data.txt":null},"patch":"*** Begin Patch\n*** Add File: data.txt\n+immutable 東京\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{value}");
-	let (_, area) = request(
+	let (_, area) = common::get(
 		&c.a.app,
 		&c.a.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", c.sender.id),
-		Value::Null,
 	)
 	.await;
 	let file = area["manifest"][0].clone();
 	let input = json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"files":[{"file_id":file["file_id"],"expected_digest":file["digest"]}],"recipient":{"node_id":aidash_domain::nodes::NodeAddress::derived(c.b.f.config.deployment.as_str(), "acme").to_string(),"agent_id":c.receiver.agent_id,"agent_version":c.receiver.agent_version,"thread_id":c.b.task}});
-	let (status, pending) = request(
+	let (status, pending) = common::post(
 		&c.a.app,
 		&c.a.token,
-		"POST",
 		&format!("/api/runs/{}/files/share", c.sender.id),
 		input.clone(),
 	)
@@ -725,10 +688,9 @@ async fn prepare_file(c: &TransferFixture) -> (Value, Value) {
 async fn until_transfer(c: &TransferFixture, input: &Value, states: &[&str]) -> Value {
 	let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
 	loop {
-		let (status, result) = request(
+		let (status, result) = common::post(
 			&c.a.app,
 			&c.a.token,
-			"POST",
 			&format!("/api/runs/{}/files/share", c.sender.id),
 			input.clone(),
 		)
@@ -752,15 +714,13 @@ async fn remote_snapshot_survives_source_edit_and_lost_final_receipt(
 ) {
 	let c = Box::pin(two_nodes).await;
 	let (input, pending) = prepare_file(&c).await;
-	let (_, source) = request(
+	let (_, source) = common::get(
 		&c.a.app,
 		&c.a.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", c.sender.id),
-		Value::Null,
 	)
 	.await;
-	let (status, result) = request(&c.a.app, &c.a.token, "POST", &format!("/api/runs/{}/patch", c.sender.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"preconditions":{"data.txt":source["manifest"][0]["digest"]},"patch":"*** Begin Patch\n*** Update File: data.txt\n@@\n-immutable 東京\n+changed later\n*** End Patch"})).await;
+	let (status, result) = common::post(&c.a.app, &c.a.token, &format!("/api/runs/{}/patch", c.sender.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":2,"preconditions":{"data.txt":source["manifest"][0]["digest"]},"patch":"*** Begin Patch\n*** Update File: data.txt\n@@\n-immutable 東京\n+changed later\n*** End Patch"})).await;
 	assert_eq!(status, 200, "{result}");
 	c.lose_commit_reply.store(true, Ordering::SeqCst);
 	let WorkerControl { stop, receiver: rx } = control_1;
@@ -775,12 +735,10 @@ async fn remote_snapshot_survives_source_edit_and_lost_final_receipt(
 		"fault must run after a real committed receiver transaction"
 	);
 	assert_eq!(receipt["transfer_id"], pending["transfer_id"]);
-	let (_, area) = request(
+	let (_, area) = common::get(
 		&c.b.app,
 		&c.b.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", c.receiver.id),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(
@@ -791,10 +749,9 @@ async fn remote_snapshot_survives_source_edit_and_lost_final_receipt(
 	assert_eq!(area["revision"], 2);
 	let file = &area["manifest"][0];
 	assert_eq!(file["digest"], source["manifest"][0]["digest"]);
-	let (status, content) = request(
+	let (status, content) = common::post(
 		&c.b.app,
 		&c.b.token,
-		"POST",
 		&format!("/api/runs/{}/files/read", c.receiver.id),
 		json!({"file_id":file["file_id"],"representation":"text"}),
 	)
@@ -865,12 +822,10 @@ async fn transfer_commit_rechecks_source_and_receiver_and_keeps_chunks_invisible
 	);
 	chunk["data"] = json!(base64::engine::general_purpose::STANDARD.encode("corrupted 東京\n"));
 	assert_eq!(peer_request(&c.b, &c.a, "chunk", chunk).await.0, 409);
-	let (_, area) = request(
+	let (_, area) = common::get(
 		&c.b.app,
 		&c.b.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", c.receiver.id),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(area["manifest"], json!([]), "staging is not visible");
@@ -882,12 +837,10 @@ async fn transfer_commit_rechecks_source_and_receiver_and_keeps_chunks_invisible
 		403,
 		"a peer credential cannot bypass original source revocation"
 	);
-	let (_, area) = request(
+	let (_, area) = common::get(
 		&c.b.app,
 		&c.b.token,
-		"GET",
 		&format!("/api/runs/{}/working-area", c.receiver.id),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(area["manifest"], json!([]));
@@ -896,19 +849,12 @@ async fn transfer_commit_rechecks_source_and_receiver_and_keeps_chunks_invisible
 
 use reinhardt::query::{ExprTrait as _, QueryStatementBuilder as _};
 async fn marketplace_admit(c: &CoreFixture) -> aidash_server::domain::Run {
-	let (status, package) = request(
-		&c.app,
-		&c.token,
-		"POST",
-		"/api/marketplace/packages",
-		json!({"source":{"id":"research","version":"1.1.0"},"package_id":"research","author":"Fixture","idempotency_key":Uuid::new_v4()}),
-	)
+	let (status, package) = common::post(&c.app, &c.token, "/api/marketplace/packages", json!({"source":{"id":"research","version":"1.1.0"},"package_id":"research","author":"Fixture","idempotency_key":Uuid::new_v4()}))
 	.await;
 	assert_eq!(status, 200, "{package}");
-	let (status, installation) = request(
+	let (status, installation) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!(
 			"/api/marketplace/packages/{}/install",
 			package["key"].as_str().unwrap()
@@ -918,12 +864,10 @@ async fn marketplace_admit(c: &CoreFixture) -> aidash_server::domain::Run {
 	.await;
 	assert_eq!(status, 200, "{installation}");
 	let id = installation["installation"]["id"].as_str().unwrap();
-	let (status, revision) = request(
+	let (status, revision) = common::get(
 		&c.app,
 		&c.token,
-		"GET",
 		&format!("/api/marketplace/installations/{id}"),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "{revision}");
@@ -952,13 +896,11 @@ async fn marketplace_admit(c: &CoreFixture) -> aidash_server::domain::Run {
 	)
 	.await
 	.unwrap();
-	let (status,activated)=request(&c.app,&c.token,"POST",&format!("/api/marketplace/installations/{id}/activation"),
-        json!({"tenant":"acme","revision":1,"expected_activation_revision":0,"expected_catalog_revision":0,"enabled":true})).await;
+	let (status,activated)=common::post(&c.app, &c.token, &format!("/api/marketplace/installations/{id}/activation"), json!({"tenant":"acme","revision":1,"expected_activation_revision":0,"expected_catalog_revision":0,"enabled":true})).await;
 	assert_eq!(status, 200, "{activated}");
-	let (status, admitted) = request(
+	let (status, admitted) = common::post(
 		&c.app,
 		&c.token,
-		"POST",
 		&format!("/api/tasks/{}/delegate", c.task),
 		json!({"node_id":c.f.config.deployment,"agent":{"id":entry.id,"version":entry.version}}),
 	)
@@ -1195,20 +1137,17 @@ async fn remote_recipients_use_the_sending_runs_node_and_its_registration(
 	assert_eq!(status, 201, "{sibling}");
 	let sibling_name = sibling["name"].as_str().unwrap();
 	let sibling_address = sibling["address"].as_str().unwrap();
-	let (status, catalog) = request(
+	let (status, catalog) = common::get(
 		&c.a.app,
 		&c.a.token,
-		"GET",
 		&format!("/api/authorization/acme/catalog?node={}", home.node),
-		Value::Null,
 	)
 	.await;
 	assert_eq!(status, 200, "{catalog}");
 	let approvals:Vec<_> = catalog.as_array().unwrap().iter().filter(|binding| binding["enabled"] == true).map(|binding|json!({"entry":{"id":binding["entry_id"],"version":binding["entry_version"]},"enabled":true,"expected_revision":0})).collect();
-	let (status, body) = request(
+	let (status, body) = common::post(
 		&c.a.app,
 		&c.a.token,
-		"POST",
 		"/api/authorization/acme/catalog/approvals",
 		json!({"node":sibling_name,"approvals":approvals}),
 	)
@@ -1218,19 +1157,17 @@ async fn remote_recipients_use_the_sending_runs_node_and_its_registration(
 	policy["subjects"][aidash_domain::agent_subject(sibling_address, "research", "1.1.0")] =
 		json!({"kind":"agent", "node": sibling_name});
 	common::replace_policy(&c.a.f.store, "acme", policy.clone()).await;
-	let (status, workspace) = request(
+	let (status, workspace) = common::post(
 		&c.a.app,
 		&c.a.token,
-		"POST",
 		"/api/workspaces",
 		json!({"title":"Source","goal":"Share from sibling","node":sibling_name}),
 	)
 	.await;
 	assert_eq!(status, 200, "{workspace}");
-	let (status, task) = request(
+	let (status, task) = common::post(
 		&c.a.app,
 		&c.a.token,
-		"POST",
 		&format!(
 			"/api/workspaces/{}/tasks",
 			workspace["id"].as_str().unwrap()
@@ -1239,10 +1176,9 @@ async fn remote_recipients_use_the_sending_runs_node_and_its_registration(
 	)
 	.await;
 	assert_eq!(status, 200, "{task}");
-	let (status, admitted) = request(
+	let (status, admitted) = common::post(
 		&c.a.app,
 		&c.a.token,
-		"POST",
 		&format!("/api/tasks/{}/delegate", task["id"].as_str().unwrap()),
 		json!({"node_id":sibling_address,"agent":{"id":"research","version":"1.1.0"}}),
 	)
@@ -1260,7 +1196,7 @@ async fn remote_recipients_use_the_sending_runs_node_and_its_registration(
 	let path = format!("/api/file-recipients?node_id={target}&run_id={}", run.id);
 	// Only the default Node initially has a registration; it must not stand in
 	// for the sending Node or advertise recipients that this Run cannot reach.
-	let (status, body) = request(&c.a.app, &c.a.token, "GET", &path, Value::Null).await;
+	let (status, body) = common::get(&c.a.app, &c.a.token, &path).await;
 	assert_ne!(status, 200, "the sibling has no route yet: {body}");
 	use common::peering;
 	let registration = peering::registration(
@@ -1300,7 +1236,7 @@ async fn remote_recipients_use_the_sending_runs_node_and_its_registration(
 	.unwrap();
 	let (status, body) = common::set_peer_mapping(&c.b.f, "acme", "alice", json!({"node":target.node,"source_node":sibling_address,"source_subject":"alice","credential_id":credential.id,"expected_revision":0,"enabled":true})).await;
 	assert_eq!(status, 200, "{body}");
-	let (status, body) = request(&c.a.app, &c.a.token, "GET", &path, Value::Null).await;
+	let (status, body) = common::get(&c.a.app, &c.a.token, &path).await;
 	assert_eq!(status, 200, "{body}");
 	assert!(
 		body["items"]
@@ -1312,7 +1248,7 @@ async fn remote_recipients_use_the_sending_runs_node_and_its_registration(
 	);
 	policy["policies"].as_array_mut().unwrap().push(json!({"id":"no-source-node","effect":"deny","subjects":{"any":true},"actions":["node.use"],"resources":{"kinds":["node"],"ids":[sibling_name]}}));
 	common::replace_policy(&c.a.f.store, "acme", policy).await;
-	let (status, body) = request(&c.a.app, &c.a.token, "GET", &path, Value::Null).await;
+	let (status, body) = common::get(&c.a.app, &c.a.token, &path).await;
 	assert_eq!(status, 403, "{body}");
 	c.close().await;
 }
@@ -1346,8 +1282,7 @@ async fn reserved_transfer_capacity_survives_unrelated_uploads_and_its_own_conve
 		json!({"transfer_id":transfer,"input_digest":data["description"]["input_digest"]});
 	let (status, prepared) = peer_request(&c.b, &c.a, "prepare", identity.clone()).await;
 	assert_eq!(status, 200, "{prepared}");
-	let (upload_status, upload) = request(&c.b.app, &c.b.token, "POST", &path_for_patch(c.receiver.id),
-        json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"other.txt":null},"patch":"*** Begin Patch\n*** Add File: other.txt\n+x\n*** End Patch"})).await;
+	let (upload_status, upload) = common::post(&c.b.app, &c.b.token, &path_for_patch(c.receiver.id), json!({"idempotency_key":Uuid::new_v4(),"expected_revision":1,"preconditions":{"other.txt":null},"patch":"*** Begin Patch\n*** Add File: other.txt\n+x\n*** End Patch"})).await;
 	let mut chunk = identity.clone();
 	chunk["file"] = json!(0);
 	chunk["offset"] = json!(0);

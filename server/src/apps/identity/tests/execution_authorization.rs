@@ -8592,6 +8592,93 @@ async fn subnode_end_waits_for_a_call_in_progress(
 }
 
 #[rstest::rstest]
+#[tokio::test]
+async fn node_deletion_waits_for_a_subnode_write_before_publishing_run_controls(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	let (f, url, schema) = fixture.runtime.parts();
+	let rig = SubnodeRig::new(&f, &fixture.application, &["subnode-leader"], true).await;
+	let subnode = late_subnode(&rig, &SUBNODE_TOOLS).await;
+	let (status, sibling) = common::administer_node(
+		&f,
+		"acme",
+		"/api/tenants/acme/nodes",
+		json!({"label":"Sibling"}),
+	)
+	.await;
+	assert_eq!(status, 201, "{sibling}");
+	let sibling = sibling["name"].as_str().unwrap();
+	assert_eq!(
+		common::administer_node(
+			&f,
+			"acme",
+			&format!("/api/tenants/acme/nodes/{sibling}/default"),
+			Value::Null
+		)
+		.await
+		.0,
+		200
+	);
+	let node = rig.node.node.to_string();
+	let browser = common::BrowserMapping::new(&f, "acme", "alice").await;
+	// Put the creating Run after its member in the physical scan of pending Runs.
+	sqlx::query("UPDATE runs SET revision = revision WHERE id = $1")
+		.bind(rig.creator_run)
+		.execute(f.store.pool.fixture_driver())
+		.await
+		.unwrap();
+	// A member's write keeps this shared lock until its event is published.
+	let mut write = f.store.pool.fixture_driver().begin().await.unwrap();
+	sqlx::query("SELECT id FROM subnodes WHERE id = $1 FOR SHARE")
+		.bind(subnode.subnode)
+		.fetch_one(&mut *write)
+		.await
+		.unwrap();
+	let holder: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+		.fetch_one(&mut *write)
+		.await
+		.unwrap();
+	let path = format!("/api/tenants/acme/nodes/{node}/deletion");
+	let end = tokio::spawn(async move {
+		browser
+			.send("POST", &path, json!({"confirmation":node}))
+			.await
+	});
+	until_waiting(
+		&rig,
+		holder,
+		"Node deletion behind the member write",
+		|(direct, _)| direct >= 1,
+	)
+	.await;
+	assert!(!end.is_finished(), "deletion must wait for the write");
+	let published = sqlx::query("SELECT pg_advisory_xact_lock(71003201)")
+		.execute(&mut *write)
+		.await;
+	assert!(
+		published.is_ok(),
+		"the write must not deadlock: {published:?}"
+	);
+	sqlx::query("INSERT INTO events (id, tenant, node, workspace_id, kind, data) VALUES ($1, 'acme', $2, $3, 'message.created', '{}')")
+		.bind(Uuid::new_v4())
+		.bind(rig.node.node.as_str())
+		.bind(subnode.workspace)
+		.execute(&mut *write)
+		.await
+		.unwrap();
+	write.commit().await.unwrap();
+	let (status, body) = end.await.unwrap();
+	assert_eq!(
+		status, 200,
+		"Node deletion must finish without deadlock: {body}"
+	);
+	assert_eq!(subnode_state(&rig, subnode.subnode).await, "dissolved");
+	cleanup(f, &url, &schema).await;
+}
+
+#[rstest::rstest]
 #[case::attachment_copy(LateCall::Copy)]
 #[case::message_with_files(LateCall::Message)]
 #[tokio::test]

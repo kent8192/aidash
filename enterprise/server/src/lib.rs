@@ -92,14 +92,15 @@ impl Extension for Adapters {
 		&self,
 		federation: &aidash_server::federation::Federation,
 		stopping: tokio::sync::watch::Receiver<bool>,
-	) -> Vec<aidash_server::bootstrap::build::Service> {
+	) -> Vec<(&'static str, aidash_server::bootstrap::build::Service)> {
 		let store = federation.store.clone();
 		let Ok(settings) = billing::load_settings() else {
 			return Vec::new();
 		};
-		vec![Box::pin(billing::meter::maintain(
-			store, settings, stopping,
-		))]
+		vec![(
+			"billing.meter",
+			Box::pin(billing::meter::maintain(store, settings, stopping)),
+		)]
 	}
 
 	fn tables(&self) -> &'static [Table] {

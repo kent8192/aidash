@@ -380,19 +380,23 @@ async fn a_publishers_silent_node_does_not_count_for_the_readers_call(mut access
 #[rstest::rstest]
 #[tokio::test]
 async fn no_negative_read_verdict_is_remembered_while_a_node_is_silent(mut access: Access) {
+	use aidash_application::ports::federation::registry_reads::RemoteReads;
 	let run = Uuid::new_v4();
 	let other = Uuid::new_v4();
-	access.remember_remote_read(run, false);
-	assert_eq!(access.cached_remote_read(run), Some(false));
+	access.remember_remote_read(run, RemoteReads::Unconfirmed);
+	assert_eq!(
+		access.cached_remote_read(run),
+		Some(RemoteReads::Unconfirmed)
+	);
 	access.mark_peer_unavailable("aidash://other/sibling");
-	access.remember_remote_read(other, false);
+	access.remember_remote_read(other, RemoteReads::Unconfirmed);
 	assert_eq!(
 		access.cached_remote_read(other),
 		None,
 		"a refusal reached while a Node was silent is asked again"
 	);
-	access.remember_remote_read(other, true);
-	assert_eq!(access.cached_remote_read(other), Some(true));
+	access.remember_remote_read(other, RemoteReads::Visible);
+	assert_eq!(access.cached_remote_read(other), Some(RemoteReads::Visible));
 }
 
 /// A memory step names a Node that did not answer for `Invalidated` as well as

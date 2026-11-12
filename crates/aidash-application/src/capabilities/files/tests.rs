@@ -31,6 +31,8 @@ struct Scope {
 	active_run: Option<Uuid>,
 	pending: Vec<u8>,
 	cache_entry: Option<(Uuid, String, Value)>,
+	/// A Subnode Area the Run created, which `subnode_area` hands back.
+	subnode: Option<Area>,
 }
 #[async_trait::async_trait]
 impl FileScopePort for Scope {
@@ -99,6 +101,17 @@ impl FileScopePort for Scope {
 	}
 	async fn for_run(&mut self, _run: &RunMetadata) -> Result<Area> {
 		Ok(self.area.as_ref().expect("admitted area").clone())
+	}
+	async fn subnode_area(
+		&mut self,
+		_run: &RunMetadata,
+		_workspace: Uuid,
+		area: Uuid,
+	) -> Result<Area> {
+		self.subnode
+			.clone()
+			.filter(|subnode| subnode.id == area)
+			.ok_or(Error::Forbidden)
 	}
 	async fn authorize(&mut self, _area: &Area, action: &str) -> Result<()> {
 		assert!(matches!(action, "file.read" | "file.write"));
@@ -272,6 +285,7 @@ fn fixture(bytes: &[u8]) -> (Scope, Area, FileEntry) {
 			active_run: None,
 			pending: vec![],
 			cache_entry: None,
+			subnode: None,
 		},
 		area,
 		file,
@@ -1001,6 +1015,36 @@ async fn subnode_file_selection_requires_both_ids_and_an_authorizing_adapter() {
 		Err(Error::Forbidden)
 	));
 	assert_eq!(scope.opens, 0);
+}
+
+#[tokio::test]
+async fn a_creating_run_reads_a_members_copy_but_not_its_reference_set() {
+	let (mut scope, run, file) = invoke_fixture("file_read", json!({}));
+	let mut reference = file.clone();
+	reference.file_id = Uuid::new_v4();
+	reference.path = "references/plan.md".into();
+	reference.scope = FileScope::References;
+	reference.provenance = json!({"kind":"reference","id":Uuid::new_v4()});
+	let mut copy = reference.clone();
+	copy.file_id = Uuid::new_v4();
+	copy.path = "plan.md".into();
+	copy.scope = FileScope::Working;
+	let mut member = scope.area.clone().unwrap();
+	member.id = Uuid::new_v4();
+	member.workspace_id = Uuid::new_v4();
+	member.manifest = json!([reference, copy]);
+	scope.subnode = Some(member.clone());
+	let read = |file: &FileEntry| json!({"file_id": file.file_id, "representation": "text", "workspace_id": member.workspace_id, "area_id": member.id});
+
+	assert!(matches!(
+		invoke(&mut scope, &run, "file_read", read(&reference), "reference").await,
+		Err(Error::NotFound(_))
+	));
+	assert_eq!(scope.opens, 0);
+	let copied = invoke(&mut scope, &run, "file_read", read(&copy), "copy")
+		.await
+		.unwrap();
+	assert_eq!(copied.result["content"], "abcdefgh");
 }
 
 #[rstest::rstest]

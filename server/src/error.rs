@@ -342,6 +342,16 @@ impl Error {
 		}
 	}
 
+	/// Whether this came from the database at all, temporary or not. Callers
+	/// that otherwise redact or flatten an error keep these typed (#787).
+	pub(crate) fn is_database(&self) -> bool {
+		match self {
+			Self::Database(_) => true,
+			Self::Framework(error) => error.database_error().is_some(),
+			_ => false,
+		}
+	}
+
 	pub(crate) fn is_transient_database(&self) -> bool {
 		fn retryable_code(code: &str) -> bool {
 			code.starts_with("08")
@@ -369,6 +379,34 @@ impl Error {
 					error.kind(),
 					DatabaseErrorKind::Connection | DatabaseErrorKind::Timeout
 				) || error.code().is_some_and(retryable_code)
+			}),
+			_ => false,
+		}
+	}
+
+	/// The database could not be reached or did not answer: a lost or refused
+	/// connection, or a client deadline. Lock waits, deadlocks and serialization
+	/// failures are transient too, but they happen while the database is up, so
+	/// they do not start a post-outage hold on lease recoveries (#786).
+	pub(crate) fn is_database_unreachable(&self) -> bool {
+		fn connection_code(code: &str) -> bool {
+			code.starts_with("08") || matches!(code, "57P01" | "57P02" | "57P03")
+		}
+		match self {
+			Self::Database(
+				sqlx::Error::PoolTimedOut
+				| sqlx::Error::Io(_)
+				| sqlx::Error::Tls(_)
+				| sqlx::Error::Protocol(_),
+			) => true,
+			Self::Database(sqlx::Error::Database(error)) => {
+				error.code().is_some_and(|code| connection_code(&code))
+			}
+			Self::Framework(error) => error.database_error().is_some_and(|error| {
+				matches!(
+					error.kind(),
+					DatabaseErrorKind::Connection | DatabaseErrorKind::Timeout
+				) || error.code().is_some_and(connection_code)
 			}),
 			_ => false,
 		}

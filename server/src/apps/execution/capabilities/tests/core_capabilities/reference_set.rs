@@ -447,6 +447,136 @@ async fn revoking_one_file_refuses_new_runs_and_names_its_path(
 	c.close().await;
 }
 
+/// The default test policy lets everyone do everything. This one leaves Alice
+/// the uploader's whole authority and gives Bob, if anyone, only `reference.delete`.
+fn only_alice_uses_references(c: &mut CoreFixture, bob_may_revoke: bool) {
+	let resources = c.policy["policies"][0]["resources"].clone();
+	c.policy["policies"][0]["subjects"] = json!({"kinds":["agent"]});
+	let policies = c.policy["policies"].as_array_mut().unwrap();
+	policies.push(json!({"id":"alice-works","effect":"allow","subjects":{"ids":["alice"]},"actions":["*"],"resources":resources}));
+	if bob_may_revoke {
+		policies.push(json!({"id":"bob-revokes-references","effect":"allow","subjects":{"ids":["bob"]},"actions":["reference.delete"],"resources":{"kinds":["reference"]}}));
+	}
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_subject_the_policy_grants_reference_delete_revokes_a_file_it_did_not_upload(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let mut c = Box::pin(capability_fixture).await;
+	let token = c.token.clone();
+	let (status, added) = add(&c, &token, vec![file("gone/plan.md", "gone\n")]).await;
+	assert_eq!(status, 200, "{added}");
+	only_alice_uses_references(&mut c, true);
+	bind_agent(
+		&mut c,
+		&[("bobs-revocable-docs", added["references"].clone())],
+	)
+	.await;
+	let id = added["files"][0]["reference"]["reference_id"]
+		.as_str()
+		.unwrap()
+		.to_owned();
+	let bob = common::issued_credential(&c.f.store, "acme", "bob").await;
+	let bob = bob["token"].as_str().unwrap();
+
+	// Reading and downloading stay with the uploader.
+	let (status, read) = request(
+		&c.app,
+		bob,
+		"GET",
+		&format!("/api/references/{id}"),
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 404, "{read}");
+	let (status, download) = request(
+		&c.app,
+		bob,
+		"GET",
+		&format!("/api/references/{id}/download"),
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 404, "{download}");
+	// The revocation view gives the revision and state, and no content.
+	let (status, view) = request(
+		&c.app,
+		bob,
+		"GET",
+		&format!("/api/references/{id}/revocation"),
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 200, "{view}");
+	assert_eq!(view["state"], "ready", "{view}");
+	assert_eq!(view.as_object().unwrap().len(), 3, "{view}");
+	let (status, stale) = request(
+		&c.app,
+		bob,
+		"POST",
+		&format!("/api/references/{id}/revoke"),
+		json!({"expected_revision":view["revision"].as_i64().unwrap() + 1}),
+	)
+	.await;
+	assert_eq!(status, 409, "{stale}");
+	let (status, result) = request(
+		&c.app,
+		bob,
+		"POST",
+		&format!("/api/references/{id}/revoke"),
+		json!({"expected_revision":view["revision"]}),
+	)
+	.await;
+	assert_eq!(status, 200, "{result}");
+
+	let (status, refused) = start(&c, &token, c.task).await;
+	assert_eq!(status, 404, "{refused}");
+	assert!(refused.to_string().contains("gone/plan.md"), "{refused}");
+	c.close().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+async fn a_subject_the_policy_does_not_grant_reference_delete_gets_404_and_revokes_nothing(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let mut c = Box::pin(capability_fixture).await;
+	let token = c.token.clone();
+	let (status, added) = add(&c, &token, vec![file("keep.md", "keep\n")]).await;
+	assert_eq!(status, 200, "{added}");
+	only_alice_uses_references(&mut c, false);
+	bind_agent(&mut c, &[("kept-docs", added["references"].clone())]).await;
+	let reference = &added["files"][0]["reference"];
+	let id = reference["reference_id"].as_str().unwrap();
+	let bob = common::issued_credential(&c.f.store, "acme", "bob").await;
+	let bob = bob["token"].as_str().unwrap();
+
+	let (status, view) = request(
+		&c.app,
+		bob,
+		"GET",
+		&format!("/api/references/{id}/revocation"),
+		json!(null),
+	)
+	.await;
+	assert_eq!(status, 404, "{view}");
+	let (status, result) = request(
+		&c.app,
+		bob,
+		"POST",
+		&format!("/api/references/{id}/revoke"),
+		json!({"expected_revision":reference["revision"]}),
+	)
+	.await;
+	assert_eq!(status, 404, "{result}");
+
+	let (status, started) = start(&c, &token, c.task).await;
+	assert_eq!(status, 200, "{started}");
+	c.close().await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 async fn revoking_a_file_does_not_lock_an_area_that_never_copied_it(
@@ -595,6 +725,94 @@ async fn a_revoked_file_stops_being_readable_through_the_run_file_routes(
 	)
 	.await;
 	assert_eq!(status, 404, "{denied}");
+	c.close().await;
+}
+
+/// A Tenant Administrator stops a Source's files by withdrawing its Catalog
+/// Approval. The Run's file routes then answer as its worker does (#788).
+#[rstest::rstest]
+#[tokio::test]
+async fn withdrawing_a_sources_approval_stops_the_run_file_routes(
+	#[future] capability_fixture: CoreFixture,
+) {
+	let mut c = Box::pin(capability_fixture).await;
+	let token = c.token.clone();
+	let (status, added) = add(&c, &token, vec![file("plan.md", "needle\n")]).await;
+	assert_eq!(status, 200, "{added}");
+	bind_agent(&mut c, &[("withdrawn-docs", added["references"].clone())]).await;
+	let (status, started) = start(&c, &token, c.task).await;
+	assert_eq!(status, 200, "{started}");
+	let run = latest_run(&c).await;
+	let (status, found) = request(
+		&c.app,
+		&token,
+		"POST",
+		&format!("/api/runs/{}/files/search", run.id),
+		json!({"query":"","mode":"path","scope":"references"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{found}");
+	let plan = found["matches"][0].clone();
+	let (status, area) = request(
+		&c.app,
+		&token,
+		"GET",
+		&format!("/api/runs/{}/working-area", run.id),
+		Value::Null,
+	)
+	.await;
+	assert_eq!(status, 200, "{area}");
+	let approve = |revision: i64, enabled: bool| {
+		request(
+			&c.app,
+			&token,
+			"POST",
+			"/api/authorization/acme/catalog",
+			json!({"node":aidash_domain::nodes::NodeName::derived("acme"),"entry":{"id":"withdrawn-docs","version":"1.0.0"},"expected_revision":revision,"enabled":enabled}),
+		)
+	};
+	let (status, withdrawn) = approve(1, false).await;
+	assert_eq!(status, 200, "{withdrawn}");
+
+	for (route, input) in [
+		(
+			"files/read",
+			json!({"file_id":plan["file_id"],"representation":"text"}),
+		),
+		(
+			"files/search",
+			json!({"query":"needle","mode":"literal","scope":"references"}),
+		),
+		(
+			"files/materialize",
+			json!({"idempotency_key":Uuid::new_v4(),"expected_revision":area["revision"],"path":"copy.md","source":{"kind":"file","file_id":plan["file_id"],"expected_digest":plan["digest"]}}),
+		),
+	] {
+		let (status, denied) = request(
+			&c.app,
+			&token,
+			"POST",
+			&format!("/api/runs/{}/{route}", run.id),
+			input,
+		)
+		.await;
+		assert_eq!(status, 403, "{route}: {denied}");
+		assert!(!denied.to_string().contains("needle"), "{route}: {denied}");
+	}
+
+	// Approving the Source again gives the files back.
+	let (status, approved) = approve(withdrawn["revision"].as_i64().unwrap(), true).await;
+	assert_eq!(status, 200, "{approved}");
+	let (status, read) = request(
+		&c.app,
+		&token,
+		"POST",
+		&format!("/api/runs/{}/files/read", run.id),
+		json!({"file_id":plan["file_id"],"representation":"text"}),
+	)
+	.await;
+	assert_eq!(status, 200, "{read}");
+	assert_eq!(read["content"], "needle\n", "{read}");
 	c.close().await;
 }
 

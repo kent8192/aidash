@@ -281,17 +281,19 @@ async fn separate_process_notifications_and_negative_control(
 
 	let mut samples = Vec::new();
 	let mut pids = Vec::new();
-	// Retain 100 admission samples while keeping each measured window below
-	// the unchanged 60s recovery delay, including on loaded hosted runners.
-	for window in 0..10 {
-		let mut one = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "worker", &directory, (window * 2 + 1, true), binary.clone());
-		let mut two = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "worker", &directory, (window * 2 + 2, true), binary.clone());
+	// Stop starting samples after 30s, leaving time for an in-flight sample
+	// before the 55s validity bound and the 60s recovery delay.
+	let mut window = 0;
+	while samples.len() < 100 {
+		let mut one = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "worker", &directory, (window * 2 + 23, true), binary.clone());
+		let mut two = /* Act: launch/relaunch tests worker lifecycle and negative controls. */ Process::start(&f, &url, &schema, "worker", &directory, (window * 2 + 24, true), binary.clone());
 		one.ready().await;
 		two.ready().await;
 		pids.extend([one.child.id(), two.child.id()]);
 		let recovery_before = count(&f, "claim_source = 'recovery'").await;
 		let window_start = Instant::now();
-		for index in 0..10 {
+		let mut index = 0;
+		while samples.len() < 100 && window_start.elapsed() < Duration::from_secs(30) {
 			// Keep the activation workload constant: historical workspace
 			// observation growth is a different performance dimension.
 			let workspace: Value = f
@@ -352,10 +354,13 @@ async fn separate_process_notifications_and_negative_control(
 			assert!([one.child.id() as i64, two.child.id() as i64].contains(&first_claim.3));
 			samples.push(json!({"window":window,"sample":index,"run_id":id,"activation_id":first_claim.0,"generation":first_claim.1,"worker_pid":first_claim.3,"upper_bound_ms":elapsed}));
 			complete(&f, id).await;
+			index += 1;
 		}
+		let elapsed = window_start.elapsed();
+		println!("activation window {window}: {index} samples in {elapsed:?}");
 		assert!(
-			window_start.elapsed() < Duration::from_secs(55),
-			"recovery suppression window exceeded"
+			elapsed < Duration::from_secs(55),
+			"recovery suppression window {window} exceeded: {elapsed:?}"
 		);
 		assert_eq!(
 			count(&f, "claim_source = 'recovery'").await,
@@ -363,6 +368,7 @@ async fn separate_process_notifications_and_negative_control(
 		);
 		one.stop();
 		two.stop();
+		window += 1;
 	}
 	// A suspended replica cannot hoard prefetched work. The other replica must
 	// drain a batch larger than its two execution slots through notifications.
