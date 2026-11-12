@@ -1,0 +1,25 @@
+# A Schedule always acts as one person, and stops rather than changes hands silently
+
+Decided on 2026-10-29 in the #557 grilling. Issue #557 adds Schedules: recurring triggers that start a Task for one Agent of the Tenant with a fixed request. Every Run in Aidash takes its Approval Mode, Approval Rules, Plan Connections (ADR 0007) and MCP OAuth Connections (ADR 0100) from the person at the root of its delegation chain. A Schedule therefore needs a person at that root even though nobody is present when it fires.
+
+## Decisions
+
+- **A Schedule acts as its Registrant.** Every Run it starts has the Registrant as `authorization_execution.root_subject` and is admitted with the credential the Registrant registered it with. That person's Approval Mode (or the mode chosen for this Schedule, within what the Tenant's policy allows them), Approval Rules, Plan Connections and MCP OAuth Connections apply exactly as they do for a Run the person starts by hand. A Schedule's mode is the mode of the Thread its Run works in, for that person.
+- **There are no Tenant-owned Schedules.** A Schedule with no person at the root would need a new kind of authority that no Plan Connection or Approval Rule reaches, and someone else to decide its approvals.
+- **An Agent registers a Schedule for the person at the root of its Run's chain**, through the core capability `schedules` (on by default, removable like any default tool). Its create, update and delete calls are Tool call approvals of that person, so their Approval Mode and Approval Rules decide them (ADR 0076, ADR 0127); listing needs none. A Run that arrived through Federation cannot use them. A Run started by a Schedule, and any Run whose Task descends from one, never registers or changes a Schedule, so Schedules cannot multiply themselves. An Agent changes or deletes only Schedules whose Registrant is its chain-root person.
+- **When the Registrant leaves the Tenant or loses access, the Schedule stops.** Disabling a person's Mapping stops their Schedules in the same transaction, and a tick whose Registrant can no longer act stops its Schedule instead of starting a Run. A holder of `schedule.administer` may name a successor, but the Schedule runs again only when the successor resumes it as their own action, after which they are its Registrant and their credential admits its Runs. Nobody can make a Schedule run in another person's name: only the Registrant edits or resumes a Schedule; administrators may pause, delete and name successors.
+- **A Schedule that cannot do what it was registered for stops and says why.** It stops when its pinned Agent version can no longer be started, when its fixed Thread is deleted, and when its Tenant is deleted (a restore leaves it stopped). It pauses itself after three failed Runs in a row; skipped ticks do not count. The Registrant is told, and only the Registrant resumes it. A start refused for any reason, such as an unapproved compaction Decider (ADR 0102), is recorded as a failed tick with that reason and is never retried silently. A start the usage gate refuses is recorded as skipped (limit), as is a tick that arrives while the previous Run is unfinished (overlap) or one later than its maximum lateness after downtime (late).
+- **PostgreSQL is the scheduler's source of truth.** There is no leader election and no NATS cron. Every replica periodically claims due Schedules with `FOR UPDATE SKIP LOCKED` in the Registrant's own transaction, starts the Run, records the tick and advances the next fire time in that one transaction. Scheduled ticks are unique on `(schedule, scheduled time)`, so a tick creates at most one Task across restarts and replicas. Ticks missed while Aidash was down run once, late, at the latest missed time.
+
+## Considered Options
+
+- **A service subject per Schedule.** Rejected: the Registrant's Plan Connection and MCP OAuth Connections would not apply, and approvals would have nobody to ask.
+- **Automatic transfer to a Tenant Administrator on departure.** Rejected: the Schedule would start acting with authority its new Registrant never chose to lend it.
+- **A separate approval kind for Schedule tools.** Rejected: the existing Tool call approval already asks the chain-root person inline where they watch the Run and applies their rules and mode; a second kind would need its own rules and screens for the same decision.
+- **NATS scheduled messages.** Rejected: the deployed NATS 2.12.4 has only one-shot `@at`; recurring schedules need 2.14, and the database would still have to decide what a tick did.
+
+## Consequences
+
+- A departed Registrant's Schedules stay visible but stopped until someone takes them over or deletes them.
+- The scheduler needs no authority model of its own. It starts Runs exactly as a person would in a Thread, and the usage gate, Catalog Approvals and policy apply to every tick as to a Run started by hand.
+- Schedule limits are Tenant settings within Deployment ceilings (`[schedules]`), and a Cloud Tier may lower the Tenant total. Per-Schedule spend budgets are #587.
