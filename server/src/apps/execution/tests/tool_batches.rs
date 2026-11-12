@@ -1274,3 +1274,180 @@ async fn offloaded_result_enqueues_while_the_next_worker_step_runs(
 		.join()
 		.unwrap();
 }
+
+/// Create a task in a fresh Workspace with `description`, and return its id.
+async fn task_in_new_workspace(b: &Batching, description: &str) -> Uuid {
+	let (status, workspace) = common::post(
+		&b.app,
+		&b.token,
+		"/api/workspaces",
+		json!({"title":"Memory","goal":description}),
+	)
+	.await;
+	assert_eq!(status, 200, "{workspace}");
+	let (status, task) = common::post(
+		&b.app,
+		&b.token,
+		&format!(
+			"/api/workspaces/{}/tasks",
+			workspace["id"].as_str().unwrap()
+		),
+		json!({"title":"Memory","description":description}),
+	)
+	.await;
+	assert_eq!(status, 200, "{task}");
+	serde_json::from_value(task["id"].clone()).unwrap()
+}
+
+/// The Unit identities Run-start recall put into a Run's context.
+fn start_recall_units(run: &Run) -> Vec<Uuid> {
+	run.context
+		.history
+		.iter()
+		.filter_map(|entry| match &entry.event {
+			ContextEvent::MemoryRecall { sources, .. } => Some(sources),
+			_ => None,
+		})
+		.flatten()
+		.filter_map(|source| match source {
+			aidash_domain::memory::Evidence::Unit { id, .. } => Some(*id),
+			_ => None,
+		})
+		.collect()
+}
+
+/// Have `run` add each of `facts` to its built-in memory through the model's
+/// `memory_mutate`, citing the Run's first Journal event, and finish the Run.
+async fn learn(b: &Batching, run: &Run, facts: &[&str]) -> Vec<Uuid> {
+	let pool = b.f.store.pool.fixture_driver().clone();
+	b.script(&[(
+		"probe",
+		"memory_recall",
+		json!({"text":"staging deploy key","time":null,"kinds":[],"max_tokens":8192}),
+	)]);
+	let worker = Harness {
+		federation: b.f.clone(),
+	};
+	while b.f.store.run(&TEST_FIXTURE, run.id).await.unwrap().phase() != RunPhase::ToolCall {
+		assert!(worker.worker_once().await.unwrap());
+	}
+	assert!(worker.worker_once().await.unwrap());
+	let seq: i64 = sqlx::query_scalar("SELECT min(seq) FROM run_context_events WHERE run_id = $1")
+		.bind(run.id)
+		.fetch_one(&pool)
+		.await
+		.unwrap();
+	let units: Vec<Uuid> = facts.iter().map(|_| Uuid::now_v7()).collect();
+	let changes: Vec<_> = facts
+		.iter()
+		.zip(&units)
+		.map(|(fact, id)| aidash_domain::memory::Change::Add {
+			id: *id,
+			content: aidash_domain::memory::Content {
+				mental_model: None,
+				text: (*fact).into(),
+				kind: aidash_domain::memory::Kind::World,
+				learning: aidash_domain::memory::Learning::Fact,
+				verification: aidash_domain::memory::Verification::Recorded,
+				occurred: None,
+				entities: vec![],
+				evidence: vec![aidash_domain::memory::Evidence::JournalRange {
+					run_id: run.id,
+					from_seq: seq as u64,
+					through_seq: seq as u64,
+				}],
+				links: vec![],
+			},
+		})
+		.collect();
+	b.script(&[("learn", "memory_mutate", json!({"changes":changes}))]);
+	complete(&b.f, run.id).await;
+	let learned: i64 =
+		sqlx::query_scalar("SELECT count(*) FROM memory_units WHERE id = ANY($1) AND NOT deleted")
+			.bind(&units)
+			.fetch_one(&pool)
+			.await
+			.unwrap();
+	assert_eq!(
+		learned as usize,
+		facts.len(),
+		"the Run must have learned every fact"
+	);
+	units
+}
+
+/// #852 decision 6: when the Tenant widens Built-in Memory to the Agent, a
+/// Run in one Workspace recalls at start what the same Agent learned in
+/// another Workspace, and the fact reaches the model. Under the default
+/// Workspace scope it does not.
+#[rstest::rstest]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tenant_agent_scope_recalls_the_same_agents_facts_from_another_workspace(
+	#[future(awt)]
+	#[from(common::runtime)]
+	runtime: RuntimeFixture,
+	#[future(awt)] scripted_model: ScriptedModel,
+) {
+	std::thread::Builder::new()
+		.stack_size(16 * 1024 * 1024)
+		.spawn(move || {
+			tokio::runtime::Builder::new_multi_thread()
+				.worker_threads(4)
+				.thread_stack_size(16 * 1024 * 1024)
+				.enable_all()
+				.build()
+				.unwrap()
+				.block_on(async move {
+					// Arrange: the research Agent learns a fact in its first Workspace.
+					let b = Batching::new(runtime, scripted_model, 1, 1).await;
+					let pool = b.f.store.pool.fixture_driver().clone();
+					let fact = "The staging deploy key rotates every quarter.";
+					let source = b.delegate(b.task).await;
+					let unit = learn(&b, &source, &[fact]).await[0];
+					let description = "Check the staging deploy key rotation";
+
+					// Act: one Run under the default scope, one after widening it.
+					let local = b
+						.delegate(task_in_new_workspace(&b, description).await)
+						.await;
+					complete(&b.f, local.id).await;
+					sqlx::query(
+						"INSERT INTO memory_tenant_scope (tenant, scope, revision, updated_at) \
+						 VALUES ('acme', 'tenant_agent', 1, now())",
+					)
+					.execute(&pool)
+					.await
+					.unwrap();
+					let seen = b.requests.lock().unwrap().len();
+					let widened = b
+						.delegate(task_in_new_workspace(&b, description).await)
+						.await;
+					complete(&b.f, widened.id).await;
+
+					// Assert
+					let local = b.f.store.run(&TEST_FIXTURE, local.id).await.unwrap();
+					assert!(
+						!start_recall_units(&local).contains(&unit),
+						"the default scope stays within one Workspace"
+					);
+					let widened = b.f.store.run(&TEST_FIXTURE, widened.id).await.unwrap();
+					assert_eq!(widened.phase(), RunPhase::Completed, "{:?}", widened.error);
+					assert!(
+						start_recall_units(&widened).contains(&unit),
+						"{:?}",
+						widened.context.history
+					);
+					let requests = b.requests.lock().unwrap()[seen..].to_vec();
+					assert!(
+						requests
+							.iter()
+							.any(|request| request.to_string().contains(fact)),
+						"the recalled fact must reach the model"
+					);
+					b.close().await;
+				});
+		})
+		.unwrap()
+		.join()
+		.unwrap();
+}

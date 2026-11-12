@@ -480,6 +480,24 @@ pub(crate) async fn operate_staged(
 		} => Some(*id),
 		_ => run,
 	};
+	// Tenant widening (#852 decision 6) lets a Run's model roles serve another
+	// Workspace's built-in bank only to recall from it, never to change it.
+	if let Some(id) = model_run
+		&& !matches!(input.action, Action::Recall { .. })
+	{
+		let workspace: Uuid = native::query_scalar(
+			&Query::select()
+				.column(Alias::new("workspace_id"))
+				.from(Alias::new("runs"))
+				.and_where(Expr::col("id").eq(Expr::value(id)))
+				.to_string(PostgresQueryBuilder),
+		)
+		.scalar_one(&mut **lease.tx())
+		.await?;
+		if workspace != input.bank.workspace {
+			return Err(Error::Forbidden);
+		}
+	}
 	let cycle = retry_cycle(lease, run).await?;
 	let mut models = super::memory_models::Models::resolve(
 		store,
