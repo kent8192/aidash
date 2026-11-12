@@ -531,3 +531,309 @@ async fn a_recorded_termination_deletes_results_by_its_deadline_even_once_undecl
 
 #[path = "account_terms/journal_results.rs"]
 mod journal_results;
+
+/// #850: a Journal read across Runs keeps its source Run, so the source
+/// Run's account-terms expiry and Evidence Revocation withdraw the copy the
+/// reader holds: its invocation, events and frozen variant, a copy stored
+/// later, and the copy as the reader's Journal resolves it.
+#[rstest::rstest]
+#[tokio::test]
+async fn journal_copies_in_another_run_are_withdrawn_with_their_source_run(
+	#[future(awt)]
+	#[from(store)]
+	_store_fixture: StoreFixture,
+) {
+	use crate::apps::execution::repositories::research::{freeze_context, resolve_entries};
+	use aidash_domain::context::{Context, ContextEvent, HistoryEntry};
+	// Arrange: Run A reads a page under account terms, Run R searches with
+	// Aidash's own provider, and Run B holds Journal copies of both.
+	let (store, url, schema) = _store_fixture.parts();
+	let agent = agent(&store).await;
+	let expiring = leased_run(&store, &agent).await;
+	let revoked = leased_run(&store, &agent).await;
+	let holder = leased_run(&store, &agent).await;
+	assert_ne!(expiring.id, revoked.id);
+	assert_ne!(revoked.id, holder.id);
+	let evidence = aidash_server::research::evidence_store(store.clone(), ACME.clone());
+	let research = Research {
+		store: &evidence,
+		gate: &Permit,
+		limits: Limits::default(),
+	};
+	let termed = Termed {
+		fixture: FixtureResearch::default(),
+		terms: terms("termed"),
+	};
+	let native = FixtureResearch::default();
+	let call = |run: Uuid, key| Call {
+		run,
+		context_revision: 0,
+		key,
+		provider: "research.fixture@1",
+		disclosure_approval: true,
+	};
+	let found = research
+		.search(
+			&call(expiring.id, "s1"),
+			&termed,
+			&json!({"query":"strasse"}),
+		)
+		.await
+		.unwrap();
+	let read = research
+		.fetch(
+			&call(expiring.id, "f1"),
+			&termed,
+			&json!({"source_id":found["data"]["sources"][0]["source_id"]}),
+		)
+		.await
+		.unwrap();
+	let document: Uuid = serde_json::from_value(read["data"]["document_id"].clone()).unwrap();
+	let searched = research
+		.search(
+			&call(revoked.id, "s1"),
+			&native,
+			&json!({"query":"strasse"}),
+		)
+		.await
+		.unwrap();
+	let source: Uuid =
+		serde_json::from_value(searched["data"]["sources"][0]["source_id"].clone()).unwrap();
+	let copy = |dependencies: Value, text: &str| {
+		json!({"contract":aidash_domain::context::research::JOURNAL_QUERY_CONTRACT,
+			"research_derived":true,"dependencies":dependencies,"stdout":text})
+	};
+	let from_expiring = copy(
+		json!({"sources":[],"documents":[document],"runs":[expiring.id]}),
+		"copied expiring passage",
+	);
+	let from_revoked = copy(
+		json!({"sources":[source],"documents":[],"runs":[revoked.id]}),
+		"copied revoked passage",
+	);
+	let token = holder.lease_owner.unwrap();
+	store
+		.renew_lease(&ACME, holder.id, token, 300)
+		.await
+		.unwrap();
+	for key in [
+		"copy-expiring",
+		"copy-revoked",
+		"late-expiring",
+		"late-revoked",
+	] {
+		store
+			.invocation_start(
+				&ACME,
+				&holder,
+				token,
+				key,
+				"journal_query",
+				&json!({"code":"journal()","run_id":expiring.id}),
+				true,
+			)
+			.await
+			.unwrap();
+	}
+	for (key, result) in [
+		("copy-expiring", &from_expiring),
+		("copy-revoked", &from_revoked),
+	] {
+		let stored = store
+			.invocation_finish(&ACME, &holder, token, key, result)
+			.await
+			.unwrap();
+		assert_eq!(&stored, result, "a copy of current Research is kept");
+	}
+	let entry = |seq: u64, id: &str, result: &Value| {
+		HistoryEntry::new(
+			seq,
+			ContextEvent::tool(
+				aidash_domain::provider::ToolCall {
+					id: id.into(),
+					name: "journal_query".into(),
+					arguments: json!({}),
+				},
+				result.clone(),
+			),
+		)
+	};
+	let held = vec![
+		entry(1, "copy-expiring", &from_expiring),
+		entry(2, "copy-revoked", &from_revoked),
+	];
+	let freeze = |history: Vec<HistoryEntry>| {
+		let store = store.clone();
+		async move {
+			let mut context = Context::default();
+			context.history = history;
+			let mut tx = store
+				.pool
+				.begin(&ACME)
+				.await
+				.unwrap()
+				.into_executor()
+				.await
+				.unwrap();
+			freeze_context(tx.as_mut(), holder.id, &context)
+				.await
+				.unwrap();
+			tx.commit().await.unwrap();
+		}
+	};
+	freeze(held.clone()).await;
+	let retained = || {
+		let store = store.clone();
+		async move {
+			sqlx::query_scalar::<_, i64>(
+				&Query::select()
+					.expr(Expr::cust("count(*)"))
+					.from(Alias::new("research_journal_results"))
+					.and_where(Expr::col("run_id").eq(Expr::value(holder.id)))
+					.and_where(Expr::col("bytes").is_not_null())
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_one(store.pool.fixture_driver())
+			.await
+			.unwrap()
+		}
+	};
+	assert_eq!(retained().await, 2);
+
+	// Act: A's Provider results expire, and R's evidence is revoked.
+	age(&store, expiring.id, 31).await;
+	aidash_server::research::sweep_account_terms(&store, std::slice::from_ref(&termed.terms))
+		.await
+		.unwrap();
+	{
+		let mut tx = store
+			.pool
+			.begin(&ACME)
+			.await
+			.unwrap()
+			.into_executor()
+			.await
+			.unwrap();
+		sqlx::query("INSERT INTO research_revocations (run_id, tenant, revoked_by, reason, revoked_at, removed) VALUES ($1,'acme',$2,'revoked',now(),$3)")
+			.bind(revoked.id)
+			.bind(json!({"kind":"subject","tenant":"acme","subject":"alice"}))
+			.bind(json!({"sources":0,"snapshots":0,"fragments":0,"attempts":0,"invocations":0,"snapshot_digests":[]}))
+			.execute(store.pool.fixture_driver())
+			.await
+			.unwrap();
+		crate::apps::execution::models::research::revoke_invocations(tx.as_mut(), Some(revoked.id))
+			.await
+			.unwrap();
+		tx.commit().await.unwrap();
+	}
+
+	// Assert: the reader's stored copies are tombstones.
+	let saved = |key: &'static str| {
+		let store = store.clone();
+		async move {
+			sqlx::query_scalar::<_, Value>(
+				&Query::select()
+					.expr(Expr::cust(
+						"jsonb_build_object('result', result, 'input', input)",
+					))
+					.from(Alias::new("invocations"))
+					.and_where(Expr::col("run_id").eq(Expr::value(holder.id)))
+					.and_where(Expr::col("idempotency_key").eq(key))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_one(store.pool.fixture_driver())
+			.await
+			.unwrap()
+		}
+	};
+	let expired = saved("copy-expiring").await;
+	assert_eq!(
+		expired["result"]["error"]["code"], "result_expired",
+		"{expired}"
+	);
+	let withdrawn = saved("copy-revoked").await;
+	assert_eq!(
+		withdrawn["result"]["error"]["code"], "evidence_revoked",
+		"{withdrawn}"
+	);
+	assert_eq!(withdrawn["input"], ContextEvent::revoked_arguments());
+	// A copy stored afterwards is stored as its tombstone.
+	let late = store
+		.invocation_finish(&ACME, &holder, token, "late-expiring", &from_expiring)
+		.await
+		.unwrap();
+	assert_eq!(late["error"]["code"], "result_expired", "{late}");
+	let late = store
+		.invocation_finish(&ACME, &holder, token, "late-revoked", &from_revoked)
+		.await
+		.unwrap();
+	assert_eq!(late["error"]["code"], "evidence_revoked", "{late}");
+	// No event of the reader keeps a copied passage.
+	let events: Vec<String> = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("data::text"))
+			.from(Alias::new("events"))
+			.and_where(Expr::cust_with_values(
+				"data->>'run_id' = ?",
+				[holder.id.to_string()],
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert!(
+		events
+			.iter()
+			.all(|event| !event.contains("copied expiring passage")
+				&& !event.contains("copied revoked passage")),
+		"{events:?}"
+	);
+	// The frozen variants lost their bytes, and a worker still holding the
+	// copies freezes them withdrawn.
+	assert_eq!(retained().await, 0);
+	let fresh = vec![
+		entry(
+			3,
+			"copy-expiring-again",
+			&copy(from_expiring["dependencies"].clone(), "again"),
+		),
+		entry(
+			4,
+			"copy-revoked-again",
+			&copy(from_revoked["dependencies"].clone(), "again"),
+		),
+	];
+	freeze(fresh.clone()).await;
+	assert_eq!(retained().await, 0);
+	// The reader's Journal resolves every copy as withdrawn.
+	let mut durable: Vec<HistoryEntry> = held
+		.iter()
+		.chain(&fresh)
+		.map(|entry| serde_json::from_value(serde_json::to_value(entry).unwrap()).unwrap())
+		.collect();
+	let mut tx = store
+		.pool
+		.begin(&ACME)
+		.await
+		.unwrap()
+		.into_executor()
+		.await
+		.unwrap();
+	resolve_entries(tx.as_mut(), holder.id, &mut durable)
+		.await
+		.unwrap();
+	tx.commit().await.unwrap();
+	let results: Vec<_> = durable
+		.iter()
+		.map(|entry| match &entry.event {
+			ContextEvent::Tool { result, .. } => result.clone(),
+			other => panic!("{other:?}"),
+		})
+		.collect();
+	assert!(ContextEvent::is_expired_result(&results[0]), "{results:?}");
+	assert!(ContextEvent::is_revoked_result(&results[1]), "{results:?}");
+	assert!(ContextEvent::is_expired_result(&results[2]), "{results:?}");
+	assert!(ContextEvent::is_revoked_result(&results[3]), "{results:?}");
+	cleanup(store, &url, &schema).await;
+}

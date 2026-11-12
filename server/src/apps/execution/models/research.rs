@@ -30,6 +30,8 @@ use uuid::Uuid;
 
 mod journal_results;
 pub(crate) use journal_results::ResearchJournalResult;
+mod source_copies;
+pub(crate) use source_copies::{expire_copies, revoke_copies};
 
 const DISPATCHED: &str = "dispatched";
 /// Advisory lock namespace of research reservations.
@@ -1275,9 +1277,23 @@ impl ResearchAttempt {
 			if ResearchRevocation::exists(tx, run).await? {
 				return Ok(Some(revoked_result(operation)));
 			}
-			let expired =
+			let mut expired =
 				crate::apps::execution::repositories::research::account_terms::expired(tx, run)
 					.await?;
+			// A copy of another Run's Research is withdrawn with that Run.
+			let copied =
+				aidash_domain::context::research::ResearchReference::from_result(key, result);
+			if !crate::apps::execution::repositories::research::source_withdrawals(
+				tx,
+				run,
+				copied,
+				&mut expired,
+			)
+			.await?
+			.is_empty()
+			{
+				return Ok(Some(revoked_result(operation)));
+			}
 			return Ok(expired
 				.covers(result)
 				.then(|| aidash_domain::research::expiry::tombstone(operation)));
@@ -1386,6 +1402,9 @@ pub(crate) async fn revoke_invocations(
 		.await?
 		.rows_affected;
 	revoke_tool_events(tx, run).await?;
+	// Other Runs' Journal copies of this Research go too; they are the
+	// holders' invocations, so they are not counted as this Run's.
+	revoke_copies(tx, run).await?;
 	Ok(u32::try_from(removed).unwrap_or(u32::MAX))
 }
 
@@ -1874,6 +1893,8 @@ impl ExpiringAttempts {
 			tx.execute(&sql, convert_values(values)).await?;
 		}
 		ResearchJournalResult::expire(tx, self.run, &all, &expired).await?;
+		// Journal copies other Runs read from this Run expire with it.
+		expire_copies(tx, self.run, &expired).await?;
 		Ok(purged)
 	}
 }

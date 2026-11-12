@@ -62,7 +62,9 @@ pub trait JournalSource: Send + Sync {
 			return Err(Error::Invalid("invalid journal range".into()));
 		}
 		let lines = self.export(scope, reader_run, target_run, None).await?;
-		Ok(snapshot_from_lines(lines, range))
+		let mut snapshot = snapshot_from_lines(lines, range);
+		snapshot.dependencies.add_source_run(reader_run, target_run);
+		Ok(snapshot)
 	}
 }
 

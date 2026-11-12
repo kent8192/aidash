@@ -68,6 +68,51 @@ fn journal_results_retain_research_dependencies_and_are_purged_with_them() {
 }
 
 #[test]
+fn a_copy_read_from_another_run_keeps_that_run_through_later_copies() {
+	let (reader, creator, third) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+	let line = super::super::journal_export::JournalLine::from(&delivered());
+	// The Run's own Journal and a Journal with no Research name no source Run.
+	assert!(
+		JournalDependencies::read_by(std::slice::from_ref(&line), reader, reader)
+			.runs
+			.is_empty()
+	);
+	assert!(
+		JournalDependencies::read_by(&[], reader, creator)
+			.runs
+			.is_empty()
+	);
+	let copied = JournalDependencies::read_by(std::slice::from_ref(&line), reader, creator);
+	assert_eq!(copied.runs, [creator].into());
+	let copy = HistoryEntry::new(
+		4,
+		ContextEvent::tool(
+			ToolCall {
+				id: "read".into(),
+				name: "journal_read".into(),
+				arguments: json!({}),
+			},
+			json!({"contract": JOURNAL_RETRIEVAL_CONTRACT, "research_derived":true, "dependencies": copied, "text":"exact provider passage"}),
+		),
+	);
+	let reference = copy.research_reference().unwrap();
+	assert_eq!(reference.runs, vec![creator]);
+	// The durable reference round-trips with its source Run.
+	let stored: HistoryEntry = serde_json::from_slice(&serde_json::to_vec(&copy).unwrap()).unwrap();
+	assert_eq!(stored.research_reference().unwrap().runs, vec![creator]);
+	// A third Run reading the reader's copy names both Runs.
+	let chained = JournalDependencies::read_by(
+		&[super::super::journal_export::JournalLine::from(&copy)],
+		third,
+		reader,
+	);
+	assert_eq!(chained.runs, [creator, reader].into());
+	// A reference without source Runs keeps its earlier durable shape.
+	let own = delivered().research_reference().unwrap();
+	assert!(serde_json::to_value(&own).unwrap().get("runs").is_none());
+}
+
+#[test]
 fn ordinary_reference_contract_results_survive_context_save_and_replay() {
 	for result in [
 		json!({"contract": CONTRACT}),
