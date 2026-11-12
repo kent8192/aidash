@@ -45,7 +45,7 @@ impl Fake {
 		}
 	}
 
-	fn as_person(mut self, subject: &str) -> Self {
+	fn acting_as(mut self, subject: &str) -> Self {
 		self.subject = subject.into();
 		self.credential = Uuid::new_v4();
 		self
@@ -348,7 +348,7 @@ async fn only_the_registrant_changes_it_and_a_new_trigger_counts_from_now() {
 	let schedule = register(&mut alice, workspace, definition(), Origin::Person)
 		.await
 		.unwrap();
-	let mut bob = alice_in(workspace).as_person("bob");
+	let mut bob = alice_in(workspace).acting_as("bob");
 	bob.schedules = alice.schedules.clone();
 	bob.administers = true;
 	let patch = Patch {
@@ -415,9 +415,9 @@ async fn a_successor_resumes_a_departed_registrants_schedule_as_their_own() {
 	let named = name_successor(&mut admin, schedule.id, "carol")
 		.await
 		.unwrap();
-	let mut carol = alice_in(workspace).as_person("carol");
+	let mut carol = alice_in(workspace).acting_as("carol");
 	carol.schedules = admin.schedules.clone();
-	let mut bob = alice_in(workspace).as_person("bob");
+	let mut bob = alice_in(workspace).acting_as("bob");
 	bob.schedules = admin.schedules.clone();
 	let refused = resume(&mut bob, schedule.id).await;
 	let taken = resume(&mut carol, schedule.id).await.unwrap();

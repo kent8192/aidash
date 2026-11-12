@@ -718,7 +718,7 @@ pub(crate) async fn task_thread(
 	tx: &mut dyn TransactionExecutor,
 	task: Uuid,
 ) -> Result<Option<Uuid>> {
-	Ok(native::query_scalar::<Uuid>(
+	native::query_scalar::<Uuid>(
 		&Query::select()
 			.column(Alias::new("thread_id"))
 			.from(Alias::new("core_task_sessions"))
@@ -727,7 +727,7 @@ pub(crate) async fn task_thread(
 			.to_string(PostgresQueryBuilder),
 	)
 	.scalar_optional(&mut *tx)
-	.await?)
+	.await
 }
 
 /// When the Schedule's latest scheduled tick was due; "Run now" ticks aside.
@@ -736,7 +736,7 @@ pub(crate) async fn last_scheduled(
 	tenant: &str,
 	schedule: Uuid,
 ) -> Result<Option<DateTime<Utc>>> {
-	Ok(native::query_scalar::<DateTime<Utc>>(
+	native::query_scalar::<DateTime<Utc>>(
 		&Query::select()
 			.column(Alias::new("scheduled_at"))
 			.from(Alias::new("schedule_ticks"))
@@ -748,5 +748,5 @@ pub(crate) async fn last_scheduled(
 			.to_string(PostgresQueryBuilder),
 	)
 	.scalar_optional(&mut *tx)
-	.await?)
+	.await
 }
