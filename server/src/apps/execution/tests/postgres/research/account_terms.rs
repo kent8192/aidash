@@ -775,8 +775,14 @@ async fn journal_copies_in_another_run_are_withdrawn_with_their_source_run(
 		.await
 		.unwrap();
 	assert_eq!(retained().await, 0);
-	// The reader's Journal resolves every copy as withdrawn.
+	// The worker learns to replace the copies it holds in memory.
 	use aidash_application::ports::execution::ExecutionStore;
+	let held = ExecutionStore::expired_research(&store.for_run(ACME.clone()), &projected)
+		.await
+		.unwrap();
+	assert!(held.documents.contains(&document), "{held:?}");
+	assert!(held.sources.contains(&source), "{held:?}");
+	// The reader's Journal resolves every copy as withdrawn.
 	let journal = ExecutionStore::context_journal(&store.for_run(ACME.clone()), holder.id, 1, head)
 		.await
 		.unwrap();

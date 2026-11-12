@@ -731,6 +731,31 @@ pub(crate) fn from_revoked_source(
 	reference.runs.iter().any(|run| revoked.contains(run))
 }
 
+/// The expiry a Run's worker applies to the history it holds, including its
+/// Journal copies of other Runs' Research (#850): their account-terms expiry,
+/// and, since this report has no per-copy revocation, the Research ids of
+/// copies from a revoked Run, so the worker replaces them before its next
+/// model request.
+pub(crate) async fn held_expiry(
+	tx: &mut dyn reinhardt::db::backends::TransactionExecutor,
+	holder: Uuid,
+	entries: &[aidash_domain::context::HistoryEntry],
+) -> crate::Result<aidash_domain::research::expiry::ExpiredResults> {
+	let mut expired = account_terms::expired(tx, holder).await?;
+	let copied = references(entries);
+	let revoked = source_withdrawals(tx, holder, copied.clone(), &mut expired).await?;
+	for reference in copied
+		.iter()
+		.filter(|reference| from_revoked_source(reference, &revoked))
+	{
+		expired.sources.extend(reference.sources.iter().copied());
+		expired
+			.documents
+			.extend(reference.documents.iter().copied());
+	}
+	Ok(expired)
+}
+
 fn references(
 	entries: &[aidash_domain::context::HistoryEntry],
 ) -> Vec<aidash_domain::context::research::ResearchReference> {
