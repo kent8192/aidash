@@ -70,10 +70,10 @@ async fn rows(lease: &mut Lease<'_>, workspace: Uuid, ids: &[Uuid]) -> Result<Ve
 		.order_by("position", Order::Asc)
 		.order_by("id", Order::Asc)
 		.to_string(PostgresQueryBuilder);
-	Ok(native::query_as(&query)
+	native::query_as(&query)
 		.columns(&COLUMNS)
 		.fetch_all(&mut **lease.tx())
-		.await?)
+		.await
 }
 
 /// The posted image a source names, if it still exists in that message.

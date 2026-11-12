@@ -456,9 +456,9 @@ impl AgentBindings {
 			// Attachment images (#622): each keeps the versions it pinned.
 			if mode == 1 || (mode == 3 && *operation != "workspace_read") {
 				target.version = "1.0.0".into();
-			} else if mode == 2 && matches!(*operation, "workspace_read" | "workspace_message") {
-				target.version = "1.0.1".into();
-			} else if mode == 4 && *operation == "workspace_message" {
+			} else if (mode == 2 && matches!(*operation, "workspace_read" | "workspace_message"))
+				|| (mode == 4 && *operation == "workspace_message")
+			{
 				target.version = "1.0.1".into();
 			} else if mode == 4 && *operation == "workspace_search" {
 				target.version = "1.0.0".into();
