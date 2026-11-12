@@ -932,8 +932,12 @@ rewritten until the migration is reapplied.
 
 `execution/0123_remove_compaction_decision_storage` removes the compaction-only decision state and outcome tables; `0124_remove_compaction_decision_storage_state` updates the model state. Decision Attempts and approval Evidence remain.
 
-`execution/0125_remove_generated_compaction` removes generated-chain Decider usage and its obsolete counters; `0126_remove_generated_compaction_state` updates the model state. Embedding and Summary allowances remain.
+`execution/0125_remove_generated_compaction` removes generated-chain Decider usage and its obsolete counters; `0126_remove_generated_compaction_state` updates the model state. Its SQL drops the usage table's statement trigger and row policy, which Reinhardt migrations cannot express, and drops the table itself because a typed `DropTable` would reverse the historical composite primary key as two separate keys; the reverse SQL recreates the original key.
+
+`execution/0127_remove_generated_summary` removes the generated Summary Stage allowance, its counters and the `generation_summary_usage` journal; `0128_remove_generated_summary_state` updates the model state. Its raw SQL has the same two reasons as 0125: the statement trigger and row policy have no typed operation, and the table drop must reverse to the original composite primary key. The Embedding allowance remains.
 
 `knowledge/0054_memory_constraint_state` keeps database-only memory checks and Tenant foreign keys out of model migration state while retaining the constraints in PostgreSQL.
+
+`registry/0066_native_context_recovery` replaces the Agent bindings validation function so a `context_policy` may carry the native recovery fields and a `summary` object that names no model of its own (it is validated with the Agent's model). Its SQL keeps the previous function body and delegates to it; PostgreSQL function bodies are DDL that Reinhardt migrations cannot express. Reversal refuses while definitions use the new policy fields.
 
 `registry/0068_reject_new_compaction_deciders` adds a `NOT VALID` check that preserves existing compaction Decider rows while rejecting new or updated ones. PostgreSQL `NOT VALID` constraint DDL is expressed as raw SQL because Reinhardt does not provide it.

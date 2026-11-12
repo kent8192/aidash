@@ -35,6 +35,19 @@ class ProbeTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate"):
             probes.generate([journal[0], journal[0]])
 
+    def test_exclusions_named_in_one_event_get_distinct_questions(self):
+        journal = [
+            {"seq": 1, "event": {"kind": "human", "response": "EXCLUDE-VENDOR=Northwind and EXCLUDE-VENDOR=Contoso"}},
+            {"seq": 2, "event": {"kind": "human", "response": "EXCLUDE-VENDOR=Fabrikam, EXCLUDE-VENDOR=Fabrikam"}},
+        ]
+        excluded = [(p["question"], p["answer"]) for p in probes.generate(journal) if "excluded value" in p["question"]]
+        self.assertEqual(len({question for question, _ in excluded}), len(excluded))
+        self.assertEqual(sorted(excluded), [
+            ("Which excluded value is named by occurrence 1 of EXCLUDE-VENDOR at event 1?", "Northwind"),
+            ("Which excluded value is named by occurrence 1 of EXCLUDE-VENDOR at event 2?", "Fabrikam"),
+            ("Which excluded value is named by occurrence 2 of EXCLUDE-VENDOR at event 1?", "Contoso"),
+        ])
+
     def test_panel_score_and_feedback_use_exact_answers_and_worst_model(self):
         example = optimizer.prepare({"source": "synthetic", "journal": [
             {"seq": 1, "event": {"kind": "human", "response": "BUDGET-USD=300"}}]})

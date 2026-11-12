@@ -130,11 +130,13 @@ async fn journal_read(ctx: &ToolContext<'_>, input: &Value) -> Result<Value> {
 	if maximum > 4000 {
 		return Err(Error::Invalid("max_chars must not exceed 4000".into()));
 	}
-	let lines = ctx
-		.operations
-		.journal(journal_target(input)?, range)
-		.await?;
-	let dependencies = aidash_domain::context::research::JournalDependencies::from_lines(&lines);
+	let target = journal_target(input)?;
+	let lines = ctx.operations.journal(target, range).await?;
+	let dependencies = aidash_domain::context::research::JournalDependencies::read_by(
+		&lines,
+		ctx.run.id,
+		target.unwrap_or(ctx.run.id),
+	);
 	let content = aidash_domain::context::journal_export::to_jsonl(&lines);
 	let total = content.chars().count();
 	let start = usize::try_from(offset).unwrap_or(usize::MAX).min(total);
@@ -167,9 +169,10 @@ async fn journal_search(ctx: &ToolContext<'_>, input: &Value) -> Result<Value> {
 		.unwrap_or("0")
 		.parse::<usize>()
 		.map_err(|_| Error::Invalid("invalid cursor".into()))?;
+	let target = journal_target(input)?;
 	let lines = ctx
 		.operations
-		.journal(journal_target(input)?, journal_range(input, false)?)
+		.journal(target, journal_range(input, false)?)
 		.await?;
 	let mut dependencies = aidash_domain::context::research::JournalDependencies::default();
 	let mut results = Vec::new();
@@ -192,6 +195,7 @@ async fn journal_search(ctx: &ToolContext<'_>, input: &Value) -> Result<Value> {
 			);
 			dependencies.sources.extend(matched.sources);
 			dependencies.documents.extend(matched.documents);
+			dependencies.runs.extend(matched.runs);
 			let mut folded_bytes = 0;
 			let prefix = text
 				.chars()
@@ -209,6 +213,7 @@ async fn journal_search(ctx: &ToolContext<'_>, input: &Value) -> Result<Value> {
 			results.push(json!({"seq":line.seq,"snippet":snippet}));
 		}
 	}
+	dependencies.add_source_run(ctx.run.id, target.unwrap_or(ctx.run.id));
 	let next = offset.saturating_add(results.len());
 	let mut result = json!({"results":results,"next_cursor":more.then(|| next.to_string())});
 	if !dependencies.is_empty() {

@@ -1111,3 +1111,225 @@ async fn withdrawing_what_a_member_read_hides_its_message_and_stops_the_creating
 	assert!(!creator, "the creating Run's Read Recheck fails");
 	cleanup(f, &url, &schema).await;
 }
+
+/// #850 decision 6: Journal Query rechecks the Journal its cell read, the
+/// creator's handed range, not the member's own Journal. A withdrawn result
+/// already in the handed range does not fail every query, and a revocation
+/// of the creator while the cell runs discards the output.
+#[rstest::rstest]
+#[tokio::test]
+async fn member_journal_query_rechecks_the_creator_journal_it_read(
+	#[future(awt)]
+	#[from(common::native_application)]
+	fixture: common::ApplicationFixture,
+) {
+	use base64::{Engine as _, engine::general_purpose::STANDARD};
+	use std::sync::atomic::{AtomicBool, Ordering};
+	let (f, url, schema) = fixture.runtime.parts();
+	let mut rig = SubnodeRig::from_conversation(&f, &fixture.application).await;
+	rig.read_own_task(rig.creator_run).await;
+	let created = rig
+		.call(
+			rig.creator_run,
+			"subnode_create",
+			json!({
+				"leader":"subnode-leader@1.0.0", "members":["subnode-leader@1.0.0"],
+				"allowance":{"tools":SUBNODE_TOOLS,"secrets":[]}
+			}),
+			"create-recheck-subnode",
+		)
+		.await;
+	let first: i64 =
+		sqlx::query_scalar("SELECT MIN(seq) FROM run_context_events WHERE run_id = $1")
+			.bind(rig.creator_run)
+			.fetch_one(f.store.pool.fixture_driver())
+			.await
+			.unwrap();
+	let second: i64 = sqlx::query_scalar(
+		"SELECT MIN(seq) FROM run_context_events WHERE run_id = $1 AND seq > $2",
+	)
+	.bind(rig.creator_run)
+	.bind(first)
+	.fetch_one(f.store.pool.fixture_driver())
+	.await
+	.unwrap();
+	let given = rig
+		.call(
+			rig.creator_run,
+			"subnode_task",
+			json!({
+				"subnode_id":created["subnode_id"], "title":"Search", "request":"Find evidence",
+				"journal_range":{"from_seq":first,"through_seq":second}
+			}),
+			"give-recheck-range",
+		)
+		.await;
+	let task: Uuid = given["task_id"].as_str().unwrap().parse().unwrap();
+	let member = rig.run_of_task(task).await;
+	let rewrite = |seq: i64, event: aidash_domain::context::ContextEvent| {
+		let event = serde_json::to_value(event).unwrap();
+		let pool = f.store.pool.fixture_driver().clone();
+		let creator = rig.creator_run;
+		async move {
+			sqlx::query(
+				"UPDATE run_context_events SET event=$1, digest=$2 WHERE run_id=$3 AND seq=$4",
+			)
+			.bind(&event)
+			.bind(aidash_domain::registry::rules::digest(&event))
+			.bind(creator)
+			.bind(seq)
+			.execute(&pool)
+			.await
+			.unwrap();
+		}
+	};
+	// Inside the handed range the creator already has a withdrawn result, so
+	// the handed range's generation differs from the member's own Journal's.
+	rewrite(
+		second,
+		aidash_domain::context::ContextEvent::tool(
+			aidash_domain::provider::ToolCall {
+				id: "withdrawn-before".into(),
+				name: "research_search".into(),
+				arguments: json!({}),
+			},
+			aidash_domain::context::ContextEvent::revoked_result("withdrawn-before"),
+		),
+	)
+	.await;
+	// Inside it, a stored Research result that the creator can still revoke.
+	let payload = json!({"contract":"aidash.research.result/1","operation":"search","data":{"text":"private evidence"}});
+	let digest = aidash_domain::registry::rules::digest(&payload);
+	let reference = json!({"contract":"aidash.research.reference/1","invocation":"research-recheck","digest":digest,"operation":"search","sources":[],"documents":[]});
+	rewrite(
+		first,
+		aidash_domain::context::ContextEvent::tool(
+			aidash_domain::provider::ToolCall {
+				id: "research-recheck".into(),
+				name: "research_search".into(),
+				arguments: json!({"query":"private query"}),
+			},
+			reference.clone(),
+		),
+	)
+	.await;
+	sqlx::query("INSERT INTO research_journal_results (id, tenant, run_id, invocation_key, digest, reference, bytes, created_at) VALUES ($1,'acme',$2,'research-recheck',$3,$4,$5,now())")
+		.bind(Uuid::new_v4()).bind(rig.creator_run).bind(&digest).bind(&reference).bind(payload.to_string().into_bytes())
+		.execute(f.store.pool.fixture_driver()).await.unwrap();
+	// A Runner protocol peer that, when asked, revokes the creator while the
+	// cell runs.
+	let revoke_during_cell = std::sync::Arc::new(AtomicBool::new(false));
+	let revoking = revoke_during_cell.clone();
+	let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+	let recorded = requests.clone();
+	let pool = f.store.pool.fixture_driver().clone();
+	let creator = rig.creator_run;
+	let mut profile = (*rig.f.store.capabilities.0).clone();
+	let health = json!({"protocol":"aidash-runner/1","verified":true,"python_verified":true,
+		"image":"fixture@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"runtime_class":"fixture","instance":"runner-one","probe":{"resources":{
+		"cpu":profile.cpu,"memory_bytes":profile.memory_bytes,"swap_bytes":0,"processes":profile.processes,
+		"working_bytes":profile.working_bytes,"temporary_bytes":profile.temporary_bytes}}});
+	let router = reinhardt::ServerRouter::new().handler("/{*rest}", upstream_fixtures::any_handler(move |request: reinhardt::Request| {
+		let path = request.uri.path().to_owned();
+		let body = request.json::<Value>().unwrap_or(Value::Null);
+		let mut calls = recorded.lock().unwrap();
+		calls.push(json!({"path":path,"body":body}));
+		let mut revoke = false;
+		let response = if path == "/v1/health" { health.clone() }
+		else if path == "/v1/operations" { json!({"status":"awaiting_files"}) }
+		else if path.contains("/inputs/") { json!({"received":true}) }
+		else if path.ends_with("/start") {
+			revoke = revoking.swap(false, Ordering::SeqCst);
+			let upload = calls.iter().rev().find(|call| call["path"].as_str().is_some_and(|p| p.contains("/inputs/"))).unwrap();
+			let bytes = STANDARD.decode(upload["body"]["data"].as_str().unwrap()).unwrap();
+			json!({"status":"completed","writer_frozen":true,"stdout":STANDARD.encode(bytes),"truncated":false})
+		} else if path.ends_with("/ack") { json!({"acknowledged":true}) }
+		else if path.ends_with("/stop") { json!({"termination_confirmed":true}) }
+		else if path.starts_with("/v1/sessions/") { json!({"live":true}) }
+		else { panic!("unexpected Runner request: {path}") };
+		let pool = pool.clone();
+		async move {
+			if revoke {
+				sqlx::query("INSERT INTO research_revocations (run_id, tenant, revoked_by, reason, revoked_at, removed) VALUES ($1,'acme',$2,'revoked during the cell',now(),$3)")
+					.bind(creator)
+					.bind(json!({"kind":"subject","tenant":"acme","subject":"alice"}))
+					.bind(json!({"sources":0,"snapshots":0,"fragments":0,"attempts":0,"invocations":0,"snapshot_digests":[]}))
+					.execute(&pool).await.unwrap();
+			}
+			reinhardt::Response::ok().with_json(&response).unwrap()
+		}
+	}));
+	let runner = upstream_fixtures::upstream(std::sync::Arc::new(router)).await;
+	profile.admission = true;
+	profile.runner = Some(
+		serde_json::from_value(
+			json!({"endpoint":runner.url,"token_env":"AIDASH_COMMAND_CLEANUP_TEST_TOKEN",
+		"image":"fixture@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"runtime_class":"fixture","namespace":"fixture"}),
+		)
+		.unwrap(),
+	);
+	rig.f.store.capabilities = aidash_server::capabilities::Runtime::new(profile).unwrap();
+	let input = json!({"run_id":rig.creator_run,"code":"journal()",
+		"journal_range":{"from_seq":first,"through_seq":second}});
+
+	// The creator's earlier withdrawal is no change during the cell.
+	let queried = rig
+		.call(member, "journal_query", input.clone(), "recheck-unchanged")
+		.await;
+	let lines: Vec<Value> = queried["stdout"]
+		.as_str()
+		.unwrap()
+		.lines()
+		.map(|line| serde_json::from_str(line).unwrap())
+		.collect();
+	assert_eq!(lines.len(), 2, "{queried}");
+	assert_eq!(lines[0]["seq"], first);
+	assert_eq!(lines[1]["seq"], second);
+	assert!(
+		queried["stdout"]
+			.as_str()
+			.unwrap()
+			.contains("private evidence")
+	);
+	let stops = || {
+		requests
+			.lock()
+			.unwrap()
+			.iter()
+			.filter(|call| {
+				call["path"]
+					.as_str()
+					.is_some_and(|path| path.ends_with("/stop"))
+			})
+			.count()
+	};
+	let stops_before = stops();
+
+	// Revoking the creator while the cell runs discards what the cell read.
+	revoke_during_cell.store(true, Ordering::SeqCst);
+	sqlx::query("UPDATE runs SET control = CASE WHEN id = $1 THEN 'ACTIVE' ELSE 'PAUSED' END WHERE control IN ('ACTIVE', 'PAUSED')")
+		.bind(member).execute(f.store.pool.fixture_driver()).await.unwrap();
+	assert!(
+		rig.script(member, "journal_query", input, "recheck-revoked")
+			.await
+	);
+	assert!(
+		!revoke_during_cell.load(Ordering::SeqCst),
+		"the second cell did not start"
+	);
+	assert!(
+		stops() > stops_before,
+		"the kernel that read revoked content was not stopped"
+	);
+	let result = rig.result_of(member, "recheck-revoked").await;
+	assert!(
+		!serde_json::to_string(&result)
+			.unwrap()
+			.contains("private evidence"),
+		"{result:?}"
+	);
+	drop(runner);
+	cleanup(f, &url, &schema).await;
+}

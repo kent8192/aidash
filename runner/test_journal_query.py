@@ -203,5 +203,23 @@ class JournalSessionTest(unittest.TestCase):
             runner.start.assert_not_called()
 
 
+    def test_reconciling_a_dispatched_cold_cell_does_not_refresh_its_journal(self):
+        # A cold Journal session hydrates its export at startup; a later pass
+        # over the same running cell must collect it, not refresh the mount.
+        import test_verification
+        fixture = test_verification.VerificationTest()
+        with tempfile.TemporaryDirectory() as root:
+            runner, operation, record, _ = fixture.watched_cell(
+                root, {'status': {'status': 'running'},
+                       'cell_status': {'status': 'completed', 'exit_code': 0, 'stdout': 'done'}},
+                running_at=1, request=test_verification.request('journal'))
+            record['pod_operation'] = operation
+            with patch('time.time', return_value=2), patch('time.sleep'):
+                runner._reconcile_python_once(operation)
+            actions = [call.args[1] for call in runner.guard.call_args_list]
+            self.assertNotIn('status', actions)
+            self.assertIn('cell_status', actions)
+            self.assertEqual(record['status'], 'completed')
+
 if __name__ == "__main__":
     unittest.main()

@@ -436,26 +436,42 @@ impl ToolOperations for Operations {
 		.specifications(&self.0.run)
 	}
 	async fn intrinsic_subnode_specifications(&self) -> Result<BTreeMap<String, ToolSpec>> {
-		let Some(authority) = &self.0.home.authority else {
-			return Ok(BTreeMap::new());
-		};
-		if !authority.is_subnode_member(&self.0.run).await? {
-			return Ok(BTreeMap::new());
-		}
 		let providers = super::bindings::Providers {
 			federation: self.0.home.federation.clone(),
 			home: self.0.home.clone(),
 			scope: self.0.scope.clone(),
 		};
-		aidash_domain::subnodes::COORDINATION_TOOLS
-			.iter()
-			.map(|name| {
-				Ok((
+		let mut specifications = BTreeMap::new();
+		// Journal retrieval, as the Run's tool map receives it (#850 decision 6).
+		let handed =
+			super::context_journal::handed_to_run(&self.0.store, &self.0.scope, &self.0.run)
+				.await?;
+		if handed.is_some()
+			|| aidash_domain::context::journal_query::offloaded_any(&self.0.run.context)
+		{
+			for name in aidash_application::registry::system::journal_tools(
+				self.0.store.capabilities.0.runner.is_some(),
+			) {
+				let note = handed.map(|(creator, range)| format!(" The creating Run handed this Task journal range {} through {}. Set run_id to {} and request only this range to inspect it. Omit run_id to inspect your own Journal.", range.from_seq, range.through_seq, creator));
+				specifications.insert(
 					(*name).to_owned(),
-					providers.coordination_tool(name)?.specification(),
-				))
-			})
-			.collect()
+					providers.intrinsic_tool(name, note)?.specification(),
+				);
+			}
+		}
+		let Some(authority) = &self.0.home.authority else {
+			return Ok(specifications);
+		};
+		if !authority.is_subnode_member(&self.0.run).await? {
+			return Ok(specifications);
+		}
+		for name in aidash_domain::subnodes::COORDINATION_TOOLS {
+			specifications.insert(
+				(*name).to_owned(),
+				providers.coordination_tool(name)?.specification(),
+			);
+		}
+		Ok(specifications)
 	}
 	async fn direct_skills(&self) -> Result<Vec<DirectSkill>> {
 		match &self.0.home.authority {

@@ -4517,7 +4517,7 @@ async fn exposure_catalog(
 	let mut catalog =
 		exposure::catalog(snapshot, &specs, &direct, run.context.plugin_tools.as_ref())?;
 	let intrinsic = tools.iter().filter(|(name, tool)| {
-        aidash_domain::subnodes::COORDINATION_TOOLS.contains(&name.as_str())
+        exposure::is_intrinsic(name)
             && matches!(&tool.contract().identity, aidash_domain::tool::ToolIdentity::Builtin(id) if id == &format!("builtin:{name}"))
     }).map(|(name, _)| (name.clone(), specs[name].clone())).collect();
 	exposure::include_subnode_intrinsics(snapshot, &mut catalog, &intrinsic)?;

@@ -182,7 +182,8 @@ impl ExecutionStore for RunStore {
 				.await?
 				.into_executor()
 				.await?;
-			let expired = super::research::account_terms::expired(tx.as_mut(), run.id).await?;
+			let expired =
+				super::research::held_expiry(tx.as_mut(), run.id, &run.context.history).await?;
 			tx.commit().await?;
 			Ok(expired)
 		}

@@ -143,7 +143,10 @@ impl aidash_application::ports::journal_export::JournalSource for Store {
 			}
 			Err(error) => return Err(error),
 		};
-		Ok(snapshot_from_lines(lines, range))
+		let mut snapshot = snapshot_from_lines(lines, range);
+		// A copy of another Run's Research stays withdrawable by that Run.
+		snapshot.dependencies.add_source_run(reader_run, target_run);
+		Ok(snapshot)
 	}
 	async fn export(
 		&self,
@@ -159,6 +162,20 @@ impl aidash_application::ports::journal_export::JournalSource for Store {
 			));
 		}
 		let reader = self.run(scope, reader_run).await?;
+		// A Run executing away from its Home has no local execution grant: its
+		// worker runs under the receiver lease and reads only its own Journal.
+		// Cross-Run reads stay with local Runs, where they are authorized.
+		if !reader.is_local(self.deployment.as_str()) {
+			if reader_run != target_run {
+				return Err(aidash_application::Error::Forbidden);
+			}
+			return Ok(self
+				.context_journal(scope, target_run, from, through)
+				.await?
+				.iter()
+				.map(Into::into)
+				.collect());
+		}
 		let mut access = crate::apps::identity::services::execution::access_for_run(
 			self,
 			&reader.metadata(),

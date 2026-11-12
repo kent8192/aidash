@@ -531,3 +531,278 @@ async fn a_recorded_termination_deletes_results_by_its_deadline_even_once_undecl
 
 #[path = "account_terms/journal_results.rs"]
 mod journal_results;
+
+/// #850: a Journal read across Runs keeps its source Run, so the source
+/// Run's account-terms expiry and Evidence Revocation withdraw the copy the
+/// reader holds: its invocation, events and frozen variant, a copy stored
+/// later, and the copy as the reader's Journal resolves it.
+#[rstest::rstest]
+#[tokio::test]
+async fn journal_copies_in_another_run_are_withdrawn_with_their_source_run(
+	#[future(awt)]
+	#[from(store)]
+	_store_fixture: StoreFixture,
+) {
+	use aidash_domain::context::ContextEvent;
+	// Arrange: Run A reads a page under account terms, Run R searches with
+	// Aidash's own provider, and Run B holds Journal copies of both.
+	let (store, url, schema) = _store_fixture.parts();
+	let agent = agent(&store).await;
+	let expiring = leased_run(&store, &agent).await;
+	let revoked = leased_run(&store, &agent).await;
+	let holder = leased_run(&store, &agent).await;
+	assert_ne!(expiring.id, revoked.id);
+	assert_ne!(revoked.id, holder.id);
+	let evidence = aidash_server::research::evidence_store(store.clone(), ACME.clone());
+	let research = Research {
+		store: &evidence,
+		gate: &Permit,
+		limits: Limits::default(),
+	};
+	let termed = Termed {
+		fixture: FixtureResearch::default(),
+		terms: terms("termed"),
+	};
+	let native = FixtureResearch::default();
+	let call = |run: Uuid, key| Call {
+		run,
+		context_revision: 0,
+		key,
+		provider: "research.fixture@1",
+		disclosure_approval: true,
+	};
+	let found = research
+		.search(
+			&call(expiring.id, "s1"),
+			&termed,
+			&json!({"query":"strasse"}),
+		)
+		.await
+		.unwrap();
+	let read = research
+		.fetch(
+			&call(expiring.id, "f1"),
+			&termed,
+			&json!({"source_id":found["data"]["sources"][0]["source_id"]}),
+		)
+		.await
+		.unwrap();
+	let document: Uuid = serde_json::from_value(read["data"]["document_id"].clone()).unwrap();
+	let searched = research
+		.search(
+			&call(revoked.id, "s1"),
+			&native,
+			&json!({"query":"strasse"}),
+		)
+		.await
+		.unwrap();
+	let source: Uuid =
+		serde_json::from_value(searched["data"]["sources"][0]["source_id"].clone()).unwrap();
+	let copy = |dependencies: &Value, text: &str| {
+		json!({"contract":aidash_domain::context::research::JOURNAL_QUERY_CONTRACT,
+			"research_derived":true,"dependencies":dependencies,"stdout":text})
+	};
+	let from_expiring_runs = json!({"sources":[],"documents":[document],"runs":[expiring.id]});
+	let from_revoked_runs = json!({"sources":[source],"documents":[],"runs":[revoked.id]});
+	let from_expiring = copy(&from_expiring_runs, "copied expiring passage");
+	let from_revoked = copy(&from_revoked_runs, "copied revoked passage");
+	let tool = |id: &str, result: &Value| {
+		ContextEvent::tool(
+			aidash_domain::provider::ToolCall {
+				id: id.into(),
+				name: "journal_query".into(),
+				arguments: json!({}),
+			},
+			result.clone(),
+		)
+	};
+	let token = holder.lease_owner.unwrap();
+	store
+		.renew_lease(&ACME, holder.id, token, 300)
+		.await
+		.unwrap();
+	// The holder's projection freezes both copies.
+	let mut projected = store.run(&ACME, holder.id).await.unwrap();
+	projected
+		.context
+		.push(tool("copy-expiring", &from_expiring));
+	projected.context.push(tool("copy-revoked", &from_revoked));
+	store
+		.save_run(&ACME, &projected, token, "run.sources_observed")
+		.await
+		.unwrap();
+	for key in [
+		"copy-expiring",
+		"copy-revoked",
+		"late-expiring",
+		"late-revoked",
+	] {
+		store
+			.invocation_start(
+				&ACME,
+				&holder,
+				token,
+				key,
+				"journal_query",
+				&json!({"code":"journal()","run_id":expiring.id}),
+				true,
+			)
+			.await
+			.unwrap();
+	}
+	for (key, result) in [
+		("copy-expiring", &from_expiring),
+		("copy-revoked", &from_revoked),
+	] {
+		let stored = store
+			.invocation_finish(&ACME, &holder, token, key, result)
+			.await
+			.unwrap();
+		assert_eq!(&stored, result, "a copy of current Research is kept");
+	}
+	let retained = || {
+		let store = store.clone();
+		async move {
+			sqlx::query_scalar::<_, i64>(
+				&Query::select()
+					.expr(Expr::cust("count(*)"))
+					.from(Alias::new("research_journal_results"))
+					.and_where(Expr::col("run_id").eq(Expr::value(holder.id)))
+					.and_where(Expr::col("bytes").is_not_null())
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_one(store.pool.fixture_driver())
+			.await
+			.unwrap()
+		}
+	};
+	assert_eq!(retained().await, 2);
+
+	// Act: A's Provider results expire, and R's evidence is revoked; the
+	// retention sweep withdraws the copies of every revoked Run.
+	age(&store, expiring.id, 31).await;
+	aidash_server::research::sweep_account_terms(&store, std::slice::from_ref(&termed.terms))
+		.await
+		.unwrap();
+	sqlx::query("INSERT INTO research_revocations (run_id, tenant, revoked_by, reason, revoked_at, removed) VALUES ($1,'acme',$2,'revoked',now(),$3)")
+		.bind(revoked.id)
+		.bind(json!({"kind":"subject","tenant":"acme","subject":"alice"}))
+		.bind(json!({"sources":0,"snapshots":0,"fragments":0,"attempts":0,"invocations":0,"snapshot_digests":[]}))
+		.execute(store.pool.fixture_driver())
+		.await
+		.unwrap();
+	aidash_server::research::sweep_retention(&store)
+		.await
+		.unwrap();
+
+	// Assert: the reader's stored copies are tombstones.
+	let saved = |key: &'static str| {
+		let store = store.clone();
+		async move {
+			sqlx::query_scalar::<_, Value>(
+				&Query::select()
+					.expr(Expr::cust(
+						"jsonb_build_object('result', result, 'input', input)",
+					))
+					.from(Alias::new("invocations"))
+					.and_where(Expr::col("run_id").eq(Expr::value(holder.id)))
+					.and_where(Expr::col("idempotency_key").eq(key))
+					.to_string(PostgresQueryBuilder),
+			)
+			.fetch_one(store.pool.fixture_driver())
+			.await
+			.unwrap()
+		}
+	};
+	let expired = saved("copy-expiring").await;
+	assert_eq!(
+		expired["result"]["error"]["code"], "result_expired",
+		"{expired}"
+	);
+	let withdrawn = saved("copy-revoked").await;
+	assert_eq!(
+		withdrawn["result"]["error"]["code"], "evidence_revoked",
+		"{withdrawn}"
+	);
+	assert_eq!(withdrawn["input"], ContextEvent::revoked_arguments());
+	// A copy stored afterwards is stored as its tombstone.
+	let late = store
+		.invocation_finish(&ACME, &holder, token, "late-expiring", &from_expiring)
+		.await
+		.unwrap();
+	assert_eq!(late["error"]["code"], "result_expired", "{late}");
+	let late = store
+		.invocation_finish(&ACME, &holder, token, "late-revoked", &from_revoked)
+		.await
+		.unwrap();
+	assert_eq!(late["error"]["code"], "evidence_revoked", "{late}");
+	// No event of the reader keeps a copied passage.
+	let events: Vec<String> = sqlx::query_scalar(
+		&Query::select()
+			.expr(Expr::cust("data::text"))
+			.from(Alias::new("events"))
+			.and_where(Expr::cust_with_values(
+				"data->>'run_id' = ?",
+				[holder.id.to_string()],
+			))
+			.to_string(PostgresQueryBuilder),
+	)
+	.fetch_all(store.pool.fixture_driver())
+	.await
+	.unwrap();
+	assert!(
+		events
+			.iter()
+			.all(|event| !event.contains("copied expiring passage")
+				&& !event.contains("copied revoked passage")),
+		"{events:?}"
+	);
+	// The frozen variants lost their bytes, and a worker still holding
+	// copies freezes them withdrawn.
+	assert_eq!(retained().await, 0);
+	let mut projected = store.run(&ACME, holder.id).await.unwrap();
+	projected.context.push(tool(
+		"copy-expiring-again",
+		&copy(&from_expiring_runs, "again"),
+	));
+	projected.context.push(tool(
+		"copy-revoked-again",
+		&copy(&from_revoked_runs, "again"),
+	));
+	let head = projected.context.journal.head;
+	store
+		.save_run(&ACME, &projected, token, "run.sources_observed")
+		.await
+		.unwrap();
+	assert_eq!(retained().await, 0);
+	// The worker learns to replace the copies it holds in memory.
+	use aidash_application::ports::execution::ExecutionStore;
+	let held = ExecutionStore::expired_research(&store.for_run(ACME.clone()), &projected)
+		.await
+		.unwrap();
+	assert!(held.documents.contains(&document), "{held:?}");
+	assert!(held.sources.contains(&source), "{held:?}");
+	// The reader's Journal resolves every copy as withdrawn.
+	let journal = ExecutionStore::context_journal(&store.for_run(ACME.clone()), holder.id, 1, head)
+		.await
+		.unwrap();
+	let results: Vec<_> = journal
+		.iter()
+		.filter_map(|entry| match &entry.event {
+			ContextEvent::Tool { call, result } if call.name == "journal_query" => {
+				Some((call.id.clone(), result.clone()))
+			}
+			_ => None,
+		})
+		.collect();
+	assert_eq!(results.len(), 4, "{results:?}");
+	for (id, result) in &results {
+		let withdrawn = if id.starts_with("copy-expiring") {
+			ContextEvent::is_expired_result(result)
+		} else {
+			ContextEvent::is_revoked_result(result)
+		};
+		assert!(withdrawn, "{id}: {result}");
+	}
+	cleanup(store, &url, &schema).await;
+}
